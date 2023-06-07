@@ -11,18 +11,30 @@ license = { file = "LICENSE" }
 authors = [{ name = "Eric Denovellis", email = "eric.denovellis@ucsf.edu" }]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-dependencies = []
+dependencies = [
+    "numpy",
+    "scipy",
+    "jax",
+    "networkx",
+    "xarray",
+    "scikit-learn",
+    "patsy",
+    "tqdm",
+    "track_linearization",
+    "replay_trajectory_classification",
+    "matplotlib",
+    "seaborn",
+]
 dynamic = ["version"]
 
 [project.urls]
 "Homepage" = "https://github.com/LorenFrankLab/non_local_detector"
+
+[project.optional-dependencies]
+test = ["black", "pytest", "pytest-cov"]
 
 [tool.hatch.version]
 source = "vcs"

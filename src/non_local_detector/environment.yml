@@ -1,0 +1,21 @@
+name: non_local_detector
+channels:
+- defaults
+- conda-forge
+- edeno
+dependencies:
+- numpy
+- scipy
+- jax
+- networkx
+- xarray
+- scikit-learn
+- patsy
+- tqdm
+- track_linearization
+- replay_trajectory_classification
+- matplotlib
+- seaborn
+- black
+- pytest
+- pytest-cov
