@@ -40,11 +40,11 @@ test = ["black", "pytest", "pytest-cov"]
 source = "vcs"
 
 [tool.hatch.build.hooks.vcs]
-version-file = "non_local_detector/_version.py"
+version-file = "src/non_local_detector/_version.py"
 
 [tool.hatch.build.targets.sdist]
 exclude = [".git_archival.txt"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["non_local_detector"]
-exclude = ["non_local_detector/data/test_data"]
+exclude = ["src/non_local_detector/data/test_data"]
