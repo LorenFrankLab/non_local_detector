@@ -8,7 +8,7 @@ from scipy.special import softmax
 from statsmodels.tsa.stattools import lagmat
 
 
-def centered_softmax_forward(y):
+def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
     """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
 
     Example
@@ -24,7 +24,7 @@ def centered_softmax_forward(y):
     return softmax(y, axis=-1)
 
 
-def centered_softmax_inverse(y):
+def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
     """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
 
     Example
@@ -328,7 +328,19 @@ dirichlet_gradient = jax.grad(dirichlet_neg_log_likelihood)
 dirichlet_hessian = jax.hessian(dirichlet_neg_log_likelihood)
 
 
-def make_transition_from_diag(diag):
+def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
+    """Make a transition matrix from the diagonal.
+
+    Parameters
+    ----------
+    diag : np.ndarray, shape (n_states,)
+        The diagonal of the transition matrix.
+
+    Returns
+    -------
+    transition_matrix : np.ndarray, shape (n_states, n_states)
+
+    """
     n_states = len(diag)
     transition_matrix = diag * np.eye(n_states)
     off_diag = ((1.0 - diag) / (n_states - 1.0))[:, np.newaxis]
@@ -339,7 +351,7 @@ def make_transition_from_diag(diag):
     return transition_matrix
 
 
-def estimate_initial_discrete_transition(
+def set_initial_discrete_transition(
     speed: np.ndarray,
     speed_knots: None | np.ndarray = None,
     is_stationary: bool = False,
