@@ -46,5 +46,5 @@ version-file = "src/non_local_detector/_version.py"
 exclude = [".git_archival.txt"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["non_local_detector"]
+packages = ["src/non_local_detector"]
 exclude = ["src/non_local_detector/data/test_data"]
