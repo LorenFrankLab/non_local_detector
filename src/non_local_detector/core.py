@@ -3,8 +3,25 @@ from replay_trajectory_classification.core import atleast_2d, check_converged  #
 
 
 def get_transition_matrix(
-    continuous_state_transitions, discrete_state_transitions, state_ind, t
-):
+    continuous_state_transitions: np.ndarray,
+    discrete_state_transitions: np.ndarray,
+    state_ind: np.ndarray,
+    t: int,
+) -> np.ndarray:
+    """Get transition matrix for a given time bin by combining continuous and discrete state transitions
+
+    Parameters
+    ----------
+    continuous_state_transitions : np.ndarray, shape (n_state_bins, n_state_bins)
+    discrete_state_transitions : np.ndarray, shape (n_time, n_state_bins, n_state_bins) or (n_state_bins, n_state_bins)
+    state_ind : np.ndarray, shape (n_state_bins,)
+    t : int
+        time bin index
+
+    Returns
+    -------
+    transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
+    """
     if discrete_state_transitions.ndim == 2:
         # could consider caching this
         return (
