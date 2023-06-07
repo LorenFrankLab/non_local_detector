@@ -16,6 +16,7 @@ dependencies:
 - replay_trajectory_classification
 - matplotlib
 - seaborn
+- ipython
 - black
 - pytest
 - pytest-cov
