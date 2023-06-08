@@ -1,41 +1,8 @@
 import numpy as np
+from scipy.stats import multivariate_normal, norm
 
 TRACK_HEIGHT = 170
 SAMPLING_FREQUENCY = 1500
-
-
-def generate_data():
-    initial_conditions = np.asarray([0.2, 0.8])
-    transition_matrix = np.asarray([[0.5, 0.5], [0.3, 0.7]])
-    emission_matrix = np.asarray([[0.3, 0.7], [0.8, 0.2]])
-
-    observations = np.asarray(["N", "N", "N", "N", "N", "E", "E", "N", "N", "N"])
-    observations_ind = np.asarray([0 if o == "N" else 1 for o in observations])
-
-    return (
-        initial_conditions,
-        transition_matrix,
-        emission_matrix,
-        observations,
-        observations_ind,
-    )
-
-
-def generate_data3():
-    initial_conditions = np.asarray([1.0, 0.0, 0.0])
-    transition_matrix = np.asarray([[0.0, 0.5, 0.5], [0.0, 0.9, 0.1], [0, 0, 1]])
-    emission_matrix = np.asarray([[0.5, 0.5], [0.9, 0.1], [0.1, 0.9]])
-
-    observations = np.asarray([2, 3, 3, 2, 2, 2, 3, 2, 3])
-    observations_ind = np.asarray([0 if o == 2 else 1 for o in observations])
-
-    return (
-        initial_conditions,
-        transition_matrix,
-        emission_matrix,
-        observations,
-        observations_ind,
-    )
 
 
 def simulate_poisson_spikes(rate, sampling_frequency):
@@ -49,22 +16,6 @@ def simulate_poisson_spikes(rate, sampling_frequency):
     spikes : np.ndarray, shape (n_time,)
     """
     return np.random.poisson(rate / sampling_frequency)
-
-
-def simulate_two_state_poisson(
-    n_time=20_000, sampling_frequency=1000, rate1=5.0, rate2=20.0
-):
-    rate = rate1 * np.ones((n_time,))
-    rate[(n_time // 6) : (2 * n_time // 6)] = rate2
-    rate[(4 * n_time // 6) : (6 * n_time // 6)] = rate2
-
-    time = np.arange(n_time) / sampling_frequency
-    spikes = simulate_poisson_spikes(rate, sampling_frequency)
-
-    return time, rate, spikes
-
-
-from scipy.stats import multivariate_normal, norm
 
 
 def simulate_time(n_samples, sampling_frequency):
