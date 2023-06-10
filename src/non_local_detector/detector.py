@@ -34,6 +34,7 @@ from non_local_detector.observation_models import ObservationModel
 
 logger = getLogger(__name__)
 sklearn.set_config(print_changed_only=False)
+np.seterr(divide="ignore", invalid="ignore")
 
 _DEFAULT_ENVIRONMENT = Environment(environment_name="")
 env_types = Environment | list[Environment] | None
@@ -433,7 +434,17 @@ class _DetectorBase(BaseEstimator):
                 )
 
                 if estimate_inital_conditions:
-                    self.initial_conditions = acausal_posterior[0]
+                    self.initial_conditions_ = acausal_posterior[0]
+                    self.discrete_initial_conditions_ = acausal_state_probabilities[0]
+
+                    expanded_discrete_ic = acausal_state_probabilities[0][
+                        self.state_ind_
+                    ]
+                    self.continuous_initial_conditions_ = np.where(
+                        np.isclose(expanded_discrete_ic, 0.0),
+                        0.0,
+                        acausal_posterior[0] / expanded_discrete_ic,
+                    )
 
                 # Stats
                 print("Stats")

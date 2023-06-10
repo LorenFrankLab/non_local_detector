@@ -1,6 +1,8 @@
 import numpy as np
 from replay_trajectory_classification.core import atleast_2d, check_converged  # noqa
 
+np.seterr(divide="ignore", invalid="ignore")
+
 
 def get_transition_matrix(
     continuous_state_transitions: np.ndarray,
