@@ -290,7 +290,7 @@ class _DetectorBase(BaseEstimator):
         """Constructs the transition matrix for the discrete states."""
         logger.info("Fitting discrete state transition")
         (
-            self.discrete_state_transition_,
+            self.discrete_state_transitions_,
             self.discrete_transition_coefficients_,
             self.discrete_transition_design_matrix_,
         ) = self.discrete_transition_type.make_state_transition(covariate_data)
