@@ -1,7 +1,8 @@
-import numpy as np
-
 from dataclasses import dataclass
+
+import numpy as np
 from replay_trajectory_classification.environments import Environment
+
 from non_local_detector.observation_models import ObservationModel
 
 

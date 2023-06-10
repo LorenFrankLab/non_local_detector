@@ -10,82 +10,40 @@ import seaborn as sns
 import sklearn
 from sklearn.base import BaseEstimator
 
-from non_local_detector.continuous_state_transitions import (
-    Discrete,
-    EmpiricalMovement,
-    RandomWalk,
-    RandomWalkDirection1,
-    RandomWalkDirection2,
-    Uniform,
-)
+from non_local_detector.continuous_state_transitions import EmpiricalMovement
 from non_local_detector.core import (
     check_converged,
     convert_to_state_probability,
     forward,
     smoother,
 )
-from non_local_detector.discrete_state_transitions import (
-    DiscreteStationaryDiagonal,
-    _estimate_discrete_transition,
-)
+from non_local_detector.discrete_state_transitions import _estimate_discrete_transition
 from non_local_detector.environment import Environment
-from non_local_detector.initial_conditions import UniformInitialConditions
+from non_local_detector.models.non_local_model_defaults import (
+    _DEFAULT_CLUSTERLESS_MODEL_KWARGS,
+    _DEFAULT_CONTINUOUS_INITIAL_CONDITIONS,
+    _DEFAULT_CONTINUOUS_TRANSITIONS,
+    _DEFAULT_DISCRETE_INITIAL_CONDITIONS,
+    _DEFAULT_DISCRETE_TRANSITION_STICKINESS,
+    _DEFAULT_DISCRETE_TRANSITION_TYPE,
+    _DEFAULT_ENVIRONMENT,
+    _DEFAULT_OBSERVATION_MODELS,
+    _DEFAULT_SORTED_SPIKES_MODEL_KWARGS,
+    _DEFAULT_STATE_NAMES,
+)
 from non_local_detector.observation_models import ObservationModel
+from non_local_detector.types import (
+    cont_ic_types,
+    ct_types,
+    discrete_types,
+    env_types,
+    obs_types,
+    stickiness_types,
+)
 
 logger = getLogger(__name__)
 sklearn.set_config(print_changed_only=False)
 np.seterr(divide="ignore", invalid="ignore")
-
-_DEFAULT_ENVIRONMENT = Environment(environment_name="")
-env_types = Environment | list[Environment] | None
-
-_DEFAULT_CONTINUOUS_TRANSITIONS = [
-    [Discrete(), Discrete(), Uniform(), Uniform()],
-    [Discrete(), Discrete(), Uniform(), Uniform()],
-    [Discrete(), Discrete(), RandomWalk(), Uniform()],
-    [Discrete(), Discrete(), Uniform(), Uniform()],
-]
-ct_types = list[
-    list[
-        Discrete
-        | EmpiricalMovement
-        | RandomWalk
-        | RandomWalkDirection1
-        | RandomWalkDirection2
-        | Uniform
-    ]
-]
-
-_DEFAULT_OBSERVATION_MODELS = [
-    ObservationModel(is_local=True),
-    ObservationModel(is_no_spike=True),
-    ObservationModel(),
-    ObservationModel(),
-]
-obs_types = list[ObservationModel] | None
-
-_DEFAULT_DISCRETE_INITIAL_CONDITIONS = np.array([1.0, 0.0, 0.0, 0.0])
-_DEFAULT_CONTINUOUS_INITIAL_CONDITIONS = [
-    UniformInitialConditions(),
-    UniformInitialConditions(),
-    UniformInitialConditions(),
-    UniformInitialConditions(),
-]
-cont_ic_types = list[UniformInitialConditions]
-
-stickiness_types = float | np.ndarray
-_DEFAULT_DISCRETE_TRANSITION_STICKINESS = np.array([30.0, 100_000.0, 30.0, 200.0])
-
-_DEFAULT_DISCRETE_TRANSITION_TYPE = DiscreteStationaryDiagonal(
-    diagonal_values=np.array([0.90, 0.90, 0.90, 0.98])
-)
-
-_DEFAULT_STATE_NAMES = [
-    "Local",
-    "No-Spike",
-    "Non-Local Continuous",
-    "Non-Local Fragmented",
-]
 
 
 class _DetectorBase(BaseEstimator):
@@ -95,7 +53,7 @@ class _DetectorBase(BaseEstimator):
         self,
         discrete_initial_conditions: np.ndarray = _DEFAULT_DISCRETE_INITIAL_CONDITIONS,
         continuous_initial_conditions_types: cont_ic_types = _DEFAULT_CONTINUOUS_INITIAL_CONDITIONS,
-        discrete_transition_type=_DEFAULT_DISCRETE_TRANSITION_TYPE,
+        discrete_transition_type: discrete_types = _DEFAULT_DISCRETE_TRANSITION_TYPE,
         discrete_transition_concentration: float = 1.1,
         discrete_transition_stickiness: stickiness_types = _DEFAULT_DISCRETE_TRANSITION_STICKINESS,
         discrete_transition_regularization: float = 1e-3,
@@ -185,7 +143,7 @@ class _DetectorBase(BaseEstimator):
                 position[is_environment], infer_track_interior=self.infer_track_interior
             )
 
-    def initalize_state_index(self):
+    def initialize_state_index(self):
         self.n_discrete_states_ = len(self.state_names)
         bin_sizes = []
         state_ind = []
@@ -363,19 +321,76 @@ class _DetectorBase(BaseEstimator):
         else:
             raise NotImplementedError
 
-    def fit(self):
+    def fit(
+        self,
+        position=None,
+        is_training=None,
+        encoding_group_labels=None,
+        environment_labels=None,
+        discrete_transition_covariate_data=None,
+    ):
         """To be implemented by inheriting class"""
-        raise NotImplementedError
+        self.initialize_environments(
+            position=position, environment_labels=environment_labels
+        )
+        self.initialize_state_index()
+        self.initialize_initial_conditions()
+        self.initialize_discrete_state_transition(
+            covariate_data=discrete_transition_covariate_data
+        )
+        self.initialize_continuous_state_transition(
+            position=position,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+        )
 
     def predict(self):
-        """To be implemented by inheriting class"""
-        raise NotImplementedError
+        (
+            causal_posterior,
+            predictive_distribution,
+            marginal_log_likelihood,
+        ) = forward(
+            self.initial_conditions_,
+            self.log_likelihood_,
+            self.discrete_state_transitions_,
+            self.continuous_state_transitions_,
+            self.state_ind_,
+        )
+        acausal_posterior = smoother(
+            causal_posterior,
+            predictive_distribution,
+            self.discrete_state_transitions_,
+            self.continuous_state_transitions_,
+            self.state_ind_,
+        )
+
+        (
+            causal_state_probabilities,
+            acausal_state_probabilities,
+            predictive_state_probabilities,
+        ) = convert_to_state_probability(
+            causal_posterior,
+            acausal_posterior,
+            predictive_distribution,
+            self.state_ind_,
+        )
+
+        return (
+            causal_posterior,
+            acausal_posterior,
+            predictive_distribution,
+            causal_state_probabilities,
+            acausal_state_probabilities,
+            predictive_state_probabilities,
+            marginal_log_likelihood,
+        )
 
     def fit_predict(self):
         """To be implemented by inheriting class"""
         raise NotImplementedError
 
-    def _estimate_parameters(
+    def estimate_parameters(
         self,
         estimate_inital_conditions: bool = True,
         estimate_discrete_transition: bool = True,
@@ -518,8 +533,182 @@ class _DetectorBase(BaseEstimator):
 
 
 class ClusterlessDetector(_DetectorBase):
-    pass
+    def __init__(
+        self,
+        clusterless_algorithm: str = "multiunit_likelihood_kde",
+        clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_MODEL_KWARGS,
+        discrete_initial_conditions: np.ndarray = _DEFAULT_DISCRETE_INITIAL_CONDITIONS,
+        continuous_initial_conditions_types: cont_ic_types = _DEFAULT_CONTINUOUS_INITIAL_CONDITIONS,
+        discrete_transition_type=_DEFAULT_DISCRETE_TRANSITION_TYPE,
+        discrete_transition_concentration: float = 1.1,
+        discrete_transition_stickiness: stickiness_types = _DEFAULT_DISCRETE_TRANSITION_STICKINESS,
+        discrete_transition_regularization: float = 0.001,
+        continuous_transition_types: ct_types = _DEFAULT_CONTINUOUS_TRANSITIONS,
+        observation_models: obs_types = _DEFAULT_OBSERVATION_MODELS,
+        environments: env_types = _DEFAULT_ENVIRONMENT,
+        infer_track_interior: bool = True,
+        state_names: list[str] | None = _DEFAULT_STATE_NAMES,
+    ):
+        super().__init__(
+            discrete_initial_conditions,
+            continuous_initial_conditions_types,
+            discrete_transition_type,
+            discrete_transition_concentration,
+            discrete_transition_stickiness,
+            discrete_transition_regularization,
+            continuous_transition_types,
+            observation_models,
+            environments,
+            infer_track_interior,
+            state_names,
+        )
+        self.clusterless_algorithm = clusterless_algorithm
+        self.clusterless_algorithm_params = clusterless_algorithm_params
+
+    def fit_marks(
+        self,
+        position,
+        marks,
+        is_training=None,
+        encoding_group_labels=None,
+        environment_labels=None,
+    ):
+        pass
+
+    def fit(
+        self,
+        position,
+        marks,
+        is_training=None,
+        encoding_group_labels=None,
+        environment_labels=None,
+        discrete_transition_covariate_data=None,
+    ):
+        super().fit(
+            position,
+            is_training,
+            encoding_group_labels,
+            environment_labels,
+            discrete_transition_covariate_data,
+        )
 
 
 class SortedSpikesDetector(_DetectorBase):
-    pass
+    def __init__(
+        self,
+        sorted_spikes_algorithm: str = "spiking_likelihood_kde",
+        sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_MODEL_KWARGS,
+        discrete_initial_conditions: np.ndarray = _DEFAULT_DISCRETE_INITIAL_CONDITIONS,
+        continuous_initial_conditions_types: cont_ic_types = _DEFAULT_CONTINUOUS_INITIAL_CONDITIONS,
+        discrete_transition_type=_DEFAULT_DISCRETE_TRANSITION_TYPE,
+        discrete_transition_concentration: float = 1.1,
+        discrete_transition_stickiness: stickiness_types = _DEFAULT_DISCRETE_TRANSITION_STICKINESS,
+        discrete_transition_regularization: float = 0.001,
+        continuous_transition_types: ct_types = _DEFAULT_CONTINUOUS_TRANSITIONS,
+        observation_models: obs_types = _DEFAULT_OBSERVATION_MODELS,
+        environments: env_types = _DEFAULT_ENVIRONMENT,
+        infer_track_interior: bool = True,
+        state_names: list[str] | None = _DEFAULT_STATE_NAMES,
+    ):
+        super().__init__(
+            discrete_initial_conditions,
+            continuous_initial_conditions_types,
+            discrete_transition_type,
+            discrete_transition_concentration,
+            discrete_transition_stickiness,
+            discrete_transition_regularization,
+            continuous_transition_types,
+            observation_models,
+            environments,
+            infer_track_interior,
+            state_names,
+        )
+        self.sorted_spikes_algorithm = sorted_spikes_algorithm
+        self.sorted_spikes_algorithm_params = sorted_spikes_algorithm_params
+
+    def fit_place_fields(
+        self,
+        position,
+        spikes,
+        is_training=None,
+        encoding_group_labels=None,
+        environment_labels=None,
+    ):
+        pass
+
+    def fit(
+        self,
+        position,
+        spikes,
+        is_training=None,
+        encoding_group_labels=None,
+        environment_labels=None,
+        discrete_transition_covariate_data=None,
+    ):
+        super().fit(
+            position,
+            is_training,
+            encoding_group_labels,
+            environment_labels,
+            discrete_transition_covariate_data,
+        )
+        self.fit_place_fields(
+            position,
+            spikes,
+            is_training,
+            encoding_group_labels,
+            environment_labels,
+        )
+
+    def compute_log_likelihood(self, spikes):
+        pass
+
+    def predict(self, spikes, time=None):
+        self.log_likelihood_ = self.compute_log_likelihood(spikes)
+        (
+            causal_posterior,
+            acausal_posterior,
+            predictive_distribution,
+            causal_state_probabilities,
+            acausal_state_probabilities,
+            predictive_state_probabilities,
+            marginal_log_likelihood,
+        ) = super().predict()
+
+        return (
+            causal_posterior,
+            acausal_posterior,
+            predictive_distribution,
+            causal_state_probabilities,
+            acausal_state_probabilities,
+            predictive_state_probabilities,
+            marginal_log_likelihood,
+        )
+
+    def estimate_parameters(
+        self,
+        position,
+        spikes,
+        time=None,
+        is_training=None,
+        encoding_group_labels=None,
+        environment_labels=None,
+        estimate_inital_conditions: bool = True,
+        estimate_discrete_transition: bool = True,
+        max_iter: int = 20,
+        tolerance: float = 0.0001,
+    ):
+        self.fit(
+            position,
+            spikes,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+        )
+        self.log_likelihood_ = self.compute_log_likelihood(spikes)
+        return super().estimate_parameters(
+            estimate_inital_conditions,
+            estimate_discrete_transition,
+            max_iter,
+            tolerance,
+        )

@@ -1,4 +1,4 @@
 from replay_trajectory_classification.environments import (
-    Environment,
+    Environment,  # noqa
     get_n_bins,
-)  # noqa
+)
