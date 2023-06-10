@@ -323,41 +323,45 @@ class _DetectorBase(BaseEstimator):
             Number of samples per second, by default 1
 
         """
-        if ax is None:
-            ax = plt.gca()
 
-        if state_names is None:
-            state_names = [
-                f"state {ind + 1}"
-                for ind in range(self.discrete_state_transition_.shape[0])
-            ]
+        if self.discrete_state_transitions_.ndim == 2:
+            if ax is None:
+                ax = plt.gca()
 
-        if convert_to_seconds:
-            discrete_state_transition = (
-                1 / (1 - self.discrete_state_transition_)
-            ) / sampling_frequency
-            vmin, vmax, fmt = 0.0, None, "0.03f"
-            label = "Seconds"
+            if state_names is None:
+                state_names = [
+                    f"state {ind + 1}"
+                    for ind in range(self.discrete_state_transitions_.shape[0])
+                ]
+
+            if convert_to_seconds:
+                discrete_state_transition = (
+                    1 / (1 - self.discrete_state_transitions_)
+                ) / sampling_frequency
+                vmin, vmax, fmt = 0.0, None, "0.03f"
+                label = "Seconds"
+            else:
+                discrete_state_transition = self.discrete_state_transitions_
+                vmin, vmax, fmt = 0.0, 1.0, "0.03f"
+                label = "Probability"
+
+            sns.heatmap(
+                data=discrete_state_transition,
+                vmin=vmin,
+                vmax=vmax,
+                annot=True,
+                fmt=fmt,
+                cmap=cmap,
+                xticklabels=state_names,
+                yticklabels=state_names,
+                ax=ax,
+                cbar_kws={"label": label},
+            )
+            ax.set_ylabel("Previous State", fontsize=12)
+            ax.set_xlabel("Current State", fontsize=12)
+            ax.set_title("Discrete State Transition", fontsize=16)
         else:
-            discrete_state_transition = self.discrete_state_transition_
-            vmin, vmax, fmt = 0.0, 1.0, "0.03f"
-            label = "Probability"
-
-        sns.heatmap(
-            data=discrete_state_transition,
-            vmin=vmin,
-            vmax=vmax,
-            annot=True,
-            fmt=fmt,
-            cmap=cmap,
-            xticklabels=state_names,
-            yticklabels=state_names,
-            ax=ax,
-            cbar_kws={"label": label},
-        )
-        ax.set_ylabel("Previous State", fontsize=12)
-        ax.set_xlabel("Current State", fontsize=12)
-        ax.set_title("Discrete State Transition", fontsize=16)
+            raise NotImplementedError
 
     def fit(self):
         """To be implemented by inheriting class"""
