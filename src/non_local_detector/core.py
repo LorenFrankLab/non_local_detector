@@ -139,3 +139,31 @@ def smoother(
         acausal_posterior[t] /= acausal_posterior[t].sum()
 
     return acausal_posterior
+
+
+def convert_to_state_probability(
+    causal_posterior: np.ndarray,
+    acausal_posterior: np.ndarray,
+    predictive_distribution: np.ndarray,
+    state_ind: np.ndarray,
+):
+    n_states = np.unique(state_ind).size
+    n_time = causal_posterior.shape[0]
+
+    causal_state_probabilities = np.zeros((n_time, n_states))
+    acausal_state_probabilities = np.zeros((n_time, n_states))
+    predictive_state_probabilities = np.zeros((n_time, n_states))
+
+    for ind in range(n_states):
+        is_state = state_ind == ind
+        causal_state_probabilities[:, ind] = causal_posterior[:, is_state].sum(axis=1)
+        acausal_state_probabilities[:, ind] = acausal_posterior[:, is_state].sum(axis=1)
+        predictive_state_probabilities[:, ind] = predictive_distribution[
+            :, is_state
+        ].sum(axis=1)
+
+    return (
+        causal_state_probabilities,
+        acausal_state_probabilities,
+        predictive_state_probabilities,
+    )

@@ -1,6 +1,9 @@
+from dataclasses import dataclass
+
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pandas as pd
 from jax.nn import log_softmax
 from patsy import dmatrix
 from scipy.optimize import minimize
@@ -367,13 +370,13 @@ def set_initial_discrete_transition(
     if is_stationary:
         diag = np.array([0.90, 0.90, 0.90, 0.98])
 
-        discrete_state_transitions = make_transition_from_diag(diag)
+        discrete_transition = make_transition_from_diag(diag)
 
         discrete_transition_coefficients = None
         discrete_transition_design_matrix = None
     else:
         diag = np.array([0.90, 0.90, 0.90, 0.98])
-        discrete_state_transitions = make_transition_from_diag(diag)
+        discrete_transition = make_transition_from_diag(diag)
 
         if speed_knots is None:
             speed_knots = [1.0, 4.0, 16.0, 32.0, 64.0]
@@ -388,15 +391,160 @@ def set_initial_discrete_transition(
             (n_coefficients, n_states, n_states - 1)
         )
         discrete_transition_coefficients[0] = centered_softmax_inverse(
-            discrete_state_transitions
+            discrete_transition
         )
 
-        discrete_state_transitions = discrete_state_transitions[np.newaxis] * np.ones(
+        discrete_transition = discrete_transition[np.newaxis] * np.ones(
             (n_time, n_states, n_states)
         )
 
     return (
-        discrete_state_transitions,
+        discrete_transition,
         discrete_transition_coefficients,
         discrete_transition_design_matrix,
     )
+
+
+def _estimate_discrete_transition(
+    causal_state_probabilities,
+    predictive_state_probabilities,
+    acausal_state_probabilities,
+    discrete_transition,
+    discrete_transition_coefficients,
+    discrete_transition_design_matrix,
+    transition_concentration,
+    transition_stickiness,
+    transition_regularization,
+):
+    if (
+        discrete_transition_coefficients is not None
+        and discrete_transition_design_matrix is not None
+    ):
+        (
+            discrete_transition_coefficients,
+            discrete_transition,
+        ) = estimate_non_stationary_state_transition(
+            discrete_transition_coefficients,
+            discrete_transition_design_matrix,
+            causal_state_probabilities,
+            predictive_state_probabilities,
+            discrete_transition,
+            acausal_state_probabilities,
+            concentration=transition_concentration,
+            stickiness=transition_stickiness,
+            transition_regularization=transition_regularization,
+        )
+
+    else:
+        discrete_transition = estimate_stationary_state_transition(
+            causal_state_probabilities,
+            predictive_state_probabilities,
+            discrete_transition,
+            acausal_state_probabilities,
+            concentration=transition_concentration,
+            stickiness=transition_stickiness,
+        )
+
+    return (
+        discrete_transition,
+        discrete_transition_coefficients,
+    )
+
+
+@dataclass
+class DiscreteStationaryDiagonal:
+    """Diagonal values are placed on the diagonal.
+
+    Off-diagonals are probability: (1 - `diagonal_value`) / (`n_states` - 1)
+
+    Attributes
+    ----------
+    diagonal_values : np.ndarray
+        The diagonal of the transition matrix.
+
+    """
+
+    diagonal_values: np.ndarray
+
+    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:
+        """Constructs the initial discrete transition matrix.
+
+        Returns
+        -------
+        discrete_transition : np.ndarray, shape (n_states, n_states)
+            The initial discrete transition matrix.
+        discrete_transition_coefficients : None
+            The coefficients for the non-stationary transition matrix.
+            It is None here because the transition matrix is stationary.
+        discrete_transition_design_matrix : None
+            The design matrix for the non-stationary transition matrix.
+            It is None here because the transition matrix is stationary.
+
+        """
+        diag = np.asarray(self.diagonal_values)
+        return make_transition_from_diag(diag), None, None
+
+
+@dataclass
+class DiscreteNonStationaryDiagonal:
+    """Covariate driven transition matrix that changes over time.
+
+    Initialized with a stationary diagonal matrix.
+
+    Off-diagonals are probability: (1 - `diagonal_value`) / (`n_states` - 1)
+
+    Attributes
+    ----------
+    diagonal_values : np.ndarray
+        The diagonal of the transition matrix.
+    formula : str
+        Regression model formula for the transition matrix.
+    """
+
+    diagonal_values: np.ndarray
+    formula: str = "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])"
+
+    def make_state_transition(
+        self, covariate_data: pd.DataFrame | dict
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Constructs the initial discrete transition matrix
+
+        Parameters
+        ----------
+        covariate_data : pd.DataFrame | dict
+            The covariate data for the transition matrix.
+
+        Returns
+        -------
+        discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
+            The initial discrete transition matrix.
+        discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+            The initial coefficients for the transition matrix.
+        discrete_transition_design_matrix : np.ndarray, shape (n_time, n_coefficients)
+            The covariate driven design matrix for the transition matrix.
+
+        """
+
+        n_states = len(self.diagonal_values)
+        discrete_transition = make_transition_from_diag(self.diagonal_values)
+
+        discrete_transition_design_matrix = dmatrix(self.formula, covariate_data)
+
+        n_time, n_coefficients = discrete_transition_design_matrix.shape
+
+        discrete_transition_coefficients = np.zeros(
+            (n_coefficients, n_states, n_states - 1)
+        )
+        discrete_transition_coefficients[0] = centered_softmax_inverse(
+            discrete_transition
+        )
+
+        discrete_transition = discrete_transition[np.newaxis] * np.ones(
+            (n_time, n_states, n_states)
+        )
+
+        return (
+            discrete_transition,
+            discrete_transition_coefficients,
+            discrete_transition_design_matrix,
+        )

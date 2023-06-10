@@ -1,27 +1,43 @@
 import numpy as np
 
+from dataclasses import dataclass
+from replay_trajectory_classification.environments import Environment
+from non_local_detector.observation_models import ObservationModel
 
-def set_initial_conditions(
-    state_ind: np.ndarray, state_names: list, local_state_name: str = "local"
-) -> np.ndarray:
-    """Set initial conditions for the causal algorithm assuming the first time bin is in the local state
 
-    Parameters
-    ----------
-    state_ind : np.ndarray, shape (n_state_bins,)
-    state_names : list, len (n_states)
-    local_state_name : str, optional
-        by default "local"
+@dataclass
+class UniformInitialConditions:
+    """Initial conditions where all position bins are
+    equally likely."""
 
-    Returns
-    -------
-    initial_conditions : np.ndarray, shape (n_state_bins,)
+    def make_initial_conditions(
+        self,
+        observation_model: ObservationModel,
+        environments: list[Environment],
+    ) -> np.ndarray:
+        """Creates initial conditions array
 
-    """
-    initial_conditions = np.zeros((len(state_ind),))
-    initial_conditions[state_ind == state_names.index(local_state_name)] = 1.0
+        Parameters
+        ----------
+        observation_model : ObservationModel
+        environments : list[Environment]
 
-    return initial_conditions
+        Returns
+        -------
+        unnormalized_initial_conditions : np.ndarray, shape (n_place_bins,)
+        """
+
+        if observation_model.is_local or observation_model.is_no_spike:
+            initial_conditions = np.ones((1,), dtype=np.float32)
+        else:
+            environment = environments[
+                environments.index(observation_model.environment_name)
+            ]
+            initial_conditions = environment.is_track_interior_.ravel(order="F").astype(
+                np.float32
+            )
+
+        return initial_conditions
 
 
 def estimate_initial_conditions(acausal_posterior: np.ndarray) -> np.ndarray:
