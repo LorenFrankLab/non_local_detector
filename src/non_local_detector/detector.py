@@ -207,17 +207,20 @@ class _DetectorBase(BaseEstimator):
     def initialize_initial_conditions(self):
         """Constructs the initial probability for the state and each spatial bin."""
         logger.info("Fitting initial conditions...")
-        self.initial_conditions_ = np.concatenate(
+        self.continuous_initial_conditions_ = np.concatenate(
             [
-                discrete_value * cont_ic.make_initial_conditions(obs, self.environments)
-                for obs, cont_ic, discrete_value in zip(
+                cont_ic.make_initial_conditions(obs, self.environments)
+                for obs, cont_ic in zip(
                     self.observation_models,
                     self.continuous_initial_conditions_types,
-                    self.discrete_initial_conditions,
                 )
             ]
         )
-        self.initial_conditions_ /= self.initial_conditions_.sum()
+        self.continuous_initial_conditions_ /= self.continuous_initial_conditions_.sum()
+        self.initial_conditions_ = (
+            self.continuous_initial_conditions_
+            * self.discrete_initial_conditions[self.state_ind_]
+        )
 
     def initialize_continuous_state_transition(
         self,
