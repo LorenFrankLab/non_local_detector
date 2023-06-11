@@ -33,7 +33,7 @@ _DEFAULT_CONTINUOUS_INITIAL_CONDITIONS = [
     UniformInitialConditions(),
 ]
 
-_DEFAULT_DISCRETE_TRANSITION_STICKINESS = np.array([30.0, 30.0])
+_DEFAULT_DISCRETE_TRANSITION_STICKINESS = np.array([200.0, 30.0])
 
 _DEFAULT_DISCRETE_TRANSITION_TYPE = DiscreteStationaryDiagonal(
     diagonal_values=np.array([0.999, 0.98])
