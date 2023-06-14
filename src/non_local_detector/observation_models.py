@@ -20,3 +20,11 @@ class ObservationModel:
     encoding_group: str = 0
     is_local: bool = False
     is_no_spike: bool = False
+
+    def __eq__(self, other):
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        return (self.environment_name, self.encoding_group) == (
+            other.environment_name,
+            other.encoding_group,
+        )
