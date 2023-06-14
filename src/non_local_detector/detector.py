@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import sklearn
+import xarray as xr
 from sklearn.base import BaseEstimator
 
 from non_local_detector.continuous_state_transitions import EmpiricalMovement
@@ -19,6 +20,10 @@ from non_local_detector.core import (
 )
 from non_local_detector.discrete_state_transitions import _estimate_discrete_transition
 from non_local_detector.environment import Environment
+from non_local_detector.likelihoods import (
+    _CLUSTERLESS_ALGORITHMS,
+    _SORTED_SPIKES_ALGORITHMS,
+)
 from non_local_detector.models.non_local_model_defaults import (
     _DEFAULT_CLUSTERLESS_MODEL_KWARGS,
     _DEFAULT_CONTINUOUS_INITIAL_CONDITIONS,
@@ -329,7 +334,6 @@ class _DetectorBase(BaseEstimator):
         environment_labels=None,
         discrete_transition_covariate_data=None,
     ):
-        """To be implemented by inheriting class"""
         self.initialize_environments(
             position=position, environment_labels=environment_labels
         )
@@ -344,6 +348,8 @@ class _DetectorBase(BaseEstimator):
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
         )
+
+        return self
 
     def predict(self):
         (
@@ -392,6 +398,8 @@ class _DetectorBase(BaseEstimator):
 
     def estimate_parameters(
         self,
+        log_likelihood,
+        time=None,
         estimate_inital_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         max_iter: int = 20,
@@ -400,10 +408,6 @@ class _DetectorBase(BaseEstimator):
         marginal_log_likelihoods = []
         n_iter = 0
         converged = False
-
-        # Set up
-        if self.log_likelihood_ is None:
-            self.log_likelihood_ = self.estimate_log_likelihood()
 
         while not converged and (n_iter < max_iter):
             # Expectation step
@@ -414,7 +418,7 @@ class _DetectorBase(BaseEstimator):
                 marginal_log_likelihood,
             ) = forward(
                 self.initial_conditions_,
-                self.log_likelihood_,
+                log_likelihood,
                 self.discrete_state_transitions_,
                 self.continuous_state_transitions_,
                 self.state_ind_,
@@ -494,11 +498,12 @@ class _DetectorBase(BaseEstimator):
                         f"likelihood: {marginal_log_likelihoods[-1]}"
                     )
 
-            return (
-                acausal_posterior,
-                acausal_state_probabilities,
-                marginal_log_likelihoods,
-            )
+        return (
+            time,
+            acausal_posterior,
+            acausal_state_probabilities,
+            marginal_log_likelihoods,
+        )
 
     def save_model(self, filename: str = "model.pkl"):
         """Save the detector to a pickled file.
@@ -530,6 +535,58 @@ class _DetectorBase(BaseEstimator):
     def copy(self):
         """Makes a copy of the detector"""
         return copy.deepcopy(self)
+
+    def _convert_results_to_xarray(
+        self,
+        time,
+        acausal_posterior,
+        acausal_state_probabilities,
+        marginal_log_likelihoods,
+    ):
+        if time is None:
+            time = np.arange(acausal_posterior.shape[0])
+
+        data_vars = {
+            "acausal_posterior": (("time", "state_bins"), acausal_posterior),
+            "acausal_state_probabilities": (
+                ("time", "states"),
+                acausal_state_probabilities,
+            ),
+        }
+        environment_names = [obs.environment_name for obs in self.observation_models]
+        encoding_group_names = [obs.encoding_group for obs in self.observation_models]
+        coords = {
+            "time": time,
+            "state_bins": self.state_ind_,
+            "states": np.asarray(self.state_names),
+            "environments": ("states", environment_names),
+            "encoding_groups": ("states", encoding_group_names),
+        }
+
+        position = []
+        n_position_dims = self.environments[0].place_bin_centers_.shape[1]
+        for obs in self.observation_models:
+            if obs.is_local or obs.is_no_spike:
+                nan_array = np.array([np.nan] * n_position_dims)
+                if n_position_dims == 1:
+                    nan_array = nan_array[:, np.newaxis]
+                position.append(nan_array)
+            else:
+                environment = self.environments[
+                    self.environments.index(obs.environment_name)
+                ]
+                position.append(environment.place_bin_centers_)
+        position = np.concatenate(position, axis=0)
+
+        coords["position"] = (("state_bins", "position_dims"), position)
+
+        attrs = {"marginal_log_likelihoods": marginal_log_likelihoods}
+
+        return xr.Dataset(
+            data_vars=data_vars,
+            coords=coords,
+            attrs=attrs,
+        )
 
 
 class ClusterlessDetector(_DetectorBase):
@@ -591,12 +648,39 @@ class ClusterlessDetector(_DetectorBase):
             environment_labels,
             discrete_transition_covariate_data,
         )
+        return self
+
+    def compute_log_likelihood(self, marks, is_missing=None):
+        pass
+
+    def predict(self, marks, time=None, is_missing=None):
+        self.log_likelihood_ = self.compute_log_likelihood(marks, is_missing)
+
+        (
+            causal_posterior,
+            acausal_posterior,
+            predictive_distribution,
+            causal_state_probabilities,
+            acausal_state_probabilities,
+            predictive_state_probabilities,
+            marginal_log_likelihood,
+        ) = super().predict()
+
+        return (
+            causal_posterior,
+            acausal_posterior,
+            predictive_distribution,
+            causal_state_probabilities,
+            acausal_state_probabilities,
+            predictive_state_probabilities,
+            marginal_log_likelihood,
+        )
 
 
 class SortedSpikesDetector(_DetectorBase):
     def __init__(
         self,
-        sorted_spikes_algorithm: str = "spiking_likelihood_kde",
+        sorted_spikes_algorithm: str = "sorted_spikes_kde_jax",
         sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_MODEL_KWARGS,
         discrete_initial_conditions: np.ndarray = _DEFAULT_DISCRETE_INITIAL_CONDITIONS,
         continuous_initial_conditions_types: ContinuousInitialConditions = _DEFAULT_CONTINUOUS_INITIAL_CONDITIONS,
@@ -634,7 +718,50 @@ class SortedSpikesDetector(_DetectorBase):
         encoding_group_labels=None,
         environment_labels=None,
     ):
-        pass
+        logger.info("Fitting place fields...")
+        n_time = position.shape[0]
+        if is_training is None:
+            is_training = np.ones((n_time,), dtype=bool)
+
+        if encoding_group_labels is None:
+            encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
+
+        if environment_labels is None:
+            environment_labels = np.asarray(
+                [self.environments[0].environment_name] * n_time
+            )
+
+        is_training = np.asarray(is_training).squeeze()
+
+        kwargs = self.sorted_spikes_algorithm_params
+        if kwargs is None:
+            kwargs = {}
+
+        self.encoding_model_ = {}
+        for obs in np.unique(self.observation_models):
+            environment = self.environments[
+                self.environments.index(obs.environment_name)
+            ]
+
+            is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
+            is_environment = environment_labels == obs.environment_name
+            likelihood_name = (
+                obs.environment_name,
+                obs.encoding_group,
+            )
+            encoding_algorithm, _ = _SORTED_SPIKES_ALGORITHMS[
+                self.sorted_spikes_algorithm
+            ]
+            self.encoding_model_[likelihood_name] = encoding_algorithm(
+                position=position[is_training & is_encoding & is_environment],
+                spikes=spikes[is_training & is_encoding & is_environment],
+                place_bin_centers=environment.place_bin_centers_,
+                place_bin_edges=environment.place_bin_edges_,
+                edges=environment.edges_,
+                is_track_interior=environment.is_track_interior_,
+                is_track_boundary=environment.is_track_boundary_,
+                **kwargs,
+            )
 
     def fit(
         self,
@@ -659,29 +786,65 @@ class SortedSpikesDetector(_DetectorBase):
             encoding_group_labels,
             environment_labels,
         )
+        return self
 
-    def compute_log_likelihood(self, spikes):
-        pass
+    def compute_log_likelihood(self, position, spikes, is_missing=None):
+        if is_missing is None:
+            is_missing = np.zeros((spikes.shape[0],), dtype=bool)
 
-    def predict(self, spikes, time=None):
-        self.log_likelihood_ = self.compute_log_likelihood(spikes)
+        n_time, n_state_bins = spikes.shape[0], self.n_state_bins_
+        log_likelihood = np.zeros((n_time, n_state_bins), dtype=np.float32)
+
+        _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
+        _, no_spike_likelihood_func = _SORTED_SPIKES_ALGORITHMS["no_spike"]
+        computed_keys = []
+
+        for state_id, obs in enumerate(self.observation_models):
+            is_state_bin = self.state_ind_ == state_id
+            obs_key = (
+                obs.environment_name,
+                obs.encoding_group,
+                obs.is_local,
+                obs.is_no_spike,
+            )
+
+            if obs.is_no_spike:
+                log_likelihood[:, is_state_bin] = no_spike_likelihood_func(spikes)
+            elif not obs_key in computed_keys:
+                log_likelihood[:, is_state_bin] = likelihood_func(
+                    position,
+                    spikes,
+                    **self.encoding_model_[obs_key[:2]],
+                    is_local=obs.is_local,
+                )
+            else:
+                previously_computed_bins = self.state_ind_ == computed_keys.index(
+                    obs_key
+                )
+                log_likelihood[:, is_state_bin] = log_likelihood[
+                    :, previously_computed_bins
+                ]
+
+            computed_keys.append(obs_key)
+
+        return log_likelihood
+
+    def predict(self, position, spikes, time=None, is_missing=None):
+        self.log_likelihood_ = self.compute_log_likelihood(position, spikes, is_missing)
         (
-            causal_posterior,
+            _,
             acausal_posterior,
-            predictive_distribution,
-            causal_state_probabilities,
+            _,
+            _,
             acausal_state_probabilities,
-            predictive_state_probabilities,
+            _,
             marginal_log_likelihood,
         ) = super().predict()
 
-        return (
-            causal_posterior,
+        return super()._convert_results_to_xarray(
+            time,
             acausal_posterior,
-            predictive_distribution,
-            causal_state_probabilities,
             acausal_state_probabilities,
-            predictive_state_probabilities,
             marginal_log_likelihood,
         )
 
@@ -705,8 +868,10 @@ class SortedSpikesDetector(_DetectorBase):
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
         )
-        self.log_likelihood_ = self.compute_log_likelihood(spikes)
+        self.log_likelihood_ = self.compute_log_likelihood(position, spikes)
         return super().estimate_parameters(
+            self.log_likelihood_,
+            time,
             estimate_inital_conditions,
             estimate_discrete_transition,
             max_iter,
