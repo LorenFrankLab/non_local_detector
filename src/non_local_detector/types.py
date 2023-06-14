@@ -13,8 +13,8 @@ from non_local_detector.environment import Environment
 from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.observation_models import ObservationModel
 
-env_types = Environment | list[Environment] | None
-ct_types = list[
+Environments = Environment | list[Environment] | None
+ContinuousTransitions = list[
     list[
         Discrete
         | EmpiricalMovement
@@ -24,7 +24,7 @@ ct_types = list[
         | Uniform
     ]
 ]
-obs_types = list[ObservationModel] | None
-cont_ic_types = list[UniformInitialConditions]
-stickiness_types = float | np.ndarray
-discrete_types = list[DiscreteStationaryDiagonal]
+Observations = list[ObservationModel] | None
+ContinuousInitialConditions = list[UniformInitialConditions]
+Stickiness = float | np.ndarray
+DiscreteTransitions = list[DiscreteStationaryDiagonal]
