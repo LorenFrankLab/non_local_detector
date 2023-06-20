@@ -106,7 +106,7 @@ def fit_sorted_spikes_glm_jax_encoding_model(
     weights = np.ones((spikes.shape[0],), dtype=np.float32)
 
     coefficients = []
-    non_local_rates = []
+    place_fields = []
     for neuron_spikes in tqdm(spikes.T):
         coef = fit_poisson_regression(
             emission_design_matrix,
@@ -116,15 +116,15 @@ def fit_sorted_spikes_glm_jax_encoding_model(
         )
         coefficients.append(coef)
 
-        non_local_rate = np.exp(emission_predict_matrix @ coef)
-        non_local_rate[~is_track_interior] = EPS
-        non_local_rate = np.clip(non_local_rate, a_min=EPS, a_max=None)
-        non_local_rates.append(non_local_rate)
+        place_field = np.exp(emission_predict_matrix @ coef)
+        place_field[~is_track_interior] = EPS
+        place_field = np.clip(place_field, a_min=EPS, a_max=None)
+        place_fields.append(place_field)
 
     return {
         "coefficients": np.stack(coefficients, axis=0),
         "emission_design_info": emission_design_matrix.design_info,
-        "non_local_rates": np.stack(non_local_rates, axis=0),
+        "place_fields": np.stack(place_fields, axis=0),
         "is_track_interior": is_track_interior,
     }
 
@@ -134,7 +134,7 @@ def predict_sorted_spikes_glm_jax_log_likelihood(
     spikes: np.ndarray,
     coefficients: np.ndarray,
     emission_design_info,
-    non_local_rates: np.ndarray,
+    place_fields: np.ndarray,
     is_track_interior: np.ndarray,
     is_local: bool = False,
 ):
@@ -151,10 +151,10 @@ def predict_sorted_spikes_glm_jax_log_likelihood(
 
         log_likelihood = log_likelihood[:, np.newaxis]
     else:
-        log_likelihood = np.zeros((n_time, non_local_rates.shape[1]))
-        for neuron_spikes, non_local_rate in zip(tqdm(spikes.T), non_local_rates):
+        log_likelihood = np.zeros((n_time, place_fields.shape[1]))
+        for neuron_spikes, place_field in zip(tqdm(spikes.T), place_fields):
             log_likelihood += scipy.stats.poisson.logpmf(
-                neuron_spikes[:, np.newaxis], non_local_rate[np.newaxis]
+                neuron_spikes[:, np.newaxis], place_field[np.newaxis]
             )
         log_likelihood[:, ~is_track_interior] = np.nan
 
