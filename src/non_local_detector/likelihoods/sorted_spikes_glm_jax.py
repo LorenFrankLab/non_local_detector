@@ -12,7 +12,9 @@ from non_local_detector.environment import get_n_bins
 EPS = 1e-15
 
 
-def make_spline_design_matrix(position, place_bin_edges, knot_spacing=10):
+def make_spline_design_matrix(
+    position: np.ndarray, place_bin_edges: np.ndarray, knot_spacing: float = 10.0
+):
     position = atleast_2d(position)
     inner_knots = []
     for pos, edges in zip(position.T, place_bin_edges.T):
@@ -34,7 +36,7 @@ def make_spline_design_matrix(position, place_bin_edges, knot_spacing=10):
     return dmatrix(formula, data)
 
 
-def make_spline_predict_matrix(design_info, position):
+def make_spline_predict_matrix(design_info, position: np.ndarray):
     position = atleast_2d(position)
     is_nan = np.any(np.isnan(position), axis=1)
     position[is_nan] = 0.0
@@ -49,7 +51,12 @@ def make_spline_predict_matrix(design_info, position):
     return design_matrix
 
 
-def fit_poisson_regression(design_matrix, spikes, weights, l2_penalty=0.0):
+def fit_poisson_regression(
+    design_matrix: np.ndarray,
+    spikes: np.ndarray,
+    weights: np.ndarray,
+    l2_penalty: float = 1e-7,
+):
     @jax.jit
     def neglogp(
         coefficients, spikes=spikes, design_matrix=design_matrix, weights=weights
@@ -80,23 +87,26 @@ def fit_poisson_regression(design_matrix, spikes, weights, l2_penalty=0.0):
 
 
 def fit_sorted_spikes_glm_jax_encoding_model(
-    position,
-    spikes,
-    place_bin_centers,
-    place_bin_edges,
-    edges,
-    is_track_interior,
-    is_track_boundary,
-    emission_knot_spacing=10,
-    l2_penalty=1e-3,
+    position: np.ndarray,
+    spikes: np.ndarray,
+    place_bin_centers: np.ndarray,
+    place_bin_edges: np.ndarray,
+    edges: np.ndarray,
+    is_track_interior: np.ndarray,
+    is_track_boundary: np.ndarray,
+    emission_knot_spacing: float = 10.0,
+    l2_penalty: float = 1e-3,
 ):
     emission_design_matrix = make_spline_design_matrix(
         position, place_bin_edges, knot_spacing=emission_knot_spacing
     )
-
+    emission_predict_matrix = make_spline_predict_matrix(
+        emission_design_matrix.design_info, place_bin_centers
+    )
     weights = np.ones((spikes.shape[0],), dtype=np.float32)
 
     coefficients = []
+    non_local_rates = []
     for neuron_spikes in tqdm(spikes.T):
         coef = fit_poisson_regression(
             emission_design_matrix,
@@ -106,28 +116,33 @@ def fit_sorted_spikes_glm_jax_encoding_model(
         )
         coefficients.append(coef)
 
+        non_local_rate = np.exp(emission_predict_matrix @ coef)
+        non_local_rate[~is_track_interior] = EPS
+        non_local_rate = np.clip(non_local_rate, a_min=EPS, a_max=None)
+        non_local_rates.append(non_local_rate)
+
     return {
         "coefficients": np.stack(coefficients, axis=0),
-        "emission_design_matrix": emission_design_matrix,
-        "place_bin_centers": place_bin_centers,
+        "emission_design_info": emission_design_matrix.design_info,
+        "non_local_rates": np.stack(non_local_rates, axis=0),
         "is_track_interior": is_track_interior,
     }
 
 
 def predict_sorted_spikes_glm_jax_log_likelihood(
-    position,
-    spikes,
-    coefficients,
-    emission_design_matrix,
-    place_bin_centers,
-    is_track_interior,
+    position: np.ndarray,
+    spikes: np.ndarray,
+    coefficients: np.ndarray,
+    emission_design_info,
+    non_local_rates: np.ndarray,
+    is_track_interior: np.ndarray,
     is_local: bool = False,
 ):
     n_time = spikes.shape[0]
     if is_local:
         log_likelihood = np.zeros((n_time,))
         emission_predict_matrix = make_spline_predict_matrix(
-            emission_design_matrix.design_info, position
+            emission_design_info, position
         )
         for neuron_spikes, coef in zip(tqdm(spikes.T), coefficients):
             local_rate = np.exp(emission_predict_matrix @ coef)
@@ -136,14 +151,8 @@ def predict_sorted_spikes_glm_jax_log_likelihood(
 
         log_likelihood = log_likelihood[:, np.newaxis]
     else:
-        emission_predict_matrix = make_spline_predict_matrix(
-            emission_design_matrix.design_info, place_bin_centers
-        )
-        log_likelihood = np.zeros((n_time, len(place_bin_centers)))
-        for neuron_spikes, coef in zip(tqdm(spikes.T), coefficients):
-            non_local_rate = np.exp(emission_predict_matrix @ coef)
-            non_local_rate[~is_track_interior] = EPS
-            non_local_rate = np.clip(non_local_rate, a_min=EPS, a_max=None)
+        log_likelihood = np.zeros((n_time, non_local_rates.shape[1]))
+        for neuron_spikes, non_local_rate in zip(tqdm(spikes.T), non_local_rates):
             log_likelihood += scipy.stats.poisson.logpmf(
                 neuron_spikes[:, np.newaxis], non_local_rate[np.newaxis]
             )

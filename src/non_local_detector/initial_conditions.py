@@ -38,6 +38,8 @@ class UniformInitialConditions:
                 np.float32
             )
 
+        initial_conditions /= initial_conditions.sum()
+
         return initial_conditions
 
 

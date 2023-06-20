@@ -1,5 +1,6 @@
 import copy
 import pickle
+from collections import namedtuple
 from logging import getLogger
 
 import matplotlib
@@ -23,32 +24,33 @@ from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
-)
-from non_local_detector.models.non_local_model_defaults import (
-    _DEFAULT_CLUSTERLESS_MODEL_KWARGS,
-    _DEFAULT_CONTINUOUS_INITIAL_CONDITIONS,
-    _DEFAULT_CONTINUOUS_TRANSITIONS,
-    _DEFAULT_DISCRETE_INITIAL_CONDITIONS,
-    _DEFAULT_DISCRETE_TRANSITION_STICKINESS,
-    _DEFAULT_DISCRETE_TRANSITION_TYPE,
-    _DEFAULT_ENVIRONMENT,
-    _DEFAULT_OBSERVATION_MODELS,
-    _DEFAULT_SORTED_SPIKES_MODEL_KWARGS,
-    _DEFAULT_STATE_NAMES,
+    predict_no_spike_log_likelihood,
 )
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
-    Environments,
-    ContinuousTransitions,
-    Observations,
     ContinuousInitialConditions,
-    Stickiness,
+    ContinuousTransitions,
     DiscreteTransitions,
+    Environments,
+    Observations,
+    Stickiness,
 )
 
 logger = getLogger(__name__)
 sklearn.set_config(print_changed_only=False)
 np.seterr(divide="ignore", invalid="ignore")
+
+_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS = {
+    "mark_std": 24.0,
+    "position_std": 6.0,
+}
+_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS = {
+    "position_std": 6.0,
+    "use_diffusion": False,
+    "block_size": None,
+}
+
+State = namedtuple("state", ("environment_name", "encoding_group"))
 
 
 class _DetectorBase(BaseEstimator):
@@ -56,17 +58,19 @@ class _DetectorBase(BaseEstimator):
 
     def __init__(
         self,
-        discrete_initial_conditions: np.ndarray = _DEFAULT_DISCRETE_INITIAL_CONDITIONS,
-        continuous_initial_conditions_types: ContinuousInitialConditions = _DEFAULT_CONTINUOUS_INITIAL_CONDITIONS,
-        discrete_transition_type: DiscreteTransitions = _DEFAULT_DISCRETE_TRANSITION_TYPE,
-        discrete_transition_concentration: float = 1.1,
-        discrete_transition_stickiness: Stickiness = _DEFAULT_DISCRETE_TRANSITION_STICKINESS,
-        discrete_transition_regularization: float = 1e-3,
-        continuous_transition_types: ContinuousTransitions = _DEFAULT_CONTINUOUS_TRANSITIONS,
-        observation_models: Observations = _DEFAULT_OBSERVATION_MODELS,
-        environments: Environments = _DEFAULT_ENVIRONMENT,
+        discrete_initial_conditions: np.ndarray,
+        continuous_initial_conditions_types: ContinuousInitialConditions,
+        discrete_transition_type: DiscreteTransitions,
+        discrete_transition_concentration: float,
+        discrete_transition_stickiness: Stickiness,
+        discrete_transition_regularization: float,
+        continuous_transition_types: ContinuousTransitions,
+        observation_models: Observations,
+        environments: Environments,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = _DEFAULT_STATE_NAMES,
+        state_names: list[str] | None = None,
+        sampling_frequency: float = 500.0,
+        no_spike_rate: float = 1e-10,
     ):
         if len(discrete_initial_conditions) != len(continuous_initial_conditions_types):
             raise ValueError(
@@ -98,7 +102,7 @@ class _DetectorBase(BaseEstimator):
 
         # Environment parameters
         if environments is None:
-            environments = (_DEFAULT_ENVIRONMENT,)
+            environments = (Environment(),)
         if isinstance(environments, Environment):
             environments = (environments,)
         self.environments = environments
@@ -123,6 +127,9 @@ class _DetectorBase(BaseEstimator):
         if len(state_names) != len(discrete_initial_conditions):
             raise ValueError("Number of state names must match number of states.")
         self.state_names = state_names
+
+        self.sampling_frequency = sampling_frequency
+        self.no_spike_rate = no_spike_rate
 
     def initialize_environments(
         self, position: np.ndarray, environment_labels: None | np.ndarray = None
@@ -179,7 +186,6 @@ class _DetectorBase(BaseEstimator):
                 )
             ]
         )
-        self.continuous_initial_conditions_ /= self.continuous_initial_conditions_.sum()
         self.initial_conditions_ = (
             self.continuous_initial_conditions_
             * self.discrete_initial_conditions[self.state_ind_]
@@ -187,7 +193,7 @@ class _DetectorBase(BaseEstimator):
 
     def initialize_continuous_state_transition(
         self,
-        continuous_transition_types: ContinuousTransitions = _DEFAULT_CONTINUOUS_TRANSITIONS,
+        continuous_transition_types: ContinuousTransitions,
         position: np.ndarray | None = None,
         is_training: np.ndarray | None = None,
         encoding_group_labels: np.ndarray | None = None,
@@ -264,7 +270,6 @@ class _DetectorBase(BaseEstimator):
 
     def plot_discrete_state_transition(
         self,
-        state_names: list[str] | None = None,
         cmap: str = "Oranges",
         ax: matplotlib.axes.Axes | None = None,
         convert_to_seconds: bool = False,
@@ -291,12 +296,6 @@ class _DetectorBase(BaseEstimator):
             if ax is None:
                 ax = plt.gca()
 
-            if state_names is None:
-                state_names = [
-                    f"state {ind + 1}"
-                    for ind in range(self.discrete_state_transitions_.shape[0])
-                ]
-
             if convert_to_seconds:
                 discrete_state_transition = (
                     1 / (1 - self.discrete_state_transitions_)
@@ -315,8 +314,8 @@ class _DetectorBase(BaseEstimator):
                 annot=True,
                 fmt=fmt,
                 cmap=cmap,
-                xticklabels=state_names,
-                yticklabels=state_names,
+                xticklabels=self.state_names,
+                yticklabels=self.state_names,
                 ax=ax,
                 cbar_kws={"label": label},
             )
@@ -325,6 +324,96 @@ class _DetectorBase(BaseEstimator):
             ax.set_title("Discrete State Transition", fontsize=16)
         else:
             raise NotImplementedError
+
+    def plot_continuous_state_transition(self, figsize_scaling=1.5, vmax=0.3):
+        GOLDEN_RATIO = 1.618
+
+        fig, axes = plt.subplots(
+            self.n_discrete_states_,
+            self.n_discrete_states_,
+            gridspec_kw=dict(
+                width_ratios=self.bin_sizes_, height_ratios=self.bin_sizes_
+            ),
+            constrained_layout=True,
+            figsize=(
+                self.n_discrete_states_ * figsize_scaling * GOLDEN_RATIO,
+                (self.n_discrete_states_ * figsize_scaling),
+            ),
+        )
+
+        try:
+            for from_state, ax_row in enumerate(axes):
+                for to_state, ax in enumerate(ax_row):
+                    ind = np.ix_(
+                        self.state_ind_ == from_state, self.state_ind_ == to_state
+                    )
+                    ax.pcolormesh(
+                        self.continuous_state_transitions_[ind], vmin=0.0, vmax=vmax
+                    )
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+
+                    if to_state == 0:
+                        ax.set_ylabel(
+                            self.state_names[from_state],
+                            rotation=0,
+                            ha="right",
+                            va="center",
+                        )
+
+                    if from_state == self.n_discrete_states_ - 1:
+                        ax.set_xlabel(
+                            self.state_names[to_state],
+                            rotation=45,
+                            ha="right",
+                            va="top",
+                            labelpad=1.0,
+                        )
+            fig.supylabel("From State")
+            fig.supxlabel("To State")
+        except TypeError:
+            axes.pcolormesh(self.continuous_state_transitions_, vmin=0.0, vmax=vmax)
+            axes.set_xticks([])
+            axes.set_yticks([])
+
+    def plot_initial_conditions(self, figsize_scaling=1.5, vmax=0.3):
+        GOLDEN_RATIO = 1.618
+        fig, axes = plt.subplots(
+            1,
+            self.n_discrete_states_,
+            gridspec_kw=dict(width_ratios=self.bin_sizes_),
+            constrained_layout=True,
+            figsize=(self.n_discrete_states_ * figsize_scaling * GOLDEN_RATIO, 1.1),
+        )
+
+        try:
+            for state, ax in enumerate(axes):
+                ind = self.state_ind_ == state
+                ax.pcolormesh(
+                    self.initial_conditions_[ind][:, np.newaxis], vmin=0.0, vmax=0.3
+                )
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_xlabel(
+                    self.state_names[state],
+                    rotation=45,
+                    ha="right",
+                    va="top",
+                    labelpad=0.0,
+                )
+        except TypeError:
+            axes.pcolormesh(self.initial_conditions_[:, np.newaxis], vmin=0.0, vmax=0.3)
+            axes.set_xticks([])
+            axes.set_yticks([])
+            axes.set_xlabel(
+                self.state_names[0],
+                rotation=45,
+                ha="right",
+                va="top",
+                labelpad=0.0,
+            )
+
+        fig.suptitle("Initial Conditions")
 
     def fit(
         self,
@@ -343,6 +432,7 @@ class _DetectorBase(BaseEstimator):
             covariate_data=discrete_transition_covariate_data
         )
         self.initialize_continuous_state_transition(
+            continuous_transition_types=self.continuous_transition_types,
             position=position,
             is_training=is_training,
             encoding_group_labels=encoding_group_labels,
@@ -352,6 +442,7 @@ class _DetectorBase(BaseEstimator):
         return self
 
     def predict(self):
+        print("Causal")
         (
             causal_posterior,
             predictive_distribution,
@@ -363,6 +454,7 @@ class _DetectorBase(BaseEstimator):
             self.continuous_state_transitions_,
             self.state_ind_,
         )
+        print("Acausal")
         acausal_posterior = smoother(
             causal_posterior,
             predictive_distribution,
@@ -539,14 +631,16 @@ class _DetectorBase(BaseEstimator):
     def _convert_results_to_xarray(
         self,
         time,
+        causal_posterior,
         acausal_posterior,
         acausal_state_probabilities,
         marginal_log_likelihoods,
     ):
         if time is None:
-            time = np.arange(acausal_posterior.shape[0])
+            time = np.arange(acausal_posterior.shape[0]) / self.sampling_frequency
 
         data_vars = {
+            "causal_posterior": (("time", "state_bins"), causal_posterior),
             "acausal_posterior": (("time", "state_bins"), acausal_posterior),
             "acausal_state_probabilities": (
                 ("time", "states"),
@@ -555,13 +649,6 @@ class _DetectorBase(BaseEstimator):
         }
         environment_names = [obs.environment_name for obs in self.observation_models]
         encoding_group_names = [obs.encoding_group for obs in self.observation_models]
-        coords = {
-            "time": time,
-            "state_bins": self.state_ind_,
-            "states": np.asarray(self.state_names),
-            "environments": ("states", environment_names),
-            "encoding_groups": ("states", encoding_group_names),
-        }
 
         position = []
         n_position_dims = self.environments[0].place_bin_centers_.shape[1]
@@ -578,7 +665,54 @@ class _DetectorBase(BaseEstimator):
                 position.append(environment.place_bin_centers_)
         position = np.concatenate(position, axis=0)
 
-        coords["position"] = (("state_bins", "position_dims"), position)
+        states = np.asarray(self.state_names)
+
+        n_position_dims = position.shape[1]
+
+        if n_position_dims == 1:
+            state_bins = pd.MultiIndex.from_arrays(
+                (
+                    (
+                        states[self.state_ind_],
+                        position[:, 0],
+                    )
+                ),
+                names=("state", "position"),
+            )
+        elif n_position_dims == 2:
+            state_bins = pd.MultiIndex.from_arrays(
+                (
+                    (
+                        states[self.state_ind_],
+                        position[:, 0],
+                        position[:, 1],
+                    )
+                ),
+                names=("state", "x_position", "y_position"),
+            )
+        elif n_position_dims == 3:
+            state_bins = pd.MultiIndex.from_arrays(
+                (
+                    (
+                        states[self.state_ind_],
+                        position[:, 0],
+                        position[:, 1],
+                        position[:, 2],
+                    )
+                ),
+                names=("state", "x_position", "y_position", "z_position"),
+            )
+        else:
+            raise NotImplementedError
+
+        coords = {
+            "time": time,
+            "state_bins": state_bins,
+            "state_ind": self.state_ind_,
+            "states": states,
+            "environments": ("states", environment_names),
+            "encoding_groups": ("states", encoding_group_names),
+        }
 
         attrs = {"marginal_log_likelihoods": marginal_log_likelihoods}
 
@@ -586,25 +720,27 @@ class _DetectorBase(BaseEstimator):
             data_vars=data_vars,
             coords=coords,
             attrs=attrs,
-        )
+        ).squeeze()
 
 
 class ClusterlessDetector(_DetectorBase):
     def __init__(
         self,
-        clusterless_algorithm: str = "multiunit_likelihood_kde",
-        clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_MODEL_KWARGS,
-        discrete_initial_conditions: np.ndarray = _DEFAULT_DISCRETE_INITIAL_CONDITIONS,
-        continuous_initial_conditions_types: ContinuousInitialConditions = _DEFAULT_CONTINUOUS_INITIAL_CONDITIONS,
-        discrete_transition_type: DiscreteTransitions = _DEFAULT_DISCRETE_TRANSITION_TYPE,
-        discrete_transition_concentration: float = 1.1,
-        discrete_transition_stickiness: Stickiness = _DEFAULT_DISCRETE_TRANSITION_STICKINESS,
-        discrete_transition_regularization: float = 0.001,
-        continuous_transition_types: ContinuousTransitions = _DEFAULT_CONTINUOUS_TRANSITIONS,
-        observation_models: Observations = _DEFAULT_OBSERVATION_MODELS,
-        environments: Environments = _DEFAULT_ENVIRONMENT,
+        discrete_initial_conditions: np.ndarray,
+        continuous_initial_conditions_types: ContinuousInitialConditions,
+        discrete_transition_type: DiscreteTransitions,
+        discrete_transition_concentration: float,
+        discrete_transition_stickiness: Stickiness,
+        discrete_transition_regularization: float,
+        continuous_transition_types: ContinuousTransitions,
+        observation_models: Observations,
+        environments: Environments,
+        clusterless_algorithm: str = "clusterless_kde_jax",
+        clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = _DEFAULT_STATE_NAMES,
+        state_names: list[str] | None = None,
+        sampling_frequency: float = 500.0,
+        no_spike_rate: float = 1e-10,
     ):
         super().__init__(
             discrete_initial_conditions,
@@ -618,6 +754,8 @@ class ClusterlessDetector(_DetectorBase):
             environments,
             infer_track_interior,
             state_names,
+            sampling_frequency,
+            no_spike_rate,
         )
         self.clusterless_algorithm = clusterless_algorithm
         self.clusterless_algorithm_params = clusterless_algorithm_params
@@ -680,19 +818,21 @@ class ClusterlessDetector(_DetectorBase):
 class SortedSpikesDetector(_DetectorBase):
     def __init__(
         self,
+        discrete_initial_conditions: np.ndarray,
+        continuous_initial_conditions_types: ContinuousInitialConditions,
+        discrete_transition_type: DiscreteTransitions,
+        discrete_transition_concentration: float,
+        discrete_transition_stickiness: Stickiness,
+        discrete_transition_regularization: float,
+        continuous_transition_types: ContinuousTransitions,
+        observation_models: Observations,
+        environments: Environments,
         sorted_spikes_algorithm: str = "sorted_spikes_kde_jax",
-        sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_MODEL_KWARGS,
-        discrete_initial_conditions: np.ndarray = _DEFAULT_DISCRETE_INITIAL_CONDITIONS,
-        continuous_initial_conditions_types: ContinuousInitialConditions = _DEFAULT_CONTINUOUS_INITIAL_CONDITIONS,
-        discrete_transition_type: DiscreteTransitions = _DEFAULT_DISCRETE_TRANSITION_TYPE,
-        discrete_transition_concentration: float = 1.1,
-        discrete_transition_stickiness: Stickiness = _DEFAULT_DISCRETE_TRANSITION_STICKINESS,
-        discrete_transition_regularization: float = 0.001,
-        continuous_transition_types: ContinuousTransitions = _DEFAULT_CONTINUOUS_TRANSITIONS,
-        observation_models: Observations = _DEFAULT_OBSERVATION_MODELS,
-        environments: Environments = _DEFAULT_ENVIRONMENT,
+        sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = _DEFAULT_STATE_NAMES,
+        state_names: list[str] | None = None,
+        sampling_frequency: float = 500.0,
+        no_spike_rate: float = 1e-10,
     ):
         super().__init__(
             discrete_initial_conditions,
@@ -706,6 +846,8 @@ class SortedSpikesDetector(_DetectorBase):
             environments,
             infer_track_interior,
             state_names,
+            sampling_frequency,
+            no_spike_rate,
         )
         self.sorted_spikes_algorithm = sorted_spikes_algorithm
         self.sorted_spikes_algorithm_params = sorted_spikes_algorithm_params
@@ -745,9 +887,8 @@ class SortedSpikesDetector(_DetectorBase):
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
-            likelihood_name = (
-                obs.environment_name,
-                obs.encoding_group,
+            likelihood_name = State(
+                environment_name=obs.environment_name, encoding_group=obs.encoding_group
             )
             encoding_algorithm, _ = _SORTED_SPIKES_ALGORITHMS[
                 self.sorted_spikes_algorithm
@@ -796,12 +937,11 @@ class SortedSpikesDetector(_DetectorBase):
         log_likelihood = np.zeros((n_time, n_state_bins), dtype=np.float32)
 
         _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
-        _, no_spike_likelihood_func = _SORTED_SPIKES_ALGORITHMS["no_spike"]
-        computed_keys = []
+        computed_likelihoods = []
 
         for state_id, obs in enumerate(self.observation_models):
             is_state_bin = self.state_ind_ == state_id
-            obs_key = (
+            likelihood_name = (
                 obs.environment_name,
                 obs.encoding_group,
                 obs.is_local,
@@ -809,30 +949,37 @@ class SortedSpikesDetector(_DetectorBase):
             )
 
             if obs.is_no_spike:
-                log_likelihood[:, is_state_bin] = no_spike_likelihood_func(spikes)
-            elif not obs_key in computed_keys:
+                # Likelihood of no spike times
+                log_likelihood[:, is_state_bin] = predict_no_spike_log_likelihood(
+                    spikes, self.no_spike_rate, self.sampling_frequency
+                )
+            elif likelihood_name not in computed_likelihoods:
                 log_likelihood[:, is_state_bin] = likelihood_func(
                     position,
                     spikes,
-                    **self.encoding_model_[obs_key[:2]],
+                    **self.encoding_model_[likelihood_name[:2]],
                     is_local=obs.is_local,
                 )
             else:
-                previously_computed_bins = self.state_ind_ == computed_keys.index(
-                    obs_key
+                # Use previously computed likelihoods
+                previously_computed_bins = (
+                    self.state_ind_ == computed_likelihoods.index(likelihood_name)
                 )
                 log_likelihood[:, is_state_bin] = log_likelihood[
                     :, previously_computed_bins
                 ]
 
-            computed_keys.append(obs_key)
+            computed_likelihoods.append(likelihood_name)
+
+        # missing data should be 1.0 because there is no information
+        log_likelihood[is_missing] = 1.0
 
         return log_likelihood
 
     def predict(self, position, spikes, time=None, is_missing=None):
         self.log_likelihood_ = self.compute_log_likelihood(position, spikes, is_missing)
         (
-            _,
+            causal_posterior,
             acausal_posterior,
             _,
             _,
@@ -843,6 +990,7 @@ class SortedSpikesDetector(_DetectorBase):
 
         return super()._convert_results_to_xarray(
             time,
+            causal_posterior,
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihood,

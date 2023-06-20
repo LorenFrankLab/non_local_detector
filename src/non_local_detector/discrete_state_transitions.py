@@ -346,7 +346,10 @@ def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
     """
     n_states = len(diag)
     transition_matrix = diag * np.eye(n_states)
-    off_diag = ((1.0 - diag) / (n_states - 1.0))[:, np.newaxis]
+    if n_states == 1:
+        off_diag = 1.0
+    else:
+        off_diag = ((1.0 - diag) / (n_states - 1.0))[:, np.newaxis]
     transition_matrix += np.ones((n_states, n_states)) * off_diag - off_diag * np.eye(
         n_states
     )
