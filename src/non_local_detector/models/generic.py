@@ -1,6 +1,7 @@
 import copy
 import pickle
 from collections import namedtuple
+from functools import partial
 from logging import getLogger
 
 import matplotlib
@@ -16,8 +17,8 @@ from non_local_detector.continuous_state_transitions import EmpiricalMovement
 from non_local_detector.core import (
     check_converged,
     convert_to_state_probability,
-    forward,
-    smoother,
+    get_transition_matrix,
+    hmm_smoother,
 )
 from non_local_detector.discrete_state_transitions import _estimate_discrete_transition
 from non_local_detector.environment import Environment
@@ -442,25 +443,23 @@ class _DetectorBase(BaseEstimator):
         return self
 
     def predict(self):
-        print("Causal")
-        (
-            causal_posterior,
-            predictive_distribution,
-            marginal_log_likelihood,
-        ) = forward(
-            self.initial_conditions_,
-            self.log_likelihood_,
-            self.discrete_state_transitions_,
+        transition_fn = partial(
+            get_transition_matrix,
             self.continuous_state_transitions_,
+            self.discrete_state_transitions_,
             self.state_ind_,
         )
-        print("Acausal")
-        acausal_posterior = smoother(
+
+        (
+            marginal_log_likelihood,
             causal_posterior,
             predictive_distribution,
-            self.discrete_state_transitions_,
-            self.continuous_state_transitions_,
-            self.state_ind_,
+            acausal_posterior,
+        ) = hmm_smoother(
+            self.initial_conditions_,
+            None,
+            self.log_likelihood_,
+            transition_fn=transition_fn,
         )
 
         (
@@ -500,27 +499,27 @@ class _DetectorBase(BaseEstimator):
         marginal_log_likelihoods = []
         n_iter = 0
         converged = False
+        transition_fn = partial(
+            get_transition_matrix,
+            self.continuous_state_transitions_,
+            self.discrete_state_transitions_,
+            self.state_ind_,
+        )
 
         while not converged and (n_iter < max_iter):
             # Expectation step
             print("Expectation Step")
+
             (
-                causal_posterior,
-                predictive_distribution,
                 marginal_log_likelihood,
-            ) = forward(
-                self.initial_conditions_,
-                log_likelihood,
-                self.discrete_state_transitions_,
-                self.continuous_state_transitions_,
-                self.state_ind_,
-            )
-            acausal_posterior = smoother(
                 causal_posterior,
                 predictive_distribution,
-                self.discrete_state_transitions_,
-                self.continuous_state_transitions_,
-                self.state_ind_,
+                acausal_posterior,
+            ) = hmm_smoother(
+                self.initial_conditions_,
+                None,
+                self.log_likelihood_,
+                transition_fn=transition_fn,
             )
             # Maximization step
             print("Maximization Step")
