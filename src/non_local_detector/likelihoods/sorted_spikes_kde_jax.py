@@ -164,6 +164,8 @@ def predict_sorted_spikes_kde_jax_log_likelihood(
                 neuron_spikes[:, jnp.newaxis], place_field[jnp.newaxis]
             )
         log_likelihood -= no_spike_part_log_likelihood[jnp.newaxis]
-        log_likelihood = jnp.where(is_track_interior[None, :], log_likelihood, jnp.nan)
+        log_likelihood = jnp.where(
+            is_track_interior[jnp.newaxis, :], log_likelihood, jnp.nan
+        )
 
     return log_likelihood

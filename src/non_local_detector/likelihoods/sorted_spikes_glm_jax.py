@@ -38,7 +38,7 @@ def make_spline_design_matrix(
 def make_spline_predict_matrix(design_info, position: jnp.ndarray) -> jnp.ndarray:
     position = jnp.asarray(position)
     is_nan = jnp.any(jnp.isnan(position), axis=1)
-    position = jnp.where(is_nan[:, None], 0.0, position)
+    position = jnp.where(is_nan[:, jnp.newaxis], 0.0, position)
 
     predict_data = {}
     for ind in range(position.shape[1]):
