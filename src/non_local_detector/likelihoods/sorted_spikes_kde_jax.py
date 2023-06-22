@@ -98,6 +98,7 @@ def fit_sorted_spikes_kde_jax_encoding_model(
 
     place_fields = []
     kde_models = []
+    no_spike_part_log_likelihood = jnp.zeros_like(occupancy)
 
     for mean_rate, neuron_spikes in zip(mean_rates, tqdm(spikes.T.astype(bool))):
         kde_model = KDEModel(std=position_std, block_size=block_size).fit(
@@ -109,6 +110,8 @@ def fit_sorted_spikes_kde_jax_encoding_model(
             occupancy > 0.0, marginal_density / occupancy, 0.0
         )
         place_field = jnp.clip(place_field, a_min=EPS, a_max=None)
+
+        no_spike_part_log_likelihood += place_field
         place_fields.append(place_field)
 
     place_fields = jnp.stack(place_fields, axis=0)
@@ -119,6 +122,7 @@ def fit_sorted_spikes_kde_jax_encoding_model(
         "occupancy": occupancy,
         "mean_rates": mean_rates,
         "place_fields": place_fields,
+        "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
         "is_track_interior": is_track_interior,
     }
 
@@ -131,6 +135,7 @@ def predict_sorted_spikes_kde_jax_log_likelihood(
     occupancy,
     mean_rates,
     place_fields,
+    no_spike_part_log_likelihood,
     is_track_interior: jnp.ndarray,
     is_local: bool = False,
 ):
@@ -148,15 +153,18 @@ def predict_sorted_spikes_kde_jax_log_likelihood(
                 occupancy > 0.0, marginal_density / occupancy, 0.0
             )
             local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
-            log_likelihood += jax.scipy.stats.poisson.logpmf(neuron_spikes, local_rate)
+            log_likelihood += (
+                jax.scipy.special.xlogy(neuron_spikes, local_rate) - local_rate
+            )
 
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
         log_likelihood = jnp.zeros((n_time, place_fields.shape[1]))
         for neuron_spikes, place_field in zip(tqdm(spikes.T), place_fields):
-            log_likelihood += jax.scipy.stats.poisson.logpmf(
+            log_likelihood += jax.scipy.special.xlogy(
                 neuron_spikes[:, jnp.newaxis], place_field[jnp.newaxis]
             )
+        log_likelihood -= no_spike_part_log_likelihood[jnp.newaxis]
         log_likelihood.at[:, ~is_track_interior].set(jnp.nan)
 
     return log_likelihood
