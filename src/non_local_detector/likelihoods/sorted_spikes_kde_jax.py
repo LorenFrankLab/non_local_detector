@@ -99,7 +99,7 @@ def fit_sorted_spikes_kde_jax_encoding_model(
     place_fields = []
     kde_models = []
 
-    for mean_rate, neuron_spikes in zip(mean_rates, tqdm(spikes.T.astype(bool))):
+    for neuron_spikes, mean_rate in zip(tqdm(spikes.T.astype(bool)), mean_rates):
         kde_model = KDEModel(std=position_std, block_size=block_size).fit(
             position[neuron_spikes]
         )
