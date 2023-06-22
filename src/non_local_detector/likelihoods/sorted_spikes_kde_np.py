@@ -1,7 +1,7 @@
 import numpy as np
-from tqdm.auto import tqdm
-import scipy.stats
 import scipy.interpolate
+import scipy.stats
+from tqdm.auto import tqdm
 
 from non_local_detector.core import atleast_2d
 

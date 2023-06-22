@@ -1,9 +1,9 @@
-import jax.numpy as jnp
-import jax
-from tqdm.autonotebook import tqdm
-from functools import partial
 from dataclasses import dataclass
+from functools import partial
 
+import jax
+import jax.numpy as jnp
+from tqdm.autonotebook import tqdm
 
 EPS = 1e-15
 
@@ -98,7 +98,6 @@ def fit_sorted_spikes_kde_jax_encoding_model(
 
     place_fields = []
     kde_models = []
-    no_spike_part_log_likelihood = jnp.zeros_like(occupancy)
 
     for mean_rate, neuron_spikes in zip(mean_rates, tqdm(spikes.T.astype(bool))):
         kde_model = KDEModel(std=position_std, block_size=block_size).fit(
@@ -109,12 +108,12 @@ def fit_sorted_spikes_kde_jax_encoding_model(
         place_field = mean_rate * jnp.where(
             occupancy > 0.0, marginal_density / occupancy, 0.0
         )
+        place_field = jnp.where(is_track_interior, place_field, EPS)
         place_field = jnp.clip(place_field, a_min=EPS, a_max=None)
-
-        no_spike_part_log_likelihood += place_field
         place_fields.append(place_field)
 
     place_fields = jnp.stack(place_fields, axis=0)
+    no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
 
     return {
         "kde_models": kde_models,
@@ -165,6 +164,6 @@ def predict_sorted_spikes_kde_jax_log_likelihood(
                 neuron_spikes[:, jnp.newaxis], place_field[jnp.newaxis]
             )
         log_likelihood -= no_spike_part_log_likelihood[jnp.newaxis]
-        log_likelihood.at[:, ~is_track_interior].set(jnp.nan)
+        log_likelihood = jnp.where(is_track_interior[None, :], log_likelihood, jnp.nan)
 
     return log_likelihood

@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
-import scipy.stats
 from patsy import build_design_matrices, dmatrix
 from scipy.optimize import minimize
 from tqdm.autonotebook import tqdm
@@ -36,10 +35,10 @@ def make_spline_design_matrix(
     return dmatrix(formula, data)
 
 
-def make_spline_predict_matrix(design_info, position: np.ndarray):
-    position = atleast_2d(position)
-    is_nan = np.any(np.isnan(position), axis=1)
-    position[is_nan] = 0.0
+def make_spline_predict_matrix(design_info, position: jnp.ndarray) -> jnp.ndarray:
+    position = jnp.asarray(position)
+    is_nan = jnp.any(jnp.isnan(position), axis=1)
+    position = jnp.where(is_nan[:, None], 0.0, position)
 
     predict_data = {}
     for ind in range(position.shape[1]):
@@ -48,7 +47,7 @@ def make_spline_predict_matrix(design_info, position: np.ndarray):
     design_matrix = build_design_matrices([design_info], predict_data)[0]
     design_matrix[is_nan] = np.nan
 
-    return design_matrix
+    return jnp.asarray(design_matrix)
 
 
 def fit_poisson_regression(
@@ -56,7 +55,7 @@ def fit_poisson_regression(
     spikes: np.ndarray,
     weights: np.ndarray,
     l2_penalty: float = 1e-7,
-):
+) -> jnp.ndarray:
     @jax.jit
     def neglogp(
         coefficients, spikes=spikes, design_matrix=design_matrix, weights=weights
@@ -71,9 +70,9 @@ def fit_poisson_regression(
 
     dlike = jax.grad(neglogp)
 
-    initial_condition = np.array([np.log(np.average(spikes, weights=weights))])
-    initial_condition = np.concatenate(
-        [initial_condition, np.zeros(design_matrix.shape[1] - 1)]
+    initial_condition = jnp.asarray([jnp.log(jnp.average(spikes, weights=weights))])
+    initial_condition = jnp.concatenate(
+        [initial_condition, jnp.zeros(design_matrix.shape[1] - 1)]
     )
 
     res = minimize(
@@ -83,7 +82,7 @@ def fit_poisson_regression(
         jac=dlike,
     )
 
-    return res.x
+    return jnp.asarray(res.x)
 
 
 def fit_sorted_spikes_glm_jax_encoding_model(
@@ -100,13 +99,21 @@ def fit_sorted_spikes_glm_jax_encoding_model(
     emission_design_matrix = make_spline_design_matrix(
         position, place_bin_edges, knot_spacing=emission_knot_spacing
     )
+    emission_design_info = emission_design_matrix.design_info
+    emission_design_matrix = jnp.asarray(emission_design_matrix)
+
     emission_predict_matrix = make_spline_predict_matrix(
-        emission_design_matrix.design_info, place_bin_centers
+        emission_design_info, place_bin_centers
     )
-    weights = np.ones((spikes.shape[0],), dtype=np.float32)
+
+    position = jnp.asarray(position)
+    spikes = jnp.asarray(spikes)
+    place_bin_centers = jnp.asarray(place_bin_centers)
+    weights = jnp.ones((spikes.shape[0],))
 
     coefficients = []
     place_fields = []
+
     for neuron_spikes in tqdm(spikes.T):
         coef = fit_poisson_regression(
             emission_design_matrix,
@@ -116,15 +123,19 @@ def fit_sorted_spikes_glm_jax_encoding_model(
         )
         coefficients.append(coef)
 
-        place_field = np.exp(emission_predict_matrix @ coef)
-        place_field[~is_track_interior] = EPS
-        place_field = np.clip(place_field, a_min=EPS, a_max=None)
+        place_field = jnp.exp(emission_predict_matrix @ coef)
+        place_field = jnp.where(is_track_interior, place_field, EPS)
+        place_field = jnp.clip(place_field, a_min=EPS, a_max=None)
         place_fields.append(place_field)
 
+    place_fields = jnp.stack(place_fields, axis=0)
+    no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
+
     return {
-        "coefficients": np.stack(coefficients, axis=0),
-        "emission_design_info": emission_design_matrix.design_info,
-        "place_fields": np.stack(place_fields, axis=0),
+        "coefficients": jnp.stack(coefficients, axis=0),
+        "emission_design_info": emission_design_info,
+        "place_fields": place_fields,
+        "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
         "is_track_interior": is_track_interior,
     }
 
@@ -132,30 +143,37 @@ def fit_sorted_spikes_glm_jax_encoding_model(
 def predict_sorted_spikes_glm_jax_log_likelihood(
     position: np.ndarray,
     spikes: np.ndarray,
-    coefficients: np.ndarray,
+    coefficients: jnp.ndarray,
     emission_design_info,
-    place_fields: np.ndarray,
+    place_fields: jnp.ndarray,
+    no_spike_part_log_likelihood: jnp.ndarray,
     is_track_interior: np.ndarray,
     is_local: bool = False,
 ):
     n_time = spikes.shape[0]
+    position = jnp.asarray(position)
+    spikes = jnp.asarray(spikes)
+
     if is_local:
-        log_likelihood = np.zeros((n_time,))
+        log_likelihood = jnp.zeros((n_time,))
         emission_predict_matrix = make_spline_predict_matrix(
             emission_design_info, position
         )
         for neuron_spikes, coef in zip(tqdm(spikes.T), coefficients):
-            local_rate = np.exp(emission_predict_matrix @ coef)
-            local_rate = np.clip(local_rate, a_min=EPS, a_max=None)
-            log_likelihood += scipy.stats.poisson.logpmf(neuron_spikes, local_rate)
-
-        log_likelihood = log_likelihood[:, np.newaxis]
-    else:
-        log_likelihood = np.zeros((n_time, place_fields.shape[1]))
-        for neuron_spikes, place_field in zip(tqdm(spikes.T), place_fields):
-            log_likelihood += scipy.stats.poisson.logpmf(
-                neuron_spikes[:, np.newaxis], place_field[np.newaxis]
+            local_rate = jnp.exp(emission_predict_matrix @ coef)
+            local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
+            log_likelihood += (
+                jax.scipy.special.xlogy(neuron_spikes, local_rate) - local_rate
             )
-        log_likelihood[:, ~is_track_interior] = np.nan
+
+        log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
+    else:
+        log_likelihood = jnp.zeros((n_time, place_fields.shape[1]))
+        for neuron_spikes, place_field in zip(tqdm(spikes.T), place_fields):
+            log_likelihood += jax.scipy.special.xlogy(
+                neuron_spikes[:, jnp.newaxis], place_field[jnp.newaxis]
+            )
+        log_likelihood -= no_spike_part_log_likelihood[jnp.newaxis]
+        log_likelihood.at[:, ~is_track_interior].set(jnp.nan)
 
     return log_likelihood
