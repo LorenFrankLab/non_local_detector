@@ -40,10 +40,10 @@ test = ["black", "pytest", "pytest-cov"]
 
 [tool.hatch.version]
 source = "vcs"
+fallback_version = "0.1.0"
 
 [tool.hatch.build.hooks.vcs]
 version-file = "src/non_local_detector/_version.py"
-fallback_version = "0.1.0"
 
 [tool.hatch.build.targets.sdist]
 exclude = [".git_archival.txt"]
