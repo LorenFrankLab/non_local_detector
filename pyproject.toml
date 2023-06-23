@@ -40,7 +40,7 @@ test = ["black", "pytest", "pytest-cov"]
 
 [tool.hatch.version]
 source = "vcs"
-fallback_version = "0.1.0"
+fallback_version = "0.1.0.dev0"
 
 [tool.hatch.build.hooks.vcs]
 version-file = "src/non_local_detector/_version.py"
