@@ -443,6 +443,7 @@ class _DetectorBase(BaseEstimator):
         return self
 
     def predict(self):
+        logger.info("Computing posterior...")
         transition_fn = partial(
             get_transition_matrix,
             self.continuous_state_transitions_,
@@ -472,7 +473,6 @@ class _DetectorBase(BaseEstimator):
             predictive_distribution,
             self.state_ind_,
         )
-
         return (
             causal_posterior,
             acausal_posterior,
@@ -508,7 +508,7 @@ class _DetectorBase(BaseEstimator):
 
         while not converged and (n_iter < max_iter):
             # Expectation step
-            print("Expectation Step")
+            logger.info("Expectation step...")
 
             (
                 marginal_log_likelihood,
@@ -522,7 +522,7 @@ class _DetectorBase(BaseEstimator):
                 transition_fn=transition_fn,
             )
             # Maximization step
-            print("Maximization Step")
+            logger.info("Maximization step..")
             (
                 causal_state_probabilities,
                 acausal_state_probabilities,
@@ -564,7 +564,7 @@ class _DetectorBase(BaseEstimator):
                     )
 
                 # Stats
-                print("Stats")
+                logger.info("Computing stats..")
                 n_iter += 1
 
                 marginal_log_likelihoods.append(marginal_log_likelihood)
@@ -578,13 +578,13 @@ class _DetectorBase(BaseEstimator):
                         tolerance,
                     )
 
-                    print(
+                    logger.info(
                         f"iteration {n_iter}, "
                         f"likelihood: {marginal_log_likelihoods[-1]}, "
                         f"change: {log_likelihood_change}"
                     )
                 else:
-                    print(
+                    logger.info(
                         f"iteration {n_iter}, "
                         f"likelihood: {marginal_log_likelihoods[-1]}"
                     )

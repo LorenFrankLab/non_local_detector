@@ -95,6 +95,7 @@ def fit_sorted_spikes_glm_jax_encoding_model(
     is_track_boundary: np.ndarray,
     emission_knot_spacing: float = 10.0,
     l2_penalty: float = 1e-3,
+    disable_progress_bar: bool = False,
 ):
     emission_design_matrix = make_spline_design_matrix(
         position, place_bin_edges, knot_spacing=emission_knot_spacing
@@ -114,7 +115,9 @@ def fit_sorted_spikes_glm_jax_encoding_model(
     coefficients = []
     place_fields = []
 
-    for neuron_spikes in tqdm(spikes.T):
+    for neuron_spikes in tqdm(
+        spikes.T, unit="cell", desc="Encoding models", disable=disable_progress_bar
+    ):
         coef = fit_poisson_regression(
             emission_design_matrix,
             neuron_spikes,
@@ -137,6 +140,7 @@ def fit_sorted_spikes_glm_jax_encoding_model(
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
         "is_track_interior": is_track_interior,
+        "disable_progress_bar": disable_progress_bar,
     }
 
 
@@ -148,6 +152,7 @@ def predict_sorted_spikes_glm_jax_log_likelihood(
     place_fields: jnp.ndarray,
     no_spike_part_log_likelihood: jnp.ndarray,
     is_track_interior: np.ndarray,
+    disable_progress_bar: bool = False,
     is_local: bool = False,
 ):
     n_time = spikes.shape[0]
@@ -159,7 +164,15 @@ def predict_sorted_spikes_glm_jax_log_likelihood(
         emission_predict_matrix = make_spline_predict_matrix(
             emission_design_info, position
         )
-        for neuron_spikes, coef in zip(tqdm(spikes.T), coefficients):
+        for neuron_spikes, coef in zip(
+            tqdm(
+                spikes.T,
+                unit="cell",
+                desc="Local Likelihood",
+                disable=disable_progress_bar,
+            ),
+            coefficients,
+        ):
             local_rate = jnp.exp(emission_predict_matrix @ coef)
             local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
             log_likelihood += (
@@ -169,7 +182,15 @@ def predict_sorted_spikes_glm_jax_log_likelihood(
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
         log_likelihood = jnp.zeros((n_time, place_fields.shape[1]))
-        for neuron_spikes, place_field in zip(tqdm(spikes.T), place_fields):
+        for neuron_spikes, place_field in zip(
+            tqdm(
+                spikes.T,
+                unit="cell",
+                desc="Non-Local Likelihood",
+                disable=disable_progress_bar,
+            ),
+            place_fields,
+        ):
             log_likelihood += jax.scipy.special.xlogy(
                 neuron_spikes[:, jnp.newaxis], place_field[jnp.newaxis]
             )

@@ -90,6 +90,7 @@ def fit_sorted_spikes_kde_jax_encoding_model(
     *args,
     position_std: float = 5.0,
     block_size: int = 100,
+    disable_progress_bar: bool = False,
     **kwargs,
 ):
     occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(position)
@@ -99,7 +100,15 @@ def fit_sorted_spikes_kde_jax_encoding_model(
     place_fields = []
     kde_models = []
 
-    for neuron_spikes, mean_rate in zip(tqdm(spikes.T.astype(bool)), mean_rates):
+    for neuron_spikes, mean_rate in zip(
+        tqdm(
+            spikes.T.astype(bool),
+            unit="cell",
+            desc="Encoding models",
+            disable=disable_progress_bar,
+        ),
+        mean_rates,
+    ):
         kde_model = KDEModel(std=position_std, block_size=block_size).fit(
             position[neuron_spikes]
         )
@@ -123,6 +132,7 @@ def fit_sorted_spikes_kde_jax_encoding_model(
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
         "is_track_interior": is_track_interior,
+        "disable_progress_bar": disable_progress_bar,
     }
 
 
@@ -136,6 +146,7 @@ def predict_sorted_spikes_kde_jax_log_likelihood(
     place_fields,
     no_spike_part_log_likelihood,
     is_track_interior: jnp.ndarray,
+    disable_progress_bar: bool = False,
     is_local: bool = False,
 ):
     n_time = spikes.shape[0]
@@ -145,7 +156,14 @@ def predict_sorted_spikes_kde_jax_log_likelihood(
         occupancy = occupancy_model.predict(position)
 
         for neuron_spikes, kde_model, mean_rate in zip(
-            tqdm(spikes.T), kde_models, mean_rates
+            tqdm(
+                spikes.T,
+                unit="cell",
+                desc="Local Likelihood",
+                disable=disable_progress_bar,
+            ),
+            kde_models,
+            mean_rates,
         ):
             marginal_density = kde_model.predict(position)
             local_rate = mean_rate * jnp.where(
@@ -159,7 +177,15 @@ def predict_sorted_spikes_kde_jax_log_likelihood(
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
         log_likelihood = jnp.zeros((n_time, place_fields.shape[1]))
-        for neuron_spikes, place_field in zip(tqdm(spikes.T), place_fields):
+        for neuron_spikes, place_field in zip(
+            tqdm(
+                spikes.T,
+                unit="cell",
+                desc="Non-Local Likelihood",
+                disable=disable_progress_bar,
+            ),
+            place_fields,
+        ):
             log_likelihood += jax.scipy.special.xlogy(
                 neuron_spikes[:, jnp.newaxis], place_field[jnp.newaxis]
             )
