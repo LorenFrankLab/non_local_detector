@@ -42,13 +42,14 @@ sklearn.set_config(print_changed_only=False)
 np.seterr(divide="ignore", invalid="ignore")
 
 _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS = {
-    "mark_std": 24.0,
+    "waveform_std": 24.0,
     "position_std": 6.0,
+    "block_size": 100,
 }
 _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS = {
     "position_std": 6.0,
     "use_diffusion": False,
-    "block_size": None,
+    "block_size": 100,
 }
 
 State = namedtuple("state", ("environment_name", "encoding_group"))
@@ -759,25 +760,72 @@ class ClusterlessDetector(_DetectorBase):
         self.clusterless_algorithm = clusterless_algorithm
         self.clusterless_algorithm_params = clusterless_algorithm_params
 
-    def fit_marks(
+    def fit_encoding_model(
         self,
         position,
-        marks,
+        multiunits,
         is_training=None,
         encoding_group_labels=None,
         environment_labels=None,
     ):
-        pass
+        logger.info("Fitting multiunits...")
+        n_time = position.shape[0]
+        if is_training is None:
+            is_training = np.ones((n_time,), dtype=bool)
+
+        if encoding_group_labels is None:
+            encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
+
+        if environment_labels is None:
+            environment_labels = np.asarray(
+                [self.environments[0].environment_name] * n_time
+            )
+
+        is_training = np.asarray(is_training).squeeze()
+
+        kwargs = self.clusterless_algorithm_params
+        if kwargs is None:
+            kwargs = {}
+
+        self.encoding_model_ = {}
+
+        for obs in np.unique(self.observation_models):
+            environment = self.environments[
+                self.environments.index(obs.environment_name)
+            ]
+
+            is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
+            is_environment = environment_labels == obs.environment_name
+            likelihood_name = State(
+                environment_name=obs.environment_name, encoding_group=obs.encoding_group
+            )
+            likelihood_name = State(
+                environment_name=obs.environment_name, encoding_group=obs.encoding_group
+            )
+
+            encoding_algorithm, _ = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
+            is_group = is_training & is_encoding & is_environment
+
+            self.encoding_model_[likelihood_name] = encoding_algorithm(
+                position=position[is_group],
+                multiunits=multiunits[is_group],
+                place_bin_centers=environment.place_bin_centers_,
+                is_track_interior=environment.is_track_interior_,
+                is_track_boundary=environment.is_track_boundary_,
+                edges=environment.edges_,
+                **kwargs,
+            )
 
     def fit(
         self,
         position,
-        marks,
+        multiunits,
         is_training=None,
         encoding_group_labels=None,
         environment_labels=None,
         discrete_transition_covariate_data=None,
     ):
+        position = position[:, np.newaxis] if position.ndim == 1 else position
         super().fit(
             position,
             is_training,
@@ -785,32 +833,116 @@ class ClusterlessDetector(_DetectorBase):
             environment_labels,
             discrete_transition_covariate_data,
         )
+        self.fit_encoding_model(
+            position,
+            multiunits,
+            is_training,
+            encoding_group_labels,
+            environment_labels,
+        )
         return self
 
-    def compute_log_likelihood(self, marks, is_missing=None):
-        pass
+    def compute_log_likelihood(self, position, multiunits, is_missing=None):
+        n_time = multiunits.shape[0]
+        if is_missing is None:
+            is_missing = np.zeros((n_time,), dtype=bool)
 
-    def predict(self, marks, time=None, is_missing=None):
-        self.log_likelihood_ = self.compute_log_likelihood(marks, is_missing)
+        log_likelihood = np.zeros((n_time, self.n_state_bins_), dtype=np.float32)
+
+        _, likelihood_func = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
+        computed_likelihoods = []
+
+        for state_id, obs in enumerate(self.observation_models):
+            is_state_bin = self.state_ind_ == state_id
+            likelihood_name = (
+                obs.environment_name,
+                obs.encoding_group,
+                obs.is_local,
+                obs.is_no_spike,
+            )
+
+            if obs.is_no_spike:
+                # Likelihood of no spike times
+                is_spike = np.any(np.isnan(multiunits), axis=1)
+                log_likelihood[:, is_state_bin] = predict_no_spike_log_likelihood(
+                    is_spike, self.no_spike_rate, self.sampling_frequency
+                )
+            elif likelihood_name not in computed_likelihoods:
+                log_likelihood[:, is_state_bin] = likelihood_func(
+                    position,
+                    multiunits,
+                    **self.encoding_model_[likelihood_name[:2]],
+                    is_local=obs.is_local,
+                )
+            else:
+                # Use previously computed likelihoods
+                previously_computed_bins = (
+                    self.state_ind_ == computed_likelihoods.index(likelihood_name)
+                )
+                log_likelihood[:, is_state_bin] = log_likelihood[
+                    :, previously_computed_bins
+                ]
+
+            computed_likelihoods.append(likelihood_name)
+
+        # missing data should be 1.0 because there is no information
+        log_likelihood[is_missing] = 1.0
+
+        return log_likelihood
+
+    def predict(self, multiunits, position=None, time=None, is_missing=None):
+        if position is not None:
+            position = position[:, np.newaxis] if position.ndim == 1 else position
+        self.log_likelihood_ = self.compute_log_likelihood(
+            position, multiunits, is_missing
+        )
 
         (
             causal_posterior,
             acausal_posterior,
-            predictive_distribution,
-            causal_state_probabilities,
+            _,
+            _,
             acausal_state_probabilities,
-            predictive_state_probabilities,
+            _,
             marginal_log_likelihood,
         ) = super().predict()
 
-        return (
+        return super()._convert_results_to_xarray(
+            time,
             causal_posterior,
             acausal_posterior,
-            predictive_distribution,
-            causal_state_probabilities,
             acausal_state_probabilities,
-            predictive_state_probabilities,
             marginal_log_likelihood,
+        )
+
+    def estimate_parameters(
+        self,
+        multiunits,
+        position=None,
+        time=None,
+        is_training=None,
+        encoding_group_labels=None,
+        environment_labels=None,
+        estimate_inital_conditions: bool = True,
+        estimate_discrete_transition: bool = True,
+        max_iter: int = 20,
+        tolerance: float = 0.0001,
+    ):
+        self.fit(
+            position,
+            multiunits,
+            is_training=is_training,
+            encoding_group_labels=encoding_group_labels,
+            environment_labels=environment_labels,
+        )
+        self.log_likelihood_ = self.compute_log_likelihood(position, spmultiunitsikes)
+        return super().estimate_parameters(
+            self.log_likelihood_,
+            time,
+            estimate_inital_conditions,
+            estimate_discrete_transition,
+            max_iter,
+            tolerance,
         )
 
 
@@ -879,6 +1011,7 @@ class SortedSpikesDetector(_DetectorBase):
             kwargs = {}
 
         self.encoding_model_ = {}
+
         for obs in np.unique(self.observation_models):
             environment = self.environments[
                 self.environments.index(obs.environment_name)
@@ -892,9 +1025,11 @@ class SortedSpikesDetector(_DetectorBase):
             encoding_algorithm, _ = _SORTED_SPIKES_ALGORITHMS[
                 self.sorted_spikes_algorithm
             ]
+            is_group = is_training & is_encoding & is_environment
+
             self.encoding_model_[likelihood_name] = encoding_algorithm(
-                position=position[is_training & is_encoding & is_environment],
-                spikes=spikes[is_training & is_encoding & is_environment],
+                position=position[is_group],
+                spikes=spikes[is_group],
                 place_bin_centers=environment.place_bin_centers_,
                 place_bin_edges=environment.place_bin_edges_,
                 edges=environment.edges_,
@@ -912,6 +1047,7 @@ class SortedSpikesDetector(_DetectorBase):
         environment_labels=None,
         discrete_transition_covariate_data=None,
     ):
+        position = position[:, np.newaxis] if position.ndim == 1 else position
         super().fit(
             position,
             is_training,
@@ -929,11 +1065,12 @@ class SortedSpikesDetector(_DetectorBase):
         return self
 
     def compute_log_likelihood(self, position, spikes, is_missing=None):
-        if is_missing is None:
-            is_missing = np.zeros((spikes.shape[0],), dtype=bool)
+        n_time = spikes.shape[0]
 
-        n_time, n_state_bins = spikes.shape[0], self.n_state_bins_
-        log_likelihood = np.zeros((n_time, n_state_bins), dtype=np.float32)
+        if is_missing is None:
+            is_missing = np.zeros((n_time,), dtype=bool)
+
+        log_likelihood = np.zeros((n_time, self.n_state_bins_), dtype=np.float32)
 
         _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
         computed_likelihoods = []
@@ -975,7 +1112,9 @@ class SortedSpikesDetector(_DetectorBase):
 
         return log_likelihood
 
-    def predict(self, position, spikes, time=None, is_missing=None):
+    def predict(self, spikes, position=None, time=None, is_missing=None):
+        if position is not None:
+            position = position[:, np.newaxis] if position.ndim == 1 else position
         self.log_likelihood_ = self.compute_log_likelihood(position, spikes, is_missing)
         (
             causal_posterior,
@@ -997,8 +1136,8 @@ class SortedSpikesDetector(_DetectorBase):
 
     def estimate_parameters(
         self,
-        position,
         spikes,
+        position=None,
         time=None,
         is_training=None,
         encoding_group_labels=None,

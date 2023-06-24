@@ -94,7 +94,7 @@ def fit_sorted_spikes_kde_jax_encoding_model(
     **kwargs,
 ):
     occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(position)
-    occupancy = occupancy_model.predict(place_bin_centers)
+    occupancy = occupancy_model.predict(place_bin_centers[is_track_interior])
     mean_rates = jnp.mean(spikes, axis=0).squeeze()
 
     place_fields = []
@@ -113,7 +113,7 @@ def fit_sorted_spikes_kde_jax_encoding_model(
             position[neuron_spikes]
         )
         kde_models.append(kde_model)
-        marginal_density = kde_model.predict(place_bin_centers)
+        marginal_density = kde_model.predict(place_bin_centers[is_track_interior])
         place_field = mean_rate * jnp.where(
             occupancy > 0.0, marginal_density / occupancy, 0.0
         )

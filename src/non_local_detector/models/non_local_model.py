@@ -8,13 +8,13 @@ from non_local_detector.continuous_state_transitions import (
 from non_local_detector.discrete_state_transitions import DiscreteStationaryDiagonal
 from non_local_detector.environment import Environment
 from non_local_detector.initial_conditions import UniformInitialConditions
-from non_local_detector.observation_models import ObservationModel
-from non_local_detector.models.generic import (
+from non_local_detector.models.base import (
     _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
     _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
-    SortedSpikesDetector,
     ClusterlessDetector,
+    SortedSpikesDetector,
 )
+from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -115,7 +115,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         clusterless_algorithm: str = "clusterless_kde_jax",
         clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = None,
+        state_names: list[str] | None = state_names,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):

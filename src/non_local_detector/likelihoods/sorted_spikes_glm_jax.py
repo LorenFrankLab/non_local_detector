@@ -195,6 +195,6 @@ def predict_sorted_spikes_glm_jax_log_likelihood(
                 neuron_spikes[:, jnp.newaxis], place_field[jnp.newaxis]
             )
         log_likelihood -= no_spike_part_log_likelihood[jnp.newaxis]
-        log_likelihood.at[:, ~is_track_interior].set(jnp.nan)
+        log_likelihood = log_likelihood.at[:, ~is_track_interior].set(jnp.nan)
 
     return log_likelihood
