@@ -37,11 +37,10 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 test = ["black", "pytest", "pytest-cov"]
-gpu = ["jax[cuda11_pip]", "jaxlib[cuda11_pip]"]
+gpu = ["jax[cuda11_pip]"]
 
 [tool.hatch.version]
 source = "vcs"
-fallback_version = "0.1.0.dev0"
 
 [tool.hatch.build.hooks.vcs]
 version-file = "src/non_local_detector/_version.py"
@@ -51,4 +50,3 @@ exclude = [".git_archival.txt"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/non_local_detector"]
-exclude = ["src/non_local_detector/data/test_data"]
