@@ -843,6 +843,13 @@ class ClusterlessDetector(_DetectorBase):
         return self
 
     def compute_log_likelihood(self, position, multiunits, is_missing=None):
+        if position is not None:
+            position = position[:, np.newaxis] if position.ndim == 1 else position
+        if position is None and np.any(
+            [obs.is_local for obs in self.observation_models]
+        ):
+            raise ValueError("Position must be provided for local observations.")
+
         n_time = multiunits.shape[0]
         if is_missing is None:
             is_missing = np.zeros((n_time,), dtype=bool)
@@ -891,8 +898,6 @@ class ClusterlessDetector(_DetectorBase):
         return log_likelihood
 
     def predict(self, multiunits, position=None, time=None, is_missing=None):
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
         self.log_likelihood_ = self.compute_log_likelihood(
             position, multiunits, is_missing
         )
@@ -1067,6 +1072,13 @@ class SortedSpikesDetector(_DetectorBase):
     def compute_log_likelihood(self, position, spikes, is_missing=None):
         n_time = spikes.shape[0]
 
+        if position is not None:
+            position = position[:, np.newaxis] if position.ndim == 1 else position
+        if position is None and np.any(
+            [obs.is_local for obs in self.observation_models]
+        ):
+            raise ValueError("Position must be provided for local observations.")
+
         if is_missing is None:
             is_missing = np.zeros((n_time,), dtype=bool)
 
@@ -1113,8 +1125,6 @@ class SortedSpikesDetector(_DetectorBase):
         return log_likelihood
 
     def predict(self, spikes, position=None, time=None, is_missing=None):
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
         self.log_likelihood_ = self.compute_log_likelihood(position, spikes, is_missing)
         (
             causal_posterior,
