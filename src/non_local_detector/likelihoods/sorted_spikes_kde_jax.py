@@ -114,12 +114,17 @@ def fit_sorted_spikes_kde_jax_encoding_model(
         )
         kde_models.append(kde_model)
         marginal_density = kde_model.predict(place_bin_centers[is_track_interior])
-        place_field = mean_rate * jnp.where(
-            occupancy > 0.0, marginal_density / occupancy, 0.0
+        place_field = jnp.zeros((is_track_interior.shape[0],))
+        place_fields.append(
+            place_field.at[is_track_interior].set(
+                jnp.clip(
+                    mean_rate
+                    * jnp.where(occupancy > 0.0, marginal_density / occupancy, 0.0),
+                    a_min=EPS,
+                    a_max=None,
+                )
+            )
         )
-        place_field = jnp.where(is_track_interior, place_field, EPS)
-        place_field = jnp.clip(place_field, a_min=EPS, a_max=None)
-        place_fields.append(place_field)
 
     place_fields = jnp.stack(place_fields, axis=0)
     no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
@@ -139,12 +144,12 @@ def fit_sorted_spikes_kde_jax_encoding_model(
 def predict_sorted_spikes_kde_jax_log_likelihood(
     position: jnp.ndarray,
     spikes: jnp.ndarray,
-    kde_models,
-    occupancy_model,
-    occupancy,
-    mean_rates,
-    place_fields,
-    no_spike_part_log_likelihood,
+    kde_models: list[KDEModel],
+    occupancy_model: KDEModel,
+    occupancy: jnp.ndarray,
+    mean_rates: jnp.ndarray,
+    place_fields: jnp.ndarray,
+    no_spike_part_log_likelihood: jnp.ndarray,
     is_track_interior: jnp.ndarray,
     disable_progress_bar: bool = False,
     is_local: bool = False,
@@ -191,7 +196,7 @@ def predict_sorted_spikes_kde_jax_log_likelihood(
             )
         log_likelihood -= no_spike_part_log_likelihood[jnp.newaxis]
         log_likelihood = jnp.where(
-            is_track_interior[jnp.newaxis, :], log_likelihood, jnp.nan
+            is_track_interior[jnp.newaxis, :], log_likelihood, EPS
         )
 
     return log_likelihood
