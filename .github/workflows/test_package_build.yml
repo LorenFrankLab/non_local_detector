@@ -78,8 +78,7 @@ jobs:
       - name: Install test extras
         run: pip install non_local_detector[test]
       - name: Run tests
-        run: |
-          pytest -v
+        run: pytest --doctest-modules -v --pyargs non_local_detector
   publish:
     runs-on: ubuntu-latest
     needs: [test-package]
