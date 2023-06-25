@@ -44,12 +44,12 @@ np.seterr(divide="ignore", invalid="ignore")
 _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS = {
     "waveform_std": 24.0,
     "position_std": 6.0,
-    "block_size": 100,
+    "block_size": 1000,
 }
 _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS = {
     "position_std": 6.0,
     "use_diffusion": False,
-    "block_size": 100,
+    "block_size": 1000,
 }
 
 State = namedtuple("state", ("environment_name", "encoding_group"))
