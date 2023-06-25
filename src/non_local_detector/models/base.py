@@ -843,6 +843,7 @@ class ClusterlessDetector(_DetectorBase):
         return self
 
     def compute_log_likelihood(self, position, multiunits, is_missing=None):
+        logger.info("Computing log likelihood...")
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
         if position is None and np.any(
@@ -1070,6 +1071,7 @@ class SortedSpikesDetector(_DetectorBase):
         return self
 
     def compute_log_likelihood(self, position, spikes, is_missing=None):
+        logger.info("Computing log likelihood...")
         n_time = spikes.shape[0]
 
         if position is not None:
