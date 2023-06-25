@@ -10,16 +10,19 @@ def plot_non_local_model(
     position,
     spikes,
     speed,
-    non_local_rates,
-    env,
-    state_ind,
-    acausal_state_probabilities,
-    acausal_posterior,
-    state_names,
+    detector,
+    results,
     figsize=(20, 5),
     time_slice=None,
     posterior_max=0.25,
 ):
+    place_fields = detector.encoding_model_[("", 0)]["place_fields"]
+    env = detector.environments[0]
+    state_ind = detector.state_ind_
+    state_names = detector.state_names
+    acausal_state_probabilities = results.acausal_state_probabilities.values
+    acausal_posterior = results.acausal_posterior.values
+
     if time_slice is None:
         time_slice = slice(0, len(time))
 
@@ -37,17 +40,23 @@ def plot_non_local_model(
     t, x = np.meshgrid(sliced_time, env.place_bin_centers_)
 
     neuron_sort_ind = np.argsort(
-        env.place_bin_centers_[np.nanargmax(non_local_rates, axis=0)].squeeze()
+        env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()
     )
     spike_time_ind, neuron_ind = np.nonzero(spikes[time_slice][:, neuron_sort_ind])
 
-    conditional_non_local_acausal_posterior = (
-        acausal_posterior[time_slice, state_ind == 2]
-        + acausal_posterior[time_slice, state_ind == 3]
-    ) / (
-        acausal_state_probabilities[time_slice, [2]]
-        + acausal_state_probabilities[time_slice, [3]]
+    non_local_inds = np.nonzero(
+        ["Non-Local" in state for state in detector.state_names]
+    )[0]
+    conditional_non_local_acausal_posterior = np.zeros(
+        (len(sliced_time), len(env.place_bin_centers_))
     )
+    for non_local_ind in non_local_inds:
+        conditional_non_local_acausal_posterior += acausal_posterior[
+            time_slice, state_ind == non_local_ind
+        ]
+    conditional_non_local_acausal_posterior /= np.sum(
+        conditional_non_local_acausal_posterior, axis=1
+    )[:, np.newaxis]
     conditional_non_local_acausal_posterior[:, ~env.is_track_interior_] = np.nan
 
     axes[0].scatter(sliced_time[spike_time_ind], neuron_ind, s=1)
@@ -58,7 +67,6 @@ def plot_non_local_model(
     axes[1].set_ylabel("Probability")
     axes[1].set_ylim((0.0, 1.05))
 
-    n_states = len(state_names)
     axes[2].pcolormesh(
         t,
         x,
@@ -80,7 +88,7 @@ def plot_non_local_likelihood_ratio(
     log_likelihood,
     acausal_posterior,
     acausal_state_probabilities,
-    non_local_rates,
+    place_fields,
     spikes,
     position,
     env,
@@ -113,7 +121,7 @@ def plot_non_local_likelihood_ratio(
     conditional_non_local_acausal_posterior[:, ~env.is_track_interior_] = np.nan
 
     neuron_place_bin = env.place_bin_centers_[
-        np.nanargmax(non_local_rates, axis=0)
+        np.nanargmax(place_fields, axis=0)
     ].squeeze()
 
     t, x = np.meshgrid(time[time_slice], env.place_bin_centers_)
