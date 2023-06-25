@@ -474,6 +474,7 @@ class _DetectorBase(BaseEstimator):
             predictive_distribution,
             self.state_ind_,
         )
+        logger.info("Finished computing posterior...")
         return (
             causal_posterior,
             acausal_posterior,
