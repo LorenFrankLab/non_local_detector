@@ -76,7 +76,7 @@ jobs:
         if: matrix.package == 'archive'
         run: pip install archive/archive.tgz
       - name: Install test extras
-        run: pip install -e .[test]
+        run: pip install non_local_detector[test]
       - name: Run tests
         run: |
           pytest -v
