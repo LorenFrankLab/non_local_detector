@@ -3,6 +3,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import scipy.interpolate
 from tqdm.autonotebook import tqdm
 
 EPS = 1e-15
@@ -136,6 +137,7 @@ def fit_sorted_spikes_kde_jax_encoding_model(
         "mean_rates": mean_rates,
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
+        "place_bin_centers": place_bin_centers,
         "is_track_interior": is_track_interior,
         "disable_progress_bar": disable_progress_bar,
     }
@@ -150,34 +152,46 @@ def predict_sorted_spikes_kde_jax_log_likelihood(
     mean_rates: jnp.ndarray,
     place_fields: jnp.ndarray,
     no_spike_part_log_likelihood: jnp.ndarray,
+    place_bin_centers: jnp.ndarray,
     is_track_interior: jnp.ndarray,
     disable_progress_bar: bool = False,
     is_local: bool = False,
+    interpolate_local: bool = False,
 ):
     n_time = spikes.shape[0]
     if is_local:
         log_likelihood = jnp.zeros((n_time,))
 
-        occupancy = occupancy_model.predict(position)
+        if interpolate_local:
+            for neuron_spikes, non_local_rate in zip(tqdm(spikes.T), place_fields.T):
+                local_rate = scipy.interpolate.griddata(
+                    place_bin_centers, non_local_rate, position, method="nearest"
+                )
+                local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
+                log_likelihood += (
+                    jax.scipy.special.xlogy(neuron_spikes, local_rate) - local_rate
+                )
+        else:
+            occupancy = occupancy_model.predict(position)
 
-        for neuron_spikes, kde_model, mean_rate in zip(
-            tqdm(
-                spikes.T,
-                unit="cell",
-                desc="Local Likelihood",
-                disable=disable_progress_bar,
-            ),
-            kde_models,
-            mean_rates,
-        ):
-            marginal_density = kde_model.predict(position)
-            local_rate = mean_rate * jnp.where(
-                occupancy > 0.0, marginal_density / occupancy, 0.0
-            )
-            local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
-            log_likelihood += (
-                jax.scipy.special.xlogy(neuron_spikes, local_rate) - local_rate
-            )
+            for neuron_spikes, kde_model, mean_rate in zip(
+                tqdm(
+                    spikes.T,
+                    unit="cell",
+                    desc="Local Likelihood",
+                    disable=disable_progress_bar,
+                ),
+                kde_models,
+                mean_rates,
+            ):
+                marginal_density = kde_model.predict(position)
+                local_rate = mean_rate * jnp.where(
+                    occupancy > 0.0, marginal_density / occupancy, 0.0
+                )
+                local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
+                log_likelihood += (
+                    jax.scipy.special.xlogy(neuron_spikes, local_rate) - local_rate
+                )
 
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
