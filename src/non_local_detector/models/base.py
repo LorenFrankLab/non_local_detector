@@ -491,7 +491,6 @@ class _DetectorBase(BaseEstimator):
 
     def estimate_parameters(
         self,
-        log_likelihood,
         time=None,
         estimate_inital_conditions: bool = True,
         estimate_discrete_transition: bool = True,
@@ -501,14 +500,14 @@ class _DetectorBase(BaseEstimator):
         marginal_log_likelihoods = []
         n_iter = 0
         converged = False
-        transition_fn = partial(
-            get_transition_matrix,
-            self.continuous_state_transitions_,
-            self.discrete_state_transitions_,
-            self.state_ind_,
-        )
 
         while not converged and (n_iter < max_iter):
+            transition_fn = partial(
+                get_transition_matrix,
+                self.continuous_state_transitions_,
+                self.discrete_state_transitions_,
+                self.state_ind_,
+            )
             # Expectation step
             logger.info("Expectation step...")
 
@@ -591,8 +590,9 @@ class _DetectorBase(BaseEstimator):
                         f"likelihood: {marginal_log_likelihoods[-1]}"
                     )
 
-        return (
+        return self._convert_results_to_xarray(
             time,
+            causal_posterior,
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihoods,
@@ -944,7 +944,6 @@ class ClusterlessDetector(_DetectorBase):
         )
         self.log_likelihood_ = self.compute_log_likelihood(position, multiunits)
         return super().estimate_parameters(
-            self.log_likelihood_,
             time,
             estimate_inital_conditions,
             estimate_discrete_transition,
@@ -1169,7 +1168,6 @@ class SortedSpikesDetector(_DetectorBase):
         )
         self.log_likelihood_ = self.compute_log_likelihood(position, spikes)
         return super().estimate_parameters(
-            self.log_likelihood_,
             time,
             estimate_inital_conditions,
             estimate_discrete_transition,
