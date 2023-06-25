@@ -935,7 +935,7 @@ class ClusterlessDetector(_DetectorBase):
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
         )
-        self.log_likelihood_ = self.compute_log_likelihood(position, spmultiunitsikes)
+        self.log_likelihood_ = self.compute_log_likelihood(position, multiunits)
         return super().estimate_parameters(
             self.log_likelihood_,
             time,
