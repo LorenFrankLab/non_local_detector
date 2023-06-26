@@ -655,10 +655,7 @@ class _DetectorBase(BaseEstimator):
         n_position_dims = self.environments[0].place_bin_centers_.shape[1]
         for obs in self.observation_models:
             if obs.is_local or obs.is_no_spike:
-                nan_array = np.array([np.nan] * n_position_dims)
-                if n_position_dims == 1:
-                    nan_array = nan_array[:, np.newaxis]
-                position.append(nan_array)
+                position.append(np.full((1, n_position_dims), np.nan))
             else:
                 environment = self.environments[
                     self.environments.index(obs.environment_name)
@@ -667,8 +664,6 @@ class _DetectorBase(BaseEstimator):
         position = np.concatenate(position, axis=0)
 
         states = np.asarray(self.state_names)
-
-        n_position_dims = position.shape[1]
 
         if n_position_dims == 1:
             state_bins = pd.MultiIndex.from_arrays(
@@ -811,7 +806,7 @@ class ClusterlessDetector(_DetectorBase):
                 position=position[is_group],
                 multiunits=multiunits[is_group],
                 place_bin_centers=environment.place_bin_centers_,
-                is_track_interior=environment.is_track_interior_,
+                is_track_interior=environment.is_track_interior_.ravel(order="F"),
                 is_track_boundary=environment.is_track_boundary_,
                 edges=environment.edges_,
                 **kwargs,
@@ -1039,7 +1034,7 @@ class SortedSpikesDetector(_DetectorBase):
                 place_bin_centers=environment.place_bin_centers_,
                 place_bin_edges=environment.place_bin_edges_,
                 edges=environment.edges_,
-                is_track_interior=environment.is_track_interior_,
+                is_track_interior=environment.is_track_interior_.ravel(order="F"),
                 is_track_boundary=environment.is_track_boundary_,
                 **kwargs,
             )
