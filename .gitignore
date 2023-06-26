@@ -153,3 +153,4 @@ cython_debug/
 
 _version.py
 .DS_Store
+*.npz
