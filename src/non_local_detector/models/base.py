@@ -161,20 +161,26 @@ class _DetectorBase(BaseEstimator):
         self.n_discrete_states_ = len(self.state_names)
         bin_sizes = []
         state_ind = []
+        is_track_interior = []
         for ind, obs in enumerate(self.observation_models):
             if obs.is_local or obs.is_no_spike:
                 bin_sizes.append(1)
                 state_ind.append(ind * np.ones((1,), dtype=int))
+                is_track_interior.append(np.ones((1,), dtype=bool))
             else:
                 environment = self.environments[
                     self.environments.index(obs.environment_name)
                 ]
                 bin_sizes.append(environment.place_bin_centers_.shape[0])
                 state_ind.append(ind * np.ones((bin_sizes[-1],), dtype=int))
+                is_track_interior.append(
+                    environment.is_track_interior_.ravel(order="F")
+                )
 
         self.state_ind_ = np.concatenate(state_ind)
         self.n_state_bins_ = len(self.state_ind_)
         self.bin_sizes_ = np.array(bin_sizes)
+        self.is_track_interior_state_bins_ = np.concatenate(is_track_interior)
 
     def initialize_initial_conditions(self):
         """Constructs the initial probability for the state and each spatial bin."""
@@ -417,7 +423,7 @@ class _DetectorBase(BaseEstimator):
 
         fig.suptitle("Initial Conditions")
 
-    def fit(
+    def _fit(
         self,
         position=None,
         is_training=None,
@@ -443,13 +449,16 @@ class _DetectorBase(BaseEstimator):
 
         return self
 
-    def predict(self):
+    def _predict(self):
         logger.info("Computing posterior...")
+        is_track_interior = self.is_track_interior_state_bins_
+        cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
+
         transition_fn = partial(
             get_transition_matrix,
-            self.continuous_state_transitions_,
+            self.continuous_state_transitions_[cross_is_track_interior],
             self.discrete_state_transitions_,
-            self.state_ind_,
+            self.state_ind_[is_track_interior],
         )
 
         (
@@ -458,9 +467,9 @@ class _DetectorBase(BaseEstimator):
             predictive_distribution,
             acausal_posterior,
         ) = hmm_smoother(
-            self.initial_conditions_,
+            self.initial_conditions_[is_track_interior],
             None,
-            self.log_likelihood_,
+            self.log_likelihood_[:, is_track_interior],
             transition_fn=transition_fn,
         )
 
@@ -472,7 +481,7 @@ class _DetectorBase(BaseEstimator):
             causal_posterior,
             acausal_posterior,
             predictive_distribution,
-            self.state_ind_,
+            self.state_ind_[is_track_interior],
         )
         logger.info("Finished computing posterior...")
         return (
@@ -502,38 +511,19 @@ class _DetectorBase(BaseEstimator):
         converged = False
 
         while not converged and (n_iter < max_iter):
-            transition_fn = partial(
-                get_transition_matrix,
-                self.continuous_state_transitions_,
-                self.discrete_state_transitions_,
-                self.state_ind_,
-            )
             # Expectation step
             logger.info("Expectation step...")
-
             (
-                marginal_log_likelihood,
                 causal_posterior,
-                predictive_distribution,
                 acausal_posterior,
-            ) = hmm_smoother(
-                self.initial_conditions_,
-                None,
-                self.log_likelihood_,
-                transition_fn=transition_fn,
-            )
-            # Maximization step
-            logger.info("Maximization step..")
-            (
+                _,
                 causal_state_probabilities,
                 acausal_state_probabilities,
                 predictive_state_probabilities,
-            ) = convert_to_state_probability(
-                causal_posterior,
-                acausal_posterior,
-                predictive_distribution,
-                self.state_ind_,
-            )
+                marginal_log_likelihood,
+            ) = self._predict()
+            # Maximization step
+            logger.info("Maximization step..")
 
             if estimate_discrete_transition:
                 (
@@ -552,8 +542,10 @@ class _DetectorBase(BaseEstimator):
                 )
 
                 if estimate_inital_conditions:
-                    self.initial_conditions_ = acausal_posterior[0]
-                    self.discrete_initial_conditions_ = acausal_state_probabilities[0]
+                    self.initial_conditions_[
+                        self.is_track_interior_state_bins_
+                    ] = acausal_posterior[0]
+                    self.discrete_initial_conditions = acausal_state_probabilities[0]
 
                     expanded_discrete_ic = acausal_state_probabilities[0][
                         self.state_ind_
@@ -561,7 +553,7 @@ class _DetectorBase(BaseEstimator):
                     self.continuous_initial_conditions_ = np.where(
                         np.isclose(expanded_discrete_ic, 0.0),
                         0.0,
-                        acausal_posterior[0] / expanded_discrete_ic,
+                        self.initial_conditions_ / expanded_discrete_ic,
                     )
 
                 # Stats
@@ -636,18 +628,34 @@ class _DetectorBase(BaseEstimator):
         acausal_posterior,
         acausal_state_probabilities,
         marginal_log_likelihoods,
+        return_causal_posterior: bool = False,
     ):
         if time is None:
             time = np.arange(acausal_posterior.shape[0]) / self.sampling_frequency
+        is_track_interior = self.is_track_interior_state_bins_
+        expanded_acausal_posterior = np.zeros(
+            (acausal_posterior.shape[0], len(is_track_interior)), dtype=np.float32
+        )
+        expanded_acausal_posterior[:, is_track_interior] = acausal_posterior
 
         data_vars = {
-            "causal_posterior": (("time", "state_bins"), causal_posterior),
-            "acausal_posterior": (("time", "state_bins"), acausal_posterior),
+            "acausal_posterior": (("time", "state_bins"), expanded_acausal_posterior),
             "acausal_state_probabilities": (
                 ("time", "states"),
                 acausal_state_probabilities,
             ),
         }
+
+        if return_causal_posterior:
+            expanded_causal_posterior = np.zeros(
+                (acausal_posterior.shape[0], len(is_track_interior)), dtype=np.float32
+            )
+            expanded_causal_posterior[:, is_track_interior] = causal_posterior
+            data_vars["causal_posterior"] = (
+                ("time", "state_bins"),
+                expanded_causal_posterior,
+            )
+
         environment_names = [obs.environment_name for obs in self.observation_models]
         encoding_group_names = [obs.encoding_group for obs in self.observation_models]
 
@@ -822,7 +830,7 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_covariate_data=None,
     ):
         position = position[:, np.newaxis] if position.ndim == 1 else position
-        super().fit(
+        self._fit(
             position,
             is_training,
             encoding_group_labels,
@@ -907,9 +915,9 @@ class ClusterlessDetector(_DetectorBase):
             acausal_state_probabilities,
             _,
             marginal_log_likelihood,
-        ) = super().predict()
+        ) = self._predict()
 
-        return super()._convert_results_to_xarray(
+        return self._convert_results_to_xarray(
             time,
             causal_posterior,
             acausal_posterior,
@@ -1049,7 +1057,7 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data=None,
     ):
         position = position[:, np.newaxis] if position.ndim == 1 else position
-        super().fit(
+        self._fit(
             position,
             is_training,
             encoding_group_labels,
@@ -1131,9 +1139,9 @@ class SortedSpikesDetector(_DetectorBase):
             acausal_state_probabilities,
             _,
             marginal_log_likelihood,
-        ) = super().predict()
+        ) = self._predict()
 
-        return super()._convert_results_to_xarray(
+        return self._convert_results_to_xarray(
             time,
             causal_posterior,
             acausal_posterior,
