@@ -54,7 +54,7 @@ def plot_non_local_model(
         conditional_non_local_acausal_posterior += acausal_posterior[
             time_slice, state_ind == non_local_ind
         ]
-    conditional_non_local_acausal_posterior /= np.sum(
+    conditional_non_local_acausal_posterior /= np.nansum(
         conditional_non_local_acausal_posterior, axis=1
     )[:, np.newaxis]
     conditional_non_local_acausal_posterior[:, ~env.is_track_interior_] = np.nan
@@ -67,13 +67,16 @@ def plot_non_local_model(
     axes[1].set_ylabel("Probability")
     axes[1].set_ylim((0.0, 1.05))
 
+    cmap = copy.copy(plt.cm.get_cmap("bone_r"))
+    cmap.set_bad(color="lightgrey")
+
     axes[2].pcolormesh(
         t,
         x,
         conditional_non_local_acausal_posterior.T,
         vmin=0.0,
         vmax=posterior_max,
-        cmap="bone_r",
+        cmap=cmap,
     )
     axes[2].scatter(sliced_time, position[time_slice], s=1, color="magenta", zorder=2)
     axes[2].set_ylabel("Position [cm]")
