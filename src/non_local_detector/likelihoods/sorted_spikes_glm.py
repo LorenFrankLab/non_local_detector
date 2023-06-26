@@ -85,7 +85,7 @@ def fit_poisson_regression(
     return jnp.asarray(res.x)
 
 
-def fit_sorted_spikes_glm_jax_encoding_model(
+def fit_sorted_spikes_glm_encoding_model(
     position: np.ndarray,
     spikes: np.ndarray,
     place_bin_centers: np.ndarray,
@@ -144,7 +144,7 @@ def fit_sorted_spikes_glm_jax_encoding_model(
     }
 
 
-def predict_sorted_spikes_glm_jax_log_likelihood(
+def predict_sorted_spikes_glm_log_likelihood(
     position: np.ndarray,
     spikes: np.ndarray,
     coefficients: jnp.ndarray,

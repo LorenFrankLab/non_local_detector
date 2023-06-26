@@ -9,33 +9,29 @@ EPS = 1e-15
 
 
 @jax.jit
-def gaussian_pdf_jax(
-    x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray
-) -> jnp.ndarray:
+def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
     """Compute the value of a Gaussian probability density function at x with
     given mean and sigma."""
     return jnp.exp(-0.5 * ((x - mean) / sigma) ** 2) / (sigma * jnp.sqrt(2.0 * jnp.pi))
 
 
 @jax.jit
-def kde_jax(
+def kde(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
-    return jnp.mean(
-        jnp.prod(
-            gaussian_pdf_jax(
-                jnp.expand_dims(eval_points, axis=0),
-                jnp.expand_dims(samples, axis=1),
-                std,
-            ),
-            axis=-1,
-        ),
-        axis=0,
-    ).squeeze()
+    distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
+
+    for dim_ind, std in enumerate(std):
+        distance *= gaussian_pdf(
+            jnp.expand_dims(eval_points[:, dim_ind], axis=0),
+            jnp.expand_dims(samples[:, dim_ind], axis=1),
+            std,
+        )
+    return jnp.mean(distance, axis=0).squeeze()
 
 
 @partial(jax.jit, static_argnums=(3,))
-def block_kde_jax(
+def block_kde(
     eval_points: jnp.ndarray,
     samples: jnp.ndarray,
     std: jnp.ndarray,
@@ -47,7 +43,7 @@ def block_kde_jax(
         block_inds = slice(start_ind, start_ind + block_size)
         density = jax.lax.dynamic_update_slice(
             density,
-            kde_jax(eval_points[block_inds], samples, std).squeeze(),
+            kde(eval_points[block_inds], samples, std).squeeze(),
             (start_ind,),
         )
 
@@ -55,17 +51,18 @@ def block_kde_jax(
 
 
 @jax.jit
-def kde_distance_jax(
+def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
-    return jnp.prod(
-        gaussian_pdf_jax(
-            jnp.expand_dims(eval_points, axis=0),
-            jnp.expand_dims(samples, axis=1),
+    distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
+
+    for dim_ind, std in enumerate(std):
+        distance *= gaussian_pdf(
+            jnp.expand_dims(eval_points[:, dim_ind], axis=0),
+            jnp.expand_dims(samples[:, dim_ind], axis=1),
             std,
-        ),
-        axis=-1,
-    ).squeeze()
+        )
+    return distance
 
 
 @jax.jit
@@ -93,7 +90,7 @@ def estimate_log_joint_mark_intensity(
     log_joint_mark_intensity : jnp.ndarray, shape (n_decoding_spikes, n_position_bins)
 
     """
-    spike_waveform_feature_distance = kde_distance_jax(
+    spike_waveform_feature_distance = kde_distance(
         decoding_spike_waveform_features,
         encoding_spike_waveform_features,
         waveform_stds,
@@ -183,10 +180,10 @@ class KDEModel:
             eval_points.shape[0] if self.block_size is None else self.block_size
         )
 
-        return block_kde_jax(eval_points, self.samples_, std, block_size)
+        return block_kde(eval_points, self.samples_, std, block_size)
 
 
-def fit_clusterless_kde_jax_encoding_model(
+def fit_clusterless_kde_encoding_model(
     position: jnp.ndarray,
     multiunits: jnp.ndarray,
     place_bin_centers: jnp.ndarray,
@@ -250,7 +247,7 @@ def fit_clusterless_kde_jax_encoding_model(
     }
 
 
-def predict_clusterless_kde_jax_log_likelihood(
+def predict_clusterless_kde_log_likelihood(
     position: jnp.ndarray,
     multiunits: jnp.ndarray,
     occupancy,
@@ -294,7 +291,7 @@ def predict_clusterless_kde_jax_log_likelihood(
             is_decoding_spike = jnp.any(~jnp.isnan(decoding_multiunits), axis=1)
             decoding_spike_waveform_features = decoding_multiunits[is_decoding_spike]
 
-            position_distance = kde_distance_jax(
+            position_distance = kde_distance(
                 position,
                 encoding_positions,
                 std=position_std,
@@ -342,7 +339,7 @@ def predict_clusterless_kde_jax_log_likelihood(
             )[0]
             decoding_spike_waveform_features = decoding_multiunits[decoding_spike_ind]
 
-            position_distance = kde_distance_jax(
+            position_distance = kde_distance(
                 interior_place_bin_centers,
                 encoding_positions,
                 std=position_std,

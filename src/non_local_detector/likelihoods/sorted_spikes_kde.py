@@ -10,33 +10,29 @@ EPS = 1e-15
 
 
 @jax.jit
-def gaussian_pdf_jax(
-    x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray
-) -> jnp.ndarray:
+def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
     """Compute the value of a Gaussian probability density function at x with
     given mean and sigma."""
     return jnp.exp(-0.5 * ((x - mean) / sigma) ** 2) / (sigma * jnp.sqrt(2.0 * jnp.pi))
 
 
 @jax.jit
-def kde_jax(
+def kde(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
-    return jnp.mean(
-        jnp.prod(
-            gaussian_pdf_jax(
-                jnp.expand_dims(eval_points, axis=0),
-                jnp.expand_dims(samples, axis=1),
-                std,
-            ),
-            axis=-1,
-        ),
-        axis=0,
-    ).squeeze()
+    distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
+
+    for dim_ind, std in enumerate(std):
+        distance *= gaussian_pdf(
+            jnp.expand_dims(eval_points[:, dim_ind], axis=0),
+            jnp.expand_dims(samples[:, dim_ind], axis=1),
+            std,
+        )
+    return jnp.mean(distance, axis=0).squeeze()
 
 
 @partial(jax.jit, static_argnums=(3,))
-def block_kde_jax(
+def block_kde(
     eval_points: jnp.ndarray,
     samples: jnp.ndarray,
     std: jnp.ndarray,
@@ -48,7 +44,7 @@ def block_kde_jax(
         block_inds = slice(start_ind, start_ind + block_size)
         density = jax.lax.dynamic_update_slice(
             density,
-            kde_jax(eval_points[block_inds], samples, std).squeeze(),
+            kde(eval_points[block_inds], samples, std).squeeze(),
             (start_ind,),
         )
 
@@ -80,10 +76,10 @@ class KDEModel:
             eval_points.shape[0] if self.block_size is None else self.block_size
         )
 
-        return block_kde_jax(eval_points, self.samples_, std, block_size)
+        return block_kde(eval_points, self.samples_, std, block_size)
 
 
-def fit_sorted_spikes_kde_jax_encoding_model(
+def fit_sorted_spikes_kde_encoding_model(
     position: jnp.ndarray,
     spikes: jnp.ndarray,
     place_bin_centers: jnp.ndarray,
@@ -143,7 +139,7 @@ def fit_sorted_spikes_kde_jax_encoding_model(
     }
 
 
-def predict_sorted_spikes_kde_jax_log_likelihood(
+def predict_sorted_spikes_kde_log_likelihood(
     position: jnp.ndarray,
     spikes: jnp.ndarray,
     kde_models: list[KDEModel],
