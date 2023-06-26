@@ -120,7 +120,7 @@ def fit_sorted_spikes_kde_jax_encoding_model(
             place_field.at[is_track_interior].set(
                 jnp.clip(
                     mean_rate
-                    * jnp.where(occupancy > 0.0, marginal_density / occupancy, 0.0),
+                    * jnp.where(occupancy > 0.0, marginal_density / occupancy, EPS),
                     a_min=EPS,
                     a_max=None,
                 )
@@ -186,7 +186,7 @@ def predict_sorted_spikes_kde_jax_log_likelihood(
             ):
                 marginal_density = kde_model.predict(position)
                 local_rate = mean_rate * jnp.where(
-                    occupancy > 0.0, marginal_density / occupancy, 0.0
+                    occupancy > 0.0, marginal_density / occupancy, EPS
                 )
                 local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
                 log_likelihood += (
