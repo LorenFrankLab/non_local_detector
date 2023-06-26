@@ -4,6 +4,7 @@ from collections import namedtuple
 from functools import partial
 from logging import getLogger
 
+import jax.numpy as jnp
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -831,9 +832,9 @@ class ClusterlessDetector(_DetectorBase):
 
         n_time = multiunits.shape[0]
         if is_missing is None:
-            is_missing = np.zeros((n_time,), dtype=bool)
+            is_missing = jnp.zeros((n_time,), dtype=bool)
 
-        log_likelihood = np.zeros((n_time, self.n_state_bins_), dtype=np.float32)
+        log_likelihood = jnp.zeros((n_time, self.n_state_bins_), dtype=np.float32)
 
         _, likelihood_func = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
         computed_likelihoods = []
@@ -850,31 +851,33 @@ class ClusterlessDetector(_DetectorBase):
             if obs.is_no_spike:
                 # Likelihood of no spike times
                 is_spike = np.any(np.isnan(multiunits), axis=1)
-                log_likelihood[:, is_state_bin] = predict_no_spike_log_likelihood(
-                    is_spike, self.no_spike_rate, self.sampling_frequency
+                log_likelihood = log_likelihood.at[:, is_state_bin].set(
+                    predict_no_spike_log_likelihood(
+                        is_spike, self.no_spike_rate, self.sampling_frequency
+                    )
                 )
             elif likelihood_name not in computed_likelihoods:
-                log_likelihood[:, is_state_bin] = likelihood_func(
-                    position,
-                    multiunits,
-                    **self.encoding_model_[likelihood_name[:2]],
-                    is_local=obs.is_local,
+                log_likelihood = log_likelihood.at[:, is_state_bin].set(
+                    likelihood_func(
+                        position,
+                        multiunits,
+                        **self.encoding_model_[likelihood_name[:2]],
+                        is_local=obs.is_local,
+                    )
                 )
             else:
                 # Use previously computed likelihoods
                 previously_computed_bins = (
                     self.state_ind_ == computed_likelihoods.index(likelihood_name)
                 )
-                log_likelihood[:, is_state_bin] = log_likelihood[
-                    :, previously_computed_bins
-                ]
+                log_likelihood = log_likelihood.at[:, is_state_bin].set(
+                    log_likelihood[:, previously_computed_bins]
+                )
 
             computed_likelihoods.append(likelihood_name)
 
         # missing data should be 1.0 because there is no information
-        log_likelihood[is_missing] = 1.0
-
-        return log_likelihood
+        return jnp.where(is_missing[:, jnp.newaxis], 1.0, log_likelihood)
 
     def predict(self, multiunits, position=None, time=None, is_missing=None):
         self.log_likelihood_ = self.compute_log_likelihood(
@@ -1061,7 +1064,7 @@ class SortedSpikesDetector(_DetectorBase):
         if is_missing is None:
             is_missing = np.zeros((n_time,), dtype=bool)
 
-        log_likelihood = np.zeros((n_time, self.n_state_bins_), dtype=np.float32)
+        log_likelihood = jnp.zeros((n_time, self.n_state_bins_))
 
         _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
         computed_likelihoods = []
@@ -1077,31 +1080,33 @@ class SortedSpikesDetector(_DetectorBase):
 
             if obs.is_no_spike:
                 # Likelihood of no spike times
-                log_likelihood[:, is_state_bin] = predict_no_spike_log_likelihood(
-                    spikes, self.no_spike_rate, self.sampling_frequency
+                log_likelihood = log_likelihood.at[:, is_state_bin].set(
+                    predict_no_spike_log_likelihood(
+                        spikes, self.no_spike_rate, self.sampling_frequency
+                    )
                 )
             elif likelihood_name not in computed_likelihoods:
-                log_likelihood[:, is_state_bin] = likelihood_func(
-                    position,
-                    spikes,
-                    **self.encoding_model_[likelihood_name[:2]],
-                    is_local=obs.is_local,
+                log_likelihood = log_likelihood.at[:, is_state_bin].set(
+                    likelihood_func(
+                        position,
+                        spikes,
+                        **self.encoding_model_[likelihood_name[:2]],
+                        is_local=obs.is_local,
+                    )
                 )
             else:
                 # Use previously computed likelihoods
                 previously_computed_bins = (
                     self.state_ind_ == computed_likelihoods.index(likelihood_name)
                 )
-                log_likelihood[:, is_state_bin] = log_likelihood[
-                    :, previously_computed_bins
-                ]
+                log_likelihood = log_likelihood.at[:, is_state_bin].set(
+                    log_likelihood[:, previously_computed_bins]
+                )
 
             computed_likelihoods.append(likelihood_name)
 
         # missing data should be 1.0 because there is no information
-        log_likelihood[is_missing] = 1.0
-
-        return log_likelihood
+        return jnp.where(is_missing[:, jnp.newaxis], 1.0, log_likelihood)
 
     def predict(self, spikes, position=None, time=None, is_missing=None):
         self.log_likelihood_ = self.compute_log_likelihood(position, spikes, is_missing)
