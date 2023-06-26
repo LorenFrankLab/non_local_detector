@@ -633,28 +633,6 @@ class _DetectorBase(BaseEstimator):
         if time is None:
             time = np.arange(acausal_posterior.shape[0]) / self.sampling_frequency
         is_track_interior = self.is_track_interior_state_bins_
-        expanded_acausal_posterior = np.zeros(
-            (acausal_posterior.shape[0], len(is_track_interior)), dtype=np.float32
-        )
-        expanded_acausal_posterior[:, is_track_interior] = acausal_posterior
-
-        data_vars = {
-            "acausal_posterior": (("time", "state_bins"), expanded_acausal_posterior),
-            "acausal_state_probabilities": (
-                ("time", "states"),
-                acausal_state_probabilities,
-            ),
-        }
-
-        if return_causal_posterior:
-            expanded_causal_posterior = np.zeros(
-                (acausal_posterior.shape[0], len(is_track_interior)), dtype=np.float32
-            )
-            expanded_causal_posterior[:, is_track_interior] = causal_posterior
-            data_vars["causal_posterior"] = (
-                ("time", "state_bins"),
-                expanded_causal_posterior,
-            )
 
         environment_names = [obs.environment_name for obs in self.observation_models]
         encoding_group_names = [obs.encoding_group for obs in self.observation_models]
@@ -674,40 +652,15 @@ class _DetectorBase(BaseEstimator):
         states = np.asarray(self.state_names)
 
         if n_position_dims == 1:
-            state_bins = pd.MultiIndex.from_arrays(
-                (
-                    (
-                        states[self.state_ind_],
-                        position[:, 0],
-                    )
-                ),
-                names=("state", "position"),
-            )
-        elif n_position_dims == 2:
-            state_bins = pd.MultiIndex.from_arrays(
-                (
-                    (
-                        states[self.state_ind_],
-                        position[:, 0],
-                        position[:, 1],
-                    )
-                ),
-                names=("state", "x_position", "y_position"),
-            )
-        elif n_position_dims == 3:
-            state_bins = pd.MultiIndex.from_arrays(
-                (
-                    (
-                        states[self.state_ind_],
-                        position[:, 0],
-                        position[:, 1],
-                        position[:, 2],
-                    )
-                ),
-                names=("state", "x_position", "y_position", "z_position"),
-            )
+            position_names = ["position"]
         else:
-            raise NotImplementedError
+            position_names = [
+                f"{name}_position" for name, _ in zip(["x", "y", "z"], position.T)
+            ]
+        state_bins = pd.MultiIndex.from_arrays(
+            ((states[self.state_ind_], *[pos for pos in position.T])),
+            names=("state", *position_names),
+        )
 
         coords = {
             "time": time,
@@ -720,11 +673,32 @@ class _DetectorBase(BaseEstimator):
 
         attrs = {"marginal_log_likelihoods": marginal_log_likelihoods}
 
-        return xr.Dataset(
-            data_vars=data_vars,
+        posterior_shape = (acausal_posterior.shape[0], len(is_track_interior))
+
+        results = xr.Dataset(
+            data_vars={
+                "acausal_posterior": (
+                    ("time", "state_bins"),
+                    np.full(posterior_shape, np.nan, dtype=np.float32),
+                ),
+                "acausal_state_probabilities": (
+                    ("time", "states"),
+                    acausal_state_probabilities,
+                ),
+            },
             coords=coords,
             attrs=attrs,
-        ).squeeze()
+        )
+
+        results["acausal_posterior"][:, is_track_interior] = acausal_posterior
+        if return_causal_posterior:
+            results["causal_posterior"] = (
+                ("time", "state_bins"),
+                np.full(posterior_shape, np.nan, dtype=np.float32),
+            )
+            results["causal_posterior"][:, is_track_interior] = causal_posterior
+
+        return results.squeeze()
 
 
 class ClusterlessDetector(_DetectorBase):
