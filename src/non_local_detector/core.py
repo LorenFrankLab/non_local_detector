@@ -8,12 +8,13 @@ from replay_trajectory_classification.core import atleast_2d, check_converged  #
 np.seterr(divide="ignore", invalid="ignore")
 
 
+@partial(jax.jit, static_argnums=(3,))
 def get_transition_matrix(
-    continuous_state_transitions: np.ndarray,
-    discrete_state_transitions: np.ndarray,
-    state_ind: np.ndarray,
+    continuous_state_transitions: jnp.ndarray,
+    discrete_state_transitions: jnp.ndarray,
+    state_ind: jnp.ndarray,
     t: int,
-) -> np.ndarray:
+) -> jnp.ndarray:
     """Get transition matrix for a given time bin by combining continuous and discrete state transitions
 
     Parameters
@@ -29,15 +30,14 @@ def get_transition_matrix(
     transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
     """
     if discrete_state_transitions.ndim == 2:
-        # could consider caching this
         return (
             continuous_state_transitions
-            * discrete_state_transitions[np.ix_(state_ind, state_ind)]
+            * discrete_state_transitions[jnp.ix_(state_ind, state_ind)]
         )
     else:
         return (
             continuous_state_transitions
-            * discrete_state_transitions[t][np.ix_(state_ind, state_ind)]
+            * discrete_state_transitions[t][jnp.ix_(state_ind, state_ind)]
         )
 
 
