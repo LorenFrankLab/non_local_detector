@@ -18,10 +18,13 @@ from non_local_detector.continuous_state_transitions import EmpiricalMovement
 from non_local_detector.core import (
     check_converged,
     convert_to_state_probability,
-    get_transition_matrix,
     hmm_smoother,
 )
-from non_local_detector.discrete_state_transitions import _estimate_discrete_transition
+from non_local_detector.discrete_state_transitions import (
+    _estimate_discrete_transition,
+    non_stationary_discrete_transition_fn,
+    stationary_discrete_transition_fn,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
@@ -455,11 +458,16 @@ class _DetectorBase(BaseEstimator):
         is_track_interior = self.is_track_interior_state_bins_
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
 
+        transition_fn = (
+            stationary_discrete_transition_fn
+            if self.discrete_state_transitions_.ndim == 2
+            else non_stationary_discrete_transition_fn
+        )
         transition_fn = partial(
-            get_transition_matrix,
-            self.continuous_state_transitions_[cross_is_track_interior],
-            self.discrete_state_transitions_,
-            self.state_ind_[is_track_interior],
+            transition_fn,
+            jnp.asarray(self.continuous_state_transitions_[cross_is_track_interior]),
+            jnp.asarray(self.discrete_state_transitions_),
+            jnp.asarray(self.state_ind_[is_track_interior]),
         )
 
         (
