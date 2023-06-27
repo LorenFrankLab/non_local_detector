@@ -910,6 +910,7 @@ class ClusterlessDetector(_DetectorBase):
         is_training=None,
         encoding_group_labels=None,
         environment_labels=None,
+        discrete_transition_covariate_data=None,
         estimate_inital_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         max_iter: int = 20,
@@ -921,6 +922,7 @@ class ClusterlessDetector(_DetectorBase):
             is_training=is_training,
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
         )
         self.log_likelihood_ = self.compute_log_likelihood(position, multiunits)
         return super().estimate_parameters(
@@ -1136,6 +1138,7 @@ class SortedSpikesDetector(_DetectorBase):
         is_training=None,
         encoding_group_labels=None,
         environment_labels=None,
+        discrete_transition_covariate_data=None,
         estimate_inital_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         max_iter: int = 20,
@@ -1147,6 +1150,7 @@ class SortedSpikesDetector(_DetectorBase):
             is_training=is_training,
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
+            discrete_transition_covariate_data=discrete_transition_covariate_data,
         )
         self.log_likelihood_ = self.compute_log_likelihood(position, spikes)
         return super().estimate_parameters(
