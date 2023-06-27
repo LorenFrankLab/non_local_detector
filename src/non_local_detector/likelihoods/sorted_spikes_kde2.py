@@ -42,14 +42,12 @@ def reshape_to_blocks(eval_points, block_size=100):
     remainder = n_points % block_size
     n_blocks = n_points // block_size
 
-    if remainder > 0:
-        n_pad = block_size - remainder
-        n_blocks += 1
-        return jnp.concatenate(
-            (eval_points, jnp.zeros((n_pad, n_dim))), axis=0
-        ).reshape(n_blocks, block_size, n_dim)
-    else:
-        return eval_points.reshape(n_blocks, block_size, n_dim)
+    n_pad = (block_size - remainder) * (remainder > 0)
+    n_blocks += remainder > 0
+
+    return jnp.concatenate((eval_points, jnp.zeros((n_pad, n_dim))), axis=0).reshape(
+        n_blocks, block_size, n_dim
+    )
 
 
 @partial(jax.jit, static_argnums=(3,))
