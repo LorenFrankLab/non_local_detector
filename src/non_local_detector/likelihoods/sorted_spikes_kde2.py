@@ -39,8 +39,7 @@ def kde(eval_points, samples, std):
 @partial(jax.jit, static_argnums=(1,))
 def reshape_to_blocks(eval_points, block_size=100):
     n_points, n_dim = eval_points.shape
-    remainder = n_points % block_size
-    n_blocks = n_points // block_size
+    n_blocks, remainder = divmod(n_points, block_size)
 
     n_pad = (block_size - remainder) * (remainder > 0)
     n_blocks += remainder > 0
