@@ -13,10 +13,6 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.sorted_spikes_kde2 import (
-    fit_sorted_spikes_kde_encoding_model2,
-    predict_sorted_spikes_kde_log_likelihood2,
-)
 
 _SORTED_SPIKES_ALGORITHMS = {
     "sorted_spikes_glm": (
