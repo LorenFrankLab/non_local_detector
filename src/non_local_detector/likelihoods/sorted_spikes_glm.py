@@ -109,7 +109,7 @@ def fit_sorted_spikes_glm_encoding_model(
 
     position = jnp.asarray(position)
     spikes = jnp.asarray(spikes)
-    place_bin_centers = jnp.asarray(place_bin_centers)
+    place_bin_centers = jnp.asarray(place_bin_centers[is_track_interior])
     weights = jnp.ones((spikes.shape[0],))
 
     coefficients = []
@@ -125,11 +125,16 @@ def fit_sorted_spikes_glm_encoding_model(
             l2_penalty=l2_penalty,
         )
         coefficients.append(coef)
-
-        place_field = jnp.exp(emission_predict_matrix @ coef)
-        place_field = jnp.where(is_track_interior, place_field, EPS)
-        place_field = jnp.clip(place_field, a_min=EPS, a_max=None)
-        place_fields.append(place_field)
+        place_field = jnp.zeros((is_track_interior.shape[0],))
+        place_fields.append(
+            place_field.at[is_track_interior].set(
+                jnp.clip(
+                    jnp.exp(emission_predict_matrix @ coef),
+                    a_min=EPS,
+                    a_max=None,
+                )
+            )
+        )
 
     place_fields = jnp.stack(place_fields, axis=0)
     no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
@@ -195,6 +200,8 @@ def predict_sorted_spikes_glm_log_likelihood(
                 neuron_spikes[:, jnp.newaxis], place_field[jnp.newaxis]
             )
         log_likelihood -= no_spike_part_log_likelihood[jnp.newaxis]
-        log_likelihood = log_likelihood.at[:, ~is_track_interior].set(jnp.nan)
+        log_likelihood = jnp.where(
+            is_track_interior[jnp.newaxis, :], log_likelihood, jnp.log(EPS)
+        )
 
     return log_likelihood
