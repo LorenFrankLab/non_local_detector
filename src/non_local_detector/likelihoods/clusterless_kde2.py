@@ -13,9 +13,6 @@ EPS = 1e-15
 
 
 def get_spike_time_bin_ind(spike_times, time):
-    spike_times = spike_times[
-        jnp.logical_and((spike_times > time.min()), (spike_times <= time.max()))
-    ]
     return jnp.digitize(spike_times, time[1:-1])
 
 
@@ -248,8 +245,8 @@ def fit_clusterless_kde_encoding_model(
     for electrode_spike_times in spike_times:
         electrode_spike_times = electrode_spike_times[
             jnp.logical_and(
-                electrode_spike_times > position_time[0],
-                electrode_spike_times < position_time[-1],
+                electrode_spike_times >= position_time[0],
+                electrode_spike_times <= position_time[-1],
             )
         ]
         mean_rates.append(len(electrode_spike_times) / n_time_bins)
@@ -339,8 +336,8 @@ def predict_clusterless_kde_log_likelihood(
             spike_times,
         ):
             is_in_bounds = jnp.logical_and(
-                electrode_spike_times > time[0],
-                electrode_spike_times < time[-1],
+                electrode_spike_times >= time[0],
+                electrode_spike_times <= time[-1],
             )
             electrode_spike_times = electrode_spike_times[is_in_bounds]
             electrode_decoding_spike_waveform_features = (
@@ -394,8 +391,8 @@ def predict_clusterless_kde_log_likelihood(
             spike_times,
         ):
             is_in_bounds = jnp.logical_and(
-                electrode_spike_times > time[0],
-                electrode_spike_times < time[-1],
+                electrode_spike_times >= time[0],
+                electrode_spike_times <= time[-1],
             )
             electrode_spike_times = electrode_spike_times[is_in_bounds]
             electrode_decoding_spike_waveform_features = (

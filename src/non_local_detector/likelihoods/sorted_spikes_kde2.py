@@ -134,8 +134,8 @@ def fit_sorted_spikes_kde_encoding_model(
     ):
         neuron_spike_times = neuron_spike_times[
             jnp.logical_and(
-                neuron_spike_times > position_time[0],
-                neuron_spike_times < position_time[-1],
+                neuron_spike_times >= position_time[0],
+                neuron_spike_times <= position_time[-1],
             )
         ]
         mean_rates.append(len(neuron_spike_times) / n_time_bins)
@@ -212,6 +212,12 @@ def predict_sorted_spikes_kde_log_likelihood(
             marginal_models,
             mean_rates,
         ):
+            neuron_spike_times = neuron_spike_times[
+                jnp.logical_and(
+                    neuron_spike_times >= time[0],
+                    neuron_spike_times <= time[-1],
+                )
+            ]
             marginal_density = neuron_marginal_model.predict(interpolated_position)
             local_rate = neuron_mean_rate * jnp.where(
                 occupancy > 0.0, marginal_density / occupancy, EPS
@@ -238,6 +244,12 @@ def predict_sorted_spikes_kde_log_likelihood(
             ),
             place_fields,
         ):
+            neuron_spike_times = neuron_spike_times[
+                jnp.logical_and(
+                    neuron_spike_times >= time[0],
+                    neuron_spike_times <= time[-1],
+                )
+            ]
             spike_count_per_time_bin = jnp.bincount(
                 jnp.digitize(neuron_spike_times, time[1:-1]),
                 minlength=time.shape[0],
