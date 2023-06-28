@@ -95,9 +95,9 @@ def fit_sorted_spikes_kde_encoding_model(
     mean_rates = jnp.mean(spikes, axis=0).squeeze()
 
     place_fields = []
-    kde_models = []
+    marginal_models = []
 
-    for neuron_spikes, mean_rate in zip(
+    for neuron_spikes, neuron_mean_rate in zip(
         tqdm(
             spikes.T.astype(bool),
             unit="cell",
@@ -106,16 +106,18 @@ def fit_sorted_spikes_kde_encoding_model(
         ),
         mean_rates,
     ):
-        kde_model = KDEModel(std=position_std, block_size=block_size).fit(
+        neuron_marginal_model = KDEModel(std=position_std, block_size=block_size).fit(
             position[neuron_spikes]
         )
-        kde_models.append(kde_model)
-        marginal_density = kde_model.predict(place_bin_centers[is_track_interior])
+        marginal_models.append(neuron_marginal_model)
+        marginal_density = neuron_marginal_model.predict(
+            place_bin_centers[is_track_interior]
+        )
         place_field = jnp.zeros((is_track_interior.shape[0],))
         place_fields.append(
             place_field.at[is_track_interior].set(
                 jnp.clip(
-                    mean_rate
+                    neuron_mean_rate
                     * jnp.where(occupancy > 0.0, marginal_density / occupancy, EPS),
                     a_min=EPS,
                     a_max=None,
@@ -127,13 +129,12 @@ def fit_sorted_spikes_kde_encoding_model(
     no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
 
     return {
-        "kde_models": kde_models,
+        "marginal_models": marginal_models,
         "occupancy_model": occupancy_model,
         "occupancy": occupancy,
         "mean_rates": mean_rates,
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
-        "place_bin_centers": place_bin_centers,
         "is_track_interior": is_track_interior,
         "disable_progress_bar": disable_progress_bar,
     }
@@ -142,52 +143,40 @@ def fit_sorted_spikes_kde_encoding_model(
 def predict_sorted_spikes_kde_log_likelihood(
     position: jnp.ndarray,
     spikes: jnp.ndarray,
-    kde_models: list[KDEModel],
+    marginal_models: list[KDEModel],
     occupancy_model: KDEModel,
     occupancy: jnp.ndarray,
     mean_rates: jnp.ndarray,
     place_fields: jnp.ndarray,
     no_spike_part_log_likelihood: jnp.ndarray,
-    place_bin_centers: jnp.ndarray,
     is_track_interior: jnp.ndarray,
     disable_progress_bar: bool = False,
     is_local: bool = False,
-    interpolate_local: bool = False,
 ):
     n_time = spikes.shape[0]
     if is_local:
         log_likelihood = jnp.zeros((n_time,))
 
-        if interpolate_local:
-            for neuron_spikes, non_local_rate in zip(tqdm(spikes.T), place_fields.T):
-                local_rate = scipy.interpolate.griddata(
-                    place_bin_centers, non_local_rate, position, method="nearest"
-                )
-                local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
-                log_likelihood += (
-                    jax.scipy.special.xlogy(neuron_spikes, local_rate) - local_rate
-                )
-        else:
-            occupancy = occupancy_model.predict(position)
+        occupancy = occupancy_model.predict(position)
 
-            for neuron_spikes, kde_model, mean_rate in zip(
-                tqdm(
-                    spikes.T,
-                    unit="cell",
-                    desc="Local Likelihood",
-                    disable=disable_progress_bar,
-                ),
-                kde_models,
-                mean_rates,
-            ):
-                marginal_density = kde_model.predict(position)
-                local_rate = mean_rate * jnp.where(
-                    occupancy > 0.0, marginal_density / occupancy, EPS
-                )
-                local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
-                log_likelihood += (
-                    jax.scipy.special.xlogy(neuron_spikes, local_rate) - local_rate
-                )
+        for neuron_spikes, neuron_marginal_model, neuron_mean_rate in zip(
+            tqdm(
+                spikes.T,
+                unit="cell",
+                desc="Local Likelihood",
+                disable=disable_progress_bar,
+            ),
+            marginal_models,
+            mean_rates,
+        ):
+            marginal_density = neuron_marginal_model.predict(position)
+            local_rate = neuron_mean_rate * jnp.where(
+                occupancy > 0.0, marginal_density / occupancy, EPS
+            )
+            local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
+            log_likelihood += (
+                jax.scipy.special.xlogy(neuron_spikes, local_rate) - local_rate
+            )
 
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
@@ -206,7 +195,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             )
         log_likelihood -= no_spike_part_log_likelihood[jnp.newaxis]
         log_likelihood = jnp.where(
-            is_track_interior[jnp.newaxis, :], log_likelihood, EPS
+            is_track_interior[jnp.newaxis, :], log_likelihood, jnp.log(EPS)
         )
 
     return log_likelihood

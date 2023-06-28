@@ -206,8 +206,8 @@ def fit_clusterless_kde_encoding_model(
         occupancy_model.predict(place_bin_centers[is_track_interior])
     )
 
-    encoding_spike_waveform_features_electrodes = []
-    encoding_position_electrodes = []
+    encoding_spike_waveform_features = []
+    encoding_positions = []
     mean_rates = []
     kde_models = []
     summed_ground_process_intensity = jnp.zeros_like(occupancy)
@@ -215,11 +215,9 @@ def fit_clusterless_kde_encoding_model(
     for electrode_multiunit in jnp.moveaxis(multiunits, 2, 0):
         is_encoding_spike = jnp.any(~jnp.isnan(electrode_multiunit), axis=1)
 
-        encoding_spike_waveform_features_electrodes.append(
-            electrode_multiunit[is_encoding_spike]
-        )
+        encoding_spike_waveform_features.append(electrode_multiunit[is_encoding_spike])
         mean_rates.append(jnp.mean(is_encoding_spike))
-        encoding_position_electrodes.append(position[is_encoding_spike])
+        encoding_positions.append(position[is_encoding_spike])
 
         kde_model = KDEModel(std=position_std, block_size=block_size).fit(
             position[is_encoding_spike]
@@ -234,8 +232,8 @@ def fit_clusterless_kde_encoding_model(
         "occupancy": occupancy,
         "occupancy_model": occupancy_model,
         "kde_models": kde_models,
-        "encoding_spike_waveform_features_electrodes": encoding_spike_waveform_features_electrodes,
-        "encoding_position_electrodes": encoding_position_electrodes,
+        "encoding_spike_waveform_features": encoding_spike_waveform_features,
+        "encoding_positions": encoding_positions,
         "mean_rates": mean_rates,
         "place_bin_centers": place_bin_centers,
         "summed_ground_process_intensity": summed_ground_process_intensity,
@@ -253,8 +251,8 @@ def predict_clusterless_kde_log_likelihood(
     occupancy,
     occupancy_model,
     kde_models,
-    encoding_spike_waveform_features_electrodes,
-    encoding_position_electrodes,
+    encoding_spike_waveform_features,
+    encoding_positions,
     mean_rates,
     place_bin_centers,
     summed_ground_process_intensity,
@@ -271,44 +269,48 @@ def predict_clusterless_kde_log_likelihood(
         occupancy = occupancy_model.predict(position)
         log_likelihood = jnp.zeros((n_time, 1))
         for (
-            encoding_spike_waveform_features,
-            encoding_positions,
-            mean_rate,
-            kde_model,
-            decoding_multiunits,
+            electrode_encoding_spike_waveform_features,
+            electrode_encoding_positions,
+            electrode_mean_rate,
+            electrode_kde_model,
+            electrode_decoding_multiunits,
         ) in zip(
             tqdm(
-                encoding_spike_waveform_features_electrodes,
+                encoding_spike_waveform_features,
                 unit="electrode",
-                desc="Non-Local Likelihood",
+                desc="Local Likelihood",
                 disable=disable_progress_bar,
             ),
-            encoding_position_electrodes,
+            encoding_positions,
             mean_rates,
             kde_models,
             jnp.moveaxis(multiunits, 2, 0),
         ):
-            is_decoding_spike = jnp.any(~jnp.isnan(decoding_multiunits), axis=1)
-            decoding_spike_waveform_features = decoding_multiunits[is_decoding_spike]
+            is_decoding_spike = jnp.any(
+                ~jnp.isnan(electrode_decoding_multiunits), axis=1
+            )
+            electrode_decoding_spike_waveform_features = electrode_decoding_multiunits[
+                is_decoding_spike
+            ]
 
             position_distance = kde_distance(
                 position,
-                encoding_positions,
+                electrode_encoding_positions,
                 std=position_std,
             )
 
             log_likelihood = log_likelihood.at[is_decoding_spike].set(
                 block_estimate_log_joint_mark_intensity(
-                    decoding_spike_waveform_features,
-                    encoding_spike_waveform_features,
+                    electrode_decoding_spike_waveform_features,
+                    electrode_encoding_spike_waveform_features,
                     waveform_std,
-                    interior_occupancy,
-                    mean_rate,
+                    occupancy,
+                    electrode_mean_rate,
                     position_distance,
                     block_size,
                 )
             )
-            log_likelihood -= kde_model.predict(position)
+            log_likelihood -= electrode_kde_model.predict(position)
     else:
         interior_occupancy = occupancy[is_track_interior]
         interior_place_bin_centers = place_bin_centers[is_track_interior]
@@ -319,29 +321,31 @@ def predict_clusterless_kde_log_likelihood(
         )
 
         for (
-            encoding_spike_waveform_features,
-            encoding_positions,
-            mean_rate,
-            decoding_multiunits,
+            electrode_encoding_spike_waveform_features,
+            electrode_encoding_positions,
+            electrode_mean_rate,
+            electrode_decoding_multiunits,
         ) in zip(
             tqdm(
-                encoding_spike_waveform_features_electrodes,
+                encoding_spike_waveform_features,
                 unit="electrode",
                 desc="Non-Local Likelihood",
                 disable=disable_progress_bar,
             ),
-            encoding_position_electrodes,
+            encoding_positions,
             mean_rates,
             jnp.moveaxis(multiunits, 2, 0),
         ):
             decoding_spike_ind = jnp.nonzero(
-                jnp.any(~jnp.isnan(decoding_multiunits), axis=1)
+                jnp.any(~jnp.isnan(electrode_decoding_multiunits), axis=1)
             )[0]
-            decoding_spike_waveform_features = decoding_multiunits[decoding_spike_ind]
+            electrode_decoding_spike_waveform_features = electrode_decoding_multiunits[
+                decoding_spike_ind
+            ]
 
             position_distance = kde_distance(
                 interior_place_bin_centers,
-                encoding_positions,
+                electrode_encoding_positions,
                 std=position_std,
             )
 
@@ -349,11 +353,11 @@ def predict_clusterless_kde_log_likelihood(
                 jnp.ix_(decoding_spike_ind, is_track_interior_ind)
             ].set(
                 block_estimate_log_joint_mark_intensity(
-                    decoding_spike_waveform_features,
-                    encoding_spike_waveform_features,
+                    electrode_decoding_spike_waveform_features,
+                    electrode_encoding_spike_waveform_features,
                     waveform_std,
                     interior_occupancy,
-                    mean_rate,
+                    electrode_mean_rate,
                     position_distance,
                     block_size,
                 )
