@@ -194,7 +194,7 @@ class KDEModel:
         return block_kde(eval_points, self.samples_, std, block_size)
 
 
-def get_position_at_spike_times(
+def get_position_at_time(
     time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: jnp.ndarray,
@@ -254,7 +254,7 @@ def fit_clusterless_kde_encoding_model(
         ]
         mean_rates.append(len(electrode_spike_times) / n_time_bins)
         encoding_positions.append(
-            get_position_at_spike_times(
+            get_position_at_time(
                 position_time, position, electrode_spike_times, environment
             )
         )
@@ -274,6 +274,7 @@ def fit_clusterless_kde_encoding_model(
         "gpi_models": gpi_models,
         "encoding_spike_waveform_features": spike_waveform_features,
         "encoding_positions": encoding_positions,
+        "environment": environment,
         "mean_rates": mean_rates,
         "place_bin_centers": place_bin_centers,
         "summed_ground_process_intensity": summed_ground_process_intensity,
@@ -287,6 +288,7 @@ def fit_clusterless_kde_encoding_model(
 
 def predict_clusterless_kde_log_likelihood(
     time: jnp.ndarray,
+    position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
@@ -295,6 +297,7 @@ def predict_clusterless_kde_log_likelihood(
     gpi_models,
     encoding_spike_waveform_features,
     encoding_positions,
+    environment,
     mean_rates,
     place_bin_centers,
     summed_ground_process_intensity,
@@ -308,7 +311,12 @@ def predict_clusterless_kde_log_likelihood(
     n_time = len(time)
 
     if is_local:
-        occupancy = occupancy_model.predict(position)
+        # Need to interpolate position
+        interpolated_position = get_position_at_time(
+            position_time, position, time, environment
+        )
+        occupancy = occupancy_model.predict(interpolated_position)
+
         log_likelihood = jnp.zeros((n_time, 1))
         for (
             electrode_encoding_spike_waveform_features,
@@ -339,7 +347,7 @@ def predict_clusterless_kde_log_likelihood(
                 electrode_decoding_spike_waveform_features[is_in_bounds]
             )
             position_distance = kde_distance(
-                position,
+                interpolated_position,
                 electrode_encoding_positions,
                 std=position_std,
             )
@@ -358,7 +366,7 @@ def predict_clusterless_kde_log_likelihood(
                 indices_are_sorted=False,
                 num_segments=n_time,
             )
-            log_likelihood -= electrode_gpi_model.predict(position)
+            log_likelihood -= electrode_gpi_model.predict(interpolated_position)
     else:
         interior_occupancy = occupancy[is_track_interior]
         interior_place_bin_centers = place_bin_centers[is_track_interior]
