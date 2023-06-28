@@ -221,6 +221,7 @@ def fit_clusterless_kde_encoding_model(
     place_bin_centers: jnp.ndarray,
     is_track_interior: jnp.ndarray,
     *args,
+    sampling_frequency: int = 500,
     position_std: float = 6.0,
     waveform_std: float = 24.0,
     block_size: int = 100,
@@ -242,6 +243,8 @@ def fit_clusterless_kde_encoding_model(
     gpi_models = []
     summed_ground_process_intensity = jnp.zeros_like(occupancy)
 
+    n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
+
     for electrode_spike_times in spike_times:
         electrode_spike_times = electrode_spike_times[
             jnp.logical_and(
@@ -249,9 +252,7 @@ def fit_clusterless_kde_encoding_model(
                 electrode_spike_times < position_time[-1],
             )
         ]
-        mean_rates.append(
-            len(electrode_spike_times) / (position_time[-1] - position_time[0])
-        )
+        mean_rates.append(len(electrode_spike_times) / n_time_bins)
         encoding_positions.append(
             get_position_at_spike_times(
                 position_time, position, electrode_spike_times, environment
