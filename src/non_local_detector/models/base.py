@@ -23,6 +23,7 @@ from non_local_detector.core import (
 from non_local_detector.discrete_state_transitions import (
     _estimate_discrete_transition,
     non_stationary_discrete_transition_fn,
+    predict_discrete_state_transitions,
     stationary_discrete_transition_fn,
 )
 from non_local_detector.environment import Environment
@@ -887,7 +888,21 @@ class ClusterlessDetector(_DetectorBase):
         # missing data should be 1.0 because there is no information
         return jnp.where(is_missing[:, jnp.newaxis], 1.0, log_likelihood)
 
-    def predict(self, multiunits, position=None, time=None, is_missing=None):
+    def predict(
+        self,
+        multiunits,
+        position=None,
+        time=None,
+        is_missing=None,
+        discrete_transition_covariate_data=None,
+    ):
+        if discrete_transition_covariate_data is not None:
+            self.discrete_state_transitions_ = predict_discrete_state_transitions(
+                self.discrete_transition_design_matrix_,
+                self.discrete_transition_coefficients_,
+                discrete_transition_covariate_data,
+            )
+
         self.log_likelihood_ = self.compute_log_likelihood(
             position, multiunits, is_missing
         )
@@ -1118,7 +1133,20 @@ class SortedSpikesDetector(_DetectorBase):
         # missing data should be 1.0 because there is no information
         return jnp.where(is_missing[:, jnp.newaxis], 1.0, log_likelihood)
 
-    def predict(self, spikes, position=None, time=None, is_missing=None):
+    def predict(
+        self,
+        spikes,
+        position=None,
+        time=None,
+        is_missing=None,
+        discrete_transition_covariate_data=None,
+    ):
+        if discrete_transition_covariate_data is not None:
+            self.discrete_state_transitions_ = predict_discrete_state_transitions(
+                self.discrete_transition_design_matrix_,
+                self.discrete_transition_coefficients_,
+                discrete_transition_covariate_data,
+            )
         self.log_likelihood_ = self.compute_log_likelihood(position, spikes, is_missing)
         (
             causal_posterior,

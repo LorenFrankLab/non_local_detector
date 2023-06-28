@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 from jax.nn import log_softmax
-from patsy import dmatrix
+from patsy import build_design_matrices, dmatrix
 from scipy.optimize import minimize
 from scipy.special import softmax
 from statsmodels.tsa.stattools import lagmat
@@ -579,3 +579,26 @@ def non_stationary_discrete_transition_fn(
         state_ind,
         t,
     )
+
+
+def predict_discrete_state_transitions(
+    discrete_transition_design_matrix,
+    discrete_transition_coefficients,
+    discrete_transition_covariate_data,
+):
+    design_matrix = build_design_matrices(
+        [discrete_transition_design_matrix.design_info],
+        discrete_transition_covariate_data,
+    )[0]
+
+    n_time = design_matrix.shape[0]
+    n_states = discrete_transition_coefficients.shape[1]
+
+    discrete_state_transitions = jnp.zeros((n_time, n_states, n_states))
+    for from_state in range(n_states):
+        discrete_state_transitions[:, from_state, :] = jnp.exp(
+            jax_centered_log_softmax_forward(
+                design_matrix @ discrete_transition_coefficients[:, from_state, :]
+            )
+        )
+    return discrete_state_transitions
