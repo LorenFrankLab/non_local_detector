@@ -124,12 +124,12 @@ def fit_sorted_spikes_kde_encoding_model(
         occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
             position1D
         )
-        occupancy = occupancy_model.predict(interior_place_bin_centers)
     else:
         occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
             position
         )
-        occupancy = occupancy_model.predict(interior_place_bin_centers)
+
+    occupancy = occupancy_model.predict(interior_place_bin_centers)
 
     mean_rates = []
     place_fields = []
