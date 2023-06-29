@@ -122,14 +122,11 @@ def fit_sorted_spikes_kde_encoding_model(
 
     n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
 
-    for neuron_spike_times, neuron_mean_rate in zip(
-        tqdm(
-            spike_times,
-            unit="cell",
-            desc="Encoding models",
-            disable=disable_progress_bar,
-        ),
-        mean_rates,
+    for neuron_spike_times in tqdm(
+        spike_times,
+        unit="cell",
+        desc="Encoding models",
+        disable=disable_progress_bar,
     ):
         neuron_spike_times = neuron_spike_times[
             jnp.logical_and(
@@ -149,7 +146,7 @@ def fit_sorted_spikes_kde_encoding_model(
         place_fields.append(
             place_field.at[is_track_interior].set(
                 jnp.clip(
-                    neuron_mean_rate
+                    mean_rates[-1]
                     * jnp.where(occupancy > 0.0, marginal_density / occupancy, EPS),
                     a_min=EPS,
                     a_max=None,

@@ -757,9 +757,11 @@ class ClusterlessDetector(_DetectorBase):
 
         group_spike_times = []
         group_spike_waveform_features = []
-        for neuron_spike_times in spike_times:
-            group_neuron_spike_times = []
-            group_neuron_waveform_features = []
+        for electrode_spike_times, electrode_spike_waveform_features in zip(
+            spike_times, spike_waveform_features
+        ):
+            group_electrode_spike_times = []
+            group_electrode_waveform_features = []
             # get spike times for each run
             for group in range(1, n_groups + 1):
                 start_time, stop_time = position_time[group_labels == group][[0, -1]]
@@ -768,16 +770,18 @@ class ClusterlessDetector(_DetectorBase):
                 start_time -= time_delta
                 stop_time += time_delta
                 is_valid_spike_time = np.logical_and(
-                    neuron_spike_times >= start_time,
-                    neuron_spike_times <= stop_time,
+                    electrode_spike_times >= start_time,
+                    electrode_spike_times <= stop_time,
                 )
-                group_neuron_spike_times.append(neuron_spike_times[is_valid_spike_time])
-                group_neuron_waveform_features.append(
-                    spike_waveform_features[is_valid_spike_time]
+                group_electrode_spike_times.append(
+                    electrode_spike_times[is_valid_spike_time]
                 )
-            group_spike_times.append(np.concatenate(group_neuron_spike_times))
+                group_electrode_waveform_features.append(
+                    electrode_spike_waveform_features[is_valid_spike_time]
+                )
+            group_spike_times.append(np.concatenate(group_electrode_spike_times))
             group_spike_waveform_features.append(
-                np.concatenate(group_neuron_waveform_features, axis=0)
+                np.concatenate(group_electrode_waveform_features, axis=0)
             )
 
         return group_spike_times, group_spike_waveform_features
@@ -1086,7 +1090,7 @@ class SortedSpikesDetector(_DetectorBase):
         self.sorted_spikes_algorithm_params = sorted_spikes_algorithm_params
 
     @staticmethod
-    def _get_group_spike_times(spike_times, is_group, position_time):
+    def _get_group_spikes(spike_times, is_group, position_time):
         # get consecutive runs in each group
         group_labels, n_groups = scipy.ndimage.label(is_group)
 
