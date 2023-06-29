@@ -113,8 +113,23 @@ def fit_sorted_spikes_kde_encoding_model(
     is_track_interior = environment.is_track_interior_.ravel(order="F")
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
-    occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(position)
-    occupancy = occupancy_model.predict(interior_place_bin_centers)
+    if environment.track_graph is not None:
+        # convert to 1D
+        position1D = get_linearized_position(
+            position,
+            environment.track_graph,
+            edge_order=environment.edge_order,
+            edge_spacing=environment.edge_spacing,
+        ).linear_position.to_numpy()
+        occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
+            position1D
+        )
+        occupancy = occupancy_model.predict(interior_place_bin_centers)
+    else:
+        occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
+            position
+        )
+        occupancy = occupancy_model.predict(interior_place_bin_centers)
 
     mean_rates = []
     place_fields = []

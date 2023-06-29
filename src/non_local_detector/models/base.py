@@ -14,6 +14,7 @@ import seaborn as sns
 import sklearn
 import xarray as xr
 from sklearn.base import BaseEstimator
+from track_linearization import get_linearized_position
 
 from non_local_detector.continuous_state_transitions import EmpiricalMovement
 from non_local_detector.core import (
@@ -151,14 +152,21 @@ class _DetectorBase(BaseEstimator):
             Labels for each time points about which environment it corresponds to, by default None
 
         """
-        if position.ndim == 1:
-            position = position[:, np.newaxis]
-
         for environment in self.environments:
             if environment_labels is None:
                 is_environment = np.ones((position.shape[0],), dtype=bool)
             else:
                 is_environment = environment_labels == environment.environment_name
+
+            if environment.track_graph is not None:
+                # convert to 1D
+                position = get_linearized_position(
+                    position,
+                    environment.track_graph,
+                    edge_order=environment.edge_order,
+                    edge_spacing=environment.edge_spacing,
+                ).linear_position.to_numpy()
+
             environment.fit_place_grid(
                 position[is_environment], infer_track_interior=self.infer_track_interior
             )
@@ -244,6 +252,8 @@ class _DetectorBase(BaseEstimator):
                 )
 
                 if isinstance(transition, EmpiricalMovement):
+                    # NOTE: need to fix
+                    raise NotImplementedError
                     if is_training is None:
                         n_time = position.shape[0]
                         is_training = np.ones((n_time,), dtype=bool)
@@ -441,6 +451,7 @@ class _DetectorBase(BaseEstimator):
             raise ValueError(
                 "Position must be 2D. If you want 1D decoding, the environment track graph must be set."
             )
+
         self.initialize_environments(
             position=position, environment_labels=environment_labels
         )
