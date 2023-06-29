@@ -437,6 +437,10 @@ class _DetectorBase(BaseEstimator):
         environment_labels=None,
         discrete_transition_covariate_data=None,
     ):
+        if (position.ndim == 1) or (position.shape[1] != 2):
+            raise ValueError(
+                "Position must be 2D. If you want 1D decoding, the environment track graph must be set."
+            )
         self.initialize_environments(
             position=position, environment_labels=environment_labels
         )
@@ -860,7 +864,6 @@ class ClusterlessDetector(_DetectorBase):
         environment_labels=None,
         discrete_transition_covariate_data=None,
     ):
-        position = position[:, np.newaxis] if position.ndim == 1 else position
         self._fit(
             position,
             is_training,
@@ -889,8 +892,6 @@ class ClusterlessDetector(_DetectorBase):
         is_missing=None,
     ):
         logger.info("Computing log likelihood...")
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
         if position is None and np.any(
             [obs.is_local for obs in self.observation_models]
         ):
@@ -1184,7 +1185,6 @@ class SortedSpikesDetector(_DetectorBase):
         environment_labels=None,
         discrete_transition_covariate_data=None,
     ):
-        position = position[:, np.newaxis] if position.ndim == 1 else position
         self._fit(
             position,
             is_training,
@@ -1213,8 +1213,6 @@ class SortedSpikesDetector(_DetectorBase):
         logger.info("Computing log likelihood...")
         n_time = len(time)
 
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
         if position is None and np.any(
             [obs.is_local for obs in self.observation_models]
         ):
