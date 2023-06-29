@@ -23,10 +23,6 @@ _SORTED_SPIKES_ALGORITHMS = {
         fit_sorted_spikes_kde_encoding_model,
         predict_sorted_spikes_kde_log_likelihood,
     ),
-    "sorted_spikes_kde2": (
-        fit_sorted_spikes_kde_encoding_model,
-        predict_sorted_spikes_kde_log_likelihood,
-    ),
 }
 _CLUSTERLESS_ALGORITHMS = {
     "clusterless_kde": (
