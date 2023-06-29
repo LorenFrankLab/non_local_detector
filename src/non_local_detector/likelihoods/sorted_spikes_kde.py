@@ -88,7 +88,9 @@ def get_position_at_time(
     spike_times: jnp.ndarray,
     env: Environment | None = None,
 ):
-    position_at_spike_times = scipy.interpolate.interpn((time,), position, spike_times)
+    position_at_spike_times = scipy.interpolate.interpn(
+        (time,), position, spike_times, bounds_error=False, fill_value=None
+    )
     if env is not None and env.track_graph is not None:
         position_at_spike_times = get_linearized_position(
             position_at_spike_times,
