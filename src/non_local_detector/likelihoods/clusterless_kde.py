@@ -3,9 +3,17 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import scipy.interpolate
 from tqdm.autonotebook import tqdm
+from track_linearization import get_linearized_position
+
+from non_local_detector.environment import Environment
 
 EPS = 1e-15
+
+
+def get_spike_time_bin_ind(spike_times, time):
+    return jnp.digitize(spike_times, time[1:-1])
 
 
 @jax.jit
@@ -183,97 +191,146 @@ class KDEModel:
         return block_kde(eval_points, self.samples_, std, block_size)
 
 
-def fit_clusterless_kde_encoding_model(
+def get_position_at_time(
+    time: jnp.ndarray,
     position: jnp.ndarray,
-    multiunits: jnp.ndarray,
-    place_bin_centers: jnp.ndarray,
-    is_track_interior: jnp.ndarray,
-    *args,
+    spike_times: jnp.ndarray,
+    env: Environment | None = None,
+):
+    position_at_spike_times = scipy.interpolate.interpn(
+        (time,), position, spike_times, bounds_error=False, fill_value=None
+    )
+    if env is not None and env.track_graph is not None:
+        position_at_spike_times = get_linearized_position(
+            position_at_spike_times,
+            env.track_graph,
+            edge_order=env.edge_order,
+            edge_spacing=env.edge_spacing,
+        ).linear_position.to_numpy()
+
+    return position_at_spike_times
+
+
+def fit_clusterless_kde_encoding_model(
+    position_time: jnp.ndarray,
+    position: jnp.ndarray,
+    spike_times: list[jnp.ndarray],
+    spike_waveform_features: list[jnp.ndarray],
+    environment: Environment,
+    sampling_frequency: int = 500,
     position_std: float = 6.0,
     waveform_std: float = 24.0,
     block_size: int = 100,
     disable_progress_bar: bool = False,
-    **kwargs,
 ):
     if isinstance(position_std, (int, float)):
         position_std = jnp.array([position_std] * position.shape[1])
     if isinstance(waveform_std, (int, float)):
-        waveform_std = jnp.array([waveform_std] * multiunits.shape[1])
+        waveform_std = jnp.array([waveform_std] * spike_waveform_features[0].shape[1])
 
-    occupancy = jnp.zeros((place_bin_centers.shape[0],))
-    occupancy_model = KDEModel(position_std, block_size=block_size).fit(position)
-    occupancy = occupancy.at[is_track_interior].set(
-        occupancy_model.predict(place_bin_centers[is_track_interior])
-    )
+    is_track_interior = environment.is_track_interior_.ravel(order="F")
+    interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
-    encoding_spike_waveform_features = []
+    if environment.track_graph is not None:
+        # convert to 1D
+        position1D = get_linearized_position(
+            position,
+            environment.track_graph,
+            edge_order=environment.edge_order,
+            edge_spacing=environment.edge_spacing,
+        ).linear_position.to_numpy()
+        occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
+            position1D
+        )
+    else:
+        occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
+            position
+        )
+
+    occupancy = occupancy_model.predict(interior_place_bin_centers)
     encoding_positions = []
     mean_rates = []
-    kde_models = []
+    gpi_models = []
     summed_ground_process_intensity = jnp.zeros_like(occupancy)
 
-    for electrode_multiunit in jnp.moveaxis(multiunits, 2, 0):
-        is_encoding_spike = jnp.any(~jnp.isnan(electrode_multiunit), axis=1)
+    n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
 
-        encoding_spike_waveform_features.append(electrode_multiunit[is_encoding_spike])
-        mean_rates.append(jnp.mean(is_encoding_spike))
-        encoding_positions.append(position[is_encoding_spike])
-
-        kde_model = KDEModel(std=position_std, block_size=block_size).fit(
-            position[is_encoding_spike]
+    for electrode_spike_times in spike_times:
+        electrode_spike_times = electrode_spike_times[
+            jnp.logical_and(
+                electrode_spike_times >= position_time[0],
+                electrode_spike_times <= position_time[-1],
+            )
+        ]
+        mean_rates.append(len(electrode_spike_times) / n_time_bins)
+        encoding_positions.append(
+            get_position_at_time(
+                position_time, position, electrode_spike_times, environment
+            )
         )
-        kde_models.append(kde_model)
+
+        gpi_model = KDEModel(std=position_std, block_size=block_size).fit(
+            encoding_positions[-1]
+        )
+        gpi_models.append(gpi_model)
 
         summed_ground_process_intensity = summed_ground_process_intensity.at[
             is_track_interior
-        ].add(kde_model.predict(place_bin_centers[is_track_interior]))
+        ].add(gpi_model.predict(interior_place_bin_centers))
 
     return {
         "occupancy": occupancy,
         "occupancy_model": occupancy_model,
-        "kde_models": kde_models,
-        "encoding_spike_waveform_features": encoding_spike_waveform_features,
+        "gpi_models": gpi_models,
+        "encoding_spike_waveform_features": spike_waveform_features,
         "encoding_positions": encoding_positions,
+        "environment": environment,
         "mean_rates": mean_rates,
-        "place_bin_centers": place_bin_centers,
         "summed_ground_process_intensity": summed_ground_process_intensity,
         "position_std": position_std,
         "waveform_std": waveform_std,
-        "is_track_interior": is_track_interior,
         "block_size": block_size,
         "disable_progress_bar": disable_progress_bar,
     }
 
 
 def predict_clusterless_kde_log_likelihood(
+    time: jnp.ndarray,
+    position_time: jnp.ndarray,
     position: jnp.ndarray,
-    multiunits: jnp.ndarray,
+    spike_times: list[jnp.ndarray],
+    spike_waveform_features: list[jnp.ndarray],
     occupancy,
     occupancy_model,
-    kde_models,
+    gpi_models,
     encoding_spike_waveform_features,
     encoding_positions,
+    environment,
     mean_rates,
-    place_bin_centers,
     summed_ground_process_intensity,
     position_std,
     waveform_std,
-    is_track_interior: jnp.ndarray,
     is_local: bool = False,
     block_size: int = 100,
     disable_progress_bar: bool = False,
 ):
-    n_time = multiunits.shape[0]
+    n_time = len(time)
 
     if is_local:
-        occupancy = occupancy_model.predict(position)
+        # Need to interpolate position
+        interpolated_position = get_position_at_time(
+            position_time, position, time, environment
+        )
+        occupancy = occupancy_model.predict(interpolated_position)
+
         log_likelihood = jnp.zeros((n_time, 1))
         for (
             electrode_encoding_spike_waveform_features,
             electrode_encoding_positions,
             electrode_mean_rate,
-            electrode_kde_model,
-            electrode_decoding_multiunits,
+            electrode_gpi_model,
+            electrode_decoding_spike_waveform_features,
+            electrode_spike_times,
         ) in zip(
             tqdm(
                 encoding_spike_waveform_features,
@@ -283,23 +340,25 @@ def predict_clusterless_kde_log_likelihood(
             ),
             encoding_positions,
             mean_rates,
-            kde_models,
-            jnp.moveaxis(multiunits, 2, 0),
+            gpi_models,
+            spike_waveform_features,
+            spike_times,
         ):
-            is_decoding_spike = jnp.any(
-                ~jnp.isnan(electrode_decoding_multiunits), axis=1
+            is_in_bounds = jnp.logical_and(
+                electrode_spike_times >= time[0],
+                electrode_spike_times <= time[-1],
             )
-            electrode_decoding_spike_waveform_features = electrode_decoding_multiunits[
-                is_decoding_spike
-            ]
-
+            electrode_spike_times = electrode_spike_times[is_in_bounds]
+            electrode_decoding_spike_waveform_features = (
+                electrode_decoding_spike_waveform_features[is_in_bounds]
+            )
             position_distance = kde_distance(
-                position,
+                interpolated_position,
                 electrode_encoding_positions,
                 std=position_std,
             )
 
-            log_likelihood = log_likelihood.at[is_decoding_spike].set(
+            log_likelihood += jax.ops.segment_sum(
                 block_estimate_log_joint_mark_intensity(
                     electrode_decoding_spike_waveform_features,
                     electrode_encoding_spike_waveform_features,
@@ -308,13 +367,16 @@ def predict_clusterless_kde_log_likelihood(
                     electrode_mean_rate,
                     position_distance,
                     block_size,
-                )
+                ),
+                get_spike_time_bin_ind(electrode_spike_times, time),
+                indices_are_sorted=False,
+                num_segments=n_time,
             )
-            log_likelihood -= electrode_kde_model.predict(position)
+            log_likelihood -= electrode_gpi_model.predict(interpolated_position)
     else:
+        is_track_interior = environment.is_track_interior_.ravel(order="F")
         interior_occupancy = occupancy[is_track_interior]
-        interior_place_bin_centers = place_bin_centers[is_track_interior]
-        is_track_interior_ind = jnp.nonzero(is_track_interior)[0]
+        interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
         log_likelihood = -summed_ground_process_intensity * jnp.ones(
             (n_time, 1),
@@ -324,7 +386,8 @@ def predict_clusterless_kde_log_likelihood(
             electrode_encoding_spike_waveform_features,
             electrode_encoding_positions,
             electrode_mean_rate,
-            electrode_decoding_multiunits,
+            electrode_decoding_spike_waveform_features,
+            electrode_spike_times,
         ) in zip(
             tqdm(
                 encoding_spike_waveform_features,
@@ -334,32 +397,36 @@ def predict_clusterless_kde_log_likelihood(
             ),
             encoding_positions,
             mean_rates,
-            jnp.moveaxis(multiunits, 2, 0),
+            spike_waveform_features,
+            spike_times,
         ):
-            decoding_spike_ind = jnp.nonzero(
-                jnp.any(~jnp.isnan(electrode_decoding_multiunits), axis=1)
-            )[0]
-            electrode_decoding_spike_waveform_features = electrode_decoding_multiunits[
-                decoding_spike_ind
-            ]
-
+            is_in_bounds = jnp.logical_and(
+                electrode_spike_times >= time[0],
+                electrode_spike_times <= time[-1],
+            )
+            electrode_spike_times = electrode_spike_times[is_in_bounds]
+            electrode_decoding_spike_waveform_features = (
+                electrode_decoding_spike_waveform_features[is_in_bounds]
+            )
             position_distance = kde_distance(
                 interior_place_bin_centers,
                 electrode_encoding_positions,
                 std=position_std,
             )
-
-            log_likelihood = log_likelihood.at[
-                jnp.ix_(decoding_spike_ind, is_track_interior_ind)
-            ].set(
-                block_estimate_log_joint_mark_intensity(
-                    electrode_decoding_spike_waveform_features,
-                    electrode_encoding_spike_waveform_features,
-                    waveform_std,
-                    interior_occupancy,
-                    electrode_mean_rate,
-                    position_distance,
-                    block_size,
+            log_likelihood = log_likelihood.at[:, is_track_interior].add(
+                jax.ops.segment_sum(
+                    block_estimate_log_joint_mark_intensity(
+                        electrode_decoding_spike_waveform_features,
+                        electrode_encoding_spike_waveform_features,
+                        waveform_std,
+                        interior_occupancy,
+                        electrode_mean_rate,
+                        position_distance,
+                        block_size,
+                    ),
+                    get_spike_time_bin_ind(electrode_spike_times, time),
+                    indices_are_sorted=False,
+                    num_segments=n_time,
                 )
             )
 

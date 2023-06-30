@@ -5,6 +5,9 @@ import jax
 import jax.numpy as jnp
 import scipy.interpolate
 from tqdm.autonotebook import tqdm
+from track_linearization import get_linearized_position
+
+from non_local_detector.environment import Environment
 
 EPS = 1e-15
 
@@ -79,45 +82,88 @@ class KDEModel:
         return block_kde(eval_points, self.samples_, std, block_size)
 
 
-def fit_sorted_spikes_kde_encoding_model(
+def get_position_at_time(
+    time: jnp.ndarray,
     position: jnp.ndarray,
-    spikes: jnp.ndarray,
-    place_bin_centers: jnp.ndarray,
-    is_track_interior: jnp.ndarray,
-    *args,
-    position_std: float = 5.0,
+    spike_times: jnp.ndarray,
+    env: Environment | None = None,
+):
+    position_at_spike_times = scipy.interpolate.interpn(
+        (time,), position, spike_times, bounds_error=False, fill_value=None
+    )
+    if env is not None and env.track_graph is not None:
+        position_at_spike_times = get_linearized_position(
+            position_at_spike_times,
+            env.track_graph,
+            edge_order=env.edge_order,
+            edge_spacing=env.edge_spacing,
+        ).linear_position.to_numpy()
+
+    return position_at_spike_times
+
+
+def fit_sorted_spikes_kde_encoding_model(
+    position_time: jnp.ndarray,
+    position: jnp.ndarray,
+    spike_times: list[jnp.ndarray],
+    environment: Environment,
+    sampling_frequency: int = 500,
+    position_std: float = 6.0,
     block_size: int = 100,
     disable_progress_bar: bool = False,
-    **kwargs,
 ):
-    occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(position)
-    occupancy = occupancy_model.predict(place_bin_centers[is_track_interior])
-    mean_rates = jnp.mean(spikes, axis=0).squeeze()
+    is_track_interior = environment.is_track_interior_.ravel(order="F")
+    interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
+    if environment.track_graph is not None:
+        # convert to 1D
+        position1D = get_linearized_position(
+            position,
+            environment.track_graph,
+            edge_order=environment.edge_order,
+            edge_spacing=environment.edge_spacing,
+        ).linear_position.to_numpy()
+        occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
+            position1D
+        )
+    else:
+        occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
+            position
+        )
+
+    occupancy = occupancy_model.predict(interior_place_bin_centers)
+
+    mean_rates = []
     place_fields = []
     marginal_models = []
 
-    for neuron_spikes, neuron_mean_rate in zip(
-        tqdm(
-            spikes.T.astype(bool),
-            unit="cell",
-            desc="Encoding models",
-            disable=disable_progress_bar,
-        ),
-        mean_rates,
+    n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
+
+    for neuron_spike_times in tqdm(
+        spike_times,
+        unit="cell",
+        desc="Encoding models",
+        disable=disable_progress_bar,
     ):
+        neuron_spike_times = neuron_spike_times[
+            jnp.logical_and(
+                neuron_spike_times >= position_time[0],
+                neuron_spike_times <= position_time[-1],
+            )
+        ]
+        mean_rates.append(len(neuron_spike_times) / n_time_bins)
         neuron_marginal_model = KDEModel(std=position_std, block_size=block_size).fit(
-            position[neuron_spikes]
+            get_position_at_time(
+                position_time, position, neuron_spike_times, environment
+            )
         )
         marginal_models.append(neuron_marginal_model)
-        marginal_density = neuron_marginal_model.predict(
-            place_bin_centers[is_track_interior]
-        )
+        marginal_density = neuron_marginal_model.predict(interior_place_bin_centers)
         place_field = jnp.zeros((is_track_interior.shape[0],))
         place_fields.append(
             place_field.at[is_track_interior].set(
                 jnp.clip(
-                    neuron_mean_rate
+                    mean_rates[-1]
                     * jnp.where(occupancy > 0.0, marginal_density / occupancy, EPS),
                     a_min=EPS,
                     a_max=None,
@@ -129,6 +175,7 @@ def fit_sorted_spikes_kde_encoding_model(
     no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
 
     return {
+        "environment": environment,
         "marginal_models": marginal_models,
         "occupancy_model": occupancy_model,
         "occupancy": occupancy,
@@ -141,8 +188,11 @@ def fit_sorted_spikes_kde_encoding_model(
 
 
 def predict_sorted_spikes_kde_log_likelihood(
+    time: jnp.ndarray,
+    position_time: jnp.ndarray,
     position: jnp.ndarray,
-    spikes: jnp.ndarray,
+    spike_times: list[jnp.ndarray],
+    environment: Environment,
     marginal_models: list[KDEModel],
     occupancy_model: KDEModel,
     occupancy: jnp.ndarray,
@@ -153,15 +203,19 @@ def predict_sorted_spikes_kde_log_likelihood(
     disable_progress_bar: bool = False,
     is_local: bool = False,
 ):
-    n_time = spikes.shape[0]
+    n_time = time.shape[0]
     if is_local:
         log_likelihood = jnp.zeros((n_time,))
 
-        occupancy = occupancy_model.predict(position)
+        # Need to interpolate position
+        interpolated_position = get_position_at_time(
+            position_time, position, time, environment
+        )
+        occupancy = occupancy_model.predict(interpolated_position)
 
-        for neuron_spikes, neuron_marginal_model, neuron_mean_rate in zip(
+        for neuron_spike_times, neuron_marginal_model, neuron_mean_rate in zip(
             tqdm(
-                spikes.T,
+                spike_times,
                 unit="cell",
                 desc="Local Likelihood",
                 disable=disable_progress_bar,
@@ -169,29 +223,50 @@ def predict_sorted_spikes_kde_log_likelihood(
             marginal_models,
             mean_rates,
         ):
-            marginal_density = neuron_marginal_model.predict(position)
+            neuron_spike_times = neuron_spike_times[
+                jnp.logical_and(
+                    neuron_spike_times >= time[0],
+                    neuron_spike_times <= time[-1],
+                )
+            ]
+            marginal_density = neuron_marginal_model.predict(interpolated_position)
             local_rate = neuron_mean_rate * jnp.where(
                 occupancy > 0.0, marginal_density / occupancy, EPS
             )
             local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
+            spike_count_per_time_bin = jnp.bincount(
+                jnp.digitize(neuron_spike_times, time[1:-1]),
+                minlength=time.shape[0],
+            )
             log_likelihood += (
-                jax.scipy.special.xlogy(neuron_spikes, local_rate) - local_rate
+                jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
+                - local_rate
             )
 
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
         log_likelihood = jnp.zeros((n_time, place_fields.shape[1]))
-        for neuron_spikes, place_field in zip(
+        for neuron_spike_times, place_field in zip(
             tqdm(
-                spikes.T,
+                spike_times,
                 unit="cell",
                 desc="Non-Local Likelihood",
                 disable=disable_progress_bar,
             ),
             place_fields,
         ):
+            neuron_spike_times = neuron_spike_times[
+                jnp.logical_and(
+                    neuron_spike_times >= time[0],
+                    neuron_spike_times <= time[-1],
+                )
+            ]
+            spike_count_per_time_bin = jnp.bincount(
+                jnp.digitize(neuron_spike_times, time[1:-1]),
+                minlength=time.shape[0],
+            )
             log_likelihood += jax.scipy.special.xlogy(
-                neuron_spikes[:, jnp.newaxis], place_field[jnp.newaxis]
+                spike_count_per_time_bin[:, jnp.newaxis], place_field[jnp.newaxis]
             )
         log_likelihood -= no_spike_part_log_likelihood[jnp.newaxis]
         log_likelihood = jnp.where(

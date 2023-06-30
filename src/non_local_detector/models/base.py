@@ -9,10 +9,12 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import scipy.ndimage
 import seaborn as sns
 import sklearn
 import xarray as xr
 from sklearn.base import BaseEstimator
+from track_linearization import get_linearized_position
 
 from non_local_detector.continuous_state_transitions import EmpiricalMovement
 from non_local_detector.core import (
@@ -150,14 +152,21 @@ class _DetectorBase(BaseEstimator):
             Labels for each time points about which environment it corresponds to, by default None
 
         """
-        if position.ndim == 1:
-            position = position[:, np.newaxis]
-
         for environment in self.environments:
             if environment_labels is None:
                 is_environment = np.ones((position.shape[0],), dtype=bool)
             else:
                 is_environment = environment_labels == environment.environment_name
+
+            if environment.track_graph is not None:
+                # convert to 1D
+                position = get_linearized_position(
+                    position,
+                    environment.track_graph,
+                    edge_order=environment.edge_order,
+                    edge_spacing=environment.edge_spacing,
+                ).linear_position.to_numpy()
+
             environment.fit_place_grid(
                 position[is_environment], infer_track_interior=self.infer_track_interior
             )
@@ -243,6 +252,8 @@ class _DetectorBase(BaseEstimator):
                 )
 
                 if isinstance(transition, EmpiricalMovement):
+                    # NOTE: need to fix
+                    raise NotImplementedError
                     if is_training is None:
                         n_time = position.shape[0]
                         is_training = np.ones((n_time,), dtype=bool)
@@ -436,6 +447,11 @@ class _DetectorBase(BaseEstimator):
         environment_labels=None,
         discrete_transition_covariate_data=None,
     ):
+        if (position.ndim == 1) or (position.shape[1] != 2):
+            raise ValueError(
+                "Position must be 2D. If you want 1D decoding, the environment track graph must be set."
+            )
+
         self.initialize_environments(
             position=position, environment_labels=environment_labels
         )
@@ -640,8 +656,6 @@ class _DetectorBase(BaseEstimator):
         marginal_log_likelihoods,
         return_causal_posterior: bool = False,
     ):
-        if time is None:
-            time = np.arange(acausal_posterior.shape[0]) / self.sampling_frequency
         is_track_interior = self.is_track_interior_state_bins_
 
         environment_names = [obs.environment_name for obs in self.observation_models]
@@ -748,15 +762,56 @@ class ClusterlessDetector(_DetectorBase):
         self.clusterless_algorithm = clusterless_algorithm
         self.clusterless_algorithm_params = clusterless_algorithm_params
 
+    def _get_group_spike_data(
+        self, spike_times, spike_waveform_features, is_group, position_time
+    ):
+        # get consecutive runs in each group
+        group_labels, n_groups = scipy.ndimage.label(is_group)
+
+        time_delta = position_time[1] - position_time[0]
+
+        group_spike_times = []
+        group_spike_waveform_features = []
+        for electrode_spike_times, electrode_spike_waveform_features in zip(
+            spike_times, spike_waveform_features
+        ):
+            group_electrode_spike_times = []
+            group_electrode_waveform_features = []
+            # get spike times for each run
+            for group in range(1, n_groups + 1):
+                start_time, stop_time = position_time[group_labels == group][[0, -1]]
+                # Add half a time bin to the start and stop times
+                # to ensure that the spike times are within the group
+                start_time -= time_delta
+                stop_time += time_delta
+                is_valid_spike_time = np.logical_and(
+                    electrode_spike_times >= start_time,
+                    electrode_spike_times <= stop_time,
+                )
+                group_electrode_spike_times.append(
+                    electrode_spike_times[is_valid_spike_time]
+                )
+                group_electrode_waveform_features.append(
+                    electrode_spike_waveform_features[is_valid_spike_time]
+                )
+            group_spike_times.append(np.concatenate(group_electrode_spike_times))
+            group_spike_waveform_features.append(
+                np.concatenate(group_electrode_waveform_features, axis=0)
+            )
+
+        return group_spike_times, group_spike_waveform_features
+
     def fit_encoding_model(
         self,
+        position_time,
         position,
-        multiunits,
+        spike_times,
+        spike_waveform_features,
         is_training=None,
         encoding_group_labels=None,
         environment_labels=None,
     ):
-        logger.info("Fitting multiunits...")
+        logger.info("Fitting clusterless spikes...")
         n_time = position.shape[0]
         if is_training is None:
             is_training = np.ones((n_time,), dtype=bool)
@@ -793,27 +848,33 @@ class ClusterlessDetector(_DetectorBase):
 
             encoding_algorithm, _ = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
             is_group = is_training & is_encoding & is_environment
-
+            (
+                group_spike_times,
+                group_spike_waveform_features,
+            ) = self._get_group_spike_data(
+                spike_times, spike_waveform_features, is_group, position_time
+            )
             self.encoding_model_[likelihood_name] = encoding_algorithm(
-                position=position[is_group],
-                multiunits=multiunits[is_group],
-                place_bin_centers=environment.place_bin_centers_,
-                is_track_interior=environment.is_track_interior_.ravel(order="F"),
-                is_track_boundary=environment.is_track_boundary_,
-                edges=environment.edges_,
+                position_time[is_group],
+                position[is_group],
+                group_spike_times,
+                group_spike_waveform_features,
+                environment,
+                self.sampling_frequency,
                 **kwargs,
             )
 
     def fit(
         self,
-        position,
-        multiunits,
+        position_time: jnp.ndarray,
+        position: jnp.ndarray,
+        spike_times: list[jnp.ndarray],
+        spike_waveform_features: list[jnp.ndarray],
         is_training=None,
         encoding_group_labels=None,
         environment_labels=None,
         discrete_transition_covariate_data=None,
     ):
-        position = position[:, np.newaxis] if position.ndim == 1 else position
         self._fit(
             position,
             is_training,
@@ -822,24 +883,32 @@ class ClusterlessDetector(_DetectorBase):
             discrete_transition_covariate_data,
         )
         self.fit_encoding_model(
+            position_time,
             position,
-            multiunits,
+            spike_times,
+            spike_waveform_features,
             is_training,
             encoding_group_labels,
             environment_labels,
         )
         return self
 
-    def compute_log_likelihood(self, position, multiunits, is_missing=None):
+    def compute_log_likelihood(
+        self,
+        time,
+        position_time,
+        position,
+        spike_times,
+        spike_waveform_features,
+        is_missing=None,
+    ):
         logger.info("Computing log likelihood...")
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
         if position is None and np.any(
             [obs.is_local for obs in self.observation_models]
         ):
             raise ValueError("Position must be provided for local observations.")
 
-        n_time = multiunits.shape[0]
+        n_time = len(time)
         if is_missing is None:
             is_missing = jnp.zeros((n_time,), dtype=bool)
 
@@ -859,17 +928,19 @@ class ClusterlessDetector(_DetectorBase):
 
             if obs.is_no_spike:
                 # Likelihood of no spike times
-                is_spike = np.any(np.isnan(multiunits), axis=1)
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     predict_no_spike_log_likelihood(
-                        is_spike, self.no_spike_rate, self.sampling_frequency
+                        time, spike_times, self.no_spike_rate, self.sampling_frequency
                     )
                 )
             elif likelihood_name not in computed_likelihoods:
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     likelihood_func(
+                        time,
+                        position_time,
                         position,
-                        multiunits,
+                        spike_times,
+                        spike_waveform_features,
                         **self.encoding_model_[likelihood_name[:2]],
                         is_local=obs.is_local,
                     )
@@ -890,12 +961,26 @@ class ClusterlessDetector(_DetectorBase):
 
     def predict(
         self,
-        multiunits,
+        spike_times,
+        spike_waveform_features,
+        time_range,
         position=None,
-        time=None,
+        position_time=None,
         is_missing=None,
+        time=None,
         discrete_transition_covariate_data=None,
     ):
+        if time is None:
+            n_time_bins = (
+                int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
+            )
+            time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+
+        if is_missing is not None and len(is_missing) != len(time):
+            raise ValueError(
+                f"Length of is_missing must match length of time. Time is n_samples: {len(time)}"
+            )
+
         if discrete_transition_covariate_data is not None:
             self.discrete_state_transitions_ = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
@@ -904,7 +989,12 @@ class ClusterlessDetector(_DetectorBase):
             )
 
         self.log_likelihood_ = self.compute_log_likelihood(
-            position, multiunits, is_missing
+            time,
+            position_time,
+            position,
+            spike_times,
+            spike_waveform_features,
+            is_missing,
         )
 
         (
@@ -927,9 +1017,12 @@ class ClusterlessDetector(_DetectorBase):
 
     def estimate_parameters(
         self,
-        multiunits,
-        position=None,
-        time=None,
+        position_time,
+        position,
+        spike_times,
+        spike_waveform_features,
+        time_range,
+        is_missing=None,
         is_training=None,
         encoding_group_labels=None,
         environment_labels=None,
@@ -939,15 +1032,29 @@ class ClusterlessDetector(_DetectorBase):
         max_iter: int = 20,
         tolerance: float = 0.0001,
     ):
+        n_time_bins = (
+            int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
+        )
+        time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+
         self.fit(
+            position_time,
             position,
-            multiunits,
+            spike_times,
+            spike_waveform_features,
             is_training=is_training,
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
         )
-        self.log_likelihood_ = self.compute_log_likelihood(position, multiunits)
+        self.log_likelihood_ = self.compute_log_likelihood(
+            time,
+            position_time,
+            position,
+            spike_times,
+            spike_waveform_features,
+            is_missing,
+        )
         return super().estimate_parameters(
             time,
             estimate_inital_conditions,
@@ -994,10 +1101,40 @@ class SortedSpikesDetector(_DetectorBase):
         self.sorted_spikes_algorithm = sorted_spikes_algorithm
         self.sorted_spikes_algorithm_params = sorted_spikes_algorithm_params
 
+    @staticmethod
+    def _get_group_spikes(spike_times, is_group, position_time):
+        # get consecutive runs in each group
+        group_labels, n_groups = scipy.ndimage.label(is_group)
+
+        time_delta = position_time[1] - position_time[0]
+
+        group_spike_times = []
+        for neuron_spike_times in spike_times:
+            group_neuron_spike_times = []
+            # get spike times for each run
+            for group in range(1, n_groups + 1):
+                start_time, stop_time = position_time[group_labels == group][[0, -1]]
+                # Add half a time bin to the start and stop times
+                # to ensure that the spike times are within the group
+                start_time -= time_delta
+                stop_time += time_delta
+                group_neuron_spike_times.append(
+                    neuron_spike_times[
+                        np.logical_and(
+                            neuron_spike_times >= start_time,
+                            neuron_spike_times <= stop_time,
+                        )
+                    ]
+                )
+            group_spike_times.append(np.concatenate(group_neuron_spike_times))
+
+        return group_spike_times
+
     def fit_place_fields(
         self,
+        position_time,
         position,
-        spikes,
+        spike_times,
         is_training=None,
         encoding_group_labels=None,
         environment_labels=None,
@@ -1039,26 +1176,26 @@ class SortedSpikesDetector(_DetectorBase):
             is_group = is_training & is_encoding & is_environment
 
             self.encoding_model_[likelihood_name] = encoding_algorithm(
-                position=position[is_group],
-                spikes=spikes[is_group],
-                place_bin_centers=environment.place_bin_centers_,
-                place_bin_edges=environment.place_bin_edges_,
-                edges=environment.edges_,
-                is_track_interior=environment.is_track_interior_.ravel(order="F"),
-                is_track_boundary=environment.is_track_boundary_,
+                position_time=position_time,
+                position=position,
+                spike_times=self._get_group_spikes(
+                    spike_times, is_group, position_time
+                ),
+                environment=environment,
+                sampling_frequency=self.sampling_frequency,
                 **kwargs,
             )
 
     def fit(
         self,
+        position_time,
         position,
-        spikes,
+        spike_times,
         is_training=None,
         encoding_group_labels=None,
         environment_labels=None,
         discrete_transition_covariate_data=None,
     ):
-        position = position[:, np.newaxis] if position.ndim == 1 else position
         self._fit(
             position,
             is_training,
@@ -1067,20 +1204,26 @@ class SortedSpikesDetector(_DetectorBase):
             discrete_transition_covariate_data,
         )
         self.fit_place_fields(
+            position_time,
             position,
-            spikes,
+            spike_times,
             is_training,
             encoding_group_labels,
             environment_labels,
         )
         return self
 
-    def compute_log_likelihood(self, position, spikes, is_missing=None):
+    def compute_log_likelihood(
+        self,
+        time,
+        position_time,
+        position,
+        spike_times,
+        is_missing=None,
+    ):
         logger.info("Computing log likelihood...")
-        n_time = spikes.shape[0]
+        n_time = len(time)
 
-        if position is not None:
-            position = position[:, np.newaxis] if position.ndim == 1 else position
         if position is None and np.any(
             [obs.is_local for obs in self.observation_models]
         ):
@@ -1107,14 +1250,16 @@ class SortedSpikesDetector(_DetectorBase):
                 # Likelihood of no spike times
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     predict_no_spike_log_likelihood(
-                        spikes, self.no_spike_rate, self.sampling_frequency
+                        time, spike_times, self.no_spike_rate, self.sampling_frequency
                     )
                 )
             elif likelihood_name not in computed_likelihoods:
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     likelihood_func(
+                        time,
+                        position_time,
                         position,
-                        spikes,
+                        spike_times,
                         **self.encoding_model_[likelihood_name[:2]],
                         is_local=obs.is_local,
                     )
@@ -1135,19 +1280,33 @@ class SortedSpikesDetector(_DetectorBase):
 
     def predict(
         self,
-        spikes,
+        spike_times,
+        time_range,
         position=None,
-        time=None,
+        position_time=None,
         is_missing=None,
         discrete_transition_covariate_data=None,
     ):
+        n_time_bins = (
+            int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
+        )
+        time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+
+        if is_missing is not None and len(is_missing) != len(time):
+            raise ValueError(
+                f"Length of is_missing must match length of time. Time is n_samples: {len(time)}"
+            )
+
         if discrete_transition_covariate_data is not None:
             self.discrete_state_transitions_ = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,
                 discrete_transition_covariate_data,
             )
-        self.log_likelihood_ = self.compute_log_likelihood(position, spikes, is_missing)
+
+        self.log_likelihood_ = self.compute_log_likelihood(
+            time, position_time, position, spike_times, is_missing
+        )
         (
             causal_posterior,
             acausal_posterior,
@@ -1168,9 +1327,11 @@ class SortedSpikesDetector(_DetectorBase):
 
     def estimate_parameters(
         self,
-        spikes,
-        position=None,
-        time=None,
+        position_time,
+        position,
+        spike_times,
+        time_range,
+        is_missing=None,
         is_training=None,
         encoding_group_labels=None,
         environment_labels=None,
@@ -1180,15 +1341,23 @@ class SortedSpikesDetector(_DetectorBase):
         max_iter: int = 20,
         tolerance: float = 0.0001,
     ):
+        n_time_bins = (
+            int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
+        )
+        time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+
         self.fit(
+            position_time,
             position,
-            spikes,
+            spike_times,
             is_training=is_training,
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
         )
-        self.log_likelihood_ = self.compute_log_likelihood(position, spikes)
+        self.log_likelihood_ = self.compute_log_likelihood(
+            time, position_time, position, spike_times, is_missing
+        )
         return super().estimate_parameters(
             time,
             estimate_inital_conditions,
