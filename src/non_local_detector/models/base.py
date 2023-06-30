@@ -963,7 +963,6 @@ class ClusterlessDetector(_DetectorBase):
         position=None,
         position_time=None,
         is_missing=None,
-        time=None,
         discrete_transition_covariate_data=None,
     ):
         if position is not None:
