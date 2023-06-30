@@ -16,8 +16,7 @@ def predict_no_spike_log_likelihood(
     no_spike_rate: float = 1e-10,
     sampling_frequency: float = 500.0,
 ):
-    n_neurons = len(spike_times)
-    no_spike_rates = jnp.ones((n_neurons,)) * no_spike_rate / sampling_frequency
+    no_spike_rates = no_spike_rate / sampling_frequency
     spike_count_per_time_bin = jnp.stack(
         [
             get_spikecount_per_time_bin(neuron_spike_times, time)
