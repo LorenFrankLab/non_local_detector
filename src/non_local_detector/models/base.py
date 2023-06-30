@@ -447,11 +447,7 @@ class _DetectorBase(BaseEstimator):
         environment_labels=None,
         discrete_transition_covariate_data=None,
     ):
-        if (position.ndim == 1) or (position.shape[1] != 2):
-            raise ValueError(
-                "Position must be 2D. If you want 1D decoding, the environment track graph must be set."
-            )
-
+        position = position[:, np.newaxis] if position.ndim == 1 else position
         self.initialize_environments(
             position=position, environment_labels=environment_labels
         )
@@ -970,11 +966,13 @@ class ClusterlessDetector(_DetectorBase):
         time=None,
         discrete_transition_covariate_data=None,
     ):
-        if time is None:
-            n_time_bins = (
-                int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
-            )
-            time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+        if position is not None:
+            position = position[:, np.newaxis] if position.ndim == 1 else position
+
+        n_time_bins = (
+            int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
+        )
+        time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
 
         if is_missing is not None and len(is_missing) != len(time):
             raise ValueError(
@@ -1292,6 +1290,9 @@ class SortedSpikesDetector(_DetectorBase):
         )
         time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
 
+        if position is not None:
+            position = position[:, np.newaxis] if position.ndim == 1 else position
+
         if is_missing is not None and len(is_missing) != len(time):
             raise ValueError(
                 f"Length of is_missing must match length of time. Time is n_samples: {len(time)}"
@@ -1345,6 +1346,7 @@ class SortedSpikesDetector(_DetectorBase):
             int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
         )
         time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+        position = position[:, np.newaxis] if position.ndim == 1 else position
 
         self.fit(
             position_time,
