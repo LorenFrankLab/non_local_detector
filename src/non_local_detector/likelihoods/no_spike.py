@@ -26,7 +26,8 @@ def predict_no_spike_log_likelihood(
         axis=1,
     )
     return jnp.sum(
-        jax.scipy.stats.poisson.logpmf(spike_count_per_time_bin, no_spike_rates),
+        jax.scipy.special.xlogy(spike_count_per_time_bin, no_spike_rates)
+        - no_spike_rates,
         axis=-1,
         keepdims=True,
     )
