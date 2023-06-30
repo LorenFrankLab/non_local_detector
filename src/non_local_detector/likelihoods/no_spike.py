@@ -1,5 +1,13 @@
+import jax.numpy as jnp
 import numpy as np
-import scipy.stats
+import jax.scipy
+
+
+def get_spikecount_per_time_bin(neuron_spike_times, time):
+    return jnp.bincount(
+        jnp.digitize(neuron_spike_times, time[1:-1]),
+        minlength=time.shape[0],
+    )
 
 
 def predict_no_spike_log_likelihood(
@@ -9,19 +17,16 @@ def predict_no_spike_log_likelihood(
     sampling_frequency: float = 500.0,
 ):
     n_neurons = len(spike_times)
-    no_spike_rates = np.ones((n_neurons,)) * no_spike_rate / sampling_frequency
-    spike_count_per_time_bin = np.stack(
+    no_spike_rates = jnp.ones((n_neurons,)) * no_spike_rate / sampling_frequency
+    spike_count_per_time_bin = jnp.stack(
         [
-            np.bincount(
-                np.digitize(neuron_spike_times, time[1:-1]),
-                minlength=time.shape[0],
-            )
+            get_spikecount_per_time_bin(neuron_spike_times, time)
             for neuron_spike_times in spike_times
         ],
         axis=1,
     )
-    return np.sum(
-        scipy.stats.poisson.logpmf(spike_count_per_time_bin, no_spike_rates),
+    return jnp.sum(
+        jax.scipy.stats.poisson.logpmf(spike_count_per_time_bin, no_spike_rates),
         axis=-1,
         keepdims=True,
     )
