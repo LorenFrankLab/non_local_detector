@@ -2,7 +2,6 @@
 from typing import Optional
 
 import numpy as np
-from replay_trajectory_classification.core import atleast_2d
 from scipy.stats import multivariate_normal
 
 
@@ -131,7 +130,7 @@ def simulate_place_field_firing_rate(
     """
     if is_condition is None:
         is_condition = np.ones(position.shape[0], dtype=bool)
-    position = atleast_2d(position)
+    position = position if position.ndim > 1 else position[:, np.newaxis]
     firing_rate = multivariate_normal(means, variance).pdf(position)
     firing_rate /= firing_rate.max()
     firing_rate *= max_rate

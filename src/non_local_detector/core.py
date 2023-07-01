@@ -3,7 +3,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import numpy as np
-from replay_trajectory_classification.core import atleast_2d, check_converged  # noqa
 
 np.seterr(divide="ignore", invalid="ignore")
 
@@ -209,3 +208,39 @@ def hmm_smoother(
         predicted_probs,
         smoothed_probs,
     )
+
+
+def check_converged(
+    log_likelihood: np.ndarray,
+    previous_log_likelihood: np.ndarray,
+    tolerance: float = 1e-4,
+) -> tuple[bool, bool]:
+    """We have converged if the slope of the log-likelihood function falls below 'tolerance',
+
+    i.e., |f(t) - f(t-1)| / avg < tolerance,
+    where avg = (|f(t)| + |f(t-1)|)/2 and f(t) is log lik at iteration t.
+
+    Parameters
+    ----------
+    log_likelihood : np.ndarray
+        Current log likelihood
+    previous_log_likelihood : np.ndarray
+        Previous log likelihood
+    tolerance : float, optional
+        threshold for similarity, by default 1e-4
+
+    Returns
+    -------
+    is_converged : bool
+    is_increasing : bool
+
+    """
+    delta_log_likelihood = abs(log_likelihood - previous_log_likelihood)
+    avg_log_likelihood = (
+        abs(log_likelihood) + abs(previous_log_likelihood) + np.spacing(1)
+    ) / 2
+
+    is_increasing = log_likelihood - previous_log_likelihood >= -1e-3
+    is_converged = (delta_log_likelihood / avg_log_likelihood) < tolerance
+
+    return is_converged, is_increasing

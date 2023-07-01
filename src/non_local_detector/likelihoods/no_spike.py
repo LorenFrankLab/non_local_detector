@@ -1,5 +1,4 @@
 import jax.numpy as jnp
-import numpy as np
 import jax.scipy
 
 
@@ -15,7 +14,7 @@ def get_spikecount_per_time_bin(spike_times, time):
 
 def predict_no_spike_log_likelihood(
     time,
-    spike_times: np.ndarray,
+    spike_times: jnp.ndarray,
     no_spike_rate: float = 1e-10,
     sampling_frequency: float = 500.0,
 ):

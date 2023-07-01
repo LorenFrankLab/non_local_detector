@@ -1,7 +1,7 @@
 """Simulate clusterless spikes and associated spike waveform features."""
 
 import numpy as np
-from replay_trajectory_classification.simulate import (
+from non_local_detector.simulate.simulate import (
     get_trajectory_direction,
     simulate_multiunit_with_place_fields,
     simulate_position,

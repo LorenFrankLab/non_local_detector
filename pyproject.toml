@@ -25,7 +25,6 @@ dependencies = [
     "patsy",
     "tqdm",
     "track_linearization",
-    "replay_trajectory_classification",
     "matplotlib",
     "seaborn",
 ]
