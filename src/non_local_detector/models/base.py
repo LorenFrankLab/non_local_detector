@@ -110,10 +110,8 @@ class _DetectorBase(BaseEstimator):
         self.continuous_transition_types = continuous_transition_types
 
         # Environment parameters
-        if environments is None:
+        if environments is None or not hasattr(environments, "__iter__"):
             environments = (Environment(),)
-        if isinstance(environments, Environment):
-            environments = (environments,)
         self.environments = environments
         self.infer_track_interior = infer_track_interior
 
