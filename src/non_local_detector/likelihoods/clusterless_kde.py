@@ -223,6 +223,7 @@ def fit_clusterless_kde_encoding_model(
     block_size: int = 100,
     disable_progress_bar: bool = False,
 ):
+    position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
         position_std = jnp.array([position_std] * position.shape[1])
     if isinstance(waveform_std, (int, float)):
