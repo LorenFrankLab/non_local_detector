@@ -9,6 +9,7 @@ dependencies:
 - numpy
 - scipy
 - jax
+- pandas
 - networkx
 - xarray
 - scikit-learn

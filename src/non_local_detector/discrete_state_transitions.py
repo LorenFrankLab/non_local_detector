@@ -8,7 +8,6 @@ from jax.nn import log_softmax
 from patsy import build_design_matrices, dmatrix
 from scipy.optimize import minimize
 from scipy.special import softmax
-from statsmodels.tsa.stattools import lagmat
 
 
 def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
@@ -385,7 +384,7 @@ def set_initial_discrete_transition(
             speed_knots = [1.0, 4.0, 16.0, 32.0, 64.0]
 
         formula = f"1 + bs(speed, knots={speed_knots})"
-        data = {"speed": lagmat(speed, maxlag=1)}
+        data = {"speed": np.concatenate(([0.0], speed[:-1]))}  # lagged speed
         discrete_transition_design_matrix = dmatrix(formula, data)
 
         n_time, n_coefficients = discrete_transition_design_matrix.shape

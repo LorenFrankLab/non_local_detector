@@ -19,6 +19,7 @@ dependencies = [
     "scipy",
     "jax",
     "jaxlib",
+    "pandas",
     "networkx",
     "xarray",
     "scikit-learn",

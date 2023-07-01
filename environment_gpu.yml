@@ -11,6 +11,7 @@ dependencies:
 - scipy
 - jaxlib=*=*cuda*
 - jax
+- pandas
 - cuda-nvcc
 - networkx
 - xarray

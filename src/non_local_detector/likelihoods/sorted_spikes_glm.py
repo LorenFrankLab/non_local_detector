@@ -5,7 +5,6 @@ from patsy import build_design_matrices, dmatrix
 from scipy.optimize import minimize
 from tqdm.autonotebook import tqdm
 
-from non_local_detector.core import atleast_2d
 from non_local_detector.environment import get_n_bins
 
 EPS = 1e-15
@@ -14,7 +13,7 @@ EPS = 1e-15
 def make_spline_design_matrix(
     position: np.ndarray, place_bin_edges: np.ndarray, knot_spacing: float = 10.0
 ):
-    position = atleast_2d(position)
+    position = position if position.ndim > 1 else position[:, np.newaxis]
     inner_knots = []
     for pos, edges in zip(position.T, place_bin_edges.T):
         n_points = get_n_bins(edges, bin_size=knot_spacing)
