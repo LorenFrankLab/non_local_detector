@@ -977,6 +977,11 @@ class ClusterlessDetector(_DetectorBase):
     ):
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
+            nan_position = np.any(np.isnan(position), axis=1)
+            if np.any(nan_position) and is_missing is None:
+                is_missing = nan_position
+            elif np.any(nan_position) and is_missing is not None:
+                is_missing = np.logical_or(is_missing, nan_position)
 
         n_time_bins = (
             int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
@@ -1308,6 +1313,11 @@ class SortedSpikesDetector(_DetectorBase):
 
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
+            nan_position = np.any(np.isnan(position), axis=1)
+            if np.any(nan_position) and is_missing is None:
+                is_missing = nan_position
+            elif np.any(nan_position) and is_missing is not None:
+                is_missing = np.logical_or(is_missing, nan_position)
 
         if is_missing is not None and len(is_missing) != len(time):
             raise ValueError(
