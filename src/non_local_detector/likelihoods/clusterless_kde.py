@@ -378,7 +378,6 @@ def predict_clusterless_kde_log_likelihood(
             log_likelihood -= electrode_gpi_model.predict(interpolated_position)
     else:
         is_track_interior = environment.is_track_interior_.ravel(order="F")
-        interior_occupancy = occupancy[is_track_interior]
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
         log_likelihood = -summed_ground_process_intensity * jnp.ones(
@@ -422,7 +421,7 @@ def predict_clusterless_kde_log_likelihood(
                         electrode_decoding_spike_waveform_features,
                         electrode_encoding_spike_waveform_features,
                         waveform_std,
-                        interior_occupancy,
+                        occupancy,
                         electrode_mean_rate,
                         position_distance,
                         block_size,
