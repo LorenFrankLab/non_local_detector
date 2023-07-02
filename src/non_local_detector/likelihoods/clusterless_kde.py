@@ -252,7 +252,9 @@ def fit_clusterless_kde_encoding_model(
     encoding_positions = []
     mean_rates = []
     gpi_models = []
-    summed_ground_process_intensity = jnp.zeros_like(occupancy)
+    summed_ground_process_intensity = jnp.zeros(
+        (environment.place_bin_centers_.shape[0],)
+    )
 
     n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
 
