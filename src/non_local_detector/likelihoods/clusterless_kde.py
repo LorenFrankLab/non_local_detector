@@ -257,14 +257,19 @@ def fit_clusterless_kde_encoding_model(
     )
 
     n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
+    bounded_spike_waveform_features = []
 
-    for electrode_spike_times in spike_times:
-        electrode_spike_times = electrode_spike_times[
-            jnp.logical_and(
-                electrode_spike_times >= position_time[0],
-                electrode_spike_times <= position_time[-1],
-            )
-        ]
+    for electrode_spike_waveform_features, electrode_spike_times in zip(
+        spike_times, spike_waveform_features
+    ):
+        is_in_bounds = jnp.logical_and(
+            electrode_spike_times >= position_time[0],
+            electrode_spike_times <= position_time[-1],
+        )
+        electrode_spike_times = electrode_spike_times[is_in_bounds]
+        bounded_spike_waveform_features.append(
+            electrode_spike_waveform_features[is_in_bounds]
+        )
         mean_rates.append(len(electrode_spike_times) / n_time_bins)
         encoding_positions.append(
             get_position_at_time(
@@ -285,7 +290,7 @@ def fit_clusterless_kde_encoding_model(
         "occupancy": occupancy,
         "occupancy_model": occupancy_model,
         "gpi_models": gpi_models,
-        "encoding_spike_waveform_features": spike_waveform_features,
+        "encoding_spike_waveform_features": bounded_spike_waveform_features,
         "encoding_positions": encoding_positions,
         "environment": environment,
         "mean_rates": mean_rates,
