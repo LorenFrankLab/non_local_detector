@@ -366,19 +366,21 @@ def predict_clusterless_kde_log_likelihood(
                 std=position_std,
             )
 
-            log_likelihood += jax.ops.segment_sum(
-                block_estimate_log_joint_mark_intensity(
-                    electrode_decoding_spike_waveform_features,
-                    electrode_encoding_spike_waveform_features,
-                    waveform_std,
-                    occupancy,
-                    electrode_mean_rate,
-                    position_distance,
-                    block_size,
-                ),
-                get_spike_time_bin_ind(electrode_spike_times, time),
-                indices_are_sorted=False,
-                num_segments=n_time,
+            log_likelihood += jnp.nan_to_num(
+                jax.ops.segment_sum(
+                    block_estimate_log_joint_mark_intensity(
+                        electrode_decoding_spike_waveform_features,
+                        electrode_encoding_spike_waveform_features,
+                        waveform_std,
+                        occupancy,
+                        electrode_mean_rate,
+                        position_distance,
+                        block_size,
+                    ),
+                    get_spike_time_bin_ind(electrode_spike_times, time),
+                    indices_are_sorted=False,
+                    num_segments=n_time,
+                )
             )
             log_likelihood -= electrode_gpi_model.predict(interpolated_position)
     else:
@@ -421,19 +423,21 @@ def predict_clusterless_kde_log_likelihood(
                 std=position_std,
             )
             log_likelihood = log_likelihood.at[:, is_track_interior].add(
-                jax.ops.segment_sum(
-                    block_estimate_log_joint_mark_intensity(
-                        electrode_decoding_spike_waveform_features,
-                        electrode_encoding_spike_waveform_features,
-                        waveform_std,
-                        occupancy,
-                        electrode_mean_rate,
-                        position_distance,
-                        block_size,
-                    ),
-                    get_spike_time_bin_ind(electrode_spike_times, time),
-                    indices_are_sorted=False,
-                    num_segments=n_time,
+                jnp.nan_to_num(
+                    jax.ops.segment_sum(
+                        block_estimate_log_joint_mark_intensity(
+                            electrode_decoding_spike_waveform_features,
+                            electrode_encoding_spike_waveform_features,
+                            waveform_std,
+                            occupancy,
+                            electrode_mean_rate,
+                            position_distance,
+                            block_size,
+                        ),
+                        get_spike_time_bin_ind(electrode_spike_times, time),
+                        indices_are_sorted=False,
+                        num_segments=n_time,
+                    )
                 )
             )
 
