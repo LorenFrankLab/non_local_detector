@@ -115,7 +115,7 @@ def fit_sorted_spikes_kde_encoding_model(
     is_track_interior = environment.is_track_interior_.ravel(order="F")
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
-    if environment.track_graph is not None:
+    if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D
         position1D = get_linearized_position(
             position,
