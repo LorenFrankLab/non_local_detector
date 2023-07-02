@@ -260,7 +260,7 @@ def fit_clusterless_kde_encoding_model(
     bounded_spike_waveform_features = []
 
     for electrode_spike_waveform_features, electrode_spike_times in zip(
-        spike_times, spike_waveform_features
+        spike_waveform_features, spike_times
     ):
         is_in_bounds = jnp.logical_and(
             electrode_spike_times >= position_time[0],
