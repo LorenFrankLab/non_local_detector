@@ -97,7 +97,7 @@ def get_position_at_time(
             env.track_graph,
             edge_order=env.edge_order,
             edge_spacing=env.edge_spacing,
-        ).linear_position.to_numpy()
+        ).linear_position.to_numpy()[:, None]
 
     return position_at_spike_times
 
@@ -122,7 +122,7 @@ def fit_sorted_spikes_kde_encoding_model(
             environment.track_graph,
             edge_order=environment.edge_order,
             edge_spacing=environment.edge_spacing,
-        ).linear_position.to_numpy()
+        ).linear_position.to_numpy()[:, None]
         occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
             position1D
         )
