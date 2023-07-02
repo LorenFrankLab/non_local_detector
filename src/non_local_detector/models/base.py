@@ -810,6 +810,8 @@ class ClusterlessDetector(_DetectorBase):
     ):
         logger.info("Fitting clusterless spikes...")
         n_time = position.shape[0]
+        position = position if position.ndim > 1 else position[:, np.newaxis]
+
         if is_training is None:
             is_training = np.ones((n_time,), dtype=bool)
 
@@ -822,6 +824,13 @@ class ClusterlessDetector(_DetectorBase):
             )
 
         is_training = np.asarray(is_training).squeeze()
+
+        is_nan = np.any(np.isnan(position), axis=1)
+        position = position[~is_nan]
+        position_time = position_time[~is_nan]
+        is_training = is_training[~is_nan]
+        encoding_group_labels = encoding_group_labels[~is_nan]
+        environment_labels = environment_labels[~is_nan]
 
         kwargs = self.clusterless_algorithm_params
         if kwargs is None:
@@ -1139,6 +1148,7 @@ class SortedSpikesDetector(_DetectorBase):
     ):
         logger.info("Fitting place fields...")
         n_time = position.shape[0]
+        position = position if position.ndim > 1 else position[:, np.newaxis]
         if is_training is None:
             is_training = np.ones((n_time,), dtype=bool)
 
@@ -1151,6 +1161,12 @@ class SortedSpikesDetector(_DetectorBase):
             )
 
         is_training = np.asarray(is_training).squeeze()
+        is_nan = np.any(np.isnan(position), axis=1)
+        position = position[~is_nan]
+        position_time = position_time[~is_nan]
+        is_training = is_training[~is_nan]
+        encoding_group_labels = encoding_group_labels[~is_nan]
+        environment_labels = environment_labels[~is_nan]
 
         kwargs = self.sorted_spikes_algorithm_params
         if kwargs is None:
