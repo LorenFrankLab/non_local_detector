@@ -3,6 +3,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import scipy.interpolate
 from tqdm.autonotebook import tqdm
 from track_linearization import get_linearized_position
@@ -234,8 +235,8 @@ def predict_sorted_spikes_kde_log_likelihood(
                 occupancy > 0.0, marginal_density / occupancy, EPS
             )
             local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
-            spike_count_per_time_bin = jnp.bincount(
-                jnp.digitize(neuron_spike_times, time[1:-1]),
+            spike_count_per_time_bin = np.bincount(
+                np.digitize(neuron_spike_times, time[1:-1]),
                 minlength=time.shape[0],
             )
             log_likelihood += (
@@ -261,8 +262,8 @@ def predict_sorted_spikes_kde_log_likelihood(
                     neuron_spike_times <= time[-1],
                 )
             ]
-            spike_count_per_time_bin = jnp.bincount(
-                jnp.digitize(neuron_spike_times, time[1:-1]),
+            spike_count_per_time_bin = np.bincount(
+                np.digitize(neuron_spike_times, time[1:-1]),
                 minlength=time.shape[0],
             )
             log_likelihood += jax.scipy.special.xlogy(

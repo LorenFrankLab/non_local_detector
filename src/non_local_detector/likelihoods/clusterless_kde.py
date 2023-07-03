@@ -3,6 +3,7 @@ from functools import partial
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import scipy.interpolate
 from tqdm.autonotebook import tqdm
 from track_linearization import get_linearized_position
@@ -13,7 +14,7 @@ EPS = 1e-15
 
 
 def get_spike_time_bin_ind(spike_times, time):
-    return jnp.digitize(spike_times, time[1:-1])
+    return np.digitize(spike_times, time[1:-1])
 
 
 @jax.jit
