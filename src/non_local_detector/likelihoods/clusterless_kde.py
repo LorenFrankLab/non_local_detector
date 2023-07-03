@@ -11,6 +11,7 @@ from track_linearization import get_linearized_position
 from non_local_detector.environment import Environment
 
 EPS = 1e-15
+LOG_EPS = np.log(EPS)
 
 
 def get_spike_time_bin_ind(spike_times, time):
@@ -161,7 +162,7 @@ def block_estimate_log_joint_mark_intensity(
             (start_ind, 0),
         )
 
-    return log_joint_mark_intensity
+    return jnp.clip(log_joint_mark_intensity, a_min=LOG_EPS, a_max=None)
 
 
 @dataclass
@@ -367,22 +368,21 @@ def predict_clusterless_kde_log_likelihood(
                 std=position_std,
             )
 
-            log_likelihood += jnp.nan_to_num(
-                jax.ops.segment_sum(
-                    block_estimate_log_joint_mark_intensity(
-                        electrode_decoding_spike_waveform_features,
-                        electrode_encoding_spike_waveform_features,
-                        waveform_std,
-                        occupancy,
-                        electrode_mean_rate,
-                        position_distance,
-                        block_size,
-                    ),
-                    get_spike_time_bin_ind(electrode_spike_times, time),
-                    indices_are_sorted=False,
-                    num_segments=n_time,
-                )
+            log_likelihood += jax.ops.segment_sum(
+                block_estimate_log_joint_mark_intensity(
+                    electrode_decoding_spike_waveform_features,
+                    electrode_encoding_spike_waveform_features,
+                    waveform_std,
+                    occupancy,
+                    electrode_mean_rate,
+                    position_distance,
+                    block_size,
+                ),
+                get_spike_time_bin_ind(electrode_spike_times, time),
+                indices_are_sorted=False,
+                num_segments=n_time,
             )
+
             log_likelihood -= electrode_gpi_model.predict(interpolated_position)
     else:
         is_track_interior = environment.is_track_interior_.ravel(order="F")
@@ -424,21 +424,19 @@ def predict_clusterless_kde_log_likelihood(
                 std=position_std,
             )
             log_likelihood = log_likelihood.at[:, is_track_interior].add(
-                jnp.nan_to_num(
-                    jax.ops.segment_sum(
-                        block_estimate_log_joint_mark_intensity(
-                            electrode_decoding_spike_waveform_features,
-                            electrode_encoding_spike_waveform_features,
-                            waveform_std,
-                            occupancy,
-                            electrode_mean_rate,
-                            position_distance,
-                            block_size,
-                        ),
-                        get_spike_time_bin_ind(electrode_spike_times, time),
-                        indices_are_sorted=False,
-                        num_segments=n_time,
-                    )
+                jax.ops.segment_sum(
+                    block_estimate_log_joint_mark_intensity(
+                        electrode_decoding_spike_waveform_features,
+                        electrode_encoding_spike_waveform_features,
+                        waveform_std,
+                        occupancy,
+                        electrode_mean_rate,
+                        position_distance,
+                        block_size,
+                    ),
+                    get_spike_time_bin_ind(electrode_spike_times, time),
+                    indices_are_sorted=False,
+                    num_segments=n_time,
                 )
             )
 
