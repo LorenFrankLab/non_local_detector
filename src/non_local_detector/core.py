@@ -35,7 +35,7 @@ def convert_to_state_probability(
     )
 
 
-## NOTE: copied from dynamax: https://github.com/probml/dynamax/ ##
+## NOTE: copied from dynamax: https://github.com/probml/dynamax/ with modifications ##
 def get_trans_mat(transition_matrix, transition_fn, t):
     if transition_fn is not None:
         return transition_fn(t)
@@ -57,9 +57,8 @@ def _normalize(u, axis=0, eps=1e-15):
     Returns:
         Tuple of the normalized values, and the normalizing denominator.
     """
-    u = jnp.where(u == 0, 0, jnp.where(u < eps, eps, u))
+    u = jnp.clip(u, a_min=1e-15, a_max=None)
     c = u.sum(axis=axis)
-    c = jnp.where(c == 0, 1, c)
     return u / c, c
 
 
@@ -76,6 +75,7 @@ def _condition_on(probs, ll):
         probs(k): posterior for state k
     """
     ll_max = ll.max()
+    ll_max = jnp.where(jnp.isfinite(ll_max), ll_max, 0.0)
     new_probs = probs * jnp.exp(ll - ll_max)
     new_probs, norm = _normalize(new_probs)
     log_norm = jnp.log(norm) + ll_max
