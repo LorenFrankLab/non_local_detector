@@ -528,6 +528,7 @@ class _DetectorBase(BaseEstimator):
         estimate_discrete_transition: bool = True,
         max_iter: int = 20,
         tolerance: float = 1e-4,
+        return_causal_posterior: bool = False,
     ):
         marginal_log_likelihoods = []
         n_iter = 0
@@ -611,6 +612,7 @@ class _DetectorBase(BaseEstimator):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihoods,
+            return_causal_posterior,
         )
 
     def save_model(self, filename: str = "model.pkl"):
@@ -974,6 +976,7 @@ class ClusterlessDetector(_DetectorBase):
         position_time=None,
         is_missing=None,
         discrete_transition_covariate_data=None,
+        return_causal_posterior: bool = False,
     ):
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
@@ -1025,6 +1028,7 @@ class ClusterlessDetector(_DetectorBase):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihood,
+            return_causal_posterior,
         )
 
     def estimate_parameters(
@@ -1305,6 +1309,7 @@ class SortedSpikesDetector(_DetectorBase):
         position_time=None,
         is_missing=None,
         discrete_transition_covariate_data=None,
+        return_causal_posterior: bool = False,
     ):
         n_time_bins = (
             int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
@@ -1350,6 +1355,7 @@ class SortedSpikesDetector(_DetectorBase):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihood,
+            return_causal_posterior,
         )
 
     def estimate_parameters(
@@ -1367,6 +1373,7 @@ class SortedSpikesDetector(_DetectorBase):
         estimate_discrete_transition: bool = True,
         max_iter: int = 20,
         tolerance: float = 0.0001,
+        return_causal_posterior: bool = False,
     ):
         n_time_bins = (
             int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
@@ -1392,4 +1399,5 @@ class SortedSpikesDetector(_DetectorBase):
             estimate_discrete_transition,
             max_iter,
             tolerance,
+            return_causal_posterior,
         )
