@@ -25,7 +25,6 @@ def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.n
     return jnp.exp(-0.5 * ((x - mean) / sigma) ** 2) / (sigma * jnp.sqrt(2.0 * jnp.pi))
 
 
-@jax.jit
 def kde(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
@@ -40,7 +39,6 @@ def kde(
     return jnp.mean(distance, axis=0).squeeze()
 
 
-@partial(jax.jit, static_argnums=(3,))
 def block_kde(
     eval_points: jnp.ndarray,
     samples: jnp.ndarray,
@@ -60,7 +58,6 @@ def block_kde(
     return density
 
 
-@jax.jit
 def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
@@ -75,7 +72,6 @@ def kde_distance(
     return distance
 
 
-@jax.jit
 def estimate_log_joint_mark_intensity(
     decoding_spike_waveform_features: jnp.ndarray,
     encoding_spike_waveform_features: jnp.ndarray,
@@ -115,7 +111,6 @@ def estimate_log_joint_mark_intensity(
     )
 
 
-@partial(jax.jit, static_argnums=(6,))
 def block_estimate_log_joint_mark_intensity(
     decoding_spike_waveform_features: jnp.ndarray,
     encoding_spike_waveform_features: jnp.ndarray,
