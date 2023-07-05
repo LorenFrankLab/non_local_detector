@@ -254,9 +254,7 @@ def fit_clusterless_kde_encoding_model(
     encoding_positions = []
     mean_rates = []
     gpi_models = []
-    summed_ground_process_intensity = jnp.zeros(
-        (environment.place_bin_centers_.shape[0],)
-    )
+    summed_ground_process_intensity = jnp.zeros_like(occupancy)
 
     n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
     bounded_spike_waveform_features = []
@@ -284,9 +282,11 @@ def fit_clusterless_kde_encoding_model(
         )
         gpi_models.append(gpi_model)
 
-        summed_ground_process_intensity = summed_ground_process_intensity.at[
-            is_track_interior
-        ].add(gpi_model.predict(interior_place_bin_centers))
+        summed_ground_process_intensity += mean_rates[-1] * jnp.where(
+            occupancy > 0.0,
+            gpi_model.predict(interior_place_bin_centers) / occupancy,
+            0.0,
+        )
 
     return {
         "occupancy": occupancy,
@@ -383,14 +383,20 @@ def predict_clusterless_kde_log_likelihood(
                 num_segments=n_time,
             )
 
-            log_likelihood -= electrode_gpi_model.predict(interpolated_position)
+            log_likelihood -= electrode_mean_rate * jnp.where(
+                occupancy > 0.0,
+                electrode_gpi_model.predict(interpolated_position) / occupancy,
+                0.0,
+            )
     else:
         is_track_interior = environment.is_track_interior_.ravel(order="F")
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
-        log_likelihood = -summed_ground_process_intensity * jnp.ones(
-            (n_time, 1),
-        )
+        log_likelihood = (
+            jnp.zeros((is_track_interior.shape[0],))
+            .at[is_track_interior]
+            .set(-1.0 * summed_ground_process_intensity)
+        ) * jnp.ones((n_time, 1))
 
         for (
             electrode_encoding_spike_waveform_features,
