@@ -20,7 +20,6 @@ def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.n
     return jnp.exp(-0.5 * ((x - mean) / sigma) ** 2) / (sigma * jnp.sqrt(2.0 * jnp.pi))
 
 
-@jax.jit
 def kde(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
@@ -35,7 +34,6 @@ def kde(
     return jnp.mean(distance, axis=0).squeeze()
 
 
-@partial(jax.jit, static_argnums=(3,))
 def block_kde(
     eval_points: jnp.ndarray,
     samples: jnp.ndarray,
