@@ -45,8 +45,6 @@ def block_kde(
     std: jnp.ndarray,
     block_size: int = 100,
 ) -> jnp.ndarray:
-    if eval_points.shape[1] != samples.shape[1] or std.shape[0] != samples.shape[1]:
-        raise ValueError("Dimension mismatch between eval_points, samples, and std")
     n_eval_points = eval_points.shape[0]
     density = jnp.zeros((n_eval_points,))
     for start_ind in range(0, n_eval_points, block_size):
@@ -64,8 +62,6 @@ def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
     distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
-    if eval_points.shape[1] != samples.shape[1] or std.shape[0] != samples.shape[1]:
-        raise ValueError("Dimension mismatch between eval_points, samples, and std")
     for dim_eval_points, dim_samples, dim_std in zip(eval_points.T, samples.T, std):
         distance *= gaussian_pdf(
             jnp.expand_dims(dim_eval_points, axis=0),
@@ -225,7 +221,10 @@ def fit_clusterless_kde_encoding_model(
 ):
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
-        position_std = jnp.array([position_std] * position.shape[1])
+        if environment.track_graph is not None and position.shape[1] > 1:
+            position_std = jnp.array([position_std])
+        else:
+            position_std = jnp.array([position_std] * position.shape[1])
     if isinstance(waveform_std, (int, float)):
         waveform_std = jnp.array([waveform_std] * spike_waveform_features[0].shape[1])
 

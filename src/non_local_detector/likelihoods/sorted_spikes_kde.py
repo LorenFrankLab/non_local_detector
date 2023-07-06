@@ -111,6 +111,13 @@ def fit_sorted_spikes_kde_encoding_model(
     block_size: int = 100,
     disable_progress_bar: bool = False,
 ):
+    position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
+    if isinstance(position_std, (int, float)):
+        if environment.track_graph is not None and position.shape[1] > 1:
+            position_std = jnp.array([position_std])
+        else:
+            position_std = jnp.array([position_std] * position.shape[1])
+
     is_track_interior = environment.is_track_interior_.ravel(order="F")
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
