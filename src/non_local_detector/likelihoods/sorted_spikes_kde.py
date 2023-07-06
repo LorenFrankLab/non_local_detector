@@ -25,11 +25,11 @@ def kde(
 ) -> jnp.ndarray:
     distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
 
-    for dim_ind, std in enumerate(std):
+    for dim_eval_points, dim_samples, dim_std in zip(eval_points.T, samples.T, std):
         distance *= gaussian_pdf(
-            jnp.expand_dims(eval_points[:, dim_ind], axis=0),
-            jnp.expand_dims(samples[:, dim_ind], axis=1),
-            std,
+            jnp.expand_dims(dim_eval_points, axis=0),
+            jnp.expand_dims(dim_samples, axis=1),
+            dim_std,
         )
     return jnp.mean(distance, axis=0).squeeze()
 

@@ -30,11 +30,11 @@ def kde(
 ) -> jnp.ndarray:
     distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
 
-    for dim_ind, std in enumerate(std):
+    for dim_eval_points, dim_samples, dim_std in zip(eval_points.T, samples.T, std):
         distance *= gaussian_pdf(
-            jnp.expand_dims(eval_points[:, dim_ind], axis=0),
-            jnp.expand_dims(samples[:, dim_ind], axis=1),
-            std,
+            jnp.expand_dims(dim_eval_points, axis=0),
+            jnp.expand_dims(dim_samples, axis=1),
+            dim_std,
         )
     return jnp.mean(distance, axis=0).squeeze()
 
@@ -45,6 +45,8 @@ def block_kde(
     std: jnp.ndarray,
     block_size: int = 100,
 ) -> jnp.ndarray:
+    if eval_points.shape[1] != samples.shape[1] or std.shape[0] != samples.shape[1]:
+        raise ValueError("Dimension mismatch between eval_points, samples, and std")
     n_eval_points = eval_points.shape[0]
     density = jnp.zeros((n_eval_points,))
     for start_ind in range(0, n_eval_points, block_size):
@@ -62,12 +64,13 @@ def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
     distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
-
-    for dim_ind, std in enumerate(std):
+    if eval_points.shape[1] != samples.shape[1] or std.shape[0] != samples.shape[1]:
+        raise ValueError("Dimension mismatch between eval_points, samples, and std")
+    for dim_eval_points, dim_samples, dim_std in zip(eval_points.T, samples.T, std):
         distance *= gaussian_pdf(
-            jnp.expand_dims(eval_points[:, dim_ind], axis=0),
-            jnp.expand_dims(samples[:, dim_ind], axis=1),
-            std,
+            jnp.expand_dims(dim_eval_points, axis=0),
+            jnp.expand_dims(dim_samples, axis=1),
+            dim_std,
         )
     return distance
 
