@@ -13,7 +13,6 @@ from non_local_detector.environment import Environment
 EPS = 1e-15
 
 
-@jax.jit
 def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
     """Compute the value of a Gaussian probability density function at x with
     given mean and sigma."""
