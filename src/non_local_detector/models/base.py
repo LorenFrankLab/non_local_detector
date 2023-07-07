@@ -55,7 +55,6 @@ _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS = {
 }
 _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS = {
     "position_std": 6.0,
-    "use_diffusion": False,
     "block_size": 10_000,
 }
 
