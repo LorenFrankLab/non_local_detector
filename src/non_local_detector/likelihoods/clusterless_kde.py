@@ -18,6 +18,7 @@ def get_spike_time_bin_ind(spike_times, time):
     return np.digitize(spike_times, time[1:-1])
 
 
+@jax.jit
 def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
     """Compute the value of a Gaussian probability density function at x with
     given mean and sigma."""
