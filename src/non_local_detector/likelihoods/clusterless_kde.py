@@ -329,61 +329,24 @@ def predict_clusterless_kde_log_likelihood(
         )
         occupancy = occupancy_model.predict(interpolated_position)
 
-        log_likelihood = jnp.zeros((n_time, 1))
-        for (
-            electrode_encoding_spike_waveform_features,
-            electrode_encoding_positions,
-            electrode_mean_rate,
-            electrode_gpi_model,
-            electrode_decoding_spike_waveform_features,
-            electrode_spike_times,
-        ) in zip(
-            tqdm(
-                encoding_spike_waveform_features,
-                unit="electrode",
-                desc="Local Likelihood",
-                disable=disable_progress_bar,
-            ),
-            encoding_positions,
-            mean_rates,
-            gpi_models,
-            spike_waveform_features,
+        log_likelihood = compute_local_log_likelihood(
+            time,
+            position_time,
+            position,
             spike_times,
-        ):
-            is_in_bounds = jnp.logical_and(
-                electrode_spike_times >= time[0],
-                electrode_spike_times <= time[-1],
-            )
-            electrode_spike_times = electrode_spike_times[is_in_bounds]
-            electrode_decoding_spike_waveform_features = (
-                electrode_decoding_spike_waveform_features[is_in_bounds]
-            )
-            position_distance = kde_distance(
-                interpolated_position,
-                electrode_encoding_positions,
-                std=position_std,
-            )
-
-            log_likelihood += jax.ops.segment_sum(
-                block_estimate_log_joint_mark_intensity(
-                    electrode_decoding_spike_waveform_features,
-                    electrode_encoding_spike_waveform_features,
-                    waveform_std,
-                    occupancy,
-                    electrode_mean_rate,
-                    position_distance,
-                    block_size,
-                ),
-                get_spike_time_bin_ind(electrode_spike_times, time),
-                indices_are_sorted=False,
-                num_segments=n_time,
-            )
-
-            log_likelihood -= electrode_mean_rate * jnp.where(
-                occupancy > 0.0,
-                electrode_gpi_model.predict(interpolated_position) / occupancy,
-                0.0,
-            )
+            spike_waveform_features,
+            occupancy,
+            occupancy_model,
+            gpi_models,
+            encoding_spike_waveform_features,
+            encoding_positions,
+            environment,
+            mean_rates,
+            position_std,
+            waveform_std,
+            block_size,
+            disable_progress_bar,
+        )
     else:
         is_track_interior = environment.is_track_interior_.ravel(order="F")
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
@@ -443,3 +406,94 @@ def predict_clusterless_kde_log_likelihood(
             )
 
     return log_likelihood
+
+
+def compute_local_log_likelihood(
+    time: jnp.ndarray,
+    position_time: jnp.ndarray,
+    position: jnp.ndarray,
+    spike_times: list[jnp.ndarray],
+    spike_waveform_features: list[jnp.ndarray],
+    occupancy,
+    occupancy_model,
+    gpi_models,
+    encoding_spike_waveform_features,
+    encoding_positions,
+    environment,
+    mean_rates,
+    position_std,
+    waveform_std,
+    block_size: int = 100,
+    disable_progress_bar: bool = False,
+):
+    # Need to interpolate position
+    interpolated_position = get_position_at_time(
+        position_time, position, time, environment
+    )
+    occupancy = occupancy_model.predict(interpolated_position)
+
+    n_time = len(time)
+    log_likelihood = jnp.zeros((n_time,))
+    for (
+        electrode_encoding_spike_waveform_features,
+        electrode_encoding_positions,
+        electrode_mean_rate,
+        electrode_gpi_model,
+        electrode_decoding_spike_waveform_features,
+        electrode_spike_times,
+    ) in zip(
+        tqdm(
+            encoding_spike_waveform_features,
+            unit="electrode",
+            desc="Local Likelihood",
+            disable=disable_progress_bar,
+        ),
+        encoding_positions,
+        mean_rates,
+        gpi_models,
+        spike_waveform_features,
+        spike_times,
+    ):
+        is_in_bounds = jnp.logical_and(
+            electrode_spike_times >= time[0],
+            electrode_spike_times <= time[-1],
+        )
+        electrode_spike_times = electrode_spike_times[is_in_bounds]
+        electrode_decoding_spike_waveform_features = (
+            electrode_decoding_spike_waveform_features[is_in_bounds]
+        )
+
+        position_at_spike_time = get_position_at_time(
+            position_time, position, electrode_spike_times, environment
+        )
+
+        log_likelihood += jax.ops.segment_sum(
+            block_kde(
+                eval_points=jnp.concatenate(
+                    (
+                        position_at_spike_time,
+                        electrode_decoding_spike_waveform_features,
+                    ),
+                    axis=1,
+                ),
+                samples=jnp.concatenate(
+                    (
+                        electrode_encoding_positions,
+                        electrode_encoding_spike_waveform_features,
+                    ),
+                    axis=1,
+                ),
+                std=jnp.concatenate((position_std, waveform_std)),
+                block_size=block_size,
+            ),
+            get_spike_time_bin_ind(electrode_spike_times, time),
+            indices_are_sorted=False,
+            num_segments=n_time,
+        )
+
+        log_likelihood -= electrode_mean_rate * jnp.where(
+            occupancy > 0.0,
+            electrode_gpi_model.predict(interpolated_position) / occupancy,
+            0.0,
+        )
+    return log_likelihood[:, jnp.newaxis]
