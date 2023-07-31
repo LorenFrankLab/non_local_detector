@@ -54,6 +54,8 @@ discrete_transition_type = DiscreteStationaryDiagonal(
     diagonal_values=np.array([0.90, 0.90, 0.90, 0.98])
 )
 
+no_spike_rate = 1e-50
+
 state_names = [
     "Local",
     "No-Spike",
@@ -79,7 +81,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         infer_track_interior: bool = True,
         state_names: list[str] | None = state_names,
         sampling_frequency: float = 500.0,
-        no_spike_rate: float = 1e-10,
+        no_spike_rate: float = no_spike_rate,
     ):
         super().__init__(
             discrete_initial_conditions,
@@ -117,7 +119,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         infer_track_interior: bool = True,
         state_names: list[str] | None = state_names,
         sampling_frequency: float = 500.0,
-        no_spike_rate: float = 1e-10,
+        no_spike_rate: float = no_spike_rate,
     ):
         super().__init__(
             discrete_initial_conditions,
