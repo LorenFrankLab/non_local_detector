@@ -19,8 +19,17 @@ def plot_non_local_model(
     if time_slice is None:
         time_slice = slice(results.time.values[0], results.time.values[-1])
 
-    place_fields = detector.encoding_model_[("", 0)]["place_fields"]
     env = detector.environments[0]
+    try:
+        place_fields = detector.encoding_model_[("", 0)]["place_fields"]
+        neuron_sort_ind = np.argsort(
+            env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()
+        )
+        cell_label = "Neuron"
+    except KeyError:
+        neuron_sort_ind = np.arange(len(spike_times))
+        cell_label = "Electrode\nGroup"
+
     state_ind = detector.state_ind_
     state_names = detector.state_names
     acausal_state_probabilities = results.sel(
@@ -55,9 +64,6 @@ def plot_non_local_model(
     )[:, np.newaxis]
     conditional_non_local_acausal_posterior[:, ~env.is_track_interior_] = np.nan
 
-    neuron_sort_ind = np.argsort(
-        env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()
-    )
     new_spike_times = [
         spike_times[neuron_id][
             np.logical_and(
@@ -68,7 +74,7 @@ def plot_non_local_model(
         for neuron_id in neuron_sort_ind
     ]
     axes[0].eventplot(new_spike_times)
-    axes[0].set_ylabel("Neuron")
+    axes[0].set_ylabel(cell_label)
 
     h = axes[1].plot(results_time, acausal_state_probabilities)
     axes[1].legend(h, state_names)
