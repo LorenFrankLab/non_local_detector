@@ -324,19 +324,12 @@ def predict_clusterless_kde_log_likelihood(
     n_time = len(time)
 
     if is_local:
-        # Need to interpolate position
-        interpolated_position = get_position_at_time(
-            position_time, position, time, environment
-        )
-        occupancy = occupancy_model.predict(interpolated_position)
-
         log_likelihood = compute_local_log_likelihood(
             time,
             position_time,
             position,
             spike_times,
             spike_waveform_features,
-            occupancy,
             occupancy_model,
             gpi_models,
             encoding_spike_waveform_features,
@@ -415,7 +408,6 @@ def compute_local_log_likelihood(
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
-    occupancy,
     occupancy_model,
     gpi_models,
     encoding_spike_waveform_features,
@@ -468,24 +460,34 @@ def compute_local_log_likelihood(
             position_time, position, electrode_spike_times, environment
         )
 
+        marginal_density = block_kde(
+            eval_points=jnp.concatenate(
+                (
+                    position_at_spike_time,
+                    electrode_decoding_spike_waveform_features,
+                ),
+                axis=1,
+            ),
+            samples=jnp.concatenate(
+                (
+                    electrode_encoding_positions,
+                    electrode_encoding_spike_waveform_features,
+                ),
+                axis=1,
+            ),
+            std=jnp.concatenate((position_std, waveform_std)),
+            block_size=block_size,
+        )
+        occupancy_at_spike_time = occupancy_model.predict(position_at_spike_time)
+
         log_likelihood += jax.ops.segment_sum(
-            block_kde(
-                eval_points=jnp.concatenate(
-                    (
-                        position_at_spike_time,
-                        electrode_decoding_spike_waveform_features,
-                    ),
-                    axis=1,
-                ),
-                samples=jnp.concatenate(
-                    (
-                        electrode_encoding_positions,
-                        electrode_encoding_spike_waveform_features,
-                    ),
-                    axis=1,
-                ),
-                std=jnp.concatenate((position_std, waveform_std)),
-                block_size=block_size,
+            jnp.log(
+                electrode_mean_rate
+                * jnp.where(
+                    occupancy_at_spike_time > 0.0,
+                    marginal_density / occupancy_at_spike_time,
+                    0.0,
+                )
             ),
             get_spike_time_bin_ind(electrode_spike_times, time),
             indices_are_sorted=False,
