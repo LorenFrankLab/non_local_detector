@@ -78,7 +78,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
         state_names: list[str] | None = state_names,
-        sampling_frequency: float = 500,
+        sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
         super().__init__(
