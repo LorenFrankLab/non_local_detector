@@ -488,6 +488,38 @@ class DiscreteStationaryDiagonal:
 
 
 @dataclass
+class DiscreteStationaryCustom:
+    """Creates a custom discrete transition matrix.
+
+
+    Attributes
+    ----------
+    values : np.ndarray, shape (n_states, n_states)
+        The values of the transition matrix.
+
+    """
+
+    values: np.ndarray
+
+    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:
+        """Constructs the initial discrete transition matrix.
+
+        Returns
+        -------
+        discrete_transition : np.ndarray, shape (n_states, n_states)
+            The initial discrete transition matrix.
+        discrete_transition_coefficients : None
+            The coefficients for the non-stationary transition matrix.
+            It is None here because the transition matrix is stationary.
+        discrete_transition_design_matrix : None
+            The design matrix for the non-stationary transition matrix.
+            It is None here because the transition matrix is stationary.
+
+        """
+        return np.asarray(self.values), None, None
+
+
+@dataclass
 class DiscreteNonStationaryDiagonal:
     """Covariate driven transition matrix that changes over time.
 
