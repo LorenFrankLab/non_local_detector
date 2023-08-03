@@ -614,6 +614,12 @@ class _DetectorBase(BaseEstimator):
             return_causal_posterior,
         )
 
+    def calculate_time_bins(self, time_range):
+        n_time_bins = int(
+            np.ceil((time_range[-1] - time_range[0]) * self.sampling_frequency)
+        )
+        return time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+
     def save_model(self, filename: str = "model.pkl"):
         """Save the detector to a pickled file.
 
@@ -985,10 +991,7 @@ class ClusterlessDetector(_DetectorBase):
             elif np.any(nan_position) and is_missing is not None:
                 is_missing = np.logical_or(is_missing, nan_position)
 
-        n_time_bins = (
-            int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
-        )
-        time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+        time = self.calculate_time_bins(time_range)
 
         if is_missing is not None and len(is_missing) != len(time):
             raise ValueError(
@@ -1047,10 +1050,7 @@ class ClusterlessDetector(_DetectorBase):
         max_iter: int = 20,
         tolerance: float = 0.0001,
     ):
-        n_time_bins = (
-            int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
-        )
-        time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+        time = self.calculate_time_bins(time_range)
 
         self.fit(
             position_time,
@@ -1310,10 +1310,7 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data=None,
         return_causal_posterior: bool = False,
     ):
-        n_time_bins = (
-            int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
-        )
-        time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+        time = self.calculate_time_bins(time_range)
 
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
@@ -1374,10 +1371,7 @@ class SortedSpikesDetector(_DetectorBase):
         tolerance: float = 0.0001,
         return_causal_posterior: bool = False,
     ):
-        n_time_bins = (
-            int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
-        )
-        time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+        time = self.calculate_time_bins(time_range)
         position = position[:, np.newaxis] if position.ndim == 1 else position
 
         self.fit(
