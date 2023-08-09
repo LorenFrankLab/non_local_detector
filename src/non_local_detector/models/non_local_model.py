@@ -1,4 +1,5 @@
 import numpy as np
+import xarray as xr
 
 from non_local_detector.continuous_state_transitions import (
     Discrete,
@@ -146,6 +147,13 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
             no_spike_rate,
         )
 
+    @staticmethod
+    def get_conditional_non_local_posterior(results):
+        acausal_posterior = results.acausal_posterior.sel(state="Non-Local Continuous")
+        acausal_posterior += results.acausal_posterior.sel(state="Non-Local Fragmented")
+
+        return acausal_posterior / acausal_posterior.sum("position")
+
 
 class NonLocalClusterlessDetector(ClusterlessDetector):
     def __init__(
@@ -183,3 +191,10 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
             sampling_frequency,
             no_spike_rate,
         )
+
+    @staticmethod
+    def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
+        acausal_posterior = results.acausal_posterior.sel(state="Non-Local Continuous")
+        acausal_posterior += results.acausal_posterior.sel(state="Non-Local Fragmented")
+
+        return acausal_posterior / acausal_posterior.sum("position")

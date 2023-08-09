@@ -1,4 +1,5 @@
 import numpy as np
+import xarray as xr
 
 from non_local_detector.continuous_state_transitions import RandomWalk, Uniform
 from non_local_detector.discrete_state_transitions import DiscreteStationaryDiagonal
@@ -87,6 +88,10 @@ class ContFragSortedSpikesClassifier(SortedSpikesDetector):
             no_spike_rate,
         )
 
+    @staticmethod
+    def get_posterior(results: xr.Dataset) -> xr.DataArray:
+        return results.acausal_posterior.unstack("state_bins").sum("position")
+
 
 class ContFragClusterlessClassifier(ClusterlessDetector):
     def __init__(
@@ -124,3 +129,7 @@ class ContFragClusterlessClassifier(ClusterlessDetector):
             sampling_frequency,
             no_spike_rate,
         )
+
+    @staticmethod
+    def get_posterior(results: xr.Dataset) -> xr.DataArray:
+        return results.acausal_posterior.unstack("state_bins").sum("position")
