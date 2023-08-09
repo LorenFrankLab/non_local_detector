@@ -2,10 +2,11 @@ try:
     from typing import Union
 
     import numpy as np
-    import pandas as pd
     import sortingview.views as vv
     import sortingview.views.franklab as vvf
     import xarray as xr
+
+    from non_local_detector.visualization.static import get_multiunit_firing_rate
 
     def discretize_and_trim(series: xr.DataArray) -> xr.DataArray:
         discretized = np.multiply(series, 255).astype(np.uint8)  # type: ignore
@@ -81,17 +82,15 @@ try:
         )
 
     def create_interactive_1D_decoding_figurl(
-        position_info: pd.DataFrame,
+        position: np.ndarray,
+        speed: np.ndarray,
         spike_times: list[np.ndarray],
         results: xr.Dataset,
-        position_name: str = "linear_position",
-        speed_name: str = "head_speed",
-        sampling_frequency: float = 500.0,
         view_height: int = 800,
     ):
         decode_view = create_1D_decode_view(
-            posterior=results[posterior_type].sum("state"),
-            linear_position=linear_position_info[position_name],
+            posterior=results.acausal_posterior.unstack("state_bins").sum("position"),
+            linear_position=position,
         )
 
         probability_view = vv.TimeseriesGraph()
@@ -107,12 +106,12 @@ try:
             "#bcbd22",
             "#17becf",
         ]
-        for state, color in zip(results.state.values, COLOR_CYCLE):
+        for state, color in zip(results.states.values, COLOR_CYCLE):
             probability_view.add_line_series(
                 name=state,
                 t=np.asarray(results.time),
                 y=np.asarray(
-                    results[posterior_type].sel(state=state).sum("position"),
+                    results.sel(states=state).acausal_state_probabilities,
                     dtype=np.float32,
                 ),
                 color=color,
@@ -121,20 +120,17 @@ try:
 
         speed_view = vv.TimeseriesGraph().add_line_series(
             name="Speed [cm/s]",
-            t=np.asarray(position_info.index),
-            y=np.asarray(position_info[speed_name], dtype=np.float32),
+            t=np.asarray(results.time),
+            y=np.asarray(speed, dtype=np.float32),
             color="black",
             width=1,
         )
-
-        multiunit_spikes = (np.any(~np.isnan(marks.values), axis=1)).astype(float)
-        multiunit_firing_rate = get_multiunit_population_firing_rate(
-            multiunit_spikes, sampling_frequency
+        multiunit_firing_rate = get_multiunit_firing_rate(
+            spike_times, results.time.values
         )
-
         multiunit_firing_rate_view = vv.TimeseriesGraph().add_line_series(
             name="Multiunit Rate [spikes/s]",
-            t=np.asarray(marks.time.values),
+            t=np.asarray(results.time.values),
             y=np.asarray(multiunit_firing_rate, dtype=np.float32),
             color="black",
             width=1,

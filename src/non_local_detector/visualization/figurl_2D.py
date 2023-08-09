@@ -2,12 +2,12 @@ try:
     from typing import Callable, Dict, Tuple
 
     import numpy as np
-    import pandas as pd
     import sortingview.views as vv
     import sortingview.views.franklab as vvf
     import xarray as xr
 
     from non_local_detector.environment import get_grid, get_track_interior
+    from non_local_detector.visualization.static import get_multiunit_firing_rate
 
     def create_static_track_animation(
         *,
@@ -319,23 +319,23 @@ try:
         return create_track_animation_object(static_track_animation=data)
 
     def create_interactive_2D_decoding_figurl(
-        position_info: pd.DataFrame,
-        marks: xr.DataArray,
+        position_time: np.ndarray,
+        position: np.ndarray,
         results: xr.Dataset,
-        bin_size: float,
-        position_name: list[str] = ["head_position_x", "head_position_y"],
-        head_direction_name: str = "head_orientation",
-        speed_name: str = "head_speed",
-        posterior_type: str = "acausal_posterior",
-        sampling_frequency: float = 500.0,
+        spike_times: np.ndarray = None,
+        head_dir: np.ndarray = None,
+        speed: np.ndarray = None,
+        bin_size: float = 2.5,  # in cm
         view_height: int = 800,
     ) -> vv.Box:
         decode_view = create_2D_decode_view(
-            position_time=position_info.index,
-            position=position_info[position_name],
-            posterior=results[posterior_type].sum("state"),
+            position_time=position_time,
+            position=position,
+            posterior=results.acausal_posterior.unstack("state_bins").sum(
+                ["x_position", "y_position"]
+            ),
             bin_size=bin_size,
-            head_dir=position_info[head_direction_name],
+            head_dir=head_dir,
         )
 
         probability_view = vv.TimeseriesGraph()
@@ -351,14 +351,12 @@ try:
             "#bcbd22",
             "#17becf",
         ]
-        for state, color in zip(results.state.values, COLOR_CYCLE):
+        for state, color in zip(results.states.values, COLOR_CYCLE):
             probability_view.add_line_series(
                 name=state,
                 t=np.asarray(results.time),
                 y=np.asarray(
-                    results[posterior_type]
-                    .sel(state=state)
-                    .sum(["x_position", "y_position"]),
+                    results.sel(states=state).acausal_state_probabilities,
                     dtype=np.float32,
                 ),
                 color=color,
@@ -367,20 +365,19 @@ try:
 
         speed_view = vv.TimeseriesGraph().add_line_series(
             name="Speed [cm/s]",
-            t=np.asarray(position_info.index),
-            y=np.asarray(position_info[speed_name], dtype=np.float32),
+            t=np.asarray(position_time),
+            y=np.asarray(speed, dtype=np.float32),
             color="black",
             width=1,
         )
 
-        multiunit_spikes = (np.any(~np.isnan(marks.values), axis=1)).astype(float)
-        multiunit_firing_rate = get_multiunit_population_firing_rate(
-            multiunit_spikes, sampling_frequency
+        multiunit_firing_rate = get_multiunit_firing_rate(
+            spike_times, results.time.values
         )
 
         multiunit_firing_rate_view = vv.TimeseriesGraph().add_line_series(
             name="Multiunit Rate [spikes/s]",
-            t=np.asarray(marks.time.values),
+            t=np.asarray(results.time.values),
             y=np.asarray(multiunit_firing_rate, dtype=np.float32),
             color="black",
             width=1,
