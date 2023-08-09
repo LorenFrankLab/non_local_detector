@@ -584,6 +584,71 @@ class DiscreteNonStationaryDiagonal:
         )
 
 
+@dataclass
+class DiscreteNonStationaryCustom:
+    """Covariate driven transition matrix that changes over time.
+
+    Initialized with a stationary diagonal matrix.
+
+    Off-diagonals are probability: (1 - `diagonal_value`) / (`n_states` - 1)
+
+    Attributes
+    ----------
+    values : np.ndarray, shape (n_states, n_states)
+        The values of the transition matrix.
+    formula : str
+        Regression model formula for the transition matrix.
+    """
+
+    values: np.ndarray
+    formula: str = "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])"
+
+    def make_state_transition(
+        self, covariate_data: pd.DataFrame | dict
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Constructs the initial discrete transition matrix
+
+        Parameters
+        ----------
+        covariate_data : pd.DataFrame | dict
+            The covariate data for the transition matrix.
+
+        Returns
+        -------
+        discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
+            The initial discrete transition matrix.
+        discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+            The initial coefficients for the transition matrix.
+        discrete_transition_design_matrix : np.ndarray, shape (n_time, n_coefficients)
+            The covariate driven design matrix for the transition matrix.
+
+        """
+
+        n_states = len(self.diagonal_values)
+        discrete_transition = self.values
+
+        discrete_transition_design_matrix = dmatrix(self.formula, covariate_data)
+
+        n_time, n_coefficients = discrete_transition_design_matrix.shape
+
+        discrete_transition_coefficients = np.zeros(
+            (n_coefficients, n_states, n_states - 1)
+        )
+        discrete_transition_coefficients[0] = centered_softmax_inverse(
+            discrete_transition
+        )
+
+        discrete_transition = discrete_transition[np.newaxis] * np.ones(
+            (n_time, n_states, n_states)
+        )
+
+        return (
+            discrete_transition,
+            discrete_transition_coefficients,
+            discrete_transition_design_matrix,
+        )
+
+
 @jax.jit
 def stationary_discrete_transition_fn(
     continuous_state_transitions: jnp.ndarray,

@@ -5,7 +5,10 @@ from non_local_detector.continuous_state_transitions import (
     RandomWalk,
     Uniform,
 )
-from non_local_detector.discrete_state_transitions import DiscreteStationaryCustom
+from non_local_detector.discrete_state_transitions import (
+    DiscreteNonStationaryCustom,
+    DiscreteStationaryCustom,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.models.base import (
@@ -59,35 +62,41 @@ non_local_frag_prob = 0.98
 # probability of staying in no-spike state
 no_spike_prob = 0.99
 
-discrete_transition_type = DiscreteStationaryCustom(
-    values=np.array(
+discrete_transition_matrix_values = np.array(
+    [
         [
-            [
-                local_prob,
-                no_spike_trans_prob,
-                (1 - local_prob - no_spike_trans_prob) / 2,
-                (1 - local_prob - no_spike_trans_prob) / 2,
-            ],
-            [
-                (1 - no_spike_prob) / 3,
-                no_spike_prob,
-                (1 - no_spike_prob) / 3,
-                (1 - no_spike_prob) / 3,
-            ],
-            [
-                (1 - cont_non_local_prob - no_spike_trans_prob) / 2,
-                no_spike_trans_prob,
-                cont_non_local_prob,
-                (1 - cont_non_local_prob - no_spike_trans_prob) / 2,
-            ],
-            [
-                (1 - non_local_frag_prob - no_spike_trans_prob) / 2,
-                no_spike_trans_prob,
-                (1 - non_local_frag_prob - no_spike_trans_prob) / 2,
-                non_local_frag_prob,
-            ],
-        ]
-    )
+            local_prob,
+            no_spike_trans_prob,
+            (1 - local_prob - no_spike_trans_prob) / 2,
+            (1 - local_prob - no_spike_trans_prob) / 2,
+        ],
+        [
+            (1 - no_spike_prob) / 3,
+            no_spike_prob,
+            (1 - no_spike_prob) / 3,
+            (1 - no_spike_prob) / 3,
+        ],
+        [
+            (1 - cont_non_local_prob - no_spike_trans_prob) / 2,
+            no_spike_trans_prob,
+            cont_non_local_prob,
+            (1 - cont_non_local_prob - no_spike_trans_prob) / 2,
+        ],
+        [
+            (1 - non_local_frag_prob - no_spike_trans_prob) / 2,
+            no_spike_trans_prob,
+            (1 - non_local_frag_prob - no_spike_trans_prob) / 2,
+            non_local_frag_prob,
+        ],
+    ]
+)
+
+discrete_transition_type = DiscreteStationaryCustom(
+    values=discrete_transition_matrix_values
+)
+
+non_stationary_discrete_transition_type = DiscreteNonStationaryCustom(
+    values=discrete_transition_matrix_values
 )
 
 no_spike_rate = 1e-50
