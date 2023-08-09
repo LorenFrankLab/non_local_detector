@@ -327,7 +327,7 @@ try:
         speed: np.ndarray = None,
         bin_size: float = 2.5,  # in cm
         view_height: int = 800,
-    ) -> vv.Box:
+    ) -> str:
         decode_view = create_2D_decode_view(
             position_time=position_time,
             position=position,
@@ -415,7 +415,7 @@ try:
             ],
         )
 
-        return view
+        return view.url(label="2D Decoding")
 
 except ImportError:
     pass

@@ -87,7 +87,7 @@ try:
         spike_times: list[np.ndarray],
         results: xr.Dataset,
         view_height: int = 800,
-    ):
+    ) -> str:
         decode_view = create_1D_decode_view(
             posterior=results.acausal_posterior.unstack("state_bins").sum("position"),
             linear_position=position,
@@ -157,7 +157,7 @@ try:
             ],
         )
 
-        return view
+        return view.url(label="1D Decoding")
 
 except ImportError:
     pass
