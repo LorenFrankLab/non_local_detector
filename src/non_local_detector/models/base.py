@@ -1,6 +1,5 @@
 import copy
 import pickle
-from collections import namedtuple
 from functools import partial
 from logging import getLogger
 
@@ -57,8 +56,6 @@ _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS = {
     "position_std": 6.0,
     "block_size": 10_000,
 }
-
-State = namedtuple("state", ("environment_name", "encoding_group"))
 
 
 class _DetectorBase(BaseEstimator):
@@ -852,12 +849,7 @@ class ClusterlessDetector(_DetectorBase):
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
-            likelihood_name = State(
-                environment_name=obs.environment_name, encoding_group=obs.encoding_group
-            )
-            likelihood_name = State(
-                environment_name=obs.environment_name, encoding_group=obs.encoding_group
-            )
+            likelihood_name = (obs.environment_name, obs.encoding_group)
 
             encoding_algorithm, _ = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
             is_group = is_training & is_encoding & is_environment
@@ -1189,9 +1181,7 @@ class SortedSpikesDetector(_DetectorBase):
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
-            likelihood_name = State(
-                environment_name=obs.environment_name, encoding_group=obs.encoding_group
-            )
+            likelihood_name = (obs.environment_name, obs.encoding_group)
             encoding_algorithm, _ = _SORTED_SPIKES_ALGORITHMS[
                 self.sorted_spikes_algorithm
             ]
