@@ -79,8 +79,11 @@ def empirical_cdf(sample):
 
 
 def rosenblatt_transform(samples):
-    n, dim = samples.shape
+    dim = samples.shape[1]
     transformed_samples = np.zeros_like(samples)
+
+    # Note: this works for independent samples, but not for dependent samples
+    # Need to numerically integrat conditional CDFs for dependent samples
 
     for i in range(dim):
         sorted_samples, cdf_values = empirical_cdf(samples[:, i])
