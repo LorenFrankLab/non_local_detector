@@ -168,7 +168,7 @@ def estimate_non_stationary_state_transition(
     stickiness: float = 0.0,
     transition_regularization: float = 1e-5,
     optimization_method: str = "Newton-CG",
-    maxiter: None | int = 100,
+    maxiter: Union[None, int] = 100,
     disp: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Estimate the non-stationary state transition model.
