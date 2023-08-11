@@ -302,7 +302,7 @@ def make_continuous_replay(
 
 def make_fragmented_replay(
     n_neurons: int = 8,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Make a simulated fragmented replay.
 
     Parameters

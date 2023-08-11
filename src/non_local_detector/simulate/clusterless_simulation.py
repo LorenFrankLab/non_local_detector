@@ -108,7 +108,7 @@ def make_continuous_replay(
     n_tetrodes: int = N_TETRODES,
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Creates a simulated continuous replay.
 
     Parameters
@@ -170,7 +170,7 @@ def make_hover_replay(
     n_tetrodes: int = N_TETRODES,
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Creates a simulated stationary replay.
 
     Parameters
@@ -222,7 +222,7 @@ def make_fragmented_replay(
     n_tetrodes: int = N_TETRODES,
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Creates a simulated fragmented replay.
 
     Parameters
@@ -268,7 +268,7 @@ def make_fragmented_replay(
 def make_hover_continuous_hover_replay(
     sampling_frequency: int = SAMPLING_FREQUENCY,
     place_field_means: np.ndarray = PLACE_FIELD_MEANS,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Make a simulated replay that first is stationary, then is continuous, then is stationary again.
 
     Parameters
@@ -300,7 +300,7 @@ def make_hover_continuous_hover_replay(
 
 def make_fragmented_hover_fragmented_replay(
     sampling_frequency: int = SAMPLING_FREQUENCY,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Makes a simulated replay that first is fragmented, then is stationary, then is fragmented again.
 
     Parameters
@@ -329,7 +329,7 @@ def make_fragmented_hover_fragmented_replay(
 
 def make_fragmented_continuous_fragmented_replay(
     sampling_frequency: int = SAMPLING_FREQUENCY,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Makes a simulated replay that first is fragmented, then is continuous, then is fragmented again.
 
     Parameters

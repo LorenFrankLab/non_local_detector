@@ -1,5 +1,6 @@
 """Classes for constructing different types of movement models."""
 from dataclasses import dataclass
+from typing import Tuple
 
 import numpy as np
 from scipy.stats import multivariate_normal
@@ -116,12 +117,12 @@ class RandomWalk:
     movement_mean: float = 0.0
     use_diffusion: bool = False
 
-    def make_state_transition(self, environments: tuple[Environment]) -> np.ndarray:
+    def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
         """Creates a transition matrix for a given environment.
 
         Parameters
         ----------
-        environments : tuple[Environment]
+        environments : Tuple[Environment]
             The existing environments in the model
 
         Returns
@@ -189,12 +190,12 @@ class Uniform:
     environment_name: str = ""
     environment2_name: str = None
 
-    def make_state_transition(self, environments: tuple[Environment]):
+    def make_state_transition(self, environments: Tuple[Environment]):
         """Creates a transition matrix for a given environment.
 
         Parameters
         ----------
-        environments : tuple[Environment]
+        environments : Tuple[Environment]
             The existing environments in the model
 
         Returns
@@ -234,12 +235,12 @@ class Identity:
 
     environment_name: str = ""
 
-    def make_state_transition(self, environments: tuple[Environment]):
+    def make_state_transition(self, environments: Tuple[Environment]):
         """Creates a transition matrix for a given environment.
 
         Parameters
         ----------
-        environments : tuple[Environment]
+        environments : Tuple[Environment]
             The existing environments in the model
 
         Returns
@@ -282,7 +283,7 @@ class EmpiricalMovement:
 
     def make_state_transition(
         self,
-        environments: tuple[Environment],
+        environments: Tuple[Environment],
         position: np.ndarray,
         is_training: np.ndarray = None,
         encoding_group_labels: np.ndarray = None,
@@ -292,7 +293,7 @@ class EmpiricalMovement:
 
         Parameters
         ----------
-        environments : tuple[Environment]
+        environments : Tuple[Environment]
             The existing environments in the model
         position : np.ndarray
             Position of the animal
@@ -358,12 +359,12 @@ class RandomWalkDirection1:
     environment_name: str = ""
     movement_var: float = 6.0
 
-    def make_state_transition(self, environments: tuple[Environment]):
+    def make_state_transition(self, environments: Tuple[Environment]):
         """Creates a transition matrix for a given environment.
 
         Parameters
         ----------
-        environments : tuple[Environment]
+        environments : Tuple[Environment]
             The existing environments in the model
 
         Returns
@@ -395,12 +396,12 @@ class RandomWalkDirection2:
     environment_name: str = ""
     movement_var: float = 6.0
 
-    def make_state_transition(self, environments: tuple[Environment]):
+    def make_state_transition(self, environments: Tuple[Environment]):
         """Creates a transition matrix for a given environment.
 
         Parameters
         ----------
-        environments : tuple[Environment]
+        environments : Tuple[Environment]
             The existing environments in the model
 
         Returns

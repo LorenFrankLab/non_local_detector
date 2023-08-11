@@ -1,6 +1,6 @@
 """Classes for constructing discrete grids representations of spatial environments in 1D and 2D"""
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional, Tuple, Union
 
 import joblib
 import matplotlib
@@ -242,7 +242,7 @@ def get_grid(
     position: np.ndarray,
     bin_size: float = 2.5,
     position_range: Optional[list[np.ndarray]] = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, tuple]:
     """Gets the spatial grid of bins.
 
     Parameters
@@ -395,7 +395,7 @@ def _calculate_linear_position(
     track_segment_id: np.ndarray,
     edge_order: list[tuple],
     edge_spacing: Union[float, list],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Determines the linear position given a 2D position and a track graph.
 
     Parameters
@@ -425,7 +425,7 @@ def _calculate_linear_position(
     ]
 
     n_edges = len(edge_order)
-    if isinstance(edge_spacing, int) | isinstance(edge_spacing, float):
+    if isinstance(edge_spacing, int) or isinstance(edge_spacing, float):
         edge_spacing = [
             edge_spacing,
         ] * (n_edges - 1)
@@ -600,7 +600,7 @@ def get_track_grid(
     edge_order: list[tuple],
     edge_spacing: Union[float, list],
     place_bin_size: float,
-) -> tuple[
+) -> Tuple[
     np.ndarray,
     np.ndarray,
     np.ndarray,
@@ -685,7 +685,7 @@ def get_track_grid(
         np.diff(no_duplicate_place_bin_edges_nodes_df.edge_id)
     )[0]
 
-    if isinstance(edge_spacing, int) | isinstance(edge_spacing, float):
+    if isinstance(edge_spacing, int) or isinstance(edge_spacing, float):
         n_edges = len(edge_order)
         edge_spacing = [
             edge_spacing,

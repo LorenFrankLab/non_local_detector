@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from functools import partial
+from typing import Union
 
 import jax
 import jax.numpy as jnp
@@ -56,7 +56,7 @@ def block_kde(
 @dataclass
 class KDEModel:
     std: jnp.ndarray
-    block_size: int | None = None
+    block_size: Union[int, None] = None
 
     def fit(self, samples: jnp.ndarray):
         samples = jnp.asarray(samples)
@@ -85,7 +85,7 @@ def get_position_at_time(
     time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: jnp.ndarray,
-    env: Environment | None = None,
+    env: Union[Environment, None] = None,
 ):
     position_at_spike_times = scipy.interpolate.interpn(
         (time,), position, spike_times, bounds_error=False, fill_value=None

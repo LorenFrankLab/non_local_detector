@@ -1,4 +1,5 @@
 from functools import partial
+from typing import Tuple
 
 import jax
 import jax.numpy as jnp
@@ -214,7 +215,7 @@ def check_converged(
     log_likelihood: np.ndarray,
     previous_log_likelihood: np.ndarray,
     tolerance: float = 1e-4,
-) -> tuple[bool, bool]:
+) -> Tuple[bool, bool]:
     """We have converged if the slope of the log-likelihood function falls below 'tolerance',
 
     i.e., |f(t) - f(t-1)| / avg < tolerance,

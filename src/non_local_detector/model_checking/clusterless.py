@@ -8,6 +8,8 @@ References
 [1] Yousefi, A., Amidi, Y., Nazari, B., and Eden, Uri.T. (2020). Assessing Goodness-of-Fit in Marked Point Process Models of Neural Population Coding via Time and Rate Rescaling. Neural Computation 32, 2145–2186. 10.1162/neco_a_01321.
 
 """
+from typing import Tuple
+
 import numpy as np
 import scipy
 
@@ -19,7 +21,7 @@ def interval_rescaling_transform(
     ground_process_intensity: np.ndarray,
     joint_mark_intensity: np.ndarray,
     permute_waveform_features: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """_summary_
 
     Parameters

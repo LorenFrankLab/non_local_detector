@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -169,7 +170,7 @@ def estimate_non_stationary_state_transition(
     optimization_method: str = "Newton-CG",
     maxiter: None | int = 100,
     disp: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Estimate the non-stationary state transition model.
 
     Parameters
@@ -358,9 +359,9 @@ def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
 
 def set_initial_discrete_transition(
     speed: np.ndarray,
-    speed_knots: None | np.ndarray = None,
+    speed_knots: Union[None, np.ndarray] = None,
     is_stationary: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     state_names = [
         "local",
         "no_spike",
@@ -468,7 +469,7 @@ class DiscreteStationaryDiagonal:
 
     diagonal_values: np.ndarray
 
-    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:
+    def make_state_transition(self, *args, **kwargs) -> Tuple[np.ndarray, None, None]:
         """Constructs the initial discrete transition matrix.
 
         Returns
@@ -501,7 +502,7 @@ class DiscreteStationaryCustom:
 
     values: np.ndarray
 
-    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:
+    def make_state_transition(self, *args, **kwargs) -> Tuple[np.ndarray, None, None]:
         """Constructs the initial discrete transition matrix.
 
         Returns
@@ -539,13 +540,13 @@ class DiscreteNonStationaryDiagonal:
     formula: str = "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])"
 
     def make_state_transition(
-        self, covariate_data: pd.DataFrame | dict
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        self, covariate_data: Union[pd.DataFrame, dict]
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Constructs the initial discrete transition matrix
 
         Parameters
         ----------
-        covariate_data : pd.DataFrame | dict
+        covariate_data : pd.DataFrame or dict
             The covariate data for the transition matrix.
 
         Returns
@@ -604,13 +605,13 @@ class DiscreteNonStationaryCustom:
     formula: str = "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])"
 
     def make_state_transition(
-        self, covariate_data: pd.DataFrame | dict
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        self, covariate_data: Tuple[pd.DataFrame, dict]
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Constructs the initial discrete transition matrix
 
         Parameters
         ----------
-        covariate_data : pd.DataFrame | dict
+        covariate_data : pd.DataFrame or dict
             The covariate data for the transition matrix.
 
         Returns

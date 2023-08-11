@@ -2,6 +2,7 @@ import copy
 import pickle
 from functools import partial
 from logging import getLogger
+from typing import Union
 
 import jax.numpy as jnp
 import matplotlib
@@ -40,6 +41,7 @@ from non_local_detector.types import (
     DiscreteTransitions,
     Environments,
     Observations,
+    StateNames,
     Stickiness,
 )
 
@@ -73,7 +75,7 @@ class _DetectorBase(BaseEstimator):
         observation_models: Observations,
         environments: Environments,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = None,
+        state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
@@ -138,7 +140,7 @@ class _DetectorBase(BaseEstimator):
         self.no_spike_rate = no_spike_rate
 
     def initialize_environments(
-        self, position: np.ndarray, environment_labels: None | np.ndarray = None
+        self, position: np.ndarray, environment_labels: Union[None, np.ndarray] = None
     ) -> None:
         """Fits the Environment class on the position data to get information about the spatial environment.
 
@@ -213,10 +215,10 @@ class _DetectorBase(BaseEstimator):
     def initialize_continuous_state_transition(
         self,
         continuous_transition_types: ContinuousTransitions,
-        position: np.ndarray | None = None,
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
+        position: Union[np.ndarray, None] = None,
+        is_training: Union[np.ndarray, None] = None,
+        encoding_group_labels: Union[np.ndarray, None] = None,
+        environment_labels: Union[np.ndarray, None] = None,
     ) -> None:
         """Constructs the transition matrices for the continuous states.
 
@@ -279,7 +281,7 @@ class _DetectorBase(BaseEstimator):
                     ]
 
     def initialize_discrete_state_transition(
-        self, covariate_data: pd.DataFrame | dict | None = None
+        self, covariate_data: Union[pd.DataFrame, dict, None] = None
     ):
         """Constructs the transition matrix for the discrete states."""
         logger.info("Fitting discrete state transition")
@@ -292,7 +294,7 @@ class _DetectorBase(BaseEstimator):
     def plot_discrete_state_transition(
         self,
         cmap: str = "Oranges",
-        ax: matplotlib.axes.Axes | None = None,
+        ax: Union[matplotlib.axes.Axes, None] = None,
         convert_to_seconds: bool = False,
         sampling_frequency: int = 1,
     ) -> None:
@@ -741,7 +743,7 @@ class ClusterlessDetector(_DetectorBase):
         clusterless_algorithm: str = "clusterless_kde",
         clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = None,
+        state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
@@ -1086,7 +1088,7 @@ class SortedSpikesDetector(_DetectorBase):
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
         sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = None,
+        state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
