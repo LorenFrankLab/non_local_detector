@@ -91,12 +91,15 @@ def get_position_at_time(
         (time,), position, spike_times, bounds_error=False, fill_value=None
     )
     if env is not None and env.track_graph is not None:
-        position_at_spike_times = get_linearized_position(
-            position_at_spike_times,
-            env.track_graph,
-            edge_order=env.edge_order,
-            edge_spacing=env.edge_spacing,
-        ).linear_position.to_numpy()[:, None]
+        if position_at_spike_times.shape[0] > 0:
+            position_at_spike_times = get_linearized_position(
+                position_at_spike_times,
+                env.track_graph,
+                edge_order=env.edge_order,
+                edge_spacing=env.edge_spacing,
+            ).linear_position.to_numpy()[:, None]
+        else:
+            position_at_spike_times = jnp.array([])[:, None]
 
     return position_at_spike_times
 
@@ -164,7 +167,10 @@ def fit_sorted_spikes_kde_encoding_model(
             )
         )
         marginal_models.append(neuron_marginal_model)
-        marginal_density = neuron_marginal_model.predict(interior_place_bin_centers)
+        try:
+            marginal_density = neuron_marginal_model.predict(interior_place_bin_centers)
+        except ValueError:
+            marginal_density = jnp.zeros_like(occupancy)
         place_fields.append(
             jnp.zeros((is_track_interior.shape[0],))
             .at[is_track_interior]
@@ -236,7 +242,10 @@ def predict_sorted_spikes_kde_log_likelihood(
                     neuron_spike_times <= time[-1],
                 )
             ]
-            marginal_density = neuron_marginal_model.predict(interpolated_position)
+            try:
+                marginal_density = neuron_marginal_model.predict(interpolated_position)
+            except ValueError:
+                marginal_density = jnp.zeros_like(occupancy)
             local_rate = neuron_mean_rate * jnp.where(
                 occupancy > 0.0, marginal_density / occupancy, EPS
             )
