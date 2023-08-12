@@ -167,10 +167,8 @@ def fit_sorted_spikes_kde_encoding_model(
             )
         )
         marginal_models.append(neuron_marginal_model)
-        try:
-            marginal_density = neuron_marginal_model.predict(interior_place_bin_centers)
-        except ValueError:
-            marginal_density = jnp.zeros_like(occupancy)
+        marginal_density = neuron_marginal_model.predict(interior_place_bin_centers)
+        marginal_density = jnp.where(jnp.isnan(marginal_density), 0.0, marginal_density)
         place_fields.append(
             jnp.zeros((is_track_interior.shape[0],))
             .at[is_track_interior]
@@ -242,10 +240,10 @@ def predict_sorted_spikes_kde_log_likelihood(
                     neuron_spike_times <= time[-1],
                 )
             ]
-            try:
-                marginal_density = neuron_marginal_model.predict(interpolated_position)
-            except ValueError:
-                marginal_density = jnp.zeros_like(occupancy)
+            marginal_density = neuron_marginal_model.predict(interpolated_position)
+            marginal_density = jnp.where(
+                jnp.isnan(marginal_density), 0.0, marginal_density
+            )
             local_rate = neuron_mean_rate * jnp.where(
                 occupancy > 0.0, marginal_density / occupancy, EPS
             )
