@@ -101,7 +101,7 @@ non_stationary_discrete_transition_type = DiscreteNonStationaryCustom(
     values=discrete_transition_matrix_values
 )
 
-no_spike_rate = 1e-50
+no_spike_rate = 1e-10
 
 state_names = [
     "Local",
