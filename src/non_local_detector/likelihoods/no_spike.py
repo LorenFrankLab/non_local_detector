@@ -1,13 +1,14 @@
+import numpy as np
 import jax.numpy as jnp
 import jax.scipy
 
 
 def get_spikecount_per_time_bin(spike_times, time):
     spike_times = spike_times[
-        jnp.logical_and(spike_times >= time[0], spike_times <= time[-1])
+        np.logical_and(spike_times >= time[0], spike_times <= time[-1])
     ]
-    return jnp.bincount(
-        jnp.digitize(spike_times, time[1:-1]),
+    return np.bincount(
+        np.digitize(spike_times, time[1:-1]),
         minlength=time.shape[0],
     )
 
