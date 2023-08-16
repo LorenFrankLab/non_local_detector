@@ -937,7 +937,7 @@ class ClusterlessDetector(_DetectorBase):
                 # Likelihood of no spike times
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     predict_no_spike_log_likelihood(
-                        time, spike_times, self.no_spike_rate, self.sampling_frequency
+                        time, spike_times, self.no_spike_rate
                     )
                 )
             elif likelihood_name not in computed_likelihoods:
@@ -1264,7 +1264,7 @@ class SortedSpikesDetector(_DetectorBase):
                 # Likelihood of no spike times
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     predict_no_spike_log_likelihood(
-                        time, spike_times, self.no_spike_rate, self.sampling_frequency
+                        time, spike_times, self.no_spike_rate
                     )
                 )
             elif likelihood_name not in computed_likelihoods:
