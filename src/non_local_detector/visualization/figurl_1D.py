@@ -88,8 +88,14 @@ try:
         results: xr.Dataset,
         view_height: int = 800,
     ) -> str:
+        posterior = (
+            results.acausal_posterior.unstack("state_bins")
+            .drop_sel(state=["Local", "No-Spike"], errors="ignore")
+            .sum("state")
+        )
+        posterior = posterior / posterior.sum("position")
         decode_view = create_1D_decode_view(
-            posterior=results.acausal_posterior.unstack("state_bins").sum("state"),
+            posterior=posterior,
             linear_position=position,
         )
 
