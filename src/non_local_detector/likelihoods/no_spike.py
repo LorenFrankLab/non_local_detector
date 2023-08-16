@@ -19,7 +19,7 @@ def predict_no_spike_log_likelihood(
     no_spike_rate: float = 1e-10,
 ) -> jnp.ndarray:
     no_spike_rates = no_spike_rate * np.median(np.diff(time))
-    no_spike_log_likelihood = jnp.zeros((time.shape[0], 1))
+    no_spike_log_likelihood = jnp.zeros((time.shape[0],))
 
     for neuron_spike_times in spike_times:
         no_spike_log_likelihood += (
@@ -29,4 +29,4 @@ def predict_no_spike_log_likelihood(
             - no_spike_rates
         )
 
-    return no_spike_log_likelihood
+    return no_spike_log_likelihood[:, None]
