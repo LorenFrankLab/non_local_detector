@@ -331,9 +331,7 @@ try:
         decode_view = create_2D_decode_view(
             position_time=position_time,
             position=position,
-            posterior=results.acausal_posterior.unstack("state_bins").sum(
-                ["x_position", "y_position"]
-            ),
+            posterior=results.acausal_posterior.unstack("state_bins").sum("state"),
             bin_size=bin_size,
             head_dir=head_dir,
         )

@@ -89,7 +89,7 @@ try:
         view_height: int = 800,
     ) -> str:
         decode_view = create_1D_decode_view(
-            posterior=results.acausal_posterior.unstack("state_bins").sum("position"),
+            posterior=results.acausal_posterior.unstack("state_bins").sum("state"),
             linear_position=position,
         )
 
