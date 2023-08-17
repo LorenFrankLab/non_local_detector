@@ -698,7 +698,7 @@ class _DetectorBase(BaseEstimator):
             "encoding_groups": ("states", encoding_group_names),
         }
 
-        attrs = {"marginal_log_likelihoods": marginal_log_likelihoods}
+        attrs = {"marginal_log_likelihoods": np.asarray(marginal_log_likelihoods)}
 
         posterior_shape = (acausal_posterior.shape[0], len(is_track_interior))
 
