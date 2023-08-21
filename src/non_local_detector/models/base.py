@@ -13,6 +13,7 @@ import scipy.ndimage
 import seaborn as sns
 import sklearn
 import xarray as xr
+from patsy import build_design_matrices
 from sklearn.base import BaseEstimator
 from track_linearization import get_linearized_position
 
@@ -24,6 +25,7 @@ from non_local_detector.core import (
 )
 from non_local_detector.discrete_state_transitions import (
     _estimate_discrete_transition,
+    centered_softmax_forward,
     non_stationary_discrete_transition_fn,
     predict_discrete_state_transitions,
     stationary_discrete_transition_fn,
@@ -297,6 +299,7 @@ class _DetectorBase(BaseEstimator):
         ax: Union[matplotlib.axes.Axes, None] = None,
         convert_to_seconds: bool = False,
         sampling_frequency: int = 1,
+        covariate_data: Union[dict, None] = None,
     ) -> None:
         """Plot heatmap of discrete transition matrix.
 
@@ -312,6 +315,8 @@ class _DetectorBase(BaseEstimator):
             Convert the probabilities of state to expected duration of state, by default False
         sampling_frequency : int, optional
             Number of samples per second, by default 1
+        covariate_data: dict, optional
+            Dictionary of covariate data, by default None. Keys are covariate names and values are 1D arrays.
 
         """
 
@@ -346,7 +351,36 @@ class _DetectorBase(BaseEstimator):
             ax.set_xlabel("Current State", fontsize=12)
             ax.set_title("Discrete State Transition", fontsize=16)
         else:
-            raise NotImplementedError
+            discrete_transition_design_matrix = self.discrete_transition_design_matrix_
+            discrete_transition_coefficients = self.discrete_transition_coefficients_
+            state_names = self.state_names
+
+            predict_matrix = build_design_matrices(
+                [discrete_transition_design_matrix.design_info], covariate_data
+            )[0]
+
+            n_states = len(state_names)
+
+            for covariate in covariate_data:
+                fig, axes = plt.subplots(
+                    1, n_states, sharex=True, constrained_layout=True, figsize=(10, 5)
+                )
+
+                for from_state_ind, (ax, from_state) in enumerate(
+                    zip(axes.flat, state_names)
+                ):
+                    from_local_transition = centered_softmax_forward(
+                        predict_matrix
+                        @ discrete_transition_coefficients[:, from_state_ind]
+                    )
+
+                    ax.plot(covariate_data[covariate], from_local_transition)
+                    ax.set_xlabel(covariate)
+                    ax.set_ylabel("Prob.")
+                    if from_state_ind == n_states - 1:
+                        ax.legend(state_names)
+                    ax.set_title(f"From {from_state}")
+                fig.suptitle(f"Predicted transitions: {covariate}")
 
     def plot_continuous_state_transition(self, figsize_scaling=1.5, vmax=0.3):
         GOLDEN_RATIO = 1.618
