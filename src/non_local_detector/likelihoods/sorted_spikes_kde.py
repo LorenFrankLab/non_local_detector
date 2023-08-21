@@ -202,7 +202,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     time: jnp.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
-    spike_times: list[jnp.ndarray],
+    spike_times: list[np.ndarray],
     environment: Environment,
     marginal_models: list[KDEModel],
     occupancy_model: KDEModel,
@@ -235,11 +235,15 @@ def predict_sorted_spikes_kde_log_likelihood(
             mean_rates,
         ):
             neuron_spike_times = neuron_spike_times[
-                jnp.logical_and(
+                np.logical_and(
                     neuron_spike_times >= time[0],
                     neuron_spike_times <= time[-1],
                 )
             ]
+            spike_count_per_time_bin = np.bincount(
+                np.digitize(neuron_spike_times, time[1:-1]),
+                minlength=time.shape[0],
+            )
             marginal_density = neuron_marginal_model.predict(interpolated_position)
             marginal_density = jnp.where(
                 jnp.isnan(marginal_density), 0.0, marginal_density
@@ -248,10 +252,6 @@ def predict_sorted_spikes_kde_log_likelihood(
                 occupancy > 0.0, marginal_density / occupancy, EPS
             )
             local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
-            spike_count_per_time_bin = np.bincount(
-                np.digitize(neuron_spike_times, time[1:-1]),
-                minlength=time.shape[0],
-            )
             log_likelihood += (
                 jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
                 - local_rate
@@ -270,7 +270,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             place_fields,
         ):
             neuron_spike_times = neuron_spike_times[
-                jnp.logical_and(
+                np.logical_and(
                     neuron_spike_times >= time[0],
                     neuron_spike_times <= time[-1],
                 )
@@ -281,7 +281,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             )
             log_likelihood = log_likelihood.at[:, is_track_interior].add(
                 jax.scipy.special.xlogy(
-                    jnp.expand_dims(spike_count_per_time_bin, axis=1),
+                    np.expand_dims(spike_count_per_time_bin, axis=1),
                     jnp.expand_dims(place_field[is_track_interior], axis=0),
                 )
             )
