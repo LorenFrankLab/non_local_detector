@@ -625,7 +625,7 @@ class DiscreteNonStationaryCustom:
 
         """
 
-        n_states = len(self.diagonal_values)
+        n_states = len(self.values)
         discrete_transition = self.values
 
         discrete_transition_design_matrix = dmatrix(self.formula, covariate_data)
