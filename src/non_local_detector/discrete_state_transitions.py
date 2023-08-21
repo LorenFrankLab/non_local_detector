@@ -629,6 +629,10 @@ class DiscreteNonStationaryCustom:
         discrete_transition = self.values
 
         discrete_transition_design_matrix = dmatrix(self.formula, covariate_data)
+        if discrete_transition_design_matrix.shape[0] == 0:
+            raise ValueError(
+                "No covariate data provided for transition matrix or NaNs are present in the covariate data."
+            )
 
         n_time, n_coefficients = discrete_transition_design_matrix.shape
 
