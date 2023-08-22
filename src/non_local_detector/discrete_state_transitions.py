@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -167,9 +168,9 @@ def estimate_non_stationary_state_transition(
     stickiness: float = 0.0,
     transition_regularization: float = 1e-5,
     optimization_method: str = "Newton-CG",
-    maxiter: None | int = 100,
+    maxiter: Union[None, int] = 100,
     disp: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Estimate the non-stationary state transition model.
 
     Parameters
@@ -358,9 +359,9 @@ def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
 
 def set_initial_discrete_transition(
     speed: np.ndarray,
-    speed_knots: None | np.ndarray = None,
+    speed_knots: Union[None, np.ndarray] = None,
     is_stationary: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     state_names = [
         "local",
         "no_spike",
@@ -468,7 +469,7 @@ class DiscreteStationaryDiagonal:
 
     diagonal_values: np.ndarray
 
-    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:
+    def make_state_transition(self, *args, **kwargs) -> Tuple[np.ndarray, None, None]:
         """Constructs the initial discrete transition matrix.
 
         Returns
@@ -485,6 +486,38 @@ class DiscreteStationaryDiagonal:
         """
         diag = np.asarray(self.diagonal_values)
         return make_transition_from_diag(diag), None, None
+
+
+@dataclass
+class DiscreteStationaryCustom:
+    """Creates a custom discrete transition matrix.
+
+
+    Attributes
+    ----------
+    values : np.ndarray, shape (n_states, n_states)
+        The values of the transition matrix.
+
+    """
+
+    values: np.ndarray
+
+    def make_state_transition(self, *args, **kwargs) -> Tuple[np.ndarray, None, None]:
+        """Constructs the initial discrete transition matrix.
+
+        Returns
+        -------
+        discrete_transition : np.ndarray, shape (n_states, n_states)
+            The initial discrete transition matrix.
+        discrete_transition_coefficients : None
+            The coefficients for the non-stationary transition matrix.
+            It is None here because the transition matrix is stationary.
+        discrete_transition_design_matrix : None
+            The design matrix for the non-stationary transition matrix.
+            It is None here because the transition matrix is stationary.
+
+        """
+        return np.asarray(self.values), None, None
 
 
 @dataclass
@@ -507,13 +540,13 @@ class DiscreteNonStationaryDiagonal:
     formula: str = "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])"
 
     def make_state_transition(
-        self, covariate_data: pd.DataFrame | dict
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        self, covariate_data: Union[pd.DataFrame, dict]
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Constructs the initial discrete transition matrix
 
         Parameters
         ----------
-        covariate_data : pd.DataFrame | dict
+        covariate_data : pd.DataFrame or dict
             The covariate data for the transition matrix.
 
         Returns
@@ -531,6 +564,75 @@ class DiscreteNonStationaryDiagonal:
         discrete_transition = make_transition_from_diag(self.diagonal_values)
 
         discrete_transition_design_matrix = dmatrix(self.formula, covariate_data)
+
+        n_time, n_coefficients = discrete_transition_design_matrix.shape
+
+        discrete_transition_coefficients = np.zeros(
+            (n_coefficients, n_states, n_states - 1)
+        )
+        discrete_transition_coefficients[0] = centered_softmax_inverse(
+            discrete_transition
+        )
+
+        discrete_transition = discrete_transition[np.newaxis] * np.ones(
+            (n_time, n_states, n_states)
+        )
+
+        return (
+            discrete_transition,
+            discrete_transition_coefficients,
+            discrete_transition_design_matrix,
+        )
+
+
+@dataclass
+class DiscreteNonStationaryCustom:
+    """Covariate driven transition matrix that changes over time.
+
+    Initialized with a stationary diagonal matrix.
+
+    Off-diagonals are probability: (1 - `diagonal_value`) / (`n_states` - 1)
+
+    Attributes
+    ----------
+    values : np.ndarray, shape (n_states, n_states)
+        The values of the transition matrix.
+    formula : str
+        Regression model formula for the transition matrix.
+    """
+
+    values: np.ndarray
+    formula: str = "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])"
+
+    def make_state_transition(
+        self, covariate_data: Tuple[pd.DataFrame, dict]
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Constructs the initial discrete transition matrix
+
+        Parameters
+        ----------
+        covariate_data : pd.DataFrame or dict
+            The covariate data for the transition matrix.
+
+        Returns
+        -------
+        discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
+            The initial discrete transition matrix.
+        discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+            The initial coefficients for the transition matrix.
+        discrete_transition_design_matrix : np.ndarray, shape (n_time, n_coefficients)
+            The covariate driven design matrix for the transition matrix.
+
+        """
+
+        n_states = len(self.values)
+        discrete_transition = self.values
+
+        discrete_transition_design_matrix = dmatrix(self.formula, covariate_data)
+        if discrete_transition_design_matrix.shape[0] == 0:
+            raise ValueError(
+                "No covariate data provided for transition matrix or NaNs are present in the covariate data."
+            )
 
         n_time, n_coefficients = discrete_transition_design_matrix.shape
 

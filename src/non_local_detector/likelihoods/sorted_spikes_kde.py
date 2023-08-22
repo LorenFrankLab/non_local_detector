@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from functools import partial
+from typing import Union
 
 import jax
 import jax.numpy as jnp
@@ -13,6 +13,7 @@ from non_local_detector.environment import Environment
 EPS = 1e-15
 
 
+@jax.jit
 def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
     """Compute the value of a Gaussian probability density function at x with
     given mean and sigma."""
@@ -55,7 +56,7 @@ def block_kde(
 @dataclass
 class KDEModel:
     std: jnp.ndarray
-    block_size: int | None = None
+    block_size: Union[int, None] = None
 
     def fit(self, samples: jnp.ndarray):
         samples = jnp.asarray(samples)
@@ -84,18 +85,21 @@ def get_position_at_time(
     time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: jnp.ndarray,
-    env: Environment | None = None,
+    env: Union[Environment, None] = None,
 ):
     position_at_spike_times = scipy.interpolate.interpn(
         (time,), position, spike_times, bounds_error=False, fill_value=None
     )
     if env is not None and env.track_graph is not None:
-        position_at_spike_times = get_linearized_position(
-            position_at_spike_times,
-            env.track_graph,
-            edge_order=env.edge_order,
-            edge_spacing=env.edge_spacing,
-        ).linear_position.to_numpy()[:, None]
+        if position_at_spike_times.shape[0] > 0:
+            position_at_spike_times = get_linearized_position(
+                position_at_spike_times,
+                env.track_graph,
+                edge_order=env.edge_order,
+                edge_spacing=env.edge_spacing,
+            ).linear_position.to_numpy()[:, None]
+        else:
+            position_at_spike_times = jnp.array([])[:, None]
 
     return position_at_spike_times
 
@@ -164,6 +168,7 @@ def fit_sorted_spikes_kde_encoding_model(
         )
         marginal_models.append(neuron_marginal_model)
         marginal_density = neuron_marginal_model.predict(interior_place_bin_centers)
+        marginal_density = jnp.where(jnp.isnan(marginal_density), 0.0, marginal_density)
         place_fields.append(
             jnp.zeros((is_track_interior.shape[0],))
             .at[is_track_interior]
@@ -197,7 +202,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     time: jnp.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
-    spike_times: list[jnp.ndarray],
+    spike_times: list[np.ndarray],
     environment: Environment,
     marginal_models: list[KDEModel],
     occupancy_model: KDEModel,
@@ -230,20 +235,23 @@ def predict_sorted_spikes_kde_log_likelihood(
             mean_rates,
         ):
             neuron_spike_times = neuron_spike_times[
-                jnp.logical_and(
+                np.logical_and(
                     neuron_spike_times >= time[0],
                     neuron_spike_times <= time[-1],
                 )
             ]
-            marginal_density = neuron_marginal_model.predict(interpolated_position)
-            local_rate = neuron_mean_rate * jnp.where(
-                occupancy > 0.0, marginal_density / occupancy, EPS
-            )
-            local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
             spike_count_per_time_bin = np.bincount(
                 np.digitize(neuron_spike_times, time[1:-1]),
                 minlength=time.shape[0],
             )
+            marginal_density = neuron_marginal_model.predict(interpolated_position)
+            marginal_density = jnp.where(
+                jnp.isnan(marginal_density), 0.0, marginal_density
+            )
+            local_rate = neuron_mean_rate * jnp.where(
+                occupancy > 0.0, marginal_density / occupancy, EPS
+            )
+            local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
             log_likelihood += (
                 jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
                 - local_rate
@@ -262,7 +270,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             place_fields,
         ):
             neuron_spike_times = neuron_spike_times[
-                jnp.logical_and(
+                np.logical_and(
                     neuron_spike_times >= time[0],
                     neuron_spike_times <= time[-1],
                 )
@@ -271,10 +279,13 @@ def predict_sorted_spikes_kde_log_likelihood(
                 np.digitize(neuron_spike_times, time[1:-1]),
                 minlength=time.shape[0],
             )
-            log_likelihood += jax.scipy.special.xlogy(
-                jnp.expand_dims(spike_count_per_time_bin, axis=1),
-                jnp.expand_dims(place_field, axis=0),
+            log_likelihood = log_likelihood.at[:, is_track_interior].add(
+                jax.scipy.special.xlogy(
+                    np.expand_dims(spike_count_per_time_bin, axis=1),
+                    jnp.expand_dims(place_field[is_track_interior], axis=0),
+                )
             )
+
         log_likelihood -= no_spike_part_log_likelihood
         log_likelihood = jnp.where(
             is_track_interior[jnp.newaxis, :], log_likelihood, jnp.log(EPS)

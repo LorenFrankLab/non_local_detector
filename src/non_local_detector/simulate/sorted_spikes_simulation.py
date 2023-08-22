@@ -1,3 +1,5 @@
+from typing import Tuple
+
 import numpy as np
 from scipy.stats import multivariate_normal, norm
 
@@ -302,7 +304,7 @@ def make_continuous_replay(
 
 def make_fragmented_replay(
     n_neurons: int = 8,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Make a simulated fragmented replay.
 
     Parameters

@@ -37,7 +37,8 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 test = ["black", "pytest", "pytest-cov"]
-gpu = ["jax[cuda11_pip]"]
+gpu = ["jax[cuda]"]
+viz = ["sortingview"]
 
 [tool.hatch.version]
 source = "vcs"

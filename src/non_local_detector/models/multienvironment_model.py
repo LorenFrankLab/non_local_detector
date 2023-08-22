@@ -17,6 +17,7 @@ from non_local_detector.types import (
     DiscreteTransitions,
     Environments,
     Observations,
+    StateNames,
     Stickiness,
 )
 
@@ -71,7 +72,7 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
         sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = state_names,
+        state_names: StateNames = state_names,
         sampling_frequency: float = 500,
         no_spike_rate: float = 1e-10,
     ):
@@ -109,7 +110,7 @@ class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
         clusterless_algorithm: str = "clusterless_kde",
         clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = state_names,
+        state_names: StateNames = state_names,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):

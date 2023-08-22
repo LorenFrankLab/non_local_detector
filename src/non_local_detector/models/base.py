@@ -1,8 +1,8 @@
 import copy
 import pickle
-from collections import namedtuple
 from functools import partial
 from logging import getLogger
+from typing import Union
 
 import jax.numpy as jnp
 import matplotlib
@@ -13,6 +13,7 @@ import scipy.ndimage
 import seaborn as sns
 import sklearn
 import xarray as xr
+from patsy import build_design_matrices
 from sklearn.base import BaseEstimator
 from track_linearization import get_linearized_position
 
@@ -24,6 +25,7 @@ from non_local_detector.core import (
 )
 from non_local_detector.discrete_state_transitions import (
     _estimate_discrete_transition,
+    centered_softmax_forward,
     non_stationary_discrete_transition_fn,
     predict_discrete_state_transitions,
     stationary_discrete_transition_fn,
@@ -41,6 +43,7 @@ from non_local_detector.types import (
     DiscreteTransitions,
     Environments,
     Observations,
+    StateNames,
     Stickiness,
 )
 
@@ -58,8 +61,6 @@ _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS = {
     "block_size": 10_000,
 }
 
-State = namedtuple("state", ("environment_name", "encoding_group"))
-
 
 class _DetectorBase(BaseEstimator):
     """Base class for detector objects."""
@@ -76,7 +77,7 @@ class _DetectorBase(BaseEstimator):
         observation_models: Observations,
         environments: Environments,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = None,
+        state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
@@ -141,7 +142,7 @@ class _DetectorBase(BaseEstimator):
         self.no_spike_rate = no_spike_rate
 
     def initialize_environments(
-        self, position: np.ndarray, environment_labels: None | np.ndarray = None
+        self, position: np.ndarray, environment_labels: Union[None, np.ndarray] = None
     ) -> None:
         """Fits the Environment class on the position data to get information about the spatial environment.
 
@@ -216,10 +217,10 @@ class _DetectorBase(BaseEstimator):
     def initialize_continuous_state_transition(
         self,
         continuous_transition_types: ContinuousTransitions,
-        position: np.ndarray | None = None,
-        is_training: np.ndarray | None = None,
-        encoding_group_labels: np.ndarray | None = None,
-        environment_labels: np.ndarray | None = None,
+        position: Union[np.ndarray, None] = None,
+        is_training: Union[np.ndarray, None] = None,
+        encoding_group_labels: Union[np.ndarray, None] = None,
+        environment_labels: Union[np.ndarray, None] = None,
     ) -> None:
         """Constructs the transition matrices for the continuous states.
 
@@ -282,7 +283,7 @@ class _DetectorBase(BaseEstimator):
                     ]
 
     def initialize_discrete_state_transition(
-        self, covariate_data: pd.DataFrame | dict | None = None
+        self, covariate_data: Union[pd.DataFrame, dict, None] = None
     ):
         """Constructs the transition matrix for the discrete states."""
         logger.info("Fitting discrete state transition")
@@ -295,9 +296,10 @@ class _DetectorBase(BaseEstimator):
     def plot_discrete_state_transition(
         self,
         cmap: str = "Oranges",
-        ax: matplotlib.axes.Axes | None = None,
+        ax: Union[matplotlib.axes.Axes, None] = None,
         convert_to_seconds: bool = False,
         sampling_frequency: int = 1,
+        covariate_data: Union[dict, None] = None,
     ) -> None:
         """Plot heatmap of discrete transition matrix.
 
@@ -313,6 +315,8 @@ class _DetectorBase(BaseEstimator):
             Convert the probabilities of state to expected duration of state, by default False
         sampling_frequency : int, optional
             Number of samples per second, by default 1
+        covariate_data: dict, optional
+            Dictionary of covariate data, by default None. Keys are covariate names and values are 1D arrays.
 
         """
 
@@ -347,7 +351,36 @@ class _DetectorBase(BaseEstimator):
             ax.set_xlabel("Current State", fontsize=12)
             ax.set_title("Discrete State Transition", fontsize=16)
         else:
-            raise NotImplementedError
+            discrete_transition_design_matrix = self.discrete_transition_design_matrix_
+            discrete_transition_coefficients = self.discrete_transition_coefficients_
+            state_names = self.state_names
+
+            predict_matrix = build_design_matrices(
+                [discrete_transition_design_matrix.design_info], covariate_data
+            )[0]
+
+            n_states = len(state_names)
+
+            for covariate in covariate_data:
+                fig, axes = plt.subplots(
+                    1, n_states, sharex=True, constrained_layout=True, figsize=(10, 5)
+                )
+
+                for from_state_ind, (ax, from_state) in enumerate(
+                    zip(axes.flat, state_names)
+                ):
+                    from_local_transition = centered_softmax_forward(
+                        predict_matrix
+                        @ discrete_transition_coefficients[:, from_state_ind]
+                    )
+
+                    ax.plot(covariate_data[covariate], from_local_transition)
+                    ax.set_xlabel(covariate)
+                    ax.set_ylabel("Prob.")
+                    if from_state_ind == n_states - 1:
+                        ax.legend(state_names)
+                    ax.set_title(f"From {from_state}")
+                fig.suptitle(f"Predicted transitions: {covariate}")
 
     def plot_continuous_state_transition(self, figsize_scaling=1.5, vmax=0.3):
         GOLDEN_RATIO = 1.618
@@ -614,6 +647,12 @@ class _DetectorBase(BaseEstimator):
             return_causal_posterior,
         )
 
+    def calculate_time_bins(self, time_range):
+        n_time_bins = int(
+            np.ceil((time_range[-1] - time_range[0]) * self.sampling_frequency)
+        )
+        return time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+
     def save_model(self, filename: str = "model.pkl"):
         """Save the detector to a pickled file.
 
@@ -693,7 +732,7 @@ class _DetectorBase(BaseEstimator):
             "encoding_groups": ("states", encoding_group_names),
         }
 
-        attrs = {"marginal_log_likelihoods": marginal_log_likelihoods}
+        attrs = {"marginal_log_likelihoods": np.asarray(marginal_log_likelihoods)}
 
         posterior_shape = (acausal_posterior.shape[0], len(is_track_interior))
 
@@ -738,7 +777,7 @@ class ClusterlessDetector(_DetectorBase):
         clusterless_algorithm: str = "clusterless_kde",
         clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = None,
+        state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
@@ -846,12 +885,7 @@ class ClusterlessDetector(_DetectorBase):
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
-            likelihood_name = State(
-                environment_name=obs.environment_name, encoding_group=obs.encoding_group
-            )
-            likelihood_name = State(
-                environment_name=obs.environment_name, encoding_group=obs.encoding_group
-            )
+            likelihood_name = (obs.environment_name, obs.encoding_group)
 
             encoding_algorithm, _ = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
             is_group = is_training & is_encoding & is_environment
@@ -937,7 +971,7 @@ class ClusterlessDetector(_DetectorBase):
                 # Likelihood of no spike times
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     predict_no_spike_log_likelihood(
-                        time, spike_times, self.no_spike_rate, self.sampling_frequency
+                        time, spike_times, self.no_spike_rate
                     )
                 )
             elif likelihood_name not in computed_likelihoods:
@@ -985,10 +1019,7 @@ class ClusterlessDetector(_DetectorBase):
             elif np.any(nan_position) and is_missing is not None:
                 is_missing = np.logical_or(is_missing, nan_position)
 
-        n_time_bins = (
-            int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
-        )
-        time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+        time = self.calculate_time_bins(time_range)
 
         if is_missing is not None and len(is_missing) != len(time):
             raise ValueError(
@@ -1047,10 +1078,7 @@ class ClusterlessDetector(_DetectorBase):
         max_iter: int = 20,
         tolerance: float = 0.0001,
     ):
-        n_time_bins = (
-            int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
-        )
-        time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+        time = self.calculate_time_bins(time_range)
 
         self.fit(
             position_time,
@@ -1094,7 +1122,7 @@ class SortedSpikesDetector(_DetectorBase):
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
         sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = None,
+        state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
@@ -1189,9 +1217,7 @@ class SortedSpikesDetector(_DetectorBase):
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
-            likelihood_name = State(
-                environment_name=obs.environment_name, encoding_group=obs.encoding_group
-            )
+            likelihood_name = (obs.environment_name, obs.encoding_group)
             encoding_algorithm, _ = _SORTED_SPIKES_ALGORITHMS[
                 self.sorted_spikes_algorithm
             ]
@@ -1272,7 +1298,7 @@ class SortedSpikesDetector(_DetectorBase):
                 # Likelihood of no spike times
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     predict_no_spike_log_likelihood(
-                        time, spike_times, self.no_spike_rate, self.sampling_frequency
+                        time, spike_times, self.no_spike_rate
                     )
                 )
             elif likelihood_name not in computed_likelihoods:
@@ -1310,10 +1336,7 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data=None,
         return_causal_posterior: bool = False,
     ):
-        n_time_bins = (
-            int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
-        )
-        time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+        time = self.calculate_time_bins(time_range)
 
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
@@ -1374,10 +1397,7 @@ class SortedSpikesDetector(_DetectorBase):
         tolerance: float = 0.0001,
         return_causal_posterior: bool = False,
     ):
-        n_time_bins = (
-            int((time_range[-1] - time_range[0]) * self.sampling_frequency) + 1
-        )
-        time = time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+        time = self.calculate_time_bins(time_range)
         position = position[:, np.newaxis] if position.ndim == 1 else position
 
         self.fit(

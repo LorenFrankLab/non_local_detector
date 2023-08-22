@@ -1,11 +1,15 @@
 import numpy as np
+import xarray as xr
 
 from non_local_detector.continuous_state_transitions import (
     Discrete,
     RandomWalk,
     Uniform,
 )
-from non_local_detector.discrete_state_transitions import DiscreteStationaryDiagonal
+from non_local_detector.discrete_state_transitions import (
+    DiscreteNonStationaryCustom,
+    DiscreteStationaryCustom,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.models.base import (
@@ -21,6 +25,7 @@ from non_local_detector.types import (
     DiscreteTransitions,
     Environments,
     Observations,
+    StateNames,
     Stickiness,
 )
 
@@ -50,9 +55,53 @@ continuous_initial_conditions = [
 
 discrete_transition_stickiness = np.array([30.0, 100_000.0, 30.0, 200.0])
 
-discrete_transition_type = DiscreteStationaryDiagonal(
-    diagonal_values=np.array([0.90, 0.90, 0.90, 0.98])
+# transition probability to no spike state
+no_spike_trans_prob = 1e-5
+# probability of staying in local or continuous non-local state
+local_prob = cont_non_local_prob = 0.9
+# probability of staying in non-local fragmented state
+non_local_frag_prob = 0.98
+# probability of staying in no-spike state
+no_spike_prob = 0.99
+
+discrete_transition_matrix_values = np.array(
+    [
+        [
+            local_prob,
+            no_spike_trans_prob,
+            (1 - local_prob - no_spike_trans_prob) / 2,
+            (1 - local_prob - no_spike_trans_prob) / 2,
+        ],
+        [
+            (1 - no_spike_prob) / 3,
+            no_spike_prob,
+            (1 - no_spike_prob) / 3,
+            (1 - no_spike_prob) / 3,
+        ],
+        [
+            (1 - cont_non_local_prob - no_spike_trans_prob) / 2,
+            no_spike_trans_prob,
+            cont_non_local_prob,
+            (1 - cont_non_local_prob - no_spike_trans_prob) / 2,
+        ],
+        [
+            (1 - non_local_frag_prob - no_spike_trans_prob) / 2,
+            no_spike_trans_prob,
+            (1 - non_local_frag_prob - no_spike_trans_prob) / 2,
+            non_local_frag_prob,
+        ],
+    ]
 )
+
+discrete_transition_type = DiscreteStationaryCustom(
+    values=discrete_transition_matrix_values
+)
+
+non_stationary_discrete_transition_type = DiscreteNonStationaryCustom(
+    values=discrete_transition_matrix_values
+)
+
+no_spike_rate = 1e-10
 
 state_names = [
     "Local",
@@ -77,9 +126,9 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
         sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = state_names,
-        sampling_frequency: float = 500,
-        no_spike_rate: float = 1e-10,
+        state_names: StateNames = state_names,
+        sampling_frequency: float = 500.0,
+        no_spike_rate: float = no_spike_rate,
     ):
         super().__init__(
             discrete_initial_conditions,
@@ -99,6 +148,13 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
             no_spike_rate,
         )
 
+    @staticmethod
+    def get_conditional_non_local_posterior(results):
+        acausal_posterior = results.acausal_posterior.sel(state="Non-Local Continuous")
+        acausal_posterior += results.acausal_posterior.sel(state="Non-Local Fragmented")
+
+        return acausal_posterior / acausal_posterior.sum("position")
+
 
 class NonLocalClusterlessDetector(ClusterlessDetector):
     def __init__(
@@ -115,9 +171,9 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         clusterless_algorithm: str = "clusterless_kde",
         clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: list[str] | None = state_names,
+        state_names: StateNames = state_names,
         sampling_frequency: float = 500.0,
-        no_spike_rate: float = 1e-10,
+        no_spike_rate: float = no_spike_rate,
     ):
         super().__init__(
             discrete_initial_conditions,
@@ -136,3 +192,10 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
             sampling_frequency,
             no_spike_rate,
         )
+
+    @staticmethod
+    def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
+        acausal_posterior = results.acausal_posterior.sel(state="Non-Local Continuous")
+        acausal_posterior += results.acausal_posterior.sel(state="Non-Local Fragmented")
+
+        return acausal_posterior / acausal_posterior.sum("position")

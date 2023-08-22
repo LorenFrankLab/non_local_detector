@@ -3,6 +3,73 @@ import copy
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+from scipy.ndimage import gaussian_filter1d
+
+
+def _gaussian_smooth(data, sigma, sampling_frequency, axis=0, truncate=8):
+    """1D convolution of the data with a Gaussian.
+
+    The standard deviation of the gaussian is in the units of the sampling
+    frequency. The function is just a wrapper around scipy's
+    `gaussian_filter1d`, The support is truncated at 8 by default, instead
+    of 4 in `gaussian_filter1d`
+
+    Parameters
+    ----------
+    data : array_like
+    sigma : float
+    sampling_frequency : int
+    axis : int, optional
+    truncate : int, optional
+
+    Returns
+    -------
+    smoothed_data : array_like
+
+    """
+    return gaussian_filter1d(
+        data,
+        sigma * sampling_frequency,
+        truncate=truncate,
+        axis=axis,
+        mode="constant",
+    )
+
+
+def get_multiunit_firing_rate(spike_times, time, smoothing_sigma=0.015):
+    spike_indicator = np.stack(
+        [
+            np.bincount(
+                np.digitize(
+                    spike_times[
+                        np.logical_and(
+                            spike_times >= time[0],
+                            spike_times <= time[-1],
+                        )
+                    ],
+                    time[1:-1],
+                ),
+                minlength=len(time),
+            )
+            for spike_times in spike_times
+        ],
+        axis=1,
+    )
+
+    sampling_frequency = 1 / np.nanmedian(np.diff(time))
+
+    multiunit_firing_rate = _gaussian_smooth(
+        spike_indicator.sum(axis=1) * sampling_frequency,
+        smoothing_sigma,
+        sampling_frequency,
+    )
+
+    return pd.DataFrame(
+        multiunit_firing_rate,
+        index=time,
+        columns=["firing_rate"],
+    )
 
 
 def plot_non_local_model(
@@ -19,8 +86,17 @@ def plot_non_local_model(
     if time_slice is None:
         time_slice = slice(results.time.values[0], results.time.values[-1])
 
-    place_fields = detector.encoding_model_[("", 0)]["place_fields"]
     env = detector.environments[0]
+    try:
+        place_fields = detector.encoding_model_[("", 0)]["place_fields"]
+        neuron_sort_ind = np.argsort(
+            env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()
+        )
+        cell_label = "Neuron"
+    except KeyError:
+        neuron_sort_ind = np.arange(len(spike_times))
+        cell_label = "Electrode\nGroup"
+
     state_ind = detector.state_ind_
     state_names = detector.state_names
     acausal_state_probabilities = results.sel(
@@ -55,9 +131,6 @@ def plot_non_local_model(
     )[:, np.newaxis]
     conditional_non_local_acausal_posterior[:, ~env.is_track_interior_] = np.nan
 
-    neuron_sort_ind = np.argsort(
-        env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()
-    )
     new_spike_times = [
         spike_times[neuron_id][
             np.logical_and(
@@ -68,7 +141,7 @@ def plot_non_local_model(
         for neuron_id in neuron_sort_ind
     ]
     axes[0].eventplot(new_spike_times)
-    axes[0].set_ylabel("Neuron")
+    axes[0].set_ylabel(cell_label)
 
     h = axes[1].plot(results_time, acausal_state_probabilities)
     axes[1].legend(h, state_names)
