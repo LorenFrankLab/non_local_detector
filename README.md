@@ -6,6 +6,15 @@
 
 In order to use GPU with the conda or mamba environment, you need to install the following packages:
 
+Using mamba or conda (mamba recommended):
+
+```bash
+mamba install jaxlib=*=*cuda* jax cuda-nvcc -c conda-forge -c nvidia
+mamba install non_local_detector -c edeno
+```
+
+or from the environment file:
+
 ```bash
 mamba create env -f environment_gpu.yml
 ```
