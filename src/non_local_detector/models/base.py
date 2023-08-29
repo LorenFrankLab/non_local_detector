@@ -1039,7 +1039,7 @@ class ClusterlessDetector(_DetectorBase):
         self,
         spike_times,
         spike_waveform_features,
-        time_range,
+        time,
         position=None,
         position_time=None,
         is_missing=None,
@@ -1053,8 +1053,6 @@ class ClusterlessDetector(_DetectorBase):
                 is_missing = nan_position
             elif np.any(nan_position) and is_missing is not None:
                 is_missing = np.logical_or(is_missing, nan_position)
-
-        time = self.calculate_time_bins(time_range)
 
         if is_missing is not None and len(is_missing) != len(time):
             raise ValueError(
@@ -1102,7 +1100,7 @@ class ClusterlessDetector(_DetectorBase):
         position,
         spike_times,
         spike_waveform_features,
-        time_range,
+        time,
         is_missing=None,
         is_training=None,
         encoding_group_labels=None,
@@ -1113,8 +1111,6 @@ class ClusterlessDetector(_DetectorBase):
         max_iter: int = 20,
         tolerance: float = 0.0001,
     ):
-        time = self.calculate_time_bins(time_range)
-
         self.fit(
             position_time,
             position,
@@ -1364,15 +1360,13 @@ class SortedSpikesDetector(_DetectorBase):
     def predict(
         self,
         spike_times,
-        time_range,
+        time,
         position=None,
         position_time=None,
         is_missing=None,
         discrete_transition_covariate_data=None,
         return_causal_posterior: bool = False,
     ):
-        time = self.calculate_time_bins(time_range)
-
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
             nan_position = np.any(np.isnan(position), axis=1)
@@ -1420,7 +1414,7 @@ class SortedSpikesDetector(_DetectorBase):
         position_time,
         position,
         spike_times,
-        time_range,
+        time,
         is_missing=None,
         is_training=None,
         encoding_group_labels=None,
@@ -1432,7 +1426,6 @@ class SortedSpikesDetector(_DetectorBase):
         tolerance: float = 0.0001,
         return_causal_posterior: bool = False,
     ):
-        time = self.calculate_time_bins(time_range)
         position = position[:, np.newaxis] if position.ndim == 1 else position
 
         self.fit(
