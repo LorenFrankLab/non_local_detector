@@ -5,9 +5,12 @@ from patsy import build_design_matrices, dmatrix
 from scipy.optimize import minimize
 from tqdm.autonotebook import tqdm
 
-from non_local_detector.environment import get_n_bins
-
-EPS = 1e-15
+from non_local_detector.environment import Environment, get_n_bins
+from non_local_detector.likelihoods.common import (
+    EPS,
+    get_position_at_time,
+    get_spikecount_per_time_bin,
+)
 
 
 def make_spline_design_matrix(
@@ -85,9 +88,10 @@ def fit_poisson_regression(
 
 
 def fit_sorted_spikes_glm_encoding_model(
-    position: np.ndarray,
-    spikes: np.ndarray,
-    place_bin_centers: np.ndarray,
+    position_time: jnp.ndarray,
+    position: jnp.ndarray,
+    spike_times: list[jnp.ndarray],
+    environment: Environment,
     place_bin_edges: np.ndarray,
     edges: np.ndarray,
     is_track_interior: np.ndarray,
@@ -95,7 +99,18 @@ def fit_sorted_spikes_glm_encoding_model(
     emission_knot_spacing: float = 10.0,
     l2_penalty: float = 1e-3,
     disable_progress_bar: bool = False,
+    sampling_frequency: float = 500.0,
 ):
+    position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
+    time_range = (position_time[0], position_time[-1])
+    n_time_bins = int(np.ceil((time_range[-1] - time_range[0]) * sampling_frequency))
+    time = time_range[0] + np.arange(n_time_bins) / sampling_frequency
+
+    is_track_interior = environment.is_track_interior_.ravel(order="F")
+    interior_place_bin_centers = jnp.asarray(
+        environment.place_bin_centers_[is_track_interior]
+    )
+
     emission_design_matrix = make_spline_design_matrix(
         position, place_bin_edges, knot_spacing=emission_knot_spacing
     )
@@ -103,23 +118,24 @@ def fit_sorted_spikes_glm_encoding_model(
     emission_design_matrix = jnp.asarray(emission_design_matrix)
 
     emission_predict_matrix = make_spline_predict_matrix(
-        emission_design_info, place_bin_centers
+        emission_design_info, interior_place_bin_centers
     )
 
-    position = jnp.asarray(position)
-    spikes = jnp.asarray(spikes)
-    place_bin_centers = jnp.asarray(place_bin_centers[is_track_interior])
-    weights = jnp.ones((spikes.shape[0],))
+    weights = jnp.ones((position_time.shape[0],))
 
     coefficients = []
     place_fields = []
 
-    for neuron_spikes in tqdm(
-        spikes.T, unit="cell", desc="Encoding models", disable=disable_progress_bar
+    for neuron_spike_times in tqdm(
+        spike_times,
+        unit="cell",
+        desc="Encoding models",
+        disable=disable_progress_bar,
     ):
+        spike_count_per_time_bin = get_spikecount_per_time_bin(neuron_spike_times, time)
         coef = fit_poisson_regression(
             emission_design_matrix,
-            neuron_spikes,
+            spike_count_per_time_bin,
             weights,
             l2_penalty=l2_penalty,
         )
@@ -149,56 +165,79 @@ def fit_sorted_spikes_glm_encoding_model(
 
 
 def predict_sorted_spikes_glm_log_likelihood(
-    position: np.ndarray,
-    spikes: np.ndarray,
+    time: jnp.ndarray,
+    position_time: jnp.ndarray,
+    position: jnp.ndarray,
+    spike_times: list[np.ndarray],
+    environment: Environment,
     coefficients: jnp.ndarray,
     emission_design_info,
     place_fields: jnp.ndarray,
     no_spike_part_log_likelihood: jnp.ndarray,
-    is_track_interior: np.ndarray,
+    is_track_interior: jnp.ndarray,
     disable_progress_bar: bool = False,
     is_local: bool = False,
 ):
-    n_time = spikes.shape[0]
-    position = jnp.asarray(position)
-    spikes = jnp.asarray(spikes)
+    n_time = time.shape[0]
 
     if is_local:
         log_likelihood = jnp.zeros((n_time,))
-        emission_predict_matrix = make_spline_predict_matrix(
-            emission_design_info, position
+        log_likelihood = jnp.zeros((n_time,))
+
+        # Need to interpolate position
+        interpolated_position = get_position_at_time(
+            position_time, position, time, environment
         )
-        for neuron_spikes, coef in zip(
+        emission_predict_matrix = make_spline_predict_matrix(
+            emission_design_info, interpolated_position
+        )
+        for neuron_spike_times, coef in zip(
             tqdm(
-                spikes.T,
+                spike_times.T,
                 unit="cell",
                 desc="Local Likelihood",
                 disable=disable_progress_bar,
             ),
             coefficients,
         ):
+            spike_count_per_time_bin = get_spikecount_per_time_bin(spike_times, time)
             local_rate = jnp.exp(emission_predict_matrix @ coef)
             local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
             log_likelihood += (
-                jax.scipy.special.xlogy(neuron_spikes, local_rate) - local_rate
+                jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
+                - local_rate
             )
 
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
         log_likelihood = jnp.zeros((n_time, place_fields.shape[1]))
-        for neuron_spikes, place_field in zip(
+        for neuron_spike_times, place_field in zip(
             tqdm(
-                spikes.T,
+                spike_times,
                 unit="cell",
                 desc="Non-Local Likelihood",
                 disable=disable_progress_bar,
             ),
             place_fields,
         ):
-            log_likelihood += jax.scipy.special.xlogy(
-                neuron_spikes[:, jnp.newaxis], place_field[jnp.newaxis]
+            neuron_spike_times = neuron_spike_times[
+                np.logical_and(
+                    neuron_spike_times >= time[0],
+                    neuron_spike_times <= time[-1],
+                )
+            ]
+            spike_count_per_time_bin = np.bincount(
+                np.digitize(neuron_spike_times, time[1:-1]),
+                minlength=time.shape[0],
             )
-        log_likelihood -= no_spike_part_log_likelihood[jnp.newaxis]
+            log_likelihood = log_likelihood.at[:, is_track_interior].add(
+                jax.scipy.special.xlogy(
+                    np.expand_dims(spike_count_per_time_bin, axis=1),
+                    jnp.expand_dims(place_field[is_track_interior], axis=0),
+                )
+            )
+
+        log_likelihood -= no_spike_part_log_likelihood
         log_likelihood = jnp.where(
             is_track_interior[jnp.newaxis, :], log_likelihood, jnp.log(EPS)
         )
