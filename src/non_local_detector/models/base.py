@@ -680,6 +680,16 @@ class _DetectorBase(BaseEstimator):
         with open(filename, "rb") as f:
             return pickle.load(f)
 
+    @staticmethod
+    def save_results(results: xr.Dataset, filename: str = "results.nc"):
+        results.reset_index("state_bins").to_netcdf(filename)
+
+    @staticmethod
+    def load_results(filename: str = "results.nc") -> xr.Dataset:
+        results = xr.open_dataset(filename)
+        coord_names = list(results["state_bins"].coords)
+        return xr.open_dataset(filename).set_index(state_bins=coord_names)
+
     def copy(self):
         """Makes a copy of the detector"""
         return copy.deepcopy(self)
