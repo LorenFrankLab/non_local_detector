@@ -682,10 +682,35 @@ class _DetectorBase(BaseEstimator):
 
     @staticmethod
     def save_results(results: xr.Dataset, filename: str = "results.nc"):
+        """Save the results to a netcdf file.
+
+        `state_bins`is a multiindex, which is not supported by netcdf so
+        it is converted before saving.
+
+        Parameters
+        ----------
+        results : xr.Dataset
+            Decoding results
+        filename : str, optional
+            Name to save, by default "results.nc"
+        """
         results.reset_index("state_bins").to_netcdf(filename)
 
     @staticmethod
     def load_results(filename: str = "results.nc") -> xr.Dataset:
+        """Loads the results from a netcdf file and converts the
+        index back to a multiindex.
+
+        Parameters
+        ----------
+        filename : str, optional
+            File containing results, by default "results.nc"
+
+        Returns
+        -------
+        results : xr.Dataset
+            Decoding results
+        """
         results = xr.open_dataset(filename)
         coord_names = list(results["state_bins"].coords)
         return xr.open_dataset(filename).set_index(state_bins=coord_names)
