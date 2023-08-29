@@ -713,7 +713,7 @@ class _DetectorBase(BaseEstimator):
         """
         results = xr.open_dataset(filename)
         coord_names = list(results["state_bins"].coords)
-        return xr.open_dataset(filename).set_index(state_bins=coord_names)
+        return results.set_index(state_bins=coord_names)
 
     def copy(self):
         """Makes a copy of the detector"""
