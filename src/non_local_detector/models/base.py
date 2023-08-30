@@ -579,7 +579,7 @@ class _DetectorBase(BaseEstimator):
                 marginal_log_likelihood,
             ) = self._predict()
             # Maximization step
-            logger.info("Maximization step..")
+            logger.info("Maximization step...")
 
             if estimate_discrete_transition:
                 (
