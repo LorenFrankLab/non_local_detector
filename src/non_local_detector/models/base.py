@@ -1027,9 +1027,9 @@ class ClusterlessDetector(_DetectorBase):
                 )
             else:
                 # Use previously computed likelihoods
-                previously_computed_bins = (
-                    self.state_ind_ == computed_likelihoods.index(likelihood_name)
-                )
+                previously_computed_bins = self.state_ind_[
+                    self.is_track_interior_state_bins_
+                ] == computed_likelihoods.index(likelihood_name)
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     log_likelihood[:, previously_computed_bins]
                 )
@@ -1351,9 +1351,9 @@ class SortedSpikesDetector(_DetectorBase):
                 )
             else:
                 # Use previously computed likelihoods
-                previously_computed_bins = (
-                    self.state_ind_ == computed_likelihoods.index(likelihood_name)
-                )
+                previously_computed_bins = self.state_ind_[
+                    self.is_track_interior_state_bins_
+                ] == computed_likelihoods.index(likelihood_name)
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     log_likelihood[:, previously_computed_bins]
                 )
