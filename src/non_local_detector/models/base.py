@@ -988,13 +988,17 @@ class ClusterlessDetector(_DetectorBase):
         if is_missing is None:
             is_missing = jnp.zeros((n_time,), dtype=bool)
 
-        log_likelihood = jnp.zeros((n_time, self.n_state_bins_), dtype=np.float32)
+        log_likelihood = jnp.zeros(
+            (n_time, self.is_track_interior_state_bins_.sum()), dtype=np.float32
+        )
 
         _, likelihood_func = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
         computed_likelihoods = []
 
         for state_id, obs in enumerate(self.observation_models):
-            is_state_bin = self.state_ind_ == state_id
+            is_state_bin = (
+                self.state_ind_[self.is_track_interior_state_bins_] == state_id
+            )
             likelihood_name = (
                 obs.environment_name,
                 obs.encoding_group,
@@ -1311,13 +1315,15 @@ class SortedSpikesDetector(_DetectorBase):
         if is_missing is None:
             is_missing = np.zeros((n_time,), dtype=bool)
 
-        log_likelihood = jnp.zeros((n_time, self.n_state_bins_))
+        log_likelihood = jnp.zeros((n_time, self.is_track_interior_state_bins_.sum()))
 
         _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
         computed_likelihoods = []
 
         for state_id, obs in enumerate(self.observation_models):
-            is_state_bin = self.state_ind_ == state_id
+            is_state_bin = (
+                self.state_ind_[self.is_track_interior_state_bins_] == state_id
+            )
             likelihood_name = (
                 obs.environment_name,
                 obs.encoding_group,
