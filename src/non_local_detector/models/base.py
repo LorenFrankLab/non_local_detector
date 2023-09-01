@@ -501,6 +501,9 @@ class _DetectorBase(BaseEstimator):
 
     def _predict(self):
         logger.info("Computing posterior...")
+        is_track_interior = self.is_track_interior_state_bins_
+        cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
+
         transition_fn = (
             stationary_discrete_transition_fn
             if self.discrete_state_transitions_.ndim == 2
@@ -508,9 +511,9 @@ class _DetectorBase(BaseEstimator):
         )
         transition_fn = partial(
             transition_fn,
-            jnp.asarray(self.continuous_state_transitions_),
+            jnp.asarray(self.continuous_state_transitions_[cross_is_track_interior]),
             jnp.asarray(self.discrete_state_transitions_),
-            jnp.asarray(self.state_ind_),
+            jnp.asarray(self.state_ind_[is_track_interior]),
         )
 
         (
@@ -519,9 +522,9 @@ class _DetectorBase(BaseEstimator):
             predictive_distribution,
             acausal_posterior,
         ) = hmm_smoother(
-            self.initial_conditions_,
+            self.initial_conditions_[is_track_interior],
             None,
-            self.log_likelihood_,
+            self.log_likelihood_[:, is_track_interior],
             transition_fn=transition_fn,
         )
 
@@ -533,7 +536,7 @@ class _DetectorBase(BaseEstimator):
             causal_posterior,
             acausal_posterior,
             predictive_distribution,
-            self.state_ind_,
+            self.state_ind_[is_track_interior],
         )
         logger.info("Finished computing posterior...")
         return (
@@ -783,13 +786,13 @@ class _DetectorBase(BaseEstimator):
             attrs=attrs,
         )
 
-        results["acausal_posterior"] = acausal_posterior
+        results["acausal_posterior"][:, is_track_interior] = acausal_posterior
         if return_causal_posterior:
             results["causal_posterior"] = (
                 ("time", "state_bins"),
                 np.full(posterior_shape, np.nan, dtype=np.float32),
             )
-            results["causal_posterior"] = causal_posterior
+            results["causal_posterior"][:, is_track_interior] = causal_posterior
 
         return results.squeeze()
 
