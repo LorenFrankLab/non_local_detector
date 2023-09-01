@@ -524,7 +524,7 @@ class _DetectorBase(BaseEstimator):
         ) = hmm_smoother(
             self.initial_conditions_[is_track_interior],
             None,
-            self.log_likelihood_[:, is_track_interior],
+            self.log_likelihood_,
             transition_fn=transition_fn,
         )
 

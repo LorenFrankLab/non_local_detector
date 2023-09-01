@@ -163,7 +163,8 @@ def predict_sorted_spikes_kde_log_likelihood(
 
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
-        log_likelihood = jnp.zeros((n_time, place_fields.shape[1]))
+        n_interior_bins = is_track_interior.sum()
+        log_likelihood = jnp.zeros((n_time, n_interior_bins))
         for neuron_spike_times, place_field in zip(
             tqdm(
                 spike_times,
@@ -183,16 +184,11 @@ def predict_sorted_spikes_kde_log_likelihood(
                 np.digitize(neuron_spike_times, time[1:-1]),
                 minlength=time.shape[0],
             )
-            log_likelihood = log_likelihood.at[:, is_track_interior].add(
-                jax.scipy.special.xlogy(
-                    np.expand_dims(spike_count_per_time_bin, axis=1),
-                    jnp.expand_dims(place_field[is_track_interior], axis=0),
-                )
+            log_likelihood += jax.scipy.special.xlogy(
+                np.expand_dims(spike_count_per_time_bin, axis=1),
+                jnp.expand_dims(place_field[is_track_interior], axis=0),
             )
 
-        log_likelihood -= no_spike_part_log_likelihood
-        log_likelihood = jnp.where(
-            is_track_interior[jnp.newaxis, :], log_likelihood, jnp.log(EPS)
-        )
+        log_likelihood -= no_spike_part_log_likelihood[is_track_interior]
 
     return log_likelihood

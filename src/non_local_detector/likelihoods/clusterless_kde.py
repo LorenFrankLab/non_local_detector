@@ -7,6 +7,7 @@ from track_linearization import get_linearized_position
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import (
     LOG_EPS,
+    EPS,
     KDEModel,
     block_kde,
     gaussian_pdf,
@@ -197,10 +198,10 @@ def fit_clusterless_kde_encoding_model(
         )
         gpi_models.append(gpi_model)
 
-        summed_ground_process_intensity += mean_rates[-1] * jnp.where(
-            occupancy > 0.0,
-            gpi_model.predict(interior_place_bin_centers) / occupancy,
-            0.0,
+        summed_ground_process_intensity += jnp.clip(
+            mean_rates[-1] * gpi_model.predict(interior_place_bin_centers) / occupancy,
+            a_min=EPS,
+            a_max=None,
         )
 
     return {
@@ -263,11 +264,7 @@ def predict_clusterless_kde_log_likelihood(
         is_track_interior = environment.is_track_interior_.ravel(order="F")
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
-        log_likelihood = (
-            jnp.zeros((is_track_interior.shape[0],))
-            .at[is_track_interior]
-            .set(-1.0 * summed_ground_process_intensity)
-        ) * jnp.ones((n_time, 1))
+        log_likelihood = -1.0 * summed_ground_process_intensity * jnp.ones((n_time, 1))
 
         for (
             electrode_encoding_spike_waveform_features,
@@ -300,21 +297,19 @@ def predict_clusterless_kde_log_likelihood(
                 electrode_encoding_positions,
                 std=position_std,
             )
-            log_likelihood = log_likelihood.at[:, is_track_interior].add(
-                jax.ops.segment_sum(
-                    block_estimate_log_joint_mark_intensity(
-                        electrode_decoding_spike_waveform_features,
-                        electrode_encoding_spike_waveform_features,
-                        waveform_std,
-                        occupancy,
-                        electrode_mean_rate,
-                        position_distance,
-                        block_size,
-                    ),
-                    get_spike_time_bin_ind(electrode_spike_times, time),
-                    indices_are_sorted=False,
-                    num_segments=n_time,
-                )
+            log_likelihood += jax.ops.segment_sum(
+                block_estimate_log_joint_mark_intensity(
+                    electrode_decoding_spike_waveform_features,
+                    electrode_encoding_spike_waveform_features,
+                    waveform_std,
+                    occupancy,
+                    electrode_mean_rate,
+                    position_distance,
+                    block_size,
+                ),
+                get_spike_time_bin_ind(electrode_spike_times, time),
+                indices_are_sorted=False,
+                num_segments=n_time,
             )
 
     return log_likelihood
