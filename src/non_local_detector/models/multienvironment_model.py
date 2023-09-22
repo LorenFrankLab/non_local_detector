@@ -52,8 +52,8 @@ discrete_transition_type = DiscreteStationaryDiagonal(
 )
 
 state_names = [
-    "Environment1",
-    "Environment2",
+    "env1",
+    "env2",
 ]
 
 
