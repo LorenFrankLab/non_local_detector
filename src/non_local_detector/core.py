@@ -77,8 +77,7 @@ def _condition_on(probs, ll):
     """
     ll_max = ll.max()
     ll_max = jnp.where(jnp.isfinite(ll_max), ll_max, 0.0)
-    new_probs = probs * jnp.exp(ll - ll_max)
-    new_probs, norm = _normalize(new_probs)
+    new_probs, norm = _normalize(probs * jnp.exp(ll - ll_max))
     log_norm = jnp.log(norm) + ll_max
     return new_probs, log_norm
 
