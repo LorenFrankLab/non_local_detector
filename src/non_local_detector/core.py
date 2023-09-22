@@ -58,7 +58,7 @@ def _normalize(u, axis=0, eps=1e-15):
     Returns:
         Tuple of the normalized values, and the normalizing denominator.
     """
-    u = jnp.clip(u, a_min=1e-15, a_max=None)
+    u = jnp.clip(u, a_min=eps, a_max=None)
     c = u.sum(axis=axis)
     return u / c, c
 
