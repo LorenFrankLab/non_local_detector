@@ -21,7 +21,10 @@ from non_local_detector.types import (
     Stickiness,
 )
 
-environment = Environment(environment_name="")
+environments = [
+    Environment(environment_name="env1"),
+    Environment(environment_name="env2"),
+]
 
 continuous_transition_types = [
     [
@@ -68,7 +71,7 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
         discrete_transition_regularization: float = 1e-10,
         continuous_transition_types: ContinuousTransitions = continuous_transition_types,
         observation_models: Observations = observation_models,
-        environments: Environments = environment,
+        environments: Environments = environments,
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
         sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
@@ -106,7 +109,7 @@ class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
         discrete_transition_regularization: float = 1e-10,
         continuous_transition_types: ContinuousTransitions = continuous_transition_types,
         observation_models: Observations = observation_models,
-        environments: Environments = environment,
+        environments: Environments = environments,
         clusterless_algorithm: str = "clusterless_kde",
         clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
