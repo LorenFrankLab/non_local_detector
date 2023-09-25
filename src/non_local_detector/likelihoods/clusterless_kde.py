@@ -308,7 +308,7 @@ def predict_clusterless_kde_log_likelihood(
                     block_size,
                 ),
                 get_spike_time_bin_ind(electrode_spike_times, time),
-                indices_are_sorted=False,
+                indices_are_sorted=True,
                 num_segments=n_time,
             )
 
@@ -403,7 +403,7 @@ def compute_local_log_likelihood(
                 )
             ),
             get_spike_time_bin_ind(electrode_spike_times, time),
-            indices_are_sorted=False,
+            indices_are_sorted=True,
             num_segments=n_time,
         )
 
