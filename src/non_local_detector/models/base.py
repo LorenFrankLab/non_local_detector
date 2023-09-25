@@ -276,11 +276,21 @@ class _DetectorBase(BaseEstimator):
                 else:
                     n_row_bins = np.max(inds[0].shape)
                     n_col_bins = np.max(inds[1].shape)
-                    self.continuous_state_transitions_[
-                        inds
-                    ] = transition.make_state_transition(self.environments)[
-                        :n_row_bins, :n_col_bins
-                    ]
+
+                    if np.logical_and(n_row_bins == 1, n_col_bins > 1):
+                        # transition from discrete to continuous
+                        # ASSUME uniform for now
+                        environment = self.environments[
+                            self.environments.index(transition.environment_name)
+                        ]
+                        self.continuous_state_transitions_[inds] = (
+                            environment.is_track_interior_.ravel(order="F")
+                            / environment.is_track_interior_.sum()
+                        ).astype(float)
+                    else:
+                        self.continuous_state_transitions_[
+                            inds
+                        ] = transition.make_state_transition(self.environments)
 
     def initialize_discrete_state_transition(
         self, covariate_data: Union[pd.DataFrame, dict, None] = None
