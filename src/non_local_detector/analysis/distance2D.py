@@ -134,17 +134,18 @@ def get_map_estimate_direction_from_track_graph(
 
     """
     node_positions = nx.get_node_attributes(track_graph, "pos")
-    node_ids = np.asarray(list(node_positions.keys()))
 
     map_estimate_direction = np.zeros((head_position.shape[0],))
 
     # remove outer boundary edge
     bin_edges = [e[1:-1] for e in edges]
     if precomputed_distance:
+        node_positions = np.asarray(list(node_positions.values()))
+        n_nodes = node_positions.shape[0]
         bin_ind1 = get_bin_ind(head_position, bin_edges)
         bin_ind2 = get_bin_ind(map_estimate, bin_edges)
 
-        first_node_on_path = np.full((len(node_ids), len(node_ids)), -1, dtype=int)
+        first_node_on_path = np.full((n_nodes, n_nodes), -1, dtype=int)
         for from_node_id, to_node_data in nx.shortest_path(
             track_graph,
             weight="distance",
@@ -161,6 +162,7 @@ def get_map_estimate_direction_from_track_graph(
             first_node_on_path_pos[:, 0] - head_position_node_pos[:, 0],
         )
     else:
+        node_ids = np.asarray(list(node_positions.keys()))
         head_position_nodes = node_ids[get_bin_ind(head_position, bin_edges)]
         map_estimate_nodes = node_ids[get_bin_ind(map_estimate, bin_edges)]
 
