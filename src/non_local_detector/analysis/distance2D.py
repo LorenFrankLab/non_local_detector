@@ -116,6 +116,7 @@ def get_map_estimate_direction_from_track_graph(
     map_estimate: np.ndarray,
     track_graph: nx.Graph,
     edges: list,
+    precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Get the direction of the MAP estimate of the decoded position from the
     animal's head position.
@@ -139,31 +140,43 @@ def get_map_estimate_direction_from_track_graph(
 
     # remove outer boundary edge
     bin_edges = [e[1:-1] for e in edges]
+    if precomputed_distance:
+        bin_ind1 = get_bin_ind(head_position, bin_edges)
+        bin_ind2 = get_bin_ind(map_estimate, bin_edges)
+        distance = np.full((len(node_ids), len(node_ids)), np.inf)
+        for to_node_id, from_node_id in nx.shortest_path_length(
+            track_graph,
+            weight="distance",
+        ):
+            distance[to_node_id, list(from_node_id.keys())] = list(
+                from_node_id.values()
+            )
+        distance = distance[bin_ind1, bin_ind2]
+    else:
+        head_position_nodes = node_ids[get_bin_ind(head_position, bin_edges)]
+        map_estimate_nodes = node_ids[get_bin_ind(map_estimate, bin_edges)]
 
-    head_position_nodes = node_ids[get_bin_ind(head_position, bin_edges)]
-    map_estimate_nodes = node_ids[get_bin_ind(map_estimate, bin_edges)]
+        for i, (head_position_node, map_estimate_node) in enumerate(
+            zip(head_position_nodes, map_estimate_nodes)
+        ):
+            try:
+                first_node_on_path = nx.shortest_path(
+                    track_graph,
+                    source=head_position_node,
+                    target=map_estimate_node,
+                    weight="distance",
+                )[1]
+            except IndexError:
+                # head_position_node and map_estimate_node are the same
+                first_node_on_path = map_estimate_node
 
-    for i, (head_position_node, map_estimate_node) in enumerate(
-        zip(head_position_nodes, map_estimate_nodes)
-    ):
-        try:
-            first_node_on_path = nx.shortest_path(
-                track_graph,
-                source=head_position_node,
-                target=map_estimate_node,
-                weight="distance",
-            )[1]
-        except IndexError:
-            # head_position_node and map_estimate_node are the same
-            first_node_on_path = map_estimate_node
+            head_position_node_pos = node_positions[head_position_node]
+            first_node_on_path_pos = node_positions[first_node_on_path]
 
-        head_position_node_pos = node_positions[head_position_node]
-        first_node_on_path_pos = node_positions[first_node_on_path]
-
-        map_estimate_direction[i] = np.arctan2(
-            first_node_on_path_pos[1] - head_position_node_pos[1],
-            first_node_on_path_pos[0] - head_position_node_pos[0],
-        )
+            map_estimate_direction[i] = np.arctan2(
+                first_node_on_path_pos[1] - head_position_node_pos[1],
+                first_node_on_path_pos[0] - head_position_node_pos[0],
+            )
 
     return map_estimate_direction
 
@@ -173,6 +186,7 @@ def get_2D_distance(
     position2: np.ndarray,
     track_graph: nx.Graph = None,
     edges: list = None,
+    precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Distance of two points along the graph of the track.
 
@@ -182,6 +196,7 @@ def get_2D_distance(
     position2 : np.ndarray, shape (n_time, 2)
     track_graph : nx.Graph or None
     edges : list or None
+    precomputed_distance : bool, optional
 
     Returns
     -------
@@ -206,20 +221,32 @@ def get_2D_distance(
         # remove outer boundary edge
         bin_edges = [e[1:-1] for e in edges]
 
-        node_ids1 = node_ids[get_bin_ind(position1, bin_edges)]
-        node_ids2 = node_ids[get_bin_ind(position2, bin_edges)]
-
-        distance = np.full((position1.shape[0]), np.inf)
-        for i in range(position1.shape[0]):
-            try:
-                distance[i] = nx.shortest_path_length(
-                    track_graph,
-                    source=node_ids1[i],
-                    target=node_ids2[i],
-                    weight="distance",
+        if precomputed_distance:
+            bin_ind1 = get_bin_ind(position1, bin_edges)
+            bin_ind2 = get_bin_ind(position2, bin_edges)
+            distance = np.full((len(node_ids), len(node_ids)), np.inf)
+            for to_node_id, from_node_id in nx.shortest_path_length(
+                track_graph,
+                weight="distance",
+            ):
+                distance[to_node_id, list(from_node_id.keys())] = list(
+                    from_node_id.values()
                 )
-            except nx.NetworkXNoPath:
-                print(f"No path between {node_ids1[i]} and {node_ids2[i]}")
+            distance = distance[bin_ind1, bin_ind2]
+        else:
+            node_ids1 = node_ids[get_bin_ind(position1, bin_edges)]
+            node_ids2 = node_ids[get_bin_ind(position2, bin_edges)]
+            distance = np.full((position1.shape[0]), np.inf)
+            for i in range(position1.shape[0]):
+                try:
+                    distance[i] = nx.shortest_path_length(
+                        track_graph,
+                        source=node_ids1[i],
+                        target=node_ids2[i],
+                        weight="distance",
+                    )
+                except nx.NetworkXNoPath:
+                    print(f"No path between {node_ids1[i]} and {node_ids2[i]}")
 
     return distance
 
@@ -230,6 +257,7 @@ def head_direction_simliarity(
     map_estimate: np.ndarray,
     track_graph: nx.Graph = None,
     edges: list = None,
+    precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Cosine similarity of the head direction vector with the vector from the
     animal's head to MAP estimate of the decoded position.
@@ -241,6 +269,7 @@ def head_direction_simliarity(
     map_estimate : np.ndarray, shape (n_time, 2)
     track_graph : nx.Graph or None
     edges : list or None
+    precomputed_distance : bool, optional
 
     Returns
     -------
@@ -265,7 +294,7 @@ def head_direction_simliarity(
         )
     else:
         map_estimate_direction = get_map_estimate_direction_from_track_graph(
-            head_position, map_estimate, track_graph, edges
+            head_position, map_estimate, track_graph, edges, precomputed_distance
         )
 
     return np.cos(head_direction - map_estimate_direction)
@@ -277,6 +306,7 @@ def get_ahead_behind_distance2D(
     map_position: np.ndarray,
     track_graph: nx.Graph = None,
     edges: list = None,
+    precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Distance of the MAP decoded position to the animal's head position where
      the sign indicates if the decoded position is in front of the
@@ -289,6 +319,7 @@ def get_ahead_behind_distance2D(
     map_position : np.ndarray, shape (n_time, 2)
     track_graph : nx.Graph or None
     edges : list or None
+    precomputed_distance : bool, optional
 
     Returns
     -------
@@ -296,10 +327,17 @@ def get_ahead_behind_distance2D(
 
     """
 
-    distance = get_2D_distance(head_position, map_position, track_graph, edges)
+    distance = get_2D_distance(
+        head_position, map_position, track_graph, edges, precomputed_distance
+    )
 
     direction_similarity = head_direction_simliarity(
-        head_position, head_direction, map_position, track_graph, edges
+        head_position,
+        head_direction,
+        map_position,
+        track_graph,
+        edges,
+        precomputed_distance,
     )
     ahead_behind = np.sign(direction_similarity)
 
