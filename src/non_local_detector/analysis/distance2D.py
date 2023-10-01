@@ -143,15 +143,23 @@ def get_map_estimate_direction_from_track_graph(
     if precomputed_distance:
         bin_ind1 = get_bin_ind(head_position, bin_edges)
         bin_ind2 = get_bin_ind(map_estimate, bin_edges)
-        distance = np.full((len(node_ids), len(node_ids)), np.inf)
-        for to_node_id, from_node_id in nx.shortest_path_length(
+
+        first_node_on_path = np.full((len(node_ids), len(node_ids)), -1, dtype=int)
+        for from_node_id, to_node_data in nx.shortest_path(
             track_graph,
             weight="distance",
-        ):
-            distance[to_node_id, list(from_node_id.keys())] = list(
-                from_node_id.values()
-            )
-        distance = distance[bin_ind1, bin_ind2]
+        ).items():
+            for to_node_id, path in to_node_data.items():
+                try:
+                    first_node_on_path[from_node_id, to_node_id] = path[1]
+                except IndexError:
+                    first_node_on_path[from_node_id, to_node_id] = path[0]
+        head_position_node_pos = node_positions[bin_ind1]
+        first_node_on_path_pos = node_positions[first_node_on_path[bin_ind1, bin_ind2]]
+        map_estimate_direction = np.arctan2(
+            first_node_on_path_pos[:, 1] - head_position_node_pos[:, 1],
+            first_node_on_path_pos[:, 0] - head_position_node_pos[:, 0],
+        )
     else:
         head_position_nodes = node_ids[get_bin_ind(head_position, bin_edges)]
         map_estimate_nodes = node_ids[get_bin_ind(map_estimate, bin_edges)]
