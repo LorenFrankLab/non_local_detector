@@ -13,7 +13,32 @@ def convert_to_state_probability(
     acausal_posterior: np.ndarray,
     predictive_distribution: np.ndarray,
     state_ind: np.ndarray,
-):
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Convert the causal, acausal, and predictive distributions to state probabilities.
+
+    Parameters
+    ----------
+    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        The causal posterior distribution.
+    acausal_posterior : np.ndarray, shape (n_time, n_states_bins)
+        The acausal posterior distribution.
+    predictive_distribution : np.ndarray, shape (n_time, n_state_bins)
+        The predictive distribution.
+    state_ind : np.ndarray, shape (n_time,)
+        The state indices.
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, np.ndarray]
+        A tuple containing the causal, acausal, and predictive state probabilities.
+        causal_state_probabilities : np.ndarray, shape (n_time, n_states)
+            The causal state probabilities.
+        acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
+            The acausal state probabilities.
+        predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
+            The predictive state probabilities.
+    """
     n_states = np.unique(state_ind).size
     n_time = causal_posterior.shape[0]
 
