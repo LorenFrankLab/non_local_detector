@@ -65,11 +65,7 @@ def convert_to_state_probability(
 def get_trans_mat(transition_matrix, transition_fn, t):
     if transition_fn is not None:
         return transition_fn(t)
-    else:
-        if transition_matrix.ndim == 3:  # (T,K,K)
-            return transition_matrix[t]
-        else:
-            return transition_matrix
+    return transition_matrix[t] if transition_matrix.ndim == 3 else transition_matrix
 
 
 def _normalize(u, axis=0, eps=1e-15):
