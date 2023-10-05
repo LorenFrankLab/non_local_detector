@@ -7,8 +7,6 @@ import numpy as np
 
 np.seterr(divide="ignore", invalid="ignore")
 
-EPS = 1e-15
-
 
 def convert_to_state_probability(
     causal_posterior: np.ndarray,
@@ -70,17 +68,18 @@ def get_trans_mat(transition_matrix, transition_fn, t):
     return transition_matrix[t] if transition_matrix.ndim == 3 else transition_matrix
 
 
-def _normalize(u, axis=0):
+def _normalize(u, axis=0, eps=1e-15):
     """Normalizes the values within the axis in a way that they sum up to 1.
 
     Args:
         u: Input array to normalize.
         axis: Axis over which to normalize.
+        eps: Minimum value threshold for numerical stability.
 
     Returns:
         Tuple of the normalized values, and the normalizing denominator.
     """
-    u = jnp.clip(u, a_min=EPS, a_max=None)
+    u = jnp.clip(u, a_min=eps, a_max=None)
     c = u.sum(axis=axis)
     return u / c, c
 
@@ -99,9 +98,14 @@ def _condition_on(probs, ll):
     """
     ll_max = ll.max()
     ll_max = jnp.where(jnp.isfinite(ll_max), ll_max, 0.0)
-    probs, log_norm = _normalize(probs * jnp.exp(ll - ll_max))
+    probs = probs * jnp.exp(ll - ll_max)
+    probs, log_norm = _normalize(probs)
     log_norm += ll_max
     return probs, log_norm
+
+
+def _predict(probs, A):
+    return A.T @ probs
 
 
 @partial(jax.jit, static_argnames=["transition_fn"])
@@ -133,11 +137,12 @@ def hmm_filter(
     def _step(carry, t):
         log_normalizer, predicted_probs = carry
 
-        filtered_probs, log_norm = _condition_on(predicted_probs, log_likelihoods[t])
+        A = get_trans_mat(transition_matrix, transition_fn, t)
+        ll = log_likelihoods[t]
+
+        filtered_probs, log_norm = _condition_on(predicted_probs, ll)
         log_normalizer += log_norm
-        predicted_probs_next = (
-            get_trans_mat(transition_matrix, transition_fn, t).T @ filtered_probs
-        )
+        predicted_probs_next = _predict(filtered_probs, A)
 
         return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
 
@@ -193,6 +198,8 @@ def hmm_smoother(
         smoothed_probs_next = carry
         t, filtered_probs, predicted_probs_next = args
 
+        A = get_trans_mat(transition_matrix, transition_fn, t)
+
         # Fold in the next state (Eq. 8.2 of Saarka, 2013)
         # If hard 0. in predicted_probs_next, set relative_probs_next as 0. to avoid NaN values
         relative_probs_next = jnp.where(
@@ -200,27 +207,22 @@ def hmm_smoother(
             0.0,
             smoothed_probs_next / predicted_probs_next,
         )
-        smoothed_probs = filtered_probs * (
-            get_trans_mat(transition_matrix, transition_fn, t) @ relative_probs_next
-        )
+        smoothed_probs = filtered_probs * (A @ relative_probs_next)
         smoothed_probs /= smoothed_probs.sum()
 
         return smoothed_probs, smoothed_probs
 
     # Run the HMM smoother
-    _, smoothed_probs = jax.lax.scan(
-        f=_step,
-        init=filtered_probs[-1],
-        xs=(
-            jnp.arange(0, num_timesteps - 1),
-            filtered_probs[:-1],
-            predicted_probs[1:],
-        ),
-        reverse=True,
+    carry = filtered_probs[-1]
+    args = (
+        jnp.arange(num_timesteps - 2, -1, -1),
+        filtered_probs[:-1][::-1],
+        predicted_probs[1:][::-1],
     )
+    _, rev_smoothed_probs = jax.lax.scan(_step, carry, args)
 
     # Reverse the arrays and return
-    smoothed_probs = jnp.vstack([smoothed_probs, filtered_probs[-1]])
+    smoothed_probs = jnp.row_stack([rev_smoothed_probs[::-1], filtered_probs[-1]])
 
     return (
         marginal_loglik,
