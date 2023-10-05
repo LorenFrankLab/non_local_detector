@@ -221,7 +221,7 @@ def hmm_smoother(
     _, rev_smoothed_probs = jax.lax.scan(_step, carry, args)
 
     # Reverse the arrays and return
-    smoothed_probs = jnp.row_stack([rev_smoothed_probs[::-1], filtered_probs[-1]])
+    smoothed_probs = jnp.vstack([rev_smoothed_probs[::-1], filtered_probs[-1]])
 
     return (
         marginal_loglik,
