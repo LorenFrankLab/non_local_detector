@@ -1,4 +1,4 @@
-"""Classes for constructing discrete grids representations of spatial environments in 1D and 2D"""
+"""Classes for constructing discrete grids representations of spatial environments in nD"""
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
@@ -68,12 +68,12 @@ class Environment:
     """
 
     environment_name: str = ""
-    place_bin_size: float = 2.0
-    track_graph: nx.Graph = None
-    edge_order: tuple = None
-    edge_spacing: tuple = None
-    is_track_interior: np.ndarray = None
-    position_range: np.ndarray = None
+    place_bin_size: Union[float, Tuple[float]] = 2.0
+    track_graph: Optional[nx.Graph] = None
+    edge_order: Optional[tuple] = None
+    edge_spacing: Optional[tuple] = None
+    is_track_interior: Optional[np.ndarray] = None
+    position_range: Optional[np.ndarray] = None
     infer_track_interior: bool = True
     fill_holes: bool = False
     dilate: bool = False
@@ -89,9 +89,9 @@ class Environment:
 
         Parameters
         ----------
-        position : np.ndarray, optional
+        position : np.ndarray, shape (n_time, n_dim), optional
             Position of the animal.
-        infer_track_interior : bool, optional
+        infer_track_interior : bool, shape (nx_bins, ...), optional
             Whether to infer the spatial geometry of track from position
 
         Returns
