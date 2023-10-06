@@ -270,8 +270,9 @@ try:
     def create_2D_decode_view(
         position_time: np.ndarray,
         position: np.ndarray,
+        interior_place_bin_centers: np.ndarray,
+        place_bin_size: np.ndarray,
         posterior: xr.DataArray,
-        bin_size: float,
         head_dir: np.ndarray = None,
     ) -> vvf.TrackPositionAnimationV1:
         """Creates a 2D decoding movie view
@@ -280,8 +281,9 @@ try:
         ----------
         position_time : np.ndarray, shape (n_time,)
         position : np.ndarray, shape (n_time, 2)
+        interior_place_bin_centers: np.ndarray, shape (n_track_bins, 2)
+        place_bin_size : np.ndarray, shape (2, 1)
         posterior : xr.DataArray, shape (n_time, n_position_bins)
-        bin_size : float
         head_dir : np.ndarray, optional
 
         Returns
@@ -301,14 +303,15 @@ try:
         if head_dir is not None:
             head_dir = np.squeeze(np.asarray(head_dir))
 
-        track_width, track_height, upper_left_points = make_track(
-            position, bin_size=bin_size
+        track_bin_width, track_bin_height = place_bin_size
+        upper_left_points = get_ul_corners(
+            track_bin_width, track_bin_height, interior_place_bin_centers
         )
 
         data = create_static_track_animation(
             ul_corners=upper_left_points,
-            track_rect_height=track_height,
-            track_rect_width=track_width,
+            track_rect_height=track_bin_height,
+            track_rect_width=track_bin_width,
             timestamps=position_time,
             positions=position.T,
             head_dir=head_dir,
@@ -321,18 +324,29 @@ try:
     def create_interactive_2D_decoding_figurl(
         position_time: np.ndarray,
         position: np.ndarray,
+        env: any,
         results: xr.Dataset,
+        posterior: xr.DataArray = None,
         spike_times: np.ndarray = None,
         head_dir: np.ndarray = None,
         speed: np.ndarray = None,
-        bin_size: float = 2.5,  # in cm
         view_height: int = 800,
     ) -> str:
+        interior_place_bin_centers = env.place_bin_centers_[
+            env.is_track_interior_.ravel()
+        ]
+        if posterior is None:
+            posterior = results.acausal_posterior.unstack("state_bins").sum("state")
+        place_bin_size = (
+            posterior.x_position.values[1] - posterior.x_position.values[0],
+            posterior.y_position.values[1] - posterior.y_position.values[0],
+        )
         decode_view = create_2D_decode_view(
             position_time=position_time,
             position=position,
-            posterior=results.acausal_posterior.unstack("state_bins").sum("state"),
-            bin_size=bin_size,
+            posterior=posterior,
+            interior_place_bin_centers=interior_place_bin_centers,
+            place_bin_size=place_bin_size,
             head_dir=head_dir,
         )
 
