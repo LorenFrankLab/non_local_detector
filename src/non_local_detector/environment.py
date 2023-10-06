@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
 import joblib
+import pickle
 import matplotlib
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -195,7 +196,8 @@ class Environment:
             File name to pickle the environment to, by default "environment.pkl"
 
         """
-        joblib.dump(self, filename)
+        with open(filename, "wb") as file_handle:
+            pickle.dump(self, file_handle)
 
     @staticmethod
     def load_environment(filename: str = "environment.pkl"):
@@ -210,7 +212,8 @@ class Environment:
         environment instance
 
         """
-        return joblib.load(filename)
+        with open(filename, "rb") as f:
+            return pickle.load(f)
 
 
 def get_n_bins(
