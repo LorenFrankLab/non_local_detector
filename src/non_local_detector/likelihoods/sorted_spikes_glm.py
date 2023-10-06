@@ -24,7 +24,7 @@ def make_spline_design_matrix(
         knots = knots[(knots > pos.min()) & (knots < pos.max())]
         inner_knots.append(knots)
 
-    inner_knots = np.meshgrid(*inner_knots)
+    inner_knots = np.meshgrid(*inner_knots, indexing="ij")
 
     data = {}
     formula = "1 + te("
@@ -106,7 +106,7 @@ def fit_sorted_spikes_glm_encoding_model(
     n_time_bins = int(np.ceil((time_range[-1] - time_range[0]) * sampling_frequency))
     time = time_range[0] + np.arange(n_time_bins) / sampling_frequency
 
-    is_track_interior = environment.is_track_interior_.ravel(order="F")
+    is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = jnp.asarray(
         environment.place_bin_centers_[is_track_interior]
     )

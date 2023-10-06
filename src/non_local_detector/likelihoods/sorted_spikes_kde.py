@@ -25,7 +25,7 @@ def fit_sorted_spikes_kde_encoding_model(
         else:
             position_std = jnp.array([position_std] * position.shape[1])
 
-    is_track_interior = environment.is_track_interior_.ravel(order="F")
+    is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
     if environment.track_graph is not None and position.shape[1] > 1:

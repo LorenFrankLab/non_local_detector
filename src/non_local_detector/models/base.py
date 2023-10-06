@@ -188,9 +188,7 @@ class _DetectorBase(BaseEstimator):
                 ]
                 bin_sizes.append(environment.place_bin_centers_.shape[0])
                 state_ind.append(ind * np.ones((bin_sizes[-1],), dtype=int))
-                is_track_interior.append(
-                    environment.is_track_interior_.ravel(order="F")
-                )
+                is_track_interior.append(environment.is_track_interior_.ravel())
 
         self.state_ind_ = np.concatenate(state_ind)
         self.n_state_bins_ = len(self.state_ind_)
@@ -284,7 +282,7 @@ class _DetectorBase(BaseEstimator):
                             self.environments.index(transition.environment_name)
                         ]
                         self.continuous_state_transitions_[inds] = (
-                            environment.is_track_interior_.ravel(order="F")
+                            environment.is_track_interior_.ravel()
                             / environment.is_track_interior_.sum()
                         ).astype(float)
                     else:

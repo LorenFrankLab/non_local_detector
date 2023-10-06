@@ -34,7 +34,7 @@ class UniformInitialConditions:
             environment = environments[
                 environments.index(observation_model.environment_name)
             ]
-            initial_conditions = environment.is_track_interior_.ravel(order="F").astype(
+            initial_conditions = environment.is_track_interior_.ravel().astype(
                 np.float32
             )
 

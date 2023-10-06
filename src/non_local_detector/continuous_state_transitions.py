@@ -155,7 +155,7 @@ class RandomWalk:
                     dx,
                     dy,
                     std=np.sqrt(self.movement_var),
-                ).reshape((n_total_bins, -1), order="F")
+                ).reshape((n_total_bins, -1))
         else:
             place_bin_center_ind_to_node = np.asarray(
                 self.environment.place_bin_centers_nodes_df_.node_id
@@ -168,7 +168,7 @@ class RandomWalk:
                 self.environment.distance_between_nodes_,
             )
 
-        is_track_interior = self.environment.is_track_interior_.ravel(order="F")
+        is_track_interior = self.environment.is_track_interior_.ravel()
         transition_matrix[~is_track_interior] = 0.0
         transition_matrix[:, ~is_track_interior] = 0.0
 
@@ -205,7 +205,7 @@ class Uniform:
         """
         self.environment1 = environments[environments.index(self.environment_name)]
         n_bins1 = self.environment1.place_bin_centers_.shape[0]
-        is_track_interior1 = self.environment1.is_track_interior_.ravel(order="F")
+        is_track_interior1 = self.environment1.is_track_interior_.ravel()
 
         if self.environment2_name is None:
             n_bins2 = n_bins1
@@ -213,7 +213,7 @@ class Uniform:
         else:
             self.environment2 = environments[environments.index(self.environment2_name)]
             n_bins2 = self.environment2.place_bin_centers_.shape[0]
-            is_track_interior2 = self.environment2.is_track_interior_.ravel(order="F")
+            is_track_interior2 = self.environment2.is_track_interior_.ravel()
 
         transition_matrix = np.ones((n_bins1, n_bins2))
 
@@ -253,7 +253,7 @@ class Identity:
 
         transition_matrix = np.identity(n_bins)
 
-        is_track_interior = self.environment.is_track_interior_.ravel(order="F")
+        is_track_interior = self.environment.is_track_interior_.ravel()
         transition_matrix[~is_track_interior] = 0.0
         transition_matrix[:, ~is_track_interior] = 0.0
 
@@ -337,7 +337,7 @@ class EmpiricalMovement:
         n_position_dims = position.shape[1]
         shape_2d = np.product(original_shape[:n_position_dims])
         state_transition = _normalize_row_probability(
-            state_transition.reshape((shape_2d, shape_2d), order="F")
+            state_transition.reshape((shape_2d, shape_2d))
         )
 
         return np.linalg.matrix_power(state_transition, self.speedup)

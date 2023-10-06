@@ -262,7 +262,7 @@ try:
         # so we can represent the track as a collection of rectangles of width bin_width and height bin_height,
         # centered on the values of place_bin_centers where track_interior = true.
         # Note, the original code uses Fortran ordering.
-        true_ctrs = place_bin_centers[is_track_interior.ravel(order="F")]
+        true_ctrs = place_bin_centers[is_track_interior.ravel()]
         upper_left_points = get_ul_corners(bin_width, bin_height, true_ctrs)
 
         return bin_width, bin_height, upper_left_points

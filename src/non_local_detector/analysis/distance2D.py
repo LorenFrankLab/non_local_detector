@@ -24,7 +24,7 @@ def make_2D_track_graph_from_environment(
     for node_id, (node_position, is_interior) in enumerate(
         zip(
             environment.place_bin_centers_,
-            environment.is_track_interior_.ravel(order="F"),
+            environment.is_track_interior_.ravel(),
         )
     ):
         track_graph.add_node(
@@ -34,20 +34,21 @@ def make_2D_track_graph_from_environment(
     edges = []
     for x_ind, y_ind in zip(*np.nonzero(environment.is_track_interior_)):
         x_inds, y_inds = np.meshgrid(
-            x_ind + np.asarray([-1, 0, 1]), y_ind + np.asarray([-1, 0, 1])
+            x_ind + np.asarray([-1, 0, 1]),
+            y_ind + np.asarray([-1, 0, 1]),
+            indexing="ij",
         )
         adj_edges = environment.is_track_interior_[x_inds, y_inds]
         adj_edges[1, 1] = False
 
-        node_id = np.ravel_multi_index(
-            (x_ind, y_ind), environment.centers_shape_, order="F"
-        )
+        node_id = np.ravel_multi_index((x_ind, y_ind), environment.centers_shape_)
         adj_node_ids = np.ravel_multi_index(
             (x_inds[adj_edges], y_inds[adj_edges]),
             environment.centers_shape_,
-            order="F",
         )
-        edges.append(np.concatenate(np.meshgrid(node_id, adj_node_ids), axis=1))
+        edges.append(
+            np.concatenate(np.meshgrid(node_id, adj_node_ids, indexing="ij"), axis=1)
+        )
 
     edges = np.concatenate(edges)
 
@@ -107,7 +108,6 @@ def get_bin_ind(sample: np.ndarray, edges: list) -> np.ndarray:
     return np.ravel_multi_index(
         Ncount,
         nbin,
-        order="F",
     )
 
 
@@ -196,7 +196,7 @@ def get_2D_distance(
     position2: np.ndarray,
     track_graph: nx.Graph = None,
     edges: list = None,
-    precomputed_distance: bool = False,
+    precomputed_distance: bool = True,
 ) -> np.ndarray:
     """Distance of two points along the graph of the track.
 

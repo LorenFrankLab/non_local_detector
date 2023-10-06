@@ -282,10 +282,10 @@ def get_grid(
             )
             for edge in edges
         ]
-    mesh_edges = np.meshgrid(*edges)
+    mesh_edges = np.meshgrid(*edges, indexing="ij")
     place_bin_edges = np.stack([edge.ravel() for edge in mesh_edges], axis=1)
 
-    mesh_centers = np.meshgrid(*[get_centers(edge) for edge in edges])
+    mesh_centers = np.meshgrid(*[get_centers(edge) for edge in edges], indexing="ij")
     place_bin_centers = np.stack([center.ravel() for center in mesh_centers], axis=1)
     centers_shape = tuple([len(edge) - 1 for edge in edges])
 
