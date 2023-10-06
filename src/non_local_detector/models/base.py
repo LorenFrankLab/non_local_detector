@@ -761,7 +761,7 @@ class _DetectorBase(BaseEstimator):
             position_names = ["position"]
         else:
             position_names = [
-                f"{name}_position" for name, _ in zip(["x", "y", "z"], position.T)
+                f"{name}_position" for name, _ in zip(["x", "y", "z", "w"], position.T)
             ]
         state_bins = pd.MultiIndex.from_arrays(
             ((states[self.state_ind_], *[pos for pos in position.T])),
