@@ -2,7 +2,7 @@ import copy
 import pickle
 from functools import partial
 from logging import getLogger
-from typing import Union
+from typing import Union, Optional
 
 import jax.numpy as jnp
 import matplotlib
@@ -215,10 +215,10 @@ class _DetectorBase(BaseEstimator):
     def initialize_continuous_state_transition(
         self,
         continuous_transition_types: ContinuousTransitions,
-        position: Union[np.ndarray, None] = None,
-        is_training: Union[np.ndarray, None] = None,
-        encoding_group_labels: Union[np.ndarray, None] = None,
-        environment_labels: Union[np.ndarray, None] = None,
+        position: Optional[np.ndarray] = None,
+        is_training: Optional[np.ndarray] = None,
+        encoding_group_labels: Optional[np.ndarray] = None,
+        environment_labels: Optional[np.ndarray] = None,
     ) -> None:
         """Constructs the transition matrices for the continuous states.
 
@@ -251,8 +251,6 @@ class _DetectorBase(BaseEstimator):
                 )
 
                 if isinstance(transition, EmpiricalMovement):
-                    # NOTE: need to fix
-                    raise NotImplementedError
                     if is_training is None:
                         n_time = position.shape[0]
                         is_training = np.ones((n_time,), dtype=bool)

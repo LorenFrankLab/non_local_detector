@@ -1,9 +1,10 @@
 """Classes for constructing different types of movement models."""
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, Optional
 
 import numpy as np
 from scipy.stats import multivariate_normal
+from track_linearization import get_linearized_position
 
 from non_local_detector.environment import Environment
 
@@ -275,19 +276,21 @@ class EmpiricalMovement:
         all the same transitions made by the animal but sped up by
         `speedup` times. So `speedup​=20` means 20x faster than the
         animal's movement.
+    is_time_reversed : bool, optional
     """
 
     environment_name: str = ""
-    encoding_group: str = None
+    encoding_group: str = 0
     speedup: int = 1
+    is_time_reversed: bool = False
 
     def make_state_transition(
         self,
         environments: Tuple[Environment],
         position: np.ndarray,
-        is_training: np.ndarray = None,
-        encoding_group_labels: np.ndarray = None,
-        environment_labels: np.ndarray = None,
+        is_training: Optional[np.ndarray] = None,
+        encoding_group_labels: Optional[np.ndarray] = None,
+        environment_labels: Optional[np.ndarray] = None,
     ):
         """Creates a transition matrix for a given environment.
 
@@ -328,8 +331,25 @@ class EmpiricalMovement:
 
         position = position if position.ndim > 1 else position[:, np.newaxis]
         position = position[is_training & is_encoding & is_environment]
+
+        if (
+            len(self.environment.edges_) == 1
+            and self.environment.track_graph is not None
+        ):
+            position = get_linearized_position(
+                position=position,
+                track_graph=self.environment.track_graph,
+                edge_order=self.environment.edge_order,
+                edge_spacing=self.environment.edge_spacing,
+            ).linear_position.to_numpy()
+            position = position if position.ndim > 1 else position[:, np.newaxis]
+
+        if self.is_time_reversed:
+            samples = np.concatenate((position[1:], position[:-1]), axis=1)
+        else:
+            samples = np.concatenate((position[:-1], position[1:]), axis=1)
         state_transition, _ = np.histogramdd(
-            np.concatenate((position[1:], position[:-1]), axis=1),
+            samples,
             bins=self.environment.edges_ * 2,
             range=self.environment.position_range,
         )
