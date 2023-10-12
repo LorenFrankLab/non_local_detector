@@ -3,14 +3,11 @@ from dataclasses import dataclass
 from typing import Tuple, Optional
 
 import numpy as np
+import networkx as nx
 from scipy.stats import multivariate_normal
 from track_linearization import get_linearized_position
 
 from non_local_detector.environment import Environment
-
-
-def diffuse_each_bin(*args, **kwargs):
-    raise NotImplementedError
 
 
 def _normalize_row_probability(x: np.ndarray) -> np.ndarray:
@@ -97,6 +94,18 @@ def _random_walk_on_track_graph(
     return state_transition
 
 
+def _euclidean_random_walk(environment, movement_mean, movement_var):
+    return np.stack(
+        [
+            multivariate_normal(mean=center + movement_mean, cov=movement_var).pdf(
+                environment.place_bin_centers_
+            )
+            for center in environment.place_bin_centers_
+        ],
+        axis=1,
+    )
+
+
 @dataclass
 class RandomWalk:
     """A transition where the movement stays locally close in space
@@ -109,14 +118,16 @@ class RandomWalk:
         How far the animal is can move in one time bin during normal
         movement.
     movement_mean : float, optional
-    use_diffusion : bool, optional
-        Use diffusion to respect the geometry of the environment
+    use_manifold_distance : bool, optional
+    direction : ("inward", "outward"), optional
+
     """
 
     environment_name: str = ""
     movement_var: float = 6.0
     movement_mean: float = 0.0
-    use_diffusion: bool = False
+    use_manifold_distance: bool = False
+    direction: Optional[str] = None
 
     def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
         """Creates a transition matrix for a given environment.
@@ -132,48 +143,64 @@ class RandomWalk:
 
         """
         self.environment = environments[environments.index(self.environment_name)]
-
         if self.environment.track_graph is None:
-            n_position_dims = self.environment.place_bin_centers_.shape[1]
-
-            if (n_position_dims == 1) or not self.use_diffusion:
-                transition_matrix = np.stack(
-                    [
-                        multivariate_normal(
-                            mean=center + self.movement_mean, cov=self.movement_var
-                        ).pdf(self.environment.place_bin_centers_)
-                        for center in self.environment.place_bin_centers_
-                    ],
-                    axis=1,
-                )
-            else:
-                dx = self.environment.edges_[0][1] - self.environment.edges_[0][0]
-                dy = self.environment.edges_[1][1] - self.environment.edges_[1][0]
-                n_total_bins = np.prod(self.environment.is_track_interior_.shape)
-                transition_matrix = diffuse_each_bin(
-                    self.environment.is_track_interior_,
-                    self.environment.is_track_boundary_,
-                    dx,
-                    dy,
-                    std=np.sqrt(self.movement_var),
-                ).reshape((n_total_bins, -1))
+            transition_matrix = self._handle_no_track_graph()
         else:
-            place_bin_center_ind_to_node = np.asarray(
-                self.environment.place_bin_centers_nodes_df_.node_id
-            )
-            transition_matrix = _random_walk_on_track_graph(
-                self.environment.place_bin_centers_,
-                self.movement_mean,
-                self.movement_var,
-                place_bin_center_ind_to_node,
-                self.environment.distance_between_nodes_,
-            )
-
+            # Linearized position
+            transition_matrix = self._handle_with_track_graph()
         is_track_interior = self.environment.is_track_interior_.ravel()
         transition_matrix[~is_track_interior] = 0.0
         transition_matrix[:, ~is_track_interior] = 0.0
-
         return _normalize_row_probability(transition_matrix)
+
+    def _handle_no_track_graph(self) -> np.ndarray:
+        if not self.use_manifold_distance:
+            transition_matrix = _euclidean_random_walk(
+                self.environment, self.movement_mean, self.movement_var
+            )
+        else:
+            transition_matrix = (
+                multivariate_normal(mean=self.movement_mean, cov=self.movement_var)
+                .pdf(self.environment.distance_between_nodes_.flat)
+                .reshape(self.environment.distance_between_nodes_.shape)
+            )
+
+            if self.direction is not None:
+                direction_func = {
+                    "inward": np.greater_equal,
+                    "outward": np.less_equal,
+                }.get(self.direction.lower(), None)
+
+                centrality = nx.closeness_centrality(
+                    self.environment.track_graphDD, distance="distance"
+                )
+                center_node_id = list(centrality.keys())[
+                    np.argmax(list(centrality.values()))
+                ]
+                transition_matrix *= direction_func(
+                    self.environment.distance_between_nodes_[:, [center_node_id]],
+                    self.environment.distance_between_nodes_[[center_node_id]],
+                )
+
+        return transition_matrix
+
+    def _handle_with_track_graph(self) -> np.ndarray:
+        n_position_dims = self.environment.place_bin_centers_.shape[1]
+        if n_position_dims != 1:
+            raise NotImplementedError(
+                "Random walk with track graph is only implemented for 1D environments"
+            )
+
+        place_bin_center_ind_to_node = np.asarray(
+            self.environment.place_bin_centers_nodes_df_.node_id
+        )
+        return _random_walk_on_track_graph(
+            self.environment.place_bin_centers_,
+            self.movement_mean,
+            self.movement_var,
+            place_bin_center_ind_to_node,
+            self.environment.distance_between_nodes_,
+        )
 
 
 @dataclass

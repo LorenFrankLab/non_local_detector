@@ -12,6 +12,7 @@ from scipy import ndimage
 from scipy.interpolate import interp1d
 from sklearn.neighbors import NearestNeighbors
 from track_linearization import plot_graph_as_1D
+from scipy.ndimage import gaussian_filter1d
 
 
 def get_centers(bin_edges: np.ndarray) -> np.ndarray:
@@ -133,6 +134,20 @@ class Environment:
             else:
                 self.is_track_boundary_ = None
 
+            self.track_graphDD = make_nD_track_graph_from_environment(self)
+            node_positions = nx.get_node_attributes(self.track_graphDD, "pos")
+            node_positions = np.asarray(list(node_positions.values()))
+            distance = np.full((len(node_positions), len(node_positions)), np.inf)
+            for to_node_id, from_node_id in nx.shortest_path_length(
+                self.track_graphDD,
+                weight="distance",
+            ):
+                distance[to_node_id, list(from_node_id.keys())] = list(
+                    from_node_id.values()
+                )
+
+            self.distance_between_nodes_ = distance
+
         else:
             (
                 self.place_bin_centers_,
@@ -213,6 +228,151 @@ class Environment:
         """
         with open(filename, "rb") as f:
             return pickle.load(f)
+
+    def get_bin_ind(self, sample: np.ndarray) -> np.ndarray:
+        """Find the indices of the bins to which each value in input array belongs.
+
+        Parameters
+        ----------
+        sample : np.ndarray, shape (n_time, n_dim)
+
+        Returns
+        -------
+        bin_ind : np.ndarray, shape (n_time,)
+
+        """
+        # remove outer boundary edge
+        edges = [e[1:-1] for e in self.edges_]
+
+        try:
+            # Sample is an ND-array.
+            N, D = sample.shape
+        except (AttributeError, ValueError):
+            # Sample is a sequence of 1D arrays.
+            sample = np.atleast_2d(sample).T
+            N, D = sample.shape
+
+        nbin = np.empty(D, np.intp)
+        for i in range(D):
+            nbin[i] = len(edges[i]) + 1  # includes an outlier on each end
+
+        # Compute the bin number each sample falls into.
+        Ncount = tuple(
+            # avoid np.digitize to work around gh-11022
+            np.searchsorted(edges[i], sample[:, i], side="right")
+            for i in range(D)
+        )
+
+        # Using digitize, values that fall on an edge are put in the right bin.
+        # For the rightmost bin, we want values equal to the right edge to be
+        # counted in the last bin, and not as an outlier.
+        for i in range(D):
+            # Find which points are on the rightmost edge.
+            on_edge = sample[:, i] == edges[i][-1]
+            # Shift these points one bin to the left.
+            Ncount[i][on_edge] -= 1
+
+        return np.ravel_multi_index(
+            Ncount,
+            nbin,
+        )
+
+    def get_manifold_distances(
+        self, position1: np.ndarray, position2: np.ndarray
+    ) -> np.ndarray:
+        """
+        Computes the distance between two positions on the track manifold.
+
+        Parameters
+        ----------
+        position1 : numpy.ndarray
+            The first position on the track manifold.
+        position2 : numpy.ndarray
+            The second position on the track manifold.
+
+        Returns
+        -------
+        float
+            The distance between the two positions on the track manifold.
+        """
+        bin_ind1 = self.get_bin_ind(position1)
+        bin_ind2 = self.get_bin_ind(position2)
+
+        n_bins = np.prod(self.centers_shape_)
+        distance = np.full((n_bins, n_bins), np.inf)
+        for to_node_id, from_node_id in nx.shortest_path_length(
+            self.track_graphDD,
+            weight="distance",
+        ):
+            distance[to_node_id, list(from_node_id.keys())] = list(
+                from_node_id.values()
+            )
+        distance = distance[bin_ind1, bin_ind2]
+
+        return distance
+
+    def get_direction(
+        self,
+        position: np.ndarray,
+        position_time: Optional[np.ndarray] = None,
+        sigma: float = 0.1,
+        sampling_frequency: Optional[float] = None,
+        classify_stop: bool = False,
+        stop_speed_threshold: float = 1e-3,
+    ) -> np.ndarray:
+        """
+        Get the direction of movement of an object relative to the center of the track.
+
+        Parameters
+        ----------
+        position : numpy.ndarray
+            The position of the object in 2D space.
+        position_time : numpy.ndarray, optional
+            The time at which each position was recorded. If not provided, it is assumed that positions were recorded at
+            regular intervals.
+        sigma : float, optional
+            The standard deviation of the Gaussian kernel used to smooth the velocity. Default is 0.1.
+        sampling_frequency : float, optional
+            The sampling frequency of the position data. If not provided, it is calculated as the inverse of the mean
+            time difference between consecutive position samples.
+        classify_stop : bool, optional
+            Whether to classify the object as "stopped" if its speed is below the stop_speed_threshold. Default is False.
+        stop_speed_threshold : float, optional
+            The speed threshold below which the object is classified as "stopped". Default is 1e-3.
+
+        Returns
+        -------
+        direction : numpy.ndarray
+            An array of strings indicating the direction of movement of the object relative to the center of the track.
+            Possible values are "inward", "outward", and "stop" (if classify_stop is True).
+        """
+        if position_time is None:
+            position_time = np.arange(position.shape[0])
+        if sampling_frequency is None:
+            sampling_frequency = 1 / np.mean(np.diff(position_time))
+
+        centrality = nx.closeness_centrality(self.track_graphDD, distance="distance")
+        center_node_id = list(centrality.keys())[np.argmax(list(centrality.values()))]
+
+        bin_ind = self.get_bin_ind(position)
+
+        velocity_to_center = gaussian_smooth(
+            np.gradient(self.distance_between_nodes_[bin_ind, center_node_id]),
+            sigma,
+            sampling_frequency,
+            axis=0,
+            truncate=8,
+        )
+        direction = np.where(
+            velocity_to_center < 0,
+            "inward",
+            "outward",
+        )
+
+        if classify_stop:
+            direction[np.abs(velocity_to_center) < stop_speed_threshold] = "stop"
+
+        return direction
 
 
 def get_n_bins(
@@ -825,44 +985,77 @@ def get_track_boundary_points(
     return order_boundary(boundary)
 
 
-def get_bin_ind(sample: np.ndarray, edges: list[np.ndarray]) -> np.ndarray:
-    """Figure out which bin a given sample falls into.
+def make_nD_track_graph_from_environment(environment) -> nx.Graph:
+    track_graph = nx.Graph()
+    axis_offsets = [-1, 0, 1]
 
-    Extracted from np.histogramdd.
+    # Enumerate over nodes
+    for node_id, (node_position, is_interior) in enumerate(
+        zip(
+            environment.place_bin_centers_,
+            environment.is_track_interior_.ravel(),
+        )
+    ):
+        track_graph.add_node(
+            node_id, pos=tuple(node_position), is_track_interior=is_interior
+        )
+
+    edges = []
+
+    for ind in zip(*np.nonzero(environment.is_track_interior_)):
+        ind = np.array(ind)
+        # Generate adjacency indices in nD
+        adj_inds = np.meshgrid(*[axis_offsets + i for i in ind], indexing="ij")
+        adj_edges = environment.is_track_interior_[tuple(adj_inds)]
+        center_idx = [n // 2 for n in adj_edges.shape]
+        adj_edges[tuple(center_idx)] = False
+
+        node_id = np.ravel_multi_index(ind, environment.centers_shape_)
+        adj_node_ids = np.ravel_multi_index(
+            [inds[adj_edges] for inds in adj_inds],
+            environment.centers_shape_,
+        )
+        edges.append(
+            np.concatenate(
+                np.meshgrid([node_id], adj_node_ids, indexing="ij"), axis=0
+            ).T
+        )
+
+    edges = np.concatenate(edges)
+
+    for node1, node2 in edges:
+        pos1 = np.asarray(track_graph.nodes[node1]["pos"])
+        pos2 = np.asarray(track_graph.nodes[node2]["pos"])
+        distance = np.linalg.norm(pos1 - pos2)
+        track_graph.add_edge(node1, node2, distance=distance)
+
+    for edge_id, edge in enumerate(track_graph.edges):
+        track_graph.edges[edge]["edge_id"] = edge_id
+
+    return track_graph
+
+
+def gaussian_smooth(data, sigma, sampling_frequency, axis=0, truncate=8):
+    """1D convolution of the data with a Gaussian.
+
+    The standard deviation of the gaussian is in the units of the sampling
+    frequency. The function is just a wrapper around scipy's
+    `gaussian_filter1d`, The support is truncated at 8 by default, instead
+    of 4 in `gaussian_filter1d`
 
     Parameters
     ----------
-    sample : np.ndarray
-    edges : list of np.ndarray
+    data : array_like
+    sigma : float
+    sampling_frequency : int
+    axis : int, optional
+    truncate : int, optional
 
     Returns
     -------
-    Ncount : np.ndarray
+    smoothed_data : array_like
 
     """
-
-    try:
-        # Sample is an ND-array.
-        N, D = sample.shape
-    except (AttributeError, ValueError):
-        # Sample is a sequence of 1D arrays.
-        sample = np.atleast_2d(sample).T
-        N, D = sample.shape
-
-    # Compute the bin number each sample falls into.
-    Ncount = tuple(
-        # avoid np.digitize to work around gh-11022
-        np.searchsorted(edges[i], sample[:, i], side="right")
-        for i in range(D)
+    return gaussian_filter1d(
+        data, sigma * sampling_frequency, truncate=truncate, axis=axis, mode="constant"
     )
-
-    # Using digitize, values that fall on an edge are put in the right bin.
-    # For the rightmost bin, we want values equal to the right edge to be
-    # counted in the last bin, and not as an outlier.
-    for i in range(D):
-        # Find which points are on the rightmost edge.
-        on_edge = sample[:, i] == edges[i][-1]
-        # Shift these points one bin to the left.
-        Ncount[i][on_edge] -= 1
-
-    return Ncount
