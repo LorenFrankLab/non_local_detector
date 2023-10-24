@@ -1,6 +1,5 @@
 name: non_local_detector
 channels:
-- defaults
 - conda-forge
 - franklab
 - edeno

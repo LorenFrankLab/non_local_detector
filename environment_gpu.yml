@@ -1,6 +1,5 @@
 name: non_local_detector_gpu
 channels:
-- defaults
 - conda-forge
 - nvidia
 - franklab
