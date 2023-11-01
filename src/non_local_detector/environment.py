@@ -1,8 +1,8 @@
 """Classes for constructing discrete grids representations of spatial environments in nD"""
-from dataclasses import dataclass
-from typing import Optional, Tuple, Union
-
 import pickle
+from dataclasses import dataclass
+from typing import Optional, Sequence, Tuple, Union
+
 import matplotlib
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -12,7 +12,6 @@ from scipy import ndimage
 from scipy.interpolate import interp1d
 from sklearn.neighbors import NearestNeighbors
 from track_linearization import plot_graph_as_1D
-from scipy.ndimage import gaussian_filter1d
 
 
 def get_centers(bin_edges: np.ndarray) -> np.ndarray:
@@ -92,7 +91,7 @@ class Environment:
         ----------
         position : np.ndarray, shape (n_time, n_dim), optional
             Position of the animal.
-        infer_track_interior : bool, shape (nx_bins, ...), optional
+        infer_track_interior : bool, optional
             Whether to infer the spatial geometry of track from position
 
         Returns
@@ -213,19 +212,8 @@ class Environment:
         with open(filename, "wb") as file_handle:
             pickle.dump(self, file_handle)
 
-    @staticmethod
-    def load_environment(filename: str = "environment.pkl"):
-        """Load the environment from a file.
-
-        Parameters
-        ----------
-        filename : str, optional
-
-        Returns
-        -------
-        environment instance
-
-        """
+    @classmethod
+    def load_environment(cls, filename: str = "environment.pkl"):
         with open(filename, "rb") as f:
             return pickle.load(f)
 
@@ -292,9 +280,13 @@ class Environment:
 
         Returns
         -------
-        float
+        distance: np.ndarray
             The distance between the two positions on the track manifold.
         """
+        # Validate input shapes
+        if position1.shape != position2.shape:
+            raise ValueError("Shapes of position1 and position2 must match.")
+
         bin_ind1 = self.get_bin_ind(position1)
         bin_ind2 = self.get_bin_ind(position2)
 
@@ -454,7 +446,7 @@ def get_grid(
 
 def get_track_interior(
     position: np.ndarray,
-    bins: int,
+    bins: Union[int, Sequence[int]],
     fill_holes: bool = False,
     dilate: bool = False,
     bin_count_threshold: int = 0,
@@ -472,7 +464,7 @@ def get_track_interior(
         * The number of bins for all dimensions (nx=ny=...=bins).
     fill_holes : bool, optional
         Fill any holes in the extracted track interior bins
-    dialate : bool, optional
+    dilate : bool, optional
         Inflate the extracted track interior bins
     bin_count_threshold : int, optional
         Greater than this number of samples should be in the bin for it to
@@ -480,7 +472,7 @@ def get_track_interior(
 
     Returns
     -------
-    is_track_interior : np.ndarray, optional
+    is_track_interior : np.ndarray
         The interior bins of the track as inferred from position
 
     """
@@ -985,7 +977,7 @@ def get_track_boundary_points(
     return order_boundary(boundary)
 
 
-def make_nD_track_graph_from_environment(environment) -> nx.Graph:
+def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
     track_graph = nx.Graph()
     axis_offsets = [-1, 0, 1]
 
@@ -1056,6 +1048,6 @@ def gaussian_smooth(data, sigma, sampling_frequency, axis=0, truncate=8):
     smoothed_data : array_like
 
     """
-    return gaussian_filter1d(
+    return ndimage.gaussian_filter1d(
         data, sigma * sampling_frequency, truncate=truncate, axis=axis, mode="constant"
     )

@@ -1,9 +1,9 @@
 """Classes for constructing different types of movement models."""
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
-import numpy as np
 import networkx as nx
+import numpy as np
 from scipy.stats import multivariate_normal
 from track_linearization import get_linearized_position
 

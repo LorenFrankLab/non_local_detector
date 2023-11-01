@@ -1,6 +1,6 @@
-import numpy as np
 import jax.numpy as jnp
 import jax.scipy
+import numpy as np
 from tqdm.autonotebook import tqdm
 
 

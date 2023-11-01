@@ -6,8 +6,8 @@ from track_linearization import get_linearized_position
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import (
-    LOG_EPS,
     EPS,
+    LOG_EPS,
     KDEModel,
     block_kde,
     gaussian_pdf,

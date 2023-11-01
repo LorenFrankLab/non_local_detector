@@ -2,7 +2,7 @@ import copy
 import pickle
 from functools import partial
 from logging import getLogger
-from typing import Union, Optional
+from typing import Optional, Union
 
 import jax.numpy as jnp
 import matplotlib
