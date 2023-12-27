@@ -43,7 +43,7 @@ class Environment:
     edge_order : tuple of 2-tuples, optional
         The order of the edges in 1D space
     edge_spacing : None or int or tuples of len n_edges-1, optional
-        Any gapes between the edges in 1D space
+        Any gaps between the edges in 1D space.
     is_track_interior : np.ndarray or None, optional
         If given, this will be used to define the valid areas of the track.
         Must be of type boolean.
