@@ -54,7 +54,7 @@ def kde(
             jnp.expand_dims(dim_samples, axis=1),
             dim_std,
         )
-    return jnp.mean(distance, axis=0).squeeze()
+    return jnp.mean(distance, axis=0)
 
 
 def block_kde(
@@ -69,26 +69,7 @@ def block_kde(
         block_inds = slice(start_ind, start_ind + block_size)
         density = jax.lax.dynamic_update_slice(
             density,
-            kde(eval_points[block_inds], samples, std).squeeze(),
-            (start_ind,),
-        )
-
-    return density
-
-
-def block_kde(
-    eval_points: jnp.ndarray,
-    samples: jnp.ndarray,
-    std: jnp.ndarray,
-    block_size: int = 100,
-) -> jnp.ndarray:
-    n_eval_points = eval_points.shape[0]
-    density = jnp.zeros((n_eval_points,))
-    for start_ind in range(0, n_eval_points, block_size):
-        block_inds = slice(start_ind, start_ind + block_size)
-        density = jax.lax.dynamic_update_slice(
-            density,
-            kde(eval_points[block_inds], samples, std).squeeze(),
+            kde(eval_points[block_inds], samples, std),
             (start_ind,),
         )
 

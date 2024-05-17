@@ -113,7 +113,7 @@ def block_estimate_log_joint_mark_intensity(
                 occupancy,
                 mean_rate,
                 position_distance,
-            ).squeeze(),
+            ),
             (start_ind, 0),
         )
 
