@@ -46,6 +46,21 @@ def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.n
 def kde(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
+    """Kernel density estimation.
+
+    Parameters
+    ----------
+    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+        Evaluation points.
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+        Training samples.
+    std : jnp.ndarray, shape (n_dims,)
+        Standard deviation of the Gaussian kernel.
+
+    Returns
+    -------
+    density_estimate : jnp.ndarray, shape (n_eval_points,)
+    """
     distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
 
     for dim_eval_points, dim_samples, dim_std in zip(eval_points.T, samples.T, std):
@@ -63,6 +78,23 @@ def block_kde(
     std: jnp.ndarray,
     block_size: int = 100,
 ) -> jnp.ndarray:
+    """Kernel density estimation split into blocks.
+
+    Parameters
+    ----------
+    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+        Evaluation points.
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+        Training samples.
+    std : jnp.ndarray, shape (n_dims,)
+        Standard deviation of the Gaussian kernel.
+    block_size : int, optional
+        _description_, by default 100
+
+    Returns
+    -------
+    density_estimate : jnp.ndarray, shape (n_eval_points,)
+    """
     n_eval_points = eval_points.shape[0]
     density = jnp.zeros((n_eval_points,))
     for start_ind in range(0, n_eval_points, block_size):

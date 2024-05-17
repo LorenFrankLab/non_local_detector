@@ -22,6 +22,22 @@ def get_spike_time_bin_ind(spike_times, time):
 def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
+    """Distance between evaluation points and samples using Gaussian kernel density
+
+    Parameters
+    ----------
+    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+        Evaluation points.
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+        Training samples.
+    std : jnp.ndarray, shape (n_dims,)
+        Standard deviation of the Gaussian kernel.
+
+    Returns
+    -------
+    distance : jnp.ndarray, shape (n_samples, n_eval_points)
+
+    """
     distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
     for dim_eval_points, dim_samples, dim_std in zip(eval_points.T, samples.T, std):
         distance *= gaussian_pdf(
