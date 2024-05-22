@@ -192,36 +192,26 @@ def hmm_smoother(
     )
 
     # Run the smoother backward in time
-    def _step(carry, args):
-        # Unpack the inputs
-        smoothed_probs_next = carry
-        t, filtered_probs, predicted_probs_next = args
-
+    def _step(smoothed_probs_next, t):
         A = get_trans_mat(transition_matrix, transition_fn, t)
 
         # Fold in the next state (Eq. 8.2 of Saarka, 2013)
         # If hard 0. in predicted_probs_next, set relative_probs_next as 0. to avoid NaN values
         relative_probs_next = jnp.where(
-            jnp.isclose(predicted_probs_next, 0.0),
+            jnp.isclose(predicted_probs[t + 1], 0.0),
             0.0,
-            smoothed_probs_next / predicted_probs_next,
+            smoothed_probs_next / predicted_probs[t + 1],
         )
-        smoothed_probs = filtered_probs * (A @ relative_probs_next)
+        smoothed_probs = filtered_probs[t] * (A @ relative_probs_next)
         smoothed_probs /= smoothed_probs.sum()
 
         return smoothed_probs, smoothed_probs
 
     # Run the HMM smoother
-    carry = filtered_probs[-1]
-    args = (
-        jnp.arange(num_timesteps - 2, -1, -1),
-        filtered_probs[:-1][::-1],
-        predicted_probs[1:][::-1],
+    _, smoothed_probs = jax.lax.scan(
+        _step, filtered_probs[-1], jnp.arange(num_timesteps - 1), reverse=True
     )
-    _, rev_smoothed_probs = jax.lax.scan(_step, carry, args)
-
-    # Reverse the arrays and return
-    smoothed_probs = jnp.vstack([rev_smoothed_probs[::-1], filtered_probs[-1]])
+    smoothed_probs = jnp.vstack([smoothed_probs, filtered_probs[-1]])
 
     return (
         marginal_loglik,
