@@ -202,13 +202,10 @@ def hmm_smoother(
         return smoothed_probs, smoothed_probs
 
     # Run the HMM smoother
-    smoothed_probs = jnp.zeros_like(filtered_probs)
-    smoothed_probs = smoothed_probs.at[-1].set(filtered_probs[-1])
-    smoothed_probs = smoothed_probs.at[:-1].set(
-        jax.lax.scan(
-            _step, filtered_probs[-1], jnp.arange(num_timesteps - 1), reverse=True
-        )[1]
+    _, smoothed_probs = jax.lax.scan(
+        _step, filtered_probs[-1], jnp.arange(num_timesteps - 1), reverse=True
     )
+    smoothed_probs = jnp.vstack([smoothed_probs, filtered_probs[-1]])
 
     return (
         marginal_loglik,
