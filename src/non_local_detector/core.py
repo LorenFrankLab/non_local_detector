@@ -103,10 +103,6 @@ def _condition_on(probs, ll):
     return new_probs, log_norm
 
 
-def _predict(probs, A):
-    return A.T @ probs
-
-
 @partial(jax.jit, static_argnames=["transition_fn"])
 def hmm_filter(
     initial_distribution,
@@ -137,17 +133,15 @@ def hmm_filter(
         log_normalizer, predicted_probs = carry
 
         A = get_trans_mat(transition_matrix, transition_fn, t)
-        ll = log_likelihoods[t]
 
-        filtered_probs, log_norm = _condition_on(predicted_probs, ll)
+        filtered_probs, log_norm = _condition_on(predicted_probs, log_likelihoods[t])
         log_normalizer += log_norm
-        predicted_probs_next = _predict(filtered_probs, A)
+        predicted_probs_next = A.T @ filtered_probs
 
         return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
 
-    carry = (0.0, initial_distribution)
     (log_normalizer, _), (filtered_probs, predicted_probs) = jax.lax.scan(
-        _step, carry, jnp.arange(num_timesteps)
+        _step, (0.0, initial_distribution), jnp.arange(num_timesteps)
     )
 
     return (
