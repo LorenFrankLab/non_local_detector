@@ -259,14 +259,14 @@ class _DetectorBase(BaseEstimator):
                         encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
 
                     is_training = np.asarray(is_training).squeeze()
-                    self.continuous_state_transitions_[
-                        inds
-                    ] = transition.make_state_transition(
-                        self.environments,
-                        position,
-                        is_training,
-                        encoding_group_labels,
-                        environment_labels,
+                    self.continuous_state_transitions_[inds] = (
+                        transition.make_state_transition(
+                            self.environments,
+                            position,
+                            is_training,
+                            encoding_group_labels,
+                            environment_labels,
+                        )
                     )
                 else:
                     n_row_bins = np.max(inds[0].shape)
@@ -283,9 +283,9 @@ class _DetectorBase(BaseEstimator):
                             / environment.is_track_interior_.sum()
                         ).astype(float)
                     else:
-                        self.continuous_state_transitions_[
-                            inds
-                        ] = transition.make_state_transition(self.environments)
+                        self.continuous_state_transitions_[inds] = (
+                            transition.make_state_transition(self.environments)
+                        )
 
     def initialize_discrete_state_transition(
         self, covariate_data: Union[pd.DataFrame, dict, None] = None
@@ -617,9 +617,9 @@ class _DetectorBase(BaseEstimator):
                 )
 
                 if estimate_inital_conditions:
-                    self.initial_conditions_[
-                        self.is_track_interior_state_bins_
-                    ] = acausal_posterior[0]
+                    self.initial_conditions_[self.is_track_interior_state_bins_] = (
+                        acausal_posterior[0]
+                    )
                     self.discrete_initial_conditions = acausal_state_probabilities[0]
 
                     expanded_discrete_ic = acausal_state_probabilities[0][
