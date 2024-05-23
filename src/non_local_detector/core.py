@@ -61,13 +61,7 @@ def convert_to_state_probability(
     )
 
 
-## NOTE: copied from dynamax: https://github.com/probml/dynamax/ with modifications ##
-def get_trans_mat(transition_matrix, transition_fn, t):
-    if transition_fn is not None:
-        return transition_fn(t)
-    return transition_matrix[t] if transition_matrix.ndim == 3 else transition_matrix
-
-
+## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
 def _normalize(u, axis=0, eps=1e-15):
     """Normalizes the values within the axis in a way that they sum up to 1.
 
@@ -103,45 +97,29 @@ def _condition_on(probs, ll):
     return new_probs, log_norm
 
 
-@partial(jax.jit, static_argnames=["transition_fn"])
-def hmm_filter(
+def _divide_safe(a, b):
+    """Divides two arrays, while setting the result to 0.0
+    if the denominator is 0.0."""
+    return jnp.where(b == 0.0, 0.0, a / b)
+
+
+@jax.jit
+def filter(
     initial_distribution,
     transition_matrix,
     log_likelihoods,
-    transition_fn=None,
 ):
-    r"""Forwards filtering
-
-    Transition matrix may be either 2D (if transition probabilities are fixed) or 3D
-    if the transition probabilities vary over time. Alternatively, the transition
-    matrix may be specified via `transition_fn`, which takes in a time index $t$ and
-    returns a transition matrix.
-
-    Args:
-        initial_distribution: $p(z_1 \mid u_1, \theta)$
-        transition_matrix: $p(z_{t+1} \mid z_t, u_t, \theta)$
-        log_likelihoods: $p(y_t \mid z_t, u_t, \theta)$ for $t=1,\ldots, T$.
-        transition_fn: function that takes in an integer time index and returns a $K \times K$ transition matrix.
-
-    Returns:
-        filtered posterior distribution
-
-    """
-    num_timesteps = log_likelihoods.shape[0]
-
-    def _step(carry, t):
+    def _step(carry, ll):
         log_normalizer, predicted_probs = carry
 
-        A = get_trans_mat(transition_matrix, transition_fn, t)
-
-        filtered_probs, log_norm = _condition_on(predicted_probs, log_likelihoods[t])
+        filtered_probs, log_norm = _condition_on(predicted_probs, ll)
         log_normalizer += log_norm
-        predicted_probs_next = A.T @ filtered_probs
+        predicted_probs_next = filtered_probs @ transition_matrix
 
         return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
 
     (log_normalizer, _), (filtered_probs, predicted_probs) = jax.lax.scan(
-        _step, (0.0, initial_distribution), jnp.arange(num_timesteps)
+        _step, (0.0, initial_distribution), log_likelihoods
     )
 
     return (
@@ -151,61 +129,171 @@ def hmm_filter(
     )
 
 
-@partial(jax.jit, static_argnames=["transition_fn"])
-def hmm_smoother(
-    initial_distribution,
+@jax.jit
+def smoother(
     transition_matrix,
-    log_likelihoods,
-    transition_fn=None,
+    filtered_probs,
 ):
-    r"""Computed the smoothed state probabilities using a general
-    Bayesian smoother.
+    n_time = filtered_probs.shape[0]
 
-    Transition matrix may be either 2D (if transition probabilities are fixed) or 3D
-    if the transition probabilities vary over time. Alternatively, the transition
-    matrix may be specified via `transition_fn`, which takes in a time index $t$ and
-    returns a transition matrix.
+    def _step(smoothed_probs_next, args):
+        filtered_probs_t, t = args
 
-    *Note: This is the discrete SSM analog of the RTS smoother for linear Gaussian SSMs.*
-
-    Args:
-        initial_distribution: $p(z_1 \mid u_1, \theta)$
-        transition_matrix: $p(z_{t+1} \mid z_t, u_t, \theta)$
-        log_likelihoods: $p(y_t \mid z_t, u_t, \theta)$ for $t=1,\ldots, T$.
-        transition_fn: function that takes in an integer time index and returns a $K \times K$ transition matrix.
-
-    Returns:
-        posterior distribution
-
-    """
-    num_timesteps = log_likelihoods.shape[0]
-
-    # Run the HMM filter
-    (marginal_loglik, filtered_probs, predicted_probs) = hmm_filter(
-        initial_distribution, transition_matrix, log_likelihoods, transition_fn
-    )
-
-    # Run the smoother backward in time
-    def _step(smoothed_probs_next, t):
-        A = get_trans_mat(transition_matrix, transition_fn, t)
-
-        # Fold in the next state (Eq. 8.2 of Saarka, 2013)
-        # If hard 0. in predicted_probs_next, set relative_probs_next as 0. to avoid NaN values
-        relative_probs_next = jnp.where(
-            jnp.isclose(predicted_probs[t + 1], 0.0),
-            0.0,
-            smoothed_probs_next / predicted_probs[t + 1],
-        )
-        smoothed_probs = filtered_probs[t] * (A @ relative_probs_next)
-        smoothed_probs /= smoothed_probs.sum()
+        smoothed_probs = filtered_probs_t * (
+            transition_matrix
+            @ _divide_safe(smoothed_probs_next, filtered_probs_t @ transition_matrix)
+        ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
+        smoothed_probs /= smoothed_probs.sum(keepdims=True)
 
         return smoothed_probs, smoothed_probs
 
-    # Run the HMM smoother
     _, smoothed_probs = jax.lax.scan(
-        _step, filtered_probs[-1], jnp.arange(num_timesteps - 1), reverse=True
+        _step,
+        filtered_probs[-1],
+        (filtered_probs, jnp.arange(n_time)),
+        reverse=True,
     )
-    smoothed_probs = jnp.vstack([smoothed_probs, filtered_probs[-1]])
+
+    return smoothed_probs
+
+
+def filter_smoother(
+    initial_distribution,
+    transition_matrix,
+    log_likelihoods,
+):
+    (
+        marginal_loglik,
+        filtered_probs,
+        predicted_probs,
+    ) = filter(
+        initial_distribution,
+        transition_matrix,
+        log_likelihoods,
+    )
+
+    smoothed_probs = smoother(
+        transition_matrix,
+        filtered_probs,
+    )
+
+    return (
+        marginal_loglik,
+        filtered_probs,
+        predicted_probs,
+        smoothed_probs,
+    )
+
+
+def _get_transition_matrix(
+    discrete_transition_matrix_t,
+    continuous_transition_matrix,
+    state_ind,
+):
+    return (
+        continuous_transition_matrix
+        * discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
+    )
+
+
+@jax.jit
+def filter_covariate_dependent(
+    initial_distribution,
+    discrete_transition_matrix,
+    continuous_transition_matrix,
+    state_ind,
+    log_likelihoods,
+):
+    def _step(carry, args):
+        log_normalizer, predicted_probs = carry
+        discrete_transition_matrix_t, ll = args
+
+        filtered_probs, log_norm = _condition_on(predicted_probs, ll)
+        log_normalizer += log_norm
+        predicted_probs_next = filtered_probs @ _get_transition_matrix(
+            discrete_transition_matrix_t, continuous_transition_matrix, state_ind
+        )
+
+        return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
+
+    (log_normalizer, _), (filtered_probs, predicted_probs) = jax.lax.scan(
+        _step,
+        (0.0, initial_distribution),
+        (log_likelihoods, discrete_transition_matrix),
+    )
+
+    return (
+        log_normalizer,
+        filtered_probs,
+        predicted_probs,
+    )
+
+
+@jax.jit
+def smoother_covariate_dependent(
+    discrete_transition_matrix,
+    continuous_transition_matrix,
+    state_ind,
+    filtered_probs,
+):
+    n_time = filtered_probs.shape[0]
+
+    def _step(smoothed_probs_next, args):
+        filtered_probs_t, discrete_transition_matrix_t, t = args
+
+        smoothed_probs = filtered_probs_t * (
+            _get_transition_matrix(
+                discrete_transition_matrix_t, continuous_transition_matrix, state_ind
+            )
+            @ _divide_safe(
+                smoothed_probs_next,
+                filtered_probs_t
+                @ _get_transition_matrix(
+                    discrete_transition_matrix_t,
+                    continuous_transition_matrix,
+                    state_ind,
+                ),
+            )
+        ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
+        smoothed_probs /= smoothed_probs.sum(keepdims=True)
+
+        return smoothed_probs, smoothed_probs
+
+    _, smoothed_probs = jax.lax.scan(
+        _step,
+        filtered_probs[-1],
+        (filtered_probs, discrete_transition_matrix, jnp.arange(n_time)),
+        reverse=True,
+    )
+
+    return smoothed_probs
+
+
+def filter_smoother_covariate_dependent(
+    initial_distribution,
+    discrete_transition_matrix,
+    continuous_transition_matrix,
+    state_ind,
+    log_likelihoods,
+):
+    (
+        marginal_loglik,
+        filtered_probs,
+        predicted_probs,
+    ) = filter(
+        initial_distribution,
+        discrete_transition_matrix,
+        continuous_transition_matrix,
+        state_ind,
+        log_likelihoods,
+    )
+
+    smoothed_probs = smoother(
+        discrete_transition_matrix,
+        continuous_transition_matrix,
+        state_ind,
+        filtered_probs,
+    )
 
     return (
         marginal_loglik,

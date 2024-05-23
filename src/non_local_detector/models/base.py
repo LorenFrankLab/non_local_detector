@@ -21,7 +21,8 @@ from non_local_detector.continuous_state_transitions import EmpiricalMovement
 from non_local_detector.core import (
     check_converged,
     convert_to_state_probability,
-    hmm_smoother,
+    filter_smoother,
+    filter_smoother_covariate_dependent,
 )
 from non_local_detector.discrete_state_transitions import (
     _estimate_discrete_transition,
@@ -511,40 +512,31 @@ class _DetectorBase(BaseEstimator):
         state_ind = self.state_ind_[is_track_interior]
 
         if self.discrete_state_transitions_.ndim == 2:
-            transition_matrix = (
-                self.continuous_state_transitions_[cross_is_track_interior]
-                * self.discrete_state_transitions_[np.ix_(state_ind, state_ind)]
-            )
             (
                 marginal_log_likelihood,
                 causal_posterior,
                 predictive_distribution,
                 acausal_posterior,
-            ) = hmm_smoother(
+            ) = filter_smoother(
                 self.initial_conditions_[is_track_interior],
-                transition_matrix,
+                (
+                    self.continuous_state_transitions_[cross_is_track_interior]
+                    * self.discrete_state_transitions_[np.ix_(state_ind, state_ind)]
+                ),
                 self.log_likelihood_,
-                transition_fn=None,
             )
         else:
-            transition_fn = partial(
-                non_stationary_discrete_transition_fn,
-                jnp.asarray(
-                    self.continuous_state_transitions_[cross_is_track_interior]
-                ),
-                jnp.asarray(self.discrete_state_transitions_),
-                jnp.asarray(state_ind),
-            )
             (
                 marginal_log_likelihood,
                 causal_posterior,
                 predictive_distribution,
                 acausal_posterior,
-            ) = hmm_smoother(
+            ) = filter_smoother_covariate_dependent(
                 self.initial_conditions_[is_track_interior],
-                None,
+                self.discrete_state_transitions_,
+                self.continuous_state_transitions_[cross_is_track_interior],
+                state_ind,
                 self.log_likelihood_,
-                transition_fn=transition_fn,
             )
 
         (
