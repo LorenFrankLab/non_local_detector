@@ -46,6 +46,10 @@ def convert_to_state_probability(
     acausal_state_probabilities = np.zeros((n_time, n_states))
     predictive_state_probabilities = np.zeros((n_time, n_states))
 
+    acausal_posterior = np.asarray(acausal_posterior)
+    causal_posterior = np.asarray(causal_posterior)
+    predictive_distribution = np.asarray(predictive_distribution)
+
     for ind in range(n_states):
         is_state = state_ind == ind
         causal_state_probabilities[:, ind] = causal_posterior[:, is_state].sum(axis=1)
