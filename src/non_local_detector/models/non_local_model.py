@@ -129,7 +129,6 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         state_names: StateNames = state_names,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = no_spike_rate,
-        n_chunks: int = 1,
     ):
         super().__init__(
             discrete_initial_conditions,
@@ -147,7 +146,6 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
             state_names,
             sampling_frequency,
             no_spike_rate,
-            n_chunks,
         )
 
     @staticmethod
@@ -176,7 +174,6 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         state_names: StateNames = state_names,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = no_spike_rate,
-        n_chunks: int = 1,
     ):
         super().__init__(
             discrete_initial_conditions,
@@ -194,7 +191,6 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
             state_names,
             sampling_frequency,
             no_spike_rate,
-            n_chunks,
         )
 
     @staticmethod

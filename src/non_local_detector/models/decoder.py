@@ -63,7 +63,6 @@ class SortedSpikesDecoder(SortedSpikesDetector):
         state_names: StateNames = state_names,
         sampling_frequency: float = 500,
         no_spike_rate: float = 1e-10,
-        n_chunks: int = 1,
     ):
         super().__init__(
             discrete_initial_conditions,
@@ -81,7 +80,6 @@ class SortedSpikesDecoder(SortedSpikesDetector):
             state_names,
             sampling_frequency,
             no_spike_rate,
-            n_chunks,
         )
 
 
@@ -103,7 +101,6 @@ class ClusterlessDecoder(ClusterlessDetector):
         state_names: StateNames = state_names,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
-        n_chunks: int = 1,
     ):
         super().__init__(
             discrete_initial_conditions,
@@ -121,5 +118,4 @@ class ClusterlessDecoder(ClusterlessDetector):
             state_names,
             sampling_frequency,
             no_spike_rate,
-            n_chunks,
         )

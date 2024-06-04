@@ -77,7 +77,6 @@ class _DetectorBase(BaseEstimator):
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
-        n_chunks: int = 1,
     ) -> None:
         """
         Initialize the _DetectorBase class.
@@ -110,8 +109,6 @@ class _DetectorBase(BaseEstimator):
             Sampling frequency, by default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
-        n_chunks : int, optional
-            Number of chunks for processing, by default 1.
         """
         self._validate_initial_conditions(
             discrete_initial_conditions,
@@ -149,7 +146,6 @@ class _DetectorBase(BaseEstimator):
 
         self.sampling_frequency = sampling_frequency
         self.no_spike_rate = no_spike_rate
-        self.n_chunks = n_chunks
 
     def _validate_initial_conditions(
         self,
@@ -706,6 +702,7 @@ class _DetectorBase(BaseEstimator):
         is_missing: Optional[np.ndarray] = None,
         log_likelihoods: Optional[np.ndarray] = None,
         cache_likelihood: bool = True,
+        n_chunks: int = 1,
     ) -> tuple[np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray]:
         """
         Compute the posterior probabilities.
@@ -722,6 +719,8 @@ class _DetectorBase(BaseEstimator):
             Precomputed log likelihoods, by default None
         cache_likelihood : bool, optional
             Whether to cache the log likelihoods, by default True
+        n_chunks : int, optional
+            Splits data into chunks for processing, by default 1
 
         Returns
         -------
@@ -749,7 +748,7 @@ class _DetectorBase(BaseEstimator):
                 log_likelihood_func=self.compute_log_likelihood,
                 log_likelihood_args=log_likelihood_args,
                 is_missing=is_missing,
-                n_chunks=self.n_chunks,
+                n_chunks=n_chunks,
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
             )
@@ -765,7 +764,7 @@ class _DetectorBase(BaseEstimator):
                 log_likelihood_func=self.compute_log_likelihood,
                 log_likelihood_args=log_likelihood_args,
                 is_missing=is_missing,
-                n_chunks=self.n_chunks,
+                n_chunks=n_chunks,
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
             )
@@ -784,6 +783,7 @@ class _DetectorBase(BaseEstimator):
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
+        n_chunks: int = 1,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -806,6 +806,8 @@ class _DetectorBase(BaseEstimator):
             Convergence tolerance for the EM algorithm, by default 1e-4.
         cache_likelihood : bool, optional
             Whether to cache the log likelihoods for faster iterations, by default False.
+        n_chunks : int, optional
+            Splits data into chunks for processing, by default 1
 
         Returns
         -------
@@ -833,6 +835,7 @@ class _DetectorBase(BaseEstimator):
                 is_missing=is_missing,
                 cache_likelihood=cache_likelihood,
                 log_likelihoods=log_likelihoods,
+                n_chunks=n_chunks,
             )
             # Maximization step
             logger.info("Maximization step...")
@@ -1109,7 +1112,6 @@ class ClusterlessDetector(_DetectorBase):
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
-        n_chunks: int = 1,
     ) -> None:
         """
         Initialize the ClusterlessDetector class.
@@ -1146,8 +1148,6 @@ class ClusterlessDetector(_DetectorBase):
             Sampling frequency, by default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
-        n_chunks : int, optional
-            Number of chunks for processing, by default 1.
         """
         super().__init__(
             discrete_initial_conditions,
@@ -1163,7 +1163,6 @@ class ClusterlessDetector(_DetectorBase):
             state_names,
             sampling_frequency,
             no_spike_rate,
-            n_chunks,
         )
         self.clusterless_algorithm = clusterless_algorithm
         self.clusterless_algorithm_params = clusterless_algorithm_params
@@ -1474,6 +1473,7 @@ class ClusterlessDetector(_DetectorBase):
         position_time: Optional[np.ndarray] = None,
         is_missing: Optional[np.ndarray] = None,
         discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
+        n_chunks: int = 1,
     ) -> xr.Dataset:
         """
         Predict the posterior probabilities for the given data.
@@ -1494,6 +1494,8 @@ class ClusterlessDetector(_DetectorBase):
             Boolean array indicating missing data, by default None.
         discrete_transition_covariate_data : dict-like, optional
             Covariate data for covariate-dependent discrete transition, by default None.
+        n_chunks : int, optional
+            Splits data into chunks for processing, by default 1
 
         Returns
         -------
@@ -1536,6 +1538,7 @@ class ClusterlessDetector(_DetectorBase):
             ),
             is_missing=is_missing,
             cache_likelihood=False,
+            n_chunks=n_chunks,
         )
 
         return self._convert_results_to_xarray(
@@ -1562,6 +1565,7 @@ class ClusterlessDetector(_DetectorBase):
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
+        n_chunks: int = 1,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -1598,6 +1602,8 @@ class ClusterlessDetector(_DetectorBase):
             Convergence tolerance for the EM algorithm, by default 1e-4.
         cache_likelihood : bool, optional
             Whether to cache the log likelihoods for faster iterations, by default True.
+        n_chunks : int, optional
+            Splits data into chunks for processing, by default 1
 
         Returns
         -------
@@ -1629,6 +1635,7 @@ class ClusterlessDetector(_DetectorBase):
             max_iter=max_iter,
             tolerance=tolerance,
             cache_likelihood=cache_likelihood,
+            n_chunks=n_chunks,
         )
 
 
@@ -1654,7 +1661,6 @@ class SortedSpikesDetector(_DetectorBase):
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
-        n_chunks: int = 1,
     ) -> None:
         """
         Initialize the SortedSpikesDetector class.
@@ -1691,8 +1697,6 @@ class SortedSpikesDetector(_DetectorBase):
             Sampling frequency, by default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
-        n_chunks : int, optional
-            Number of chunks for processing, by default 1.
         """
         super().__init__(
             discrete_initial_conditions,
@@ -1708,7 +1712,6 @@ class SortedSpikesDetector(_DetectorBase):
             state_names,
             sampling_frequency,
             no_spike_rate,
-            n_chunks,
         )
         self.sorted_spikes_algorithm = sorted_spikes_algorithm
         self.sorted_spikes_algorithm_params = sorted_spikes_algorithm_params
@@ -1987,6 +1990,7 @@ class SortedSpikesDetector(_DetectorBase):
         position_time: Optional[np.ndarray] = None,
         is_missing: Optional[np.ndarray] = None,
         discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
+        n_chunks: int = 1,
     ) -> xr.Dataset:
         """
         Predict the posterior probabilities for the given data.
@@ -2005,6 +2009,8 @@ class SortedSpikesDetector(_DetectorBase):
             Boolean array indicating missing data, by default None.
         discrete_transition_covariate_data : dict-like, optional
             Covariate data for covariate-dependent discrete transition, by default None.
+        n_chunks : int, optional
+            Splits data into chunks for processing, by default 1
 
         Returns
         -------
@@ -2046,6 +2052,7 @@ class SortedSpikesDetector(_DetectorBase):
             ),
             is_missing=is_missing,
             cache_likelihood=False,
+            n_chunks=n_chunks,
         )
 
         return self._convert_results_to_xarray(
@@ -2071,6 +2078,7 @@ class SortedSpikesDetector(_DetectorBase):
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
+        n_chunks: int = 1,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities
@@ -2109,6 +2117,8 @@ class SortedSpikesDetector(_DetectorBase):
             Convergence tolerance for EM, by default 0.0001
         cache_likelihood : bool, optional
             Store the likelihood for faster iterations, by default True
+        n_chunks : int, optional
+            Number of chunks for processing, by default 1
 
         Returns
         -------
@@ -2139,4 +2149,5 @@ class SortedSpikesDetector(_DetectorBase):
             max_iter=max_iter,
             tolerance=tolerance,
             cache_likelihood=cache_likelihood,
+            n_chunks=n_chunks,
         )

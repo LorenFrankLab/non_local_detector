@@ -78,7 +78,6 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
         state_names: StateNames = state_names,
         sampling_frequency: float = 500,
         no_spike_rate: float = 1e-10,
-        n_chunks: int = 1,
     ):
         super().__init__(
             discrete_initial_conditions,
@@ -96,7 +95,6 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
             state_names,
             sampling_frequency,
             no_spike_rate,
-            n_chunks,
         )
 
 
@@ -118,7 +116,6 @@ class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
         state_names: StateNames = state_names,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
-        n_chunks: int = 1,
     ):
         super().__init__(
             discrete_initial_conditions,
@@ -136,5 +133,4 @@ class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
             state_names,
             sampling_frequency,
             no_spike_rate,
-            n_chunks,
         )
