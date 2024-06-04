@@ -15,7 +15,7 @@ from non_local_detector.likelihoods.common import (
 
 def make_spline_design_matrix(
     position: np.ndarray, place_bin_edges: np.ndarray, knot_spacing: float = 10.0
-):
+) -> np.ndarray:
     position = position if position.ndim > 1 else position[:, np.newaxis]
     inner_knots = []
     for pos, edges in zip(position.T, place_bin_edges.T):
@@ -177,7 +177,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     is_track_interior: jnp.ndarray,
     disable_progress_bar: bool = False,
     is_local: bool = False,
-):
+) -> jnp.ndarray:
     n_time = time.shape[0]
 
     if is_local:

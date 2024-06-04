@@ -1,7 +1,10 @@
+from typing import Optional
+
 import networkx as nx
 import numpy as np
-from non_local_detector.environment import Environment
 from scipy.ndimage import gaussian_filter1d
+
+from non_local_detector.environment import Environment
 
 
 def make_2D_track_graph_from_environment(
@@ -359,7 +362,13 @@ def get_ahead_behind_distance2D(
     return ahead_behind_distance
 
 
-def _gaussian_smooth(data, sigma, sampling_frequency, axis=0, truncate=8):
+def _gaussian_smooth(
+    data: np.ndarray,
+    sigma: float,
+    sampling_frequency: float,
+    axis: int = 0,
+    truncate: int = 8,
+) -> np.ndarray:
     """1D convolution of the data with a Gaussian.
 
     The standard deviation of the gaussian is in the units of the sampling
@@ -385,7 +394,26 @@ def _gaussian_smooth(data, sigma, sampling_frequency, axis=0, truncate=8):
     )
 
 
-def get_velocity(position, time=None, sigma=0.0025, sampling_frequency=500):
+def get_velocity(
+    position: np.ndarray,
+    time: Optional[np.ndarray] = None,
+    sigma: float = 0.0025,
+    sampling_frequency: float = 500,
+) -> np.ndarray:
+    """Estimate the velocity of the decode.
+
+    Parameters
+    ----------
+    position : np.ndarray, shape (n_time, n_position_dims)
+        MAP decoded position
+    time : np.ndarray, shape (n_time,), optional
+    sigma : float, optional
+    sampling_frequency : float, optional
+
+    Returns
+    -------
+    decoded_velocity : np.ndarray, shape (n_time, n_position_dims)
+    """
     if time is None:
         time = np.arange(position.shape[0])
 
@@ -398,5 +426,15 @@ def get_velocity(position, time=None, sigma=0.0025, sampling_frequency=500):
     )
 
 
-def get_speed(velocity):
+def get_speed(velocity: np.ndarray) -> np.ndarray:
+    """Estimate the speed of the decoded position.
+
+    Parameters
+    ----------
+    velocity : np.ndarray, shape (n_time, n_position_dims)
+
+    Returns
+    -------
+    speed: np.ndarray, shape (n_time,)
+    """
     return np.sqrt(np.sum(velocity**2, axis=1))

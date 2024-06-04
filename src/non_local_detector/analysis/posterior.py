@@ -1,8 +1,9 @@
 import numpy as np
+import xarray as xr
 from scipy.stats import rv_histogram
 
 
-def maximum_a_posteriori_estimate(posterior):
+def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
     """Finds the most likely position of the posterior (the posterior mode)
 
     Parameters
@@ -25,13 +26,18 @@ def maximum_a_posteriori_estimate(posterior):
     return map_estimate
 
 
-def sample_posterior(posterior, place_bin_edges, n_samples=1000):
+def sample_posterior(
+    posterior: xr.DataArray, place_bin_edges: np.ndarray, n_samples: int = 1000
+) -> np.ndarray:
     """Samples the posterior positions.
 
     Parameters
     ----------
     posterior : xarray.DataArray, shape (n_time, n_position_bins) or
         shape (n_time, n_x_bins, n_y_bins)
+    place_bin_edges : ndarray, shape (n_position_bins,)
+        The edges of the position bins.
+    n_samples : int, optional
 
     Returns
     -------

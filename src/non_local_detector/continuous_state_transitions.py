@@ -1,4 +1,5 @@
 """Classes for constructing different types of movement models."""
+
 from dataclasses import dataclass
 from typing import Optional, Tuple
 

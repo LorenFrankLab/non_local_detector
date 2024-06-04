@@ -654,39 +654,11 @@ class DiscreteNonStationaryCustom:
         )
 
 
-@jax.jit
-def stationary_discrete_transition_fn(
-    continuous_state_transitions: jnp.ndarray,
-    discrete_state_transitions: jnp.ndarray,
-    state_ind: jnp.ndarray,
-    t: int,
-):
-    return (
-        continuous_state_transitions
-        * discrete_state_transitions[jnp.ix_(state_ind, state_ind)]
-    )
-
-
-@jax.jit
-def non_stationary_discrete_transition_fn(
-    continuous_state_transitions: jnp.ndarray,
-    discrete_state_transitions: jnp.ndarray,
-    state_ind: jnp.ndarray,
-    t: int,
-):
-    return stationary_discrete_transition_fn(
-        continuous_state_transitions,
-        discrete_state_transitions[t],
-        state_ind,
-        t,
-    )
-
-
 def predict_discrete_state_transitions(
     discrete_transition_design_matrix,
     discrete_transition_coefficients,
     discrete_transition_covariate_data,
-):
+) -> np.ndarray:
     design_matrix = build_design_matrices(
         [discrete_transition_design_matrix.design_info],
         discrete_transition_covariate_data,

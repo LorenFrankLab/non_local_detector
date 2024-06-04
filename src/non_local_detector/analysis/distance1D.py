@@ -1,9 +1,20 @@
+from typing import Hashable
+
 import networkx as nx
 import numpy as np
+import xarray as xr
 from scipy.ndimage import gaussian_filter1d
 
+from non_local_detector.models.base import _DetectorBase
 
-def _gaussian_smooth(data, sigma, sampling_frequency, axis=0, truncate=8):
+
+def _gaussian_smooth(
+    data: np.ndarray,
+    sigma: float,
+    sampling_frequency: float,
+    axis: int = 0,
+    truncate: int = 8,
+) -> np.ndarray:
     """1D convolution of the data with a Gaussian.
 
     The standard deviation of the gaussian is in the units of the sampling
@@ -30,8 +41,33 @@ def _gaussian_smooth(data, sigma, sampling_frequency, axis=0, truncate=8):
 
 
 def _get_MAP_estimate_2d_position_edges(
-    posterior, track_graph, decoder, environment_name
-):
+    posterior: xr.DataArray,
+    track_graph: nx.Graph,
+    decoder: _DetectorBase,
+    environment_name: str = "",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Get the most likely position of the posterior position and the edges
+    of the track graph that the position corresponds to.
+
+    Parameters
+    ----------
+    posterior : xarray.DataArray, shape (n_time, n_position_bins)
+        Decoded probability of position
+    track_graph : networkx.Graph
+        Graph representation of the environment
+    decoder : SortedSpikesDecoder, ClusterlessDecoder, SortedSpikesClassifier,
+                ClusterlessClassifier
+            Model used to decode the data
+    environment_name : str, optional
+        Name of the environment
+
+    Returns
+    -------
+    mental_position_2d : numpy.ndarray, shape (n_time, 2)
+        Most likely decoded position
+    mental_position_edges : numpy.ndarray, shape (n_time,)
+        Edge of the `track_graph` that most likely decoded position corresponds
+    """
     try:
         environments = decoder.environments
         env = environments[environments.index(environment_name)]
@@ -66,7 +102,9 @@ def _get_MAP_estimate_2d_position_edges(
     return mental_position_2d, mental_position_edges
 
 
-def _points_toward_node(track_graph, edge, head_direction):
+def _points_toward_node(
+    track_graph: nx.Graph, edge: np.ndarray, head_direction: np.ndarray
+) -> object:
     """Given an edge, determine the node the head is pointed toward
 
     Parameters
@@ -90,15 +128,22 @@ def _points_toward_node(track_graph, edge, head_direction):
     return edge[(edge_vector @ head_vector >= 0).astype(int)]
 
 
-def _get_distance_between_nodes(track_graph, node1, node2):
+def _get_distance_between_nodes(
+    track_graph: nx.Graph, node1: Hashable, node2: Hashable
+):
     node1_pos = np.asarray(track_graph.nodes[node1]["pos"])
     node2_pos = np.asarray(track_graph.nodes[node2]["pos"])
     return np.sqrt(np.sum((node1_pos - node2_pos) ** 2))
 
 
 def _setup_track_graph(
-    track_graph, actual_pos, actual_edge, head_direction, mental_pos, mental_edge
-):
+    track_graph: nx.Graph,
+    actual_pos: np.ndarray,
+    actual_edge: np.ndarray,
+    head_direction: float,
+    mental_pos: np.ndarray,
+    mental_edge: np.ndarray,
+) -> nx.Graph:
     """Takes the track graph and add nodes for the animal's actual position,
     mental position, and head direction.
 
@@ -170,7 +215,9 @@ def _setup_track_graph(
 
 
 def _calculate_ahead_behind(
-    track_graph, source="actual_position", target="mental_position"
+    track_graph: nx.Graph,
+    source: Hashable = "actual_position",
+    target: Hashable = "mental_position",
 ):
     path = nx.shortest_path(
         track_graph,
@@ -183,7 +230,9 @@ def _calculate_ahead_behind(
 
 
 def _calculate_distance(
-    track_graph, source="actual_position", target="mental_position"
+    track_graph: nx.Graph,
+    source: Hashable = "actual_position",
+    target: Hashable = "mental_position",
 ):
     return nx.shortest_path_length(
         track_graph, source=source, target=target, weight="distance"
@@ -191,14 +240,14 @@ def _calculate_distance(
 
 
 def get_trajectory_data(
-    posterior,
-    track_graph,
-    decoder,
-    actual_projected_position,
-    track_segment_id,
-    actual_orientation,
-    environment_name="",
-):
+    posterior: xr.DataArray,
+    track_graph: nx.Graph,
+    decoder: _DetectorBase,
+    actual_projected_position: np.ndarray,
+    track_segment_id: np.ndarray,
+    actual_orientation: np.ndarray,
+    environment_name: str = "",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Convenience function for getting the most likely position of the
     posterior position and actual position/direction of the animal.
 
@@ -248,14 +297,14 @@ def get_trajectory_data(
 
 
 def get_ahead_behind_distance(
-    track_graph,
-    actual_projected_position,
-    actual_edges,
-    actual_orientation,
-    mental_position_2d,
-    mental_position_edges,
-    source="actual_position",
-):
+    track_graph: nx.Graph,
+    actual_projected_position: np.ndarray,
+    actual_edges: np.ndarray,
+    actual_orientation: np.ndarray,
+    mental_position_2d: np.ndarray,
+    mental_position_edges: np.ndarray,
+    source: Hashable = "actual_position",
+) -> np.ndarray:
     """
 
     Parameters
@@ -276,7 +325,7 @@ def get_ahead_behind_distance(
 
     Returns
     -------
-    distance_metrics : pandas.DataFrame, shape (n_time, 2)
+    distance_metrics : np.ndarray
         Information about the distance of the animal to the mental position.
 
     """
@@ -313,7 +362,7 @@ def get_ahead_behind_distance(
 
 
 def get_map_speed(
-    posterior: np.ndarray,
+    posterior: xr.DataArray,
     track_graph_with_bin_centers_edges: nx.Graph,
     place_bin_center_ind_to_node: np.ndarray,
     sampling_frequency: float = 500.0,

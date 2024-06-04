@@ -1,4 +1,5 @@
 """Simulate clusterless spikes and associated spike waveform features."""
+
 from typing import Tuple
 
 import numpy as np

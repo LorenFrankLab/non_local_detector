@@ -1,4 +1,5 @@
 """Classes for constructing discrete grids representations of spatial environments in nD"""
+
 import pickle
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple, Union
@@ -84,7 +85,7 @@ class Environment:
 
     def fit_place_grid(
         self, position: Optional[np.ndarray] = None, infer_track_interior: bool = True
-    ):
+    ) -> "Environment":
         """Fits a discrete grid of the spatial environment.
 
         Parameters
@@ -170,7 +171,7 @@ class Environment:
 
         return self
 
-    def plot_grid(self, ax: matplotlib.axes.Axes = None):
+    def plot_grid(self, ax: matplotlib.axes.Axes = None) -> None:
         """Plot the fitted spatial grid of the environment.
 
         Parameters
@@ -213,7 +214,7 @@ class Environment:
             pickle.dump(self, file_handle)
 
     @classmethod
-    def load_environment(cls, filename: str = "environment.pkl"):
+    def load_environment(cls, filename: str = "environment.pkl") -> "Environment":
         with open(filename, "rb") as f:
             return pickle.load(f)
 
@@ -953,7 +954,7 @@ def order_boundary(boundary: np.ndarray) -> np.ndarray:
 
 def get_track_boundary_points(
     is_track_interior: np.ndarray, edges: list[np.ndarray], connectivity: int = 1
-):
+) -> np.ndarray:
     """
 
     Parameters
@@ -1027,7 +1028,13 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
     return track_graph
 
 
-def gaussian_smooth(data, sigma, sampling_frequency, axis=0, truncate=8):
+def gaussian_smooth(
+    data: np.ndarray,
+    sigma: float,
+    sampling_frequency: float,
+    axis: int = 0,
+    truncate: int = 8,
+) -> np.ndarray:
     """1D convolution of the data with a Gaussian.
 
     The standard deviation of the gaussian is in the units of the sampling

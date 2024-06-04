@@ -1,68 +1,10 @@
-from functools import partial
-from typing import Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 np.seterr(divide="ignore", invalid="ignore")
-
-
-def convert_to_state_probability(
-    causal_posterior: np.ndarray,
-    acausal_posterior: np.ndarray,
-    predictive_distribution: np.ndarray,
-    state_ind: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Convert the causal, acausal, and predictive distributions to state probabilities.
-
-    Parameters
-    ----------
-    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
-        The causal posterior distribution.
-    acausal_posterior : np.ndarray, shape (n_time, n_states_bins)
-        The acausal posterior distribution.
-    predictive_distribution : np.ndarray, shape (n_time, n_state_bins)
-        The predictive distribution.
-    state_ind : np.ndarray, shape (n_time,)
-        The state indices.
-
-    Returns
-    -------
-    Tuple[np.ndarray, np.ndarray, np.ndarray]
-        A tuple containing the causal, acausal, and predictive state probabilities.
-        causal_state_probabilities : np.ndarray, shape (n_time, n_states)
-            The causal state probabilities.
-        acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
-            The acausal state probabilities.
-        predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
-            The predictive state probabilities.
-    """
-    n_states = np.unique(state_ind).size
-    n_time = causal_posterior.shape[0]
-
-    causal_state_probabilities = np.zeros((n_time, n_states))
-    acausal_state_probabilities = np.zeros((n_time, n_states))
-    predictive_state_probabilities = np.zeros((n_time, n_states))
-
-    acausal_posterior = np.asarray(acausal_posterior)
-    causal_posterior = np.asarray(causal_posterior)
-    predictive_distribution = np.asarray(predictive_distribution)
-
-    for ind in range(n_states):
-        is_state = state_ind == ind
-        causal_state_probabilities[:, ind] = causal_posterior[:, is_state].sum(axis=1)
-        acausal_state_probabilities[:, ind] = acausal_posterior[:, is_state].sum(axis=1)
-        predictive_state_probabilities[:, ind] = predictive_distribution[
-            :, is_state
-        ].sum(axis=1)
-
-    return (
-        causal_state_probabilities,
-        acausal_state_probabilities,
-        predictive_state_probabilities,
-    )
 
 
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
@@ -113,6 +55,7 @@ def filter(
     transition_matrix,
     log_likelihoods,
 ):
+
     def _step(carry, ll):
         log_normalizer, predicted_probs = carry
 
@@ -122,23 +65,23 @@ def filter(
 
         return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
 
-    (log_normalizer, _), (filtered_probs, predicted_probs) = jax.lax.scan(
-        _step, (0.0, initial_distribution), log_likelihoods
-    )
-
-    return (
-        log_normalizer,
-        filtered_probs,
-        predicted_probs,
-    )
+    return jax.lax.scan(_step, (0.0, initial_distribution), log_likelihoods)
 
 
 @jax.jit
 def smoother(
     transition_matrix,
     filtered_probs,
+    initial=None,
+    ind=None,
+    n_time=None,
 ):
-    n_time = filtered_probs.shape[0]
+    if n_time is None:
+        n_time = filtered_probs.shape[0]
+    if ind is None:
+        ind = jnp.arange(n_time)
+    if initial is None:
+        initial = filtered_probs[-1]
 
     def _step(smoothed_probs_next, args):
         filtered_probs_t, t = args
@@ -151,44 +94,111 @@ def smoother(
 
         return smoothed_probs, smoothed_probs
 
-    _, smoothed_probs = jax.lax.scan(
+    return jax.lax.scan(
         _step,
-        filtered_probs[-1],
-        (filtered_probs, jnp.arange(n_time)),
+        initial,
+        (filtered_probs, ind),
         reverse=True,
-    )
-
-    return smoothed_probs
+    )[1]
 
 
-def filter_smoother(
-    initial_distribution,
-    transition_matrix,
-    log_likelihoods,
+def chunked_filter_smoother(
+    time: np.array,
+    state_ind: np.array,
+    initial_distribution: np.array,
+    transition_matrix: np.array,
+    log_likelihood_func: callable,
+    log_likelihood_args: tuple,
+    is_missing: Optional[np.array] = None,
+    n_chunks: int = 1,
+    log_likelihoods: Optional[np.array] = None,
+    cache_log_likelihoods: bool = True,
 ):
-    (
-        marginal_loglik,
-        filtered_probs,
-        predicted_probs,
-    ) = filter(
-        initial_distribution,
-        transition_matrix,
+    causal_posterior = []
+    predictive_state_probabilities = []
+    causal_state_probabilities = []
+    acausal_posterior = []
+    acausal_state_probabilities = []
+    marginal_likelihood = 0.0
+
+    n_time = len(time)
+    time_chunks = np.array_split(np.arange(n_time), n_chunks)
+
+    n_states = len(np.unique(state_ind))
+    state_mask = np.identity(n_states, dtype=np.float32)[
+        state_ind
+    ]  # shape (n_state_inds, n_states)
+
+    if cache_log_likelihoods and log_likelihoods is None:
+        log_likelihoods = log_likelihood_func(
+            time,
+            *log_likelihood_args,
+            is_missing=is_missing,
+        )
+
+    for chunk_id, time_inds in enumerate(time_chunks):
+        if log_likelihoods is not None:
+            log_likelihood_chunk = log_likelihoods[time_inds]
+        else:
+            is_missing_chunk = is_missing[time_inds] if is_missing is not None else None
+            log_likelihood_chunk = log_likelihood_func(
+                time[time_inds],
+                *log_likelihood_args,
+                is_missing=is_missing_chunk,
+            )
+
+        (
+            (marginal_likelihood_chunk, predicted_probs_next),
+            (causal_posterior_chunk, predicted_probs_chunk),
+        ) = filter(
+            initial_distribution=(
+                initial_distribution if chunk_id == 0 else predicted_probs_next
+            ),
+            transition_matrix=transition_matrix,
+            log_likelihoods=log_likelihood_chunk,
+        )
+
+        causal_posterior_chunk = np.asarray(causal_posterior_chunk)
+        causal_posterior.append(causal_posterior_chunk)
+        causal_state_probabilities.append(causal_posterior_chunk @ state_mask)
+        predictive_state_probabilities.append(
+            np.asarray(predicted_probs_chunk) @ state_mask
+        )
+
+        marginal_likelihood += marginal_likelihood_chunk
+
+    causal_posterior = np.concatenate(causal_posterior)
+    causal_state_probabilities = np.concatenate(causal_state_probabilities)
+    predictive_state_probabilities = np.concatenate(predictive_state_probabilities)
+
+    for chunk_id, time_inds in enumerate(reversed(time_chunks)):
+        acausal_posterior_chunk = smoother(
+            transition_matrix=transition_matrix,
+            filtered_probs=causal_posterior[time_inds],
+            initial=(
+                causal_posterior[-1] if chunk_id == 0 else acausal_posterior_chunk[0]
+            ),
+            ind=time_inds,
+            n_time=n_time,
+        )
+        acausal_posterior_chunk = np.asarray(acausal_posterior_chunk)
+        acausal_posterior.append(acausal_posterior_chunk)
+        acausal_state_probabilities.append(acausal_posterior_chunk @ state_mask)
+
+    acausal_posterior = np.concatenate(acausal_posterior[::-1])
+    acausal_state_probabilities = np.concatenate(acausal_state_probabilities[::-1])
+
+    return (
+        acausal_posterior,
+        acausal_state_probabilities,
+        marginal_likelihood,
+        causal_state_probabilities,
+        predictive_state_probabilities,
         log_likelihoods,
     )
 
-    smoothed_probs = smoother(
-        transition_matrix,
-        filtered_probs,
-    )
 
-    return (
-        marginal_loglik,
-        filtered_probs,
-        predicted_probs,
-        smoothed_probs,
-    )
-
-
+## Covariate dependent filtering and smoothing ##
 def _get_transition_matrix(
     discrete_transition_matrix_t,
     continuous_transition_matrix,
@@ -208,6 +218,7 @@ def filter_covariate_dependent(
     state_ind,
     log_likelihoods,
 ):
+
     def _step(carry, args):
         log_normalizer, predicted_probs = carry
         discrete_transition_matrix_t, ll = args
@@ -220,16 +231,10 @@ def filter_covariate_dependent(
 
         return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
 
-    (log_normalizer, _), (filtered_probs, predicted_probs) = jax.lax.scan(
+    return jax.lax.scan(
         _step,
         (0.0, initial_distribution),
         (log_likelihoods, discrete_transition_matrix),
-    )
-
-    return (
-        log_normalizer,
-        filtered_probs,
-        predicted_probs,
     )
 
 
@@ -239,74 +244,146 @@ def smoother_covariate_dependent(
     continuous_transition_matrix,
     state_ind,
     filtered_probs,
+    initial=None,
+    ind=None,
+    n_time=None,
 ):
-    n_time = filtered_probs.shape[0]
+    if n_time is None:
+        n_time = filtered_probs.shape[0]
+    if ind is None:
+        ind = jnp.arange(n_time)
+    if initial is None:
+        initial = filtered_probs[-1]
 
     def _step(smoothed_probs_next, args):
         filtered_probs_t, discrete_transition_matrix_t, t = args
 
+        transition_matrix = _get_transition_matrix(
+            discrete_transition_matrix_t,
+            continuous_transition_matrix,
+            state_ind,
+        )
+
         smoothed_probs = filtered_probs_t * (
-            _get_transition_matrix(
-                discrete_transition_matrix_t, continuous_transition_matrix, state_ind
-            )
+            transition_matrix
             @ _divide_safe(
                 smoothed_probs_next,
-                filtered_probs_t
-                @ _get_transition_matrix(
-                    discrete_transition_matrix_t,
-                    continuous_transition_matrix,
-                    state_ind,
-                ),
+                filtered_probs_t @ transition_matrix,
             )
         ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
         smoothed_probs /= smoothed_probs.sum(keepdims=True)
 
         return smoothed_probs, smoothed_probs
 
-    _, smoothed_probs = jax.lax.scan(
+    return jax.lax.scan(
         _step,
-        filtered_probs[-1],
-        (filtered_probs, discrete_transition_matrix, jnp.arange(n_time)),
+        initial,
+        (filtered_probs, discrete_transition_matrix, ind),
         reverse=True,
-    )
-
-    return smoothed_probs
+    )[1]
 
 
-def filter_smoother_covariate_dependent(
-    initial_distribution,
-    discrete_transition_matrix,
-    continuous_transition_matrix,
-    state_ind,
-    log_likelihoods,
+def chunked_filter_smoother_covariate_dependent(
+    time: np.ndarray,
+    state_ind: np.ndarray,
+    initial_distribution: np.ndarray,
+    discrete_transition_matrix: np.ndarray,
+    continuous_transition_matrix: np.ndarray,
+    log_likelihood_func: callable,
+    log_likelihood_args: tuple,
+    is_missing: Optional[np.array] = None,
+    n_chunks: int = 1,
+    log_likelihoods: Optional[np.array] = None,
+    cache_log_likelihoods: bool = True,
 ):
-    (
-        marginal_loglik,
-        filtered_probs,
-        predicted_probs,
-    ) = filter(
-        initial_distribution,
-        discrete_transition_matrix,
-        continuous_transition_matrix,
-        state_ind,
+    causal_posterior = []
+    predictive_state_probabilities = []
+    causal_state_probabilities = []
+    acausal_posterior = []
+    acausal_state_probabilities = []
+    marginal_likelihood = 0.0
+
+    n_time = len(time)
+    time_chunks = np.array_split(np.arange(n_time), n_chunks)
+
+    n_states = len(np.unique(state_ind))
+    state_mask = np.identity(n_states, dtype=np.float32)[
+        state_ind
+    ]  # shape (n_state_inds, n_states)
+
+    if cache_log_likelihoods and log_likelihoods is None:
+        log_likelihoods = log_likelihood_func(
+            time,
+            *log_likelihood_args,
+            is_missing=is_missing,
+        )
+
+    for chunk_id, time_inds in enumerate(time_chunks):
+        if log_likelihoods is not None:
+            log_likelihood_chunk = log_likelihoods[time_inds]
+        else:
+            is_missing_chunk = is_missing[time_inds] if is_missing is not None else None
+            log_likelihood_chunk = log_likelihood_func(
+                time[time_inds],
+                *log_likelihood_args,
+                is_missing=is_missing_chunk,
+            )
+
+        (
+            (marginal_likelihood_chunk, predicted_probs_next),
+            (causal_posterior_chunk, predicted_probs_chunk),
+        ) = filter_covariate_dependent(
+            initial_distribution=(
+                initial_distribution if chunk_id == 0 else predicted_probs_next
+            ),
+            discrete_transition_matrix=discrete_transition_matrix[time_inds],
+            continuous_transition_matrix=continuous_transition_matrix,
+            state_ind=state_ind,
+            log_likelihoods=log_likelihood_chunk,
+        )
+        causal_posterior_chunk = np.asarray(causal_posterior_chunk)
+        causal_posterior.append(causal_posterior_chunk)
+        causal_state_probabilities.append(causal_posterior_chunk @ state_mask)
+        predictive_state_probabilities.append(
+            np.asarray(predicted_probs_chunk) @ state_mask
+        )
+
+        marginal_likelihood += marginal_likelihood_chunk
+
+    causal_posterior = np.concatenate(causal_posterior)
+    causal_state_probabilities = np.concatenate(causal_state_probabilities)
+    predictive_state_probabilities = np.concatenate(predictive_state_probabilities)
+
+    for chunk_id, time_inds in enumerate(reversed(time_chunks)):
+        acausal_posterior_chunk = smoother_covariate_dependent(
+            discrete_transition_matrix=discrete_transition_matrix[time_inds],
+            continuous_transition_matrix=continuous_transition_matrix,
+            state_ind=state_ind,
+            filtered_probs=causal_posterior[time_inds],
+            initial=(
+                causal_posterior[-1] if chunk_id == 0 else acausal_posterior_chunk[0]
+            ),
+            ind=time_inds,
+            n_time=n_time,
+        )
+        acausal_posterior_chunk = np.asarray(acausal_posterior_chunk)
+        acausal_posterior.append(acausal_posterior_chunk)
+        acausal_state_probabilities.append(acausal_posterior_chunk @ state_mask)
+
+    acausal_posterior = np.concatenate(acausal_posterior[::-1])
+    acausal_state_probabilities = np.concatenate(acausal_state_probabilities[::-1])
+
+    return (
+        acausal_posterior,
+        acausal_state_probabilities,
+        marginal_likelihood,
+        causal_state_probabilities,
+        predictive_state_probabilities,
         log_likelihoods,
     )
 
-    smoothed_probs = smoother(
-        discrete_transition_matrix,
-        continuous_transition_matrix,
-        state_ind,
-        filtered_probs,
-    )
 
-    return (
-        marginal_loglik,
-        filtered_probs,
-        predicted_probs,
-        smoothed_probs,
-    )
-
-
+## Convergence check ##
 def check_converged(
     log_likelihood: np.ndarray,
     previous_log_likelihood: np.ndarray,

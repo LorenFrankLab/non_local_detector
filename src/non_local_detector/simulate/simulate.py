@@ -1,4 +1,5 @@
 """Main code for simulating position and sorted spikes or clusterless spikes and waveforms."""
+
 from typing import Optional
 
 import numpy as np

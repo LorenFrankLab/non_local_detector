@@ -17,7 +17,7 @@ def fit_sorted_spikes_kde_encoding_model(
     position_std: float = 6.0,
     block_size: int = 100,
     disable_progress_bar: bool = False,
-):
+) -> dict:
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
         if environment.track_graph is not None and position.shape[1] > 1:
@@ -117,7 +117,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     is_track_interior: jnp.ndarray,
     disable_progress_bar: bool = False,
     is_local: bool = False,
-):
+) -> jnp.ndarray:
     n_time = time.shape[0]
     if is_local:
         log_likelihood = jnp.zeros((n_time,))

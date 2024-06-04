@@ -3,15 +3,7 @@ import jax.scipy
 import numpy as np
 from tqdm.autonotebook import tqdm
 
-
-def get_spikecount_per_time_bin(spike_times, time):
-    spike_times = spike_times[
-        np.logical_and(spike_times >= time[0], spike_times <= time[-1])
-    ]
-    return np.bincount(
-        np.digitize(spike_times, time[1:-1]),
-        minlength=time.shape[0],
-    )
+from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
 
 
 def predict_no_spike_log_likelihood(

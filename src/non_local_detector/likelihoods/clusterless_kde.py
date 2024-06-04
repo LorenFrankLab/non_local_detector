@@ -15,7 +15,7 @@ from non_local_detector.likelihoods.common import (
 )
 
 
-def get_spike_time_bin_ind(spike_times, time):
+def get_spike_time_bin_ind(spike_times: np.ndarray, time: np.ndarray) -> np.ndarray:
     return np.digitize(spike_times, time[1:-1])
 
 
@@ -147,7 +147,7 @@ def fit_clusterless_kde_encoding_model(
     waveform_std: float = 24.0,
     block_size: int = 100,
     disable_progress_bar: bool = False,
-):
+) -> dict:
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
         if environment.track_graph is not None and position.shape[1] > 1:
@@ -242,20 +242,20 @@ def predict_clusterless_kde_log_likelihood(
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
-    occupancy,
-    occupancy_model,
-    gpi_models,
-    encoding_spike_waveform_features,
-    encoding_positions,
-    environment,
-    mean_rates,
-    summed_ground_process_intensity,
-    position_std,
-    waveform_std,
+    occupancy: jnp.ndarray,
+    occupancy_model: KDEModel,
+    gpi_models: list[KDEModel],
+    encoding_spike_waveform_features: list[jnp.ndarray],
+    encoding_positions: jnp.ndarray,
+    environment: Environment,
+    mean_rates: jnp.ndarray,
+    summed_ground_process_intensity: jnp.ndarray,
+    position_std: jnp.ndarray,
+    waveform_std: jnp.ndarray,
     is_local: bool = False,
     block_size: int = 100,
     disable_progress_bar: bool = False,
-):
+) -> jnp.ndarray:
     n_time = len(time)
 
     if is_local:
@@ -337,17 +337,17 @@ def compute_local_log_likelihood(
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
-    occupancy_model,
-    gpi_models,
-    encoding_spike_waveform_features,
-    encoding_positions,
-    environment,
-    mean_rates,
-    position_std,
-    waveform_std,
+    occupancy_model: KDEModel,
+    gpi_models: list[KDEModel],
+    encoding_spike_waveform_features: list[jnp.ndarray],
+    encoding_positions: jnp.ndarray,
+    environment: Environment,
+    mean_rates: jnp.ndarray,
+    position_std: jnp.ndarray,
+    waveform_std: jnp.ndarray,
     block_size: int = 100,
     disable_progress_bar: bool = False,
-):
+) -> jnp.ndarray:
     # Need to interpolate position
     interpolated_position = get_position_at_time(
         position_time, position, time, environment

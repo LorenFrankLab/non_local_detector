@@ -18,7 +18,7 @@ def get_position_at_time(
     position: jnp.ndarray,
     spike_times: jnp.ndarray,
     env: Optional[Environment] = None,
-):
+) -> jnp.ndarray:
     position_at_spike_times = scipy.interpolate.interpn(
         (time,), position, spike_times, bounds_error=False, fill_value=None
     )
@@ -37,10 +37,19 @@ def get_position_at_time(
 
 
 @jax.jit
+def log_gaussian_pdf(
+    x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray
+) -> jnp.ndarray:
+    """Compute the log of the Gaussian probability density function at x with
+    given mean and sigma."""
+    return -0.5 * ((x - mean) / sigma) ** 2 - jnp.log(sigma * jnp.sqrt(2.0 * jnp.pi))
+
+
+@jax.jit
 def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
     """Compute the value of a Gaussian probability density function at x with
     given mean and sigma."""
-    return jnp.exp(-0.5 * ((x - mean) / sigma) ** 2) / (sigma * jnp.sqrt(2.0 * jnp.pi))
+    return jnp.exp(log_gaussian_pdf(x, mean, sigma))
 
 
 def kde(
@@ -136,7 +145,9 @@ class KDEModel:
         return block_kde(eval_points, self.samples_, std, block_size)
 
 
-def get_spikecount_per_time_bin(spike_times, time):
+def get_spikecount_per_time_bin(
+    spike_times: np.ndarray, time: np.ndarray
+) -> np.ndarray:
     spike_times = spike_times[
         np.logical_and(spike_times >= time[0], spike_times <= time[-1])
     ]

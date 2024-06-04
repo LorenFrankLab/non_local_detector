@@ -1,7 +1,10 @@
 import numpy as np
+import xarray as xr
 
 
-def get_highest_posterior_threshold(posterior, coverage=0.95):
+def get_highest_posterior_threshold(
+    posterior: xr.DataArray, coverage: float = 0.95
+) -> np.ndarray:
     """Estimate of the posterior spread that can account for multimodal
     distributions.
 
@@ -39,7 +42,9 @@ def get_highest_posterior_threshold(posterior, coverage=0.95):
     return threshold
 
 
-def get_HPD_spatial_coverage(posterior, hpd_threshold):
+def get_HPD_spatial_coverage(
+    posterior: xr.DataArray, hpd_threshold: np.ndarray
+) -> np.ndarray:
     """Total area of the environment covered by the higest posterior values.
 
     Parameters
@@ -51,7 +56,7 @@ def get_HPD_spatial_coverage(posterior, hpd_threshold):
 
     Returns
     -------
-    spatial_coverage : float
+    spatial_coverage : np.ndarray, shape (n_time,)
         Amount of the environment covered by the higest posterior values.
     """
     isin_hpd = posterior >= hpd_threshold[:, np.newaxis]
