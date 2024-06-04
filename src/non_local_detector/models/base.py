@@ -1473,6 +1473,7 @@ class ClusterlessDetector(_DetectorBase):
         position_time: Optional[np.ndarray] = None,
         is_missing: Optional[np.ndarray] = None,
         discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
+        cache_likelihood: bool = False,
         n_chunks: int = 1,
     ) -> xr.Dataset:
         """
@@ -1494,6 +1495,8 @@ class ClusterlessDetector(_DetectorBase):
             Boolean array indicating missing data, by default None.
         discrete_transition_covariate_data : dict-like, optional
             Covariate data for covariate-dependent discrete transition, by default None.
+        cache_likelihood : bool, optional
+            Whether to cache the log likelihoods, by default False.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
 
@@ -1537,7 +1540,7 @@ class ClusterlessDetector(_DetectorBase):
                 spike_waveform_features,
             ),
             is_missing=is_missing,
-            cache_likelihood=False,
+            cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
         )
 
@@ -1990,6 +1993,7 @@ class SortedSpikesDetector(_DetectorBase):
         position_time: Optional[np.ndarray] = None,
         is_missing: Optional[np.ndarray] = None,
         discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
+        cache_likelihood: bool = False,
         n_chunks: int = 1,
     ) -> xr.Dataset:
         """
@@ -2009,6 +2013,8 @@ class SortedSpikesDetector(_DetectorBase):
             Boolean array indicating missing data, by default None.
         discrete_transition_covariate_data : dict-like, optional
             Covariate data for covariate-dependent discrete transition, by default None.
+        cache_likelihood : bool, optional
+            Whether to cache the log likelihoods, by default False.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
 
@@ -2051,7 +2057,7 @@ class SortedSpikesDetector(_DetectorBase):
                 spike_times,
             ),
             is_missing=is_missing,
-            cache_likelihood=False,
+            cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
         )
 
