@@ -21,7 +21,7 @@ class ObservationModel:
     is_local: bool = False
     is_no_spike: bool = False
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
         if other.__class__ is not self.__class__:
             return NotImplemented
         return (self.environment_name, self.encoding_group) == (

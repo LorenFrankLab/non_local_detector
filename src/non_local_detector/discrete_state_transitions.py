@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -13,6 +13,16 @@ from scipy.special import softmax
 
 def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
     """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
+
+    Parameters
+    ----------
+    y : np.ndarray, shape (n_states,)
+        The input values
+
+    Returns
+    -------
+    softmax : np.ndarray, shape (n_states + 1,)
+        The softmax of the input values
 
     Example
     -------
@@ -29,6 +39,16 @@ def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
 
 def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
     """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
+
+    Parameters
+    ----------
+    y : np.ndarray, shape (n_states + 1,)
+        The softmax values
+
+    Returns
+    -------
+    inverse : np.ndarray, shape (n_states,)
+        The inverse of the softmax values
 
     Example
     -------
@@ -94,6 +114,16 @@ def estimate_joint_distribution(
 def jax_centered_log_softmax_forward(y: jnp.ndarray) -> jnp.ndarray:
     """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
 
+    Parameters
+    ----------
+    y : jnp.ndarray, shape (n_states,)
+        The input values
+
+    Returns
+    -------
+    log_softmax : jnp.ndarray, shape (n_states + 1,)
+        The log softmax of the input values
+
     Example
     -------
     > y = np.log([2, 3, 4])
@@ -153,7 +183,9 @@ multinomial_gradient = jax.grad(multinomial_neg_log_likelihood)
 multinomial_hessian = jax.hessian(multinomial_neg_log_likelihood)
 
 
-def get_transition_prior(concentration: float, stickiness: float, n_states: int):
+def get_transition_prior(
+    concentration: float, stickiness: float, n_states: int
+) -> np.ndarray:
     return concentration * np.ones((n_states,)) + stickiness * np.eye(n_states)
 
 
@@ -168,7 +200,7 @@ def estimate_non_stationary_state_transition(
     stickiness: float = 0.0,
     transition_regularization: float = 1e-5,
     optimization_method: str = "Newton-CG",
-    maxiter: Union[None, int] = 100,
+    maxiter: Optional[int] = 100,
     disp: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Estimate the non-stationary state transition model.
@@ -197,7 +229,6 @@ def estimate_non_stationary_state_transition(
     -------
     estimated_transition_coefficients : jnp.ndarray, shape (n_coefficients, n_states, n_states - 1)
     estimated_transition_matrix : jnp.ndarray, shape (n_time, n_states, n_states)
-
     """
     # p(x_t, x_{t+1} | O_{1:T})
     joint_distribution = estimate_joint_distribution(
@@ -260,7 +291,22 @@ def estimate_stationary_state_transition(
     acausal_posterior: np.ndarray,
     stickiness: float = 0.0,
     concentration: float = 1.0,
-):
+) -> np.ndarray:
+    """Estimate the stationary state transition model.
+
+    Parameters
+    ----------
+    causal_posterior : np.ndarray, shape (n_time, n_states)
+    predictive_distribution : np.ndarray, shape (n_time, n_states)
+    transition_matrix : np.ndarray, shape (n_states, n_states)
+    acausal_posterior : np.ndarray, shape (n_time, n_states)
+    stickiness : float, optional
+    concentration : float, optional
+
+    Returns
+    -------
+    new_transition_matrix : np.ndarray, shape (n_states, n_states)
+    """
     # p(x_t, x_{t+1} | O_{1:T})
     joint_distribution = estimate_joint_distribution(
         causal_posterior,
@@ -307,7 +353,6 @@ def dirichlet_neg_log_likelihood(
     Returns
     -------
     negative_expected_complete_log_likelihood : float
-
     """
     n_coefficients = design_matrix.shape[1]
 
@@ -359,9 +404,23 @@ def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
 
 def set_initial_discrete_transition(
     speed: np.ndarray,
-    speed_knots: Union[None, np.ndarray] = None,
+    speed_knots: Optional[np.ndarray] = None,
     is_stationary: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Set the initial discrete transition matrix.
+
+    Parameters
+    ----------
+    speed : np.ndarray, shape (n_time,)
+    speed_knots : np.ndarray, optional
+    is_stationary : bool, optional
+
+    Returns
+    -------
+    discrete_transition : np.ndarray, shape (n_states, n_states)
+    discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+    discrete_transition_design_matrix : np.ndarray, shape (n_time, n_coefficients)
+    """
     state_names = [
         "local",
         "no_spike",
@@ -409,16 +468,37 @@ def set_initial_discrete_transition(
 
 
 def _estimate_discrete_transition(
-    causal_state_probabilities,
-    predictive_state_probabilities,
-    acausal_state_probabilities,
-    discrete_transition,
-    discrete_transition_coefficients,
-    discrete_transition_design_matrix,
-    transition_concentration,
-    transition_stickiness,
-    transition_regularization,
-):
+    causal_state_probabilities: np.ndarray,
+    predictive_state_probabilities: np.ndarray,
+    acausal_state_probabilities: np.ndarray,
+    discrete_transition: np.ndarray,
+    discrete_transition_coefficients: np.ndarray,
+    discrete_transition_design_matrix: np.ndarray,
+    transition_concentration: float,
+    transition_stickiness: float,
+    transition_regularization: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Estimate the discrete transition matrix.
+
+    Parameters
+    ----------
+    causal_state_probabilities : np.ndarray, shape (n_time, n_states)
+    predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
+    acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
+    discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
+    discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+    discrete_transition_design_matrix : np.ndarray, shape (n_time, n_coefficients)
+    transition_concentration : float
+    transition_stickiness : float
+    transition_regularization : float
+
+    Returns
+    -------
+    discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
+    discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+    """
+
     if (
         discrete_transition_coefficients is not None
         and discrete_transition_design_matrix is not None
@@ -655,10 +735,22 @@ class DiscreteNonStationaryCustom:
 
 
 def predict_discrete_state_transitions(
-    discrete_transition_design_matrix,
-    discrete_transition_coefficients,
-    discrete_transition_covariate_data,
+    discrete_transition_design_matrix: np.ndarray,
+    discrete_transition_coefficients: np.ndarray,
+    discrete_transition_covariate_data: pd.DataFrame,
 ) -> np.ndarray:
+    """Predict the discrete state transitions.
+
+    Parameters
+    ----------
+    discrete_transition_design_matrix : np.ndarray, shape (n_time, n_coefficients)
+    discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+    discrete_transition_covariate_data : pd.DataFrame
+
+    Returns
+    -------
+    discrete_state_transitions : np.ndarray, shape (n_time, n_states, n_states)
+    """
     design_matrix = build_design_matrices(
         [discrete_transition_design_matrix.design_info],
         discrete_transition_covariate_data,

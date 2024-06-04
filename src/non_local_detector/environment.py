@@ -201,7 +201,7 @@ class Environment:
             ax.grid(visible=True, which="minor")
             ax.grid(visible=False, which="major")
 
-    def save_environment(self, filename: str = "environment.pkl"):
+    def save_environment(self, filename: str = "environment.pkl") -> None:
         """Saves the environment as a pickled file.
 
         Parameters
