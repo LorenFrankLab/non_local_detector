@@ -131,6 +131,18 @@ def _points_toward_node(
 def _get_distance_between_nodes(
     track_graph: nx.Graph, node1: Hashable, node2: Hashable
 ):
+    """Get the distance between two nodes in the track graph
+
+    Parameters
+    ----------
+    track_graph : nx.Graph
+    node1 : Hashable
+    node2 : Hashable
+
+    Returns
+    -------
+    distance : float
+    """
     node1_pos = np.asarray(track_graph.nodes[node1]["pos"])
     node2_pos = np.asarray(track_graph.nodes[node2]["pos"])
     return np.sqrt(np.sum((node1_pos - node2_pos) ** 2))
@@ -158,7 +170,7 @@ def _setup_track_graph(
 
     Returns
     -------
-    track_graph
+    track_graph : nx.Graph
 
     """
     track_graph.add_node("actual_position", pos=actual_pos)
@@ -218,7 +230,22 @@ def _calculate_ahead_behind(
     track_graph: nx.Graph,
     source: Hashable = "actual_position",
     target: Hashable = "mental_position",
-):
+) -> int:
+    """Calculate whether the animal is ahead or behind the mental position
+
+    Parameters
+    ----------
+    track_graph : nx.Graph
+    source : Hashable, optional
+        Node ID, by default "actual_position"
+    target : Hashable, optional
+        Node ID, by default "mental_position"
+
+    Returns
+    -------
+    sign : int
+        1 if ahead, -1 if behind
+    """
     path = nx.shortest_path(
         track_graph,
         source=source,
@@ -233,7 +260,21 @@ def _calculate_distance(
     track_graph: nx.Graph,
     source: Hashable = "actual_position",
     target: Hashable = "mental_position",
-):
+) -> float:
+    """Calculate the distance between two nodes in the track graph
+
+    Parameters
+    ----------
+    track_graph : nx.Graph
+    source : Hashable, optional
+        Node ID, by default "actual_position"
+    target : Hashable, optional
+        Node ID, by default "mental_position"
+
+    Returns
+    -------
+    shortest_path_distance : float
+    """
     return nx.shortest_path_length(
         track_graph, source=source, target=target, weight="distance"
     )
@@ -305,7 +346,8 @@ def get_ahead_behind_distance(
     mental_position_edges: np.ndarray,
     source: Hashable = "actual_position",
 ) -> np.ndarray:
-    """
+    """Distance of the animal to the mental position where the sign indicates
+    whether the mental position is ahead or behind the animal.
 
     Parameters
     ----------
@@ -368,6 +410,25 @@ def get_map_speed(
     sampling_frequency: float = 500.0,
     smooth_sigma: float = 0.0025,
 ) -> np.ndarray:
+    """Get the speed of the most likely decoded position.
+
+    Parameters
+    ----------
+    posterior : xr.DataArray
+    track_graph_with_bin_centers_edges : nx.Graph
+        Track graph with bin centers as nodes and edges
+    place_bin_center_ind_to_node : np.ndarray
+        Mapping of place bin center index to node ID
+    sampling_frequency : float, optional
+        Samples per second, by default 500.0
+    smooth_sigma : float, optional
+        Gaussian smoothing parameter, by default 0.0025
+
+    Returns
+    -------
+    map_speed : np.ndarray
+        Speed of the most likely decoded position.
+    """
     dt = 1 / sampling_frequency
     posterior = np.asarray(posterior)
     map_position_ind = np.argmax(posterior, axis=1)

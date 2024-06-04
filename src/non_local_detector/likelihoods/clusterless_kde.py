@@ -16,6 +16,18 @@ from non_local_detector.likelihoods.common import (
 
 
 def get_spike_time_bin_ind(spike_times: np.ndarray, time: np.ndarray) -> np.ndarray:
+    """Get the index of the time bin for each spike time.
+
+    Parameters
+    ----------
+    spike_times : np.ndarray, shape (n_spikes,)
+    time : np.ndarray, shape (n_time_bins,)
+        Bin edges.
+
+    Returns
+    -------
+    ind : np.ndarray, shape (n_spikes,)
+    """
     return np.digitize(spike_times, time[1:-1])
 
 
@@ -143,11 +155,40 @@ def fit_clusterless_kde_encoding_model(
     spike_waveform_features: list[jnp.ndarray],
     environment: Environment,
     sampling_frequency: int = 500,
-    position_std: float = 6.0,
+    position_std: float = np.sqrt(12.5),
     waveform_std: float = 24.0,
     block_size: int = 100,
     disable_progress_bar: bool = False,
 ) -> dict:
+    """Fit the clusterless KDE encoding model.
+
+    Parameters
+    ----------
+    position_time : jnp.ndarray, shape (n_time_position,)
+        Time of each position sample.
+    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        Position samples.
+    spike_times : list[jnp.ndarray]
+        Spike times for each electrode.
+    spike_waveform_features : list[jnp.ndarray]
+        Spike waveform features for each electrode.
+    environment : Environment
+        The spatial environment.
+    sampling_frequency : int, optional
+        Samples per second, by default 500
+    position_std : float, optional
+        Gaussian smoothing standard deviation for position, by default sqrt(12.5)
+    waveform_std : float, optional
+        Gaussian smoothing standard deviation for waveform, by default 24.0
+    block_size : int, optional
+        Divide computation into blocks, by default 100
+    disable_progress_bar : bool, optional
+        Turn off progress bar, by default False
+
+    Returns
+    -------
+    encoding_model : dict
+    """
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
         if environment.track_graph is not None and position.shape[1] > 1:
@@ -256,6 +297,52 @@ def predict_clusterless_kde_log_likelihood(
     block_size: int = 100,
     disable_progress_bar: bool = False,
 ) -> jnp.ndarray:
+    """Predict the log likelihood of the clusterless KDE model.
+
+    Parameters
+    ----------
+    time : jnp.ndarray
+        Decoding time bins.
+    position_time : jnp.ndarray, shape (n_time_position,)
+        Time of each position sample.
+    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        Position samples.
+    spike_times : list[jnp.ndarray]
+        Spike times for each electrode.
+    spike_waveform_features : list[jnp.ndarray]
+        Waveform features for each electrode.
+    occupancy : jnp.ndarray, shape (n_position_bins,)
+        How much time is spent in each position bin by the animal.
+    occupancy_model : KDEModel
+        KDE model for occupancy.
+    gpi_models : list[KDEModel]
+        KDE models for the ground process intensity.
+    encoding_spike_waveform_features : list[jnp.ndarray]
+        Spike waveform features for each electrode used for encoding.
+    encoding_positions : jnp.ndarray, shape (n_encoding_spikes, n_position_dims)
+        Position samples used for encoding.
+    environment : Environment
+        The spatial environment
+    mean_rates : jnp.ndarray, shape (n_electrodes,)
+        Mean firing rate for each electrode.
+    summed_ground_process_intensity : jnp.ndarray, shape (n_position_bins,)
+        Summed ground process intensity for all electrodes.
+    position_std : jnp.ndarray
+        Gaussian smoothing standard deviation for position.
+    waveform_std : jnp.ndarray
+        Gaussian smoothing standard deviation for waveform.
+    is_local : bool, optional
+        If True, compute the log likelihood at the animal's position, by default False
+    block_size : int, optional
+        Divide computation into blocks, by default 100
+    disable_progress_bar : bool, optional
+        Turn off progress bar, by default False
+
+    Returns
+    -------
+    log_likelihood : jnp.ndarray, shape (n_time, 1) or (n_time, n_position_bins)
+        Shape depends on whether local or non-local decoding, respectively.
+    """
     n_time = len(time)
 
     if is_local:
@@ -348,6 +435,46 @@ def compute_local_log_likelihood(
     block_size: int = 100,
     disable_progress_bar: bool = False,
 ) -> jnp.ndarray:
+    """Compute the log likelihood at the animal's position.
+
+    Parameters
+    ----------
+    time : jnp.ndarray, shape (n_time,)
+        Time bins for decoding.
+    position_time : jnp.ndarray, shape (n_time_position,)
+        Time of each position sample.
+    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        Position samples.
+    spike_times : list[jnp.ndarray]
+        List of spike times for each electrode.
+    spike_waveform_features : list[jnp.ndarray]
+        List of spike waveform features for each electrode.
+    occupancy_model : KDEModel
+        KDE model for occupancy.
+    gpi_models : list[KDEModel]
+        List of KDE models for the ground process intensity.
+    encoding_spike_waveform_features : list[jnp.ndarray]
+        List of spike waveform features for each electrode used for encoding.
+    encoding_positions : jnp.ndarray
+        Position samples used for encoding.
+    environment : Environment
+        The spatial environment.
+    mean_rates : jnp.ndarray
+        Mean firing rate for each electrode.
+    position_std : jnp.ndarray
+        Gaussian smoothing standard deviation for position.
+    waveform_std : jnp.ndarray
+        Gaussian smoothing standard deviation for waveform.
+    block_size : int, optional
+        Divide computation into blocks, by default 100
+    disable_progress_bar : bool, optional
+        Turn off progress bar, by default False
+
+    Returns
+    -------
+    log_likelihood : jnp.ndarray, shape (n_time, 1)
+    """
+
     # Need to interpolate position
     interpolated_position = get_position_at_time(
         position_time, position, time, environment

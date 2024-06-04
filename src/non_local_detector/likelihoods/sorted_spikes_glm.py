@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from patsy import build_design_matrices, dmatrix
+from patsy.design_info import DesignInfo
 from scipy.optimize import minimize
 from tqdm.autonotebook import tqdm
 
@@ -16,6 +17,19 @@ from non_local_detector.likelihoods.common import (
 def make_spline_design_matrix(
     position: np.ndarray, place_bin_edges: np.ndarray, knot_spacing: float = 10.0
 ) -> np.ndarray:
+    """Create a design matrix for a spline basis.
+
+    Parameters
+    ----------
+    position : np.ndarray, shape (n_time, n_position_dims)
+    place_bin_edges : np.ndarray, shape (n_bins,)
+    knot_spacing : float, shape (n_bins,), optional
+        Spacing of spline knots, by default 10.0
+
+    Returns
+    -------
+    design_matrix : np.ndarray, shape (n_time, n_spline_basis)
+    """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     inner_knots = []
     for pos, edges in zip(position.T, place_bin_edges.T):
@@ -37,7 +51,20 @@ def make_spline_design_matrix(
     return dmatrix(formula, data)
 
 
-def make_spline_predict_matrix(design_info, position: jnp.ndarray) -> jnp.ndarray:
+def make_spline_predict_matrix(
+    design_info: DesignInfo, position: jnp.ndarray
+) -> jnp.ndarray:
+    """Create a prediction matrix for a spline basis.
+
+    Parameters
+    ----------
+    design_info : patsy.design_info.DesignInfo
+    position : jnp.ndarray, shape (n_position_bins, n_position_dims)
+
+    Returns
+    -------
+    jnp.ndarray, shape (n_position_bins, n_spline_basis)
+    """
     position = jnp.asarray(position)
     is_nan = jnp.any(jnp.isnan(position), axis=1)
     position = jnp.where(is_nan[:, jnp.newaxis], 0.0, position)
@@ -58,6 +85,21 @@ def fit_poisson_regression(
     weights: np.ndarray,
     l2_penalty: float = 1e-7,
 ) -> jnp.ndarray:
+    """Fit a Poisson regression model.
+
+    Parameters
+    ----------
+    design_matrix : np.ndarray, shape (n_time, n_coefficients)
+    spikes : np.ndarray, shape (n_time,)
+    weights : np.ndarray, shape (n_time,)
+    l2_penalty : float, optional
+        L2 regression penalty, by default 1e-7
+
+    Returns
+    -------
+    coefficients : jnp.ndarray, shape (n_coefficients,)
+    """
+
     @jax.jit
     def neglogp(
         coefficients, spikes=spikes, design_matrix=design_matrix, weights=weights
@@ -100,7 +142,38 @@ def fit_sorted_spikes_glm_encoding_model(
     l2_penalty: float = 1e-3,
     disable_progress_bar: bool = False,
     sampling_frequency: float = 500.0,
-):
+) -> dict:
+    """Fit a GLM encoding model
+
+    Parameters
+    ----------
+    position_time : jnp.ndarray, shape (n_time_position,)
+    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+    spike_times : list[jnp.ndarray]
+        Spike times for each neuron.
+    environment : Environment
+        The spatial environment.
+    place_bin_edges : np.ndarray, shape (n_bins + 1,)
+        The edges of the place bins.
+    edges : np.ndarray, shape (n_edges, 2)
+        The edges of the place bins.
+    is_track_interior : np.ndarray, shape (n_position_bins,)
+        Identifies if the bin is on the track interior.
+    is_track_boundary : np.ndarray, shape (n_position_bins,)
+        Identifies if the bin is on the track boundary.
+    emission_knot_spacing : float, optional
+        Knots over position, by default 10.0
+    l2_penalty : float, optional
+        L2 penalty for regression, by default 1e-3
+    disable_progress_bar : bool, optional
+        Turn off the progress bars, by default False
+    sampling_frequency : float, optional
+        Samples per second, by default 500.0
+
+    Returns
+    -------
+    encoding_model : dict
+    """
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     time_range = (position_time[0], position_time[-1])
     n_time_bins = int(np.ceil((time_range[-1] - time_range[0]) * sampling_frequency))
@@ -171,13 +244,46 @@ def predict_sorted_spikes_glm_log_likelihood(
     spike_times: list[np.ndarray],
     environment: Environment,
     coefficients: jnp.ndarray,
-    emission_design_info,
+    emission_design_info: DesignInfo,
     place_fields: jnp.ndarray,
     no_spike_part_log_likelihood: jnp.ndarray,
     is_track_interior: jnp.ndarray,
     disable_progress_bar: bool = False,
     is_local: bool = False,
 ) -> jnp.ndarray:
+    """Predict the log likelihood of spikes given the model.
+
+    Parameters
+    ----------
+    time : jnp.ndarray, shape (n_time,)
+        Decoded time bins.
+    position_time : jnp.ndarray, shape (n_time_position,)
+        Time bins for position.
+    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        Position data.
+    spike_times : list[np.ndarray]
+        Spike times for each neuron.
+    environment : Environment
+        The spatial environment.
+    coefficients : jnp.ndarray, shape (n_neurons, n_coefficients)
+        Coefficients for each neuron.
+    emission_design_info : patsy.design_info.DesignInfo
+        _description_
+    place_fields : jnp.ndarray
+        _description_
+    no_spike_part_log_likelihood : jnp.ndarray
+        _description_
+    is_track_interior : jnp.ndarray
+        _description_
+    disable_progress_bar : bool, optional
+        _description_, by default False
+    is_local : bool, optional
+        _description_, by default False
+
+    Returns
+    -------
+    log_likelihood : jnp.ndarray, shape (n_time, n_bins)
+    """
     n_time = time.shape[0]
 
     if is_local:

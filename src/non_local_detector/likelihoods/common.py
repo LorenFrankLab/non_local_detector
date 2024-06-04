@@ -19,6 +19,20 @@ def get_position_at_time(
     spike_times: jnp.ndarray,
     env: Optional[Environment] = None,
 ) -> jnp.ndarray:
+    """Get the position at the time of each spike.
+
+    Parameters
+    ----------
+    time : jnp.ndarray, shape (n_time,)
+    position : jnp.ndarray, shape (n_time_position, n_dims_position)
+    spike_times : jnp.ndarray, shape (n_spikes,)
+    env : Optional[Environment], optional
+        The spatial environment, by default None
+
+    Returns
+    -------
+    position_at_spike_times : jnp.ndarray, shape (n_spikes, n_dims_position)
+    """
     position_at_spike_times = scipy.interpolate.interpn(
         (time,), position, spike_times, bounds_error=False, fill_value=None
     )
@@ -41,14 +55,42 @@ def log_gaussian_pdf(
     x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray
 ) -> jnp.ndarray:
     """Compute the log of the Gaussian probability density function at x with
-    given mean and sigma."""
+    given mean and sigma.
+
+    Parameters
+    ----------
+    x : jnp.ndarray, shape (n_samples, n_dims)
+        Input data.
+    mean : jnp.ndarray, shape (n_dims,)
+        Mean of the Gaussian.
+    sigma : jnp.ndarray, shape (n_dims,)
+        Standard deviation of the Gaussian.
+
+    Returns
+    -------
+    log_pdf : jnp.ndarray, shape (n_samples,)
+    """
     return -0.5 * ((x - mean) / sigma) ** 2 - jnp.log(sigma * jnp.sqrt(2.0 * jnp.pi))
 
 
 @jax.jit
 def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.ndarray:
     """Compute the value of a Gaussian probability density function at x with
-    given mean and sigma."""
+    given mean and sigma.
+
+    Parameters
+    ----------
+    x : jnp.ndarray, shape (n_samples, n_dims)
+        Input data.
+    mean : jnp.ndarray, shape (n_dims,)
+        Mean of the Gaussian.
+    sigma : jnp.ndarray, shape (n_dims,)
+        Standard deviation of the Gaussian.
+
+    Returns
+    -------
+    pdf : jnp.ndarray, shape (n_samples,)
+    """
     return jnp.exp(log_gaussian_pdf(x, mean, sigma))
 
 
@@ -98,7 +140,7 @@ def block_kde(
     std : jnp.ndarray, shape (n_dims,)
         Standard deviation of the Gaussian kernel.
     block_size : int, optional
-        _description_, by default 100
+        Size of blocks to do computation over, by default 100
 
     Returns
     -------
@@ -122,7 +164,18 @@ class KDEModel:
     std: jnp.ndarray
     block_size: Optional[int] = None
 
-    def fit(self, samples: jnp.ndarray):
+    def fit(self, samples: jnp.ndarray) -> "KDEModel":
+        """Fit the model.
+
+        Parameters
+        ----------
+        samples : jnp.ndarray, shape (n_samples, n_dims)
+            Training samples.
+
+        Returns
+        -------
+        self : KDEModel
+        """
         samples = jnp.asarray(samples)
         if samples.ndim == 1:
             samples = jnp.expand_dims(samples, axis=1)
@@ -130,7 +183,17 @@ class KDEModel:
 
         return self
 
-    def predict(self, eval_points: jnp.ndarray):
+    def predict(self, eval_points: jnp.ndarray) -> jnp.ndarray:
+        """Predict the density at the evaluation points.
+
+        Parameters
+        ----------
+        eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+
+        Returns
+        -------
+        density : jnp.ndarray, shape (n_eval_points,)
+        """
         if eval_points.ndim == 1:
             eval_points = jnp.expand_dims(eval_points, axis=1)
         std = (
@@ -148,6 +211,17 @@ class KDEModel:
 def get_spikecount_per_time_bin(
     spike_times: np.ndarray, time: np.ndarray
 ) -> np.ndarray:
+    """Get the number of spikes in each time bin.
+
+    Parameters
+    ----------
+    spike_times : np.ndarray, shape (n_spikes,)
+    time : np.ndarray, shape (n_time,)
+
+    Returns
+    -------
+    count : np.ndarray, shape (n_time,)
+    """
     spike_times = spike_times[
         np.logical_and(spike_times >= time[0], spike_times <= time[-1])
     ]

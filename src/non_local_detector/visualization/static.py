@@ -1,10 +1,17 @@
 import copy
+from typing import Optional, Tuple, Union
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import xarray as xr
 from scipy.ndimage import gaussian_filter1d
+
+from non_local_detector.models import (
+    NonLocalClusterlessDetector,
+    NonLocalSortedSpikesDetector,
+)
 
 
 def _gaussian_smooth(data, sigma, sampling_frequency, axis=0, truncate=8):
@@ -37,7 +44,24 @@ def _gaussian_smooth(data, sigma, sampling_frequency, axis=0, truncate=8):
     )
 
 
-def get_multiunit_firing_rate(spike_times, time, smoothing_sigma=0.015):
+def get_multiunit_firing_rate(
+    spike_times: list[np.ndarray], time: np.ndarray, smoothing_sigma: float = 0.015
+) -> pd.DataFrame:
+    """Calculate the multiunit firing rate.
+
+    Parameters
+    ----------
+    spike_times : list[np.ndarray]
+        Spike times for each neuron.
+    time : np.ndarray
+        Time bins.
+    smoothing_sigma : float, optional
+        Standard deviation of the Gaussian smoothing, by default 0.015
+
+    Returns
+    -------
+    multiunit_firing_rate : pd.DataFrame
+    """
     spike_indicator = np.stack(
         [
             np.bincount(
@@ -73,16 +97,30 @@ def get_multiunit_firing_rate(spike_times, time, smoothing_sigma=0.015):
 
 
 def plot_non_local_model(
-    position_time,
-    position,
-    spike_times,
-    speed,
-    detector,
-    results,
-    figsize=(20, 10),
-    time_slice=None,
-    posterior_max=0.25,
-):
+    position_time: np.ndarray,
+    position: np.ndarray,
+    spike_times: list[np.ndarray],
+    speed: np.ndarray,
+    detector: Union[NonLocalClusterlessDetector, NonLocalSortedSpikesDetector],
+    results: xr.Dataset,
+    figsize: Tuple[int, int] = (20, 10),
+    time_slice: Optional[slice] = None,
+    posterior_max: float = 0.25,
+) -> None:
+    """Plot the results of a non-local model.
+
+    Parameters
+    ----------
+    position_time : np.ndarray
+    position : np.ndarray
+    spike_times : list[np.ndarray]
+    speed : np.ndarray
+    detector : Union[NonLocalClusterlessDetector, NonLocalSortedSpikesDetector]
+    results : xr.Dataset
+    figsize : Tuple[int, int], optional
+    time_slice : Optional[slice], optional
+    posterior_max : float, optional
+    """
     if time_slice is None:
         time_slice = slice(results.time.values[0], results.time.values[-1])
 

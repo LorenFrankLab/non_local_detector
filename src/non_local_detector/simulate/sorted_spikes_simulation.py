@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 from scipy.stats import multivariate_normal, norm
@@ -7,7 +7,7 @@ TRACK_HEIGHT = 170
 SAMPLING_FREQUENCY = 1500
 
 
-def simulate_poisson_spikes(rate, sampling_frequency):
+def simulate_poisson_spikes(rate: np.ndarray, sampling_frequency: float) -> np.ndarray:
     """Given a rate, returns a time series of spikes.
     Parameters
     ----------
@@ -20,11 +20,25 @@ def simulate_poisson_spikes(rate, sampling_frequency):
     return np.random.poisson(rate / sampling_frequency)
 
 
-def simulate_time(n_samples, sampling_frequency):
+def simulate_time(n_samples: int, sampling_frequency: float) -> np.ndarray:
+    """Generate a time vector given the number of samples and sampling frequency.
+
+    Parameters
+    ----------
+    n_samples : int
+    sampling_frequency : float
+        Samples per second.
+
+    Returns
+    -------
+    time : np.ndarray, shape (n_samples,)
+    """
     return np.arange(n_samples) / sampling_frequency
 
 
-def simulate_position(time, track_height, running_speed=10):
+def simulate_position(
+    time: np.ndarray, track_height: float, running_speed: float = 10.0
+) -> np.ndarray:
     half_height = track_height / 2
     return (
         half_height * np.sin(2 * np.pi * time / running_speed - np.pi / 2) + half_height
@@ -32,13 +46,13 @@ def simulate_position(time, track_height, running_speed=10):
 
 
 def create_place_field(
-    place_field_mean,
-    position,
-    sampling_frequency,
-    is_condition=None,
-    place_field_std_deviation=12.5,
-    max_firing_rate=20,
-    baseline_firing_rate=0.001,
+    place_field_mean: float,
+    position: np.ndarray,
+    sampling_frequency: float = SAMPLING_FREQUENCY,
+    is_condition: Optional[np.ndarray] = None,
+    place_field_std_deviation: float = 12.5,
+    max_firing_rate: float = 20.0,
+    baseline_firing_rate: float = 0.001,
 ):
     if is_condition is None:
         is_condition = np.ones_like(position, dtype=bool)
@@ -49,8 +63,12 @@ def create_place_field(
 
 
 def simulate_place_field_firing_rate(
-    means, position, max_rate=15, variance=10, is_condition=None
-):
+    means: np.ndarray,
+    position: np.ndarray,
+    max_rate: float = 15.0,
+    variance: float = 12.5,
+    is_condition: Optional[np.ndarray] = None,
+) -> np.ndarray:
     """Simulates the firing rate of a neuron with a place field at `means`.
 
     Parameters
@@ -64,7 +82,6 @@ def simulate_place_field_firing_rate(
     Returns
     -------
     firing_rate : ndarray, shape (n_time,)
-
     """
     if is_condition is None:
         is_condition = np.ones(position.shape[0], dtype=bool)
@@ -77,7 +94,12 @@ def simulate_place_field_firing_rate(
 
 
 def simulate_neuron_with_place_field(
-    means, position, max_rate=15, variance=36, sampling_frequency=500, is_condition=None
+    means: np.ndarray,
+    position: np.ndarray,
+    max_rate: float = 15.0,
+    variance: float = 12.5,
+    sampling_frequency: float = 500.0,
+    is_condition: Optional[np.ndarray] = None,
 ):
     """Simulates the spiking of a neuron with a place field at `means`.
 
@@ -101,12 +123,23 @@ def simulate_neuron_with_place_field(
     return simulate_poisson_spikes(firing_rate, sampling_frequency)
 
 
-def get_trajectory_direction(position):
+def get_trajectory_direction(position: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Get the direction of the trajectory.
+
+    Parameters
+    ----------
+    position : np.ndarray, shape (n_time, n_position_dims)
+
+    Returns
+    -------
+    direction : np.ndarray, shape (n_time,)
+    is_inbound : np.ndarray, shape (n_time,)
+    """
     is_inbound = np.insert(np.diff(position) < 0, 0, False)
     return np.where(is_inbound, "Inbound", "Outbound"), is_inbound
 
 
-def gaussian_pdf(x, mean, sigma):
+def gaussian_pdf(x: np.ndarray, mean: float, sigma: float) -> np.ndarray:
     """Compute the value of a Gaussian probability density function at x with
     given mean and sigma."""
     return np.exp(-0.5 * ((x - mean) / sigma) ** 2) / (sigma * np.sqrt(2.0 * np.pi))
@@ -128,7 +161,6 @@ def estimate_position_distance(
     Returns
     -------
     position_distance : np.ndarray, shape (n_time, n_position_bins)
-
     """
     n_time, n_position_dims = positions.shape
     n_position_bins = place_bin_centers.shape[0]
@@ -153,7 +185,7 @@ def estimate_position_density(
     positions: np.ndarray,
     position_std: np.ndarray,
     block_size: int = 100,
-    sample_weights: np.ndarray = None,
+    sample_weights: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Estimates a kernel density estimate over position bins using
     Euclidean distances.
@@ -168,7 +200,6 @@ def estimate_position_density(
     Returns
     -------
     position_density : np.ndarray, shape (n_position_bins,)
-
     """
     n_position_bins = place_bin_centers.shape[0]
 
@@ -199,6 +230,24 @@ def get_firing_rate(
     block_size: int = None,
     weights: np.ndarray = None,
 ) -> np.ndarray:
+    """Estimate the firing rate of a neuron for each position bin.
+
+    Parameters
+    ----------
+    is_spike : np.ndarray, shape (n_time,)
+    position : np.ndarray, shape (n_time, n_position_dims)
+    place_bin_centers : np.ndarray, shape (n_position_bins, n_position_dims)
+    is_track_interior : np.ndarray, shape (n_position_bins,)
+    not_nan_position : np.ndarray, shape (n_time,)
+    occupancy : np.ndarray, shape (n_position_bins,)
+    position_std : np.ndarray, shape (n_position_dims,
+    block_size : int, optional
+    weights : np.ndarray, optional
+
+    Returns
+    -------
+    rate : np.ndarray, shape (n_position_bins,)
+    """
     if is_spike.sum() > 0:
         mean_rate = np.average(is_spike, weights=weights)
         marginal_density = np.zeros((place_bin_centers.shape[0],), dtype=np.float32)
@@ -219,7 +268,18 @@ def get_firing_rate(
         return np.zeros_like(occupancy)
 
 
-def simulate_two_state_inhomogenous_poisson():
+def simulate_two_state_inhomogenous_poisson() -> (
+    Tuple[np.ndarray, np.ndarray, np.ndarray]
+):
+    """Simulate a two-state inhomogenous Poisson process.
+
+    Returns
+    -------
+    time : np.ndarray, shape (n_time,)
+    position : np.ndarray, shape (n_time,)
+    spikes : np.ndarray, shape (n_time,)
+
+    """
     track_height = 170
     sampling_frequency = 500
     n_samples = sampling_frequency * 240
@@ -248,8 +308,26 @@ def simulate_two_state_inhomogenous_poisson():
 
 
 def simulate_linear_distance_with_pauses(
-    time, track_height, running_speed=10, pause=0.5, sampling_frequency=1
-):
+    time: np.ndarray,
+    track_height: float,
+    running_speed: float = 10.0,
+    pause: float = 0.5,
+    sampling_frequency: float = 1.0,
+) -> np.ndarray:
+    """Simulate linear distance with pauses.
+
+    Parameters
+    ----------
+    time : np.ndarray, shape (n_time,)
+    track_height : float
+    running_speed : float, optional
+    pause : float, optional
+    sampling_frequency : float, optional
+
+    Returns
+    -------
+    linear_distance : np.ndarray, shape (n_time,)
+    """
     linear_distance = simulate_position(time, track_height, running_speed)
     peaks = np.nonzero(linear_distance == track_height)[0]
     n_pause_samples = int(pause * sampling_frequency)
@@ -280,9 +358,9 @@ def make_continuous_replay(
     place_field_means : np.ndarray, optional
         Location of the center of the Gaussian place fields.
     replay_speedup : int, optional
-        _description_, by default REPLAY_SPEEDUP
+        Number of times faster, by default REPLAY_SPEEDUP
     is_outbound : bool, optional
-        _description_, by default True
+        Is it an outbound run, by default True
 
     Returns
     -------
@@ -302,7 +380,21 @@ def make_continuous_replay(
     return spikes
 
 
-def make_fragmented_replay(place_field_means, sampling_frequency, cont_replay_speed):
+def make_fragmented_replay(
+    place_field_means: np.ndarray, sampling_frequency: float, cont_replay_speed: float
+) -> np.ndarray:
+    """Make a simulated fragmented replay.
+
+    Parameters
+    ----------
+    place_field_means : np.ndarray, shape (n_neurons,)
+    sampling_frequency : float
+    cont_replay_speed : float
+
+    Returns
+    -------
+    spikes : np.ndarray, shape (n_time, n_neurons)
+    """
     n_neurons = len(place_field_means)
     neuron_id = np.random.choice(n_neurons, n_neurons // 2, replace=False)
     frag_replay_speed = cont_replay_speed * 20
@@ -325,9 +417,30 @@ def make_fragmented_replay(place_field_means, sampling_frequency, cont_replay_sp
 def make_simulated_data(
     track_height: float = TRACK_HEIGHT,
     sampling_frequency: int = SAMPLING_FREQUENCY,
-    replay_speed=6,  # m/s
-    n_neurons=25,
-):
+    replay_speed: float = 6.0,  # m/s
+    n_neurons: int = 25,
+) -> Tuple[
+    np.ndarray, np.ndarray, list[np.ndarray], np.ndarray, np.ndarray, int, np.ndarray
+]:
+    """Make simulated data for testing.
+
+    Parameters
+    ----------
+    track_height : float, optional
+    sampling_frequency : int, optional
+    replay_speed : float, optional
+    n_neurons : int, optional
+
+    Returns
+    -------
+    speed : np.ndarray, shape (n_time,)
+    linear_distance : np.ndarray, shape (n_time,)
+    spike_times : list[np.ndarray]
+    time : np.ndarray, shape (n_time,)
+    event_times : np.ndarray, shape (n_events, 2)
+    sampling_frequency : int
+    is_event : np.ndarray, shape (n_time,)
+    """
     n_samples = sampling_frequency * 65  # 65 seconds
 
     time = simulate_time(n_samples, sampling_frequency)

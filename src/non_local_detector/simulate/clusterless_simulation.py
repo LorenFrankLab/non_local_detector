@@ -14,7 +14,7 @@ from non_local_detector.simulate.simulate import (
 SAMPLING_FREQUENCY = 1000
 TRACK_HEIGHT = 175
 RUNNING_SPEED = 15
-PLACE_FIELD_VARIANCE = 6.0**2
+PLACE_FIELD_VARIANCE = 12.5
 PLACE_FIELD_MEANS = np.arange(0, 200, 10)
 N_RUNS = 15
 REPLAY_SPEEDUP = 120.0
@@ -78,6 +78,7 @@ def make_simulated_run_data(
                     position,
                     mark_spacing=10,
                     n_mark_dims=4,
+                    place_variance=place_field_variance,
                     sampling_frequency=sampling_frequency,
                 )
             )
@@ -93,6 +94,7 @@ def make_simulated_run_data(
                         mark_spacing=10,
                         n_mark_dims=4,
                         sampling_frequency=sampling_frequency,
+                        place_variance=place_field_variance,
                         is_condition=is_condition,
                     )
                 )

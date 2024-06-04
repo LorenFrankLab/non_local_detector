@@ -14,10 +14,35 @@ def fit_sorted_spikes_kde_encoding_model(
     spike_times: list[jnp.ndarray],
     environment: Environment,
     sampling_frequency: int = 500,
-    position_std: float = 6.0,
+    position_std: float = np.sqrt(12.5),
     block_size: int = 100,
     disable_progress_bar: bool = False,
 ) -> dict:
+    """Fit a KDE encoding model for sorted spikes.
+
+    Parameters
+    ----------
+    position_time : jnp.ndarray, shape (n_time_position,)
+        Sampling times for the position.
+    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        Position samples.
+    spike_times : list[jnp.ndarray]
+        Spike times for each neuron.
+    environment : Environment
+        The spatial environment.
+    sampling_frequency : int, optional
+        Samples per second, by default 500
+    position_std : float, optional
+        Gaussian kernel standard deviation for position, by default sqrt(12.5)
+    block_size : int, optional
+        Size of blocks for KDE computation, by default 100
+    disable_progress_bar : bool, optional
+        Turn off progress bar, by default False
+
+    Returns
+    -------
+    encoding_model : dict
+    """
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
         if environment.track_graph is not None and position.shape[1] > 1:
@@ -118,6 +143,46 @@ def predict_sorted_spikes_kde_log_likelihood(
     disable_progress_bar: bool = False,
     is_local: bool = False,
 ) -> jnp.ndarray:
+    """Predict the log likelihood of sorted spikes using KDE encoding models.
+
+    Parameters
+    ----------
+    time : jnp.ndarray, shape (n_time,)
+        Decoding time bins.
+    position_time : jnp.ndarray, shape (n_time_position,)
+        Sampling times for the position.
+    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        Position samples.
+    spike_times : list[np.ndarray]
+        Spike times for each neuron.
+    environment : Environment
+        The spatial environment.
+    marginal_models : list[KDEModel]
+        Marginal models for each neuron.
+    occupancy_model : KDEModel
+        Occupancy model.
+    occupancy : jnp.ndarray, shape (n_place_bins,)
+        Occupancy for each place bin.
+    mean_rates : jnp.ndarray, shape (n_neurons,)
+        Mean rates for each neuron.
+    place_fields : jnp.ndarray, shape (n_neurons, n_place_bins)
+        Place fields for each neuron.
+    no_spike_part_log_likelihood : jnp.ndarray, shape (n_place_bins,)
+        Log likelihood of no spike for each place bin.
+    is_track_interior : jnp.ndarray, shape (n_place_bins,)
+        Boolean mask for track interior.
+    disable_progress_bar : bool, optional
+        Turn off progress bar, by default False
+    is_local : bool, optional
+        Compute the log likelihood at the animal's position, by default False
+
+    Returns
+    -------
+    log_likelihood : jnp.ndarray, shape (n_time, n_place_bins) or (n_time, 1)
+        The log likelihood of the spikes at each time bin. The shape is (n_time, n_place_bins)
+        if is_local is False, otherwise the shape is (n_time, 1).
+
+    """
     n_time = time.shape[0]
     if is_local:
         log_likelihood = jnp.zeros((n_time,))

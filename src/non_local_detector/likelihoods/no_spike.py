@@ -11,6 +11,21 @@ def predict_no_spike_log_likelihood(
     spike_times: list[list[float]],
     no_spike_rate: float = 1e-10,
 ) -> jnp.ndarray:
+    """Return the log likelihood of low spike rate for each time bin.
+
+    Parameters
+    ----------
+    time : np.ndarray, shape (n_time,)
+        Time bins.
+    spike_times : list[list[float]]
+        Spike times for each neuron.
+    no_spike_rate : float, optional
+        Rate of low spiking process, by default 1e-10
+
+    Returns
+    -------
+    log_likelihood : jnp.ndarray, shape (n_time, 1)
+    """
     no_spike_rates = no_spike_rate * np.median(np.diff(time))
     no_spike_log_likelihood = jnp.zeros((time.shape[0],))
 

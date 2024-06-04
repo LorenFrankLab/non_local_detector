@@ -11,6 +11,8 @@ References
 
 """
 
+from typing import Optional
+
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import integrate
@@ -52,11 +54,20 @@ class TimeRescaling:
 
     def __init__(
         self,
-        conditional_intensity,
-        is_spike,
-        trial_id=None,
-        adjust_for_short_trials=False,
+        conditional_intensity: np.ndarray,
+        is_spike: np.ndarray,
+        trial_id: Optional[np.ndarray] = None,
+        adjust_for_short_trials: bool = False,
     ):
+        """Initialize the TimeRescaling object.
+
+        Parameters
+        ----------
+        conditional_intensity : np.ndarray, shape (n_time,)
+        is_spike : np.ndarray, shape (n_time,)
+        trial_id : Optional[np.ndarray], shape (n_time,), optional
+        adjust_for_short_trials : bool, optional
+        """
         self.conditional_intensity = np.asarray(conditional_intensity).squeeze()
         if trial_id is None:
             trial_id = np.ones_like(self.conditional_intensity)
@@ -65,14 +76,19 @@ class TimeRescaling:
         self.adjust_for_short_trials = adjust_for_short_trials
 
     @property
-    def n_spikes(self):
+    def n_spikes(self) -> int:
         """Number of total spikes."""
         return np.nonzero(self.is_spike)[0].size
 
-    def uniform_rescaled_ISIs(self):
+    def uniform_rescaled_ISIs(self) -> np.ndarray:
         """Rescales the interspike intervals (ISIs) to unit rate Poisson,
         adjusts for short time intervals, and transforms the ISIs to a
-        uniform distribution for easier analysis."""
+        uniform distribution for easier analysis.
+
+        Returns
+        -------
+        uniform_rescaled_ISIs : ndarray, shape (n_spikes,)
+        """
 
         trial_IDs = np.unique(self.trial_id)
         uniform_rescaled_ISIs_by_trial = []
@@ -88,22 +104,28 @@ class TimeRescaling:
 
         return np.concatenate(uniform_rescaled_ISIs_by_trial)
 
-    def ks_statistic(self):
+    def ks_statistic(self) -> float:
         """Measures the maximum distance of the rescaled ISIs from the unit
         rate Poisson.
 
         Smaller maximum distance means better fitting model.
 
+        Returns
+        -------
+        ks_statistic : float
         """
         uniform_cdf_values = _uniform_cdf_values(self.n_spikes)
         return ks_statistic(np.sort(self.uniform_rescaled_ISIs()), uniform_cdf_values)
 
-    def rescaled_ISI_autocorrelation(self):
+    def rescaled_ISI_autocorrelation(self) -> np.ndarray:
         """Examine rescaled ISI dependence.
 
         Should be independent if the transformation to unit rate Poisson
         process fits well.
 
+        Returns
+        -------
+        rescaled_ISI_autocorrelation : ndarray, shape (2 * n_spikes - 1,)
         """
         # Avoid -inf and inf when transforming to normal distribution.
         u = self.uniform_rescaled_ISIs()
@@ -115,7 +137,12 @@ class TimeRescaling:
         c = correlate(normal_rescaled_ISIs, normal_rescaled_ISIs)
         return c / c.max()
 
-    def plot_ks(self, ax=None, scatter_kwargs=None, ci_color="red"):
+    def plot_ks(
+        self,
+        ax: plt.Axes = None,
+        scatter_kwargs: Optional[dict] = None,
+        ci_color: str = "red",
+    ) -> plt.Axes:
         """Plots the rescaled ISIs versus a uniform distribution to
         examine how close the rescaled ISIs are to the unit rate Poisson.
 
@@ -141,8 +168,11 @@ class TimeRescaling:
         )
 
     def plot_rescaled_ISI_autocorrelation(
-        self, ax=None, scatter_kwargs=None, ci_color="red"
-    ):
+        self,
+        ax: Optional[plt.Axes] = None,
+        scatter_kwargs: Optional[dict] = None,
+        ci_color: str = "red",
+    ) -> plt.Axes:
         """Plot the rescaled ISI dependence.
 
         Should be independent if the transformation to unit rate Poisson
@@ -160,7 +190,6 @@ class TimeRescaling:
         Returns
         -------
         ax : axis_handle
-
         """
         return plot_rescaled_ISI_autocorrelation(
             self.rescaled_ISI_autocorrelation(),
@@ -170,7 +199,7 @@ class TimeRescaling:
         )
 
 
-def _uniform_cdf_values(n_spikes):
+def _uniform_cdf_values(n_spikes: int) -> np.ndarray:
     """Model based cumulative distribution function values. Used for
     plotting the `uniform_rescaled_ISIs`.
 
@@ -181,26 +210,28 @@ def _uniform_cdf_values(n_spikes):
 
     Returns
     -------
-        uniform_cdf_values : ndarray, shape (n_spikes,)
-
-
+    uniform_cdf_values : ndarray, shape (n_spikes,)
     """
     return (np.arange(n_spikes) + 0.5) / n_spikes
 
 
-def ks_statistic(empirical_cdf, model_cdf):
+def ks_statistic(empirical_cdf: np.ndarray, model_cdf: np.ndarray) -> float:
     """Compares the empirical and model-based distribution using the
     Kolmogorov-Smirnov statistic.
 
     Parameters
     ----------
-    empirical_cdf : ndarray
-    model_cdf : ndarray
+    empirical_cdf : np.ndarray, shape (n_spikes,)
+    model_cdf : np.ndarray, shape (n_spikes,)
 
     Returns
     -------
     ks_statistic : float
 
+    Raises
+    ------
+    ValueError
+        If the arrays are not the same size.
     """
     try:
         return np.max(np.abs(empirical_cdf - model_cdf))
@@ -208,20 +239,21 @@ def ks_statistic(empirical_cdf, model_cdf):
         return np.nan
 
 
-def _rescaled_ISIs(integrated_conditional_intensity, is_spike):
+def _rescaled_ISIs(
+    integrated_conditional_intensity: np.ndarray, is_spike: np.ndarray
+) -> np.ndarray:
     """Rescales the interspike intervals (ISIs) to unit rate Poisson.
 
     Parameters
     ----------
-    integrated_conditional_intensity : ndarray, shape (n_time,)
+    integrated_conditional_intensity : np.ndarray, shape (n_time,)
         The cumulative conditional_intensity integrated over time.
-    is_spike : bool ndarray, shape (n_time,)
+    is_spike : bool np.ndarray, shape (n_time,)
         Whether or not the neuron has spiked at that time.
 
     Returns
     -------
     rescaled_ISIs : ndarray, shape (n_spikes,)
-
     """
     ici_at_spike = integrated_conditional_intensity[is_spike.nonzero()]
     ici_at_spike = np.concatenate((np.array([0]), ici_at_spike))
@@ -229,8 +261,10 @@ def _rescaled_ISIs(integrated_conditional_intensity, is_spike):
 
 
 def _max_transformed_interval(
-    integrated_conditional_intensity, is_spike, rescaled_ISIs
-):
+    integrated_conditional_intensity: np.ndarray,
+    is_spike: np.ndarray,
+    rescaled_ISIs: np.ndarray,
+) -> np.ndarray:
     """Weights for each time in censored trials.
 
     Parameters
@@ -244,15 +278,16 @@ def _max_transformed_interval(
     Returns
     -------
     max_transformed_interval : ndarray, shape (n_spikes,)
-
     """
     ici_at_spike = integrated_conditional_intensity[is_spike.nonzero()]
     return integrated_conditional_intensity[-1] - ici_at_spike + rescaled_ISIs
 
 
 def uniform_rescaled_ISIs(
-    conditional_intensity, is_spike, adjust_for_short_trials=True
-):
+    conditional_intensity: np.ndarray,
+    is_spike: np.ndarray,
+    adjust_for_short_trials: bool = True,
+) -> np.ndarray:
     """Rescales the interspike intervals (ISIs) to unit rate Poisson,
     adjusts for short time intervals, and transforms the ISIs to a
     uniform distribution for easier analysis.
@@ -304,7 +339,26 @@ def uniform_rescaled_ISIs(
     return expon.cdf(rescaled_ISIs) / max_transformed_interval
 
 
-def plot_ks(uniform_rescaled_ISIs, ax=None, scatter_kwargs=None, ci_color="red"):
+def plot_ks(
+    uniform_rescaled_ISIs: np.ndarray,
+    ax: Optional[plt.Axes] = None,
+    scatter_kwargs: Optional[dict] = None,
+    ci_color: str = "red",
+) -> plt.Axes:
+    """Plots the rescaled ISIs versus a uniform distribution to examine
+    how close the rescaled ISIs are to the unit rate Poisson.
+
+    Parameters
+    ----------
+    uniform_rescaled_ISIs : np.ndarray, shape (n_spikes,)
+    ax : Optional[plt.Axes], optional
+    scatter_kwargs : Optional[dict], optional
+    ci_color : str, optional
+
+    Returns
+    -------
+    ax : plt.Axes
+    """
     n_spikes = uniform_rescaled_ISIs.size
     uniform_cdf_values = _uniform_cdf_values(n_spikes)
     uniform_rescaled_ISIs = np.sort(uniform_rescaled_ISIs)
@@ -328,8 +382,11 @@ def plot_ks(uniform_rescaled_ISIs, ax=None, scatter_kwargs=None, ci_color="red")
 
 
 def plot_rescaled_ISI_autocorrelation(
-    rescaled_ISI_autocorrelation, ax=None, scatter_kwargs=None, ci_color="red"
-):
+    rescaled_ISI_autocorrelation: np.ndarray,
+    ax: Optional[plt.Axes] = None,
+    scatter_kwargs: Optional[dict] = None,
+    ci_color: str = "red",
+) -> plt.Axes:
     n_spikes = rescaled_ISI_autocorrelation.size // 2 + 1
     lag = np.arange(-n_spikes + 1, n_spikes)
     if ax is None:

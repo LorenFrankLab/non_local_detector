@@ -1,12 +1,12 @@
 try:
-    from typing import Callable, Dict, Tuple
+    from typing import Callable, Dict, Optional, Tuple
 
     import numpy as np
     import sortingview.views as vv
     import sortingview.views.franklab as vvf
     import xarray as xr
 
-    from non_local_detector.environment import get_grid, get_track_interior
+    from non_local_detector.environment import Environment, get_grid, get_track_interior
     from non_local_detector.visualization.static import get_multiunit_firing_rate
 
     def create_static_track_animation(
@@ -17,8 +17,24 @@ try:
         timestamps: np.ndarray,
         positions: np.ndarray,
         compute_real_time_rate: bool = False,
-        head_dir=None,
-    ):
+        head_dir: Optional[np.ndarray] = None,
+    ) -> dict:
+        """Create a static track animation object.
+
+        Parameters
+        ----------
+        track_rect_width : float
+        track_rect_height : float
+        ul_corners : np.ndarray, shape (2, n_corners)
+        timestamps : np.ndarray, shape (n_time,)
+        positions : np.ndarray, shape (2, n_time)
+        compute_real_time_rate : bool, optional
+        head_dir : np.ndarray, shape (n_time,), optional
+
+        Returns
+        -------
+        static_track_animation : dict
+        """
         # float32 gives about 7 digits of decimal precision; we want 3 digits right of the decimal.
         # So need to compress-store the timestamp if the start is greater than say 5000.
         first_timestamp = 0
@@ -76,7 +92,23 @@ try:
         x_width: float,
         y_min: float,
         y_width: float,
-    ):
+    ) -> int:
+        """Memoized linearization function.
+
+        Parameters
+        ----------
+        t : Tuple[float, float, float]
+        location_lookup : Dict[Tuple[float, float], int]
+        x_count : int
+        x_min : float
+        x_width : float
+        y_min : float
+        y_width : float
+
+        Returns
+        -------
+        linearize_location : int
+        """
         (_, y, x) = t
         my_tuple = (x, y)
         if my_tuple not in location_lookup:
@@ -91,7 +123,22 @@ try:
         x_width: float,
         y_min: float,
         y_width: float,
-    ):
+    ) -> Callable[[Tuple[float, float]], int]:
+        """Generate a linearization function.
+
+        Parameters
+        ----------
+        location_lookup : Dict[Tuple[float, float], int]
+        x_count : int
+        x_min : float
+        x_width : float
+        y_min : float
+        y_width : float
+
+        Returns
+        -------
+        linearization_fn : Callable[[Tuple[float, float]], int]
+        """
         args = {
             "location_lookup": location_lookup,
             "x_count": x_count,
@@ -106,7 +153,17 @@ try:
 
         return inner
 
-    def discretize_and_trim(base_slice: xr.DataArray):
+    def discretize_and_trim(base_slice: xr.DataArray) -> xr.DataArray:
+        """Discretizes and trims a series for visualization.
+
+        Parameters
+        ----------
+        base_slice : xr.DataArray
+
+        Returns
+        -------
+        trimmed : xr.DataArray
+        """
         i = np.multiply(base_slice, 255).astype(np.uint8)
         i_stack = i.stack(unified_index=["time", "y_position", "x_position"])
 
@@ -114,11 +171,35 @@ try:
 
     def get_positions(
         i_trim: xr.Dataset, linearization_fn: Callable[[Tuple[float, float]], int]
-    ):
+    ) -> np.ndarray:
+        """Get the positions.
+
+        Parameters
+        ----------
+        i_trim : xr.Dataset
+        linearization_fn : Callable[[Tuple[float, float]], int]
+
+        Returns
+        -------
+        positions : np.ndarray, shape (n_time,)
+        """
         linearizer_map = map(linearization_fn, i_trim.unified_index.values)
         return np.array(list(linearizer_map), dtype=np.uint16)
 
-    def get_observations_per_frame(i_trim: xr.DataArray, base_slice: xr.DataArray):
+    def get_observations_per_frame(
+        i_trim: xr.DataArray, base_slice: xr.DataArray
+    ) -> np.ndarray:
+        """Get the observations per frame.
+
+        Parameters
+        ----------
+        i_trim : xr.DataArray
+        base_slice : xr.DataArray
+
+        Returns
+        -------
+        observations_per_frame : np.ndarray, shape (n_time,)
+        """
         (times, time_counts_np) = np.unique(i_trim.time.values, return_counts=True)
         time_counts = xr.DataArray(time_counts_np, coords={"time": times})
         raw_times = base_slice.time
@@ -128,14 +209,37 @@ try:
 
     def extract_slice_data(
         base_slice: xr.DataArray, location_fn: Callable[[Tuple[float, float]], int]
-    ):
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Extract slice data.
+
+        Parameters
+        ----------
+        base_slice : xr.DataArray
+        location_fn : Callable[[Tuple[float, float]], int]
+
+        Returns
+        -------
+        i_trim : np.ndarray, shape (n_time,)
+        positions : np.ndarray, shape (n_time,)
+        observations_per_frame : np.ndarray, shape (n_time,)
+        """
         i_trim = discretize_and_trim(base_slice)
 
         positions = get_positions(i_trim, location_fn)
         observations_per_frame = get_observations_per_frame(i_trim, base_slice)
         return i_trim.values, positions, observations_per_frame
 
-    def process_decoded_data(posterior: xr.DataArray):
+    def process_decoded_data(posterior: xr.DataArray) -> Dict[str, np.ndarray]:
+        """Process decoded data.
+
+        Parameters
+        ----------
+        posterior : xr.DataArray
+
+        Returns
+        -------
+        vis_data : Dict[str, np.ndarray]
+        """
         frame_step_size = 100_000
         location_lookup = {}
 
@@ -199,7 +303,9 @@ try:
             "frameBounds": final_frame_bounds,
         }
 
-    def create_track_animation_object(*, static_track_animation: any):
+    def create_track_animation_object(
+        *, static_track_animation: any
+    ) -> vvf.TrackPositionAnimationV1:
         if "decodedData" in static_track_animation:
             decoded_data = static_track_animation["decodedData"]
             decoded_data_obj = vvf.DecodedPositionData(
@@ -245,13 +351,40 @@ try:
             decoded_data=decoded_data_obj,
         )
 
-    def get_ul_corners(width: float, height: float, centers):
+    def get_ul_corners(width: float, height: float, centers: np.ndarray) -> np.ndarray:
+        """Get the upper left corners.
+
+        Parameters
+        ----------
+        width : float
+        height : float
+        centers : np.ndarray, shape (n_centers, 2)
+
+        Returns
+        -------
+        corners : np.ndarray, shape (n_centers, 2)
+        """
         ul = np.subtract(centers, (width / 2, -height / 2))
 
         # Reshape so we have an x array and a y array
         return ul.T
 
-    def make_track(position, bin_size: float = 1.0):
+    def make_track(
+        position: np.ndarray, bin_size: float = 1.0
+    ) -> Tuple[float, float, np.ndarray]:
+        """Make a track.
+
+        Parameters
+        ----------
+        position : np.ndarray, shape (n_time, 2)
+        bin_size : float, optional
+
+        Returns
+        -------
+        bin_width : float
+        bin_height : float
+        upper_left_points : np.ndarray, shape (n_track_bins, 2)
+        """
         (edges, _, place_bin_centers, _) = get_grid(position, bin_size)
         is_track_interior = get_track_interior(position, edges)
 
@@ -324,14 +457,37 @@ try:
     def create_interactive_2D_decoding_figurl(
         position_time: np.ndarray,
         position: np.ndarray,
-        env: any,
+        env: Environment,
         results: xr.Dataset,
         posterior: xr.DataArray = None,
-        spike_times: np.ndarray = None,
-        head_dir: np.ndarray = None,
-        speed: np.ndarray = None,
+        spike_times: Optional[list[np.ndarray]] = None,
+        head_dir: Optional[np.ndarray] = None,
+        speed: Optional[np.ndarray] = None,
         view_height: int = 800,
     ) -> str:
+        """Create an interactive 2D decoding figure.
+
+        Parameters
+        ----------
+        position_time : np.ndarray, shape (n_time_position,)
+            Sample times for the position data.
+        position : np.ndarray, shape (n_time_position, 2)
+        env : Environment
+        results : xr.Dataset
+        posterior : xr.DataArray, optional
+        spike_times : list[np.ndarray], optional
+            Spike times for each neuron.
+        head_dir : np.ndarray, shape (n_time_position,), optional
+            Head direction of animal
+        speed : np.ndarray, shape (n_time_position,), optional
+            Speed of animal
+        view_height : int, optional
+            Height of the visualization.
+
+        Returns
+        -------
+        url : str
+        """
         interior_place_bin_centers = env.place_bin_centers_[
             env.is_track_interior_.ravel()
         ]

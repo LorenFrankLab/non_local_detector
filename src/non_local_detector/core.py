@@ -8,16 +8,26 @@ np.seterr(divide="ignore", invalid="ignore")
 
 
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
-def _normalize(u, axis=0, eps=1e-15):
+def _normalize(
+    u: jnp.ndarray, axis: int = 0, eps: float = 1e-15
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Normalizes the values within the axis in a way that they sum up to 1.
 
-    Args:
-        u: Input array to normalize.
-        axis: Axis over which to normalize.
-        eps: Minimum value threshold for numerical stability.
+    Parameters
+    ----------
+    u : jnp.ndarray
+        Array to normalize
+    axis : int, optional
+        Axis to normalize, by default 0
+    eps : float, optional
+        Small value to avoid division by zero, by default 1e-15
 
-    Returns:
-        Tuple of the normalized values, and the normalizing denominator.
+    Returns
+    -------
+    normalized_u : jnp.ndarray
+        Normalized array
+    c : jnp.ndarray
+        Normalization constant
     """
     u = jnp.clip(u, a_min=eps, a_max=None)
     c = u.sum(axis=axis)
@@ -25,16 +35,23 @@ def _normalize(u, axis=0, eps=1e-15):
 
 
 # Helper functions for the two key filtering steps
-def _condition_on(probs, ll):
+def _condition_on(probs: jnp.ndarray, ll: jnp.ndarray) -> Tuple[jnp.ndarray, float]:
     """Condition on new emissions, given in the form of log likelihoods
     for each discrete state, while avoiding numerical underflow.
 
-    Args:
-        probs(k): prior for state k
-        ll(k): log likelihood for state k
+    Parameters
+    ----------
+    probs : jnp.ndarray
+        Current state probabilities
+    ll : jnp.ndarray
+        Log likelihoods for each state
 
-    Returns:
-        probs(k): posterior for state k
+    Returns
+    -------
+    new_probs : jnp.ndarray
+        Updated state probabilities
+    log_norm : float
+        Log normalization constant
     """
     ll_max = ll.max()
     ll_max = jnp.where(jnp.isfinite(ll_max), ll_max, 0.0)
@@ -43,18 +60,50 @@ def _condition_on(probs, ll):
     return new_probs, log_norm
 
 
-def _divide_safe(a, b):
+def _divide_safe(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.ndarray:
     """Divides two arrays, while setting the result to 0.0
-    if the denominator is 0.0."""
-    return jnp.where(b == 0.0, 0.0, a / b)
+    if the denominator is 0.0.
+
+    Parameters
+    ----------
+    numerator : jnp.ndarray
+    denominator : jnp.ndarray
+    """
+    return jnp.where(denominator == 0.0, 0.0, numerator / denominator)
+
+    # (
+    #     (marginal_likelihood_chunk, predicted_probs_next),
+    #     (causal_posterior_chunk, predicted_probs_chunk),
+    # )
 
 
 @jax.jit
 def filter(
-    initial_distribution,
-    transition_matrix,
-    log_likelihoods,
-):
+    initial_distribution: jnp.ndarray,
+    transition_matrix: jnp.ndarray,
+    log_likelihoods: jnp.ndarray,
+) -> Tuple[Tuple[float, jnp.ndarray], Tuple[jnp.ndarray, jnp.ndarray]]:
+    """Filtering step.
+
+    Parameters
+    ----------
+    initial_distribution : jnp.ndarray, shape (n_states,)
+        Initial state distribution
+    transition_matrix : jnp.ndarray, shape (n_states, n_states)
+        Transition matrix
+    log_likelihoods : jnp.ndarray, shape (n_time, n_states)
+        Log likelihoods for each state at each time point
+
+    Returns
+    -------
+    marginal_likelihood : float
+    predicted_probs_next : jnp.ndarray, shape (n_states,)
+        Next one-step-ahead predicted state probabilities
+    causal_posterior : jnp.ndarray, shape (n_time, n_states)
+        Filtered state probabilities
+    predicted_probs : jnp.ndarray, shape (n_time, n_states)
+        One-step-ahead predicted state probabilities
+    """
 
     def _step(carry, ll):
         log_normalizer, predicted_probs = carry
@@ -70,12 +119,32 @@ def filter(
 
 @jax.jit
 def smoother(
-    transition_matrix,
-    filtered_probs,
-    initial=None,
-    ind=None,
-    n_time=None,
-):
+    transition_matrix: jnp.ndarray,
+    filtered_probs: jnp.ndarray,
+    initial: Optional[jnp.ndarray] = None,
+    ind: Optional[jnp.ndarray] = None,
+    n_time: Optional[int] = None,
+) -> jnp.ndarray:
+    """Smoother step.
+
+    Parameters
+    ----------
+    transition_matrix : jnp.ndarray, shape (n_states, n_states)
+        Transition matrix
+    filtered_probs : jnp.ndarray, shape (n_time, n_states)
+        Filtered state probabilities
+    initial : jnp.ndarray, optional
+        Initial state distribution, by default None
+    ind : jnp.ndarray, optional
+        Time indices, by default None
+    n_time : int, optional
+        Number of time points, by default None
+
+    Returns
+    -------
+    smoothed_probs : jnp.ndarray, shape (n_time, n_states)
+        Smoothed state probabilities
+    """
     if n_time is None:
         n_time = filtered_probs.shape[0]
     if ind is None:
@@ -83,7 +152,9 @@ def smoother(
     if initial is None:
         initial = filtered_probs[-1]
 
-    def _step(smoothed_probs_next, args):
+    def _step(
+        smoothed_probs_next: jnp.ndarray, args: Tuple[jnp.ndarray, int]
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         filtered_probs_t, t = args
 
         smoothed_probs = filtered_probs_t * (
@@ -103,17 +174,49 @@ def smoother(
 
 
 def chunked_filter_smoother(
-    time: np.array,
-    state_ind: np.array,
-    initial_distribution: np.array,
-    transition_matrix: np.array,
+    time: np.ndarray,
+    state_ind: np.ndarray,
+    initial_distribution: np.ndarray,
+    transition_matrix: np.ndarray,
     log_likelihood_func: callable,
     log_likelihood_args: tuple,
-    is_missing: Optional[np.array] = None,
+    is_missing: Optional[np.ndarray] = None,
     n_chunks: int = 1,
-    log_likelihoods: Optional[np.array] = None,
+    log_likelihoods: Optional[np.ndarray] = None,
     cache_log_likelihoods: bool = True,
-):
+) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray]:
+    """Filter and smooth the state probabilities in chunks.
+
+    Parameters
+    ----------
+    time : np.ndarray, shape (n_time,)
+    state_ind : np.ndarray, shape (n_state_bins,)
+        Connects the discrete states to the state space
+    initial_distribution : np.ndarray, shape (n_state_bins,)
+    transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
+    log_likelihood_func : callable
+    log_likelihood_args : tuple
+    is_missing : np.ndarray, shape (n_time,), optional
+    n_chunks : int, optional
+        Number of chunks to split the data into, by default 1
+    log_likelihoods : Optional[np.ndarray], optional
+    cache_log_likelihoods : bool, optional
+        If True, log likelihoods are cached, by default True
+
+    Returns
+    -------
+    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        Smoothed state probabilities
+    acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
+        Smoothed state probabilities for each state index
+    marginal_likelihood : float
+    causal_state_probabilities : np.ndarray, shape (n_time, n_states)
+        Filtered state probabilities for each state index
+    predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
+        One-step-ahead predicted state probabilities for each state index
+    log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
+        Log likelihoods for each state at each time point
+    """
     causal_posterior = []
     predictive_state_probabilities = []
     causal_state_probabilities = []
@@ -200,10 +303,24 @@ def chunked_filter_smoother(
 
 ## Covariate dependent filtering and smoothing ##
 def _get_transition_matrix(
-    discrete_transition_matrix_t,
-    continuous_transition_matrix,
-    state_ind,
-):
+    discrete_transition_matrix_t: jnp.ndarray,
+    continuous_transition_matrix: jnp.ndarray,
+    state_ind: jnp.ndarray,
+) -> jnp.ndarray:
+    """Get the transition matrix for the current time point.
+
+    Combines the discrete and continuous transition matrices.
+
+    Parameters
+    ----------
+    discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
+    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+
+    Returns
+    -------
+    transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    """
     return (
         continuous_transition_matrix
         * discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
@@ -212,14 +329,36 @@ def _get_transition_matrix(
 
 @jax.jit
 def filter_covariate_dependent(
-    initial_distribution,
-    discrete_transition_matrix,
-    continuous_transition_matrix,
-    state_ind,
-    log_likelihoods,
-):
+    initial_distribution: jnp.ndarray,
+    discrete_transition_matrix: jnp.ndarray,
+    continuous_transition_matrix: jnp.ndarray,
+    state_ind: jnp.ndarray,
+    log_likelihoods: jnp.ndarray,
+) -> Tuple[Tuple[float, jnp.ndarray], Tuple[jnp.ndarray, jnp.ndarray]]:
+    """Filtering step with covariate dependent transitions.
 
-    def _step(carry, args):
+    Parameters
+    ----------
+    initial_distribution : jnp.ndarray, shape (n_state_bins,)
+    discrete_transition_matrix : jnp.ndarray, shape (n_time, n_states, n_states)
+    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+    log_likelihoods : jnp.ndarray, shape (n_time, n_states)
+
+    Returns
+    -------
+    marginal_likelihood : float
+    predicted_probs_next : jnp.ndarray, shape (n_state_bins,)
+        Next one-step-ahead predicted state probabilities
+    causal_posterior : jnp.ndarray, shape (n_time, n_state_bins)
+        Filtered state probabilities
+    predicted_probs : jnp.ndarray, shape (n_time, n_state_bins)
+        One-step-ahead predicted state probabilities
+    """
+
+    def _step(
+        carry: Tuple[float, jnp.ndarray], args: Tuple[jnp.ndarray, jnp.ndarray]
+    ) -> Tuple[Tuple[float, jnp.ndarray], Tuple[jnp.ndarray, jnp.ndarray]]:
         log_normalizer, predicted_probs = carry
         discrete_transition_matrix_t, ll = args
 
@@ -240,14 +379,30 @@ def filter_covariate_dependent(
 
 @jax.jit
 def smoother_covariate_dependent(
-    discrete_transition_matrix,
-    continuous_transition_matrix,
-    state_ind,
-    filtered_probs,
-    initial=None,
-    ind=None,
-    n_time=None,
-):
+    discrete_transition_matrix: jnp.ndarray,
+    continuous_transition_matrix: jnp.ndarray,
+    state_ind: jnp.ndarray,
+    filtered_probs: jnp.ndarray,
+    initial: Optional[jnp.ndarray] = None,
+    ind: Optional[jnp.ndarray] = None,
+    n_time: Optional[int] = None,
+) -> jnp.ndarray:
+    """Smoother step with covariate dependent transitions.
+
+    Parameters
+    ----------
+    discrete_transition_matrix : jnp.ndarray, shape (n_time, n_states, n_states)
+    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+    filtered_probs : jnp.ndarray, shape (n_time, n_state_bins)
+    initial : jnp.ndarray, shape (n_state_bins,), optional
+    ind : jnp.ndarray, shape (n_time,), optional
+    n_time : int, optional
+
+    Returns
+    -------
+    smoothed_probs : jnp.ndarray, shape (n_time, n_state_bins)
+    """
     if n_time is None:
         n_time = filtered_probs.shape[0]
     if ind is None:
@@ -296,6 +451,38 @@ def chunked_filter_smoother_covariate_dependent(
     log_likelihoods: Optional[np.array] = None,
     cache_log_likelihoods: bool = True,
 ):
+    """Filter and smooth the state probabilities in chunks with covariate dependent transitions.
+
+    Parameters
+    ----------
+    time : np.ndarray, shape (n_time,)
+    state_ind : np.ndarray, shape (n_state_bins,)
+    initial_distribution : np.ndarray, shape (n_state_bins,)
+    discrete_transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
+    continuous_transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
+    log_likelihood_func : callable
+    log_likelihood_args : tuple
+    is_missing : np.ndarray, shape (n_time,), optional
+    n_chunks : int, optional
+        Number of chunks to split the data into, by default 1
+    log_likelihoods : np.ndarray, optional
+    cache_log_likelihoods : bool, optional
+        If True, log likelihoods are cached, by default True
+
+    Returns
+    -------
+    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        Smoothed state probabilities
+    acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
+        Smoothed state probabilities for each state index
+    marginal_likelihood : float
+    causal_state_probabilities : np.ndarray, shape (n_time, n_states)
+        Filtered state probabilities for each state index
+    predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
+        One-step-ahead predicted state probabilities for each state index
+    log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
+        Log likelihoods for each state at each time point
+    """
     causal_posterior = []
     predictive_state_probabilities = []
     causal_state_probabilities = []

@@ -1,5 +1,5 @@
 try:
-    from typing import Union
+    from typing import Optional
 
     import numpy as np
     import sortingview.views as vv
@@ -9,6 +9,16 @@ try:
     from non_local_detector.visualization.static import get_multiunit_firing_rate
 
     def discretize_and_trim(series: xr.DataArray) -> xr.DataArray:
+        """Discretizes and trims a series for visualization.
+
+        Parameters
+        ----------
+        series : xr.DataArray
+
+        Returns
+        -------
+        xr.DataArray
+        """
         discretized = np.multiply(series, 255).astype(np.uint8)  # type: ignore
         stacked = discretized.stack(unified_index=["time", "position"])
         return stacked.where(stacked > 0, drop=True).astype(np.uint8)
@@ -16,6 +26,17 @@ try:
     def get_observations_per_time(
         trimmed_posterior: xr.DataArray, base_data: xr.Dataset
     ) -> np.ndarray:
+        """Get the number of observations per time.
+
+        Parameters
+        ----------
+        trimmed_posterior : xr.DataArray
+        base_data : xr.Dataset
+
+        Returns
+        -------
+        observations : np.ndarray
+        """
         times, counts = np.unique(trimmed_posterior.time.values, return_counts=True)
         indexed_counts = xr.DataArray(counts, coords={"time": times})
         _, good_counts = xr.align(base_data.time, indexed_counts, join="left", fill_value=0)  # type: ignore
@@ -23,6 +44,16 @@ try:
         return good_counts.values.astype(np.uint8)
 
     def get_sampling_freq(times: np.ndarray) -> float:
+        """Get the sampling frequency from a series of times.
+
+        Parameters
+        ----------
+        times : np.ndarray
+
+        Returns
+        -------
+        sampling_rate : float
+        """
         round_times = np.floor(1000 * times)
         median_delta_t_ms = np.median(np.diff(round_times)).item()
         return 1000 / median_delta_t_ms  # from time-delta to Hz
@@ -30,14 +61,25 @@ try:
     def get_trimmed_bin_center_index(
         place_bin_centers: np.ndarray, trimmed_place_bin_centers: np.ndarray
     ) -> np.ndarray:
+        """Get the index of the trimmed bin centers in the full bin centers.
+
+        Parameters
+        ----------
+        place_bin_centers : np.ndarray, shape (n_position_bins, )
+        trimmed_place_bin_centers : np.ndarray, shape (n_trimmed_position_bins, )
+
+        Returns
+        -------
+        bin_ind : np.ndarray, shape (n_trimmed_position_bins, )
+        """
         return np.searchsorted(
             place_bin_centers, trimmed_place_bin_centers, side="left"
         ).astype(np.uint16)
 
     def create_1D_decode_view(
         posterior: xr.DataArray,
-        linear_position: np.ndarray = None,
-        ref_time_sec: Union[np.float64, None] = None,
+        linear_position: Optional[np.ndarray] = None,
+        ref_time_sec: Optional[float] = None,
     ) -> vvf.DecodedLinearPositionData:
         """Creates a view of an interactive heatmap of position vs. time.
 

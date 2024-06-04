@@ -111,7 +111,7 @@ def simulate_place_field_firing_rate(
     means: np.ndarray,
     position: np.ndarray,
     max_rate: float = 15.0,
-    variance: float = 10.0,
+    variance: float = 12.5,
     is_condition: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Simulates the firing rate of a neuron with a place field at `means`.
@@ -144,7 +144,7 @@ def simulate_neuron_with_place_field(
     means: np.ndarray,
     position: np.ndarray,
     max_rate: float = 15.0,
-    variance: float = 36.0,
+    variance: float = 12.5,
     sampling_frequency: int = 500,
     is_condition: Optional[np.ndarray] = None,
 ) -> np.ndarray:
@@ -175,7 +175,7 @@ def simulate_multiunit_with_place_fields(
     position: np.ndarray,
     mark_spacing: int = 5,
     n_mark_dims: int = 4,
-    place_variance: float = 36.0,
+    place_variance: float = 12.5,
     mark_variance: float = 1.0,
     max_rate: float = 100.0,
     sampling_frequency: int = 1000,

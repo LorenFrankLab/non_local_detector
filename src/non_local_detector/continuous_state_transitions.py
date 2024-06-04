@@ -95,7 +95,22 @@ def _random_walk_on_track_graph(
     return state_transition
 
 
-def _euclidean_random_walk(environment, movement_mean, movement_var):
+def _euclidean_random_walk(
+    environment: Environment, movement_mean: float, movement_var: float
+) -> np.ndarray:
+    """Estimates the random walk probabilities based on the Euclidean distance
+
+    Parameters
+    ----------
+    environment : Environment
+    movement_mean : float
+    movement_var : float
+
+    Returns
+    -------
+    transition : np.ndarray, shape (n_position_bins, n_position_bins)
+
+    """
     return np.stack(
         [
             multivariate_normal(mean=center + movement_mean, cov=movement_var).pdf(
@@ -219,7 +234,7 @@ class Uniform:
     environment_name: str = ""
     environment2_name: str = None
 
-    def make_state_transition(self, environments: Tuple[Environment]):
+    def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
         """Creates a transition matrix for a given environment.
 
         Parameters
@@ -264,7 +279,7 @@ class Identity:
 
     environment_name: str = ""
 
-    def make_state_transition(self, environments: Tuple[Environment]):
+    def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
         """Creates a transition matrix for a given environment.
 
         Parameters
@@ -319,7 +334,7 @@ class EmpiricalMovement:
         is_training: Optional[np.ndarray] = None,
         encoding_group_labels: Optional[np.ndarray] = None,
         environment_labels: Optional[np.ndarray] = None,
-    ):
+    ) -> np.ndarray:
         """Creates a transition matrix for a given environment.
 
         Parameters
@@ -407,7 +422,7 @@ class RandomWalkDirection1:
     environment_name: str = ""
     movement_var: float = 6.0
 
-    def make_state_transition(self, environments: Tuple[Environment]):
+    def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
         """Creates a transition matrix for a given environment.
 
         Parameters
@@ -444,7 +459,7 @@ class RandomWalkDirection2:
     environment_name: str = ""
     movement_var: float = 6.0
 
-    def make_state_transition(self, environments: Tuple[Environment]):
+    def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
         """Creates a transition matrix for a given environment.
 
         Parameters
@@ -468,7 +483,7 @@ class RandomWalkDirection2:
 class Discrete:
     pass
 
-    def make_state_transition(self, *args, **kwargs):
+    def make_state_transition(self, *args, **kwargs) -> np.ndarray:
         """Creates a continuous transition matrix for a discrete state space.
 
         Essentially, there is no continuous state space, so the transition matrix is just an identity matrix.
