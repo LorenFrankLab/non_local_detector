@@ -979,6 +979,18 @@ def get_track_boundary_points(
 
 
 def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
+    """Create a graph of the track with nodes at the center of each on track bin and
+    edges between adjacent bins on the track.
+
+    Parameters
+    ----------
+    environment : Environment
+
+    Returns
+    -------
+    track_graph : nx.Graph
+
+    """
     track_graph = nx.Graph()
     axis_offsets = [-1, 0, 1]
 
@@ -994,20 +1006,34 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
         )
 
     edges = []
-
+    # Enumerate over nodes in the track interior
     for ind in zip(*np.nonzero(environment.is_track_interior_)):
         ind = np.array(ind)
-        # Generate adjacency indices in nD
+        # Indices of adjacent nodes
         adj_inds = np.meshgrid(*[axis_offsets + i for i in ind], indexing="ij")
-        adj_edges = environment.is_track_interior_[tuple(adj_inds)]
-        center_idx = [n // 2 for n in adj_edges.shape]
-        adj_edges[tuple(center_idx)] = False
+        # Remove out of bounds indices
+        adj_inds = [
+            inds[np.logical_and(inds >= 0, inds < dim_size)]
+            for inds, dim_size in zip(adj_inds, environment.centers_shape_)
+        ]
 
+        # Is the adjacent node on the track?
+        adj_on_track_inds = environment.is_track_interior_[tuple(adj_inds)]
+
+        # Remove the center node
+        center_idx = [n // 2 for n in adj_on_track_inds.shape]
+        adj_on_track_inds[tuple(center_idx)] = False
+
+        # Get the node ids of the center node
         node_id = np.ravel_multi_index(ind, environment.centers_shape_)
+
+        # Get the node ids of the adjacent nodes on the track
         adj_node_ids = np.ravel_multi_index(
-            [inds[adj_edges] for inds in adj_inds],
+            [inds[adj_on_track_inds] for inds in adj_inds],
             environment.centers_shape_,
         )
+
+        # Collect the edges for the graph
         edges.append(
             np.concatenate(
                 np.meshgrid([node_id], adj_node_ids, indexing="ij"), axis=0
@@ -1016,6 +1042,7 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
 
     edges = np.concatenate(edges)
 
+    # Add edges to the graph with distance
     for node1, node2 in edges:
         pos1 = np.asarray(track_graph.nodes[node1]["pos"])
         pos2 = np.asarray(track_graph.nodes[node2]["pos"])
