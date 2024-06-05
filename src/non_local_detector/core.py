@@ -360,7 +360,7 @@ def filter_covariate_dependent(
         carry: Tuple[float, jnp.ndarray], args: Tuple[jnp.ndarray, jnp.ndarray]
     ) -> Tuple[Tuple[float, jnp.ndarray], Tuple[jnp.ndarray, jnp.ndarray]]:
         log_normalizer, predicted_probs = carry
-        discrete_transition_matrix_t, ll = args
+        ll, discrete_transition_matrix_t = args
 
         filtered_probs, log_norm = _condition_on(predicted_probs, ll)
         log_normalizer += log_norm
