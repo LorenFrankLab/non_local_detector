@@ -21,6 +21,8 @@ from non_local_detector.core import (
     check_converged,
     chunked_filter_smoother,
     chunked_filter_smoother_covariate_dependent,
+    most_likely_sequence,
+    most_likely_sequence_covariate_dependent,
 )
 from non_local_detector.discrete_state_transitions import (
     _estimate_discrete_transition,
@@ -783,6 +785,7 @@ class _DetectorBase(BaseEstimator):
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
+        store_log_likelihood: bool = False,
         n_chunks: int = 1,
     ) -> xr.Dataset:
         """
@@ -805,7 +808,9 @@ class _DetectorBase(BaseEstimator):
         tolerance : float, optional
             Convergence tolerance for the EM algorithm, by default 1e-4.
         cache_likelihood : bool, optional
-            Whether to cache the log likelihoods for faster iterations, by default False.
+            Whether to cache the log likelihoods for faster iterations, by default True.
+        store_log_likelihood : bool, optional
+            Whether to store the log likelihoods in self.log_likelihoods_, by default False.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
 
@@ -817,7 +822,11 @@ class _DetectorBase(BaseEstimator):
         marginal_log_likelihoods = []
         n_iter = 0
         converged = False
-        log_likelihoods = None
+
+        if store_log_likelihood:
+            log_likelihoods = getattr(self, "log_likelihood_", None)
+        else:
+            log_likelihoods = None
 
         while not converged and (n_iter < max_iter):
             # Expectation step
@@ -897,12 +906,58 @@ class _DetectorBase(BaseEstimator):
                         f"likelihood: {marginal_log_likelihoods[-1]}"
                     )
 
+        if store_log_likelihood:
+            self.log_likelihood_ = log_likelihoods
+
         return self._convert_results_to_xarray(
             time,
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihoods,
         )
+
+    def most_likely_sequence(
+        self,
+        time: np.ndarray,
+        log_likelihood_args: Optional[tuple] = None,
+        is_missing: Optional[np.ndarray] = None,
+        n_chunks: int = 1,
+    ) -> np.ndarray:
+        """Find the most likely sequence of states."""
+        is_track_interior = self.is_track_interior_state_bins_
+        cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
+        state_ind = self.state_ind_[is_track_interior]
+        if self.discrete_state_transitions_.ndim == 2:
+            sequence_ind = most_likely_sequence(
+                time=time,
+                initial_distribution=self.initial_conditions_[is_track_interior],
+                transition_matrix=(
+                    self.continuous_state_transitions_[cross_is_track_interior]
+                    * self.discrete_state_transitions_[np.ix_(state_ind, state_ind)]
+                ),
+                log_likelihood_func=self.compute_log_likelihood,
+                log_likelihood_args=log_likelihood_args,
+                is_missing=is_missing,
+                log_likelihoods=getattr(self, "log_likelihood_", None),
+                n_chunks=n_chunks,
+            )
+        else:
+            sequence_ind = most_likely_sequence_covariate_dependent(
+                time=time,
+                state_ind=state_ind,
+                initial_distribution=self.initial_conditions_[is_track_interior],
+                discrete_transition_matrix=self.discrete_state_transitions_,
+                continuous_transition_matrix=self.continuous_state_transitions_[
+                    cross_is_track_interior
+                ],
+                log_likelihood_func=self.compute_log_likelihood,
+                log_likelihood_args=log_likelihood_args,
+                is_missing=is_missing,
+                log_likelihoods=getattr(self, "log_likelihood_", None),
+                n_chunks=n_chunks,
+            )
+
+        return self._convert_seq_to_df(sequence_ind, time)
 
     def calculate_time_bins(self, time_range: np.ndarray) -> np.ndarray:
         """
@@ -1088,6 +1143,64 @@ class _DetectorBase(BaseEstimator):
         results["acausal_posterior"][:, is_track_interior] = acausal_posterior
 
         return results.squeeze()
+
+    def _convert_seq_to_df(
+        self, sequence_ind: np.ndarray, time: np.ndarray
+    ) -> pd.DataFrame:
+        """Converts the sequence indices to a DataFrame.
+
+        Parameters
+        ----------
+        sequence_ind : np.ndarray, shape (n_time,)
+            Most likely sequence indices.
+        time : np.ndarray, shape (n_time,)
+
+        Returns
+        -------
+        results : pd.DataFrame, shape (n_time, n_cols)
+        """
+        position = []
+        n_position_dims = self.environments[0].place_bin_centers_.shape[1]
+        environment_names = []
+        encoding_group_names = []
+        for obs in self.observation_models:
+            if obs.is_local or obs.is_no_spike:
+                position.append(np.full((1, n_position_dims), np.nan))
+                environment_names.append([None])
+                encoding_group_names.append([None])
+            else:
+                environment = self.environments[
+                    self.environments.index(obs.environment_name)
+                ]
+                position.append(environment.place_bin_centers_)
+                environment_names.append(
+                    [obs.environment_name] * environment.place_bin_centers_.shape[0]
+                )
+                encoding_group_names.append(
+                    [obs.encoding_group] * environment.place_bin_centers_.shape[0]
+                )
+
+        position = np.concatenate(position, axis=0)
+        environment_names = np.concatenate(environment_names, axis=0)
+        encoding_group_names = np.concatenate(encoding_group_names, axis=0)
+
+        states = np.asarray(self.state_names)
+        if n_position_dims == 1:
+            position_names = ["position"]
+        else:
+            position_names = [
+                f"{name}_position" for name, _ in zip(["x", "y", "z", "w"], position.T)
+            ]
+        state_bins = pd.DataFrame(
+            {
+                "state": states[self.state_ind_],
+                **{name: pos for name, pos in zip(position_names, position.T)},
+                "environment": environment_names,
+                "encoding_group_names": encoding_group_names,
+            }
+        ).iloc[self.is_track_interior_state_bins_]
+
+        return state_bins.iloc[sequence_ind].set_index(pd.Index(time, name="time"))
 
 
 class ClusterlessDetector(_DetectorBase):
@@ -1568,6 +1681,7 @@ class ClusterlessDetector(_DetectorBase):
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
+        store_log_likelihood: bool = False,
         n_chunks: int = 1,
     ) -> xr.Dataset:
         """
@@ -1605,6 +1719,8 @@ class ClusterlessDetector(_DetectorBase):
             Convergence tolerance for the EM algorithm, by default 1e-4.
         cache_likelihood : bool, optional
             Whether to cache the log likelihoods for faster iterations, by default True.
+        store_log_likelihood : bool, optional
+            Whether to store the log likelihoods in self.log_likelihoods_, by default False.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
 
@@ -1638,6 +1754,52 @@ class ClusterlessDetector(_DetectorBase):
             max_iter=max_iter,
             tolerance=tolerance,
             cache_likelihood=cache_likelihood,
+            store_log_likelihood=store_log_likelihood,
+            n_chunks=n_chunks,
+        )
+
+    def most_likely_sequence(
+        self,
+        position_time: np.ndarray,
+        position: np.ndarray,
+        spike_times: list[np.ndarray],
+        spike_waveform_features: list[np.ndarray],
+        time: np.ndarray,
+        is_missing: np.ndarray | None = None,
+        n_chunks: int = 1,
+    ) -> pd.DataFrame:
+        """Find the most likely sequence of states.
+
+        Parameters
+        ----------
+        position_time : np.ndarray, shape (n_time_position,)
+            Time points for position data.
+        position : np.ndarray, shape (n_time_position, n_position_dims)
+            Position data
+        spike_times : list of np.ndarray
+            Spike times for each neuron.
+        spike_waveform_features : list of np.ndarray
+            Spike waveform features for each neuron.
+        time : np.ndarray, shape (n_time,)
+            Time points for decoding.
+        is_missing : np.ndarray, shape (n_time,), optional
+            Boolean array indicating missing data, by default None.
+        n_chunks : int, optional
+            Splits data into chunks for processing, by default 1
+
+        Returns
+        -------
+        most_likely_sequence : pd.DataFrame, shape (n_time, n_cols)
+        """
+        return super().most_likely_sequence(
+            time=time,
+            log_likelihood_args=(
+                position_time,
+                position,
+                spike_times,
+                spike_waveform_features,
+            ),
+            is_missing=is_missing,
             n_chunks=n_chunks,
         )
 
@@ -2084,6 +2246,7 @@ class SortedSpikesDetector(_DetectorBase):
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
+        store_log_likelihood: bool = False,
         n_chunks: int = 1,
     ) -> xr.Dataset:
         """
@@ -2123,6 +2286,8 @@ class SortedSpikesDetector(_DetectorBase):
             Convergence tolerance for EM, by default 0.0001
         cache_likelihood : bool, optional
             Store the likelihood for faster iterations, by default True
+        store_log_likelihood : bool, optional
+            Whether to store the log likelihoods in self.log_likelihoods_, by default False.
         n_chunks : int, optional
             Number of chunks for processing, by default 1
 
@@ -2155,5 +2320,47 @@ class SortedSpikesDetector(_DetectorBase):
             max_iter=max_iter,
             tolerance=tolerance,
             cache_likelihood=cache_likelihood,
+            store_log_likelihood=store_log_likelihood,
+            n_chunks=n_chunks,
+        )
+
+    def most_likely_sequence(
+        self,
+        position_time: np.ndarray,
+        position: np.ndarray,
+        spike_times: list[np.ndarray],
+        time: np.ndarray,
+        is_missing: np.ndarray | None = None,
+        n_chunks: int = 1,
+    ) -> pd.DataFrame:
+        """Find the most likely sequence of states.
+
+        Parameters
+        ----------
+        position_time : np.ndarray, shape (n_time_position,)
+            Time of each position sample
+        position : np.ndarray, shape (n_time_position, n_position_dims), optional
+            Position data, by default None.
+        spike_times : list of np.ndarray, len (n_neurons,)
+            Each element of the list is an array of spike times for a neuron
+        time : np.ndarray, shape (n_time,)
+            Decoding time points
+        is_missing : np.ndarray, shape (n_time,), optional
+            Denote missing samples, None includes all samples, by default None
+        n_chunks : int, optional
+            Number of chunks for processing, by default 1
+
+        Returns
+        -------
+        most_likely_sequence : pd.DataFrame, shape (n_time, n_cols)
+        """
+        return super().most_likely_sequence(
+            time=time,
+            log_likelihood_args=(
+                position_time,
+                position,
+                spike_times,
+            ),
+            is_missing=is_missing,
             n_chunks=n_chunks,
         )
