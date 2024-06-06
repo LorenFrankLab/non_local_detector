@@ -50,7 +50,7 @@ def create_place_field(
     position: np.ndarray,
     sampling_frequency: float = SAMPLING_FREQUENCY,
     is_condition: Optional[np.ndarray] = None,
-    place_field_std_deviation: float = 12.5,
+    place_field_std_deviation: float = np.sqrt(12.5),
     max_firing_rate: float = 20.0,
     baseline_firing_rate: float = 0.001,
 ):
@@ -537,4 +537,5 @@ def make_simulated_data(
         event_times,
         sampling_frequency,
         is_event,
+        place_fields.T,
     )
