@@ -1765,7 +1765,7 @@ class ClusterlessDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         time: np.ndarray,
-        is_missing: np.ndarray | None = None,
+        is_missing: Optional[np.ndarray] = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
         """Find the most likely sequence of states.
@@ -2330,7 +2330,7 @@ class SortedSpikesDetector(_DetectorBase):
         position: np.ndarray,
         spike_times: list[np.ndarray],
         time: np.ndarray,
-        is_missing: np.ndarray | None = None,
+        is_missing: Optional[np.ndarray] = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
         """Find the most likely sequence of states.
