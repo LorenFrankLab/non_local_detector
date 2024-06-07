@@ -367,12 +367,10 @@ def most_likely_sequence(
         raise NotImplementedError("Chunked Viterbi is not yet implemented.")
 
     if log_likelihoods is None:
-        log_likelihoods = (
-            log_likelihood_func(
-                time,
-                *log_likelihood_args,
-                is_missing=is_missing,
-            ),
+        log_likelihoods = log_likelihood_func(
+            time,
+            *log_likelihood_args,
+            is_missing=is_missing,
         )
     return viterbi(
         initial_distribution=initial_distribution,
@@ -725,12 +723,10 @@ def most_likely_sequence_covariate_dependent(
         raise NotImplementedError("Chunked Viterbi is not yet implemented.")
 
     if log_likelihoods is None:
-        log_likelihoods = (
-            log_likelihood_func(
-                time,
-                *log_likelihood_args,
-                is_missing=is_missing,
-            ),
+        log_likelihoods = log_likelihood_func(
+            time,
+            *log_likelihood_args,
+            is_missing=is_missing,
         )
     return viterbi_covariate_dependent(
         initial_distribution=initial_distribution,
