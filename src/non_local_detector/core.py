@@ -71,11 +71,6 @@ def _divide_safe(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.ndarra
     """
     return jnp.where(denominator == 0.0, 0.0, numerator / denominator)
 
-    # (
-    #     (marginal_likelihood_chunk, predicted_probs_next),
-    #     (causal_posterior_chunk, predicted_probs_chunk),
-    # )
-
 
 @jax.jit
 def filter(
