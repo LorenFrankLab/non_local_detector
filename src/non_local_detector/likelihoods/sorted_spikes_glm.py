@@ -15,7 +15,9 @@ from non_local_detector.likelihoods.common import (
 
 
 def make_spline_design_matrix(
-    position: np.ndarray, place_bin_edges: np.ndarray, knot_spacing: float = 10.0
+    position: np.ndarray,
+    place_bin_edges: np.ndarray,
+    knot_spacing: float = np.sqrt(12.5) * 2,
 ) -> np.ndarray:
     """Create a design matrix for a spline basis.
 
@@ -138,7 +140,7 @@ def fit_sorted_spikes_glm_encoding_model(
     edges: np.ndarray,
     is_track_interior: np.ndarray,
     is_track_boundary: np.ndarray,
-    emission_knot_spacing: float = 10.0,
+    emission_knot_spacing: float = np.sqrt(12.5) * 2,
     l2_penalty: float = 1e-3,
     disable_progress_bar: bool = False,
     sampling_frequency: float = 500.0,
