@@ -12,3 +12,7 @@ from non_local_detector.models.non_local_model import (  # noqa
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.models.nospike_cont_frag_model import (  # noqa
+    NoSpikeContFragClusterlessClassifier,
+    NoSpikeContFragSortedSpikesClassifier,
+)

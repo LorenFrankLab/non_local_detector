@@ -23,6 +23,8 @@ from non_local_detector.models import (  # noqa
     MultiEnvironmentSortedSpikesClassifier,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
+    NoSpikeContFragClusterlessClassifier,
+    NoSpikeContFragSortedSpikesClassifier,
     SortedSpikesDecoder,
 )
 
