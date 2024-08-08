@@ -98,7 +98,7 @@ state_names = [
 ]
 
 
-class ContFragNoSpikeSortedSpikesClassifier(SortedSpikesDetector):
+class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray = discrete_initial_conditions,
@@ -143,7 +143,7 @@ class ContFragNoSpikeSortedSpikesClassifier(SortedSpikesDetector):
         return acausal_posterior / acausal_posterior.sum("position")
 
 
-class ContFragNoSpikeClusterlessClassifier(ClusterlessDetector):
+class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray = discrete_initial_conditions,
