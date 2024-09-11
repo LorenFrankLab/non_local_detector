@@ -2211,6 +2211,7 @@ class SortedSpikesDetector(_DetectorBase):
             marginal_log_likelihood,
             _,
             _,
+            _,
         ) = self._predict(
             time=time,
             log_likelihood_args=(
