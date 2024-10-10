@@ -865,20 +865,18 @@ class _DetectorBase(BaseEstimator):
                     self.discrete_transition_regularization,
                 )
 
-                if estimate_inital_conditions:
-                    self.initial_conditions_[self.is_track_interior_state_bins_] = (
-                        acausal_posterior[0]
-                    )
-                    self.discrete_initial_conditions = acausal_state_probabilities[0]
+            if estimate_inital_conditions:
+                self.initial_conditions_[self.is_track_interior_state_bins_] = (
+                    acausal_posterior[0]
+                )
+                self.discrete_initial_conditions = acausal_state_probabilities[0]
 
-                    expanded_discrete_ic = acausal_state_probabilities[0][
-                        self.state_ind_
-                    ]
-                    self.continuous_initial_conditions_ = np.where(
-                        np.isclose(expanded_discrete_ic, 0.0),
-                        0.0,
-                        self.initial_conditions_ / expanded_discrete_ic,
-                    )
+                expanded_discrete_ic = acausal_state_probabilities[0][self.state_ind_]
+                self.continuous_initial_conditions_ = np.where(
+                    np.isclose(expanded_discrete_ic, 0.0),
+                    0.0,
+                    self.initial_conditions_ / expanded_discrete_ic,
+                )
 
                 # Stats
                 logger.info("Computing stats..")
