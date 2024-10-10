@@ -878,31 +878,31 @@ class _DetectorBase(BaseEstimator):
                     self.initial_conditions_ / expanded_discrete_ic,
                 )
 
-                # Stats
-                logger.info("Computing stats..")
-                n_iter += 1
+            # Stats
+            logger.info("Computing stats..")
+            n_iter += 1
 
-                marginal_log_likelihoods.append(marginal_log_likelihood)
-                if n_iter > 1:
-                    log_likelihood_change = (
-                        marginal_log_likelihoods[-1] - marginal_log_likelihoods[-2]
-                    )
-                    converged, _ = check_converged(
-                        marginal_log_likelihoods[-1],
-                        marginal_log_likelihoods[-2],
-                        tolerance,
-                    )
+            marginal_log_likelihoods.append(marginal_log_likelihood)
+            if n_iter > 1:
+                log_likelihood_change = (
+                    marginal_log_likelihoods[-1] - marginal_log_likelihoods[-2]
+                )
+                converged, _ = check_converged(
+                    marginal_log_likelihoods[-1],
+                    marginal_log_likelihoods[-2],
+                    tolerance,
+                )
 
-                    logger.info(
-                        f"iteration {n_iter}, "
-                        f"likelihood: {marginal_log_likelihoods[-1]}, "
-                        f"change: {log_likelihood_change}"
-                    )
-                else:
-                    logger.info(
-                        f"iteration {n_iter}, "
-                        f"likelihood: {marginal_log_likelihoods[-1]}"
-                    )
+                logger.info(
+                    f"iteration {n_iter}, "
+                    f"likelihood: {marginal_log_likelihoods[-1]}, "
+                    f"change: {log_likelihood_change}"
+                )
+            else:
+                logger.info(
+                    f"iteration {n_iter}, "
+                    f"likelihood: {marginal_log_likelihoods[-1]}"
+                )
 
         if store_log_likelihood:
             self.log_likelihood_ = log_likelihoods
