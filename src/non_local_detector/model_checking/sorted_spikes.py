@@ -172,6 +172,8 @@ class TimeRescaling:
         ax: Optional[plt.Axes] = None,
         scatter_kwargs: Optional[dict] = None,
         ci_color: str = "red",
+        sampling_frequency: float = 1.0,
+        lag_max: Optional[float] = None,
     ) -> plt.Axes:
         """Plot the rescaled ISI dependence.
 
@@ -186,6 +188,10 @@ class TimeRescaling:
             Plotting arguments for scatter plot
         ci_color : str
             Confidence interval color
+        sampling_frequency : float
+            Sampling frequency of the data
+        lag_max : float, optional
+            Maximum lag to plot. If None, plots all lags.
 
         Returns
         -------
@@ -196,6 +202,8 @@ class TimeRescaling:
             ax=ax,
             scatter_kwargs=scatter_kwargs,
             ci_color=ci_color,
+            sampling_frequency=sampling_frequency,
+            lag_max=lag_max,
         )
 
 
@@ -386,15 +394,21 @@ def plot_rescaled_ISI_autocorrelation(
     ax: Optional[plt.Axes] = None,
     scatter_kwargs: Optional[dict] = None,
     ci_color: str = "red",
+    sampling_frequency: float = 1.0,
+    lag_max: Optional[float] = None,
 ) -> plt.Axes:
     n_spikes = rescaled_ISI_autocorrelation.size // 2 + 1
-    lag = np.arange(-n_spikes + 1, n_spikes)
+    lag = np.arange(-n_spikes + 1, n_spikes) / sampling_frequency
+
+    lag_max = n_spikes if lag_max is None else int(lag_max * sampling_frequency)
+    lag_ind = slice(-lag_max + 1, lag_max)
+
     if ax is None:
         ax = plt.gca()
     if scatter_kwargs is None:
         scatter_kwargs = dict()
     ci = 1.96 / np.sqrt(n_spikes)
-    ax.scatter(lag, rescaled_ISI_autocorrelation, **scatter_kwargs)
+    ax.scatter(lag[lag_ind], rescaled_ISI_autocorrelation[lag_ind], **scatter_kwargs)
     ax.axhline(ci, linestyle="--", color=ci_color)
     ax.axhline(-ci, linestyle="--", color=ci_color)
     ax.set_xlabel("Lag")
