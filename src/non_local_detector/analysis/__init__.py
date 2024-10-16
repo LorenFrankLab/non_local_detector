@@ -13,10 +13,6 @@ from non_local_detector.analysis.distance2D import (
     head_direction_simliarity,
     make_2D_track_graph_from_environment,
 )
-from non_local_detector.analysis.highest_posterior_density import (
-    get_highest_posterior_threshold,
-    get_HPD_spatial_coverage,
-)
 from non_local_detector.analysis.posterior import (
     maximum_a_posteriori_estimate,
     sample_posterior,
