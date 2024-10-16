@@ -21,25 +21,25 @@ def get_highest_posterior_threshold(
     threshold : ndarray, shape (n_time,)
 
     """
-    # Stack 2D positions into one dimension
-    try:
-        posterior = (
-            posterior.stack(position=["x_position", "y_position"])
-            .dropna("position")
-            .values
-        )
-    except KeyError:
-        posterior = posterior.dropna("position").values
+    # Reshape non-time dimensions into a single dimension
+    n_time = posterior.shape[0]
+    posterior = np.asarray(posterior).reshape((n_time, -1))
+    # Remove NaN values from the posterior
+    posterior = posterior[:, ~np.any(np.isnan(posterior), axis=0)]
+
+    # Sort the posterior values in descending order
     const = np.sum(posterior, axis=1, keepdims=True)
     sorted_norm_posterior = np.sort(posterior, axis=1)[:, ::-1] / const
+
+    # Find the threshold that corresponds to the coverage
+    # by finding the first index where the cumulative sum is greater than the coverage
     posterior_less_than_coverage = np.cumsum(sorted_norm_posterior, axis=1) >= coverage
     crit_ind = np.argmax(posterior_less_than_coverage, axis=1)
+
     # Handle case when there are no points in the posterior less than coverage
     crit_ind[posterior_less_than_coverage.sum(axis=1) == 0] = posterior.shape[1] - 1
 
-    n_time = posterior.shape[0]
-    threshold = sorted_norm_posterior[(np.arange(n_time), crit_ind)] * const.squeeze()
-    return threshold
+    return sorted_norm_posterior[(np.arange(n_time), crit_ind)] * const.squeeze()
 
 
 def get_HPD_spatial_coverage(

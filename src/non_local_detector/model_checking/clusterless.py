@@ -45,9 +45,9 @@ def interval_rescaling_transform(
     uniform_rescaled_ground_process_isi = scipy.stats.expon.cdf(
         rescaled_ground_process_isi
     )
+
     # Rescale each mark dimension sequentially using a Rosenblatt transformation
     # based on the conditional mark distribution given the spike time
-
     conditional_mark_intensity = joint_mark_intensity / ground_process_intensity
     n_features = joint_mark_intensity.shape[1]
     feature_indices = (
