@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "non_local_detector"
 description = "A python package to decode non-local activity from neural data"
 readme = "README.md"
-requires-python = ">=3.8,<3.11"
+requires-python = ">=3.8"
 license = { file = "LICENSE" }
 authors = [{ name = "Eric Denovellis", email = "eric.denovellis@ucsf.edu" }]
 classifiers = [
