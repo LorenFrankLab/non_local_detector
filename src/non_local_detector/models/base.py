@@ -1635,11 +1635,11 @@ class ClusterlessDetector(_DetectorBase):
                 self.discrete_transition_coefficients_,
                 discrete_transition_covariate_data,
             )
-
         (
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihood,
+            _,
             _,
             _,
         ) = self._predict(
