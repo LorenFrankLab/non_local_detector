@@ -33,7 +33,7 @@ ContinuousTransitions = list[
         ]
     ]
 ]
-Observations = Union[list[ObservationModel], None]
+Observations = Union[list[ObservationModel], ObservationModel, None]
 ContinuousInitialConditions = list[UniformInitialConditions]
 Stickiness = Union[float, np.ndarray]
 DiscreteTransitions = Union[
