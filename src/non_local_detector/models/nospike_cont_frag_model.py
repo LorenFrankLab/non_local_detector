@@ -135,13 +135,6 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
             no_spike_rate,
         )
 
-    @staticmethod
-    def get_conditional_non_local_posterior(results):
-        acausal_posterior = results.acausal_posterior.sel(state="Continuous")
-        acausal_posterior += results.acausal_posterior.sel(state="Fragmented")
-
-        return acausal_posterior / acausal_posterior.sum("position")
-
 
 class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
     def __init__(
@@ -179,13 +172,3 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
             sampling_frequency,
             no_spike_rate,
         )
-
-    @staticmethod
-    def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
-        acausal_posterior = results.acausal_posterior.sel(state="Continuous")
-        acausal_posterior += results.acausal_posterior.sel(state="Fragmented")
-        denom = results.acausal_state_probabilities.sel(
-            states=["Continuous", "Fragmented"]
-        ).sum("states")
-
-        return acausal_posterior.unstack("state_bins") / denom
