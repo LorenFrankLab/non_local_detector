@@ -186,7 +186,9 @@ multinomial_hessian = jax.hessian(multinomial_neg_log_likelihood)
 def get_transition_prior(
     concentration: float, stickiness: float, n_states: int
 ) -> np.ndarray:
-    return concentration * np.ones((n_states,)) + stickiness * np.eye(n_states)
+    return np.maximum(
+        concentration * np.ones((n_states,)) + stickiness * np.eye(n_states), 1.0
+    )
 
 
 def estimate_non_stationary_state_transition(
@@ -318,9 +320,6 @@ def estimate_stationary_state_transition(
     # Dirichlet prior for transition probabilities
     n_states = acausal_posterior.shape[1]
     alpha = get_transition_prior(concentration, stickiness, n_states)
-
-    # alpha needs to be >= 1.0 for the new transition matrix to be greater than 0.0
-    assert np.all(alpha >= 1.0)
 
     new_transition_matrix = joint_distribution.sum(axis=0) + alpha - 1.0
     new_transition_matrix /= new_transition_matrix.sum(axis=-1, keepdims=True)
