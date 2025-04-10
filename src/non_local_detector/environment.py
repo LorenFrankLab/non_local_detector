@@ -187,8 +187,12 @@ class Environment:
             plot_graph_as_1D(
                 self.track_graph, self.edge_order, self.edge_spacing, ax=ax
             )
-            for edge in self.edges_[0]:
-                ax.axvline(edge.squeeze(), linewidth=0.5, color="black")
+            try:
+                for edge in self.edges_[0]:
+                    ax.axvline(edge.squeeze(), linewidth=0.5, color="black")
+            except AttributeError:
+                # Edges have not been fit yet
+                pass
             ax.set_ylim((0, 0.1))
         else:
             if ax is None:
@@ -247,9 +251,7 @@ class Environment:
 
         # Compute the bin number each sample falls into.
         Ncount = tuple(
-            # avoid np.digitize to work around gh-11022
-            np.searchsorted(edges[i], sample[:, i], side="right")
-            for i in range(D)
+            np.searchsorted(edges[i], sample[:, i], side="right") for i in range(D)
         )
 
         # Using digitize, values that fall on an edge are put in the right bin.
