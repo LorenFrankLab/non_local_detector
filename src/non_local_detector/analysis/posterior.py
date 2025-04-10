@@ -17,7 +17,7 @@ def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:
 
     """
     try:
-        stacked_posterior = np.log(posterior.stack(z=["x_position", "y_position"]))
+        stacked_posterior = posterior.stack(z=["x_position", "y_position"])
         map_estimate = stacked_posterior.z[stacked_posterior.argmax("z")]
         map_estimate = np.asarray(map_estimate.values.tolist())
     except KeyError:
