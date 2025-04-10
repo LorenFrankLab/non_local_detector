@@ -58,7 +58,7 @@ class ContFragSortedSpikesClassifier(SortedSpikesDetector):
         discrete_initial_conditions: np.ndarray = discrete_initial_conditions,
         continuous_initial_conditions_types: ContinuousInitialConditions = continuous_initial_conditions,
         discrete_transition_type: DiscreteTransitions = discrete_transition_type,
-        discrete_transition_concentration: float = 1.0,
+        discrete_transition_concentration: float = 1.1,
         discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
         discrete_transition_regularization: float = 1e-10,
         continuous_transition_types: ContinuousTransitions = continuous_transition_types,
