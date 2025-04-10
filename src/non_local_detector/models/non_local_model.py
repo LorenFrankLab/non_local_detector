@@ -197,8 +197,5 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
     def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
         acausal_posterior = results.acausal_posterior.sel(state="Non-Local Continuous")
         acausal_posterior += results.acausal_posterior.sel(state="Non-Local Fragmented")
-        denom = results.acausal_state_probabilities.sel(
-            states=["Non-Local Continuous", "Non-Local Fragmented"]
-        ).sum("states")
 
-        return acausal_posterior.unstack("state_bins") / denom
+        return acausal_posterior / acausal_posterior.sum("position")
