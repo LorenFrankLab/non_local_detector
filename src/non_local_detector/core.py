@@ -540,7 +540,7 @@ def chunked_filter_smoother_covariate_dependent(
         Number of chunks to split the data into, by default 1
     log_likelihoods : np.ndarray, optional
     cache_log_likelihoods : bool, optional
-        If True, log likelihoods are cached, by default True
+        If True, log likelihoods are cached instead of recomputed for each chunk, by default True
 
     Returns
     -------

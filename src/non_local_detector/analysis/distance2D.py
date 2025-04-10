@@ -269,7 +269,7 @@ def head_direction_simliarity(
     head_direction: np.ndarray,
     map_estimate: np.ndarray,
     track_graph: nx.Graph = None,
-    edges: list = None,
+    edges: Optional[list] = None,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Cosine similarity of the head direction vector with the vector from the

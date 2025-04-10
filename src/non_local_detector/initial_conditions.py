@@ -25,7 +25,7 @@ class UniformInitialConditions:
 
         Returns
         -------
-        unnormalized_initial_conditions : np.ndarray, shape (n_place_bins,)
+        initial_conditions : np.ndarray, shape (n_place_bins,)
         """
 
         if observation_model.is_local or observation_model.is_no_spike:
@@ -48,12 +48,12 @@ def estimate_initial_conditions(acausal_posterior: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-    acausal_posterior : np.ndarray, shape (n_time, n_states)
+    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
         Acausal posterior distribution
 
     Returns
     -------
-    initial_conditions : np.ndarray, shape (n_states,)
+    initial_conditions : np.ndarray, shape (n_state_bins,)
         Estimated initial conditions
 
     """
