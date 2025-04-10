@@ -23,34 +23,34 @@ def _normalize_row_probability(x: np.ndarray) -> np.ndarray:
     normalized_x : np.ndarray, shape (n_rows, n_cols)
 
     """
-    x /= x.sum(axis=1, keepdims=True)
-    x[np.isnan(x)] = 0
-    return x
+    # Handle cases where the sum is zero to avoid division by zero -> NaN
+    row_sums = x.sum(axis=1, keepdims=True)
+    # Use np.errstate to temporarily ignore invalid division warnings
+    with np.errstate(invalid="ignore"):
+        normalized_x = np.where(row_sums > 0, x / row_sums, 0.0)
+    # Ensure any remaining NaNs (though unlikely with the above) are zero
+    normalized_x[np.isnan(normalized_x)] = 0.0
+    return normalized_x
 
 
-def estimate_movement_var(
-    position: np.ndarray, sampling_frequency: int = 1
-) -> np.ndarray:
+def estimate_movement_var(position: np.ndarray) -> np.ndarray:
     """Estimates the movement variance based on position.
 
     Parameters
     ----------
     position : np.ndarray, shape (n_time, n_position_dim)
         Position of the animal
-    sampling_frequency : int, optional
-        Number of samples per second.
 
     Returns
     -------
     movement_var : np.ndarray, shape (n_position_dim,)
-        Variance of the movement.
+        Variance of the movement per time bin
 
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     is_nan = np.any(np.isnan(position), axis=1)
     position = position[~is_nan]
-    movement_var = np.cov(np.diff(position, axis=0), rowvar=False)
-    return movement_var * sampling_frequency
+    return np.cov(np.diff(position, axis=0), rowvar=False)
 
 
 def _random_walk_on_track_graph(
