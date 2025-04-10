@@ -53,7 +53,7 @@ continuous_initial_conditions = [
     UniformInitialConditions(),
 ]
 
-discrete_transition_stickiness = np.array([1000.0, 100.0, 30.0, 30.0])
+discrete_transition_stickiness = np.array([10_000.0, 150.0, 150.0, 150.0])
 discrete_transition_concentration = 1.0
 
 # transition probability to no spike state
