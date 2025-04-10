@@ -53,7 +53,8 @@ continuous_initial_conditions = [
     UniformInitialConditions(),
 ]
 
-discrete_transition_stickiness = np.array([30.0, 100_000.0, 30.0, 200.0])
+discrete_transition_stickiness = np.array([1000.0, 100.0, 30.0, 30.0])
+discrete_transition_concentration = 1.0
 
 # transition probability to no spike state
 no_spike_trans_prob = 1e-5
@@ -112,12 +113,13 @@ state_names = [
 
 
 class NonLocalSortedSpikesDetector(SortedSpikesDetector):
+
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray = discrete_initial_conditions,
         continuous_initial_conditions_types: ContinuousInitialConditions = continuous_initial_conditions,
         discrete_transition_type: DiscreteTransitions = discrete_transition_type,
-        discrete_transition_concentration: float = 1.1,
+        discrete_transition_concentration: float = discrete_transition_concentration,
         discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
         discrete_transition_regularization: float = 1e-10,
         continuous_transition_types: ContinuousTransitions = continuous_transition_types,
@@ -157,12 +159,13 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
 
 
 class NonLocalClusterlessDetector(ClusterlessDetector):
+
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray = discrete_initial_conditions,
         continuous_initial_conditions_types: ContinuousInitialConditions = continuous_initial_conditions,
         discrete_transition_type: DiscreteTransitions = discrete_transition_type,
-        discrete_transition_concentration: float = 1.1,
+        discrete_transition_concentration: float = discrete_transition_concentration,
         discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
         discrete_transition_regularization: float = 1e-10,
         continuous_transition_types: ContinuousTransitions = continuous_transition_types,
