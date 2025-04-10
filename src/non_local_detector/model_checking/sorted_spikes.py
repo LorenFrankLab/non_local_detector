@@ -143,8 +143,8 @@ class TimeRescaling:
         scatter_kwargs: Optional[dict] = None,
         ci_color: str = "red",
     ) -> plt.Axes:
-        """Plots the rescaled ISIs versus a uniform distribution to
-        examine how close the rescaled ISIs are to the unit rate Poisson.
+        """Plots the empirical CDF versus the expected CDF to examine how
+        close the rescaled ISIs are to the unit rate Poisson.
 
         Parameters
         ----------
@@ -161,6 +161,36 @@ class TimeRescaling:
 
         """
         return plot_ks(
+            self.uniform_rescaled_ISIs(),
+            ax=ax,
+            scatter_kwargs=scatter_kwargs,
+            ci_color=ci_color,
+        )
+
+    def plot_qq(
+        self,
+        ax: plt.Axes = None,
+        scatter_kwargs: Optional[dict] = None,
+        ci_color: str = "red",
+    ) -> plt.Axes:
+        """Plots the rescaled ISIs versus a uniform distribution to examine
+        how close the rescaled ISIs are to the unit rate Poisson.
+
+        Parameters
+        ----------
+        ax : matplotlib axis handle, optional
+            If None, plots on the current axis handle.
+        scatter_kwargs : None or dict
+            Plotting arguments for scatter plot
+        ci_color : str
+            Confidence interval color
+
+        Returns
+        -------
+        ax : axis_handle
+
+        """
+        return plot_qq(
             self.uniform_rescaled_ISIs(),
             ax=ax,
             scatter_kwargs=scatter_kwargs,
@@ -333,6 +363,8 @@ def uniform_rescaled_ISIs(
         integrated_conditional_intensity = integrate.cumtrapz(
             conditional_intensity, initial=0.0
         )
+    # Rescale the ISIs to unit rate Poisson: \Lambda(spike_k) - \Lambda(spike_{k-1})
+    # These should be exponentially distributed with mean 1
     rescaled_ISIs = _rescaled_ISIs(integrated_conditional_intensity, is_spike)
 
     if adjust_for_short_trials:
@@ -344,7 +376,28 @@ def uniform_rescaled_ISIs(
     else:
         max_transformed_interval = 1
 
+    # Transform the ISIs to a uniform distribution (1 - exp(-ISI))
     return expon.cdf(rescaled_ISIs) / max_transformed_interval
+
+
+def point_process_residuals(
+    conditional_intensity: np.ndarray, is_spike: np.ndarray
+) -> np.ndarray:
+    """Compute the residuals of the point process model.
+
+    Parameters
+    ----------
+    conditional_intensity : np.ndarray, shape (n_time,)
+        The fitted model mean response rate at each time.
+    is_spike : np.ndarray, shape (n_time,)
+        Whether or not the neuron has spiked at that time.
+
+    Returns
+    -------
+    residuals : np.ndarray, shape (n_time,)
+        The residuals of the point process model.
+    """
+    return np.cumsum(is_spike - conditional_intensity)
 
 
 def plot_ks(
@@ -368,10 +421,9 @@ def plot_ks(
     ax : plt.Axes
     """
     n_spikes = uniform_rescaled_ISIs.size
-    uniform_cdf_values = _uniform_cdf_values(n_spikes)
-    uniform_rescaled_ISIs = np.sort(uniform_rescaled_ISIs)
+    uniform_cdf_values = (np.arange(1, n_spikes + 1) - 0.5) / n_spikes
 
-    ci = 1.36 / np.sqrt(n_spikes)
+    ci = 1.36 / np.sqrt(n_spikes)  # 95% confidence interval
 
     if ax is None:
         ax = plt.gca()
@@ -381,10 +433,40 @@ def plot_ks(
 
     ax.plot(uniform_cdf_values, uniform_cdf_values - ci, linestyle="--", color=ci_color)
     ax.plot(uniform_cdf_values, uniform_cdf_values + ci, linestyle="--", color=ci_color)
-    ax.scatter(uniform_rescaled_ISIs, uniform_cdf_values, **scatter_kwargs)
+    ax.plot([0, 1], [0, 1], linestyle="--", color=ci_color)
+    ax.scatter(np.sort(uniform_rescaled_ISIs), uniform_cdf_values, **scatter_kwargs)
 
     ax.set_xlabel("Empirical CDF")
     ax.set_ylabel("Expected CDF")
+
+    return ax
+
+
+def plot_qq(
+    uniform_rescaled_ISIs: np.ndarray,
+    ax: Optional[plt.Axes] = None,
+    scatter_kwargs: Optional[dict] = None,
+    ci_color: str = "red",
+) -> plt.Axes:
+
+    n_spikes = uniform_rescaled_ISIs.size
+    uniform_quantiles = (np.arange(1, n_spikes + 1) - 0.5) / n_spikes
+    sorted_ISIs = np.sort(uniform_rescaled_ISIs)
+
+    if ax is None:
+        ax = plt.gca()
+
+    if scatter_kwargs is None:
+        scatter_kwargs = dict()
+
+    ci = 1.96 * np.sqrt(sorted_ISIs * (1 - sorted_ISIs) / n_spikes)
+
+    ax.plot([0, 1], [0, 1], linestyle="--", color=ci_color)
+    ax.plot(sorted_ISIs, sorted_ISIs - ci, linestyle="--", color=ci_color)
+    ax.plot(sorted_ISIs, sorted_ISIs + ci, linestyle="--", color=ci_color)
+    ax.scatter(uniform_quantiles, sorted_ISIs, **scatter_kwargs)
+    ax.set_xlabel("Empirical quantiles")
+    ax.set_ylabel("Expected quantiles")
 
     return ax
 
