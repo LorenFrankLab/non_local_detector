@@ -847,6 +847,8 @@ class _DetectorBase(BaseEstimator):
             Whether to estimate the initial conditions, by default True.
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
+        estimate_encoding_model : bool, optional
+            Estimate the place fields based on the Local state, by default True.
         max_iter : int, optional
             Maximum number of EM iterations, by default 20.
         tolerance : float, optional
@@ -1776,6 +1778,7 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
+        estimate_encoding_model: bool = True,
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
@@ -1812,6 +1815,8 @@ class ClusterlessDetector(_DetectorBase):
             Whether to estimate the initial conditions, by default True.
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
+        estimate_encoding_model : bool, optional
+            Estimate the place fields based on the Local state, by default True
         max_iter : int, optional
             Maximum number of EM iterations, by default 20.
         tolerance : float, optional
@@ -1861,6 +1866,7 @@ class ClusterlessDetector(_DetectorBase):
             is_missing=is_missing,
             estimate_initial_conditions=estimate_initial_conditions,
             estimate_discrete_transition=estimate_discrete_transition,
+            estimate_encoding_model=estimate_encoding_model,
             max_iter=max_iter,
             tolerance=tolerance,
             cache_likelihood=cache_likelihood,
@@ -2369,6 +2375,7 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
+        estimate_encoding_model: bool = True,
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
@@ -2407,6 +2414,8 @@ class SortedSpikesDetector(_DetectorBase):
             Estimate the initial conditions, by default True
         estimate_discrete_transition : bool, optional
             Estimate the discrete transition matrix, by default True
+        estimate_encoding_model : bool, optional
+            Estimate the place fields based on the Local state, by default True.
         max_iter : int, optional
             Maximuim number of EM iterations, by default 20
         tolerance : float, optional
@@ -2454,6 +2463,7 @@ class SortedSpikesDetector(_DetectorBase):
             is_missing=is_missing,
             estimate_initial_conditions=estimate_initial_conditions,
             estimate_discrete_transition=estimate_discrete_transition,
+            estimate_encoding_model=estimate_encoding_model,
             max_iter=max_iter,
             tolerance=tolerance,
             cache_likelihood=cache_likelihood,
