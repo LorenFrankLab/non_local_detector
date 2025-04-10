@@ -1,3 +1,5 @@
+from typing import Optional
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -102,17 +104,21 @@ def fit_poisson_regression(
     coefficients : jnp.ndarray, shape (n_coefficients,)
     """
 
+    n_time = design_matrix.shape[0]
+
     @jax.jit
     def neglogp(
         coefficients, spikes=spikes, design_matrix=design_matrix, weights=weights
     ):
         conditional_intensity = jnp.exp(design_matrix @ coefficients)
         conditional_intensity = jnp.clip(conditional_intensity, a_min=EPS, a_max=None)
-        negative_log_likelihood = -1.0 * jnp.mean(
-            weights * jax.scipy.stats.poisson.logpmf(spikes, conditional_intensity)
+        log_likelihood_term = weights * (
+            jax.scipy.special.xlogy(spikes, conditional_intensity)
+            - conditional_intensity
         )
+        mean_neg_log_likelihood = -jnp.sum(log_likelihood_term) / n_time
         l2_penalty_term = l2_penalty * jnp.sum(coefficients[1:] ** 2)
-        return negative_log_likelihood + l2_penalty_term
+        return mean_neg_log_likelihood + l2_penalty_term
 
     dlike = jax.grad(neglogp)
 
@@ -126,6 +132,7 @@ def fit_poisson_regression(
         x0=initial_condition,
         method="BFGS",
         jac=dlike,
+        tol=1e-5,  # Added tolerance for potentially better convergence
     )
 
     return jnp.asarray(res.x)
@@ -140,6 +147,7 @@ def fit_sorted_spikes_glm_encoding_model(
     edges: np.ndarray,
     is_track_interior: np.ndarray,
     is_track_boundary: np.ndarray,
+    weights: Optional[np.ndarray] = None,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
     l2_penalty: float = 1e-3,
     disable_progress_bar: bool = False,
@@ -195,8 +203,8 @@ def fit_sorted_spikes_glm_encoding_model(
     emission_predict_matrix = make_spline_predict_matrix(
         emission_design_info, interior_place_bin_centers
     )
-
-    weights = jnp.ones((position_time.shape[0],))
+    if weights is None:
+        weights = jnp.ones((position.shape[0],))
 
     coefficients = []
     place_fields = []
@@ -301,7 +309,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         )
         for neuron_spike_times, coef in zip(
             tqdm(
-                spike_times.T,
+                spike_times,
                 unit="cell",
                 desc="Local Likelihood",
                 disable=disable_progress_bar,

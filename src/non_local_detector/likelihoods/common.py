@@ -95,7 +95,10 @@ def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.n
 
 
 def kde(
-    eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
+    eval_points: jnp.ndarray,
+    samples: jnp.ndarray,
+    std: jnp.ndarray,
+    weights: jnp.ndarray,
 ) -> jnp.ndarray:
     """Kernel density estimation.
 
@@ -107,6 +110,8 @@ def kde(
         Training samples.
     std : jnp.ndarray, shape (n_dims,)
         Standard deviation of the Gaussian kernel.
+    weights : jnp.ndarray, shape (n_samples,)
+        Weights for each sample.
 
     Returns
     -------
@@ -120,7 +125,7 @@ def kde(
             jnp.expand_dims(dim_samples, axis=1),
             dim_std,
         )
-    return jnp.mean(distance, axis=0)
+    return (weights @ distance) / jnp.sum(weights)
 
 
 def block_kde(
@@ -128,6 +133,7 @@ def block_kde(
     samples: jnp.ndarray,
     std: jnp.ndarray,
     block_size: int = 100,
+    weights: Optional[jnp.ndarray] = None,
 ) -> jnp.ndarray:
     """Kernel density estimation split into blocks.
 
@@ -148,11 +154,15 @@ def block_kde(
     """
     n_eval_points = eval_points.shape[0]
     density = jnp.zeros((n_eval_points,))
+
+    if weights is None:
+        weights = jnp.ones((samples.shape[0],))
+
     for start_ind in range(0, n_eval_points, block_size):
         block_inds = slice(start_ind, start_ind + block_size)
         density = jax.lax.dynamic_update_slice(
             density,
-            kde(eval_points[block_inds], samples, std),
+            kde(eval_points[block_inds], samples, std, weights),
             (start_ind,),
         )
 
@@ -164,7 +174,9 @@ class KDEModel:
     std: jnp.ndarray
     block_size: Optional[int] = None
 
-    def fit(self, samples: jnp.ndarray) -> "KDEModel":
+    def fit(
+        self, samples: jnp.ndarray, weights: Optional[jnp.ndarray] = None
+    ) -> "KDEModel":
         """Fit the model.
 
         Parameters
@@ -180,6 +192,10 @@ class KDEModel:
         if samples.ndim == 1:
             samples = jnp.expand_dims(samples, axis=1)
         self.samples_ = samples
+        if weights is None:
+            self.weights_ = jnp.ones((samples.shape[0],))
+        else:
+            self.weights_ = jnp.asarray(weights)
 
         return self
 
@@ -205,7 +221,7 @@ class KDEModel:
             eval_points.shape[0] if self.block_size is None else self.block_size
         )
 
-        return block_kde(eval_points, self.samples_, std, block_size)
+        return block_kde(eval_points, self.samples_, std, block_size, self.weights_)
 
 
 def get_spikecount_per_time_bin(

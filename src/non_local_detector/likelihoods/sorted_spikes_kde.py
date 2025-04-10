@@ -1,11 +1,19 @@
+from typing import Optional
+
 import jax
 import jax.numpy as jnp
 import numpy as np
+import scipy.interpolate
 from tqdm.autonotebook import tqdm
 from track_linearization import get_linearized_position
 
 from non_local_detector.environment import Environment
-from non_local_detector.likelihoods.common import EPS, KDEModel, get_position_at_time
+from non_local_detector.likelihoods.common import (
+    EPS,
+    KDEModel,
+    get_position_at_time,
+    get_spikecount_per_time_bin,
+)
 
 
 def fit_sorted_spikes_kde_encoding_model(
@@ -13,6 +21,7 @@ def fit_sorted_spikes_kde_encoding_model(
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
     environment: Environment,
+    weights: Optional[jnp.ndarray] = None,
     sampling_frequency: int = 500,
     position_std: float = np.sqrt(12.5),
     block_size: int = 100,
@@ -52,6 +61,8 @@ def fit_sorted_spikes_kde_encoding_model(
 
     is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
+    if weights is None:
+        weights = jnp.ones((position.shape[0],))
 
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D
@@ -61,12 +72,20 @@ def fit_sorted_spikes_kde_encoding_model(
             edge_order=environment.edge_order,
             edge_spacing=environment.edge_spacing,
         ).linear_position.to_numpy()[:, None]
-        occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
-            position1D
+        occupancy_model = KDEModel(
+            std=position_std,
+            block_size=block_size,
+        ).fit(
+            position1D,
+            weights=weights,
         )
     else:
-        occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
-            position
+        occupancy_model = KDEModel(
+            std=position_std,
+            block_size=block_size,
+        ).fit(
+            position,
+            weights=weights,
         )
 
     occupancy = occupancy_model.predict(interior_place_bin_centers)
@@ -74,8 +93,6 @@ def fit_sorted_spikes_kde_encoding_model(
     mean_rates = []
     place_fields = []
     marginal_models = []
-
-    n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
 
     for neuron_spike_times in tqdm(
         spike_times,
@@ -89,11 +106,25 @@ def fit_sorted_spikes_kde_encoding_model(
                 neuron_spike_times <= position_time[-1],
             )
         ]
-        mean_rates.append(len(neuron_spike_times) / n_time_bins)
+        weights_at_spike_times = scipy.interpolate.interpn(
+            (position_time,),
+            weights,
+            neuron_spike_times,
+            bounds_error=False,
+            fill_value=None,
+        )
+
+        try:
+            weights_at_spike_times = weights_at_spike_times.squeeze(axis=1)
+        except np.exceptions.AxisError:
+            pass
+
+        mean_rates.append(weights_at_spike_times.sum() / weights.sum())
         neuron_marginal_model = KDEModel(std=position_std, block_size=block_size).fit(
             get_position_at_time(
                 position_time, position, neuron_spike_times, environment
-            )
+            ),
+            weights=weights_at_spike_times,
         )
         marginal_models.append(neuron_marginal_model)
         marginal_density = neuron_marginal_model.predict(interior_place_bin_centers)
@@ -209,9 +240,8 @@ def predict_sorted_spikes_kde_log_likelihood(
                     neuron_spike_times <= time[-1],
                 )
             ]
-            spike_count_per_time_bin = np.bincount(
-                np.digitize(neuron_spike_times, time[1:-1]),
-                minlength=time.shape[0],
+            spike_count_per_time_bin = get_spikecount_per_time_bin(
+                neuron_spike_times, time
             )
             marginal_density = neuron_marginal_model.predict(interpolated_position)
             marginal_density = jnp.where(
@@ -245,9 +275,8 @@ def predict_sorted_spikes_kde_log_likelihood(
                     neuron_spike_times <= time[-1],
                 )
             ]
-            spike_count_per_time_bin = np.bincount(
-                np.digitize(neuron_spike_times, time[1:-1]),
-                minlength=time.shape[0],
+            spike_count_per_time_bin = get_spikecount_per_time_bin(
+                neuron_spike_times, time
             )
             log_likelihood += jax.scipy.special.xlogy(
                 np.expand_dims(spike_count_per_time_bin, axis=1),

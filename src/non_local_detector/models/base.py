@@ -85,7 +85,7 @@ class _DetectorBase(BaseEstimator):
 
         Parameters
         ----------
-        discrete_initial_conditions : np.ndarray
+        discrete_initial_conditions : np.ndarray, shape (n_states,)
             Initial conditions for discrete states.
         continuous_initial_conditions_types : ContinuousInitialConditions
             Types of continuous initial conditions.
@@ -293,22 +293,35 @@ class _DetectorBase(BaseEstimator):
             else:
                 is_environment = environment_labels == environment.environment_name
 
+            env_position = position[is_environment]
             if environment.track_graph is not None:
                 # convert to 1D
-                position = get_linearized_position(
-                    position,
+                env_position = get_linearized_position(
+                    env_position,
                     environment.track_graph,
                     edge_order=environment.edge_order,
                     edge_spacing=environment.edge_spacing,
                 ).linear_position.to_numpy()
 
             environment.fit_place_grid(
-                position[is_environment], infer_track_interior=self.infer_track_interior
+                env_position, infer_track_interior=self.infer_track_interior
             )
 
     def initialize_state_index(self) -> None:
-        """
-        Initialize the state index and related parameters.
+        """Initialize the state index and related parameters.
+
+        Attributes
+        ----------
+        n_discrete_states_ : int
+            Number of discrete states.
+        state_ind_ : np.ndarray, shape (n_state_bins,)
+            Index mapping each state bin to its corresponding discrete state.
+        n_state_bins_ : int
+            Total number of bins across all states (sum of spatial bins for continuous states and 1 for discrete).
+        bin_sizes_ : np.ndarray, shape (n_states,)
+             Number of bins for each discrete state.
+        is_track_interior_state_bins_ : np.ndarray, shape (n_state_bins,)
+             Boolean array indicating if a state bin corresponds to the track interior.
         """
         self.n_discrete_states_ = len(self.state_names)
         bin_sizes = []
@@ -333,7 +346,15 @@ class _DetectorBase(BaseEstimator):
         self.is_track_interior_state_bins_ = np.concatenate(is_track_interior)
 
     def initialize_initial_conditions(self) -> None:
-        """Constructs the initial probability for the state and each spatial bin."""
+        """Constructs the initial probability for the state and each spatial bin.
+
+        Attributes
+        ----------
+        continuous_initial_conditions_ : np.ndarray, shape (n_state_bins,)
+            Initial probability distribution over the bins within each state.
+        initial_conditions_ : np.ndarray, shape (n_state_bins,)
+            Overall initial probability distribution across all state bins.
+        """
         logger.info("Fitting initial conditions...")
         self.continuous_initial_conditions_ = np.concatenate(
             [
@@ -372,6 +393,13 @@ class _DetectorBase(BaseEstimator):
             If place fields should correspond to each state, label each time point with the group name, by default None.
         environment_labels : np.ndarray, shape (n_time,), optional
             If there are multiple environments, label each time point with the environment name, by default None.
+
+        Attributes
+        ----------
+        continuous_state_transitions_ : np.ndarray, shape (n_state_bins, n_state_bins)
+            Probability of transitioning between bins, assuming a transition between the corresponding discrete states occurs.
+        continuous_transition_types : ContinuousTransitions
+            Stores the continuous transition types used.
         """
         logger.info("Fitting continuous state transition...")
 
@@ -432,8 +460,17 @@ class _DetectorBase(BaseEstimator):
 
         Parameters
         ----------
-        covariate_data : Union[pd.DataFrame, dict, None], optional
+        covariate_data : dict or pd.DataFrame, optional
             Covariate data for covariate-dependent discrete transition, by default None.
+
+        Attributes
+        ----------
+        discrete_state_transitions_ : np.ndarray, shape (n_states, n_states) or (n_time, n_states, n_states)
+            Probability of transitioning between discrete states. Shape is (n_states, n_states) if no covariates, otherwise depends on covariate data.
+        discrete_transition_coefficients_ : np.ndarray or None
+            Fitted coefficients for covariate-dependent transitions.
+        discrete_transition_design_matrix_ : patsy.DesignMatrix or None
+            Design matrix information for covariate-dependent transitions.
         """
         logger.info("Fitting discrete state transition")
         (
@@ -463,8 +500,9 @@ class _DetectorBase(BaseEstimator):
             Convert the probabilities of state to expected duration of state, by default False.
         sampling_frequency : int, optional
             Number of samples per second, by default 1.
-        covariate_data: dict, optional
-            Dictionary of covariate data, by default None. Keys are covariate names and values are 1D arrays.
+        covariate_data: dict or pd.DataFrame, optional
+            Dictionary or DataFrame of covariate data, by default None.
+            Keys are covariate names and values are 1D arrays.
         """
 
         if self.discrete_state_transitions_.ndim == 2:
@@ -666,7 +704,7 @@ class _DetectorBase(BaseEstimator):
             If place fields should correspond to each state, label each time point with the group name, by default None.
         environment_labels : np.ndarray, optional, shape (n_time,)
             If there are multiple environments, label each time point with the environment name, by default None.
-        discrete_transition_covariate_data : dict, optional
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Covariate data for covariate-dependent discrete transition, by default None.
 
         Returns
@@ -775,18 +813,24 @@ class _DetectorBase(BaseEstimator):
         """Fit the model and predict the posterior probabilities. To be implemented by inheriting class."""
         raise NotImplementedError
 
+    def fit_encoding_model(self):
+        """Fit the encoding model. To be implemented by inheriting class."""
+        raise NotImplementedError
+
     def estimate_parameters(
         self,
         time: Optional[np.ndarray] = None,
         log_likelihood_args: Optional[tuple] = None,
         is_missing: Optional[np.ndarray] = None,
-        estimate_inital_conditions: bool = True,
+        estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
+        estimate_encoding_model: bool = True,
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
+        save_log_likelihood_to_results: bool = False,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -799,7 +843,7 @@ class _DetectorBase(BaseEstimator):
             Arguments for the log likelihood function, by default None.
         is_missing : np.ndarray, shape (n_time,), optional
             Boolean array indicating missing data, by default None.
-        estimate_inital_conditions : bool, optional
+        estimate_initial_conditions : bool, optional
             Whether to estimate the initial conditions, by default True.
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
@@ -808,25 +852,22 @@ class _DetectorBase(BaseEstimator):
         tolerance : float, optional
             Convergence tolerance for the EM algorithm, by default 1e-4.
         cache_likelihood : bool, optional
-            Whether to cache the log likelihoods for faster iterations, by default True.
+            If True, log likelihoods are cached instead of recomputed for each chunk, by default True
         store_log_likelihood : bool, optional
             Whether to store the log likelihoods in self.log_likelihoods_, by default False.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
+        save_log_likelihood_to_results : bool, optional
+            Whether to save the log likelihood to the results, by default False.
 
         Returns
         -------
         results : xr.Dataset
-            Results of the decoding.
+            Results of the decoding, including posterior probabilities and marginal log likelihoods.
         """
         marginal_log_likelihoods = []
         n_iter = 0
         converged = False
-
-        if store_log_likelihood:
-            log_likelihoods = getattr(self, "log_likelihood_", None)
-        else:
-            log_likelihoods = None
 
         while not converged and (n_iter < max_iter):
             # Expectation step
@@ -837,17 +878,40 @@ class _DetectorBase(BaseEstimator):
                 marginal_log_likelihood,
                 causal_state_probabilities,
                 predictive_state_probabilities,
-                log_likelihoods,
+                log_likelihood,
             ) = self._predict(
                 time=time,
                 log_likelihood_args=log_likelihood_args,
                 is_missing=is_missing,
                 cache_likelihood=cache_likelihood,
-                log_likelihoods=log_likelihoods,
+                log_likelihoods=getattr(self, "log_likelihood_", None),
                 n_chunks=n_chunks,
             )
             # Maximization step
             logger.info("Maximization step...")
+
+            if estimate_encoding_model:
+                try:
+                    local_state_index = self.state_names.index("Local")
+                except ValueError:
+                    # Handle case where 'Local' state might not exist or has different name
+                    local_state_index = None  # Or raise error
+
+                if local_state_index is not None:
+                    logger.info("Estimating encoding model...")
+                    local_state_weights = acausal_state_probabilities[
+                        :, local_state_index
+                    ]
+                    # Re-fit the encoding model using the posterior weights
+                    self.fit_encoding_model(
+                        **self._encoding_model_data,
+                        weights=local_state_weights,
+                    )
+                    if cache_likelihood:
+                        try:
+                            del self.log_likelihood_
+                        except AttributeError:
+                            pass
 
             if estimate_discrete_transition:
                 (
@@ -865,7 +929,7 @@ class _DetectorBase(BaseEstimator):
                     self.discrete_transition_regularization,
                 )
 
-            if estimate_inital_conditions:
+            if estimate_initial_conditions:
                 self.initial_conditions_[self.is_track_interior_state_bins_] = (
                     acausal_posterior[0]
                 )
@@ -905,13 +969,17 @@ class _DetectorBase(BaseEstimator):
                 )
 
         if store_log_likelihood:
-            self.log_likelihood_ = log_likelihoods
+            self.log_likelihood_ = log_likelihood
+
+        if hasattr(self, "encoding_model_data_"):
+            del self.encoding_model_data_
 
         return self._convert_results_to_xarray(
             time,
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihoods,
+            log_likelihood=log_likelihood if save_log_likelihood_to_results else None,
         )
 
     def most_likely_sequence(
@@ -921,7 +989,15 @@ class _DetectorBase(BaseEstimator):
         is_missing: Optional[np.ndarray] = None,
         n_chunks: int = 1,
     ) -> np.ndarray:
-        """Find the most likely sequence of states."""
+        """Find the most likely sequence of states.
+
+        Returns
+        -------
+        pd.DataFrame, shape (n_time, n_columns)
+            DataFrame containing the most likely sequence of states
+            and corresponding positions/metadata at each time step.
+
+        """
         is_track_interior = self.is_track_interior_state_bins_
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
         state_ind = self.state_ind_[is_track_interior]
@@ -1060,6 +1136,7 @@ class _DetectorBase(BaseEstimator):
         acausal_posterior: np.ndarray,
         acausal_state_probabilities: np.ndarray,
         marginal_log_likelihoods: list[float],
+        log_likelihood: Optional[np.ndarray] = None,
     ) -> xr.Dataset:
         """
         Convert the results to an xarray Dataset.
@@ -1074,6 +1151,8 @@ class _DetectorBase(BaseEstimator):
             Acausal state probabilities.
         marginal_log_likelihoods : list of float
             Marginal log likelihoods for each iteration.
+        log_likelihood : np.ndarray, optional, shape (n_time, n_state_bins)
+            Log likelihoods, by default None.
 
         Returns
         -------
@@ -1139,6 +1218,13 @@ class _DetectorBase(BaseEstimator):
         )
 
         results["acausal_posterior"][:, is_track_interior] = acausal_posterior
+
+        if log_likelihood is not None:
+            results["log_likelihood"] = (
+                ("time", "state_bins"),
+                np.full(posterior_shape, np.nan, dtype=np.float32),
+            )
+            results["log_likelihood"][:, is_track_interior] = log_likelihood
 
         return results.squeeze()
 
@@ -1349,6 +1435,7 @@ class ClusterlessDetector(_DetectorBase):
         is_training: Optional[np.ndarray] = None,
         encoding_group_labels: Optional[np.ndarray] = None,
         environment_labels: Optional[np.ndarray] = None,
+        weights: Optional[np.ndarray] = None,
     ) -> None:
         """
         Fit the encoding model to the data.
@@ -1364,11 +1451,20 @@ class ClusterlessDetector(_DetectorBase):
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
         is_training : np.ndarray, shape (n_time_position,), optional
-            Boolean array indicating training data, by default None.
+            Boolean array or weights indicating training data, by default None.
         encoding_group_labels : np.ndarray, shape (n_time_position,) optional
             Group labels for encoding, by default None.
         environment_labels : np.ndarray, optional
             Environment labels, by default None.
+        weights : np.ndarray, optional, shape (n_time_position,)
+            Weights for training data, by default None.
+
+        Attributes
+        ----------
+        encoding_model_ : dict
+            Dictionary holding the fitted encoding models for each unique observation model
+            configuration (environment, encoding group).
+            The values depend on the chosen `clusterless_algorithm`.
         """
         logger.info("Fitting clusterless spikes...")
         n_time = position.shape[0]
@@ -1457,7 +1553,7 @@ class ClusterlessDetector(_DetectorBase):
             Group labels for encoding, by default None.
         environment_labels : np.ndarray, shape (n_time_position,), optional
             Environment labels, by default None.
-        discrete_transition_covariate_data : dict-like, optional
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Covariate data for covariate-dependent discrete transition, by default None.
 
         Returns
@@ -1572,8 +1668,8 @@ class ClusterlessDetector(_DetectorBase):
 
             computed_likelihoods.append(likelihood_name)
 
-        # missing data should be 1.0 because there is no information
-        return jnp.where(is_missing[:, jnp.newaxis], 1.0, log_likelihood)
+        # missing data should be 0.0 because there is no information
+        return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
 
     def predict(
         self,
@@ -1586,6 +1682,7 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
+        save_log_likelihood_to_results: bool = False,
     ) -> xr.Dataset:
         """
         Predict the posterior probabilities for the given data.
@@ -1607,9 +1704,11 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_covariate_data : dict-like, optional
             Covariate data for covariate-dependent discrete transition, by default None.
         cache_likelihood : bool, optional
-            Whether to cache the log likelihoods, by default False.
+            If True, log likelihoods are cached instead of recomputed for each chunk, by default True
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
+        save_log_likelihood_to_results : bool, optional
+            Whether to save the log likelihood to the results, by default False.
 
         Returns
         -------
@@ -1641,7 +1740,7 @@ class ClusterlessDetector(_DetectorBase):
             marginal_log_likelihood,
             _,
             _,
-            _,
+            log_likelihood,
         ) = self._predict(
             time=time,
             log_likelihood_args=(
@@ -1660,6 +1759,7 @@ class ClusterlessDetector(_DetectorBase):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihood,
+            log_likelihood if save_log_likelihood_to_results else None,
         )
 
     def estimate_parameters(
@@ -1674,13 +1774,14 @@ class ClusterlessDetector(_DetectorBase):
         encoding_group_labels: Optional[np.ndarray] = None,
         environment_labels: Optional[np.ndarray] = None,
         discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
-        estimate_inital_conditions: bool = True,
+        estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
+        save_log_likelihood_to_results: bool = False,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -1707,7 +1808,7 @@ class ClusterlessDetector(_DetectorBase):
             Environment labels, by default None.
         discrete_transition_covariate_data : dict-like, optional
             Covariate data for covariate-dependent discrete transition, by default None.
-        estimate_inital_conditions : bool, optional
+        estimate_initial_conditions : bool, optional
             Whether to estimate the initial conditions, by default True.
         estimate_discrete_transition : bool, optional
             Whether to estimate the discrete transition matrix, by default True.
@@ -1716,17 +1817,28 @@ class ClusterlessDetector(_DetectorBase):
         tolerance : float, optional
             Convergence tolerance for the EM algorithm, by default 1e-4.
         cache_likelihood : bool, optional
-            Whether to cache the log likelihoods for faster iterations, by default True.
+            If True, log likelihoods are cached instead of recomputed for each chunk, by default True
         store_log_likelihood : bool, optional
             Whether to store the log likelihoods in self.log_likelihoods_, by default False.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
+        save_log_likelihood_to_results : bool, optional
+            Whether to save the log likelihood to the results, by default False.
 
         Returns
         -------
         results : xr.Dataset
             Results of the decoding.
         """
+        self._encoding_model_data = {
+            "position_time": position_time,
+            "position": position,
+            "spike_times": spike_times,
+            "spike_waveform_features": spike_waveform_features,
+            "is_training": None,
+            "encoding_group_labels": encoding_group_labels,
+            "environment_labels": environment_labels,
+        }
         self.fit(
             position_time,
             position,
@@ -1747,13 +1859,14 @@ class ClusterlessDetector(_DetectorBase):
                 spike_waveform_features,
             ),
             is_missing=is_missing,
-            estimate_inital_conditions=estimate_inital_conditions,
+            estimate_initial_conditions=estimate_initial_conditions,
             estimate_discrete_transition=estimate_discrete_transition,
             max_iter=max_iter,
             tolerance=tolerance,
             cache_likelihood=cache_likelihood,
             store_log_likelihood=store_log_likelihood,
             n_chunks=n_chunks,
+            save_log_likelihood_to_results=save_log_likelihood_to_results,
         )
 
     def most_likely_sequence(
@@ -1830,7 +1943,7 @@ class SortedSpikesDetector(_DetectorBase):
 
         Parameters
         ----------
-        discrete_initial_conditions : np.ndarray
+        discrete_initial_conditions : np.ndarray, shape (n_states,)
             Initial conditions for discrete states.
         continuous_initial_conditions_types : ContinuousInitialConditions
             Types of continuous initial conditions.
@@ -1927,7 +2040,7 @@ class SortedSpikesDetector(_DetectorBase):
 
         return group_spike_times
 
-    def fit_place_fields(
+    def fit_encoding_model(
         self,
         position_time: np.ndarray,
         position: np.ndarray,
@@ -1935,6 +2048,7 @@ class SortedSpikesDetector(_DetectorBase):
         is_training: Optional[np.ndarray] = None,
         encoding_group_labels: Optional[np.ndarray] = None,
         environment_labels: Optional[np.ndarray] = None,
+        weights: Optional[np.ndarray] = None,
     ) -> None:
         """
         Fit place fields to the data.
@@ -1953,6 +2067,15 @@ class SortedSpikesDetector(_DetectorBase):
             Group labels for encoding, by default None.
         environment_labels : np.ndarray, optional
             Environment labels, by default None.
+        weights : np.ndarray, optional, shape (n_time_position,)
+            Weights for training data, by default None.
+
+        Attributes
+        ----------
+        encoding_model_ : dict
+            Dictionary holding the fitted encoding models (place fields) for each unique
+            observation model configuration (environment, encoding group).
+            The values depend on the chosen `sorted_spikes_algorithm`.
         """
         logger.info("Fitting place fields...")
         n_time = position.shape[0]
@@ -1994,7 +2117,6 @@ class SortedSpikesDetector(_DetectorBase):
                 self.sorted_spikes_algorithm
             ]
             is_group = is_training & is_encoding & is_environment
-
             self.encoding_model_[likelihood_name] = encoding_algorithm(
                 position_time=position_time,
                 position=position,
@@ -2003,6 +2125,7 @@ class SortedSpikesDetector(_DetectorBase):
                 ),
                 environment=environment,
                 sampling_frequency=self.sampling_frequency,
+                weights=weights[is_group] if weights is not None else None,
                 **kwargs,
             )
 
@@ -2033,7 +2156,7 @@ class SortedSpikesDetector(_DetectorBase):
             Group labels for encoding, by default None.
         environment_labels : np.ndarray, shape (n_time_position,), optional
             Environment labels, by default None.
-        discrete_transition_covariate_data : dict-like, optional
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Covariate data for covariate-dependent discrete transition, by default None.
 
         Returns
@@ -2048,7 +2171,7 @@ class SortedSpikesDetector(_DetectorBase):
             environment_labels,
             discrete_transition_covariate_data,
         )
-        self.fit_place_fields(
+        self.fit_encoding_model(
             position_time,
             position,
             spike_times,
@@ -2142,8 +2265,8 @@ class SortedSpikesDetector(_DetectorBase):
 
             computed_likelihoods.append(likelihood_name)
 
-        # missing data should be 1.0 because there is no information
-        return jnp.where(is_missing[:, jnp.newaxis], 1.0, log_likelihood)
+        # missing data should be 0.0 because there is no information
+        return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
 
     def predict(
         self,
@@ -2155,6 +2278,7 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
+        save_log_likelihood_to_results: bool = False,
     ) -> xr.Dataset:
         """
         Predict the posterior probabilities for the given data.
@@ -2171,12 +2295,14 @@ class SortedSpikesDetector(_DetectorBase):
             Time points for position data, by default None.
         is_missing : np.ndarray, shape (n_time,), optional
             Boolean array indicating missing data, by default None.
-        discrete_transition_covariate_data : dict-like, optional
+        discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Covariate data for covariate-dependent discrete transition, by default None.
         cache_likelihood : bool, optional
             Whether to cache the log likelihoods, by default False.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
+        save_log_likelihood_to_results : bool, optional
+            Whether to save the log likelihood to the results, by default False.
 
         Returns
         -------
@@ -2209,7 +2335,7 @@ class SortedSpikesDetector(_DetectorBase):
             marginal_log_likelihood,
             _,
             _,
-            _,
+            log_likelihood,
         ) = self._predict(
             time=time,
             log_likelihood_args=(
@@ -2227,6 +2353,7 @@ class SortedSpikesDetector(_DetectorBase):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihood,
+            log_likelihood=log_likelihood if save_log_likelihood_to_results else None,
         )
 
     def estimate_parameters(
@@ -2240,13 +2367,14 @@ class SortedSpikesDetector(_DetectorBase):
         encoding_group_labels: Optional[np.ndarray] = None,
         environment_labels: Optional[np.ndarray] = None,
         discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
-        estimate_inital_conditions: bool = True,
+        estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         max_iter: int = 20,
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
+        save_log_likelihood_to_results: bool = False,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities
@@ -2275,7 +2403,7 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data : dict, optional
             Covariate data for a covariate dependent discrete transition.
             A dict-like object that can be used to look up variables, by default None
-        estimate_inital_conditions : bool, optional
+        estimate_initial_conditions : bool, optional
             Estimate the initial conditions, by default True
         estimate_discrete_transition : bool, optional
             Estimate the discrete transition matrix, by default True
@@ -2289,6 +2417,8 @@ class SortedSpikesDetector(_DetectorBase):
             Whether to store the log likelihoods in self.log_likelihoods_, by default False.
         n_chunks : int, optional
             Number of chunks for processing, by default 1
+        save_log_likelihood_to_results : bool, optional
+            Whether to save the log likelihood to the results, by default False.
 
         Returns
         -------
@@ -2296,7 +2426,14 @@ class SortedSpikesDetector(_DetectorBase):
             Results of the decoding
         """
         position = position[:, np.newaxis] if position.ndim == 1 else position
-
+        self._encoding_model_data = {
+            "position_time": position_time,
+            "position": position,
+            "spike_times": spike_times,
+            "is_training": None,
+            "encoding_group_labels": encoding_group_labels,
+            "environment_labels": environment_labels,
+        }
         self.fit(
             position_time,
             position,
@@ -2306,6 +2443,7 @@ class SortedSpikesDetector(_DetectorBase):
             environment_labels=environment_labels,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
         )
+
         return super().estimate_parameters(
             time=time,
             log_likelihood_args=(
@@ -2314,13 +2452,14 @@ class SortedSpikesDetector(_DetectorBase):
                 spike_times,
             ),
             is_missing=is_missing,
-            estimate_inital_conditions=estimate_inital_conditions,
+            estimate_initial_conditions=estimate_initial_conditions,
             estimate_discrete_transition=estimate_discrete_transition,
             max_iter=max_iter,
             tolerance=tolerance,
             cache_likelihood=cache_likelihood,
             store_log_likelihood=store_log_likelihood,
             n_chunks=n_chunks,
+            save_log_likelihood_to_results=save_log_likelihood_to_results,
         )
 
     def most_likely_sequence(
