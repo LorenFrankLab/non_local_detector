@@ -308,20 +308,31 @@ class _DetectorBase(BaseEstimator):
             )
 
     def initialize_state_index(self) -> None:
-        """Initialize the state index and related parameters.
+        """Initialize indices and parameters related to the combined state space.
+
+        Determines the total number of bins across all discrete states (spatial
+        bins for continuous states, 1 for discrete states like 'Local' or
+        'No-Spike') and creates mappings between these combined bins and the
+        original discrete states. Also identifies which combined bins correspond
+        to the track interior.
 
         Attributes
         ----------
         n_discrete_states_ : int
-            Number of discrete states.
-        state_ind_ : np.ndarray, shape (n_state_bins,)
-            Index mapping each state bin to its corresponding discrete state.
+            Total number of discrete states defined in the model.
+        state_ind_ : np.ndarray, shape (n_total_bins,)
+            Index mapping each combined bin to its corresponding discrete state index.
         n_state_bins_ : int
-            Total number of bins across all states (sum of spatial bins for continuous states and 1 for discrete).
-        bin_sizes_ : np.ndarray, shape (n_states,)
-             Number of bins for each discrete state.
-        is_track_interior_state_bins_ : np.ndarray, shape (n_state_bins,)
-             Boolean array indicating if a state bin corresponds to the track interior.
+            Total number of bins across all states (sum of spatial bins for
+            continuous states and 1 for discrete states). Referred to as
+            `n_total_bins` in the shape description here for clarity.
+        bin_sizes_ : np.ndarray, shape (n_discrete_states_,)
+             Number of bins associated with each discrete state (e.g., number
+             of place bins for spatial states, 1 for non-spatial states).
+        is_track_interior_state_bins_ : np.ndarray, shape (n_total_bins,)
+             Boolean array indicating if a combined state bin corresponds to the
+             track interior. For non-spatial states, this is typically True.
+
         """
         self.n_discrete_states_ = len(self.state_names)
         bin_sizes = []

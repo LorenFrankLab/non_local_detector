@@ -78,26 +78,37 @@ def filter(
     transition_matrix: jnp.ndarray,
     log_likelihoods: jnp.ndarray,
 ) -> Tuple[Tuple[float, jnp.ndarray], Tuple[jnp.ndarray, jnp.ndarray]]:
-    """Filtering step.
+    """Performs the forward pass of the forward-backward algorithm (filtering).
+
+    Computes the filtered state probabilities P(z_t | x_{1:t}) and the
+    one-step-ahead predicted probabilities P(z_t | x_{1:t-1}) iteratively.
 
     Parameters
     ----------
     initial_distribution : jnp.ndarray, shape (n_states,)
-        Initial state distribution
+        Probability distribution of the initial state, P(z_1).
     transition_matrix : jnp.ndarray, shape (n_states, n_states)
-        Transition matrix
+        State transition probability matrix, P(z_t | z_{t-1}).
     log_likelihoods : jnp.ndarray, shape (n_time, n_states)
-        Log likelihoods for each state at each time point
+        Log likelihood of the observations for each state at each time step,
+        log P(x_t | z_t).
 
     Returns
     -------
-    marginal_likelihood : float
-    predicted_probs_next : jnp.ndarray, shape (n_states,)
-        Next one-step-ahead predicted state probabilities
-    causal_posterior : jnp.ndarray, shape (n_time, n_states)
-        Filtered state probabilities
-    predicted_probs : jnp.ndarray, shape (n_time, n_states)
-        One-step-ahead predicted state probabilities
+    carry : tuple[float, jnp.ndarray]
+        A tuple containing:
+            - marginal_likelihood : float
+                Log probability of the observations log P(x_{1:T}).
+            - predicted_probs_next : jnp.ndarray, shape (n_states,)
+                The final one-step-ahead prediction P(z_{T+1} | x_{1:T}).
+    outputs : tuple[jnp.ndarray, jnp.ndarray]
+         A tuple containing:
+            - causal_posterior : jnp.ndarray, shape (n_time, n_states)
+                Filtered state probabilities P(z_t | x_{1:t}) for t=1...T.
+            - predicted_probs : jnp.ndarray, shape (n_time, n_states)
+                One-step-ahead predicted state probabilities P(z_t | x_{1:t-1})
+                for t=1...T. Note that `predicted_probs[0]` is equivalent
+                to `initial_distribution`.
     """
 
     def _step(carry, ll):

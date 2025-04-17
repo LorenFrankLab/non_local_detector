@@ -402,25 +402,41 @@ def get_grid(
     bin_size: float = 2.5,
     position_range: Optional[list[np.ndarray]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, tuple]:
-    """Gets the spatial grid of bins.
+    """Calculate bin edges and centers for a spatial grid.
+
+    Creates a grid based on the provided position data or range, using
+    a specified bin size. Handles multiple position dimensions. Adds
+    boundary bins to the edges.
 
     Parameters
     ----------
     position : np.ndarray, shape (n_time, n_position_dims)
+        Position data used to determine the grid extent if `position_range`
+        is not provided. NaNs are ignored.
     bin_size : float, optional
-        Maximum size of each position bin.
-    position_range : None or list of np.ndarray
-        Use this to define the extent instead of position
+        The desired approximate size of the bins in each dimension. The actual
+        size may vary slightly to evenly cover the range. By default 2.5.
+    position_range : Optional[List[Tuple[float, float]]], optional
+        A list of tuples, one for each position dimension, specifying the
+        (min, max) boundary for the grid. If None, the min/max of the
+        `position` data is used. By default None.
 
     Returns
     -------
-    edges : tuple of bin edges, len n_position_dims
-    place_bin_edges : np.ndarray, shape (n_bins + 1, n_position_dims)
-        Edges of each position bin
-    place_bin_centers : np.ndarray, shape (n_bins, n_position_dims)
-        Center of each position bin
-    centers_shape : tuple
-        Position grid shape
+    edges : tuple[np.ndarray, ...]
+        A tuple containing the bin edges for each position dimension. Each
+        element is a 1D array of shape (n_bins_d + 1,), where n_bins_d is
+        the number of bins in that dimension `d`. Includes boundary bins.
+    place_bin_edges_flat : np.ndarray, shape (n_total_bins, n_position_dims)
+        The edges corresponding to each bin in the flattened grid. Note: This
+        output might be less standard or useful than `edges` and
+        `place_bin_centers`. Consider if it's truly needed.
+    place_bin_centers_flat : np.ndarray, shape (n_total_bins, n_position_dims)
+        The center coordinate of each bin in the flattened grid.
+        `n_total_bins` is the product of the number of bins in each dimension.
+    centers_shape : tuple[int, ...]
+        The shape of the grid in terms of the number of bins in each dimension
+        (e.g., (n_bins_x, n_bins_y)).
 
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]

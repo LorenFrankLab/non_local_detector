@@ -346,30 +346,47 @@ def get_ahead_behind_distance(
     mental_position_edges: np.ndarray,
     source: Hashable = "actual_position",
 ) -> np.ndarray:
-    """Distance of the animal to the mental position where the sign indicates
-    whether the mental position is ahead or behind the animal.
+    """Calculate signed distance from animal's position to mental position along the track graph.
+
+    Computes the shortest path distance along the track graph between the
+    animal's actual projected position and the estimated mental position (MAP).
+    The sign indicates direction relative to the animal's orientation:
+    positive means the mental position is ahead, negative means behind.
 
     Parameters
     ----------
     track_graph : networkx.Graph
-        Graph representation of the environment
-    actual_projected_position : numpy.ndarray, shape (n_time, 2)
+        Graph representation of the environment, potentially including temporary
+        nodes for actual/mental positions.
+    actual_projected_position : np.ndarray, shape (n_time, 2)
         2D position of the animal projected onto the `track_graph`.
-    actual_edges : numpy.ndarray, shape (n_time,)
-        Edge of the `track_graph` that the animal is currently on.
-    actual_orientation : numpy.ndarray, shape (n_time,)
-        Orientation of the animal in radians.
-    mental_position_2d : numpy.ndarray, shape (n_time, 2)
-        Most likely decoded position
-    mental_position_edges : numpy.ndarray, shape (n_time,)
-        Edge of the `track_graph` that most likely decoded position corresponds
-        to.
+    actual_edges : np.ndarray, shape (n_time, 2)
+        Tuple of node IDs representing the edge of the `track_graph` that the
+        animal is currently on at each time point.
+    actual_orientation : np.ndarray, shape (n_time,)
+        Orientation of the animal in radians at each time point.
+    mental_position_2d : np.ndarray, shape (n_time, 2)
+        Most likely decoded 2D position (MAP estimate) at each time point.
+    mental_position_edges : np.ndarray, shape (n_time, 2)
+        Tuple of node IDs representing the edge of the `track_graph` that the
+        most likely decoded position corresponds to at each time point.
+    source : Hashable, optional
+        Node ID representing the starting point for distance calculation,
+        typically the temporary node "actual_position".
+        By default "actual_position".
 
     Returns
     -------
-    distance_metrics : np.ndarray
-        Information about the distance of the animal to the mental position.
+    ahead_behind_distance : np.ndarray, shape (n_time,)
+        The shortest path distance along the track graph. Positive if the
+        mental position is ahead of the animal based on its orientation,
+        negative if behind. Units are the same as the graph edge distances.
 
+    Notes
+    -----
+    This function iteratively modifies a copy of the input `track_graph`
+    by adding temporary nodes for the actual and mental positions for each
+    time step.
     """
     copy_graph = track_graph.copy()
     ahead_behind_distance = []

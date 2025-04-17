@@ -27,8 +27,8 @@ def make_spline_design_matrix(
     ----------
     position : np.ndarray, shape (n_time, n_position_dims)
     place_bin_edges : np.ndarray, shape (n_bins,)
-    knot_spacing : float, shape (n_bins,), optional
-        Spacing of spline knots, by default 10.0
+    knot_spacing : float, optional
+        Spacing of spline knots
 
     Returns
     -------
@@ -183,6 +183,19 @@ def fit_sorted_spikes_glm_encoding_model(
     Returns
     -------
     encoding_model : dict
+        coefficients : jnp.ndarray, shape (n_neurons, n_coefficients)
+            Fitted coefficients for each neuron.
+        emission_design_info : patsy.design_info.DesignInfo
+            DesignInfo object for the spline basis.
+        place_fields : jnp.ndarray, shape (n_neurons, n_bins)
+            Place fields for each neuron.
+        no_spike_part_log_likelihood : jnp.ndarray, shape (n_bins,)
+            Contribution to the log likelihood from no spikes.
+        is_track_interior : jnp.ndarray, shape (n_bins,)
+            Boolean array indicating track interior.
+        disable_progress_bar : bool
+            If True, suppresses the progress bar display.
+
     """
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     time_range = (position_time[0], position_time[-1])
@@ -261,34 +274,45 @@ def predict_sorted_spikes_glm_log_likelihood(
     disable_progress_bar: bool = False,
     is_local: bool = False,
 ) -> jnp.ndarray:
-    """Predict the log likelihood of spikes given the model.
+    """Predict the log likelihood of spikes given a fitted GLM encoding model.
+
+    Calculates the log likelihood of observing the given spike times under
+    either a non-local (over spatial bins) or local (at the animal's current
+    position) GLM model.
 
     Parameters
     ----------
     time : jnp.ndarray, shape (n_time,)
-        Decoded time bins.
+        Time bins for decoding likelihood.
     position_time : jnp.ndarray, shape (n_time_position,)
-        Time bins for position.
+        Timestamps corresponding to the position data.
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
-        Position data.
+        Position data of the animal.
     spike_times : list[np.ndarray]
-        Spike times for each neuron.
+        List where each element is an array of spike times for a single neuron.
     environment : Environment
-        The spatial environment.
+        The spatial environment object containing track geometry information.
     coefficients : jnp.ndarray, shape (n_neurons, n_coefficients)
-        Coefficients for each neuron.
+        Fitted GLM coefficients for each neuron.
     emission_design_info : patsy.design_info.DesignInfo
-        _description_
-    place_fields : jnp.ndarray
-        _description_
-    no_spike_part_log_likelihood : jnp.ndarray
-        _description_
-    is_track_interior : jnp.ndarray
-        _description_
+        Patsy DesignInfo object used for creating the spline design matrix
+        during encoding, needed for prediction.
+    place_fields : jnp.ndarray, shape (n_neurons, n_position_bins)
+        Expected firing rate for each neuron in each position bin, derived
+        from the fitted GLM (`exp(predict_matrix @ coefficients)`).
+    no_spike_part_log_likelihood : jnp.ndarray, shape (n_position_bins,)
+        The contribution to the log likelihood from the possibility of no spikes
+        occurring in a time bin, summed across neurons (`sum(place_fields)`).
+    is_track_interior : jnp.ndarray, shape (n_position_bins,)
+        Boolean array indicating which position bins are part of the valid
+        track area.
     disable_progress_bar : bool, optional
-        _description_, by default False
+        If True, suppresses the progress bar display. By default False.
     is_local : bool, optional
-        _description_, by default False
+        If True, compute the log likelihood only at the animal's current
+        interpolated position (local decoding). If False, compute the log
+        likelihood across all position bins (non-local decoding).
+        By default False.
 
     Returns
     -------
