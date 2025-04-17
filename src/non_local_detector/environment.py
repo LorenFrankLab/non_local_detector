@@ -2,7 +2,7 @@
 
 import pickle
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -37,48 +37,92 @@ class Environment:
     Parameters
     ----------
     environment_name : str, optional
-    place_bin_size : float, optional
-        Approximate size of the position bins.
+        Identifier for the environment. Defaults to "".
+    place_bin_size : float or tuple[float], optional
+        Approximate size of the position bins in each dimension. Defaults to 2.0.
     track_graph : networkx.Graph, optional
-        Graph representing the 1D spatial topology
+        Graph representing the 1D spatial topology. If provided, 1D methods are used.
     edge_order : tuple of 2-tuples, optional
-        The order of the edges in 1D space
-    edge_spacing : None or int or tuples of len n_edges-1, optional
-        Any gaps between the edges in 1D space.
+        Required if `track_graph` is provided. The order of the edges in 1D space.
+    edge_spacing : float or list, optional
+        Required if `track_graph` is provided. Spacing between edges. Defaults to 0.
     is_track_interior : np.ndarray or None, optional
-        If given, this will be used to define the valid areas of the track.
-        Must be of type boolean.
-    position_range : sequence, optional
-        A sequence of `n_position_dims`, each an optional (lower, upper)
-        tuple giving the outer bin edges for position.
-        An entry of None in the sequence results in the minimum and maximum
-        values being used for the corresponding dimension.
-        The default, None, is equivalent to passing a tuple of
-        `n_position_dims` None values.
+        Boolean array defining valid track areas. If None and `infer_track_interior`
+        is True, it will be inferred from position data.
+    position_range : Sequence[Tuple[float, float]], optional
+        Outer bin edges for each dimension [(min_dim1, max_dim1), ...].
+        If None, range is determined from position data.
     infer_track_interior : bool, optional
-        If True, then use the given positions to figure out the valid track
-        areas.
+        If True and `is_track_interior` is None, infer track geometry from position data.
+        Defaults to True. Ignored if `track_graph` is provided.
     fill_holes : bool, optional
-        Fill holes when inferring the track
+        Fill holes in the inferred track interior. Defaults to False. Ignored if `track_graph` is provided.
     dilate : bool, optional
-        Inflate the available track area with binary dilation
+        Inflate the inferred track interior. Defaults to False. Ignored if `track_graph` is provided.
     bin_count_threshold : int, optional
-        Greater than this number of samples should be in the bin for it to
-        be considered on the track.
+        Minimum number of samples in a bin to be considered part of the track interior.
+        Defaults to 0. Ignored if `track_graph` is provided.
 
+    Attributes
+    ----------
+    edges_ : tuple[np.ndarray, ...]
+        Bin edges for each dimension.
+    place_bin_edges_ : np.ndarray, shape (n_bins + 1, n_dims) or (n_total_bins + n_edges, n_dims)
+        Edges of the place bins (linearized or N-D).
+    place_bin_centers_ : np.ndarray, shape (n_bins, n_dims)
+        Center coordinates of each place bin.
+    centers_shape_ : tuple[int, ...]
+        Shape of the grid in terms of bins per dimension.
+    is_track_interior_ : np.ndarray, shape (n_bins,) or (n_bins_dim1, n_bins_dim2, ...)
+        Boolean array indicating which bins are part of the track interior.
+    is_track_boundary_ : np.ndarray or None
+        Boolean array indicating boundary bins (only for N-D environments).
+    track_graphDD : networkx.Graph or None
+        Graph representation where nodes are bin centers (only for N-D environments).
+    distance_between_nodes_ : Dict[int, Dict[int, float]] or np.ndarray
+        Shortest path distances between nodes on the track graph (1D or N-D).
+    track_graph_with_bin_centers_edges_ : nx.Graph or None
+        Track graph with bin centers and edges added as nodes (only for 1D).
+    original_nodes_df_ : pd.DataFrame or None
+        Info about original track graph nodes (only for 1D).
+    place_bin_edges_nodes_df_ : pd.DataFrame or None
+        Info about nodes representing bin edges (only for 1D).
+    place_bin_centers_nodes_df_ : pd.DataFrame or None
+        Info about nodes representing bin centers (only for 1D).
+    nodes_df_ : pd.DataFrame or None
+        Combined info about all nodes in the augmented graph (only for 1D).
     """
 
     environment_name: str = ""
-    place_bin_size: Union[float, Tuple[float]] = 2.0
+    place_bin_size: Union[float, Tuple[float, ...]] = 2.0
     track_graph: Optional[nx.Graph] = None
-    edge_order: Optional[tuple] = None
-    edge_spacing: Optional[tuple] = None
+    edge_order: Optional[List[Tuple]] = None
+    edge_spacing: Optional[Union[float, List[float]]] = 0.0
     is_track_interior: Optional[np.ndarray] = None
-    position_range: Optional[np.ndarray] = None
+    position_range: Optional[Sequence[Tuple[float, float]]] = None
     infer_track_interior: bool = True
     fill_holes: bool = False
     dilate: bool = False
     bin_count_threshold: int = 0
+
+    # Attributes to be fitted
+    edges_: Optional[Tuple[np.ndarray, ...]] = None
+    place_bin_edges_: Optional[np.ndarray] = None
+    place_bin_centers_: Optional[np.ndarray] = None
+    centers_shape_: Optional[Tuple[int, ...]] = None
+    is_track_interior_: Optional[np.ndarray] = None
+    is_track_boundary_: Optional[np.ndarray] = None
+    track_graphDD: Optional[nx.Graph] = None  # For N-D case
+    distance_between_nodes_: Optional[
+        Union[Dict[int, Dict[int, float]], np.ndarray]
+    ] = None
+    track_graph_with_bin_centers_edges_: Optional[nx.Graph] = None  # For 1D case
+    original_nodes_df_: Optional[pd.DataFrame] = None
+    place_bin_edges_nodes_df_: Optional[pd.DataFrame] = None
+    place_bin_centers_nodes_df_: Optional[pd.DataFrame] = None
+    nodes_df_: Optional[pd.DataFrame] = None
+    # Internal flag
+    _is_fitted: bool = False
 
     def __eq__(self, other: str) -> bool:
         return self.environment_name == other
@@ -171,13 +215,18 @@ class Environment:
 
         return self
 
-    def plot_grid(self, ax: matplotlib.axes.Axes = None) -> None:
+    def plot_grid(self, ax: matplotlib.axes.Axes = None) -> matplotlib.axes.Axes:
         """Plot the fitted spatial grid of the environment.
 
         Parameters
         ----------
         ax : plt.axes, optional
             Plot on this axis if given, by default None
+
+        Returns
+        -------
+        ax : plt.axes
+            The axis on which the grid is plotted.
 
         """
         if self.track_graph is not None:
@@ -205,35 +254,58 @@ class Environment:
             ax.grid(visible=True, which="minor")
             ax.grid(visible=False, which="major")
 
+        return ax
+
     def save_environment(self, filename: str = "environment.pkl") -> None:
-        """Saves the environment as a pickled file.
+        """Saves the environment object as a pickled file.
 
         Parameters
         ----------
         filename : str, optional
-            File name to pickle the environment to, by default "environment.pkl"
-
+            File name to save the environment to. Defaults to "environment.pkl".
         """
         with open(filename, "wb") as file_handle:
             pickle.dump(self, file_handle)
 
     @classmethod
     def load_environment(cls, filename: str = "environment.pkl") -> "Environment":
+        """Loads a pickled environment object from a file.
+
+        Parameters
+        ----------
+        filename : str, optional
+            File name to load the environment from. Defaults to "environment.pkl".
+
+        Returns
+        -------
+        Environment
+            The loaded environment object.
+        """
         with open(filename, "rb") as f:
             return pickle.load(f)
 
     def get_bin_ind(self, sample: np.ndarray) -> np.ndarray:
         """Find the indices of the bins to which each value in input array belongs.
 
+        Uses the fitted grid edges (`self.edges_`).
+
         Parameters
         ----------
         sample : np.ndarray, shape (n_time, n_dim)
+            Input data points.
 
         Returns
         -------
-        bin_ind : np.ndarray, shape (n_time,)
-
+        bin_inds : np.ndarray, shape (n_time,)
+            Flat index of the bin for each data point in `sample`.
         """
+        if not self._is_fitted:
+            raise RuntimeError(
+                "Environment has not been fitted yet. Call `fit_place_grid` first."
+            )
+        if self.edges_ is None:
+            raise ValueError("Environment edges `edges_` are not defined.")
+
         # remove outer boundary edge
         edges = [e[1:-1] for e in self.edges_]
 
@@ -271,21 +343,41 @@ class Environment:
     def get_manifold_distances(
         self, position1: np.ndarray, position2: np.ndarray
     ) -> np.ndarray:
-        """
-        Computes the distance between two positions on the track manifold.
+        """Computes the distance between pairs of positions along the track manifold.
+
+        This uses the precomputed shortest path distances between bin centers on the
+        graph representation of the environment (either 1D or N-D).
 
         Parameters
         ----------
-        position1 : numpy.ndarray
-            The first position on the track manifold.
-        position2 : numpy.ndarray
-            The second position on the track manifold.
+        position1 : np.ndarray, shape (n_time, n_dims) or (n_dims,)
+            The first set of positions.
+        position2 : np.ndarray, shape (n_time, n_dims) or (n_dims,)
+             The second set of positions. Must have the same shape as position1.
 
         Returns
         -------
-        distance: np.ndarray
-            The distance between the two positions on the track manifold.
+        distances : np.ndarray, shape (n_time,)
+            The shortest path distance along the track for each pair of positions.
+            Returns np.inf if no path exists between the bins corresponding to the positions.
+
+        Raises
+        ------
+        RuntimeError
+            If the environment has not been fitted.
+        ValueError
+            If input shapes mismatch or required attributes are missing.
         """
+        if not self._is_fitted:
+            raise RuntimeError(
+                "Environment has not been fitted yet. Call `fit_place_grid` first."
+            )
+        if self.distance_between_nodes_ is None:
+            raise ValueError("Distance between nodes has not been computed or stored.")
+
+        position1 = np.atleast_2d(position1)
+        position2 = np.atleast_2d(position2)
+
         # Validate input shapes
         if position1.shape != position2.shape:
             raise ValueError("Shapes of position1 and position2 must match.")
@@ -315,32 +407,47 @@ class Environment:
         classify_stop: bool = False,
         stop_speed_threshold: float = 1e-3,
     ) -> np.ndarray:
-        """
-        Get the direction of movement of an object relative to the center of the track.
+        """Get the direction of movement relative to the center of the track (inward/outward).
+
+        Requires a fitted N-D environment with a corresponding track graph (`track_graphDD`).
 
         Parameters
         ----------
-        position : numpy.ndarray
-            The position of the object in 2D space.
-        position_time : numpy.ndarray, optional
-            The time at which each position was recorded. If not provided, it is assumed that positions were recorded at
-            regular intervals.
+        position : np.ndarray, shape (n_time, n_dims)
+            Position data.
+        position_time : np.ndarray, shape (n_time,), optional
+            Timestamps for position data. If None, assumes uniform sampling.
         sigma : float, optional
-            The standard deviation of the Gaussian kernel used to smooth the velocity. Default is 0.1.
+            Standard deviation (in seconds) for Gaussian smoothing of velocity towards center. Defaults to 0.1.
         sampling_frequency : float, optional
-            The sampling frequency of the position data. If not provided, it is calculated as the inverse of the mean
-            time difference between consecutive position samples.
+            Sampling frequency in Hz. If None, estimated from `position_time`.
         classify_stop : bool, optional
-            Whether to classify the object as "stopped" if its speed is below the stop_speed_threshold. Default is False.
+            If True, classify speeds below `stop_speed_threshold` as "stop". Defaults to False.
         stop_speed_threshold : float, optional
-            The speed threshold below which the object is classified as "stopped". Default is 1e-3.
+            Speed threshold for classifying stops. Defaults to 1e-3.
 
         Returns
         -------
-        direction : numpy.ndarray
-            An array of strings indicating the direction of movement of the object relative to the center of the track.
-            Possible values are "inward", "outward", and "stop" (if classify_stop is True).
+        direction : np.ndarray, shape (n_time,)
+            Array of strings: "inward", "outward", or "stop".
+
+        Raises
+        ------
+        RuntimeError
+            If the environment has not been fitted or lacks the N-D track graph.
+        ValueError
+            If sampling frequency cannot be determined.
         """
+
+        if not self._is_fitted:
+            raise RuntimeError(
+                "Environment has not been fitted yet. Call `fit_place_grid` first."
+            )
+        if self.track_graphDD is None or self.distance_between_nodes_ is None:
+            raise RuntimeError(
+                "Direction finding requires a fitted N-D environment with a track graph ('track_graphDD') and precomputed distances."
+            )
+
         if position_time is None:
             position_time = np.arange(position.shape[0])
         if sampling_frequency is None:
