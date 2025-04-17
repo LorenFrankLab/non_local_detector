@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 from jax.nn import log_softmax
-from patsy import build_design_matrices, dmatrix
+from patsy import DesignMatrix, build_design_matrices, dmatrix
 from scipy.optimize import minimize
 from scipy.special import softmax
 
@@ -16,18 +16,20 @@ def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-    y : np.ndarray, shape (n_states,)
-        The input values
+    y : np.ndarray, shape (..., n_states)
+        The input values. Can have leading dimensions.
+        The last dimension is the state dimension.
 
     Returns
     -------
-    softmax : np.ndarray, shape (n_states + 1,)
+    softmax : np.ndarray, shape (..., n_states + 1)
         The softmax of the input values
 
     Example
     -------
-    > y = np.log([2, 3, 4])
-    > np.allclose(centered_softmax_forward(y), [0.2, 0.3, 0.4, 0.1])
+    >>> y = np.log([2, 3, 4])
+    >>> np.allclose(centered_softmax_forward(y), [0.2, 0.3, 0.4, 0.1])
+    True
     """
     if y.ndim == 1:
         y = np.append(y, 0)
@@ -42,18 +44,19 @@ def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-    y : np.ndarray, shape (n_states + 1,)
-        The softmax values
+    y : np.ndarray, shape (..., n_states + 1)
+        The softmax values. Can have leading dimensions.
 
     Returns
     -------
-    inverse : np.ndarray, shape (n_states,)
+    inverse : np.ndarray, shape (..., n_states)
         The inverse of the softmax values
 
     Example
     -------
-    > y = np.asarray([0.2, 0.3, 0.4, 0.1])
-    > np.allclose(np.exp(centered_softmax_inverse(y)), np.asarray([2,3,4]))
+    >>> y = np.asarray([0.2, 0.3, 0.4, 0.1])
+    >>> np.allclose(np.exp(centered_softmax_inverse(y)), np.asarray([2,3,4]))
+    True
     """
     return np.log(y[..., :-1]) - np.log(y[..., [-1]])
 
@@ -71,13 +74,13 @@ def estimate_joint_distribution(
     Parameters
     ----------
     causal_posterior : np.ndarray, shape (n_time, n_states)
-        Causal posterior distribution
+        Causal posterior distribution P(z_t | x_{1:t})
     predictive_distribution : np.ndarray, shape (n_time, n_states)
-        One step predictive distribution
+        One step predictive distribution P(z_{t+1} | x_{1:t})
     transition_matrix : np.ndarray, shape (n_time, n_states, n_states) or shape (n_states, n_states)
-        Current estimate of the transition matrix
+        Current estimate of the transition matrix P(z_{t+1} | z_t)
     acausal_posterior : np.ndarray, shape (n_time, n_states)
-        Acausal posterior distribution
+        Acausal posterior distribution P(z_{t+1} | x_{1:T})
 
     Returns
     -------
@@ -91,21 +94,21 @@ def estimate_joint_distribution(
     )[:, np.newaxis]
 
     if transition_matrix.ndim == 2:
-        # Add a singleton dimension for the time axis if the transition matrix is stationary
+        # Add a singleton dimension for the time axis
+        # if the transition matrix is stationary
+        # shape (1, n_states, n_states)
         joint_distribution = (
             transition_matrix[np.newaxis]
             * causal_posterior[:-1, :, np.newaxis]
             * relative_distribution
         )
     else:
+        # shape (n_time - 1, n_states, n_states)
         joint_distribution = (
             transition_matrix[:-1]
             * causal_posterior[:-1, :, np.newaxis]
             * relative_distribution
         )
-        # joint_distribution = (
-        #         np.einsum("ts,st,t->tsst", transition_matrix[:-1], causal_posterior[:-1], relative_distribution)
-        #     )
 
     return joint_distribution
 
@@ -116,18 +119,20 @@ def jax_centered_log_softmax_forward(y: jnp.ndarray) -> jnp.ndarray:
 
     Parameters
     ----------
-    y : jnp.ndarray, shape (n_states,)
+    y : jnp.ndarray, shape (..., n_states)
         The input values
 
     Returns
     -------
-    log_softmax : jnp.ndarray, shape (n_states + 1,)
+    log_softmax : jnp.ndarray, shape (..., n_states + 1)
         The log softmax of the input values
 
     Example
     -------
-    > y = np.log([2, 3, 4])
-    > np.allclose(centered_softmax_forward(y), [0.2, 0.3, 0.4, 0.1])
+    >>> y = jnp.log(jnp.array([2, 3, 4]))
+    >>> log_p = jax_centered_log_softmax_forward(y)
+    >>> np.allclose(jnp.exp(log_p), jnp.array([0.2, 0.3, 0.4, 0.1]))
+    True
     """
     if y.ndim == 1:
         y = jnp.append(y, 0)
@@ -149,8 +154,10 @@ def multinomial_neg_log_likelihood(
     Parameters
     ----------
     coefficients : jnp.ndarray, shape (n_coefficients * n_states - 1)
+        Flattened coefficients.
     design_matrix : jnp.ndarray, shape (n_samples, n_coefficients)
     response : jnp.ndarray, shape (n_samples, n_states)
+        Expected counts or probabilities for each state transition.
 
     Returns
     -------
@@ -184,11 +191,15 @@ multinomial_hessian = jax.hessian(multinomial_neg_log_likelihood)
 
 
 def get_transition_prior(
-    concentration: float, stickiness: float, n_states: int
+    concentration: float, stickiness: Union[float, np.ndarray], n_states: int
 ) -> np.ndarray:
-    return np.maximum(
-        concentration * np.ones((n_states,)) + stickiness * np.eye(n_states), 1.0
-    )
+    """Creates a Dirichlet prior for the transition matrix rows."""
+    if isinstance(stickiness, (int, float)):
+        stickiness_arr = stickiness * np.eye(n_states)
+    else:
+        # Assume stickiness provided per state
+        stickiness_arr = np.diag(stickiness)
+    return np.maximum(concentration * np.ones((n_states,)) + stickiness_arr, 1.0)
 
 
 def estimate_non_stationary_state_transition(
@@ -199,38 +210,47 @@ def estimate_non_stationary_state_transition(
     transition_matrix: np.ndarray,
     acausal_posterior: np.ndarray,
     concentration: float = 1.0,
-    stickiness: float = 0.0,
+    stickiness: Union[float, np.ndarray] = 0.0,
     transition_regularization: float = 1e-5,
     optimization_method: str = "Newton-CG",
     maxiter: Optional[int] = 100,
     disp: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Estimate the non-stationary state transition model.
+    """Estimate the non-stationary state transition model using Dirichlet likelihood.
 
     Parameters
     ----------
     transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
-        Initial estimate of the transition coefficients
+        Initial estimate of the transition coefficients.
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        Covariate design matrix.
     causal_posterior : np.ndarray, shape (n_time, n_states)
-        Causal posterior distribution
+        Filtered posterior P(z_t | x_{1:t}).
     predictive_distribution : np.ndarray, shape (n_time, n_states)
-        One step predictive distribution
+        One-step predictive distribution P(z_{t+1} | x_{1:t}).
     transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
-        Current estimate of the transition matrix
+        Current estimate of the transition matrix P(z_{t+1} | z_t).
     acausal_posterior : np.ndarray, shape (n_time, n_states)
-        Acausal posterior distribution
+        Smoothed posterior P(z_{t+1} | x_{1:T}).
+    concentration : float, optional
+        Dirichlet prior concentration parameter (uniform part), by default 1.0.
+    stickiness : float or np.ndarray, optional
+        Dirichlet prior stickiness parameter (diagonal enhancement), by default 0.0.
+    transition_regularization : float, optional
+        L2 penalty on coefficients (excluding intercept), by default 1e-5.
     optimization_method : str, optional
-        See scipy.optimize.minimize for available methods
+        Optimization method for `scipy.optimize.minimize`, by default "Newton-CG".
     maxiter : int, optional
-        Maximum number of iterations for the optimization
+        Maximum iterations for optimizer, by default 100.
     disp : bool, optional
-        Whether to print convergence messages for the optimization
+        Display optimizer convergence messages, by default False.
 
     Returns
     -------
-    estimated_transition_coefficients : jnp.ndarray, shape (n_coefficients, n_states, n_states - 1)
-    estimated_transition_matrix : jnp.ndarray, shape (n_time, n_states, n_states)
+    estimated_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+        Optimized transition coefficients.
+    estimated_transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
+        Resulting non-stationary transition matrix.
     """
     # p(x_t, x_{t+1} | O_{1:T})
     joint_distribution = estimate_joint_distribution(
@@ -337,21 +357,30 @@ def dirichlet_neg_log_likelihood(
     coefficients: jnp.ndarray,
     design_matrix: jnp.ndarray,
     response: jnp.ndarray,
-    alpha=1.0,
+    alpha: Union[float, jnp.ndarray] = 1.0,
     l2_penalty: float = 1e-5,
 ) -> float:
-    """Negative expected complete log likelihood of the transition model.
+    """Negative expected complete log likelihood for Dirichlet-Multinomial model.
 
     Parameters
     ----------
-    coefficients : jnp.ndarray, shape (n_coefficients * (n_states - 1))
+    coefficients : jnp.ndarray, shape (n_coefficients * (n_states - 1),)
+        Flattened regression coefficients.
     design_matrix : jnp.ndarray, shape (n_samples, n_coefficients)
+        Covariate design matrix.
     response : jnp.ndarray, shape (n_samples, n_states)
-    alpha : jnp.ndarray, shape (n_states,)
+        Expected counts or probabilities for each state transition.
+    alpha : Union[float, jnp.ndarray], shape (n_states,), optional
+        Dirichlet prior parameters for this row of the transition matrix.
+        If float, assumed uniform. Defaults to 1.0 (Laplace smoothing).
+    l2_penalty : float, optional
+        L2 regularization penalty on coefficients (excluding intercept).
+        Defaults to 1e-5.
 
     Returns
     -------
     negative_expected_complete_log_likelihood : float
+        The loss value to be minimized.
     """
     n_coefficients = design_matrix.shape[1]
 
@@ -376,17 +405,18 @@ dirichlet_hessian = jax.hessian(dirichlet_neg_log_likelihood)
 
 
 def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
-    """Make a transition matrix from the diagonal.
+    """Make a transition matrix where diagonal probabilities are `diag`,
+    and off-diagonal probabilities are uniform for the remaining probability.
 
     Parameters
     ----------
     diag : np.ndarray, shape (n_states,)
-        The diagonal of the transition matrix.
+        The desired diagonal probabilities of the transition matrix.
 
     Returns
     -------
     transition_matrix : np.ndarray, shape (n_states, n_states)
-
+        The constructed transition matrix.
     """
     n_states = len(diag)
     transition_matrix = diag * np.eye(n_states)
@@ -406,19 +436,36 @@ def set_initial_discrete_transition(
     speed_knots: Optional[np.ndarray] = None,
     is_stationary: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Set the initial discrete transition matrix.
+    """Set the initial discrete transition matrix for the local/non-local model
 
     Parameters
     ----------
-    speed : np.ndarray, shape (n_time,)
+    speed : np.ndarray, shape (n_time,), optional
+        Required if `is_stationary` is False.
     speed_knots : np.ndarray, optional
+        Used if `is_stationary` is False and `formula` includes knots.
     is_stationary : bool, optional
+        If True, return a stationary matrix. If False, return non-stationary.
+    diag : np.ndarray, optional
+        Diagonal values for the initial stationary matrix.
+        Defaults to [0.90, 0.90, 0.90, 0.98].
+    formula : str, optional
+        Patsy formula for non-stationary transitions.
+        Defaults to "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])".
 
     Returns
     -------
-    discrete_transition : np.ndarray, shape (n_states, n_states)
-    discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
-    discrete_transition_design_matrix : np.ndarray, shape (n_time, n_coefficients)
+    discrete_transition : np.ndarray, shape (n_states, n_states) or (n_time, n_states, n_states)
+        The initial transition matrix.
+    discrete_transition_coefficients : Optional[np.ndarray], shape (n_coefficients, n_states, n_states - 1)
+        Initial coefficients (only if non-stationary).
+    discrete_transition_design_matrix : Optional[patsy.DesignMatrix]
+        Design matrix (only if non-stationary).
+
+    Raises
+    ------
+    ValueError
+        If `is_stationary` is False but `speed` is None.
     """
     state_names = [
         "local",
@@ -471,31 +518,41 @@ def _estimate_discrete_transition(
     predictive_state_probabilities: np.ndarray,
     acausal_state_probabilities: np.ndarray,
     discrete_transition: np.ndarray,
-    discrete_transition_coefficients: np.ndarray,
-    discrete_transition_design_matrix: np.ndarray,
+    discrete_transition_coefficients: Optional[np.ndarray],
+    discrete_transition_design_matrix: Optional[DesignMatrix],
     transition_concentration: float,
-    transition_stickiness: float,
+    transition_stickiness: Union[float, np.ndarray],
     transition_regularization: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Estimate the discrete transition matrix.
+    """Estimate the discrete transition matrix (stationary or non-stationary).
 
     Parameters
     ----------
     causal_state_probabilities : np.ndarray, shape (n_time, n_states)
+        P(z_t | x_{1:t})
     predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
+        P(z_{t+1} | x_{1:t})
     acausal_state_probabilities : np.ndarray, shape (n_time, n_states)
-    discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
-    discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
-    discrete_transition_design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        P(z_{t+1} | x_{1:T})
+    discrete_transition : np.ndarray, shape (n_time, n_states, n_states) or (n_states, n_states)
+        Current transition matrix estimate.
+    discrete_transition_coefficients : Optional[np.ndarray], shape (n_coefficients, n_states, n_states - 1)
+        Current coefficient estimate (if non-stationary).
+    discrete_transition_design_matrix : Optional[patsy.DesignMatrix]
+        Design matrix (if non-stationary).
     transition_concentration : float
-    transition_stickiness : float
+        Dirichlet prior concentration.
+    transition_stickiness : float or np.ndarray
+        Dirichlet prior stickiness.
     transition_regularization : float
+        L2 penalty for non-stationary coefficients.
 
     Returns
     -------
-    discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
-    discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+    estimated_discrete_transition : np.ndarray
+        Updated transition matrix.
+    estimated_discrete_transition_coefficients : Optional[np.ndarray]
+        Updated coefficients (if non-stationary).
     """
 
     if (
@@ -541,7 +598,7 @@ class DiscreteStationaryDiagonal:
 
     Attributes
     ----------
-    diagonal_values : np.ndarray
+    diagonal_values : np.ndarray, shape (n_states,)
         The diagonal of the transition matrix.
 
     """
@@ -575,7 +632,7 @@ class DiscreteStationaryCustom:
     Attributes
     ----------
     values : np.ndarray, shape (n_states, n_states)
-        The values of the transition matrix.
+        The transition matrix values. Rows must sum to 1.
 
     """
 
@@ -601,18 +658,18 @@ class DiscreteStationaryCustom:
 
 @dataclass
 class DiscreteNonStationaryDiagonal:
-    """Covariate driven transition matrix that changes over time.
+    """Non-stationary transition matrix driven by covariates.
 
-    Initialized with a stationary diagonal matrix.
-
-    Off-diagonals are probability: (1 - `diagonal_value`) / (`n_states` - 1)
+    Initialized with a stationary diagonal matrix, then coefficients are estimated.
+    Off-diagonals are uniform based on the diagonal value at each time step.
 
     Attributes
     ----------
-    diagonal_values : np.ndarray
-        The diagonal of the transition matrix.
-    formula : str
-        Regression model formula for the transition matrix.
+    diagonal_values : np.ndarray, shape (n_states,)
+        Initial diagonal probabilities used to set intercept coefficients.
+    formula : str, optional
+        Patsy formula defining the relationship between covariates and transitions.
+        Defaults to a spline based on 'speed'.
     """
 
     diagonal_values: np.ndarray
@@ -621,22 +678,22 @@ class DiscreteNonStationaryDiagonal:
     def make_state_transition(
         self, covariate_data: Union[pd.DataFrame, dict]
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Constructs the initial discrete transition matrix
+        """Constructs the initial non-stationary discrete transition structures.
 
         Parameters
         ----------
         covariate_data : pd.DataFrame or dict
-            The covariate data for the transition matrix.
+            Data containing covariates specified in the formula. Must have
+            length matching the number of time steps.
 
         Returns
         -------
-        discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
-            The initial discrete transition matrix.
-        discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
-            The initial coefficients for the transition matrix.
-        discrete_transition_design_matrix : np.ndarray, shape (n_time, n_coefficients)
-            The covariate driven design matrix for the transition matrix.
-
+        initial_discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
+            Initial guess for the transition matrix at each time step (based on intercept).
+        initial_discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+            Initial coefficients, with intercepts set based on `diagonal_values`.
+        discrete_transition_design_matrix : patsy.DesignMatrix
+            The design matrix derived from the formula and covariate data.
         """
 
         n_states = len(self.diagonal_values)
@@ -666,18 +723,18 @@ class DiscreteNonStationaryDiagonal:
 
 @dataclass
 class DiscreteNonStationaryCustom:
-    """Covariate driven transition matrix that changes over time.
+    """Non-stationary transition matrix driven by covariates, with custom initial values.
 
-    Initialized with a stationary diagonal matrix.
-
-    Off-diagonals are probability: (1 - `diagonal_value`) / (`n_states` - 1)
+    Initialized with a custom stationary matrix, then coefficients are estimated.
 
     Attributes
     ----------
     values : np.ndarray, shape (n_states, n_states)
-        The values of the transition matrix.
-    formula : str
-        Regression model formula for the transition matrix.
+        Initial stationary transition matrix used to set intercept coefficients.
+        Rows must sum to 1.
+    formula : str, optional
+        Patsy formula defining the relationship between covariates and transitions.
+        Defaults to a spline based on 'speed'.
     """
 
     values: np.ndarray
@@ -686,22 +743,22 @@ class DiscreteNonStationaryCustom:
     def make_state_transition(
         self, covariate_data: Tuple[pd.DataFrame, dict]
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Constructs the initial discrete transition matrix
+        """Constructs the initial non-stationary discrete transition structures.
 
         Parameters
         ----------
         covariate_data : pd.DataFrame or dict
-            The covariate data for the transition matrix.
+            Data containing covariates specified in the formula. Must have
+            length matching the number of time steps.
 
         Returns
         -------
-        discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
-            The initial discrete transition matrix.
-        discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
-            The initial coefficients for the transition matrix.
-        discrete_transition_design_matrix : np.ndarray, shape (n_time, n_coefficients)
-            The covariate driven design matrix for the transition matrix.
-
+        initial_discrete_transition : np.ndarray, shape (n_time, n_states, n_states)
+            Initial guess for the transition matrix at each time step (based on intercept).
+        initial_discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+            Initial coefficients, with intercepts set based on `values`.
+        discrete_transition_design_matrix : patsy.DesignMatrix
+            The design matrix derived from the formula and covariate data.
         """
 
         n_states = len(self.values)
@@ -734,21 +791,25 @@ class DiscreteNonStationaryCustom:
 
 
 def predict_discrete_state_transitions(
-    discrete_transition_design_matrix: np.ndarray,
+    discrete_transition_design_matrix: DesignMatrix,
     discrete_transition_coefficients: np.ndarray,
-    discrete_transition_covariate_data: pd.DataFrame,
+    discrete_transition_covariate_data: Union[pd.DataFrame, dict],
 ) -> np.ndarray:
-    """Predict the discrete state transitions.
+    """Predict the discrete state transitions based on new covariate data.
 
     Parameters
     ----------
-    discrete_transition_design_matrix : np.ndarray, shape (n_time, n_coefficients)
+    discrete_transition_design_matrix : patsy.DesignMatrix
+        Original design matrix used for fitting (contains design_info).
     discrete_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
-    discrete_transition_covariate_data : pd.DataFrame
+        Fitted regression coefficients.
+    discrete_transition_covariate_data : pd.DataFrame or dict
+        New covariate data for prediction.
 
     Returns
     -------
-    discrete_state_transitions : np.ndarray, shape (n_time, n_states, n_states)
+    discrete_state_transitions : np.ndarray, shape (n_new_time, n_states, n_states)
+        Predicted transition matrices for the new covariate data.
     """
     design_matrix = build_design_matrices(
         [discrete_transition_design_matrix.design_info],
