@@ -385,18 +385,14 @@ class Environment:
         bin_ind1 = self.get_bin_ind(position1)
         bin_ind2 = self.get_bin_ind(position2)
 
-        n_bins = np.prod(self.centers_shape_)
-        distance = np.full((n_bins, n_bins), np.inf)
-        for to_node_id, from_node_id in nx.shortest_path_length(
-            self.track_graphDD,
-            weight="distance",
-        ):
-            distance[to_node_id, list(from_node_id.keys())] = list(
-                from_node_id.values()
+        if self.track_graph is not None:  # 1D case uses dict
+            raise NotImplementedError(
+                "Distance calculation for 1D track graph is not implemented."
             )
-        distance = distance[bin_ind1, bin_ind2]
+        else:
+            distances = self.distance_between_nodes_[bin_ind1, bin_ind2]
 
-        return distance
+        return distances
 
     def get_direction(
         self,
