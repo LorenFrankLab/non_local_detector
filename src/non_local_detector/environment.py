@@ -1,4 +1,53 @@
-"""Classes for constructing discrete grids representations of spatial environments in nD"""
+"""Defines spatial environments using discrete grids and graph representations.
+
+This module provides the `Environment` class and associated helper functions to
+represent spatial environments commonly used in neuroscience experiments, such
+as open fields or linear tracks. The core idea is to discretize the continuous
+space into a grid of bins and potentially represent the connectivity or topology
+of the valid space using a graph.
+
+The module supports two main types of environments:
+
+1.  **N-Dimensional Environments (e.g., Open Field, W-Track):**
+    - Discretizes the space into a regular N-D grid based on specified bin sizes
+      or position data ranges.
+    - Can automatically infer the "track interior" (the portion of the grid
+      actually occupied by the animal) from position data using histogramming
+      and optional morphological operations (filling holes, dilation).
+    - Constructs a `networkx` graph (`track_graphDD`) where nodes represent
+      the centers of *interior* bins, and edges connect adjacent interior bins.
+      This graph captures the connectivity of the valid space.
+    - Can compute shortest-path distances between all pairs of interior bins
+      on this graph (`distance_between_nodes_`).
+    - Provides methods to find the bin index for a given position (`get_bin_ind`),
+      calculate manifold distances between positions (`get_manifold_distances`),
+      and determine movement direction relative to the track center (`get_direction`).
+
+2.  **1-Dimensional Environments (Linear Tracks, W-Tracks):**
+    - Requires a `networkx.Graph` (`track_graph`) defining the track's topology
+      (nodes, edges, and their positions) along with edge ordering and spacing.
+    - Linearizes the track based on the provided graph structure.
+    - Creates bins along this linearized track.
+    - Generates an augmented graph (`track_graph_with_bin_centers_edges_`) where
+      both the original track nodes and the newly created bin centers/edges
+      are represented as nodes.
+    - Computes shortest-path distances between all nodes in this augmented graph
+      (`distance_between_nodes_`).
+    - Stores detailed information about original nodes, bin edges, and bin
+      centers in pandas DataFrames (`original_nodes_df_`, etc.).
+
+The central component is the `Environment` dataclass, which holds the parameters
+defining the environment and stores the results of the fitting process (grid
+details, graphs, distances) as attributes. The primary method `fit_place_grid`
+is used to perform the discretization and graph construction based on the input
+parameters and optional position data.
+
+Helper functions are provided for tasks like grid generation (`get_grid`),
+track interior inference (`get_track_interior`), graph construction
+(`make_nD_track_graph_from_environment`, `get_track_grid`), distance calculation,
+and visualization (`plot_grid`). The class also supports saving and loading
+environment definitions using `pickle`.
+"""
 
 import pickle
 from dataclasses import dataclass
