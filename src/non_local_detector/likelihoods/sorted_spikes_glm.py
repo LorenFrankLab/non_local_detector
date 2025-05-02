@@ -1,3 +1,54 @@
+"""Poisson Generalized Linear Model (GLM) for Sorted Spikes using Spatial Splines.
+
+This module provides functions to fit and predict neural activity using a
+Generalized Linear Model (GLM) assuming Poisson firing statistics. It is
+specifically designed for **sorted spikes**, where each spike train corresponds
+to a distinct, pre-identified neural unit.
+
+The core idea is to model the firing rate of each neuron as a function of the
+animal's position. This relationship (the place field) is captured flexibly
+using B-splines defined over the spatial dimensions. The model assumes:
+  `spike_count ~ Poisson(rate)`
+  `log(rate) = design_matrix @ coefficients`
+where the `design_matrix` is constructed using spatial spline basis functions
+derived from the animal's position, and `coefficients` are parameters fitted
+to the data.
+
+Key functionalities include:
+1.  **Spline Basis Generation:**
+    - `make_spline_design_matrix`: Creates the design matrix for fitting using
+      `patsy`, defining cyclic cubic regression splines based on position data
+      and specified knot spacing.
+    - `make_spline_predict_matrix`: Generates the corresponding matrix for new
+      positions based on the fitted model's design information, ensuring
+      consistent basis functions for prediction.
+
+2.  **Model Fitting:**
+    - `fit_poisson_regression`: Fits the Poisson GLM coefficients for a *single*
+      neuron using its spike counts and the design matrix. It employs L2
+      regularization and optimizes the Poisson log-likelihood using SciPy's
+      BFGS optimizer, leveraging JAX for automatic differentiation.
+    - `fit_sorted_spikes_glm_encoding_model`: Orchestrates the fitting process
+      for *all neurons*. It iterates through each neuron's spike train, calls
+      `fit_poisson_regression`, computes the resulting place field (expected
+      firing rate across space), and aggregates the results.
+
+3.  **Likelihood Prediction:**
+    - `predict_sorted_spikes_glm_log_likelihood`: Calculates the log-likelihood
+      of observing spike trains during a *decoding* period, given the fitted
+      GLM. It uses the Poisson log-likelihood formula:
+      `sum_{neurons} [ k * log(lambda) - lambda ]`
+      where `k` is the observed spike count and `lambda` is the predicted rate
+      from the model. It supports both:
+        - **Non-local decoding:** Computing likelihood across all spatial bins.
+        - **Local decoding:** Computing likelihood only at the animal's
+          interpolated position at each time point.
+
+This module integrates with the `non_local_detector.environment` for spatial
+context and uses common helper functions for spike counting and position
+interpolation.
+"""
+
 from typing import Optional
 
 import jax

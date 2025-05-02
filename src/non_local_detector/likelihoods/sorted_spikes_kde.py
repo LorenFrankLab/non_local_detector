@@ -1,3 +1,51 @@
+"""Kernel Density Estimation (KDE) based encoding/decoding for sorted spikes.
+
+This module implements a non-parametric method for modeling neural firing rates
+(place fields) and decoding position based on **sorted spike** data, using
+Kernel Density Estimation (KDE).
+
+Unlike parametric models like GLMs, this approach directly estimates density
+functions from the data. The core principle is to estimate:
+1.  The spatial density of the animal's occupancy (how much time is spent where).
+2.  The spatial density of each neuron's spikes (where a neuron tends to fire).
+
+The place field, or firing rate map (`rate(x)`), for each neuron is then
+calculated as:
+  `rate(x) = mean_firing_rate * (spike_density(x) / occupancy_density(x))`
+Both `spike_density` and `occupancy_density` are estimated using KDE with
+Gaussian kernels. The model assumes Poisson firing statistics, where the spike
+counts are driven by this estimated rate `rate(x)`.
+
+Key functionalities:
+1.  **Encoding Model Fitting (`fit_sorted_spikes_kde_encoding_model`):**
+    - Takes position data, sorted spike times (one list per neuron), and
+      environment information.
+    - Fits KDE models (using the shared `KDEModel` class) to estimate the
+      spatial occupancy density and the marginal spatial density for each
+      neuron's spikes.
+    - Calculates the mean firing rate for each neuron.
+    - Derives the place field (rate map) for each neuron using the formula above.
+    - Handles both 2D and 1D linearized environments.
+    - Returns a dictionary containing the fitted KDE models, mean rates,
+      derived place fields, and occupancy information.
+
+2.  **Log-Likelihood Prediction (`predict_sorted_spikes_kde_log_likelihood`):**
+    - Calculates the log-likelihood of observing spike trains during a
+      *decoding* period, given the fitted KDE-based encoding model.
+    - Assumes Poisson statistics and uses the log-likelihood formula:
+      `sum_{neurons} [ k * log(lambda) - lambda ]`
+      where `k` is the observed spike count and `lambda` is the predicted rate
+      (`rate(x)`) derived from the KDE place fields.
+    - Supports both:
+        - **Non-local decoding:** Computing likelihood across all spatial bins.
+        - **Local decoding:** Computing likelihood only at the animal's
+          interpolated position.
+
+This module provides a non-parametric alternative to GLM-based methods for
+sorted spikes, relying on density estimation rather than fitted coefficients.
+It utilizes JAX and SciPy for efficient computation and interpolation.
+"""
+
 from typing import Optional
 
 import jax

@@ -1,3 +1,51 @@
+"""Clusterless decoding using Kernel Density Estimation (KDE).
+
+This module implements a clusterless decoding algorithm based on Kernel Density
+Estimation (KDE). Unlike traditional methods that rely on pre-sorted neural
+units (clusters), this approach uses the waveform features of detected spikes
+directly, treating them as "marks" in a marked point process.
+
+The core idea is to model the joint distribution of spike times, spike waveform
+features, and the animal's position during an "encoding" period (typically
+when the animal is actively exploring the environment). This model is then used
+during a "decoding" period (e.g., during sleep or quiet wakefulness) to compute
+the likelihood of observing spikes with specific waveform features occurring at
+various positions.
+
+Key components:
+1.  **Encoding Model Fitting (`fit_clusterless_kde_encoding_model`):**
+    - Takes position data, spike times, and spike waveform features from the
+      encoding period.
+    - Uses KDE with Gaussian kernels to estimate:
+        - Spatial occupancy (how much time the animal spends where).
+        - Ground process intensity (spatial firing rate density, marginalizing
+          over features) for each electrode.
+        - Implicitly models the joint distribution of position and waveform
+          features for spikes on each electrode.
+    - Handles both 2D environments and 1D linearized tracks.
+    - Returns a dictionary containing the fitted models (occupancy, GPI models),
+      processed encoding data, and parameters.
+
+2.  **Log-Likelihood Prediction (`predict_clusterless_kde_log_likelihood`):**
+    - Takes time bins for decoding, new spike data (times and features), and
+      the fitted encoding model.
+    - Calculates the log-likelihood of the observed spikes under the model for
+      each time bin.
+    - Can compute either:
+        - **Non-local likelihood:** Log-likelihood across all spatial bins,
+          suitable for estimating a posterior probability distribution over
+          position.
+        - **Local likelihood:** Log-likelihood specifically at the animal's
+          actual (interpolated) position at each time bin.
+    - Leverages JAX for efficient computation, particularly the KDE steps,
+      often using blocking (`block_estimate_log_joint_mark_intensity`) to
+      manage memory for large datasets.
+
+Helper functions are included for tasks like mapping spike times to time bins
+(`get_spike_time_bin_ind`) and computing KDE distances (`kde_distance`).
+Constants like `EPS` and `LOG_EPS` are used for numerical stability.
+"""
+
 from typing import Optional
 
 import jax

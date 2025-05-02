@@ -1,3 +1,16 @@
+"""Log-likelihood computation for a very low firing rate Poisson firing model.
+
+This module provides a function to calculate the log-likelihood of observed spike
+counts under a simple baseline model. This model is intended to quiescent
+times when the population of neurons is not firing, or is firing at a very low rate.
+Examples of this are times when the animal is immobile and the hippocampus has
+burst like activity.
+
+The primary function `predict_no_spike_log_likelihood` computes this value
+for specified time bins based on the provided spike times and baseline rate.
+It utilizes JAX for efficient computation.
+"""
+
 import jax.numpy as jnp
 import jax.scipy
 import numpy as np
