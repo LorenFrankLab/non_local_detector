@@ -857,44 +857,100 @@ class Environment:
     ) -> "Environment":
         return self.fit(position=position)
 
-    def plot_grid(self, ax: matplotlib.axes.Axes = None) -> matplotlib.axes.Axes:
-        """Plot the fitted spatial grid of the environment.
+    def plot_grid(
+        self, ax: Optional[matplotlib.axes.Axes] = None
+    ) -> matplotlib.axes.Axes:
+        """Plots the spatial grid and track interior/graph.
 
         Parameters
         ----------
-        ax : plt.axes, optional
-            Plot on this axis if given, by default None
+        ax : Optional[matplotlib.axes.Axes], optional
+            Existing axes to plot on. If None, creates new axes. Defaults to None.
 
         Returns
         -------
-        ax : plt.axes
-            The axis on which the grid is plotted.
+        ax : matplotlib.axes.Axes
+            The axes used for plotting.
 
+        Raises
+        ------
+        RuntimeError
+            If the environment has not been fitted.
+        ValueError
+            If the environment is 1D but `track_graph` and `edge_order` are not set.
+        NotImplementedError
+            If the environment is not 1D or 2D.
         """
-        if self.track_graph is not None:
-            if ax is None:
-                _, ax = plt.subplots(figsize=(15, 2))
+        if not self._is_fitted:
+            raise RuntimeError("Environment has not been fitted. Call fit() first.")
 
-            plot_graph_as_1D(
-                self.track_graph, self.edge_order, self.edge_spacing, ax=ax
-            )
-            try:
-                for edge in self.edges_[0]:
-                    ax.axvline(edge.squeeze(), linewidth=0.5, color="black")
-            except AttributeError:
-                # Edges have not been fit yet
-                pass
-            ax.set_ylim((0, 0.1))
-        else:
+        if self.is_1d:
+            # Plot 1D linearized track
             if ax is None:
-                _, ax = plt.subplots(figsize=(6, 7))
+                fig, ax = plt.subplots(figsize=(15, 2.5))
+            if self.track_graph and self.edge_order:
+                # Plot the original graph structure linearized
+                plot_graph_as_1D(
+                    self.track_graph,
+                    self.edge_order,
+                    self.edge_spacing,
+                    ax=ax,
+                    node_size=50,
+                )
+
+                # Overlay bin edges
+                if self.edges_ and self.edges_[0] is not None:
+                    edges_lin = self.edges_[0]
+                    for edge_pos in edges_lin:
+                        ax.axvline(
+                            edge_pos, linewidth=0.5, color="black", linestyle=":"
+                        )
+                ax.set_title(f"{self.environment_name} (Linearized)")
+                ax.set_xlabel("Linearized Position")
+                ax.set_yticks([])  # Remove y-ticks for 1D plot
+                ax.set_ylim(-0.1, 0.1)  # Adjust y-limits for node visibility
+
+            else:
+                raise ValueError(
+                    "1D environment requires `track_graph` and `edge_order` to be set."
+                )
+
+        else:
+            # Plot 2D grid
+            if len(self.centers_shape_) != 2:
+                raise NotImplementedError(
+                    "Plotting is only implemented for 2D environments."
+                )
+
+            if ax is None:
+                fig, ax = plt.subplots(figsize=(7, 7))
+
+            # Plot interior bins
             ax.pcolormesh(
-                self.edges_[0], self.edges_[1], self.is_track_interior_.T, cmap="bone_r"
+                self.edges_[0],
+                self.edges_[1],
+                self.is_track_interior_.T,
+                cmap="bone_r",
+                alpha=0.7,
+                shading="auto",
             )
-            ax.set_xticks(self.edges_[0], minor=True)
-            ax.set_yticks(self.edges_[1], minor=True)
-            ax.grid(visible=True, which="minor")
-            ax.grid(visible=False, which="major")
+
+            # Grid lines
+            ax.set_xticks(edges_x)
+            ax.set_yticks(edges_y)
+            ax.set_xticks(get_centers(edges_x), minor=True)
+            ax.set_yticks(get_centers(edges_y), minor=True)
+            ax.grid(which="major", linestyle="-", linewidth="0.5", color="gray")
+            ax.grid(which="minor", linestyle=":", linewidth="0.5", color="lightgray")
+
+            ax.set_aspect("equal", adjustable="box")
+            ax.set_title(f"{self.environment_name} (Grid)")
+            ax.set_xlabel("Position Dim 1")
+            ax.set_ylabel("Position Dim 2")
+
+            if self.position_range_:
+                ax.set_xlim(self.position_range_[0])
+                ax.set_ylim(self.position_range_[1])
 
         return ax
 
