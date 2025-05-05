@@ -50,15 +50,17 @@ environment definitions using `pickle`.
 """
 
 import pickle
-from dataclasses import dataclass
-from itertools import combinations
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+from dataclasses import dataclass, field
+from itertools import accumulate, combinations
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 import matplotlib
+import matplotlib.axes
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
+from numpy.typing import NDArray
 from scipy import ndimage
 from scipy.interpolate import interp1d
 from sklearn.neighbors import NearestNeighbors
@@ -124,6 +126,154 @@ def get_n_bins(
     n_bins[n_bins == 0] = 1  # Handle zero extent case
 
     return n_bins
+
+
+def create_grid(
+    position: Optional[NDArray[np.float64]] = None,
+    bin_size: Union[float, Sequence[float]] = 2.0,
+    position_range: Optional[Sequence[Tuple[float, float]]] = None,
+    add_boundary_bins: bool = True,
+) -> Tuple[
+    Tuple[NDArray[np.float64], ...],
+    NDArray[np.float64],
+    Tuple[int, ...],
+]:
+    """Calculates bin edges and centers for a spatial grid.
+
+    Creates a grid based on provided position data or range. Handles multiple
+    position dimensions and optionally adds boundary bins around the core grid.
+
+    Parameters
+    ----------
+    position : Optional[NDArray[np.float64]], shape (n_time, n_dims), optional
+        Position data. Used to determine grid extent if `position_range`
+        is None. NaNs are ignored. Required if `position_range` is None.
+        Defaults to None.
+    bin_size : Union[float, Sequence[float]], optional
+        Desired approximate size of bins in each dimension. If a sequence,
+        must match the number of dimensions. Defaults to 2.0.
+    position_range : Optional[Sequence[Tuple[float, float]]], optional
+        Explicit grid boundaries [(min_dim1, max_dim1), ...]. If None,
+        boundaries are derived from `position`. Defaults to None.
+    add_boundary_bins : bool, optional
+        If True, add one bin on each side of the grid in each dimension,
+        extending the range. Defaults to True.
+
+    Returns
+    -------
+    edges : Tuple[NDArray[np.float64], ...]
+        Tuple containing bin edges for each dimension (shape (n_bins_d + 1,)).
+        Includes boundary bins if `add_boundary_bins` is True.
+    place_bin_edges_flat : np.ndarray, shape (n_total_bins, n_position_dims)
+        The edges corresponding to each bin in the flattened grid.
+    place_bin_centers : NDArray[np.float64], shape (n_total_bins, n_dims)
+        Center coordinates of each bin in the flattened grid.
+    centers_shape : Tuple[int, ...]
+        Shape of the grid (number of bins in each dimension).
+
+    Raises
+    ------
+    ValueError
+        If both `position` and `position_range` are None.
+        If `bin_size` sequence length doesn't match dimensions.
+        If `position_range` sequence length doesn't match dimensions.
+    """
+    if position is None and position_range is None:
+        raise ValueError("Either `position` or `position_range` must be provided.")
+    if position is not None:
+        pos_nd = np.atleast_2d(position)
+        n_dims = pos_nd.shape[1]
+        pos_clean = pos_nd[~np.any(np.isnan(pos_nd), axis=1)]
+        if pos_clean.shape[0] == 0 and position_range is None:
+            raise ValueError(
+                "Position data contains only NaNs and no position_range provided."
+            )
+    elif position_range is not None:
+        n_dims = len(position_range)
+        pos_clean = None  # No position data needed if range is given
+    else:  # Should be unreachable due to first check, but added for safety
+        raise ValueError("Cannot determine number of dimensions.")
+
+    # Validate and process bin_size
+    if isinstance(bin_size, (float, int)):
+        bin_sizes = np.array([float(bin_size)] * n_dims)
+    elif len(bin_size) == n_dims:
+        bin_sizes = np.array(bin_size, dtype=float)
+    else:
+        raise ValueError(
+            f"`bin_size` sequence length ({len(bin_size)}) must match "
+            f"number of dimensions ({n_dims})."
+        )
+    if np.any(bin_sizes <= 0):
+        raise ValueError("All elements in `bin_size` must be positive.")
+
+    # Determine histogram range
+    hist_range = position_range
+    if hist_range is None and pos_clean is not None:
+        hist_range = [
+            (np.nanmin(pos_clean[:, dim]), np.nanmax(pos_clean[:, dim]))
+            for dim in range(n_dims)
+        ]
+        # Handle case where min == max in a dimension
+        hist_range = [
+            (
+                (r[0], r[1])
+                if r[0] < r[1]
+                else (r[0] - 0.5 * bin_sizes[i], r[0] + 0.5 * bin_sizes[i])
+            )
+            for i, r in enumerate(hist_range)
+        ]
+
+    # Validate position_range dimensions if provided
+    if position_range is not None and len(position_range) != n_dims:
+        raise ValueError(
+            f"`position_range` length ({len(position_range)}) must match "
+            f"number of dimensions ({n_dims})."
+        )
+
+    # Calculate number of bins for the core range
+    n_bins_core = get_n_bins(pos_clean, bin_sizes, hist_range)  # Pass array bin_sizes
+
+    # Calculate core edges using histogramdd (even if position is None, to get uniform bins)
+    # Need dummy data if no position provided
+    dummy_data = (
+        np.array([[(r[0] + r[1]) / 2] for r in hist_range]).T
+        if pos_clean is None
+        else pos_clean
+    )
+    _, core_edges_list = np.histogramdd(dummy_data, bins=n_bins_core, range=hist_range)
+
+    if add_boundary_bins:
+        # Add boundary bins by extending edges
+        final_edges_list = []
+        for edges_dim in core_edges_list:
+            step = np.diff(edges_dim)[0]  # Assume uniform bins from histogramdd
+            extended_edges = np.insert(
+                edges_dim,
+                [0, len(edges_dim)],
+                [edges_dim[0] - step, edges_dim[-1] + step],
+            )
+            final_edges_list.append(extended_edges)
+    else:
+        final_edges_list = list(core_edges_list)  # Ensure it's a list of arrays
+
+    # Calculate centers and shape
+    centers_list = [get_centers(edge_dim) for edge_dim in final_edges_list]
+    centers_shape = tuple(len(c) for c in centers_list)
+
+    # Create meshgrid of centers and flatten
+    mesh_centers = np.meshgrid(*centers_list, indexing="ij")
+    place_bin_centers_flat = np.stack(
+        [center.ravel() for center in mesh_centers], axis=1
+    )
+
+    # Create meshgrid of edges and flatten
+    mesh_edges = np.meshgrid(*final_edges_list, indexing="ij")
+    place_bin_edges_flat = np.stack([edge.ravel() for edge in mesh_edges], axis=1)
+
+    edges_tuple: Tuple[NDArray[np.float64], ...] = tuple(final_edges_list)
+
+    return edges_tuple, place_bin_edges_flat, place_bin_centers_flat, centers_shape
 
 
 @dataclass
@@ -246,7 +396,7 @@ class Environment:
                 self.place_bin_edges_,
                 self.place_bin_centers_,
                 self.centers_shape_,
-            ) = get_grid(
+            ) = create_grid(
                 position,
                 self.place_bin_size,
                 self.position_range,
@@ -569,72 +719,6 @@ class Environment:
             direction[np.abs(velocity_to_center) < stop_speed_threshold] = "stop"
 
         return direction
-
-
-def get_grid(
-    position: np.ndarray,
-    bin_size: float = 2.5,
-    position_range: Optional[list[np.ndarray]] = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, tuple]:
-    """Calculate bin edges and centers for a spatial grid.
-
-    Creates a grid based on the provided position data or range, using
-    a specified bin size. Handles multiple position dimensions. Adds
-    boundary bins to the edges.
-
-    Parameters
-    ----------
-    position : np.ndarray, shape (n_time, n_position_dims)
-        Position data used to determine the grid extent if `position_range`
-        is not provided. NaNs are ignored.
-    bin_size : float, optional
-        The desired approximate size of the bins in each dimension. The actual
-        size may vary slightly to evenly cover the range. By default 2.5.
-    position_range : Optional[List[Tuple[float, float]]], optional
-        A list of tuples, one for each position dimension, specifying the
-        (min, max) boundary for the grid. If None, the min/max of the
-        `position` data is used. By default None.
-
-    Returns
-    -------
-    edges : tuple[np.ndarray, ...]
-        A tuple containing the bin edges for each position dimension. Each
-        element is a 1D array of shape (n_bins_d + 1,), where n_bins_d is
-        the number of bins in that dimension `d`. Includes boundary bins.
-    place_bin_edges_flat : np.ndarray, shape (n_total_bins, n_position_dims)
-        The edges corresponding to each bin in the flattened grid. Note: This
-        output might be less standard or useful than `edges` and
-        `place_bin_centers`. Consider if it's truly needed.
-    place_bin_centers_flat : np.ndarray, shape (n_total_bins, n_position_dims)
-        The center coordinate of each bin in the flattened grid.
-        `n_total_bins` is the product of the number of bins in each dimension.
-    centers_shape : tuple[int, ...]
-        The shape of the grid in terms of the number of bins in each dimension
-        (e.g., (n_bins_x, n_bins_y)).
-
-    """
-    position = position if position.ndim > 1 else position[:, np.newaxis]
-    is_nan = np.any(np.isnan(position), axis=1)
-    position = position[~is_nan]
-    n_bins = get_n_bins(position, bin_size, position_range)
-    _, edges = np.histogramdd(position, bins=n_bins, range=position_range)
-    if len(edges) > 1:
-        edges = [
-            np.insert(
-                edge,
-                (0, len(edge)),
-                (edge[0] - np.diff(edge)[0], edge[-1] + np.diff(edge)[0]),
-            )
-            for edge in edges
-        ]
-    mesh_edges = np.meshgrid(*edges, indexing="ij")
-    place_bin_edges = np.stack([edge.ravel() for edge in mesh_edges], axis=1)
-
-    mesh_centers = np.meshgrid(*[get_centers(edge) for edge in edges], indexing="ij")
-    place_bin_centers = np.stack([center.ravel() for center in mesh_centers], axis=1)
-    centers_shape = tuple([len(edge) - 1 for edge in edges])
-
-    return edges, place_bin_edges, place_bin_centers, centers_shape
 
 
 def get_track_interior(
