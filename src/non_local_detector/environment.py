@@ -384,6 +384,119 @@ def get_track_boundary(
     )
 
 
+def _make_nd_track_graph(
+    place_bin_centers: NDArray[np.float64],
+    is_track_interior: NDArray[np.bool_],
+    centers_shape: Tuple[int, ...],
+) -> nx.Graph:
+    """Creates a NetworkX graph connecting centers of adjacent interior bins in N-D.
+
+    Parameters
+    ----------
+    place_bin_centers : NDArray[np.float64], shape (n_total_bins, n_dims)
+        Coordinates of the center of each bin (flattened).
+    is_track_interior : NDArray[np.bool_], shape (n_bins_dim1, ...)
+        Boolean grid indicating which bins are part of the track.
+    centers_shape : Tuple[int, ...]
+        Shape of the bin grid (bins per dimension).
+
+    Returns
+    -------
+    track_graph_nd : nx.Graph
+        Graph where nodes are indices of interior bins, 'pos' attribute stores
+        coordinates, and edges connect adjacent interior bins with 'distance'.
+    """
+
+    track_graph_nd = nx.Graph()
+    axis_offsets = [-1, 0, 1]
+
+    # Enumerate over nodes
+    for node_id, (node_position, is_interior) in enumerate(
+        zip(
+            place_bin_centers,
+            is_track_interior.ravel(),
+        )
+    ):
+        track_graph_nd.add_node(
+            node_id, pos=tuple(node_position), is_track_interior=is_interior
+        )
+
+    edges = []
+    # Enumerate over nodes in the track interior
+    for ind in zip(*np.nonzero(is_track_interior)):
+        ind = np.array(ind)
+        # Indices of adjacent nodes
+        adj_inds = np.meshgrid(*[axis_offsets + i for i in ind], indexing="ij")
+        # Remove out of bounds indices
+        adj_inds = [
+            inds[np.logical_and(inds >= 0, inds < dim_size)]
+            for inds, dim_size in zip(adj_inds, centers_shape)
+        ]
+
+        # Is the adjacent node on the track?
+        adj_on_track_inds = is_track_interior[tuple(adj_inds)]
+
+        # Remove the center node
+        center_idx = [n // 2 for n in adj_on_track_inds.shape]
+        adj_on_track_inds[tuple(center_idx)] = False
+
+        # Get the node ids of the center node
+        node_id = np.ravel_multi_index(ind, centers_shape)
+
+        # Get the node ids of the adjacent nodes on the track
+        adj_node_ids = np.ravel_multi_index(
+            [inds[adj_on_track_inds] for inds in adj_inds],
+            centers_shape,
+        )
+
+        # Collect the edges for the graph
+        edges.append(
+            np.concatenate(
+                np.meshgrid([node_id], adj_node_ids, indexing="ij"), axis=0
+            ).T
+        )
+
+    edges = np.concatenate(edges)
+
+    # Add edges to the graph with distance
+    for node1, node2 in edges:
+        pos1 = np.asarray(track_graph_nd.nodes[node1]["pos"])
+        pos2 = np.asarray(track_graph_nd.nodes[node2]["pos"])
+        distance = np.linalg.norm(pos1 - pos2)
+        track_graph_nd.add_edge(node1, node2, distance=distance)
+
+    for edge_id, edge in enumerate(track_graph_nd.edges):
+        track_graph_nd.edges[edge]["edge_id"] = edge_id
+
+    return track_graph_nd
+
+
+def _get_distance_between_nodes(track_graph_nd: nx.Graph) -> np.ndarray:
+    """Calculates the shortest path distances between nodes in a graph.
+
+    Parameters
+    ----------
+    track_graph_nd : nx.Graph
+        Graph where nodes are indices of interior bins, 'pos' attribute stores
+        coordinates, and edges connect adjacent interior bins with 'distance'.
+
+    Returns
+    -------
+    distance : np.ndarray, shape (n_nodes, n_nodes)
+        Matrix of shortest path distances between all pairs of nodes.
+    """
+    node_positions = nx.get_node_attributes(track_graph_nd, "pos")
+    node_positions = np.asarray(list(node_positions.values()))
+    distance = np.full((len(node_positions), len(node_positions)), np.inf)
+    for to_node_id, from_node_id in nx.shortest_path_length(
+        track_graph_nd,
+        weight="distance",
+    ):
+        distance[to_node_id, list(from_node_id.keys())] = list(from_node_id.values())
+
+    return distance
+
+
 @dataclass
 class Environment:
     """Represent the spatial environment with a discrete grid.
@@ -554,19 +667,15 @@ class Environment:
             else:
                 self.is_track_boundary_ = None
 
-            self.track_graphDD = make_nD_track_graph_from_environment(self)
-            node_positions = nx.get_node_attributes(self.track_graphDD, "pos")
-            node_positions = np.asarray(list(node_positions.values()))
-            distance = np.full((len(node_positions), len(node_positions)), np.inf)
-            for to_node_id, from_node_id in nx.shortest_path_length(
-                self.track_graphDD,
-                weight="distance",
-            ):
-                distance[to_node_id, list(from_node_id.keys())] = list(
-                    from_node_id.values()
-                )
+            self.track_graph_nd = _make_nd_track_graph(
+                self.place_bin_centers_,
+                self.is_track_interior_,
+                self.centers_shape_,
+            )
 
-            self.distance_between_nodes_ = distance
+            self.distance_between_nodes_ = get_distance_between_nodes(
+                self.track_graph_nd,
+            )
 
         else:
             (

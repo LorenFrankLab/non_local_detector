@@ -198,7 +198,6 @@ class RandomWalk:
                 }.get(self.direction.lower(), None)
 
                 centrality = nx.closeness_centrality(
-                    self.environment.track_graphDD, distance="distance"
                 )
                 center_node_id = list(centrality.keys())[
                     np.argmax(list(centrality.values()))
