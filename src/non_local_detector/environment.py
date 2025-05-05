@@ -51,7 +51,8 @@ environment definitions using `pickle`.
 
 import pickle
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from itertools import combinations
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -261,6 +262,8 @@ class Environment:
                 self.place_bin_size,
             )
             self.is_track_boundary_ = None
+
+        self._is_fitted = True
 
         return self
 
@@ -1255,3 +1258,148 @@ def gaussian_smooth(
     return ndimage.gaussian_filter1d(
         data, sigma * sampling_frequency, truncate=truncate, axis=axis, mode="constant"
     )
+
+
+def add_distance_weight_to_edges(
+    track_graph: nx.Graph,
+) -> nx.Graph:
+    # --- Compute and add a new attribute 'distance_weight' = 1 / distance ---
+    new_attribute_name = "distance_weight"
+    for u, v, data in track_graph.edges(data=True):
+        try:
+            distance = data["distance"]
+            # Avoid division by zero
+            computed_value = 1.0 / (distance + 1e-9) if distance > -1e9 else np.inf
+            track_graph.edges[u, v][new_attribute_name] = computed_value
+        except KeyError:
+            # If the distance attribute is not present, skip this edge
+            continue
+
+
+def _get_node_pos(graph: nx.Graph, node_id: Any) -> np.ndarray:
+    """Helper to get node position as a numpy array."""
+    if node_id not in graph or "pos" not in graph.nodes[node_id]:
+        raise KeyError(f"Node {node_id} or its 'pos' attribute not found in graph.")
+    return np.asarray(graph.nodes[node_id]["pos"])
+
+
+def make_track_graph_with_bin_centers(env: Environment) -> nx.Graph:
+    """Creates a graph connecting bin centers sequentially along the track.
+
+    Builds a graph using only bin center nodes. Connects adjacent centers
+    within segments based on linear position. Links segment endpoints meeting
+    at original track graph nodes by looking via intermediate nodes in the
+    augmented graph.
+
+    Parameters
+    ----------
+    env : Environment
+        A fitted Environment object for a 1D track.
+
+    Returns
+    -------
+    track_graph_with_bin_centers : nx.Graph
+        Graph with bin centers as nodes, linked sequentially and at junctions.
+
+    Raises
+    ------
+    RuntimeError, ValueError, KeyError as before.
+    """
+    if not env._is_fitted:
+        raise RuntimeError("Environment not fitted.")
+    if env.track_graph is None:
+        raise RuntimeError("Requires a 1D environment.")
+    required_attrs = [
+        "place_bin_centers_nodes_df_",
+        "original_nodes_df_",
+        "track_graph_with_bin_centers_edges_",
+    ]
+    for attr in required_attrs:
+        if getattr(env, attr, None) is None:
+            raise ValueError(f"Missing required attribute '{attr}'.")
+
+    track_graph_with_bin_centers = nx.Graph()
+    centers_df = env.place_bin_centers_nodes_df_.copy()
+
+    # --- 1. Add Nodes ---
+    nodes_to_add = []
+    valid_centers_df = centers_df[centers_df["node_id"] != -1]
+    for _, row in valid_centers_df.iterrows():
+        nodes_to_add.append(
+            (
+                row["node_id"],
+                {
+                    "pos": (row["x_position"], row["y_position"]),
+                    "edge_id": int(row["edge_id"]),
+                },
+            )
+        )
+    track_graph_with_bin_centers.add_nodes_from(nodes_to_add)
+
+    # --- 2. Add Intra-Segment Edges ---
+    edges_to_add: List[Tuple[Any, Any, Dict[str, Any]]] = []
+    intra_segment_edge_count = 0
+    for edge_id, group in valid_centers_df.groupby("edge_id"):
+        sorted_group = group.sort_values("linear_position")
+        node_ids = sorted_group["node_id"].values
+        for node1, node2 in zip(node_ids[:-1], node_ids[1:]):
+            try:
+                pos1 = _get_node_pos(track_graph_with_bin_centers, node1)
+                pos2 = _get_node_pos(track_graph_with_bin_centers, node2)
+            except KeyError as e:
+                continue
+            distance = np.linalg.norm(pos1 - pos2)
+            if distance > 1e-9:
+                edges_to_add.append(
+                    (node1, node2, {"distance": distance, "edge_id": edge_id})
+                )
+                intra_segment_edge_count += 1
+    track_graph_with_bin_centers.add_edges_from(edges_to_add)
+
+    # --- 3. Add Inter-Segment Edges (Link segment ends) ---
+    linking_edges_to_add: List[Tuple[Any, Any, Dict[str, Any]]] = []
+    inter_segment_edge_count = 0
+    augmented_graph = env.track_graph_with_bin_centers_edges_
+    original_node_ids_in_augmented = env.original_nodes_df_["node_id"].unique()
+
+    for original_node_id in original_node_ids_in_augmented:
+        if not augmented_graph.has_node(original_node_id):
+            continue  # Skip if original node somehow isn't in augmented graph
+
+        # Find bin centers associated with this junction
+        endpoint_centers: Set[Any] = set()  # Use set to store unique centers
+
+        # Find direct neighbors of the original node (likely edge nodes)
+        direct_neighbors = list(augmented_graph.neighbors(original_node_id))
+
+        for intermediate_node in direct_neighbors:
+            # Find neighbors of the intermediate node
+            second_level_neighbors = list(augmented_graph.neighbors(intermediate_node))
+            # Filter these to find bin centers present in our target graph
+            for potential_center in second_level_neighbors:
+                # Ensure it's not the original node itself and it IS a bin center
+                if (
+                    potential_center != original_node_id
+                    and track_graph_with_bin_centers.has_node(potential_center)
+                ):
+                    endpoint_centers.add(potential_center)
+
+        # Add edges between all pairs of these endpoint bin centers
+        for node1, node2 in combinations(endpoint_centers, 2):
+            # Avoid adding edges already added or self-loops (combinations handles self-loops)
+            if not track_graph_with_bin_centers.has_edge(node1, node2):
+                try:
+                    pos1 = _get_node_pos(track_graph_with_bin_centers, node1)
+                    pos2 = _get_node_pos(track_graph_with_bin_centers, node2)
+                except KeyError as e:
+                    continue
+
+                distance = np.linalg.norm(pos1 - pos2)
+                linking_edges_to_add.append(
+                    (node1, node2, {"distance": distance, "edge_id": -1})
+                )
+                inter_segment_edge_count += 1
+
+    track_graph_with_bin_centers.add_edges_from(linking_edges_to_add)
+
+    return track_graph_with_bin_centers
