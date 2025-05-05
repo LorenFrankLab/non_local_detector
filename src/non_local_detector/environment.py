@@ -87,7 +87,7 @@ def get_centers(bin_edges: NDArray[np.float64]) -> NDArray[np.float64]:
 
 def get_n_bins(
     position: NDArray[np.float64],
-    bin_size: float,
+    bin_size: Union[float, Sequence[float]],
     position_range: Optional[Sequence[Tuple[float, float]]] = None,
 ) -> NDArray[np.int_]:
     """Calculates the number of bins needed for each dimension.
@@ -96,8 +96,8 @@ def get_n_bins(
     ----------
     position : NDArray[np.float64], shape (n_time, n_dims)
         Position data to determine range if `position_range` is not given.
-    bin_size : float
-        The desired size of the bins.
+    bin_size : float or Sequence[float]
+        The desired size(s) of the bins.
     position_range : Optional[Sequence[Tuple[float, float]]], optional
         Explicit range [(min_dim1, max_dim1), ...] for each dimension.
         If None, range is calculated from `position`. Defaults to None.
@@ -118,7 +118,7 @@ def get_n_bins(
         extent = np.nanmax(position, axis=0) - np.nanmin(position, axis=0)
 
     # Ensure bin_size is positive
-    if bin_size <= 0:
+    if np.all(bin_size <= 0):
         raise ValueError("bin_size must be positive.")
 
     # Calculate number of bins, ensuring at least 1 bin even if extent is 0
