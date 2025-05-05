@@ -41,8 +41,6 @@ defining the environment and stores the results of the fitting process (grid
 details, graphs, distances) as attributes. The primary method `fit_place_grid`
 is used to perform the discretization and graph construction based on the input
 parameters and optional position data.
-
-Helper functions are provided for tasks like grid generation (`get_grid`),
 track interior inference (`get_track_interior`), graph construction
 (`make_nD_track_graph_from_environment`, `get_track_grid`), distance calculation,
 and visualization (`plot_grid`). The class also supports saving and loading
@@ -85,7 +83,7 @@ def get_centers(bin_edges: NDArray[np.float64]) -> NDArray[np.float64]:
     return bin_edges[:-1] + np.diff(bin_edges) / 2
 
 
-def get_n_bins(
+def _get_n_bins(
     position: NDArray[np.float64],
     bin_size: Union[float, Sequence[float]],
     position_range: Optional[Sequence[Tuple[float, float]]] = None,
@@ -128,7 +126,7 @@ def get_n_bins(
     return n_bins
 
 
-def create_grid(
+def _create_grid(
     position: Optional[NDArray[np.float64]] = None,
     bin_size: Union[float, Sequence[float]] = 2.0,
     position_range: Optional[Sequence[Tuple[float, float]]] = None,
@@ -232,7 +230,7 @@ def create_grid(
         )
 
     # Calculate number of bins for the core range
-    n_bins_core = get_n_bins(pos_clean, bin_sizes, hist_range)  # Pass array bin_sizes
+    n_bins_core = _get_n_bins(pos_clean, bin_sizes, hist_range)  # Pass array bin_sizes
 
     # Calculate core edges using histogramdd (even if position is None, to get uniform bins)
     # Need dummy data if no position provided
@@ -351,7 +349,7 @@ def _infer_track_interior(
     return is_track_interior.astype(bool)
 
 
-def get_track_boundary(
+def _get_track_boundary(
     is_track_interior: NDArray[np.bool_], connectivity: int = 1
 ) -> NDArray[np.bool_]:
     """Identifies boundary bins adjacent to the track interior.
@@ -639,7 +637,7 @@ class Environment:
                 self.place_bin_edges_,
                 self.place_bin_centers_,
                 self.centers_shape_,
-            ) = create_grid(
+            ) = _create_grid(
                 position,
                 self.place_bin_size,
                 self.position_range,
@@ -660,7 +658,7 @@ class Environment:
                 self.is_track_interior_ = np.ones(self.centers_shape_, dtype=bool)
 
             if len(self.edges_) > 1:
-                self.is_track_boundary_ = get_track_boundary(
+                self.is_track_boundary_ = _get_track_boundary(
                     self.is_track_interior_,
                     connectivity=1,
                 )
@@ -690,7 +688,7 @@ class Environment:
                 self.place_bin_edges_nodes_df_,
                 self.place_bin_centers_nodes_df_,
                 self.nodes_df_,
-            ) = get_track_grid(
+            ) = _create_1d_track_grid_data(
                 self.track_graph,
                 self.edge_order,
                 self.edge_spacing,
@@ -1216,7 +1214,7 @@ def extract_bin_info_from_track_graph(
     return nodes_df
 
 
-def get_track_grid(
+def _create_1d_track_grid_data(
     track_graph: nx.Graph,
     edge_order: list[tuple],
     edge_spacing: Union[float, list],
