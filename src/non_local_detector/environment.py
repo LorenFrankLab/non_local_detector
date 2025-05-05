@@ -470,6 +470,25 @@ class Environment:
     def __eq__(self, other: str) -> bool:
         return self.environment_name == other
 
+    def fit(
+        self, position: Optional[np.ndarray] = None, infer_track_interior: bool = True
+    ) -> "Environment":
+        """Fits the environment based on provided position data.
+
+        Parameters
+        ----------
+        position : np.ndarray, shape (n_time, n_dim), optional
+            Position of the animal.
+        infer_track_interior : bool, optional
+            Whether to infer the spatial geometry of track from position
+
+        Returns
+        -------
+        self
+
+        """
+        return self.fit_place_grid(position, infer_track_interior)
+
     def fit_place_grid(
         self, position: Optional[np.ndarray] = None, infer_track_interior: bool = True
     ) -> "Environment":
