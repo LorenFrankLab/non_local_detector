@@ -64,18 +64,21 @@ from scipy.interpolate import interp1d
 from sklearn.neighbors import NearestNeighbors
 from track_linearization import plot_graph_as_1D
 
+# --- Helper Functions ---
 
-def get_centers(bin_edges: np.ndarray) -> np.ndarray:
-    """Given a set of bin edges, return the center of the bin.
+
+def get_centers(bin_edges: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Calculates the center of each bin given its edges.
 
     Parameters
     ----------
-    bin_edges : np.ndarray, shape (n_edges,)
+    bin_edges : NDArray[np.float64], shape (n_edges,)
+        The edges defining the bins.
 
     Returns
     -------
-    bin_centers : np.ndarray, shape (n_edges - 1,)
-
+    bin_centers : NDArray[np.float64], shape (n_edges - 1,)
+        The center of each bin.
     """
     return bin_edges[:-1] + np.diff(bin_edges) / 2
 
