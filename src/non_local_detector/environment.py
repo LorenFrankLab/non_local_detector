@@ -132,7 +132,7 @@ def create_grid(
     position: Optional[NDArray[np.float64]] = None,
     bin_size: Union[float, Sequence[float]] = 2.0,
     position_range: Optional[Sequence[Tuple[float, float]]] = None,
-    add_boundary_bins: bool = True,
+    add_boundary_bins: bool = False,
 ) -> Tuple[
     Tuple[NDArray[np.float64], ...],
     NDArray[np.float64],
