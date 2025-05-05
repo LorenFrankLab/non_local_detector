@@ -340,6 +340,39 @@ def _infer_track_interior(
     return is_track_interior.astype(bool)
 
 
+def get_track_boundary(
+    is_track_interior: NDArray[np.bool_], connectivity: int = 1
+) -> NDArray[np.bool_]:
+    """Identifies boundary bins adjacent to the track interior.
+
+    The boundary bins themselves are *not* part of the track interior.
+
+    Parameters
+    ----------
+    is_track_interior : NDArray[np.bool_], shape (n_bins_dim1, ...)
+        Boolean array indicating track interior bins.
+    connectivity : int, optional
+        Defines neighborhood for dilation (1 for direct orthogonal neighbors,
+        higher for diagonals). Defaults to 1.
+
+    Returns
+    -------
+    is_track_boundary : NDArray[np.bool_], shape (n_bins_dim1, ...)
+        Boolean array indicating bins adjacent to the track interior.
+    """
+    n_dims = is_track_interior.ndim
+    if n_dims == 0:  # Handle scalar case
+        return np.array(False, dtype=bool)
+    structure = ndimage.generate_binary_structure(
+        rank=n_dims, connectivity=connectivity
+    )
+    # Dilate the interior and XOR with original interior to find the boundary shell
+    return (
+        ndimage.binary_dilation(is_track_interior, structure=structure)
+        ^ is_track_interior
+    )
+
+
 @dataclass
 class Environment:
     """Represent the spatial environment with a discrete grid.
@@ -1174,38 +1207,6 @@ def get_track_grid(
         place_bin_edges_nodes_df,
         place_bin_centers_nodes_df,
         nodes_df.reset_index(),
-    )
-
-
-def get_track_boundary(
-    is_track_interior: np.ndarray, n_position_dims: int = 2, connectivity: int = 1
-) -> np.ndarray:
-    """Determines the boundary of the valid interior track bins. The boundary
-    are not bins on the track but surround it.
-
-    Parameters
-    ----------
-    is_track_interior : np.ndarray, shape (n_bins_x, n_bins_y)
-    n_position_dims : int
-    connectivity : int
-         `connectivity` determines which elements of the output array belong
-         to the structure, i.e., are considered as neighbors of the central
-         element. Elements up to a squared distance of `connectivity` from
-         the center are considered neighbors. `connectivity` may range from 1
-         (no diagonal elements are neighbors) to `rank` (all elements are
-         neighbors).
-
-    Returns
-    -------
-    is_track_boundary : np.ndarray, shape (n_bins,)
-
-    """
-    structure = ndimage.generate_binary_structure(
-        rank=n_position_dims, connectivity=connectivity
-    )
-    return (
-        ndimage.binary_dilation(is_track_interior, structure=structure)
-        ^ is_track_interior
     )
 
 
