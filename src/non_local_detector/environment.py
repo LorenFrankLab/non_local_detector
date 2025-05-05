@@ -132,7 +132,7 @@ def create_grid(
     position: Optional[NDArray[np.float64]] = None,
     bin_size: Union[float, Sequence[float]] = 2.0,
     position_range: Optional[Sequence[Tuple[float, float]]] = None,
-    add_boundary_bins: bool = False,
+    add_boundary_bins: bool = True,
 ) -> Tuple[
     Tuple[NDArray[np.float64], ...],
     NDArray[np.float64],
@@ -283,6 +283,7 @@ def _infer_track_interior(
     fill_holes: bool = False,
     dilate: bool = False,
     bin_count_threshold: int = 0,
+    boundary_exists: bool = True,
 ) -> NDArray[np.bool_]:
     """Infers the interior bins of the track based on position density.
 
@@ -301,6 +302,9 @@ def _infer_track_interior(
     bin_count_threshold : int, optional
         Minimum samples in a bin for it to be considered part of the track.
         Defaults to 0 (any occupancy counts).
+    boundary_exists : bool, optional
+        If True, the last bin in each dimension is not considered part of
+        the track. Defaults to False.
 
     Returns
     -------
@@ -339,6 +343,10 @@ def _infer_track_interior(
             is_track_interior = ndimage.binary_dilation(
                 is_track_interior, structure=structure
             )
+
+        if boundary_exists:
+            is_track_interior[-1] = False
+            is_track_interior[:, -1] = False
 
     return is_track_interior.astype(bool)
 
