@@ -515,7 +515,6 @@ class Environment:
             if len(self.edges_) > 1:
                 self.is_track_boundary_ = get_track_boundary(
                     self.is_track_interior_,
-                    n_position_dims=len(self.edges_),
                     connectivity=1,
                 )
             else:
