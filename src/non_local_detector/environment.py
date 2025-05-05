@@ -58,7 +58,7 @@ from numpy.typing import NDArray
 from scipy import ndimage
 from scipy.interpolate import interp1d
 from sklearn.neighbors import NearestNeighbors
-from track_linearization import plot_graph_as_1D
+from track_linearization import get_linearized_position, plot_graph_as_1D
 
 # --- Helper Functions ---
 
@@ -1830,3 +1830,32 @@ class Environment:
             direction[np.abs(velocity_to_center) < stop_speed_threshold] = "stop"
 
         return direction
+
+    def get_linear_position(self, position: np.ndarray) -> np.ndarray:
+        """Get the linearized position along the track.
+
+        Parameters
+        ----------
+        position : np.ndarray, shape (n_time, n_dims)
+            Position data.
+
+        Returns
+        -------
+        linear_position : np.ndarray, shape (n_time,)
+            Linearized position along the track.
+        """
+        if not self._is_fitted:
+            raise RuntimeError(
+                "Environment has not been fitted yet. Call `fit_place_grid` first."
+            )
+        if not self.is_1d:
+            raise ValueError(
+                "Linear position calculation is only implemented for 1D environments."
+            )
+
+        return get_linearized_position(
+            position,
+            self.track_graph,
+            edge_order=self.edge_order,
+            edge_spacing=self.edge_spacing,
+        )
