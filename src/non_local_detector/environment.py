@@ -83,6 +83,49 @@ def get_centers(bin_edges: NDArray[np.float64]) -> NDArray[np.float64]:
     return bin_edges[:-1] + np.diff(bin_edges) / 2
 
 
+def get_n_bins(
+    position: NDArray[np.float64],
+    bin_size: float,
+    position_range: Optional[Sequence[Tuple[float, float]]] = None,
+) -> NDArray[np.int_]:
+    """Calculates the number of bins needed for each dimension.
+
+    Parameters
+    ----------
+    position : NDArray[np.float64], shape (n_time, n_dims)
+        Position data to determine range if `position_range` is not given.
+    bin_size : float
+        The desired size of the bins.
+    position_range : Optional[Sequence[Tuple[float, float]]], optional
+        Explicit range [(min_dim1, max_dim1), ...] for each dimension.
+        If None, range is calculated from `position`. Defaults to None.
+
+    Returns
+    -------
+    n_bins : NDArray[np.int_], shape (n_dims,)
+        Number of bins required for each dimension.
+    """
+    if position_range is not None:
+        # Ensure position_range is numpy array for consistent processing
+        pr = np.asarray(position_range)
+        if pr.shape[1] != 2:
+            raise ValueError("position_range must be sequence of (min, max) pairs.")
+        extent = np.diff(pr, axis=1).squeeze(axis=1)
+    else:
+        # Ignore NaNs when calculating range from data
+        extent = np.nanmax(position, axis=0) - np.nanmin(position, axis=0)
+
+    # Ensure bin_size is positive
+    if bin_size <= 0:
+        raise ValueError("bin_size must be positive.")
+
+    # Calculate number of bins, ensuring at least 1 bin even if extent is 0
+    n_bins = np.ceil(extent / bin_size).astype(np.int32)
+    n_bins[n_bins == 0] = 1  # Handle zero extent case
+
+    return n_bins
+
+
 @dataclass
 class Environment:
     """Represent the spatial environment with a discrete grid.
@@ -526,33 +569,6 @@ class Environment:
             direction[np.abs(velocity_to_center) < stop_speed_threshold] = "stop"
 
         return direction
-
-
-def get_n_bins(
-    position: np.ndarray,
-    bin_size: float = 2.5,
-    position_range: Optional[list[np.ndarray]] = None,
-) -> int:
-    """Get number of bins need to span a range given a bin size.
-
-    Parameters
-    ----------
-    position : np.ndarray, shape (n_time,)
-    bin_size : float, optional
-    position_range : None or list of np.ndarray
-        Use this to define the extent instead of position
-
-    Returns
-    -------
-    n_bins : int
-
-    """
-    if position_range is not None:
-        extent = np.diff(position_range, axis=1).squeeze()
-    else:
-        extent = np.ptp(position, axis=0)
-
-    return np.ceil(extent / bin_size).astype(np.int32)
 
 
 def get_grid(
