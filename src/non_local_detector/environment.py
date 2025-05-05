@@ -940,7 +940,7 @@ def get_track_boundary_points(
 
     """
     n_position_dims = len(edges)
-    boundary = get_track_boundary(
+    boundary = _get_track_boundary(
         is_track_interior, n_position_dims=n_position_dims, connectivity=connectivity
     )
 
