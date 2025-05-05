@@ -276,6 +276,70 @@ def create_grid(
     return edges_tuple, place_bin_edges_flat, place_bin_centers_flat, centers_shape
 
 
+def infer_track_interior(
+    position: NDArray[np.float64],
+    edges: Tuple[NDArray[np.float64], ...],
+    fill_holes: bool = False,
+    dilate: bool = False,
+    bin_count_threshold: int = 0,
+) -> NDArray[np.bool_]:
+    """Infers the interior bins of the track based on position density.
+
+    Parameters
+    ----------
+    position : NDArray[np.float64], shape (n_time, n_dims)
+        Position data. NaNs are ignored.
+    edges : Tuple[NDArray[np.float64], ...]
+        Bin edges for each dimension, as returned by `create_grid`.
+    fill_holes : bool, optional
+        Fill holes within the inferred occupied area using binary closing
+        and filling. Defaults to False.
+    dilate : bool, optional
+        Expand the boundary of the inferred occupied area using binary
+        dilation. Defaults to False.
+    bin_count_threshold : int, optional
+        Minimum samples in a bin for it to be considered part of the track.
+        Defaults to 0 (any occupancy counts).
+
+    Returns
+    -------
+    is_track_interior : NDArray[np.bool_], shape (n_bins_dim1, n_bins_dim2, ...)
+        Boolean array indicating which bins are considered part of the track.
+    """
+    pos_clean = position[~np.any(np.isnan(position), axis=1)]
+    if pos_clean.shape[0] == 0:
+        # Handle case with no valid positions
+        grid_shape = tuple(len(e) - 1 for e in edges)
+        return np.zeros(grid_shape, dtype=bool)
+
+    bin_counts, _ = np.histogramdd(pos_clean, bins=edges)
+    is_track_interior = bin_counts > bin_count_threshold
+
+    n_dims = position.shape[1]
+    if n_dims > 1:
+        # Use connectivity=1 for 4-neighbor (2D) or 6-neighbor (3D) etc.
+        structure = ndimage.generate_binary_structure(n_dims, connectivity=1)
+
+        # Closing operation first (dilation then erosion) to close small gaps
+        is_track_interior = ndimage.binary_closing(
+            is_track_interior, structure=structure
+        )
+
+        if fill_holes:
+            # Fill larger holes enclosed by occupied bins
+            is_track_interior = ndimage.binary_fill_holes(
+                is_track_interior, structure=structure
+            )
+
+        if dilate:
+            # Expand the occupied area
+            is_track_interior = ndimage.binary_dilation(
+                is_track_interior, structure=structure
+            )
+
+    return is_track_interior.astype(bool)
+
+
 @dataclass
 class Environment:
     """Represent the spatial environment with a discrete grid.
@@ -405,7 +469,7 @@ class Environment:
             self.infer_track_interior = infer_track_interior
 
             if self.is_track_interior is None and self.infer_track_interior:
-                self.is_track_interior_ = get_track_interior(
+                self.is_track_interior_ = infer_track_interior(
                     position,
                     self.edges_,
                     self.fill_holes,
@@ -719,57 +783,6 @@ class Environment:
             direction[np.abs(velocity_to_center) < stop_speed_threshold] = "stop"
 
         return direction
-
-
-def get_track_interior(
-    position: np.ndarray,
-    bins: Union[int, Sequence[int]],
-    fill_holes: bool = False,
-    dilate: bool = False,
-    bin_count_threshold: int = 0,
-) -> np.ndarray:
-    """Infers the interior bins of the track given positions.
-
-    Parameters
-    ----------
-    position : np.ndarray, shape (n_time, n_position_dims)
-    bins : sequence or int, optional
-        The bin specification:
-
-        * A sequence of arrays describing the bin edges along each dimension.
-        * The number of bins for each dimension (nx, ny, ... =bins)
-        * The number of bins for all dimensions (nx=ny=...=bins).
-    fill_holes : bool, optional
-        Fill any holes in the extracted track interior bins
-    dilate : bool, optional
-        Inflate the extracted track interior bins
-    bin_count_threshold : int, optional
-        Greater than this number of samples should be in the bin for it to
-        be considered on the track.
-
-    Returns
-    -------
-    is_track_interior : np.ndarray
-        The interior bins of the track as inferred from position
-
-    """
-    bin_counts, _ = np.histogramdd(position, bins=bins)
-    is_track_interior = (bin_counts > bin_count_threshold).astype(int)
-    n_position_dims = position.shape[1]
-    if n_position_dims > 1:
-        structure = ndimage.generate_binary_structure(n_position_dims, 1)
-        is_track_interior = ndimage.binary_closing(
-            is_track_interior, structure=structure
-        )
-        if fill_holes:
-            is_track_interior = ndimage.binary_fill_holes(is_track_interior)
-
-        if dilate:
-            is_track_interior = ndimage.binary_dilation(is_track_interior)
-        # adjust for boundary edges in 2D
-        is_track_interior[-1] = False
-        is_track_interior[:, -1] = False
-    return is_track_interior.astype(bool)
 
 
 def get_track_segments_from_graph(track_graph: nx.Graph) -> np.ndarray:
