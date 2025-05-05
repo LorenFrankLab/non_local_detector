@@ -276,7 +276,7 @@ def create_grid(
     return edges_tuple, place_bin_edges_flat, place_bin_centers_flat, centers_shape
 
 
-def infer_track_interior(
+def _infer_track_interior(
     position: NDArray[np.float64],
     edges: Tuple[NDArray[np.float64], ...],
     fill_holes: bool = False,
@@ -469,7 +469,7 @@ class Environment:
             self.infer_track_interior = infer_track_interior
 
             if self.is_track_interior is None and self.infer_track_interior:
-                self.is_track_interior_ = infer_track_interior(
+                self.is_track_interior_ = _infer_track_interior(
                     position,
                     self.edges_,
                     self.fill_holes,
