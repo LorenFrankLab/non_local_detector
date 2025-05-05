@@ -279,6 +279,7 @@ def create_grid(
 def _infer_track_interior(
     position: NDArray[np.float64],
     edges: Tuple[NDArray[np.float64], ...],
+    close_gaps: bool = False,
     fill_holes: bool = False,
     dilate: bool = False,
     bin_count_threshold: int = 0,
@@ -317,13 +318,15 @@ def _infer_track_interior(
 
     n_dims = position.shape[1]
     if n_dims > 1:
-        # Use connectivity=1 for 4-neighbor (2D) or 6-neighbor (3D) etc.
-        structure = ndimage.generate_binary_structure(n_dims, connectivity=1)
 
-        # Closing operation first (dilation then erosion) to close small gaps
-        is_track_interior = ndimage.binary_closing(
-            is_track_interior, structure=structure
-        )
+        if close_gaps:
+            # Use connectivity=1 for 4-neighbor (2D) or 6-neighbor (3D) etc.
+            structure = ndimage.generate_binary_structure(n_dims, connectivity=1)
+
+            # Closing operation first (dilation then erosion) to close small gaps
+            is_track_interior = ndimage.binary_closing(
+                is_track_interior, structure=structure
+            )
 
         if fill_holes:
             # Fill larger holes enclosed by occupied bins
@@ -398,6 +401,8 @@ class Environment:
     infer_track_interior : bool, optional
         If True and `is_track_interior` is None, infer track geometry from position data.
         Defaults to True. Ignored if `track_graph` is provided.
+    close_gaps : bool, optional
+        Close gaps in the inferred track interior. Defaults to False. Ignored if `track_graph` is provided.
     fill_holes : bool, optional
         Fill holes in the inferred track interior. Defaults to False. Ignored if `track_graph` is provided.
     dilate : bool, optional
@@ -444,6 +449,7 @@ class Environment:
     is_track_interior: Optional[np.ndarray] = None
     position_range: Optional[Sequence[Tuple[float, float]]] = None
     infer_track_interior: bool = True
+    close_gaps: bool = False
     fill_holes: bool = False
     dilate: bool = False
     bin_count_threshold: int = 0
@@ -524,6 +530,7 @@ class Environment:
                 self.is_track_interior_ = _infer_track_interior(
                     position,
                     self.edges_,
+                    self.close_gaps,
                     self.fill_holes,
                     self.dilate,
                     self.bin_count_threshold,
