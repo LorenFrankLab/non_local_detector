@@ -1859,3 +1859,23 @@ class Environment:
             edge_order=self.edge_order,
             edge_spacing=self.edge_spacing,
         )
+
+    def get_fitted_track_graph(self) -> nx.Graph:
+        """Get the fitted track graph of the environment.
+
+        Returns
+        -------
+        nx.Graph
+            The fitted track graph, which includes bin centers.
+
+        Raises
+        ------
+        RuntimeError
+            If the environment has not been fitted.
+        """
+        if not self._is_fitted:
+            raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
+        if self.is_1d:
+            return self.track_graph_with_bin_centers_
+        else:
+            return self.track_graph_nd_
