@@ -892,7 +892,7 @@ def _create_1d_track_grid_data(
     )
 
 
-def order_boundary(boundary: np.ndarray) -> np.ndarray:
+def _order_boundary(boundary: np.ndarray) -> np.ndarray:
     """Given boundary bin centers, orders them in a way to make a continuous line.
 
     https://stackoverflow.com/questions/37742358/sorting-points-to-form-a-continuous-line
@@ -947,7 +947,7 @@ def get_track_boundary_points(
     inds = np.nonzero(boundary)
     centers = [get_centers(x) for x in edges]
     boundary = np.stack([center[ind] for center, ind in zip(centers, inds)], axis=1)
-    return order_boundary(boundary)
+    return _order_boundary(boundary)
 
 
 def gaussian_smooth(
@@ -985,7 +985,18 @@ def gaussian_smooth(
 def add_distance_weight_to_edges(
     track_graph: nx.Graph,
 ) -> nx.Graph:
-    # --- Compute and add a new attribute 'distance_weight' = 1 / distance ---
+    """Adds a distance weight to each edge in the track graph.
+
+    Parameters
+    ----------
+    track_graph : nx.Graph
+        The input track graph.
+
+    Returns
+    -------
+    track_graph : nx.Graph
+        The modified track graph with distance weights added to edges.
+    """
     new_attribute_name = "distance_weight"
     for u, v, data in track_graph.edges(data=True):
         try:
@@ -1027,7 +1038,9 @@ def _make_track_graph_with_bin_centers(
 
     Raises
     ------
-    RuntimeError, ValueError, KeyError as before.
+    KeyError
+        If a node's position is not found in the graph.
+
     """
     track_graph_with_bin_centers = nx.Graph()
     centers_df = place_bin_centers_nodes_df.copy()
