@@ -28,7 +28,7 @@ The module supports two main types of environments:
       (nodes, edges, and their positions) along with edge ordering and spacing.
     - Linearizes the track based on the provided graph structure.
     - Creates bins along this linearized track.
-    - Generates an augmented graph (`track_graph_with_bin_centers_edges_`) where
+    - Generates an augmented graph (`track_graph_bin_centers_edges_`) where
       both the original track nodes and the newly created bin centers/edges
       are represented as nodes.
     - Computes shortest-path distances between all nodes in this augmented graph
@@ -496,7 +496,7 @@ def _get_distance_between_nodes(track_graph_nd: nx.Graph) -> np.ndarray:
     return distance
 
 
-def make_track_graph_with_bin_centers_edges(
+def make_track_graph_bin_centers_edges(
     track_graph: nx.Graph, place_bin_size: float
 ) -> nx.Graph:
     """Insert the bin center and bin edge positions as nodes in the track graph.
@@ -508,10 +508,10 @@ def make_track_graph_with_bin_centers_edges(
 
     Returns
     -------
-    track_graph_with_bin_centers_edges : nx.Graph
+    track_graph_bin_centers_edges : nx.Graph
 
     """
-    track_graph_with_bin_centers_edges = track_graph.copy()
+    track_graph_bin_centers_edges = track_graph.copy()
     n_nodes = len(track_graph.nodes)
 
     for edge_ind, (node1, node2) in enumerate(track_graph.edges):
@@ -534,36 +534,34 @@ def make_track_graph_with_bin_centers_edges(
 
         new_node_ids = n_nodes + np.arange(len(dist_between_nodes) + 1)
         nx.add_path(
-            track_graph_with_bin_centers_edges,
+            track_graph_bin_centers_edges,
             [*new_node_ids],
             distance=dist_between_nodes[0],
         )
+        nx.add_path(track_graph_bin_centers_edges, [node1, new_node_ids[0]], distance=0)
         nx.add_path(
-            track_graph_with_bin_centers_edges, [node1, new_node_ids[0]], distance=0
+            track_graph_bin_centers_edges, [node2, new_node_ids[-1]], distance=0
         )
-        nx.add_path(
-            track_graph_with_bin_centers_edges, [node2, new_node_ids[-1]], distance=0
-        )
-        track_graph_with_bin_centers_edges.remove_edge(node1, node2)
+        track_graph_bin_centers_edges.remove_edge(node1, node2)
         for ind, (node_id, pos) in enumerate(zip(new_node_ids, xy)):
-            track_graph_with_bin_centers_edges.nodes[node_id]["pos"] = pos
-            track_graph_with_bin_centers_edges.nodes[node_id]["edge_id"] = edge_ind
+            track_graph_bin_centers_edges.nodes[node_id]["pos"] = pos
+            track_graph_bin_centers_edges.nodes[node_id]["edge_id"] = edge_ind
             if ind % 2:
-                track_graph_with_bin_centers_edges.nodes[node_id]["is_bin_edge"] = False
+                track_graph_bin_centers_edges.nodes[node_id]["is_bin_edge"] = False
             else:
-                track_graph_with_bin_centers_edges.nodes[node_id]["is_bin_edge"] = True
-        track_graph_with_bin_centers_edges.nodes[node1]["edge_id"] = edge_ind
-        track_graph_with_bin_centers_edges.nodes[node2]["edge_id"] = edge_ind
-        track_graph_with_bin_centers_edges.nodes[node1]["is_bin_edge"] = True
-        track_graph_with_bin_centers_edges.nodes[node2]["is_bin_edge"] = True
-        n_nodes = len(track_graph_with_bin_centers_edges.nodes)
+                track_graph_bin_centers_edges.nodes[node_id]["is_bin_edge"] = True
+        track_graph_bin_centers_edges.nodes[node1]["edge_id"] = edge_ind
+        track_graph_bin_centers_edges.nodes[node2]["edge_id"] = edge_ind
+        track_graph_bin_centers_edges.nodes[node1]["is_bin_edge"] = True
+        track_graph_bin_centers_edges.nodes[node2]["is_bin_edge"] = True
+        n_nodes = len(track_graph_bin_centers_edges.nodes)
 
-    return track_graph_with_bin_centers_edges
+    return track_graph_bin_centers_edges
 
 
 def extract_bin_info_from_track_graph(
     track_graph: nx.Graph,
-    track_graph_with_bin_centers_edges: nx.Graph,
+    track_graph_bin_centers_edges: nx.Graph,
     edge_order: list[tuple],
     edge_spacing: Union[float, list],
 ) -> pd.DataFrame:
@@ -573,7 +571,7 @@ def extract_bin_info_from_track_graph(
     Parameters
     ----------
     track_graph : nx.Graph
-    track_graph_with_bin_centers_edges : nx.Graph
+    track_graph_bin_centers_edges : nx.Graph
     edge_order : list of 2-tuples
     edge_spacing : list, len n_edges - 1
 
@@ -585,7 +583,7 @@ def extract_bin_info_from_track_graph(
     """
     nodes_df = (
         pd.DataFrame.from_dict(
-            dict(track_graph_with_bin_centers_edges.nodes(data=True)), orient="index"
+            dict(track_graph_bin_centers_edges.nodes(data=True)), orient="index"
         )
         .assign(x_position=lambda df: np.asarray(list(df.pos))[:, 0])
         .assign(y_position=lambda df: np.asarray(list(df.pos))[:, 1])
@@ -652,8 +650,8 @@ def _create_1d_track_grid_data(
     distance_between_nodes : dict
     centers_shape : tuple
     edges : tuple of np.ndarray
-    track_graph_with_bin_centers : nx.Graph
-    track_graph_with_bin_centers_edges : nx.Graph
+    track_graph_bin_centers : nx.Graph
+    track_graph_bin_centers_edges : nx.Graph
     original_nodes_df : pd.DataFrame
         Table of information about the original nodes in the track graph
     place_bin_edges_nodes_df : pd.DataFrame
@@ -665,11 +663,11 @@ def _create_1d_track_grid_data(
         bin edges, and bin centers
 
     """
-    track_graph_with_bin_centers_edges = make_track_graph_with_bin_centers_edges(
+    track_graph_bin_centers_edges = make_track_graph_bin_centers_edges(
         track_graph, place_bin_size
     )
     nodes_df = extract_bin_info_from_track_graph(
-        track_graph, track_graph_with_bin_centers_edges, edge_order, edge_spacing
+        track_graph, track_graph_bin_centers_edges, edge_order, edge_spacing
     )
 
     # Dataframe with nodes from track graph only
@@ -699,7 +697,7 @@ def _create_1d_track_grid_data(
     # Compute distance between nodes
     distance_between_nodes = dict(
         nx.all_pairs_dijkstra_path_length(
-            track_graph_with_bin_centers_edges, weight="distance"
+            track_graph_bin_centers_edges, weight="distance"
         )
     )
 
@@ -735,9 +733,9 @@ def _create_1d_track_grid_data(
         ).sort_values(by=["linear_position"], axis="rows")
     ).reset_index(drop=True)
 
-    track_graph_with_bin_centers = _make_track_graph_with_bin_centers(
+    track_graph_bin_centers = _make_track_graph_bin_centers(
         place_bin_centers_nodes_df,
-        track_graph_with_bin_centers_edges,
+        track_graph_bin_centers_edges,
         original_nodes_df,
     )
 
@@ -752,8 +750,8 @@ def _create_1d_track_grid_data(
         distance_between_nodes,
         centers_shape,
         edges,
-        track_graph_with_bin_centers,
-        track_graph_with_bin_centers_edges,
+        track_graph_bin_centers,
+        track_graph_bin_centers_edges,
         original_nodes_df,
         place_bin_edges_nodes_df,
         place_bin_centers_nodes_df,
@@ -885,8 +883,10 @@ def _get_node_pos(graph: nx.Graph, node_id: Any) -> np.ndarray:
     return np.asarray(graph.nodes[node_id]["pos"])
 
 
-def _make_track_graph_with_bin_centers(
-    place_bin_centers_nodes_df, track_graph_with_bin_centers_edges, original_nodes_df
+def _make_track_graph_bin_centers(
+    place_bin_centers_nodes_df: pd.DataFrame,
+    track_graph_bin_centers_edges: nx.Graph,
+    original_nodes_df: pd.DataFrame,
 ) -> nx.Graph:
     """Creates a graph connecting bin centers sequentially along the track.
 
@@ -897,12 +897,32 @@ def _make_track_graph_with_bin_centers(
 
     Parameters
     ----------
-    env : Environment
-        A fitted Environment object for a 1D track.
+    place_bin_centers_nodes_df : pd.DataFrame
+        DataFrame containing bin center nodes with columns:
+        - node_id: Unique identifier for each node.
+        - x_position: X-coordinate of the node.
+        - y_position: Y-coordinate of the node.
+        - edge_id: Identifier for the edge this node belongs to.
+        - linear_position: Linear position along the edge.
+    track_graph_bin_centers_edges : nx.Graph
+        Graph with bin centers as nodes, linked sequentially and at junctions.
+    original_nodes_df : pd.DataFrame
+        DataFrame containing original nodes with columns:
+        - node_id: Unique identifier for each node.
+        - x_position: X-coordinate of the node.
+        - y_position: Y-coordinate of the node.
+        - edge_id: Identifier for the edge this node belongs to.
+        - linear_position: Linear position along the edge.
+        - is_bin_edge: Boolean indicating if the node is a bin edge.
+        - is_track_interior: Boolean indicating if the node is part of the track.
+        - bin_ind: Index of the bin in the grid.
+        - bin_ind_flat: Flattened index of the bin in the grid.
+        - edge_avg_linear_position: Average linear position of the edge.
+        - distance: Distance to the next node.
 
     Returns
     -------
-    track_graph_with_bin_centers : nx.Graph
+    track_graph_bin_centers : nx.Graph
         Graph with bin centers as nodes, linked sequentially and at junctions.
 
     Raises
@@ -911,7 +931,7 @@ def _make_track_graph_with_bin_centers(
         If a node's position is not found in the graph.
 
     """
-    track_graph_with_bin_centers = nx.Graph()
+    track_graph_bin_centers = nx.Graph()
     centers_df = place_bin_centers_nodes_df.copy()
 
     # --- 1. Add Nodes ---
@@ -927,7 +947,7 @@ def _make_track_graph_with_bin_centers(
                 },
             )
         )
-    track_graph_with_bin_centers.add_nodes_from(nodes_to_add)
+    track_graph_bin_centers.add_nodes_from(nodes_to_add)
 
     # --- 2. Add Intra-Segment Edges ---
     edges_to_add: List[Tuple[Any, Any, Dict[str, Any]]] = []
@@ -937,8 +957,8 @@ def _make_track_graph_with_bin_centers(
         node_ids = sorted_group["node_id"].values
         for node1, node2 in zip(node_ids[:-1], node_ids[1:]):
             try:
-                pos1 = _get_node_pos(track_graph_with_bin_centers, node1)
-                pos2 = _get_node_pos(track_graph_with_bin_centers, node2)
+                pos1 = _get_node_pos(track_graph_bin_centers, node1)
+                pos2 = _get_node_pos(track_graph_bin_centers, node2)
             except KeyError as e:
                 continue
             distance = np.linalg.norm(pos1 - pos2)
@@ -947,12 +967,12 @@ def _make_track_graph_with_bin_centers(
                     (node1, node2, {"distance": distance, "edge_id": edge_id})
                 )
                 intra_segment_edge_count += 1
-    track_graph_with_bin_centers.add_edges_from(edges_to_add)
+    track_graph_bin_centers.add_edges_from(edges_to_add)
 
     # --- 3. Add Inter-Segment Edges (Link segment ends) ---
     linking_edges_to_add: List[Tuple[Any, Any, Dict[str, Any]]] = []
     inter_segment_edge_count = 0
-    augmented_graph = track_graph_with_bin_centers_edges
+    augmented_graph = track_graph_bin_centers_edges
     original_node_ids_in_augmented = original_nodes_df["node_id"].unique()
 
     for original_node_id in original_node_ids_in_augmented:
@@ -973,17 +993,17 @@ def _make_track_graph_with_bin_centers(
                 # Ensure it's not the original node itself and it IS a bin center
                 if (
                     potential_center != original_node_id
-                    and track_graph_with_bin_centers.has_node(potential_center)
+                    and track_graph_bin_centers.has_node(potential_center)
                 ):
                     endpoint_centers.add(potential_center)
 
         # Add edges between all pairs of these endpoint bin centers
         for node1, node2 in combinations(endpoint_centers, 2):
             # Avoid adding edges already added or self-loops (combinations handles self-loops)
-            if not track_graph_with_bin_centers.has_edge(node1, node2):
+            if not track_graph_bin_centers.has_edge(node1, node2):
                 try:
-                    pos1 = _get_node_pos(track_graph_with_bin_centers, node1)
-                    pos2 = _get_node_pos(track_graph_with_bin_centers, node2)
+                    pos1 = _get_node_pos(track_graph_bin_centers, node1)
+                    pos2 = _get_node_pos(track_graph_bin_centers, node2)
                 except KeyError as e:
                     continue
 
@@ -993,9 +1013,9 @@ def _make_track_graph_with_bin_centers(
                 )
                 inter_segment_edge_count += 1
 
-    track_graph_with_bin_centers.add_edges_from(linking_edges_to_add)
+    track_graph_bin_centers.add_edges_from(linking_edges_to_add)
 
-    return track_graph_with_bin_centers
+    return track_graph_bin_centers
 
 
 @dataclass
@@ -1084,13 +1104,13 @@ class Environment:
     place_bin_edges_linear_ : Optional[NDArray[np.float64]] # shape (n_edges,)
         Linearized bin edge positions.
     distance_between_nodes_1d_ : Optional[Dict[Any, Dict[Any, float]]]
-        Shortest path distances between all nodes in `track_graph_with_bin_centers_edges_`.
-    track_graph_with_bin_centers_edges_ : Optional[nx.Graph]
+        Shortest path distances between all nodes in `track_graph_bin_centers_edges_`.
+    track_graph_bin_centers_edges_ : Optional[nx.Graph]
         Graph including original nodes, bin edges, and bin centers.
     track_graph_bin_centers_ : Optional[nx.Graph]
          Graph connecting only bin centers sequentially and at junctions.
     nodes_df_ : Optional[pd.DataFrame]
-        DataFrame with info about all nodes in `track_graph_with_bin_centers_edges_`.
+        DataFrame with info about all nodes in `track_graph_bin_centers_edges_`.
     original_nodes_df_ : Optional[pd.DataFrame]
         Info about original track graph nodes projected onto the linearization.
     place_bin_edges_nodes_df_ : Optional[pd.DataFrame]
@@ -1139,9 +1159,7 @@ class Environment:
     distance_between_nodes_1d_: Optional[Dict[Any, Dict[Any, float]]] = field(
         init=False, default=None
     )
-    track_graph_with_bin_centers_edges_: Optional[nx.Graph] = field(
-        init=False, default=None
-    )
+    track_graph_bin_centers_edges_: Optional[nx.Graph] = field(init=False, default=None)
     track_graph_bin_centers_: Optional[nx.Graph] = field(init=False, default=None)
     nodes_df_: Optional[pd.DataFrame] = field(init=False, default=None)
     original_nodes_df_: Optional[pd.DataFrame] = field(init=False, default=None)
@@ -1292,8 +1310,8 @@ class Environment:
             self.distance_between_nodes_,
             self.centers_shape_,
             self.edges_,
-            self.track_graph_with_bin_centers_,
-            self.track_graph_with_bin_centers_edges_,
+            self.track_graph_bin_centers_,
+            self.track_graph_bin_centers_edges_,
             self.original_nodes_df_,
             self.place_bin_edges_nodes_df_,
             self.place_bin_centers_nodes_df_,
@@ -1758,6 +1776,6 @@ class Environment:
         if not self._is_fitted:
             raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
         if self.is_1d:
-            return self.track_graph_with_bin_centers_
+            return self.track_graph_bin_centers_
         else:
             return self.track_graph_nd_

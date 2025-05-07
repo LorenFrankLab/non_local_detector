@@ -422,7 +422,7 @@ def get_ahead_behind_distance(
 
 def get_map_speed(
     posterior: xr.DataArray,
-    track_graph_with_bin_centers_edges: nx.Graph,
+    track_graph_bin_centers_edges: nx.Graph,
     place_bin_center_ind_to_node: np.ndarray,
     sampling_frequency: float = 500.0,
     smooth_sigma: float = 0.0025,
@@ -432,7 +432,7 @@ def get_map_speed(
     Parameters
     ----------
     posterior : xr.DataArray
-    track_graph_with_bin_centers_edges : nx.Graph
+    track_graph_bin_centers_edges : nx.Graph
         Track graph with bin centers as nodes and edges
     place_bin_center_ind_to_node : np.ndarray
         Mapping of place bin center index to node ID
@@ -460,7 +460,7 @@ def get_map_speed(
             speed,
             0,
             nx.shortest_path_length(
-                track_graph_with_bin_centers_edges,
+                track_graph_bin_centers_edges,
                 source=node_ids[0],
                 target=node_ids[1],
                 weight="distance",
@@ -471,7 +471,7 @@ def get_map_speed(
             speed,
             -1,
             nx.shortest_path_length(
-                track_graph_with_bin_centers_edges,
+                track_graph_bin_centers_edges,
                 source=node_ids[-2],
                 target=node_ids[-1],
                 weight="distance",
@@ -483,7 +483,7 @@ def get_map_speed(
         for node1, node2 in zip(node_ids[:-2], node_ids[2:]):
             speed.append(
                 nx.shortest_path_length(
-                    track_graph_with_bin_centers_edges,
+                    track_graph_bin_centers_edges,
                     source=node1,
                     target=node2,
                     weight="distance",
@@ -495,7 +495,7 @@ def get_map_speed(
             speed,
             0,
             nx.shortest_path_length(
-                track_graph_with_bin_centers_edges,
+                track_graph_bin_centers_edges,
                 source=node_ids[0],
                 target=node_ids[1],
                 weight="distance",
@@ -506,7 +506,7 @@ def get_map_speed(
             speed,
             -1,
             nx.shortest_path_length(
-                track_graph_with_bin_centers_edges,
+                track_graph_bin_centers_edges,
                 source=node_ids[-2],
                 target=node_ids[-1],
                 weight="distance",
