@@ -701,13 +701,6 @@ def _create_1d_track_grid_data(
     place_bin_edges = np.asarray(no_duplicate_place_bin_edges_nodes_df.linear_position)
     place_bin_centers = get_centers(place_bin_edges)
 
-    # Compute distance between nodes
-    distance_between_nodes = dict(
-        nx.all_pairs_dijkstra_path_length(
-            track_graph_bin_centers_edges, weight="distance"
-        )
-    )
-
     # Figure out which points are on the track and not just gaps
     change_edge_ind = np.nonzero(
         np.diff(no_duplicate_place_bin_edges_nodes_df.edge_id)
@@ -749,6 +742,9 @@ def _create_1d_track_grid_data(
         track_graph_bin_centers_edges,
         original_nodes_df,
     )
+
+    # Compute distance between nodes
+    distance_between_nodes = _get_distance_between_nodes(track_graph_bin_centers)
 
     # Other needed information
     edges = [place_bin_edges]
