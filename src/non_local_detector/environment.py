@@ -18,7 +18,7 @@ The module supports two main types of environments:
       the centers of *interior* bins, and edges connect adjacent interior bins.
       This graph captures the connectivity of the valid space.
     - Can compute shortest-path distances between all pairs of interior bins
-      on this graph (`distance_between_nodes_`).
+      on this graph (`distance_between_bins`).
     - Provides methods to find the bin index for a given position (`get_bin_ind`),
       calculate manifold distances between positions (`get_manifold_distances`),
       and determine movement direction relative to the track center (`get_direction`).
@@ -32,7 +32,7 @@ The module supports two main types of environments:
       both the original track nodes and the newly created bin centers/edges
       are represented as nodes.
     - Computes shortest-path distances between all nodes in this augmented graph
-      (`distance_between_nodes_`).
+      (`distance_between_bins`).
     - Stores detailed information about original nodes, bin edges, and bin
       centers in pandas DataFrames (`original_nodes_df_`, etc.).
 
@@ -45,6 +45,7 @@ parameters and optional position data.
 
 import pickle
 from dataclasses import dataclass, field
+from functools import cached_property
 from itertools import combinations
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
@@ -743,9 +744,6 @@ def _create_1d_track_grid_data(
         original_nodes_df,
     )
 
-    # Compute distance between nodes
-    distance_between_nodes = _get_distance_between_nodes(track_graph_bin_centers)
-
     # Other needed information
     edges = [place_bin_edges]
     centers_shape = (place_bin_centers.size,)
@@ -754,7 +752,6 @@ def _create_1d_track_grid_data(
         place_bin_centers[:, np.newaxis],
         place_bin_edges[:, np.newaxis],
         is_track_interior,
-        distance_between_nodes,
         centers_shape,
         edges,
         track_graph_bin_centers,
@@ -1121,15 +1118,10 @@ class Environment:
         Boolean grid indicating bins adjacent to the N-D track interior.
     track_graph_nd_ : Optional[nx.Graph]
         Graph connecting centers of adjacent interior N-D bins.
-    distance_between_nodes_ : Optional[NDArray[np.float64]]
-         Shape (n_interior_bins, n_interior_bins). Pairwise shortest path distances
-         on `track_graph_nd_`. Indices correspond to flat indices of interior bins.
 
     # 1-D Specific Attributes
     place_bin_edges_linear_ : Optional[NDArray[np.float64]] # shape (n_edges,)
         Linearized bin edge positions.
-    distance_between_nodes_1d_ : Optional[Dict[Any, Dict[Any, float]]]
-        Shortest path distances between all nodes in `track_graph_bin_centers_edges_`.
     track_graph_bin_centers_edges_ : Optional[nx.Graph]
         Graph including original nodes, bin edges, and bin centers.
     track_graph_bin_centers_ : Optional[nx.Graph]
@@ -1173,15 +1165,9 @@ class Environment:
     )
     is_track_boundary_: Optional[NDArray[np.bool_]] = field(init=False, default=None)
     track_graph_nd_: Optional[nx.Graph] = field(init=False, default=None)
-    distance_between_nodes_: Optional[NDArray[np.float64]] = field(
-        init=False, default=None
-    )
 
     ## 1-D
     place_bin_edges_linear_: Optional[NDArray[np.float64]] = field(
-        init=False, default=None
-    )
-    distance_between_nodes_1d_: Optional[Dict[Any, Dict[Any, float]]] = field(
         init=False, default=None
     )
     track_graph_bin_centers_edges_: Optional[nx.Graph] = field(init=False, default=None)
@@ -1316,11 +1302,6 @@ class Environment:
             self.place_bin_centers_, self.is_track_interior_, self.centers_shape_
         )
 
-        # 5. Calculate Distances on N-D Graph
-        self.distance_between_nodes_ = _get_distance_between_nodes(
-            self.track_graph_nd_,
-        )
-
     def _fit_1d(self) -> None:
         """Fit method for 1-dimensional track environments."""
         if self.track_graph is None or self.edge_order is None:
@@ -1332,7 +1313,6 @@ class Environment:
             self.place_bin_centers_,
             self.place_bin_edges_,
             self.is_track_interior_,
-            self.distance_between_nodes_,
             self.centers_shape_,
             self.edges_,
             self.track_graph_bin_centers_,
@@ -1352,7 +1332,6 @@ class Environment:
         self.position_range_ = None
         self.is_track_boundary_ = None
         self.track_graph_nd_ = None
-        self.distance_between_nodes_ = None
 
     def fit(self, position: Optional[NDArray[np.float64]] = None) -> "Environment":
         """Fits the discrete grid and graph representation of the environment.
@@ -1653,8 +1632,6 @@ class Environment:
             raise RuntimeError(
                 "Environment has not been fitted yet. Call `fit_place_grid` first."
             )
-        if self.distance_between_nodes_ is None:
-            raise ValueError("Distance between nodes has not been computed or stored.")
 
         position1 = np.atleast_2d(position1)
         position2 = np.atleast_2d(position2)
@@ -1669,12 +1646,7 @@ class Environment:
         bin_ind1 = self.get_bin_ind(position1)
         bin_ind2 = self.get_bin_ind(position2)
 
-        if self.track_graph is not None:  # 1D case uses dict
-            raise NotImplementedError(
-                "Distance calculation for 1D track graph is not implemented."
-            )
-        else:
-            distances = self.distance_between_nodes_[bin_ind1, bin_ind2]
+        distances = self.distance_between_bins[bin_ind1, bin_ind2]
 
         return distances
 
@@ -1689,6 +1661,7 @@ class Environment:
     ) -> np.ndarray:
         """Get the direction of movement relative to the center of the track (inward/outward).
 
+        Requires a fitted N-D environment with a corresponding track graph (`track_graph_nd`).
 
         Parameters
         ----------
@@ -1738,7 +1711,7 @@ class Environment:
         bin_ind = self.get_bin_ind(position)
 
         velocity_to_center = gaussian_smooth(
-            np.gradient(self.distance_between_nodes_[bin_ind, center_node_id]),
+            np.gradient(self.distance_between_bins[bin_ind, center_node_id]),
             sigma,
             sampling_frequency,
             axis=0,
@@ -1803,3 +1776,21 @@ class Environment:
             return self.track_graph_bin_centers_
         else:
             return self.track_graph_nd_
+
+    @cached_property
+    def distance_between_bins(self) -> float:
+        """Get the distance between two nodes in the fitted track graph.
+        Returns
+        -------
+        distance : np.ndarray, shape (n_bins, n_bins)
+            The distance between all pairs of bins in the fitted track graph.
+
+        Raises
+        ------
+        RuntimeError
+            If the environment has not been fitted.
+        """
+        if not self._is_fitted:
+            raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
+
+        return _get_distance_between_nodes(self.get_fitted_track_graph())
