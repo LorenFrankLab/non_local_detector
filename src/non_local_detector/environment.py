@@ -732,6 +732,10 @@ def _create_1d_track_grid_data(
             )
         ).sort_values(by=["linear_position"], axis="rows")
     ).reset_index(drop=True)
+    place_bin_centers_nodes_df["bin_ind"] = np.arange(
+        len(place_bin_centers_nodes_df), dtype=np.int32
+    )
+    place_bin_centers_nodes_df["bin_ind_flat"] = place_bin_centers_nodes_df["bin_ind"]
 
     track_graph_bin_centers = _make_track_graph_bin_centers(
         place_bin_centers_nodes_df,
@@ -944,6 +948,9 @@ def _make_track_graph_bin_centers(
                 {
                     "pos": (row["x_position"], row["y_position"]),
                     "edge_id": int(row["edge_id"]),
+                    "bin_ind": row["bin_ind"],
+                    "bin_ind_flat": row["bin_ind_flat"],
+                    "is_track_interior": True,
                 },
             )
         )
