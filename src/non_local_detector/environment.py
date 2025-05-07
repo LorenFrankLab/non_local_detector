@@ -956,6 +956,21 @@ def _make_track_graph_bin_centers(
         )
     track_graph_bin_centers.add_nodes_from(nodes_to_add)
 
+    for ind, (_, row) in enumerate(centers_df[centers_df["node_id"] == -1].iterrows()):
+        nodes_to_add.append(
+            (
+                -ind,
+                {
+                    "pos": (np.nan, np.nan),
+                    "edge_id": -1,
+                    "bin_ind": row["bin_ind"],
+                    "bin_ind_flat": row["bin_ind_flat"],
+                    "is_track_interior": False,
+                },
+            )
+        )
+    track_graph_bin_centers.add_nodes_from(nodes_to_add)
+
     # --- 2. Add Intra-Segment Edges ---
     edges_to_add: List[Tuple[Any, Any, Dict[str, Any]]] = []
     intra_segment_edge_count = 0
