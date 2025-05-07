@@ -484,14 +484,21 @@ def _get_distance_between_nodes(track_graph_nd: nx.Graph) -> np.ndarray:
     distance : np.ndarray, shape (n_nodes, n_nodes)
         Matrix of shortest path distances between all pairs of nodes.
     """
+
+    node_to_bin_ind_flat = nx.get_node_attributes(track_graph_nd, "bin_ind_flat")
+
     node_positions = nx.get_node_attributes(track_graph_nd, "pos")
     node_positions = np.asarray(list(node_positions.values()))
-    distance = np.full((len(node_positions), len(node_positions)), np.inf)
+    n_bins = len(node_positions)
+
+    distance = np.full((n_bins, n_bins), np.inf)
     for to_node_id, from_node_id in nx.shortest_path_length(
         track_graph_nd,
         weight="distance",
     ):
-        distance[to_node_id, list(from_node_id.keys())] = list(from_node_id.values())
+        to_bin_ind = node_to_bin_ind_flat[to_node_id]
+        from_bin_inds = [node_to_bin_ind_flat[node_id] for node_id in from_node_id]
+        distance[to_bin_ind, from_bin_inds] = list(from_node_id.values())
 
     return distance
 
