@@ -14,7 +14,7 @@ The module supports two main types of environments:
     - Can automatically infer the "track interior" (the portion of the grid
       actually occupied by the animal) from position data using histogramming
       and optional morphological operations (filling holes, dilation).
-    - Constructs a `networkx` graph (`track_graphDD`) where nodes represent
+    - Constructs a `networkx` graph (`track_graph_nd`) where nodes represent
       the centers of *interior* bins, and edges connect adjacent interior bins.
       This graph captures the connectivity of the valid space.
     - Can compute shortest-path distances between all pairs of interior bins
@@ -1689,7 +1689,6 @@ class Environment:
     ) -> np.ndarray:
         """Get the direction of movement relative to the center of the track (inward/outward).
 
-        Requires a fitted N-D environment with a corresponding track graph (`track_graphDD`).
 
         Parameters
         ----------
@@ -1723,9 +1722,9 @@ class Environment:
             raise RuntimeError(
                 "Environment has not been fitted yet. Call `fit_place_grid` first."
             )
-        if self.track_graphDD is None or self.distance_between_nodes_ is None:
+        if self.track_graph_nd is None:
             raise RuntimeError(
-                "Direction finding requires a fitted N-D environment with a track graph ('track_graphDD') and precomputed distances."
+                "Direction finding requires a fitted N-D environment with a track graph ('track_graph_nd') and precomputed distances."
             )
 
         if position_time is None:
@@ -1733,7 +1732,7 @@ class Environment:
         if sampling_frequency is None:
             sampling_frequency = 1 / np.mean(np.diff(position_time))
 
-        centrality = nx.closeness_centrality(self.track_graphDD, distance="distance")
+        centrality = nx.closeness_centrality(self.track_graph_nd, distance="distance")
         center_node_id = list(centrality.keys())[np.argmax(list(centrality.values()))]
 
         bin_ind = self.get_bin_ind(position)
