@@ -412,7 +412,11 @@ def _make_nd_track_graph(
         )
     ):
         track_graph_nd.add_node(
-            node_id, pos=tuple(node_position), is_track_interior=is_interior
+            node_id,
+            pos=tuple(node_position),
+            is_track_interior=is_interior,
+            bin_ind=tuple(np.unravel_index(node_id, centers_shape)),
+            bin_ind_flat=node_id,
         )
 
     edges = []
