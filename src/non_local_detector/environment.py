@@ -1636,6 +1636,7 @@ class Environment:
             )
         if self.track_graph_nd_ is None:
             raise RuntimeError(
+                "Direction finding requires a fitted N-D environment with a track graph ('track_graph_nd_') and precomputed distances."
             )
 
         if position_time is None:
