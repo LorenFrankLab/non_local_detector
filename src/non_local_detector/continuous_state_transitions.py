@@ -50,7 +50,13 @@ def estimate_movement_var(position: np.ndarray) -> np.ndarray:
     position = position if position.ndim > 1 else position[:, np.newaxis]
     is_nan = np.any(np.isnan(position), axis=1)
     position = position[~is_nan]
-    return np.cov(np.diff(position, axis=0), rowvar=False)
+
+    if position.shape[0] < 2:
+        raise ValueError("Not enough data to estimate movement variance.")
+
+    movement_cov = np.cov(np.diff(position, axis=0), rowvar=False, ddof=1)
+
+    return np.diag(movement_cov) if movement_cov.ndim > 0 else movement_cov
 
 
 def _random_walk_on_track_graph(
