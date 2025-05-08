@@ -157,7 +157,7 @@ def _create_grid(
     edges : Tuple[NDArray[np.float64], ...]
         Tuple containing bin edges for each dimension (shape (n_bins_d + 1,)).
         Includes boundary bins if `add_boundary_bins` is True.
-    place_bin_edges_flat : np.ndarray, shape (n_total_bins, n_position_dims)
+    place_bin_edges_flat : np.ndarray, shape (n_total_bins + 1, n_dims)
         The edges corresponding to each bin in the flattened grid.
     place_bin_centers : NDArray[np.float64], shape (n_total_bins, n_dims)
         Center coordinates of each bin in the flattened grid.
