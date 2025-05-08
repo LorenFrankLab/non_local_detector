@@ -707,7 +707,7 @@ def _create_1d_track_grid_data(
         np.diff(no_duplicate_place_bin_edges_nodes_df.edge_id)
     )[0]
 
-    if isinstance(edge_spacing, int) or isinstance(edge_spacing, float):
+    if isinstance(edge_spacing, (int, float)):
         n_edges = len(edge_order)
         edge_spacing = [
             edge_spacing,
@@ -745,7 +745,7 @@ def _create_1d_track_grid_data(
     )
 
     # Other needed information
-    edges = [place_bin_edges]
+    edges = (place_bin_edges,)
     centers_shape = (place_bin_centers.size,)
 
     return (
@@ -959,7 +959,7 @@ def _make_track_graph_bin_centers(
     for ind, (_, row) in enumerate(centers_df[centers_df["node_id"] == -1].iterrows()):
         nodes_to_add.append(
             (
-                -ind,
+                -ind - 1,
                 {
                     "pos": (np.nan, np.nan),
                     "edge_id": -1,
@@ -1281,9 +1281,6 @@ class Environment:
                     bin_count_threshold=self.bin_count_threshold,
                 )
             else:
-                # Assume all bins within the core range are interior
-                # create_grid adds boundary bins, so interior needs slicing
-                core_shape = tuple(s - 2 for s in self.centers_shape_)
                 self.is_track_interior_ = np.zeros(self.centers_shape_, dtype=bool)
                 # Create slice object (e.g., (slice(1,-1), slice(1,-1), ...))
                 core_slice = tuple(slice(1, s - 1) for s in self.centers_shape_)
@@ -1633,18 +1630,18 @@ class Environment:
                 "Environment has not been fitted yet. Call `fit_place_grid` first."
             )
 
-        position1 = np.atleast_2d(position1)
-        position2 = np.atleast_2d(position2)
+        positions1 = np.atleast_2d(positions1)
+        positions2 = np.atleast_2d(positions2)
 
         # Validate input shapes
-        if position1.shape != position2.shape:
+        if positions1.shape != positions2.shape:
             raise ValueError("Shapes of position1 and position2 must match.")
 
-        if (position1.shape[0] == 0) or (position2.shape[0] == 0):
+        if (positions1.shape[0] == 0) or (positions2.shape[0] == 0):
             return np.zeros((0,), dtype=np.float64)
 
-        bin_ind1 = self.get_bin_ind(position1)
-        bin_ind2 = self.get_bin_ind(position2)
+        bin_ind1 = self.get_bin_ind(positions1)
+        bin_ind2 = self.get_bin_ind(positions2)
 
         distances = self.distance_between_bins[bin_ind1, bin_ind2]
 
