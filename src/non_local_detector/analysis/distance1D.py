@@ -84,8 +84,8 @@ def _get_MAP_estimate_2d_position_edges(
     try:
         place_bin_center_2D_position = env.place_bin_center_2D_position_
     except AttributeError:
-        place_bin_center_2D_position = np.asarray(
-            env.place_bin_centers_nodes_df_.loc[:, ["x_position", "y_position"]]
+        place_bin_center_2D_position = (
+            env.get_bin_center_dataframe().loc[:, ["pos_x", "pos_y"]].to_numpy()
         )
 
     mental_position_2d = place_bin_center_2D_position[map_position_ind]
@@ -94,7 +94,7 @@ def _get_MAP_estimate_2d_position_edges(
     try:
         edge_id = env.place_bin_center_ind_to_edge_id_
     except AttributeError:
-        edge_id = np.asarray(env.place_bin_centers_nodes_df_.edge_id)
+        edge_id = env.get_bin_center_dataframe().edge_id.to_numpy()
 
     track_segment_id = edge_id[map_position_ind]
     mental_position_edges = np.asarray(list(track_graph.edges))[track_segment_id]

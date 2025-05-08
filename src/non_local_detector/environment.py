@@ -28,13 +28,8 @@ The module supports two main types of environments:
       (nodes, edges, and their positions) along with edge ordering and spacing.
     - Linearizes the track based on the provided graph structure.
     - Creates bins along this linearized track.
-    - Generates an augmented graph (`track_graph_bin_centers_edges_`) where
-      both the original track nodes and the newly created bin centers/edges
-      are represented as nodes.
     - Computes shortest-path distances between all nodes in this augmented graph
       (`distance_between_bins`).
-    - Stores detailed information about original nodes, bin edges, and bin
-      centers in pandas DataFrames (`original_nodes_df_`, etc.).
 
 The central component is the `Environment` dataclass, which holds the parameters
 defining the environment and stores the results of the fitting process (grid
@@ -636,11 +631,6 @@ def _create_1d_track_grid_data(
     tuple,
     tuple,
     nx.Graph,
-    nx.Graph,
-    pd.DataFrame,
-    pd.DataFrame,
-    pd.DataFrame,
-    pd.DataFrame,
 ]:
     """Figures out 1D spatial bins given a track graph.
 
@@ -660,17 +650,6 @@ def _create_1d_track_grid_data(
     centers_shape : tuple
     edges : tuple of np.ndarray
     track_graph_bin_centers : nx.Graph
-    track_graph_bin_centers_edges : nx.Graph
-    original_nodes_df : pd.DataFrame
-        Table of information about the original nodes in the track graph
-    place_bin_edges_nodes_df : pd.DataFrame
-        Table of information with bin edges and centers
-    place_bin_centers_nodes_df : pd.DataFrame
-        Table of information about bin centers
-    nodes_df : pd.DataFrame
-        Table of information with information about the original nodes,
-        bin edges, and bin centers
-
     """
     track_graph_bin_centers_edges = make_track_graph_bin_centers_edges(
         track_graph, place_bin_size
@@ -756,11 +735,6 @@ def _create_1d_track_grid_data(
         centers_shape,
         edges,
         track_graph_bin_centers,
-        track_graph_bin_centers_edges,
-        original_nodes_df,
-        place_bin_edges_nodes_df,
-        place_bin_centers_nodes_df,
-        nodes_df.reset_index(),
     )
 
 
@@ -1038,6 +1012,83 @@ def _make_track_graph_bin_centers(
     return track_graph_bin_centers
 
 
+def get_direction(
+    env: "Environment",
+    position: np.ndarray,
+    position_time: Optional[np.ndarray] = None,
+    sigma: float = 0.1,
+    sampling_frequency: Optional[float] = None,
+    classify_stop: bool = False,
+    stop_speed_threshold: float = 1e-3,
+) -> np.ndarray:
+    """Get the direction of movement relative to the center of the track (inward/outward).
+
+    Requires a fitted N-D environment with a corresponding track graph (`track_graph_nd_`).
+
+    Parameters
+    ----------
+    position : np.ndarray, shape (n_time, n_dims)
+        Position data.
+    position_time : np.ndarray, shape (n_time,), optional
+        Timestamps for position data. If None, assumes uniform sampling.
+    sigma : float, optional
+        Standard deviation (in seconds) for Gaussian smoothing of velocity towards center. Defaults to 0.1.
+    sampling_frequency : float, optional
+        Sampling frequency in Hz. If None, estimated from `position_time`.
+    classify_stop : bool, optional
+        If True, classify speeds below `stop_speed_threshold` as "stop". Defaults to False.
+    stop_speed_threshold : float, optional
+        Speed threshold for classifying stops. Defaults to 1e-3.
+
+    Returns
+    -------
+    direction : np.ndarray, shape (n_time,)
+        Array of strings: "inward", "outward", or "stop".
+
+    Raises
+    ------
+    RuntimeError
+        If the environment has not been fitted or lacks the N-D track graph.
+    ValueError
+        If sampling frequency cannot be determined.
+    """
+
+    if not env._is_fitted:
+        raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
+    if env.track_graph_nd_ is None:
+        raise RuntimeError(
+            "Direction finding requires a fitted N-D environment with a track graph ('track_graph_nd_') and precomputed distances."
+        )
+
+    if position_time is None:
+        position_time = np.arange(position.shape[0])
+    if sampling_frequency is None:
+        sampling_frequency = 1 / np.mean(np.diff(position_time))
+
+    centrality = nx.closeness_centrality(env.track_graph_nd_, distance="distance")
+    center_node_id = list(centrality.keys())[np.argmax(list(centrality.values()))]
+
+    bin_ind = env.get_bin_ind(position)
+
+    velocity_to_center = gaussian_smooth(
+        np.gradient(env.distance_between_bins[bin_ind, center_node_id]),
+        sigma,
+        sampling_frequency,
+        axis=0,
+        truncate=8,
+    )
+    direction = np.where(
+        velocity_to_center < 0,
+        "inward",
+        "outward",
+    )
+
+    if classify_stop:
+        direction[np.abs(velocity_to_center) < stop_speed_threshold] = "stop"
+
+    return direction
+
+
 @dataclass
 class Environment:
     """Represents a spatial environment with a discrete grid and graph topology.
@@ -1118,18 +1169,8 @@ class Environment:
         Graph connecting centers of adjacent interior N-D bins.
 
     # 1-D Specific Attributes
-    track_graph_bin_centers_edges_ : Optional[nx.Graph]
-        Graph including original nodes, bin edges, and bin centers.
     track_graph_bin_centers_ : Optional[nx.Graph]
          Graph connecting only bin centers sequentially and at junctions.
-    nodes_df_ : Optional[pd.DataFrame]
-        DataFrame with info about all nodes in `track_graph_bin_centers_edges_`.
-    original_nodes_df_ : Optional[pd.DataFrame]
-        Info about original track graph nodes projected onto the linearization.
-    place_bin_edges_nodes_df_ : Optional[pd.DataFrame]
-        Info about nodes representing bin edges in the augmented graph.
-    place_bin_centers_nodes_df_ : Optional[pd.DataFrame]
-        Info about nodes representing bin centers in the augmented graph.
 
     _is_fitted : bool
          Internal flag indicating if `fit` has been called.
@@ -1163,14 +1204,7 @@ class Environment:
     track_graph_nd_: Optional[nx.Graph] = field(init=False, default=None)
 
     ## 1-D
-    track_graph_bin_centers_edges_: Optional[nx.Graph] = field(init=False, default=None)
     track_graph_bin_centers_: Optional[nx.Graph] = field(init=False, default=None)
-    nodes_df_: Optional[pd.DataFrame] = field(init=False, default=None)
-    original_nodes_df_: Optional[pd.DataFrame] = field(init=False, default=None)
-    place_bin_edges_nodes_df_: Optional[pd.DataFrame] = field(init=False, default=None)
-    place_bin_centers_nodes_df_: Optional[pd.DataFrame] = field(
-        init=False, default=None
-    )
 
     # Internal flag
     _is_fitted: bool = field(init=False, default=False)
@@ -1306,11 +1340,6 @@ class Environment:
             self.centers_shape_,
             self.edges_,
             self.track_graph_bin_centers_,
-            self.track_graph_bin_centers_edges_,
-            self.original_nodes_df_,
-            self.place_bin_edges_nodes_df_,
-            self.place_bin_centers_nodes_df_,
-            self.nodes_df_,
         ) = _create_1d_track_grid_data(
             self.track_graph,
             self.edge_order,
@@ -1550,82 +1579,6 @@ class Environment:
 
         return distances
 
-    def get_direction(
-        self,
-        position: np.ndarray,
-        position_time: Optional[np.ndarray] = None,
-        sigma: float = 0.1,
-        sampling_frequency: Optional[float] = None,
-        classify_stop: bool = False,
-        stop_speed_threshold: float = 1e-3,
-    ) -> np.ndarray:
-        """Get the direction of movement relative to the center of the track (inward/outward).
-
-        Requires a fitted N-D environment with a corresponding track graph (`track_graph_nd_`).
-
-        Parameters
-        ----------
-        position : np.ndarray, shape (n_time, n_dims)
-            Position data.
-        position_time : np.ndarray, shape (n_time,), optional
-            Timestamps for position data. If None, assumes uniform sampling.
-        sigma : float, optional
-            Standard deviation (in seconds) for Gaussian smoothing of velocity towards center. Defaults to 0.1.
-        sampling_frequency : float, optional
-            Sampling frequency in Hz. If None, estimated from `position_time`.
-        classify_stop : bool, optional
-            If True, classify speeds below `stop_speed_threshold` as "stop". Defaults to False.
-        stop_speed_threshold : float, optional
-            Speed threshold for classifying stops. Defaults to 1e-3.
-
-        Returns
-        -------
-        direction : np.ndarray, shape (n_time,)
-            Array of strings: "inward", "outward", or "stop".
-
-        Raises
-        ------
-        RuntimeError
-            If the environment has not been fitted or lacks the N-D track graph.
-        ValueError
-            If sampling frequency cannot be determined.
-        """
-
-        if not self._is_fitted:
-            raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
-        if self.track_graph_nd_ is None:
-            raise RuntimeError(
-                "Direction finding requires a fitted N-D environment with a track graph ('track_graph_nd_') and precomputed distances."
-            )
-
-        if position_time is None:
-            position_time = np.arange(position.shape[0])
-        if sampling_frequency is None:
-            sampling_frequency = 1 / np.mean(np.diff(position_time))
-
-        centrality = nx.closeness_centrality(self.track_graph_nd_, distance="distance")
-        center_node_id = list(centrality.keys())[np.argmax(list(centrality.values()))]
-
-        bin_ind = self.get_bin_ind(position)
-
-        velocity_to_center = gaussian_smooth(
-            np.gradient(self.distance_between_bins[bin_ind, center_node_id]),
-            sigma,
-            sampling_frequency,
-            axis=0,
-            truncate=8,
-        )
-        direction = np.where(
-            velocity_to_center < 0,
-            "inward",
-            "outward",
-        )
-
-        if classify_stop:
-            direction[np.abs(velocity_to_center) < stop_speed_threshold] = "stop"
-
-        return direction
-
     def get_linear_position(self, position: np.ndarray) -> np.ndarray:
         """Get the linearized position along the track.
 
@@ -1766,8 +1719,7 @@ class Environment:
     ) -> NDArray[Any]:
         """Assigns a region identifier to each spatial bin.
 
-        Regions can be defined by lists of bin indices (flat indices for N-D,
-        or `bin_ind_flat` from `place_bin_centers_nodes_df_` for 1-D) or by a
+        Regions can be defined by lists of bin indices (flat indices) or by a
         function that takes bin center coordinates and returns True if the bin
         belongs to the region.
 
@@ -1807,27 +1759,16 @@ class Environment:
         if not self._is_fitted or self.place_bin_centers_ is None:
             raise RuntimeError("Environment has not been fitted. Call fit() first.")
 
-        if self.is_1d and self.place_bin_centers_nodes_df_ is None:
-            raise RuntimeError(
-                "1D Environment not fitted with place_bin_centers_nodes_df_."
-            )
+        if self.is_1d:
+            raise RuntimeError("1D Environment not fitted")
 
         num_total_bins: int
         if self.is_1d:
-            # For 1D, use the number of bins from place_bin_centers_nodes_df_['bin_ind_flat']
-            # This should match self.centers_shape_[0]
             num_total_bins = self.centers_shape_[0]
-            # `all_bin_centers` are (x,y) for 1D, or linearized if preferred.
-            # Using (x,y) for consistency if callable is geometric.
-            # `self.place_bin_centers_` for 1D is (n_bins, 1) - linearized.
-            # `self.place_bin_centers_nodes_df_` has x,y.
-            all_bin_centers_coords = self.place_bin_centers_nodes_df_[
-                ["x_position", "y_position"]
-            ].to_numpy()
+            bin_center_df = self.get_bin_center_dataframe()
+            all_bin_centers_coords = bin_center_df.loc[:, ["pos_x", "pos_y"]].to_numpy()
             # And their corresponding flat indices (which are just 0 to n-1 for 1D in this context)
-            all_bin_flat_indices = self.place_bin_centers_nodes_df_[
-                "bin_ind_flat"
-            ].to_numpy()
+            all_bin_flat_indices = bin_center_df["bin_ind_flat"].to_numpy()
             output_shape = (num_total_bins,)
             # Initialize region_ids array based on 1D structure
             region_ids_flat = np.full(num_total_bins, default_region_id, dtype=object)

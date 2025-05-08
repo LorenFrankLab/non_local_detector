@@ -218,8 +218,8 @@ class RandomWalk:
                 "Random walk with track graph is only implemented for 1D environments"
             )
 
-        place_bin_center_ind_to_node = np.asarray(
-            self.environment.place_bin_centers_nodes_df_.node_id
+        place_bin_center_ind_to_node = (
+            self.environment.get_bin_center_dataframe().reset_index().node_id.to_numpy()
         )
         return _random_walk_on_track_graph(
             self.environment.place_bin_centers_,
