@@ -25,8 +25,8 @@ def _normalize_row_probability(x: np.ndarray) -> np.ndarray:
     """
     # Handle cases where the sum is zero to avoid division by zero -> NaN
     row_sums = x.sum(axis=1, keepdims=True)
-    # Use np.errstate to temporarily ignore invalid division warnings
-    with np.errstate(invalid="ignore"):
+    # Use np.errstate to temporarily ignore invalid division/zero warnings
+    with np.errstate(invalid="ignore", divide="ignore"):
         normalized_x = np.where(row_sums > 0, x / row_sums, 0.0)
     # Ensure any remaining NaNs (though unlikely with the above) are zero
     normalized_x[np.isnan(normalized_x)] = 0.0
