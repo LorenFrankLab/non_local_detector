@@ -124,7 +124,7 @@ def _create_grid(
     position: Optional[NDArray[np.float64]] = None,
     bin_size: Union[float, Sequence[float]] = 2.0,
     position_range: Optional[Sequence[Tuple[float, float]]] = None,
-    add_boundary_bins: bool = True,
+    add_boundary_bins: bool = False,
 ) -> Tuple[
     Tuple[NDArray[np.float64], ...],  # edges_tuple
     NDArray[np.float64],  # place_bin_edges_flat
@@ -150,7 +150,7 @@ def _create_grid(
         boundaries are derived from `position`. Defaults to None.
     add_boundary_bins : bool, optional
         If True, add one bin on each side of the grid in each dimension,
-        extending the range. Defaults to True.
+        extending the range. Defaults to False.
 
     Returns
     -------
@@ -276,7 +276,7 @@ def _infer_track_interior(
     fill_holes: bool = False,
     dilate: bool = False,
     bin_count_threshold: int = 0,
-    boundary_exists: bool = True,
+    boundary_exists: bool = False,
 ) -> NDArray[np.bool_]:
     """Infers the interior bins of the track based on position density.
 
@@ -1329,7 +1329,7 @@ class Environment:
                 position=position,
                 bin_size=self.place_bin_size,
                 position_range=self.position_range,
-                add_boundary_bins=True,
+                add_boundary_bins=False,
             )
             # Store the actual range used (needed if derived from position)
             self.position_range_ = tuple((e[0], e[-1]) for e in self.edges_)
@@ -1348,10 +1348,7 @@ class Environment:
                     bin_count_threshold=self.bin_count_threshold,
                 )
             else:
-                self.is_track_interior_ = np.zeros(self.centers_shape_, dtype=bool)
-                # Create slice object (e.g., (slice(1,-1), slice(1,-1), ...))
-                core_slice = tuple(slice(1, s - 1) for s in self.centers_shape_)
-                self.is_track_interior_[core_slice] = True
+                self.is_track_interior_ = np.ones(self.centers_shape_, dtype=bool)
 
         # 3. Determine Track Boundary (only if > 1D)
         if self.is_track_interior_.ndim > 1:
