@@ -44,10 +44,10 @@ parameters and optional position data.
 """
 
 import pickle
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from functools import cached_property
 from itertools import combinations
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import matplotlib
 import matplotlib.axes
@@ -1467,7 +1467,6 @@ class Environment:
             ax.set_xticks(get_centers(self.edges_[0]), minor=True)
             ax.set_yticks(get_centers(self.edges_[1]), minor=True)
             ax.grid(which="major", linestyle="-", linewidth="0.5", color="gray")
-            ax.grid(which="minor", linestyle=":", linewidth="0.5", color="lightgray")
 
             ax.set_aspect("equal", adjustable="box")
             ax.set_title(f"{self.environment_name} (Grid)")
@@ -1775,3 +1774,239 @@ class Environment:
         bin_ind = tree.query(positions, k=1)[1]
 
         return df["bin_ind_flat"].iloc[bin_ind].to_numpy()
+
+    def get_bin_coordinates(self, bin_ind: np.ndarray) -> np.ndarray:
+        """Get the coordinates of the bin centers for given bin indices.
+
+        Parameters
+        ----------
+        bin_ind : np.ndarray, shape (n_bins,)
+            The bin indices.
+
+        Returns
+        -------
+        bin_coordinates : np.ndarray, shape (n_bins, n_dims)
+            The coordinates of the bin centers.
+        """
+        if not self._is_fitted:
+            raise RuntimeError("Environment has not been fit yet. Call `fit` first.")
+
+        if self.is_1d:
+            return self.place_bin_centers_[bin_ind]
+        else:
+            return self.place_bin_centers_[bin_ind].reshape(-1, self.centers_shape_[-1])
+
+    def assign_region_ids_to_bins(
+        self,
+        regions_definition: Dict[
+            str, Union[List[int], Callable[[NDArray[np.float64]], bool]]
+        ],
+        default_region_id: Any = -1,
+    ) -> NDArray[Any]:
+        """Assigns a region identifier to each spatial bin.
+
+        Regions can be defined by lists of bin indices (flat indices for N-D,
+        or `bin_ind_flat` from `place_bin_centers_nodes_df_` for 1-D) or by a
+        function that takes bin center coordinates and returns True if the bin
+        belongs to the region.
+
+        Parameters
+        ----------
+        regions_definition : Dict[str, Union[List[int], Callable[[NDArray[np.float64]], bool]]]
+            A dictionary where keys are region names (or numeric IDs) and values define the region.
+            - If `List[int]`: A list of bin flat indices belonging to this region.
+            - If `Callable`: A function `func(bin_center_coords) -> bool`.
+            `bin_center_coords` is an NDArray of shape (n_dims,).
+        default_region_id : Any, optional
+            Identifier for bins not assigned to any defined region. Defaults to -1.
+
+        Returns
+        -------
+        region_ids_map : NDArray[Any]
+            For 1-D environments, a 1D array of shape (n_bins,) containing the region ID for each bin.
+            For N-D environments, a multi-dimensional array of shape matching `centers_shape_`.
+
+        Raises
+        ------
+        RuntimeError
+            If the environment has not been fitted.
+
+        Examples
+        --------
+        >>> env = Environment()
+        >>> env.fit(position_data)
+        >>> regions = {
+        ...     "RegionA": lambda coords: coords[0] < 5,
+        ...     "RegionB": [0, 1, 2],
+        ... }
+        >>> region_ids = env.assign_region_ids_to_bins(regions)
+        >>> print(region_ids)
+        [0, 0, 0, -1, -1, ...]
+        """
+        if not self._is_fitted or self.place_bin_centers_ is None:
+            raise RuntimeError("Environment has not been fitted. Call fit() first.")
+
+        if self.is_1d and self.place_bin_centers_nodes_df_ is None:
+            raise RuntimeError(
+                "1D Environment not fitted with place_bin_centers_nodes_df_."
+            )
+
+        num_total_bins: int
+        if self.is_1d:
+            # For 1D, use the number of bins from place_bin_centers_nodes_df_['bin_ind_flat']
+            # This should match self.centers_shape_[0]
+            num_total_bins = self.centers_shape_[0]
+            # `all_bin_centers` are (x,y) for 1D, or linearized if preferred.
+            # Using (x,y) for consistency if callable is geometric.
+            # `self.place_bin_centers_` for 1D is (n_bins, 1) - linearized.
+            # `self.place_bin_centers_nodes_df_` has x,y.
+            all_bin_centers_coords = self.place_bin_centers_nodes_df_[
+                ["x_position", "y_position"]
+            ].to_numpy()
+            # And their corresponding flat indices (which are just 0 to n-1 for 1D in this context)
+            all_bin_flat_indices = self.place_bin_centers_nodes_df_[
+                "bin_ind_flat"
+            ].to_numpy()
+            output_shape = (num_total_bins,)
+            # Initialize region_ids array based on 1D structure
+            region_ids_flat = np.full(num_total_bins, default_region_id, dtype=object)
+
+        else:  # N-D
+            num_total_bins = self.place_bin_centers_.shape[0]
+            all_bin_centers_coords = self.place_bin_centers_
+            # Flat indices are just np.arange(num_total_bins) for N-D as place_bin_centers_ is already flat
+            all_bin_flat_indices = np.arange(num_total_bins)
+            output_shape = self.centers_shape_
+            # Initialize region_ids_flat for N-D; will be reshaped later
+            region_ids_flat = np.full(num_total_bins, default_region_id, dtype=object)
+
+        for region_name_or_id, definition in regions_definition.items():
+            if callable(definition):
+                for i, bin_flat_idx in enumerate(all_bin_flat_indices):
+                    # For N-D, bin_flat_idx is the index into all_bin_centers_coords
+                    # For 1-D, bin_flat_idx is also the index here.
+                    coords = all_bin_centers_coords[
+                        i
+                    ]  # Assuming all_bin_flat_indices are 0..N-1 sequential
+                    if definition(coords):
+                        region_ids_flat[bin_flat_idx] = region_name_or_id
+            elif isinstance(definition, list):
+                # Ensure indices are within bounds
+                valid_indices = [idx for idx in definition if 0 <= idx < num_total_bins]
+                region_ids_flat[valid_indices] = region_name_or_id
+            else:
+                raise TypeError(
+                    f"Region definition for '{region_name_or_id}' must be a list of "
+                    "bin indices or a callable function."
+                )
+
+        if self.is_1d:
+            return region_ids_flat  # Already 1D
+        else:
+            return region_ids_flat.reshape(output_shape)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serializes the Environment object to a dictionary for DataJoint.
+        Starts with self.__dict__ and transforms only types that DataJoint
+        might not handle as well directly (e.g., NetworkX graphs).
+        Assumes DataJoint can handle np.ndarray and pd.DataFrame objects directly.
+
+        Returns
+        -------
+        data_dict : Dict[str, Any]
+            A dictionary representation of the Environment object.
+        """
+        # Start with a shallow copy of the instance's dictionary
+        data = self.__dict__.copy()
+
+        # Add a class identifier/version for robustness during deserialization
+        data["__classname__"] = self.__class__.__name__
+        data["__module__"] = self.__class__.__module__
+        data["class_version"] = "1.0.0"  # Versioning for future changes
+        data["__type__"] = "Environment"
+
+        # Selectively transform types
+        for key, value in data.items():
+            if isinstance(value, nx.Graph):
+                # Convert NetworkX graphs to a more standard dict format for robustness
+                # as direct pickling of graphs can sometimes be sensitive to library versions.
+                data[key] = {
+                    "__type__": "networkx_graph",
+                    "node_link_data": nx.node_link_data(value),
+                }
+            # Pandas DataFrames and NumPy arrays are assumed to be handled directly by DataJoint.
+
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Environment":
+        """Deserializes an Environment object from a dictionary created by to_dict().
+        Handles NetworkX graphs generically, including those passed as init arguments.
+
+        Parameters
+        ----------
+        data : Dict[str, Any]
+            A dictionary representation of the Environment object.
+
+        Returns
+        -------
+        env : Environment
+            The reconstructed Environment object.
+        """
+        if (
+            data.get("__classname__") != cls.__name__
+            or data.get("__module__") != cls.__module__
+        ):
+            raise ValueError(
+                f"Dictionary is not for class {cls.__module__}.{cls.__name__}, "
+                f"found {data.get('__module__')}.{data.get('__classname__')}"
+            )
+
+        # Create a working copy of the data to extract init args from
+        # and to allow modification of values (e.g., reconstructing graphs)
+        construction_data = data.copy()
+
+        # Collect and reconstruct init arguments for the class constructor
+        init_args = {}
+        for f in fields(cls):  # `fields` from `dataclasses`
+            if f.init:
+                if f.name in construction_data:
+                    value = construction_data[f.name]
+                    # Check if this init arg's value is a serialized graph
+                    if (
+                        isinstance(value, dict)
+                        and value.get("__type__") == "networkx_graph"
+                    ):
+                        init_args[f.name] = nx.node_link_graph(value["node_link_data"])
+                    else:
+                        init_args[f.name] = value
+                elif f.default is not MISSING:
+                    init_args[f.name] = f.default
+                elif f.default_factory is not MISSING:
+                    init_args[f.name] = f.default_factory()
+                # If a required init arg (no default) is missing, cls(**init_args) will fail.
+
+        # Create the instance
+        env = cls(**init_args)
+
+        # Restore the rest of the attributes from the original data dictionary
+        # These are attributes not handled by __init__ (e.g., fitted attributes, cached properties)
+        for key, value in data.items():
+            if key not in init_args and key not in [
+                "__classname__",
+                "__module__",
+                "class_version",
+            ]:
+                restored_value = value
+
+                # Check if the value is a serialized graph
+                if (
+                    isinstance(value, dict)
+                    and value.get("__type__") == "networkx_graph"
+                ):
+                    restored_value = nx.node_link_graph(value["node_link_data"])
+
+                # Setting the attribute, including populating __dict__ for cached_properties
+                setattr(env, key, restored_value)
+
+        return env
