@@ -467,8 +467,8 @@ def _make_nd_track_graph(
     return track_graph_nd
 
 
-def _get_distance_between_nodes(track_graph_nd: nx.Graph) -> np.ndarray:
-    """Calculates the shortest path distances between nodes in a graph.
+def _get_distance_between_bins(track_graph_nd: nx.Graph) -> NDArray[np.float64]:
+    """Calculates the shortest path distances between bins in the track graph.
 
     Parameters
     ----------
@@ -1642,7 +1642,7 @@ class Environment:
         if not self._is_fitted:
             raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
 
-        return _get_distance_between_nodes(self.get_fitted_track_graph())
+        return _get_distance_between_bins(self.get_fitted_track_graph())
 
     def get_bin_center_dataframe(self) -> pd.DataFrame:
         """Get a DataFrame with information about the bin centers.
@@ -1753,13 +1753,11 @@ class Environment:
         >>> print(region_ids)
         [0, 0, 0, -1, -1, ...]
         """
-        if not self._is_fitted or self.place_bin_centers_ is None:
+        if not self._is_fitted:
             raise RuntimeError("Environment has not been fitted. Call fit() first.")
 
-        if self.is_1d:
-            raise RuntimeError("1D Environment not fitted")
-
         num_total_bins: int
+
         if self.is_1d:
             num_total_bins = self.centers_shape_[0]
             bin_center_df = self.get_bin_center_dataframe()
