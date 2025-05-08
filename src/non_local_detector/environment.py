@@ -396,82 +396,115 @@ def _make_nd_track_graph(
     ----------
     place_bin_centers : NDArray[np.float64], shape (n_total_bins, n_dims)
         Coordinates of the center of each bin (flattened).
+        n_total_bins should be np.prod(centers_shape).
     is_track_interior : NDArray[np.bool_], shape (n_bins_dim1, ...)
         Boolean grid indicating which bins are part of the track.
+        Its shape must be `centers_shape`.
     centers_shape : Tuple[int, ...]
-        Shape of the bin grid (bins per dimension).
+        Shape of the bin grid (number of bins in each dimension).
 
     Returns
     -------
     track_graph_nd : nx.Graph
-        Graph where nodes are indices of interior bins, 'pos' attribute stores
-        coordinates, and edges connect adjacent interior bins with 'distance'.
+        Graph where nodes are *flat indices* of bins.
+        Nodes have 'pos' (coordinates), 'is_track_interior' (bool),
+        'bin_ind' (N-D tuple index), and 'bin_ind_flat' (flat index) attributes.
+        Edges connect adjacent interior bins and have a 'distance' attribute
+        (Euclidean distance between bin centers) and an 'edge_id'.
     """
-
     track_graph_nd = nx.Graph()
-    axis_offsets = [-1, 0, 1]
+    n_dims = is_track_interior.ndim
 
-    # Enumerate over nodes
-    for node_id, (node_position, is_interior) in enumerate(
+    if place_bin_centers.shape[0] != np.prod(centers_shape):
+        raise ValueError(
+            f"Mismatch between place_bin_centers length ({place_bin_centers.shape[0]}) "
+            f"and product of centers_shape ({np.prod(centers_shape)})."
+        )
+    if is_track_interior.shape != centers_shape:
+        raise ValueError(
+            f"Shape of is_track_interior {is_track_interior.shape} "
+            f"does not match centers_shape {centers_shape}."
+        )
+
+    # Add all bins as nodes to the graph.
+    # Node IDs will be the flat index of the bin.
+    for node_id, (node_position, is_interior_flag) in enumerate(
         zip(
             place_bin_centers,
-            is_track_interior.ravel(),
+            is_track_interior.ravel(),  # Flatten to match node_id sequence
         )
     ):
         track_graph_nd.add_node(
-            node_id,
+            node_id,  # Flat index
             pos=tuple(node_position),
-            is_track_interior=is_interior,
-            bin_ind=tuple(np.unravel_index(node_id, centers_shape)),
+            is_track_interior=bool(is_interior_flag),
+            bin_ind=tuple(np.unravel_index(node_id, centers_shape)),  # N-D index
             bin_ind_flat=node_id,
         )
 
-    edges = []
-    # Enumerate over nodes in the track interior
-    for ind in zip(*np.nonzero(is_track_interior)):
-        ind = np.array(ind)
-        # Indices of adjacent nodes
-        adj_inds = np.meshgrid(*[axis_offsets + i for i in ind], indexing="ij")
-        # Remove out of bounds indices
-        adj_inds = [
-            inds[np.logical_and(inds >= 0, inds < dim_size)]
-            for inds, dim_size in zip(adj_inds, centers_shape)
-        ]
+    # Collect edges to add. Store as (u, v) with u < v to ensure uniqueness.
+    edges_to_add_set: set[tuple[int, int]] = set()
 
-        # Is the adjacent node on the track?
-        adj_on_track_inds = is_track_interior[tuple(adj_inds)]
+    # Iterate over only the bins that are part of the track interior
+    # interior_indices_nd is an array of shape (num_interior_bins, n_dims)
+    # where each row is an N-D index tuple (e.g., [r, c, z])
+    interior_indices_nd = np.array(np.nonzero(is_track_interior)).T
 
-        # Remove the center node
-        center_idx = [n // 2 for n in adj_on_track_inds.shape]
-        adj_on_track_inds[tuple(center_idx)] = False
+    for current_nd_index_arr in interior_indices_nd:
+        # current_nd_index_arr is a 1D array, e.g., np.array([row, col, ...])
+        current_node_id = np.ravel_multi_index(current_nd_index_arr, centers_shape)
 
-        # Get the node ids of the center node
-        node_id = np.ravel_multi_index(ind, centers_shape)
+        # Iterate over all N-dimensional offsets: (-1,-1,..), (-1,-1,..,0), ..., (1,1,..,1)
+        # This creates 3^n_dims potential neighbors.
+        # To get only orthogonal neighbors, replace the itertools.product loop with:
+        # for dim_of_offset in range(n_dims):
+        #     for offset_val in [-1, 1]:
+        #         offset_tuple = [0] * n_dims
+        #         offset_tuple[dim_of_offset] = offset_val
+        for offset_tuple in itertools.product([-1, 0, 1], repeat=n_dims):
+            if all(
+                offset == 0 for offset in offset_tuple
+            ):  # Skip offset (0,0,...) which is self
+                continue
 
-        # Get the node ids of the adjacent nodes on the track
-        adj_node_ids = np.ravel_multi_index(
-            [inds[adj_on_track_inds] for inds in adj_inds],
-            centers_shape,
-        )
+            neighbor_nd_index_arr = current_nd_index_arr + np.array(offset_tuple)
 
-        # Collect the edges for the graph
-        edges.append(
-            np.concatenate(
-                np.meshgrid([node_id], adj_node_ids, indexing="ij"), axis=0
-            ).T
-        )
+            # Check if the neighbor's N-D index is within grid bounds
+            in_bounds = True
+            for dim_idx in range(n_dims):
+                if not (0 <= neighbor_nd_index_arr[dim_idx] < centers_shape[dim_idx]):
+                    in_bounds = False
+                    break
+            if not in_bounds:
+                continue
 
-    edges = np.concatenate(edges)
+            # If in bounds, check if this neighbor is also part of the track interior
+            neighbor_nd_index_tuple = tuple(neighbor_nd_index_arr)
+            if is_track_interior[neighbor_nd_index_tuple]:
+                neighbor_node_id = np.ravel_multi_index(
+                    neighbor_nd_index_tuple, centers_shape
+                )
 
-    # Add edges to the graph with distance
-    for node1, node2 in edges:
-        pos1 = np.asarray(track_graph_nd.nodes[node1]["pos"])
-        pos2 = np.asarray(track_graph_nd.nodes[node2]["pos"])
+                # Add edge pair (u,v) where u < v to the set
+                u, v = min(current_node_id, neighbor_node_id), max(
+                    current_node_id, neighbor_node_id
+                )
+                # Ensure we only add edges between different nodes
+                # (i.e., not self-loops)
+                if u != v:
+                    edges_to_add_set.add((u, v))
+
+    # Add the collected unique edges to the graph with their distances
+    for u_node, v_node in edges_to_add_set:
+        pos1 = np.asarray(track_graph_nd.nodes[u_node]["pos"])
+        pos2 = np.asarray(track_graph_nd.nodes[v_node]["pos"])
         distance = np.linalg.norm(pos1 - pos2)
-        track_graph_nd.add_edge(node1, node2, distance=distance)
+        track_graph_nd.add_edge(u_node, v_node, distance=distance)
 
-    for edge_id, edge in enumerate(track_graph_nd.edges):
-        track_graph_nd.edges[edge]["edge_id"] = edge_id
+    # Add a unique 'edge_id' to each edge (optional, but was in original)
+    for edge_id, graph_edge_tuple in enumerate(track_graph_nd.edges()):
+        # graph_edge_tuple is (node1, node2) or (node1, node2, key) if multigraph
+        track_graph_nd.edges[graph_edge_tuple]["edge_id"] = edge_id
 
     return track_graph_nd
 
