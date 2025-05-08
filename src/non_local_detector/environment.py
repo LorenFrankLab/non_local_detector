@@ -38,10 +38,10 @@ is used to perform the discretization and graph construction based on the input
 parameters and optional position data.
 """
 
+import itertools
 import pickle
 from dataclasses import MISSING, dataclass, field, fields
 from functools import cached_property
-from itertools import combinations
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import matplotlib
@@ -1032,7 +1032,7 @@ def _make_track_graph_bin_centers(
                     endpoint_centers.add(potential_center)
 
         # Add edges between all pairs of these endpoint bin centers
-        for node1, node2 in combinations(endpoint_centers, 2):
+        for node1, node2 in itertools.combinations(endpoint_centers, 2):
             # Avoid adding edges already added or self-loops (combinations handles self-loops)
             if not track_graph_bin_centers.has_edge(node1, node2):
                 try:
@@ -1698,7 +1698,12 @@ class Environment:
         df = pd.DataFrame.from_dict(
             dict(self.get_fitted_track_graph().nodes(data=True)), orient="index"
         )
-        df[["pos_x", "pos_y"]] = pd.DataFrame(df["pos"].tolist(), index=df.index)
+
+        if not df.empty and isinstance(df["pos"].iloc[0], (list, tuple)):
+            n_dims = len(df["pos"].iloc[0])
+            pos_cols = [f"pos_dim{i}" for i in range(n_dims)]
+            pos_df = pd.DataFrame(df["pos"].tolist(), index=df.index, columns=pos_cols)
+            df = pd.concat([df.drop(columns="pos"), pos_df], axis=1)
         df = df.sort_values(by="bin_ind_flat")
 
         # set index name to node_id
@@ -1720,14 +1725,19 @@ class Environment:
             The flattened bin index for each position. To get the 2D index,
             use np.unravel_index(bin_ind_flat, self.centers_shape_).
         """
+
         df = self.get_bin_center_dataframe()
         df = df[df["is_track_interior"]]
-        xy_pos = df.loc[:, ["pos_x", "pos_y"]].to_numpy()
-        tree = KDTree(xy_pos)
-        positions = np.atleast_2d(positions)
-        bin_ind = tree.query(positions, k=1)[1]
+        if df.empty:
+            return np.full(positions.shape[0], -1, dtype=int)
 
-        return df["bin_ind_flat"].iloc[bin_ind].to_numpy()
+        pos_cols = [col for col in df.columns if col.startswith("pos_dim")]
+        track_coords = df.loc[:, pos_cols].to_numpy()
+
+        tree = KDTree(track_coords)
+        bin_ind_subset = tree.query(np.atleast_2d(positions), k=1)[1]
+
+        return df["bin_ind_flat"].iloc[bin_ind_subset].to_numpy().squeeze()
 
     def get_bin_coordinates(self, bin_ind: np.ndarray) -> np.ndarray:
         """Get the coordinates of the bin centers for given bin indices.
@@ -1801,7 +1811,10 @@ class Environment:
         if self.is_1d:
             num_total_bins = self.centers_shape_[0]
             bin_center_df = self.get_bin_center_dataframe()
-            all_bin_centers_coords = bin_center_df.loc[:, ["pos_x", "pos_y"]].to_numpy()
+            pos_cols = [
+                col for col in bin_center_df.columns if col.startswith("pos_dim")
+            ]
+            all_bin_centers_coords = bin_center_df.loc[:, pos_cols].to_numpy()
             # And their corresponding flat indices (which are just 0 to n-1 for 1D in this context)
             all_bin_flat_indices = bin_center_df["bin_ind_flat"].to_numpy()
             output_shape = (num_total_bins,)

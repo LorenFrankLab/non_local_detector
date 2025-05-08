@@ -84,9 +84,9 @@ def _get_MAP_estimate_2d_position_edges(
     try:
         place_bin_center_2D_position = env.place_bin_center_2D_position_
     except AttributeError:
-        place_bin_center_2D_position = (
-            env.get_bin_center_dataframe().loc[:, ["pos_x", "pos_y"]].to_numpy()
-        )
+        df = env.get_bin_center_dataframe()
+        pos_cols = [col for col in df.columns if col.startswith("pos_dim")]
+        place_bin_center_2D_position = df.loc[:, pos_cols].to_numpy()
 
     mental_position_2d = place_bin_center_2D_position[map_position_ind]
 
