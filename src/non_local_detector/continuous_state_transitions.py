@@ -514,3 +514,35 @@ class Discrete:
         state_transition_matrix : np.ndarray, shape (1, 1)
         """
         return np.ones((1, 1))
+
+
+def calculate_rw_movement_variance(speed: float, time_step: float) -> float:
+    """Calculates the variance for a RandomWalk model based on speed.
+
+    Assumes the characteristic distance traveled in one time step
+    (speed * time_step) corresponds to the standard deviation of
+    displacement per dimension.
+
+    Parameters
+    ----------
+    speed : float
+        Characteristic speed (e.g., in cm/s).
+    time_step : float
+        Duration of one time step. Units must be consistent
+        with speed's time unit (e.g., in 0.002 s).
+
+    Returns
+    -------
+    movement_variance : float
+        The calculated variance (movement_var) for the RandomWalk model
+        (e.g., in cm^2).
+    """
+    if time_step <= 0:
+        raise ValueError("time_step must be positive.")
+
+    # Calculate characteristic distance
+    # (interpreted as standard deviation sigma)
+    sigma = speed * time_step
+
+    # Variance is sigma squared
+    return sigma**2
