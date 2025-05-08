@@ -58,6 +58,7 @@ import pandas as pd
 from numpy.typing import NDArray
 from scipy import ndimage
 from scipy.interpolate import interp1d
+from scipy.spatial import KDTree
 from sklearn.neighbors import NearestNeighbors
 from track_linearization import get_linearized_position, plot_graph_as_1D
 from track_linearization.core import _calculate_linear_position
@@ -114,7 +115,7 @@ def get_n_bins(
         extent = np.nanmax(position, axis=0) - np.nanmin(position, axis=0)
 
     # Ensure bin_size is positive
-    if np.all(bin_size <= 0):
+    if np.any(bin_size <= 0):
         raise ValueError("bin_size must be positive.")
 
     # Calculate number of bins, ensuring at least 1 bin even if extent is 0
@@ -130,9 +131,10 @@ def _create_grid(
     position_range: Optional[Sequence[Tuple[float, float]]] = None,
     add_boundary_bins: bool = True,
 ) -> Tuple[
-    Tuple[NDArray[np.float64], ...],
-    NDArray[np.float64],
-    Tuple[int, ...],
+    Tuple[NDArray[np.float64], ...],  # edges_tuple
+    NDArray[np.float64],  # place_bin_edges_flat
+    NDArray[np.float64],  # place_bin_centers_flat
+    Tuple[int, ...],  # centers_shape
 ]:
     """Calculates bin edges and centers for a spatial grid.
 
@@ -318,11 +320,10 @@ def _infer_track_interior(
 
     n_dims = position.shape[1]
     if n_dims > 1:
+        # Use connectivity=1 for 4-neighbor (2D) or 6-neighbor (3D) etc.
+        structure = ndimage.generate_binary_structure(n_dims, connectivity=1)
 
         if close_gaps:
-            # Use connectivity=1 for 4-neighbor (2D) or 6-neighbor (3D) etc.
-            structure = ndimage.generate_binary_structure(n_dims, connectivity=1)
-
             # Closing operation first (dilation then erosion) to close small gaps
             is_track_interior = ndimage.binary_closing(
                 is_track_interior, structure=structure
@@ -1716,7 +1717,7 @@ class Environment:
             return self.track_graph_nd_
 
     @cached_property
-    def distance_between_bins(self) -> float:
+    def distance_between_bins(self) -> NDArray[np.float64]:
         """Get the distance between two nodes in the fitted track graph.
         Returns
         -------
