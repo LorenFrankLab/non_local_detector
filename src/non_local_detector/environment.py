@@ -624,13 +624,12 @@ def _create_1d_track_grid_data(
     edge_spacing: Union[float, list],
     place_bin_size: float,
 ) -> Tuple[
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    dict,
-    tuple,
-    tuple,
-    nx.Graph,
+    np.ndarray,  # place_bin_centers
+    np.ndarray,  # place_bin_edges
+    np.ndarray,  # is_track_interior
+    tuple,  # centers_shape
+    tuple,  # edges
+    nx.Graph,  # track_graph_bin_centers
 ]:
     """Figures out 1D spatial bins given a track graph.
 
@@ -646,7 +645,6 @@ def _create_1d_track_grid_data(
     place_bin_centers : np.ndarray, shape (n_bins, n_position_dims)
     place_bin_edges : np.ndarray, shape (n_bins + n_position_dims, n_position_dims)
     is_track_interior : np.ndarray, shape (n_bins, n_position_dim)
-    distance_between_nodes : dict
     centers_shape : tuple
     edges : tuple of np.ndarray
     track_graph_bin_centers : nx.Graph
