@@ -38,7 +38,7 @@ The module supports two main types of environments:
 
 The central component is the `Environment` dataclass, which holds the parameters
 defining the environment and stores the results of the fitting process (grid
-details, graphs, distances) as attributes. The primary method `fit_place_grid`
+details, graphs, distances) as attributes. The primary method `fit`
 is used to perform the discretization and graph construction based on the input
 parameters and optional position data.
 """
@@ -1373,11 +1373,6 @@ class Environment:
 
         return self
 
-    def fit_place_grid(
-        self, position: Optional[np.ndarray] = None, infer_track_interior: bool = True
-    ) -> "Environment":
-        return self.fit(position=position)
-
     def plot_grid(
         self, ax: Optional[matplotlib.axes.Axes] = None
     ) -> matplotlib.axes.Axes:
@@ -1487,16 +1482,6 @@ class Environment:
 
         print(f"Environment saved to {filename}")
 
-    def save_environment(self, filename: str = "environment.pkl") -> None:
-        """Saves the environment object as a pickled file.
-
-        Parameters
-        ----------
-        filename : str, optional
-            File name to save the environment to. Defaults to "environment.pkl".
-        """
-        self.save(filename)
-
     @classmethod
     def load(cls, filename: str) -> "Environment":
         """Loads an Environment object from a pickled file.
@@ -1515,22 +1500,6 @@ class Environment:
             environment = pickle.load(file_handle)
 
         return environment
-
-    @classmethod
-    def load_environment(cls, filename: str = "environment.pkl") -> "Environment":
-        """Loads a pickled environment object from a file.
-
-        Parameters
-        ----------
-        filename : str, optional
-            File name to load the environment from. Defaults to "environment.pkl".
-
-        Returns
-        -------
-        Environment
-            The loaded environment object.
-        """
-        return cls.load(filename)
 
     def get_manifold_distances(
         self, positions1: NDArray[np.float64], positions2: NDArray[np.float64]
@@ -1562,9 +1531,7 @@ class Environment:
             If input shapes mismatch or required distance attributes are missing.
         """
         if not self._is_fitted:
-            raise RuntimeError(
-                "Environment has not been fitted yet. Call `fit_place_grid` first."
-            )
+            raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
 
         positions1 = np.atleast_2d(positions1)
         positions2 = np.atleast_2d(positions2)
@@ -1625,9 +1592,7 @@ class Environment:
         """
 
         if not self._is_fitted:
-            raise RuntimeError(
-                "Environment has not been fitted yet. Call `fit_place_grid` first."
-            )
+            raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
         if self.track_graph_nd_ is None:
             raise RuntimeError(
                 "Direction finding requires a fitted N-D environment with a track graph ('track_graph_nd_') and precomputed distances."
@@ -1675,9 +1640,7 @@ class Environment:
             Linearized position along the track.
         """
         if not self._is_fitted:
-            raise RuntimeError(
-                "Environment has not been fitted yet. Call `fit_place_grid` first."
-            )
+            raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
         if not self.is_1d:
             raise ValueError(
                 "Linear position calculation is only implemented for 1D environments."

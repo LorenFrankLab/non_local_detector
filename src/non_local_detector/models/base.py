@@ -303,7 +303,7 @@ class _DetectorBase(BaseEstimator):
                     edge_spacing=environment.edge_spacing,
                 ).linear_position.to_numpy()
 
-            environment.fit_place_grid(
+            environment.fit(
                 env_position, infer_track_interior=self.infer_track_interior
             )
 
