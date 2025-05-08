@@ -54,7 +54,6 @@ from numpy.typing import NDArray
 from scipy import ndimage
 from scipy.interpolate import interp1d
 from scipy.spatial import KDTree
-from sklearn.neighbors import NearestNeighbors
 from track_linearization import get_linearized_position, plot_graph_as_1D
 from track_linearization.core import _calculate_linear_position
 
@@ -542,7 +541,7 @@ def _get_distance_between_bins(track_graph_nd: nx.Graph) -> NDArray[np.float64]:
     return distance
 
 
-def make_track_graph_bin_centers_edges(
+def _make_track_graph_bin_centers_edges(
     track_graph: nx.Graph, place_bin_size: float
 ) -> nx.Graph:
     """Insert the bin center and bin edge positions as nodes in the track graph.
@@ -736,7 +735,7 @@ def make_track_graph_bin_centers_edges(
     return track_graph_bin_centers_edges
 
 
-def extract_bin_info_from_track_graph(
+def _extract_bin_info_from_track_graph(
     track_graph: nx.Graph,
     track_graph_bin_centers_edges: nx.Graph,
     edge_order: list[tuple],
@@ -822,10 +821,10 @@ def _create_1d_track_grid_data(
     edges : tuple of np.ndarray
     track_graph_bin_centers : nx.Graph
     """
-    track_graph_bin_centers_edges = make_track_graph_bin_centers_edges(
+    track_graph_bin_centers_edges = _make_track_graph_bin_centers_edges(
         track_graph, place_bin_size
     )
-    nodes_df = extract_bin_info_from_track_graph(
+    nodes_df = _extract_bin_info_from_track_graph(
         track_graph, track_graph_bin_centers_edges, edge_order, edge_spacing
     )
 
@@ -909,62 +908,7 @@ def _create_1d_track_grid_data(
     )
 
 
-def _order_boundary(boundary: np.ndarray) -> np.ndarray:
-    """Given boundary bin centers, orders them in a way to make a continuous line.
-
-    https://stackoverflow.com/questions/37742358/sorting-points-to-form-a-continuous-line
-
-    Parameters
-    ----------
-    boundary : np.ndarray, shape (n_boundary_points, n_position_dims)
-
-    Returns
-    -------
-    ordered_boundary : np.ndarray, shape (n_boundary_points, n_position_dims)
-
-    """
-    n_points = boundary.shape[0]
-    clf = NearestNeighbors(n_neighbors=2).fit(boundary)
-    G = clf.kneighbors_graph()
-    T = nx.from_scipy_sparse_matrix(G)
-
-    paths = [list(nx.dfs_preorder_nodes(T, i)) for i in range(n_points)]
-    min_idx, min_dist = 0, np.inf
-
-    for idx, path in enumerate(paths):
-        ordered = boundary[path]  # ordered nodes
-        cost = np.sum(np.diff(ordered) ** 2)
-        if cost < min_dist:
-            min_idx, min_dist = idx, cost
-
-    opt_order = paths[min_idx]
-    return boundary[opt_order][:-1]
-
-
-def get_track_boundary_points(
-    is_track_interior: np.ndarray, edges: list[np.ndarray], connectivity: int = 1
-) -> np.ndarray:
-    """
-
-    Parameters
-    ----------
-    is_track_interior : np.ndarray, shape (n_x_bins, n_y_bins)
-    edges : list of ndarray
-
-    Returns
-    -------
-    boundary_points : np.ndarray, shape (n_boundary_points, n_position_dims)
-
-    """
-    boundary = _get_track_boundary(is_track_interior, connectivity=connectivity)
-
-    inds = np.nonzero(boundary)
-    centers = [get_centers(x) for x in edges]
-    boundary = np.stack([center[ind] for center, ind in zip(centers, inds)], axis=1)
-    return _order_boundary(boundary)
-
-
-def gaussian_smooth(
+def _gaussian_smooth(
     data: np.ndarray,
     sigma: float,
     sampling_frequency: float,
@@ -1241,7 +1185,7 @@ def get_direction(
 
     bin_ind = env.get_bin_ind(position)
 
-    velocity_to_center = gaussian_smooth(
+    velocity_to_center = _gaussian_smooth(
         np.gradient(env.distance_between_bins[bin_ind, center_node_id]),
         sigma,
         sampling_frequency,
