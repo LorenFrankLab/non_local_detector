@@ -852,7 +852,7 @@ def add_distance_weight_to_edges(
         try:
             distance = data["distance"]
             # Avoid division by zero
-            computed_value = 1.0 / (distance + 1e-9) if distance > -1e9 else np.inf
+            computed_value = 1.0 / (distance + 1e-9) if distance > 0.0 else np.inf
             track_graph.edges[u, v][new_attribute_name] = computed_value
         except KeyError:
             # If the distance attribute is not present, skip this edge
