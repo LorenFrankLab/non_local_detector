@@ -547,60 +547,191 @@ def make_track_graph_bin_centers_edges(
 ) -> nx.Graph:
     """Insert the bin center and bin edge positions as nodes in the track graph.
 
+    Subdivides each edge of the input `track_graph` into smaller segments
+    based on `place_bin_size`. New nodes are added representing bin edges
+    and bin centers along the original edge. The original edge is removed
+    and replaced by a chain of these new nodes and edges with calculated
+    Euclidean distances.
+
     Parameters
     ----------
     track_graph : nx.Graph
+        The input track graph. Nodes must have a 'pos' attribute
+        containing (x, y) coordinates.
     place_bin_size : float
+        The desired size of the bins along the track edges.
 
     Returns
     -------
     track_graph_bin_centers_edges : nx.Graph
+        A new graph with original edges subdivided into bin-sized segments.
+        New nodes representing bin edges and centers are added.
+        Edges in the new graph have a 'distance' attribute.
+        Nodes have 'pos', 'edge_id' (referencing the original edge index),
+        and 'is_bin_edge' attributes.
 
+    Raises
+    ------
+    KeyError
+        If a node in `track_graph` is missing the 'pos' attribute.
+    ValueError
+        If `place_bin_size` is not positive.
     """
+    if place_bin_size <= 0:
+        raise ValueError("place_bin_size must be positive.")
+
+    # Create a copy to avoid modifying the original graph
     track_graph_bin_centers_edges = track_graph.copy()
-    n_nodes = len(track_graph.nodes)
+    n_nodes = len(track_graph.nodes)  # Keep track of the next available node ID
 
-    for edge_ind, (node1, node2) in enumerate(track_graph.edges):
-        node1_x_pos, node1_y_pos = track_graph.nodes[node1]["pos"]
-        node2_x_pos, node2_y_pos = track_graph.nodes[node2]["pos"]
+    # Iterate through a list of original edges to avoid issues with modifying the graph during iteration
+    original_edges = list(track_graph.edges)
 
-        edge_size = np.linalg.norm(
-            [(node2_x_pos - node1_x_pos), (node2_y_pos - node1_y_pos)]
-        )
-        n_bins = 2 * np.ceil(edge_size / place_bin_size).astype(np.int32) + 1
-        if ~np.isclose(node1_x_pos, node2_x_pos):
-            f = interp1d((node1_x_pos, node2_x_pos), (node1_y_pos, node2_y_pos))
-            xnew = np.linspace(node1_x_pos, node2_x_pos, num=n_bins, endpoint=True)
-            xy = np.stack((xnew, f(xnew)), axis=1)
-        else:
-            ynew = np.linspace(node1_y_pos, node2_y_pos, num=n_bins, endpoint=True)
-            xnew = np.ones_like(ynew) * node1_x_pos
-            xy = np.stack((xnew, ynew), axis=1)
-        dist_between_nodes = np.linalg.norm(np.diff(xy, axis=0), axis=1)
+    for edge_ind, (node1, node2) in enumerate(original_edges):
+        # Get positions of the original edge's nodes
+        try:
+            node1_pos = np.asarray(track_graph.nodes[node1]["pos"])
+            node2_pos = np.asarray(track_graph.nodes[node2]["pos"])
+            if node1_pos.shape != (2,) or node2_pos.shape != (2,):
+                raise ValueError(
+                    f"Node positions for edge ({node1}, {node2}) must be 2D."
+                )
+            node1_x_pos, node1_y_pos = node1_pos
+            node2_x_pos, node2_y_pos = node2_pos
+        except KeyError as e:
+            raise KeyError(
+                f"Node {e} on edge ({node1}, {node2}) is missing 'pos' attribute."
+            ) from e
 
-        new_node_ids = n_nodes + np.arange(len(dist_between_nodes) + 1)
-        nx.add_path(
-            track_graph_bin_centers_edges,
-            [*new_node_ids],
-            distance=dist_between_nodes[0],
-        )
-        nx.add_path(track_graph_bin_centers_edges, [node1, new_node_ids[0]], distance=0)
-        nx.add_path(
-            track_graph_bin_centers_edges, [node2, new_node_ids[-1]], distance=0
-        )
-        track_graph_bin_centers_edges.remove_edge(node1, node2)
-        for ind, (node_id, pos) in enumerate(zip(new_node_ids, xy)):
-            track_graph_bin_centers_edges.nodes[node_id]["pos"] = pos
-            track_graph_bin_centers_edges.nodes[node_id]["edge_id"] = edge_ind
-            if ind % 2:
-                track_graph_bin_centers_edges.nodes[node_id]["is_bin_edge"] = False
-            else:
-                track_graph_bin_centers_edges.nodes[node_id]["is_bin_edge"] = True
+        # Calculate the length of the original edge
+        edge_vector = node2_pos - node1_pos
+        edge_size = np.linalg.norm(edge_vector)
+
+        # Determine the number of points needed to represent bin edges/centers
+        # Need points for node1, node2, and intermediate bin edges/centers
+        # n_segments = ceil(edge_size / place_bin_size)
+        # n_points_for_centers_and_edges = 2 * n_segments + 1 (alternating edge, center, edge...)
+        # Ensure at least 3 points (start, center, end) even for very small edges if place_bin_size is large
+        # but number of bins should correspond to edge_size / place_bin_size
+        n_segments = max(1, np.ceil(edge_size / place_bin_size).astype(np.int32))
+        n_points = 2 * n_segments + 1
+
+        # Interpolate points along the edge
+        # Handle vertical lines separately to avoid issues with interp1d
+        if not np.isclose(node1_x_pos, node2_x_pos):
+            # Use linear interpolation for y based on x
+            f_interp = interp1d([node1_x_pos, node2_x_pos], [node1_y_pos, node2_y_pos])
+            x_new = np.linspace(node1_x_pos, node2_x_pos, num=n_points, endpoint=True)
+            y_new = f_interp(x_new)
+        else:  # Vertical line
+            x_new = np.full(n_points, node1_x_pos)
+            y_new = np.linspace(node1_y_pos, node2_y_pos, num=n_points, endpoint=True)
+
+        # Combine x and y coordinates
+        xy_interpolated = np.stack((x_new, y_new), axis=1)
+
+        # Calculate distances between consecutive interpolated points
+        # dist_between_nodes[i] is the distance between xy_interpolated[i] and xy_interpolated[i+1]
+        dist_between_nodes = np.linalg.norm(np.diff(xy_interpolated, axis=0), axis=1)
+
+        # Generate IDs for the new intermediate nodes
+        # The number of new nodes to add is n_points - 2 (excluding original node1 and node2)
+        # However, we create IDs for all interpolated points temporarily.
+        # The first and last points in xy_interpolated correspond to node1 and node2.
+        # We will connect node1 to xy_interpolated[1] and xy_interpolated[-2] to node2.
+        # The nodes corresponding to xy_interpolated[1] through xy_interpolated[-2] are truly new.
+
+        # IDs for all points generated by linspace (including endpoints)
+        # We'll use these as temporary identifiers before linking to original nodes
+        temp_node_ids = n_nodes + np.arange(n_points)
+        n_nodes += n_points  # Increment total node count for next edge
+
+        # --- Add nodes and edges to the new graph ---
+
+        # 1. Remove the original edge
+        if track_graph_bin_centers_edges.has_edge(node1, node2):
+            track_graph_bin_centers_edges.remove_edge(node1, node2)
+
+        # 2. Add attributes to the new intermediate nodes and connect them
+        #    The loop runs n_points - 1 times, corresponding to dist_between_nodes length
+        for idx in range(n_points - 1):
+            current_temp_node_id = temp_node_ids[idx]
+            next_temp_node_id = temp_node_ids[idx + 1]
+            current_pos = xy_interpolated[idx]
+            next_pos = xy_interpolated[idx + 1]
+            segment_distance = dist_between_nodes[idx]
+
+            # Add the 'current' node if it's not the very first point (which corresponds to node1)
+            if idx > 0:
+                track_graph_bin_centers_edges.add_node(
+                    current_temp_node_id,
+                    pos=tuple(current_pos),
+                    edge_id=edge_ind,
+                    is_bin_edge=(
+                        idx % 2 == 0
+                    ),  # 0, 2, 4... are edges (including start/end)
+                )
+
+            # Add the 'next' node if it's the last point in the interpolation
+            # (as it won't be added as 'current' in the next iteration)
+            # This corresponds to the point matching node2 IF idx == n_points - 2
+            if idx == n_points - 2:
+                track_graph_bin_centers_edges.add_node(
+                    next_temp_node_id,
+                    pos=tuple(next_pos),
+                    edge_id=edge_ind,
+                    is_bin_edge=((idx + 1) % 2 == 0),
+                )
+
+            # Add the edge between the current and next temporary nodes
+            # We add edges sequentially with their specific calculated distance
+            track_graph_bin_centers_edges.add_edge(
+                current_temp_node_id, next_temp_node_id, distance=segment_distance
+            )
+
+        # 3. Connect original node1 to the first *intermediate* temporary node
+        #    temp_node_ids[0] corresponds to node1's position, temp_node_ids[1] is the first actual intermediate node
+        #    The distance between them is dist_between_nodes[0]
+        #    We replace the temporary node temp_node_ids[0] with the original node1
+        #    Need to handle the edge case where n_points might be small (e.g., 3)
+        if n_points > 1:
+            first_intermediate_node_id = temp_node_ids[1]
+            # Remove the temporary node corresponding to node1's position
+            if track_graph_bin_centers_edges.has_node(temp_node_ids[0]):
+                track_graph_bin_centers_edges.remove_node(temp_node_ids[0])
+
+            # Add edge from original node1 to the first intermediate node
+            track_graph_bin_centers_edges.add_edge(
+                node1, first_intermediate_node_id, distance=dist_between_nodes[0]
+            )
+
+        # 4. Connect the last *intermediate* temporary node to the original node2
+        #    temp_node_ids[-1] corresponds to node2's position, temp_node_ids[-2] is the last actual intermediate node
+        #    The distance between them is dist_between_nodes[-1]
+        #    We replace the temporary node temp_node_ids[-1] with the original node2
+        if n_points > 1:
+            last_intermediate_node_id = temp_node_ids[-2]
+            # Remove the temporary node corresponding to node2's position
+            if track_graph_bin_centers_edges.has_node(temp_node_ids[-1]):
+                track_graph_bin_centers_edges.remove_node(temp_node_ids[-1])
+
+            # Add edge from last intermediate node to original node2
+            track_graph_bin_centers_edges.add_edge(
+                last_intermediate_node_id, node2, distance=dist_between_nodes[-1]
+            )
+        elif n_points == 1:  # Edge case: edge_size was effectively zero or very small
+            # Only one point, corresponds to both node1 and node2 (or very close)
+            # Remove temporary node and ensure node1/node2 exist with correct attributes
+            if track_graph_bin_centers_edges.has_node(temp_node_ids[0]):
+                track_graph_bin_centers_edges.remove_node(temp_node_ids[0])
+            # Optionally add a zero-distance edge if needed, or just ensure nodes exist
+            # track_graph_bin_centers_edges.add_edge(node1, node2, distance=0.0) # Creates self-loop if node1==node2
+
+        # 5. Set attributes for the original nodes (ensure they have edge_id and are bin edges)
         track_graph_bin_centers_edges.nodes[node1]["edge_id"] = edge_ind
-        track_graph_bin_centers_edges.nodes[node2]["edge_id"] = edge_ind
         track_graph_bin_centers_edges.nodes[node1]["is_bin_edge"] = True
+        track_graph_bin_centers_edges.nodes[node2]["edge_id"] = edge_ind
         track_graph_bin_centers_edges.nodes[node2]["is_bin_edge"] = True
-        n_nodes = len(track_graph_bin_centers_edges.nodes)
 
     return track_graph_bin_centers_edges
 
