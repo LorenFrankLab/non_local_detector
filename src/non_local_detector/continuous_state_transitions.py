@@ -187,8 +187,8 @@ class RandomWalk:
         else:
             transition_matrix = (
                 multivariate_normal(mean=self.movement_mean, cov=self.movement_var)
-                .pdf(self.environment.distance_between_nodes_.flat)
-                .reshape(self.environment.distance_between_nodes_.shape)
+                .pdf(self.environment.distance_between_bins.flat)
+                .reshape(self.environment.distance_between_bins.shape)
             )
 
             if self.direction is not None:
@@ -198,13 +198,14 @@ class RandomWalk:
                 }.get(self.direction.lower(), None)
 
                 centrality = nx.closeness_centrality(
+                    self.environment.track_graph_nd_, distance="distance"
                 )
                 center_node_id = list(centrality.keys())[
                     np.argmax(list(centrality.values()))
                 ]
                 transition_matrix *= direction_func(
-                    self.environment.distance_between_nodes_[:, [center_node_id]],
-                    self.environment.distance_between_nodes_[[center_node_id]],
+                    self.environment.distance_between_bins[:, [center_node_id]],
+                    self.environment.distance_between_bins[[center_node_id]],
                 )
 
         return transition_matrix
@@ -225,7 +226,7 @@ class RandomWalk:
             self.movement_mean,
             self.movement_var,
             place_bin_center_ind_to_node,
-            self.environment.distance_between_nodes_,
+            self.environment.distance_between_bins,
         )
 
 
