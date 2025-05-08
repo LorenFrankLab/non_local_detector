@@ -1540,62 +1540,6 @@ class Environment:
         """
         return cls.load(filename)
 
-    def get_bin_ind(self, sample: np.ndarray) -> np.ndarray:
-        """Find the indices of the bins to which each value in input array belongs.
-
-        Uses the fitted grid edges (`self.edges_`).
-
-        Parameters
-        ----------
-        sample : np.ndarray, shape (n_time, n_dim)
-            Input data points.
-
-        Returns
-        -------
-        bin_inds : np.ndarray, shape (n_time,)
-            Flat index of the bin for each data point in `sample`.
-        """
-        if not self._is_fitted:
-            raise RuntimeError(
-                "Environment has not been fitted yet. Call `fit_place_grid` first."
-            )
-        if self.edges_ is None:
-            raise ValueError("Environment edges `edges_` are not defined.")
-
-        # remove outer boundary edge
-        edges = [e[1:-1] for e in self.edges_]
-
-        try:
-            # Sample is an ND-array.
-            N, D = sample.shape
-        except (AttributeError, ValueError):
-            # Sample is a sequence of 1D arrays.
-            sample = np.atleast_2d(sample).T
-            N, D = sample.shape
-
-        nbin = np.empty(D, np.intp)
-        for i in range(D):
-            nbin[i] = len(edges[i]) + 1  # includes an outlier on each end
-
-        # Compute the bin number each sample falls into.
-        Ncount = tuple(
-            np.searchsorted(edges[i], sample[:, i], side="right") for i in range(D)
-        )
-
-        # Using digitize, values that fall on an edge are put in the right bin.
-        # For the rightmost bin, we want values equal to the right edge to be
-        # counted in the last bin, and not as an outlier.
-        for i in range(D):
-            # Find which points are on the rightmost edge.
-            on_edge = sample[:, i] == edges[i][-1]
-            # Shift these points one bin to the left.
-            Ncount[i][on_edge] -= 1
-
-        return np.ravel_multi_index(
-            Ncount,
-            nbin,
-        )
-
     def get_manifold_distances(
         self, positions1: NDArray[np.float64], positions2: NDArray[np.float64]
     ) -> NDArray[np.float64]:
@@ -1791,3 +1735,45 @@ class Environment:
             raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
 
         return _get_distance_between_nodes(self.get_fitted_track_graph())
+
+    def get_bin_center_dataframe(self) -> pd.DataFrame:
+        """Get a DataFrame with information about the bin centers.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame containing information about the bin centers.
+        """
+        if not self._is_fitted:
+            raise RuntimeError("Environment has not been fit yet. Call `fit` first.")
+
+        df = pd.DataFrame.from_dict(
+            dict(self.get_fitted_track_graph().nodes(data=True)), orient="index"
+        )
+        df[["pos_x", "pos_y"]] = pd.DataFrame(df["pos"].tolist(), index=df.index)
+        df = df.sort_values(by="bin_ind_flat")
+
+        return df
+
+    def get_bin_ind(self, positions: np.ndarray) -> np.ndarray:
+        """Get the bin index for a given position.
+
+        Parameters
+        ----------
+        positions : np.ndarray, shape (n_time, n_dims)
+            Position data.
+
+        Returns
+        -------
+        bin_ind_flat : np.ndarray, shape (n_time,)
+            The flattened bin index for each position. To get the 2D index,
+            use np.unravel_index(bin_ind_flat, self.centers_shape_).
+        """
+        df = self.get_bin_center_dataframe()
+        df = df[df["is_track_interior"]]
+        xy_pos = df.loc[:, ["pos_x", "pos_y"]].to_numpy()
+        tree = KDTree(xy_pos)
+        positions = np.atleast_2d(positions)
+        bin_ind = tree.query(positions, k=1)[1]
+
+        return df["bin_ind_flat"].iloc[bin_ind].to_numpy()
