@@ -810,10 +810,7 @@ def get_track_boundary_points(
     boundary_points : np.ndarray, shape (n_boundary_points, n_position_dims)
 
     """
-    n_position_dims = len(edges)
-    boundary = _get_track_boundary(
-        is_track_interior, n_position_dims=n_position_dims, connectivity=connectivity
-    )
+    boundary = _get_track_boundary(is_track_interior, connectivity=connectivity)
 
     inds = np.nonzero(boundary)
     centers = [get_centers(x) for x in edges]
