@@ -1705,10 +1705,7 @@ class Environment:
         if not self._is_fitted:
             raise RuntimeError("Environment has not been fit yet. Call `fit` first.")
 
-        if self.is_1d:
-            return self.place_bin_centers_[bin_ind]
-        else:
-            return self.place_bin_centers_[bin_ind].reshape(-1, self.centers_shape_[-1])
+        return self.place_bin_centers_[bin_ind]
 
     def assign_region_ids_to_bins(
         self,
