@@ -1118,8 +1118,6 @@ class Environment:
         Graph connecting centers of adjacent interior N-D bins.
 
     # 1-D Specific Attributes
-    place_bin_edges_linear_ : Optional[NDArray[np.float64]] # shape (n_edges,)
-        Linearized bin edge positions.
     track_graph_bin_centers_edges_ : Optional[nx.Graph]
         Graph including original nodes, bin edges, and bin centers.
     track_graph_bin_centers_ : Optional[nx.Graph]
@@ -1165,9 +1163,6 @@ class Environment:
     track_graph_nd_: Optional[nx.Graph] = field(init=False, default=None)
 
     ## 1-D
-    place_bin_edges_linear_: Optional[NDArray[np.float64]] = field(
-        init=False, default=None
-    )
     track_graph_bin_centers_edges_: Optional[nx.Graph] = field(init=False, default=None)
     track_graph_bin_centers_: Optional[nx.Graph] = field(init=False, default=None)
     nodes_df_: Optional[pd.DataFrame] = field(init=False, default=None)
