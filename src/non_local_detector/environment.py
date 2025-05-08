@@ -1745,6 +1745,9 @@ class Environment:
         df[["pos_x", "pos_y"]] = pd.DataFrame(df["pos"].tolist(), index=df.index)
         df = df.sort_values(by="bin_ind_flat")
 
+        # set index name to node_id
+        df.index.name = "node_id"
+
         return df
 
     def get_bin_ind(self, positions: np.ndarray) -> np.ndarray:
