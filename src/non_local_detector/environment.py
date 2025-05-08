@@ -337,8 +337,17 @@ def _infer_track_interior(
             )
 
         if boundary_exists:
-            is_track_interior[-1] = False
-            is_track_interior[:, -1] = False
+            if is_track_interior.ndim == 1:
+                if len(is_track_interior) > 0:
+                    is_track_interior[-1] = False
+            elif is_track_interior.ndim > 1 and is_track_interior.size > 0:
+                for axis_n in range(is_track_interior.ndim):
+                    slicer_first = [slice(None)] * is_track_interior.ndim
+                    slicer_first[axis_n] = 0
+                    is_track_interior[tuple(slicer_first)] = False
+                    slicer_last = [slice(None)] * is_track_interior.ndim
+                    slicer_last[axis_n] = -1
+                    is_track_interior[tuple(slicer_last)] = False
 
     return is_track_interior.astype(bool)
 
