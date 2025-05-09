@@ -7,7 +7,7 @@ import numpy as np
 import scipy.interpolate
 from track_linearization import get_linearized_position
 
-from non_local_detector.environment import Environment
+from non_local_detector.environment.environment import Environment
 
 EPS = 1e-15
 LOG_EPS = np.log(EPS)

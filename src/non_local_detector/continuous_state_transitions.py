@@ -8,7 +8,7 @@ import numpy as np
 from scipy.stats import multivariate_normal
 from track_linearization import get_linearized_position
 
-from non_local_detector.environment import Environment
+from non_local_detector.environment.environment import Environment
 
 
 def _normalize_row_probability(x: np.ndarray) -> np.ndarray:

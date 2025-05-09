@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from non_local_detector.environment import (
+from non_local_detector.environment.environment import (
     Environment,
     _create_1d_track_grid_data,
     _create_grid,

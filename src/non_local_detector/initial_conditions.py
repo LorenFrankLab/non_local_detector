@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from non_local_detector.environment import Environment
+from non_local_detector.environment.environment import Environment
 from non_local_detector.observation_models import ObservationModel
 
 

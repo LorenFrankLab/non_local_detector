@@ -29,7 +29,7 @@ from non_local_detector.discrete_state_transitions import (
     centered_softmax_forward,
     predict_discrete_state_transitions,
 )
-from non_local_detector.environment import Environment
+from non_local_detector.environment.environment import Environment
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,

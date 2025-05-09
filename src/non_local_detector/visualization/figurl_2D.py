@@ -6,7 +6,11 @@ try:
     import sortingview.views.franklab as vvf
     import xarray as xr
 
-    from non_local_detector.environment import Environment, get_grid, get_track_interior
+    from non_local_detector.environment.environment import (
+        Environment,
+        get_grid,
+        get_track_interior,
+    )
     from non_local_detector.visualization.static import get_multiunit_firing_rate
 
     def create_static_track_animation(
