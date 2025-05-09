@@ -245,6 +245,7 @@ class Environment:
             self.position_range_ = None
 
         self._is_fitted = True
+
         return self
 
     @check_fitted
@@ -939,7 +940,7 @@ class Environment:
         pos = np.atleast_2d(position)
         best_name, best_d = None, np.inf
         for name in self.list_regions():
-            c = self.region_center(self, name)
+            c = self.region_center(name)
             d = np.linalg.norm(pos - c, axis=1).mean()
             if d < best_d:
                 best_name, best_d = name, d
