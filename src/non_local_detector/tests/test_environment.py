@@ -603,11 +603,3 @@ def test_fit_1d_with_spacing(fitted_env_1d_with_spacing, fitted_env_1d_no_spacin
     max_lin_pos_space = np.max(env_space.place_bin_centers_)
     max_lin_pos_no_space = np.max(env_no_space.place_bin_centers_)
     assert max_lin_pos_space > max_lin_pos_no_space
-
-
-test_fit_1d_with_spacing(
-    fitted_env_1d_with_spacing(
-        linear_track_graph_with_spacing(linear_track_graph_base())
-    ),
-    fitted_env_1d_no_spacing(linear_track_graph_no_spacing(linear_track_graph_base())),
-)
