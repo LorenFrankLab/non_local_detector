@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import warnings
 from abc import abstractmethod
 from typing import (
     Any,
@@ -105,54 +106,61 @@ class _KDTreeMixin:
                 "place_bin_centers_ not set; call build() before _build_kdtree()"
             )
 
-        if interior_mask is not None:
-            # Validate mask shape against place_bin_centers_ and centers_shape_
-            expected_mask_len = self.place_bin_centers_.shape[0]
-            flat_mask = interior_mask.ravel()
+        current_place_bin_centers = self.place_bin_centers_  # Points to build KDTree on
+        num_points = current_place_bin_centers.shape[0]
 
-            if len(flat_mask) != expected_mask_len:
-                # This case might occur if place_bin_centers_ is already filtered
-                # and interior_mask refers to the original full grid.
-                # The current logic expects interior_mask to align with self.place_bin_centers_
-                # if self.place_bin_centers_ is itself a flattened representation of a grid
-                # described by self.centers_shape_.
-                # If place_bin_centers_ can be arbitrary points (not from a grid),
-                # then interior_mask should be a 1D array of the same length.
-                if (
-                    self.place_bin_centers_.shape[0] == interior_mask.shape[0]
-                    and interior_mask.ndim == 1
-                ):
-                    pass
-                elif (
-                    hasattr(self, "centers_shape_")
-                    and interior_mask.shape == self.centers_shape_
-                ):
-                    pass
-                else:
+        if interior_mask is not None:
+            # Scenario 1: interior_mask is N-D and applies to a full grid
+            # from which current_place_bin_centers may or may not be derived.
+            if (
+                interior_mask.ndim > 1
+                and hasattr(self, "centers_shape_")
+                and interior_mask.shape == self.centers_shape_
+            ):
+                if num_points != np.prod(self.centers_shape_):
+                    # This is complex: place_bin_centers_ might be a subset already,
+                    # and an N-D mask is given. This scenario needs clear definition.
+                    # Assuming for now place_bin_centers_ IS the full grid if N-D mask is given.
+                    warnings.warn(
+                        "N-D interior_mask provided, but place_bin_centers_ does not seem to be the full grid. "
+                        "Ensure consistency.",
+                        UserWarning,
+                    )
+                mask_to_apply_flat = interior_mask.ravel()
+                if len(mask_to_apply_flat) != num_points:
                     raise ValueError(
-                        f"Flattened interior_mask length {len(flat_mask)} (from shape {interior_mask.shape}) "
-                        f"does not match place_bin_centers_ length {expected_mask_len} "
-                        f"nor does its shape match centers_shape_ {getattr(self, 'centers_shape_', None)}."
+                        f"Raveled N-D interior_mask length {len(mask_to_apply_flat)} "
+                        f"does not match place_bin_centers_ length {num_points}."
                     )
 
-            points_for_kdtree = self.place_bin_centers_[flat_mask]
-            self._flat_indices_of_kdtree_nodes = np.where(flat_mask)[0].astype(np.int32)
-        else:
-            points_for_kdtree = self.place_bin_centers_
-            self._flat_indices_of_kdtree_nodes = np.arange(
-                self.place_bin_centers_.shape[0], dtype=np.int32
+            # Scenario 2: interior_mask is 1D
+            elif interior_mask.ndim == 1:
+                if interior_mask.shape[0] != num_points:
+                    raise ValueError(
+                        f"1D interior_mask length {interior_mask.shape[0]} "
+                        f"does not match place_bin_centers_ length {num_points}."
+                    )
+                mask_to_apply_flat = interior_mask
+            else:  # Mask shape is unusable
+                raise ValueError(
+                    f"interior_mask shape {interior_mask.shape} is not compatible. "
+                    "Must be N-D matching centers_shape_ or 1D matching place_bin_centers_."
+                )
+
+            points_for_kdtree = current_place_bin_centers[mask_to_apply_flat]
+            # Indices here are into the original current_place_bin_centers
+            self._flat_indices_of_kdtree_nodes = np.where(mask_to_apply_flat)[0].astype(
+                np.int32
             )
+        else:  # No mask
+            points_for_kdtree = current_place_bin_centers
+            self._flat_indices_of_kdtree_nodes = np.arange(num_points, dtype=np.int32)
 
         if points_for_kdtree.shape[0] > 0:
             self._kdtree = KDTree(points_for_kdtree)
         else:
             self._kdtree = None
-            # Ensure _flat_indices_of_kdtree_nodes is empty if no points
-            if (
-                self._flat_indices_of_kdtree_nodes is not None
-                and self._flat_indices_of_kdtree_nodes.size > 0
-            ):
-                self._flat_indices_of_kdtree_nodes = np.array([], dtype=np.int32)
+            self._flat_indices_of_kdtree_nodes = np.array([], dtype=np.int32)
 
     def point_to_bin(self, pts: NDArray[np.float64]) -> NDArray[np.int_]:
         if self._kdtree is None:
@@ -1005,17 +1013,8 @@ class HexagonalGridEngine(_KDTreeMixin):
         # dx is distance between centers of adjacent hexes horizontally
         # dy is distance between centers of rows of hexes
         # For point-up hexagons:
-        dx = (
-            place_bin_size * 3 / 2
-        )  # Width of bounding box of hex if side = place_bin_size? No, this isn't right.
-        # If place_bin_size is side length `s`:
-        # width of hex = 2s. Horizontal distance between centers = 1.5s?
-        # Let place_bin_size be distance between parallel sides (apothem * 2)
-        # Or let place_bin_size be distance between centers (equivalent to side length for regular tiling)
-        # Assume place_bin_size (s) = distance between centers.
-        # So, s = side length of hexagon.
+        dx = place_bin_size * 3 / 2
         s = place_bin_size
-        hex_width = 2 * s  # Total width of a hexagon
         hex_height = math.sqrt(3) * s  # Total height of a hexagon
 
         col_spacing = 1.5 * s  # Horizontal distance between centers in same row
