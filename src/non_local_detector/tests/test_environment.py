@@ -12,10 +12,12 @@ from non_local_detector.environment import (
     _extract_bin_info_from_track_graph,
     _get_distance_between_bins,
     _get_node_pos,
+    _get_track_boundary,
     _infer_track_interior,
     _make_nd_track_graph,
     _make_track_graph_bin_centers,
     _make_track_graph_bin_centers_edges,
+    add_distance_weight_to_edges,
     get_centers,
     get_n_bins,
 )
@@ -231,7 +233,7 @@ def test_create_grid(position_data_2d_simple):
 
     # Test with position_range
     pos_range = [(0.0, 4.0), (0.0, 6.0)]
-    edges_r, _, centers_r, shape_r = _create_grid(
+    edges_r, _, _, shape_r = _create_grid(
         position_range=pos_range, bin_size=bin_size, add_boundary_bins=False
     )
     assert shape_r == (4, 6)
@@ -321,9 +323,7 @@ def test_get_distance_between_bins():
     # Add positions and distances
     pos = {i: (i, 0) for i in range(4)}
     nx.set_node_attributes(graph, pos, "pos")
-    nx.set_node_attributes(
-        graph, {i: i for i in range(4)}, "bin_ind_flat"
-    )  # Need this attr
+    nx.set_node_attributes(graph, {i: i for i in range(4)}, "bin_ind_flat")
     for u, v in graph.edges():
         graph.edges[u, v]["distance"] = 1.0
 
@@ -443,6 +443,7 @@ def test_environment_init_nd_defaults():
     # Check defaults related to boundary handling if they were added to __init__
     # If changes were only in _fit_nd, this test remains simple.
     assert not env.is_1d
+    assert not env._is_fitted
 
 
 # --- Test N-D Fitting ---
@@ -564,7 +565,7 @@ def linear_track_graph_with_spacing(
 ) -> Tuple[nx.Graph, list, float]:
     """Linear track with non-zero edge spacing."""
     graph, order = linear_track_graph_base
-    return graph, order, 10.0  # Example spacing
+    return graph, order, 10.0
 
 
 @pytest.fixture
@@ -596,10 +597,100 @@ def test_fit_1d_with_spacing(fitted_env_1d_with_spacing, fitted_env_1d_no_spacin
     assert env_no_space._is_fitted and env_no_space.is_1d
 
     # Check that some bins are marked as non-interior due to spacing
-    assert not np.all(env_space.is_track_interior_)
-    assert np.all(env_no_space.is_track_interior_)
+    assert np.sum(env_no_space.is_track_interior_) == 11
+    assert np.sum(~env_no_space.is_track_interior_) == 0
+    assert np.sum(~env_space.is_track_interior_) == 2
+    assert np.sum(env_space.is_track_interior_) == 9
 
     # Check that the total linearized length is greater with spacing
     max_lin_pos_space = np.max(env_space.place_bin_centers_)
     max_lin_pos_no_space = np.max(env_no_space.place_bin_centers_)
     assert max_lin_pos_space > max_lin_pos_no_space
+
+
+# --- Initialization and Serialization ---
+
+
+def test_env_init_without_edge_order_raises():
+    """Providing a track_graph without edge_order should error in __post_init__."""
+    with pytest.raises(ValueError):
+        Environment(track_graph=nx.Graph())
+
+
+def test_to_dict_from_dict_roundtrip(fitted_env_square_nd):
+    """Ensure to_dict and from_dict restore key attributes."""
+    env = fitted_env_square_nd
+    data = env.to_dict()
+    env2 = Environment.from_dict(data)
+    assert isinstance(env2, Environment)
+    # Match simple attributes
+    assert env2.environment_name == env.environment_name
+    assert env2.is_1d == env.is_1d
+    # Numeric arrays
+    np.testing.assert_allclose(env2.place_bin_centers_, env.place_bin_centers_)
+    assert np.array_equal(env2.is_track_interior_, env.is_track_interior_)
+
+
+def test_save_and_load(tmp_path, fitted_env_3d):
+    """Saving to file and loading should preserve the object."""
+    env = fitted_env_3d
+    file_path = tmp_path / "env.pkl"
+    env.save(str(file_path))
+    assert file_path.exists()
+    loaded = Environment.load(str(file_path))
+    assert isinstance(loaded, Environment)
+    assert loaded._is_fitted == env._is_fitted
+    # A few spot checks
+    np.testing.assert_allclose(loaded.place_bin_centers_, env.place_bin_centers_)
+
+
+def test_get_bin_coordinates_and_dataframe(fitted_env_square_nd):
+    """Test get_bin_coordinates returns correct shapes and dataframe has expected cols."""
+    env = fitted_env_square_nd
+    # sample bin indices
+    idx = np.array([0, 1, 2, env.place_bin_centers_.shape[0] - 1])
+    coords = env.get_bin_coordinates(idx)
+    assert coords.shape == (4, env.place_bin_centers_.shape[1])
+
+    df = env.get_bin_center_dataframe()
+    # Should have pos_dim* and bin_ind_flat
+    for dim in range(env.place_bin_centers_.shape[1]):
+        assert f"pos_dim{dim}" in df.columns
+    assert df.index.name == "node_id"
+    assert "bin_ind_flat" in df.columns
+
+
+def test_create_1d_track_grid_data_linear(linear_track_graph):
+    """Test that _create_1d_track_grid_data returns consistent bin arrays and graph."""
+    graph, edge_order, edge_spacing = linear_track_graph
+    place_bin_size = 1.0
+    centers, edges_lin, interior, centers_shape, edges_tuple, tg_centers = (
+        _create_1d_track_grid_data(graph, edge_order, edge_spacing, place_bin_size)
+    )
+
+    # Shapes and types
+    assert isinstance(centers, np.ndarray)
+    assert isinstance(edges_lin, np.ndarray)
+    assert isinstance(interior, np.ndarray)
+    assert isinstance(centers_shape, tuple)
+    assert isinstance(edges_tuple, tuple)
+    assert isinstance(tg_centers, nx.Graph)
+
+    n_bins = centers_shape[0]
+    # centers and interior lengths
+    assert centers.shape == (n_bins, 1)
+    assert edges_lin.shape == (n_bins + 1, 1)
+    assert interior.shape == (n_bins,)
+    # edges_tuple consistency
+    assert len(edges_tuple) == 1
+    np.testing.assert_allclose(edges_tuple[0], edges_lin.ravel())
+
+    # When spacing is zero, all bins should be interior
+    assert interior.all()
+
+    for node in tg_centers.nodes():
+        assert "pos" in tg_centers.nodes[node]
+        assert np.any(np.isin(np.array(tg_centers.nodes[node]["pos"]), centers))
+        assert "bin_ind_flat" in tg_centers.nodes[node]
+        assert "edge_id" in tg_centers.nodes[node]
+        assert "distance" in tg_centers.edges[node]
