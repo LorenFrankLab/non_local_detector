@@ -45,7 +45,55 @@ except ImportError:
 # ---------------------------------------------------------------------------
 @runtime_checkable
 class GeometryEngine(Protocol):
-    """Contract all engines must satisfy (with *Environment* field names)."""
+    """Defines the interface for all geometry engines.
+
+    A GeometryEngine is responsible for discretizing a spatial environment
+    into bins and constructing a graph representation of this discretized space.
+    It provides methods for building the geometry, mapping points to bins,
+    finding neighbors, and plotting.
+
+    Attributes
+    ----------
+    place_bin_centers_ : NDArray[np.float64]
+        Coordinates of the center of each bin, shape (n_bins, n_dims).
+        For grid-based engines, these are typically the centers of the grid cells
+        that are considered part of the environment (e.g., interior bins).
+        For graph-based engines (like Delaunay or 1D tracks), these are the
+        positions of the graph nodes.
+    edges_ : Tuple[NDArray[np.float64], ...]
+        Bin edges for each dimension. For N-D grids, this is a tuple where
+        each element is an array of edge positions for that dimension.
+        For 1D environments, it typically contains a single array of
+        linearized edge positions. For point-cloud based engines (Delaunay,
+        Hexagonal, etc.), this might be an empty tuple if a regular grid
+        structure is not applicable.
+    centers_shape_ : Tuple[int, ...]
+        Shape of the bin grid (number of bins in each dimension).
+        For N-D grids, this reflects the grid dimensions (e.g., (n_x_bins, n_y_bins)).
+        For 1D environments, it's typically (n_bins,).
+        For non-grid engines, it might be (n_points,).
+    track_graph_nd_ : Optional[nx.Graph]
+        A graph representation suitable for N-dimensional, grid-like environments.
+        Nodes usually represent bin centers (or their flat indices), and edges
+        connect adjacent/neighboring bins. Node attributes often include 'pos'
+        (coordinates), 'is_track_interior', 'bin_ind' (N-D index),
+        and 'bin_ind_flat'. Edges often have a 'distance' attribute.
+        May be None if not applicable (e.g., for strictly 1D engines where
+        `track_graph_bin_centers_` is primary).
+    track_graph_bin_centers_ : Optional[nx.Graph]
+        A graph where nodes directly correspond to `place_bin_centers_`.
+        This is often the primary graph for 1D environments (linear tracks)
+        or for engines based on point clouds (e.g., Delaunay, Voronoi)
+        where bins are directly associated with specific points.
+        May be None if `track_graph_nd_` is the primary representation.
+    interior_mask_ : Optional[NDArray[np.bool_]]
+        A boolean array indicating which bins/areas are considered part of the
+        valid environment.
+        For grid-based engines, this usually has the shape `centers_shape_`.
+        For other engines, it might be a 1D array corresponding to
+        `place_bin_centers_`. If None, all defined bins/points are considered
+        interior.
+    """
 
     place_bin_centers_: NDArray[np.float64]
     edges_: Tuple[NDArray[np.float64], ...]
@@ -55,38 +103,92 @@ class GeometryEngine(Protocol):
 
     interior_mask_: Optional[NDArray[np.bool_]] = None
 
-    def build(self, **kwargs) -> None: ...
+    def build(self, **kwargs) -> None:
+        """Constructs the geometry, binning, and graph(s) for the environment.
 
-    def point_to_bin(self, pts: NDArray[np.float64]) -> NDArray[np.int_]: ...
+        This method is called to initialize or re-initialize the engine's
+        attributes (e.g., `place_bin_centers_`, `track_graph_nd_`) based on
+        the provided parameters.
 
-    def neighbors(self, flat_idx: int) -> List[int]: ...
+        Parameters
+        ----------
+        **kwargs
+            Engine-specific parameters required for building the geometry.
+            See the `build` method of individual engine implementations for
+            details on their specific parameters.
+        """
+        ...
+
+    def point_to_bin(self, pts: NDArray[np.float64]) -> NDArray[np.int_]:
+        """Maps continuous spatial points to discrete bin indices.
+
+        Parameters
+        ----------
+        pts : NDArray[np.float64], shape (n_samples, n_dims)
+            The continuous spatial positions to be binned.
+
+        Returns
+        -------
+        NDArray[np.int_]
+            The flat indices of the bins corresponding to each input point.
+            Shape is (n_samples,). Returns -1 for points that cannot be
+            mapped to a bin (e.g., outside the defined area or if no
+            bins exist).
+        """
+        ...
+
+    def neighbors(self, flat_idx: int) -> List[int]:
+        """Finds the flat indices of neighboring bins for a given bin.
+
+        Neighbor definitions depend on the specific engine and its graph
+        representation.
+
+        Parameters
+        ----------
+        flat_idx : int
+            The flat index of the bin for which to find neighbors.
+
+        Returns
+        -------
+        List[int]
+            A list of flat indices of the neighboring bins. Returns an
+            empty list if the bin has no neighbors or is not part of the graph.
+        """
+        ...
 
     @property
     @abstractmethod
     def is_1d(self) -> bool:
-        """Return True if the engine represents a 1-dimensional environment."""
+        """Return True if the engine represents a 1-dimensional environment.
+
+        Returns
+        -------
+        bool
+            True if the environment is 1D, False otherwise.
+        """
         ...
 
     @abstractmethod
     def plot(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
-        """Plot the geometry of the environment.
+        """Plots the geometry of the environment.
 
         Parameters
         ----------
         ax : Optional[matplotlib.axes.Axes], optional
-            Existing axes to plot on. If None, creates new axes.
-            Defaults to None.
+            Existing Matplotlib axes to plot on. If None, new axes are
+            created. Defaults to None.
         **kwargs
-            Additional keyword arguments to pass to the plotting functions.
-            Common kwargs include `node_size`, `edge_color` for graph plots,
-            or `cmap` for grid plots.
+            Additional keyword arguments to customize the plot. Common arguments
+            might include `node_size`, `edge_color` for graph plots,
+            or `cmap` for grid plots. See specific engine `plot` methods
+            for their supported kwargs.
 
         Returns
         -------
         matplotlib.axes.Axes
-            The axes used for plotting.
+            The Matplotlib axes object used for plotting.
         """
         ...
 
@@ -95,12 +197,49 @@ class GeometryEngine(Protocol):
 # KD-tree mixin implementing generic mapping helpers
 # ---------------------------------------------------------------------------
 class _KDTreeMixin:
-    """Mixin providing *point_to_bin* and *neighbors* via KD-tree + NetworkX."""
+    """Mixin providing `point_to_bin` and `neighbors` via KD-tree and NetworkX.
+
+    This mixin assumes that the class it's mixed into will define
+    `place_bin_centers_` (or `spatial_place_bin_centers_` for some engines),
+    and one or both of `track_graph_nd_` or `track_graph_bin_centers_`
+    after its `build` method is called.
+
+    Attributes
+    ----------
+    _kdtree : Optional[scipy.spatial.KDTree]
+        The KD-tree built from the (potentially masked) `place_bin_centers_`.
+    _flat_indices_of_kdtree_nodes : Optional[NDArray[np.int_]]
+        Array mapping indices from the KD-tree back to the original flat indices
+        of `place_bin_centers_`.
+    """
 
     _kdtree: Optional[KDTree] = None
     _flat_indices_of_kdtree_nodes: Optional[NDArray[np.int_]] = None
 
     def _build_kdtree(self, interior_mask: Optional[NDArray[np.bool_]] = None) -> None:
+        """Builds the KD-tree from `place_bin_centers_`.
+
+        If `interior_mask` is provided, the KD-tree is built only from the
+        points/bin centers marked as True in the mask.
+
+        Parameters
+        ----------
+        interior_mask : Optional[NDArray[np.bool_]], optional
+            A boolean mask indicating which points from `self.place_bin_centers_`
+            to include in the KD-tree.
+            If 1D, its length must match `self.place_bin_centers_.shape[0]`.
+            If N-D (for grid-based engines), its shape must match
+            `self.centers_shape_`, and `self.place_bin_centers_` is assumed
+            to be the flattened full grid.
+            If None, all points in `self.place_bin_centers_` are used.
+            Defaults to None.
+
+        Raises
+        ------
+        ValueError
+            If `place_bin_centers_` is not set, or if `interior_mask` has
+            an incompatible shape.
+        """
         if not hasattr(self, "place_bin_centers_") or self.place_bin_centers_ is None:
             raise ValueError(
                 "place_bin_centers_ not set; call build() before _build_kdtree()"
@@ -163,6 +302,22 @@ class _KDTreeMixin:
             self._flat_indices_of_kdtree_nodes = np.array([], dtype=np.int32)
 
     def point_to_bin(self, pts: NDArray[np.float64]) -> NDArray[np.int_]:
+        """Maps continuous spatial points to the nearest bin's flat index.
+
+        Uses the KD-tree built from (interior) bin centers.
+
+        Parameters
+        ----------
+        pts : NDArray[np.float64], shape (n_samples, n_dims)
+            The spatial positions to be binned.
+
+        Returns
+        -------
+        NDArray[np.int_]
+            The flat indices of the bins corresponding to each input point.
+            Shape is (n_samples,). Returns -1 if the KD-tree is empty or
+            if mapping fails.
+        """
         if self._kdtree is None:
             return np.full(np.atleast_2d(pts).shape[0], -1, dtype=np.int32)
 
@@ -172,7 +327,7 @@ class _KDTreeMixin:
                 "_flat_indices_of_kdtree_nodes not set. Ensure _build_kdtree was called."
             )
 
-        _distances, indices_in_kdtree_subset = self._kdtree.query(np.atleast_2d(pts))
+        _, indices_in_kdtree_subset = self._kdtree.query(np.atleast_2d(pts))
 
         if (
             indices_in_kdtree_subset.size == 0
@@ -189,7 +344,26 @@ class _KDTreeMixin:
         return original_flat_indices.astype(np.int32)
 
     def neighbors(self, flat_idx: int) -> List[int]:
-        graph_to_use = None
+        """Finds neighbors of a bin using the engine's track graph.
+
+        Parameters
+        ----------
+        flat_idx : int
+            The flat index of the bin.
+
+        Returns
+        -------
+        List[int]
+            List of flat indices of neighboring bins. Returns an empty list
+            if the bin is not in the graph or has no neighbors.
+
+        Raises
+        ------
+        ValueError
+            If no suitable graph attribute (`track_graph_nd_` or
+            `track_graph_bin_centers_`) is found or set in the engine.
+        """
+        graph_to_use: Optional[nx.Graph] = None
         if hasattr(self, "track_graph_nd_") and self.track_graph_nd_ is not None:
             graph_to_use = self.track_graph_nd_
         elif (
@@ -218,18 +392,22 @@ class _KDTreeMixin:
 
 
 class RegularGridEngine(_KDTreeMixin):
-    """Axis-aligned rectangular (N-D) grid engine.
-    Can infer interior based on position data or define all bins as interior.
+    """Engine for discretizing space into an N-dimensional regular grid.
+
+    This engine creates an axis-aligned rectangular grid. It can infer the
+    "track interior" (occupied bins) from position data or define all bins
+    within the specified range as interior. A graph connects adjacent
+    interior bins.
     """
 
     place_bin_centers_: NDArray[np.float64]
-    place_bin_edges_: Optional[NDArray[np.float64]] = None
+    place_bin_edges_: Optional[NDArray[np.float64]] = (
+        None  # Typically not the primary edge representation
+    )
     edges_: Tuple[NDArray[np.float64], ...]
     centers_shape_: Tuple[int, ...]
     track_graph_nd_: Optional[nx.Graph] = None
-    track_graph_bin_centers_: Optional[nx.Graph] = (
-        None  # Not typically used by this engine
-    )
+    track_graph_bin_centers_: Optional[nx.Graph] = None
     interior_mask_: Optional[NDArray[np.bool_]] = None
 
     def build(
@@ -245,6 +423,45 @@ class RegularGridEngine(_KDTreeMixin):
         close_gaps: bool = False,
         bin_count_threshold: int = 0,
     ) -> None:
+        """Builds the regular grid geometry.
+
+        Parameters
+        ----------
+        place_bin_size : Union[float, Sequence[float]]
+            The desired size of the bins. If a float, used for all dimensions.
+            If a sequence, specifies size for each dimension.
+        position_range : Optional[Sequence[Tuple[float, float]]], optional
+            Explicit grid boundaries `[(min_dim1, max_dim1), ...]`. If None,
+            boundaries are derived from `position` data. Defaults to None.
+        position : Optional[NDArray[np.float64]], shape (n_time, n_dims), optional
+            Position data. Required if `position_range` is None or if
+            `infer_track_interior` is True. NaNs are ignored. Defaults to None.
+        add_boundary_bins : bool, default=False
+            If True, adds one bin on each side of the grid in each dimension,
+            extending the range slightly.
+        infer_track_interior : bool, default=True
+            If True, infers the occupied track area from `position` data.
+            If False, all bins within the defined grid are considered interior.
+        dilate : bool, default=False
+            If `infer_track_interior` is True, setting this to True will
+            expand the boundary of the inferred occupied area.
+        fill_holes : bool, default=False
+            If `infer_track_interior` is True, setting this to True will
+            fill holes within the inferred occupied area.
+        close_gaps : bool, default=False
+            If `infer_track_interior` is True, setting this to True will
+            close small gaps in the inferred occupied area.
+        bin_count_threshold : int, default=0
+            If `infer_track_interior` is True, this is the minimum number of
+            position samples a bin must contain to be considered part of the
+            track interior.
+
+        Raises
+        ------
+        ValueError
+            If `position` data is required but not provided for interior inference
+            or range determination.
+        """
         (
             self.edges_,
             self.place_bin_edges_,
@@ -281,13 +498,46 @@ class RegularGridEngine(_KDTreeMixin):
 
     @property
     def is_1d(self) -> bool:
-        """Return True if the engine represents a 1-dimensional environment."""
+        """Returns False, as RegularGridEngine is for N-D grids."""
         return False  # RegularGridEngine is for N-D grids
 
     def plot(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
-        """Plots the 2D grid and track interior."""
+        """Plots the 2D grid and track interior, or a graph for N-D.
+
+        For 2D grids, this method uses `pcolormesh` to show the `interior_mask_`.
+        For grids of other dimensions, it attempts to plot `track_graph_nd_`
+        or a scatter plot of `place_bin_centers_`.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], optional
+            Existing Matplotlib axes to plot on. If None, new axes are created.
+            Defaults to None.
+        **kwargs
+            Additional keyword arguments:
+            figsize : tuple, optional
+                Figure size `(width, height)` if `ax` is None. Default (7,7) for 2D.
+            cmap : str, optional
+                Colormap for `pcolormesh` (2D plot). Default 'bone_r'.
+            alpha : float, optional
+                Alpha transparency for `pcolormesh` (2D plot). Default 0.7.
+            node_size : int, optional
+                Node size for N-D graph fallback plot. Default 10.
+            scatter_kwargs : dict, optional
+                Keyword arguments for scatter plot (N-D fallback if no graph).
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The Matplotlib axes object used for plotting.
+
+        Raises
+        ------
+        RuntimeError
+            If the engine has not been built yet.
+        """
         if self.place_bin_centers_ is None or self.edges_ is None:
             raise RuntimeError("Engine has not been built yet. Call `build` first.")
 
@@ -353,20 +603,33 @@ class RegularGridEngine(_KDTreeMixin):
 
 
 class TrackGraphEngine(_KDTreeMixin):
-    """1-D topological track engine."""
+    """Engine for 1-D environments defined by a topological track graph.
 
-    place_bin_centers_: NDArray[np.float64]
-    place_bin_edges_: Optional[NDArray[np.float64]] = None
-    edges_: Tuple[NDArray[np.float64], ...]  # Linearized bin edges
-    centers_shape_: Tuple[int, ...]
+    This engine linearizes a provided track graph and creates bins along this
+    linearized representation. The `place_bin_centers_` attribute stores
+    linearized positions, while `spatial_place_bin_centers_` (internal) holds
+    the original N-D coordinates used for KD-tree mapping.
+    """
+
+    place_bin_centers_: NDArray[np.float64]  # Linearized positions (n_bins, 1)
+    place_bin_edges_: Optional[NDArray[np.float64]] = None  # Linearized edges
+    edges_: Tuple[
+        NDArray[np.float64], ...
+    ]  # Tuple containing one array: (linearized_edges,)
+    centers_shape_: Tuple[int, ...]  # (n_bins,)
     track_graph_nd_: Optional[nx.Graph] = None  # Not used by this engine
-    track_graph_bin_centers_: Optional[nx.Graph] = None
-    interior_mask_: Optional[NDArray[np.bool_]] = None
+    track_graph_bin_centers_: Optional[nx.Graph] = (
+        None  # Graph with original N-D 'pos' attributes for bins
+    )
+    interior_mask_: Optional[NDArray[np.bool_]] = None  # 1D mask for linearized bins
 
-    # Store parameters needed for potential re-linearization or plotting
+    # Store parameters for potential re-linearization or inspection
     track_graph_definition_: Optional[nx.Graph] = None
     edge_order_definition_: Optional[List[Tuple[Any, Any]]] = None
     edge_spacing_definition_: Optional[Union[float, Sequence[float]]] = None
+    spatial_place_bin_centers_: Optional[NDArray[np.float64]] = (
+        None  # N-D coordinates of bins
+    )
 
     def build(
         self,
@@ -376,141 +639,226 @@ class TrackGraphEngine(_KDTreeMixin):
         edge_spacing: Union[float, Sequence[float]],
         place_bin_size: float,
     ) -> None:
+        """Builds the 1-D track geometry.
+
+        Parameters
+        ----------
+        track_graph : nx.Graph
+            The topological graph of the track. Nodes must have a 'pos'
+            attribute with N-D coordinates.
+        edge_order : List[Tuple[Any, Any]]
+            An ordered list of node pairs (edges from `track_graph`)
+            defining the sequence for linearization.
+        edge_spacing : Union[float, Sequence[float]]
+            Spacing(s) to insert between segments during linearization.
+            If a float, applied uniformly. If a sequence, applied between
+            consecutive edges in `edge_order`.
+        place_bin_size : float
+            The desired size of bins along the linearized track.
+
+        Raises
+        ------
+        ValueError
+            If `track_graph` nodes are missing the 'pos' attribute.
+        RuntimeError
+            If `track_graph_bin_centers_` is not created by helper functions.
+        """
         self.track_graph_definition_ = track_graph
         self.edge_order_definition_ = edge_order
         self.edge_spacing_definition_ = edge_spacing
 
         (
-            self.place_bin_centers_,  # (n_bins, 1) for linearized position
-            self.place_bin_edges_,  # (n_edges, 1) for linearized position
-            is_interior,
+            self.place_bin_centers_,  # (n_bins, 1) with linearized positions
+            self.place_bin_edges_,  # (n_edges, 1) with linearized positions
+            is_interior,  # 1D boolean array for interior bins
             self.centers_shape_,  # (n_bins,)
-            self.edges_,  # Tuple containing one array: (linearized_edges,)
-            self.track_graph_bin_centers_,  # Graph with original 2D/3D 'pos' attributes
+            self.edges_,  # Tuple: (linearized_1d_edges_array,)
+            self.track_graph_bin_centers_,  # Graph with N-D 'pos' attributes for bins
         ) = _create_1d_track_grid_data(
             track_graph,
             edge_order,
             edge_spacing,
-            place_bin_size,
+            place_bin_size,  # This is the linear bin size
         )
-        # place_bin_centers_ from _create_1d_track_grid_data is (n_bins, 1) with linearized positions.
-        # For KDTree, we need the actual spatial coordinates from the graph.
-        if self.track_graph_bin_centers_ is not None:
-            # Extract 2D/3D positions from the graph for KDTree
-            # Node IDs in track_graph_bin_centers_ correspond to bin_ind_flat
-            # Ensure place_bin_centers_ for KDTree matches these positions
-            # and interior_mask aligns with these nodes.
 
-            # Create a DataFrame from graph nodes to easily get positions
-            nodes_df = pd.DataFrame.from_dict(
-                dict(self.track_graph_bin_centers_.nodes(data=True)), orient="index"
-            )
-            if "pos" not in nodes_df.columns:
-                raise ValueError(
-                    "TrackGraphEngine's track_graph_bin_centers_ nodes must have 'pos' attribute."
-                )
-
-            # Sort nodes by 'bin_ind_flat' to ensure alignment
-            # 'bin_ind_flat' should be 0 to N-1 for the bins
-            nodes_df = nodes_df.sort_values(by="bin_ind_flat")
-
-            # This will be the N-D coordinates of bin centers.
-            self.spatial_place_bin_centers_ = np.array(
-                nodes_df["pos"].tolist()
-            )  # (n_bins, n_dims)
-
-            # The interior_mask from _create_1d_track_grid_data is 1D (n_bins,)
-            self.interior_mask_ = (
-                np.array(nodes_df["is_track_interior"].tolist(), dtype=bool)
-                if "is_track_interior" in nodes_df
-                else is_interior
+        if self.track_graph_bin_centers_ is None:
+            raise RuntimeError(
+                "track_graph_bin_centers_ was not created by _create_1d_track_grid_data."
             )
 
-            # Override place_bin_centers_ to be spatial for KDTree and point_to_bin
-            # The original linearized place_bin_centers_ is still available implicitly via edges_
-            # Or store it separately if Environment needs it directly.
-            # For now, the KDTreeMixin will use spatial_place_bin_centers_
-            # We need to ensure the _KDTreeMixin refers to this.
-            # A bit of a hack: temporarily assign for _build_kdtree, then restore.
-            original_pb_centers = self.place_bin_centers_  # Store linearized
-            self.place_bin_centers_ = self.spatial_place_bin_centers_
-            self._build_kdtree(interior_mask=self.interior_mask_)
-            self.place_bin_centers_ = original_pb_centers  # Restore linearized centers
+        # Extract N-D spatial positions from the generated bin graph for KDTree
+        nodes_df = pd.DataFrame.from_dict(
+            dict(self.track_graph_bin_centers_.nodes(data=True)), orient="index"
+        )
+        if "pos" not in nodes_df.columns:
+            raise ValueError(
+                "TrackGraphEngine's track_graph_bin_centers_ nodes must have 'pos' attribute."
+            )
+        if "bin_ind_flat" not in nodes_df.columns:
+            raise ValueError(
+                "TrackGraphEngine's track_graph_bin_centers_ nodes must have 'bin_ind_flat' attribute."
+            )
 
-        else:
-            raise RuntimeError("track_graph_bin_centers_ was not created.")
+        nodes_df = nodes_df.sort_values(by="bin_ind_flat")
+        self.spatial_place_bin_centers_ = np.array(nodes_df["pos"].tolist())
+
+        # The interior_mask_ should correspond to these spatial bins
+        # is_interior from _create_1d_track_grid_data is already aligned with linearized bins
+        # which should map 1:1 with the nodes in track_graph_bin_centers_
+        self.interior_mask_ = (
+            np.array(nodes_df["is_track_interior"].tolist(), dtype=bool)
+            if "is_track_interior" in nodes_df  # is_track_interior should be on nodes
+            else is_interior  # Fallback, ensure is_interior matches node count
+        )
+        if len(self.interior_mask_) != self.spatial_place_bin_centers_.shape[0]:
+            # This indicates a mismatch that needs debugging in _create_1d_track_grid_data
+            # or how attributes are set on track_graph_bin_centers_
+            raise RuntimeError(
+                f"Length of interior_mask ({len(self.interior_mask_)}) does not match "
+                f"number of spatial_place_bin_centers ({self.spatial_place_bin_centers_.shape[0]})."
+            )
+
+        # For _KDTreeMixin, `place_bin_centers_` needs to be the spatial coordinates.
+        # We will store the linearized ones in self.place_bin_centers_ (as per class attr type)
+        # but use spatial for KDTree construction.
+        original_place_bin_centers_for_kdtree = self.place_bin_centers_
+        self.place_bin_centers_ = self.spatial_place_bin_centers_
+        self._build_kdtree(interior_mask=self.interior_mask_)
+        self.place_bin_centers_ = (
+            original_place_bin_centers_for_kdtree  # Restore linearized
+        )
 
     @property
     def is_1d(self) -> bool:
-        """Return True if the engine represents a 1-dimensional environment."""
+        """Returns True, as TrackGraphEngine is for 1-D environments."""
         return True
 
     def plot(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
-        """Plots the 1D track graph with bin centers."""
-        if self.track_graph_bin_centers_ is None or not hasattr(
-            self, "spatial_place_bin_centers_"
+        """Plots the 1D track graph using its N-D spatial node positions.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], optional
+            Existing Matplotlib axes to plot on. If None, new axes are created.
+            Defaults to None.
+        **kwargs
+            Additional keyword arguments for `nx.draw_networkx_nodes` and
+            `nx.draw_networkx_edges`:
+            figsize : tuple, optional
+                Figure size `(width, height)` if `ax` is None. Default (8,8).
+            node_size : int, optional
+                Size of nodes in the plot. Default 20.
+            node_color : str or sequence, optional
+                Color of nodes. If None, interior nodes are 'blue', others 'red'.
+            edge_alpha : float, optional
+                Alpha transparency for edges. Default 0.5.
+            edge_color : str, optional
+                Color of edges. Default 'gray'.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The Matplotlib axes object used for plotting.
+
+        Raises
+        ------
+        RuntimeError
+            If the engine has not been built or lacks spatial bin centers.
+        ValueError
+            If a 3D plot is requested but `ax` is not a 3D axes.
+        """
+        if (
+            self.track_graph_bin_centers_ is None
+            or self.spatial_place_bin_centers_ is None
         ):
             raise RuntimeError(
                 "Engine has not been built or spatial_place_bin_centers_ is missing. Call `build` first."
             )
 
-        graph = self.track_graph_bin_centers_
-
-        # Node positions are the original 2D/3D coordinates
+        graph_to_plot = self.track_graph_bin_centers_
         node_positions = {
-            node: data["pos"] for node, data in graph.nodes(data=True) if "pos" in data
+            node: data["pos"]
+            for node, data in graph_to_plot.nodes(data=True)
+            if "pos" in data
         }
 
-        if not node_positions:
+        if not node_positions:  # Should not happen if build was successful
             if ax is None:
-                _, ax = plt.subplots()
+                _, ax = plt.subplots(figsize=kwargs.get("figsize", (7, 7)))
             ax.text(
-                0.5, 0.5, "No positional data in graph nodes.", ha="center", va="center"
+                0.5,
+                0.5,
+                "No positional data in graph nodes.",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
             )
             ax.set_title(f"{self.__class__.__name__}")
             return ax
 
-        # Determine if plot is 2D or 3D based on node positions
+        # Determine if plot is 2D or 3D
         first_pos_val = next(iter(node_positions.values()))
         is_3d_plot = len(first_pos_val) == 3
 
         if ax is None:
             fig = plt.figure(figsize=kwargs.get("figsize", (8, 8)))
-            if is_3d_plot:
-                ax = fig.add_subplot(111, projection="3d")
-            else:
-                ax = fig.add_subplot(111)
+            ax = fig.add_subplot(111, projection="3d" if is_3d_plot else None)  # type: ignore
         elif is_3d_plot and not hasattr(ax, "plot3D"):  # ax provided but not 3D
-            # Cannot easily change projection of existing ax, warn or raise
-            raise ValueError("Provided 'ax' is not 3D, but data is 3D.")
+            raise ValueError(
+                "Provided 'ax' is not 3D, but data is 3D. Create a 3D subplot."
+            )
 
-        node_colors = None
-        if self.interior_mask_ is not None and hasattr(
-            self, "spatial_place_bin_centers_"
-        ):
-            # Colors nodes based on whether they are 'interior' if mask aligns with graph nodes
-            # This assumes node IDs in graph are 0 to num_nodes-1, matching interior_mask indices
-            # which track_graph_bin_centers should ensure via 'bin_ind_flat'
-            node_list = sorted(list(graph.nodes()))  # Ensure order for coloring
+        # Default node colors based on interior_mask_
+        node_colors = kwargs.get("node_color", None)
+        if node_colors is None and self.interior_mask_ is not None:
+            # Assuming node IDs in graph are 0 to num_nodes-1 (bin_ind_flat)
+            # and align with interior_mask_ indices.
+            node_list = sorted(list(graph_to_plot.nodes()))
             try:
-                node_colors = [
-                    "blue" if self.interior_mask_[node_id] else "red"
-                    for node_id in node_list
-                ]
-            except IndexError:  # If node IDs don't align with mask
+                # Map node IDs (bin_ind_flat) to interior_mask_
+                # This assumes that nodes in track_graph_bin_centers_ are indexed
+                # in a way that corresponds to self.interior_mask_
+                # self.interior_mask_ is aligned with self.spatial_place_bin_centers_
+                # and nodes in track_graph_bin_centers_ are derived from these.
+                color_map_list = []
+                for node_id in node_list:
+                    # We need to find which index in self.interior_mask corresponds to node_id
+                    # Typically, node_id from track_graph_bin_centers is 'bin_ind_flat'
+                    # And self.interior_mask is ordered by 'bin_ind_flat'
+                    bin_flat_index = graph_to_plot.nodes[node_id].get("bin_ind_flat")
+                    if bin_flat_index is not None and 0 <= bin_flat_index < len(
+                        self.interior_mask_
+                    ):
+                        color_map_list.append(
+                            "blue" if self.interior_mask_[bin_flat_index] else "red"
+                        )
+                    else:
+                        color_map_list.append("gray")  # Fallback for nodes not in mask
+                node_colors = color_map_list
+
+            except (
+                IndexError,
+                KeyError,
+            ):  # If node IDs don't align or attributes missing
+                warnings.warn(
+                    "Could not map all nodes to interior_mask for coloring. Defaulting to blue.",
+                    UserWarning,
+                )
                 node_colors = "blue"
+        elif node_colors is None:
+            node_colors = "blue"
 
         nx.draw_networkx_nodes(
-            graph,
+            graph_to_plot,
             pos=node_positions,
             ax=ax,  # type: ignore
             node_size=kwargs.get("node_size", 20),
-            node_color=kwargs.get("node_color", node_colors),
+            node_color=node_colors,
         )
         nx.draw_networkx_edges(
-            graph,
+            graph_to_plot,
             pos=node_positions,
             ax=ax,  # type: ignore
             alpha=kwargs.get("edge_alpha", 0.5),
@@ -525,13 +873,10 @@ class TrackGraphEngine(_KDTreeMixin):
 
         if not is_3d_plot:
             ax.set_aspect("equal", adjustable="box")
-        elif hasattr(ax, "set_box_aspect"):  # For 3D axes in newer matplotlib
-            ax.set_box_aspect([1, 1, 1])  # type: ignore
-
-        # Optionally, plot linearized bin edges if they make sense in this context
-        # self.edges_ contains linearized bin edges. Plotting them on the 2D/3D graph
-        # is not straightforward unless we map them back or plot them separately.
-        # For now, this plot focuses on the spatial graph structure.
+        elif hasattr(ax, "set_box_aspect") and hasattr(ax, "get_xlim"):  # For 3D axes
+            # Attempt to make aspect somewhat equal for 3D
+            x_lim, y_lim, z_lim = ax.get_xlim(), ax.get_ylim(), ax.get_zlim()  # type: ignore
+            ax.set_box_aspect([np.ptp(x_lim), np.ptp(y_lim), np.ptp(z_lim)])  # type: ignore
 
         return ax  # type: ignore
 
@@ -539,15 +884,25 @@ class TrackGraphEngine(_KDTreeMixin):
 if SHAPELY_AVAILABLE:
 
     class ShapelyGridEngine(_KDTreeMixin):
-        """Mask a regular 2D grid by a Shapely Polygon."""
+        """Engine that creates a 2D grid and masks it using a Shapely Polygon.
 
-        place_bin_centers_: NDArray[np.float64]
-        edges_: Tuple[NDArray[np.float64], ...]
-        centers_shape_: Tuple[int, ...]
-        track_graph_nd_: Optional[nx.Graph] = None
-        track_graph_bin_centers_: Optional[nx.Graph] = None  # Not typically used
-        interior_mask_: Optional[NDArray[np.bool_]] = None
-        polygon_definition_: Optional[Polygon] = None
+        This engine first defines a regular rectangular grid that encompasses the
+        bounds of the provided Shapely Polygon. Then, it determines which grid
+        bin centers fall within the polygon, marking these as the interior of
+        the environment. A graph connects adjacent interior bins.
+        """
+
+        place_bin_centers_: NDArray[np.float64]  # Bin centers within the polygon
+        edges_: Tuple[NDArray[np.float64], ...]  # Edges of the encompassing grid
+        centers_shape_: Tuple[int, ...]  # Shape of the encompassing grid
+        track_graph_nd_: Optional[nx.Graph] = None  # Graph of interior bins
+        track_graph_bin_centers_: Optional[nx.Graph] = (
+            None  # Typically not the primary for this engine
+        )
+        interior_mask_: Optional[NDArray[np.bool_]] = (
+            None  # Boolean mask matching centers_shape_
+        )
+        polygon_definition_: Optional[Polygon] = None  # The input Shapely polygon
 
         def build(
             self,
@@ -556,6 +911,27 @@ if SHAPELY_AVAILABLE:
             place_bin_size: Union[float, Sequence[float]],
             add_boundary_bins: bool = False,
         ) -> None:
+            """Builds the grid masked by the Shapely polygon.
+
+            Parameters
+            ----------
+            polygon : shapely.geometry.Polygon
+                The Shapely Polygon object used to define the environment's shape.
+            place_bin_size : Union[float, Sequence[float]]
+                The size of the bins for the underlying rectangular grid.
+                If a float, used for both x and y dimensions.
+                If a sequence (length 2), specifies size for x and y dimensions.
+            add_boundary_bins : bool, default=False
+                If True, adds one bin on each side of the grid (defined by
+                polygon bounds) before masking.
+
+            Raises
+            ------
+            RuntimeError
+                If Shapely is not installed.
+            ValueError
+                If `place_bin_size` is incompatible with 2D.
+            """
             if not SHAPELY_AVAILABLE:
                 raise RuntimeError("ShapelyGridEngine requires the 'shapely' package.")
             self.polygon_definition_ = polygon
@@ -563,8 +939,8 @@ if SHAPELY_AVAILABLE:
             pos_range: Sequence[Tuple[float, float]] = [(minx, maxx), (miny, maxy)]
 
             (
-                _edges_tuple,
-                _place_bin_edges_flat,
+                self.edges_,
+                self.place_bin_edges_,
                 self.place_bin_centers_,
                 self.centers_shape_,
             ) = _create_grid(
@@ -573,7 +949,6 @@ if SHAPELY_AVAILABLE:
                 position_range=pos_range,
                 add_boundary_bins=add_boundary_bins,
             )
-            self.edges_ = _edges_tuple
 
             # Ensure place_bin_centers_ has 2 dimensions for polygon.contains
             if (
@@ -603,12 +978,48 @@ if SHAPELY_AVAILABLE:
 
         @property
         def is_1d(self) -> bool:
+            """Returns False, as ShapelyGridEngine is 2D."""
             return False
 
         def plot(
             self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
         ) -> matplotlib.axes.Axes:
-            """Plots the 2D grid, Shapely polygon, and interior mask."""
+            """Plots the 2D grid, Shapely polygon, and interior mask.
+
+            Parameters
+            ----------
+            ax : Optional[matplotlib.axes.Axes], optional
+                Existing Matplotlib axes to plot on. If None, new axes are created.
+            **kwargs
+                Additional keyword arguments:
+                figsize : tuple, optional
+                    Figure size `(width, height)` if `ax` is None. Default (7,7).
+                polygon_kwargs : dict, optional
+                    Keyword arguments for plotting the Shapely polygon
+                    (passed to `ax.fill`). Default `{'alpha': 0.3, 'fc': 'gray', 'ec': 'black'}`.
+                grid_cmap : str, optional
+                    Colormap for `pcolormesh` of the interior mask. Default 'viridis'.
+                grid_alpha : float, optional
+                    Alpha transparency for `pcolormesh` of the interior mask. Default 0.5.
+                show_grid_lines : bool, optional
+                    If True, draw major grid lines. Default True.
+                show_bin_centers : bool, optional
+                    If True, scatter plot the centers of interior bins. Default False.
+                center_size : float, optional
+                    Size of markers for bin centers if `show_bin_centers` is True. Default 5.
+                center_color : str, optional
+                    Color of markers for bin centers. Default 'red'.
+
+            Returns
+            -------
+            matplotlib.axes.Axes
+                The Matplotlib axes object used for plotting.
+
+            Raises
+            ------
+            RuntimeError
+                If Shapely is not available or if the engine has not been built.
+            """
             if not SHAPELY_AVAILABLE:
                 raise RuntimeError("Shapely is required for plotting this engine.")
             if (
@@ -715,7 +1126,12 @@ else:
 
 
 class MaskedGridEngine(_KDTreeMixin):
-    """Build from existing boolean mask + edges."""
+    """Engine that builds geometry from a pre-defined N-D boolean mask and grid edges.
+
+    This engine is useful when the environment's interior shape is already known
+    as a boolean grid. It uses this mask directly to define `interior_mask_`
+    and `place_bin_centers_`.
+    """
 
     place_bin_centers_: NDArray[np.float64]
     edges_: Tuple[NDArray[np.float64], ...]
@@ -730,6 +1146,25 @@ class MaskedGridEngine(_KDTreeMixin):
         mask: NDArray[np.bool_],
         edges: Tuple[NDArray[np.float64], ...],
     ) -> None:
+        """Builds the environment from a mask and edges.
+
+        Parameters
+        ----------
+        mask : NDArray[np.bool_]
+            An N-dimensional boolean array where True indicates bins that are
+            part of the environment interior.
+        edges : Tuple[NDArray[np.float64], ...]
+            A tuple of 1D arrays, where each array defines the bin edge
+            positions for one dimension. The length of `edges` must match
+            `mask.ndim`. The number of bins derived from `edges[i]`
+            (i.e., `len(edges[i]) - 1`) must match `mask.shape[i]`.
+
+        Raises
+        ------
+        ValueError
+            If the shape of the mask is inconsistent with the dimensions
+            derived from `edges`.
+        """
         self.edges_ = edges
         self.centers_shape_ = mask.shape
         self.interior_mask_ = mask
@@ -750,12 +1185,42 @@ class MaskedGridEngine(_KDTreeMixin):
 
     @property
     def is_1d(self) -> bool:
+        """Returns False, as MaskedGridEngine is typically N-D."""
         return False
 
     def plot(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
-        """Plots the 2D grid and interior mask."""
+        """Plots the 2D masked grid, or a graph representation for N-D.
+
+        Similar to `RegularGridEngine.plot`. For 2D, uses `pcolormesh`
+        with `self.interior_mask_`.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], optional
+            Existing Matplotlib axes to plot on. If None, new axes are created.
+        **kwargs
+            Additional keyword arguments:
+            figsize : tuple, optional
+                Figure size `(width, height)` if `ax` is None. Default (7,7) for 2D.
+            cmap : str, optional
+                Colormap for `pcolormesh` (2D plot). Default 'bone_r'.
+            alpha : float, optional
+                Alpha transparency for `pcolormesh` (2D plot). Default 0.7.
+            node_size : int, optional
+                Node size for N-D graph fallback plot. Default 10.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The Matplotlib axes object used for plotting.
+
+        Raises
+        ------
+        RuntimeError
+            If the engine has not been built yet.
+        """
         # This plot method can be very similar to RegularGridEngine's plot
         if (
             self.place_bin_centers_ is None
@@ -1004,83 +1469,80 @@ class HexagonalGridEngine(_KDTreeMixin):
     def build(
         self,
         *,
-        place_bin_size: float,  # Radius of hexagon
-        position_range: Tuple[
-            Tuple[float, float], Tuple[float, float]
-        ],  # (xmin, xmax), (ymin, ymax)
+        place_bin_size: float,  # side length of the hexagon (s)
+        position_range: Tuple[Tuple[float, float], Tuple[float, float]],
     ) -> None:
         (xmin, xmax), (ymin, ymax) = position_range
-        # dx is distance between centers of adjacent hexes horizontally
-        # dy is distance between centers of rows of hexes
-        # For point-up hexagons:
-        dx = place_bin_size * 3 / 2
+
+        # --- Corrected spacing for pointy-topped hex grid ---
         s = place_bin_size
-        hex_height = math.sqrt(3) * s  # Total height of a hexagon
+        # Horizontal spacing between adjacent centers (√3·s)
+        dx = math.sqrt(3) * s
+        # Vertical spacing between rows (1.5·s)
+        row_spacing = 1.5 * s
+        # Use same dx for column step
+        col_spacing = dx
 
-        col_spacing = 1.5 * s  # Horizontal distance between centers in same row
-        row_spacing = (
-            hex_height / 2
-        )  # Vertical distance for staggered rows (sqrt(3)/2 * s)
-
+        # --- Generate all candidate centers ---
         centers_list: List[Tuple[float, float]] = []
         row_idx = 0
         current_y = ymin
-        while current_y < ymax + row_spacing:  # Iterate through rows
-            current_x_offset = (dx / 2) if (row_idx % 2 != 0) else 0  # Stagger odd rows
-            current_x = xmin + current_x_offset
-            while current_x < xmax + col_spacing:  # Iterate through columns
-                # Check if center is within a slightly expanded bounding box to catch edge cases
-                if (xmin - s) <= current_x <= (xmax + s) and (
-                    ymin - hex_height / 2
-                ) <= current_y <= (ymax + hex_height / 2):
+        while current_y < ymax + row_spacing:
+            # stagger odd rows by half a column
+            x_offset = (dx / 2) if (row_idx % 2 != 0) else 0
+            current_x = xmin + x_offset
+            while current_x < xmax + dx:
+                # allow a small margin to catch edge cases
+                if (xmin - dx / 2) <= current_x <= (xmax + dx / 2) and (
+                    ymin - s
+                ) <= current_y <= (ymax + s):
                     centers_list.append((current_x, current_y))
                 current_x += col_spacing
             current_y += row_spacing
             row_idx += 1
 
-        temp_centers = np.array(centers_list)
-        if temp_centers.size > 0:
-            # Filter to keep only points whose centers are strictly within the original range
-            # (or some reasonable margin)
-            valid_mask = (
-                (temp_centers[:, 0] >= xmin)
-                & (temp_centers[:, 0] <= xmax)
-                & (temp_centers[:, 1] >= ymin)
-                & (temp_centers[:, 1] <= ymax)
+        tmp = np.array(centers_list, dtype=float)
+        if tmp.size > 0:
+            # keep only those strictly within the original box
+            mask = (
+                (tmp[:, 0] >= xmin)
+                & (tmp[:, 0] <= xmax)
+                & (tmp[:, 1] >= ymin)
+                & (tmp[:, 1] <= ymax)
             )
-            self.place_bin_centers_ = temp_centers[valid_mask]
+            self.place_bin_centers_ = tmp[mask]
         else:
-            self.place_bin_centers_ = np.empty((0, 2))
+            self.place_bin_centers_ = np.empty((0, 2), dtype=float)
 
+        # --- Set up masks and shapes ---
         self.centers_shape_ = (self.place_bin_centers_.shape[0],)
-        self.interior_mask_ = np.ones(
-            self.centers_shape_, dtype=bool
-        )  # All generated centers are interior
+        self.interior_mask_ = np.ones(self.centers_shape_, dtype=bool)
 
+        # --- Build neighbor graph on bin‐centers ---
         G = nx.Graph()
-        if self.place_bin_centers_.shape[0] == 0:
-            self.track_graph_bin_centers_ = G
-            self._build_kdtree(interior_mask=self.interior_mask_)
-            return
+        n = self.place_bin_centers_.shape[0]
+        G.add_nodes_from(range(n))
+        for i, pos in enumerate(self.place_bin_centers_):
+            G.nodes[i].update(
+                {
+                    "pos": tuple(pos),
+                    "is_track_interior": True,
+                    "bin_ind": (i,),
+                    "bin_ind_flat": i,
+                }
+            )
 
-        G.add_nodes_from(range(len(self.place_bin_centers_)))
-        for i in range(len(self.place_bin_centers_)):
-            G.nodes[i]["pos"] = tuple(self.place_bin_centers_[i])
-            G.nodes[i]["is_track_interior"] = True
-            G.nodes[i]["bin_ind"] = (i,)
-            G.nodes[i]["bin_ind_flat"] = i
-
-        if self.place_bin_centers_.shape[0] > 1:
+        if n > 1:
             tree = KDTree(self.place_bin_centers_)
-            # Connect to neighbors within s * 1.1 (should capture 6 neighbors for perfect lattice)
-            pairs = tree.query_pairs(r=s * 1.1)
-            for i, j in pairs:
+            # connect pairs within just over dx to capture the six neighbors
+            for i, j in tree.query_pairs(r=dx * 1.1):
                 dist = np.linalg.norm(
                     self.place_bin_centers_[i] - self.place_bin_centers_[j]
                 )
                 G.add_edge(i, j, distance=dist)
 
         self.track_graph_bin_centers_ = G
+        # finally build the KD‐tree for fast point‐to‐bin queries
         self._build_kdtree(interior_mask=self.interior_mask_)
 
     @property
@@ -1098,8 +1560,11 @@ class HexagonalGridEngine(_KDTreeMixin):
 
 
 class QuadtreeGridEngine(_KDTreeMixin):
-    """Adaptive quadtree tiling of 2D space to a maximum depth.
-    Bin centers are the centers of the quadtree cells.
+    """Engine that adaptively tiles a 2D space using a Quadtree structure.
+
+    The space is recursively subdivided into quadrants up to a maximum depth.
+    The centers of the leaf cells of the quadtree become the `place_bin_centers_`.
+    A graph connects adjacent leaf cells.
     """
 
     place_bin_centers_: NDArray[np.float64]
@@ -1120,6 +1585,21 @@ class QuadtreeGridEngine(_KDTreeMixin):
         ],  # (xmin, xmax), (ymin, ymax)
         max_depth: int = 4,
     ) -> None:
+        """Builds the Quadtree grid.
+
+        Parameters
+        ----------
+        position_range : Tuple[Tuple[float, float], Tuple[float, float]]
+            The initial rectangular area `((xmin, xmax), (ymin, ymax))` to subdivide.
+        max_depth : int, default=4
+            The maximum depth of the quadtree subdivision. A depth of 0 means
+            a single cell covering the `position_range`.
+
+        Raises
+        ------
+        ValueError
+            If `max_depth` is negative or `position_range` is invalid.
+        """
         if max_depth < 0:
             raise ValueError("max_depth must be non-negative.")
 
@@ -1184,7 +1664,8 @@ class QuadtreeGridEngine(_KDTreeMixin):
 
     @property
     def is_1d(self) -> bool:
-        return False  # Quadtree is 2D
+        """Returns False, as QuadtreeGridEngine is 2D."""
+        return False
 
     # Use generic graph plot from Delaunay engine
     _generic_graph_plot = DelaunayGraphEngine._generic_graph_plot
@@ -1192,7 +1673,31 @@ class QuadtreeGridEngine(_KDTreeMixin):
     def plot(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
-        """Plots the Quadtree graph and optionally cell boundaries."""
+        """Plots the Quadtree graph and optionally the cell boundaries.
+
+        Uses a generic graph plotting utility for the cell centers and their
+        connections. See `_generic_graph_plot` for common `**kwargs`.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], optional
+            Existing Matplotlib axes to plot on. If None, new axes are created.
+        **kwargs
+            Additional keyword arguments:
+            show_cell_boundaries : bool, optional
+                If True, draws the rectangular boundaries of the quadtree
+                leaf cells. Default False.
+            cell_boundary_kwargs : dict, optional
+                Keyword arguments for plotting cell boundaries (passed to
+                `matplotlib.patches.Rectangle`). Default
+                `{'fill': False, 'edgecolor': 'blue', 'alpha': 0.3}`.
+            Other kwargs are passed to `_generic_graph_plot`.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The Matplotlib axes object used for plotting.
+        """
         ax = self._generic_graph_plot(ax, self.track_graph_bin_centers_, **kwargs)  # type: ignore
 
         if (
@@ -1211,20 +1716,39 @@ class QuadtreeGridEngine(_KDTreeMixin):
 
 
 class VoronoiPartitionEngine(_KDTreeMixin):
-    """Partitions N-D space via Voronoi tessellation of seed points.
-    Bin centers are the centroids of the finite Voronoi regions.
+    """Engine that partitions N-D space using Voronoi tessellation of seed points.
+
+    Bin centers (`place_bin_centers_`) are defined as the centroids of the
+    finite Voronoi regions generated from the input seed points.
+    The graph connects centroids of Voronoi regions that share a ridge.
     """
 
     place_bin_centers_: NDArray[np.float64]  # Centroids of finite Voronoi regions
-    edges_: Tuple[NDArray[np.float64], ...] = ()
+    edges_: Tuple[NDArray[np.float64], ...] = ()  # No regular grid edges
     centers_shape_: Tuple[int, ...]  # (n_finite_regions,)
     track_graph_nd_: Optional[nx.Graph] = None  # Not typically used
-    track_graph_bin_centers_: Optional[nx.Graph] = None
-    interior_mask_: Optional[NDArray[np.bool_]] = None
-    voronoi_diagram_: Optional[Voronoi] = None
-    seed_points_: Optional[NDArray[np.float64]] = None  # Store original seeds
+    track_graph_bin_centers_: Optional[nx.Graph] = (
+        None  # Graph of Voronoi region centroids
+    )
+    interior_mask_: Optional[NDArray[np.bool_]] = None  # All True for finite regions
+    voronoi_diagram_: Optional[Voronoi] = None  # The scipy.spatial.Voronoi object
+    seed_points_: Optional[NDArray[np.float64]] = None  # Original input seed points
 
     def build(self, *, seeds: NDArray[np.float64]) -> None:
+        """Builds the Voronoi partition.
+
+        Parameters
+        ----------
+        seeds : NDArray[np.float64], shape (n_seeds, n_dims)
+            The seed points used to generate the Voronoi diagram.
+            Requires at least `n_dims + 1` seed points.
+
+        Raises
+        ------
+        ValueError
+            If `seeds` is not a 2D array or has insufficient points for
+            the dimensionality.
+        """
         if seeds.ndim != 2:
             raise ValueError("Input seeds must be a 2D array (n_seeds, n_dims).")
         if seeds.shape[0] < seeds.shape[1] + 1:
@@ -1293,9 +1817,9 @@ class VoronoiPartitionEngine(_KDTreeMixin):
 
     @property
     def is_1d(self) -> bool:
-        # Voronoi is typically for 2D+
+        """Checks if the input seed points were 1-dimensional."""
         if self.seed_points_ is not None and self.seed_points_.shape[1] == 1:
-            return True  # If input seeds were 1D
+            return True
         return False
 
     # Use generic graph plot from Delaunay engine
@@ -1304,7 +1828,36 @@ class VoronoiPartitionEngine(_KDTreeMixin):
     def plot(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
-        """Plots the Voronoi graph and optionally the Voronoi diagram."""
+        """Plots the graph of Voronoi region centroids and optionally the Voronoi diagram.
+
+        Uses a generic graph plotting utility for the centroids and their
+        connections. See `_generic_graph_plot` for common `**kwargs`.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], optional
+            Existing Matplotlib axes to plot on. If None, new axes are created.
+        **kwargs
+            Additional keyword arguments:
+            show_voronoi_diagram : bool, optional
+                If True and the environment is 2D, plots the Voronoi diagram
+                (ridges and vertices) using `scipy.spatial.voronoi_plot_2d`.
+                Default False.
+            show_seed_points : bool, optional
+                If True, scatter plots the original seed points. Default False.
+            seed_point_kwargs : dict, optional
+                Keyword arguments for plotting seed points.
+                Default `{'c': 'red', 's': 25, 'marker': 'x'}`.
+            voronoi_plot_kwargs : dict, optional
+                Keyword arguments passed to `scipy.spatial.voronoi_plot_2d`.
+                E.g., `{'show_vertices': False, 'line_colors': 'orange'}`.
+            Other kwargs are passed to `_generic_graph_plot`.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The Matplotlib axes object used for plotting.
+        """
         ax = self._generic_graph_plot(ax, self.track_graph_bin_centers_, **kwargs)  # type: ignore
 
         if (
@@ -1329,17 +1882,39 @@ class VoronoiPartitionEngine(_KDTreeMixin):
 
 
 class MeshSurfaceEngine(_KDTreeMixin):
-    """Uses an existing triangular mesh: vertices as bins, edges as adjacency."""
+    """Engine that uses a pre-existing triangular mesh (vertices and faces).
+
+    The vertices of the mesh become the `place_bin_centers_`. The graph connects
+    vertices that share an edge in any triangular face.
+    """
 
     place_bin_centers_: NDArray[np.float64]  # Mesh vertices
-    edges_: Tuple[NDArray[np.float64], ...] = ()
+    edges_: Tuple[NDArray[np.float64], ...] = ()  # No regular grid edges
     centers_shape_: Tuple[int, ...]  # (n_vertices,)
-    track_graph_nd_: Optional[nx.Graph] = None  # Not typically used
-    track_graph_bin_centers_: Optional[nx.Graph] = None
-    interior_mask_: Optional[NDArray[np.bool_]] = None
-    faces_definition_: Optional[NDArray[np.int_]] = None
+    track_graph_nd_: Optional[nx.Graph] = None  # Not typically used for this engine
+    track_graph_bin_centers_: Optional[nx.Graph] = (
+        None  # The mesh graph (vertices as nodes)
+    )
+    interior_mask_: Optional[NDArray[np.bool_]] = None  # All True for provided vertices
+    faces_definition_: Optional[NDArray[np.int_]] = None  # Input faces (n_faces, 3)
 
     def build(self, *, vertices: NDArray[np.float64], faces: NDArray[np.int_]) -> None:
+        """Builds the graph from mesh vertices and faces.
+
+        Parameters
+        ----------
+        vertices : NDArray[np.float64], shape (n_vertices, n_dims)
+            The coordinates of the mesh vertices.
+        faces : NDArray[np.int_], shape (n_faces, 3)
+            An array where each row contains three integer indices referring to
+            rows in the `vertices` array, defining a triangular face.
+
+        Raises
+        ------
+        ValueError
+            If `vertices` or `faces` have incorrect shapes or if face indices
+            are out of bounds.
+        """
         if vertices.ndim != 2:
             raise ValueError("Vertices must be a 2D array (n_vertices, n_dims).")
         if faces.ndim != 2 or faces.shape[1] != 3:
@@ -1377,6 +1952,7 @@ class MeshSurfaceEngine(_KDTreeMixin):
 
     @property
     def is_1d(self) -> bool:
+        """Checks if the mesh vertices are 1-dimensional."""
         # Typically a 2D surface in 3D space, or a 2D mesh.
         # Could be 1D if vertices are collinear and faces connect them sequentially, but not typical.
         if (
@@ -1392,7 +1968,30 @@ class MeshSurfaceEngine(_KDTreeMixin):
     def plot(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
-        """Plots the mesh graph and optionally the mesh faces."""
+        """Plots the mesh graph and optionally the mesh faces.
+
+        Uses a generic graph plotting utility for the vertices and their
+        connections. See `_generic_graph_plot` for common `**kwargs`.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], optional
+            Existing Matplotlib axes to plot on. If None, new axes are created.
+        **kwargs
+            Additional keyword arguments:
+            show_mesh_faces : bool, optional
+                If True and the mesh is 3D (`self.place_bin_centers_.shape[1] == 3`),
+                plots the triangular faces using `ax.plot_trisurf`. Default False.
+            mesh_kwargs : dict, optional
+                Keyword arguments passed to `ax.plot_trisurf` if
+                `show_mesh_faces` is True. Default `{'color': 'lightblue', 'alpha': 0.5}`.
+            Other kwargs are passed to `_generic_graph_plot`.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The Matplotlib axes object used for plotting.
+        """
         ax = self._generic_graph_plot(ax, self.track_graph_bin_centers_, **kwargs)  # type: ignore
 
         if (
@@ -1416,20 +2015,47 @@ class MeshSurfaceEngine(_KDTreeMixin):
 
 
 class ImageMaskEngine(_KDTreeMixin):
-    """Converts a 2D boolean image mask into pixel-center bins and a graph.
-    Connects 4-neighbors or 8-neighbors.
+    """Engine that converts a 2D boolean image mask into pixel-center bins and a graph.
+
+    Each True pixel in the input mask becomes a bin center (offset by 0.5 to be
+    at the pixel center). The graph connects adjacent True pixels, either using
+    4-connectivity (orthogonal neighbors) or 8-connectivity (orthogonal + diagonal).
     """
 
-    place_bin_centers_: NDArray[np.float64]  # (col+0.5, row+0.5)
-    edges_: Tuple[NDArray[np.float64], ...] = ()
+    place_bin_centers_: NDArray[np.float64]  # Centers of True pixels (col+0.5, row+0.5)
+    edges_: Tuple[
+        NDArray[np.float64], ...
+    ] = ()  # No regular grid edges in the typical sense
     centers_shape_: Tuple[int, ...]  # (n_true_pixels,)
     track_graph_nd_: Optional[nx.Graph] = None  # Not typically used
-    track_graph_bin_centers_: Optional[nx.Graph] = None
-    interior_mask_: Optional[NDArray[np.bool_]] = None
-    pixel_to_node_map_: Optional[Dict[Tuple[int, int], int]] = None
-    image_mask_definition_: Optional[NDArray[np.bool_]] = None
+    track_graph_bin_centers_: Optional[nx.Graph] = None  # Graph of True pixel centers
+    interior_mask_: Optional[NDArray[np.bool_]] = (
+        None  # All True for generated pixel centers
+    )
+    pixel_to_node_map_: Optional[Dict[Tuple[int, int], int]] = (
+        None  # Maps (row,col) of True pixel to node_id
+    )
+    image_mask_definition_: Optional[NDArray[np.bool_]] = (
+        None  # The input 2D boolean mask
+    )
 
-    def build(self, *, mask: NDArray[np.bool_], connect_diagonal: bool = False) -> None:
+    def build(self, *, mask: NDArray[np.bool_], connect_diagonal: bool = True) -> None:
+        """Builds the graph from the image mask.
+
+        Parameters
+        ----------
+        mask : NDArray[np.bool_], shape (n_rows, n_cols)
+            A 2D boolean array where True indicates pixels that are part of
+            the environment.
+        connect_diagonal : bool, default=False
+            If True, connects pixels that are diagonally adjacent (8-connectivity).
+            If False, only connects orthogonally adjacent pixels (4-connectivity).
+
+        Raises
+        ------
+        ValueError
+            If `mask` is not a 2D array.
+        """
         if mask.ndim != 2:
             raise ValueError("ImageMaskEngine currently only supports 2D masks.")
         self.image_mask_definition_ = mask
@@ -1480,7 +2106,8 @@ class ImageMaskEngine(_KDTreeMixin):
 
     @property
     def is_1d(self) -> bool:
-        return False  # Image mask is 2D
+        """Returns False, as ImageMaskEngine is 2D."""
+        return False
 
     # Use generic graph plot from Delaunay engine
     _generic_graph_plot = DelaunayGraphEngine._generic_graph_plot
@@ -1488,7 +2115,31 @@ class ImageMaskEngine(_KDTreeMixin):
     def plot(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
-        """Plots the graph from the image mask, or the mask itself."""
+        """Plots the graph derived from the image mask, or the mask itself.
+
+        If `show_image_mask` is True in `**kwargs`, displays the input boolean
+        mask using `imshow`. Otherwise, plots the graph of connected pixel
+        centers using `_generic_graph_plot`.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], optional
+            Existing Matplotlib axes to plot on. If None, new axes are created.
+        **kwargs
+            Additional keyword arguments:
+            show_image_mask : bool, optional
+                If True, displays the original boolean mask image. Default False
+                (plots the graph).
+            imshow_kwargs : dict, optional
+                Keyword arguments passed to `ax.imshow` if `show_image_mask`
+                is True. Default `{'origin': 'lower', 'cmap': 'gray', 'interpolation': 'nearest'}`.
+            Other kwargs are passed to `_generic_graph_plot` if plotting the graph.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The Matplotlib axes object used for plotting.
+        """
         if (
             kwargs.get("show_image_mask", False)
             and self.image_mask_definition_ is not None
