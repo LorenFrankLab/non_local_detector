@@ -80,6 +80,28 @@ def position_data_square_nd() -> NDArray[np.float64]:
 
 
 @pytest.fixture
+def position_data_3d() -> NDArray[np.float64]:
+    """Simple 3D helix-like position data."""
+    n_points = 100
+    t = np.linspace(0, 4 * np.pi, n_points)
+    x = np.cos(t)
+    y = np.sin(t)
+    z = np.linspace(0, 10, n_points)
+    pos = np.stack([x, y, z], axis=1)
+    rng = np.random.default_rng(seed=43)
+    noise = rng.normal(0, 0.1, size=pos.shape)
+    return pos + noise
+
+
+@pytest.fixture
+def fitted_env_3d(position_data_3d) -> Environment:
+    """Fixture for a fitted 3D environment."""
+    env = Environment(place_bin_size=0.5, infer_track_interior=True, dilate=True)
+    env.fit(position_data_3d)
+    return env
+
+
+@pytest.fixture
 def track_graph_u_shape() -> nx.Graph:
     """User-provided U-shaped graph structure."""
     node_positions = {
@@ -452,3 +474,140 @@ def test_get_node_pos():
         _get_node_pos(graph, 1)  # Missing 'pos'
     with pytest.raises(KeyError):
         _get_node_pos(graph, 2)  # Missing node
+
+
+def test_fit_3d(fitted_env_3d):
+    """Test fitting a 3D environment."""
+    env = fitted_env_3d
+    assert env._is_fitted and not env.is_1d
+    assert env.place_bin_centers_ is not None and env.place_bin_centers_.shape[1] == 3
+    assert env.is_track_interior_ is not None and env.is_track_interior_.ndim == 3
+    assert env.centers_shape_ is not None and len(env.centers_shape_) == 3
+    assert env.edges_ is not None and len(env.edges_) == 3
+    assert env.track_graph_nd_ is not None
+    assert env.track_graph_nd_.number_of_edges() > 0
+    # Check node positions are 3D
+    node_id = list(env.track_graph_nd_.nodes)[0]
+    assert len(env.track_graph_nd_.nodes[node_id]["pos"]) == 3
+
+
+def test_assign_region_ids_to_bins(fitted_env_square_nd):
+    """Test assigning regions to bins."""
+    env = fitted_env_square_nd
+    n_bins = np.prod(env.centers_shape_)
+    center_coords = env.place_bin_centers_
+
+    # Define regions
+    region_defs = {
+        "BottomHalf": lambda coords: coords[1] < 15.0,  # Function based
+        "TopLeftCorner": [
+            0,
+            1,
+            env.centers_shape_[1],
+            env.centers_shape_[1] + 1,
+        ],  # List based (example indices)
+    }
+    # Filter list indices to be valid
+    valid_indices = [idx for idx in region_defs["TopLeftCorner"] if 0 <= idx < n_bins]
+    region_defs["TopLeftCorner"] = valid_indices
+
+    region_map = env.assign_region_ids_to_bins(region_defs, default_region_id="Other")
+
+    assert region_map.shape == env.centers_shape_
+    assert "Other" in region_map
+    assert "BottomHalf" in region_map
+    if valid_indices:  # Only check if list wasn't empty/invalid
+        assert "TopLeftCorner" in region_map
+
+    # Check some assignments
+    bottom_half_mask = region_map == "BottomHalf"
+    top_left_mask = region_map == "TopLeftCorner"
+
+    assert np.all(center_coords[bottom_half_mask.ravel(), 1] < 15.0)
+    if valid_indices:
+        assert np.all(np.isin(np.where(top_left_mask.ravel())[0], valid_indices))
+
+
+@pytest.fixture
+def linear_track_graph_base() -> Tuple[nx.Graph, list]:
+    """Base linear track graph without spacing defined yet."""
+    nodes = [0, 1, 2, 3]
+    edges = [(0, 1), (1, 2), (2, 3)]
+    node_positions = {0: (0, 0), 1: (5, 0), 2: (10, 0), 3: (15, 0)}
+    edge_order = [(0, 1), (1, 2), (2, 3)]
+
+    graph = nx.Graph()
+    graph.add_nodes_from(nodes)
+    graph.add_edges_from(edges)
+    nx.set_node_attributes(graph, node_positions, "pos")
+    for i, edge in enumerate(edge_order):
+        pos1 = np.array(node_positions[edge[0]])
+        pos2 = np.array(node_positions[edge[1]])
+        dist = np.linalg.norm(pos1 - pos2)
+        graph.edges[edge]["distance"] = dist
+        graph.edges[edge]["edge_id"] = i
+    return graph, edge_order
+
+
+@pytest.fixture
+def linear_track_graph_no_spacing(
+    linear_track_graph_base,
+) -> Tuple[nx.Graph, list, float]:
+    """Linear track with zero edge spacing."""
+    graph, order = linear_track_graph_base
+    return graph, order, 0.0
+
+
+@pytest.fixture
+def linear_track_graph_with_spacing(
+    linear_track_graph_base,
+) -> Tuple[nx.Graph, list, float]:
+    """Linear track with non-zero edge spacing."""
+    graph, order = linear_track_graph_base
+    return graph, order, 10.0  # Example spacing
+
+
+@pytest.fixture
+def fitted_env_1d_no_spacing(linear_track_graph_no_spacing) -> Environment:
+    graph, order, spacing = linear_track_graph_no_spacing
+    env = Environment(
+        track_graph=graph, edge_order=order, edge_spacing=spacing, place_bin_size=1.0
+    )
+    env.fit()
+    return env
+
+
+@pytest.fixture
+def fitted_env_1d_with_spacing(linear_track_graph_with_spacing) -> Environment:
+    graph, order, spacing = linear_track_graph_with_spacing
+    env = Environment(
+        track_graph=graph, edge_order=order, edge_spacing=spacing, place_bin_size=1.0
+    )
+    env.fit()
+    return env
+
+
+def test_fit_1d_with_spacing(fitted_env_1d_with_spacing, fitted_env_1d_no_spacing):
+    """Test 1D fitting with non-zero edge_spacing."""
+    env_space = fitted_env_1d_with_spacing
+    env_no_space = fitted_env_1d_no_spacing
+
+    assert env_space._is_fitted and env_space.is_1d
+    assert env_no_space._is_fitted and env_no_space.is_1d
+
+    # Check that some bins are marked as non-interior due to spacing
+    assert not np.all(env_space.is_track_interior_)
+    assert np.all(env_no_space.is_track_interior_)
+
+    # Check that the total linearized length is greater with spacing
+    max_lin_pos_space = np.max(env_space.place_bin_centers_)
+    max_lin_pos_no_space = np.max(env_no_space.place_bin_centers_)
+    assert max_lin_pos_space > max_lin_pos_no_space
+
+
+test_fit_1d_with_spacing(
+    fitted_env_1d_with_spacing(
+        linear_track_graph_with_spacing(linear_track_graph_base())
+    ),
+    fitted_env_1d_no_spacing(linear_track_graph_no_spacing(linear_track_graph_base())),
+)
