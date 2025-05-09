@@ -1128,6 +1128,33 @@ def _make_track_graph_bin_centers(
     return track_graph_bin_centers
 
 
+from functools import wraps
+
+
+def check_fitted(method):
+    """
+    Decorator for Environment instance methods that must only be
+    called *after* `fit()`.
+
+    Raises
+    ------
+    RuntimeError
+        If the Environment has not yet been fitted.
+    """
+
+    @wraps(method)
+    def _inner(self, *args, **kwargs):
+        if not getattr(self, "_is_fitted", False):
+            raise RuntimeError(
+                f"{self.__class__.__name__}.{method.__name__}() "
+                "requires the environment to be fitted. "
+                "Call `.fit()` first."
+            )
+        return method(self, *args, **kwargs)
+
+    return _inner
+
+
 def get_direction(
     env: "Environment",
     position: np.ndarray,
@@ -1515,6 +1542,7 @@ class Environment:
 
         return self
 
+    @check_fitted
     def plot_grid(
         self, ax: Optional[matplotlib.axes.Axes] = None
     ) -> matplotlib.axes.Axes:
@@ -1539,8 +1567,6 @@ class Environment:
         NotImplementedError
             If the environment is not 1D or 2D.
         """
-        if not self._is_fitted:
-            raise RuntimeError("Environment has not been fitted. Call fit() first.")
 
         if self.is_1d:
             # Plot 1D linearized track
@@ -1643,6 +1669,7 @@ class Environment:
 
         return environment
 
+    @check_fitted
     def get_manifold_distances(
         self, positions1: NDArray[np.float64], positions2: NDArray[np.float64]
     ) -> NDArray[np.float64]:
@@ -1672,9 +1699,6 @@ class Environment:
         ValueError
             If input shapes mismatch or required distance attributes are missing.
         """
-        if not self._is_fitted:
-            raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
-
         positions1 = np.atleast_2d(positions1)
         positions2 = np.atleast_2d(positions2)
 
@@ -1692,6 +1716,7 @@ class Environment:
 
         return distances
 
+    @check_fitted
     def get_linear_position(self, position: np.ndarray) -> np.ndarray:
         """Get the linearized position along the track.
 
@@ -1705,8 +1730,6 @@ class Environment:
         linear_position : np.ndarray, shape (n_time,)
             Linearized position along the track.
         """
-        if not self._is_fitted:
-            raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
         if not self.is_1d:
             raise ValueError(
                 "Linear position calculation is only implemented for 1D environments."
@@ -1719,6 +1742,7 @@ class Environment:
             edge_spacing=self.edge_spacing,
         )
 
+    @check_fitted
     def get_fitted_track_graph(self) -> nx.Graph:
         """Get the fitted track graph of the environment.
 
@@ -1732,14 +1756,13 @@ class Environment:
         RuntimeError
             If the environment has not been fitted.
         """
-        if not self._is_fitted:
-            raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
         if self.is_1d:
             return self.track_graph_bin_centers_
         else:
             return self.track_graph_nd_
 
     @cached_property
+    @check_fitted
     def distance_between_bins(self) -> NDArray[np.float64]:
         """Get the distance between two nodes in the fitted track graph.
         Returns
@@ -1752,11 +1775,9 @@ class Environment:
         RuntimeError
             If the environment has not been fitted.
         """
-        if not self._is_fitted:
-            raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
-
         return _get_distance_between_bins(self.get_fitted_track_graph())
 
+    @check_fitted
     def get_bin_center_dataframe(self) -> pd.DataFrame:
         """Get a DataFrame with information about the bin centers.
 
@@ -1765,8 +1786,6 @@ class Environment:
         pd.DataFrame
             DataFrame containing information about the bin centers.
         """
-        if not self._is_fitted:
-            raise RuntimeError("Environment has not been fit yet. Call `fit` first.")
 
         df = pd.DataFrame.from_dict(
             dict(self.get_fitted_track_graph().nodes(data=True)), orient="index"
@@ -1784,6 +1803,7 @@ class Environment:
 
         return df
 
+    @check_fitted
     def get_bin_ind(self, positions: np.ndarray) -> np.ndarray:
         """Get the bin index for a given position.
 
@@ -1812,6 +1832,7 @@ class Environment:
 
         return df["bin_ind_flat"].iloc[bin_ind_subset].to_numpy().squeeze()
 
+    @check_fitted
     def get_bin_coordinates(self, bin_ind: np.ndarray) -> np.ndarray:
         """Get the coordinates of the bin centers for given bin indices.
 
@@ -1825,11 +1846,9 @@ class Environment:
         bin_coordinates : np.ndarray, shape (n_bins, n_dims)
             The coordinates of the bin centers.
         """
-        if not self._is_fitted:
-            raise RuntimeError("Environment has not been fit yet. Call `fit` first.")
-
         return self.place_bin_centers_[bin_ind]
 
+    @check_fitted
     def assign_region_ids_to_bins(
         self,
         regions_definition: Dict[
@@ -2033,3 +2052,121 @@ class Environment:
                 setattr(env, key, restored_value)
 
         return env
+
+    @check_fitted
+    def bin_size(self, dim: int | None = None) -> float | np.ndarray:
+        """
+        Return the spatial bin size.
+
+        Parameters
+        ----------
+        dim : int | None, optional
+            If None (default) return the *array* of bin sizes for every
+            dimension; otherwise return the scalar bin size for the requested
+            dimension index.
+
+        Returns
+        -------
+        float | np.ndarray
+            The bin size for the specified dimension or an array of bin sizes
+            for all dimensions.
+        Raises
+        -------
+        IndexError
+            If `dim` is not in the range of dimensions.
+        RuntimeError
+            If the environment has not been fitted.
+
+        Examples
+        --------
+        >>> env.bin_size()      # e.g. array([2., 2.])
+        >>> env.bin_size(0)     # 2.0
+        """
+        sizes = (
+            np.asarray(self.place_bin_size, dtype=float)
+            if isinstance(self.place_bin_size, (list, tuple, np.ndarray))
+            else np.array([float(self.place_bin_size)])
+        )
+        if dim is None:
+            return sizes
+        if not (0 <= dim < sizes.size):
+            raise IndexError(f"dim must be in [0, {sizes.size-1}]")
+        return float(sizes[dim])
+
+    @check_fitted
+    def bin_index_to_nd(self, idx_flat: np.ndarray) -> tuple[np.ndarray, ...]:
+        """
+        Convert flattened bin indices back to N-D indices.
+
+        Parameters
+        ----------
+        idx_flat : array-like
+            Flat (raveled) indices - accepts scalar or 1-D array.
+
+        Returns
+        -------
+        tuple of ndarrays
+            Same output as `np.unravel_index`.
+        """
+        if self.centers_shape_ is None:
+            raise RuntimeError("Environment must be fitted before calling this.")
+        idx_flat = np.asarray(idx_flat, dtype=int)
+        return np.unravel_index(idx_flat, self.centers_shape_)
+
+    @check_fitted
+    def nd_index_to_flat(self, *idx_nd: np.ndarray | int) -> np.ndarray:
+        """
+        Convert N-D indices (one array per dimension *or* a single iterable)
+        into flattened indices.
+
+        Parameters
+        ----------
+        idx_nd : array-like
+            N-D indices. Can be a single iterable or separate arrays/ints.
+            If a single iterable, it should be of shape (n_dims, n_bins).
+
+        Returns
+        -------
+        np.ndarray
+            Flattened indices corresponding to the provided N-D indices.
+
+        Raises
+        -------
+        RuntimeError
+            If the environment has not been fitted.
+        ValueError
+            If the number of indices does not match the number of dimensions
+            in the fitted environment.
+
+
+        Examples
+        --------
+        >>> env.nd_index_to_flat([0, 1], [2, 3])   # 2-D example
+        >>> env.nd_index_to_flat((0, 1))           # single coordinate
+        """
+        if self.centers_shape_ is None:
+            raise RuntimeError("Environment must be fitted before calling this.")
+
+        # Allow caller to pass a single iterable or separate arrays/ints
+        if len(idx_nd) == 1 and not np.isscalar(idx_nd[0]):
+            idx_nd = tuple(np.asarray(idx_nd[0]).T)  # split last axis
+        idx_nd = tuple(np.asarray(idx, dtype=int) for idx in idx_nd)
+
+        if len(idx_nd) != len(self.centers_shape_):
+            raise ValueError(
+                f"Expected {len(self.centers_shape_)} indices, got {len(idx_nd)}"
+            )
+        return np.ravel_multi_index(idx_nd, self.centers_shape_)
+
+    @property
+    @check_fitted
+    def n_dims(self) -> int | None:
+        """
+        Number of spatial dimensions in the environment **after fitting**.
+
+        Returns
+        -------
+        int | None
+            Dimensionality of `place_bin_centers_` if fitted, else None.
+        """
+        return self.place_bin_centers_.shape[1]
