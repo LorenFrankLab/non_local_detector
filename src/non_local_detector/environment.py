@@ -109,7 +109,8 @@ def get_n_bins(
         extent = np.nanmax(position, axis=0) - np.nanmin(position, axis=0)
 
     # Ensure bin_size is positive
-    if np.any(bin_size <= 0):
+    bin_size = np.asarray(bin_size, dtype=float)
+    if np.any(bin_size <= 0.0):
         raise ValueError("bin_size must be positive.")
 
     # Calculate number of bins, ensuring at least 1 bin even if extent is 0
