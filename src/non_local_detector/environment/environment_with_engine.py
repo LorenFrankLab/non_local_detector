@@ -3,7 +3,7 @@ from __future__ import annotations
 import pickle
 import warnings
 from dataclasses import dataclass, field
-from functools import cached_property
+from functools import cached_property, wraps
 from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Tuple
 
 import matplotlib.axes
@@ -15,9 +15,93 @@ from numpy.typing import NDArray
 from non_local_detector.environment.geometry_engines import GeometryEngine, make_engine
 from non_local_detector.environment.geometry_utils import _get_distance_between_bins
 
-if TYPE_CHECKING:
-    # To avoid circular imports if regions.py imports Environment
-    from non_local_detector.environment.regions import RegionInfo
+try:
+    import shapely.geometry as _shp  # noqa: E402
+
+    _HAS_SHAPELY = True
+except ModuleNotFoundError:  # polygon support disabled
+    _HAS_SHAPELY = False
+
+    class _shp:  # type: ignore[misc]
+        """Dummy shim so type references still work."""
+
+        class Polygon:  # noqa: N801
+            pass
+
+
+def check_fitted(method):
+    """
+    Decorator for Environment instance methods that must only be
+    called *after* `fit()`.
+
+    Raises
+    ------
+    RuntimeError
+        If the Environment has not yet been fitted.
+    """
+
+    @wraps(method)
+    def _inner(self, *args, **kwargs):
+        if not getattr(self, "_is_fitted", False):
+            raise RuntimeError(
+                f"{self.__class__.__name__}.{method.__name__}() "
+                "requires the environment to be fitted. "
+                "Call `.fit()` first."
+            )
+        return method(self, *args, **kwargs)
+
+    return _inner
+
+
+@dataclass
+class RegionInfo:
+    """Container for a symbolic region.
+
+    Parameters
+    ----------
+    name
+        User-supplied identifier (must be unique per environment).
+    kind
+        One of ``{"point", "mask", "polygon"}``.
+    data
+        Payload whose interpretation depends on *kind*:
+
+        * **``point``**   - *np.ndarray* (shape ``(n_dims,)``)
+        * **``mask``**    - Boolean array matching ``centers_shape_``
+        * **``polygon``** - :class:`shapely.geometry.Polygon`
+
+    metadata
+        Arbitrary key-value store forwarded from :pyfunc:`add_region`.
+    """
+
+    name: str
+    kind: str  # "point" | "mask" | "polygon"
+    data: Any
+    metadata: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.kind not in {"point", "mask", "polygon"}:
+            raise ValueError(f"Unknown region kind: {self.kind}")
+        if self.kind == "polygon" and not _HAS_SHAPELY:
+            raise RuntimeError("Polygon regions require the 'shapely' package.")
+
+
+def _point_in_polygon(
+    points: np.ndarray, polygon: "_shp.Polygon"
+) -> np.ndarray:  # noqa: D401
+    """Return a boolean array telling which *points* lie inside *polygon*.
+
+    Notes
+    -----
+    * Requires ``shapely``.
+    """
+
+    if not _HAS_SHAPELY:
+        raise RuntimeError("Polygon support requested but Shapely is not installed.")
+    try:
+        return np.array(polygon.contains_points(points), bool)  # type: ignore[attr-defined]
+    except AttributeError:
+        return np.fromiter((polygon.contains(_shp.Point(xy)) for xy in points), bool)
 
 
 @dataclass
@@ -163,6 +247,7 @@ class Environment:
         self._is_fitted = True
         return self
 
+    @check_fitted
     def get_fitted_track_graph(self) -> nx.Graph:
         """Returns the primary track graph after fitting.
 
@@ -182,8 +267,6 @@ class Environment:
         ValueError
             If no suitable graph is available from the geometry engine.
         """
-        if not self._is_fitted:
-            raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
 
         if self.is_1d:
             graph = self.track_graph_bin_centers_
@@ -209,6 +292,7 @@ class Environment:
         raise ValueError("No suitable graph is available from the geometry engine.")
 
     @cached_property
+    @check_fitted
     def distance_between_bins(self) -> NDArray[np.float64]:
         """Shortest path distances between all pairs of bins in the fitted graph.
 
@@ -226,10 +310,9 @@ class Environment:
         RuntimeError
             If the environment has not been fitted.
         """
-        if not self._is_fitted:
-            raise RuntimeError("Environment has not been fitted yet. Call `fit` first.")
         return _get_distance_between_bins(self.get_fitted_track_graph())
 
+    @check_fitted
     def get_bin_ind(self, positions: NDArray[np.float64]) -> NDArray[np.int_]:
         """Converts continuous spatial positions to discrete bin indices.
 
@@ -251,12 +334,9 @@ class Environment:
         RuntimeError
             If the environment or geometry engine is not fitted/initialized.
         """
-        if not self._is_fitted or self.geometry_engine is None:
-            raise RuntimeError(
-                "Environment or geometry engine not fitted/initialized. Call `fit` first."
-            )
         return self.geometry_engine.point_to_bin(positions)
 
+    @check_fitted
     def get_bin_center_dataframe(self) -> pd.DataFrame:
         """Creates a DataFrame with information about each bin center.
 
@@ -274,8 +354,6 @@ class Environment:
         RuntimeError
             If the environment has not been fitted.
         """
-        if not self._is_fitted:
-            raise RuntimeError("Environment has not been fit yet. Call `fit` first.")
         graph = self.get_fitted_track_graph()
         if graph.number_of_nodes() == 0:
             # Define columns for an empty DataFrame for consistency
@@ -363,6 +441,7 @@ class Environment:
 
         return df
 
+    @check_fitted
     def get_manifold_distances(
         self, positions1: NDArray[np.float64], positions2: NDArray[np.float64]
     ) -> NDArray[np.float64]:
@@ -389,8 +468,6 @@ class Environment:
         ValueError
             If input shapes of `positions1` and `positions2` do not match.
         """
-        if not self._is_fitted:
-            raise RuntimeError("Environment has not been fitted. Call `fit` first.")
         p1 = np.atleast_2d(positions1)
         p2 = np.atleast_2d(positions2)
         if p1.shape != p2.shape:
@@ -441,6 +518,7 @@ class Environment:
 
         return distances.squeeze()
 
+    @check_fitted
     def get_linear_position(self, position: NDArray[np.float64]) -> NDArray[np.float64]:
         """Calculates linearized position along the track for 1D environments.
 
@@ -483,6 +561,7 @@ class Environment:
                 "does not support 'get_linearized_position'."
             )
 
+    @check_fitted
     def plot_grid(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
@@ -507,19 +586,9 @@ class Environment:
         RuntimeError
             If the environment or geometry engine has not been fitted/initialized.
         """
-        if not self._is_fitted or self.geometry_engine is None:
-            raise RuntimeError(
-                "Environment or geometry engine not fitted/initialized. Call `fit` first."
-            )
-
-        # The geometry_engine.plot method is responsible for creating the figure if ax is None
-        # or using the provided ax.
         ax = self.geometry_engine.plot(ax=ax, **kwargs)
 
-        # Environment can add its own title or annotations if needed
-        if (
-            self.environment_name and ax.get_title() == ""
-        ):  # Only if engine didn't set one
+        if self.environment_name and ax.get_title() == "":
             ax.set_title(
                 f"Environment: {self.environment_name} ({self.geometry_engine.__class__.__name__})"
             )
@@ -736,3 +805,142 @@ class Environment:
             # Else, it relies on the _is_1d_env from the dictionary.
 
         return env
+
+    @check_fitted
+    def add_region(
+        self: Environment,
+        name: str,
+        *,
+        point: Tuple[float, ...] | None = None,
+        mask: np.ndarray | None = None,
+        polygon: "_shp.Polygon | list[Tuple[float,float]]" | None = None,
+        **metadata,
+    ):
+        """Register a region *name* using one of three specifiers.
+
+        Exactly **one** of ``point``, ``mask`` or ``polygon`` must be given.
+
+        Parameters
+        ----------
+        name
+            Unique identifier for the region.
+        point
+            Physical coordinates (same dimensionality as positions).  Faster
+            when you only need a single bin (e.g. reward well).
+        mask
+            Boolean array of shape ``env.centers_shape_`` - useful when you
+            already computed a mask elsewhere.
+        polygon
+            *Shapely* polygon or list of ``(x, y)`` vertices for 2-D engines
+            - lets you delineate irregular zones (start box, wings, etc.).
+        metadata
+            Additional keyword pairs stored verbatim in :attr:`RegionInfo.metadata`.
+        """
+        if sum(v is not None for v in (point, mask, polygon)) != 1:
+            raise ValueError("Must provide exactly one of point / mask / polygon.")
+        if name in self._regions:
+            raise ValueError(f"Region '{name}' already exists.")
+
+        # Determine kind + data storage
+        if point is not None:
+            kind, data = "point", np.asarray(point, float)
+        elif mask is not None:
+            if mask.shape != self.centers_shape_:
+                raise ValueError("Mask shape mismatches environment grid.")
+            kind, data = "mask", mask.astype(bool)
+        else:  # polygon given
+            if not _HAS_SHAPELY:
+                raise RuntimeError("Install 'shapely' to use polygon regions.")
+            if isinstance(polygon, list):  # coordinates → Polygon
+                polygon = _shp.Polygon(polygon)
+            if not isinstance(polygon, _shp.Polygon):
+                raise TypeError(
+                    "polygon must be a shapely.geometry.Polygon or list of coords."
+                )
+            kind, data = "polygon", polygon
+
+        self._regions[name] = RegionInfo(
+            name=name, kind=kind, data=data, metadata=metadata
+        )
+
+    @check_fitted
+    def remove_region(self: Environment, name: str):
+        """Remove *name* from the registry (silently ignored if absent)."""
+        self._regions.pop(name, None)
+
+    def list_regions(self: Environment) -> List[str]:
+        """Return a list of registered region names (in insertion order)."""
+        return list(self._regions.keys())
+
+    @check_fitted
+    def region_mask(self: Environment, name: str) -> np.ndarray:
+        """Boolean occupancy mask for *name*.
+
+        The returned array has the same shape as ``env.centers_shape_``.
+        """
+        info = self._regions[name]
+        if info.kind == "mask":
+            return info.data.copy()
+
+        # flat mask initialised false
+        flat = np.zeros(np.prod(self.centers_shape_), bool)
+
+        if info.kind == "point":
+            idx = self.get_bin_ind(info.data)
+            flat[idx] = True
+        else:  # polygon
+            pts = self.place_bin_centers_[:, :2]  # xy only for test
+            inside = _point_in_polygon(pts, info.data)
+            flat[inside] = True
+
+        return flat.reshape(self.centers_shape_)
+
+    @check_fitted
+    def bins_in_region(self: Environment, name: str) -> np.ndarray:
+        """Return flattened indices of bins inside *name*."""
+        return np.flatnonzero(self.region_mask(name))
+
+    @check_fitted
+    def region_center(self: Environment, name: str) -> np.ndarray:
+        """Geometric center of the region.
+
+        * For ``point`` regions, this simply returns the point.
+        * For ``mask`` / ``polygon``, returns the mean of all bin centers.
+
+        Parameters
+        ----------
+        name
+            Name of the region.
+        Returns
+        -------
+        np.ndarray
+            Geometric center of the region.
+
+        """
+        info = self._regions[name]
+        if info.kind == "point":
+            return info.data
+        return self.place_bin_centers_[self.bins_in_region(name)].mean(axis=0)
+
+    @check_fitted
+    def nearest_region(self: Environment, position: np.ndarray) -> str | None:
+        """Nearest region (Euclidean) to *position*.
+
+        Parameters
+        ----------
+        position
+            Array of shape ``(n_dims,)`` or ``(n_samples, n_dims)``.
+        Returns
+        -------
+        str | None
+            Region name with minimal mean distance, or ``None`` if no regions
+            are registered.
+        """
+        pos = np.atleast_2d(position)
+        best_name, best_d = None, np.inf
+        for name in self.list_regions():
+            c = self.region_center(self, name)
+            d = np.linalg.norm(pos - c, axis=1).mean()
+            if d < best_d:
+                best_name, best_d = name, d
+        return best_name
