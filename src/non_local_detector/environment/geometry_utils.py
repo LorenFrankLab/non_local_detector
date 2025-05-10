@@ -41,7 +41,7 @@ parameters and optional position data.
 import itertools
 import pickle
 from dataclasses import MISSING, dataclass, field, fields
-from functools import cached_property
+from functools import cached_property, wraps
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import matplotlib
@@ -58,6 +58,30 @@ from track_linearization import get_linearized_position, plot_graph_as_1D
 from track_linearization.core import _calculate_linear_position
 
 # --- Helper Functions ---
+
+
+def check_fitted(method):
+    """
+    Decorator for Environment instance methods that must only be
+    called *after* `fit()`.
+
+    Raises
+    ------
+    RuntimeError
+        If the Environment has not yet been fitted.
+    """
+
+    @wraps(method)
+    def _inner(self, *args, **kwargs):
+        if not getattr(self, "_is_fitted", False):
+            raise RuntimeError(
+                f"{self.__class__.__name__}.{method.__name__}() "
+                "requires the environment to be fitted. "
+                "Call `.fit()` first."
+            )
+        return method(self, *args, **kwargs)
+
+    return _inner
 
 
 def get_centers(bin_edges: NDArray[np.float64]) -> NDArray[np.float64]:
