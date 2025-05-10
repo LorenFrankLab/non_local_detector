@@ -4,7 +4,7 @@ import pickle
 import warnings
 from dataclasses import dataclass, field
 from functools import cached_property, wraps
-from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import matplotlib.axes
 import networkx as nx
@@ -114,7 +114,7 @@ class Environment:
     environment_name: str = ""
     geometry_engine: Optional[GeometryEngine] = None  # Engine can be pre-configured
 
-    engine_kind: Optional[str] = None
+    engine_kind: Optional[str] = "Grid"  # Default engine kind
     engine_build_params: Dict[str, Any] = field(default_factory=dict)
 
     place_bin_centers_: Optional[NDArray[np.float64]] = field(init=False, default=None)
