@@ -54,7 +54,7 @@ import numpy as np
 from tqdm.autonotebook import tqdm
 from track_linearization import get_linearized_position
 
-from non_local_detector.environment.environment import Environment
+from non_local_detector.environment.environment_with_engine import Environment
 from non_local_detector.likelihoods.common import (
     EPS,
     LOG_EPS,

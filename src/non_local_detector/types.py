@@ -16,7 +16,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
 )
-from non_local_detector.environment.environment import Environment
+from non_local_detector.environment.environment_with_engine import Environment
 from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.observation_models import ObservationModel
 

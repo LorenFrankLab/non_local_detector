@@ -2,7 +2,7 @@ import numpy as np
 
 from non_local_detector.continuous_state_transitions import RandomWalk
 from non_local_detector.discrete_state_transitions import DiscreteStationaryDiagonal
-from non_local_detector.environment.environment import Environment
+from non_local_detector.environment.environment_with_engine import Environment
 from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.models.base import (
     _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,

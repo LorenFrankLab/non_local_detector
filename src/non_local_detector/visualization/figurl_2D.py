@@ -6,10 +6,10 @@ try:
     import sortingview.views.franklab as vvf
     import xarray as xr
 
-    from non_local_detector.environment.environment import (
-        Environment,
-        get_grid,
-        get_track_interior,
+    from non_local_detector.environment.environment_with_engine import Environment
+    from non_local_detector.environment.geometry_utils import (
+        _get_grid,
+        _infer_track_interior,
     )
     from non_local_detector.visualization.static import get_multiunit_firing_rate
 
@@ -389,8 +389,8 @@ try:
         bin_height : float
         upper_left_points : np.ndarray, shape (n_track_bins, 2)
         """
-        (edges, _, place_bin_centers, _) = get_grid(position, bin_size)
-        is_track_interior = get_track_interior(position, edges)
+        (edges, _, place_bin_centers, _) = _get_grid(position, bin_size)
+        is_track_interior = _infer_track_interior(position, edges)
 
         # bin dimensions are the difference between bin centers in the x and y directions.
         bin_width = np.max(np.diff(place_bin_centers, axis=0)[:, 0])

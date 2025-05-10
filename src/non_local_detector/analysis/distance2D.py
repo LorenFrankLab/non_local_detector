@@ -4,7 +4,7 @@ import networkx as nx
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
-from non_local_detector.environment.environment import Environment
+from non_local_detector.environment.environment_with_engine import Environment
 
 
 def make_2D_track_graph_from_environment(

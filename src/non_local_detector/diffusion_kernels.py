@@ -6,7 +6,7 @@ import jax.scipy.linalg
 import networkx as nx
 import numpy as np
 
-from non_local_detector.environment.environment import add_distance_weight_to_edges
+from non_local_detector.environment.geometry_utils import add_distance_weight_to_edges
 
 
 def compute_diffusion_kernels(

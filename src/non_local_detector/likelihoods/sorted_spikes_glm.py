@@ -59,7 +59,8 @@ from patsy.design_info import DesignInfo
 from scipy.optimize import minimize
 from tqdm.autonotebook import tqdm
 
-from non_local_detector.environment.environment import Environment, get_n_bins
+from non_local_detector.environment.environment_with_engine import Environment
+from non_local_detector.environment.geometry_utils import get_n_bins
 from non_local_detector.likelihoods.common import (
     EPS,
     get_position_at_time,
