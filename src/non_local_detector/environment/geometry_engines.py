@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import itertools
 import math
 import warnings
@@ -638,6 +639,7 @@ class TrackGraphEngine(_KDTreeMixin):
         edge_order: List[Tuple[Any, Any]],
         edge_spacing: Union[float, Sequence[float]],
         place_bin_size: float,
+        position: Optional[NDArray[np.float64]] = None,
     ) -> None:
         """Builds the 1-D track geometry.
 
@@ -655,6 +657,9 @@ class TrackGraphEngine(_KDTreeMixin):
             consecutive edges in `edge_order`.
         place_bin_size : float
             The desired size of bins along the linearized track.
+        position : Optional[NDArray[np.float64]], optional
+            Position data for the track. Ignored in this engine but
+            included for consistency with other engines. Defaults to None.
 
         Raises
         ------
@@ -663,6 +668,12 @@ class TrackGraphEngine(_KDTreeMixin):
         RuntimeError
             If `track_graph_bin_centers_` is not created by helper functions.
         """
+        if position is not None:
+            warnings.warn(
+                "Position data is not used in TrackGraphEngine. It is included for consistency with other engines.",
+                UserWarning,
+            )
+
         self.track_graph_definition_ = track_graph
         self.edge_order_definition_ = edge_order
         self.edge_spacing_definition_ = edge_spacing
@@ -1465,85 +1476,257 @@ class HexagonalGridEngine(_KDTreeMixin):
     track_graph_nd_: Optional[nx.Graph] = None  # Not typically used
     track_graph_bin_centers_: Optional[nx.Graph] = None
     interior_mask_: Optional[NDArray[np.bool_]] = None
+    place_bin_size: Optional[float] = None
 
     def build(
         self,
         *,
-        place_bin_size: float,  # side length of the hexagon (s)
-        position_range: Tuple[Tuple[float, float], Tuple[float, float]],
+        place_bin_size: float,
+        position_range: Optional[
+            Tuple[Tuple[float, float], Tuple[float, float]]
+        ] = None,
+        position: Optional[NDArray[np.float64]] = None,
+        infer_track_interior: bool = False,
+        bin_count_threshold: int = 0,
     ) -> None:
-        (xmin, xmax), (ymin, ymax) = position_range
+        """Builds the 2D hexagonal grid.
 
-        # --- Corrected spacing for pointy-topped hex grid ---
-        s = place_bin_size
-        # Horizontal spacing between adjacent centers (√3·s)
-        dx = math.sqrt(3) * s
-        # Vertical spacing between rows (1.5·s)
-        row_spacing = 1.5 * s
-        # Use same dx for column step
-        col_spacing = dx
+        Parameters
+        ----------
+        place_bin_size : float
+            The side length of the hexagons, which is also approximately the
+            distance between the centers of adjacent hexagons in the tiling.
+        position_range : Tuple[Tuple[float, float], Tuple[float, float]]
+            The 2D rectangular area `((xmin, xmax), (ymin, ymax))` to tile.
+            Hexagon centers initially generated within this range are considered.
+        position : Optional[NDArray[np.float64]], shape (n_time, 2), optional
+            2D position data. If `infer_track_interior` is True, this data is
+            used to determine which generated hexagons are part of the track.
+            Defaults to None.
+        infer_track_interior : bool, default=False
+            If True and `position` data is provided, infers the track interior
+            by keeping only hexagons whose centers are sufficiently occupied by
+            the position data.
+        bin_count_threshold : int, default=0
+            If `infer_track_interior` is True, this is the minimum number of
+            position samples that must map to a hexagon's center (or its vicinity)
+            for it to be considered part of the track interior.
 
-        # --- Generate all candidate centers ---
-        centers_list: List[Tuple[float, float]] = []
+        Raises
+        ------
+        ValueError
+            If `place_bin_size` is not positive, or if `position` data is
+            provided for inference and is not 2D.
+        """
+        if place_bin_size <= 0:
+            raise ValueError("place_bin_size must be positive.")
+        self.place_bin_size = place_bin_size
+
+        current_position_range: Tuple[Tuple[float, float], Tuple[float, float]]
+
+        if position_range is not None:
+            current_position_range = position_range
+        elif position is not None:
+            if (
+                position.ndim != 2 or position.shape[1] != 2
+            ):  # Assuming 2D for Hexagonal
+                raise ValueError(
+                    "If position_range is not provided, position data must be 2D."
+                )
+
+            pos_clean = position[~np.any(np.isnan(position), axis=1)]
+            if pos_clean.shape[0] == 0:
+                raise ValueError(
+                    "If position_range is not provided, position data cannot be all NaNs or empty."
+                )
+
+            xmin, ymin = np.nanmin(pos_clean, axis=0)
+            xmax, ymax = np.nanmax(pos_clean, axis=0)
+
+            # Handle cases where data might be a single point or collinear
+            if np.isclose(xmin, xmax):
+                warnings.warn(
+                    "X-extent of position data is zero. Creating a minimal range around the data for X.",
+                    UserWarning,
+                )
+                xmin -= place_bin_size  # Or some other sensible default extent
+                xmax += place_bin_size
+            if np.isclose(ymin, ymax):
+                warnings.warn(
+                    "Y-extent of position data is zero. Creating a minimal range around the data for Y.",
+                    UserWarning,
+                )
+                ymin -= place_bin_size
+                ymax += place_bin_size
+
+            current_position_range = ((xmin, xmax), (ymin, ymax))
+            warnings.warn(
+                f"position_range not provided, inferred as {current_position_range} from position data.",
+                UserWarning,
+            )
+        else:
+            raise ValueError(
+                "Either 'position_range' or 'position' data must be provided "
+                "for HexagonalGridEngine to define its tiling area."
+            )
+
+        (xmin, xmax), (ymin, ymax) = current_position_range
+        s = place_bin_size  # side length
+
+        # Geometry for point-up hexagons (centers form a triangular lattice)
+        hex_width_total = 2 * s  # Distance between parallel vertical sides
+        hex_height_total = (
+            math.sqrt(3) * s
+        )  # Distance between parallel horizontal sides (for flat-top)
+        # For pointy-top, this is the full height.
+
+        # Spacing between centers for a pointy-topped hexagonal grid
+        # dx_centers: horizontal distance between centers of hexagons in the same "conceptual" row.
+        # (e.g. (0,0) and (s*sqrt(3), 0) if first row starts at y=0)
+        # For a common "axial coordinate" type system or dense packing:
+        # horizontal distance between centers: s * 1.5
+        # vertical distance between rows of centers: s * sqrt(3) / 2
+        col_spacing_x = s * 1.5
+        row_spacing_y = s * math.sqrt(3) / 2.0
+
+        # --- Step 1: Generate all candidate hexagon centers ---
+        initial_centers_list: List[Tuple[float, float]] = []
         row_idx = 0
         current_y = ymin
-        while current_y < ymax + row_spacing:
-            # stagger odd rows by half a column
-            x_offset = (dx / 2) if (row_idx % 2 != 0) else 0
-            current_x = xmin + x_offset
-            while current_x < xmax + dx:
-                # allow a small margin to catch edge cases
-                if (xmin - dx / 2) <= current_x <= (xmax + dx / 2) and (
+        # Extend generation slightly to catch hexagons whose centers are just outside
+        # but might cover the boundary.
+        while (
+            current_y < ymax + row_spacing_y
+        ):  # Add hex_height_total/2 or s for better coverage margin
+            # Offset for staggering: even/odd rows are shifted
+            current_x_offset = (col_spacing_x / 2.0) if (row_idx % 2 != 0) else 0.0
+            current_x = xmin + current_x_offset
+            while (
+                current_x < xmax + col_spacing_x
+            ):  # Add hex_width_total/2 or s for margin
+                # Crude check if center is roughly near the desired area before strict filtering
+                if (xmin - s) <= current_x <= (xmax + s) and (
                     ymin - s
-                ) <= current_y <= (ymax + s):
-                    centers_list.append((current_x, current_y))
-                current_x += col_spacing
-            current_y += row_spacing
+                ) <= current_y <= (
+                    ymax + s
+                ):  # Margin s for pointy-top height consideration
+                    initial_centers_list.append((current_x, current_y))
+                current_x += col_spacing_x
+            current_y += row_spacing_y
             row_idx += 1
 
-        tmp = np.array(centers_list, dtype=float)
-        if tmp.size > 0:
-            # keep only those strictly within the original box
-            mask = (
-                (tmp[:, 0] >= xmin)
-                & (tmp[:, 0] <= xmax)
-                & (tmp[:, 1] >= ymin)
-                & (tmp[:, 1] <= ymax)
-            )
-            self.place_bin_centers_ = tmp[mask]
+        if not initial_centers_list:
+            initial_candidate_centers = np.empty((0, 2))
         else:
-            self.place_bin_centers_ = np.empty((0, 2), dtype=float)
-
-        # --- Set up masks and shapes ---
-        self.centers_shape_ = (self.place_bin_centers_.shape[0],)
-        self.interior_mask_ = np.ones(self.centers_shape_, dtype=bool)
-
-        # --- Build neighbor graph on bin‐centers ---
-        G = nx.Graph()
-        n = self.place_bin_centers_.shape[0]
-        G.add_nodes_from(range(n))
-        for i, pos in enumerate(self.place_bin_centers_):
-            G.nodes[i].update(
-                {
-                    "pos": tuple(pos),
-                    "is_track_interior": True,
-                    "bin_ind": (i,),
-                    "bin_ind_flat": i,
-                }
+            temp_centers = np.array(initial_centers_list)
+            # Filter to keep only centers strictly within the original range
+            strict_valid_mask = (
+                (temp_centers[:, 0] >= xmin)
+                & (temp_centers[:, 0] <= xmax)
+                & (temp_centers[:, 1] >= ymin)
+                & (temp_centers[:, 1] <= ymax)
             )
+            initial_candidate_centers = temp_centers[strict_valid_mask]
 
-        if n > 1:
-            tree = KDTree(self.place_bin_centers_)
-            # connect pairs within just over dx to capture the six neighbors
-            for i, j in tree.query_pairs(r=dx * 1.1):
-                dist = np.linalg.norm(
-                    self.place_bin_centers_[i] - self.place_bin_centers_[j]
+        n_initial_candidates = initial_candidate_centers.shape[0]
+
+        # --- Step 2: Initial Interior Mask (all generated candidates) ---
+        # This 1D mask corresponds to initial_candidate_centers
+        calculated_interior_mask_1d = np.ones(n_initial_candidates, dtype=bool)
+
+        # --- Step 3: Infer Interior based on position data (if requested) ---
+        if infer_track_interior and position is not None:
+            if n_initial_candidates == 0:  # No candidates to infer upon
+                warnings.warn(
+                    "Cannot infer interior: no initial hexagon candidates generated for the given range.",
+                    UserWarning,
                 )
-                G.add_edge(i, j, distance=dist)
+                self.place_bin_centers_ = np.empty((0, 2))
+                self.centers_shape_ = (0,)
+                self.interior_mask_ = np.array([], dtype=bool)
+                self.track_graph_bin_centers_ = nx.Graph()
+                self._build_kdtree(interior_mask=self.interior_mask_)
+                return
+
+            if position.ndim != 2 or position.shape[1] != 2:
+                raise ValueError(
+                    f"Position data shape {position.shape} must be (n_time, 2) for HexagonalGridEngine."
+                )
+
+            valid_positions = position[~np.any(np.isnan(position), axis=1)]
+            if valid_positions.shape[0] > 0:
+                # Map positions to the initial set of candidate hexagon centers
+                temp_kdtree = KDTree(initial_candidate_centers)
+                _, assigned_bin_indices = temp_kdtree.query(valid_positions)
+
+                occupancy_counts = np.bincount(
+                    assigned_bin_indices, minlength=n_initial_candidates
+                )
+                calculated_interior_mask_1d = occupancy_counts > bin_count_threshold
+            else:  # No valid positions after NaN removal
+                calculated_interior_mask_1d = np.zeros(n_initial_candidates, dtype=bool)
+                warnings.warn(
+                    "No valid positions provided for interior inference after NaN removal.",
+                    UserWarning,
+                )
+
+            if not np.any(calculated_interior_mask_1d):
+                warnings.warn(
+                    "Inferring interior resulted in no hexagon centers meeting the threshold. "
+                    "The environment will be empty of active bins if this was the only criterion.",
+                    UserWarning,
+                )
+
+        # --- Step 4: Update attributes based on the final interior mask ---
+        self.interior_mask_ = calculated_interior_mask_1d  # This is the crucial 1D mask
+
+        # Filter place_bin_centers_ to only include interior ones
+        self.place_bin_centers_ = initial_candidate_centers[self.interior_mask_]
+        self.centers_shape_ = (
+            self.place_bin_centers_.shape[0],
+        )  # Shape of the *final* interior bins
+
+        # --- Step 5: Build Graph on FINAL INTERIOR hexagon centers ---
+        G = nx.Graph()
+        n_final_interior_points = self.place_bin_centers_.shape[0]
+
+        if n_final_interior_points > 0:
+            for i_node in range(n_final_interior_points):
+                G.add_node(
+                    i_node,  # Node ID is index in the final self.place_bin_centers_
+                    pos=tuple(self.place_bin_centers_[i_node]),
+                    is_track_interior=True,  # By definition, these are now the interior bins
+                    bin_ind=(i_node,),  # Simple index for point-based engines
+                    bin_ind_flat=i_node,
+                )
+
+            if n_final_interior_points > 1:
+                # Build KDTree on the *final* interior points for neighbor finding
+                final_kdtree = KDTree(self.place_bin_centers_)
+                # Connect pairs within s * 1.1 (s is side length / inter-center distance)
+                # This captures the 6 immediate neighbors in a perfect lattice.
+                # The actual distance between centers of touching hexagons is 's'.
+                # Using a slightly larger radius for robustness.
+                pairs = final_kdtree.query_pairs(r=s * 1.05)  # More precise radius
+                for (
+                    u_new,
+                    v_new,
+                ) in pairs:  # u_new, v_new are indices for self.place_bin_centers_
+                    dist = np.linalg.norm(
+                        self.place_bin_centers_[u_new] - self.place_bin_centers_[v_new]
+                    )
+                    # Additional check: ensure distance is very close to 's' for true hex neighbors
+                    if np.isclose(dist, s):  # Only connect true hexagonal neighbors
+                        G.add_edge(u_new, v_new, distance=dist)
 
         self.track_graph_bin_centers_ = G
-        # finally build the KD‐tree for fast point‐to‐bin queries
-        self._build_kdtree(interior_mask=self.interior_mask_)
+
+        if n_final_interior_points > 0:
+            self._build_kdtree(
+                interior_mask=np.ones(n_final_interior_points, dtype=bool)
+            )
+        else:
+            self._build_kdtree(interior_mask=np.array([], dtype=bool))
 
     @property
     def is_1d(self) -> bool:
@@ -2213,3 +2396,33 @@ def make_engine(kind: str, **kwargs) -> GeometryEngine:
     eng = eng_cls()
     eng.build(**kwargs)
     return eng
+
+
+def list_available_engines() -> List[str]:
+    """Lists the 'kind' strings for all available geometry engines.
+
+    These kinds can be used for the `engine_kind` parameter when
+    initializing an `Environment`.
+
+    Returns
+    -------
+    List[str]
+        A list of unique engine kind identifiers.
+    """
+    unique_options = []
+    processed_normalized_options = set()
+    for opt in _ENGINE_MAP.keys():
+        # Provide the primary, more readable key if there are aliases
+        norm_opt = "".join(filter(str.isalnum, opt)).lower()
+        if norm_opt not in processed_normalized_options:
+            # Prefer keys that don't have "Grid" if a shorter alias exists, or just take the first encountered.
+            # This logic can be refined based on how you want to present aliases.
+            is_alias_of_already_added = False
+            for added_opt in unique_options:
+                if "".join(filter(str.isalnum, added_opt)).lower() == norm_opt:
+                    is_alias_of_already_added = True
+                    break
+            if not is_alias_of_already_added:
+                unique_options.append(opt)
+            processed_normalized_options.add(norm_opt)
+    return sorted(unique_options)
