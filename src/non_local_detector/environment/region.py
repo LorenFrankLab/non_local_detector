@@ -66,7 +66,11 @@ def _point_in_polygon(
     NDArray[np.bool_]
         Boolean array indicating whether each point is inside the polygon.
     """
-    return np.array([polygon.contains(_shp.Point(p)) for p in points])  # type: ignore
+    if not _HAS_SHAPELY:
+        raise RuntimeError("Shapely is required for polygon operations.")
+    if points.shape[0] == 0:
+        return np.array([], dtype=bool)
+    return np.array([polygon.contains(_shp.Point(p)) for p in points])
 
 
 @dataclass
@@ -366,7 +370,11 @@ class RegionManager:
                     }
 
                 for orig_flat_idx in original_flat_indices_in_region_and_active:
-                    active_node_id = self._env._source_flat_to_active_node_id_map_cached.get(orig_flat_idx)  # type: ignore
+                    active_node_id = (
+                        self._env._source_flat_to_active_node_id_map_cached.get(
+                            orig_flat_idx
+                        )
+                    )
                     if (
                         active_node_id is not None
                     ):  # Should always be found if logic is correct
@@ -379,7 +387,9 @@ class RegionManager:
                 )
             # self._env.bin_centers_ are the N-D (here 2D) coordinates of *active* bins
             if self._env.bin_centers_.shape[0] > 0:
-                points_inside = _point_in_polygon(self._env.bin_centers_[:, :2], info.data)  # type: ignore
+                points_inside = _point_in_polygon(
+                    self._env.bin_centers_[:, :2], info.data
+                )
                 active_bin_is_in_region_1d = points_inside
 
         return active_bin_is_in_region_1d
