@@ -48,6 +48,15 @@ def _create_hex_grid(
         The radius of the hexagons (distance from center to vertex).
     hex_orientation : float
         The orientation of the hexagons (0.0 for point-up).
+    min_x : float
+        Minimum x-coordinate of the grid.
+    min_y : float
+        Minimum y-coordinate of the grid.
+    dimension_range : Sequence[Tuple[float, float]]
+        The effective grid boundaries after processing.
+        If `dimension_range` is None, this will be derived from `data_samples`.
+        If `dimension_range` is provided, this will be the same as the input.
+        The order is [(min_dim1, max_dim1), (min_dim2, max_dim2)].
 
     Raises
     ------
@@ -79,6 +88,7 @@ def _create_hex_grid(
         max_x = max(float(min_x_user), float(max_x_user))
         min_y = min(float(min_y_user), float(max_y_user))
         max_y = max(float(min_y_user), float(max_y_user))
+        dimension_range = [(min_x, max_x), (min_y, max_y)]
     else:
         if (
             not isinstance(data_samples, np.ndarray)
@@ -97,6 +107,7 @@ def _create_hex_grid(
         max_vals = np.max(data_samples, axis=0)
         min_x, min_y = float(min_vals[0]), float(min_vals[1])
         max_x, max_y = float(max_vals[0]), float(max_vals[1])
+        dimension_range = [(min_x, max_x), (min_y, max_y)]
 
     grid_vertical_step = (np.sqrt(3.0) / 2.0) * hexagon_width
 
@@ -139,6 +150,7 @@ def _create_hex_grid(
         hex_orientation,
         min_x,
         min_y,
+        dimension_range,
     )
 
 

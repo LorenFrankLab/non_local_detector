@@ -185,7 +185,7 @@ def _create_graph_layout_connectivity_graph(
                 {
                     "pos": tuple(center_2D),
                     "bin_ind": b_ind,
-                    "bin_ind_flat": b_ind,
+                    "source_1d_flat_index": b_ind,
                     "pos_1D": center_1D,
                     "edge_id": edge_id,
                 },
@@ -207,6 +207,8 @@ def _create_graph_layout_connectivity_graph(
                 bin_centers_2D[active_mask][bin_ind1]
                 - bin_centers_2D[active_mask][bin_ind2]
             )
+            dist = float(np.linalg.norm(displacement_vector))
+            weight = 1 / dist if dist > 0 else np.inf
 
             edges_to_add.append(
                 (

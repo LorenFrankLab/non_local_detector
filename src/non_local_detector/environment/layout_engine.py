@@ -197,6 +197,17 @@ class LayoutEngine(Protocol):
         """
         ...
 
+    @abstractmethod
+    def get_bin_area_volume(self) -> NDArray[np.float64]:
+        """Returns the area/volume of each bin in the layout.
+
+        Returns
+        -------
+        NDArray[np.float64]
+            Array of bin areas/volumes.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # KD-tree mixin (for point_to_bin_index)
@@ -790,6 +801,7 @@ class HexagonalLayout(_KDTreeMixin):
             self.hex_orientation_,
             self.grid_offset_x_,
             self.grid_offset_y_,
+            self.dimension_ranges_,
         ) = _create_hex_grid(
             data_samples=data_samples,
             dimension_range=dimension_ranges,
@@ -962,6 +974,11 @@ class GraphLayout(_KDTreeMixin):
             active_mask=self.active_mask_,
             edge_order=edge_order,
         )
+        self.dimension_ranges_ = (
+            np.min(self.nd_bin_centers_[:, 0]),
+            np.max(self.nd_bin_centers_[:, 0]),
+        ), (np.min(self.nd_bin_centers_[:, 1]), np.max(self.nd_bin_centers_[:, 1]))
+
         # --- Build KDTree ---
         self._build_kdtree(points_for_tree=self.nd_bin_centers_[self.active_mask_])
 

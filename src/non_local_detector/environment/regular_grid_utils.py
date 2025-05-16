@@ -11,65 +11,7 @@ from numpy.typing import NDArray
 from scipy import ndimage
 from scipy.spatial import KDTree
 
-
-def get_centers(bin_edges: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Calculates the center of each bin given its edges.
-
-    Parameters
-    ----------
-    bin_edges : NDArray[np.float64], shape (n_edges,)
-        The edges defining the bins.
-
-    Returns
-    -------
-    bin_centers : NDArray[np.float64], shape (n_edges - 1,)
-        The center of each bin.
-    """
-    return bin_edges[:-1] + np.diff(bin_edges) / 2
-
-
-def get_n_bins(
-    data_samples: NDArray[np.float64],
-    bin_size: Union[float, Sequence[float]],
-    dimension_range: Optional[Sequence[Tuple[float, float]]] = None,
-) -> NDArray[np.int_]:
-    """Calculates the number of bins needed for each dimension.
-
-    Parameters
-    ----------
-    data_samples : NDArray[np.float64], shape (n_time, n_dims)
-        data_samples data to determine range if `dimension_range` is not given.
-    bin_size : float or Sequence[float]
-        The desired size(s) of the bins.
-    dimension_range : Optional[Sequence[Tuple[float, float]]], optional
-        Explicit range [(min_dim1, max_dim1), ...] for each dimension.
-        If None, range is calculated from `data_samples`. Defaults to None.
-
-    Returns
-    -------
-    n_bins : NDArray[np.int_], shape (n_dims,)
-        Number of bins required for each dimension.
-    """
-    if dimension_range is not None:
-        # Ensure dimension_range is numpy array for consistent processing
-        pr = np.asarray(dimension_range)
-        if pr.shape[1] != 2:
-            raise ValueError("dimension_range must be sequence of (min, max) pairs.")
-        extent = np.diff(pr, axis=1).squeeze(axis=1)
-    else:
-        # Ignore NaNs when calculating range from data
-        extent = np.nanmax(data_samples, axis=0) - np.nanmin(data_samples, axis=0)
-
-    # Ensure bin_size is positive
-    bin_size = np.asarray(bin_size, dtype=float)
-    if np.any(bin_size <= 0.0):
-        raise ValueError("bin_size must be positive.")
-
-    # Calculate number of bins, ensuring at least 1 bin even if extent is 0
-    n_bins = np.ceil(extent / bin_size).astype(np.int32)
-    n_bins[n_bins == 0] = 1  # Handle zero extent case
-
-    return n_bins
+from non_local_detector.environment.utils import get_centers, get_n_bins
 
 
 def _infer_active_elements_from_samples(
