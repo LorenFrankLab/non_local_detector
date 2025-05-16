@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+import math
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import networkx as nx
 import numpy as np
@@ -444,7 +445,7 @@ def _create_hex_connectivity_graph(
 
     # 3. Add edges between these new active node IDs
     # Iterate through each active bin using its *original* N-D index
-    edges_to_add_with_attrs: Set[Tuple[int, int, float]] = set()
+    edges_to_add_with_attrs = []
     for node_id, original_flat_idx in enumerate(active_original_flat_indices):
         row_idx = original_flat_idx // n_hex_x
         col_idx = original_flat_idx % n_hex_x
@@ -475,14 +476,27 @@ def _create_hex_connectivity_graph(
                 # Add an edge between the current node and its neighbor
                 if node_id < neighbor_node_id:
                     # Avoid duplicate edges in undirected graph
-                    pos1 = np.asarray(connectivity_graph.nodes[node_id]["pos"])
-                    pos2 = np.asarray(connectivity_graph.nodes[neighbor_node_id]["pos"])
-                    distance = float(np.linalg.norm(pos1 - pos2))
-                    edges_to_add_with_attrs.add((node_id, neighbor_node_id, distance))
+                    pos_u = np.asarray(connectivity_graph.nodes[node_id]["pos"])
+                    pos_v = np.asarray(
+                        connectivity_graph.nodes[neighbor_node_id]["pos"]
+                    )
+                    distance = float(np.linalg.norm(pos_u - pos_v))
+                    displacement_vector = pos_v - pos_u
+                    weight = 1.0 / distance if distance > 0.0 else np.inf
+                    edge_attrs: Dict[str, Any] = {
+                        "distance": distance,
+                        "vector": tuple(displacement_vector.tolist()),
+                        "weight": weight,
+                        "angle_2d": math.atan2(
+                            displacement_vector[1], displacement_vector[0]
+                        ),
+                    }
+                    edges_to_add_with_attrs.append(
+                        (node_id, neighbor_node_id, edge_attrs)
+                    )
 
-    for u, v, dist in edges_to_add_with_attrs:
-        weight = 1 / dist if dist > 0 else np.inf
-        connectivity_graph.add_edge(u, v, distance=dist, weight=weight)
+    # Add all edges with their attributes
+    connectivity_graph.add_edges_from(edges_to_add_with_attrs)
 
     # Add edge IDs to the graph
     # This is a unique ID for each edge in the graph, starting from 0

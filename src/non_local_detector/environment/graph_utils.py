@@ -213,7 +213,8 @@ def _create_graph_layout_connectivity_graph(
                     int(bin_ind1),
                     int(bin_ind2),
                     {
-                        "distance": float(np.linalg.norm(displacement_vector)),
+                        "distance": dist,
+                        "weight": float(weight),
                         "vector": tuple(displacement_vector.tolist()),
                         "edge_id": int(edge_id),
                         "angle_2d": math.atan2(
