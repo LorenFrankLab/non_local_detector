@@ -60,6 +60,9 @@ except ImportError:
     Point = None  # type: ignore
 
 
+PolygonType = type[Polygon]
+
+
 # --------------------------
 # LayoutEngine protocol
 # --------------------------
@@ -578,6 +581,16 @@ class _GridMixin:
         """RegularGridLayout is N-D"""
         return False
 
+    def get_bin_area_volume(self) -> NDArray[np.float64]:
+        return (
+            np.prod(
+                np.array([np.diff(edge)[0] for edge in self.grid_edges_]),
+                axis=0,
+            )
+            .reshape(self.grid_shape_)
+            .T
+        )
+
 
 # ---------------------------------------------------------------------------
 # Specific LayoutEngine Implementations
@@ -877,6 +890,9 @@ class HexagonalLayout(_KDTreeMixin):
             self.grid_shape_,
         )
 
+    def get_bin_area_volume(self) -> NDArray[np.float64]:
+        return 3 * np.sqrt(3) / 2 * self.hex_radius_**2 * np.ones(self.grid_shape_)
+
 
 class GraphLayout(_KDTreeMixin):
     """User-provided graph layout.
@@ -1022,6 +1038,9 @@ class GraphLayout(_KDTreeMixin):
             data_points, bin_edges=self.grid_edges_[0], active_mask=self.active_mask_
         )
 
+    def get_bin_area_volume(self) -> NDArray[np.float64]:
+        return np.ones(self.grid_shape_) * self._build_params_used["bin_size"]
+
 
 if SHAPELY_AVAILABLE:
 
@@ -1040,7 +1059,7 @@ if SHAPELY_AVAILABLE:
         _build_params_used: Dict[str, Any]
 
         # Layout Specific
-        _polygon_definition: Optional[Polygon] = None
+        _polygon_definition: Optional[PolygonType] = None
 
         def __init__(self):
             self._layout_type_tag = "ShapelyPolygon"
@@ -1049,7 +1068,7 @@ if SHAPELY_AVAILABLE:
         def build(
             self,
             *,
-            polygon: Polygon,
+            polygon: PolygonType,
             bin_size: Union[float, Sequence[float]],
             connect_diagonal_neighbors: bool = True,
         ) -> None:
