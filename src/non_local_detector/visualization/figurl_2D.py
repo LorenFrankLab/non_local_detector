@@ -6,7 +6,7 @@ try:
     import sortingview.views.franklab as vvf
     import xarray as xr
 
-    from non_local_detector.environment.environment_with_engine import Environment
+    from non_local_detector.environment.environment import Environment
     from non_local_detector.environment.geometry_utils import (
         _get_grid,
         _infer_track_interior,
