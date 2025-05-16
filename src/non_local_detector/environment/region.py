@@ -48,6 +48,27 @@ except ImportError:
     unary_union = None  # type: ignore
 
 
+def _point_in_polygon(
+    points: NDArray[np.float_], polygon: _shp.Polygon
+) -> NDArray[np.bool_]:
+    """
+    Checks if points are inside a polygon using Shapely.
+
+    Parameters
+    ----------
+    points : NDArray[np.float_]
+        Array of shape (n_points, 2) containing the coordinates of the points.
+    polygon : _shp.Polygon
+        Shapely Polygon object.
+
+    Returns
+    -------
+    NDArray[np.bool_]
+        Boolean array indicating whether each point is inside the polygon.
+    """
+    return np.array([polygon.contains(_shp.Point(p)) for p in points])  # type: ignore
+
+
 @dataclass
 class RegionInfo:
     """
@@ -358,7 +379,6 @@ class RegionManager:
                 )
             # self._env.bin_centers_ are the N-D (here 2D) coordinates of *active* bins
             if self._env.bin_centers_.shape[0] > 0:
-                # _point_in_polygon expects (N,2)
                 points_inside = _point_in_polygon(self._env.bin_centers_[:, :2], info.data)  # type: ignore
                 active_bin_is_in_region_1d = points_inside
 
