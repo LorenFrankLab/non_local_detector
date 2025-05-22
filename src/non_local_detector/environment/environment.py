@@ -513,7 +513,7 @@ class Environment:
         return self.layout.map_linear_to_nd_coordinate(linear_coordinates)
 
     @check_fitted
-    def plot_layout(
+    def plot(
         self,
         ax: Optional[matplotlib.axes.Axes] = None,
         show_regions: bool = False,
