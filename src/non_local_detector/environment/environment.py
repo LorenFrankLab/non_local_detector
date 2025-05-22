@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 from non_local_detector.environment.layout_engine import (
     GraphLayout,
     LayoutEngine,
+    RegularGridLayout,
     create_layout,
 )
 from non_local_detector.environment.region import RegionInfo, RegionManager
@@ -88,7 +89,6 @@ class Environment:
     # Internal state
     _is_1d_env: bool = field(init=False)
     _is_fitted: bool = field(init=False, default=False)
-    _regions: Dict[str, RegionInfo] = field(default_factory=dict, init=False)
 
     # For introspection and serialization
     _layout_type_used: Optional[str] = field(init=False, default=None)
@@ -97,8 +97,8 @@ class Environment:
     # Primary constructor - intended for use by factory methods
     def __init__(
         self,
-        environment_name: str,
-        layout: LayoutEngine,
+        environment_name: str = "",
+        layout: LayoutEngine = RegularGridLayout,
         layout_type_used: Optional[str] = None,
         layout_params_used: Optional[Dict[str, Any]] = None,
     ):
