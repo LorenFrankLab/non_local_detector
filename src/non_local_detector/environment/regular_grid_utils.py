@@ -476,32 +476,91 @@ def _points_to_regular_grid_bin_ind(
           outside grid boundaries get -1 or out-of-range indices (depending
           on `np.digitize` behavior for edge cases, typically -1 due to clipping).
     """
-    points = np.atleast_2d(points)
-    points = points[~np.any(np.isnan(points), axis=1)]
+    points_atleast_2d = np.atleast_2d(points)
+    valid_input_mask = ~np.any(np.isnan(points_atleast_2d), axis=1)
 
-    n_dims = points.shape[1]
+    # Initialize output assuming all points are invalid or unmapped
+    # Output shape should match original number of points (before NaN filter)
+    output_indices = np.full(points_atleast_2d.shape[0], -1, dtype=np.int_)
 
-    multi_bin_idx = tuple(
-        np.digitize(points[:, i], grid_edges[i]) - 1 for i in range(n_dims)
+    if not np.any(valid_input_mask):  # No valid points after NaN filter
+        return output_indices
+
+    valid_points = points_atleast_2d[valid_input_mask]
+    if valid_points.shape[0] == 0:  # Should be caught by above, but defensive
+        return output_indices
+
+    n_dims = valid_points.shape[1]
+    if n_dims != len(grid_edges) or n_dims != len(grid_shape):
+        # This case should ideally be caught earlier or raise a more specific error.
+        # For now, assume dimensions match if we reach here.
+        # If not, returning all -1s is a safe fallback.
+        warnings.warn(
+            "Dimensionality mismatch between points, grid_edges, or grid_shape.",
+            RuntimeWarning,
+        )
+        return output_indices
+
+    # Calculate N-D indices for valid_points
+    multi_bin_idx_list = []
+    point_is_within_grid_bounds = np.ones(valid_points.shape[0], dtype=bool)
+
+    for i in range(n_dims):
+        # np.digitize returns indices from 1 to len(bins)+1
+        # We subtract 1 to get 0-based bin indices
+        dim_indices = np.digitize(valid_points[:, i], grid_edges[i]) - 1
+
+        # Check if indices are within the valid range [0, grid_shape[i]-1]
+        point_is_within_grid_bounds &= (dim_indices >= 0) & (
+            dim_indices < grid_shape[i]
+        )
+        multi_bin_idx_list.append(dim_indices)
+
+    # Initialize flat indices for valid_points to -1
+    original_bin_flat_idx_for_valid_points = np.full(
+        valid_points.shape[0], -1, dtype=np.int_
     )
-    original_bin_flat_idx = np.ravel_multi_index(multi_bin_idx, grid_shape)
+
+    if np.any(point_is_within_grid_bounds):
+        # Filter to only points that are fully within grid bounds for ravel_multi_index
+        coords_for_ravel = tuple(
+            idx[point_is_within_grid_bounds] for idx in multi_bin_idx_list
+        )
+
+        # np.ravel_multi_index requires all coords to be within dimension bounds
+        original_bin_flat_idx_for_valid_points[point_is_within_grid_bounds] = (
+            np.ravel_multi_index(coords_for_ravel, grid_shape)
+        )
+
+    # Place these calculated flat indices (or -1 for out-of-bounds) back into the full output array
+    # This mapping depends on whether an active_mask is used for final indexing.
+
+    final_mapped_indices_for_valid_points = np.full(
+        valid_points.shape[0], -1, dtype=np.int_
+    )
 
     if active_mask is not None:
-        # could store this in a dict for faster lookup
+        # Create mapping from original_full_grid_flat_index to active_bin_id (0 to N-1)
+        # This should only be created once if possible, e.g., stored on the layout object
         active_original_flat_indices = np.flatnonzero(active_mask)
-        original_flat_to_new_node_id_map: Dict[int, int] = {
+        original_flat_to_active_id_map: Dict[int, int] = {
             original_idx: new_idx
             for new_idx, original_idx in enumerate(active_original_flat_indices)
         }
 
-        # Map the original bin indices to the new active bin indices
-        return np.array(
-            [
-                original_flat_to_new_node_id_map.get(idx, -1)
-                for idx in original_bin_flat_idx
-            ],
-            dtype=int,
-        )
+        for i, orig_flat_idx in enumerate(original_bin_flat_idx_for_valid_points):
+            if orig_flat_idx != -1:  # If it was a valid original flat index
+                # Check if this original flat index corresponds to an active bin
+                if active_mask.ravel()[orig_flat_idx]:
+                    final_mapped_indices_for_valid_points[i] = (
+                        original_flat_to_active_id_map[orig_flat_idx]
+                    )
+                # else it remains -1 (was in grid, but not in active_mask)
+            # else it remains -1 (was out of grid bounds)
     else:
-        # No active mask provided, return original bin indices
-        return original_bin_flat_idx
+        # No active_mask, so original_bin_flat_idx_for_valid_points are the final indices
+        # (where -1 means out of bounds)
+        final_mapped_indices_for_valid_points = original_bin_flat_idx_for_valid_points
+
+    output_indices[valid_input_mask] = final_mapped_indices_for_valid_points
+    return output_indices
