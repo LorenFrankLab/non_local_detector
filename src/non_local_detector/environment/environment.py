@@ -42,6 +42,16 @@ PolygonType = type[_shp.Polygon]  # type: ignore[misc]
 
 # --- Decorator ---
 def check_fitted(method):
+    """
+    Decorator to ensure that an Environment method is called only after fitting.
+
+    Raises
+    ------
+    RuntimeError
+        If the method is called on an Environment instance that has not been
+        fully initialized (i.e., `_is_fitted` is False).
+    """
+
     @wraps(method)
     def _inner(self: "Environment", *args, **kwargs):
         if not getattr(self, "_is_fitted", False):
@@ -61,13 +71,63 @@ class Environment:
     """
     Represents a discretized N-dimensional space with connectivity.
 
-    Use classmethod factories to create instances, for example:
-    - `Environment.from_data_samples(...)`
-    - `Environment.with_dimension_ranges(...)`
-    - `Environment.from_track_definition(...)`
-    - `Environment.from_shapely_polygon(...)`
-    - `Environment.from_nd_mask(...)`
-    - `Environment.from_image_mask(...)`
+    This class serves as a comprehensive model of a spatial environment,
+    discretized into bins or nodes. It stores the geometric properties of these
+    bins (e.g., centers, areas), their connectivity, and provides methods for
+    various spatial queries and operations.
+
+    Instances are typically created using one of the provided classmethod
+    factories (e.g., `Environment.from_data_samples(...)`,
+    `Environment.from_graph(...)`). These factories handle the underlying
+    `LayoutEngine` setup.
+
+    Attributes
+    ----------
+    environment_name : str
+        A user-defined name for the environment.
+    layout : LayoutEngine
+        The layout engine instance that defines the geometry and connectivity
+        of the discretized space.
+    bin_centers_ : NDArray[np.float64]
+        Coordinates of the center of each *active* bin/node in the environment.
+        Shape is (n_active_bins, n_dims). Populated by `_setup_from_layout`.
+    connectivity_graph_ : nx.Graph
+        A NetworkX graph where nodes are integers from `0` to `n_active_bins - 1`,
+        directly corresponding to the rows of `bin_centers_`. Edges represent
+        adjacency between bins. Populated by `_setup_from_layout`.
+    dimension_ranges_ : Optional[Sequence[Tuple[float, float]]]
+        The effective min/max extent `[(min_d0, max_d0), ..., (min_dN-1, max_dN-1)]`
+        covered by the layout's geometry. Populated by `_setup_from_layout`.
+    grid_edges_ : Optional[Tuple[NDArray[np.float64], ...]]
+        For grid-based layouts, a tuple where each element is a 1D array of
+        bin edge positions for that dimension of the *original, full grid*.
+        `None` or `()` for non-grid or point-based layouts. Populated by
+        `_setup_from_layout`.
+    grid_shape_ : Optional[Tuple[int, ...]]
+        For grid-based layouts, the N-D shape of the *original, full grid*.
+        For point-based/cell-based layouts without a full grid concept, this
+        may be `(n_active_bins,)`. Populated by `_setup_from_layout`.
+    active_mask_ : Optional[NDArray[np.bool_]]
+        - For grid-based layouts: An N-D boolean mask indicating active bins
+          on the *original, full grid*.
+        - For point-based/cell-based layouts: A 1D array of `True` values,
+          shape `(n_active_bins,)`, corresponding to `bin_centers_`.
+        Populated by `_setup_from_layout`.
+    regions : RegionManager
+        Manages symbolic spatial regions defined within this environment.
+    _is_1d_env : bool
+        Internal flag indicating if the environment's layout is primarily 1-dimensional.
+        Set based on `layout.is_1d`.
+    _is_fitted : bool
+        Internal flag indicating if the environment has been fully initialized
+        and its layout-dependent attributes are populated.
+    _layout_type_used : Optional[str]
+        The string identifier of the `LayoutEngine` type used to create this
+        environment (e.g., "RegularGrid"). For introspection and serialization.
+    _layout_params_used : Dict[str, Any]
+        A dictionary of the parameters used to build the `LayoutEngine` instance.
+        For introspection and serialization.
+
     """
 
     environment_name: str
@@ -94,7 +154,6 @@ class Environment:
     _layout_type_used: Optional[str] = field(init=False, default=None)
     _layout_params_used: Dict[str, Any] = field(init=False, default_factory=dict)
 
-    # Primary constructor - intended for use by factory methods
     def __init__(
         self,
         environment_name: str = "",
@@ -103,8 +162,27 @@ class Environment:
         layout_params_used: Optional[Dict[str, Any]] = None,
     ):
         """
-        Internal constructor. Users should use factory methods.
-        Assumes `layout` is already built.
+        Initialize the Environment.
+
+        Note: This constructor is primarily intended for internal use by factory
+        methods. Users should typically create Environment instances using
+        classmethods like `Environment.from_data_samples(...)`. The provided
+        `layout` instance is assumed to be already built and configured.
+
+        Parameters
+        ----------
+        environment_name : str, optional
+            Name for the environment, by default "".
+        layout : LayoutEngine
+            A fully built LayoutEngine instance that defines the environment's
+            geometry and connectivity.
+        layout_type_used : Optional[str], optional
+            The string identifier for the type of layout used. If None, it's
+            inferred from `layout._layout_type_tag`. Defaults to None.
+        layout_params_used : Optional[Dict[str, Any]], optional
+            Parameters used to build the layout. If None, inferred from
+            `layout._build_params_used`. Defaults to None.
+
         """
         self.environment_name = environment_name
         self.layout = layout
@@ -134,8 +212,16 @@ class Environment:
         self._setup_from_layout()  # Populate attributes from the built layout
         self.regions = RegionManager(self)
 
-    def _setup_from_layout(self):
-        """Populates Environment attributes from its (built) LayoutEngine."""
+    def _setup_from_layout(self) -> None:
+        """
+        Populate Environment attributes from its (built) LayoutEngine.
+
+        This internal method is called after the `LayoutEngine` is associated
+        with the Environment. It copies essential geometric and connectivity
+        information from the layout to the Environment's attributes.
+        It also applies fallbacks for certain grid-specific attributes if the
+        layout is point-based to ensure consistency.
+        """
 
         self.bin_centers_ = self.layout.bin_centers_
         self.connectivity_graph_ = getattr(
@@ -162,12 +248,14 @@ class Environment:
 
     def __repr__(self: "Environment") -> str:
         """
-        Generates an unambiguous string representation of the Environment.
+        Generate an unambiguous string representation of the Environment.
 
         Returns
         -------
         str
-            A string representation of the Environment object.
+            A string representation of the Environment object, including its
+            name, layout type, and key geometric properties if fitted.
+
         """
         class_name = self.__class__.__name__
         env_name_repr = f"environment_name={self.environment_name!r}"
@@ -205,12 +293,9 @@ class Environment:
         data_samples: NDArray[np.float64],
         environment_name: str = "",
         layout_type: str = "RegularGrid",
-        # Common params (defaults should match typical use)
         bin_size: Optional[Union[float, Sequence[float]]] = 2.0,
-        # For RegularGrid/Shapely(Grid base)
         infer_active_bins: bool = True,
         bin_count_threshold: int = 0,
-        # Common RegularGrid inference params
         dilate: bool = False,
         fill_holes: bool = False,
         close_gaps: bool = False,
@@ -218,12 +303,68 @@ class Environment:
         connect_diagonal_neighbors: bool = True,
         **layout_specific_kwargs: Any,
     ) -> Environment:
-        """Creates an Environment, primarily inferring geometry from data_samples."""
+        """
+        Create an Environment, primarily inferring geometry from data samples.
+
+        This factory method initializes a `LayoutEngine` of the specified
+        `layout_type` using the provided `data_samples` to determine spatial
+        extents and, optionally, to infer which bins/regions are active.
+
+        Parameters
+        ----------
+        data_samples : NDArray[np.float64], shape (n_samples, n_dims)
+            N-dimensional coordinates of data samples (e.g., animal positions)
+            used to define the environment's geometry and active areas.
+        environment_name : str, optional
+            A name for the created environment. Defaults to "".
+        layout_type : str, optional
+            The type of layout to use (e.g., "RegularGrid", "Hexagonal").
+            Defaults to "RegularGrid".
+        bin_size : Optional[Union[float, Sequence[float]]], optional
+            The characteristic size of the discretization bins.
+            For "RegularGrid", this is the side length(s) of the grid cells.
+            For "Hexagonal", this is interpreted as the hexagon width.
+            Defaults to 2.0.
+        infer_active_bins : bool, optional
+            If True, the layout will attempt to infer active bins based on
+            the density or presence of `data_samples`. Defaults to True.
+        bin_count_threshold : int, optional
+            If `infer_active_bins` is True, this is the minimum number of
+            samples a bin must contain to be initially considered active.
+            Defaults to 0.
+        dilate : bool, optional
+            If `infer_active_bins` is True (primarily for grid-based layouts),
+            whether to apply a dilation operation to expand the active area.
+            Defaults to False.
+        fill_holes : bool, optional
+            If `infer_active_bins` is True (primarily for grid-based layouts),
+            whether to fill holes within the inferred active area.
+            Defaults to False.
+        close_gaps : bool, optional
+            If `infer_active_bins` is True (primarily for grid-based layouts),
+            whether to close small gaps in the inferred active area.
+            Defaults to False.
+        add_boundary_bins : bool, optional
+            For "RegularGrid" layout, whether to add a layer of inactive
+            boundary bins around the inferred active area. Defaults to False.
+        connect_diagonal_neighbors : bool, optional
+            For grid-based layouts, whether to connect diagonally adjacent bins
+            in the `connectivity_graph_`. Defaults to True.
+        **layout_specific_kwargs : Any
+            Additional keyword arguments passed directly to the constructor
+            of the chosen `LayoutEngine`.
+
+        Returns
+        -------
+        Environment
+            A new Environment instance.
+
+        """
         build_params: Dict[str, Any] = {
-            "data_samples": data_samples,  # dimension_ranges will be inferred by layout
+            "data_samples": data_samples,
             "infer_active_bins": infer_active_bins,
             "bin_count_threshold": bin_count_threshold,
-            **layout_specific_kwargs,  # Must come before specific overrides below
+            **layout_specific_kwargs,
         }
         if layout_type.lower() == "regulargrid":
             build_params.update(
@@ -237,9 +378,10 @@ class Environment:
                 }
             )
         elif layout_type.lower() == "hexagonal":
+            # For Hexagonal, bin_size is typically interpreted as hexagon_width
             build_params.update(
                 {
-                    "hex_width": bin_size,  # Assuming bin_size is hex_width for hexagonal
+                    "hex_width": bin_size,
                 }
             )
 
@@ -255,7 +397,38 @@ class Environment:
         bin_size: Optional[Union[float, Sequence[float]]] = 2.0,
         **layout_specific_kwargs: Any,
     ) -> Environment:
-        """Creates an Environment with explicitly defined spatial boundaries."""
+        """
+        Create an Environment with explicitly defined spatial boundaries.
+
+        This factory method initializes a `LayoutEngine` covering the specified
+        `dimension_ranges`. Unlike `from_data_samples`, this method does not
+        typically infer active bins from data unless `data_samples` and relevant
+        inference parameters are passed via `layout_specific_kwargs`.
+
+        Parameters
+        ----------
+        dimension_ranges : Sequence[Tuple[float, float]]
+            A sequence of (min, max) tuples defining the extent for each
+            dimension, e.g., `[(x_min, x_max), (y_min, y_max)]`.
+        environment_name : str, optional
+            A name for the created environment. Defaults to "".
+        layout_type : str, optional
+            The type of layout to use (e.g., "RegularGrid", "Hexagonal").
+            Defaults to "RegularGrid".
+        bin_size : Optional[Union[float, Sequence[float]]], optional
+            The characteristic size of the discretization bins.
+            Interpreted by the specific `layout_type`. Defaults to 2.0.
+        **layout_specific_kwargs : Any
+            Additional keyword arguments passed directly to the constructor
+            of the chosen `LayoutEngine`. For example, to infer active bins
+            within these ranges, pass `data_samples`, `infer_active_bins=True`, etc.
+
+        Returns
+        -------
+        Environment
+            A new Environment instance.
+
+        """
         build_params: Dict[str, Any] = {
             "dimension_ranges": dimension_ranges,
             **layout_specific_kwargs,
@@ -287,6 +460,39 @@ class Environment:
         environment_name: str = "",
         **kwargs,
     ) -> Environment:
+        """
+        Create an Environment from a user-defined graph structure.
+
+        This method is used for 1D environments where the spatial layout is
+        defined by a graph, an ordered list of its edges, and spacing between
+        these edges. The track is then linearized and binned.
+
+        Parameters
+        ----------
+        graph : nx.Graph
+            The NetworkX graph defining the track segments. Nodes are expected
+            to have a 'pos' attribute for their N-D coordinates.
+        edge_order : List[Tuple[Any, Any]]
+            An ordered list of edge tuples (node1, node2) from `graph` that
+            defines the 1D bin ordering.
+        edge_spacing : Union[float, Sequence[float]]
+            The spacing to insert between consecutive edges in `edge_order`
+            during linearization. If a float, applies to all gaps. If a
+            sequence, specifies spacing for each gap.
+        bin_size : float
+            The length of each bin along the linearized track.
+        environment_name : str, optional
+            A name for the created environment. Defaults to "".
+        **kwargs : Any
+            Additional parameters for the GraphLayout, though specific ones
+            are explicitly listed.
+
+        Returns
+        -------
+        Environment
+            A new Environment instance with a `GraphLayout`.
+
+        """
         layout_instance = create_layout(
             kind="Graph",
             graph_definition=graph,
@@ -304,6 +510,36 @@ class Environment:
         environment_name: str = "",
         connect_diagonal_neighbors: bool = True,
     ) -> Environment:
+        """
+        Create a 2D grid Environment masked by a Shapely Polygon.
+
+        A regular grid is formed based on the polygon's bounds and `bin_size`.
+        Only grid cells whose centers are contained within the polygon are
+        considered active.
+
+        Parameters
+        ----------
+        polygon : shapely.geometry.Polygon
+            The Shapely Polygon object that defines the boundary of the active area.
+        bin_size : Optional[Union[float, Sequence[float]]], optional
+            The side length(s) of the grid cells. Defaults to 2.0.
+        environment_name : str, optional
+            A name for the created environment. Defaults to "".
+        connect_diagonal_neighbors : bool, optional
+            Whether to connect diagonally adjacent active grid cells.
+            Defaults to True.
+
+        Returns
+        -------
+        Environment
+            A new Environment instance with a `ShapelyPolygonLayout`.
+
+        Raises
+        ------
+        RuntimeError
+            If the 'shapely' package is not installed.
+
+        """
         layout_params = {
             "polygon": polygon,
             "bin_size": bin_size,
@@ -315,11 +551,38 @@ class Environment:
     @classmethod
     def from_nd_mask(
         cls,
+        active_mask: NDArray[np.bool_],
+        grid_edges: Tuple[NDArray[np.float64], ...],
         environment_name: str = "",
-        active_mask: NDArray[np.bool_] = None,
-        grid_edges: Optional[Tuple[NDArray[np.float64], ...]] = None,
         connect_diagonal_neighbors: bool = True,
     ) -> Environment:
+        """
+        Create an Environment from a pre-defined N-D boolean mask and grid edges.
+
+        This factory method allows for precise specification of active bins in
+        an N-dimensional grid.
+
+        Parameters
+        ----------
+        active_mask : NDArray[np.bool_]
+            An N-dimensional boolean array where `True` indicates an active bin.
+            The shape of this mask must correspond to the number of bins implied
+            by `grid_edges` (i.e., `tuple(len(e)-1 for e in grid_edges)`).
+        grid_edges : Tuple[NDArray[np.float64], ...]
+            A tuple where each element is a 1D NumPy array of bin edge positions
+            for that dimension, defining the underlying full grid.
+        environment_name : str, optional
+            A name for the created environment. Defaults to "".
+        connect_diagonal_neighbors : bool, optional
+            Whether to connect diagonally adjacent active grid cells.
+            Defaults to True.
+
+        Returns
+        -------
+        Environment
+            A new Environment instance with a `MaskedGridLayout`.
+
+        """
         layout_params = {
             "active_mask": active_mask,
             "grid_edges": grid_edges,
@@ -331,13 +594,38 @@ class Environment:
     @classmethod
     def from_image_mask(
         cls,
-        image_mask: NDArray[np.bool_],  # Defines candidate pixels
-        bin_size: Union[float, Tuple[float, float]] = 1.0,  # one pixel
+        image_mask: NDArray[np.bool_],
+        bin_size: Union[float, Tuple[float, float]] = 1.0,
         connect_diagonal_neighbors: bool = True,
         environment_name: str = "",
-        **kwargs,
     ) -> Environment:
-        """Creates an Environment from a binary image mask."""
+        """
+        Create a 2D Environment from a binary image mask.
+
+        Each `True` pixel in the `image_mask` becomes an active bin in the
+        environment. The `bin_size` determines the spatial scale of these pixels.
+
+        Parameters
+        ----------
+        image_mask : NDArray[np.bool_], shape (n_rows, n_cols)
+            A 2D boolean array where `True` pixels define active bins.
+        bin_size : Union[float, Tuple[float, float]], optional
+            The spatial size of each pixel. If a float, pixels are square.
+            If a tuple `(width, height)`, specifies pixel dimensions.
+            Defaults to 1.0 (each pixel is 1x1 spatial unit).
+        connect_diagonal_neighbors : bool, optional
+            Whether to connect diagonally adjacent active pixel-bins.
+            Defaults to True.
+        environment_name : str, optional
+            A name for the created environment. Defaults to "".
+
+        Returns
+        -------
+        Environment
+            A new Environment instance with an `ImageMaskLayout`.
+
+        """
+
         layout_params = {
             "image_mask": image_mask,
             "bin_size": bin_size,
@@ -355,62 +643,240 @@ class Environment:
         layout_params: Dict[str, Any],
         environment_name: str = "",
     ) -> Environment:
-        """Creates Environment with any specified layout and its build parameters."""
+        """
+        Create an Environment with a specified layout type and its build parameters.
+
+        This is an advanced factory method primarily used for deserialization or
+        when the layout construction logic is handled externally.
+
+        Parameters
+        ----------
+        layout_type : str
+            The string identifier of the `LayoutEngine` to use
+            (e.g., "RegularGrid", "Hexagonal").
+        layout_params : Dict[str, Any]
+            A dictionary of parameters that will be passed to the `build`
+            method of the chosen `LayoutEngine`.
+        environment_name : str, optional
+            A name for the created environment. Defaults to "".
+
+        Returns
+        -------
+        Environment
+            A new Environment instance.
+
+        """
         layout_instance = create_layout(kind=layout_type, **layout_params)
         return cls(environment_name, layout_instance, layout_type, layout_params)
 
     @property
     def is_1d(self) -> bool:
-        """True if the environment's layout structure is primarily 1-dimensional."""
-        return self._is_1d_env  # Set in __init__ from layout.is_1d
+        """
+        Indicate if the environment's layout is primarily 1-dimensional.
+
+        Returns
+        -------
+        bool
+            True if the underlying `LayoutEngine` (`self.layout`) reports
+            itself as 1-dimensional (e.g., `GraphLayout`), False otherwise.
+            This is determined by `self.layout.is_1d`.
+
+        """
+        return self._is_1d_env
 
     @property
     @check_fitted
     def n_dims(self) -> int:
-        """Number of spatial dimensions of the active bin centers."""
-        if self.bin_centers_ is None:  # Should be caught by check_fitted
-            raise RuntimeError("Layout not fitted or bin_centers_ not available.")
+        """
+        Return the number of spatial dimensions of the active bin centers.
+
+        Returns
+        -------
+        int
+            The number of dimensions (e.g., 1 for a line, 2 for a plane).
+            Derived from the shape of `self.bin_centers_`.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted or if `bin_centers_`
+            is not available.
+        """
         return self.bin_centers_.shape[1]
 
     @check_fitted
     def get_connectivity_graph(self) -> nx.Graph:
         """
-        Returns the primary connectivity graph of active/interior bins.
-        Nodes in this graph (0 to N-1) directly correspond to rows in
-        `self.bin_centers_`.
+        Return the primary connectivity graph of active bins.
+
+        Nodes in this graph are integers from `0` to `N-1`, where `N` is the
+        number of active bins. These node IDs directly correspond to the row
+        indices in `self.bin_centers_`. Edges connect adjacent active bins.
+
+        Returns
+        -------
+        nx.Graph
+            The connectivity graph. Node attributes typically include 'pos'
+            (N-D coordinates), 'source_grid_flat_index', and
+            'original_grid_nd_index'. Edge attributes typically include
+            'distance'.
+
+        Raises
+        ------
+        ValueError
+            If the connectivity graph is not available (e.g., not yet built).
+        RuntimeError
+            If called before the environment is fitted.
+
         """
         if self.connectivity_graph_ is None:
             raise ValueError("Connectivity graph is not available.")
         return self.connectivity_graph_
 
-    @cached_property  # type: ignore[attr-defined]
+    @cached_property
     @check_fitted
     def distance_between_bins(self) -> NDArray[np.float64]:
-        """Shortest path distances between all pairs of active bins."""
+        """
+        Compute shortest path distances between all pairs of active bins.
+
+        The distance is calculated using the `connectivity_graph_`, where
+        edge weights typically represent the Euclidean distance between
+        connected bin centers.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_active_bins, n_active_bins)
+            A matrix where element `(i, j)` is the shortest path distance
+            between active bin `i` and active bin `j`. `np.inf` indicates
+            no path.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        """
         return _get_distance_between_bins(self.get_connectivity_graph())
 
     @check_fitted
     def get_bin_ind(self, points_nd: NDArray[np.float64]) -> NDArray[np.int_]:
+        """
+        Map N-dimensional continuous points to discrete active bin indices.
+
+        This method delegates to the `point_to_bin_index` method of the
+        underlying `LayoutEngine`.
+
+        Parameters
+        ----------
+        points_nd : NDArray[np.float64], shape (n_points, n_dims)
+            An array of N-dimensional points to map.
+
+        Returns
+        -------
+        NDArray[np.int_], shape (n_points,)
+            An array of active bin indices (0 to `n_active_bins - 1`).
+            A value of -1 indicates that the corresponding point did not map
+            to any active bin (e.g., it's outside the environment).
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        """
         return self.layout.point_to_bin_index(points_nd)
 
     @check_fitted
     def is_point_active(self, points_nd: NDArray[np.float64]) -> NDArray[np.bool_]:
-        """Checks if the given points are within active bins."""
+        """
+        Check if N-dimensional continuous points fall within any active bin.
+
+        Parameters
+        ----------
+        points_nd : NDArray[np.float64], shape (n_points, n_dims)
+            An array of N-dimensional points to check.
+
+        Returns
+        -------
+        NDArray[np.bool_], shape (n_points,)
+            A boolean array where `True` indicates the corresponding point
+            maps to an active bin, and `False` indicates it does not.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        """
         return self.get_bin_ind(points_nd) != -1
 
     @check_fitted
     def get_bin_neighbors(self, bin_index: int) -> List[int]:
-        """Finds indices of neighboring active bins for a given active bin index."""
+        """
+        Find indices of neighboring active bins for a given active bin index.
+
+        This method delegates to the `get_bin_neighbors` method of the
+        underlying `LayoutEngine`, which typically uses the `connectivity_graph_`.
+
+        Parameters
+        ----------
+        bin_index : int
+            The index (0 to `n_active_bins - 1`) of the active bin for which
+            to find neighbors.
+
+        Returns
+        -------
+        List[int]
+            A list of active bin indices that are neighbors to `bin_index`.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        """
         return self.layout.get_bin_neighbors(bin_index)
 
     @check_fitted
     def get_bin_area_volume(self) -> NDArray[np.float64]:
-        """Calculates the area/volume of a given active bin."""
+        """
+        Calculate the area (for 2D) or volume (for 3D+) of each active bin.
+
+        For 1D environments, this typically returns the length of each bin.
+        This method delegates to the `get_bin_area_volume` method of the
+        underlying `LayoutEngine`.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_active_bins,)
+            An array containing the area/volume/length of each active bin.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        """
         return self.layout.get_bin_area_volume()
 
     @check_fitted
     def get_bin_attributes_dataframe(self) -> pd.DataFrame:  # Renamed
-        """Creates a DataFrame with information about each active bin."""
+        """
+        Create a Pandas DataFrame with attributes of each active bin.
+
+        The DataFrame is constructed from the node data of the
+        `connectivity_graph_`. Each row corresponds to an active bin.
+        Columns include the bin's N-D position (split into `pos_dim0`,
+        `pos_dim1`, etc.) and any other attributes stored on the graph nodes.
+
+        Returns
+        -------
+        pd.DataFrame
+            A DataFrame where the index is `active_bin_id` (0 to `n_active_bins - 1`)
+            and columns contain bin attributes.
+
+        Raises
+        ------
+        ValueError
+            If there are no active bins in the environment.
+        RuntimeError
+            If called before the environment is fitted.
+        """
         graph = self.get_connectivity_graph()
         if graph.number_of_nodes() == 0:
             raise ValueError("No active bins in the environment.")
@@ -432,7 +898,35 @@ class Environment:
     def get_manifold_distances(
         self, points1: NDArray[np.float64], points2: NDArray[np.float64]
     ) -> NDArray[np.float64]:
-        # ... (Implementation as before, uses self.get_bin_ind and self.distance_between_bins) ...
+        """
+        Calculate manifold distances between pairs of points.
+
+        Points are first mapped to their respective active bin indices.
+        The manifold distance is then the shortest path distance between these
+        bins, retrieved from `self.distance_between_bins`.
+
+        Parameters
+        ----------
+        points1 : NDArray[np.float64], shape (n_pairs, n_dims) or (n_dims,)
+            First set of N-dimensional points.
+        points2 : NDArray[np.float64], shape (n_pairs, n_dims) or (n_dims,)
+            Second set of N-dimensional points. Must have the same shape as `points1`.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_pairs,)
+            Array of manifold distances. If a point in a pair does not map to
+            an active bin, or if the bins are disconnected, the distance
+            will be `np.inf`.
+
+        Raises
+        ------
+        ValueError
+            If `points1` and `points2` have mismatched shapes or if input arrays
+            are empty but dimensions are incompatible.
+        RuntimeError
+            If called before the environment is fitted.
+        """
         p1, p2 = np.atleast_2d(points1), np.atleast_2d(points2)
         if p1.shape != p2.shape:
             raise ValueError("Shape mismatch.")
@@ -465,6 +959,30 @@ class Environment:
     def get_linearized_coordinate(
         self, points_nd: NDArray[np.float64]
     ) -> NDArray[np.float64]:
+        """
+        Convert N-dimensional points to 1D linearized coordinates.
+
+        This method is only applicable if the environment uses a `GraphLayout`
+        and `is_1d` is True. It delegates to the layout's
+        `get_linearized_coordinate` method.
+
+        Parameters
+        ----------
+        points_nd : NDArray[np.float64], shape (n_points, n_dims)
+            N-dimensional points to linearize.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_points,)
+            1D linearized coordinates corresponding to the input points.
+
+        Raises
+        ------
+        TypeError
+            If the environment is not 1D or not based on a `GraphLayout`.
+        RuntimeError
+            If called before the environment is fitted.
+        """
         if not self.is_1d or not isinstance(self.layout, GraphLayout):
             raise TypeError("Linearized coordinate only for GraphLayout environments.")
         return self.layout.get_linearized_coordinate(points_nd)
@@ -473,6 +991,30 @@ class Environment:
     def map_linear_to_nd_coordinate(
         self, linear_coordinates: NDArray[np.float64]
     ) -> NDArray[np.float64]:
+        """
+        Convert 1D linearized coordinates back to N-dimensional coordinates.
+
+        This method is only applicable if the environment uses a `GraphLayout`
+        and `is_1d` is True. It delegates to the layout's
+        `map_linear_to_nd_coordinate` method.
+
+        Parameters
+        ----------
+        linear_coordinates : NDArray[np.float64], shape (n_points,)
+            1D linearized coordinates to map to N-D space.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_points, n_dims)
+            N-dimensional coordinates corresponding to the input linear coordinates.
+
+        Raises
+        ------
+        TypeError
+            If the environment is not 1D or not based on a `GraphLayout`.
+        RuntimeError
+            If called before the environment is fitted.
+        """
         if not self.is_1d or not isinstance(self.layout, GraphLayout):
             raise TypeError("Mapping linear to N-D only for GraphLayout environments.")
         return self.layout.map_linear_to_nd_coordinate(linear_coordinates)
@@ -484,9 +1026,43 @@ class Environment:
         show_regions: bool = False,
         layout_plot_kwargs: Optional[Dict[str, Any]] = None,
         regions_plot_kwargs: Optional[Dict[str, Any]] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> matplotlib.axes.Axes:
-        """Plots the environment's layout and optionally defined regions."""
+        """
+        Plot the environment's layout and optionally defined regions.
+
+        This method delegates plotting of the base layout to the `plot` method
+        of the underlying `LayoutEngine`. If `show_regions` is True, it then
+        overlays any defined spatial regions managed by `self.regions`.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], optional
+            The Matplotlib axes to plot on. If None, a new figure and axes
+            are created. Defaults to None.
+        show_regions : bool, optional
+            If True, plot defined spatial regions on top of the layout.
+            Defaults to False.
+        layout_plot_kwargs : Optional[Dict[str, Any]], optional
+            Keyword arguments to pass to the `layout.plot()` method.
+            Defaults to None.
+        regions_plot_kwargs : Optional[Dict[str, Any]], optional
+            Keyword arguments to pass to the `regions.plot_regions()` method.
+            Defaults to None.
+        **kwargs : Any
+            Additional keyword arguments that are passed to `layout.plot()`.
+            These can be overridden by `layout_plot_kwargs`.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes on which the environment was plotted.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        """
         l_kwargs = layout_plot_kwargs if layout_plot_kwargs is not None else {}
         l_kwargs.update(kwargs)  # Allow direct kwargs to override for layout.plot
 
@@ -517,24 +1093,92 @@ class Environment:
         self,
         ax: Optional[matplotlib.axes.Axes] = None,
         layout_plot_kwargs: Optional[Dict[str, Any]] = None,
-        **kwargs,
+        **kwargs: Any,
     ):
+        """
+        Plot a 1D representation of the environment, if applicable.
+
+        This method is primarily for environments where `is_1d` is True
+        (e.g., using `GraphLayout`). It calls the `plot_linear_layout`
+        method of the underlying layout if it exists and the layout is 1D.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], optional
+            The Matplotlib axes to plot on. If None, a new figure and axes
+            are created. Defaults to None.
+        layout_plot_kwargs : Optional[Dict[str, Any]], optional
+            Keyword arguments to pass to the layout's 1D plotting method.
+        **kwargs : Any
+            Additional keyword arguments passed to the layout's 1D plotting method.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes on which the 1D layout was plotted, or the original `ax`
+            if plotting was not applicable.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        AttributeError
+            If `self.layout.is_1d` is True but the layout does not have a
+            `plot_linear_layout` method.
+        """
         l_kwargs = layout_plot_kwargs if layout_plot_kwargs is not None else {}
         l_kwargs.update(kwargs)  # Allow direct kwargs to override for layout.plot
         if self.layout.is_1d:
-            ax = self.layout.plot_linear_layout(ax=ax, **l_kwargs)
+            if hasattr(self.layout, "plot_linear_layout"):
+                ax = self.layout.plot_linear_layout(ax=ax, **l_kwargs)  # type: ignore
+            else:
+                warnings.warn(
+                    f"Layout '{self._layout_type_used}' is 1D but does not "
+                    "have a 'plot_linear_layout' method. Skipping 1D plot.",
+                    UserWarning,
+                )
+        else:
+            warnings.warn(
+                "Environment is not 1D. Skipping 1D plot. Use regular plot() method.",
+                UserWarning,
+            )
 
         return ax
 
     def save(self, filename: str = "environment.pkl") -> None:
-        """Saves the Environment object to a file using pickle."""
+        """
+        Save the Environment object to a file using pickle.
+
+        Parameters
+        ----------
+        filename : str, optional
+            The name of the file to save the environment to.
+            Defaults to "environment.pkl".
+        """
         with open(filename, "wb") as fh:
             pickle.dump(self, fh, protocol=pickle.HIGHEST_PROTOCOL)
         print(f"Environment saved to {filename}")
 
     @classmethod
     def load(cls, filename: str) -> Environment:
-        """Loads an Environment object from a pickled file."""
+        """
+        Load an Environment object from a pickled file.
+
+        Parameters
+        ----------
+        filename : str
+            The name of the file to load the environment from.
+
+        Returns
+        -------
+        Environment
+            The loaded Environment object.
+
+        Raises
+        ------
+        TypeError
+            If the loaded object is not an instance of the Environment class.
+        """
         with open(filename, "rb") as fh:
             environment = pickle.load(fh)
         if not isinstance(environment, cls):
@@ -543,7 +1187,28 @@ class Environment:
 
     # --- Serialization ---
     def to_dict(self) -> Dict[str, Any]:
-        """Serializes the Environment object to a dictionary."""
+        """
+        Serialize the Environment object to a dictionary.
+
+        This method captures the essential information needed to reconstruct
+        the Environment, including its name, the type of layout used, the
+        parameters for that layout, and any defined regions.
+        Complex objects within `_layout_params_used` (like NetworkX graphs or
+        Shapely polygons) are converted to serializable formats.
+
+        Returns
+        -------
+        Dict[str, Any]
+            A dictionary representing the Environment object.
+            Keys include:
+            - "__classname__": Name of the class.
+            - "__module__": Module where the class is defined.
+            - "environment_name": Name of the environment.
+            - "_layout_type_used": Type of layout engine.
+            - "_layout_params_used": Parameters for the layout engine,
+              with complex objects serialized.
+            - "_regions_data": Serialized data for defined regions.
+        """
         # Ensure complex objects in _layout_params_used are serializable
         # For example, nx.Graph for GraphLayout should be converted to node_link_data
         serializable_layout_params = self._layout_params_used.copy()
@@ -593,7 +1258,31 @@ class Environment:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> Environment:
-        """Deserializes an Environment object from a dictionary."""
+        """
+        Deserialize an Environment object from a dictionary.
+
+        This method reconstructs an Environment instance from a dictionary
+        created by `to_dict`. It handles the deserialization of complex
+        objects like NetworkX graphs and Shapely polygons stored within
+        the layout parameters and region data.
+
+        Parameters
+        ----------
+        data : Dict[str, Any]
+            A dictionary representing the Environment object, typically
+            generated by `to_dict()`.
+
+        Returns
+        -------
+        Environment
+            A new Environment instance reconstructed from the dictionary.
+
+        Raises
+        ------
+        ValueError
+            If the dictionary is not for this Environment class or if
+            essential information like `_layout_type_used` is missing.
+        """
         if not (
             data.get("__classname__") == cls.__name__
             and data.get("__module__") == cls.__module__
@@ -696,8 +1385,37 @@ class Environment:
         self, flat_indices: Union[int, NDArray[np.int_]]
     ) -> Union[Tuple[int, ...], Tuple[NDArray[np.int_], ...]]:
         """
-        Converts active bin flat indices (0..N-1) to their original N-D grid indices.
-        Only meaningful for grid-based layouts that have an underlying full grid.
+        Convert active bin flat indices (0..N-1) to N-D grid indices.
+
+        This method translates a flat index (which refers to an active bin,
+        e.g., a row in `self.bin_centers_`) back to its original N-dimensional
+        index within the environment's full conceptual grid. This is primarily
+        meaningful for grid-based layouts.
+
+        Parameters
+        ----------
+        flat_indices : Union[int, NDArray[np.int_]]
+            A single flat index or an array of flat indices for active bins.
+            These indices range from `0` to `n_active_bins - 1`.
+
+        Returns
+        -------
+        Union[Tuple[int, ...], Tuple[NDArray[np.int_], ...]]
+            If input is a single int: A tuple of N integers representing the
+            N-D grid index (e.g., `(row, col, ...)`). Contains `np.nan` if
+            conversion fails for an index.
+            If input is an array: A tuple of N arrays, where each array
+            contains the indices for one dimension. (e.g., `(rows_array, cols_array, ...)`).
+            Contains `np.nan` for failed conversions.
+
+        Raises
+        ------
+        TypeError
+            If the environment is not N-D grid-based (e.g., if it's 1D or
+            lacks a clear N-D `grid_shape_` or `active_mask_`).
+        RuntimeError
+            If called before the environment is fitted or if the connectivity
+            graph is unavailable.
         """
         if (
             self.grid_shape_ is None
@@ -773,9 +1491,44 @@ class Environment:
         self, *nd_idx_per_dim: Union[int, NDArray[np.int_]]
     ) -> Union[int, NDArray[np.int_]]:
         """
-        Converts N-D grid indices (of the original full grid) to active bin flat indices (0..N-1).
-        Returns -1 if the N-D index is outside bounds or not part of an active bin.
-        Only meaningful for grid-based layouts.
+        Convert N-D grid indices to active bin flat indices (0..N-1).
+
+        This method takes N-D indices (referring to the original full
+        conceptual grid of the environment) and maps them to the
+        corresponding flat index of an *active* bin (0 to `n_active_bins - 1`).
+        If the N-D index is outside the grid bounds or maps to a bin that is
+        not active, -1 is returned. This is primarily meaningful for
+        grid-based layouts.
+
+        Parameters
+        ----------
+        *nd_idx_per_dim : Union[int, NDArray[np.int_]]
+            N arguments, one for each dimension of the grid. Each argument can
+            be an integer (for a single point query) or a NumPy array of
+            integers (for multiple points, must be broadcastable).
+            Example: `env.nd_to_flat_bin_index(rows, cols)` for a 2D grid.
+            Alternatively, can be a single tuple/list of N-D indices or
+            arrays of N-D indices, e.g., `env.nd_to_flat_bin_index([(r1,c1), (r2,c2)])`
+            or `env.nd_to_flat_bin_index(([r1,r2],[c1,c2]))`.
+
+        Returns
+        -------
+        Union[int, NDArray[np.int_]]
+            If input implies a single N-D point: An integer representing the
+            active bin flat index, or -1 if not active/out of bounds.
+            If input implies multiple N-D points: A NumPy array of active bin
+            flat indices, with -1 for non-active/out-of-bounds points.
+
+        Raises
+        ------
+        TypeError
+            If the environment is not N-D grid-based.
+        RuntimeError
+            If called before the environment is fitted or if the connectivity
+            graph is unavailable.
+        ValueError
+            If the number of N-D index arguments doesn't match the environment's
+            dimensions, or if input arrays cannot be broadcast.
         """
         if (
             self.grid_shape_ is None
