@@ -1043,23 +1043,55 @@ class GraphLayout(_KDTreeMixin):
     ) -> matplotlib.axes.Axes:
         if ax is None:
             _, ax = plt.subplots(figsize=(7, 7))
-        kwargs["node_size"] = kwargs.get("node_size", 10)
-        node_position = nx.get_node_attributes(self.connectivity_graph_, "pos")
-        nx.draw_networkx_nodes(self.connectivity_graph_, node_position, ax=ax, **kwargs)
 
+        # Draw the original graph nodes
         original_node_pos = nx.get_node_attributes(
             self._build_params_used["graph_definition"], "pos"
         )
+        nx.draw_networkx_nodes(
+            self._build_params_used["graph_definition"],
+            original_node_pos,
+            ax=ax,
+            node_size=300,
+            node_color="#1f77b4",
+        )
+        # Draw the original graph edges
+        for node_id1, node_id2 in self._build_params_used["graph_definition"].edges:
+            pos = np.stack(
+                (
+                    original_node_pos[node_id1],
+                    original_node_pos[node_id2],
+                )
+            )
+            ax.plot(
+                pos[:, 0], pos[:, 1], color="gray", zorder=-1, label="original edges"
+            )
+
         for node_id, pos in original_node_pos.items():
             plt.text(
                 pos[0],
                 pos[1],
                 str(node_id),
-                fontsize=8,
                 ha="center",
                 va="center",
                 zorder=10,
             )
+
+        # Draw the bin centers
+        bin_centers = nx.get_node_attributes(self.connectivity_graph_, "pos")
+        nx.draw_networkx_nodes(
+            self.connectivity_graph_,
+            bin_centers,
+            ax=ax,
+            node_size=30,
+            node_color="black",
+        )
+
+        # Draw connectivity graph edges
+        for node_id1, node_id2 in self.connectivity_graph_.edges:
+            pos = np.stack((bin_centers[node_id1], bin_centers[node_id2]))
+            ax.plot(pos[:, 0], pos[:, 1], color="black", zorder=-1)
+
         grid_line_2d = _project_1d_to_2d(
             self.grid_edges_[0],
             self._build_params_used["graph_definition"],
@@ -1071,8 +1103,9 @@ class GraphLayout(_KDTreeMixin):
                 grid_line[0],
                 grid_line[1],
                 color="gray",
-                marker="o",
-                alpha=0.5,
+                marker="+",
+                alpha=0.8,
+                label="bin edges",
             )
         return ax
 
