@@ -16,6 +16,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from numpy.typing import NDArray
 from scipy.spatial import KDTree
 
@@ -373,33 +375,82 @@ def _generic_graph_plot(
         raise ValueError("Graph is empty or None. Cannot plot an empty graph.")
 
     node_positions = nx.get_node_attributes(graph, "pos")
+    if not node_positions:  # No 'pos' attributes
+        raise ValueError("Nodes in graph are missing 'pos' attribute for plotting.")
 
     is_3d = len(next(iter(node_positions.values()))) == 3
 
     if ax is None:
         fig = plt.figure(figsize=kwargs.get("figsize", (7, 7)))
         ax = fig.add_subplot(111, projection="3d" if is_3d else None)
-    elif is_3d and not hasattr(ax, "plot3D"):
-        raise ValueError("Provided 'ax' is not 3D, but data is 3D.")
+    elif is_3d and not isinstance(ax, Axes3D):  # More specific check for 3D axes
+        # Check if it has 'plot_surface' or similar 3D methods
+        if not hasattr(ax, "plot_surface") and not hasattr(ax, "plot3D"):
+            raise ValueError("Provided 'ax' is not a 3D Axes, but data is 3D.")
 
-    default_node_kwargs = {"node_size": 20}
-    node_kwargs = {**default_node_kwargs, **kwargs.get("node_kwargs", {})}
-    nx.draw_networkx_nodes(graph, pos=node_positions, ax=ax, **node_kwargs)
+    default_node_kwargs = {
+        "node_size": 20,
+        "ax": ax,
+    }  # Pass ax to networkx draw functions
+    node_kwargs_final = {**default_node_kwargs, **kwargs.get("node_kwargs", {})}
+    nx.draw_networkx_nodes(graph, pos=node_positions, **node_kwargs_final)
 
-    default_edge_kwargs = {"alpha": 0.5, "edge_color": "gray"}
-    edge_kwargs = {**default_edge_kwargs, **kwargs.get("edge_kwargs", {})}
-    nx.draw_networkx_edges(graph, pos=node_positions, ax=ax, **edge_kwargs)
+    default_edge_kwargs = {"alpha": 0.5}  # edge_color handled below
+    edge_kwargs_final = {**default_edge_kwargs, **kwargs.get("edge_kwargs", {})}
+
+    if is_3d:
+        edge_xyz = np.array(
+            [(node_positions[u], node_positions[v]) for u, v in graph.edges()]
+        )
+        if edge_xyz.size > 0:
+            segments_3d = []
+            for start_node_coords, end_node_coords in edge_xyz:
+                segments_3d.append([start_node_coords, end_node_coords])
+
+            # Extract common MPL LineCollection kwargs, provide defaults
+            edge_color = edge_kwargs_final.pop("edge_color", "gray")
+            linewidths = edge_kwargs_final.pop(
+                "linewidths", edge_kwargs_final.pop("linewidth", 1)
+            )
+            alpha = edge_kwargs_final.pop("alpha", 0.5)
+
+            line_collection = Line3DCollection(
+                segments_3d,
+                colors=edge_color,
+                linewidths=linewidths,
+                alpha=alpha,
+                **edge_kwargs_final,  # Pass remaining specific kwargs
+            )
+            if isinstance(ax, Axes3D):  # Check if ax is indeed a 3D axis
+                ax.add_collection3d(line_collection)
+            else:
+                warnings.warn(
+                    "Attempting to add 3D edges to a non-3D Axes object. Edges may not display correctly.",
+                    UserWarning,
+                )
+
+    else:  # 2D case
+        edge_kwargs_final_2d = {**edge_kwargs_final, "ax": ax}
+        if "edge_color" not in edge_kwargs_final_2d:  # Set default if not provided
+            edge_kwargs_final_2d["edge_color"] = "gray"
+        nx.draw_networkx_edges(graph, pos=node_positions, **edge_kwargs_final_2d)
+        ax.set_aspect("equal", adjustable="box")
 
     ax.set_title(f"{name} Graph")
     ax.set_xlabel("Dim 0")
     ax.set_ylabel("Dim 1")
-    if is_3d and hasattr(ax, "set_zlabel"):
+    if is_3d and isinstance(ax, Axes3D):
         ax.set_zlabel("Dim 2")
+        # Attempt to set aspect ratio for 3D plots if possible
+        # This is often tricky and depends on Matplotlib version and backend
+        try:
+            ax.set_box_aspect([1, 1, 1])  # For newer matplotlib
+        except AttributeError:
+            try:
+                ax.pbaspect = [1, 1, 1]  # Older attribute
+            except AttributeError:
+                pass  # Fallback, may not be perfectly equal aspect
 
-    if not is_3d:
-        ax.set_aspect("equal", adjustable="box")
-    elif hasattr(ax, "set_box_aspect"):
-        ax.set_box_aspect([1, 1, 1])
     return ax
 
 
