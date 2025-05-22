@@ -57,7 +57,7 @@ def check_fitted(method):
 
 
 # --- Main Environment Class ---
-@dataclass(repr=False)
+@dataclass
 class Environment:
     """
     Represents a discretized N-dimensional space with connectivity.
@@ -135,10 +135,6 @@ class Environment:
         self._setup_from_layout()  # Populate attributes from the built layout
         self.regions = RegionManager(self)
 
-    def __html_repr__(self):
-        fig, ax = plt.subplots(figsize=(7, 7))
-        self.plot(ax=ax)
-
     def _setup_from_layout(self):
         """Populates Environment attributes from its (built) LayoutEngine."""
 
@@ -164,6 +160,44 @@ class Environment:
             self.active_mask_ = np.ones(self.bin_centers_.shape[0], dtype=bool)
 
         self._is_fitted = True
+
+    def __repr__(self: "Environment") -> str:
+        """
+        Generates an unambiguous string representation of the Environment.
+
+        Returns
+        -------
+        str
+            A string representation of the Environment object.
+        """
+        class_name = self.__class__.__name__
+        env_name_repr = f"environment_name={self.environment_name!r}"
+        layout_type_repr = f"layout_type={self._layout_type_used!r}"
+
+        if not self._is_fitted:
+            # If not fitted, show minimal information
+            return f"{class_name}({env_name_repr}, {layout_type_repr}, fitted=False)"
+
+        # If fitted, provide more details
+        try:
+            dims_repr = f"n_dims={self.n_dims}"
+        except RuntimeError:
+            # Should not happen if _is_fitted is True and n_dims is correctly implemented
+            dims_repr = "n_dims='Error'"
+
+        active_bins_repr = "active_bins='N/A'"
+        if self.bin_centers_ is not None:
+            active_bins_repr = f"active_bins={self.bin_centers_.shape[0]}"
+
+        return (
+            f"{class_name}("
+            f"{env_name_repr}, "
+            f"{layout_type_repr}, "
+            f"{dims_repr}, "
+            f"{active_bins_repr}, "
+            f"fitted=True"
+            f")"
+        )
 
     # --- Factory Methods ---
     @classmethod
