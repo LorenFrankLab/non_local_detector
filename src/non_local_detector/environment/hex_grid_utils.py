@@ -1,3 +1,24 @@
+"""
+Utility functions for creating and managing hexagonal grid layouts.
+
+This module provides helper functions specifically for environments that use
+hexagonal tiling. These functions cover:
+- Generation of hexagonal grid coordinates (`_create_hex_grid`).
+- Conversion between Cartesian and hexagonal (cube/axial) coordinate systems
+  (`_cartesian_to_fractional_cube`, `_round_fractional_cube_to_integer_axial`,
+  `_axial_to_offset_bin_indices`).
+- Mapping continuous 2D points to discrete hexagonal bin indices
+  (`_points_to_hex_bin_ind`).
+- Inferring active hexagonal bins based on data sample occupancy
+  (`_infer_active_bins_from_hex_grid`).
+- Determining neighbor relationships in the hexagonal grid
+  (`_get_hex_grid_neighbor_deltas`).
+- Constructing a connectivity graph for active hexagonal bins
+  (`_create_hex_connectivity_graph`).
+
+These utilities are primarily used by the `HexagonalLayout` engine.
+"""
+
 from __future__ import annotations
 
 import math
@@ -20,50 +41,48 @@ def _create_hex_grid(
     float,  # min_x
     float,  # min_y
 ]:
-    """Creates a hexagonal grid based on data_samples data.
-    The grid is defined by hexagons of a specified width.
-    The hexagons are arranged in a staggered pattern.
-    The grid is centered around the provided data_samples data.
-    The hexagons are oriented with one vertex pointing up.
+    """
+    Create a hexagonal grid covering a specified area or data extent.
+
+    Generates the centers of all potential hexagons (pointy-top orientation)
+    that would tile a rectangular region. The region is determined either by
+    `dimension_range` or inferred from `data_samples`.
 
     Parameters
     ----------
-    data_samples : NDArray[np.float64], shape (n_time, 2)
-        data_samples data. Used to determine grid extent if `dimension_range`
+    data_samples : NDArray[np.float64], shape (n_samples, 2)
+        2D data samples. Used to determine grid extent if `dimension_range`
         is None. NaNs are ignored.
     dimension_range : Optional[Sequence[Tuple[float, float]]], optional
-        Explicit grid boundaries [(min_dim1, max_dim1), ...]. If None,
-        boundaries are derived from `data_samples`. Defaults to None.
-    hexagon_width : float, optional
-        The width of the hexagons in the grid. Defaults to 1.0.
+        Explicit grid boundaries `[(min_x, max_x), (min_y, max_y)]`. If None
+        (default), boundaries are derived from `data_samples`.
+    hexagon_width : float, optional, default=1.0
+        The width of the hexagons (distance between parallel sides).
         Must be positive.
 
     Returns
     -------
-    bin_centers : NDArray[np.float64], shape (n_total_bins, 2)
-        Center coordinates of each hexagon in the flattened grid.
-    centers_shape : Tuple[int, ...]
-        Shape of the grid (number of hexagons in each dimension).
+    bin_centers : NDArray[np.float64], shape (n_total_hex_bins, 2)
+        Center (x, y) coordinates of every hexagon in the flattened full grid.
+    centers_shape : Tuple[int, int]
+        Shape of the conceptual full grid of hexagons (n_hex_rows, n_hex_cols).
     hex_radius : float
-        The radius of the hexagons (distance from center to vertex).
+        The radius of the hexagons (distance from center to any vertex).
     hex_orientation : float
-        The orientation of the hexagons (0.0 for point-up).
+        Orientation of hexagons in radians (0.0 for pointy-top).
     min_x : float
-        Minimum x-coordinate of the grid.
+        Minimum x-coordinate of the grid's effective origin.
     min_y : float
-        Minimum y-coordinate of the grid.
-    dimension_range : Sequence[Tuple[float, float]]
-        The effective grid boundaries after processing.
-        If `dimension_range` is None, this will be derived from `data_samples`.
-        If `dimension_range` is provided, this will be the same as the input.
-        The order is [(min_dim1, max_dim1), (min_dim2, max_dim2)].
+        Minimum y-coordinate of the grid's effective origin.
+    effective_dimension_range : Sequence[Tuple[float, float]]
+        The `[(min_x, max_x), (min_y, max_y)]` bounds actually used or
+        inferred for the grid generation.
 
     Raises
     ------
     ValueError
-        If `data_samples` is empty and no `dimension_range` is provided.
-        If `data_samples` is not a 2D array with shape (n_samples, 2).
         If `hexagon_width` is not positive.
+        If `data_samples` is empty or not 2D and no `dimension_range` is provided.
     """
     if hexagon_width <= 0:
         raise ValueError("hexagon_width must be positive.")
@@ -159,23 +178,30 @@ def _cartesian_to_fractional_cube(
     points_y: NDArray[np.float64],
     hex_radius: float,
 ) -> Tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-    """Converts Cartesian coordinates to fractional cube coordinates for pointy-top hexagons.
+    """
+    Convert 2D Cartesian coordinates to fractional cube coordinates.
+
+    This transformation is for pointy-top oriented hexagons. Cube coordinates
+    (q, r, s) satisfy q + r + s = 0.
 
     Parameters
     ----------
     points_x : NDArray[np.float64], shape (n_points,)
-        X-coordinates of the points, relative to the grid's effective origin.
+        X-coordinates of the points, typically relative to the hexagonal
+        grid's origin.
     points_y : NDArray[np.float64], shape (n_points,)
-        Y-coordinates of the points, relative to the grid's effective origin.
+        Y-coordinates of the points, relative to the grid's origin.
     hex_radius : float
-        Radius of the hexagons (center to vertex).
+        Radius of the hexagons (distance from center to a vertex).
 
     Returns
     -------
-    Tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]
-        Fractional cube coordinates (q_frac, r_frac, s_frac), each shape (n_points,).
-        q + r + s = 0.
-        column (q) and row (r) coordinates are returned, with s calculated as s = -q - r.
+    q_frac : NDArray[np.float64], shape (n_points,)
+        Fractional q cube coordinate.
+    r_frac : NDArray[np.float64], shape (n_points,)
+        Fractional r cube coordinate.
+    s_frac : NDArray[np.float64], shape (n_points,)
+        Fractional s cube coordinate, calculated as -q_frac - r_frac.
     """
     if hex_radius == 0:  # Avoid division by zero
         # If hex_radius is zero, implies a degenerate grid.
@@ -195,10 +221,12 @@ def _round_fractional_cube_to_integer_axial(
     r_frac: NDArray[np.float64],
     s_frac: NDArray[np.float64],
 ) -> Tuple[NDArray[np.int_], NDArray[np.int_]]:
-    """Rounds fractional cube coordinates to integer axial coordinates (q, r).
+    """
+    Round fractional cube coordinates to integer axial coordinates (q, r).
 
-    This process ensures that the sum of integer cube coordinates is zero by
-    adjusting the coordinate with the largest fractional difference.
+    This rounding method ensures that the sum of the corresponding integer
+    cube coordinates (q_int + r_int + s_int) would be zero by adjusting
+    the coordinate with the largest fractional difference from its rounded integer.
 
     Parameters
     ----------
@@ -207,12 +235,14 @@ def _round_fractional_cube_to_integer_axial(
     r_frac : NDArray[np.float64], shape (n_points,)
         Fractional r cube coordinates.
     s_frac : NDArray[np.float64], shape (n_points,)
-        Fractional s cube coordinates. (s = -q -r)
+        Fractional s cube coordinates (where s_frac = -q_frac - r_frac).
 
     Returns
     -------
-    Tuple[NDArray[np.int_], NDArray[np.int_]]
-        Integer axial coordinates (q_axial, r_axial), each shape (n_points,).
+    q_axial : NDArray[np.int_], shape (n_points,)
+        Integer q axial coordinate.
+    r_axial : NDArray[np.int_], shape (n_points,)
+        Integer r axial coordinate.
     """
     # Initial rounding to nearest integer
     q_round_f: NDArray[np.float64] = np.round(q_frac)
@@ -258,7 +288,12 @@ def _axial_to_offset_bin_indices(
     n_hex_x: int,
     n_hex_y: int,
 ) -> NDArray[np.int_]:
-    """Converts integer axial coordinates (q, r) to 1D bin indices for an "odd-r" offset grid.
+    """
+    Convert integer axial coordinates (q, r) to 1D bin indices.
+
+    This conversion is for an "odd-r" offset grid arrangement where odd rows
+    are shifted relative to even rows. The resulting 1D index corresponds
+    to a flattened row-major order of the conceptual rectangular grid of hexagons.
 
     Parameters
     ----------
@@ -267,14 +302,16 @@ def _axial_to_offset_bin_indices(
     r_axial : NDArray[np.int_], shape (n_points,)
         Integer r axial coordinates.
     n_hex_x : int
-        Number of hexagons in the x-direction of the grid.
+        Number of hexagons in the x-direction (columns) of the full conceptual grid.
     n_hex_y : int
-        Number of hexagons in the y-direction of the grid.
+        Number of hexagons in the y-direction (rows) of the full conceptual grid.
 
     Returns
     -------
     NDArray[np.int_], shape (n_points,)
-        1D bin indices. Points outside the grid are assigned an index of -1.
+        1D bin indices corresponding to the input axial coordinates.
+        Points that fall outside the defined grid dimensions (`n_hex_x`, `n_hex_y`)
+        are assigned an index of -1.
     """
     # Convert axial to "odd-r" offset coordinates
     # col = q + (r - (r & 1)) / 2
@@ -300,32 +337,39 @@ def _axial_to_offset_bin_indices(
 
 def _points_to_hex_bin_ind(
     points: NDArray[np.float64],
-    grid_offset_x,
-    grid_offset_y,
-    hex_radius,
-    centers_shape,
+    grid_offset_x: float,
+    grid_offset_y: float,
+    hex_radius: float,
+    centers_shape: Tuple[int, int],
 ) -> NDArray[np.int_]:
-    """Assigns data points to hexagon bins in a pre-defined grid.
+    """
+    Assign 2D Cartesian data points to hexagon bin indices in a predefined grid.
+
+    This function converts Cartesian points to hexagonal grid coordinates and
+    then to 1D flat indices relative to the full conceptual grid of hexagons.
 
     Parameters
     ----------
     points : NDArray[np.float64], shape (n_points, 2)
         The (x, y) coordinates of the points to assign to bins.
+        NaN input points result in an index of -1.
     grid_offset_x : float
-        The x-coordinate of the grid's effective origin.
+        The x-coordinate of the grid's effective origin (e.g., min_x from
+        `_create_hex_grid`).
     grid_offset_y : float
-        The y-coordinate of the grid's effective origin.
+        The y-coordinate of the grid's effective origin (e.g., min_y from
+        `_create_hex_grid`).
     hex_radius : float
         The radius of the hexagons (distance from center to vertex).
     centers_shape : Tuple[int, int]
-        The shape of the grid (number of hexagons in each dimension).
+        The shape (n_hex_rows, n_hex_cols) of the full conceptual grid of hexagons.
 
     Returns
     -------
     NDArray[np.int_], shape (n_points,)
-        The 1D bin index for each data point. Points falling outside
-        the defined grid area are assigned an index of -1. NaN input points
-        also result in an index of -1.
+        The 1D bin index (relative to the full conceptual grid) for each
+        data point. Points falling outside the defined grid area or NaN input
+        points are assigned an index of -1.
     """
     n_points = points.shape[0]
     if n_points == 0:
@@ -368,13 +412,41 @@ def _points_to_hex_bin_ind(
 
 def _infer_active_bins_from_hex_grid(
     data_samples: NDArray[np.float64],
-    centers_shape,
-    hex_radius,
-    min_x,
-    min_y,
-    bin_count_threshold=0,
+    centers_shape: Tuple[int, int],
+    hex_radius: float,
+    min_x: float,
+    min_y: float,
+    bin_count_threshold: int = 0,
 ) -> NDArray[np.int_]:
-    """Infers active bins from a hexagonal grid based on data_samples data."""
+    """
+    Infer active bins in a hexagonal grid based on data sample occupancy.
+
+    Maps `data_samples` to their respective hexagon bins within the full
+    conceptual grid. Hexagons are marked active if their occupancy count
+    exceeds `bin_count_threshold`.
+
+    Parameters
+    ----------
+    data_samples : NDArray[np.float64], shape (n_samples, 2)
+        2D data samples (e.g., positions).
+    centers_shape : Tuple[int, int]
+        Shape (n_hex_rows, n_hex_cols) of the full conceptual grid of hexagons.
+    hex_radius : float
+        Radius of the hexagons.
+    min_x : float
+        Minimum x-coordinate of the grid's effective origin.
+    min_y : float
+        Minimum y-coordinate of the grid's effective origin.
+    bin_count_threshold : int, optional, default=0
+        Minimum number of samples a hexagon must contain to be considered active.
+
+    Returns
+    -------
+    NDArray[np.int_], shape (n_active_hex_bins,)
+        An array of original flat indices (relative to the full conceptual grid)
+        of the hexagons that were deemed active. Returns an empty array if no
+        bins are found to be active.
+    """
     bin_ind = _points_to_hex_bin_ind(
         points=data_samples,
         grid_offset_x=min_x,
@@ -400,20 +472,22 @@ def _infer_active_bins_from_hex_grid(
 
 def _get_hex_grid_neighbor_deltas(is_odd_row: bool) -> List[Tuple[int, int]]:
     """
-    Returns the (dc, dr) coordinate deltas for neighbors in an "odd-r"
-    pointy-top hex grid. 'r' is the row index, 'c' is the column index.
-    Odd rows are shifted right. The y-axis (row index) is assumed to
-    increase "upwards" in the coordinate system of the grid.
+    Return (delta_col, delta_row) coordinate deltas for hexagon neighbors.
+
+    This is for an "odd-r" pointy-top hex grid, where odd rows (1, 3, ...)
+    are typically shifted right relative to even rows (0, 2, ...).
+    The y-axis (row index) increases "upwards" in grid coordinates.
 
     Parameters
     ----------
     is_odd_row : bool
-        True if the current row index is odd, False otherwise.
+        True if the current hexagon's row index is odd, False otherwise.
 
     Returns
     -------
     List[Tuple[int, int]]
-        A list of (delta_col, delta_row) tuples for the 6 neighbors.
+        A list of 6 (delta_col, delta_row) tuples, each representing the
+        offset to one of the 6 neighbors.
     """
     if is_odd_row:
         # Neighbors for an odd row (shifted right): E, W, NW, NE, SW, SE
@@ -426,8 +500,38 @@ def _get_hex_grid_neighbor_deltas(is_odd_row: bool) -> List[Tuple[int, int]]:
 
 
 def _create_hex_connectivity_graph(
-    active_original_flat_indices, full_grid_bin_centers, centers_shape
+    active_original_flat_indices: NDArray[np.int_],
+    full_grid_bin_centers: NDArray[np.float64],
+    centers_shape: Tuple[int, int],
 ):
+    """
+    Create a connectivity graph for active bins in a hexagonal grid.
+
+    Nodes in the returned graph are indexed from `0` to `n_active_bins - 1`.
+    Each node corresponds to an active hexagon and stores attributes:
+    - 'pos': (x, y) coordinates of the active hexagon's center.
+    - 'source_grid_flat_index': Original flat index in the full conceptual hex grid.
+    - 'original_grid_nd_index': (row, col) index in the full conceptual hex grid.
+
+    Edges connect active hexagons that are immediate neighbors in the lattice.
+    Edges store 'distance', 'vector', 'weight', and 'angle_2d'.
+
+    Parameters
+    ----------
+    active_original_flat_indices : NDArray[np.int_], shape (n_active_bins,)
+        Array of original flat indices (relative to the full conceptual grid)
+        for hexagons that are active.
+    full_grid_bin_centers : NDArray[np.float64], shape (n_total_hex_bins, 2)
+        Center coordinates of *all* potential hexagons in the full grid.
+    centers_shape : Tuple[int, int]
+        Shape (n_hex_rows, n_hex_cols) of the full conceptual grid of hexagons.
+
+    Returns
+    -------
+    nx.Graph
+        Connectivity graph of active hexagonal bins. Nodes are re-indexed
+        `0` to `n_active_bins - 1`.
+    """
     connectivity_graph = nx.Graph()
 
     # 1. Identify active bins and create mapping from original flat index to new node ID
