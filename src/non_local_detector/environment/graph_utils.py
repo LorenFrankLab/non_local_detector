@@ -259,6 +259,12 @@ def _create_graph_layout_connectivity_graph(
                 )
     connectivity_graph.add_edges_from(bins_to_connect)
 
+    # Add edge IDs to the graph
+    # This is a unique ID for each edge in the graph, starting from 0
+    # and incrementing by 1 for each edge
+    for edge_id_counter, (u, v) in enumerate(connectivity_graph.edges()):
+        connectivity_graph.edges[u, v]["edge_id"] = edge_id_counter
+
     return connectivity_graph
 
 
