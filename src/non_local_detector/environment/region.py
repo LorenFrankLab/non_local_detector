@@ -1,4 +1,12 @@
-"""Manages the region of interest (ROI) annotation for the Environment class."""
+"""
+Manages symbolic spatial regions of interest (ROIs) within an Environment.
+
+This module provides the `RegionInfo` dataclass to store details about a
+specific region and the `RegionManager` class to handle collections of these
+regions, their geometric definitions, and interactions with the associated
+`Environment` instance. Regions can be defined by points, boolean masks, or
+Shapely polygons (if Shapely is installed).
+"""
 
 from __future__ import annotations
 
@@ -49,28 +57,48 @@ except ImportError:
 
 
 def _point_in_polygon(
-    points: NDArray[np.float_], polygon: _shp.Polygon
+    points: NDArray[np.float_], polygon_geom: _shp.Polygon
 ) -> NDArray[np.bool_]:
     """
-    Checks if points are inside a polygon using Shapely.
+    Check if 2D points are inside a Shapely Polygon.
 
     Parameters
     ----------
-    points : NDArray[np.float_]
-        Array of shape (n_points, 2) containing the coordinates of the points.
-    polygon : _shp.Polygon
-        Shapely Polygon object.
+    points : NDArray[np.float_], shape (n_points, 2)
+        Array of (x, y) coordinates for the points to check.
+    polygon_geom : shapely.geometry.Polygon
+        The Shapely Polygon object against which to check the points.
 
     Returns
     -------
-    NDArray[np.bool_]
-        Boolean array indicating whether each point is inside the polygon.
+    NDArray[np.bool_], shape (n_points,)
+        A boolean array where `True` indicates the corresponding point is
+        inside or on the boundary of the polygon.
+
+    Raises
+    ------
+    RuntimeError
+        If the 'shapely' package is not installed.
     """
-    if not _HAS_SHAPELY:
+    if not _HAS_SHAPELY:  # pragma: no cover
         raise RuntimeError("Shapely is required for polygon operations.")
+    if points.ndim == 1:  # Single point
+        points = points.reshape(1, -1)
     if points.shape[0] == 0:
         return np.array([], dtype=bool)
-    return np.array([polygon.contains(_shp.Point(p)) for p in points])
+    if points.shape[1] != 2:
+        raise ValueError("Points must be 2-dimensional for polygon checking.")
+
+    try:
+        from shapely import points as shapely_points_vec
+
+        return polygon_geom.contains(shapely_points_vec(points))
+    except AttributeError:
+        # Fallback for older Shapely versions
+        # Check if points are inside the polygon using a loop
+        # This is less efficient but works with older Shapely versions
+        # and without the vectorized points function.
+        return np.array([polygon_geom.contains(_shp.Point(p)) for p in points])
 
 
 @dataclass
@@ -84,15 +112,19 @@ class RegionInfo:
         User-supplied unique identifier for the region.
     kind : str
         The type of geometric definition for the region.
-        One of ``{"point", "mask", "polygon"}``.
+        Must be one of ``{"point", "mask", "polygon"}``.
     data : Any
         The geometric data defining the region:
-        - If `kind` is "point": `NDArray[np.float_]` of shape `(n_dims,)`.
+        - If `kind` is "point": `NDArray[np.float_]` of shape `(n_dims,)`
+          representing the coordinates of the point.
         - If `kind` is "mask": `NDArray[np.bool_]` with N-D shape matching the
-          environment's full `grid_shape_` (for grid-based layouts).
-        - If `kind` is "polygon": A `shapely.geometry.Polygon` object (for 2D layouts).
+          environment's full `grid_shape_` (for grid-based layouts). `True`
+          values indicate that a grid cell is part of the region.
+        - If `kind` is "polygon": A `shapely.geometry.Polygon` object (for 2D
+          layouts).
     metadata : dict
-        Arbitrary key-value store for additional information about the region.
+        Arbitrary key-value store for additional information about the region
+        (e.g., plotting arguments, semantic labels).
     """
 
     name: str
@@ -101,6 +133,7 @@ class RegionInfo:
     metadata: dict = field(default_factory=dict)
 
     def __post_init__(self):
+        """Validate region data after initialization."""
         if self.kind not in {"point", "mask", "polygon"}:
             raise ValueError(
                 f"Unknown region kind: '{self.kind}'. Must be 'point', 'mask', or 'polygon'."
@@ -129,23 +162,24 @@ class RegionInfo:
 
 class RegionManager:
     """
-    Manages symbolic spatial regions within an Environment.
+    Manages symbolic spatial regions within an associated Environment.
 
-    This class provides methods to define regions using points, masks, or
-    polygons, and to query relationships between these regions and the
-    environment's discretized bins.
+    This class provides methods to define regions using points, N-D boolean masks,
+    or Shapely polygons. It allows querying these regions in relation to the
+    discretized bins of the parent Environment.
     """
 
     def __init__(self, environment_facade: "Environment"):
         """
-        Initializes the RegionManager.
+        Initialize the RegionManager.
 
         Parameters
         ----------
         environment_facade : Environment
-            A reference to the Environment instance this manager serves.
-            This provides access to the environment's geometric properties
-            (e.g., bin_centers_, grid_shape_, active_mask_, get_bin_ind, n_dims).
+            A reference to the `Environment` instance this manager serves.
+            This facade provides access to the environment's geometric
+            properties (e.g., `bin_centers_`, `grid_shape_`, `active_mask_`,
+            `get_bin_ind`, `n_dims`).
         """
         self._env = environment_facade  # Facade to access Environment's state
         self._regions: Dict[str, RegionInfo] = {}
@@ -172,7 +206,19 @@ class RegionManager:
         )
 
     def _check_env_fitted(self, method_name: str):
-        """Helper to check if the associated environment is fitted."""
+        """
+        Ensure the associated Environment is fitted before proceeding.
+
+        Parameters
+        ----------
+        method_name : str
+            The name of the method calling this check (for error messages).
+
+        Raises
+        ------
+        RuntimeError
+            If the parent Environment (`self._env`) is not fitted.
+        """
         if not self._env._is_fitted:  # Accessing internal _is_fitted via facade
             raise RuntimeError(
                 f"RegionManager.{method_name}() requires the parent Environment to be fitted."
@@ -188,38 +234,43 @@ class RegionManager:
         **metadata,
     ) -> None:
         """
-        Registers a region with a unique name.
+        Register a new spatial region with a unique name.
 
-        Exactly one of `point`, `mask`, or `polygon` must be provided to define
-        the region's geometry.
+        Exactly one of `point`, `mask`, or `polygon` must be provided to
+        define the region's geometry.
 
         Parameters
         ----------
         name : str
             Unique identifier for the region.
         point : Optional[Union[Tuple[float, ...], NDArray[np.float_]]], optional
-            Coordinates (same dimensionality as environment) defining a point region.
-            The region will effectively be the active bin closest to this point.
+            Coordinates (same dimensionality as environment) defining a point
+            region. The region will effectively correspond to the active bin
+            closest to this point.
         mask : Optional[NDArray[np.bool_]], optional
-            Boolean array defining the region. For grid-based layouts, this mask
-            must match the environment's full `grid_shape_` and applies to the
-            conceptual full grid.
+            Boolean N-D array defining the region. For grid-based layouts,
+            this mask must match the environment's full `grid_shape_` and
+            applies to the conceptual full grid.
         polygon : Optional[Union[shapely.geometry.Polygon, List[Tuple[float,float]]]], optional
-            A Shapely Polygon object or a list of (x, y) vertex tuples defining
-            a polygonal region. Applicable primarily for 2D environments. Bins whose
-            centers fall within this polygon are considered part of the region.
-        metadata : dict, optional
-            Additional key-value pairs to store with the region.
+            A Shapely Polygon object or a list of (x, y) vertex tuples
+            defining a polygonal region. Applicable primarily for 2D
+            environments. Bins whose centers fall within this polygon are
+            considered part of the region.
+        **metadata : Any
+            Additional key-value pairs to store with the region (e.g.,
+            `plot_kwargs={'color': 'red'}`).
 
         Raises
         ------
         ValueError
-            If `name` already exists, if not exactly one geometric specifier is
-            provided, or if inputs are inconsistent with the environment.
+            If `name` already exists, if not exactly one geometric specifier
+            is provided, or if inputs are inconsistent with the environment
+            (e.g., dimension mismatch for point, shape mismatch for mask).
         RuntimeError
             If `polygon` is specified but Shapely is not installed.
         TypeError
-            If data for a kind is of the wrong type.
+            If the data provided for `point`, `mask`, or `polygon` is of
+            an incorrect type.
         """
         self._check_env_fitted("add_region")
         if sum(v is not None for v in (point, mask, polygon)) != 1:
@@ -298,27 +349,80 @@ class RegionManager:
         )
 
     def remove_region(self, name: str) -> None:
-        """Removes region `name` from the registry. Silently ignores if absent."""
+        """
+        Remove a region from the manager.
+
+        If the specified region name does not exist, this method does nothing
+        (silently ignores the request).
+
+        Parameters
+        ----------
+        name : str
+            The unique identifier of the region to remove.
+        """
         self._regions.pop(name, None)
 
     def list_regions(self) -> List[str]:
-        """Returns a list of all registered region names, in insertion order."""
+        """
+        Return a list of names of all registered regions.
+
+        The order of names corresponds to the order of insertion.
+
+        Returns
+        -------
+        List[str]
+            A list of all defined region names.
+        """
         return list(self._regions.keys())
 
     def get_region_info(self, name: str) -> RegionInfo:
-        """Retrieves the `RegionInfo` object for a named region."""
+        """
+        Retrieve the `RegionInfo` object for a named region.
+
+        Parameters
+        ----------
+        name : str
+            The unique identifier of the region.
+
+        Returns
+        -------
+        RegionInfo
+            The `RegionInfo` object containing details about the specified region.
+
+        Raises
+        ------
+        KeyError
+            If a region with the given `name` is not found.
+        """
         if name not in self._regions:
             raise KeyError(f"Region '{name}' not found.")
         return self._regions[name]
 
     @property
     def environment(self) -> "Environment":
-        """Provides access to the parent Environment instance."""
+        """
+        Access the parent `Environment` instance.
+
+        Returns
+        -------
+        Environment
+            The `Environment` instance this `RegionManager` is associated with.
+        """
         return self._env
 
     @environment.setter
     def environment(self, value: "Environment"):
-        """Sets the parent Environment instance (should typically be done once)."""
+        """
+        Set the parent `Environment` instance.
+
+        This is typically done only once during initialization.
+        A warning is issued if attempting to overwrite an existing association.
+
+        Parameters
+        ----------
+        value : Environment
+            The `Environment` instance to associate with this manager.
+        """
         if hasattr(self, "_env") and self._env is not None:
             warnings.warn(
                 "RegionManager is already associated with an Environment. Overwriting.",
@@ -328,8 +432,33 @@ class RegionManager:
 
     def region_mask(self, name: str) -> NDArray[np.bool_]:
         """
-        Returns a 1D boolean mask indicating which *active bins* of the
-        environment (indexed 0 to N-1) are part of the specified region.
+        Return a 1D boolean mask indicating active environment bins in the region.
+
+        The returned mask has a length equal to the number of *active bins*
+        in the associated `Environment` (`env.bin_centers_.shape[0]`).
+        `True` at an index `i` means that active bin `i` is part of the
+        specified region.
+
+        Parameters
+        ----------
+        name : str
+            The name of the region for which to generate the mask.
+
+        Returns
+        -------
+        NDArray[np.bool_], shape (n_active_bins,)
+            A 1D boolean mask over the active bins of the environment.
+
+        Raises
+        ------
+        KeyError
+            If the region `name` is not found.
+        RuntimeError
+            If the environment is not fitted, or if required components
+            (like Shapely for polygon regions) are missing.
+        ValueError
+            If region data or environment properties are inconsistent
+            (e.g., mask shape mismatch for 'mask' kind regions).
         """
         self._check_env_fitted("region_mask")
         info = self.get_region_info(name)
@@ -401,16 +530,57 @@ class RegionManager:
         return active_bin_is_in_region_1d
 
     def bins_in_region(self, name: str) -> NDArray[np.int_]:
-        """Returns active bin indices (0..N-1) that are part of region `name`."""
+        """
+        Return active bin indices (0..N-1) that are part of a named region.
+
+        Parameters
+        ----------
+        name : str
+            The name of the region.
+
+        Returns
+        -------
+        NDArray[np.int_], shape (n_bins_in_region,)
+            An array of integer indices for active bins that fall within
+            the specified region.
+
+        Raises
+        ------
+        KeyError
+            If the region `name` is not found.
+        RuntimeError
+            If the environment is not fitted.
+        """
         self._check_env_fitted("bins_in_region")
         active_bin_mask_1d = self.region_mask(name)
         return np.flatnonzero(active_bin_mask_1d).astype(np.int_)
 
     def region_center(self, name: str) -> Optional[NDArray[np.float64]]:
         """
-        Calculates the geometric center of the active bins within the specified region.
-        For "point" regions, returns the point itself.
-        Returns None if the region is empty or not defined.
+        Calculate the geometric center of active bins within a specified region.
+
+        - For "point" regions, returns the defining point itself.
+        - For "mask" or "polygon" regions, computes the mean N-D coordinates
+          of the centers of all active environment bins that fall within the region.
+
+        Parameters
+        ----------
+        name : str
+            The name of the region.
+
+        Returns
+        -------
+        Optional[NDArray[np.float64]], shape (n_dims,)
+            The N-D coordinates of the region's center. Returns `None` if the
+            region is empty (contains no active bins) or if the region itself
+            is not defined.
+
+        Raises
+        ------
+        KeyError
+            If the region `name` is not found.
+        RuntimeError
+            If the environment is not fitted.
         """
         self._check_env_fitted("region_center")
         info = self.get_region_info(name)
@@ -432,22 +602,33 @@ class RegionManager:
         candidate_region_names: Optional[List[str]] = None,
     ) -> Optional[str]:
         """
-        Finds the named region whose center is closest (Euclidean distance)
-        to the given query `position`.
+        Find the named region whose center is closest to a query position.
+
+        Distance is calculated as Euclidean distance between the query position
+        and the `region_center()` of each candidate region.
 
         Parameters
         ----------
         position : NDArray[np.float64], shape (n_dims,) or (1, n_dims)
-            The query position.
+            The N-D query position.
         candidate_region_names : Optional[List[str]], optional
-            If provided, search only among these named regions.
-            Defaults to None (search all defined regions).
+            A list of region names to consider. If None (default), all
+            defined regions are considered.
 
         Returns
         -------
         Optional[str]
-            The name of the nearest region, or None if no regions are defined
-            or no suitable candidates are found.
+            The name of the nearest region. Returns `None` if no regions are
+            defined, no suitable candidate regions have a calculable center,
+            or if `candidate_region_names` is empty.
+
+        Raises
+        ------
+        ValueError
+            If the dimensionality of `position` does not match the
+            environment's `n_dims`.
+        RuntimeError
+            If the environment is not fitted.
         """
         self._check_env_fitted("nearest_region")
         query_pos = np.atleast_2d(position)
@@ -480,61 +661,91 @@ class RegionManager:
 
     def get_region_area(self, region_name: str) -> Optional[float]:
         """
-        Calculates the area of a defined region (primarily for 2D layouts).
+        Calculate the area/volume of a defined region.
 
-        For polygon regions, uses Shapely's area.
-        For mask regions on a grid, sums the area of active bins within the region.
-        Returns None if area cannot be determined or region is not 2D/grid-like.
+        - For "polygon" regions (2D only): Returns the polygon's area using Shapely.
+        - For "mask" regions on a grid: Sums the area/volume of active environment
+          bins that are part of the region. Assumes uniform bin sizes if calculated
+          from grid edges.
+        - For "point" regions: Returns 0.0.
+
+        Parameters
+        ----------
+        region_name : str
+            The name of the region.
+
+        Returns
+        -------
+        Optional[float]
+            The calculated area/volume of the region. Returns `None` if the area
+            cannot be determined (e.g., Shapely not available for a polygon, or
+            layout type does not support area calculation for a mask).
+
+        Raises
+        ------
+        KeyError
+            If the region `region_name` is not found.
+        RuntimeError
+            If the environment is not fitted.
         """
         self._check_env_fitted("get_region_area")
-        info = self.get_region_info(region_name)
+        info = self.get_region_info(region_name)  # Raises KeyError if name not found
 
         if info.kind == "polygon":
             if _HAS_SHAPELY and self._env.n_dims == 2:
                 return info.data.area  # type: ignore
-            else:
+            else:  # pragma: no cover
                 warnings.warn(
-                    "Cannot calculate area for polygon region: Shapely not available or not 2D env.",
+                    "Cannot calculate area for polygon region: Shapely not "
+                    "available or environment is not 2D.",
                     UserWarning,
                 )
                 return None
         elif info.kind == "mask":
-            if self._env.layout and hasattr(self._env.layout, "get_bin_area_volume"):
+            if (
+                self._env.grid_edges_
+                and len(self._env.grid_edges_) == self._env.n_dims
+                and all(
+                    isinstance(e, np.ndarray) and e.size > 1
+                    for e in self._env.grid_edges_
+                )
+            ):
+                # Assumes uniform bins if calculating from grid_edges
+                bin_dimension_sizes = [
+                    np.diff(edge_dim)[0] for edge_dim in self._env.grid_edges_
+                ]
+                single_bin_measure = np.prod(bin_dimension_sizes)
+                num_active_bins_in_mask_region = np.sum(self.region_mask(region_name))
+                return num_active_bins_in_mask_region * single_bin_measure
+            elif hasattr(
+                self._env.layout, "get_bin_area_volume"
+            ):  # Fallback if layout provides per-bin measures
                 active_bins_in_reg_indices = self.bins_in_region(region_name)
                 if active_bins_in_reg_indices.size == 0:
                     return 0.0
-
-                # This requires layout.get_bin_area_volume() to return areas for *active* bins (0..N-1)
-                # Or, if it returns areas for original grid bins, we need mapping.
-                # Simpler: if all bins in a grid layout have same area:
+                all_bin_areas = self._env.layout.get_bin_area_volume()
                 if (
-                    isinstance(self._env.layout, _GridMixin)
-                    and self._env.grid_edges_
-                    and len(self._env.grid_edges_) == self._env.n_dims
-                ):
-                    bin_areas_per_dim = [
-                        np.diff(edges_dim)[0] for edges_dim in self._env.grid_edges_
-                    ]  # Assumes uniform bins
-                    single_bin_area = np.prod(bin_areas_per_dim)
-                    num_active_bins_in_mask_region = np.sum(
-                        self.region_mask(region_name)
-                    )  # This mask is 1D on active bins
-                    return num_active_bins_in_mask_region * single_bin_area
-                else:  # Fallback if per-bin area isn't straightforward
+                    len(all_bin_areas) == self._env.bin_centers_.shape[0]
+                ):  # Matches active bins
+                    return np.sum(all_bin_areas[active_bins_in_reg_indices])
+                else:  # pragma: no cover
                     warnings.warn(
-                        f"Area calculation for mask region '{region_name}' on non-uniform or non-grid layout not fully supported yet.",
+                        f"Area calculation for mask region '{region_name}' on layout type "
+                        f"'{self._env._layout_type_used}' with non-standard bin area reporting "
+                        "not fully supported yet.",
                         UserWarning,
                     )
-                    return None  # Placeholder for more complex area sum
-            else:
+                    return None
+            else:  # pragma: no cover
                 warnings.warn(
-                    f"Layout type for mask region '{region_name}' does not support area calculation.",
+                    f"Layout type for mask region '{region_name}' does not support "
+                    "area calculation based on grid edges or get_bin_area_volume.",
                     UserWarning,
                 )
                 return None
         elif info.kind == "point":
-            return 0.0  # A point has no area
-        return None
+            return 0.0
+        return None  # Should be unreachable if kind is validated
 
     def create_buffered_region(
         self,
@@ -543,7 +754,43 @@ class RegionManager:
         new_region_name: str,
         **metadata,
     ) -> None:
-        """Creates a new polygonal region by buffering an existing region or a point (2D only)."""
+        """
+        Create a new polygonal region by buffering an existing region or a point.
+
+        This operation is currently supported only for 2D environments and
+        requires the 'shapely' package.
+        - If `source_region_name_or_point` is a region name:
+            - "polygon" kind: Buffers the existing polygon.
+            - "point" kind: Buffers the point.
+            - "mask" kind: Computes the convex hull of active bins within the
+              mask region and then buffers this hull.
+        - If `source_region_name_or_point` is an N-D array: Treats it as a point to buffer.
+
+        Parameters
+        ----------
+        source_region_name_or_point : Union[str, NDArray[np.float_]]
+            The name of an existing region, or a 2D NumPy array `(x, y)`
+            representing a point.
+        buffer_distance : float
+            The distance by which to buffer the source geometry. Positive values
+            expand, negative values shrink (if applicable).
+        new_region_name : str
+            The name for the newly created buffered region.
+        **metadata : Any
+            Additional metadata for the new region.
+
+        Raises
+        ------
+        RuntimeError
+            If Shapely is not installed.
+        ValueError
+            If the environment is not 2D, or if `source_region_name_or_point`
+            is an array with incorrect dimensions.
+        TypeError
+            If `source_region_name_or_point` is of an unsupported type.
+        KeyError
+            If `source_region_name_or_point` is a string but no such region exists.
+        """
         self._check_env_fitted("create_buffered_region")
         if not _HAS_SHAPELY:
             raise RuntimeError("Buffering requires Shapely.")
@@ -610,8 +857,44 @@ class RegionManager:
         **new_region_metadata,
     ) -> Optional[Any]:  # Shapely geom or bool mask
         """
-        Computes geometric relationship (intersection, union, difference) between two regions.
-        Currently best supported for polygon regions in 2D.
+        Compute geometric relationship (e.g., intersection) between two regions.
+
+        Currently best supported for polygon-defined regions in 2D environments
+        using Shapely. Other combinations (e.g., mask-mask) may be added in
+        the future.
+
+        Parameters
+        ----------
+        region_name1 : str
+            Name of the first region.
+        region_name2 : str
+            Name of the second region.
+        relationship_type : str, optional
+            The type of geometric relationship to compute. Supported for
+            polygons: "intersection", "union", "difference",
+            "symmetric_difference". Defaults to "intersection".
+        add_as_new_region : Optional[str], optional
+            If provided, and the result is a valid Shapely Polygon, the
+            resulting geometry will be added as a new region with this name.
+            Defaults to None (do not add).
+        **new_region_metadata : Any
+            Metadata for the new region if `add_as_new_region` is specified.
+
+        Returns
+        -------
+        Optional[shapely.geometry.BaseGeometry]
+            The resulting Shapely geometry from the operation. Returns `None`
+            if the operation is not supported for the region kinds, if Shapely
+            is unavailable, or if the result is an empty geometry.
+
+        Raises
+        ------
+        RuntimeError
+            If Shapely is required but not installed.
+        KeyError
+            If `region_name1` or `region_name2` are not found.
+        ValueError
+            If `relationship_type` is unsupported.
         """
         self._check_env_fitted("get_region_relationship")
         if not _HAS_SHAPELY:
@@ -662,7 +945,25 @@ class RegionManager:
         default_plot_kwargs: Optional[Dict[str, Any]] = None,
         **specific_region_plot_kwargs,
     ) -> None:
-        """Plots specified (or all) defined regions onto the provided axes."""
+        """
+        Plot specified (or all) defined regions onto the provided Matplotlib axes.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes
+            The Matplotlib axes object on which to plot the regions.
+        region_names : Optional[List[str]], optional
+            A list of names of regions to plot. If None (default), all
+            defined regions are plotted.
+        default_plot_kwargs : Optional[Dict[str, Any]], optional
+            A dictionary of default keyword arguments to apply to all regions
+            being plotted (e.g., `{'alpha': 0.5}`). These can be overridden
+            by metadata stored in `RegionInfo` or by `specific_region_plot_kwargs`.
+        **specific_region_plot_kwargs : Any
+            Keyword arguments specific to individual regions. The key should be
+            the region name, and the value a dictionary of plot kwargs for that
+            region (e.g., `MyRegion={'color': 'blue', 'linestyle': '--'}`).
+        """
         self._check_env_fitted("plot_regions")
 
         if ax is None:
