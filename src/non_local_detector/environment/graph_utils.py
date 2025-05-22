@@ -118,9 +118,9 @@ def _get_graph_bins(
 
 def _create_graph_layout_connectivity_graph(
     graph: nx.Graph,
-    bin_centers_2D: np.ndarray,
-    bin_centers_1D: np.ndarray,
-    edge_ids: np.ndarray,
+    bin_centers_nd: np.ndarray,
+    linear_bin_centers: np.ndarray,
+    original_edge_ids: np.ndarray,
     active_mask: np.ndarray,
     edge_order: List[Tuple[object, object]],
 ) -> nx.Graph:
@@ -135,15 +135,14 @@ def _create_graph_layout_connectivity_graph(
     ----------
     graph : networkx.Graph
         The original graph from which bins were derived.
-    bin_centers_2D : np.ndarray, shape (N_sum_active_mask, 2)
-        2D coordinates of the centers of active bins.
-        Obtained by `projection_function(bin_centers_1D[active_mask])`.
-    bin_centers_1D : np.ndarray, shape (N_total_bins,)
+    bin_centers_nd : np.ndarray, shape (N_sum_active_mask, 2)
+        n-D coordinates of the centers of active bins.
+    linear_bin_centers : np.ndarray, shape (N_total_bins,)
         1D coordinates of all bin centers (active and inactive).
-    edge_ids : np.ndarray, shape (N_sum_active_mask,)
+    original_edge_ids : np.ndarray, shape (N_sum_active_mask,)
         Integer IDs of the original graph edge for each active bin.
     active_mask : np.ndarray, shape (N_total_bins,), dtype=bool
-        Mask indicating which bins in `bin_centers_1D` are active.
+        Mask indicating which bins in `linear_bin_centers` are active.
     edge_order : list of tuples
         The ordered sequence of edges from the original graph that defines
         the linearized track layout. Used for inter-segment connections.
@@ -154,7 +153,7 @@ def _create_graph_layout_connectivity_graph(
         A new graph where nodes are active bin centers and edges show connectivity.
         Node attributes include:
         - 'pos': tuple (x, y), 2D position of the bin center.
-        - 'bin_ind': int, original index of the bin in `bin_centers_1D`.
+        - 'bin_ind': int, original index of the bin in `linear_bin_centers`.
         - 'bin_ind_flat': int, same as `bin_ind`.
         - 'pos_1D': float, 1D position of the bin center.
         - 'edge_id': int, ID of the original graph edge this bin belongs to.
@@ -168,14 +167,14 @@ def _create_graph_layout_connectivity_graph(
     # --- 1. Add Nodes (representing active bin centers) ---
     nodes_to_add = []
 
-    bin_ind = np.arange(len(bin_centers_1D))
+    bin_ind = np.arange(len(linear_bin_centers))
 
     # Add active bin centers to the graph
-    for node_id, (center_2D, center_1D, edge_id, b_ind) in enumerate(
+    for node_id, (center_2D, center_1D, original_edge_id, b_ind) in enumerate(
         zip(
-            bin_centers_2D[active_mask],
-            bin_centers_1D[active_mask],
-            edge_ids,
+            bin_centers_nd[active_mask],
+            linear_bin_centers[active_mask],
+            original_edge_ids,
             bin_ind[active_mask],
         )
     ):
@@ -186,10 +185,10 @@ def _create_graph_layout_connectivity_graph(
                     "pos": tuple(center_2D),
                     "source_grid_flat_index": b_ind,
                     "original_grid_nd_index": np.unravel_index(
-                        b_ind, bin_centers_1D.shape
+                        b_ind, linear_bin_centers.shape
                     ),
                     "pos_1D": center_1D,
-                    "source_edge_id": edge_id,
+                    "source_edge_id": original_edge_id,
                 },
             )
         )
@@ -197,17 +196,18 @@ def _create_graph_layout_connectivity_graph(
 
     # --- 2. Add Intra-Segment Edges (connecting bins on the same original edge) ---
     edges_to_add = []
-    _, sort_ind = np.unique(edge_ids, return_index=True)
-    unsorted_unique_edge_ids = [int(edge_ids[ind]) for ind in sorted(sort_ind)]
+    _, sort_ind = np.unique(original_edge_ids, return_index=True)
+    unsorted_unique_edge_ids = [int(original_edge_ids[ind]) for ind in sorted(sort_ind)]
     bin_edge_order = []
-    for edge_id in unsorted_unique_edge_ids:
-        edge_active_bin_ind = np.where(np.isin(edge_ids, edge_id))[0]
+    for original_edge_id in unsorted_unique_edge_ids:
+        edge_active_bin_ind = np.where(np.isin(original_edge_ids, original_edge_id))[0]
+
         for bin_ind1, bin_ind2 in zip(
             edge_active_bin_ind[:-1], edge_active_bin_ind[1:]
         ):
             displacement_vector = (
-                bin_centers_2D[active_mask][bin_ind1]
-                - bin_centers_2D[active_mask][bin_ind2]
+                bin_centers_nd[active_mask][bin_ind1]
+                - bin_centers_nd[active_mask][bin_ind2]
             )
             dist = float(np.linalg.norm(displacement_vector))
             weight = 1 / dist if dist > 0 else np.inf
@@ -220,7 +220,6 @@ def _create_graph_layout_connectivity_graph(
                         "distance": dist,
                         "weight": float(weight),
                         "vector": tuple(displacement_vector.tolist()),
-                        "source_edge_id": int(edge_id),
                         "angle_2d": math.atan2(
                             displacement_vector[1], displacement_vector[0]
                         ),
@@ -242,8 +241,8 @@ def _create_graph_layout_connectivity_graph(
         if len(connections) > 1:
             for i in range(len(connections) - 1):
                 displacement_vector = (
-                    bin_centers_2D[active_mask][connections[i]]
-                    - bin_centers_2D[active_mask][connections[i + 1]]
+                    bin_centers_nd[active_mask][connections[i]]
+                    - bin_centers_nd[active_mask][connections[i + 1]]
                 )
                 bins_to_connect.append(
                     (
@@ -252,7 +251,7 @@ def _create_graph_layout_connectivity_graph(
                         {
                             "distance": float(np.linalg.norm(displacement_vector)),
                             "vector": tuple(displacement_vector.tolist()),
-                            "source_edge_id": int(edge_id),
+                            "source_edge_id": int(original_edge_id),
                             "angle_2d": math.atan2(
                                 displacement_vector[1], displacement_vector[0]
                             ),
