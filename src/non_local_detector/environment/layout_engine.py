@@ -1820,20 +1820,28 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
 
         self.active_mask_ = active_mask
         self.grid_edges_ = grid_edges
-
-        self._build_params_used = locals().copy()  # Store all passed params
-        del self._build_params_used["self"]  # Remove self from the dictionary
-
-        full_grid_bin_centers = np.meshgrid(
-            *[get_centers(edge) for edge in grid_edges],
-            indexing="ij",
-            sparse=False,
-        )
-        self.bin_size_ = np.array(
-            [np.diff(edge)[0] for edge in grid_edges], dtype=np.float64
-        )
         self.grid_shape_ = tuple(len(edge) - 1 for edge in grid_edges)
-        self.dimension_ranges_ = [(edge[0], edge[-1]) for edge in grid_edges]
+
+        if self.active_mask_.shape != self.grid_shape_:
+            raise ValueError(
+                f"active_mask shape {self.active_mask_.shape} must match "
+                f"the shape implied by grid_edges {self.grid_shape_}."
+            )
+
+        # Create full_grid_bin_centers as (N_total_bins, N_dims) array
+        centers_per_dim = [get_centers(edge_dim) for edge_dim in self.grid_edges_]
+        mesh_centers_list = np.meshgrid(*centers_per_dim, indexing="ij", sparse=False)
+        full_grid_bin_centers = np.stack(
+            [c.ravel() for c in mesh_centers_list], axis=-1
+        )
+
+        self.bin_size_ = np.array(
+            [np.diff(edge_dim)[0] for edge_dim in self.grid_edges_], dtype=np.float64
+        )
+
+        self.dimension_ranges_ = tuple(
+            (edge_dim[0], edge_dim[-1]) for edge_dim in self.grid_edges_
+        )
         self.bin_centers_ = full_grid_bin_centers[self.active_mask_.ravel()]
 
         self.connectivity_graph_ = _create_regular_grid_connectivity_graph(
@@ -1842,6 +1850,12 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
             grid_shape=self.grid_shape_,
             connect_diagonal=connect_diagonal_neighbors,
         )
+
+        self._build_params_used = {
+            "active_mask": active_mask,
+            "grid_edges": grid_edges,
+            "connect_diagonal_neighbors": connect_diagonal_neighbors,
+        }
 
 
 class ImageMaskLayout(_GridMixin):
