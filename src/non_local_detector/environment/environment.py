@@ -7,6 +7,7 @@ from functools import cached_property, wraps
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import matplotlib.axes
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -134,15 +135,12 @@ class Environment:
         self._setup_from_layout()  # Populate attributes from the built layout
         self.regions = RegionManager(self)
 
+    def __html_repr__(self):
+        fig, ax = plt.subplots(figsize=(7, 7))
+        self.plot(ax=ax)
+
     def _setup_from_layout(self):
         """Populates Environment attributes from its (built) LayoutEngine."""
-        # Check key built attributes
-        if not (
-            hasattr(self.layout, "bin_centers_")
-            and self.layout.bin_centers_ is not None
-            and hasattr(self.layout, "connectivity_graph_")
-        ):
-            raise RuntimeError("LayoutEngine instance does not appear to be built.")
 
         self.bin_centers_ = self.layout.bin_centers_
         self.connectivity_graph_ = getattr(
@@ -328,30 +326,6 @@ class Environment:
         layout_instance = create_layout(kind=layout_type, **layout_params)
         return cls(environment_name, layout_instance, layout_type, layout_params)
 
-    # --- Core Methods ---
-    def fit(self) -> Environment:
-        """
-        Finalizes the environment setup. The LayoutDefinition is built by factories.
-        This method ensures Environment attributes are populated from its layout
-        and marks the environment as fully ready for use.
-        """
-        # If _setup_from_layout didn't run or complete in __init__
-        if not self._is_fitted:
-            self._setup_from_layout()
-
-        if (
-            self.layout is None
-            or self.bin_centers_ is None
-            or self.connectivity_graph_ is None
-        ):
-            raise RuntimeError(
-                "Environment.fit() called, but layout seems unbuilt or attributes "
-                "not populated. Ensure Environment was created via a valid factory method."
-            )
-        self._is_fitted = True
-
-        return self
-
     @property
     def is_1d(self) -> bool:
         """True if the environment's layout structure is primarily 1-dimensional."""
@@ -406,21 +380,7 @@ class Environment:
         """Creates a DataFrame with information about each active bin."""
         graph = self.get_connectivity_graph()
         if graph.number_of_nodes() == 0:
-            # Define expected columns based on typical attributes
-            cols = [
-                f"pos_dim{i}"
-                for i in range(
-                    self.n_dims
-                    if hasattr(self, "n_dims") and self.n_dims is not None
-                    else 2
-                )
-            ]
-            cols.extend(["source_index", "is_active", "bin_ind", "bin_ind_flat"])
-            if self.is_1d:
-                cols.append("linear_pos")
-            return pd.DataFrame(columns=cols).set_index(
-                pd.Index([], name="active_bin_id")
-            )
+            raise ValueError("No active bins in the environment.")
 
         df = pd.DataFrame.from_dict(dict(graph.nodes(data=True)), orient="index")
         df.index.name = "active_bin_id"  # Index is 0..N-1
@@ -433,34 +393,6 @@ class Environment:
             pos_df.columns = [f"pos_dim{i}" for i in range(pos_df.shape[1])]
             df = pd.concat([df.drop(columns="pos"), pos_df], axis=1)
 
-        # Ensure other common attributes exist
-        if "source_index" not in df.columns:
-            df["source_index"] = pd.NA
-        if "is_active" not in df.columns:
-            df["is_active"] = True  # All nodes in this graph are active
-        if "bin_ind" not in df.columns:
-            df["bin_ind"] = df.index.to_series().apply(lambda x: (x,))
-        if "bin_ind_flat" not in df.columns:
-            df["bin_ind_flat"] = df.index.to_series()
-
-        if self.is_1d and "linear_pos" not in df.columns:
-            # Try to get from layout if available (e.g. TrackLayout)
-            if (
-                hasattr(self.layout, "linearized_bin_centers_")
-                and self.layout.linearized_bin_centers_ is not None
-            ):
-                if len(self.layout.linearized_bin_centers_) == len(df):
-                    df["linear_pos"] = self.layout.linearized_bin_centers_.flatten()
-                else:
-                    df["linear_pos"] = np.nan
-            else:
-                df["linear_pos"] = np.nan
-
-        # Sort by flat index if it makes sense (usually index is already 0..N-1)
-        if "bin_ind_flat" in df.columns and pd.api.types.is_numeric_dtype(
-            df["bin_ind_flat"]
-        ):
-            df = df.sort_values(by="bin_ind_flat")
         return df
 
     @check_fitted
@@ -498,10 +430,9 @@ class Environment:
 
     @check_fitted
     def get_linearized_coordinate(
-        self, data_samples_nd: NDArray[np.float64]
         self, points_nd: NDArray[np.float64]
     ) -> NDArray[np.float64]:
-        if not self.is_1d or not isinstance(self.layout, GraphLayout):  # Be specific
+        if not self.is_1d or not isinstance(self.layout, GraphLayout):
             raise TypeError("Linearized coordinate only for GraphLayout environments.")
         return self.layout.get_linearized_coordinate(points_nd)
 
