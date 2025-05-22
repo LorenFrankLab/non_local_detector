@@ -6,8 +6,6 @@ import jax.scipy.linalg
 import networkx as nx
 import numpy as np
 
-from non_local_detector.environment.geometry_utils import add_distance_weight_to_edges
-
 
 def compute_diffusion_kernels(
     track_graph: nx.Graph,
@@ -46,8 +44,6 @@ def compute_diffusion_kernels(
 
     if bandwidth_sigma <= 0:
         raise ValueError("bandwidth_sigma must be positive.")
-
-    add_distance_weight_to_edges(track_graph)
 
     n_bins_total = interior_mask.size
     interior_mask_flat = jnp.asarray(interior_mask.ravel())
