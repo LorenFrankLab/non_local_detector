@@ -1034,8 +1034,23 @@ class GraphLayout(_KDTreeMixin):
     ) -> matplotlib.axes.Axes:
         if ax is None:
             _, ax = plt.subplots(figsize=(7, 7))
+        kwargs["node_size"] = kwargs.get("node_size", 10)
+        node_position = nx.get_node_attributes(self.connectivity_graph_, "pos")
+        nx.draw_networkx_nodes(self.connectivity_graph_, node_position, ax=ax, **kwargs)
 
-        plot_track_graph(self.connectivity_graph_, ax=ax, **kwargs)
+        original_node_pos = nx.get_node_attributes(
+            self._build_params_used["graph_definition"], "pos"
+        )
+        for node_id, pos in original_node_pos.items():
+            plt.text(
+                pos[0],
+                pos[1],
+                str(node_id),
+                fontsize=8,
+                ha="center",
+                va="center",
+                zorder=10,
+            )
         grid_line_2d = _project_1d_to_2d(
             self.grid_edges_[0],
             self._build_params_used["graph_definition"],
