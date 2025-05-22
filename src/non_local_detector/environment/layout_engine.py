@@ -1,3 +1,24 @@
+"""
+Defines the spatial layout engines for discretizing continuous space.
+
+This module provides the `LayoutEngine` protocol, which outlines the interface
+for all spatial discretization strategies. It includes concrete implementations
+such as:
+- `RegularGridLayout`: For N-dimensional rectilinear grids.
+- `HexagonalLayout`: For 2D hexagonal tilings.
+- `GraphLayout`: For layouts defined by user-provided graphs, often used for
+  linearized tracks.
+- `ShapelyPolygonLayout`: For 2D grid layouts masked by a Shapely polygon.
+- `MaskedGridLayout`: For N-D grids defined by an explicit mask and edge definitions.
+- `ImageMaskLayout`: For 2D layouts derived from a boolean image mask.
+
+It also contains mixin classes (`_KDTreeMixin`, `_GridMixin`) to provide common
+functionality to layout implementations, and factory helper functions
+(`create_layout`, `list_available_layouts`, `get_layout_parameters`) for
+instantiating and inspecting layout engines. These engines are fundamental
+to the `Environment` class, defining its geometry and connectivity.
+"""
+
 from __future__ import annotations
 
 import inspect
@@ -69,57 +90,60 @@ PolygonType = type[Polygon]
 @runtime_checkable
 class LayoutEngine(Protocol):
     """
-    Protocol defining the interface for all layout definitions.
+    Protocol defining the interface for all spatial layout engines.
 
     A LayoutEngine is responsible for discretizing a continuous N-dimensional
-    space into a set of bins/elements and constructing a graph representation
+    space into a set of bins or elements and constructing a graph representation
     of their connectivity.
 
     Attributes
     ----------
-    bin_centers_ : NDArray[np.float64], shape (n_active_bins, n_dims).
-        N-D Coordinates of the center of each *active* bin
+    bin_centers_ : NDArray[np.float64]
+        Coordinates of the center of each *active* bin/node.
+        Shape is (n_active_bins, n_dims).
     connectivity_graph_ : Optional[nx.Graph]
-        Graph where nodes are indexed 0 to n_active_bins-1, directly corresponding
-        to `bin_centers_`.
-
+        Graph where nodes are integers from `0` to `n_active_bins - 1`,
+        directly corresponding to rows in `bin_centers_`.
         **Mandatory Node Attributes**:
-        - 'pos': Tuple[float, ...] - N-D coordinates of the active bin center.
-        - 'source_grid_flat_index': int - Flat index in the original full conceptual grid.
-        - 'original_grid_nd_index': Tuple[int, ...] - N-D tuple index in the original full conceptual grid.
-
+            - 'pos': Tuple[float, ...] - N-D coordinates of the active bin center.
+            - 'source_grid_flat_index': int - Flat index in the original
+              full conceptual grid from which this active bin originated.
+            - 'original_grid_nd_index': Tuple[int, ...] - N-D tuple index
+              in the original full conceptual grid.
         **Mandatory Edge Attributes**:
-        - 'distance': float - Euclidean distance between connected bin centers.
-        - 'weight': float - Cost for pathfinding (typically equals 'distance').
-
+            - 'distance': float - Euclidean distance between connected bin centers.
+            - 'weight': float - Cost for pathfinding, often equals 'distance'.
         **Recommended Edge Attributes**:
-        - 'vector': Tuple[float, ...] - Displacement vector.
-        - 'angle_2d': Optional[float] - Angle of displacement vector for 2D layouts.
-        - 'edge_id': int - Unique ID for the edge within this graph.
+            - 'vector': Tuple[float, ...] - Displacement vector between centers.
+            - 'angle_2d': Optional[float] - Angle of displacement for 2D layouts.
+            - 'edge_id': int - Unique ID for the edge within this graph.
     is_1d : bool
-        True if the layout represents a 1-dimensional structure.
+        True if the layout represents a primarily 1-dimensional structure
+        (e.g., a linearized track), False otherwise.
     dimension_ranges_ : Optional[Sequence[Tuple[float, float]]]
         The actual min/max extent `[(min_d0, max_d0), ..., (min_dN-1, max_dN-1)]`
         covered by the layout's geometry.
     grid_edges_ : Optional[Tuple[NDArray[np.float64], ...]]
-        For grid-based layouts: Bin edges for each dimension of the *original, full grid*.
-        None or () for non-grid layouts.
+        For grid-based layouts: A tuple of 1D arrays, where each array
+        contains the bin edge positions for one dimension of the *original,
+        full grid*. `None` or `()` for non-grid or point-based layouts.
     grid_shape_ : Optional[Tuple[int, ...]]
-        For grid-based layouts: The N-D shape of the *original, full grid*.
-        For point-based/cell-based layouts: (n_active_bins,).
+        For grid-based layouts: The N-D shape (number of bins in each
+        dimension) of the *original, full grid*.
+        For point-based/cell-based layouts without a full grid concept:
+        Typically `(n_active_bins,)`.
     active_mask_ : Optional[NDArray[np.bool_]]
-        - For grid-based layouts: N-D boolean mask on the *original, full grid*.
-        - For point-based/cell-based layouts: 1D array of all True,
-          shape (n_active_bins,), corresponding to `bin_centers_`.
+        - For grid-based layouts: An N-D boolean mask indicating active bins
+          on the *original, full grid* (shape matches `grid_shape_`).
+        - For point-based/cell-based layouts: A 1D array of `True` values,
+          shape `(n_active_bins,)`, corresponding to `bin_centers_`.
     _layout_type_tag : str
-        String identifier for the type of layout (e.g., "RegularGrid").
+        A string identifier for the type of layout (e.g., "RegularGrid").
+        Used for introspection and serialization.
     _build_params_used : Dict[str, Any]
-        Dictionary of parameters used to build this layout instance.
+        A dictionary of the parameters used to construct this layout instance.
+        Used for introspection and serialization.
 
-    Properties
-    ----------
-    is_1d : bool
-        True if the layout represents a 1-dimensional structure.
     """
 
     # --- Required Data Attributes ---
@@ -139,54 +163,68 @@ class LayoutEngine(Protocol):
     # --- Required Methods ---
     def build(self, **kwargs) -> None:
         """
-        Constructs the layout's geometry, bins, and connectivity graph.
-        Populates all attributes defined above.
+        Construct the layout's geometry, bins, and connectivity graph.
+
+        This method is responsible for populating all the attributes defined
+        in the `LayoutEngine` protocol (e.g., `bin_centers_`,
+        `connectivity_graph_`, etc.) based on the provided keyword arguments.
+        The specific arguments required will vary depending on the concrete
+        implementation of the layout engine.
         """
         ...
 
     def point_to_bin_index(self, points: NDArray[np.float64]) -> NDArray[np.int_]:
         """
-        Maps continuous N-D points to discrete active bin indices (0 to N-1).
-        Returns -1 for points not mapped to an active bin.
+        Map continuous N-D points to discrete active bin indices.
+
+        The returned indices range from `0` to `n_active_bins - 1`.
+        A value of -1 indicates that the corresponding point did not map
+        to any active bin (e.g., it's outside the defined environment).
 
         Parameters
         ----------
         points : NDArray[np.float64], shape (n_points, n_dims)
-            N-D array of points to map to bin indices.
+            An array of N-dimensional points to map to bin indices.
 
         Returns
         -------
         NDArray[np.int_], shape (n_points,)
-            Array of bin indices corresponding to the input points.
+            An array of active bin indices corresponding to the input points.
             -1 for points outside the layout's active bins.
         """
         ...
 
     def get_bin_neighbors(self, bin_index: int) -> List[int]:
         """
-        Finds indices of neighboring active bins for a given active bin index (0 to N-1).
-        Uses `connectivity_graph_`.
+        Find indices of neighboring active bins for a given active bin index.
+
+        This typically uses the `connectivity_graph_`. The input `bin_index`
+        and returned indices are relative to the active bins (0 to N-1).
 
         Parameters
         ----------
         bin_index : int
-            Index of the active bin for which to find neighbors.
+            The index (0 to `n_active_bins - 1`) of the active bin for which
+            to find neighbors.
+
         Returns
         -------
         List[int]
-            List of indices of neighboring active bins.
+            A list of active bin indices that are neighbors to `bin_index`.
         """
         ...
 
     @property
     @abstractmethod
     def is_1d(self) -> bool:
-        """True if the layout structure is primarily 1-dimensional.
+        """
+        Indicate if the layout structure is primarily 1-dimensional.
 
         Returns
         -------
         bool
-            True if the layout is 1D, False otherwise.
+            True if the layout represents a 1D structure (e.g., a linearized
+            track), False otherwise.
         """
         ...
 
@@ -194,13 +232,17 @@ class LayoutEngine(Protocol):
     def plot(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
-        """Plots the layout's geometry.
+        """
+        Plot the layout's geometry.
 
         Parameters
         ----------
-        ax : Optional[matplotlib.axes.Axes]
-            Axes to plot on. If None, a new figure and axes are created.
-        **kwargs : Additional keyword arguments for customization.
+        ax : Optional[matplotlib.axes.Axes], optional
+            The Matplotlib axes to plot on. If None, a new figure and axes
+            are created. Defaults to None.
+        **kwargs : Any
+            Additional keyword arguments for plot customization, specific to
+            the layout engine implementation.
 
         Returns
         -------
@@ -211,12 +253,18 @@ class LayoutEngine(Protocol):
 
     @abstractmethod
     def get_bin_area_volume(self) -> NDArray[np.float64]:
-        """Returns the area/volume of each bin in the layout.
+        """
+        Return the area (2D) or volume (3D+) of each active bin.
+
+        For 1D layouts, this typically returns the length of each bin.
+        The measure should correspond to the dimensionality of the space
+        the bins occupy.
 
         Returns
         -------
-        NDArray[np.float64]
-            Array of bin areas/volumes.
+        NDArray[np.float64], shape (n_active_bins,)
+            An array where each element is the area/volume/length of the
+            corresponding active bin.
         """
         ...
 
@@ -226,23 +274,17 @@ class LayoutEngine(Protocol):
 # ---------------------------------------------------------------------------
 class _KDTreeMixin:
     """
-    Mixin providing `point_to_bin_index` and `get_bin_neighbors`
-    functionality using a KD-tree built on bin centers and a NetworkX graph
-    for connectivity.
+    Mixin providing point-to-bin mapping and neighbor finding using a KD-tree.
 
-    It finds the nearest bin center to a given point and returns the index of
-    that bin center in `bin_centers_`. The KD-tree is built on the active
-    bin centers, and the graph is used to find neighboring bins.
+    This mixin uses a KD-tree built on bin centers for nearest-neighbor
+    searches (`point_to_bin_index`) and a NetworkX graph for connectivity
+    to find neighbors (`get_bin_neighbors`).
 
-    This mixin assumes that the class it's mixed into will define:
-    - `self.bin_centers_`: An NDArray of shape (n_active_bins, n_dims)
-      containing the coordinates of the active bin centers. This is the array
-      on which the KD-tree will be built.
-    - `self.connectivity_graph_`: A NetworkX graph where nodes are integers
-      from `0` to `n_active_bins - 1`, corresponding to the rows of
-      `self.bin_centers_`.
+    Assumes the inheriting class defines:
+    - `self.bin_centers_`: NDArray of active bin center coordinates.
+    - `self.connectivity_graph_`: NetworkX graph of active bins.
 
-    The `_build_kdtree` method should be called by the implementing layout's
+    The `_build_kdtree` method must be called by the inheriting layout's
     `build` method after `bin_centers_` is finalized.
 
     Attributes:
@@ -348,8 +390,10 @@ class _KDTreeMixin:
 
     def point_to_bin_index(self, points: NDArray[np.float64]) -> NDArray[np.int_]:
         """
-        Maps continuous N-D points to discrete active bin indices (0 to N-1)
-        by finding the nearest bin center in `self.bin_centers_`.
+        Map N-D points to active bin indices using nearest-neighbor search.
+
+        Finds the nearest active bin center in `self.bin_centers_` (on which
+        the KD-tree was built) to each query point.
 
         Parameters
         ----------
@@ -359,9 +403,8 @@ class _KDTreeMixin:
         Returns
         -------
         NDArray[np.int_], shape (n_query_points,)
-            Array of active bin indices (corresponding to rows in `self.bin_centers_`
-            and node IDs in `self.connectivity_graph_`).
-            Returns -1 for points if the KD-tree is not built or is empty.
+            Array of active bin indices (0 to `n_active_bins - 1`).
+            Returns -1 for all points if the KD-tree is not built or is empty.
         """
         query_points = np.atleast_2d(points)
         n_query_points = query_points.shape[0]
@@ -407,15 +450,16 @@ class _KDTreeMixin:
 
     def get_bin_neighbors(self, bin_index: int) -> List[int]:
         """
-        Finds indices of neighboring active bins for a given active bin index.
+        Find indices of neighboring active bins for a given active bin index.
 
-        Uses the `connectivity_graph_` which should be defined by the layout
-        and have nodes `0` to `n_active_bins - 1`.
+        Uses the `connectivity_graph_` which should have nodes `0` to
+        `n_active_bins - 1`.
 
         Parameters
         ----------
         bin_index : int
-            Index of the active bin (0 to n_active_bins - 1) for which to find neighbors.
+            Index (0 to `n_active_bins - 1`) of the active bin for which
+            to find neighbors.
 
         Returns
         -------
@@ -427,7 +471,7 @@ class _KDTreeMixin:
         AttributeError
             If `connectivity_graph_` is not defined on the instance.
         ValueError
-            If `connectivity_graph_` is None (not built).
+            If `connectivity_graph_` is None (e.g., not built).
         """
         if not hasattr(self, "connectivity_graph_"):
             raise AttributeError(
@@ -455,6 +499,18 @@ class _KDTreeMixin:
 
 
 class _GridMixin:
+    """
+    Mixin for grid-based layout engines (e.g., RegularGrid, ShapelyPolygon).
+
+    Provides common functionality for layouts that are based on an underlying
+    N-dimensional grid, such as `point_to_bin_index` using grid definitions,
+    default plotting, and `get_bin_area_volume` for uniform grids.
+
+    Assumes the inheriting class defines grid-specific attributes like
+    `grid_edges_`, `grid_shape_`, `active_mask_`, `bin_centers_`, and
+    `connectivity_graph_`.
+    """
+
     grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
     grid_shape_: Optional[Tuple[int, ...]] = None
     active_mask_: Optional[NDArray[np.bool_]] = None
@@ -464,6 +520,27 @@ class _GridMixin:
     _layout_type_tag: str = "_Grid_Layout"
 
     def point_to_bin_index(self, points: NDArray[np.float64]) -> NDArray[np.int_]:
+        """
+        Map N-D points to active bin indices based on grid structure.
+
+        Uses the grid's `grid_edges_`, `grid_shape_`, and `active_mask_`
+        to determine the corresponding active bin for each point.
+
+        Parameters
+        ----------
+        points : NDArray[np.float64], shape (n_points, n_dims)
+            N-D points to map.
+
+        Returns
+        -------
+        NDArray[np.int_], shape (n_points,)
+            Active bin indices (0 to N-1). -1 for points outside active areas.
+
+        Raises
+        ------
+        RuntimeError
+            If grid attributes (`grid_edges_`, `grid_shape_`) are not set.
+        """
         if self.grid_edges_ is None or self.grid_shape_ is None:
             raise RuntimeError("Grid layout not built; edges or shape missing.")
 
@@ -476,27 +553,22 @@ class _GridMixin:
 
     def get_bin_neighbors(self, bin_index: int) -> List[int]:
         """
-        Finds indices of neighboring active bins for a given active bin index.
-
-        Uses the `connectivity_graph_` which should be defined by the layout
-        and have nodes `0` to `n_active_bins - 1`.
+        Find indices of neighboring active bins using the connectivity graph.
 
         Parameters
         ----------
         bin_index : int
-            Index of the active bin (0 to n_active_bins - 1) for which to find neighbors.
+            Index (0 to `n_active_bins - 1`) of the active bin.
 
         Returns
         -------
         List[int]
-            List of indices of neighboring active bins.
+            List of neighboring active bin indices.
 
         Raises
         ------
-        AttributeError
-            If `connectivity_graph_` is not defined on the instance.
         ValueError
-            If `connectivity_graph_` is None (not built).
+            If `connectivity_graph_` is None.
         """
         if not hasattr(self, "connectivity_graph_"):
             raise AttributeError(
@@ -533,19 +605,42 @@ class _GridMixin:
         node_color: str = "blue",
     ) -> matplotlib.axes.Axes:
         """
+        Plot the grid-based layout.
+
+        For 2D grids, displays the `active_mask_` using `pcolormesh` and
+        optionally overlays the `connectivity_graph_`.
+
         Parameters
         ----------
-        ax : Optional[matplotlib.axes.Axes]
-            Axes to plot on. If None, a new figure and axes are created.
-        figsize : tuple, default=(7, 7)
+        ax : Optional[matplotlib.axes.Axes], optional
+            Axes to plot on. If None, new figure and axes are created.
+        figsize : Tuple[float, float], default=(7, 7)
             Size of the figure if a new one is created.
         cmap : str, default="bone_r"
-            Colormap for the active mask.
+            Colormap for the `active_mask_` plot.
         alpha : float, default=0.7
-            Transparency level for the active mask.
+            Transparency for the `active_mask_` plot.
         draw_connectivity_graph : bool, default=True
-            If True, draws the connectivity graph on top of the active mask.
+            If True, draw the connectivity graph nodes and edges.
+        node_size : float, default=20
+            Size of nodes if `draw_connectivity_graph` is True.
+        node_color : str, default="blue"
+            Color of nodes if `draw_connectivity_graph` is True.
+        **kwargs : Any
+            Additional keyword arguments passed to `ax.pcolormesh` or
+            NetworkX drawing functions.
 
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes on which the layout was plotted.
+
+        Raises
+        ------
+        RuntimeError
+            If layout attributes are not built.
+        NotImplementedError
+            If attempting to plot a non-2D grid layout with this method.
         """
         if (
             self.bin_centers_ is None
@@ -601,16 +696,53 @@ class _GridMixin:
 
     @property
     def is_1d(self) -> bool:
-        """RegularGridLayout is N-D"""
+        """
+        Indicate if the grid layout is 1-dimensional.
+
+        Standard grid layouts (RegularGrid, etc.) are generally N-D (N>=1).
+        This mixin's default assumes not strictly 1D in the sense of a
+        linearized track (which GraphLayout would handle).
+
+        Returns
+        -------
+        bool
+            False, as this mixin is for general N-D grids.
+        """
         return False
 
     def get_bin_area_volume(self) -> NDArray[np.float64]:
+        """
+        Calculate area/volume for each active bin, assuming a uniform grid.
+
+        Computes the product of bin side lengths for each dimension from
+        `grid_edges_`. Assumes all bins in the grid have the same dimensions.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_active_bins,)
+            Array containing the constant area/volume for each active bin.
+
+        Raises
+        ------
+        RuntimeError
+            If `grid_edges_` or `bin_centers_` is not populated.
+        """
+        if self.grid_edges_ is None or self.bin_centers_ is None:  # pragma: no cover
+            raise RuntimeError("Layout not built; grid_edges_ or bin_centers_ missing.")
+        if not self.grid_edges_ or not all(
+            len(e) > 1 for e in self.grid_edges_
+        ):  # pragma: no cover
+            raise ValueError(
+                "grid_edges_ are not properly defined for area/volume calculation."
+            )
+
+        # Assume uniform bin sizes from the first diff of each dimension's edges
         bin_dimension_sizes = np.array(
             [np.diff(edge_dim)[0] for edge_dim in self.grid_edges_]
         )
-        single_bin_volume = np.prod(bin_dimension_sizes)
+        single_bin_measure = np.prod(bin_dimension_sizes)
 
-        return np.full(self.bin_centers_.shape[0], single_bin_volume)
+        return np.full(self.bin_centers_.shape[0], single_bin_measure)
 
 
 # ---------------------------------------------------------------------------
@@ -623,7 +755,9 @@ class RegularGridLayout(_GridMixin):
     Axis-aligned rectangular N-D grid layout.
 
     Discretizes space into a uniform N-dimensional grid. Can infer the
-    active portion of this grid based on provided data samples.
+    active portion of this grid based on provided data samples using occupancy
+    and morphological operations. Inherits grid-based functionalities from
+    `_GridMixin`.
     """
 
     bin_centers_: NDArray[np.float64]
@@ -637,6 +771,7 @@ class RegularGridLayout(_GridMixin):
     _build_params_used: Dict[str, Any]
 
     def __init__(self):
+        """Initialize a RegularGridLayout engine."""
         self._layout_type_tag = "RegularGrid"
         self._build_params_used = {}
         # Initialize all protocol attributes to satisfy type checkers, even if None
@@ -662,7 +797,7 @@ class RegularGridLayout(_GridMixin):
         connect_diagonal_neighbors: bool = True,
     ) -> None:
         """
-        Builds the regular grid layout.
+        Build the regular N-D grid layout.
 
         Parameters
         ----------
@@ -759,9 +894,9 @@ class HexagonalLayout(_KDTreeMixin):
     2D layout that tiles a rectangular area with a hexagonal lattice.
 
     Bin centers are the centers of the hexagons. Hexagons are connected to their
-    immediate neighbors in the lattice. Can infer an active subset of these
-    hexagons based on data sample occupancy, leveraging an intermediate
-    regular grid for robust morphological operations.
+    immediate neighbors. Active hexagons can be inferred from data sample
+    occupancy. Uses `_KDTreeMixin` for neighbor finding after the connectivity
+    graph is built, but `point_to_bin_index` is specialized for hexagonal grids.
     """
 
     bin_centers_: NDArray[np.float64]
@@ -780,6 +915,7 @@ class HexagonalLayout(_KDTreeMixin):
     _source_flat_to_active_id_map: Optional[Dict[int, int]] = None
 
     def __init__(self):
+        """Initialize a HexagonalLayout engine."""
         self._layout_type_tag = "Hexagonal"
         self._build_params_used = {}
         self.bin_centers_ = np.empty((0, 2))
@@ -806,6 +942,34 @@ class HexagonalLayout(_KDTreeMixin):
         infer_active_bins: bool = True,
         bin_count_threshold: int = 0,
     ) -> None:
+        """
+        Build the hexagonal grid layout.
+
+        Parameters
+        ----------
+        hexagon_width : float
+            The width of the hexagons (distance between parallel sides).
+        dimension_ranges : Optional[Tuple[Tuple[float,float], Tuple[float,float]]], optional
+            Explicit `[(min_x, max_x), (min_y, max_y)]` for the area to tile.
+            If None (default), range is inferred from `data_samples`.
+        data_samples : Optional[NDArray[np.float64]], shape (n_samples, 2), optional
+            2D data used to infer `dimension_ranges` (if not provided) and/or
+            to infer active hexagons (if `infer_active_bins` is True).
+            Defaults to None.
+        infer_active_bins : bool, default=True
+            If True and `data_samples` are provided, infers active hexagons
+            based on occupancy. If False, all hexagons within the defined
+            area are considered active.
+        bin_count_threshold : int, default=0
+            If `infer_active_bins` is True, the minimum number of samples a
+            hexagon must contain to be considered active.
+
+        Raises
+        ------
+        ValueError
+            If `dimension_ranges` and `data_samples` are both None, or if
+            `hexagon_width` is not positive.
+        """
         self._build_params_used = locals().copy()  # Store all passed params
         del self._build_params_used["self"]  # Remove self from the dictionary
 
@@ -854,11 +1018,32 @@ class HexagonalLayout(_KDTreeMixin):
 
     @property
     def is_1d(self) -> bool:
+        """Hexagonal layouts are 2-dimensional."""
         return False
 
     def plot(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
+        """
+        Plot the hexagonal layout.
+
+        Displays active hexagons and their connectivity graph.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], optional
+            Axes to plot on. If None, new figure and axes are created.
+        **kwargs : Any
+            Additional keyword arguments:
+            - `show_hexagons` (bool, default=True): Whether to draw hexagon cells.
+            - `hexagon_kwargs` (dict): Kwargs for `matplotlib.patches.RegularPolygon`.
+            - Other kwargs are passed to `_generic_graph_plot` for the graph.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes on which the layout is plotted.
+        """
         ax = _generic_graph_plot(
             ax=ax,
             graph=self.connectivity_graph_,
@@ -930,8 +1115,20 @@ class HexagonalLayout(_KDTreeMixin):
 
     def point_to_bin_index(self, points):
         """
-        Maps continuous N-D points to discrete active bin indices (0 to N-1).
-        Returns -1 for points not mapped to an active bin.
+        Map 2D points to active hexagonal bin indices.
+
+        Uses specialized logic to determine which hexagon each point falls into,
+        then maps this to an active bin index.
+
+        Parameters
+        ----------
+        points : NDArray[np.float64], shape (n_points, 2)
+            2D points to map.
+
+        Returns
+        -------
+        NDArray[np.int_], shape (n_points,)
+            Active bin indices (0 to N-1). -1 for points not in an active hexagon.
         """
         if (
             self.grid_offset_x_ is None
@@ -964,17 +1161,39 @@ class HexagonalLayout(_KDTreeMixin):
         )
 
     def get_bin_area_volume(self) -> NDArray[np.float64]:
+        """
+        Calculate the area of each hexagonal bin.
+
+        All active hexagons are assumed to have the same area.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_active_bins,)
+            Array containing the constant area for each active hexagonal bin.
+
+        Raises
+        ------
+        RuntimeError
+            If `hex_radius_` or `bin_centers_` is not populated.
+        """
+        if self.hex_radius_ is None or self.bin_centers_ is None:  # pragma: no cover
+            raise RuntimeError("Layout not built; hex_radius_ or bin_centers_ missing.")
+
+        # Area of a regular hexagon: (3 * sqrt(3) / 2) * side_length^2
+        # For pointy-top hexagons, side_length (s) is equal to hex_radius_ (R, center to vertex).
         single_hex_area = 3.0 * np.sqrt(3.0) / 2.0 * self.hex_radius_**2.0
         return np.full(self.bin_centers_.shape[0], single_hex_area)
 
 
 class GraphLayout(_KDTreeMixin):
-    """User-provided graph layout.
+    """
+    Layout defined by a user-provided graph, typically for 1D tracks.
 
-    The graph is expected to be a NetworkX graph with nodes having 'pos'
-    attributes for their coordinates. The graph is used to define the
-    connectivity of the layout. The layout is not necessarily regular or
-    uniform, and the bin centers are derived from the graph's node positions.
+    The graph's nodes (with 'pos' attributes) and a specified edge order
+    are used to create a linearized representation of the space, which is
+    then binned. Connectivity is derived from this binned structure.
+    Uses `_KDTreeMixin` for point mapping and neighbor finding on the
+    N-D embeddings of the linearized bin centers.
     """
 
     bin_centers_: NDArray[np.float64]
@@ -989,11 +1208,19 @@ class GraphLayout(_KDTreeMixin):
     _build_params_used: Dict[str, Any]
 
     # Layout Specific
-    linear_bin_centers_: NDArray[np.float64] = None
+    linear_bin_centers_: Optional[NDArray[np.float64]] = None
 
     def __init__(self):
+        """Initialize a GraphLayout engine."""
         self._layout_type_tag = "Graph"
         self._build_params_used = {}
+        self.bin_centers_ = np.empty((0, 0), dtype=np.float64)
+        self.connectivity_graph_ = None
+        self.dimension_ranges_ = None
+        self.grid_edges_ = None
+        self.grid_shape_ = None
+        self.active_mask_ = None
+        self.linear_bin_centers_ = None
 
     def build(
         self,
@@ -1003,6 +1230,33 @@ class GraphLayout(_KDTreeMixin):
         edge_spacing: Union[float, Sequence[float]],
         bin_size: float,  # Linearized bin size
     ) -> None:
+        """
+        Build the graph-based (linearized track) layout.
+
+        Parameters
+        ----------
+        graph_definition : nx.Graph
+            The original NetworkX graph. Nodes must have a 'pos' attribute
+            (e.g., `(x, y)` coordinates) and edges should ideally have a
+            'distance' attribute if not relying on Euclidean distance calculation.
+        edge_order : List[Tuple[Any, Any]]
+            An ordered sequence of edge tuples (node_id_1, node_id_2) from
+            `graph_definition` that defines the ordering of edges in the
+            linear space.
+        edge_spacing : Union[float, Sequence[float]]
+            Spacing (gap) to insert between consecutive edges in `edge_order`
+            during linearization. If float, same gap for all. If sequence,
+            specifies each gap; length must be `len(edge_order) - 1`.
+        bin_size : float
+            The desired length of each bin along the linearized space.
+
+        Raises
+        ------
+        TypeError
+            If `graph_definition` is not a NetworkX graph.
+        ValueError
+            If `edge_order` is empty or `bin_size` is not positive.
+        """
         self._build_params_used = locals().copy()  # Store all passed params
         del self._build_params_used["self"]  # Remove self from the dictionary
 
@@ -1046,11 +1300,37 @@ class GraphLayout(_KDTreeMixin):
 
     @property
     def is_1d(self) -> bool:
-        return True  # GraphLayout is 1D by default
+        """Graph layouts are treated as 1-dimensional due to linearization."""
+        return True
 
     def plot(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
+        """
+        Plot the N-D embedding of the graph-based layout.
+
+        Displays the original graph used for definition, the N-D positions of
+        the binned track segments (active bin centers), and their connectivity.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], optional
+            Axes to plot on. If None, new figure and axes are created.
+        **kwargs : Any
+            Additional keyword arguments:
+            - `figsize` (tuple): Figure size if `ax` is None.
+            - `node_kwargs` (dict): Kwargs for plotting original graph nodes.
+            - `edge_kwargs` (dict): Kwargs for plotting original graph edges.
+            - `bin_node_kwargs` (dict): Kwargs for plotting active bin center nodes.
+            - `bin_edge_kwargs` (dict): Kwargs for plotting connectivity graph edges.
+            - `show_bin_edges` (bool): Whether to project and plot 1D bin edges in N-D.
+
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes on which the layout is plotted.
+        """
         if ax is None:
             _, ax = plt.subplots(figsize=(7, 7))
 
@@ -1122,8 +1402,29 @@ class GraphLayout(_KDTreeMixin):
     def plot_linear_layout(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
+        """
+        Plot the 1D linearized representation of the graph layout.
+
+        Uses `track_linearization.plot_graph_as_1D` to display the track
+        segments and nodes in their 1D linearized positions. Overlays the
+        1D bin edges from `self.grid_edges_`.
+
+        Parameters
+        ----------
+        ax : Optional[matplotlib.axes.Axes], optional
+            Axes to plot on. If None, new figure and axes are created.
+        **kwargs : Any
+            Additional keyword arguments passed to
+            `track_linearization.plot_graph_as_1D` and for customizing
+            the appearance of bin edge lines.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes on which the 1D layout is plotted.
+        """
         if ax is None:
-            _, ax = plt.subplots(figsize=(7, 2))
+            _, ax = plt.subplots(figsize=kwargs.get("figsize", (10, 3)))
 
         plot_graph_as_1D(
             self._build_params_used["graph_definition"],
@@ -1143,6 +1444,22 @@ class GraphLayout(_KDTreeMixin):
     def get_linearized_coordinate(
         self, data_points: NDArray[np.float64]
     ) -> NDArray[np.float64]:
+        """
+        Convert N-D points to 1D linearized coordinates along the track.
+
+        Uses `track_linearization.get_linearized_position`.
+
+        Parameters
+        ----------
+        data_points : NDArray[np.float64], shape (n_points, n_dims)
+            N-D points to linearize.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_points,)
+            1D linearized coordinates. NaNs may be returned for points
+            far from the track.
+        """
         return _get_linearized_position(
             data_points,
             self._build_params_used["graph_definition"],
@@ -1153,6 +1470,19 @@ class GraphLayout(_KDTreeMixin):
     def map_linear_to_nd_coordinate(
         self, linear_coordinates: NDArray[np.float64]
     ) -> NDArray[np.float64]:
+        """
+        Map 1D linearized coordinates back to N-D coordinates on the track graph.
+
+        Parameters
+        ----------
+        linear_coordinates : NDArray[np.float64], shape (n_points,)
+            1D linearized coordinates to map.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_points, n_dims)
+            N-D coordinates corresponding to the input linear positions.
+        """
         return _project_1d_to_2d(
             linear_coordinates,
             self._build_params_used["graph_definition"],
@@ -1161,11 +1491,47 @@ class GraphLayout(_KDTreeMixin):
         )
 
     def linear_point_to_bin_ind(self, data_points):
+        """
+        Map 1D linearized positions to active 1D bin indices.
+
+        Parameters
+        ----------
+        linear_positions : NDArray[np.float64], shape (n_points,)
+            1D linearized positions.
+
+        Returns
+        -------
+        NDArray[np.int_], shape (n_points,)
+            Indices of the active 1D bins corresponding to each linear position.
+            Returns -1 for positions outside active bins or in gaps.
+            Note: These are indices relative to the set of *active* 1D bins,
+            not indices into the full `linear_bin_centers_all` array.
+        """
         return _find_bin_for_linear_position(
             data_points, bin_edges=self.grid_edges_[0], active_mask=self.active_mask_
         )
 
     def get_bin_area_volume(self) -> NDArray[np.float64]:
+        """
+        Return the length of each active 1D bin along the linearized track.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_active_bins,)
+            Array containing the length of each active linearized bin.
+
+        Raises
+        ------
+        RuntimeError
+            If `grid_edges_` or `active_mask_` is not populated.
+        """
+        if self.grid_edges_ is None or self.active_mask_ is None:  # pragma: no cover
+            raise RuntimeError("Layout not built; grid_edges_ or active_mask_ missing.")
+        if not self.grid_edges_ or self.grid_edges_[0].size <= 1:  # pragma: no cover
+            raise ValueError(
+                "grid_edges_ (1D) are not properly defined for length calculation."
+            )
+
         all_1d_bin_lengths = np.diff(self.grid_edges_[0])
         return all_1d_bin_lengths[self.active_mask_]
 
@@ -1173,7 +1539,14 @@ class GraphLayout(_KDTreeMixin):
 if SHAPELY_AVAILABLE:
 
     class ShapelyPolygonLayout(_GridMixin):
-        """2D grid layout masked by a Shapely Polygon."""
+        """
+        2D grid layout masked by a Shapely Polygon.
+
+        Creates a regular grid based on the polygon's bounds and specified
+        `bin_size`. Only grid cells whose centers are contained within the
+        polygon are considered active. Inherits grid functionalities from
+        `_GridMixin`.
+        """
 
         bin_centers_: NDArray[np.float64]
         connectivity_graph_: Optional[nx.Graph] = None
@@ -1190,8 +1563,16 @@ if SHAPELY_AVAILABLE:
         _polygon_definition: Optional[PolygonType] = None
 
         def __init__(self):
+            """Initialize a ShapelyPolygonLayout engine."""
             self._layout_type_tag = "ShapelyPolygon"
             self._build_params_used = {}
+            self.bin_centers_ = np.empty((0, 2), dtype=np.float64)  # 2D Layout
+            self.connectivity_graph_ = None
+            self.dimension_ranges_ = None
+            self.grid_edges_ = None
+            self.grid_shape_ = None
+            self.active_mask_ = None
+            self.polygon_definition_ = None
 
         def build(
             self,
@@ -1200,6 +1581,30 @@ if SHAPELY_AVAILABLE:
             bin_size: Union[float, Sequence[float]],
             connect_diagonal_neighbors: bool = True,
         ) -> None:
+            """
+            Build the Shapely Polygon masked grid layout.
+
+            Parameters
+            ----------
+            polygon : shapely.geometry.Polygon
+                The Shapely Polygon object that defines the boundary of the
+                active area.
+            bin_size : Union[float, Sequence[float]]
+                The side length(s) of the grid cells. If float, cells are
+                square (or cubic). If sequence (length 2 for 2D), specifies
+                (width, height).
+            connect_diagonal_neighbors : bool, default=True
+                If True, connect diagonally adjacent active grid cells in the
+                `connectivity_graph_`.
+
+            Raises
+            ------
+            RuntimeError
+                If the 'shapely' package is not installed (should be caught by
+                SHAPELY_AVAILABLE check at class definition).
+            TypeError
+                If `polygon` is not a Shapely Polygon.
+            """
             if not SHAPELY_AVAILABLE:
                 raise RuntimeError("ShapelyGridEngine requires the 'shapely' package.")
 
@@ -1257,19 +1662,27 @@ if SHAPELY_AVAILABLE:
         **kwargs,
     ) -> matplotlib.axes.Axes:
         """
+        Plot the ShapelyPolygon layout.
+
+        Displays the active grid cells and overlays the defining polygon.
+        Inherits base grid plotting from `_GridMixin.plot` and adds
+        polygon visualization.
+
         Parameters
         ----------
-        ax : Optional[matplotlib.axes.Axes]
-            Axes to plot on. If None, a new figure and axes are created.
-        figsize : tuple, default=(7, 7)
-            Size of the figure if a new one is created.
-        cmap : str, default="bone_r"
-            Colormap for the active mask.
-        alpha : float, default=0.7
-            Transparency level for the active mask.
-        draw_connectivity_graph : bool, default=True
-            If True, draws the connectivity graph on top of the active mask.
+        ax : Optional[matplotlib.axes.Axes], optional
+            Axes to plot on. If None, new figure and axes are created.
+        figsize : Tuple[float, float], default=(7, 7)
+            Size of the figure if `ax` is None.
+        **kwargs : Any
+            Additional keyword arguments passed to `_GridMixin.plot()`
+            (e.g., `cmap`, `alpha` for the grid) and for polygon plotting
+            (e.g., `polygon_kwargs` which is a dict for `ax.fill`).
 
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes on which the layout is plotted.
         """
         if (
             self.bin_centers_ is None
@@ -1341,7 +1754,14 @@ else:
 
 
 class MaskedGridLayout(_GridMixin):  # type: ignore
-    """Layout from a pre-defined N-D boolean mask and grid edges."""
+    """
+    Layout from a pre-defined N-D boolean mask and explicit grid edges.
+
+    Allows for precise specification of active bins in an N-dimensional grid
+    by providing the complete grid structure (`grid_edges`) and a mask
+    (`active_mask`) that designates which cells of that grid are active.
+    Inherits grid functionalities from `_GridMixin`.
+    """
 
     bin_centers_: NDArray[np.float64]
     connectivity_graph_: Optional[nx.Graph] = None
@@ -1353,10 +1773,19 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
 
     _layout_type_tag: str
     _build_params_used: Dict[str, Any]
+    bin_size_: Optional[NDArray[np.float64]] = None
 
     def __init__(self):
+        """Initialize a MaskedGridLayout engine."""
         self._layout_type_tag = "MaskedGrid"
-        self._build_params_used = {}  # type: ignore
+        self._build_params_used = {}
+        self.bin_centers_ = np.empty((0, 0), dtype=np.float64)
+        self.connectivity_graph_ = None
+        self.dimension_ranges_ = None
+        self.grid_edges_ = None
+        self.grid_shape_ = None
+        self.active_mask_ = None
+        self.bin_size_ = None
 
     def build(
         self,
@@ -1365,6 +1794,27 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
         grid_edges: Tuple[NDArray[np.float64], ...],
         connect_diagonal_neighbors: bool = True,
     ) -> None:
+        """
+        Build the layout from a mask and grid edges.
+
+        Parameters
+        ----------
+        active_mask : NDArray[np.bool_]
+            N-dimensional boolean array where `True` indicates an active bin.
+            Its shape must correspond to the number of bins defined by `grid_edges`
+            (i.e., `tuple(len(e)-1 for e in grid_edges)`).
+        grid_edges : Tuple[NDArray[np.float64], ...]
+            A tuple where each element is a 1D NumPy array of bin edge
+            positions for that dimension, defining the full grid structure.
+        connect_diagonal_neighbors : bool, default=True
+            If True, connect diagonally adjacent active grid cells.
+
+        Raises
+        ------
+        ValueError
+            If `active_mask` shape does not match `grid_edges` definition,
+            or if `grid_edges` are invalid.
+        """
         self._build_params_used = locals().copy()  # Store all passed params
         del self._build_params_used["self"]  # Remove self from the dictionary
 
@@ -1395,7 +1845,13 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
 
 
 class ImageMaskLayout(_GridMixin):
-    """2D layout from a boolean image mask, pixel centers are bins."""
+    """
+    2D layout derived from a boolean image mask.
+
+    Each `True` pixel in the input `image_mask` corresponds to an active bin
+    in the environment. The spatial scale of these pixel-bins is determined
+    by `bin_size`. Inherits grid functionalities from `_GridMixin`.
+    """
 
     bin_centers_: NDArray[np.float64]
     connectivity_graph_: Optional[nx.Graph] = None
@@ -1409,8 +1865,15 @@ class ImageMaskLayout(_GridMixin):
     _build_params_used: Dict[str, Any]
 
     def __init__(self):
+        """Initialize an ImageMaskLayout engine."""
         self._layout_type_tag = "ImageMask"
-        self._build_params_used = {}  # type: ignore
+        self._build_params_used = {}
+        self.bin_centers_ = np.empty((0, 2), dtype=np.float64)
+        self.connectivity_graph_ = None
+        self.dimension_ranges_ = None
+        self.grid_edges_ = None
+        self.grid_shape_ = None
+        self.active_mask_ = None
 
     def build(
         self,
@@ -1419,6 +1882,28 @@ class ImageMaskLayout(_GridMixin):
         bin_size: Union[float, Tuple[float, float]] = 1.0,  # one pixel
         connect_diagonal_neighbors: bool = True,
     ) -> None:
+        """
+        Build the layout from a 2D image mask.
+
+        Parameters
+        ----------
+        image_mask : NDArray[np.bool_], shape (n_rows, n_cols)
+            A 2D boolean array where `True` pixels define active bins.
+        bin_size : Union[float, Tuple[float, float]], default=1.0
+            The spatial size of each pixel.
+            If float: pixels are square (size x size).
+            If tuple (width, height): specifies pixel_width and pixel_height.
+        connect_diagonal_neighbors : bool, default=True
+            If True, connect diagonally adjacent active pixel-bins.
+
+        Raises
+        ------
+        TypeError
+            If `image_mask` is not a NumPy array.
+        ValueError
+            If `image_mask` is not 2D, not boolean, or `bin_size` is invalid,
+            or if `image_mask` contains no True values or non-finite values.
+        """
 
         if not isinstance(image_mask, np.ndarray):
             raise TypeError("image_mask must be a numpy array.")
@@ -1495,7 +1980,15 @@ if SHAPELY_AVAILABLE and ShapelyPolygonLayout is not None:
 
 
 def list_available_layouts() -> List[str]:
-    """Lists user-friendly 'type' strings for all available layout definitions."""
+    """
+    List user-friendly type strings for all available layout engines.
+
+    Returns
+    -------
+    List[str]
+        A sorted list of unique string identifiers for available
+        `LayoutEngine` types (e.g., "RegularGrid", "Hexagonal").
+    """
     unique_options: List[str] = []
     processed_normalized_options: set[str] = set()
     for opt in _LAYOUT_MAP.keys():
@@ -1512,7 +2005,32 @@ def list_available_layouts() -> List[str]:
 
 
 def get_layout_parameters(layout_type: str) -> Dict[str, Dict[str, Any]]:
-    """Retrieves expected build parameters for a specified layout type."""
+    """
+    Retrieve expected build parameters for a specified layout engine type.
+
+    Inspects the `build` method signature of the specified `LayoutEngine`
+    class to determine its required and optional parameters.
+
+    Parameters
+    ----------
+    layout_type : str
+        The string identifier of the layout engine type (case-insensitive,
+        ignores non-alphanumeric characters).
+
+    Returns
+    -------
+    Dict[str, Dict[str, Any]]
+        A dictionary where keys are parameter names for the `build` method.
+        Each value is another dictionary containing:
+        - 'annotation': The type annotation of the parameter.
+        - 'default': The default value, or `inspect.Parameter.empty` if no default.
+        - 'kind': The parameter kind (e.g., 'keyword-only').
+
+    Raises
+    ------
+    ValueError
+        If `layout_type` is unknown.
+    """
     normalized_kind_query = "".join(filter(str.isalnum, layout_type)).lower()
     found_key = next(
         (
@@ -1549,7 +2067,33 @@ def get_layout_parameters(layout_type: str) -> Dict[str, Dict[str, Any]]:
 
 
 def create_layout(kind: str, **kwargs) -> LayoutEngine:
-    """Instantiates and builds a layout definition by its 'kind' string."""
+    """
+    Instantiate and build a layout engine by its 'kind' string.
+
+    This factory function finds the appropriate `LayoutEngine` class based
+    on the `kind` string, instantiates it, and calls its `build` method
+    with the provided `**kwargs`.
+
+    Parameters
+    ----------
+    kind : str
+        The string identifier of the layout engine type to create
+        (case-insensitive, ignores non-alphanumeric characters).
+        See `list_available_layouts()` for options.
+    **kwargs : Any
+        Keyword arguments to be passed to the `build` method of the
+        selected layout engine.
+
+    Returns
+    -------
+    LayoutEngine
+        A fully built instance of the specified layout engine.
+
+    Raises
+    ------
+    ValueError
+        If `kind` is an unknown layout engine type.
+    """
     normalized_kind_query = "".join(filter(str.isalnum, kind)).lower()
     found_key = next(
         (
