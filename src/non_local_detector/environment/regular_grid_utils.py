@@ -277,18 +277,22 @@ def _infer_active_bins_from_regular_grid(
             # Expand the occupied area
             active_mask = ndimage.binary_dilation(active_mask, structure=structure)
 
-        if boundary_exists:
-            if active_mask.ndim == 1:
-                if len(active_mask) > 0:
-                    active_mask[-1] = False
-            elif active_mask.ndim > 1 and active_mask.size > 0:
-                for axis_n in range(active_mask.ndim):
-                    slicer_first = [slice(None)] * active_mask.ndim
-                    slicer_first[axis_n] = 0
-                    active_mask[tuple(slicer_first)] = False
-                    slicer_last = [slice(None)] * active_mask.ndim
-                    slicer_last[axis_n] = -1
-                    active_mask[tuple(slicer_last)] = False
+    if boundary_exists:
+        if active_mask.ndim == 1 or (
+            active_mask.ndim == 2 and active_mask.shape[1] == 1
+        ):
+            if active_mask.size > 0:
+                active_mask[0] = False
+            if active_mask.size > 1:
+                active_mask[-1] = False
+        elif active_mask.ndim > 1 and active_mask.size > 0:
+            for axis_n in range(active_mask.ndim):
+                slicer_first = [slice(None)] * active_mask.ndim
+                slicer_first[axis_n] = 0
+                active_mask[tuple(slicer_first)] = False
+                slicer_last = [slice(None)] * active_mask.ndim
+                slicer_last[axis_n] = -1
+                active_mask[tuple(slicer_last)] = False
 
     return active_mask.astype(bool)
 
