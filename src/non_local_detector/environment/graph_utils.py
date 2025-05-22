@@ -135,11 +135,11 @@ def _create_graph_layout_connectivity_graph(
     ----------
     graph : networkx.Graph
         The original graph from which bins were derived.
-    bin_centers_nd : np.ndarray, shape (N_sum_active_mask, 2)
+    bin_centers_nd : np.ndarray, shape (n_active_bins, 2)
         n-D coordinates of the centers of active bins.
-    linear_bin_centers : np.ndarray, shape (N_total_bins,)
+    linear_bin_centers : np.ndarray, shape (n_total_bins,)
         1D coordinates of all bin centers (active and inactive).
-    original_edge_ids : np.ndarray, shape (N_sum_active_mask,)
+    original_edge_ids : np.ndarray, shape (n_active_bins,)
         Integer IDs of the original graph edge for each active bin.
     active_mask : np.ndarray, shape (N_total_bins,), dtype=bool
         Mask indicating which bins in `linear_bin_centers` are active.
@@ -251,7 +251,6 @@ def _create_graph_layout_connectivity_graph(
                         {
                             "distance": float(np.linalg.norm(displacement_vector)),
                             "vector": tuple(displacement_vector.tolist()),
-                            "source_edge_id": int(original_edge_id),
                             "angle_2d": math.atan2(
                                 displacement_vector[1], displacement_vector[0]
                             ),

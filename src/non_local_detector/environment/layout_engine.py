@@ -1011,18 +1011,18 @@ class GraphLayout(_KDTreeMixin):
                 bin_size=bin_size,
             )
         )
-        self.grid_shape_ = (len(self.bin_centers_),)
         self.bin_centers_ = _project_1d_to_2d(
             self.linear_bin_centers_,
             graph_definition,
             edge_order,
             edge_spacing,
         )
+        self.grid_shape_ = (len(self.bin_centers_),)
         self.connectivity_graph_ = _create_graph_layout_connectivity_graph(
             graph=graph_definition,
-            bin_centers_2D=self.bin_centers_,
-            bin_centers_1D=self.linear_bin_centers_,
-            edge_ids=edge_ids,
+            bin_centers_nd=self.bin_centers_,
+            linear_bin_centers=self.linear_bin_centers_,
+            original_edge_ids=edge_ids,
             active_mask=self.active_mask_,
             edge_order=edge_order,
         )
