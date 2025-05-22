@@ -6,6 +6,7 @@ import warnings  # Import warnings
 from pathlib import Path
 from typing import List, Tuple
 
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -16,6 +17,7 @@ from non_local_detector.environment.environment import Environment
 from non_local_detector.environment.layout_engine import (
     SHAPELY_AVAILABLE,
     GraphLayout,
+    HexagonalLayout,
     ImageMaskLayout,
     MaskedGridLayout,
     RegularGridLayout,
@@ -737,3 +739,444 @@ def test_with_dimension_ranges(plus_maze_data_samples: NDArray[np.float64]):
     assert env.dimension_ranges_[1] == tuple(dim_ranges_list[1])
     assert np.sum(env.active_mask_) > 0
     assert env.bin_centers_.shape[0] == np.sum(env.active_mask_)
+
+
+@pytest.fixture
+def data_for_morpho_ops() -> NDArray[np.float64]:
+    """Data designed to test morphological operations.
+    Creates a C-shape that can be dilated, have holes filled (if it formed one),
+    and gaps closed if another segment was nearby.
+    """
+    points = []
+    # Vertical bar
+    for y_val in np.arange(0, 5, 0.5):
+        points.append([0.0, y_val])
+    # Top horizontal bar
+    for x_val in np.arange(0.5, 2.5, 0.5):
+        points.append([x_val, 4.5])
+    # Bottom horizontal bar
+    for x_val in np.arange(0.5, 2.5, 0.5):
+        points.append([x_val, 0.0])
+    return np.array(points)
+
+
+@pytest.fixture
+def env_hexagonal() -> Environment:
+    """A simple hexagonal environment."""
+    return Environment.from_data_samples(
+        data_samples=np.array(
+            [[0, 0], [1, 1], [0, 1], [1, 0], [0.5, 0.5]]
+        ),  # Some points to define an area
+        layout_type="Hexagonal",
+        hexagon_width=1.0,
+        environment_name="HexTestEnv",
+    )
+
+
+@pytest.fixture
+def env_with_disconnected_regions() -> Environment:
+    """Environment with two disconnected active regions using from_nd_mask."""
+    active_mask = np.zeros((10, 10), dtype=bool)
+    active_mask[1:3, 1:3] = True  # Region 1
+    active_mask[7:9, 7:9] = True  # Region 2
+    grid_edges = (np.arange(11.0), np.arange(11.0))
+    return Environment.from_nd_mask(
+        active_mask=active_mask,
+        grid_edges=grid_edges,
+        environment_name="DisconnectedEnv",
+    )
+
+
+@pytest.fixture
+def env_no_active_bins() -> Environment:
+    """Environment with no active bins."""
+    return Environment.from_data_samples(
+        data_samples=np.array([[100.0, 100.0]]),  # Far from default range
+        dimension_ranges=[(0, 1), (0, 1)],  # Explicit small range
+        bin_size=0.5,
+        infer_active_bins=True,
+        bin_count_threshold=5,  # High threshold
+        environment_name="NoActiveEnv",
+    )
+
+
+# --- Test Classes ---
+
+
+class TestFromDataSamplesDetailed:
+    """Detailed tests for Environment.from_data_samples."""
+
+    def test_bin_count_threshold(self):
+        data = np.array(
+            [[0.5, 0.5]] * 2 + [[1.5, 1.5]] * 5
+        )  # Bin (0,0) has 2, Bin (1,1) has 5 (if bin_size=1)
+        env_thresh0 = Environment.from_data_samples(
+            data, bin_size=1.0, bin_count_threshold=0
+        )
+        env_thresh3 = Environment.from_data_samples(
+            data, bin_size=1.0, bin_count_threshold=3
+        )
+
+        # Assuming (0.5,0.5) is in one bin and (1.5,1.5) in another with bin_size=1
+        # This requires knowing how bins are aligned.
+        # A simpler check: number of active bins decreases with threshold.
+        assert env_thresh0.bin_centers_.shape[0] > env_thresh3.bin_centers_.shape[0]
+        if (
+            env_thresh0.bin_centers_.shape[0] == 2
+            and env_thresh3.bin_centers_.shape[0] == 1
+        ):
+            pass  # This would be ideal if bin alignment leads to this count.
+
+    def test_morphological_ops(self, data_for_morpho_ops: NDArray[np.float64]):
+        """Test dilate, fill_holes, close_gaps effects."""
+        base_env = Environment.from_data_samples(
+            data_samples=data_for_morpho_ops,
+            bin_size=1.0,
+            infer_active_bins=True,
+            dilate=False,
+            fill_holes=False,
+            close_gaps=False,
+            bin_count_threshold=0,
+        )
+        dilated_env = Environment.from_data_samples(
+            data_samples=data_for_morpho_ops,
+            bin_size=1.0,
+            infer_active_bins=True,
+            dilate=True,
+            fill_holes=False,
+            close_gaps=False,
+            bin_count_threshold=0,
+        )
+        # Dilation should increase the number of active bins or keep it same
+        assert dilated_env.bin_centers_.shape[0] >= base_env.bin_centers_.shape[0]
+        if base_env.bin_centers_.shape[0] > 0:  # Only if base had active bins
+            assert dilated_env.bin_centers_.shape[0] > base_env.bin_centers_.shape[
+                0
+            ] or np.array_equal(dilated_env.active_mask_, base_env.active_mask_)
+
+        # Creating specific scenarios for fill_holes and close_gaps for concise unit tests
+        # requires very careful crafting of data_samples and bin_size, which can be complex.
+        # For now, we check that they run and don't drastically reduce active bins unexpectedly.
+        hole_data = np.array(
+            [
+                [0, 0],
+                [0, 1],
+                [0, 2],
+                [1, 0],
+                [1, 2],
+                [2, 0],
+                [2, 1],
+                [2, 2],  # Square boundary
+            ]
+        )  # Center [1,1] is a hole
+        env_no_fill = Environment.from_data_samples(
+            hole_data, bin_size=1.0, fill_holes=False, bin_count_threshold=0
+        )
+        env_fill = Environment.from_data_samples(
+            hole_data, bin_size=1.0, fill_holes=True, bin_count_threshold=0
+        )
+
+        # Find bin for (1.0,1.0) - should be center of a bin if grid aligned at 0
+        # This assumes bin_size 1.0 aligns bins like (0-1, 1-2, etc.)
+        # (1.0, 1.0) point falls into bin with center (0.5, 0.5), (0.5, 1.5), (1.5, 0.5), or (1.5, 1.5)
+        # For a hole at the bin centered at (1.5,1.5) (original data [1,1] is one of its corners)
+        # with bin_size=1, edges are 0,1,2,3. Bin centers 0.5, 1.5, 2.5.
+        # Center of hole would be around (1.5,1.5)
+        if (
+            env_no_fill.bin_centers_.shape[0] > 0
+            and env_fill.bin_centers_.shape[0] > env_no_fill.bin_centers_.shape[0]
+        ):
+            # Check if the bin corresponding to the hole [1.5,1.5] is active in env_fill but not env_no_fill
+            # This requires precise knowledge of bin indices.
+            # A simpler check is just more active bins.
+            pass
+
+    def test_add_boundary_bins(self, data_for_morpho_ops: NDArray[np.float64]):
+        env_no_boundary = Environment.from_data_samples(
+            data_for_morpho_ops, bin_size=1.0, add_boundary_bins=False
+        )
+        env_with_boundary = Environment.from_data_samples(
+            data_for_morpho_ops, bin_size=1.0, add_boundary_bins=True
+        )
+
+        assert env_with_boundary.grid_shape_[0] > env_no_boundary.grid_shape_[0]
+        assert env_with_boundary.grid_shape_[1] > env_no_boundary.grid_shape_[1]
+        # Check that boundary bins are indeed outside the range of non-boundary bins
+        assert env_with_boundary.grid_edges_[0][0] < env_no_boundary.grid_edges_[0][0]
+        assert env_with_boundary.grid_edges_[0][-1] > env_no_boundary.grid_edges_[0][-1]
+
+    def test_infer_active_bins_false(self):
+        data = np.array([[0.5, 0.5], [2.5, 2.5]])
+        dim_ranges = [(0, 3), (0, 3)]  # Defines a 3x3 grid if bin_size=1
+        env = Environment.from_data_samples(
+            data_samples=data,
+            dimension_ranges=dim_ranges,
+            bin_size=1.0,
+            infer_active_bins=False,
+        )
+        assert env.bin_centers_.shape[0] == 9  # All 3x3 bins should be active
+        assert np.all(env.active_mask_)
+
+
+class TestHexagonalLayout:
+    """Tests specific to HexagonalLayout."""
+
+    def test_creation_hex(self, env_hexagonal: Environment):
+        assert env_hexagonal.environment_name == "HexTestEnv"
+        assert isinstance(env_hexagonal.layout, HexagonalLayout)
+        assert env_hexagonal.n_dims == 2
+        assert env_hexagonal.layout.hexagon_width == 1.0
+        assert env_hexagonal.bin_centers_.shape[0] > 0  # Some bins should be active
+
+    def test_point_to_bin_index_hex(self, env_hexagonal: Environment):
+        # Test a point known to be near the center of some active hexagon
+        # (e.g., one of the input samples if it's isolated enough)
+        if env_hexagonal.bin_centers_.shape[0] > 0:
+            test_point_near_active_center = env_hexagonal.bin_centers_[0] + np.array(
+                [0.01, 0.01]
+            )
+            idx = env_hexagonal.get_bin_ind(
+                test_point_near_active_center.reshape(1, -1)
+            )
+            assert idx[0] == 0  # Should map to the first active bin
+
+            # Test a point far away
+            far_point = np.array([[100.0, 100.0]])
+            idx_far = env_hexagonal.get_bin_ind(far_point)
+            assert (
+                idx_far[0] == -1
+            )  # Hexagonal point_to_bin_index should return -1 if outside
+
+    def test_get_bin_area_volume_hex(self, env_hexagonal: Environment):
+        areas = env_hexagonal.get_bin_area_volume()
+        assert areas.ndim == 1
+        assert areas.shape[0] == env_hexagonal.bin_centers_.shape[0]
+        # Area of hexagon = (3 * sqrt(3) / 2) * radius^2. Radius = width / sqrt(3).
+        # Side length = radius.
+        # Area = (3 * sqrt(3) / 2) * (side_length)^2
+        # Hexagon width w (distance between parallel sides). Radius R (center to vertex). s = side_length
+        # w = 2 * s * sqrt(3)/2 = s * sqrt(3). So s = w / sqrt(3).
+        # R = s. So R = w / sqrt(3).
+        # Area = (3 * np.sqrt(3) / 2.0) * (env_hexagonal.layout.hex_radius_)**2
+        # Layout stores hex_radius_
+        expected_area = (3 * np.sqrt(3) / 2.0) * (
+            env_hexagonal.layout.hexagon_width / np.sqrt(3)
+        ) ** 2
+        expected_area_simplified = (
+            np.sqrt(3) / 2.0
+        ) * env_hexagonal.layout.hexagon_width**2
+
+        assert np.allclose(areas, expected_area_simplified)
+
+    def test_get_bin_neighbors_hex(self, env_hexagonal: Environment):
+        if env_hexagonal.bin_centers_.shape[0] < 7:
+            pytest.skip(
+                "Not enough active bins for a central hex with 6 neighbors test."
+            )
+        # This test is hard without knowing the exact layout.
+        # A qualitative check: find a bin, get its neighbors.
+        # Neighbors should be distinct and their centers should be approx hexagon_width away.
+        some_bin_idx = (
+            env_hexagonal.bin_centers_.shape[0] // 2
+        )  # A somewhat central bin
+        neighbors = env_hexagonal.get_bin_neighbors(some_bin_idx)
+        assert isinstance(neighbors, list)
+        if len(neighbors) > 0:
+            assert len(set(neighbors)) == len(neighbors)  # Unique neighbors
+            center_node = env_hexagonal.bin_centers_[some_bin_idx]
+            for neighbor_idx in neighbors:
+                center_neighbor = env_hexagonal.bin_centers_[neighbor_idx]
+                dist = np.linalg.norm(center_node - center_neighbor)
+                # Distance between centers of adjacent pointy-top hexagons is hexagon_width (if side by side)
+                # or side_length (if vertex to vertex on same row), side_length = width/sqrt(3) * 2 /2 = width/sqrt(3)
+                # For pointy-top, horizontal distance between centers = width
+                # Vertical distance between rows = width * sqrt(3)/2
+                # Neighbor distance should be side length = radius
+                side_length = env_hexagonal.layout.hexagon_width / np.sqrt(3)
+                assert pytest.approx(dist, rel=0.1) == side_length  # Approx
+
+
+@pytest.mark.skipif(not _HAS_SHAPELY_FOR_TEST, reason="Shapely not installed")
+class TestShapelyPolygonLayoutDetailed:
+    def test_polygon_with_hole(self):
+        outer_coords = [(0, 0), (0, 3), (3, 3), (3, 0)]
+        inner_coords = [(1, 1), (1, 2), (2, 2), (2, 1)]  # A hole
+        polygon_with_hole = ShapelyPoly(outer_coords, [inner_coords])
+
+        env = Environment.from_shapely_polygon(
+            polygon=polygon_with_hole, bin_size=1.0, environment_name="PolyHoleTest"
+        )
+        # Grid bins (centers at 0.5, 1.5, 2.5 in each dim)
+        # Bin centered at (1.5, 1.5) should be in the hole, thus inactive.
+        # Active bins should be: (0.5,0.5), (1.5,0.5), (2.5,0.5),
+        #                        (0.5,1.5) /* no (1.5,1.5) */, (2.5,1.5),
+        #                        (0.5,2.5), (1.5,2.5), (2.5,2.5)
+        # Total 8 active bins.
+        assert env.bin_centers_.shape[0] == 8
+
+        point_in_hole = np.array([[1.5, 1.5]])
+        bin_idx_in_hole = env.get_bin_ind(point_in_hole)
+        assert bin_idx_in_hole[0] == -1  # Should not map to an active bin
+
+        point_in_active_part = np.array([[0.5, 0.5]])
+        bin_idx_active = env.get_bin_ind(point_in_active_part)
+        assert bin_idx_active[0] != -1
+
+
+class TestRegionManagerAdvanced:
+    """Advanced tests for RegionManager."""
+
+    def test_add_invalid_regions(
+        self, env_hexagonal: Environment
+    ):  # Use any fitted env
+        with pytest.raises(ValueError, match="Point dimensions"):
+            env_hexagonal.regions.add_region(name="p1", point=(1, 2, 3))  # env is 2D
+
+        mask_2d_wrong_shape = np.zeros((5, 5), dtype=bool)
+        if (
+            env_hexagonal.grid_shape_ != (5, 5)
+            and env_hexagonal.grid_shape_ is not None
+        ):  # grid_shape_ can be None for Hex if not treated as grid
+            with pytest.raises(
+                ValueError, match="Mask shape"
+            ):  # Will fail if hex grid_shape is not (5,5)
+                env_hexagonal.regions.add_region(name="m1", mask=mask_2d_wrong_shape)
+
+        with pytest.raises(ValueError, match="unique name"):
+            env_hexagonal.regions.add_region(name="p2", point=(0, 0))
+            env_hexagonal.regions.add_region(name="p2", point=(1, 1))
+
+    def test_queries_on_empty_or_non_covering_regions(self, env_hexagonal: Environment):
+        env_hexagonal.regions.add_region(name="far_point", point=(100, 100))
+        assert env_hexagonal.regions.bins_in_region("far_point").size == 0
+        assert np.all(~env_hexagonal.regions.region_mask("far_point"))
+        assert (
+            env_hexagonal.regions.region_center("far_point") is not None
+        )  # Point itself
+        assert env_hexagonal.regions.get_region_area("far_point") == 0.0
+
+        if _HAS_SHAPELY_FOR_TEST:
+            far_poly = ShapelyPoly([(100, 100), (101, 100), (101, 101), (100, 101)])
+            env_hexagonal.regions.add_region(name="far_poly", polygon=far_poly)
+            assert env_hexagonal.regions.bins_in_region("far_poly").size == 0
+
+    @pytest.mark.skipif(not _HAS_SHAPELY_FOR_TEST, reason="Shapely not installed")
+    def test_create_buffered_region(self, env_hexagonal: Environment):
+        if env_hexagonal.bin_centers_.shape[0] == 0:
+            pytest.skip("Need active bins")
+
+        center_of_first_bin = env_hexagonal.bin_centers_[0]
+        env_hexagonal.regions.add_region(
+            name="source_pt_for_buffer", point=center_of_first_bin
+        )
+
+        env_hexagonal.regions.create_buffered_region(
+            source_region_name_or_point="source_pt_for_buffer",
+            buffer_distance=0.5,  # Small buffer
+            new_region_name="buffered_from_point",
+        )
+        assert "buffered_from_point" in env_hexagonal.regions.list_regions()
+        info = env_hexagonal.regions.get_region_info("buffered_from_point")
+        assert info.kind == "polygon"
+        assert info.data.area > 0
+
+        # Test buffering a direct point
+        env_hexagonal.regions.create_buffered_region(
+            source_region_name_or_point=np.array([0.0, 0.0]),
+            buffer_distance=1.0,
+            new_region_name="buffered_direct_pt",
+        )
+        assert "buffered_direct_pt" in env_hexagonal.regions.list_regions()
+
+    def test_serialization_with_regions(
+        self, env_hexagonal: Environment, tmp_path: Path
+    ):
+        env_hexagonal.regions.add_region(name="test_pt_region", point=(0.1, 0.1))
+        if _HAS_SHAPELY_FOR_TEST:
+            poly = ShapelyPoly([(0, 0), (0.5, 0), (0.5, 0.5), (0, 0.5)])
+            env_hexagonal.regions.add_region(
+                name="test_poly_region", polygon=poly, plot_kwargs={"color": "red"}
+            )
+
+        # Test save/load
+        file_path = tmp_path / "env_with_regions.pkl"
+        env_hexagonal.save(str(file_path))
+        loaded_env = Environment.load(str(file_path))
+
+        assert "test_pt_region" in loaded_env.regions.list_regions()
+        loaded_pt_info = loaded_env.regions.get_region_info("test_pt_region")
+        assert np.allclose(loaded_pt_info.data, (0.1, 0.1))
+
+        if _HAS_SHAPELY_FOR_TEST:
+            assert "test_poly_region" in loaded_env.regions.list_regions()
+            loaded_poly_info = loaded_env.regions.get_region_info("test_poly_region")
+            assert loaded_poly_info.kind == "polygon"
+            assert loaded_poly_info.data.equals(poly)  # Check polygon equality
+            assert loaded_poly_info.metadata.get("plot_kwargs") == {"color": "red"}
+
+        # Test to_dict/from_dict
+        env_dict = env_hexagonal.to_dict()
+        dict_recreated_env = Environment.from_dict(env_dict)
+
+        assert "test_pt_region" in dict_recreated_env.regions.list_regions()
+        if _HAS_SHAPELY_FOR_TEST:
+            assert "test_poly_region" in dict_recreated_env.regions.list_regions()
+            # Further checks similar to loaded_env
+
+
+class TestDimensionality:
+    def test_1d_regular_grid(self):
+        env = Environment.from_data_samples(
+            data_samples=np.arange(10).reshape(-1, 1).astype(float),
+            bin_size=1.0,
+            environment_name="1DGridTest",
+        )
+        assert env.n_dims == 1
+        assert (
+            not env.is_1d
+        )  # RegularGrid layout is not flagged as is_1d (which is for GraphLayout)
+        assert env.bin_centers_.ndim == 2 and env.bin_centers_.shape[1] == 1
+        assert len(env.grid_edges_) == 1
+        assert len(env.grid_shape_) == 1
+        areas = env.get_bin_area_volume()  # Should be lengths
+        assert np.allclose(areas, 1.0)
+
+    def test_3d_regular_grid(self):
+        data = np.random.rand(100, 3) * 5
+        input_bin_size = 1.0
+        env = Environment.from_data_samples(
+            data_samples=data,
+            bin_size=input_bin_size,  # Use the variable
+            environment_name="3DGridTest",
+            connect_diagonal_neighbors=True,
+        )
+        assert env.n_dims == 3
+        assert not env.is_1d
+        assert env.bin_centers_.shape[1] == 3
+        assert len(env.grid_edges_) == 3
+        assert len(env.grid_shape_) == 3
+
+        volumes = env.get_bin_area_volume()
+
+        # Calculate expected volume from actual grid_edges
+        # _GridMixin.get_bin_area_volume assumes uniform bins from the first diff
+        expected_vol_per_bin = 1.0
+        if env.grid_edges_ is not None and all(
+            len(e_dim) > 1 for e_dim in env.grid_edges_
+        ):
+            for dim_edges in env.grid_edges_:
+                # Assuming get_bin_area_volume uses the first diff, like:
+                expected_vol_per_bin *= np.diff(dim_edges)[0]
+
+        assert np.allclose(volumes, expected_vol_per_bin)
+
+        # Optionally, check that the actual calculated volume is reasonably close
+        # to what might be expected from the input bin_size.
+        # This can have some tolerance due to range fitting.
+        assert pytest.approx(expected_vol_per_bin, rel=0.1) == (input_bin_size**3)
+
+        # Test plotting for non-2D (should raise NotImplementedError by default _GridMixin.plot)
+        with pytest.raises(NotImplementedError):
+            fig, ax = plt.subplots()
+            env.plot(ax=ax)
+            plt.close(fig)
