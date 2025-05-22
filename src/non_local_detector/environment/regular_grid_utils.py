@@ -635,17 +635,17 @@ def _create_regular_grid(
 
 
 def _points_to_regular_grid_bin_ind(
-    data_samples: NDArray[np.float64],
+    points: NDArray[np.float64],
     grid_edges: Tuple[NDArray[np.float64], ...],
     grid_shape: Tuple[int, ...],
     active_mask: NDArray[np.bool_] = None,
 ) -> NDArray[np.int_]:
-    """Maps data_samples points to their corresponding bin indices in a regular grid.
+    """Maps points to their corresponding bin indices in a regular grid.
 
     Parameters
     ----------
-    data_samples : NDArray[np.float64], shape (n_time, n_dims)
-        data_samples data. NaNs are ignored.
+    points : NDArray[np.float64], shape (n_time, n_dims)
+        NaNs are ignored.
     edges : Tuple[NDArray[np.float64], ...]
         Bin edges for each dimension, as returned by `create_grid`.
     centers_shape : Tuple[int, ...]
@@ -659,13 +659,13 @@ def _points_to_regular_grid_bin_ind(
         to a dimension. The indices are 0-based and correspond to the bin
         edges provided.
     """
-    data_samples = np.atleast_2d(data_samples)
-    data_samples = data_samples[~np.any(np.isnan(data_samples), axis=1)]
+    points = np.atleast_2d(points)
+    points = points[~np.any(np.isnan(points), axis=1)]
 
-    n_dims = data_samples.shape[1]
+    n_dims = points.shape[1]
 
     multi_bin_idx = tuple(
-        np.digitize(data_samples[:, i], grid_edges[i]) - 1 for i in range(n_dims)
+        np.digitize(points[:, i], grid_edges[i]) - 1 for i in range(n_dims)
     )
     original_bin_flat_idx = np.ravel_multi_index(multi_bin_idx, grid_shape)
 

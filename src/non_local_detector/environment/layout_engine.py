@@ -451,12 +451,12 @@ class _GridMixin:
     dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
     _layout_type_tag: str = "_Grid_Layout"
 
-    def point_to_bin_index(self, data_samples: NDArray[np.float64]) -> NDArray[np.int_]:
+    def point_to_bin_index(self, points: NDArray[np.float64]) -> NDArray[np.int_]:
         if self.grid_edges_ is None or self.grid_shape_ is None:
             raise RuntimeError("Grid layout not built; edges or shape missing.")
 
         return _points_to_regular_grid_bin_ind(
-            data_samples=data_samples,
+            points=points,
             grid_edges=self.grid_edges_,
             grid_shape=self.grid_shape_,
             active_mask=self.active_mask_,
