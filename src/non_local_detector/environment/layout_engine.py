@@ -1096,6 +1096,7 @@ class GraphLayout(_KDTreeMixin):
             self._build_params_used["graph_definition"],
             self._build_params_used["edge_order"],
             self._build_params_used["edge_spacing"],
+        ).linear_position.to_numpy()
 
     def map_linear_to_nd_coordinate(
         self, linear_coordinates: NDArray[np.float64]
