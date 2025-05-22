@@ -343,34 +343,33 @@ def _generic_graph_plot(
     return ax
 
 
-def _get_distance_between_bins(track_graph_nd: nx.Graph) -> NDArray[np.float64]:
+def _get_distance_between_bins(
+    connectivity_graph: nx.Graph,
+) -> NDArray[np.float64]:
     """Calculates the shortest path distances between bins in the track graph.
 
     Parameters
     ----------
     track_graph_nd : nx.Graph
-        Graph where nodes are indices of interior bins, 'pos' attribute stores
-        coordinates, and edges connect adjacent interior bins with 'distance'.
+        Graph where nodes are indices of active bins (0 to N-1),
+        'pos' attribute stores coordinates, and edges connect adjacent
+        active bins with a 'distance' attribute.
 
     Returns
     -------
-    distance : np.ndarray, shape (n_nodes, n_nodes)
-        Matrix of shortest path distances between all pairs of nodes.
+    distance : np.ndarray, shape (n_active_nodes, n_active_nodes)
+        Matrix of shortest path distances between all pairs of active bin nodes.
     """
+    n_active_bins = connectivity_graph.number_of_nodes()
+    distance_matrix = np.full((n_active_bins, n_active_bins), np.inf)
 
-    node_to_bin_ind_flat = nx.get_node_attributes(track_graph_nd, "bin_ind_flat")
+    all_pairs_shortest_paths = nx.shortest_path_length(
+        connectivity_graph, weight="distance"
+    )
 
-    node_positions = nx.get_node_attributes(track_graph_nd, "pos")
-    node_positions = np.asarray(list(node_positions.values()))
-    n_bins = len(node_positions)
+    for source_node_id, target_lengths_dict in all_pairs_shortest_paths:
+        # source_node_id is an integer from 0 to n_active_bins - 1
+        for target_node_id, length in target_lengths_dict.items():
+            distance_matrix[source_node_id, target_node_id] = length
 
-    distance = np.full((n_bins, n_bins), np.inf)
-    for to_node_id, from_node_id in nx.shortest_path_length(
-        track_graph_nd,
-        weight="distance",
-    ):
-        to_bin_ind = node_to_bin_ind_flat[to_node_id]
-        from_bin_inds = [node_to_bin_ind_flat[node_id] for node_id in from_node_id]
-        distance[to_bin_ind, from_bin_inds] = list(from_node_id.values())
-
-    return distance
+    return distance_matrix
