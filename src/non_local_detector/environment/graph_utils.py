@@ -1,9 +1,28 @@
+"""
+Utility functions for graph-based (linearized track) layouts. 📐
+
+This module provides helper functions specifically for environments where the
+spatial layout is defined by a graph structure that is subsequently linearized,
+such as an animal's track in an experiment. These functions handle:
+
+- Discretizing a linearized graph track into 1D bins, accounting for edge
+  lengths and specified spacing between segments (`_get_graph_bins`).
+- Creating a connectivity graph from these binned segments, where nodes
+  represent active 1D bin centers and edges connect adjacent bins
+  (`_create_graph_layout_connectivity_graph`).
+- Projecting 1D linearized positions back to their corresponding N-D
+  coordinates on the original track graph (`_project_1d_to_2d`).
+- Finding the appropriate 1D bin index for a given linear position
+  (`_find_bin_for_linear_position`).
+
+These utilities are primarily used by the `GraphLayout` engine.
+"""
+
 import math
 from typing import Any, Dict, List, Tuple, Union
 
 import networkx as nx
 import numpy as np
-from track_linearization.core import _calculate_linear_position
 
 from non_local_detector.environment.utils import get_centers
 
@@ -13,38 +32,53 @@ Edge = Tuple[Any, Any]
 def _get_graph_bins(
     graph: nx.Graph,
     edge_order: List[Tuple[object, object]],
-    edge_spacing: float | List[float],
+    edge_spacing: Union[float, List[float]],
     bin_size: float,
-) -> Tuple[np.ndarray, Tuple[np.ndarray], np.ndarray, np.ndarray]:
-    """Get the 1D bins of a graph accounting for edge spacing.
+) -> Tuple[np.ndarray, Tuple[np.ndarray, ...], np.ndarray, np.ndarray]:
+    """
+    Discretize a graph into 1D bins along a specified path, accounting for spacing.
+
+    Calculates 1D bin centers and edges for a track defined by `edge_order`
+    from the `graph`. It considers the length of each edge and any specified
+    `edge_spacing` (gaps) between consecutive edges in the path.
 
     Parameters
     ----------
     graph : networkx.Graph
-        The graph to be binned. Node positions are expected to be stored
-        as a 'pos' attribute, e.g., graph.nodes[node_id]['pos'] = (x, y).
-    edge_order : list of tuples
-        The ordered sequence of edges (node_id_1, node_id_2) defining the
-        linearized track.
-    edge_spacing : float or list of float
-        If float, the spacing between all consecutive edges in `edge_order`.
-        If list, the spacing between each pair of consecutive edges.
-        Length must be `len(edge_order) - 1`.
+        The graph defining the track. Nodes are expected to have a 'pos'
+        attribute (e.g., `graph.nodes[node_id]['pos'] = (x, y)`).
+    edge_order : list[tuple[object, object]]
+        Ordered sequence of edge tuples (node_id_1, node_id_2) defining
+        the linearized track segments.
+    edge_spacing : float | list[float]
+        Spacing (gap length) between consecutive edges in `edge_order`.
+        If a float, applies uniformly to all gaps.
+        If a list, specifies spacing for each gap; its length must be
+        `len(edge_order) - 1`.
     bin_size : float
-        The desired size of each bin along the track.
+        Desired length of each bin along the linearized track. Must be positive.
 
     Returns
     -------
-    bin_centers : np.ndarray, shape (N_total_bins,)
-        1D coordinates of the center of each bin (including active and inactive bins).
-    bin_edges : np.ndarray, shape (N_total_bins + 1,)
-        1D coordinates of the edges of each bin.
-    active_mask : np.ndarray, shape (N_total_bins,), dtype=bool
-        Boolean mask indicating active bins (True, on an edge) vs.
-        inactive bins (False, in a gap).
-    edge_ids : np.ndarray, shape (N_active_bins,), dtype=int
-        Integer IDs corresponding to the original graph edges for each *active* bin.
-        `N_active_bins = np.sum(active_mask)`.
+    bin_centers_1d : np.ndarray, shape (n_total_bins,)
+        1D coordinates of the center of each bin along the linearized track,
+        including bins within gaps (which will be marked inactive).
+    bin_edges_1d_tuple : tuple[np.ndarray, ...]
+        A tuple containing a single 1D NumPy array of bin edge coordinates
+        (shape `(n_total_bins + 1,)`). This structure matches `np.histogramdd` output.
+    active_mask_1d : np.ndarray, shape (n_total_bins,), dtype=bool
+        Boolean mask indicating active bins (True, on an actual edge segment)
+        vs. inactive bins (False, within a gap).
+    edge_ids_for_active_bins : np.ndarray, shape (n_active_bins,), dtype=int
+        Integer IDs corresponding to the original graph edges (from `graph.edges()`)
+        for each *active* bin. `n_active_bins = np.sum(active_mask_1d)`.
+
+    Raises
+    ------
+    ValueError
+        If any edge in `edge_order` contains nodes not in `graph`.
+        If `bin_size` is not positive.
+        If `edge_spacing` (if a list) has an incorrect length.
     """
     # Verify the nodes are in the graph
     for edge in edge_order:
@@ -141,7 +175,7 @@ def _create_graph_layout_connectivity_graph(
         1D coordinates of all bin centers (active and inactive).
     original_edge_ids : np.ndarray, shape (n_active_bins,)
         Integer IDs of the original graph edge for each active bin.
-    active_mask : np.ndarray, shape (N_total_bins,), dtype=bool
+    active_mask : np.ndarray, shape (n_total_bins,), dtype=bool
         Mask indicating which bins in `linear_bin_centers` are active.
     edge_order : list of tuples
         The ordered sequence of edges from the original graph that defines
@@ -150,16 +184,21 @@ def _create_graph_layout_connectivity_graph(
     Returns
     -------
     networkx.Graph
-        A new graph where nodes are active bin centers and edges show connectivity.
-        Node attributes include:
-        - 'pos': tuple (x, y), 2D position of the bin center.
-        - 'bin_ind': int, original index of the bin in `linear_bin_centers`.
-        - 'bin_ind_flat': int, same as `bin_ind`.
-        - 'pos_1D': float, 1D position of the bin center.
-        - 'edge_id': int, ID of the original graph edge this bin belongs to.
-        Edge attributes include:
-        - 'dist': float, Euclidean distance between connected bin centers.
-        - 'edge_id': int, (for intra-segment edges) ID of the original edge.
+        A new graph where nodes are indexed `0` to `n_active_bins - 1`.
+        Node attributes:
+        - 'pos': tuple (x, y, ...), N-D position of the active bin center.
+        - 'source_grid_flat_index': int, Original flat index of this bin in
+          the `linear_bin_centers_all` array (the 1D "grid").
+        - 'original_grid_nd_index': tuple (int,), N-D (here, 1D) index in
+          the `linear_bin_centers_all` array.
+        - 'pos_1D': float, 1D linearized position of the active bin center.
+        - 'source_edge_id': int, ID of the original graph edge this bin is on.
+        Edge attributes:
+        - 'distance': float, Euclidean distance between connected N-D bin centers.
+        - 'weight': float, Typically same as 'distance'.
+        - 'vector': tuple, Displacement vector in N-D.
+        - 'angle_2d': float, (For 2D) angle of the displacement vector.
+        - 'edge_id': int, Unique ID for this edge within the connectivity graph.
     """
     # Create a new graph
     connectivity_graph = nx.Graph()
@@ -275,26 +314,38 @@ def _project_1d_to_2d(
     edge_spacing: Union[float, List[float]] = 0.0,
 ) -> np.ndarray:
     """
-    Map 1-D linear positions back to 2-D coordinates on the track graph.
+    Map 1D linear positions back to N-D coordinates on the track graph.
+
+    Projects points from a 1D linearized representation of the track (defined
+    by `graph`, `edge_order`, and `edge_spacing`) back to their original
+    N-dimensional spatial coordinates.
 
     Parameters
     ----------
-    linear_position : np.ndarray, shape (n_time,)
+    linear_position : np.ndarray, shape (n_points,)
+        1D positions along the linearized track.
     graph : networkx.Graph
-        Same graph you passed to `get_linearized_position`.
-        Nodes must have `"pos"`; edges must have `"distance"`.
-    edge_order : list[tuple(node, node)]
-        Same order you used for linearization.
-    edge_spacing : float or list of float, optional
-        Controls the spacing between track segments in 1D position.
+        The original graph. Nodes must have a 'pos' attribute (N-D coordinates)
+        and edges must have a 'distance' attribute (pre-calculated length).
+    edge_order : list[tuple[node, node]]
+        Ordered sequence of edges defining the linearization path.
+    edge_spacing : float or list[float], optional, default=0.0
+        Spacing (gaps) between track segments used during linearization.
         If float, applied uniformly. If list, length must be `len(edge_order) - 1`.
 
     Returns
     -------
-    coords : np.ndarray, shape (n_time, n_space)
-        2-D (or 3-D) coordinates corresponding to each 1-D input.
-        Positions that fall beyond the last edge are clipped to the last node.
-        NaNs in `linear_position` propagate to rows of NaNs.
+    coords_nd : np.ndarray, shape (n_points, n_dims)
+        N-dimensional coordinates corresponding to each input `linear_position`.
+        Positions falling into gaps or beyond track ends are typically
+        projected onto the nearest valid track segment endpoint.
+        NaNs in `linear_position` propagate to rows of NaNs in output.
+
+    Raises
+    ------
+    ValueError
+        If `linear_position` is not 1D.
+        If `edge_spacing` (if a list) has an incorrect length.
     """
     linear_position = np.asarray(linear_position, dtype=float)
     try:
@@ -366,25 +417,44 @@ def _find_bin_for_linear_position(
     bin_edges: np.ndarray,
     active_mask: np.ndarray = None,
 ) -> Union[int, np.ndarray]:
-    """Find the bin index for each linear position.
+    """
+    Find the 1D bin index for each given linear position.
+
+    Assigns each position in `linear_positions` to a bin defined by
+    `bin_edges_1d`. If `active_mask_1d` is provided, positions falling into
+    inactive bins (gaps) can be handled (e.g., by adjusting to a nearby
+    active bin or returning an invalid index, depending on implementation details).
+    The current implementation maps to bins based on `np.digitize` and handles
+    positions on edges that might fall into inactive bins by shifting them to
+    the preceding active bin.
 
     Parameters
     ----------
-    linear_positions : float or np.ndarray
-        Linear positions to find the corresponding bin index.
-    bin_edges : np.ndarray
-        Array of bin edges.
-    active_mask : np.ndarray, optional, shape (n_bins,)
-        Mask to filter the bins. If provided, only bins where the mask is True
-        will be considered for the search. The mask should be of the same length
-        as the number of bins.
-        If not provided, all bins will be considered.
+    linear_positions : float | np.ndarray, shape (n_points,)
+        Linear position(s) to map to bin indices.
+    bin_edges_1d : np.ndarray, shape (n_total_bins + 1,)
+        1D array of sorted bin edge coordinates for the entire linearized track
+        (including gaps).
+    active_mask_1d : Optional[np.ndarray], shape (n_total_bins,), dtype=bool, optional
+        Boolean mask indicating which bins in the `bin_edges_1d` definition
+        are active (on an edge segment) vs. inactive (in a gap). If provided,
+        the function ensures returned indices correspond to active bins or
+        handles points in gaps.
 
     Returns
     -------
-    bin_indices : int or np.ndarray
-        Bin indices corresponding to the input linear positions.
-        If a position falls outside the range of bin edges, returns -1.
+    bin_indices : int | np.ndarray, shape (n_points,)
+        0-based bin index (relative to the full set of bins defined by
+        `bin_edges_1d`) for each input linear position.
+        Returns -1 if a position falls outside the range of `bin_edges_1d`.
+        If `active_mask_1d` is used, logic attempts to assign to an active bin.
+
+    Raises
+    ------
+    ValueError
+        If `active_mask_1d` (if provided) length doesn't match the number of bins.
+        If, after processing, a position maps to an index marked as invalid by
+        `active_mask_1d` (indicating an issue with gap handling logic or input).
     """
     was_scalar = np.isscalar(linear_positions)
     linear_positions = np.atleast_1d(np.asarray(linear_positions, dtype=float))
