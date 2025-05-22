@@ -78,12 +78,24 @@ class LayoutEngine(Protocol):
     Attributes
     ----------
     bin_centers_ : NDArray[np.float64], shape (n_active_bins, n_dims).
-        Coordinates of the center of each *active* bin
+        N-D Coordinates of the center of each *active* bin
     connectivity_graph_ : Optional[nx.Graph]
         Graph where nodes are indexed 0 to n_active_bins-1, directly corresponding
-        to `bin_centers_`. Nodes should have a 'pos' attribute (from `bin_centers_`)
-        and a 'source_index' attribute mapping back to an original definition
-        (e.g., flat index in a full grid, original input point index).
+        to `bin_centers_`.
+
+        **Mandatory Node Attributes**:
+        - 'pos': Tuple[float, ...] - N-D coordinates of the active bin center.
+        - 'source_grid_flat_index': int - Flat index in the original full conceptual grid.
+        - 'original_grid_nd_index': Tuple[int, ...] - N-D tuple index in the original full conceptual grid.
+
+        **Mandatory Edge Attributes**:
+        - 'distance': float - Euclidean distance between connected bin centers.
+        - 'weight': float - Cost for pathfinding (typically equals 'distance').
+
+        **Recommended Edge Attributes**:
+        - 'vector': Tuple[float, ...] - Displacement vector.
+        - 'angle_2d': Optional[float] - Angle of displacement vector for 2D layouts.
+        - 'edge_id': int - Unique ID for the edge within this graph.
     is_1d : bool
         True if the layout represents a 1-dimensional structure.
     dimension_ranges_ : Optional[Sequence[Tuple[float, float]]]
