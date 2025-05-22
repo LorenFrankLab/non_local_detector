@@ -499,6 +499,7 @@ class Environment:
     @check_fitted
     def get_linearized_coordinate(
         self, data_samples_nd: NDArray[np.float64]
+        self, points_nd: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         if not self.is_1d or not isinstance(self.layout, GraphLayout):  # Be specific
             raise TypeError("Linearized coordinate only for GraphLayout environments.")
