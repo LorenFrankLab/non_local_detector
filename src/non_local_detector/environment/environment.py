@@ -548,6 +548,19 @@ class Environment:
 
         return ax
 
+    def plot_1D(
+        self,
+        ax: Optional[matplotlib.axes.Axes] = None,
+        layout_plot_kwargs: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ):
+        l_kwargs = layout_plot_kwargs if layout_plot_kwargs is not None else {}
+        l_kwargs.update(kwargs)  # Allow direct kwargs to override for layout.plot
+        if self.layout.is_1d:
+            ax = self.layout.plot_linear_layout(ax=ax, **l_kwargs)
+
+        return ax
+
     def save(self, filename: str = "environment.pkl") -> None:
         """Saves the Environment object to a file using pickle."""
         with open(filename, "wb") as fh:
