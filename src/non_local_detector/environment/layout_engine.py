@@ -767,6 +767,7 @@ class HexagonalLayout(_KDTreeMixin):
 
     # Layout Specific
     hexagon_width: Optional[float] = None
+    _source_flat_to_active_id_map: Optional[Dict[int, int]] = None
 
     def __init__(self):
         self._layout_type_tag = "Hexagonal"
@@ -778,6 +779,11 @@ class HexagonalLayout(_KDTreeMixin):
         self.grid_shape_ = None
         self.active_mask_ = None
         self.hexagon_width = None
+        self.hex_radius_ = None
+        self.hex_orientation_ = None
+        self.grid_offset_x_ = None
+        self.grid_offset_y_ = None
+        self._source_flat_to_active_id_map = None
 
     def build(
         self,
@@ -807,8 +813,8 @@ class HexagonalLayout(_KDTreeMixin):
             dimension_range=dimension_ranges,
             hexagon_width=self.hexagon_width,
         )
-        if infer_active_bins:
-            active_bin_ind = _infer_active_bins_from_hex_grid(
+        if infer_active_bins and data_samples is not None:
+            active_bin_original_flat_indices = _infer_active_bins_from_hex_grid(
                 data_samples=data_samples,
                 centers_shape=self.grid_shape_,
                 hex_radius=self.hex_radius_,
@@ -817,15 +823,24 @@ class HexagonalLayout(_KDTreeMixin):
                 bin_count_threshold=bin_count_threshold,
             )
         else:
-            active_bin_ind = np.arange(len(full_grid_bin_centers))
+            active_bin_original_flat_indices = np.arange(len(full_grid_bin_centers))
 
-        self.bin_centers_ = full_grid_bin_centers[active_bin_ind]
+        nd_active_mask = np.zeros(self.grid_shape_, dtype=bool).ravel()
+        nd_active_mask[active_bin_original_flat_indices] = True
+        self.active_mask_ = nd_active_mask.reshape(self.grid_shape_)
+
+        self.bin_centers_ = full_grid_bin_centers[active_bin_original_flat_indices]
 
         self.connectivity_graph_ = _create_hex_connectivity_graph(
-            active_original_flat_indices=active_bin_ind,
+            active_original_flat_indices=active_bin_original_flat_indices,
             full_grid_bin_centers=full_grid_bin_centers,
             centers_shape=self.grid_shape_,
         )
+
+        self._source_flat_to_active_id_map = {
+            data["source_grid_flat_index"]: node_id
+            for node_id, data in self.connectivity_graph_.nodes(data=True)
+        }
 
     @property
     def is_1d(self) -> bool:
@@ -894,16 +909,44 @@ class HexagonalLayout(_KDTreeMixin):
         return ax
 
     def point_to_bin_index(self, points):
-        return _points_to_hex_bin_ind(
-            points,
-            self.grid_offset_x_,
-            self.grid_offset_y_,
-            self.hex_radius_,
-            self.grid_shape_,
+        """
+        Maps continuous N-D points to discrete active bin indices (0 to N-1).
+        Returns -1 for points not mapped to an active bin.
+        """
+        if (
+            self.grid_offset_x_ is None
+            or self.grid_offset_y_ is None
+            or self.hex_radius_ is None
+            or self.grid_shape_ is None
+            or self._source_flat_to_active_id_map is None
+        ):
+            # This can happen if build() failed or was incomplete (e.g. no active bins)
+            warnings.warn(
+                "HexagonalLayout is not fully initialized or has no active bins. "
+                "Cannot map points to bin indices.",
+                RuntimeWarning,
+            )
+            return np.full(points.shape[0], -1, dtype=np.int_)
+
+        original_flat_indices = _points_to_hex_bin_ind(
+            points=points,
+            grid_offset_x=self.grid_offset_x_,
+            grid_offset_y=self.grid_offset_y_,
+            hex_radius=self.hex_radius_,
+            centers_shape=self.grid_shape_,
+        )
+        return np.array(
+            [
+                self._source_flat_to_active_id_map.get(idx, -1)
+                for idx in original_flat_indices
+            ],
+            dtype=int,
         )
 
     def get_bin_area_volume(self) -> NDArray[np.float64]:
-        return 3 * np.sqrt(3) / 2 * self.hex_radius_**2 * np.ones(self.grid_shape_)
+        return (
+            3.0 * np.sqrt(3.0) / 2.0 * self.hex_radius_**2.0 * np.ones(self.grid_shape_)
+        )
 
 
 class GraphLayout(_KDTreeMixin):
