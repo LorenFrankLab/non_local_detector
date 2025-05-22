@@ -187,7 +187,7 @@ def _create_graph_layout_connectivity_graph(
                     "bin_ind": b_ind,
                     "source_1d_flat_index": b_ind,
                     "pos_1D": center_1D,
-                    "edge_id": edge_id,
+                    "source_edge_id": edge_id,
                 },
             )
         )
@@ -218,7 +218,7 @@ def _create_graph_layout_connectivity_graph(
                         "distance": dist,
                         "weight": float(weight),
                         "vector": tuple(displacement_vector.tolist()),
-                        "edge_id": int(edge_id),
+                        "source_edge_id": int(edge_id),
                         "angle_2d": math.atan2(
                             displacement_vector[1], displacement_vector[0]
                         ),
@@ -250,7 +250,7 @@ def _create_graph_layout_connectivity_graph(
                         {
                             "distance": float(np.linalg.norm(displacement_vector)),
                             "vector": tuple(displacement_vector.tolist()),
-                            "edge_id": int(edge_id),
+                            "source_edge_id": int(edge_id),
                             "angle_2d": math.atan2(
                                 displacement_vector[1], displacement_vector[0]
                             ),
