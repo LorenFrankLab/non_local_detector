@@ -593,14 +593,12 @@ class _GridMixin:
         return False
 
     def get_bin_area_volume(self) -> NDArray[np.float64]:
-        return (
-            np.prod(
-                np.array([np.diff(edge)[0] for edge in self.grid_edges_]),
-                axis=0,
-            )
-            .reshape(self.grid_shape_)
-            .T
+        bin_dimension_sizes = np.array(
+            [np.diff(edge_dim)[0] for edge_dim in self.grid_edges_]
         )
+        single_bin_volume = np.prod(bin_dimension_sizes)
+
+        return np.full(self.bin_centers_.shape[0], single_bin_volume)
 
 
 # ---------------------------------------------------------------------------
@@ -944,9 +942,8 @@ class HexagonalLayout(_KDTreeMixin):
         )
 
     def get_bin_area_volume(self) -> NDArray[np.float64]:
-        return (
-            3.0 * np.sqrt(3.0) / 2.0 * self.hex_radius_**2.0 * np.ones(self.grid_shape_)
-        )
+        single_hex_area = 3.0 * np.sqrt(3.0) / 2.0 * self.hex_radius_**2.0
+        return np.full(self.bin_centers_.shape[0], single_hex_area)
 
 
 class GraphLayout(_KDTreeMixin):
@@ -1114,7 +1111,8 @@ class GraphLayout(_KDTreeMixin):
         )
 
     def get_bin_area_volume(self) -> NDArray[np.float64]:
-        return np.ones(self.grid_shape_) * self._build_params_used["bin_size"]
+        all_1d_bin_lengths = np.diff(self.grid_edges_[0])
+        return all_1d_bin_lengths[self.active_mask_]
 
 
 if SHAPELY_AVAILABLE:
