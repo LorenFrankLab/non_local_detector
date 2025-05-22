@@ -956,6 +956,68 @@ class Environment:
         return distances.squeeze()
 
     @check_fitted
+    def get_shortest_path(
+        self, source_active_bin_idx: int, target_active_bin_idx: int
+    ) -> List[int]:
+        """
+        Find the shortest path between two active bins.
+
+        The path is a sequence of active bin indices (0 to n_active_bins - 1)
+        connecting the source to the target. Path calculation uses the
+        'distance' attribute on the edges of the `connectivity_graph_`
+        as weights.
+
+        Parameters
+        ----------
+        source_active_bin_idx : int
+            The active bin index (0 to n_active_bins - 1) for the start of the path.
+        target_active_bin_idx : int
+            The active bin index (0 to n_active_bins - 1) for the end of the path.
+
+        Returns
+        -------
+        List[int]
+            A list of active bin indices representing the shortest path from
+            source to target. The list includes both the source and target indices.
+            Returns an empty list if the source and target are the same, or if
+            no path exists, or if nodes are not found.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        nx.NodeNotFound
+            If `source_active_bin_idx` or `target_active_bin_idx` is not
+            a node in the `connectivity_graph_`.
+        """
+        graph = self.get_connectivity_graph()
+
+        if source_active_bin_idx == target_active_bin_idx:
+            return [source_active_bin_idx]
+
+        try:
+            path = nx.shortest_path(
+                graph,
+                source=source_active_bin_idx,
+                target=target_active_bin_idx,
+                weight="distance",
+            )
+            return path
+        except nx.NetworkXNoPath:
+            warnings.warn(
+                f"No path found between active bin {source_active_bin_idx} "
+                f"and {target_active_bin_idx}.",
+                UserWarning,
+            )
+            return []
+        except nx.NodeNotFound as e:
+            # Re-raise if the user provides an invalid node index for active bins
+            raise nx.NodeNotFound(
+                f"Node not found in connectivity graph: {e}. "
+                "Ensure source/target indices are valid active bin indices."
+            ) from e
+
+    @check_fitted
     def get_linearized_coordinate(
         self, points_nd: NDArray[np.float64]
     ) -> NDArray[np.float64]:
