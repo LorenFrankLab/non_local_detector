@@ -348,10 +348,17 @@ def _project_1d_to_2d(
         If `edge_spacing` (if a list) has an incorrect length.
     """
     linear_position = np.asarray(linear_position, dtype=float)
-    try:
-        linear_position = np.squeeze(linear_position, axis=-1)
-    except ValueError:  # If linear_position is already 1D, this will raise an error
-        pass
+    if linear_position.ndim == 0:
+        linear_position = linear_position.reshape((1,))
+    elif linear_position.ndim > 1:
+        # Attempt to squeeze if it's like (N,1) or (1,N)
+        squeezed_pos = np.squeeze(linear_position)
+        if squeezed_pos.ndim == 1:
+            linear_position = squeezed_pos
+        elif squeezed_pos.ndim == 0 and linear_position.size == 1:  # e.g. from [[5.]]
+            linear_position = squeezed_pos.reshape((1,))
+        else:  # If it's still not 1D (e.g. (M,N) where M,N > 1)
+            raise ValueError("linear_position must be convertible to a 1D array.")
     if linear_position.ndim != 1:
         raise ValueError("linear_position must be a 1D array.")
     n_edges = len(edge_order)
