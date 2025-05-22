@@ -979,7 +979,7 @@ class GraphLayout(_KDTreeMixin):
     _build_params_used: Dict[str, Any]
 
     # Layout Specific
-    nd_bin_centers_: NDArray[np.float64] = None
+    linear_bin_centers_: NDArray[np.float64] = None
 
     def __init__(self):
         self._layout_type_tag = "Graph"
@@ -1003,7 +1003,7 @@ class GraphLayout(_KDTreeMixin):
         if bin_size <= 0:
             raise ValueError("bin_size must be positive.")
 
-        (self.bin_centers_, self.grid_edges_, self.active_mask_, edge_ids) = (
+        (self.linear_bin_centers_, self.grid_edges_, self.active_mask_, edge_ids) = (
             _get_graph_bins(
                 graph=graph_definition,
                 edge_order=edge_order,
@@ -1012,27 +1012,27 @@ class GraphLayout(_KDTreeMixin):
             )
         )
         self.grid_shape_ = (len(self.bin_centers_),)
-        self.nd_bin_centers_ = _project_1d_to_2d(
-            self.bin_centers_,
+        self.bin_centers_ = _project_1d_to_2d(
+            self.linear_bin_centers_,
             graph_definition,
             edge_order,
             edge_spacing,
         )
         self.connectivity_graph_ = _create_graph_layout_connectivity_graph(
             graph=graph_definition,
-            bin_centers_2D=self.nd_bin_centers_,
-            bin_centers_1D=self.bin_centers_,
+            bin_centers_2D=self.bin_centers_,
+            bin_centers_1D=self.linear_bin_centers_,
             edge_ids=edge_ids,
             active_mask=self.active_mask_,
             edge_order=edge_order,
         )
         self.dimension_ranges_ = (
-            np.min(self.nd_bin_centers_[:, 0]),
-            np.max(self.nd_bin_centers_[:, 0]),
-        ), (np.min(self.nd_bin_centers_[:, 1]), np.max(self.nd_bin_centers_[:, 1]))
+            np.min(self.bin_centers_[:, 0]),
+            np.max(self.bin_centers_[:, 0]),
+        ), (np.min(self.bin_centers_[:, 1]), np.max(self.bin_centers_[:, 1]))
 
         # --- Build KDTree ---
-        self._build_kdtree(points_for_tree=self.nd_bin_centers_[self.active_mask_])
+        self._build_kdtree(points_for_tree=self.bin_centers_[self.active_mask_])
 
     @property
     def is_1d(self) -> bool:
