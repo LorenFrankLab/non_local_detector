@@ -7,7 +7,6 @@ from functools import cached_property, wraps
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import matplotlib.axes
-import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -19,7 +18,7 @@ from non_local_detector.environment.layout_engine import (
     RegularGridLayout,
     create_layout,
 )
-from non_local_detector.environment.region import RegionInfo, RegionManager
+from non_local_detector.environment.region import RegionManager
 from non_local_detector.environment.utils import _get_distance_between_bins
 
 if TYPE_CHECKING:
