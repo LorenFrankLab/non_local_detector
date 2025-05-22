@@ -15,7 +15,7 @@ def _get_graph_bins(
     edge_order: List[Tuple[object, object]],
     edge_spacing: float | List[float],
     bin_size: float,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, Tuple[np.ndarray], np.ndarray, np.ndarray]:
     """Get the 1D bins of a graph accounting for edge spacing.
 
     Parameters
@@ -108,7 +108,7 @@ def _get_graph_bins(
     bin_edges.append(linear_start_pos)
     # Convert to numpy array
     bin_edges = np.array(bin_edges)
-    bin_edges = [np.unique(bin_edges)]
+    bin_edges = (np.unique(bin_edges),)
     bin_centers = get_centers(bin_edges[0])
     active_mask = np.array(active_mask, dtype=bool)
     edge_ids = np.array(edge_ids, dtype=int)
