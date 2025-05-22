@@ -912,9 +912,19 @@ class HexagonalLayout(_KDTreeMixin):
             )
 
             ax.set_title(f"{self._layout_type_tag} Layout")
-            if self.dimension_ranges_:
-                ax.set_xlim(self.dimension_ranges_[0])
-                ax.set_ylim(self.dimension_ranges_[1])
+            padding = 1.1 * self.hex_radius_
+            ax.set_xlim(
+                (
+                    self.dimension_ranges_[0][0] - padding,
+                    self.dimension_ranges_[0][1] + padding,
+                )
+            )
+            ax.set_ylim(
+                (
+                    self.dimension_ranges_[1][0] - padding,
+                    self.dimension_ranges_[1][1] + padding,
+                )
+            )
             ax.set_aspect("equal", adjustable="box")
         return ax
 
