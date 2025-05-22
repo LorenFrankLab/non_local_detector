@@ -1,3 +1,25 @@
+"""
+Utility functions for creating and managing regular N-dimensional grid layouts.
+
+This module provides a collection of helper functions used primarily by
+`RegularGridLayout` and other grid-based layout engines within the
+`non_local_detector.environment` package. These functions handle tasks such as:
+
+- Defining the structure (bin edges, bin centers, shape) of a regular N-D grid
+  based on data samples or specified dimension ranges (`_create_regular_grid`).
+- Inferring which bins within this grid are "active" based on the density of
+  provided data samples, often involving morphological operations to refine
+  the active area (`_infer_active_bins_from_regular_grid`).
+- Constructing a `networkx.Graph` that represents the connectivity between
+  these active grid bins, allowing for orthogonal and diagonal connections
+  (`_create_regular_grid_connectivity_graph`).
+- Mapping continuous N-D points to their corresponding discrete bin indices
+  within the grid, taking into account active areas (`_points_to_regular_grid_bin_ind`).
+
+The module also includes functions for inferring dimensional properties from
+data samples, which might be shared with or used by other utility modules.
+"""
+
 from __future__ import annotations
 
 import itertools
@@ -21,40 +43,41 @@ def _create_regular_grid_connectivity_graph(
     connect_diagonal: bool = False,
 ) -> nx.Graph:
     """
-    Creates a graph connecting centers of active/interior bins in an N-D grid.
+    Create a graph connecting centers of active bins in an N-D grid.
 
-    Nodes in the returned graph are indexed from 0 to n_active_bins - 1.
-    Each node carries attributes:
-    - 'pos': The N-D coordinates of the active bin center.
-    - 'source_grid_flat_index': The original flat index of this bin in the full grid.
-    - 'original_grid_nd_index': The original N-D tuple index in the full grid.
-    - 'is_active': Always True.
+    Nodes in the returned graph are indexed from `0` to `n_active_bins - 1`.
+    Each node stores attributes:
+    - 'pos': N-D coordinates of the active bin center.
+    - 'source_grid_flat_index': Original flat index in the full conceptual grid.
+    - 'original_grid_nd_index': Original N-D tuple index in the full grid.
 
-    Edges connect active bins that are adjacent in the N-D grid.
+    Edges connect active bins that are adjacent (orthogonally or, optionally,
+    diagonally) in the N-D grid. Edges store 'distance' and 'weight'.
 
     Parameters
     ----------
     full_grid_bin_centers : NDArray[np.float64], shape (n_total_bins, n_dims)
-        Coordinates of the center of *all* bins in the original full grid,
-        ordered by flattened grid index.
+        Coordinates of centers of *all* bins in the original full grid,
+        ordered by flattened grid index (row-major).
     active_mask_nd : NDArray[np.bool_], shape (dim0_size, dim1_size, ...)
-        N-dimensional boolean mask indicating which bins in the full grid
-        are active/interior. Must match `grid_shape`.
+        N-dimensional boolean mask indicating active bins in the full grid.
+        Must match `grid_shape`.
     grid_shape : Tuple[int, ...]
-        The N-D shape of the original full grid.
+        The N-D shape (number of bins in each dimension) of the original full grid.
     connect_diagonal : bool, default=False
-        If True, connect diagonally adjacent active bins in addition to
-        orthogonally adjacent ones.
+        If True, connect diagonally adjacent active bins. Otherwise, only
+        orthogonally adjacent active bins are connected.
 
     Returns
     -------
     connectivity_graph : nx.Graph
-        Graph of active bins with re-indexed nodes (0 to n_active_bins - 1).
+        Graph of active bins. Nodes are re-indexed `0` to `n_active_bins - 1`.
 
     Raises
     ------
     ValueError
-        If input shapes or dimensionalities are inconsistent.
+        If input shapes (`full_grid_bin_centers`, `active_mask_nd`,
+        `grid_shape`) are inconsistent.
     """
     if full_grid_bin_centers.shape[0] != np.prod(grid_shape):
         raise ValueError(
@@ -185,31 +208,42 @@ def _infer_active_bins_from_regular_grid(
     bin_count_threshold: int = 0,
     boundary_exists: bool = False,
 ) -> NDArray[np.bool_]:
-    """Infers the interior bins of the track based on data_samples density.
+    """
+    Infer active bins in a regular grid based on data sample density.
+
+    This function first counts data samples in each grid bin defined by `edges`.
+    Bins with counts above `bin_count_threshold` are initially marked active.
+    Optional morphological operations (closing, filling, dilation) can then be
+    applied to refine the active area.
 
     Parameters
     ----------
-    data_samples : NDArray[np.float64], shape (n_time, n_dims)
-        data_samples data. NaNs are ignored.
+    data_samples : NDArray[np.float64], shape (n_samples, n_dims)
+        N-dimensional data samples (e.g., positions). NaNs are ignored.
     edges : Tuple[NDArray[np.float64], ...]
-        Bin edges for each dimension, as returned by `create_grid`.
-    fill_holes : bool, optional
-        Fill holes within the inferred occupied area using binary closing
-        and filling. Defaults to False.
-    dilate : bool, optional
-        Expand the boundary of the inferred occupied area using binary
-        dilation. Defaults to False.
-    bin_count_threshold : int, optional
-        Minimum samples in a bin for it to be considered part of the track.
-        Defaults to 0 (any occupancy counts).
-    boundary_exists : bool, optional
-        If True, the last bin in each dimension is not considered part of
-        the track. Defaults to False.
+        A tuple where each element is a 1D array of bin edge positions for
+        one dimension of the grid.
+    close_gaps : bool, default=False
+        If True, apply binary closing (dilation then erosion) to close small
+        gaps in the active area.
+    fill_holes : bool, default=False
+        If True, apply binary hole filling to fill holes enclosed by active bins.
+    dilate : bool, default=False
+        If True, apply binary dilation to expand the boundary of the active area.
+    bin_count_threshold : int, default=0
+        Minimum number of samples a bin must contain to be initially
+        considered active (before morphological operations).
+    boundary_exists : bool, default=False
+        If True, explicitly mark the outermost layer of bins in each dimension
+        as inactive *after* morphological operations. This can be used if
+        `add_boundary_bins` was True during grid creation to ensure these
+        added boundary bins are not part of the inferred active track.
 
     Returns
     -------
-    is_track_interior : NDArray[np.bool_], shape (n_bins_dim1, n_bins_dim2, ...)
-        Boolean array indicating which bins are considered part of the track.
+    active_mask : NDArray[np.bool_], shape (n_bins_dim0, n_bins_dim1, ...)
+        N-dimensional boolean mask indicating which bins in the grid are
+        considered active or part of the track interior.
     """
     pos_clean = data_samples[~np.any(np.isnan(data_samples), axis=1)]
 
@@ -224,7 +258,7 @@ def _infer_active_bins_from_regular_grid(
         return np.zeros(grid_shape, dtype=bool)
 
     bin_counts, _ = np.histogramdd(pos_clean, bins=edges)
-    is_track_interior = bin_counts > bin_count_threshold
+    active_mask = bin_counts > bin_count_threshold
 
     n_dims = data_samples.shape[1]
     if n_dims > 1:
@@ -233,36 +267,30 @@ def _infer_active_bins_from_regular_grid(
 
         if close_gaps:
             # Closing operation first (dilation then erosion) to close small gaps
-            is_track_interior = ndimage.binary_closing(
-                is_track_interior, structure=structure
-            )
+            active_mask = ndimage.binary_closing(active_mask, structure=structure)
 
         if fill_holes:
             # Fill larger holes enclosed by occupied bins
-            is_track_interior = ndimage.binary_fill_holes(
-                is_track_interior, structure=structure
-            )
+            active_mask = ndimage.binary_fill_holes(active_mask, structure=structure)
 
         if dilate:
             # Expand the occupied area
-            is_track_interior = ndimage.binary_dilation(
-                is_track_interior, structure=structure
-            )
+            active_mask = ndimage.binary_dilation(active_mask, structure=structure)
 
         if boundary_exists:
-            if is_track_interior.ndim == 1:
-                if len(is_track_interior) > 0:
-                    is_track_interior[-1] = False
-            elif is_track_interior.ndim > 1 and is_track_interior.size > 0:
-                for axis_n in range(is_track_interior.ndim):
-                    slicer_first = [slice(None)] * is_track_interior.ndim
+            if active_mask.ndim == 1:
+                if len(active_mask) > 0:
+                    active_mask[-1] = False
+            elif active_mask.ndim > 1 and active_mask.size > 0:
+                for axis_n in range(active_mask.ndim):
+                    slicer_first = [slice(None)] * active_mask.ndim
                     slicer_first[axis_n] = 0
-                    is_track_interior[tuple(slicer_first)] = False
-                    slicer_last = [slice(None)] * is_track_interior.ndim
+                    active_mask[tuple(slicer_first)] = False
+                    slicer_last = [slice(None)] * active_mask.ndim
                     slicer_last[axis_n] = -1
-                    is_track_interior[tuple(slicer_last)] = False
+                    active_mask[tuple(slicer_last)] = False
 
-    return is_track_interior.astype(bool)
+    return active_mask.astype(bool)
 
 
 def _create_regular_grid(
@@ -275,43 +303,49 @@ def _create_regular_grid(
     NDArray[np.float64],  # bin_centers
     Tuple[int, ...],  # centers_shape
 ]:
-    """Calculates bin edges and centers for a spatial grid.
+    """
+    Calculate bin edges and centers for a regular N-dimensional spatial grid.
 
-    Creates a grid based on provided data_samples data or range. Handles multiple
-    data_samples dimensions and optionally adds boundary bins around the core grid.
+    The grid can be defined based on the extent of `data_samples` or an
+    explicit `dimension_range`. Boundary bins can optionally be added.
 
     Parameters
     ----------
-    data_samples : Optional[NDArray[np.float64]], shape (n_time, n_dims), optional
-        data_samples data. Used to determine grid extent if `dimension_range`
-        is None. NaNs are ignored. Required if `dimension_range` is None.
-        Defaults to None.
-    bin_size : Union[float, Sequence[float]], optional
-        Desired approximate size of bins in each dimension. If a sequence,
-        must match the number of dimensions. Defaults to 2.0.
+    data_samples : Optional[NDArray[np.float64]], shape (n_samples, n_dims), optional
+        N-dimensional data samples. Used to determine grid extent if
+        `dimension_range` is None. NaNs are ignored. Required if
+        `dimension_range` is None. Defaults to None.
+    bin_size : Union[float, Sequence[float]], default=2.0
+        Desired approximate size of bins in each dimension. If a float,
+        applied to all dimensions. If a sequence, must match `n_dims`.
     dimension_range : Optional[Sequence[Tuple[float, float]]], optional
-        Explicit grid boundaries [(min_dim1, max_dim1), ...]. If None,
-        boundaries are derived from `data_samples`. Defaults to None.
-    add_boundary_bins : bool, optional
+        Explicit grid boundaries `[(min_d0, max_d0), ..., (min_dN-1, max_dN-1)]`.
+        If None (default), boundaries are derived from `data_samples`.
+    add_boundary_bins : bool, default=False
         If True, add one bin on each side of the grid in each dimension,
-        extending the range. Defaults to False.
+        effectively extending the `dimension_range` covered by the grid edges.
 
     Returns
     -------
-    edges : Tuple[NDArray[np.float64], ...]
-        Tuple containing bin edges for each dimension (shape (n_bins_d + 1,)).
-        Includes boundary bins if `add_boundary_bins` is True.
-    place_bin_centers : NDArray[np.float64], shape (n_total_bins, n_dims)
-        Center coordinates of each bin in the flattened grid.
-    centers_shape : Tuple[int, ...]
-        Shape of the grid (number of bins in each dimension).
+    edges_tuple : Tuple[NDArray[np.float64], ...]
+        Tuple where each element is a 1D array of bin edge positions for one
+        dimension (shape `(n_bins_in_dim + 1,)`). Includes boundary bins if
+        `add_boundary_bins` is True.
+    full_grid_bin_centers : NDArray[np.float64], shape (n_total_bins, n_dims)
+        Center coordinates of *every* bin in the (potentially boundary-extended)
+        flattened grid, ordered row-major.
+    grid_shape : Tuple[int, ...]
+        N-D shape (number of bins in each dimension) of the created grid,
+        including boundary bins if added.
 
     Raises
     ------
     ValueError
         If both `data_samples` and `dimension_range` are None.
-        If `bin_size` sequence length doesn't match dimensions.
-        If `dimension_range` sequence length doesn't match dimensions.
+        If `data_samples` (if used) are all NaN or empty.
+        If `bin_size` sequence length doesn't match `n_dims`.
+        If `dimension_range` (if used) sequence length doesn't match `n_dims`.
+        If any `bin_size` component is not positive.
     """
     if data_samples is None and dimension_range is None:
         raise ValueError("Either `data_samples` or `dimension_range` must be provided.")
@@ -411,24 +445,36 @@ def _points_to_regular_grid_bin_ind(
     grid_shape: Tuple[int, ...],
     active_mask: NDArray[np.bool_] = None,
 ) -> NDArray[np.int_]:
-    """Maps points to their corresponding bin indices in a regular grid.
+    """
+    Map N-D points to their corresponding bin indices in a regular grid.
+
+    If `active_mask` is provided, maps to indices relative to active bins
+    (0 to `n_active_bins - 1`). Otherwise, maps to flat indices of the
+    full conceptual grid.
 
     Parameters
     ----------
-    points : NDArray[np.float64], shape (n_time, n_dims)
-        NaNs are ignored.
-    edges : Tuple[NDArray[np.float64], ...]
-        Bin edges for each dimension, as returned by `create_grid`.
-    centers_shape : Tuple[int, ...]
-    activate_mask : Optional[NDArray[bool]], shape (n_x, ...)
+    points : NDArray[np.float64], shape (n_points, n_dims)
+        N-dimensional points to map. NaNs are filtered out.
+    grid_edges : Tuple[NDArray[np.float64], ...]
+        Tuple where each element is a 1D array of bin edge positions for one
+        dimension of the full grid.
+    grid_shape : Tuple[int, ...]
+        N-D shape (number of bins in each dimension) of the full grid.
+    active_mask : Optional[NDArray[np.bool_]], shape `grid_shape`, optional
+        If provided, an N-D boolean mask indicating active bins in the full
+        grid. Output indices will be relative to these active bins.
+        If None (default), output indices are flat indices of the full grid.
 
     Returns
     -------
-    flat_bin_indices : NDArray[np.int_], shape (n_time, n_dims)
-        Indices of the bins corresponding to each data_sample point.
-        Each row corresponds to a data_sample, and each column corresponds
-        to a dimension. The indices are 0-based and correspond to the bin
-        edges provided.
+    bin_indices : NDArray[np.int_], shape (n_valid_points,)
+        Integer indices of the bins corresponding to each valid input point.
+        - If `active_mask` is provided: Indices are `0` to `n_active_bins - 1`.
+          Points outside active bins or grid boundaries get -1.
+        - If `active_mask` is None: Flat indices of the full grid. Points
+          outside grid boundaries get -1 or out-of-range indices (depending
+          on `np.digitize` behavior for edge cases, typically -1 due to clipping).
     """
     points = np.atleast_2d(points)
     points = points[~np.any(np.isnan(points), axis=1)]
