@@ -232,17 +232,12 @@ class RegionManager:
                 raise TypeError(
                     "Region data for kind 'mask' must be a boolean NumPy array."
                 )
-            # For grid-based layouts, mask should match the full grid_shape_
-            if (
-                self._env.grid_shape_ is not None and len(self._env.grid_shape_) > 1
-            ):  # N-D grid
+            if self._env.grid_shape_ is not None:
                 if mask.shape != self._env.grid_shape_:
                     raise ValueError(
                         f"Mask shape {mask.shape} mismatches environment's "
                         f"full grid_shape_ {self._env.grid_shape_}."
                     )
-            # If not an N-D grid (e.g. point-based or 1D track), this mask might be interpreted differently
-            # or might not be the primary way to define regions. For now, we assume it's for full grids.
             data_processed = mask.copy()
 
         elif polygon is not None:
