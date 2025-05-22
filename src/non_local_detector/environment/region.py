@@ -150,6 +150,27 @@ class RegionManager:
         self._env = environment_facade  # Facade to access Environment's state
         self._regions: Dict[str, RegionInfo] = {}
 
+    def __repr__(self) -> str:
+        """
+        Return an unambiguous string representation of the RegionManager.
+
+        Returns
+        -------
+        str
+            A string representation showing the class name, the name of the
+            associated environment, and the number of defined regions.
+        """
+        env_name = "N/A"
+        if self._env is not None and hasattr(self._env, "environment_name"):
+            env_name = self._env.environment_name
+
+        return (
+            f"{self.__class__.__name__}("
+            f"environment_name={env_name!r}, "
+            f"n_regions={len(self._regions)}"
+            f")"
+        )
+
     def _check_env_fitted(self, method_name: str):
         """Helper to check if the associated environment is fitted."""
         if not self._env._is_fitted:  # Accessing internal _is_fitted via facade
@@ -321,7 +342,9 @@ class RegionManager:
 
         if info.kind == "point":
             # Find which active bin the point maps to
-            mapped_bin_idx_arr = self._env.get_bin_ind(info.data)  # Returns array
+            mapped_bin_idx_arr = self._env.get_bin_ind(
+                np.atleast_2d(info.data)
+            )  # Returns array
             if mapped_bin_idx_arr.size > 0 and mapped_bin_idx_arr[0] != -1:
                 active_bin_is_in_region_1d[mapped_bin_idx_arr[0]] = True
 
@@ -353,22 +376,10 @@ class RegionManager:
 
             if original_flat_indices_in_region_and_active.size > 0:
                 # Map these original full-grid flat indices to 0..N-1 active bin indices
-                # This requires a map from source_grid_flat_index to active_bin_id
-                if not hasattr(self._env, "_source_flat_to_active_node_id_map_cached"):
-                    # Cache this map on the environment if not present
-                    self._env._source_flat_to_active_node_id_map_cached = {  # type: ignore
-                        data["source_grid_flat_index"]: node_id
-                        for node_id, data in self._env.connectivity_graph_.nodes(
-                            data=True
-                        )
-                        if "source_grid_flat_index" in data
-                    }
 
                 for orig_flat_idx in original_flat_indices_in_region_and_active:
-                    active_node_id = (
-                        self._env._source_flat_to_active_node_id_map_cached.get(
-                            orig_flat_idx
-                        )
+                    active_node_id = self._env._source_flat_to_active_node_id_map.get(
+                        orig_flat_idx
                     )
                     if (
                         active_node_id is not None
@@ -654,6 +665,9 @@ class RegionManager:
         """Plots specified (or all) defined regions onto the provided axes."""
         self._check_env_fitted("plot_regions")
 
+        if ax is None:
+            ax = plt.gca()  # Get current axes if not provided
+
         regions_to_plot = (
             region_names if region_names is not None else self.list_regions()
         )
@@ -675,14 +689,15 @@ class RegionManager:
             plot_opts.update(specific_region_plot_kwargs.get(name, {}))
 
             label = plot_opts.pop("label", name)
-            color = plot_opts.pop(
-                "color",
-                (
-                    next(ax._get_lines.prop_cycler)["color"]
-                    if hasattr(ax, "_get_lines")
-                    else None
-                ),
-            )  # Cycle color
+            default_color_from_opts = plot_opts.pop("color", None)
+            if default_color_from_opts is not None:
+                color = default_color_from_opts
+            elif hasattr(ax, "_get_lines") and hasattr(ax._get_lines, "get_next_color"):
+                # Use the get_next_color() method of the _process_plot_var_args object
+                color = ax._get_lines.get_next_color()
+            else:
+                # Fallback if the above method isn't available (e.g., different Axes type)
+                color = None
             alpha = plot_opts.pop("alpha", 0.4)
 
             if info.kind == "point":
@@ -713,16 +728,62 @@ class RegionManager:
                         UserWarning,
                     )
                     continue
+
                 from matplotlib.patches import PathPatch  # Local import
-                from matplotlib.path import Path as MplPath  # Local import
+                from matplotlib.path import Path as MplPath  # Local import for clarity
 
                 poly_data: "_shp.Polygon" = info.data  # type: ignore
-                path_data = [MplPath.MOVETO] + poly_data.exterior.coords.tolist()  # type: ignore
-                for interior in poly_data.interiors:  # type: ignore
-                    path_data.extend([MplPath.MOVETO] + interior.coords.tolist())
 
-                codes, verts = zip(*path_data)
-                path = MplPath(verts, codes)
+                all_verts_list = []
+                all_codes_list = []
+
+                # Process exterior
+                # Convert CoordinateSequence to a list of coordinate tuples
+                exterior_coords_list = list(poly_data.exterior.coords)
+
+                if (
+                    len(exterior_coords_list) >= 2
+                ):  # Need at least two points to draw something
+                    all_verts_list.extend(exterior_coords_list)
+                    all_codes_list.append(MplPath.MOVETO)
+                    # Add LINETO for all subsequent points except the last one,
+                    # as CLOSEPOLY will handle closing to the first point.
+                    all_codes_list.extend(
+                        [MplPath.LINETO] * (len(exterior_coords_list) - 2)
+                    )
+                    all_codes_list.append(MplPath.CLOSEPOLY)  # Close the exterior path
+                elif (
+                    len(exterior_coords_list) == 1
+                ):  # A single point, should not happen for valid polygon
+                    all_verts_list.extend(exterior_coords_list)
+                    all_codes_list.append(MplPath.MOVETO)
+
+                # Process interiors (holes)
+                for interior in poly_data.interiors:
+                    interior_coords_list = list(
+                        interior.coords
+                    )  # Convert CoordinateSequence
+                    if len(interior_coords_list) >= 2:
+                        all_verts_list.extend(interior_coords_list)
+                        all_codes_list.append(MplPath.MOVETO)
+                        all_codes_list.extend(
+                            [MplPath.LINETO] * (len(interior_coords_list) - 2)
+                        )
+                        all_codes_list.append(MplPath.CLOSEPOLY)
+                    elif len(interior_coords_list) == 1:
+                        all_verts_list.extend(interior_coords_list)
+                        all_codes_list.append(MplPath.MOVETO)
+
+                if not all_verts_list:
+                    warnings.warn(
+                        f"Polygon region '{name}' resulted in no vertices to plot.",
+                        UserWarning,
+                    )
+                    continue
+
+                # Create the Path object
+                # Vertices should be a NumPy array for Matplotlib Path
+                path = MplPath(np.array(all_verts_list), all_codes_list)
                 patch = PathPatch(
                     path, label=label, facecolor=color, alpha=alpha, **plot_opts
                 )

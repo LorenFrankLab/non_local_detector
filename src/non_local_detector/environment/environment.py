@@ -154,6 +154,11 @@ class Environment:
     _layout_type_used: Optional[str] = field(init=False, default=None)
     _layout_params_used: Dict[str, Any] = field(init=False, default_factory=dict)
 
+    # Cache the mapping from source flat indices to active node IDs
+    _source_flat_to_active_node_id_map: Optional[Dict[int, int]] = field(
+        init=False, default=None, repr=False
+    )
+
     def __init__(
         self,
         environment_name: str = "",
@@ -212,40 +217,6 @@ class Environment:
         self._setup_from_layout()  # Populate attributes from the built layout
         self.regions = RegionManager(self)
 
-    def _setup_from_layout(self) -> None:
-        """
-        Populate Environment attributes from its (built) LayoutEngine.
-
-        This internal method is called after the `LayoutEngine` is associated
-        with the Environment. It copies essential geometric and connectivity
-        information from the layout to the Environment's attributes.
-        It also applies fallbacks for certain grid-specific attributes if the
-        layout is point-based to ensure consistency.
-        """
-
-        self.bin_centers_ = self.layout.bin_centers_
-        self.connectivity_graph_ = getattr(
-            self.layout, "connectivity_graph_", nx.Graph()
-        )
-        self.dimension_ranges_ = self.layout.dimension_ranges_
-
-        # Grid-specific attributes
-        self.grid_edges_ = getattr(self.layout, "grid_edges_", ())
-        self.grid_shape_ = getattr(self.layout, "grid_shape_", None)
-        self.active_mask_ = getattr(self.layout, "active_mask_", None)
-
-        # If it's not a grid layout, grid_shape_ might be (n_active_bins,),
-        # and active_mask_ might be 1D all True. This is fine.
-        # Ensure they are at least None if not applicable from layout
-        if self.grid_shape_ is None and self.bin_centers_ is not None:
-            # Fallback for point-based
-            self.grid_shape_ = (self.bin_centers_.shape[0],)
-        if self.active_mask_ is None and self.bin_centers_ is not None:
-            # Fallback for point-based
-            self.active_mask_ = np.ones(self.bin_centers_.shape[0], dtype=bool)
-
-        self._is_fitted = True
-
     def __repr__(self: "Environment") -> str:
         """
         Generate an unambiguous string representation of the Environment.
@@ -285,6 +256,68 @@ class Environment:
             f"fitted=True"
             f")"
         )
+
+    def _setup_from_layout(self) -> None:
+        """
+        Populate Environment attributes from its (built) LayoutEngine.
+
+        This internal method is called after the `LayoutEngine` is associated
+        with the Environment. It copies essential geometric and connectivity
+        information from the layout to the Environment's attributes.
+        It also applies fallbacks for certain grid-specific attributes if the
+        layout is point-based to ensure consistency.
+        """
+
+        self.bin_centers_ = self.layout.bin_centers_
+        self.connectivity_graph_ = getattr(
+            self.layout, "connectivity_graph_", nx.Graph()
+        )
+        self.dimension_ranges_ = self.layout.dimension_ranges_
+
+        # Grid-specific attributes
+        self.grid_edges_ = getattr(self.layout, "grid_edges_", ())
+        self.grid_shape_ = getattr(self.layout, "grid_shape_", None)
+        self.active_mask_ = getattr(self.layout, "active_mask_", None)
+
+        # If it's not a grid layout, grid_shape_ might be (n_active_bins,),
+        # and active_mask_ might be 1D all True. This is fine.
+        # Ensure they are at least None if not applicable from layout
+        if self.grid_shape_ is None and self.bin_centers_ is not None:
+            # Fallback for point-based
+            self.grid_shape_ = (self.bin_centers_.shape[0],)
+        if self.active_mask_ is None and self.bin_centers_ is not None:
+            # Fallback for point-based
+            self.active_mask_ = np.ones(self.bin_centers_.shape[0], dtype=bool)
+
+        self._is_fitted = True
+
+    @cached_property
+    @check_fitted
+    def _source_flat_to_active_node_id_map(self) -> Dict[int, int]:
+        """
+        Get or create the mapping from original full grid flat indices
+        to active bin IDs (0 to n_active_bins - 1).
+
+        The map is cached on the instance for subsequent calls. This method
+        is intended for internal use by other Environment or related manager methods.
+
+        Returns
+        -------
+        Dict[int, int]
+            A dictionary mapping `source_grid_flat_index` from graph nodes
+            to the `active_bin_id` (which is the graph node ID).
+
+        Raises
+        ------
+        RuntimeError
+            If the connectivity graph is not available, or if all nodes are
+            missing the 'source_grid_flat_index' attribute required for the map.
+        """
+        return {
+            data["source_grid_flat_index"]: node_id
+            for node_id, data in self.connectivity_graph_.nodes(data=True)
+            if "source_grid_flat_index" in data
+        }
 
     # --- Factory Methods ---
     @classmethod
@@ -1698,17 +1731,9 @@ class Environment:
             truly_active_nd_indices_tuple, self.grid_shape_
         )
 
-        # Map these original_flat_indices to the new active bin indices (0 to N-1)
-        if not hasattr(self, "_source_flat_to_active_node_id_map_cached"):
-            self._source_flat_to_active_node_id_map_cached = {  # Cache this map
-                data["source_grid_flat_index"]: node_id
-                for node_id, data in self.connectivity_graph_.nodes(data=True)
-                if "source_grid_flat_index" in data
-            }
-
         final_active_bin_ids = np.array(
             [
-                self._source_flat_to_active_node_id_map_cached.get(orig_flat_idx, -1)
+                self._source_flat_to_active_node_id_map.get(orig_flat_idx, -1)
                 for orig_flat_idx in original_flat_indices_of_targets
             ],
             dtype=np.int_,
