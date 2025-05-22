@@ -299,7 +299,7 @@ def _axial_to_offset_bin_indices(
 
 
 def _points_to_hex_bin_ind(
-    data_samples: NDArray[np.float64],
+    points: NDArray[np.float64],
     grid_offset_x,
     grid_offset_y,
     hex_radius,
@@ -309,7 +309,7 @@ def _points_to_hex_bin_ind(
 
     Parameters
     ----------
-    data_samples : NDArray[np.float64], shape (n_points, 2)
+    points : NDArray[np.float64], shape (n_points, 2)
         The (x, y) coordinates of the points to assign to bins.
     grid_offset_x : float
         The x-coordinate of the grid's effective origin.
@@ -327,18 +327,18 @@ def _points_to_hex_bin_ind(
         the defined grid area are assigned an index of -1. NaN input points
         also result in an index of -1.
     """
-    n_points = data_samples.shape[0]
+    n_points = points.shape[0]
     if n_points == 0:
         return np.array([], dtype=np.int_)
 
     output_indices: NDArray[np.int_] = np.full(n_points, -1, dtype=np.int_)
 
     # Identify valid (non-NaN) points
-    valid_mask: NDArray[np.bool_] = ~np.isnan(data_samples).any(axis=1)
+    valid_mask: NDArray[np.bool_] = ~np.isnan(points).any(axis=1)
     if not np.any(valid_mask):
         return output_indices  # All points are NaN or empty after all
 
-    valid_points: NDArray[np.float64] = data_samples[valid_mask]
+    valid_points: NDArray[np.float64] = points[valid_mask]
 
     # Adjust points relative to the grid's effective origin
     # (grid_offset_x, grid_offset_y) is the center of hex (0,0) in grid indices
@@ -374,7 +374,7 @@ def _infer_active_bins_from_hex_grid(
 ) -> NDArray[np.int_]:
     """Infers active bins from a hexagonal grid based on data_samples data."""
     bin_ind = _points_to_hex_bin_ind(
-        data_samples=data_samples,
+        points=data_samples,
         grid_offset_x=min_x,
         grid_offset_y=min_y,
         hex_radius=hex_radius,
