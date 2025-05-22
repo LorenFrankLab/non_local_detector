@@ -184,8 +184,10 @@ def _create_graph_layout_connectivity_graph(
                 int(node_id),
                 {
                     "pos": tuple(center_2D),
-                    "bin_ind": b_ind,
-                    "source_1d_flat_index": b_ind,
+                    "source_grid_flat_index": b_ind,
+                    "original_grid_nd_index": np.unravel_index(
+                        b_ind, bin_centers_1D.shape
+                    ),
                     "pos_1D": center_1D,
                     "source_edge_id": edge_id,
                 },
