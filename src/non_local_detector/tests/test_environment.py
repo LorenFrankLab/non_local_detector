@@ -2,11 +2,9 @@
 Tests for the Environment class using a plus maze example.
 """
 
-import pickle
-import tempfile
 import warnings  # Import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
+from typing import List, Tuple
 
 import networkx as nx
 import numpy as np
@@ -16,14 +14,10 @@ from numpy.typing import NDArray
 
 from non_local_detector.environment.environment import Environment
 from non_local_detector.environment.layout_engine import (
-    ImageMaskLayout,  # Import for type check
-)
-from non_local_detector.environment.layout_engine import (
-    MaskedGridLayout,  # Import for type check
-)
-from non_local_detector.environment.layout_engine import (
     SHAPELY_AVAILABLE,
     GraphLayout,
+    ImageMaskLayout,
+    MaskedGridLayout,
     RegularGridLayout,
     ShapelyPolygonLayout,
 )
