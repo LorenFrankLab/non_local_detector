@@ -489,16 +489,10 @@ def _find_bin_for_linear_position(
         [
             np.any(np.isclose(bin_edges[1:], lin_pos))
             for lin_pos in linear_positions[in_gap_ind]
-        ]
+        ],
+        dtype=bool,
     )
     bin_ind[in_gap_ind[is_bin_edge]] = bin_ind[in_gap_ind[is_bin_edge]] - 1
 
-    if np.any(np.isin(bin_ind, invalid_bin_ind)):
-        raise ValueError(
-            "Some bin indices are invalid. Check the active_mask or bin_edges."
-        )
-    if was_scalar:
-        return int(bin_ind[0]) if bin_ind.size > 0 else -1
-    else:
-        # Return the bin indices as an array
-        return bin_ind.astype(int)
+    bin_ind[in_gap_ind[~is_bin_edge]] = -1
+    return int(bin_ind[0]) if was_scalar else bin_ind.astype(int)
