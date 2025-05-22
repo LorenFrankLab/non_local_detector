@@ -501,15 +501,15 @@ class Environment:
         self, data_samples_nd: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         if not self.is_1d or not isinstance(self.layout, GraphLayout):  # Be specific
-            raise TypeError("Linearized coordinate only for TrackLayout environments.")
-        return self.layout.get_linearized_coordinate(data_samples_nd)
+            raise TypeError("Linearized coordinate only for GraphLayout environments.")
+        return self.layout.get_linearized_coordinate(points_nd)
 
     @check_fitted
     def map_linear_to_nd_coordinate(
         self, linear_coordinates: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         if not self.is_1d or not isinstance(self.layout, GraphLayout):
-            raise TypeError("Mapping linear to N-D only for TrackLayout environments.")
+            raise TypeError("Mapping linear to N-D only for GraphLayout environments.")
         return self.layout.map_linear_to_nd_coordinate(linear_coordinates)
 
     @check_fitted
