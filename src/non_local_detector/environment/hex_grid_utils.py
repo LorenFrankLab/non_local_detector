@@ -331,6 +331,8 @@ def _points_to_hex_bin_ind(
     if n_points == 0:
         return np.array([], dtype=np.int_)
 
+    points = np.atleast_2d(points)
+
     output_indices: NDArray[np.int_] = np.full(n_points, -1, dtype=np.int_)
 
     # Identify valid (non-NaN) points
