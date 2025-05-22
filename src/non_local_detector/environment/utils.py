@@ -1,30 +1,39 @@
+"""
+General utility functions for the non_local_detector.environment package.
+
+This module provides helper functions used across various components of the
+environment definition and processing, such as calculating bin properties,
+inferring geometric features from data samples, plotting graphs, and
+computing distances.
+"""
+
 from __future__ import annotations
 
-import itertools
 import warnings
-from typing import Dict, Optional, Sequence, Set, Tuple, Union
+from typing import Optional, Sequence, Tuple, Union
 
 import matplotlib
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 from numpy.typing import NDArray
-from scipy import ndimage
 from scipy.spatial import KDTree
 
 
 def get_centers(bin_edges: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Calculates the center of each bin given its edges.
+    """
+    Calculate the center of each bin given its edges.
 
     Parameters
     ----------
     bin_edges : NDArray[np.float64], shape (n_edges,)
-        The edges defining the bins.
+        A 1D array of sorted coordinates representing the edges that define
+        a sequence of bins. For `N` bins, there will be `N+1` edges.
 
     Returns
     -------
-    bin_centers : NDArray[np.float64], shape (n_edges - 1,)
-        The center of each bin.
+    NDArray[np.float64], shape (n_edges - 1,)
+        A 1D array containing the center coordinate of each bin.
     """
     return bin_edges[:-1] + np.diff(bin_edges) / 2
 
@@ -34,22 +43,39 @@ def get_n_bins(
     bin_size: Union[float, Sequence[float]],
     dimension_range: Optional[Sequence[Tuple[float, float]]] = None,
 ) -> NDArray[np.int_]:
-    """Calculates the number of bins needed for each dimension.
+    """
+    Calculate the number of bins needed for each dimension of a dataset.
+
+    The number of bins is determined based on the extent of the data (or a
+    specified `dimension_range`) and the desired `bin_size`.
 
     Parameters
     ----------
-    data_samples : NDArray[np.float64], shape (n_time, n_dims)
-        data_samples data to determine range if `dimension_range` is not given.
-    bin_size : float or Sequence[float]
-        The desired size(s) of the bins.
+    data_samples : NDArray[np.float64], shape (n_samples, n_dims)
+        N-dimensional data samples. Used to determine the data extent if
+        `dimension_range` is not provided. NaNs are ignored for range calculation.
+    bin_size : Union[float, Sequence[float]]
+        The desired size of the bins. If a float, this size is applied to
+        all dimensions. If a sequence, it specifies the bin size for each
+        dimension and its length must match `n_dims`. Must be positive.
     dimension_range : Optional[Sequence[Tuple[float, float]]], optional
-        Explicit range [(min_dim1, max_dim1), ...] for each dimension.
-        If None, range is calculated from `data_samples`. Defaults to None.
+        Explicit range `[(min_d0, max_d0), ..., (min_dN-1, max_dN-1)]` for
+        each dimension. If None (default), the range is calculated from
+        the min/max of `data_samples`.
 
     Returns
     -------
-    n_bins : NDArray[np.int_], shape (n_dims,)
-        Number of bins required for each dimension.
+    NDArray[np.int_], shape (n_dims,)
+        An array containing the calculated number of bins required for each
+        dimension. Each value is at least 1.
+
+    Raises
+    ------
+    ValueError
+        If `bin_size` is not positive or if its length (if a sequence)
+        does not match the number of dimensions.
+        If `dimension_range` (if provided) does not have two values (min, max)
+        per dimension.
     """
     if dimension_range is not None:
         # Ensure dimension_range is numpy array for consistent processing
@@ -79,39 +105,40 @@ def _infer_active_elements_from_samples(
     bin_count_threshold: int = 0,
 ) -> Tuple[NDArray[np.bool_], NDArray[np.float64], NDArray[np.int_]]:
     """
-    Infers active elements from a set of candidate centers based on data sample occupancy.
+    Infer active elements from candidates based on data sample occupancy.
 
     This function maps `data_samples` to the nearest `candidate_element_centers`
-    and then determines which candidates are "active" by checking if their
-    occupancy count exceeds `bin_count_threshold`.
+    using a KD-tree. Candidates are marked "active" if their occupancy count
+    (number of mapped data samples) exceeds `bin_count_threshold`.
 
     Parameters
     ----------
     candidate_element_centers : NDArray[np.float64], shape (n_candidates, n_dims)
-        The N-dimensional coordinates of the centers of all potential elements (bins, cells, points).
+        N-dimensional coordinates of the centers of all potential elements
+        (e.g., bins, cells).
     data_samples : NDArray[np.float64], shape (n_samples, n_dims)
-        The N-dimensional data samples (e.g., recorded data_sampless) used to determine occupancy.
-        NaNs within this array will be filtered out.
-    bin_count_threshold : int, optional
-        The minimum number of data samples that must map to a candidate element
+        N-dimensional data samples (e.g., recorded positions) used to
+        determine occupancy. NaNs within this array are filtered out.
+    bin_count_threshold : int, optional, default=0
+        Minimum number of data samples that must map to a candidate element
         for it to be considered active. If 0, any occupancy makes it active.
 
     Returns
     -------
-    inferred_1d_mask_on_candidates : NDArray[np.bool_]
-        A 1D boolean mask with the same length as `candidate_element_centers`.
-        `True` indicates that the corresponding candidate element is active.
+    inferred_1d_mask_on_candidates : NDArray[np.bool_], shape (n_candidates,)
+        A 1D boolean mask. `True` indicates the corresponding candidate
+        element is active.
     final_active_centers : NDArray[np.float64], shape (n_active_elements, n_dims)
         The subset of `candidate_element_centers` that were deemed active.
-    source_indices_of_active_centers : NDArray[np.int_], (n_active_elements,)
-        The original indices (from `candidate_element_centers`) of the elements
+    source_indices_of_active_centers : NDArray[np.int_], shape (n_active_elements,)
+        Original indices (from `candidate_element_centers`) of the elements
         that were deemed active.
 
     Raises
     ------
     ValueError
-        If `candidate_element_centers` or `data_samples` have incompatible dimensions
-        or if `bin_count_threshold` is negative.
+        If `candidate_element_centers` or `data_samples` have incompatible
+        dimensions, or if `bin_count_threshold` is negative.
     """
     if bin_count_threshold < 0:
         raise ValueError("bin_count_threshold must be non-negative.")
@@ -228,29 +255,30 @@ def _infer_dimension_ranges_from_samples(
     buffer_around_data: Union[float, Sequence[float]] = 0.0,
 ) -> Sequence[Tuple[float, float]]:
     """
-    Infers the min/max range for each dimension from data samples.
+    Infer min/max range for each dimension from data samples, with a buffer.
 
     Parameters
     ----------
     data_samples : NDArray[np.float64], shape (n_samples, n_dims)
-        The data points from which to infer ranges. NaNs are ignored.
-    buffer_around_data : Union[float, Sequence[float]], default 0.0
-        A buffer to add to the min and max of the inferred range in each dimension.
-        If a float, the same buffer is applied to all dimensions.
-        If a sequence, it specifies the buffer for each dimension.
-        This is useful if the data points are all identical or collinear,
-        or if a margin around the data is desired.
+        Data points from which to infer ranges. NaNs are ignored.
+    buffer_around_data : Union[float, Sequence[float]], default=0.0
+        Buffer to add to the min and max of the inferred range in each
+        dimension. If a float, applied to all dimensions. If a sequence,
+        specifies buffer per dimension. Useful for ensuring extent if data
+        is collinear or a margin around the data is desired.
 
     Returns
     -------
     Sequence[Tuple[float, float]]
-        The inferred ranges as `[(min_d0, max_d0), ..., (min_dN-1, max_dN-1)]`.
+        Inferred ranges: `[(min_d0, max_d0), ..., (min_dN-1, max_dN-1)]`.
 
     Raises
     ------
     ValueError
-        If data_samples are all NaN, empty after NaN removal, or if
-        dimensionality mismatch.
+        If `data_samples` are all NaN, empty after NaN removal, not 2D,
+        or if `buffer_around_data` dimensionality mismatches `data_samples`.
+    TypeError
+        If `buffer_around_data` is not a float or sequence of floats.
     """
     if data_samples.ndim != 2:
         raise ValueError(
@@ -308,6 +336,38 @@ def _generic_graph_plot(
     ax: Optional[matplotlib.axes.Axes] = None,
     **kwargs,
 ) -> matplotlib.axes.Axes:
+    """
+    Provide a generic plotting function for a NetworkX graph with 2D/3D positions.
+
+    Nodes are expected to have a 'pos' attribute containing their coordinates.
+    The plot can be 2D or 3D based on the dimensionality of these positions.
+
+    Parameters
+    ----------
+    graph : nx.Graph
+        The NetworkX graph to plot. Nodes must have a 'pos' attribute.
+    name : str
+        A name for the graph, used in the plot title.
+    ax : Optional[matplotlib.axes.Axes], optional
+        Matplotlib Axes object to plot on. If None (default), a new figure
+        and axes are created. For 3D plots, if `ax` is provided, it must be
+        a 3D-enabled Axes.
+    **kwargs : Any
+        Additional keyword arguments for customization:
+        - `figsize` (Tuple[float, float]): Size of the figure if created.
+        - `node_kwargs` (Dict[str, Any]): Keyword arguments for `nx.draw_networkx_nodes`.
+        - `edge_kwargs` (Dict[str, Any]): Keyword arguments for `nx.draw_networkx_edges`.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        The Matplotlib Axes object on which the graph was plotted.
+
+    Raises
+    ------
+    ValueError
+        If `graph` is empty or None, or if a 3D plot is attempted on a 2D `ax`.
+    """
 
     if graph is None or graph.number_of_nodes() == 0:
         raise ValueError("Graph is empty or None. Cannot plot an empty graph.")
@@ -346,14 +406,19 @@ def _generic_graph_plot(
 def _get_distance_between_bins(
     connectivity_graph: nx.Graph,
 ) -> NDArray[np.float64]:
-    """Calculates the shortest path distances between bins in the track graph.
+    """
+    Calculate shortest path distances between all pairs of bins in a graph.
+
+    Uses `networkx.shortest_path_length` with the 'distance' attribute of
+    edges as the weight.
 
     Parameters
     ----------
-    track_graph_nd : nx.Graph
-        Graph where nodes are indices of active bins (0 to N-1),
-        'pos' attribute stores coordinates, and edges connect adjacent
-        active bins with a 'distance' attribute.
+    connectivity_graph : nx.Graph
+        A NetworkX graph where nodes represent bins (indexed `0` to `N-1`)
+        and edges connect adjacent bins. Edges are expected to have a
+        'distance' attribute representing the cost/length of traversing that edge.
+
 
     Returns
     -------
