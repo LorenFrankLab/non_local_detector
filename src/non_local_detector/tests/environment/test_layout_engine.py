@@ -17,7 +17,7 @@ from non_local_detector.environment.layout_engine import (
     get_layout_parameters,
     list_available_layouts,
 )
-from non_local_detector.tests.test_environment import plus_maze_data_samples
+from non_local_detector.tests.environment.test_environment import plus_maze_data_samples
 
 try:
     from shapely.geometry import Polygon as ShapelyPoly
