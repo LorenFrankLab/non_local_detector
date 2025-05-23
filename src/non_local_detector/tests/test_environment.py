@@ -1463,3 +1463,201 @@ class TestIndexConversions:
             env.nd_to_flat_bin_index(
                 0
             )  # For GraphLayout, it expects 1 arg for nd_idx_per_dim
+
+
+@pytest.fixture
+def env_all_active_2x2() -> Environment:
+    """A 2x2 grid where all 4 cells are active."""
+    active_mask = np.array([[True, True], [True, True]], dtype=bool)
+    grid_edges = (np.array([0.0, 1.0, 2.0]), np.array([0.0, 1.0, 2.0]))
+    return Environment.from_nd_mask(
+        active_mask=active_mask,
+        grid_edges=grid_edges,
+        environment_name="AllActive2x2",
+        connect_diagonal_neighbors=False,  # Orthogonal connections for simpler graph
+    )
+
+
+@pytest.fixture
+def env_center_hole_3x3() -> Environment:
+    """A 3x3 grid with the center cell inactive, others active."""
+    active_mask = np.array(
+        [[True, True, True], [True, False, True], [True, True, True]], dtype=bool
+    )
+    grid_edges = (np.array([0.0, 1.0, 2.0, 3.0]), np.array([0.0, 1.0, 2.0, 3.0]))
+    return Environment.from_nd_mask(
+        active_mask=active_mask,
+        grid_edges=grid_edges,
+        environment_name="CenterHole3x3",
+        connect_diagonal_neighbors=False,
+    )
+
+
+@pytest.fixture
+def env_hollow_square_4x4() -> Environment:
+    """A 4x4 grid with outer perimeter active, inner 2x2 inactive."""
+    active_mask = np.array(
+        [
+            [True, True, True, True],
+            [True, False, False, True],
+            [True, False, False, True],
+            [True, True, True, True],
+        ],
+        dtype=bool,
+    )
+    grid_edges = (
+        np.array([0.0, 1.0, 2.0, 3.0, 4.0]),
+        np.array([0.0, 1.0, 2.0, 3.0, 4.0]),
+    )
+    return Environment.from_nd_mask(
+        active_mask=active_mask,
+        grid_edges=grid_edges,
+        environment_name="HollowSquare4x4",
+        connect_diagonal_neighbors=False,
+    )
+
+
+@pytest.fixture
+def env_line_1x3_in_3x3_grid() -> Environment:
+    """A (1,3) line of active cells within a larger 3x3 defined grid space."""
+    active_mask = np.array(
+        [
+            [False, False, False],
+            [True, True, True],  # The active line
+            [False, False, False],
+        ],
+        dtype=bool,
+    )
+    grid_edges = (np.array([0.0, 1.0, 2.0, 3.0]), np.array([0.0, 1.0, 2.0, 3.0]))
+    # Active nodes: (1,0), (1,1), (1,2)
+    # Expected boundaries (by grid logic): all three.
+    return Environment.from_nd_mask(
+        active_mask=active_mask,
+        grid_edges=grid_edges,
+        environment_name="Line1x3in3x3",
+        connect_diagonal_neighbors=False,
+    )
+
+
+@pytest.fixture
+def env_single_active_cell_3x3() -> Environment:
+    """A 3x3 grid with only the center cell active."""
+    active_mask = np.array(
+        [[False, False, False], [False, True, False], [False, False, False]], dtype=bool
+    )
+    grid_edges = (np.array([0.0, 1.0, 2.0, 3.0]), np.array([0.0, 1.0, 2.0, 3.0]))
+    return Environment.from_nd_mask(
+        active_mask=active_mask,
+        grid_edges=grid_edges,
+        environment_name="SingleActive3x3",
+        connect_diagonal_neighbors=False,
+    )
+
+
+@pytest.fixture
+def env_no_active_cells_nd_mask() -> Environment:
+    """A 2x2 grid with no active cells, created using from_nd_mask."""
+    active_mask = np.array([[False, False], [False, False]], dtype=bool)
+    grid_edges = (np.array([0.0, 1.0, 2.0]), np.array([0.0, 1.0, 2.0]))
+    return Environment.from_nd_mask(
+        active_mask=active_mask,
+        grid_edges=grid_edges,
+        environment_name="NoActiveNDMask",
+    )
+
+
+@pytest.fixture
+def env_1d_grid_3bins() -> Environment:
+    """A 1D grid with 3 active bins. This will test degree-based logic for 1D grids."""
+    active_mask_1d = np.array([True, True, True], dtype=bool)
+    # from_nd_mask expects N-D mask where N is len(grid_edges)
+    # To make a 1D grid, grid_edges should be a tuple with one array
+    grid_edges_1d = (np.array([0.0, 1.0, 2.0, 3.0]),)  # Edges for 3 bins
+    return Environment.from_nd_mask(
+        active_mask=active_mask_1d,  # Mask is 1D
+        grid_edges=grid_edges_1d,
+        environment_name="1DGrid3Bins",
+        connect_diagonal_neighbors=False,  # Not applicable for 1D but good to be explicit
+    )
+
+
+def test_boundary_grid_all_active_2x2(env_all_active_2x2: Environment):
+    boundary_indices = env_all_active_2x2.get_boundary_bin_indices()
+    # All 4 active bins are at the edge of the 2x2 defined grid.
+    assert boundary_indices.shape[0] == 4
+    assert np.array_equal(np.sort(boundary_indices), np.arange(4))
+
+
+def test_boundary_grid_center_hole_3x3(env_center_hole_3x3: Environment):
+    boundary_indices = env_center_hole_3x3.get_boundary_bin_indices()
+    # 8 active bins, all are adjacent to the central hole or the grid edge.
+    assert boundary_indices.shape[0] == 8
+    assert np.array_equal(np.sort(boundary_indices), np.arange(8))
+
+
+def test_boundary_grid_hollow_square_4x4(env_hollow_square_4x4: Environment):
+    boundary_indices = env_hollow_square_4x4.get_boundary_bin_indices()
+    # 12 active bins forming the perimeter, all are boundary.
+    assert boundary_indices.shape[0] == 12
+    assert np.array_equal(np.sort(boundary_indices), np.arange(12))
+
+
+def test_boundary_grid_line_in_larger_grid(env_line_1x3_in_3x3_grid: Environment):
+    # Active mask: FFF, TTT, FFF. Active cells are (1,0), (1,1), (1,2)
+    # Expected mapping: (1,0)->0, (1,1)->1, (1,2)->2
+    # (1,0) is boundary (nbr (1,-1) out, (0,0) inactive, (2,0) inactive)
+    # (1,1) is boundary (nbr (0,1) inactive, (2,1) inactive)
+    # (1,2) is boundary (nbr (1,3) out, (0,2) inactive, (2,2) inactive)
+    # All 3 should be boundary by grid logic.
+    boundary_indices = env_line_1x3_in_3x3_grid.get_boundary_bin_indices()
+    assert boundary_indices.shape[0] == 3
+    assert np.array_equal(np.sort(boundary_indices), np.arange(3))
+
+
+def test_boundary_grid_single_active_cell_3x3(env_single_active_cell_3x3: Environment):
+    boundary_indices = env_single_active_cell_3x3.get_boundary_bin_indices()
+    # Single active cell is its own boundary.
+    assert boundary_indices.shape[0] == 1
+    assert np.array_equal(np.sort(boundary_indices), np.array([0]))
+
+
+def test_boundary_grid_no_active_cells(env_no_active_cells_nd_mask: Environment):
+    boundary_indices = env_no_active_cells_nd_mask.get_boundary_bin_indices()
+    assert boundary_indices.shape[0] == 0
+
+
+@pytest.fixture
+def env_path_graph_3nodes() -> Environment:
+    """Environment with a Path Graph layout (0-1-2)."""
+    g = nx.path_graph(3)
+    nx.set_node_attributes(g, {i: (float(i), 0.0) for i in range(3)}, name="pos")
+    layout_params = {
+        "graph_definition": g,
+        "edge_order": [(0, 1), (1, 2)],  # Needs edge_order for GraphLayout
+        "edge_spacing": 0.0,
+        "bin_size": 0.8,  # Should result in 1 bin per edge segment approx.
+        # This detail depends on GraphLayout binning logic.
+        # For testing degree, actual binning isn't critical, only connectivity.
+    }
+    # For simpler graph testing, we can directly build the GraphLayout and then Environment
+    gl = GraphLayout()
+    gl.build(**layout_params)  # GraphLayout will create its own binning
+    return Environment(
+        environment_name="PathGraph3",
+        layout=gl,
+        layout_type_used="Graph",
+        layout_params_used=layout_params,
+    )
+
+
+def test_boundary_1d_grid_degree_logic(env_1d_grid_3bins: Environment):
+    """Test the 1D grid which should use degree-based logic."""
+    # env_1d_grid_3bins.active_mask_ is 1D, so len(grid_shape) is 1.
+    # Grid logic path for `is_grid_layout_with_mask` will be false due to `len(self.grid_shape_) > 1`.
+    # It will fall to degree-based.
+    # Graph: 0 -- 1 -- 2. Degrees: 0:1, 1:2, 2:1.
+    # Layout type "MaskedGrid" (from from_nd_mask).
+    # For 1D grid (len(grid_shape_) == 1), it hits `elif is_grid_layout_with_mask and len(self.grid_shape_) == 1:`
+    # threshold_degree = 1.5
+    boundary_indices = env_1d_grid_3bins.get_boundary_bin_indices()
+    assert np.array_equal(np.sort(boundary_indices), np.array([0, 2]))

@@ -1755,3 +1755,136 @@ class Environment:
         ):
             return int(output_flat_indices[0])
         return output_flat_indices
+
+    @check_fitted
+    def get_boundary_bin_indices(
+        self: "Environment", connectivity_threshold_factor: Optional[float] = None
+    ) -> NDArray[np.int_]:
+        """
+        Identifies active bin indices that are on the boundary of the active area.
+
+        For grid-based layouts (those with `active_mask_` and `grid_shape_` defined
+        and more than 1 dimension), it identifies active bins adjacent to inactive
+        areas or the grid's edge.
+
+        For other layouts, or if `connectivity_threshold_factor` is provided,
+        it uses a degree-based heuristic: bins whose connectivity graph degree
+        is less than `connectivity_threshold_factor` times the median degree
+        of the graph (or simply less than max possible degree if factor not given).
+
+        Parameters
+        ----------
+        connectivity_threshold_factor : Optional[float], optional
+            If provided for non-grid or as an override for grid layouts,
+            this factor is used with the median degree to define boundary bins.
+            E.g., a factor of 0.8 means bins with degree < 0.8 * median_degree
+            are considered boundary. If None, grid-specific logic is used if applicable,
+            otherwise a default heuristic might apply (e.g. degree < max_degree).
+
+
+        Returns
+        -------
+        NDArray[np.int_]
+            An array of active bin indices considered to be boundary bins.
+        """
+        graph = self.get_connectivity_graph()
+        if graph.number_of_nodes() == 0:
+            return np.array([], dtype=int)
+
+        is_grid_layout_with_mask = (
+            hasattr(self, "active_mask_")
+            and self.active_mask_ is not None
+            and hasattr(self, "grid_shape_")
+            and self.grid_shape_ is not None
+            and len(self.grid_shape_) > 1  # Meaningful for 2D+ grids
+        )
+
+        boundary_bin_indices = []
+
+        if is_grid_layout_with_mask and connectivity_threshold_factor is None:
+            # Grid-specific boundary detection
+            active_mask_nd = self.active_mask_
+            grid_shape_nd = self.grid_shape_
+            n_dims = len(grid_shape_nd)
+
+            # Iterate through all active bins using their node ID (0 to N-1)
+            for active_node_id in graph.nodes():
+                node_data = graph.nodes[active_node_id]
+                original_nd_idx = node_data.get("original_grid_nd_index")
+                if (
+                    original_nd_idx is None
+                ):  # Fallback if this attribute isn't on graph nodes
+                    # This might happen if the graph wasn't built by standard grid utils
+                    # For now, skip if essential info is missing for this method
+                    warnings.warn(
+                        f"Node {active_node_id} missing 'original_grid_nd_index'. Cannot use grid boundary logic.",
+                        UserWarning,
+                    )
+                    # Fallback to degree-based method or skip. For now, skip.
+                    continue
+
+                is_boundary = False
+                # Check orthogonal neighbors in the original full grid
+                for dim_idx in range(n_dims):
+                    for offset_val in [-1, 1]:
+                        neighbor_nd_idx_list = list(original_nd_idx)
+                        neighbor_nd_idx_list[dim_idx] += offset_val
+                        neighbor_nd_idx = tuple(neighbor_nd_idx_list)
+
+                        # Check if neighbor is outside grid bounds
+                        if not (0 <= neighbor_nd_idx[dim_idx] < grid_shape_nd[dim_idx]):
+                            is_boundary = True
+                            break
+                        # Check if neighbor is inside grid but inactive
+                        if not active_mask_nd[neighbor_nd_idx]:
+                            is_boundary = True
+                            break
+                    if is_boundary:
+                        break
+
+                if is_boundary:
+                    boundary_bin_indices.append(active_node_id)
+
+        else:  # Degree-based heuristic for non-grid or if factor is provided
+            degrees = dict(graph.degree())
+            if not degrees:
+                return np.array([], dtype=int)
+
+            median_degree = np.median(list(degrees.values()))
+            # Max degree for some known layouts (e.g. 6 for hex, 2*n_dims for ortho grid)
+            # For a general graph, just use median or user factor.
+
+            threshold_degree = median_degree  # Default if no factor
+            if connectivity_threshold_factor is not None:
+                if connectivity_threshold_factor <= 0:
+                    raise ValueError("connectivity_threshold_factor must be positive.")
+                threshold_degree = connectivity_threshold_factor * median_degree
+            elif (
+                self._layout_type_used == "Hexagonal" and median_degree > 5
+            ):  # Hex specific default
+                threshold_degree = 5.5  # Bins with < 6 neighbors
+            elif is_grid_layout_with_mask and median_degree > (
+                2 * len(self.grid_shape_) - 1
+            ):  # Grid specific (ortho)
+                threshold_degree = 2 * len(self.grid_shape_) - 0.5
+
+            for node_id, degree in degrees.items():
+                if degree < threshold_degree:
+                    boundary_bin_indices.append(node_id)
+            if (
+                not boundary_bin_indices
+                and connectivity_threshold_factor is None
+                and not is_grid_layout_with_mask
+            ):
+                # Fallback: if no factor, and not a grid, and median heuristic found nothing,
+                # consider bins with degree less than max_degree as boundary.
+                max_degree = np.max(list(degrees.values()))
+                if max_degree > 0:  # Ensure there is some connectivity
+                    for node_id, degree in degrees.items():
+                        if degree < max_degree:
+                            boundary_bin_indices.append(node_id)
+                boundary_bin_indices = list(
+                    set(boundary_bin_indices)
+                )  # Remove duplicates if any
+
+        return np.array(sorted(list(set(boundary_bin_indices))), dtype=int)
