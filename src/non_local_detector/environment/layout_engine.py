@@ -291,12 +291,12 @@ class _KDTreeMixin:
     ----------
     _kdtree : Optional[KDTree]
         KDTree for fast nearest-neighbor search.
-    _kdtree_source_indices_map : Optional[NDArray[np.int_]], shape (n_active_bins,)
+    _kdtree_nodes_to_bin_indices_map : Optional[NDArray[np.int_]], shape (n_active_bins,)
         Maps KDTree node index to original source_index.
     """
 
     _kdtree: Optional[KDTree] = None
-    _kdtree_source_indices_map: Optional[NDArray[np.int_]] = None
+    _kdtree_nodes_to_bin_indices_map: Optional[NDArray[np.int_]] = None
 
     def _build_kdtree(
         self,
