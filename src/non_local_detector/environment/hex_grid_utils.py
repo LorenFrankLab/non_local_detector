@@ -179,20 +179,20 @@ def _cartesian_to_fractional_cube(
     hex_radius: float,
 ) -> Tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
     """
-    Convert 2D Cartesian coordinates to fractional cube coordinates.
+    Convert Cartesian (x, y) coordinates to fractional axial coordinates of a hex grid.
 
-    This transformation is for pointy-top oriented hexagons. Cube coordinates
-    (q, r, s) satisfy q + r + s = 0.
+    Axial coordinates represent positions in a hexagonal grid using two axes (q, r),
+    simplifying neighbor and distance calculations compared to Cartesian coordinates.
 
     Parameters
     ----------
     points_x : NDArray[np.float64], shape (n_points,)
-        X-coordinates of the points, typically relative to the hexagonal
+        X-coordinate(s) in Cartesian space, typically relative to the hexagonal
         grid's origin.
     points_y : NDArray[np.float64], shape (n_points,)
-        Y-coordinates of the points, relative to the grid's origin.
+        Y-coordinate(s) in Cartesian space, relative to the grid's origin.
     hex_radius : float
-        Radius of the hexagons (distance from center to a vertex).
+        Width of each hexagon in the grid, measured as the distance between opposite sides.
 
     Returns
     -------
@@ -202,6 +202,20 @@ def _cartesian_to_fractional_cube(
         Fractional r cube coordinate.
     s_frac : NDArray[np.float64], shape (n_points,)
         Fractional s cube coordinate, calculated as -q_frac - r_frac.
+
+    Notes
+    -----
+    The conversion follows the standard formulas (see
+    https://www.redblobgames.com/grids/hexagons/#coordinates):
+
+        q = (sqrt(3)/3 * x - 1/3 * y) / hex_width
+        r = (2/3 * y) / hex_width
+
+    Fractional axial coordinates allow for smooth interpolation before rounding
+    to discrete hex indices.
+
+    Points outside the grid bounds or containing NaNs in inputs will produce NaN outputs.
+
     """
     if hex_radius == 0:  # Avoid division by zero
         # If hex_radius is zero, implies a degenerate grid.

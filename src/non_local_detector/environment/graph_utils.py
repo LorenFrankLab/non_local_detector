@@ -36,11 +36,10 @@ def _get_graph_bins(
     bin_size: float,
 ) -> Tuple[np.ndarray, Tuple[np.ndarray, ...], np.ndarray, np.ndarray]:
     """
-    Discretize a graph into 1D bins along a specified path, accounting for spacing.
+    Bin node positions along graph edges into discrete spatial bins.
 
-    Calculates 1D bin centers and edges for a track defined by `edge_order`
-    from the `graph`. It considers the length of each edge and any specified
-    `edge_spacing` (gaps) between consecutive edges in the path.
+    This function discretizes continuous node positions along a graph's edges
+    into bins of fixed size.
 
     Parameters
     ----------
@@ -79,6 +78,13 @@ def _get_graph_bins(
         If any edge in `edge_order` contains nodes not in `graph`.
         If `bin_size` is not positive.
         If `edge_spacing` (if a list) has an incorrect length.
+
+    Notes
+    -----
+    The function assumes edges are linear segments in space, and bins are created
+    by dividing each edge into segments of length `bin_size`. The last bin on each
+    edge may be shorter if the edge length is not an exact multiple of `bin_size`.
+
     """
     # Verify the nodes are in the graph
     for edge in edge_order:
