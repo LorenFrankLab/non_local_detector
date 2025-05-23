@@ -1180,3 +1180,286 @@ class TestDimensionality:
             fig, ax = plt.subplots()
             env.plot(ax=ax)
             plt.close(fig)
+
+
+@pytest.fixture
+def simple_graph_for_layout() -> nx.Graph:
+    """Minimal graph with pos and distance attributes for GraphLayout."""
+    G = nx.Graph()
+    G.add_node(0, pos=(0.0, 0.0))
+    G.add_node(1, pos=(1.0, 0.0))
+    G.add_edge(0, 1, distance=1.0, edge_id=0)  # Add edge_id
+    return G
+
+
+@pytest.fixture
+def simple_hex_env(plus_maze_data_samples) -> Environment:
+    """Basic hexagonal environment for mask testing."""
+    return Environment.from_data_samples(
+        data_samples=plus_maze_data_samples,  # Use existing samples
+        layout_type="Hexagonal",
+        hexagon_width=2.0,  # Reasonably large hexes
+        environment_name="SimpleHexEnvForMask",
+        infer_active_bins=True,  # Important for source_flat_to_active_node_id_map
+        bin_count_threshold=0,
+    )
+
+
+@pytest.fixture
+def simple_graph_env(simple_graph_for_layout) -> Environment:
+    """Basic graph environment for mask testing."""
+    edge_order = [(0, 1)]
+    # For serialization to pass correctly, ensure layout_params_used are captured
+    layout_build_params = {
+        "graph_definition": simple_graph_for_layout,
+        "edge_order": edge_order,
+        "edge_spacing": 0.0,
+        "bin_size": 0.5,
+    }
+    layout_instance = GraphLayout()
+    layout_instance.build(**layout_build_params)
+    return Environment(
+        environment_name="SimpleGraphEnvForMask",
+        layout=layout_instance,
+        layout_type_used="Graph",
+        layout_params_used=layout_build_params,
+    )
+
+
+@pytest.fixture
+def grid_env_for_indexing(plus_maze_data_samples) -> Environment:
+    """A 2D RegularGrid environment suitable for index testing."""
+    return Environment.from_data_samples(
+        data_samples=plus_maze_data_samples,  # Creates a reasonable grid
+        bin_size=1.0,
+        infer_active_bins=True,
+        bin_count_threshold=0,
+        environment_name="GridForIndexing",
+    )
+
+
+class TestMaskRegionsWithLayouts:
+
+    def test_mask_region_with_graph_layout(self, simple_graph_env: Environment):
+        """Test adding a 1D mask region to a GraphLayout environment."""
+        env = simple_graph_env
+        assert env.is_1d
+        assert env.grid_shape_ is not None, "GraphLayout should have a 1D grid_shape"
+        assert len(env.grid_shape_) == 1, "GraphLayout grid_shape should be 1D"
+
+        n_linear_bins = env.grid_shape_[0]
+        if n_linear_bins == 0:
+            pytest.skip("Graph environment has no bins, cannot test mask region.")
+
+        # Create a 1D mask for the GraphLayout's linearized bins
+        # Example: make the first half of the track part of the region
+        mask_1d = np.zeros(n_linear_bins, dtype=bool)
+        mid_point = n_linear_bins // 2
+        if mid_point == 0 and n_linear_bins > 0:
+            mid_point = 1  # ensure at least one if possible
+        mask_1d[:mid_point] = True
+
+        env.regions.add_region(name="graph_mask_region", mask=mask_1d)
+
+        # bins_in_region returns indices relative to active bins.
+        # For GraphLayout, all linearized bins are typically active and correspond 1-to-1
+        # with the source_grid_flat_index.
+        region_bins = env.regions.bins_in_region("graph_mask_region")
+
+        expected_bins_in_region = np.flatnonzero(mask_1d)
+        assert np.array_equal(np.sort(region_bins), np.sort(expected_bins_in_region))
+
+        # region_mask gives a mask over active bins
+        active_bin_mask = env.regions.region_mask("graph_mask_region")
+        assert active_bin_mask.shape == (env.bin_centers_.shape[0],)
+        assert np.sum(active_bin_mask) == np.sum(mask_1d)
+        assert np.all(active_bin_mask[:mid_point])
+        if mid_point < n_linear_bins:
+            assert np.all(~active_bin_mask[mid_point:])
+
+    def test_mask_region_with_hexagonal_layout(self, simple_hex_env: Environment):
+        """Test adding a 2D mask region to a HexagonalLayout environment."""
+        env = simple_hex_env
+        assert not env.is_1d
+        assert env.grid_shape_ is not None, "HexagonalLayout should have a grid_shape"
+        assert len(env.grid_shape_) == 2, "HexagonalLayout grid_shape should be 2D"
+
+        # Create a 2D mask matching the HexagonalLayout's full conceptual grid
+        # Example: make a strip or a corner of the hex grid part of the region
+        hex_mask_2d = np.zeros(env.grid_shape_, dtype=bool)
+        rows, cols = env.grid_shape_
+        hex_mask_2d[0 : rows // 2, 0 : cols // 2] = (
+            True  # Top-left quadrant of hex grid
+        )
+
+        env.regions.add_region(name="hex_mask_region", mask=hex_mask_2d)
+
+        # bins_in_region returns indices relative to active environment bins
+        region_bins = env.regions.bins_in_region("hex_mask_region")
+
+        # Determine expected active bins:
+        # 1. Get original flat indices of hex_mask_2d
+        # 2. Filter these by which ones are *also* in env.active_mask_ (the active hexes)
+        # 3. Map these original flat indices (of hexes in region AND active in env) to active bin IDs
+        original_flat_indices_in_region_mask = np.flatnonzero(hex_mask_2d)
+
+        expected_active_bins_in_region = []
+        if env._source_flat_to_active_node_id_map is not None:
+            for orig_flat_idx in original_flat_indices_in_region_mask:
+                # Check if this original hex is actually an active hex in the environment
+                # The env.active_mask_ is N-D, env.layout.active_mask_ is also N-D
+                # This check can be done by seeing if orig_flat_idx is a key in the map
+                active_node_id = env._source_flat_to_active_node_id_map.get(
+                    orig_flat_idx
+                )
+                if active_node_id is not None:
+                    expected_active_bins_in_region.append(active_node_id)
+
+        assert np.array_equal(
+            np.sort(region_bins), np.sort(expected_active_bins_in_region)
+        )
+
+        active_bin_mask_for_region = env.regions.region_mask("hex_mask_region")
+        assert active_bin_mask_for_region.shape == (env.bin_centers_.shape[0],)
+        assert np.sum(active_bin_mask_for_region) == len(expected_active_bins_in_region)
+
+
+class TestIndexConversions:
+
+    def test_flat_to_nd_on_grid_env(self, grid_env_for_indexing: Environment):
+        env = grid_env_for_indexing
+        if env.bin_centers_.shape[0] == 0:
+            pytest.skip("Environment has no active bins.")
+
+        n_active = env.bin_centers_.shape[0]
+
+        # Scalar valid input
+        nd_idx_scalar = env.flat_to_nd_bin_index(0)
+        assert isinstance(nd_idx_scalar, tuple)
+        assert len(nd_idx_scalar) == env.n_dims
+        assert all(
+            isinstance(i, (int, np.integer)) for i in nd_idx_scalar if not np.isnan(i)
+        )  # Allow nan for out of bounds mapping
+
+        # Array valid input
+        flat_indices_arr = np.array([0, n_active - 1], dtype=int)
+        nd_indices_tuple_of_arrs = env.flat_to_nd_bin_index(flat_indices_arr)
+        assert isinstance(nd_indices_tuple_of_arrs, tuple)
+        assert len(nd_indices_tuple_of_arrs) == env.n_dims
+        assert all(isinstance(arr, np.ndarray) for arr in nd_indices_tuple_of_arrs)
+        assert all(
+            arr.shape == flat_indices_arr.shape for arr in nd_indices_tuple_of_arrs
+        )
+
+        # Out-of-bounds scalar inputs
+        with pytest.warns(UserWarning, match="Active flat_index .* is out of bounds"):
+            nd_idx_neg = env.flat_to_nd_bin_index(-1)
+        assert all(np.isnan(i) for i in nd_idx_neg)
+
+        with pytest.warns(UserWarning, match="Active flat_index .* is out of bounds"):
+            nd_idx_large = env.flat_to_nd_bin_index(n_active + 10)
+        assert all(np.isnan(i) for i in nd_idx_large)
+
+        # Out-of-bounds array inputs
+        flat_indices_mixed_arr = np.array([-1, 0, n_active, n_active - 1], dtype=int)
+        # Expect warnings for -1 and n_active
+        with pytest.warns(UserWarning):  # Could check for multiple warnings if needed
+            nd_mixed_results = env.flat_to_nd_bin_index(flat_indices_mixed_arr)
+        assert np.isnan(
+            nd_mixed_results[0][0]
+        )  # First element of first dim array (for input -1)
+        assert np.isnan(
+            nd_mixed_results[1][0]
+        )  # First element of second dim array (for input -1)
+        assert np.isnan(
+            nd_mixed_results[0][2]
+        )  # Third element of first dim array (for input n_active)
+        assert np.isnan(
+            nd_mixed_results[1][2]
+        )  # Third element of second dim array (for input n_active)
+        assert not np.isnan(nd_mixed_results[0][1])  # For input 0
+        assert not np.isnan(nd_mixed_results[0][3])  # For input n_active - 1
+
+    def test_nd_to_flat_on_grid_env(self, grid_env_for_indexing: Environment):
+        env = grid_env_for_indexing
+        if env.bin_centers_.shape[0] == 0:
+            pytest.skip("No active bins.")
+        if env.grid_shape_ is None or env.active_mask_ is None:
+            pytest.skip("Grid not fully defined.")
+
+        # Find an N-D index of an active bin
+        active_nd_indices_all = np.argwhere(env.active_mask_)
+        if active_nd_indices_all.shape[0] == 0:
+            pytest.skip("No active_mask True values.")
+
+        valid_nd_scalar_input = tuple(active_nd_indices_all[0])  # e.g. (r,c)
+        flat_idx_scalar = env.nd_to_flat_bin_index(*valid_nd_scalar_input)
+        assert isinstance(flat_idx_scalar, (int, np.integer))
+        assert 0 <= flat_idx_scalar < env.bin_centers_.shape[0]
+
+        # Find N-D indices for two active bins for array input
+        if active_nd_indices_all.shape[0] < 2:
+            pytest.skip("Need at least two active N-D indices for array test.")
+        valid_nd_arr_input_tuple = tuple(
+            active_nd_indices_all[:2].T
+        )  # ([r1,r2], [c1,c2])
+        flat_indices_arr = env.nd_to_flat_bin_index(*valid_nd_arr_input_tuple)
+        assert isinstance(flat_indices_arr, np.ndarray)
+        assert flat_indices_arr.shape == (2,)
+        assert np.all(flat_indices_arr >= 0)
+
+        # Scalar N-D input mapping to an inactive bin (if one exists)
+        if np.any(~env.active_mask_):
+            inactive_nd_scalar_input = tuple(np.argwhere(~env.active_mask_)[0])
+            flat_idx_inactive = env.nd_to_flat_bin_index(*inactive_nd_scalar_input)
+            assert flat_idx_inactive == -1
+
+        # Scalar N-D input out of grid_shape bounds
+        out_of_bounds_nd_input = tuple(s + 10 for s in env.grid_shape_)
+        flat_idx_outofbounds = env.nd_to_flat_bin_index(*out_of_bounds_nd_input)
+        assert flat_idx_outofbounds == -1
+
+        # Array N-D input with mixed valid, inactive, out-of-bounds
+        # Example: point1 valid, point2 inactive, point3 out-of-bounds
+        r_coords = [valid_nd_scalar_input[0]]
+        c_coords = [valid_nd_scalar_input[1]]
+        if np.any(~env.active_mask_):
+            inactive_nd = tuple(np.argwhere(~env.active_mask_)[0])
+            r_coords.append(inactive_nd[0])
+            c_coords.append(inactive_nd[1])
+        else:  # If all active, make one effectively out of bounds for active by picking a non-active cell
+            r_coords.append(env.grid_shape_[0] + 1)  # Make it out of bounds
+            c_coords.append(env.grid_shape_[1] + 1)
+
+        r_coords.append(env.grid_shape_[0] + 10)  # Clearly out of bounds
+        c_coords.append(env.grid_shape_[1] + 10)
+
+        mixed_nd_input_tuple = (np.array(r_coords), np.array(c_coords))
+        mixed_flat_results = env.nd_to_flat_bin_index(*mixed_nd_input_tuple)
+        assert isinstance(mixed_flat_results, np.ndarray)
+        assert mixed_flat_results.shape[0] == len(r_coords)
+        assert mixed_flat_results[0] >= 0  # Valid
+        if len(r_coords) > 1:
+            assert mixed_flat_results[1] == -1  # Inactive or out of bounds
+        if len(r_coords) > 2:
+            assert mixed_flat_results[2] == -1  # Out of bounds
+
+    def test_index_conversion_on_non_grid_typeerror(
+        self, simple_graph_env: Environment
+    ):
+        """Ensure TypeError for flat_to_nd/nd_to_flat on non-grid-like layouts."""
+        env = simple_graph_env  # This is a GraphLayout
+        assert env.is_1d  # GraphLayout specific
+
+        with pytest.raises(
+            TypeError,
+            match="N-D index conversion is primarily for N-D grid-based layouts",
+        ):
+            env.flat_to_nd_bin_index(0)
+
+        with pytest.raises(
+            TypeError, match="N-D index conversion is for N-D grid-based layouts"
+        ):
+            env.nd_to_flat_bin_index(
+                0
+            )  # For GraphLayout, it expects 1 arg for nd_idx_per_dim
