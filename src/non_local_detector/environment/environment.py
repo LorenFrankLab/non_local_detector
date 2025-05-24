@@ -1083,7 +1083,7 @@ class Environment:
         return self.layout.get_linearized_coordinate(points_nd)
 
     @check_fitted
-    def map_linear_to_nd_coordinate(
+    def map_linear_to_grid_coordinate(
         self, linear_coordinates: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         """
@@ -1091,7 +1091,7 @@ class Environment:
 
         This method is only applicable if the environment uses a `GraphLayout`
         and `is_1d` is True. It delegates to the layout's
-        `map_linear_to_nd_coordinate` method.
+        `map_linear_to_grid_coordinate` method.
 
         Parameters
         ----------
@@ -1112,7 +1112,7 @@ class Environment:
         """
         if not self.is_1d or not isinstance(self.layout, GraphLayout):
             raise TypeError("Mapping linear to N-D only for GraphLayout environments.")
-        return self.layout.map_linear_to_nd_coordinate(linear_coordinates)
+        return self.layout.map_linear_to_grid_coordinate(linear_coordinates)
 
     @check_fitted
     def plot(
@@ -1476,7 +1476,7 @@ class Environment:
         return env
 
     @check_fitted
-    def flat_to_nd_bin_index(
+    def flat_to_grid_bin_index(
         self, flat_indices: Union[int, NDArray[np.int_]]
     ) -> Union[Tuple[int, ...], Tuple[NDArray[np.int_], ...]]:
         """
@@ -1582,7 +1582,7 @@ class Environment:
         return final_output_nd_indices
 
     @check_fitted
-    def nd_to_flat_bin_index(
+    def grid_to_flat_bin_index(
         self, *nd_idx_per_dim: Union[int, NDArray[np.int_]]
     ) -> Union[int, NDArray[np.int_]]:
         """
@@ -1601,10 +1601,10 @@ class Environment:
             N arguments, one for each dimension of the grid. Each argument can
             be an integer (for a single point query) or a NumPy array of
             integers (for multiple points, must be broadcastable).
-            Example: `env.nd_to_flat_bin_index(rows, cols)` for a 2D grid.
+            Example: `env.grid_to_flat_bin_index(rows, cols)` for a 2D grid.
             Alternatively, can be a single tuple/list of N-D indices or
-            arrays of N-D indices, e.g., `env.nd_to_flat_bin_index([(r1,c1), (r2,c2)])`
-            or `env.nd_to_flat_bin_index(([r1,r2],[c1,c2]))`.
+            arrays of N-D indices, e.g., `env.grid_to_flat_bin_index([(r1,c1), (r2,c2)])`
+            or `env.grid_to_flat_bin_index(([r1,r2],[c1,c2]))`.
 
         Returns
         -------
@@ -1644,7 +1644,7 @@ class Environment:
             and isinstance(nd_idx_per_dim[0], (list, tuple))
             and not np.isscalar(nd_idx_per_dim[0][0])
         ):
-            # Input like env.nd_to_flat_bin_index( ([r1,r2],[c1,c2]) ) or env.nd_to_flat_bin_index( ( (r1,c1), (r2,c2) ) )
+            # Input like env.grid_to_flat_bin_index( ([r1,r2],[c1,c2]) ) or env.grid_to_flat_bin_index( ( (r1,c1), (r2,c2) ) )
             # The latter needs to be transposed if it's (n_points, n_dims)
             temp_input = np.asarray(nd_idx_per_dim[0])
             if (
