@@ -34,7 +34,7 @@ PtArr = NDArray[np.float_]
 IdxArr = NDArray[np.int_]
 
 PointToBin = Callable[["Environment", PtArr], IdxArr]
-PlotFunc = Callable[["Environment", "Any"], None]
+PlotFunc = Callable[["Environment", MatplotlibAxes], None]
 AreaFn = Callable[["Environment"], NDArray[np.float_]]
 
 # For 1D specific helpers
@@ -140,6 +140,30 @@ class LayoutResult:
             raise ValueError(
                 "LayoutResult: connectivity_graph_ must have same node count as bin_centers_ rows."
             )
+        # check if nodes have correct attributes
+        for node in self.connectivity_graph_.nodes:
+            if "pos" not in self.connectivity_graph_.nodes[node]:
+                raise ValueError(
+                    f"LayoutResult: Node {node} in connectivity_graph_ must have 'pos' attribute."
+                )
+            if "original_grid_nd_index" not in self.connectivity_graph_.nodes[node]:
+                raise ValueError(
+                    f"LayoutResult: Node {node} in connectivity_graph_ must have 'original_grid_nd_index' attribute."
+                )
+            if "source_grid_flat_index" not in self.connectivity_graph_.nodes[node]:
+                raise ValueError(
+                    f"LayoutResult: Node {node} in connectivity_graph_ must have 'source_grid_flat_index' attribute."
+                )
+        # check if edges have correct attributes
+        for u, v in self.connectivity_graph_.edges:
+            if "distance" not in self.connectivity_graph_.edges[u, v]:
+                raise ValueError(
+                    f"LayoutResult: Edge ({u}, {v}) in connectivity_graph_ must have 'distance' attribute."
+                )
+            if "weight" not in self.connectivity_graph_.edges[u, v]:
+                raise ValueError(
+                    f"LayoutResult: Edge ({u}, {v}) in connectivity_graph_ must have 'weight' attribute."
+                )
 
         if self.is_1d_:
             if self.graph_definition_ is None:
@@ -219,8 +243,6 @@ class LinearAdapter:
     edge_spacing : float
         The spacing applied between edges during linearization.
     """
-
-    __slots__ = ("_env", "_graph_definition", "_edge_order", "_edge_spacing")
 
     def __init__(
         self,
@@ -389,7 +411,7 @@ class LinearAdapter:
 # ---------------------------------------------------------------------
 # Environment dataclass
 # ---------------------------------------------------------------------
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Environment:
     """
     Represents a discretized N-dimensional space with connectivity.
@@ -834,52 +856,21 @@ class Environment:
         region_membership_for_active_bins = self.mask_for_region(region_name)
 
         output_mask = np.zeros(points.shape[0], dtype=bool)
+        # Points that successfully mapped to an active bin
         validly_mapped_points_mask = active_bin_indices_for_points != -1
 
         if np.any(validly_mapped_points_mask):
-            # Get the actual active bin indices for these validly mapped points
-            mapped_active_bin_ids = active_bin_indices_for_points[
+            # Get the bin indices for points that mapped successfully
+            # These indices are guaranteed to be within [0, n_bins - 1]
+            # if _pt2bin adheres to its contract.
+            mapped_bin_indices = active_bin_indices_for_points[
                 validly_mapped_points_mask
             ]
 
-            # Check region membership for these specific active bin IDs
-            # Ensure mapped_active_bin_ids are valid indices for region_membership_for_active_bins
-            if np.any(
-                (mapped_active_bin_ids < 0)
-                | (mapped_active_bin_ids >= len(region_membership_for_active_bins))
-            ):
-                warnings.warn(
-                    "Some bin indices from bin_at were out of bounds for region_membership_for_active_bins. "
-                    "This indicates an internal inconsistency.",
-                    RuntimeWarning,
-                )
-                # Proceed cautiously or raise an error, for now, let indexing handle it (may error)
-                # A robust way is to filter mapped_active_bin_ids further:
-                valid_indices_for_lookup = (mapped_active_bin_ids >= 0) & (
-                    mapped_active_bin_ids < len(region_membership_for_active_bins)
-                )
-
-                true_mapped_active_bin_ids = mapped_active_bin_ids[
-                    valid_indices_for_lookup
-                ]
-
-                # Create a temporary mask for where to place results from valid_indices_for_lookup
-                temp_placement_mask = np.zeros(len(mapped_active_bin_ids), dtype=bool)
-                temp_placement_mask[valid_indices_for_lookup] = True
-
-                # Update the relevant part of output_mask
-                # First, get the subset of validly_mapped_points_mask where true_mapped_active_bin_ids apply
-                final_placement_indices = np.where(validly_mapped_points_mask)[0][
-                    temp_placement_mask
-                ]
-                output_mask[final_placement_indices] = (
-                    region_membership_for_active_bins[true_mapped_active_bin_ids]
-                )
-
-            else:  # All mapped_active_bin_ids are valid indices
-                output_mask[validly_mapped_points_mask] = (
-                    region_membership_for_active_bins[mapped_active_bin_ids]
-                )
+            # Check if these bins are in the specified region
+            output_mask[validly_mapped_points_mask] = region_membership_for_active_bins[
+                mapped_bin_indices
+            ]
 
         return output_mask
 
@@ -949,7 +940,7 @@ class Environment:
         bandwidth_sigma : float
             The bandwidth (standard deviation) of the Gaussian kernel used in
             the diffusion process. Controls the spread of the kernel.
-        edge_weight_key : str, optional
+        edge_weight : str, optional
             The edge attribute from the connectivity graph to use as weights
             for constructing the Graph Laplacian. Defaults to "weight".
 
@@ -1172,7 +1163,7 @@ class Environment:
 
         return df.sort_index()
 
-    def plot(self, ax: Optional[MatplotlibAxes] = None, **kw: Any) -> Any:
+    def plot(self, ax: Optional[MatplotlibAxes] = None, **kw: Any) -> MatplotlibAxes:
         """
         Plot the environment's layout.
 
