@@ -873,28 +873,143 @@ class Environment:
         return self.layout.bin_size()
 
     @cached_property
-    @check_fitted
-    def distance_between_bins(self) -> NDArray[np.float64]:
+    def get_all_euclidean_distances(self) -> NDArray[np.float64]:
         """
-        Compute shortest path distances between all pairs of active bins.
-
-        The distance is calculated using the `connectivity_`, where
-        edge weights typically represent the Euclidean distance between
-        connected bin centers.
+        Calculate the Euclidean distance between all pairs of active bin centers.
 
         Returns
         -------
-        NDArray[np.float64], shape (n_active_bins, n_active_bins)
-            A matrix where element `(i, j)` is the shortest path distance
-            between active bin `i` and active bin `j`. `np.inf` indicates
-            no path.
+        euclidean_distances : NDArray[np.float64], shape (n_bins, n_bins)
+            A square distance matrix where element (i, j) is the Euclidean
+            distance between the centers of active bin i and active bin j.
+            The diagonal elements (distance from a bin to itself) are 0.
+        """
+        if self.n_bins == 0:
+            return np.empty((0, 0), dtype=float)
+        if self.n_bins == 1:
+            return np.zeros((self.n_bins, self.n_bins), dtype=float)
+
+        from scipy.spatial.distance import pdist, squareform
+
+        return squareform(pdist(self.bin_centers, metric="euclidean"))
+
+    @cached_property
+    def get_all_geodesic_distances(self) -> NDArray[np.float64]:
+        """
+        Calculate the shortest path (geodesic) distance between all
+        pairs of active bins in the environment, using the 'distance'
+        attribute of edges in the connectivity graph as weights.
+
+        Returns
+        -------
+        geodesic_distances : NDArray[np.float64], shape (n_bins, n_bins)
+            A square matrix where element (i, j) is the shortest
+            path distance between active bin i and active bin j.
+            Returns np.inf if no path exists between two bins.
+            Diagonal elements are 0.
+        """
+        if self.connectivity_ is None or self.n_bins == 0:
+            return np.empty((0, 0), dtype=np.float64)
+
+        dist_matrix = np.full((self.n_bins, self.n_bins), np.inf, dtype=np.float64)
+        np.fill_diagonal(dist_matrix, 0.0)
+
+        # path_lengths is an iterator of (source_node, {target_node: length})
+        path_lengths = nx.shortest_path_length(
+            G=self.connectivity_, source=None, target=None, weight="distance"
+        )
+        for source_idx, targets in path_lengths:
+            for target_idx, length in targets.items():
+                dist_matrix[source_idx, target_idx] = length
+
+        return dist_matrix
+
+    def get_diffusion_kernel(
+        self, bandwidth_sigma: float, edge_weight: str = "weight"
+    ) -> NDArray[np.float64]:
+        """
+        Computes the diffusion kernel matrix for all active bins.
+
+        This method utilizes the `connectivity` graph of the environment and
+        delegates to an external `compute_diffusion_kernels` function.
+        The resulting matrix can represent the influence or probability flow
+        between bins after a diffusion process controlled by `bandwidth_sigma`.
+
+        Parameters
+        ----------
+        bandwidth_sigma : float
+            The bandwidth (standard deviation) of the Gaussian kernel used in
+            the diffusion process. Controls the spread of the kernel.
+        edge_weight : str, optional
+            The edge attribute from the connectivity graph to use as weights
+            for constructing the Graph Laplacian. Defaults to "weight".
+
+        Returns
+        -------
+        kernel_matrix : NDArray[np.float64], shape (n_bins, n_bins)
+            The diffusion kernel matrix. Element (i, j) can represent the
+            influence of bin j on bin i after diffusion. Columns typically
+            sum to 1 if normalized by the underlying computation.
 
         Raises
         ------
-        RuntimeError
-            If called before the environment is fitted.
+        ValueError
+            If the connectivity graph is not available or if n_bins is 0.
+        ImportError
+            If JAX (a dependency of `compute_diffusion_kernels`) is not installed.
         """
-        return _get_distance_between_bins(self.connectivity_)
+        from non_local_detector.diffusion_kernels import compute_diffusion_kernels
+
+        return compute_diffusion_kernels(
+            self.connectivity_, bandwidth_sigma=bandwidth_sigma, weight=edge_weight
+        )
+
+    def get_geodesic_distance(
+        self,
+        point1: NDArray[np.float64],
+        point2: NDArray[np.float64],
+        edge_weight: str = "distance",
+    ) -> float:
+        """
+        Calculate the geodesic distance between two points in the environment.
+
+        Points are first mapped to their nearest active bins using `self.bin_at()`.
+        The geodesic distance is then the shortest path length in the
+        `connectivity` graph between these bins, using the specified `edge_weight`.
+
+        Parameters
+        ----------
+        point1 : PtArr, shape (n_dims,) or (1, n_dims)
+            The first N-dimensional point.
+        point2 : PtArr, shape (n_dims,) or (1, n_dims)
+            The second N-dimensional point.
+        edge_weight : str, optional
+            The edge attribute to use as weight for path calculation,
+            by default "distance". If None, the graph is treated as unweighted.
+
+        Returns
+        -------
+        float
+            The geodesic distance. Returns `np.inf` if points do not map to
+            valid active bins, if bins are disconnected, or if the connectivity
+            graph is not available.
+        """
+        source_bin = self.bin_at(np.atleast_2d(point1))[0]
+        target_bin = self.bin_at(np.atleast_2d(point2))[0]
+
+        if source_bin == -1 or target_bin == -1:
+            # One or both points didn't map to a valid active bin
+            return np.inf
+
+        try:
+            return nx.shortest_path_length(
+                self.connectivity_,
+                source=source_bin,
+                target=target_bin,
+                weight=edge_weight,
+            )
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return np.inf
 
     @check_fitted
     def get_bin_attributes_dataframe(self) -> pd.DataFrame:  # Renamed
@@ -932,67 +1047,6 @@ class Environment:
             df = pd.concat([df.drop(columns="pos"), pos_df], axis=1)
 
         return df
-
-    @check_fitted
-    def get_manifold_distances(
-        self, points1: NDArray[np.float64], points2: NDArray[np.float64]
-    ) -> NDArray[np.float64]:
-        """
-        Calculate manifold distances between pairs of points.
-
-        Points are first mapped to their respective active bin indices.
-        The manifold distance is then the shortest path distance between these
-        bins, retrieved from `self.distance_between_bins`.
-
-        Parameters
-        ----------
-        points1 : NDArray[np.float64], shape (n_pairs, n_dims) or (n_dims,)
-            First set of N-dimensional points.
-        points2 : NDArray[np.float64], shape (n_pairs, n_dims) or (n_dims,)
-            Second set of N-dimensional points. Must have the same shape as `points1`.
-
-        Returns
-        -------
-        NDArray[np.float64], shape (n_pairs,)
-            Array of manifold distances. If a point in a pair does not map to
-            an active bin, or if the bins are disconnected, the distance
-            will be `np.inf`.
-
-        Raises
-        ------
-        ValueError
-            If `points1` and `points2` have mismatched shapes or if input arrays
-            are empty but dimensions are incompatible.
-        RuntimeError
-            If called before the environment is fitted.
-        """
-        p1, p2 = np.atleast_2d(points1), np.atleast_2d(points2)
-        if p1.shape != p2.shape:
-            raise ValueError("Shape mismatch.")
-        if p1.shape[0] == 0:
-            return np.array([], dtype=np.float64)
-        bin1, bin2 = self.bin_at(p1), self.bin_at(p2)
-        dist_matrix = self.distance_between_bins
-        n_active_bins_in_matrix = dist_matrix.shape[0]
-        distances = np.full(len(p1), np.inf, dtype=np.float64)
-        valid_mask = (
-            (bin1 != -1)
-            & (bin2 != -1)
-            & (bin1 < n_active_bins_in_matrix)
-            & (bin2 < n_active_bins_in_matrix)
-        )
-        if np.any(valid_mask):
-            distances[valid_mask] = dist_matrix[bin1[valid_mask], bin2[valid_mask]]
-        # Warning for out-of-bounds indices can be simplified as bin_at now returns relative to active.
-        if np.any(
-            ((bin1 != -1) & ~((bin1 < n_active_bins_in_matrix) & (bin1 >= 0)))
-            | ((bin2 != -1) & ~((bin2 < n_active_bins_in_matrix) & (bin2 >= 0)))
-        ):
-            warnings.warn(
-                "Some bin indices from bin_at were out of bounds for distance_between_bins matrix. This is unexpected.",
-                RuntimeWarning,
-            )
-        return distances.squeeze()
 
     @check_fitted
     def get_shortest_path(
@@ -1170,8 +1224,10 @@ class Environment:
         ax = self.layout.plot(ax=ax, **l_kwargs)
 
         if show_regions and hasattr(self, "regions") and self.regions is not None:
+            from non_local_detector.environment.regions.plot import plot_regions
+
             r_kwargs = regions_plot_kwargs if regions_plot_kwargs is not None else {}
-            self.regions.plot_regions(ax=ax, **r_kwargs)
+            plot_regions(self.regions, ax=ax, **r_kwargs)
 
         plot_title = self.name
         if (

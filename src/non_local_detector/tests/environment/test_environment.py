@@ -211,24 +211,12 @@ class TestEnvironmentFromGraph:
         expected_neighbors_of_3 = {2, 4}  # Corrected expectation
         assert set(neighbors_of_3) == expected_neighbors_of_3
 
-    def test_distance_between_bins(self, graph_env: Environment):
-        """Test distance matrix calculation."""
-        dist_matrix = graph_env.distance_between_bins
-        assert dist_matrix.shape == (16, 16)
-        assert np.all(np.diag(dist_matrix) == 0)
-        assert np.all(dist_matrix >= 0)
-        dist_0_1 = dist_matrix[0, 1]
-        assert pytest.approx(dist_0_1, abs=1e-9) == np.linalg.norm(
-            graph_env.bin_centers_[0] - graph_env.bin_centers_[1]
-        )
-
-    def test_get_manifold_distances(self, graph_env: Environment):
+    def test_get_geodesic_distance(self, graph_env: Environment):
         """Test manifold distance between points."""
         p1 = np.array([[-1.5, 0.0]])
         p2 = np.array([[0.0, 1.5]])
 
-        manifold_dist = graph_env.get_manifold_distances(p1, p2)
-        assert manifold_dist.ndim == 0
+        manifold_dist = graph_env.get_geodesic_distance(p1, p2)
 
         bin_p1 = graph_env.bin_at(p1)[0]
         bin_p2 = graph_env.bin_at(p2)[0]
