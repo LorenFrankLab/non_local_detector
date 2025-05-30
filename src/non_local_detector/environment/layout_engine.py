@@ -43,6 +43,7 @@ import matplotlib.axes
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+from matplotlib.axes import Axes as MatplotlibAxes
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import RegularPolygon
 from numpy.typing import NDArray
@@ -92,12 +93,12 @@ PolygonType = type[Polygon]
 # --------------------------
 # ---------------------------------------------------------------------
 # type aliases
-PtArr = NDArray[np.float_]
+PtArr = NDArray[np.float64]
 IdxArr = NDArray[np.int_]
 
 PointToBin = Callable[["Environment", PtArr], IdxArr]
 PlotFunc = Callable[["Environment", MatplotlibAxes], None]
-AreaFn = Callable[["Environment"], NDArray[np.float_]]
+AreaFn = Callable[["Environment"], NDArray[np.float64]]
 
 # For 1D specific helpers
 LinearProjectionFn = Callable[["Environment", PtArr], PtArr]
