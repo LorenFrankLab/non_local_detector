@@ -144,7 +144,7 @@ class Environment:
     active_mask_: Optional[NDArray[np.bool_]] = field(init=False)
 
     # Region Management
-    regions: RegionManager = field(init=False, repr=False)
+    regions: Regions = field(init=False, repr=False)
 
     # Internal state
     _is_1d_env: bool = field(init=False)
@@ -215,7 +215,7 @@ class Environment:
         self._is_fitted = False  # Will be set by _setup_from_layout
 
         self._setup_from_layout()  # Populate attributes from the built layout
-        self.regions = RegionManager(self)
+        self.regions = Regions()
 
     def __repr__(self: "Environment") -> str:
         """
@@ -1888,3 +1888,159 @@ class Environment:
                 )  # Remove duplicates if any
 
         return np.array(sorted(list(set(boundary_bin_indices))), dtype=int)
+
+    @check_fitted
+    def get_graph_layout_properties_for_linearization(
+        self: "Environment",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        If the environment uses a GraphLayout, returns properties needed
+        for linearization using the `track_linearization` library.
+
+        These properties are typically passed to `track_linearization.get_linearized_position`.
+
+        Returns
+        -------
+        Optional[Dict[str, Any]]
+            A dictionary with keys 'track_graph', 'edge_order', 'edge_spacing'
+            if the layout is `GraphLayout` and parameters are available.
+            Returns `None` otherwise. The 'track_graph' herein refers to the
+            original graph definition used to build the `GraphLayout`.
+        """
+        if isinstance(self.layout, GraphLayout):
+            # _layout_params_used stores the kwargs passed to the layout's build method
+            graph_def = self._layout_params_used.get("graph_definition")
+            edge_order = self._layout_params_used.get("edge_order")
+            # edge_spacing can be 0.0, so check for None explicitly if it's optional
+            edge_spacing = self._layout_params_used.get("edge_spacing")
+
+            if (
+                graph_def is not None
+                and edge_order is not None
+                and edge_spacing is not None
+            ):
+                return {
+                    "track_graph": graph_def,
+                    "edge_order": edge_order,
+                    "edge_spacing": edge_spacing,
+                }
+            else:
+                warnings.warn(
+                    "GraphLayout instance is missing some expected build parameters "
+                    "('graph_definition', 'edge_order', or 'edge_spacing') "
+                    "in _layout_params_used.",
+                    UserWarning,
+                )
+        return None
+
+    @check_fitted
+    def get_indices_for_values_in_region(
+        self: "Environment", values: NDArray[np.float64], region_name: str
+    ) -> NDArray[np.bool_]:
+        """
+        Determines which time points (rows in `values` array) correspond
+        to locations falling within a specified named region of this environment.
+
+        A value is considered in the region if it maps to an active bin
+        that is part of the defined region.
+
+        Parameters
+        ----------
+        values : NDArray[np.float64]
+            N-dimensional position data, shape (n_time_points, n_dims).
+        region_name : str
+            The name of a defined region in `self.regions`.
+
+        Returns
+        -------
+        NDArray[np.bool_]
+            Boolean mask of shape (n_time_points,). `True` indicates the
+            position at that time point is within the specified region.
+
+        Raises
+        ------
+        AttributeError
+            If the environment does not have a `regions` (RegionManager) attribute.
+        KeyError
+            If `region_name` is not found in `self.regions`.
+        ValueError
+            If `values` array has incorrect dimensionality.
+        """
+        if not hasattr(self, "regions") or self.regions is None:
+            raise AttributeError(
+                f"Environment '{self.environment_name}' has no 'regions' manager."
+            )
+        if values.ndim != 2 or values.shape[1] != self.n_dims:
+            raise ValueError(
+                f"Values array must be 2D with shape (n_points, {self.n_dims}), "
+                f"got {values.shape}."
+            )
+
+        # Map continuous positions to active bin indices (0 to N-1, or -1 if outside)
+        # `get_bin_ind` is already @check_fitted
+        active_bin_indices_for_positions = self.get_bin_ind(values)
+
+        # Get the set of active bin indices that constitute the target region
+        # `bins_in_region` also raises KeyError if region_name not found
+        # and is @check_fitted via region_mask
+        try:
+            bins_in_target_region = self.regions.bins_in_region(region_name)
+        except KeyError:
+            # Re-raise with more context or let original error propagate
+            raise KeyError(
+                f"Region '{region_name}' not found in environment '{self.environment_name}'."
+            )
+
+        if bins_in_target_region.size == 0:
+            # Region is defined but contains no active bins from this environment
+            return np.zeros(values.shape[0], dtype=bool)
+
+        # Create a boolean mask: True if the mapped active_bin_index for a position
+        # is present in the set of bins defining the target region.
+        # np.isin is efficient for this.
+        is_in_region_mask = np.isin(
+            active_bin_indices_for_positions, bins_in_target_region
+        )
+
+        return is_in_region_mask
+
+    @property
+    @check_fitted
+    def grid_edges_list(self: "Environment") -> Optional[List[NDArray[np.float64]]]:
+        """
+        Provides grid_edges_ as a list of NumPy arrays, suitable for some
+        histogramming functions or other consumers expecting a list.
+
+        Returns None if grid_edges_ is not defined (e.g., for non-grid layouts).
+
+        Returns
+        -------
+        Optional[List[NDArray[np.float64]]]
+            A list where each element is a 1D NumPy array of bin edge
+            positions for that dimension, or None if not applicable.
+        """
+        if self.grid_edges_ is None or not isinstance(self.grid_edges_, tuple):
+            return None
+        return list(self.grid_edges_)
+
+    @property
+    @check_fitted
+    def dimension_ranges_list(
+        self: "Environment",
+    ) -> Optional[List[Tuple[float, float]]]:
+        """
+        Provides dimension_ranges_ (min, max for each dimension) as a list of tuples.
+        Returns None if dimension_ranges_ is not defined.
+
+        Returns
+        -------
+        Optional[List[Tuple[float, float]]]
+            A list where each element is a (min, max) tuple for a dimension,
+            or None if not applicable.
+        """
+        if self.dimension_ranges_ is None or not isinstance(
+            self.dimension_ranges_, Sequence
+        ):
+            return None
+        # Ensure each element is a tuple if it's not already (e.g. if it was List[List[float]])
+        return [tuple(item) for item in self.dimension_ranges_]
