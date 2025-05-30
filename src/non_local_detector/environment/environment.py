@@ -77,7 +77,7 @@ class Environment:
     various spatial queries and operations.
 
     Instances are typically created using one of the provided classmethod
-    factories (e.g., `Environment.from_data_samples(...)`,
+    factories (e.g., `Environment.from_samples(...)`,
     `Environment.from_graph(...)`). These factories handle the underlying
     `LayoutEngine` setup.
 
@@ -171,7 +171,7 @@ class Environment:
 
         Note: This constructor is primarily intended for internal use by factory
         methods. Users should typically create Environment instances using
-        classmethods like `Environment.from_data_samples(...)`. The provided
+        classmethods like `Environment.from_samples(...)`. The provided
         `layout` instance is assumed to be already built and configured.
 
         Parameters
@@ -319,7 +319,7 @@ class Environment:
 
     # --- Factory Methods ---
     @classmethod
-    def from_data_samples(
+    def from_samples(
         cls,
         data_samples: NDArray[np.float64],
         name: str = "",
@@ -432,7 +432,7 @@ class Environment:
         Create an Environment with explicitly defined spatial boundaries.
 
         This factory method initializes a `LayoutEngine` covering the specified
-        `dimension_ranges`. Unlike `from_data_samples`, this method does not
+        `dimension_ranges`. Unlike `from_samples`, this method does not
         typically infer active bins from data unless `data_samples` and relevant
         inference parameters are passed via `layout_specific_kwargs`.
 

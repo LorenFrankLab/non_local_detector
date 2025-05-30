@@ -129,7 +129,7 @@ def grid_env_from_samples(
     plus_maze_data_samples: NDArray[np.float64],
 ) -> Environment:
     """Environment created as a RegularGrid from plus maze data samples."""
-    return Environment.from_data_samples(
+    return Environment.from_samples(
         data_samples=plus_maze_data_samples,
         bin_size=0.5,
         infer_active_bins=True,
@@ -311,7 +311,7 @@ class TestEnvironmentFromGraph:
 
 
 class TestEnvironmentFromDataSamplesGrid:
-    """Tests for Environment created with from_data_samples (RegularGrid)."""
+    """Tests for Environment created with from_samples (RegularGrid)."""
 
     def test_creation_grid(self, grid_env_from_samples: Environment):
         """Test basic attributes for grid layout."""
@@ -567,7 +567,7 @@ def data_for_morpho_ops() -> NDArray[np.float64]:
 @pytest.fixture
 def env_hexagonal() -> Environment:
     """A simple hexagonal environment."""
-    return Environment.from_data_samples(
+    return Environment.from_samples(
         data_samples=np.array(
             [[0, 0], [1, 1], [0, 1], [1, 0], [0.5, 0.5]]
         ),  # Some points to define an area
@@ -594,7 +594,7 @@ def env_with_disconnected_regions() -> Environment:
 @pytest.fixture
 def env_no_active_bins() -> Environment:
     """Environment with no active bins."""
-    return Environment.from_data_samples(
+    return Environment.from_samples(
         data_samples=np.array([[100.0, 100.0]]),  # Far from default range
         dimension_ranges=[(0, 1), (0, 1)],  # Explicit small range
         bin_size=0.5,
@@ -608,16 +608,16 @@ def env_no_active_bins() -> Environment:
 
 
 class TestFromDataSamplesDetailed:
-    """Detailed tests for Environment.from_data_samples."""
+    """Detailed tests for Environment.from_samples."""
 
     def test_bin_count_threshold(self):
         data = np.array(
             [[0.5, 0.5]] * 2 + [[1.5, 1.5]] * 5
         )  # Bin (0,0) has 2, Bin (1,1) has 5 (if bin_size=1)
-        env_thresh0 = Environment.from_data_samples(
+        env_thresh0 = Environment.from_samples(
             data, bin_size=1.0, bin_count_threshold=0
         )
-        env_thresh3 = Environment.from_data_samples(
+        env_thresh3 = Environment.from_samples(
             data, bin_size=1.0, bin_count_threshold=3
         )
 
@@ -633,7 +633,7 @@ class TestFromDataSamplesDetailed:
 
     def test_morphological_ops(self, data_for_morpho_ops: NDArray[np.float64]):
         """Test dilate, fill_holes, close_gaps effects."""
-        base_env = Environment.from_data_samples(
+        base_env = Environment.from_samples(
             data_samples=data_for_morpho_ops,
             bin_size=1.0,
             infer_active_bins=True,
@@ -642,7 +642,7 @@ class TestFromDataSamplesDetailed:
             close_gaps=False,
             bin_count_threshold=0,
         )
-        dilated_env = Environment.from_data_samples(
+        dilated_env = Environment.from_samples(
             data_samples=data_for_morpho_ops,
             bin_size=1.0,
             infer_active_bins=True,
@@ -673,10 +673,10 @@ class TestFromDataSamplesDetailed:
                 [2, 2],  # Square boundary
             ]
         )  # Center [1,1] is a hole
-        env_no_fill = Environment.from_data_samples(
+        env_no_fill = Environment.from_samples(
             hole_data, bin_size=1.0, fill_holes=False, bin_count_threshold=0
         )
-        env_fill = Environment.from_data_samples(
+        env_fill = Environment.from_samples(
             hole_data, bin_size=1.0, fill_holes=True, bin_count_threshold=0
         )
 
@@ -696,10 +696,10 @@ class TestFromDataSamplesDetailed:
             pass
 
     def test_add_boundary_bins(self, data_for_morpho_ops: NDArray[np.float64]):
-        env_no_boundary = Environment.from_data_samples(
+        env_no_boundary = Environment.from_samples(
             data_for_morpho_ops, bin_size=1.0, add_boundary_bins=False
         )
-        env_with_boundary = Environment.from_data_samples(
+        env_with_boundary = Environment.from_samples(
             data_for_morpho_ops, bin_size=1.0, add_boundary_bins=True
         )
 
@@ -712,7 +712,7 @@ class TestFromDataSamplesDetailed:
     def test_infer_active_bins_false(self):
         data = np.array([[0.5, 0.5], [2.5, 2.5]])
         dim_ranges = [(0, 3), (0, 3)]  # Defines a 3x3 grid if bin_size=1
-        env = Environment.from_data_samples(
+        env = Environment.from_samples(
             data_samples=data,
             dimension_ranges=dim_ranges,
             bin_size=1.0,
@@ -825,7 +825,7 @@ class TestShapelyPolygonLayoutDetailed:
 
 class TestDimensionality:
     def test_1d_regular_grid(self):
-        env = Environment.from_data_samples(
+        env = Environment.from_samples(
             data_samples=np.arange(10).reshape(-1, 1).astype(float),
             bin_size=1.0,
             name="1DGridTest",
@@ -843,7 +843,7 @@ class TestDimensionality:
     def test_3d_regular_grid(self):
         data = np.random.rand(100, 3) * 5
         input_bin_size = 1.0
-        env = Environment.from_data_samples(
+        env = Environment.from_samples(
             data_samples=data,
             bin_size=input_bin_size,  # Use the variable
             name="3DGridTest",
@@ -894,7 +894,7 @@ def simple_graph_for_layout() -> nx.Graph:
 @pytest.fixture
 def simple_hex_env(plus_maze_data_samples) -> Environment:
     """Basic hexagonal environment for mask testing."""
-    return Environment.from_data_samples(
+    return Environment.from_samples(
         data_samples=plus_maze_data_samples,  # Use existing samples
         layout_type="Hexagonal",
         hexagon_width=2.0,  # Reasonably large hexes
@@ -928,7 +928,7 @@ def simple_graph_env(simple_graph_for_layout) -> Environment:
 @pytest.fixture
 def grid_env_for_indexing(plus_maze_data_samples) -> Environment:
     """A 2D RegularGrid environment suitable for index testing."""
-    return Environment.from_data_samples(
+    return Environment.from_samples(
         data_samples=plus_maze_data_samples,  # Creates a reasonable grid
         bin_size=1.0,
         infer_active_bins=True,

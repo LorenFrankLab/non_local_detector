@@ -282,7 +282,7 @@ def simple_graph_for_layout() -> nx.Graph:
 @pytest.fixture
 def simple_hex_env(plus_maze_data_samples) -> Environment:
     """Basic hexagonal environment for mask testing."""
-    return Environment.from_data_samples(
+    return Environment.from_samples(
         data_samples=plus_maze_data_samples,  # Use existing samples
         layout_type="Hexagonal",
         hexagon_width=2.0,  # Reasonably large hexes
@@ -316,7 +316,7 @@ def simple_graph_env(simple_graph_for_layout) -> Environment:
 @pytest.fixture
 def grid_env_for_indexing(plus_maze_data_samples) -> Environment:
     """A 2D RegularGrid environment suitable for index testing."""
-    return Environment.from_data_samples(
+    return Environment.from_samples(
         data_samples=plus_maze_data_samples,  # Creates a reasonable grid
         bin_size=1.0,
         infer_active_bins=True,
