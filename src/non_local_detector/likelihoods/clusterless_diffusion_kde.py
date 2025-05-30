@@ -161,7 +161,7 @@ def fit_clusterless_diffusion_encoding_model(
     time_weights = weights[valid_pos_mask]
 
     if valid_positions.shape[0] > 0:
-        position_bin_inds_valid = environment.get_bin_ind(valid_positions)
+        position_bin_inds_valid = environment.bin_at(valid_positions)
     else:
         position_bin_inds_valid = np.array([], dtype=int)
 
@@ -231,7 +231,7 @@ def fit_clusterless_diffusion_encoding_model(
             valid_pos_at_spike = pos_at_spike[valid_spike_pos_mask]
 
             if valid_pos_at_spike.shape[0] > 0:
-                spike_bin_inds_valid = environment.get_bin_ind(valid_pos_at_spike)
+                spike_bin_inds_valid = environment.bin_at(valid_pos_at_spike)
             else:
                 spike_bin_inds_valid = np.array([], dtype=int)
 

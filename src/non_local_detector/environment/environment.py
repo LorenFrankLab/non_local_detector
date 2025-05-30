@@ -735,32 +735,28 @@ class Environment:
         """
         return self.bin_centers_.shape[1]
 
-    @cached_property
+    @property
     @check_fitted
-    def distance_between_bins(self) -> NDArray[np.float64]:
+    def n_bins(self) -> int:
         """
-        Compute shortest path distances between all pairs of active bins.
+        Return the number of active bins in the environment.
 
-        The distance is calculated using the `connectivity_`, where
-        edge weights typically represent the Euclidean distance between
-        connected bin centers.
+        This is determined by the number of rows in `self.bin_centers_`.
 
         Returns
         -------
-        NDArray[np.float64], shape (n_active_bins, n_active_bins)
-            A matrix where element `(i, j)` is the shortest path distance
-            between active bin `i` and active bin `j`. `np.inf` indicates
-            no path.
+        int
+            The number of active bins (0 if not fitted).
 
         Raises
         ------
         RuntimeError
             If called before the environment is fitted.
         """
-        return _get_distance_between_bins(self.connectivity_)
+        return self.bin_centers_.shape[0]
 
     @check_fitted
-    def get_bin_ind(self, points_nd: NDArray[np.float64]) -> NDArray[np.int_]:
+    def bin_at(self, points_nd: NDArray[np.float64]) -> NDArray[np.int_]:
         """
         Map N-dimensional continuous points to discrete active bin indices.
 
@@ -786,6 +782,30 @@ class Environment:
         """
         return self.layout.point_to_bin_index(points_nd)
 
+    @cached_property
+    @check_fitted
+    def distance_between_bins(self) -> NDArray[np.float64]:
+        """
+        Compute shortest path distances between all pairs of active bins.
+
+        The distance is calculated using the `connectivity_`, where
+        edge weights typically represent the Euclidean distance between
+        connected bin centers.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_active_bins, n_active_bins)
+            A matrix where element `(i, j)` is the shortest path distance
+            between active bin `i` and active bin `j`. `np.inf` indicates
+            no path.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        """
+        return _get_distance_between_bins(self.connectivity_)
+
     @check_fitted
     def contains(self, points_nd: NDArray[np.float64]) -> NDArray[np.bool_]:
         """
@@ -807,7 +827,7 @@ class Environment:
         RuntimeError
             If called before the environment is fitted.
         """
-        return self.get_bin_ind(points_nd) != -1
+        return self.bin_at(points_nd) != -1
 
     @check_fitted
     def get_bin_neighbors(self, bin_index: int) -> List[int]:
@@ -931,7 +951,7 @@ class Environment:
             raise ValueError("Shape mismatch.")
         if p1.shape[0] == 0:
             return np.array([], dtype=np.float64)
-        bin1, bin2 = self.get_bin_ind(p1), self.get_bin_ind(p2)
+        bin1, bin2 = self.bin_at(p1), self.bin_at(p2)
         dist_matrix = self.distance_between_bins
         n_active_bins_in_matrix = dist_matrix.shape[0]
         distances = np.full(len(p1), np.inf, dtype=np.float64)
@@ -943,13 +963,13 @@ class Environment:
         )
         if np.any(valid_mask):
             distances[valid_mask] = dist_matrix[bin1[valid_mask], bin2[valid_mask]]
-        # Warning for out-of-bounds indices can be simplified as get_bin_ind now returns relative to active.
+        # Warning for out-of-bounds indices can be simplified as bin_at now returns relative to active.
         if np.any(
             ((bin1 != -1) & ~((bin1 < n_active_bins_in_matrix) & (bin1 >= 0)))
             | ((bin2 != -1) & ~((bin2 < n_active_bins_in_matrix) & (bin2 >= 0)))
         ):
             warnings.warn(
-                "Some bin indices from get_bin_ind were out of bounds for distance_between_bins matrix. This is unexpected.",
+                "Some bin indices from bin_at were out of bounds for distance_between_bins matrix. This is unexpected.",
                 RuntimeWarning,
             )
         return distances.squeeze()
@@ -1727,7 +1747,7 @@ class Environment:
                     f"Region point dimension {point_nd.shape[1]} "
                     f"does not match environment dimension {self.n_dims}."
                 )
-            bin_idx = self.get_bin_ind(point_nd)
+            bin_idx = self.bin_at(point_nd)
             return bin_idx[bin_idx != -1]
 
         elif region_info.kind == "polygon":

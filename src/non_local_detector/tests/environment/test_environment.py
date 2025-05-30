@@ -159,24 +159,24 @@ class TestEnvironmentFromGraph:
         assert graph_env.active_mask_ is not None
         assert np.all(graph_env.active_mask_)
 
-    def test_get_bin_ind(self, graph_env: Environment):
+    def test_bin_at(self, graph_env: Environment):
         """Test mapping points to bin indices."""
         point_on_track1 = np.array([[-1.0, 0.0]])
-        bin_idx1 = graph_env.get_bin_ind(point_on_track1)
+        bin_idx1 = graph_env.bin_at(point_on_track1)
         assert bin_idx1.ndim == 1
         assert bin_idx1[0] != -1
         assert 0 <= bin_idx1[0] < 16
 
         point_center = np.array([[0.0, 0.0]])
-        bin_idx_center = graph_env.get_bin_ind(point_center)
+        bin_idx_center = graph_env.bin_at(point_center)
         assert bin_idx_center[0] != -1
 
         point_off_track = np.array([[10.0, 10.0]])
-        bin_idx_off = graph_env.get_bin_ind(point_off_track)
+        bin_idx_off = graph_env.bin_at(point_off_track)
         assert bin_idx_off[0] != -1
 
         points = np.array([[-1.0, 0.0], [0.0, 1.0], [10.0, 10.0]])
-        bin_indices = graph_env.get_bin_ind(points)
+        bin_indices = graph_env.bin_at(points)
         assert len(bin_indices) == 3
         assert bin_indices[0] != -1
         assert bin_indices[1] != -1
@@ -196,7 +196,7 @@ class TestEnvironmentFromGraph:
         assert isinstance(neighbors_of_0, list)
         assert set(neighbors_of_0) == {1}  # Only connected to next bin on segment
 
-        idx_on_west_arm = graph_env.get_bin_ind(np.array([[-1.0, 0.0]]))[0]  # Bin 2
+        idx_on_west_arm = graph_env.bin_at(np.array([[-1.0, 0.0]]))[0]  # Bin 2
         neighbors_on_west = graph_env.get_bin_neighbors(idx_on_west_arm)
         assert isinstance(neighbors_on_west, list)
         assert len(neighbors_on_west) > 0
@@ -230,8 +230,8 @@ class TestEnvironmentFromGraph:
         manifold_dist = graph_env.get_manifold_distances(p1, p2)
         assert manifold_dist.ndim == 0
 
-        bin_p1 = graph_env.get_bin_ind(p1)[0]
-        bin_p2 = graph_env.get_bin_ind(p2)[0]
+        bin_p1 = graph_env.bin_at(p1)[0]
+        bin_p2 = graph_env.bin_at(p2)[0]
 
         expected_dist_via_path = nx.shortest_path_length(
             graph_env.connectivity_,
@@ -243,8 +243,8 @@ class TestEnvironmentFromGraph:
 
     def test_get_shortest_path(self, graph_env: Environment):
         """Test finding the shortest path between bins."""
-        bin_idx_west = graph_env.get_bin_ind(np.array([[-1.5, 0.0]]))[0]
-        bin_idx_north = graph_env.get_bin_ind(np.array([[0.0, 1.5]]))[0]
+        bin_idx_west = graph_env.bin_at(np.array([[-1.5, 0.0]]))[0]
+        bin_idx_north = graph_env.bin_at(np.array([[0.0, 1.5]]))[0]
 
         path = graph_env.get_shortest_path(bin_idx_west, bin_idx_north)
         assert isinstance(path, list)
@@ -351,14 +351,14 @@ class TestEnvironmentFromDataSamplesGrid:
             grid_env_from_samples.active_mask_
         )
 
-    def test_get_bin_ind_grid(
+    def test_bin_at_grid(
         self,
         grid_env_from_samples: Environment,
         plus_maze_data_samples: NDArray[np.float64],
     ):
         """Test mapping points to bin indices for grid."""
         point_on_active_bin = np.array([[-1.0, 0.0]])
-        idx_active = grid_env_from_samples.get_bin_ind(point_on_active_bin)
+        idx_active = grid_env_from_samples.bin_at(point_on_active_bin)
         assert idx_active[0] != -1
 
         # Test a point known to be within the grid_edges but potentially inactive
@@ -370,12 +370,12 @@ class TestEnvironmentFromDataSamplesGrid:
         min_x_coord = grid_env_from_samples.grid_edges_[0][0]
         min_y_coord = grid_env_from_samples.grid_edges_[1][0]
         point_far_left_bottom = np.array([[min_x_coord - 10.0, min_y_coord - 10.0]])
-        idx_off_grid = grid_env_from_samples.get_bin_ind(point_far_left_bottom)
+        idx_off_grid = grid_env_from_samples.bin_at(point_far_left_bottom)
         assert idx_off_grid[0] == -1
 
-        sample_bin_indices = grid_env_from_samples.get_bin_ind(plus_maze_data_samples)
+        sample_bin_indices = grid_env_from_samples.bin_at(plus_maze_data_samples)
         on_track_samples = plus_maze_data_samples[:-2]
-        on_track_indices = grid_env_from_samples.get_bin_ind(on_track_samples)
+        on_track_indices = grid_env_from_samples.bin_at(on_track_samples)
 
         # It's possible that due to binning, some on_track_samples might fall into
         # bins that were not made active if bin_count_threshold was >0 or due to
@@ -751,14 +751,12 @@ class TestHexagonalLayout:
             test_point_near_active_center = env_hexagonal.bin_centers_[0] + np.array(
                 [0.01, 0.01]
             )
-            idx = env_hexagonal.get_bin_ind(
-                test_point_near_active_center.reshape(1, -1)
-            )
+            idx = env_hexagonal.bin_at(test_point_near_active_center.reshape(1, -1))
             assert idx[0] == 0  # Should map to the first active bin
 
             # Test a point far away
             far_point = np.array([[100.0, 100.0]])
-            idx_far = env_hexagonal.get_bin_ind(far_point)
+            idx_far = env_hexagonal.bin_at(far_point)
             assert (
                 idx_far[0] == -1
             )  # Hexagonal point_to_bin_index should return -1 if outside
@@ -831,11 +829,11 @@ class TestShapelyPolygonLayoutDetailed:
         assert env.bin_centers_.shape[0] == 8
 
         point_in_hole = np.array([[1.5, 1.5]])
-        bin_idx_in_hole = env.get_bin_ind(point_in_hole)
+        bin_idx_in_hole = env.bin_at(point_in_hole)
         assert bin_idx_in_hole[0] == -1  # Should not map to an active bin
 
         point_in_active_part = np.array([[0.5, 0.5]])
-        bin_idx_active = env.get_bin_ind(point_in_active_part)
+        bin_idx_active = env.bin_at(point_in_active_part)
         assert bin_idx_active[0] != -1
 
 

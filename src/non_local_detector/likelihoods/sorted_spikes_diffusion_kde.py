@@ -109,7 +109,7 @@ def fit_sorted_spikes_diffusion_kde_encoding_model(
 
     # Bin valid positions using the Environment method
     if valid_positions.shape[0] > 0:
-        position_bin_inds_valid = environment.get_bin_ind(valid_positions)
+        position_bin_inds_valid = environment.bin_at(valid_positions)
     else:
         position_bin_inds_valid = np.array([], dtype=int)
 
@@ -186,7 +186,7 @@ def fit_sorted_spikes_diffusion_kde_encoding_model(
 
             # Bin valid spike positions using the Environment method
             if valid_pos_at_spike.shape[0] > 0:
-                spike_bin_inds_valid = environment.get_bin_ind(valid_pos_at_spike)
+                spike_bin_inds_valid = environment.bin_at(valid_pos_at_spike)
             else:
                 spike_bin_inds_valid = np.array([], dtype=int)
 

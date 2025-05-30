@@ -67,7 +67,7 @@ def make_2D_track_graph_from_environment(
     return track_graph
 
 
-def get_bin_ind(sample: np.ndarray, edges: list) -> np.ndarray:
+def bin_at(sample: np.ndarray, edges: list) -> np.ndarray:
     """Find the indices of the bins to which each value in input array belongs.
 
     Parameters
@@ -145,8 +145,8 @@ def get_map_estimate_direction_from_track_graph(
     if precomputed_distance:
         node_positions = np.asarray(list(node_positions.values()))
         n_nodes = node_positions.shape[0]
-        bin_ind1 = get_bin_ind(head_position, bin_edges)
-        bin_ind2 = get_bin_ind(map_estimate, bin_edges)
+        bin_ind1 = bin_at(head_position, bin_edges)
+        bin_ind2 = bin_at(map_estimate, bin_edges)
 
         first_node_on_path = np.full((n_nodes, n_nodes), -1, dtype=int)
         for from_node_id, to_node_data in nx.shortest_path(
@@ -166,8 +166,8 @@ def get_map_estimate_direction_from_track_graph(
         )
     else:
         node_ids = np.asarray(list(node_positions.keys()))
-        head_position_nodes = node_ids[get_bin_ind(head_position, bin_edges)]
-        map_estimate_nodes = node_ids[get_bin_ind(map_estimate, bin_edges)]
+        head_position_nodes = node_ids[bin_at(head_position, bin_edges)]
+        map_estimate_nodes = node_ids[bin_at(map_estimate, bin_edges)]
 
         for i, (head_position_node, map_estimate_node) in enumerate(
             zip(head_position_nodes, map_estimate_nodes)
@@ -235,8 +235,8 @@ def get_2D_distance(
         bin_edges = [e[1:-1] for e in edges]
 
         if precomputed_distance:
-            bin_ind1 = get_bin_ind(position1, bin_edges)
-            bin_ind2 = get_bin_ind(position2, bin_edges)
+            bin_ind1 = bin_at(position1, bin_edges)
+            bin_ind2 = bin_at(position2, bin_edges)
             distance = np.full((len(node_ids), len(node_ids)), np.inf)
             for to_node_id, from_node_id in nx.shortest_path_length(
                 track_graph,
@@ -247,8 +247,8 @@ def get_2D_distance(
                 )
             distance = distance[bin_ind1, bin_ind2]
         else:
-            node_ids1 = node_ids[get_bin_ind(position1, bin_edges)]
-            node_ids2 = node_ids[get_bin_ind(position2, bin_edges)]
+            node_ids1 = node_ids[bin_at(position1, bin_edges)]
+            node_ids2 = node_ids[bin_at(position2, bin_edges)]
             distance = np.full((position1.shape[0]), np.inf)
             for i in range(position1.shape[0]):
                 try:
