@@ -782,6 +782,29 @@ class Environment:
         """
         return self.layout.point_to_bin_index(points_nd)
 
+    @check_fitted
+    def contains(self, points_nd: NDArray[np.float64]) -> NDArray[np.bool_]:
+        """
+        Check if N-dimensional continuous points fall within any active bin.
+
+        Parameters
+        ----------
+        points_nd : NDArray[np.float64], shape (n_points, n_dims)
+            An array of N-dimensional points to check.
+
+        Returns
+        -------
+        NDArray[np.bool_], shape (n_points,)
+            A boolean array where `True` indicates the corresponding point
+            maps to an active bin, and `False` indicates it does not.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        """
+        return self.bin_at(points_nd) != -1
+
     @cached_property
     @check_fitted
     def distance_between_bins(self) -> NDArray[np.float64]:
@@ -805,29 +828,6 @@ class Environment:
             If called before the environment is fitted.
         """
         return _get_distance_between_bins(self.connectivity_)
-
-    @check_fitted
-    def contains(self, points_nd: NDArray[np.float64]) -> NDArray[np.bool_]:
-        """
-        Check if N-dimensional continuous points fall within any active bin.
-
-        Parameters
-        ----------
-        points_nd : NDArray[np.float64], shape (n_points, n_dims)
-            An array of N-dimensional points to check.
-
-        Returns
-        -------
-        NDArray[np.bool_], shape (n_points,)
-            A boolean array where `True` indicates the corresponding point
-            maps to an active bin, and `False` indicates it does not.
-
-        Raises
-        ------
-        RuntimeError
-            If called before the environment is fitted.
-        """
-        return self.bin_at(points_nd) != -1
 
     @check_fitted
     def get_bin_neighbors(self, bin_index: int) -> List[int]:
