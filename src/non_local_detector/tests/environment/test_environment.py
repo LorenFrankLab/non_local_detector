@@ -463,15 +463,15 @@ class TestEnvironmentSerialization:
 # --- Test Other Factory Methods (Basic Checks) ---
 
 
-def test_from_nd_mask():
-    """Basic test for Environment.from_nd_mask."""
+def test_from_mask():
+    """Basic test for Environment.from_mask."""
     active_mask_np = np.array([[True, True, False], [False, True, True]], dtype=bool)
     grid_edges_tuple = (np.array([0, 1, 2.0]), np.array([0, 1, 2, 3.0]))
 
     # Ensure the MaskedGridLayout.build can handle its inputs
     # This test implicitly tests the fix for MaskedGridLayout.build if it runs
     try:
-        env = Environment.from_nd_mask(
+        env = Environment.from_mask(
             active_mask=active_mask_np,
             grid_edges=grid_edges_tuple,
             name="NDMaskTest",
@@ -492,10 +492,10 @@ def test_from_nd_mask():
             raise e
 
 
-def test_from_image_mask():
-    """Basic test for Environment.from_image_mask."""
+def test_from_image():
+    """Basic test for Environment.from_image."""
     image_mask_np = np.array([[True, True, False], [False, True, True]], dtype=bool)
-    env = Environment.from_image_mask(
+    env = Environment.from_image(
         image_mask=image_mask_np, bin_size=1.0, name="ImageMaskTest"
     )
     assert env.name == "ImageMaskTest"
@@ -510,39 +510,16 @@ def test_from_image_mask():
 @pytest.mark.skipif(
     not _HAS_SHAPELY_FOR_TEST, reason="Shapely not installed or not usable by test"
 )
-def test_from_shapely_polygon():
-    """Basic test for Environment.from_shapely_polygon."""
+def test_from_polygon():
+    """Basic test for Environment.from_polygon."""
     polygon = ShapelyPoly([(0, 0), (0, 2), (2, 2), (2, 0)])
-    env = Environment.from_shapely_polygon(
-        polygon=polygon, bin_size=1.0, name="ShapelyTest"
-    )
+    env = Environment.from_polygon(polygon=polygon, bin_size=1.0, name="ShapelyTest")
     assert env.name == "ShapelyTest"
     assert isinstance(env.layout, ShapelyPolygonLayout)
     assert env._is_fitted
     assert env.n_dims == 2
     assert env.bin_centers.shape[0] == 4
     assert np.sum(env.active_mask) == 4
-
-
-def test_with_dimension_ranges(plus_maze_data_samples: NDArray[np.float64]):
-    """Basic test for Environment.with_dimension_ranges."""
-    dim_ranges_list = [(-2.5, 2.5), (-2.5, 2.5)]
-    env = Environment.with_dimension_ranges(
-        dimension_ranges=dim_ranges_list,
-        bin_size=0.5,
-        name="DimRangeTest",
-        data_samples=plus_maze_data_samples,
-        infer_active_bins=True,
-        bin_count_threshold=0,
-    )
-    assert env.name == "DimRangeTest"
-    assert env._is_fitted
-    assert env.n_dims == 2
-    assert env.dimension_ranges is not None  # Ensure it's populated
-    assert env.dimension_ranges[0] == tuple(dim_ranges_list[0])  # Compare as tuples
-    assert env.dimension_ranges[1] == tuple(dim_ranges_list[1])
-    assert np.sum(env.active_mask) > 0
-    assert env.bin_centers.shape[0] == np.sum(env.active_mask)
 
 
 @pytest.fixture
@@ -571,20 +548,20 @@ def env_hexagonal() -> Environment:
         data_samples=np.array(
             [[0, 0], [1, 1], [0, 1], [1, 0], [0.5, 0.5]]
         ),  # Some points to define an area
-        layout_type="Hexagonal",
-        hexagon_width=1.0,
+        layout_kind="Hexagonal",
+        bin_size=1.0,
         name="HexTestEnv",
     )
 
 
 @pytest.fixture
 def env_with_disconnected_regions() -> Environment:
-    """Environment with two disconnected active regions using from_nd_mask."""
+    """Environment with two disconnected active regions using from_mask."""
     active_mask = np.zeros((10, 10), dtype=bool)
     active_mask[1:3, 1:3] = True  # Region 1
     active_mask[7:9, 7:9] = True  # Region 2
     grid_edges = (np.arange(11.0), np.arange(11.0))
-    return Environment.from_nd_mask(
+    return Environment.from_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
         name="DisconnectedEnv",
@@ -803,7 +780,7 @@ class TestShapelyPolygonLayoutDetailed:
         inner_coords = [(1, 1), (1, 2), (2, 2), (2, 1)]  # A hole
         polygon_with_hole = ShapelyPoly(outer_coords, [inner_coords])
 
-        env = Environment.from_shapely_polygon(
+        env = Environment.from_polygon(
             polygon=polygon_with_hole, bin_size=1.0, name="PolyHoleTest"
         )
         # Grid bins (centers at 0.5, 1.5, 2.5 in each dim)
@@ -1083,7 +1060,7 @@ def env_all_active_2x2() -> Environment:
     """A 2x2 grid where all 4 cells are active."""
     active_mask = np.array([[True, True], [True, True]], dtype=bool)
     grid_edges = (np.array([0.0, 1.0, 2.0]), np.array([0.0, 1.0, 2.0]))
-    return Environment.from_nd_mask(
+    return Environment.from_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
         name="AllActive2x2",
@@ -1098,7 +1075,7 @@ def env_center_hole_3x3() -> Environment:
         [[True, True, True], [True, False, True], [True, True, True]], dtype=bool
     )
     grid_edges = (np.array([0.0, 1.0, 2.0, 3.0]), np.array([0.0, 1.0, 2.0, 3.0]))
-    return Environment.from_nd_mask(
+    return Environment.from_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
         name="CenterHole3x3",
@@ -1122,7 +1099,7 @@ def env_hollow_square_4x4() -> Environment:
         np.array([0.0, 1.0, 2.0, 3.0, 4.0]),
         np.array([0.0, 1.0, 2.0, 3.0, 4.0]),
     )
-    return Environment.from_nd_mask(
+    return Environment.from_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
         name="HollowSquare4x4",
@@ -1144,7 +1121,7 @@ def env_line_1x3_in_3x3_grid() -> Environment:
     grid_edges = (np.array([0.0, 1.0, 2.0, 3.0]), np.array([0.0, 1.0, 2.0, 3.0]))
     # Active nodes: (1,0), (1,1), (1,2)
     # Expected boundaries (by grid logic): all three.
-    return Environment.from_nd_mask(
+    return Environment.from_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
         name="Line1x3in3x3",
@@ -1159,7 +1136,7 @@ def env_single_active_cell_3x3() -> Environment:
         [[False, False, False], [False, True, False], [False, False, False]], dtype=bool
     )
     grid_edges = (np.array([0.0, 1.0, 2.0, 3.0]), np.array([0.0, 1.0, 2.0, 3.0]))
-    return Environment.from_nd_mask(
+    return Environment.from_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
         name="SingleActive3x3",
@@ -1169,10 +1146,10 @@ def env_single_active_cell_3x3() -> Environment:
 
 @pytest.fixture
 def env_no_active_cells_nd_mask() -> Environment:
-    """A 2x2 grid with no active cells, created using from_nd_mask."""
+    """A 2x2 grid with no active cells, created using from_mask."""
     active_mask = np.array([[False, False], [False, False]], dtype=bool)
     grid_edges = (np.array([0.0, 1.0, 2.0]), np.array([0.0, 1.0, 2.0]))
-    return Environment.from_nd_mask(
+    return Environment.from_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
         name="NoActiveNDMask",
@@ -1183,10 +1160,10 @@ def env_no_active_cells_nd_mask() -> Environment:
 def env_1d_grid_3bins() -> Environment:
     """A 1D grid with 3 active bins. This will test degree-based logic for 1D grids."""
     active_mask_1d = np.array([True, True, True], dtype=bool)
-    # from_nd_mask expects N-D mask where N is len(grid_edges)
+    # from_mask expects N-D mask where N is len(grid_edges)
     # To make a 1D grid, grid_edges should be a tuple with one array
     grid_edges_1d = (np.array([0.0, 1.0, 2.0, 3.0]),)  # Edges for 3 bins
-    return Environment.from_nd_mask(
+    return Environment.from_mask(
         active_mask=active_mask_1d,  # Mask is 1D
         grid_edges=grid_edges_1d,
         name="1DGrid3Bins",
@@ -1269,7 +1246,7 @@ def test_boundary_1d_grid_degree_logic(env_1d_grid_3bins: Environment):
     # Grid logic path for `is_grid_layout_with_mask` will be false due to `len(self.grid_shape) > 1`.
     # It will fall to degree-based.
     # Graph: 0 -- 1 -- 2. Degrees: 0:1, 1:2, 2:1.
-    # Layout type "MaskedGrid" (from from_nd_mask).
+    # Layout type "MaskedGrid" (from from_mask).
     # For 1D grid (len(grid_shape) == 1), it hits `elif is_grid_layout_with_mask and len(self.grid_shape) == 1:`
     # threshold_degree = 1.5
     boundary_indices = env_1d_grid_3bins.get_boundary_bin_indices()

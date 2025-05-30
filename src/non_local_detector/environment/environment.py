@@ -323,7 +323,7 @@ class Environment:
         cls,
         data_samples: NDArray[np.float64],
         name: str = "",
-        layout_type: str = "RegularGrid",
+        layout_kind: str = "RegularGrid",
         bin_size: Optional[Union[float, Sequence[float]]] = 2.0,
         infer_active_bins: bool = True,
         bin_count_threshold: int = 0,
@@ -348,7 +348,7 @@ class Environment:
             used to define the environment's geometry and active areas.
         name : str, optional
             A name for the created environment. Defaults to "".
-        layout_type : str, optional
+        layout_kind : str, optional
             The type of layout to use (e.g., "RegularGrid", "Hexagonal").
             Defaults to "RegularGrid".
         bin_size : Optional[Union[float, Sequence[float]]], optional
@@ -390,15 +390,20 @@ class Environment:
         Environment
             A new Environment instance.
 
+        Raises
+        ------
+        NotImplementedError
+            If the specified `layout_kind` is not implemented.
+
         """
-        build_params: Dict[str, Any] = {
+        layout_params: Dict[str, Any] = {
             "data_samples": data_samples,
             "infer_active_bins": infer_active_bins,
             "bin_count_threshold": bin_count_threshold,
             **layout_specific_kwargs,
         }
-        if layout_type.lower() == "regulargrid":
-            build_params.update(
+        if layout_kind.lower() == "regulargrid":
+            layout_params.update(
                 {
                     "bin_size": bin_size,
                     "add_boundary_bins": add_boundary_bins,
@@ -408,79 +413,20 @@ class Environment:
                     "connect_diagonal_neighbors": connect_diagonal_neighbors,
                 }
             )
-        elif layout_type.lower() == "hexagonal":
+        elif layout_kind.lower() == "hexagonal":
             # For Hexagonal, bin_size is typically interpreted as hexagon_width
-            build_params.update(
+            layout_params.update(
                 {
-                    "hex_width": bin_size,
+                    "hexagon_width": bin_size,
                 }
             )
-
-        layout_instance = create_layout(kind=layout_type, **build_params)
-        return cls(name, layout_instance, layout_type, build_params)
-
-    @classmethod
-    def with_dimension_ranges(
-        cls,
-        dimension_ranges: Sequence[Tuple[float, float]],
-        name: str = "",
-        layout_type: str = "RegularGrid",
-        bin_size: Optional[Union[float, Sequence[float]]] = 2.0,
-        **layout_specific_kwargs: Any,
-    ) -> Environment:
-        """
-        Create an Environment with explicitly defined spatial boundaries.
-
-        This factory method initializes a `LayoutEngine` covering the specified
-        `dimension_ranges`. Unlike `from_samples`, this method does not
-        typically infer active bins from data unless `data_samples` and relevant
-        inference parameters are passed via `layout_specific_kwargs`.
-
-        Parameters
-        ----------
-        dimension_ranges : Sequence[Tuple[float, float]]
-            A sequence of (min, max) tuples defining the extent for each
-            dimension, e.g., `[(x_min, x_max), (y_min, y_max)]`.
-        name : str, optional
-            A name for the created environment. Defaults to "".
-        layout_type : str, optional
-            The type of layout to use (e.g., "RegularGrid", "Hexagonal").
-            Defaults to "RegularGrid".
-        bin_size : Optional[Union[float, Sequence[float]]], optional
-            The characteristic size of the discretization bins.
-            Interpreted by the specific `layout_type`. Defaults to 2.0.
-        **layout_specific_kwargs : Any
-            Additional keyword arguments passed directly to the constructor
-            of the chosen `LayoutEngine`. For example, to infer active bins
-            within these ranges, pass `data_samples`, `infer_active_bins=True`, etc.
-
-        Returns
-        -------
-        Environment
-            A new Environment instance.
-
-        """
-        build_params: Dict[str, Any] = {
-            "dimension_ranges": dimension_ranges,
-            **layout_specific_kwargs,
-        }
-        if layout_type.lower() == "regulargrid":
-            build_params.update(
-                {
-                    "bin_size": bin_size,
-                }
-            )
-        elif layout_type.lower() == "hexagonal":
-            build_params.update(
-                {
-                    "hexagon_width": bin_size,  # Assuming bin_size is hex_width for hexagonal
-                }
+        else:
+            raise NotImplementedError(
+                f"Layout kind '{layout_kind}' is not implemented for from_samples."
             )
 
-        layout_instance = create_layout(kind=layout_type, **build_params)
-        return cls(name, layout_instance, layout_type, build_params)
+        return cls.from_layout(kind=layout_kind, layout_params=layout_params, name=name)
 
-    # --- Specialized Factories (signatures as discussed previously) ---
     @classmethod
     def from_graph(
         cls,
@@ -489,7 +435,6 @@ class Environment:
         edge_spacing: Union[float, Sequence[float]],
         bin_size: float,
         name: str = "",
-        **kwargs,
     ) -> Environment:
         """
         Create an Environment from a user-defined graph structure.
@@ -514,9 +459,6 @@ class Environment:
             The length of each bin along the linearized track.
         name : str, optional
             A name for the created environment. Defaults to "".
-        **kwargs : Any
-            Additional parameters for the GraphLayout, though specific ones
-            are explicitly listed.
 
         Returns
         -------
@@ -524,17 +466,16 @@ class Environment:
             A new Environment instance with a `GraphLayout`.
 
         """
-        layout_instance = create_layout(
-            kind="Graph",
-            graph_definition=graph,
-            edge_order=edge_order,
-            edge_spacing=edge_spacing,
-            bin_size=bin_size,
-        )
-        return cls(name, layout_instance, "Graph", kwargs)
+        layout_params = {
+            "graph_definition": graph,
+            "edge_order": edge_order,
+            "edge_spacing": edge_spacing,
+            "bin_size": bin_size,
+        }
+        return cls.from_layout(kind="Graph", layout_params=layout_params, name=name)
 
     @classmethod
-    def from_shapely_polygon(
+    def from_polygon(
         cls,
         polygon: PolygonType,
         bin_size: Optional[Union[float, Sequence[float]]] = 2.0,
@@ -576,11 +517,14 @@ class Environment:
             "bin_size": bin_size,
             "connect_diagonal_neighbors": connect_diagonal_neighbors,
         }
-        layout_instance = create_layout(kind="ShapelyPolygon", **layout_params)
-        return cls(name, layout_instance, "ShapelyPolygon", layout_params)
+        return cls.from_layout(
+            kind="ShapelyPolygon",
+            layout_params=layout_params,
+            name=name,
+        )
 
     @classmethod
-    def from_nd_mask(
+    def from_mask(
         cls,
         active_mask: NDArray[np.bool_],
         grid_edges: Tuple[NDArray[np.float64], ...],
@@ -619,11 +563,15 @@ class Environment:
             "grid_edges": grid_edges,
             "connect_diagonal_neighbors": connect_diagonal_neighbors,
         }
-        layout_instance = create_layout(kind="MaskedGrid", **layout_params)
-        return cls(name, layout_instance, "MaskedGrid", layout_params)
+
+        return cls.from_layout(
+            kind="MaskedGrid",
+            layout_params=layout_params,
+            name=name,
+        )
 
     @classmethod
-    def from_image_mask(
+    def from_image(
         cls,
         image_mask: NDArray[np.bool_],
         bin_size: Union[float, Tuple[float, float]] = 1.0,
@@ -663,26 +611,21 @@ class Environment:
             "connect_diagonal_neighbors": connect_diagonal_neighbors,
         }
 
-        layout_instance = create_layout(kind="ImageMask", **layout_params)
-        return cls(name, layout_instance, "ImageMask", layout_params)
+        return cls.from_layout(kind="ImageMask", layout_params=layout_params, name=name)
 
-    # Fallback factory for advanced use or deserialization
     @classmethod
-    def from_custom_layout(
+    def from_layout(
         cls,
-        layout_type: str,
+        kind: str,
         layout_params: Dict[str, Any],
         name: str = "",
     ) -> Environment:
         """
         Create an Environment with a specified layout type and its build parameters.
 
-        This is an advanced factory method primarily used for deserialization or
-        when the layout construction logic is handled externally.
-
         Parameters
         ----------
-        layout_type : str
+        kind : str
             The string identifier of the `LayoutEngine` to use
             (e.g., "RegularGrid", "Hexagonal").
         layout_params : Dict[str, Any]
@@ -697,8 +640,8 @@ class Environment:
             A new Environment instance.
 
         """
-        layout_instance = create_layout(kind=layout_type, **layout_params)
-        return cls(name, layout_instance, layout_type, layout_params)
+        layout_instance = create_layout(kind=kind, **layout_params)
+        return cls(name, layout_instance, kind, layout_params)
 
     @property
     def is_1d(self) -> bool:
