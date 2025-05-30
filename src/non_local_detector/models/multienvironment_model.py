@@ -22,24 +22,24 @@ from non_local_detector.types import (
 )
 
 environments = [
-    Environment(environment_name="env1"),
-    Environment(environment_name="env2"),
+    Environment(name="env1"),
+    Environment(name="env2"),
 ]
 
 continuous_transition_types = [
     [
-        RandomWalk(environment_name="env1"),
-        Uniform(environment_name="env1", environment2_name="env2"),
+        RandomWalk(name="env1"),
+        Uniform(name="env1", environment2_name="env2"),
     ],
     [
-        Uniform(environment_name="env2", environment2_name="env1"),
-        RandomWalk(environment_name="env2"),
+        Uniform(name="env2", environment2_name="env1"),
+        RandomWalk(name="env2"),
     ],
 ]
 
 observation_models = [
-    ObservationModel(environment_name="env1"),
-    ObservationModel(environment_name="env2"),
+    ObservationModel(name="env1"),
+    ObservationModel(name="env2"),
 ]
 
 discrete_initial_conditions = np.array([1.0, 0.0])

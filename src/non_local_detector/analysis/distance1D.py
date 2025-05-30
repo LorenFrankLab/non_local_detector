@@ -44,7 +44,7 @@ def _get_MAP_estimate_2d_position_edges(
     posterior: xr.DataArray,
     track_graph: nx.Graph,
     decoder: _DetectorBase,
-    environment_name: str = "",
+    name: str = "",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Get the most likely position of the posterior position and the edges
     of the track graph that the position corresponds to.
@@ -58,7 +58,7 @@ def _get_MAP_estimate_2d_position_edges(
     decoder : SortedSpikesDecoder, ClusterlessDecoder, SortedSpikesClassifier,
                 ClusterlessClassifier
             Model used to decode the data
-    environment_name : str, optional
+    name : str, optional
         Name of the environment
 
     Returns
@@ -70,7 +70,7 @@ def _get_MAP_estimate_2d_position_edges(
     """
     try:
         environments = decoder.environments
-        env = environments[environments.index(environment_name)]
+        env = environments[environments.index(name)]
     except AttributeError:
         try:
             env = decoder.environment
@@ -287,7 +287,7 @@ def get_trajectory_data(
     actual_projected_position: np.ndarray,
     track_segment_id: np.ndarray,
     actual_orientation: np.ndarray,
-    environment_name: str = "",
+    name: str = "",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Convenience function for getting the most likely position of the
     posterior position and actual position/direction of the animal.
@@ -321,7 +321,7 @@ def get_trajectory_data(
 
     """
     (mental_position_2d, mental_position_edges) = _get_MAP_estimate_2d_position_edges(
-        posterior, track_graph, decoder, environment_name
+        posterior, track_graph, decoder, name
     )
     actual_projected_position = np.asarray(actual_projected_position)
     track_segment_id = np.asarray(track_segment_id).astype(int).squeeze()

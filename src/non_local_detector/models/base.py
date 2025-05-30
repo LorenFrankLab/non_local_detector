@@ -235,7 +235,7 @@ class _DetectorBase(BaseEstimator):
         """
         if observation_models is None:
             n_states = len(continuous_transition_types)
-            env_name = environments[0].environment_name
+            env_name = environments[0].name
             observation_models = (ObservationModel(env_name),) * n_states
         elif isinstance(observation_models, ObservationModel):
             observation_models = (observation_models,) * len(
@@ -291,7 +291,7 @@ class _DetectorBase(BaseEstimator):
             if environment_labels is None:
                 is_environment = np.ones((position.shape[0],), dtype=bool)
             else:
-                is_environment = environment_labels == environment.environment_name
+                is_environment = environment_labels == environment.name
 
             env_position = position[is_environment]
             if environment.track_graph is not None:
@@ -344,9 +344,7 @@ class _DetectorBase(BaseEstimator):
                 state_ind.append(ind * np.ones((1,), dtype=int))
                 is_track_interior.append(np.ones((1,), dtype=bool))
             else:
-                environment = self.environments[
-                    self.environments.index(obs.environment_name)
-                ]
+                environment = self.environments[self.environments.index(obs.name)]
                 bin_sizes.append(environment.place_bin_centers_.shape[0])
                 state_ind.append(ind * np.ones((bin_sizes[-1],), dtype=int))
                 is_track_interior.append(environment.is_track_interior_.ravel())
@@ -452,7 +450,7 @@ class _DetectorBase(BaseEstimator):
                         # transition from discrete to continuous
                         # ASSUME uniform for now
                         environment = self.environments[
-                            self.environments.index(transition.environment_name)
+                            self.environments.index(transition.name)
                         ]
                         self.continuous_state_transitions_[inds] = (
                             environment.is_track_interior_.ravel()
@@ -1178,7 +1176,7 @@ class _DetectorBase(BaseEstimator):
         """
         is_track_interior = self.is_track_interior_state_bins_
 
-        environment_names = [obs.environment_name for obs in self.observation_models]
+        names = [obs.name for obs in self.observation_models]
         encoding_group_names = [obs.encoding_group for obs in self.observation_models]
 
         position = []
@@ -1187,9 +1185,7 @@ class _DetectorBase(BaseEstimator):
             if obs.is_local or obs.is_no_spike:
                 position.append(np.full((1, n_position_dims), np.nan))
             else:
-                environment = self.environments[
-                    self.environments.index(obs.environment_name)
-                ]
+                environment = self.environments[self.environments.index(obs.name)]
                 position.append(environment.place_bin_centers_)
         position = np.concatenate(position, axis=0)
 
@@ -1211,7 +1207,7 @@ class _DetectorBase(BaseEstimator):
             "state_bins": state_bins,
             "state_ind": self.state_ind_,
             "states": states,
-            "environments": ("states", environment_names),
+            "environments": ("states", names),
             "encoding_groups": ("states", encoding_group_names),
         }
 
@@ -1262,27 +1258,23 @@ class _DetectorBase(BaseEstimator):
         """
         position = []
         n_position_dims = self.environments[0].place_bin_centers_.shape[1]
-        environment_names = []
+        names = []
         encoding_group_names = []
         for obs in self.observation_models:
             if obs.is_local or obs.is_no_spike:
                 position.append(np.full((1, n_position_dims), np.nan))
-                environment_names.append([None])
+                names.append([None])
                 encoding_group_names.append([None])
             else:
-                environment = self.environments[
-                    self.environments.index(obs.environment_name)
-                ]
+                environment = self.environments[self.environments.index(obs.name)]
                 position.append(environment.place_bin_centers_)
-                environment_names.append(
-                    [obs.environment_name] * environment.place_bin_centers_.shape[0]
-                )
+                names.append([obs.name] * environment.place_bin_centers_.shape[0])
                 encoding_group_names.append(
                     [obs.encoding_group] * environment.place_bin_centers_.shape[0]
                 )
 
         position = np.concatenate(position, axis=0)
-        environment_names = np.concatenate(environment_names, axis=0)
+        names = np.concatenate(names, axis=0)
         encoding_group_names = np.concatenate(encoding_group_names, axis=0)
 
         states = np.asarray(self.state_names)
@@ -1296,7 +1288,7 @@ class _DetectorBase(BaseEstimator):
             {
                 "state": states[self.state_ind_],
                 **{name: pos for name, pos in zip(position_names, position.T)},
-                "environment": environment_names,
+                "environment": names,
                 "encoding_group_names": encoding_group_names,
             }
         ).iloc[self.is_track_interior_state_bins_]
@@ -1494,9 +1486,7 @@ class ClusterlessDetector(_DetectorBase):
             encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
 
         if environment_labels is None:
-            environment_labels = np.asarray(
-                [self.environments[0].environment_name] * n_time
-            )
+            environment_labels = np.asarray([self.environments[0].name] * n_time)
 
         is_training = np.asarray(is_training).squeeze()
 
@@ -1514,13 +1504,11 @@ class ClusterlessDetector(_DetectorBase):
         self.encoding_model_ = {}
 
         for obs in np.unique(self.observation_models):
-            environment = self.environments[
-                self.environments.index(obs.environment_name)
-            ]
+            environment = self.environments[self.environments.index(obs.name)]
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
-            is_environment = environment_labels == obs.environment_name
-            likelihood_name = (obs.environment_name, obs.encoding_group)
+            is_environment = environment_labels == obs.name
+            likelihood_name = (obs.name, obs.encoding_group)
 
             encoding_algorithm, _ = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
             is_group = is_training & is_encoding & is_environment
@@ -1649,7 +1637,7 @@ class ClusterlessDetector(_DetectorBase):
                 self.state_ind_[self.is_track_interior_state_bins_] == state_id
             )
             likelihood_name = (
-                obs.environment_name,
+                obs.name,
                 obs.encoding_group,
                 obs.is_local,
                 obs.is_no_spike,
@@ -2108,9 +2096,7 @@ class SortedSpikesDetector(_DetectorBase):
             encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
 
         if environment_labels is None:
-            environment_labels = np.asarray(
-                [self.environments[0].environment_name] * n_time
-            )
+            environment_labels = np.asarray([self.environments[0].name] * n_time)
 
         is_training = np.asarray(is_training).squeeze()
         is_nan = np.any(np.isnan(position), axis=1)
@@ -2127,13 +2113,11 @@ class SortedSpikesDetector(_DetectorBase):
         self.encoding_model_ = {}
 
         for obs in np.unique(self.observation_models):
-            environment = self.environments[
-                self.environments.index(obs.environment_name)
-            ]
+            environment = self.environments[self.environments.index(obs.name)]
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
-            is_environment = environment_labels == obs.environment_name
-            likelihood_name = (obs.environment_name, obs.encoding_group)
+            is_environment = environment_labels == obs.name
+            likelihood_name = (obs.name, obs.encoding_group)
             encoding_algorithm, _ = _SORTED_SPIKES_ALGORITHMS[
                 self.sorted_spikes_algorithm
             ]
@@ -2251,7 +2235,7 @@ class SortedSpikesDetector(_DetectorBase):
                 self.state_ind_[self.is_track_interior_state_bins_] == state_id
             )
             likelihood_name = (
-                obs.environment_name,
+                obs.name,
                 obs.encoding_group,
                 obs.is_local,
                 obs.is_no_spike,

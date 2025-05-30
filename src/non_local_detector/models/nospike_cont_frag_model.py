@@ -29,7 +29,7 @@ from non_local_detector.types import (
     Stickiness,
 )
 
-environment = Environment(environment_name="")
+environment = Environment(name="")
 
 continuous_transition_types = [
     [Discrete(), Uniform(), Uniform()],

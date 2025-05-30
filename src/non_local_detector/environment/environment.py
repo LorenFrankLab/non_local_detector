@@ -83,7 +83,7 @@ class Environment:
 
     Attributes
     ----------
-    environment_name : str
+    name : str
         A user-defined name for the environment.
     layout : LayoutEngine
         The layout engine instance that defines the geometry and connectivity
@@ -130,7 +130,7 @@ class Environment:
 
     """
 
-    environment_name: str
+    name: str
     layout: LayoutEngine
 
     # --- Attributes populated from the layout instance ---
@@ -161,7 +161,7 @@ class Environment:
 
     def __init__(
         self,
-        environment_name: str = "",
+        name: str = "",
         layout: LayoutEngine = RegularGridLayout,
         layout_type_used: Optional[str] = None,
         layout_params_used: Optional[Dict[str, Any]] = None,
@@ -176,7 +176,7 @@ class Environment:
 
         Parameters
         ----------
-        environment_name : str, optional
+        name : str, optional
             Name for the environment, by default "".
         layout : LayoutEngine
             A fully built LayoutEngine instance that defines the environment's
@@ -189,7 +189,7 @@ class Environment:
             `layout._build_params_used`. Defaults to None.
 
         """
-        self.environment_name = environment_name
+        self.name = name
         self.layout = layout
 
         self._layout_type_used = (
@@ -229,7 +229,7 @@ class Environment:
 
         """
         class_name = self.__class__.__name__
-        env_name_repr = f"environment_name={self.environment_name!r}"
+        env_name_repr = f"name={self.name!r}"
         layout_type_repr = f"layout_type={self._layout_type_used!r}"
 
         if not self._is_fitted:
@@ -324,7 +324,7 @@ class Environment:
     def from_data_samples(
         cls,
         data_samples: NDArray[np.float64],
-        environment_name: str = "",
+        name: str = "",
         layout_type: str = "RegularGrid",
         bin_size: Optional[Union[float, Sequence[float]]] = 2.0,
         infer_active_bins: bool = True,
@@ -348,7 +348,7 @@ class Environment:
         data_samples : NDArray[np.float64], shape (n_samples, n_dims)
             N-dimensional coordinates of data samples (e.g., animal positions)
             used to define the environment's geometry and active areas.
-        environment_name : str, optional
+        name : str, optional
             A name for the created environment. Defaults to "".
         layout_type : str, optional
             The type of layout to use (e.g., "RegularGrid", "Hexagonal").
@@ -419,13 +419,13 @@ class Environment:
             )
 
         layout_instance = create_layout(kind=layout_type, **build_params)
-        return cls(environment_name, layout_instance, layout_type, build_params)
+        return cls(name, layout_instance, layout_type, build_params)
 
     @classmethod
     def with_dimension_ranges(
         cls,
         dimension_ranges: Sequence[Tuple[float, float]],
-        environment_name: str = "",
+        name: str = "",
         layout_type: str = "RegularGrid",
         bin_size: Optional[Union[float, Sequence[float]]] = 2.0,
         **layout_specific_kwargs: Any,
@@ -443,7 +443,7 @@ class Environment:
         dimension_ranges : Sequence[Tuple[float, float]]
             A sequence of (min, max) tuples defining the extent for each
             dimension, e.g., `[(x_min, x_max), (y_min, y_max)]`.
-        environment_name : str, optional
+        name : str, optional
             A name for the created environment. Defaults to "".
         layout_type : str, optional
             The type of layout to use (e.g., "RegularGrid", "Hexagonal").
@@ -480,7 +480,7 @@ class Environment:
             )
 
         layout_instance = create_layout(kind=layout_type, **build_params)
-        return cls(environment_name, layout_instance, layout_type, build_params)
+        return cls(name, layout_instance, layout_type, build_params)
 
     # --- Specialized Factories (signatures as discussed previously) ---
     @classmethod
@@ -490,7 +490,7 @@ class Environment:
         edge_order: List[Tuple[Any, Any]],
         edge_spacing: Union[float, Sequence[float]],
         bin_size: float,
-        environment_name: str = "",
+        name: str = "",
         **kwargs,
     ) -> Environment:
         """
@@ -514,7 +514,7 @@ class Environment:
             sequence, specifies spacing for each gap.
         bin_size : float
             The length of each bin along the linearized track.
-        environment_name : str, optional
+        name : str, optional
             A name for the created environment. Defaults to "".
         **kwargs : Any
             Additional parameters for the GraphLayout, though specific ones
@@ -533,14 +533,14 @@ class Environment:
             edge_spacing=edge_spacing,
             bin_size=bin_size,
         )
-        return cls(environment_name, layout_instance, "Graph", kwargs)
+        return cls(name, layout_instance, "Graph", kwargs)
 
     @classmethod
     def from_shapely_polygon(
         cls,
         polygon: PolygonType,
         bin_size: Optional[Union[float, Sequence[float]]] = 2.0,
-        environment_name: str = "",
+        name: str = "",
         connect_diagonal_neighbors: bool = True,
     ) -> Environment:
         """
@@ -556,7 +556,7 @@ class Environment:
             The Shapely Polygon object that defines the boundary of the active area.
         bin_size : Optional[Union[float, Sequence[float]]], optional
             The side length(s) of the grid cells. Defaults to 2.0.
-        environment_name : str, optional
+        name : str, optional
             A name for the created environment. Defaults to "".
         connect_diagonal_neighbors : bool, optional
             Whether to connect diagonally adjacent active grid cells.
@@ -579,14 +579,14 @@ class Environment:
             "connect_diagonal_neighbors": connect_diagonal_neighbors,
         }
         layout_instance = create_layout(kind="ShapelyPolygon", **layout_params)
-        return cls(environment_name, layout_instance, "ShapelyPolygon", layout_params)
+        return cls(name, layout_instance, "ShapelyPolygon", layout_params)
 
     @classmethod
     def from_nd_mask(
         cls,
         active_mask: NDArray[np.bool_],
         grid_edges: Tuple[NDArray[np.float64], ...],
-        environment_name: str = "",
+        name: str = "",
         connect_diagonal_neighbors: bool = True,
     ) -> Environment:
         """
@@ -604,7 +604,7 @@ class Environment:
         grid_edges : Tuple[NDArray[np.float64], ...]
             A tuple where each element is a 1D NumPy array of bin edge positions
             for that dimension, defining the underlying full grid.
-        environment_name : str, optional
+        name : str, optional
             A name for the created environment. Defaults to "".
         connect_diagonal_neighbors : bool, optional
             Whether to connect diagonally adjacent active grid cells.
@@ -622,7 +622,7 @@ class Environment:
             "connect_diagonal_neighbors": connect_diagonal_neighbors,
         }
         layout_instance = create_layout(kind="MaskedGrid", **layout_params)
-        return cls(environment_name, layout_instance, "MaskedGrid", layout_params)
+        return cls(name, layout_instance, "MaskedGrid", layout_params)
 
     @classmethod
     def from_image_mask(
@@ -630,7 +630,7 @@ class Environment:
         image_mask: NDArray[np.bool_],
         bin_size: Union[float, Tuple[float, float]] = 1.0,
         connect_diagonal_neighbors: bool = True,
-        environment_name: str = "",
+        name: str = "",
     ) -> Environment:
         """
         Create a 2D Environment from a binary image mask.
@@ -649,7 +649,7 @@ class Environment:
         connect_diagonal_neighbors : bool, optional
             Whether to connect diagonally adjacent active pixel-bins.
             Defaults to True.
-        environment_name : str, optional
+        name : str, optional
             A name for the created environment. Defaults to "".
 
         Returns
@@ -666,7 +666,7 @@ class Environment:
         }
 
         layout_instance = create_layout(kind="ImageMask", **layout_params)
-        return cls(environment_name, layout_instance, "ImageMask", layout_params)
+        return cls(name, layout_instance, "ImageMask", layout_params)
 
     # Fallback factory for advanced use or deserialization
     @classmethod
@@ -674,7 +674,7 @@ class Environment:
         cls,
         layout_type: str,
         layout_params: Dict[str, Any],
-        environment_name: str = "",
+        name: str = "",
     ) -> Environment:
         """
         Create an Environment with a specified layout type and its build parameters.
@@ -690,7 +690,7 @@ class Environment:
         layout_params : Dict[str, Any]
             A dictionary of parameters that will be passed to the `build`
             method of the chosen `LayoutEngine`.
-        environment_name : str, optional
+        name : str, optional
             A name for the created environment. Defaults to "".
 
         Returns
@@ -700,7 +700,7 @@ class Environment:
 
         """
         layout_instance = create_layout(kind=layout_type, **layout_params)
-        return cls(environment_name, layout_instance, layout_type, layout_params)
+        return cls(name, layout_instance, layout_type, layout_params)
 
     @property
     def is_1d(self) -> bool:
@@ -1167,7 +1167,7 @@ class Environment:
             r_kwargs = regions_plot_kwargs if regions_plot_kwargs is not None else {}
             self.regions.plot_regions(ax=ax, **r_kwargs)
 
-        plot_title = self.environment_name
+        plot_title = self.name
         if (
             self.layout
             and hasattr(self.layout, "_layout_type_tag")
@@ -1298,7 +1298,7 @@ class Environment:
             Keys include:
             - "__classname__": Name of the class.
             - "__module__": Module where the class is defined.
-            - "environment_name": Name of the environment.
+            - "name": Name of the environment.
             - "_layout_type_used": Type of layout engine.
             - "_layout_params_used": Parameters for the layout engine,
               with complex objects serialized.
@@ -1344,7 +1344,7 @@ class Environment:
         data = {
             "__classname__": self.__class__.__name__,
             "__module__": self.__class__.__module__,
-            "environment_name": self.environment_name,
+            "name": self.name,
             "_layout_type_used": self._layout_type_used,
             "_layout_params_used": serializable_layout_params,
             "_regions_data": [asdict(info) for info in self.regions.values()],
@@ -1384,7 +1384,7 @@ class Environment:
         ):
             raise ValueError("Dictionary is not for this Environment class.")
 
-        env_name = data["environment_name"]
+        env_name = data["name"]
         layout_type = data.get("_layout_type_used")
         layout_params = data.get("_layout_params_used", {})
 
@@ -1424,7 +1424,7 @@ class Environment:
 
         # Use from_custom_layout which calls create_layout
         env = cls.from_custom_layout(
-            environment_name=env_name,
+            name=env_name,
             layout_type=layout_type,
             layout_params=layout_params,
         )
@@ -1960,9 +1960,7 @@ class Environment:
             If `values` array has incorrect dimensionality.
         """
         if not hasattr(self, "regions") or self.regions is None:
-            raise AttributeError(
-                f"Environment '{self.environment_name}' has no 'regions' manager."
-            )
+            raise AttributeError(f"Environment '{self.name}' has no 'regions' manager.")
         if values.ndim != 2 or values.shape[1] != self.n_dims:
             raise ValueError(
                 f"Values array must be 2D with shape (n_points, {self.n_dims}), "
@@ -1981,7 +1979,7 @@ class Environment:
         except KeyError:
             # Re-raise with more context or let original error propagate
             raise KeyError(
-                f"Region '{region_name}' not found in environment '{self.environment_name}'."
+                f"Region '{region_name}' not found in environment '{self.name}'."
             )
 
         if bins_in_target_region.size == 0:
@@ -2064,7 +2062,7 @@ class Environment:
         if not hasattr(self, "regions") or self.regions is None:  # Should always exist
             # This case should ideally not be reached if __init__ guarantees self.regions
             raise AttributeError(
-                f"Environment '{self.environment_name}' has no 'regions' manager."
+                f"Environment '{self.name}' has no 'regions' manager."
             )  # pragma: no cover
 
         region_info = self.regions[region_name]  # Can raise KeyError
@@ -2294,9 +2292,7 @@ class Environment:
         ...
         """
         if not hasattr(self, "regions") or self.regions is None:  # pragma: no cover
-            raise AttributeError(
-                f"Environment '{self.environment_name}' has no 'regions' manager."
-            )
+            raise AttributeError(f"Environment '{self.name}' has no 'regions' manager.")
         if values.ndim != 2 or values.shape[1] != self.n_dims:
             raise ValueError(
                 f"Values array must be 2D with shape (n_points, {self.n_dims}), "

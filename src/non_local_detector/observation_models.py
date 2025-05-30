@@ -10,14 +10,14 @@ class ObservationModel:
 
     Attributes
     ----------
-    environment_name : str, optional
+    name : str, optional
     encoding_group : str or int, optional
     is_local : bool, optional
     is_no_spike : bool, optional
 
     """
 
-    environment_name: str = ""
+    name: str = ""
     encoding_group: Union[str, int] = 0
     is_local: bool = False
     is_no_spike: bool = False
@@ -25,7 +25,7 @@ class ObservationModel:
     def __eq__(self, other: object) -> bool:
         if other.__class__ is not self.__class__:
             return NotImplemented
-        return (self.environment_name, self.encoding_group) == (
-            other.environment_name,
+        return (self.name, self.encoding_group) == (
+            other.name,
             other.encoding_group,
         )

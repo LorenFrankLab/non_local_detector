@@ -286,7 +286,7 @@ def simple_hex_env(plus_maze_data_samples) -> Environment:
         data_samples=plus_maze_data_samples,  # Use existing samples
         layout_type="Hexagonal",
         hexagon_width=2.0,  # Reasonably large hexes
-        environment_name="SimpleHexEnvForMask",
+        name="SimpleHexEnvForMask",
         infer_active_bins=True,  # Important for source_flat_to_active_node_id_map
         bin_count_threshold=0,
     )
@@ -306,7 +306,7 @@ def simple_graph_env(simple_graph_for_layout) -> Environment:
     layout_instance = GraphLayout()
     layout_instance.build(**layout_build_params)
     return Environment(
-        environment_name="SimpleGraphEnvForMask",
+        name="SimpleGraphEnvForMask",
         layout=layout_instance,
         layout_type_used="Graph",
         layout_params_used=layout_build_params,
@@ -321,7 +321,7 @@ def grid_env_for_indexing(plus_maze_data_samples) -> Environment:
         bin_size=1.0,
         infer_active_bins=True,
         bin_count_threshold=0,
-        environment_name="GridForIndexing",
+        name="GridForIndexing",
     )
 
 

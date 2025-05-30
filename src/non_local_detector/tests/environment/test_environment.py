@@ -117,7 +117,7 @@ def graph_env(
     layout_instance.build(**layout_build_params)
 
     return Environment(
-        environment_name="PlusMazeGraph",
+        name="PlusMazeGraph",
         layout=layout_instance,
         layout_type_used="Graph",
         layout_params_used=layout_build_params,
@@ -137,7 +137,7 @@ def grid_env_from_samples(
         dilate=False,  # Keep it simple, no dilation
         fill_holes=False,
         close_gaps=False,
-        environment_name="PlusMazeGrid",
+        name="PlusMazeGrid",
         connect_diagonal_neighbors=False,  # Only orthogonal for easier neighbor check
     )
 
@@ -147,7 +147,7 @@ class TestEnvironmentFromGraph:
 
     def test_creation(self, graph_env: Environment, plus_maze_graph: nx.Graph):
         """Test basic attributes after creation."""
-        assert graph_env.environment_name == "PlusMazeGraph"
+        assert graph_env.name == "PlusMazeGraph"
         assert isinstance(graph_env.layout, GraphLayout)
         assert graph_env._is_fitted
         assert graph_env.is_1d
@@ -327,7 +327,7 @@ class TestEnvironmentFromDataSamplesGrid:
 
     def test_creation_grid(self, grid_env_from_samples: Environment):
         """Test basic attributes for grid layout."""
-        assert grid_env_from_samples.environment_name == "PlusMazeGrid"
+        assert grid_env_from_samples.name == "PlusMazeGrid"
         assert isinstance(grid_env_from_samples.layout, RegularGridLayout)
         assert grid_env_from_samples._is_fitted
         assert not grid_env_from_samples.is_1d
@@ -457,7 +457,7 @@ class TestEnvironmentSerialization:
 
         loaded_env = Environment.load(str(file_path))
         assert isinstance(loaded_env, Environment)
-        assert loaded_env.environment_name == graph_env.environment_name
+        assert loaded_env.name == graph_env.name
         assert loaded_env._layout_type_used == graph_env._layout_type_used
         assert loaded_env.is_1d == graph_env.is_1d
         assert loaded_env.n_dims == graph_env.n_dims
@@ -475,7 +475,7 @@ class TestEnvironmentSerialization:
         """Test to_dict and from_dict methods for GraphLayout based Environment."""
         env_dict = graph_env.to_dict()
         assert isinstance(env_dict, dict)
-        assert env_dict["environment_name"] == "PlusMazeGraph"
+        assert env_dict["name"] == "PlusMazeGraph"
         assert env_dict["_layout_type_used"] == "Graph"
         # Check if _layout_params_used (which should be populated by the fixed graph_env fixture)
         # contains the graph_definition
@@ -486,7 +486,7 @@ class TestEnvironmentSerialization:
 
         recreated_env = Environment.from_dict(env_dict)
         assert isinstance(recreated_env, Environment)
-        assert recreated_env.environment_name == graph_env.environment_name
+        assert recreated_env.name == graph_env.name
         assert recreated_env._layout_type_used == graph_env._layout_type_used
         assert isinstance(recreated_env.layout, GraphLayout)
         assert recreated_env.is_1d == graph_env.is_1d
@@ -501,12 +501,12 @@ class TestEnvironmentSerialization:
         """Test to_dict and from_dict for RegularGrid based Environment."""
         env_dict = grid_env_from_samples.to_dict()
         assert isinstance(env_dict, dict)
-        assert env_dict["environment_name"] == "PlusMazeGrid"
+        assert env_dict["name"] == "PlusMazeGrid"
         assert env_dict["_layout_type_used"] == "RegularGrid"
 
         recreated_env = Environment.from_dict(env_dict)
         assert isinstance(recreated_env, Environment)
-        assert recreated_env.environment_name == grid_env_from_samples.environment_name
+        assert recreated_env.name == grid_env_from_samples.name
         assert isinstance(recreated_env.layout, RegularGridLayout)
         assert recreated_env.is_1d == grid_env_from_samples.is_1d
         assert recreated_env.n_dims == grid_env_from_samples.n_dims
@@ -536,9 +536,9 @@ def test_from_nd_mask():
         env = Environment.from_nd_mask(
             active_mask=active_mask_np,
             grid_edges=grid_edges_tuple,
-            environment_name="NDMaskTest",
+            name="NDMaskTest",
         )
-        assert env.environment_name == "NDMaskTest"
+        assert env.name == "NDMaskTest"
         assert isinstance(env.layout, MaskedGridLayout)
         assert env._is_fitted
         assert env.n_dims == 2
@@ -558,9 +558,9 @@ def test_from_image_mask():
     """Basic test for Environment.from_image_mask."""
     image_mask_np = np.array([[True, True, False], [False, True, True]], dtype=bool)
     env = Environment.from_image_mask(
-        image_mask=image_mask_np, bin_size=1.0, environment_name="ImageMaskTest"
+        image_mask=image_mask_np, bin_size=1.0, name="ImageMaskTest"
     )
-    assert env.environment_name == "ImageMaskTest"
+    assert env.name == "ImageMaskTest"
     assert isinstance(env.layout, ImageMaskLayout)
     assert env._is_fitted
     assert env.n_dims == 2
@@ -576,9 +576,9 @@ def test_from_shapely_polygon():
     """Basic test for Environment.from_shapely_polygon."""
     polygon = ShapelyPoly([(0, 0), (0, 2), (2, 2), (2, 0)])
     env = Environment.from_shapely_polygon(
-        polygon=polygon, bin_size=1.0, environment_name="ShapelyTest"
+        polygon=polygon, bin_size=1.0, name="ShapelyTest"
     )
-    assert env.environment_name == "ShapelyTest"
+    assert env.name == "ShapelyTest"
     assert isinstance(env.layout, ShapelyPolygonLayout)
     assert env._is_fitted
     assert env.n_dims == 2
@@ -592,12 +592,12 @@ def test_with_dimension_ranges(plus_maze_data_samples: NDArray[np.float64]):
     env = Environment.with_dimension_ranges(
         dimension_ranges=dim_ranges_list,
         bin_size=0.5,
-        environment_name="DimRangeTest",
+        name="DimRangeTest",
         data_samples=plus_maze_data_samples,
         infer_active_bins=True,
         bin_count_threshold=0,
     )
-    assert env.environment_name == "DimRangeTest"
+    assert env.name == "DimRangeTest"
     assert env._is_fitted
     assert env.n_dims == 2
     assert env.dimension_ranges_ is not None  # Ensure it's populated
@@ -635,7 +635,7 @@ def env_hexagonal() -> Environment:
         ),  # Some points to define an area
         layout_type="Hexagonal",
         hexagon_width=1.0,
-        environment_name="HexTestEnv",
+        name="HexTestEnv",
     )
 
 
@@ -649,7 +649,7 @@ def env_with_disconnected_regions() -> Environment:
     return Environment.from_nd_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
-        environment_name="DisconnectedEnv",
+        name="DisconnectedEnv",
     )
 
 
@@ -662,7 +662,7 @@ def env_no_active_bins() -> Environment:
         bin_size=0.5,
         infer_active_bins=True,
         bin_count_threshold=5,  # High threshold
-        environment_name="NoActiveEnv",
+        name="NoActiveEnv",
     )
 
 
@@ -788,7 +788,7 @@ class TestHexagonalLayout:
     """Tests specific to HexagonalLayout."""
 
     def test_creation_hex(self, env_hexagonal: Environment):
-        assert env_hexagonal.environment_name == "HexTestEnv"
+        assert env_hexagonal.name == "HexTestEnv"
         assert isinstance(env_hexagonal.layout, HexagonalLayout)
         assert env_hexagonal.n_dims == 2
         assert env_hexagonal.layout.hexagon_width == 1.0
@@ -870,7 +870,7 @@ class TestShapelyPolygonLayoutDetailed:
         polygon_with_hole = ShapelyPoly(outer_coords, [inner_coords])
 
         env = Environment.from_shapely_polygon(
-            polygon=polygon_with_hole, bin_size=1.0, environment_name="PolyHoleTest"
+            polygon=polygon_with_hole, bin_size=1.0, name="PolyHoleTest"
         )
         # Grid bins (centers at 0.5, 1.5, 2.5 in each dim)
         # Bin centered at (1.5, 1.5) should be in the hole, thus inactive.
@@ -894,7 +894,7 @@ class TestDimensionality:
         env = Environment.from_data_samples(
             data_samples=np.arange(10).reshape(-1, 1).astype(float),
             bin_size=1.0,
-            environment_name="1DGridTest",
+            name="1DGridTest",
         )
         assert env.n_dims == 1
         assert (
@@ -912,7 +912,7 @@ class TestDimensionality:
         env = Environment.from_data_samples(
             data_samples=data,
             bin_size=input_bin_size,  # Use the variable
-            environment_name="3DGridTest",
+            name="3DGridTest",
             connect_diagonal_neighbors=True,
         )
         assert env.n_dims == 3
@@ -964,7 +964,7 @@ def simple_hex_env(plus_maze_data_samples) -> Environment:
         data_samples=plus_maze_data_samples,  # Use existing samples
         layout_type="Hexagonal",
         hexagon_width=2.0,  # Reasonably large hexes
-        environment_name="SimpleHexEnvForMask",
+        name="SimpleHexEnvForMask",
         infer_active_bins=True,  # Important for source_flat_to_active_node_id_map
         bin_count_threshold=0,
     )
@@ -984,7 +984,7 @@ def simple_graph_env(simple_graph_for_layout) -> Environment:
     layout_instance = GraphLayout()
     layout_instance.build(**layout_build_params)
     return Environment(
-        environment_name="SimpleGraphEnvForMask",
+        name="SimpleGraphEnvForMask",
         layout=layout_instance,
         layout_type_used="Graph",
         layout_params_used=layout_build_params,
@@ -999,7 +999,7 @@ def grid_env_for_indexing(plus_maze_data_samples) -> Environment:
         bin_size=1.0,
         infer_active_bins=True,
         bin_count_threshold=0,
-        environment_name="GridForIndexing",
+        name="GridForIndexing",
     )
 
 
@@ -1152,7 +1152,7 @@ def env_all_active_2x2() -> Environment:
     return Environment.from_nd_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
-        environment_name="AllActive2x2",
+        name="AllActive2x2",
         connect_diagonal_neighbors=False,  # Orthogonal connections for simpler graph
     )
 
@@ -1167,7 +1167,7 @@ def env_center_hole_3x3() -> Environment:
     return Environment.from_nd_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
-        environment_name="CenterHole3x3",
+        name="CenterHole3x3",
         connect_diagonal_neighbors=False,
     )
 
@@ -1191,7 +1191,7 @@ def env_hollow_square_4x4() -> Environment:
     return Environment.from_nd_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
-        environment_name="HollowSquare4x4",
+        name="HollowSquare4x4",
         connect_diagonal_neighbors=False,
     )
 
@@ -1213,7 +1213,7 @@ def env_line_1x3_in_3x3_grid() -> Environment:
     return Environment.from_nd_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
-        environment_name="Line1x3in3x3",
+        name="Line1x3in3x3",
         connect_diagonal_neighbors=False,
     )
 
@@ -1228,7 +1228,7 @@ def env_single_active_cell_3x3() -> Environment:
     return Environment.from_nd_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
-        environment_name="SingleActive3x3",
+        name="SingleActive3x3",
         connect_diagonal_neighbors=False,
     )
 
@@ -1241,7 +1241,7 @@ def env_no_active_cells_nd_mask() -> Environment:
     return Environment.from_nd_mask(
         active_mask=active_mask,
         grid_edges=grid_edges,
-        environment_name="NoActiveNDMask",
+        name="NoActiveNDMask",
     )
 
 
@@ -1255,7 +1255,7 @@ def env_1d_grid_3bins() -> Environment:
     return Environment.from_nd_mask(
         active_mask=active_mask_1d,  # Mask is 1D
         grid_edges=grid_edges_1d,
-        environment_name="1DGrid3Bins",
+        name="1DGrid3Bins",
         connect_diagonal_neighbors=False,  # Not applicable for 1D but good to be explicit
     )
 
@@ -1322,7 +1322,7 @@ def env_path_graph_3nodes() -> Environment:
     gl = GraphLayout()
     gl.build(**layout_params)  # GraphLayout will create its own binning
     return Environment(
-        environment_name="PathGraph3",
+        name="PathGraph3",
         layout=gl,
         layout_type_used="Graph",
         layout_params_used=layout_params,

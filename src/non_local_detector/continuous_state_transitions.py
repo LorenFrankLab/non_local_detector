@@ -139,7 +139,7 @@ class RandomWalk:
 
     Attributes
     ----------
-    environment_name : str, optional
+    name : str, optional
         Name of environment to fit, defaults to "".
     movement_var : float, optional
         Variance of the displacement in one time step. Defaults to 6.0.
@@ -154,7 +154,7 @@ class RandomWalk:
 
     """
 
-    environment_name: str = ""
+    name: str = ""
     movement_var: float = 6.0
     movement_mean: float = 0.0
     use_manifold_distance: bool = False
@@ -173,7 +173,7 @@ class RandomWalk:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized transition probability matrix.
         """
-        self.environment = environments[environments.index(self.environment_name)]
+        self.environment = environments[environments.index(self.name)]
         if self.environment.track_graph is None:
             transition_matrix = self._handle_no_track_graph()
         else:
@@ -242,14 +242,14 @@ class Uniform:
 
     Attributes
     ----------
-    environment_name : str, optional
+    name : str, optional
         Name of the source environment. Defaults to "".
     environment2_name : str, optional
         Name of the destination environment if different from the source.
         If None, assumes transition within the same environment. Defaults to None.
     """
 
-    environment_name: str = ""
+    name: str = ""
     environment2_name: str = None
 
     def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
@@ -265,7 +265,7 @@ class Uniform:
         state_transition_matrix : np.ndarray, shape (n_bins1, n_bins2)
             Row-normalized uniform transition probability matrix.
         """
-        self.environment1 = environments[environments.index(self.environment_name)]
+        self.environment1 = environments[environments.index(self.name)]
         n_bins1 = self.environment1.place_bin_centers_.shape[0]
         is_track_interior1 = self.environment1.is_track_interior_.ravel()
 
@@ -291,11 +291,11 @@ class Identity:
 
     Attributes
     ----------
-    environment_name : str, optional
+    name : str, optional
         Name of environment to fit. Defaults to "".
     """
 
-    environment_name: str = ""
+    name: str = ""
 
     def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
         """Creates an identity transition matrix for a given environment.
@@ -310,7 +310,7 @@ class Identity:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Identity matrix where invalid bins have zero probability.
         """
-        self.environment = environments[environments.index(self.environment_name)]
+        self.environment = environments[environments.index(self.name)]
         n_bins = self.environment.place_bin_centers_.shape[0]
 
         transition_matrix = np.identity(n_bins)
@@ -328,7 +328,7 @@ class EmpiricalMovement:
 
     Attributes
     ----------
-    environment_name : str, optional
+    name : str, optional
         Name of environment to fit. Defaults to "".
     encoding_group : str or int, optional
         Name of encoding group to filter data by. Defaults to 0.
@@ -340,7 +340,7 @@ class EmpiricalMovement:
         Defaults to False.
     """
 
-    environment_name: str = ""
+    name: str = ""
     encoding_group: str = 0
     speedup: int = 1
     is_time_reversed: bool = False
@@ -373,7 +373,7 @@ class EmpiricalMovement:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized transition probability matrix, potentially powered by `speedup`.
         """
-        self.environment = environments[environments.index(self.environment_name)]
+        self.environment = environments[environments.index(self.name)]
 
         n_time = position.shape[0]
         if is_training is None:
@@ -387,7 +387,7 @@ class EmpiricalMovement:
         if environment_labels is None:
             is_environment = np.ones((n_time,), dtype=bool)
         else:
-            is_environment = environment_labels == self.environment_name
+            is_environment = environment_labels == self.name
 
         position = position if position.ndim > 1 else position[:, np.newaxis]
         position = position[is_training & is_encoding & is_environment]
@@ -431,13 +431,13 @@ class RandomWalkDirection1:
 
     Attributes
     ----------
-    environment_name : str, optional
+    name : str, optional
         Name of environment to fit. Defaults to "".
     movement_var : float, optional
         Variance of the displacement. Defaults to 6.0.
     """
 
-    environment_name: str = ""
+    name: str = ""
     movement_var: float = 6.0
 
     def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
@@ -453,10 +453,10 @@ class RandomWalkDirection1:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized upper triangular transition matrix.
         """
-        self.environment = environments[environments.index(self.environment_name)]
-        random = RandomWalk(
-            self.environment_name, self.movement_var
-        ).make_state_transition(environments)
+        self.environment = environments[environments.index(self.name)]
+        random = RandomWalk(self.name, self.movement_var).make_state_transition(
+            environments
+        )
 
         return _normalize_row_probability(np.triu(random))
 
@@ -469,13 +469,13 @@ class RandomWalkDirection2:
 
     Attributes
     ----------
-    environment_name : str, optional
+    name : str, optional
         Name of environment to fit. Defaults to "".
     movement_var : float, optional
         Variance of the displacement. Defaults to 6.0.
     """
 
-    environment_name: str = ""
+    name: str = ""
     movement_var: float = 6.0
 
     def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
@@ -491,10 +491,10 @@ class RandomWalkDirection2:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized lower triangular transition matrix.
         """
-        self.environment = environments[environments.index(self.environment_name)]
-        random = RandomWalk(
-            self.environment_name, self.movement_var
-        ).make_state_transition(environments)
+        self.environment = environments[environments.index(self.name)]
+        random = RandomWalk(self.name, self.movement_var).make_state_transition(
+            environments
+        )
 
         return _normalize_row_probability(np.tril(random))
 
