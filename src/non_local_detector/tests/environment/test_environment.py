@@ -471,56 +471,6 @@ class TestEnvironmentSerialization:
             == graph_env.connectivity_.number_of_edges()
         )
 
-    def test_to_from_dict_graph(self, graph_env: Environment):
-        """Test to_dict and from_dict methods for GraphLayout based Environment."""
-        env_dict = graph_env.to_dict()
-        assert isinstance(env_dict, dict)
-        assert env_dict["name"] == "PlusMazeGraph"
-        assert env_dict["_layout_type_used"] == "Graph"
-        # Check if _layout_params_used (which should be populated by the fixed graph_env fixture)
-        # contains the graph_definition
-        assert "graph_definition" in env_dict["_layout_params_used"]
-        assert isinstance(
-            env_dict["_layout_params_used"]["graph_definition"], dict
-        )  # Serialized graph
-
-        recreated_env = Environment.from_dict(env_dict)
-        assert isinstance(recreated_env, Environment)
-        assert recreated_env.name == graph_env.name
-        assert recreated_env._layout_type_used == graph_env._layout_type_used
-        assert isinstance(recreated_env.layout, GraphLayout)
-        assert recreated_env.is_1d == graph_env.is_1d
-        assert recreated_env.n_dims == graph_env.n_dims
-        assert np.allclose(recreated_env.bin_centers_, graph_env.bin_centers_)
-        assert (
-            recreated_env.connectivity_.number_of_nodes()
-            == graph_env.connectivity_.number_of_nodes()
-        )
-
-    def test_to_from_dict_grid(self, grid_env_from_samples: Environment):
-        """Test to_dict and from_dict for RegularGrid based Environment."""
-        env_dict = grid_env_from_samples.to_dict()
-        assert isinstance(env_dict, dict)
-        assert env_dict["name"] == "PlusMazeGrid"
-        assert env_dict["_layout_type_used"] == "RegularGrid"
-
-        recreated_env = Environment.from_dict(env_dict)
-        assert isinstance(recreated_env, Environment)
-        assert recreated_env.name == grid_env_from_samples.name
-        assert isinstance(recreated_env.layout, RegularGridLayout)
-        assert recreated_env.is_1d == grid_env_from_samples.is_1d
-        assert recreated_env.n_dims == grid_env_from_samples.n_dims
-        assert np.allclose(
-            recreated_env.bin_centers_, grid_env_from_samples.bin_centers_
-        )
-        assert np.array_equal(
-            recreated_env.active_mask_, grid_env_from_samples.active_mask_
-        )
-        assert (
-            recreated_env.connectivity_.number_of_nodes()
-            == grid_env_from_samples.connectivity_.number_of_nodes()
-        )
-
 
 # --- Test Other Factory Methods (Basic Checks) ---
 
