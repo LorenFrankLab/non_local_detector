@@ -735,35 +735,6 @@ class Environment:
         """
         return self.bin_centers_.shape[1]
 
-    @check_fitted
-    def get_connectivity_graph(self) -> nx.Graph:
-        """
-        Return the primary connectivity graph of active bins.
-
-        Nodes in this graph are integers from `0` to `N-1`, where `N` is the
-        number of active bins. These node IDs directly correspond to the row
-        indices in `self.bin_centers_`. Edges connect adjacent active bins.
-
-        Returns
-        -------
-        nx.Graph
-            The connectivity graph. Node attributes typically include 'pos'
-            (N-D coordinates), 'source_grid_flat_index', and
-            'original_grid_nd_index'. Edge attributes typically include
-            'distance'.
-
-        Raises
-        ------
-        ValueError
-            If the connectivity graph is not available (e.g., not yet built).
-        RuntimeError
-            If called before the environment is fitted.
-
-        """
-        if self.connectivity_ is None:
-            raise ValueError("Connectivity graph is not available.")
-        return self.connectivity_
-
     @cached_property
     @check_fitted
     def distance_between_bins(self) -> NDArray[np.float64]:
@@ -786,7 +757,7 @@ class Environment:
         RuntimeError
             If called before the environment is fitted.
         """
-        return _get_distance_between_bins(self.get_connectivity_graph())
+        return _get_distance_between_bins(self.connectivity_)
 
     @check_fitted
     def get_bin_ind(self, points_nd: NDArray[np.float64]) -> NDArray[np.int_]:
@@ -908,7 +879,7 @@ class Environment:
         RuntimeError
             If called before the environment is fitted.
         """
-        graph = self.get_connectivity_graph()
+        graph = self.connectivity_
         if graph.number_of_nodes() == 0:
             raise ValueError("No active bins in the environment.")
 
@@ -1018,7 +989,7 @@ class Environment:
             If `source_active_bin_idx` or `target_active_bin_idx` is not
             a node in the `connectivity_`.
         """
-        graph = self.get_connectivity_graph()
+        graph = self.connectivity_
 
         if source_active_bin_idx == target_active_bin_idx:
             return [source_active_bin_idx]
@@ -1560,8 +1531,7 @@ class Environment:
     def get_boundary_bin_indices(
         self: "Environment", connectivity_threshold_factor: Optional[float] = None
     ) -> NDArray[np.int_]:
-        # ... (graph and initial checks remain the same) ...
-        graph = self.get_connectivity_graph()
+        graph = self.connectivity_
         if graph.number_of_nodes() == 0:
             return np.array([], dtype=int)
 
@@ -1577,7 +1547,6 @@ class Environment:
         )
 
         if is_nd_grid_layout_with_mask and connectivity_threshold_factor is None:
-            # ... (existing N-D grid boundary detection logic remains the same) ...
             active_mask_nd = self.active_mask_
             grid_shape_nd = self.grid_shape_
             n_dims = len(grid_shape_nd)
