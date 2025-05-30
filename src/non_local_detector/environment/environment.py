@@ -1995,47 +1995,6 @@ class Environment:
 
         return is_in_region_mask
 
-    @property
-    @check_fitted
-    def grid_edges_list(self: "Environment") -> Optional[List[NDArray[np.float64]]]:
-        """
-        Provides grid_edges_ as a list of NumPy arrays, suitable for some
-        histogramming functions or other consumers expecting a list.
-
-        Returns None if grid_edges_ is not defined (e.g., for non-grid layouts).
-
-        Returns
-        -------
-        Optional[List[NDArray[np.float64]]]
-            A list where each element is a 1D NumPy array of bin edge
-            positions for that dimension, or None if not applicable.
-        """
-        if self.grid_edges_ is None or not isinstance(self.grid_edges_, tuple):
-            return None
-        return list(self.grid_edges_)
-
-    @property
-    @check_fitted
-    def dimension_ranges_list(
-        self: "Environment",
-    ) -> Optional[List[Tuple[float, float]]]:
-        """
-        Provides dimension_ranges_ (min, max for each dimension) as a list of tuples.
-        Returns None if dimension_ranges_ is not defined.
-
-        Returns
-        -------
-        Optional[List[Tuple[float, float]]]
-            A list where each element is a (min, max) tuple for a dimension,
-            or None if not applicable.
-        """
-        if self.dimension_ranges_ is None or not isinstance(
-            self.dimension_ranges_, Sequence
-        ):
-            return None
-        # Ensure each element is a tuple if it's not already (e.g. if it was List[List[float]])
-        return [tuple(item) for item in self.dimension_ranges_]
-
     @check_fitted
     def bins_in_region(self, region_name: str) -> NDArray[np.int_]:
         """
