@@ -190,14 +190,14 @@ class TestEnvironmentFromGraph:
         point_off_track = np.array([[10.0, 10.0]])
         assert graph_env.contains(point_off_track)[0]
 
-    def test_get_bin_neighbors(self, graph_env: Environment):
+    def test_neighbors(self, graph_env: Environment):
         """Test getting neighbors of a bin."""
-        neighbors_of_0 = graph_env.get_bin_neighbors(0)  # Start of West arm segment
+        neighbors_of_0 = graph_env.neighbors(0)  # Start of West arm segment
         assert isinstance(neighbors_of_0, list)
         assert set(neighbors_of_0) == {1}  # Only connected to next bin on segment
 
         idx_on_west_arm = graph_env.bin_at(np.array([[-1.0, 0.0]]))[0]  # Bin 2
-        neighbors_on_west = graph_env.get_bin_neighbors(idx_on_west_arm)
+        neighbors_on_west = graph_env.neighbors(idx_on_west_arm)
         assert isinstance(neighbors_on_west, list)
         assert len(neighbors_on_west) > 0
         if 0 < idx_on_west_arm < 3:
@@ -206,7 +206,7 @@ class TestEnvironmentFromGraph:
         # Bin 3 is the end of the West arm segment (4,0)
         # Based on current graph_utils, it connects to bin 2 (intra-segment)
         # and to bin 4 (start of North arm, due to (3,4) inter-segment connection)
-        neighbors_of_3 = graph_env.get_bin_neighbors(3)
+        neighbors_of_3 = graph_env.neighbors(3)
         assert isinstance(neighbors_of_3, list)
         expected_neighbors_of_3 = {2, 4}  # Corrected expectation
         assert set(neighbors_of_3) == expected_neighbors_of_3
@@ -782,7 +782,7 @@ class TestHexagonalLayout:
 
         assert np.allclose(areas, expected_area_simplified)
 
-    def test_get_bin_neighbors_hex(self, env_hexagonal: Environment):
+    def test_neighbors_hex(self, env_hexagonal: Environment):
         if env_hexagonal.bin_centers_.shape[0] < 7:
             pytest.skip(
                 "Not enough active bins for a central hex with 6 neighbors test."
@@ -793,7 +793,7 @@ class TestHexagonalLayout:
         some_bin_idx = (
             env_hexagonal.bin_centers_.shape[0] // 2
         )  # A somewhat central bin
-        neighbors = env_hexagonal.get_bin_neighbors(some_bin_idx)
+        neighbors = env_hexagonal.neighbors(some_bin_idx)
         assert isinstance(neighbors, list)
         if len(neighbors) > 0:
             assert len(set(neighbors)) == len(neighbors)  # Unique neighbors

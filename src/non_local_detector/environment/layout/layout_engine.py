@@ -194,7 +194,7 @@ class LayoutEngine(Protocol):
         """
         ...
 
-    def get_bin_neighbors(self, bin_index: int) -> List[int]:
+    def neighbors(self, bin_index: int) -> List[int]:
         """
         Find indices of neighboring active bins for a given active bin index.
 
@@ -278,7 +278,7 @@ class _KDTreeMixin:
 
     This mixin uses a KD-tree built on bin centers for nearest-neighbor
     searches (`point_to_bin_index`) and a NetworkX graph for connectivity
-    to find neighbors (`get_bin_neighbors`).
+    to find neighbors (`neighbors`).
 
     Assumes the inheriting class defines:
     - `self.bin_centers_`: NDArray of active bin center coordinates.
@@ -448,7 +448,7 @@ class _KDTreeMixin:
 
         return final_bin_indices.astype(np.int32)
 
-    def get_bin_neighbors(self, bin_index: int) -> List[int]:
+    def neighbors(self, bin_index: int) -> List[int]:
         """
         Find indices of neighboring active bins for a given active bin index.
 
@@ -551,7 +551,7 @@ class _GridMixin:
             active_mask=self.active_mask_,
         )
 
-    def get_bin_neighbors(self, bin_index: int) -> List[int]:
+    def neighbors(self, bin_index: int) -> List[int]:
         """
         Find indices of neighboring active bins using the connectivity graph.
 

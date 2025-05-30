@@ -83,7 +83,7 @@ def test_regular_grid_point_to_bin_index_and_neighbors():
     inds = layout.point_to_bin_index(points)
     assert inds.shape == (3,)
     assert np.any(inds >= 0)
-    neighbors = layout.get_bin_neighbors(inds[0])
+    neighbors = layout.neighbors(inds[0])
     assert isinstance(neighbors, list)
 
 
@@ -127,7 +127,7 @@ def test_hexagonal_point_to_bin_index_and_neighbors():
     inds = layout.point_to_bin_index(points)
     assert inds.shape == (3,)
     assert np.any(inds >= 0)
-    neighbors = layout.get_bin_neighbors(inds[0])
+    neighbors = layout.neighbors(inds[0])
     assert isinstance(neighbors, list)
 
 
@@ -189,7 +189,7 @@ def test_image_mask_point_to_bin_index_and_neighbors():
     inds = layout.point_to_bin_index(points)
     assert inds.shape == (2,)
     assert inds[0] >= 0
-    neighbors = layout.get_bin_neighbors(inds[0])
+    neighbors = layout.neighbors(inds[0])
     assert isinstance(neighbors, list)
 
 
@@ -235,7 +235,7 @@ def test_graph_point_to_bin_index_and_neighbors():
     inds = layout.point_to_bin_index(points)
     assert inds.shape == (3,)
     assert np.any(inds >= 0)
-    neighbors = layout.get_bin_neighbors(inds[0])
+    neighbors = layout.neighbors(inds[0])
     assert isinstance(neighbors, list)
 
 

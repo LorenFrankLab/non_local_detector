@@ -824,6 +824,32 @@ class Environment:
         """
         return self.bin_centers_[np.asarray(bin_indices, dtype=int)]
 
+    @check_fitted
+    def neighbors(self, bin_index: int) -> List[int]:
+        """
+        Find indices of neighboring active bins for a given active bin index.
+
+        This method delegates to the `neighbors` method of the
+        underlying `LayoutEngine`, which typically uses the `connectivity_`.
+
+        Parameters
+        ----------
+        bin_index : int
+            The index (0 to `n_active_bins - 1`) of the active bin for which
+            to find neighbors.
+
+        Returns
+        -------
+        List[int]
+            A list of active bin indices that are neighbors to `bin_index`.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        """
+        return list(self.connectivity_.neighbors(bin_index))
+
     @cached_property
     @check_fitted
     def distance_between_bins(self) -> NDArray[np.float64]:
@@ -847,32 +873,6 @@ class Environment:
             If called before the environment is fitted.
         """
         return _get_distance_between_bins(self.connectivity_)
-
-    @check_fitted
-    def get_bin_neighbors(self, bin_index: int) -> List[int]:
-        """
-        Find indices of neighboring active bins for a given active bin index.
-
-        This method delegates to the `get_bin_neighbors` method of the
-        underlying `LayoutEngine`, which typically uses the `connectivity_`.
-
-        Parameters
-        ----------
-        bin_index : int
-            The index (0 to `n_active_bins - 1`) of the active bin for which
-            to find neighbors.
-
-        Returns
-        -------
-        List[int]
-            A list of active bin indices that are neighbors to `bin_index`.
-
-        Raises
-        ------
-        RuntimeError
-            If called before the environment is fitted.
-        """
-        return list(self.connectivity_.neighbors(bin_index))
 
     @check_fitted
     def get_bin_area_volume(self) -> NDArray[np.float64]:
