@@ -14,7 +14,7 @@ import pytest
 from numpy.typing import NDArray
 
 from non_local_detector.environment.environment import Environment
-from non_local_detector.environment.layout_engine import (
+from non_local_detector.environment.layout.layout_engine import (
     SHAPELY_AVAILABLE,
     GraphLayout,
     HexagonalLayout,

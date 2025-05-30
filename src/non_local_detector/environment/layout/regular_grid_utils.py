@@ -25,15 +25,14 @@ from __future__ import annotations
 import itertools
 import math
 import warnings
-from typing import Any, Dict, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import networkx as nx
 import numpy as np
 from numpy.typing import NDArray
 from scipy import ndimage
-from scipy.spatial import KDTree
 
-from non_local_detector.environment.utils import get_centers, get_n_bins
+from non_local_detector.environment.layout.utils import get_centers, get_n_bins
 
 
 def _create_regular_grid_connectivity_graph(

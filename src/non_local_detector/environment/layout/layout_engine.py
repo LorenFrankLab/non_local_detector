@@ -45,28 +45,28 @@ from matplotlib.patches import RegularPolygon
 from numpy.typing import NDArray
 from scipy.spatial import KDTree
 from track_linearization import get_linearized_position as _get_linearized_position
-from track_linearization import plot_graph_as_1D, plot_track_graph
+from track_linearization import plot_graph_as_1D
 
-from non_local_detector.environment.graph_utils import (
+from non_local_detector.environment.layout.graph_utils import (
     _create_graph_layout_connectivity_graph,
     _find_bin_for_linear_position,
     _get_graph_bins,
     _project_1d_to_2d,
 )
-from non_local_detector.environment.hex_grid_utils import (
+from non_local_detector.environment.layout.hex_grid_utils import (
     _create_hex_connectivity_graph,
     _create_hex_grid,
     _infer_active_bins_from_hex_grid,
     _points_to_hex_bin_ind,
 )
-from non_local_detector.environment.regular_grid_utils import (
+from non_local_detector.environment.layout.regular_grid_utils import (
     _create_regular_grid,
     _create_regular_grid_connectivity_graph,
     _infer_active_bins_from_regular_grid,
     _points_to_regular_grid_bin_ind,
     get_centers,
 )
-from non_local_detector.environment.utils import (
+from non_local_detector.environment.layout.utils import (
     _generic_graph_plot,
     _infer_dimension_ranges_from_samples,
 )

@@ -12,11 +12,7 @@ from tqdm.autonotebook import tqdm
 
 from non_local_detector.diffusion_kernels import compute_diffusion_kernels
 from non_local_detector.environment.environment import Environment
-from non_local_detector.likelihoods.common import (  # Removed KDEModel import
-    EPS,
-    LOG_EPS,
-    get_position_at_time,
-)
+from non_local_detector.likelihoods.common import EPS, LOG_EPS, get_position_at_time
 
 
 # Re-add helper function for Gaussian KDE logpdf calculation

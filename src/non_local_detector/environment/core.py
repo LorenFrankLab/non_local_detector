@@ -25,7 +25,7 @@ from scipy.spatial.distance import pdist, squareform
 if TYPE_CHECKING:  # avoid run-time circular dep
     from matplotlib.axes import Axes as MatplotlibAxes
 
-    from .layout_engine import (
+    from .layout.layout_engine import (
         AreaFn,
         IdxArr,
         LayoutResult,

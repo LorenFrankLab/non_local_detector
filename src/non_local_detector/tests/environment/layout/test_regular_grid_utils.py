@@ -2,7 +2,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector.environment.regular_grid_utils import (
+from non_local_detector.environment.layout.regular_grid_utils import (
     _create_regular_grid,
     _create_regular_grid_connectivity_graph,
     _infer_active_bins_from_regular_grid,

@@ -4,7 +4,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector.environment.utils import (
+from non_local_detector.environment.layout.utils import (
     _generic_graph_plot,
     _get_distance_between_bins,
     _infer_active_elements_from_samples,

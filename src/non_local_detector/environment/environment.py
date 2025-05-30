@@ -12,14 +12,14 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from non_local_detector.environment.layout_engine import (
+from non_local_detector.environment.layout.layout_engine import (
     GraphLayout,
     LayoutEngine,
     RegularGridLayout,
     create_layout,
 )
+from non_local_detector.environment.layout.utils import _get_distance_between_bins
 from non_local_detector.environment.regions import Regions
-from non_local_detector.environment.utils import _get_distance_between_bins
 
 if TYPE_CHECKING:
     # For type hinting shapely without a hard dependency

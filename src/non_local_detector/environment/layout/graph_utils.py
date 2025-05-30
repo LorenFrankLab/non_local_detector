@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Tuple, Union
 import networkx as nx
 import numpy as np
 
-from non_local_detector.environment.utils import get_centers
+from non_local_detector.environment.layout.utils import get_centers
 
 Edge = Tuple[Any, Any]
 
