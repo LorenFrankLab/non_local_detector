@@ -1467,7 +1467,7 @@ class GraphLayout(_KDTreeMixin):
             self._build_params_used["edge_spacing"],
         ).linear_position.to_numpy()
 
-    def map_linear_to_nd_coordinate(
+    def map_linear_to_grid_coordinate(
         self, linear_coordinates: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         """

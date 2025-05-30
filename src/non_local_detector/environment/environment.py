@@ -18,7 +18,7 @@ from non_local_detector.environment.layout_engine import (
     RegularGridLayout,
     create_layout,
 )
-from non_local_detector.environment.region import RegionManager
+from non_local_detector.environment.regions import Regions
 from non_local_detector.environment.utils import _get_distance_between_bins
 
 if TYPE_CHECKING:
@@ -1347,7 +1347,7 @@ class Environment:
             "environment_name": self.environment_name,
             "_layout_type_used": self._layout_type_used,
             "_layout_params_used": serializable_layout_params,
-            "_regions_data": [asdict(info) for info in self.regions._regions.values()],
+            "_regions_data": [asdict(info) for info in self.regions.values()],
         }
         return data
 
@@ -1461,7 +1461,7 @@ class Environment:
                     region_info_data["metadata"] = {}
 
                 try:
-                    env.regions.add_region(
+                    env.regions.add(
                         name=region_info_data["name"],
                         kind=region_info_data["kind"],
                         **{region_info_data["kind"]: region_info_data["data"]},
@@ -1760,132 +1760,125 @@ class Environment:
     def get_boundary_bin_indices(
         self: "Environment", connectivity_threshold_factor: Optional[float] = None
     ) -> NDArray[np.int_]:
-        """
-        Identifies active bin indices that are on the boundary of the active area.
-
-        For grid-based layouts (those with `active_mask_` and `grid_shape_` defined
-        and more than 1 dimension), it identifies active bins adjacent to inactive
-        areas or the grid's edge.
-
-        For other layouts, or if `connectivity_threshold_factor` is provided,
-        it uses a degree-based heuristic: bins whose connectivity graph degree
-        is less than `connectivity_threshold_factor` times the median degree
-        of the graph (or simply less than max possible degree if factor not given).
-
-        Parameters
-        ----------
-        connectivity_threshold_factor : Optional[float], optional
-            If provided for non-grid or as an override for grid layouts,
-            this factor is used with the median degree to define boundary bins.
-            E.g., a factor of 0.8 means bins with degree < 0.8 * median_degree
-            are considered boundary. If None, grid-specific logic is used if applicable,
-            otherwise a default heuristic might apply (e.g. degree < max_degree).
-
-
-        Returns
-        -------
-        NDArray[np.int_]
-            An array of active bin indices considered to be boundary bins.
-        """
+        # ... (graph and initial checks remain the same) ...
         graph = self.get_connectivity_graph()
         if graph.number_of_nodes() == 0:
             return np.array([], dtype=int)
 
-        is_grid_layout_with_mask = (
+        boundary_bin_indices = []
+
+        # Grid-specific logic for N-D grids (N > 1)
+        is_nd_grid_layout_with_mask = (
             hasattr(self, "active_mask_")
             and self.active_mask_ is not None
             and hasattr(self, "grid_shape_")
             and self.grid_shape_ is not None
-            and len(self.grid_shape_) > 1  # Meaningful for 2D+ grids
+            and len(self.grid_shape_) > 1  # Explicitly for N-D (N>1) grids
         )
 
-        boundary_bin_indices = []
-
-        if is_grid_layout_with_mask and connectivity_threshold_factor is None:
-            # Grid-specific boundary detection
+        if is_nd_grid_layout_with_mask and connectivity_threshold_factor is None:
+            # ... (existing N-D grid boundary detection logic remains the same) ...
             active_mask_nd = self.active_mask_
             grid_shape_nd = self.grid_shape_
             n_dims = len(grid_shape_nd)
 
-            # Iterate through all active bins using their node ID (0 to N-1)
             for active_node_id in graph.nodes():
                 node_data = graph.nodes[active_node_id]
                 original_nd_idx = node_data.get("original_grid_nd_index")
-                if (
-                    original_nd_idx is None
-                ):  # Fallback if this attribute isn't on graph nodes
-                    # This might happen if the graph wasn't built by standard grid utils
-                    # For now, skip if essential info is missing for this method
+                if original_nd_idx is None:
                     warnings.warn(
-                        f"Node {active_node_id} missing 'original_grid_nd_index'. Cannot use grid boundary logic.",
+                        f"Node {active_node_id} missing 'original_grid_nd_index'. "
+                        "Cannot use N-D grid boundary logic. Consider degree-based method.",
                         UserWarning,
                     )
-                    # Fallback to degree-based method or skip. For now, skip.
-                    continue
+                    # Potentially fall back to degree-based for this node or skip
+                    continue  # Skip this node for grid logic
 
                 is_boundary = False
-                # Check orthogonal neighbors in the original full grid
                 for dim_idx in range(n_dims):
                     for offset_val in [-1, 1]:
                         neighbor_nd_idx_list = list(original_nd_idx)
                         neighbor_nd_idx_list[dim_idx] += offset_val
                         neighbor_nd_idx = tuple(neighbor_nd_idx_list)
 
-                        # Check if neighbor is outside grid bounds
                         if not (0 <= neighbor_nd_idx[dim_idx] < grid_shape_nd[dim_idx]):
                             is_boundary = True
                             break
-                        # Check if neighbor is inside grid but inactive
                         if not active_mask_nd[neighbor_nd_idx]:
                             is_boundary = True
                             break
                     if is_boundary:
                         break
-
                 if is_boundary:
                     boundary_bin_indices.append(active_node_id)
+        else:
+            # Degree-based heuristic for:
+            # - Non-grid layouts
+            # - 1D grid layouts (where len(grid_shape_) == 1)
+            # - N-D grid layouts if connectivity_threshold_factor is provided
+            # - N-D grid layouts if 'original_grid_nd_index' is missing for nodes
 
-        else:  # Degree-based heuristic for non-grid or if factor is provided
             degrees = dict(graph.degree())
             if not degrees:
                 return np.array([], dtype=int)
 
-            median_degree = np.median(list(degrees.values()))
-            # Max degree for some known layouts (e.g. 6 for hex, 2*n_dims for ortho grid)
-            # For a general graph, just use median or user factor.
+            all_degree_values = list(degrees.values())
+            median_degree = np.median(all_degree_values)
+            max_degree_val = np.max(all_degree_values) if all_degree_values else 0
 
-            threshold_degree = median_degree  # Default if no factor
+            threshold_degree: float
             if connectivity_threshold_factor is not None:
-                if connectivity_threshold_factor <= 0:
+                if connectivity_threshold_factor <= 0:  # pragma: no cover
                     raise ValueError("connectivity_threshold_factor must be positive.")
                 threshold_degree = connectivity_threshold_factor * median_degree
-            elif (
-                self._layout_type_used == "Hexagonal" and median_degree > 5
-            ):  # Hex specific default
-                threshold_degree = 5.5  # Bins with < 6 neighbors
-            elif is_grid_layout_with_mask and median_degree > (
-                2 * len(self.grid_shape_) - 1
-            ):  # Grid specific (ortho)
-                threshold_degree = 2 * len(self.grid_shape_) - 0.5
+            else:
+                # Default heuristics if no factor provided
+                if self._layout_type_used == "Hexagonal" and median_degree > 5:
+                    threshold_degree = 5.5  # Bins with < 6 neighbors
+                elif (  # For 1D grids or path-like graphs
+                    hasattr(self, "grid_shape_")
+                    and self.grid_shape_ is not None
+                    and len(self.grid_shape_) == 1
+                ) or (self.is_1d and isinstance(self.layout, GraphLayout)):
+                    # For linear structures, ends typically have degree 1, internal degree 2
+                    # Threshold just below typical internal degree.
+                    threshold_degree = (
+                        1.5 if max_degree_val >= 2 else max_degree_val
+                    )  # Catches degree 1
+                elif is_nd_grid_layout_with_mask and median_degree > (
+                    2 * len(self.grid_shape_) - 1
+                ):  # For N>1 grids when falling back
+                    threshold_degree = 2 * len(self.grid_shape_) - 0.5
+                else:  # General fallback if no specific layout recognized or no factor
+                    threshold_degree = (
+                        median_degree  # Bins with degree < median are boundary
+                    )
 
             for node_id, degree in degrees.items():
                 if degree < threshold_degree:
                     boundary_bin_indices.append(node_id)
+
+            # If the above found nothing, and it's not a specific grid case where that's expected,
+            # a simple fallback for general graphs: degree < max_degree
             if (
                 not boundary_bin_indices
                 and connectivity_threshold_factor is None
-                and not is_grid_layout_with_mask
+                and not is_nd_grid_layout_with_mask  # Avoid if it was an ND-grid that correctly found no boundaries
+                and max_degree_val > 0
             ):
-                # Fallback: if no factor, and not a grid, and median heuristic found nothing,
-                # consider bins with degree less than max_degree as boundary.
-                max_degree = np.max(list(degrees.values()))
-                if max_degree > 0:  # Ensure there is some connectivity
+                # This ensures that if all nodes have the same degree (e.g. a k-regular graph like a circle)
+                # it doesn't mark all as boundary unless median was already low.
+                # Only mark as boundary if degree is strictly less than the absolute max.
+                # This is a very general fallback.
+                if median_degree == max_degree_val:  # e.g. all nodes have same degree
+                    pass  # Don't mark any as boundary unless threshold_degree was already < max_degree_val
+                else:
                     for node_id, degree in degrees.items():
-                        if degree < max_degree:
-                            boundary_bin_indices.append(node_id)
-                boundary_bin_indices = list(
-                    set(boundary_bin_indices)
-                )  # Remove duplicates if any
+                        if (
+                            degree < max_degree_val
+                        ):  # Stricter than degree < median_degree for some cases
+                            if node_id not in boundary_bin_indices:  # Avoid re-adding
+                                boundary_bin_indices.append(node_id)
 
         return np.array(sorted(list(set(boundary_bin_indices))), dtype=int)
 
@@ -2044,3 +2037,282 @@ class Environment:
             return None
         # Ensure each element is a tuple if it's not already (e.g. if it was List[List[float]])
         return [tuple(item) for item in self.dimension_ranges_]
+
+    @check_fitted
+    def bins_in_region(self, region_name: str) -> NDArray[np.int_]:
+        """
+        Get active bin indices that fall within a specified named region.
+
+        Parameters
+        ----------
+        region_name : str
+            The name of a defined region in `self.regions`.
+
+        Returns
+        -------
+        NDArray[np.int_]
+            Array of active bin indices (0 to n_active_bins - 1)
+            that are part of the region.
+
+        Raises
+        ------
+        KeyError
+            If `region_name` is not found in `self.regions`.
+        ValueError
+            If region kind is unsupported or mask dimensions mismatch.
+        """
+        if not hasattr(self, "regions") or self.regions is None:  # Should always exist
+            # This case should ideally not be reached if __init__ guarantees self.regions
+            raise AttributeError(
+                f"Environment '{self.environment_name}' has no 'regions' manager."
+            )  # pragma: no cover
+
+        region_info = self.regions[region_name]  # Can raise KeyError
+
+        if region_info.kind == "point":
+            point_nd = np.asarray(region_info.data).reshape(1, -1)
+            if point_nd.shape[1] != self.n_dims:
+                raise ValueError(
+                    f"Region point dimension {point_nd.shape[1]} "
+                    f"does not match environment dimension {self.n_dims}."
+                )
+            bin_idx = self.get_bin_ind(point_nd)
+            return bin_idx[bin_idx != -1]
+
+        elif region_info.kind == "polygon":
+            if not _HAS_SHAPELY:  # pragma: no cover
+                raise RuntimeError("Polygon region queries require 'shapely'.")
+            if self.n_dims != 2:  # pragma: no cover
+                raise ValueError(
+                    "Polygon regions are only supported for 2D environments."
+                )
+
+            polygon = region_info.data
+            contained_mask = np.array(
+                [polygon.contains(_shp.Point(center)) for center in self.bin_centers_],
+                dtype=bool,
+            )
+            return np.flatnonzero(contained_mask)
+
+        elif region_info.kind == "mask":
+            mask_data = np.asarray(region_info.data, dtype=bool)
+
+            if (
+                self.grid_shape_ is None or self.active_mask_ is None
+            ):  # pragma: no cover
+                raise ValueError(
+                    "Mask regions are only supported for environments with "
+                    "a defined grid_shape and active_mask (typically grid-based layouts)."
+                )
+            if mask_data.shape != self.grid_shape_:
+                raise ValueError(
+                    f"Region mask shape {mask_data.shape} does not match "
+                    f"environment grid_shape {self.grid_shape_}."
+                )
+
+            # Mask from region applies to the *full original grid*
+            # We need active environment bins whose original grid positions fall in this mask
+            effective_mask_on_full_grid = mask_data & self.active_mask_
+
+            original_flat_indices_in_region_and_active = np.flatnonzero(
+                effective_mask_on_full_grid
+            )
+
+            if not original_flat_indices_in_region_and_active.size:
+                return np.array([], dtype=int)
+
+            # Map these original full grid flat indices to active bin IDs
+            # Need to ensure _source_flat_to_active_node_id_map is populated
+            if (
+                self._source_flat_to_active_node_id_map is None
+                or not self._source_flat_to_active_node_id_map
+            ):  # Check if empty
+                # This can happen if connectivity_graph_ has no 'source_grid_flat_index'
+                # For example, if it's a non-grid layout that doesn't add it.
+                # Or if all nodes are missing it.
+                # If the layout is a grid, this map should exist.
+                # If it's a GraphLayout, its source_grid_flat_index refers to linearized bins.
+                # The "mask" kind for GraphLayout means the mask_data should be 1D.
+                if (
+                    self.is_1d
+                    and mask_data.ndim == 1
+                    and len(mask_data) == self.grid_shape_[0]
+                ):
+                    # For GraphLayout, source_grid_flat_index is 0..n_linear_bins-1
+                    # and these are also the active_node_ids if all linearized bins are nodes.
+                    # The active_mask_ for GraphLayout is all True, shape (n_linear_bins,).
+                    # So effective_mask_on_full_grid is just mask_data.
+                    # The indices from np.flatnonzero(mask_data) are directly the active_bin_ids.
+                    return np.flatnonzero(mask_data)  # These are the active node IDs
+                else:
+                    warnings.warn(
+                        "Source flat to active node ID map is not available or not applicable. "
+                        "Cannot map mask region for this layout type accurately without it.",
+                        UserWarning,
+                    )
+                    return np.array([], dtype=int)
+
+            active_bin_ids_in_region = [
+                self._source_flat_to_active_node_id_map.get(orig_flat_idx, -1)
+                for orig_flat_idx in original_flat_indices_in_region_and_active
+            ]
+            return np.array(
+                [bid for bid in active_bin_ids_in_region if bid != -1], dtype=int
+            )
+
+        else:  # pragma: no cover
+            raise ValueError(f"Unsupported region kind: {region_info.kind}")
+
+    @check_fitted
+    def region_mask(self, region_name: str) -> NDArray[np.bool_]:
+        """
+        Get a boolean mask over active bins indicating membership in a region.
+
+        Returns
+        -------
+        NDArray[np.bool_]
+            Boolean array of shape (n_active_bins,). True if an active bin
+            is part of the region.
+        """
+        active_bins_for_mask = self.bins_in_region(region_name)
+        mask = np.zeros(self.bin_centers_.shape[0], dtype=bool)
+        if active_bins_for_mask.size > 0:
+            mask[active_bins_for_mask] = True
+        return mask
+
+    @check_fitted
+    def region_center(self, region_name: str) -> Optional[NDArray[np.float64]]:
+        """
+        Calculate the center of a specified named region.
+
+        - For 'point' regions, returns the point itself.
+        - For 'polygon' regions, returns the centroid of the polygon.
+        - For 'mask' regions, returns the mean of the bin_centers_ of the
+          active bins included in the region.
+
+        Returns
+        -------
+        Optional[NDArray[np.float64]]
+            N-D coordinates of the region's center, or None if the region
+            is empty or center cannot be determined.
+        """
+        region_info = self.regions[region_name]
+
+        if region_info.kind == "point":
+            return np.asarray(region_info.data)
+        elif region_info.kind == "polygon":
+            if not _HAS_SHAPELY:  # pragma: no cover
+                raise RuntimeError("Polygon region queries require 'shapely'.")
+            return np.array(region_info.data.centroid.coords[0])  # type: ignore
+        elif region_info.kind == "mask":
+            active_bin_ids = self.bins_in_region(region_name)
+            if active_bin_ids.size == 0:
+                return None
+            return np.mean(self.bin_centers_[active_bin_ids], axis=0)
+        return None  # pragma: no cover
+
+    @check_fitted
+    def get_region_area(self, region_name: str) -> float:
+        """
+        Calculate the area/volume of a specified named region.
+
+        - For 'point' regions, area is 0.0.
+        - For 'polygon' regions, uses Shapely's area.
+        - For 'mask' regions, sums the area/volume of active bins in the region.
+        """
+        region_info = self.regions[region_name]
+
+        if region_info.kind == "point":
+            return 0.0
+        elif region_info.kind == "polygon":
+            if not _HAS_SHAPELY:  # pragma: no cover
+                raise RuntimeError("Polygon area calculation requires 'shapely'.")
+            return region_info.data.area  # type: ignore
+        elif region_info.kind == "mask":
+            active_bin_ids = self.bins_in_region(region_name)
+            if active_bin_ids.size == 0:
+                return 0.0
+            bin_areas_volumes = self.get_bin_area_volume()
+            return np.sum(bin_areas_volumes[active_bin_ids])
+        return 0.0  # pragma: no cover
+
+    @check_fitted
+    def create_buffered_region(
+        self,
+        source_region_name_or_point: Union[str, NDArray[np.float64]],
+        buffer_distance: float,
+        new_region_name: str,
+        **meta: Any,
+    ) -> CoreRegion:
+        """
+        Creates a new polygon region by buffering an existing region or a point.
+        The new region is added to `self.regions`.
+
+        Parameters
+        ----------
+        source_region_name_or_point : Union[str, NDArray[np.float64]]
+            If str, the name of an existing 'point' or 'polygon' region.
+            If NDArray, the N-D coordinates of a point to buffer.
+        buffer_distance : float
+            The distance for the buffer operation.
+        new_region_name : str
+            Name for the newly created buffered region.
+        **meta : Any
+            Additional metadata for the new region.
+
+        Returns
+        -------
+        CoreRegion
+            The newly created and added Region object.
+
+        Raises
+        ------
+        RuntimeError
+            If Shapely is not installed.
+        ValueError
+            If source region is not 2D, or other issues.
+        """
+        if not _HAS_SHAPELY:  # pragma: no cover
+            raise RuntimeError("Buffering requires Shapely.")
+
+        # This method now delegates to self.regions (CoreRegions instance)
+        # CoreRegions.buffer() already handles adding the region.
+        return self.regions.buffer(
+            source=source_region_name_or_point,
+            distance=buffer_distance,
+            new_name=new_region_name,
+            **meta,
+        )
+
+    @check_fitted
+    def get_indices_for_values_in_region(
+        self: "Environment", values: NDArray[np.float64], region_name: str
+    ) -> NDArray[np.bool_]:
+        """
+        Determines which time points (rows in `values` array) correspond
+        to locations falling within a specified named region of this environment.
+        ...
+        """
+        if not hasattr(self, "regions") or self.regions is None:  # pragma: no cover
+            raise AttributeError(
+                f"Environment '{self.environment_name}' has no 'regions' manager."
+            )
+        if values.ndim != 2 or values.shape[1] != self.n_dims:
+            raise ValueError(
+                f"Values array must be 2D with shape (n_points, {self.n_dims}), "
+                f"got {values.shape}."
+            )
+
+        active_bin_indices_for_positions = self.get_bin_ind(values)
+
+        # Use the new Environment method
+        bins_in_target_region = self.bins_in_region(region_name)
+
+        if bins_in_target_region.size == 0:
+            return np.zeros(values.shape[0], dtype=bool)
+
+        is_in_region_mask = np.isin(
+            active_bin_indices_for_positions, bins_in_target_region
+        )
+
+        return is_in_region_mask
