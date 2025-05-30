@@ -344,13 +344,13 @@ class Environment:
         """
         return cls(
             name=name,
-            bin_centers=layout_result.bin_centers_,
-            connectivity=layout_result.connectivity_,
-            dimension_ranges=layout_result.dimension_ranges_,
+            bin_centers=layout_result.bin_centers,
+            connectivity=layout_result.connectivity,
+            dimension_ranges=layout_result.dimension_ranges,
             is_1d=layout_result.is_1d_,
             regions=regions,
-            grid_edges=layout_result.grid_edges_,
-            grid_shape=layout_result.grid_shape_,
+            grid_edges=layout_result.grid_edges,
+            grid_shape=layout_result.grid_shape,
             active_mask=layout_result.active_mask_nd_,
             _pt2bin=layout_result.point_to_bin_func_,
             _area=lambda s: layout_result.active_bin_areas_,

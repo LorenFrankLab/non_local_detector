@@ -11,7 +11,7 @@ from non_local_detector.environment.alignment import (
 # Minimal mock Environment class for testing
 class MockEnvironment:
     def __init__(self, bin_centers, n_dims, is_fitted=True):
-        self.bin_centers_ = bin_centers
+        self.bin_centers = bin_centers
         self.n_dims = n_dims
         self._is_fitted = is_fitted
 

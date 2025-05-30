@@ -33,7 +33,7 @@ This module is designed to assist in scenarios such as:
         attempting to preserve the spatial correspondence of the data.
 
 The functions generally expect `Environment` objects that have been "fitted"
-(i.e., their `bin_centers_` attribute is populated) and probability arrays
+(i.e., their `bin_centers` attribute is populated) and probability arrays
 that correspond to the active bins of these environments.
 """
 
@@ -157,20 +157,20 @@ def map_probabilities_to_nearest_target_bin(
     ----------
     source_env : Environment
         The source environment with defined probabilities. Must be fitted
-        and have `bin_centers_`.
+        and have `bin_centers`.
     target_env : Environment
         The target environment to map probabilities onto. Must be fitted
-        and have `bin_centers_`.
+        and have `bin_centers`.
     source_probabilities : NDArray[np.float64]
         Probabilities associated with each active bin in `source_env`.
         Shape must be (n_source_active_bins,).
     source_rotation_matrix : Optional[NDArray[np.float64]], optional
-        Rotation matrix to apply to `source_env.bin_centers_`.
+        Rotation matrix to apply to `source_env.bin_centers`.
         Shape (n_dims, n_dims). Defaults to identity if None.
     source_scale_factor : float, optional
-        Uniform scaling factor for `source_env.bin_centers_`. Defaults to 1.0.
+        Uniform scaling factor for `source_env.bin_centers`. Defaults to 1.0.
     source_translation_vector : Optional[NDArray[np.float64]], optional
-        Translation vector for `source_env.bin_centers_`.
+        Translation vector for `source_env.bin_centers`.
         Shape (n_dims,). Defaults to zero vector if None.
 
     Returns
@@ -185,24 +185,24 @@ def map_probabilities_to_nearest_target_bin(
     RuntimeError
         If environments are not fitted.
     ValueError
-        If `bin_centers_` are missing, or if `source_probabilities`
+        If `bin_centers` are missing, or if `source_probabilities`
         shape mismatches, or if transformation parameters have incorrect dimensions.
     """
     if not source_env._is_fitted or not target_env._is_fitted:
         raise RuntimeError("Both source and target environments must be fitted.")
-    if source_env.bin_centers_ is None:
-        raise ValueError("Source environment is missing 'bin_centers_'.")
-    if target_env.bin_centers_ is None:
-        raise ValueError("Target environment is missing 'bin_centers_'.")
+    if source_env.bin_centers is None:
+        raise ValueError("Source environment is missing 'bin_centers'.")
+    if target_env.bin_centers is None:
+        raise ValueError("Target environment is missing 'bin_centers'.")
 
-    n_source_bins = source_env.bin_centers_.shape[0]
-    n_target_bins = target_env.bin_centers_.shape[0]
+    n_source_bins = source_env.bin_centers.shape[0]
+    n_target_bins = target_env.bin_centers.shape[0]
     n_dims = source_env.n_dims
 
     if source_probabilities.shape != (n_source_bins,):
         raise ValueError(
             f"source_probabilities shape {source_probabilities.shape} "
-            f"must match source_env.bin_centers_ shape ({n_source_bins},)."
+            f"must match source_env.bin_centers shape ({n_source_bins},)."
         )
     if source_env.n_dims != target_env.n_dims:
         raise ValueError(
@@ -211,7 +211,7 @@ def map_probabilities_to_nearest_target_bin(
         )
 
     # Prepare transformed source bin centers
-    active_source_bin_centers = source_env.bin_centers_
+    active_source_bin_centers = source_env.bin_centers
     if (
         source_rotation_matrix is not None
         or not np.isclose(source_scale_factor, 1.0)
@@ -231,7 +231,7 @@ def map_probabilities_to_nearest_target_bin(
         )
 
         active_source_bin_centers = apply_similarity_transform(
-            source_env.bin_centers_, R, s, t
+            source_env.bin_centers, R, s, t
         )
 
     # Handle cases with no bins
@@ -247,12 +247,12 @@ def map_probabilities_to_nearest_target_bin(
 
     # Build KDTree on target_env bin centers for efficient nearest neighbor lookup
     try:
-        target_kdtree = KDTree(target_env.bin_centers_)
+        target_kdtree = KDTree(target_env.bin_centers)
     except Exception as e:
-        # This can happen if target_env.bin_centers_ is degenerate (e.g., all points identical)
+        # This can happen if target_env.bin_centers is degenerate (e.g., all points identical)
         # or other KDTree construction issues.
         warnings.warn(
-            f"KDTree construction on target_env.bin_centers_ failed: {e}. "
+            f"KDTree construction on target_env.bin_centers failed: {e}. "
             "Cannot perform nearest neighbor mapping. Returning zeros.",
             UserWarning,
         )

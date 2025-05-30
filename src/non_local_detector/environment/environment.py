@@ -88,30 +88,30 @@ class Environment:
     layout : LayoutEngine
         The layout engine instance that defines the geometry and connectivity
         of the discretized space.
-    bin_centers_ : NDArray[np.float64]
+    bin_centers : NDArray[np.float64]
         Coordinates of the center of each *active* bin/node in the environment.
         Shape is (n_active_bins, n_dims). Populated by `_setup_from_layout`.
-    connectivity_ : nx.Graph
+    connectivity : nx.Graph
         A NetworkX graph where nodes are integers from `0` to `n_active_bins - 1`,
-        directly corresponding to the rows of `bin_centers_`. Edges represent
+        directly corresponding to the rows of `bin_centers`. Edges represent
         adjacency between bins. Populated by `_setup_from_layout`.
-    dimension_ranges_ : Optional[Sequence[Tuple[float, float]]]
+    dimension_ranges : Optional[Sequence[Tuple[float, float]]]
         The effective min/max extent `[(min_d0, max_d0), ..., (min_dN-1, max_dN-1)]`
         covered by the layout's geometry. Populated by `_setup_from_layout`.
-    grid_edges_ : Optional[Tuple[NDArray[np.float64], ...]]
+    grid_edges : Optional[Tuple[NDArray[np.float64], ...]]
         For grid-based layouts, a tuple where each element is a 1D array of
         bin edge positions for that dimension of the *original, full grid*.
         `None` or `()` for non-grid or point-based layouts. Populated by
         `_setup_from_layout`.
-    grid_shape_ : Optional[Tuple[int, ...]]
+    grid_shape : Optional[Tuple[int, ...]]
         For grid-based layouts, the N-D shape of the *original, full grid*.
         For point-based/cell-based layouts without a full grid concept, this
         may be `(n_active_bins,)`. Populated by `_setup_from_layout`.
-    active_mask_ : Optional[NDArray[np.bool_]]
+    active_mask : Optional[NDArray[np.bool_]]
         - For grid-based layouts: An N-D boolean mask indicating active bins
           on the *original, full grid*.
         - For point-based/cell-based layouts: A 1D array of `True` values,
-          shape `(n_active_bins,)`, corresponding to `bin_centers_`.
+          shape `(n_active_bins,)`, corresponding to `bin_centers`.
         Populated by `_setup_from_layout`.
     regions : RegionManager
         Manages symbolic spatial regions defined within this environment.
@@ -134,14 +134,14 @@ class Environment:
     layout: LayoutEngine
 
     # --- Attributes populated from the layout instance ---
-    bin_centers_: NDArray[np.float64] = field(init=False)
-    connectivity_: nx.Graph = field(init=False)
-    dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = field(init=False)
+    bin_centers: NDArray[np.float64] = field(init=False)
+    connectivity: nx.Graph = field(init=False)
+    dimension_ranges: Optional[Sequence[Tuple[float, float]]] = field(init=False)
 
     # Grid-specific context (populated if layout is grid-based)
-    grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = field(init=False)
-    grid_shape_: Optional[Tuple[int, ...]] = field(init=False)
-    active_mask_: Optional[NDArray[np.bool_]] = field(init=False)
+    grid_edges: Optional[Tuple[NDArray[np.float64], ...]] = field(init=False)
+    grid_shape: Optional[Tuple[int, ...]] = field(init=False)
+    active_mask: Optional[NDArray[np.bool_]] = field(init=False)
 
     # Region Management
     regions: Regions = field(init=False, repr=False)
@@ -206,12 +206,12 @@ class Environment:
         self._is_1d_env = self.layout.is_1d
 
         # Initialize attributes that will be populated by _setup_from_layout
-        self.bin_centers_ = np.empty((0, 0))  # Placeholder
-        self.connectivity_ = nx.Graph()
-        self.dimension_ranges_ = None
-        self.grid_edges_ = ()
-        self.grid_shape_ = None
-        self.active_mask_ = None
+        self.bin_centers = np.empty((0, 0))  # Placeholder
+        self.connectivity = nx.Graph()
+        self.dimension_ranges = None
+        self.grid_edges = ()
+        self.grid_shape = None
+        self.active_mask = None
         self._is_fitted = False  # Will be set by _setup_from_layout
 
         self._setup_from_layout()  # Populate attributes from the built layout
@@ -244,8 +244,8 @@ class Environment:
             dims_repr = "n_dims='Error'"
 
         active_bins_repr = "active_bins='N/A'"
-        if self.bin_centers_ is not None:
-            active_bins_repr = f"active_bins={self.bin_centers_.shape[0]}"
+        if self.bin_centers is not None:
+            active_bins_repr = f"active_bins={self.bin_centers.shape[0]}"
 
         return (
             f"{class_name}("
@@ -268,24 +268,24 @@ class Environment:
         layout is point-based to ensure consistency.
         """
 
-        self.bin_centers_ = self.layout.bin_centers_
-        self.connectivity_ = getattr(self.layout, "connectivity_", nx.Graph())
-        self.dimension_ranges_ = self.layout.dimension_ranges_
+        self.bin_centers = self.layout.bin_centers
+        self.connectivity = getattr(self.layout, "connectivity", nx.Graph())
+        self.dimension_ranges = self.layout.dimension_ranges
 
         # Grid-specific attributes
-        self.grid_edges_ = getattr(self.layout, "grid_edges_", ())
-        self.grid_shape_ = getattr(self.layout, "grid_shape_", None)
-        self.active_mask_ = getattr(self.layout, "active_mask_", None)
+        self.grid_edges = getattr(self.layout, "grid_edges", ())
+        self.grid_shape = getattr(self.layout, "grid_shape", None)
+        self.active_mask = getattr(self.layout, "active_mask", None)
 
-        # If it's not a grid layout, grid_shape_ might be (n_active_bins,),
-        # and active_mask_ might be 1D all True. This is fine.
+        # If it's not a grid layout, grid_shape might be (n_active_bins,),
+        # and active_mask might be 1D all True. This is fine.
         # Ensure they are at least None if not applicable from layout
-        if self.grid_shape_ is None and self.bin_centers_ is not None:
+        if self.grid_shape is None and self.bin_centers is not None:
             # Fallback for point-based
-            self.grid_shape_ = (self.bin_centers_.shape[0],)
-        if self.active_mask_ is None and self.bin_centers_ is not None:
+            self.grid_shape = (self.bin_centers.shape[0],)
+        if self.active_mask is None and self.bin_centers is not None:
             # Fallback for point-based
-            self.active_mask_ = np.ones(self.bin_centers_.shape[0], dtype=bool)
+            self.active_mask = np.ones(self.bin_centers.shape[0], dtype=bool)
 
         self._is_fitted = True
 
@@ -313,7 +313,7 @@ class Environment:
         """
         return {
             data["source_grid_flat_index"]: node_id
-            for node_id, data in self.connectivity_.nodes(data=True)
+            for node_id, data in self.connectivity.nodes(data=True)
             if "source_grid_flat_index" in data
         }
 
@@ -380,7 +380,7 @@ class Environment:
             boundary bins around the inferred active area. Defaults to False.
         connect_diagonal_neighbors : bool, optional
             For grid-based layouts, whether to connect diagonally adjacent bins
-            in the `connectivity_`. Defaults to True.
+            in the `connectivity`. Defaults to True.
         **layout_specific_kwargs : Any
             Additional keyword arguments passed directly to the constructor
             of the chosen `LayoutEngine`.
@@ -725,15 +725,15 @@ class Environment:
         -------
         int
             The number of dimensions (e.g., 1 for a line, 2 for a plane).
-            Derived from the shape of `self.bin_centers_`.
+            Derived from the shape of `self.bin_centers`.
 
         Raises
         ------
         RuntimeError
-            If called before the environment is fitted or if `bin_centers_`
+            If called before the environment is fitted or if `bin_centers`
             is not available.
         """
-        return self.bin_centers_.shape[1]
+        return self.bin_centers.shape[1]
 
     @property
     @check_fitted
@@ -741,7 +741,7 @@ class Environment:
         """
         Return the number of active bins in the environment.
 
-        This is determined by the number of rows in `self.bin_centers_`.
+        This is determined by the number of rows in `self.bin_centers`.
 
         Returns
         -------
@@ -753,7 +753,7 @@ class Environment:
         RuntimeError
             If called before the environment is fitted.
         """
-        return self.bin_centers_.shape[0]
+        return self.bin_centers.shape[0]
 
     @check_fitted
     def bin_at(self, points_nd: NDArray[np.float64]) -> NDArray[np.int_]:
@@ -822,7 +822,7 @@ class Environment:
         NDArray[np.float64], shape (n_requested_bins, n_dims) or (n_dims,)
             The N-D center point(s) corresponding to `bin_indices`.
         """
-        return self.bin_centers_[np.asarray(bin_indices, dtype=int)]
+        return self.bin_centers[np.asarray(bin_indices, dtype=int)]
 
     @check_fitted
     def neighbors(self, bin_index: int) -> List[int]:
@@ -830,7 +830,7 @@ class Environment:
         Find indices of neighboring active bins for a given active bin index.
 
         This method delegates to the `neighbors` method of the
-        underlying `LayoutEngine`, which typically uses the `connectivity_`.
+        underlying `LayoutEngine`, which typically uses the `connectivity`.
 
         Parameters
         ----------
@@ -848,7 +848,7 @@ class Environment:
         RuntimeError
             If called before the environment is fitted.
         """
-        return list(self.connectivity_.neighbors(bin_index))
+        return list(self.connectivity.neighbors(bin_index))
 
     @cached_property
     @check_fitted
@@ -908,7 +908,7 @@ class Environment:
             Returns np.inf if no path exists between two bins.
             Diagonal elements are 0.
         """
-        if self.connectivity_ is None or self.n_bins == 0:
+        if self.connectivity is None or self.n_bins == 0:
             return np.empty((0, 0), dtype=np.float64)
 
         dist_matrix = np.full((self.n_bins, self.n_bins), np.inf, dtype=np.float64)
@@ -916,7 +916,7 @@ class Environment:
 
         # path_lengths is an iterator of (source_node, {target_node: length})
         path_lengths = nx.shortest_path_length(
-            G=self.connectivity_, source=None, target=None, weight="distance"
+            G=self.connectivity, source=None, target=None, weight="distance"
         )
         for source_idx, targets in path_lengths:
             for target_idx, length in targets.items():
@@ -961,7 +961,7 @@ class Environment:
         from non_local_detector.diffusion_kernels import compute_diffusion_kernels
 
         return compute_diffusion_kernels(
-            self.connectivity_, bandwidth_sigma=bandwidth_sigma, weight=edge_weight
+            self.connectivity, bandwidth_sigma=bandwidth_sigma, weight=edge_weight
         )
 
     def get_geodesic_distance(
@@ -1003,7 +1003,7 @@ class Environment:
 
         try:
             return nx.shortest_path_length(
-                self.connectivity_,
+                self.connectivity,
                 source=source_bin,
                 target=target_bin,
                 weight=edge_weight,
@@ -1017,7 +1017,7 @@ class Environment:
         Create a Pandas DataFrame with attributes of each active bin.
 
         The DataFrame is constructed from the node data of the
-        `connectivity_`. Each row corresponds to an active bin.
+        `connectivity`. Each row corresponds to an active bin.
         Columns include the bin's N-D position (split into `pos_dim0`,
         `pos_dim1`, etc.) and any other attributes stored on the graph nodes.
 
@@ -1034,7 +1034,7 @@ class Environment:
         RuntimeError
             If called before the environment is fitted.
         """
-        graph = self.connectivity_
+        graph = self.connectivity
         if graph.number_of_nodes() == 0:
             raise ValueError("No active bins in the environment.")
 
@@ -1057,7 +1057,7 @@ class Environment:
 
         The path is a sequence of active bin indices (0 to n_active_bins - 1)
         connecting the source to the target. Path calculation uses the
-        'distance' attribute on the edges of the `connectivity_`
+        'distance' attribute on the edges of the `connectivity`
         as weights.
 
         Parameters
@@ -1081,9 +1081,9 @@ class Environment:
             If called before the environment is fitted.
         nx.NodeNotFound
             If `source_active_bin_idx` or `target_active_bin_idx` is not
-            a node in the `connectivity_`.
+            a node in the `connectivity`.
         """
-        graph = self.connectivity_
+        graph = self.connectivity
 
         if source_active_bin_idx == target_active_bin_idx:
             return [source_active_bin_idx]
@@ -1350,7 +1350,7 @@ class Environment:
         Convert active bin flat indices (0..N-1) to N-D grid indices.
 
         This method translates a flat index (which refers to an active bin,
-        e.g., a row in `self.bin_centers_`) back to its original N-dimensional
+        e.g., a row in `self.bin_centers`) back to its original N-dimensional
         index within the environment's full conceptual grid. This is primarily
         meaningful for grid-based layouts.
 
@@ -1374,22 +1374,22 @@ class Environment:
         ------
         TypeError
             If the environment is not N-D grid-based (e.g., if it's 1D or
-            lacks a clear N-D `grid_shape_` or `active_mask_`).
+            lacks a clear N-D `grid_shape` or `active_mask`).
         RuntimeError
             If called before the environment is fitted or if the connectivity
             graph is unavailable.
         """
         if (
-            self.grid_shape_ is None
-            or len(self.grid_shape_) <= 1
-            or self.active_mask_ is None
-            or self.active_mask_.ndim <= 1
+            self.grid_shape is None
+            or len(self.grid_shape) <= 1
+            or self.active_mask is None
+            or self.active_mask.ndim <= 1
         ):
             raise TypeError(
                 "N-D index conversion is primarily for N-D grid-based layouts "
-                "with a defined N-D active_mask_ and grid_shape_."
+                "with a defined N-D active_mask and grid_shape."
             )
-        if self.connectivity_ is None:
+        if self.connectivity is None:
             raise RuntimeError(
                 "Connectivity graph not available for mapping source indices."
             )
@@ -1400,15 +1400,15 @@ class Environment:
         output_nd_indices_list = []
 
         for active_flat_idx in flat_indices_arr:
-            if not (0 <= active_flat_idx < self.connectivity_.number_of_nodes()):
+            if not (0 <= active_flat_idx < self.connectivity.number_of_nodes()):
                 warnings.warn(
-                    f"Active flat_index {active_flat_idx} is out of bounds for connectivity_ nodes. Returning NaNs.",
+                    f"Active flat_index {active_flat_idx} is out of bounds for connectivity nodes. Returning NaNs.",
                     UserWarning,
                 )
-                output_nd_indices_list.append(tuple([np.nan] * len(self.grid_shape_)))
+                output_nd_indices_list.append(tuple([np.nan] * len(self.grid_shape)))
                 continue
 
-            node_data = self.connectivity_.nodes[active_flat_idx]
+            node_data = self.connectivity.nodes[active_flat_idx]
 
             # Prefer 'original_grid_nd_index' if directly available
             if (
@@ -1422,25 +1422,25 @@ class Environment:
                 original_full_grid_flat_idx = node_data["source_grid_flat_index"]
                 output_nd_indices_list.append(
                     tuple(
-                        np.unravel_index(original_full_grid_flat_idx, self.grid_shape_)
+                        np.unravel_index(original_full_grid_flat_idx, self.grid_shape)
                     )
                 )
             else:
                 warnings.warn(
-                    f"Node {active_flat_idx} in connectivity_ missing necessary source index information for N-D conversion. Returning NaNs.",
+                    f"Node {active_flat_idx} in connectivity missing necessary source index information for N-D conversion. Returning NaNs.",
                     UserWarning,
                 )
-                output_nd_indices_list.append(tuple([np.nan] * len(self.grid_shape_)))
+                output_nd_indices_list.append(tuple([np.nan] * len(self.grid_shape)))
 
         if (
             not output_nd_indices_list
         ):  # Should not happen if flat_indices_arr was not empty
-            return tuple(np.array([], dtype=int) for _ in range(len(self.grid_shape_)))  # type: ignore
+            return tuple(np.array([], dtype=int) for _ in range(len(self.grid_shape)))  # type: ignore
 
         # Convert list of tuples to tuple of arrays
         final_output_nd_indices = tuple(
             np.array([item[d] for item in output_nd_indices_list])
-            for d in range(len(self.grid_shape_))
+            for d in range(len(self.grid_shape))
         )
 
         if is_scalar:
@@ -1493,13 +1493,13 @@ class Environment:
             dimensions, or if input arrays cannot be broadcast.
         """
         if (
-            self.grid_shape_ is None
-            or len(self.grid_shape_) <= 1
-            or self.active_mask_ is None
-            or self.active_mask_.ndim <= 1
+            self.grid_shape is None
+            or len(self.grid_shape) <= 1
+            or self.active_mask is None
+            or self.active_mask.ndim <= 1
         ):
             raise TypeError("N-D index conversion is for N-D grid-based layouts.")
-        if self.connectivity_ is None:
+        if self.connectivity is None:
             raise RuntimeError(
                 "Connectivity graph not available for mapping to active indices."
             )
@@ -1516,20 +1516,20 @@ class Environment:
             temp_input = np.asarray(nd_idx_per_dim[0])
             if (
                 temp_input.ndim == 2
-                and temp_input.shape[0] == len(self.grid_shape_)
+                and temp_input.shape[0] == len(self.grid_shape)
                 and temp_input.shape[1] > 0
             ):  # (n_dims, n_points)
                 nd_indices_tuple = tuple(
-                    temp_input[d] for d in range(len(self.grid_shape_))
+                    temp_input[d] for d in range(len(self.grid_shape))
                 )
             elif temp_input.ndim == 2 and temp_input.shape[1] == len(
-                self.grid_shape_
+                self.grid_shape
             ):  # (n_points, n_dims)
                 nd_indices_tuple = tuple(
-                    temp_input[:, d] for d in range(len(self.grid_shape_))
+                    temp_input[:, d] for d in range(len(self.grid_shape))
                 )
             elif temp_input.ndim == 1 and len(temp_input) == len(
-                self.grid_shape_
+                self.grid_shape
             ):  # Single N-D index as a list/tuple
                 nd_indices_tuple = tuple(
                     np.array([val]) for val in temp_input
@@ -1541,9 +1541,9 @@ class Environment:
                 np.atleast_1d(np.asarray(idx, dtype=int)) for idx in nd_idx_per_dim
             )
 
-        if len(nd_indices_tuple) != len(self.grid_shape_):
+        if len(nd_indices_tuple) != len(self.grid_shape):
             raise ValueError(
-                f"Expected {len(self.grid_shape_)} N-D indices, got {len(nd_indices_tuple)}"
+                f"Expected {len(self.grid_shape)} N-D indices, got {len(nd_indices_tuple)}"
             )
 
         # Determine output shape based on input arrays (assuming they broadcast correctly)
@@ -1558,14 +1558,14 @@ class Environment:
         in_bounds_mask = np.ones(common_shape, dtype=bool)
         for dim_idx, dim_coords in enumerate(nd_indices_tuple):
             in_bounds_mask &= (dim_coords >= 0) & (
-                dim_coords < self.grid_shape_[dim_idx]
+                dim_coords < self.grid_shape[dim_idx]
             )
 
         if not np.any(in_bounds_mask):
             return (
                 output_flat_indices[0]
                 if np.isscalar(nd_idx_per_dim[0])
-                and len(nd_idx_per_dim) == len(self.grid_shape_)
+                and len(nd_idx_per_dim) == len(self.grid_shape)
                 and common_shape == (1,)
                 else output_flat_indices
             )
@@ -1574,7 +1574,7 @@ class Environment:
         valid_nd_indices_tuple = tuple(idx[in_bounds_mask] for idx in nd_indices_tuple)
 
         # Check if these in-bounds N-D grid cells are active
-        are_these_bins_active_on_full_grid = self.active_mask_[valid_nd_indices_tuple]
+        are_these_bins_active_on_full_grid = self.active_mask[valid_nd_indices_tuple]
 
         # Further filter to only N-D indices that are both in-bounds AND active
         truly_active_nd_indices_tuple = tuple(
@@ -1588,14 +1588,14 @@ class Environment:
             return (
                 output_flat_indices[0]
                 if np.isscalar(nd_idx_per_dim[0])
-                and len(nd_idx_per_dim) == len(self.grid_shape_)
+                and len(nd_idx_per_dim) == len(self.grid_shape)
                 and common_shape == (1,)
                 else output_flat_indices
             )
 
         # Convert these N-D indices (of active bins on full grid) to original_full_grid_flat_indices
         original_flat_indices_of_targets = np.ravel_multi_index(
-            truly_active_nd_indices_tuple, self.grid_shape_
+            truly_active_nd_indices_tuple, self.grid_shape
         )
 
         final_active_bin_ids = np.array(
@@ -1617,7 +1617,7 @@ class Environment:
         # Handle scalar input case for return type
         if (
             np.isscalar(nd_idx_per_dim[0])
-            and len(nd_idx_per_dim) == len(self.grid_shape_)
+            and len(nd_idx_per_dim) == len(self.grid_shape)
             and common_shape == (1,)
         ):
             return int(output_flat_indices[0])
@@ -1627,7 +1627,7 @@ class Environment:
     def get_boundary_bin_indices(
         self: "Environment", connectivity_threshold_factor: Optional[float] = None
     ) -> NDArray[np.int_]:
-        graph = self.connectivity_
+        graph = self.connectivity
         if graph.number_of_nodes() == 0:
             return np.array([], dtype=int)
 
@@ -1635,16 +1635,16 @@ class Environment:
 
         # Grid-specific logic for N-D grids (N > 1)
         is_nd_grid_layout_with_mask = (
-            hasattr(self, "active_mask_")
-            and self.active_mask_ is not None
-            and hasattr(self, "grid_shape_")
-            and self.grid_shape_ is not None
-            and len(self.grid_shape_) > 1  # Explicitly for N-D (N>1) grids
+            hasattr(self, "active_mask")
+            and self.active_mask is not None
+            and hasattr(self, "grid_shape")
+            and self.grid_shape is not None
+            and len(self.grid_shape) > 1  # Explicitly for N-D (N>1) grids
         )
 
         if is_nd_grid_layout_with_mask and connectivity_threshold_factor is None:
-            active_mask_nd = self.active_mask_
-            grid_shape_nd = self.grid_shape_
+            active_mask_nd = self.active_mask
+            grid_shape_nd = self.grid_shape
             n_dims = len(grid_shape_nd)
 
             for active_node_id in graph.nodes():
@@ -1679,7 +1679,7 @@ class Environment:
         else:
             # Degree-based heuristic for:
             # - Non-grid layouts
-            # - 1D grid layouts (where len(grid_shape_) == 1)
+            # - 1D grid layouts (where len(grid_shape) == 1)
             # - N-D grid layouts if connectivity_threshold_factor is provided
             # - N-D grid layouts if 'original_grid_nd_index' is missing for nodes
 
@@ -1701,9 +1701,9 @@ class Environment:
                 if self._layout_type_used == "Hexagonal" and median_degree > 5:
                     threshold_degree = 5.5  # Bins with < 6 neighbors
                 elif (  # For 1D grids or path-like graphs
-                    hasattr(self, "grid_shape_")
-                    and self.grid_shape_ is not None
-                    and len(self.grid_shape_) == 1
+                    hasattr(self, "grid_shape")
+                    and self.grid_shape is not None
+                    and len(self.grid_shape) == 1
                 ) or (self.is_1d and isinstance(self.layout, GraphLayout)):
                     # For linear structures, ends typically have degree 1, internal degree 2
                     # Threshold just below typical internal degree.
@@ -1711,9 +1711,9 @@ class Environment:
                         1.5 if max_degree_val >= 2 else max_degree_val
                     )  # Catches degree 1
                 elif is_nd_grid_layout_with_mask and median_degree > (
-                    2 * len(self.grid_shape_) - 1
+                    2 * len(self.grid_shape) - 1
                 ):  # For N>1 grids when falling back
-                    threshold_degree = 2 * len(self.grid_shape_) - 0.5
+                    threshold_degree = 2 * len(self.grid_shape) - 0.5
                 else:  # General fallback if no specific layout recognized or no factor
                     threshold_degree = (
                         median_degree  # Bins with degree < median are boundary
@@ -1836,7 +1836,7 @@ class Environment:
 
             polygon = region_info.data
             contained_mask = np.array(
-                [polygon.contains(_shp.Point(center)) for center in self.bin_centers_],
+                [polygon.contains(_shp.Point(center)) for center in self.bin_centers],
                 dtype=bool,
             )
             return np.flatnonzero(contained_mask)
@@ -1856,7 +1856,7 @@ class Environment:
             is part of the region.
         """
         active_bins_for_mask = self.bins_in_region(region_name)
-        mask = np.zeros(self.bin_centers_.shape[0], dtype=bool)
+        mask = np.zeros(self.bin_centers.shape[0], dtype=bool)
         if active_bins_for_mask.size > 0:
             mask[active_bins_for_mask] = True
         return mask
@@ -1868,7 +1868,7 @@ class Environment:
 
         - For 'point' regions, returns the point itself.
         - For 'polygon' regions, returns the centroid of the polygon.
-        - For 'mask' regions, returns the mean of the bin_centers_ of the
+        - For 'mask' regions, returns the mean of the bin_centers of the
           active bins included in the region.
 
         Returns

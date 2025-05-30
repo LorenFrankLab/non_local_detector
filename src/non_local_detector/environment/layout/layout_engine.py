@@ -98,12 +98,12 @@ class LayoutEngine(Protocol):
 
     Attributes
     ----------
-    bin_centers_ : NDArray[np.float64]
+    bin_centers : NDArray[np.float64]
         Coordinates of the center of each *active* bin/node.
         Shape is (n_active_bins, n_dims).
-    connectivity_ : Optional[nx.Graph]
+    connectivity : Optional[nx.Graph]
         Graph where nodes are integers from `0` to `n_active_bins - 1`,
-        directly corresponding to rows in `bin_centers_`.
+        directly corresponding to rows in `bin_centers`.
         **Mandatory Node Attributes**:
             - 'pos': Tuple[float, ...] - N-D coordinates of the active bin center.
             - 'source_grid_flat_index': int - Flat index in the original
@@ -120,23 +120,23 @@ class LayoutEngine(Protocol):
     is_1d : bool
         True if the layout represents a primarily 1-dimensional structure
         (e.g., a linearized track), False otherwise.
-    dimension_ranges_ : Optional[Sequence[Tuple[float, float]]]
+    dimension_ranges : Optional[Sequence[Tuple[float, float]]]
         The actual min/max extent `[(min_d0, max_d0), ..., (min_dN-1, max_dN-1)]`
         covered by the layout's geometry.
-    grid_edges_ : Optional[Tuple[NDArray[np.float64], ...]]
+    grid_edges : Optional[Tuple[NDArray[np.float64], ...]]
         For grid-based layouts: A tuple of 1D arrays, where each array
         contains the bin edge positions for one dimension of the *original,
         full grid*. `None` or `()` for non-grid or point-based layouts.
-    grid_shape_ : Optional[Tuple[int, ...]]
+    grid_shape : Optional[Tuple[int, ...]]
         For grid-based layouts: The N-D shape (number of bins in each
         dimension) of the *original, full grid*.
         For point-based/cell-based layouts without a full grid concept:
         Typically `(n_active_bins,)`.
-    active_mask_ : Optional[NDArray[np.bool_]]
+    active_mask : Optional[NDArray[np.bool_]]
         - For grid-based layouts: An N-D boolean mask indicating active bins
-          on the *original, full grid* (shape matches `grid_shape_`).
+          on the *original, full grid* (shape matches `grid_shape`).
         - For point-based/cell-based layouts: A 1D array of `True` values,
-          shape `(n_active_bins,)`, corresponding to `bin_centers_`.
+          shape `(n_active_bins,)`, corresponding to `bin_centers`.
     _layout_type_tag : str
         A string identifier for the type of layout (e.g., "RegularGrid").
         Used for introspection and serialization.
@@ -147,14 +147,14 @@ class LayoutEngine(Protocol):
     """
 
     # --- Required Data Attributes ---
-    bin_centers_: NDArray[np.float64]
-    connectivity_: Optional[nx.Graph] = None
-    dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
+    bin_centers: NDArray[np.float64]
+    connectivity: Optional[nx.Graph] = None
+    dimension_ranges: Optional[Sequence[Tuple[float, float]]] = None
 
     # Attributes primarily for GRID-BASED Layouts
-    grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
-    grid_shape_: Optional[Tuple[int, ...]] = None
-    active_mask_: Optional[NDArray[np.bool_]] = None
+    grid_edges: Optional[Tuple[NDArray[np.float64], ...]] = None
+    grid_shape: Optional[Tuple[int, ...]] = None
+    active_mask: Optional[NDArray[np.bool_]] = None
 
     # Internal Attributes for Introspection/Serialization
     _layout_type_tag: str
@@ -166,8 +166,8 @@ class LayoutEngine(Protocol):
         Construct the layout's geometry, bins, and connectivity graph.
 
         This method is responsible for populating all the attributes defined
-        in the `LayoutEngine` protocol (e.g., `bin_centers_`,
-        `connectivity_`, etc.) based on the provided keyword arguments.
+        in the `LayoutEngine` protocol (e.g., `bin_centers`,
+        `connectivity`, etc.) based on the provided keyword arguments.
         The specific arguments required will vary depending on the concrete
         implementation of the layout engine.
         """
@@ -198,7 +198,7 @@ class LayoutEngine(Protocol):
         """
         Find indices of neighboring active bins for a given active bin index.
 
-        This typically uses the `connectivity_`. The input `bin_index`
+        This typically uses the `connectivity`. The input `bin_index`
         and returned indices are relative to the active bins (0 to N-1).
 
         Parameters
@@ -281,11 +281,11 @@ class _KDTreeMixin:
     to find neighbors (`neighbors`).
 
     Assumes the inheriting class defines:
-    - `self.bin_centers_`: NDArray of active bin center coordinates.
-    - `self.connectivity_`: NetworkX graph of active bins.
+    - `self.bin_centers`: NDArray of active bin center coordinates.
+    - `self.connectivity`: NetworkX graph of active bins.
 
     The `_build_kdtree` method must be called by the inheriting layout's
-    `build` method after `bin_centers_` is finalized.
+    `build` method after `bin_centers` is finalized.
 
     Attributes:
     ----------
@@ -312,7 +312,7 @@ class _KDTreeMixin:
         internal node indices (0 to k-1) back to the original indices within
         `points_for_tree` that were selected by the mask.
 
-        If `points_for_tree` are the layout's final `bin_centers_` (which are
+        If `points_for_tree` are the layout's final `bin_centers` (which are
         all active), `mask_for_points_in_tree` should be `None` or all `True`.
         In this common case, `_kdtree_nodes_to_bin_indices_map` will effectively
         be `np.arange(len(points_for_tree))`.
@@ -321,7 +321,7 @@ class _KDTreeMixin:
         ----------
         points_for_tree : NDArray[np.float64], shape (n_total_points, n_dims)
             The set of points from which to build the KD-tree. Typically, these
-            are `self.bin_centers_` of the layout.
+            are `self.bin_centers` of the layout.
         mask_for_points_in_tree : Optional[NDArray[np.bool_]], shape (n_total_points,), optional
             A boolean mask indicating which points from `points_for_tree`
             to include in the KD-tree. If None, all points are used.
@@ -392,7 +392,7 @@ class _KDTreeMixin:
         """
         Map N-D points to active bin indices using nearest-neighbor search.
 
-        Finds the nearest active bin center in `self.bin_centers_` (on which
+        Finds the nearest active bin center in `self.bin_centers` (on which
         the KD-tree was built) to each query point.
 
         Parameters
@@ -440,7 +440,7 @@ class _KDTreeMixin:
         )
 
         # Map these internal KD-tree indices back to the original bin indices
-        # (which are 0 to N-1, corresponding to rows in self.bin_centers_)
+        # (which are 0 to N-1, corresponding to rows in self.bin_centers)
         # using the map created in _build_kdtree.
         final_bin_indices = self._kdtree_nodes_to_bin_indices_map[
             kdtree_internal_indices
@@ -452,7 +452,7 @@ class _KDTreeMixin:
         """
         Find indices of neighboring active bins for a given active bin index.
 
-        Uses the `connectivity_` which should have nodes `0` to
+        Uses the `connectivity` which should have nodes `0` to
         `n_active_bins - 1`.
 
         Parameters
@@ -469,20 +469,20 @@ class _KDTreeMixin:
         Raises
         ------
         AttributeError
-            If `connectivity_` is not defined on the instance.
+            If `connectivity` is not defined on the instance.
         ValueError
-            If `connectivity_` is None (e.g., not built).
+            If `connectivity` is None (e.g., not built).
         """
-        if not hasattr(self, "connectivity_"):
+        if not hasattr(self, "connectivity"):
             raise AttributeError(
-                f"{self.__class__.__name__} does not have 'connectivity_' attribute."
+                f"{self.__class__.__name__} does not have 'connectivity' attribute."
             )
 
-        graph_to_use: Optional[nx.Graph] = getattr(self, "connectivity_", None)
+        graph_to_use: Optional[nx.Graph] = getattr(self, "connectivity", None)
 
         if graph_to_use is None:
             raise ValueError(
-                f"{self.__class__.__name__}.connectivity_ is None. "
+                f"{self.__class__.__name__}.connectivity is None. "
                 "Ensure the layout is built."
             )
 
@@ -490,7 +490,7 @@ class _KDTreeMixin:
             # This could happen if bin_index is out of range for the number of active bins
             # or if the graph was unexpectedly empty or misconfigured.
             warnings.warn(
-                f"Bin index {bin_index} not found in connectivity_. Returning no neighbors.",
+                f"Bin index {bin_index} not found in connectivity. Returning no neighbors.",
                 RuntimeWarning,
             )
             return []
@@ -507,23 +507,23 @@ class _GridMixin:
     default plotting, and `bin_size` for uniform grids.
 
     Assumes the inheriting class defines grid-specific attributes like
-    `grid_edges_`, `grid_shape_`, `active_mask_`, `bin_centers_`, and
-    `connectivity_`.
+    `grid_edges`, `grid_shape`, `active_mask`, `bin_centers`, and
+    `connectivity`.
     """
 
-    grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
-    grid_shape_: Optional[Tuple[int, ...]] = None
-    active_mask_: Optional[NDArray[np.bool_]] = None
-    bin_centers_: Optional[NDArray[np.float64]] = None
-    connectivity_: Optional[nx.Graph] = None
-    dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
+    grid_edges: Optional[Tuple[NDArray[np.float64], ...]] = None
+    grid_shape: Optional[Tuple[int, ...]] = None
+    active_mask: Optional[NDArray[np.bool_]] = None
+    bin_centers: Optional[NDArray[np.float64]] = None
+    connectivity: Optional[nx.Graph] = None
+    dimension_ranges: Optional[Sequence[Tuple[float, float]]] = None
     _layout_type_tag: str = "_Grid_Layout"
 
     def point_to_bin_index(self, points: NDArray[np.float64]) -> NDArray[np.int_]:
         """
         Map N-D points to active bin indices based on grid structure.
 
-        Uses the grid's `grid_edges_`, `grid_shape_`, and `active_mask_`
+        Uses the grid's `grid_edges`, `grid_shape`, and `active_mask`
         to determine the corresponding active bin for each point.
 
         Parameters
@@ -539,16 +539,16 @@ class _GridMixin:
         Raises
         ------
         RuntimeError
-            If grid attributes (`grid_edges_`, `grid_shape_`) are not set.
+            If grid attributes (`grid_edges`, `grid_shape`) are not set.
         """
-        if self.grid_edges_ is None or self.grid_shape_ is None:
+        if self.grid_edges is None or self.grid_shape is None:
             raise RuntimeError("Grid layout not built; edges or shape missing.")
 
         return _points_to_regular_grid_bin_ind(
             points=points,
-            grid_edges=self.grid_edges_,
-            grid_shape=self.grid_shape_,
-            active_mask=self.active_mask_,
+            grid_edges=self.grid_edges,
+            grid_shape=self.grid_shape,
+            active_mask=self.active_mask,
         )
 
     def neighbors(self, bin_index: int) -> List[int]:
@@ -568,18 +568,18 @@ class _GridMixin:
         Raises
         ------
         ValueError
-            If `connectivity_` is None.
+            If `connectivity` is None.
         """
-        if not hasattr(self, "connectivity_"):
+        if not hasattr(self, "connectivity"):
             raise AttributeError(
-                f"{self.__class__.__name__} does not have 'connectivity_' attribute."
+                f"{self.__class__.__name__} does not have 'connectivity' attribute."
             )
 
-        graph_to_use: Optional[nx.Graph] = getattr(self, "connectivity_", None)
+        graph_to_use: Optional[nx.Graph] = getattr(self, "connectivity", None)
 
         if graph_to_use is None:
             raise ValueError(
-                f"{self.__class__.__name__}.connectivity_ is None. "
+                f"{self.__class__.__name__}.connectivity is None. "
                 "Ensure the layout is built."
             )
 
@@ -587,7 +587,7 @@ class _GridMixin:
             # This could happen if bin_index is out of range for the number of active bins
             # or if the graph was unexpectedly empty or misconfigured.
             warnings.warn(
-                f"Bin index {bin_index} not found in connectivity_. Returning no neighbors.",
+                f"Bin index {bin_index} not found in connectivity. Returning no neighbors.",
                 RuntimeWarning,
             )
             return []
@@ -607,8 +607,8 @@ class _GridMixin:
         """
         Plot the grid-based layout.
 
-        For 2D grids, displays the `active_mask_` using `pcolormesh` and
-        optionally overlays the `connectivity_`.
+        For 2D grids, displays the `active_mask` using `pcolormesh` and
+        optionally overlays the `connectivity`.
 
         Parameters
         ----------
@@ -617,9 +617,9 @@ class _GridMixin:
         figsize : Tuple[float, float], default=(7, 7)
             Size of the figure if a new one is created.
         cmap : str, default="bone_r"
-            Colormap for the `active_mask_` plot.
+            Colormap for the `active_mask` plot.
         alpha : float, default=0.7
-            Transparency for the `active_mask_` plot.
+            Transparency for the `active_mask` plot.
         draw_connectivity_graph : bool, default=True
             If True, draw the connectivity graph nodes and edges.
         node_size : float, default=20
@@ -643,48 +643,48 @@ class _GridMixin:
             If attempting to plot a non-2D grid layout with this method.
         """
         if (
-            self.bin_centers_ is None
-            or self.grid_edges_ is None
-            or self.active_mask_ is None
-            or self.grid_shape_ is None
-            or self.connectivity_ is None
+            self.bin_centers is None
+            or self.grid_edges is None
+            or self.active_mask is None
+            or self.grid_shape is None
+            or self.connectivity is None
         ):
             raise RuntimeError("Layout not built. Call `build` first.")
 
-        is_2d_grid = len(self.grid_shape_) == 2 and len(self.grid_edges_) == 2
+        is_2d_grid = len(self.grid_shape) == 2 and len(self.grid_edges) == 2
 
         if is_2d_grid:
             if ax is None:
                 _, ax = plt.subplots(figsize=figsize)
             ax.pcolormesh(
-                self.grid_edges_[0],
-                self.grid_edges_[1],
-                self.active_mask_.T,
+                self.grid_edges[0],
+                self.grid_edges[1],
+                self.active_mask.T,
                 cmap=cmap,
                 alpha=alpha,
                 shading="auto",
             )
-            ax.set_xticks(self.grid_edges_[0])
-            ax.set_yticks(self.grid_edges_[1])
+            ax.set_xticks(self.grid_edges[0])
+            ax.set_yticks(self.grid_edges[1])
             ax.grid(True, ls="-", lw=0.5, c="gray")
             ax.set_aspect("equal")
             ax.set_title(f"{self._layout_type_tag} (2D Grid)")
             ax.set_xlabel("Dimension 0")
             ax.set_ylabel("Dimension 1")
-            if self.dimension_ranges_:
-                ax.set_xlim(self.dimension_ranges_[0])
-                ax.set_ylim(self.dimension_ranges_[1])
+            if self.dimension_ranges:
+                ax.set_xlim(self.dimension_ranges[0])
+                ax.set_ylim(self.dimension_ranges[1])
 
             if draw_connectivity_graph:
-                node_position = nx.get_node_attributes(self.connectivity_, "pos")
+                node_position = nx.get_node_attributes(self.connectivity, "pos")
                 nx.draw_networkx_nodes(
-                    self.connectivity_,
+                    self.connectivity,
                     node_position,
                     ax=ax,
                     node_size=node_size,
                     node_color=node_color,
                 )
-                for node_id1, node_id2 in self.connectivity_.edges:
+                for node_id1, node_id2 in self.connectivity.edges:
                     pos = np.stack((node_position[node_id1], node_position[node_id2]))
                     ax.plot(pos[:, 0], pos[:, 1], color="black", zorder=-1)
 
@@ -715,7 +715,7 @@ class _GridMixin:
         Calculate area/volume for each active bin, assuming a uniform grid.
 
         Computes the product of bin side lengths for each dimension from
-        `grid_edges_`. Assumes all bins in the grid have the same dimensions.
+        `grid_edges`. Assumes all bins in the grid have the same dimensions.
 
         Returns
         -------
@@ -725,24 +725,24 @@ class _GridMixin:
         Raises
         ------
         RuntimeError
-            If `grid_edges_` or `bin_centers_` is not populated.
+            If `grid_edges` or `bin_centers` is not populated.
         """
-        if self.grid_edges_ is None or self.bin_centers_ is None:  # pragma: no cover
-            raise RuntimeError("Layout not built; grid_edges_ or bin_centers_ missing.")
-        if not self.grid_edges_ or not all(
-            len(e) > 1 for e in self.grid_edges_
+        if self.grid_edges is None or self.bin_centers is None:  # pragma: no cover
+            raise RuntimeError("Layout not built; grid_edges or bin_centers missing.")
+        if not self.grid_edges or not all(
+            len(e) > 1 for e in self.grid_edges
         ):  # pragma: no cover
             raise ValueError(
-                "grid_edges_ are not properly defined for area/volume calculation."
+                "grid_edges are not properly defined for area/volume calculation."
             )
 
         # Assume uniform bin sizes from the first diff of each dimension's edges
         bin_dimension_sizes = np.array(
-            [np.diff(edge_dim)[0] for edge_dim in self.grid_edges_]
+            [np.diff(edge_dim)[0] for edge_dim in self.grid_edges]
         )
         single_bin_measure = np.prod(bin_dimension_sizes)
 
-        return np.full(self.bin_centers_.shape[0], single_bin_measure)
+        return np.full(self.bin_centers.shape[0], single_bin_measure)
 
 
 # ---------------------------------------------------------------------------
@@ -760,12 +760,12 @@ class RegularGridLayout(_GridMixin):
     `_GridMixin`.
     """
 
-    bin_centers_: NDArray[np.float64]
-    connectivity_: Optional[nx.Graph] = None
-    dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
-    grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
-    grid_shape_: Optional[Tuple[int, ...]] = None
-    active_mask_: Optional[NDArray[np.bool_]] = None
+    bin_centers: NDArray[np.float64]
+    connectivity: Optional[nx.Graph] = None
+    dimension_ranges: Optional[Sequence[Tuple[float, float]]] = None
+    grid_edges: Optional[Tuple[NDArray[np.float64], ...]] = None
+    grid_shape: Optional[Tuple[int, ...]] = None
+    active_mask: Optional[NDArray[np.bool_]] = None
 
     _layout_type_tag: str
     _build_params_used: Dict[str, Any]
@@ -775,12 +775,12 @@ class RegularGridLayout(_GridMixin):
         self._layout_type_tag = "RegularGrid"
         self._build_params_used = {}
         # Initialize all protocol attributes to satisfy type checkers, even if None
-        self.bin_centers_ = np.empty((0, 0))
-        self.connectivity_ = None
-        self.dimension_ranges_ = None
-        self.grid_edges_ = None
-        self.grid_shape_ = None
-        self.active_mask_ = None
+        self.bin_centers = np.empty((0, 0))
+        self.connectivity = None
+        self.dimension_ranges = None
+        self.grid_edges = None
+        self.grid_shape = None
+        self.active_mask = None
 
     def build(
         self,
@@ -831,7 +831,7 @@ class RegularGridLayout(_GridMixin):
 
         # --- Determine dimension_ranges if not provided ---
         if dimension_ranges is not None:
-            self.dimension_ranges_ = dimension_ranges
+            self.dimension_ranges = dimension_ranges
         else:
             # Infer ranges from data_samples
             if data_samples is None:
@@ -845,26 +845,26 @@ class RegularGridLayout(_GridMixin):
                 else bin_size
             )
             # Infer ranges from data_samples
-            self.dimension_ranges_ = _infer_dimension_ranges_from_samples(
+            self.dimension_ranges = _infer_dimension_ranges_from_samples(
                 data_samples=data_samples,
                 buffer_around_data=buffer_for_inference,
             )
 
         (
-            self.grid_edges_,
+            self.grid_edges,
             full_grid_bin_centers,
-            self.grid_shape_,
+            self.grid_shape,
         ) = _create_regular_grid(
             data_samples=data_samples,
             bin_size=bin_size,
-            dimension_range=self.dimension_ranges_,
+            dimension_range=self.dimension_ranges,
             add_boundary_bins=add_boundary_bins,
         )
 
         if infer_active_bins and data_samples is not None:
-            self.active_mask_ = _infer_active_bins_from_regular_grid(
+            self.active_mask = _infer_active_bins_from_regular_grid(
                 data_samples=data_samples,
-                edges=self.grid_edges_,
+                edges=self.grid_edges,
                 close_gaps=close_gaps,
                 fill_holes=fill_holes,
                 dilate=dilate,
@@ -873,18 +873,18 @@ class RegularGridLayout(_GridMixin):
             )
         else:
             # No data_samples or not inferring active bins, use all bins
-            self.active_mask_ = np.ones(self.grid_shape_, dtype=bool)
+            self.active_mask = np.ones(self.grid_shape, dtype=bool)
 
-        if not np.any(self.active_mask_):
+        if not np.any(self.active_mask):
             raise ValueError(
                 "No active bins found. Check your data_samples and bin_size."
             )
 
-        self.bin_centers_ = full_grid_bin_centers[self.active_mask_.ravel()]
-        self.connectivity_ = _create_regular_grid_connectivity_graph(
+        self.bin_centers = full_grid_bin_centers[self.active_mask.ravel()]
+        self.connectivity = _create_regular_grid_connectivity_graph(
             full_grid_bin_centers=full_grid_bin_centers,
-            active_mask_nd=self.active_mask_,
-            grid_shape=self.grid_shape_,
+            active_mask_nd=self.active_mask,
+            grid_shape=self.grid_shape,
             connect_diagonal=connect_diagonal_neighbors,
         )
 
@@ -899,13 +899,13 @@ class HexagonalLayout(_KDTreeMixin):
     graph is built, but `point_to_bin_index` is specialized for hexagonal grids.
     """
 
-    bin_centers_: NDArray[np.float64]
-    connectivity_: Optional[nx.Graph] = None
-    dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
+    bin_centers: NDArray[np.float64]
+    connectivity: Optional[nx.Graph] = None
+    dimension_ranges: Optional[Sequence[Tuple[float, float]]] = None
 
-    grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = ()
-    grid_shape_: Optional[Tuple[int, ...]] = None
-    active_mask_: Optional[NDArray[np.bool_]] = None
+    grid_edges: Optional[Tuple[NDArray[np.float64], ...]] = ()
+    grid_shape: Optional[Tuple[int, ...]] = None
+    active_mask: Optional[NDArray[np.bool_]] = None
 
     _layout_type_tag: str
     _build_params_used: Dict[str, Any]
@@ -918,12 +918,12 @@ class HexagonalLayout(_KDTreeMixin):
         """Initialize a HexagonalLayout engine."""
         self._layout_type_tag = "Hexagonal"
         self._build_params_used = {}
-        self.bin_centers_ = np.empty((0, 2))
-        self.connectivity_ = None
-        self.dimension_ranges_ = None
-        self.grid_edges_ = ()
-        self.grid_shape_ = None
-        self.active_mask_ = None
+        self.bin_centers = np.empty((0, 2))
+        self.connectivity = None
+        self.dimension_ranges = None
+        self.grid_edges = ()
+        self.grid_shape = None
+        self.active_mask = None
         self.hexagon_width = None
         self.hex_radius_ = None
         self.hex_orientation_ = None
@@ -976,12 +976,12 @@ class HexagonalLayout(_KDTreeMixin):
         self.hexagon_width = hexagon_width
         (
             full_grid_bin_centers,
-            self.grid_shape_,
+            self.grid_shape,
             self.hex_radius_,
             self.hex_orientation_,
             self.grid_offset_x_,
             self.grid_offset_y_,
-            self.dimension_ranges_,
+            self.dimension_ranges,
         ) = _create_hex_grid(
             data_samples=data_samples,
             dimension_range=dimension_ranges,
@@ -990,7 +990,7 @@ class HexagonalLayout(_KDTreeMixin):
         if infer_active_bins and data_samples is not None:
             active_bin_original_flat_indices = _infer_active_bins_from_hex_grid(
                 data_samples=data_samples,
-                centers_shape=self.grid_shape_,
+                centers_shape=self.grid_shape,
                 hex_radius=self.hex_radius_,
                 min_x=self.grid_offset_x_,
                 min_y=self.grid_offset_y_,
@@ -999,21 +999,21 @@ class HexagonalLayout(_KDTreeMixin):
         else:
             active_bin_original_flat_indices = np.arange(len(full_grid_bin_centers))
 
-        nd_active_mask = np.zeros(self.grid_shape_, dtype=bool).ravel()
+        nd_active_mask = np.zeros(self.grid_shape, dtype=bool).ravel()
         nd_active_mask[active_bin_original_flat_indices] = True
-        self.active_mask_ = nd_active_mask.reshape(self.grid_shape_)
+        self.active_mask = nd_active_mask.reshape(self.grid_shape)
 
-        self.bin_centers_ = full_grid_bin_centers[active_bin_original_flat_indices]
+        self.bin_centers = full_grid_bin_centers[active_bin_original_flat_indices]
 
-        self.connectivity_ = _create_hex_connectivity_graph(
+        self.connectivity = _create_hex_connectivity_graph(
             active_original_flat_indices=active_bin_original_flat_indices,
             full_grid_bin_centers=full_grid_bin_centers,
-            centers_shape=self.grid_shape_,
+            centers_shape=self.grid_shape,
         )
 
         self._source_flat_to_active_id_map = {
             data["source_grid_flat_index"]: node_id
-            for node_id, data in self.connectivity_.nodes(data=True)
+            for node_id, data in self.connectivity.nodes(data=True)
         }
 
     @property
@@ -1046,7 +1046,7 @@ class HexagonalLayout(_KDTreeMixin):
         """
         ax = _generic_graph_plot(
             ax=ax,
-            graph=self.connectivity_,
+            graph=self.connectivity,
             name=self._layout_type_tag,
             **kwargs,
         )
@@ -1054,8 +1054,8 @@ class HexagonalLayout(_KDTreeMixin):
         if (
             kwargs.get("show_hexagons", True)
             and self.hex_radius_ is not None
-            and self.bin_centers_ is not None
-            and self.bin_centers_.shape[0] > 0
+            and self.bin_centers is not None
+            and self.bin_centers.shape[0] > 0
         ):
 
             hex_kws = kwargs.get(
@@ -1069,8 +1069,8 @@ class HexagonalLayout(_KDTreeMixin):
             )
 
             ax.scatter(
-                self.bin_centers_[:, 0],
-                self.bin_centers_[:, 1],
+                self.bin_centers[:, 0],
+                self.bin_centers[:, 1],
                 s=1,
                 label="hexagonal grid",
             )
@@ -1081,14 +1081,14 @@ class HexagonalLayout(_KDTreeMixin):
                     radius=self.hex_radius_,
                     orientation=self.hex_orientation_,
                 )
-                for x, y in self.bin_centers_
+                for x, y in self.bin_centers
             ]
 
             collection = PatchCollection(patches, **hex_kws)
             ax.add_collection(collection)
             ax.plot(
-                self.bin_centers_[:, 0],
-                self.bin_centers_[:, 1],
+                self.bin_centers[:, 0],
+                self.bin_centers[:, 1],
                 marker="o",
                 markersize=1,
                 color="blue",
@@ -1100,14 +1100,14 @@ class HexagonalLayout(_KDTreeMixin):
             padding = 1.1 * self.hex_radius_
             ax.set_xlim(
                 (
-                    self.dimension_ranges_[0][0] - padding,
-                    self.dimension_ranges_[0][1] + padding,
+                    self.dimension_ranges[0][0] - padding,
+                    self.dimension_ranges[0][1] + padding,
                 )
             )
             ax.set_ylim(
                 (
-                    self.dimension_ranges_[1][0] - padding,
-                    self.dimension_ranges_[1][1] + padding,
+                    self.dimension_ranges[1][0] - padding,
+                    self.dimension_ranges[1][1] + padding,
                 )
             )
             ax.set_aspect("equal", adjustable="box")
@@ -1134,7 +1134,7 @@ class HexagonalLayout(_KDTreeMixin):
             self.grid_offset_x_ is None
             or self.grid_offset_y_ is None
             or self.hex_radius_ is None
-            or self.grid_shape_ is None
+            or self.grid_shape is None
             or self._source_flat_to_active_id_map is None
         ):
             # This can happen if build() failed or was incomplete (e.g. no active bins)
@@ -1150,7 +1150,7 @@ class HexagonalLayout(_KDTreeMixin):
             grid_offset_x=self.grid_offset_x_,
             grid_offset_y=self.grid_offset_y_,
             hex_radius=self.hex_radius_,
-            centers_shape=self.grid_shape_,
+            centers_shape=self.grid_shape,
         )
         return np.array(
             [
@@ -1174,15 +1174,15 @@ class HexagonalLayout(_KDTreeMixin):
         Raises
         ------
         RuntimeError
-            If `hex_radius_` or `bin_centers_` is not populated.
+            If `hex_radius_` or `bin_centers` is not populated.
         """
-        if self.hex_radius_ is None or self.bin_centers_ is None:  # pragma: no cover
-            raise RuntimeError("Layout not built; hex_radius_ or bin_centers_ missing.")
+        if self.hex_radius_ is None or self.bin_centers is None:  # pragma: no cover
+            raise RuntimeError("Layout not built; hex_radius_ or bin_centers missing.")
 
         # Area of a regular hexagon: (3 * sqrt(3) / 2) * side_length^2
         # For pointy-top hexagons, side_length (s) is equal to hex_radius_ (R, center to vertex).
         single_hex_area = 3.0 * np.sqrt(3.0) / 2.0 * self.hex_radius_**2.0
-        return np.full(self.bin_centers_.shape[0], single_hex_area)
+        return np.full(self.bin_centers.shape[0], single_hex_area)
 
 
 class GraphLayout(_KDTreeMixin):
@@ -1196,13 +1196,13 @@ class GraphLayout(_KDTreeMixin):
     N-D embeddings of the linearized bin centers.
     """
 
-    bin_centers_: NDArray[np.float64]
-    connectivity_: Optional[nx.Graph] = None
-    dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
+    bin_centers: NDArray[np.float64]
+    connectivity: Optional[nx.Graph] = None
+    dimension_ranges: Optional[Sequence[Tuple[float, float]]] = None
 
-    grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
-    grid_shape_: Optional[Tuple[int, ...]] = None
-    active_mask_: Optional[NDArray[np.bool_]] = None
+    grid_edges: Optional[Tuple[NDArray[np.float64], ...]] = None
+    grid_shape: Optional[Tuple[int, ...]] = None
+    active_mask: Optional[NDArray[np.bool_]] = None
 
     _layout_type_tag: str
     _build_params_used: Dict[str, Any]
@@ -1214,12 +1214,12 @@ class GraphLayout(_KDTreeMixin):
         """Initialize a GraphLayout engine."""
         self._layout_type_tag = "Graph"
         self._build_params_used = {}
-        self.bin_centers_ = np.empty((0, 0), dtype=np.float64)
-        self.connectivity_ = None
-        self.dimension_ranges_ = None
-        self.grid_edges_ = None
-        self.grid_shape_ = None
-        self.active_mask_ = None
+        self.bin_centers = np.empty((0, 0), dtype=np.float64)
+        self.connectivity = None
+        self.dimension_ranges = None
+        self.grid_edges = None
+        self.grid_shape = None
+        self.active_mask = None
         self.linear_bin_centers_ = None
 
     def build(
@@ -1267,7 +1267,7 @@ class GraphLayout(_KDTreeMixin):
         if bin_size <= 0:
             raise ValueError("bin_size must be positive.")
 
-        (self.linear_bin_centers_, self.grid_edges_, self.active_mask_, edge_ids) = (
+        (self.linear_bin_centers_, self.grid_edges, self.active_mask, edge_ids) = (
             _get_graph_bins(
                 graph=graph_definition,
                 edge_order=edge_order,
@@ -1275,28 +1275,28 @@ class GraphLayout(_KDTreeMixin):
                 bin_size=bin_size,
             )
         )
-        self.bin_centers_ = _project_1d_to_2d(
+        self.bin_centers = _project_1d_to_2d(
             self.linear_bin_centers_,
             graph_definition,
             edge_order,
             edge_spacing,
         )
-        self.grid_shape_ = (len(self.bin_centers_),)
-        self.connectivity_ = _create_graph_layout_connectivity_graph(
+        self.grid_shape = (len(self.bin_centers),)
+        self.connectivity = _create_graph_layout_connectivity_graph(
             graph=graph_definition,
-            bin_centers_nd=self.bin_centers_,
+            bin_centers_nd=self.bin_centers,
             linear_bin_centers=self.linear_bin_centers_,
             original_edge_ids=edge_ids,
-            active_mask=self.active_mask_,
+            active_mask=self.active_mask,
             edge_order=edge_order,
         )
-        self.dimension_ranges_ = (
-            np.min(self.bin_centers_[:, 0]),
-            np.max(self.bin_centers_[:, 0]),
-        ), (np.min(self.bin_centers_[:, 1]), np.max(self.bin_centers_[:, 1]))
+        self.dimension_ranges = (
+            np.min(self.bin_centers[:, 0]),
+            np.max(self.bin_centers[:, 0]),
+        ), (np.min(self.bin_centers[:, 1]), np.max(self.bin_centers[:, 1]))
 
         # --- Build KDTree ---
-        self._build_kdtree(points_for_tree=self.bin_centers_[self.active_mask_])
+        self._build_kdtree(points_for_tree=self.bin_centers[self.active_mask])
 
     @property
     def is_1d(self) -> bool:
@@ -1368,9 +1368,9 @@ class GraphLayout(_KDTreeMixin):
             )
 
         # Draw the bin centers
-        bin_centers = nx.get_node_attributes(self.connectivity_, "pos")
+        bin_centers = nx.get_node_attributes(self.connectivity, "pos")
         nx.draw_networkx_nodes(
-            self.connectivity_,
+            self.connectivity,
             bin_centers,
             ax=ax,
             node_size=30,
@@ -1378,12 +1378,12 @@ class GraphLayout(_KDTreeMixin):
         )
 
         # Draw connectivity graph edges
-        for node_id1, node_id2 in self.connectivity_.edges:
+        for node_id1, node_id2 in self.connectivity.edges:
             pos = np.stack((bin_centers[node_id1], bin_centers[node_id2]))
             ax.plot(pos[:, 0], pos[:, 1], color="black", zorder=-1)
 
         grid_line_2d = _project_1d_to_2d(
-            self.grid_edges_[0],
+            self.grid_edges[0],
             self._build_params_used["graph_definition"],
             self._build_params_used["edge_order"],
             self._build_params_used["edge_spacing"],
@@ -1407,7 +1407,7 @@ class GraphLayout(_KDTreeMixin):
 
         Uses `track_linearization.plot_graph_as_1D` to display the track
         segments and nodes in their 1D linearized positions. Overlays the
-        1D bin edges from `self.grid_edges_`.
+        1D bin edges from `self.grid_edges`.
 
         Parameters
         ----------
@@ -1433,7 +1433,7 @@ class GraphLayout(_KDTreeMixin):
             ax=ax,
             **kwargs,
         )
-        for grid_line in self.grid_edges_[0]:
+        for grid_line in self.grid_edges[0]:
             ax.axvline(grid_line, color="gray", linestyle="--", alpha=0.5)
         ax.set_title(f"{self._layout_type_tag} Layout")
         ax.set_xlabel("Linearized Position")
@@ -1508,7 +1508,7 @@ class GraphLayout(_KDTreeMixin):
             not indices into the full `linear_bin_centers_all` array.
         """
         return _find_bin_for_linear_position(
-            data_points, bin_edges=self.grid_edges_[0], active_mask=self.active_mask_
+            data_points, bin_edges=self.grid_edges[0], active_mask=self.active_mask
         )
 
     def bin_size(self) -> NDArray[np.float64]:
@@ -1523,17 +1523,17 @@ class GraphLayout(_KDTreeMixin):
         Raises
         ------
         RuntimeError
-            If `grid_edges_` or `active_mask_` is not populated.
+            If `grid_edges` or `active_mask` is not populated.
         """
-        if self.grid_edges_ is None or self.active_mask_ is None:  # pragma: no cover
-            raise RuntimeError("Layout not built; grid_edges_ or active_mask_ missing.")
-        if not self.grid_edges_ or self.grid_edges_[0].size <= 1:  # pragma: no cover
+        if self.grid_edges is None or self.active_mask is None:  # pragma: no cover
+            raise RuntimeError("Layout not built; grid_edges or active_mask missing.")
+        if not self.grid_edges or self.grid_edges[0].size <= 1:  # pragma: no cover
             raise ValueError(
-                "grid_edges_ (1D) are not properly defined for length calculation."
+                "grid_edges (1D) are not properly defined for length calculation."
             )
 
-        all_1d_bin_lengths = np.diff(self.grid_edges_[0])
-        return all_1d_bin_lengths[self.active_mask_]
+        all_1d_bin_lengths = np.diff(self.grid_edges[0])
+        return all_1d_bin_lengths[self.active_mask]
 
 
 if SHAPELY_AVAILABLE:
@@ -1548,13 +1548,13 @@ if SHAPELY_AVAILABLE:
         `_GridMixin`.
         """
 
-        bin_centers_: NDArray[np.float64]
-        connectivity_: Optional[nx.Graph] = None
-        dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
+        bin_centers: NDArray[np.float64]
+        connectivity: Optional[nx.Graph] = None
+        dimension_ranges: Optional[Sequence[Tuple[float, float]]] = None
 
-        grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
-        grid_shape_: Optional[Tuple[int, ...]] = None
-        active_mask_: Optional[NDArray[np.bool_]] = None
+        grid_edges: Optional[Tuple[NDArray[np.float64], ...]] = None
+        grid_shape: Optional[Tuple[int, ...]] = None
+        active_mask: Optional[NDArray[np.bool_]] = None
 
         _layout_type_tag: str
         _build_params_used: Dict[str, Any]
@@ -1566,12 +1566,12 @@ if SHAPELY_AVAILABLE:
             """Initialize a ShapelyPolygonLayout engine."""
             self._layout_type_tag = "ShapelyPolygon"
             self._build_params_used = {}
-            self.bin_centers_ = np.empty((0, 2), dtype=np.float64)  # 2D Layout
-            self.connectivity_ = None
-            self.dimension_ranges_ = None
-            self.grid_edges_ = None
-            self.grid_shape_ = None
-            self.active_mask_ = None
+            self.bin_centers = np.empty((0, 2), dtype=np.float64)  # 2D Layout
+            self.connectivity = None
+            self.dimension_ranges = None
+            self.grid_edges = None
+            self.grid_shape = None
+            self.active_mask = None
             self.polygon_definition_ = None
 
         def build(
@@ -1595,7 +1595,7 @@ if SHAPELY_AVAILABLE:
                 (width, height).
             connect_diagonal_neighbors : bool, default=True
                 If True, connect diagonally adjacent active grid cells in the
-                `connectivity_`.
+                `connectivity`.
 
             Raises
             ------
@@ -1616,16 +1616,16 @@ if SHAPELY_AVAILABLE:
 
             self.polygon_definition_ = polygon
             minx, miny, maxx, maxy = polygon.bounds
-            self.dimension_ranges_ = [(minx, maxx), (miny, maxy)]
+            self.dimension_ranges = [(minx, maxx), (miny, maxy)]
 
             (
-                self.grid_edges_,
+                self.grid_edges,
                 full_grid_bin_centers,
-                self.grid_shape_,
+                self.grid_shape,
             ) = _create_regular_grid(
                 data_samples=None,
                 bin_size=bin_size,
-                dimension_range=self.dimension_ranges_,
+                dimension_range=self.dimension_ranges,
                 add_boundary_bins=False,
             )
 
@@ -1640,13 +1640,13 @@ if SHAPELY_AVAILABLE:
                 if pts_to_check.shape[0] > 0
                 else np.array([], dtype=bool)
             )
-            self.active_mask_ = shapely_mask_flat.reshape(self.grid_shape_)
+            self.active_mask = shapely_mask_flat.reshape(self.grid_shape)
 
-            self.bin_centers_ = full_grid_bin_centers[self.active_mask_.ravel()]
-            self.connectivity_ = _create_regular_grid_connectivity_graph(
+            self.bin_centers = full_grid_bin_centers[self.active_mask.ravel()]
+            self.connectivity = _create_regular_grid_connectivity_graph(
                 full_grid_bin_centers=full_grid_bin_centers,
-                active_mask_nd=self.active_mask_,
-                grid_shape=self.grid_shape_,
+                active_mask_nd=self.active_mask,
+                grid_shape=self.grid_shape,
                 connect_diagonal=connect_diagonal_neighbors,
             )
 
@@ -1685,48 +1685,48 @@ if SHAPELY_AVAILABLE:
             The axes on which the layout is plotted.
         """
         if (
-            self.bin_centers_ is None
-            or self.grid_edges_ is None
-            or self.active_mask_ is None
-            or self.grid_shape_ is None
-            or self.connectivity_ is None
+            self.bin_centers is None
+            or self.grid_edges is None
+            or self.active_mask is None
+            or self.grid_shape is None
+            or self.connectivity is None
         ):
             raise RuntimeError("Layout not built. Call `build` first.")
 
-        is_2d_grid = len(self.grid_shape_) == 2 and len(self.grid_edges_) == 2
+        is_2d_grid = len(self.grid_shape) == 2 and len(self.grid_edges) == 2
 
         if is_2d_grid:
             if ax is None:
                 _, ax = plt.subplots(figsize=figsize)
             ax.pcolormesh(
-                self.grid_edges_[0],
-                self.grid_edges_[1],
-                self.active_mask_.T,
+                self.grid_edges[0],
+                self.grid_edges[1],
+                self.active_mask.T,
                 cmap=cmap,
                 alpha=alpha,
                 shading="auto",
             )
-            ax.set_xticks(self.grid_edges_[0])
-            ax.set_yticks(self.grid_edges_[1])
+            ax.set_xticks(self.grid_edges[0])
+            ax.set_yticks(self.grid_edges[1])
             ax.grid(True, ls="-", lw=0.5, c="gray")
             ax.set_aspect("equal")
             ax.set_title(f"{self._layout_type_tag} (2D Grid)")
             ax.set_xlabel("Dimension 0")
             ax.set_ylabel("Dimension 1")
-            if self.dimension_ranges_:
-                ax.set_xlim(self.dimension_ranges_[0])
-                ax.set_ylim(self.dimension_ranges_[1])
+            if self.dimension_ranges:
+                ax.set_xlim(self.dimension_ranges[0])
+                ax.set_ylim(self.dimension_ranges[1])
 
             if draw_connectivity_graph:
-                node_position = nx.get_node_attributes(self.connectivity_, "pos")
+                node_position = nx.get_node_attributes(self.connectivity, "pos")
                 nx.draw_networkx_nodes(
-                    self.connectivity_,
+                    self.connectivity,
                     node_position,
                     ax=ax,
                     node_size=node_size,
                     node_color=node_color,
                 )
-                for node_id1, node_id2 in self.connectivity_.edges:
+                for node_id1, node_id2 in self.connectivity.edges:
                     pos = np.stack((node_position[node_id1], node_position[node_id2]))
                     ax.plot(pos[:, 0], pos[:, 1], color="black", zorder=-1)
 
@@ -1763,13 +1763,13 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
     Inherits grid functionalities from `_GridMixin`.
     """
 
-    bin_centers_: NDArray[np.float64]
-    connectivity_: Optional[nx.Graph] = None
-    dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
+    bin_centers: NDArray[np.float64]
+    connectivity: Optional[nx.Graph] = None
+    dimension_ranges: Optional[Sequence[Tuple[float, float]]] = None
 
-    grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
-    grid_shape_: Optional[Tuple[int, ...]] = None
-    active_mask_: Optional[NDArray[np.bool_]] = None
+    grid_edges: Optional[Tuple[NDArray[np.float64], ...]] = None
+    grid_shape: Optional[Tuple[int, ...]] = None
+    active_mask: Optional[NDArray[np.bool_]] = None
 
     _layout_type_tag: str
     _build_params_used: Dict[str, Any]
@@ -1779,12 +1779,12 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
         """Initialize a MaskedGridLayout engine."""
         self._layout_type_tag = "MaskedGrid"
         self._build_params_used = {}
-        self.bin_centers_ = np.empty((0, 0), dtype=np.float64)
-        self.connectivity_ = None
-        self.dimension_ranges_ = None
-        self.grid_edges_ = None
-        self.grid_shape_ = None
-        self.active_mask_ = None
+        self.bin_centers = np.empty((0, 0), dtype=np.float64)
+        self.connectivity = None
+        self.dimension_ranges = None
+        self.grid_edges = None
+        self.grid_shape = None
+        self.active_mask = None
         self.bin_size_ = None
 
     def build(
@@ -1818,36 +1818,36 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
         self._build_params_used = locals().copy()  # Store all passed params
         del self._build_params_used["self"]  # Remove self from the dictionary
 
-        self.active_mask_ = active_mask
-        self.grid_edges_ = grid_edges
-        self.grid_shape_ = tuple(len(edge) - 1 for edge in grid_edges)
+        self.active_mask = active_mask
+        self.grid_edges = grid_edges
+        self.grid_shape = tuple(len(edge) - 1 for edge in grid_edges)
 
-        if self.active_mask_.shape != self.grid_shape_:
+        if self.active_mask.shape != self.grid_shape:
             raise ValueError(
-                f"active_mask shape {self.active_mask_.shape} must match "
-                f"the shape implied by grid_edges {self.grid_shape_}."
+                f"active_mask shape {self.active_mask.shape} must match "
+                f"the shape implied by grid_edges {self.grid_shape}."
             )
 
         # Create full_grid_bin_centers as (N_total_bins, N_dims) array
-        centers_per_dim = [get_centers(edge_dim) for edge_dim in self.grid_edges_]
+        centers_per_dim = [get_centers(edge_dim) for edge_dim in self.grid_edges]
         mesh_centers_list = np.meshgrid(*centers_per_dim, indexing="ij", sparse=False)
         full_grid_bin_centers = np.stack(
             [c.ravel() for c in mesh_centers_list], axis=-1
         )
 
         self.bin_size_ = np.array(
-            [np.diff(edge_dim)[0] for edge_dim in self.grid_edges_], dtype=np.float64
+            [np.diff(edge_dim)[0] for edge_dim in self.grid_edges], dtype=np.float64
         )
 
-        self.dimension_ranges_ = tuple(
-            (edge_dim[0], edge_dim[-1]) for edge_dim in self.grid_edges_
+        self.dimension_ranges = tuple(
+            (edge_dim[0], edge_dim[-1]) for edge_dim in self.grid_edges
         )
-        self.bin_centers_ = full_grid_bin_centers[self.active_mask_.ravel()]
+        self.bin_centers = full_grid_bin_centers[self.active_mask.ravel()]
 
-        self.connectivity_ = _create_regular_grid_connectivity_graph(
+        self.connectivity = _create_regular_grid_connectivity_graph(
             full_grid_bin_centers=full_grid_bin_centers,
-            active_mask_nd=self.active_mask_,
-            grid_shape=self.grid_shape_,
+            active_mask_nd=self.active_mask,
+            grid_shape=self.grid_shape,
             connect_diagonal=connect_diagonal_neighbors,
         )
 
@@ -1867,13 +1867,13 @@ class ImageMaskLayout(_GridMixin):
     by `bin_size`. Inherits grid functionalities from `_GridMixin`.
     """
 
-    bin_centers_: NDArray[np.float64]
-    connectivity_: Optional[nx.Graph] = None
-    dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
+    bin_centers: NDArray[np.float64]
+    connectivity: Optional[nx.Graph] = None
+    dimension_ranges: Optional[Sequence[Tuple[float, float]]] = None
 
-    grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
-    grid_shape_: Optional[Tuple[int, ...]] = None
-    active_mask_: Optional[NDArray[np.bool_]] = None
+    grid_edges: Optional[Tuple[NDArray[np.float64], ...]] = None
+    grid_shape: Optional[Tuple[int, ...]] = None
+    active_mask: Optional[NDArray[np.bool_]] = None
 
     _layout_type_tag: str
     _build_params_used: Dict[str, Any]
@@ -1882,12 +1882,12 @@ class ImageMaskLayout(_GridMixin):
         """Initialize an ImageMaskLayout engine."""
         self._layout_type_tag = "ImageMask"
         self._build_params_used = {}
-        self.bin_centers_ = np.empty((0, 2), dtype=np.float64)
-        self.connectivity_ = None
-        self.dimension_ranges_ = None
-        self.grid_edges_ = None
-        self.grid_shape_ = None
-        self.active_mask_ = None
+        self.bin_centers = np.empty((0, 2), dtype=np.float64)
+        self.connectivity = None
+        self.dimension_ranges = None
+        self.grid_edges = None
+        self.grid_shape = None
+        self.active_mask = None
 
     def build(
         self,
@@ -1953,11 +1953,11 @@ class ImageMaskLayout(_GridMixin):
             raise ValueError("bin_size components must be positive.")
 
         n_rows, n_cols = image_mask.shape
-        self.grid_shape_ = (n_rows, n_cols)  # Note: (rows, cols) often (y_dim, x_dim)
+        self.grid_shape = (n_rows, n_cols)  # Note: (rows, cols) often (y_dim, x_dim)
         y_edges = np.arange(n_rows + 1) * bin_size_y
         x_edges = np.arange(n_cols + 1) * bin_size_x
-        self.grid_edges_ = (y_edges, x_edges)
-        self.dimension_ranges_ = (
+        self.grid_edges = (y_edges, x_edges)
+        self.dimension_ranges = (
             (x_edges[0], x_edges[-1]),
             (y_edges[0], y_edges[-1]),
         )
@@ -1969,12 +1969,12 @@ class ImageMaskLayout(_GridMixin):
         )  # x is cols, y is rows
         full_grid_bin_centers = np.stack((xv.ravel(), yv.ravel()), axis=1)
 
-        self.active_mask_ = image_mask
-        self.bin_centers_ = full_grid_bin_centers[self.active_mask_.ravel()]
-        self.connectivity_ = _create_regular_grid_connectivity_graph(
+        self.active_mask = image_mask
+        self.bin_centers = full_grid_bin_centers[self.active_mask.ravel()]
+        self.connectivity = _create_regular_grid_connectivity_graph(
             full_grid_bin_centers=full_grid_bin_centers,
-            active_mask_nd=self.active_mask_,
-            grid_shape=self.grid_shape_,
+            active_mask_nd=self.active_mask,
+            grid_shape=self.grid_shape,
             connect_diagonal=connect_diagonal_neighbors,
         )
 

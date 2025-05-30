@@ -153,11 +153,11 @@ class TestEnvironmentFromGraph:
         assert graph_env.is_1d
         assert graph_env.n_dims == 2
 
-        assert graph_env.bin_centers_.shape[0] == 16
-        assert graph_env.bin_centers_.shape[1] == 2
-        assert graph_env.connectivity_.number_of_nodes() == 16
-        assert graph_env.active_mask_ is not None
-        assert np.all(graph_env.active_mask_)
+        assert graph_env.bin_centers.shape[0] == 16
+        assert graph_env.bin_centers.shape[1] == 2
+        assert graph_env.connectivity.number_of_nodes() == 16
+        assert graph_env.active_mask is not None
+        assert np.all(graph_env.active_mask)
 
     def test_bin_at(self, graph_env: Environment):
         """Test mapping points to bin indices."""
@@ -222,7 +222,7 @@ class TestEnvironmentFromGraph:
         bin_p2 = graph_env.bin_at(p2)[0]
 
         expected_dist_via_path = nx.shortest_path_length(
-            graph_env.connectivity_,
+            graph_env.connectivity,
             source=bin_p1,
             target=bin_p2,
             weight="distance",
@@ -321,22 +321,22 @@ class TestEnvironmentFromDataSamplesGrid:
         assert not grid_env_from_samples.is_1d
         assert grid_env_from_samples.n_dims == 2
 
-        assert grid_env_from_samples.bin_centers_ is not None
-        assert grid_env_from_samples.bin_centers_.ndim == 2
-        assert grid_env_from_samples.bin_centers_.shape[1] == 2
+        assert grid_env_from_samples.bin_centers is not None
+        assert grid_env_from_samples.bin_centers.ndim == 2
+        assert grid_env_from_samples.bin_centers.shape[1] == 2
 
-        assert grid_env_from_samples.active_mask_ is not None
-        assert grid_env_from_samples.grid_edges_ is not None
-        assert len(grid_env_from_samples.grid_edges_) == 2
-        assert grid_env_from_samples.grid_shape_ is not None
-        assert len(grid_env_from_samples.grid_shape_) == 2
+        assert grid_env_from_samples.active_mask is not None
+        assert grid_env_from_samples.grid_edges is not None
+        assert len(grid_env_from_samples.grid_edges) == 2
+        assert grid_env_from_samples.grid_shape is not None
+        assert len(grid_env_from_samples.grid_shape) == 2
 
-        assert np.sum(grid_env_from_samples.active_mask_) > 0
-        assert grid_env_from_samples.bin_centers_.shape[0] == np.sum(
-            grid_env_from_samples.active_mask_
+        assert np.sum(grid_env_from_samples.active_mask) > 0
+        assert grid_env_from_samples.bin_centers.shape[0] == np.sum(
+            grid_env_from_samples.active_mask
         )
-        assert grid_env_from_samples.connectivity_.number_of_nodes() == np.sum(
-            grid_env_from_samples.active_mask_
+        assert grid_env_from_samples.connectivity.number_of_nodes() == np.sum(
+            grid_env_from_samples.active_mask
         )
 
     def test_bin_at_grid(
@@ -355,8 +355,8 @@ class TestEnvironmentFromDataSamplesGrid:
         # For points inside grid_edges but in an inactive bin, it should also be -1.
         # The ValueError in ravel_multi_index typically happens if np.digitize gives out-of-bounds indices.
         # Let's test a point guaranteed to be outside all edges.
-        min_x_coord = grid_env_from_samples.grid_edges_[0][0]
-        min_y_coord = grid_env_from_samples.grid_edges_[1][0]
+        min_x_coord = grid_env_from_samples.grid_edges[0][0]
+        min_y_coord = grid_env_from_samples.grid_edges[1][0]
         point_far_left_bottom = np.array([[min_x_coord - 10.0, min_y_coord - 10.0]])
         idx_off_grid = grid_env_from_samples.bin_at(point_far_left_bottom)
         assert idx_off_grid[0] == -1
@@ -375,7 +375,7 @@ class TestEnvironmentFromDataSamplesGrid:
         self, grid_env_from_samples: Environment
     ):
         """Test N-D to flat index and vice-versa for grid."""
-        n_active_bins = grid_env_from_samples.bin_centers_.shape[0]
+        n_active_bins = grid_env_from_samples.bin_centers.shape[0]
         if n_active_bins == 0:
             pytest.skip(
                 "No active bins in grid_env_from_samples, skipping index conversion test."
@@ -390,19 +390,19 @@ class TestEnvironmentFromDataSamplesGrid:
         assert len(nd_indices_tuple) == grid_env_from_samples.n_dims
 
         for i, dim_idx in enumerate(nd_indices_tuple):
-            assert 0 <= dim_idx < grid_env_from_samples.grid_shape_[i]
+            assert 0 <= dim_idx < grid_env_from_samples.grid_shape[i]
 
-        assert grid_env_from_samples.active_mask_[nd_indices_tuple]
+        assert grid_env_from_samples.active_mask[nd_indices_tuple]
 
         re_flat_idx = grid_env_from_samples.grid_to_flat_bin_index(*nd_indices_tuple)
         assert re_flat_idx == first_active_bin_flat_idx
 
-        if np.any(~grid_env_from_samples.active_mask_):  # If there are inactive bins
+        if np.any(~grid_env_from_samples.active_mask):  # If there are inactive bins
             inactive_nd_indices = np.unravel_index(
-                np.argmin(grid_env_from_samples.active_mask_),
-                grid_env_from_samples.grid_shape_,
+                np.argmin(grid_env_from_samples.active_mask),
+                grid_env_from_samples.grid_shape,
             )
-            if not grid_env_from_samples.active_mask_[inactive_nd_indices]:
+            if not grid_env_from_samples.active_mask[inactive_nd_indices]:
                 flat_idx_for_inactive = grid_env_from_samples.grid_to_flat_bin_index(
                     *inactive_nd_indices
                 )
@@ -449,14 +449,14 @@ class TestEnvironmentSerialization:
         assert loaded_env._layout_type_used == graph_env._layout_type_used
         assert loaded_env.is_1d == graph_env.is_1d
         assert loaded_env.n_dims == graph_env.n_dims
-        assert np.array_equal(loaded_env.bin_centers_, graph_env.bin_centers_)
+        assert np.array_equal(loaded_env.bin_centers, graph_env.bin_centers)
         assert (
-            loaded_env.connectivity_.number_of_nodes()
-            == graph_env.connectivity_.number_of_nodes()
+            loaded_env.connectivity.number_of_nodes()
+            == graph_env.connectivity.number_of_nodes()
         )
         assert (
-            loaded_env.connectivity_.number_of_edges()
-            == graph_env.connectivity_.number_of_edges()
+            loaded_env.connectivity.number_of_edges()
+            == graph_env.connectivity.number_of_edges()
         )
 
 
@@ -480,9 +480,9 @@ def test_from_nd_mask():
         assert isinstance(env.layout, MaskedGridLayout)
         assert env._is_fitted
         assert env.n_dims == 2
-        assert env.bin_centers_.shape[0] == np.sum(active_mask_np)
-        assert np.array_equal(env.active_mask_, active_mask_np)
-        assert env.grid_shape_ == active_mask_np.shape
+        assert env.bin_centers.shape[0] == np.sum(active_mask_np)
+        assert np.array_equal(env.active_mask, active_mask_np)
+        assert env.grid_shape == active_mask_np.shape
     except TypeError as e:
         if "integer scalar arrays can be converted to a scalar index" in str(e):
             pytest.skip(
@@ -502,9 +502,9 @@ def test_from_image_mask():
     assert isinstance(env.layout, ImageMaskLayout)
     assert env._is_fitted
     assert env.n_dims == 2
-    assert env.bin_centers_.shape[0] == np.sum(image_mask_np)
-    assert np.array_equal(env.active_mask_, image_mask_np)
-    assert env.grid_shape_ == image_mask_np.shape
+    assert env.bin_centers.shape[0] == np.sum(image_mask_np)
+    assert np.array_equal(env.active_mask, image_mask_np)
+    assert env.grid_shape == image_mask_np.shape
 
 
 @pytest.mark.skipif(
@@ -520,8 +520,8 @@ def test_from_shapely_polygon():
     assert isinstance(env.layout, ShapelyPolygonLayout)
     assert env._is_fitted
     assert env.n_dims == 2
-    assert env.bin_centers_.shape[0] == 4
-    assert np.sum(env.active_mask_) == 4
+    assert env.bin_centers.shape[0] == 4
+    assert np.sum(env.active_mask) == 4
 
 
 def test_with_dimension_ranges(plus_maze_data_samples: NDArray[np.float64]):
@@ -538,11 +538,11 @@ def test_with_dimension_ranges(plus_maze_data_samples: NDArray[np.float64]):
     assert env.name == "DimRangeTest"
     assert env._is_fitted
     assert env.n_dims == 2
-    assert env.dimension_ranges_ is not None  # Ensure it's populated
-    assert env.dimension_ranges_[0] == tuple(dim_ranges_list[0])  # Compare as tuples
-    assert env.dimension_ranges_[1] == tuple(dim_ranges_list[1])
-    assert np.sum(env.active_mask_) > 0
-    assert env.bin_centers_.shape[0] == np.sum(env.active_mask_)
+    assert env.dimension_ranges is not None  # Ensure it's populated
+    assert env.dimension_ranges[0] == tuple(dim_ranges_list[0])  # Compare as tuples
+    assert env.dimension_ranges[1] == tuple(dim_ranges_list[1])
+    assert np.sum(env.active_mask) > 0
+    assert env.bin_centers.shape[0] == np.sum(env.active_mask)
 
 
 @pytest.fixture
@@ -624,10 +624,10 @@ class TestFromDataSamplesDetailed:
         # Assuming (0.5,0.5) is in one bin and (1.5,1.5) in another with bin_size=1
         # This requires knowing how bins are aligned.
         # A simpler check: number of active bins decreases with threshold.
-        assert env_thresh0.bin_centers_.shape[0] > env_thresh3.bin_centers_.shape[0]
+        assert env_thresh0.bin_centers.shape[0] > env_thresh3.bin_centers.shape[0]
         if (
-            env_thresh0.bin_centers_.shape[0] == 2
-            and env_thresh3.bin_centers_.shape[0] == 1
+            env_thresh0.bin_centers.shape[0] == 2
+            and env_thresh3.bin_centers.shape[0] == 1
         ):
             pass  # This would be ideal if bin alignment leads to this count.
 
@@ -652,11 +652,11 @@ class TestFromDataSamplesDetailed:
             bin_count_threshold=0,
         )
         # Dilation should increase the number of active bins or keep it same
-        assert dilated_env.bin_centers_.shape[0] >= base_env.bin_centers_.shape[0]
-        if base_env.bin_centers_.shape[0] > 0:  # Only if base had active bins
-            assert dilated_env.bin_centers_.shape[0] > base_env.bin_centers_.shape[
+        assert dilated_env.bin_centers.shape[0] >= base_env.bin_centers.shape[0]
+        if base_env.bin_centers.shape[0] > 0:  # Only if base had active bins
+            assert dilated_env.bin_centers.shape[0] > base_env.bin_centers.shape[
                 0
-            ] or np.array_equal(dilated_env.active_mask_, base_env.active_mask_)
+            ] or np.array_equal(dilated_env.active_mask, base_env.active_mask)
 
         # Creating specific scenarios for fill_holes and close_gaps for concise unit tests
         # requires very careful crafting of data_samples and bin_size, which can be complex.
@@ -687,8 +687,8 @@ class TestFromDataSamplesDetailed:
         # with bin_size=1, edges are 0,1,2,3. Bin centers 0.5, 1.5, 2.5.
         # Center of hole would be around (1.5,1.5)
         if (
-            env_no_fill.bin_centers_.shape[0] > 0
-            and env_fill.bin_centers_.shape[0] > env_no_fill.bin_centers_.shape[0]
+            env_no_fill.bin_centers.shape[0] > 0
+            and env_fill.bin_centers.shape[0] > env_no_fill.bin_centers.shape[0]
         ):
             # Check if the bin corresponding to the hole [1.5,1.5] is active in env_fill but not env_no_fill
             # This requires precise knowledge of bin indices.
@@ -703,11 +703,11 @@ class TestFromDataSamplesDetailed:
             data_for_morpho_ops, bin_size=1.0, add_boundary_bins=True
         )
 
-        assert env_with_boundary.grid_shape_[0] > env_no_boundary.grid_shape_[0]
-        assert env_with_boundary.grid_shape_[1] > env_no_boundary.grid_shape_[1]
+        assert env_with_boundary.grid_shape[0] > env_no_boundary.grid_shape[0]
+        assert env_with_boundary.grid_shape[1] > env_no_boundary.grid_shape[1]
         # Check that boundary bins are indeed outside the range of non-boundary bins
-        assert env_with_boundary.grid_edges_[0][0] < env_no_boundary.grid_edges_[0][0]
-        assert env_with_boundary.grid_edges_[0][-1] > env_no_boundary.grid_edges_[0][-1]
+        assert env_with_boundary.grid_edges[0][0] < env_no_boundary.grid_edges[0][0]
+        assert env_with_boundary.grid_edges[0][-1] > env_no_boundary.grid_edges[0][-1]
 
     def test_infer_active_bins_false(self):
         data = np.array([[0.5, 0.5], [2.5, 2.5]])
@@ -718,8 +718,8 @@ class TestFromDataSamplesDetailed:
             bin_size=1.0,
             infer_active_bins=False,
         )
-        assert env.bin_centers_.shape[0] == 9  # All 3x3 bins should be active
-        assert np.all(env.active_mask_)
+        assert env.bin_centers.shape[0] == 9  # All 3x3 bins should be active
+        assert np.all(env.active_mask)
 
 
 class TestHexagonalLayout:
@@ -730,13 +730,13 @@ class TestHexagonalLayout:
         assert isinstance(env_hexagonal.layout, HexagonalLayout)
         assert env_hexagonal.n_dims == 2
         assert env_hexagonal.layout.hexagon_width == 1.0
-        assert env_hexagonal.bin_centers_.shape[0] > 0  # Some bins should be active
+        assert env_hexagonal.bin_centers.shape[0] > 0  # Some bins should be active
 
     def test_point_to_bin_index_hex(self, env_hexagonal: Environment):
         # Test a point known to be near the center of some active hexagon
         # (e.g., one of the input samples if it's isolated enough)
-        if env_hexagonal.bin_centers_.shape[0] > 0:
-            test_point_near_active_center = env_hexagonal.bin_centers_[0] + np.array(
+        if env_hexagonal.bin_centers.shape[0] > 0:
+            test_point_near_active_center = env_hexagonal.bin_centers[0] + np.array(
                 [0.01, 0.01]
             )
             idx = env_hexagonal.bin_at(test_point_near_active_center.reshape(1, -1))
@@ -752,7 +752,7 @@ class TestHexagonalLayout:
     def test_bin_size_hex(self, env_hexagonal: Environment):
         areas = env_hexagonal.bin_size
         assert areas.ndim == 1
-        assert areas.shape[0] == env_hexagonal.bin_centers_.shape[0]
+        assert areas.shape[0] == env_hexagonal.bin_centers.shape[0]
         # Area of hexagon = (3 * sqrt(3) / 2) * radius^2. Radius = width / sqrt(3).
         # Side length = radius.
         # Area = (3 * sqrt(3) / 2) * (side_length)^2
@@ -771,23 +771,21 @@ class TestHexagonalLayout:
         assert np.allclose(areas, expected_area_simplified)
 
     def test_neighbors_hex(self, env_hexagonal: Environment):
-        if env_hexagonal.bin_centers_.shape[0] < 7:
+        if env_hexagonal.bin_centers.shape[0] < 7:
             pytest.skip(
                 "Not enough active bins for a central hex with 6 neighbors test."
             )
         # This test is hard without knowing the exact layout.
         # A qualitative check: find a bin, get its neighbors.
         # Neighbors should be distinct and their centers should be approx hexagon_width away.
-        some_bin_idx = (
-            env_hexagonal.bin_centers_.shape[0] // 2
-        )  # A somewhat central bin
+        some_bin_idx = env_hexagonal.bin_centers.shape[0] // 2  # A somewhat central bin
         neighbors = env_hexagonal.neighbors(some_bin_idx)
         assert isinstance(neighbors, list)
         if len(neighbors) > 0:
             assert len(set(neighbors)) == len(neighbors)  # Unique neighbors
-            center_node = env_hexagonal.bin_centers_[some_bin_idx]
+            center_node = env_hexagonal.bin_centers[some_bin_idx]
             for neighbor_idx in neighbors:
-                center_neighbor = env_hexagonal.bin_centers_[neighbor_idx]
+                center_neighbor = env_hexagonal.bin_centers[neighbor_idx]
                 dist = np.linalg.norm(center_node - center_neighbor)
                 # Distance between centers of adjacent pointy-top hexagons is hexagon_width (if side by side)
                 # or side_length (if vertex to vertex on same row), side_length = width/sqrt(3) * 2 /2 = width/sqrt(3)
@@ -814,7 +812,7 @@ class TestShapelyPolygonLayoutDetailed:
         #                        (0.5,1.5) /* no (1.5,1.5) */, (2.5,1.5),
         #                        (0.5,2.5), (1.5,2.5), (2.5,2.5)
         # Total 8 active bins.
-        assert env.bin_centers_.shape[0] == 8
+        assert env.bin_centers.shape[0] == 8
 
         point_in_hole = np.array([[1.5, 1.5]])
         bin_idx_in_hole = env.bin_at(point_in_hole)
@@ -836,9 +834,9 @@ class TestDimensionality:
         assert (
             not env.is_1d
         )  # RegularGrid layout is not flagged as is_1d (which is for GraphLayout)
-        assert env.bin_centers_.ndim == 2 and env.bin_centers_.shape[1] == 1
-        assert len(env.grid_edges_) == 1
-        assert len(env.grid_shape_) == 1
+        assert env.bin_centers.ndim == 2 and env.bin_centers.shape[1] == 1
+        assert len(env.grid_edges) == 1
+        assert len(env.grid_shape) == 1
         areas = env.bin_size  # Should be lengths
         assert np.allclose(areas, 1.0)
 
@@ -853,19 +851,19 @@ class TestDimensionality:
         )
         assert env.n_dims == 3
         assert not env.is_1d
-        assert env.bin_centers_.shape[1] == 3
-        assert len(env.grid_edges_) == 3
-        assert len(env.grid_shape_) == 3
+        assert env.bin_centers.shape[1] == 3
+        assert len(env.grid_edges) == 3
+        assert len(env.grid_shape) == 3
 
         volumes = env.bin_size
 
         # Calculate expected volume from actual grid_edges
         # _GridMixin.bin_size assumes uniform bins from the first diff
         expected_vol_per_bin = 1.0
-        if env.grid_edges_ is not None and all(
-            len(e_dim) > 1 for e_dim in env.grid_edges_
+        if env.grid_edges is not None and all(
+            len(e_dim) > 1 for e_dim in env.grid_edges
         ):
-            for dim_edges in env.grid_edges_:
+            for dim_edges in env.grid_edges:
                 # Assuming bin_size uses the first diff, like:
                 expected_vol_per_bin *= np.diff(dim_edges)[0]
 
@@ -943,10 +941,10 @@ class TestIndexConversions:
 
     def test_flat_to_grid_on_grid_env(self, grid_env_for_indexing: Environment):
         env = grid_env_for_indexing
-        if env.bin_centers_.shape[0] == 0:
+        if env.bin_centers.shape[0] == 0:
             pytest.skip("Environment has no active bins.")
 
-        n_active = env.bin_centers_.shape[0]
+        n_active = env.bin_centers.shape[0]
 
         # Scalar valid input
         nd_idx_scalar = env.flat_to_grid_bin_index(0)
@@ -997,20 +995,20 @@ class TestIndexConversions:
 
     def test_grid_to_flat_on_grid_env(self, grid_env_for_indexing: Environment):
         env = grid_env_for_indexing
-        if env.bin_centers_.shape[0] == 0:
+        if env.bin_centers.shape[0] == 0:
             pytest.skip("No active bins.")
-        if env.grid_shape_ is None or env.active_mask_ is None:
+        if env.grid_shape is None or env.active_mask is None:
             pytest.skip("Grid not fully defined.")
 
         # Find an N-D index of an active bin
-        active_nd_indices_all = np.argwhere(env.active_mask_)
+        active_nd_indices_all = np.argwhere(env.active_mask)
         if active_nd_indices_all.shape[0] == 0:
             pytest.skip("No active_mask True values.")
 
         valid_nd_scalar_input = tuple(active_nd_indices_all[0])  # e.g. (r,c)
         flat_idx_scalar = env.grid_to_flat_bin_index(*valid_nd_scalar_input)
         assert isinstance(flat_idx_scalar, (int, np.integer))
-        assert 0 <= flat_idx_scalar < env.bin_centers_.shape[0]
+        assert 0 <= flat_idx_scalar < env.bin_centers.shape[0]
 
         # Find N-D indices for two active bins for array input
         if active_nd_indices_all.shape[0] < 2:
@@ -1024,13 +1022,13 @@ class TestIndexConversions:
         assert np.all(flat_indices_arr >= 0)
 
         # Scalar N-D input mapping to an inactive bin (if one exists)
-        if np.any(~env.active_mask_):
-            inactive_nd_scalar_input = tuple(np.argwhere(~env.active_mask_)[0])
+        if np.any(~env.active_mask):
+            inactive_nd_scalar_input = tuple(np.argwhere(~env.active_mask)[0])
             flat_idx_inactive = env.grid_to_flat_bin_index(*inactive_nd_scalar_input)
             assert flat_idx_inactive == -1
 
         # Scalar N-D input out of grid_shape bounds
-        out_of_bounds_nd_input = tuple(s + 10 for s in env.grid_shape_)
+        out_of_bounds_nd_input = tuple(s + 10 for s in env.grid_shape)
         flat_idx_outofbounds = env.grid_to_flat_bin_index(*out_of_bounds_nd_input)
         assert flat_idx_outofbounds == -1
 
@@ -1038,16 +1036,16 @@ class TestIndexConversions:
         # Example: point1 valid, point2 inactive, point3 out-of-bounds
         r_coords = [valid_nd_scalar_input[0]]
         c_coords = [valid_nd_scalar_input[1]]
-        if np.any(~env.active_mask_):
-            inactive_nd = tuple(np.argwhere(~env.active_mask_)[0])
+        if np.any(~env.active_mask):
+            inactive_nd = tuple(np.argwhere(~env.active_mask)[0])
             r_coords.append(inactive_nd[0])
             c_coords.append(inactive_nd[1])
         else:  # If all active, make one effectively out of bounds for active by picking a non-active cell
-            r_coords.append(env.grid_shape_[0] + 1)  # Make it out of bounds
-            c_coords.append(env.grid_shape_[1] + 1)
+            r_coords.append(env.grid_shape[0] + 1)  # Make it out of bounds
+            c_coords.append(env.grid_shape[1] + 1)
 
-        r_coords.append(env.grid_shape_[0] + 10)  # Clearly out of bounds
-        c_coords.append(env.grid_shape_[1] + 10)
+        r_coords.append(env.grid_shape[0] + 10)  # Clearly out of bounds
+        c_coords.append(env.grid_shape[1] + 10)
 
         mixed_nd_input_tuple = (np.array(r_coords), np.array(c_coords))
         mixed_flat_results = env.grid_to_flat_bin_index(*mixed_nd_input_tuple)
@@ -1267,12 +1265,12 @@ def env_path_graph_3nodes() -> Environment:
 
 def test_boundary_1d_grid_degree_logic(env_1d_grid_3bins: Environment):
     """Test the 1D grid which should use degree-based logic."""
-    # env_1d_grid_3bins.active_mask_ is 1D, so len(grid_shape) is 1.
-    # Grid logic path for `is_grid_layout_with_mask` will be false due to `len(self.grid_shape_) > 1`.
+    # env_1d_grid_3bins.active_mask is 1D, so len(grid_shape) is 1.
+    # Grid logic path for `is_grid_layout_with_mask` will be false due to `len(self.grid_shape) > 1`.
     # It will fall to degree-based.
     # Graph: 0 -- 1 -- 2. Degrees: 0:1, 1:2, 2:1.
     # Layout type "MaskedGrid" (from from_nd_mask).
-    # For 1D grid (len(grid_shape_) == 1), it hits `elif is_grid_layout_with_mask and len(self.grid_shape_) == 1:`
+    # For 1D grid (len(grid_shape) == 1), it hits `elif is_grid_layout_with_mask and len(self.grid_shape) == 1:`
     # threshold_degree = 1.5
     boundary_indices = env_1d_grid_3bins.get_boundary_bin_indices()
     assert np.array_equal(np.sort(boundary_indices), np.array([0, 2]))

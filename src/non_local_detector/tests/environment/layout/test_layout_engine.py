@@ -62,11 +62,11 @@ def test_create_layout_regular_grid():
         infer_active_bins=True,
         add_boundary_bins=False,
     )
-    assert hasattr(layout, "bin_centers_")
-    assert layout.bin_centers_.ndim == 2
-    assert layout.connectivity_ is not None
-    assert layout.active_mask_ is not None
-    assert layout.grid_edges_ is not None
+    assert hasattr(layout, "bin_centers")
+    assert layout.bin_centers.ndim == 2
+    assert layout.connectivity is not None
+    assert layout.active_mask is not None
+    assert layout.grid_edges is not None
     assert not layout.is_1d
 
 
@@ -98,7 +98,7 @@ def test_regular_grid_bin_area_volume():
     )
     areas = layout.bin_size()
     assert np.allclose(areas, areas[0])
-    assert areas.shape[0] == layout.bin_centers_.shape[0]
+    assert areas.shape[0] == layout.bin_centers.shape[0]
 
 
 def test_create_layout_hexagonal():
@@ -109,9 +109,9 @@ def test_create_layout_hexagonal():
         data_samples=data,
         infer_active_bins=True,
     )
-    assert hasattr(layout, "bin_centers_")
-    assert layout.bin_centers_.ndim == 2
-    assert layout.connectivity_ is not None
+    assert hasattr(layout, "bin_centers")
+    assert layout.bin_centers.ndim == 2
+    assert layout.connectivity is not None
     assert not layout.is_1d
 
 
@@ -141,7 +141,7 @@ def test_hexagonal_bin_area_volume():
     )
     areas = layout.bin_size()
     assert np.allclose(areas, areas[0])
-    assert areas.shape[0] == layout.bin_centers_.shape[0]
+    assert areas.shape[0] == layout.bin_centers.shape[0]
 
 
 def test_create_layout_masked_grid():
@@ -156,10 +156,10 @@ def test_create_layout_masked_grid():
         active_mask=mask,
         grid_edges=edges,
     )
-    assert hasattr(layout, "bin_centers_")
-    assert layout.bin_centers_.ndim == 2
-    assert layout.bin_centers_.shape[0] == np.sum(mask)  # Should be 9
-    assert layout.connectivity_ is not None
+    assert hasattr(layout, "bin_centers")
+    assert layout.bin_centers.ndim == 2
+    assert layout.bin_centers.shape[0] == np.sum(mask)  # Should be 9
+    assert layout.connectivity is not None
     assert not layout.is_1d
 
 
@@ -171,9 +171,9 @@ def test_create_layout_image_mask():
         image_mask=mask,
         bin_size=1.0,
     )
-    assert hasattr(layout, "bin_centers_")
-    assert layout.bin_centers_.ndim == 2
-    assert layout.connectivity_ is not None
+    assert hasattr(layout, "bin_centers")
+    assert layout.bin_centers.ndim == 2
+    assert layout.connectivity is not None
     assert not layout.is_1d
 
 
@@ -208,11 +208,11 @@ def test_create_layout_graph():
         edge_spacing=0.0,
         bin_size=0.5,
     )
-    assert hasattr(layout, "bin_centers_")
-    assert layout.bin_centers_.ndim == 2
+    assert hasattr(layout, "bin_centers")
+    assert layout.bin_centers.ndim == 2
     # Graph: 0 --1m-- 1 --1m-- 2. Total length 2m. Bin size 0.5m. Expected 4 bins.
-    assert layout.bin_centers_.shape[0] == 4
-    assert layout.connectivity_ is not None
+    assert layout.bin_centers.shape[0] == 4
+    assert layout.connectivity is not None
     assert layout.is_1d
 
 
@@ -256,7 +256,7 @@ def test_graph_bin_area_volume():
     )
     lengths = layout.bin_size()
     assert np.allclose(lengths, lengths[0])
-    assert lengths.shape[0] == layout.bin_centers_.shape[0]
+    assert lengths.shape[0] == layout.bin_centers.shape[0]
 
 
 def test_create_layout_invalid_kind():
@@ -383,14 +383,14 @@ def test_layout_engine_protocol_adherence(
         pytest.fail(f"Failed to create layout {layout_kind} with params {params}: {e}")
 
     # 1. Check presence of all protocol attributes
-    assert hasattr(layout, "bin_centers_"), f"{layout_kind} missing bin_centers_"
-    assert hasattr(layout, "connectivity_"), f"{layout_kind} missing connectivity_"
+    assert hasattr(layout, "bin_centers"), f"{layout_kind} missing bin_centers"
+    assert hasattr(layout, "connectivity"), f"{layout_kind} missing connectivity"
     assert hasattr(
-        layout, "dimension_ranges_"
-    ), f"{layout_kind} missing dimension_ranges_"
-    assert hasattr(layout, "grid_edges_"), f"{layout_kind} missing grid_edges_"
-    assert hasattr(layout, "grid_shape_"), f"{layout_kind} missing grid_shape_"
-    assert hasattr(layout, "active_mask_"), f"{layout_kind} missing active_mask_"
+        layout, "dimension_ranges"
+    ), f"{layout_kind} missing dimension_ranges"
+    assert hasattr(layout, "grid_edges"), f"{layout_kind} missing grid_edges"
+    assert hasattr(layout, "grid_shape"), f"{layout_kind} missing grid_shape"
+    assert hasattr(layout, "active_mask"), f"{layout_kind} missing active_mask"
     assert hasattr(
         layout, "_layout_type_tag"
     ), f"{layout_kind} missing _layout_type_tag"
@@ -401,23 +401,21 @@ def test_layout_engine_protocol_adherence(
 
     # 2. Check basic types and consistency
     assert isinstance(
-        layout.bin_centers_, np.ndarray
-    ), f"{layout_kind}.bin_centers_ not ndarray"
-    if layout.bin_centers_.size > 0:  # Only check shape if not empty
-        assert layout.bin_centers_.ndim == 2, f"{layout_kind}.bin_centers_ not 2D"
+        layout.bin_centers, np.ndarray
+    ), f"{layout_kind}.bin_centers not ndarray"
+    if layout.bin_centers.size > 0:  # Only check shape if not empty
+        assert layout.bin_centers.ndim == 2, f"{layout_kind}.bin_centers not 2D"
 
     if (
-        layout.connectivity_ is not None
+        layout.connectivity is not None
     ):  # Optional for protocol, but usually present if active bins
         assert isinstance(
-            layout.connectivity_, nx.Graph
-        ), f"{layout_kind}.connectivity_ not nx.Graph"
+            layout.connectivity, nx.Graph
+        ), f"{layout_kind}.connectivity not nx.Graph"
         if (
-            layout.bin_centers_.shape[0] > 0
+            layout.bin_centers.shape[0] > 0
         ):  # If there are active bins, graph should not be None
-            assert (
-                layout.connectivity_.number_of_nodes() == layout.bin_centers_.shape[0]
-            )
+            assert layout.connectivity.number_of_nodes() == layout.bin_centers.shape[0]
 
     assert isinstance(layout.is_1d, bool), f"{layout_kind}.is_1d not bool"
     assert (
@@ -429,36 +427,36 @@ def test_layout_engine_protocol_adherence(
             k in layout._build_params_used
         ), f"{layout_kind}._build_params_used missing '{k}'"
 
-    if layout.active_mask_ is not None:
+    if layout.active_mask is not None:
         assert isinstance(
-            layout.active_mask_, np.ndarray
-        ), f"{layout_kind}.active_mask_ not ndarray"
-        assert layout.active_mask_.dtype == bool, f"{layout_kind}.active_mask_ not bool"
+            layout.active_mask, np.ndarray
+        ), f"{layout_kind}.active_mask not ndarray"
+        assert layout.active_mask.dtype == bool, f"{layout_kind}.active_mask not bool"
         if (
-            layout.grid_shape_ is not None
-            and len(layout.grid_shape_) == layout.active_mask_.ndim
+            layout.grid_shape is not None
+            and len(layout.grid_shape) == layout.active_mask.ndim
         ):
             # For point-based layouts, grid_shape might be (N,) and active_mask (N,)
             # For grid-based, active_mask N-D shape matches grid_shape N-D shape
-            if len(layout.grid_shape_) > 1 or (
-                len(layout.grid_shape_) == 1
-                and layout.grid_shape_[0] != layout.active_mask_.shape[0]
+            if len(layout.grid_shape) > 1 or (
+                len(layout.grid_shape) == 1
+                and layout.grid_shape[0] != layout.active_mask.shape[0]
             ):
                 # This check needs to be careful. If grid_shape is (N_active,), active_mask is (N_active,)
                 # If grid_shape is (R,C), active_mask is (R,C)
                 if not (
-                    len(layout.grid_shape_) == 1
-                    and layout.grid_shape_[0] == layout.active_mask_.shape[0]
-                    and layout.active_mask_.ndim == 1
+                    len(layout.grid_shape) == 1
+                    and layout.grid_shape[0] == layout.active_mask.shape[0]
+                    and layout.active_mask.ndim == 1
                 ):
                     assert (
-                        layout.active_mask_.shape == layout.grid_shape_
+                        layout.active_mask.shape == layout.grid_shape
                     ), f"{layout_kind} active_mask shape vs grid_shape"
 
     # 3. Connectivity Graph Node/Edge Attributes (if graph exists and has elements)
-    if layout.connectivity_ and layout.connectivity_.number_of_nodes() > 0:
-        sample_node = list(layout.connectivity_.nodes())[0]
-        node_data = layout.connectivity_.nodes[sample_node]
+    if layout.connectivity and layout.connectivity.number_of_nodes() > 0:
+        sample_node = list(layout.connectivity.nodes())[0]
+        node_data = layout.connectivity.nodes[sample_node]
         assert "pos" in node_data, f"{layout_kind} node missing 'pos'"
         assert isinstance(
             node_data["pos"], tuple
@@ -476,8 +474,8 @@ def test_layout_engine_protocol_adherence(
             node_data["original_grid_nd_index"], tuple
         ), f"{layout_kind} node 'original_grid_nd_index' not tuple"
 
-        if layout.connectivity_.number_of_edges() > 0:
-            u, v, edge_data = list(layout.connectivity_.edges(data=True))[0]
+        if layout.connectivity.number_of_edges() > 0:
+            u, v, edge_data = list(layout.connectivity.edges(data=True))[0]
             assert "distance" in edge_data, f"{layout_kind} edge missing 'distance'"
             assert isinstance(
                 edge_data["distance"], (float, np.floating)
