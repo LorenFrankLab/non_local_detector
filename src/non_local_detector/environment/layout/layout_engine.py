@@ -252,7 +252,7 @@ class LayoutEngine(Protocol):
         ...
 
     @abstractmethod
-    def get_bin_area_volume(self) -> NDArray[np.float64]:
+    def bin_size(self) -> NDArray[np.float64]:
         """
         Return the area (2D) or volume (3D+) of each active bin.
 
@@ -504,7 +504,7 @@ class _GridMixin:
 
     Provides common functionality for layouts that are based on an underlying
     N-dimensional grid, such as `point_to_bin_index` using grid definitions,
-    default plotting, and `get_bin_area_volume` for uniform grids.
+    default plotting, and `bin_size` for uniform grids.
 
     Assumes the inheriting class defines grid-specific attributes like
     `grid_edges_`, `grid_shape_`, `active_mask_`, `bin_centers_`, and
@@ -710,7 +710,7 @@ class _GridMixin:
         """
         return False
 
-    def get_bin_area_volume(self) -> NDArray[np.float64]:
+    def bin_size(self) -> NDArray[np.float64]:
         """
         Calculate area/volume for each active bin, assuming a uniform grid.
 
@@ -1160,7 +1160,7 @@ class HexagonalLayout(_KDTreeMixin):
             dtype=int,
         )
 
-    def get_bin_area_volume(self) -> NDArray[np.float64]:
+    def bin_size(self) -> NDArray[np.float64]:
         """
         Calculate the area of each hexagonal bin.
 
@@ -1511,7 +1511,7 @@ class GraphLayout(_KDTreeMixin):
             data_points, bin_edges=self.grid_edges_[0], active_mask=self.active_mask_
         )
 
-    def get_bin_area_volume(self) -> NDArray[np.float64]:
+    def bin_size(self) -> NDArray[np.float64]:
         """
         Return the length of each active 1D bin along the linearized track.
 

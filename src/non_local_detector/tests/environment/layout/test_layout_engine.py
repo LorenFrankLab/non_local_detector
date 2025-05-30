@@ -96,7 +96,7 @@ def test_regular_grid_bin_area_volume():
         infer_active_bins=True,
         add_boundary_bins=False,
     )
-    areas = layout.get_bin_area_volume()
+    areas = layout.bin_size()
     assert np.allclose(areas, areas[0])
     assert areas.shape[0] == layout.bin_centers_.shape[0]
 
@@ -139,7 +139,7 @@ def test_hexagonal_bin_area_volume():
         data_samples=data,
         infer_active_bins=True,
     )
-    areas = layout.get_bin_area_volume()
+    areas = layout.bin_size()
     assert np.allclose(areas, areas[0])
     assert areas.shape[0] == layout.bin_centers_.shape[0]
 
@@ -254,7 +254,7 @@ def test_graph_bin_area_volume():
         edge_spacing=0.0,
         bin_size=0.5,
     )
-    lengths = layout.get_bin_area_volume()
+    lengths = layout.bin_size()
     assert np.allclose(lengths, lengths[0])
     assert lengths.shape[0] == layout.bin_centers_.shape[0]
 

@@ -852,6 +852,28 @@ class Environment:
 
     @cached_property
     @check_fitted
+    def bin_size(self) -> NDArray[np.float64]:
+        """
+        Calculate the area (for 2D) or volume (for 3D+) of each active bin.
+
+        For 1D environments, this typically returns the length of each bin.
+        This method delegates to the `bin_size` method of the
+        underlying `LayoutEngine`.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_active_bins,)
+            An array containing the area/volume/length of each active bin.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        """
+        return self.layout.bin_size()
+
+    @cached_property
+    @check_fitted
     def distance_between_bins(self) -> NDArray[np.float64]:
         """
         Compute shortest path distances between all pairs of active bins.
@@ -873,27 +895,6 @@ class Environment:
             If called before the environment is fitted.
         """
         return _get_distance_between_bins(self.connectivity_)
-
-    @check_fitted
-    def get_bin_area_volume(self) -> NDArray[np.float64]:
-        """
-        Calculate the area (for 2D) or volume (for 3D+) of each active bin.
-
-        For 1D environments, this typically returns the length of each bin.
-        This method delegates to the `get_bin_area_volume` method of the
-        underlying `LayoutEngine`.
-
-        Returns
-        -------
-        NDArray[np.float64], shape (n_active_bins,)
-            An array containing the area/volume/length of each active bin.
-
-        Raises
-        ------
-        RuntimeError
-            If called before the environment is fitted.
-        """
-        return self.layout.get_bin_area_volume()
 
     @check_fitted
     def get_bin_attributes_dataframe(self) -> pd.DataFrame:  # Renamed
