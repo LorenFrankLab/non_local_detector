@@ -805,6 +805,25 @@ class Environment:
         """
         return self.bin_at(points_nd) != -1
 
+    def bin_center_of(self, bin_indices: NDArray[np.int_]) -> NDArray[np.float64]:
+        """
+        Return the N-D center point(s) of the specified active bin index/indices.
+
+        This directly indexes the `bin_centers` attribute.
+
+        Parameters
+        ----------
+        bin_indices : NDArray[np.int_] or int
+            Integer index or array of indices for the active bin(s)
+            (0 to `n_bins - 1`).
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_requested_bins, n_dims) or (n_dims,)
+            The N-D center point(s) corresponding to `bin_indices`.
+        """
+        return self.bin_centers_[np.asarray(bin_indices, dtype=int)]
+
     @cached_property
     @check_fitted
     def distance_between_bins(self) -> NDArray[np.float64]:
