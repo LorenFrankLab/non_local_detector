@@ -47,19 +47,19 @@ from scipy.spatial import KDTree
 from track_linearization import get_linearized_position as _get_linearized_position
 from track_linearization import plot_graph_as_1D
 
-from non_local_detector.environment.layout.graph_utils import (
+from non_local_detector.environment.layout.graph import (
     _create_graph_layout_connectivity_graph,
     _find_bin_for_linear_position,
     _get_graph_bins,
     _project_1d_to_2d,
 )
-from non_local_detector.environment.layout.hex_grid_utils import (
+from non_local_detector.environment.layout.hex_grid import (
     _create_hex_connectivity_graph,
     _create_hex_grid,
     _infer_active_bins_from_hex_grid,
     _points_to_hex_bin_ind,
 )
-from non_local_detector.environment.layout.regular_grid_utils import (
+from non_local_detector.environment.layout.regular_grid import (
     _create_regular_grid,
     _create_regular_grid_connectivity_graph,
     _infer_active_bins_from_regular_grid,

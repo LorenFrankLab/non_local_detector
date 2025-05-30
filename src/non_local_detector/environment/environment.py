@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pickle
 import warnings
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from functools import cached_property, wraps
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
 
