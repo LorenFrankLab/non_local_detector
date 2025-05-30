@@ -40,7 +40,6 @@ import matplotlib.axes
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-from matplotlib.axes import Axes as MatplotlibAxes
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import RegularPolygon
 from numpy.typing import NDArray
