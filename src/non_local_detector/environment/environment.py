@@ -19,7 +19,7 @@ from non_local_detector.environment.layout.layout_engine import (
     create_layout,
 )
 from non_local_detector.environment.layout.utils import _get_distance_between_bins
-from non_local_detector.environment.regions import Regions
+from non_local_detector.environment.regions import Region, Regions
 
 if TYPE_CHECKING:
     # For type hinting shapely without a hard dependency
@@ -1927,75 +1927,6 @@ class Environment:
         return None
 
     @check_fitted
-    def get_indices_for_values_in_region(
-        self: "Environment", values: NDArray[np.float64], region_name: str
-    ) -> NDArray[np.bool_]:
-        """
-        Determines which time points (rows in `values` array) correspond
-        to locations falling within a specified named region of this environment.
-
-        A value is considered in the region if it maps to an active bin
-        that is part of the defined region.
-
-        Parameters
-        ----------
-        values : NDArray[np.float64]
-            N-dimensional position data, shape (n_time_points, n_dims).
-        region_name : str
-            The name of a defined region in `self.regions`.
-
-        Returns
-        -------
-        NDArray[np.bool_]
-            Boolean mask of shape (n_time_points,). `True` indicates the
-            position at that time point is within the specified region.
-
-        Raises
-        ------
-        AttributeError
-            If the environment does not have a `regions` (RegionManager) attribute.
-        KeyError
-            If `region_name` is not found in `self.regions`.
-        ValueError
-            If `values` array has incorrect dimensionality.
-        """
-        if not hasattr(self, "regions") or self.regions is None:
-            raise AttributeError(f"Environment '{self.name}' has no 'regions' manager.")
-        if values.ndim != 2 or values.shape[1] != self.n_dims:
-            raise ValueError(
-                f"Values array must be 2D with shape (n_points, {self.n_dims}), "
-                f"got {values.shape}."
-            )
-
-        # Map continuous positions to active bin indices (0 to N-1, or -1 if outside)
-        # `get_bin_ind` is already @check_fitted
-        active_bin_indices_for_positions = self.get_bin_ind(values)
-
-        # Get the set of active bin indices that constitute the target region
-        # `bins_in_region` also raises KeyError if region_name not found
-        # and is @check_fitted via region_mask
-        try:
-            bins_in_target_region = self.regions.bins_in_region(region_name)
-        except KeyError:
-            # Re-raise with more context or let original error propagate
-            raise KeyError(
-                f"Region '{region_name}' not found in environment '{self.name}'."
-            )
-
-        if bins_in_target_region.size == 0:
-            # Region is defined but contains no active bins from this environment
-            return np.zeros(values.shape[0], dtype=bool)
-
-        # Create a boolean mask: True if the mapped active_bin_index for a position
-        # is present in the set of bins defining the target region.
-        # np.isin is efficient for this.
-        is_in_region_mask = np.isin(
-            active_bin_indices_for_positions, bins_in_target_region
-        )
-
-        return is_in_region_mask
-
-    @check_fitted
     def bins_in_region(self, region_name: str) -> NDArray[np.int_]:
         """
         Get active bin indices that fall within a specified named region.
@@ -2018,13 +1949,7 @@ class Environment:
         ValueError
             If region kind is unsupported or mask dimensions mismatch.
         """
-        if not hasattr(self, "regions") or self.regions is None:  # Should always exist
-            # This case should ideally not be reached if __init__ guarantees self.regions
-            raise AttributeError(
-                f"Environment '{self.name}' has no 'regions' manager."
-            )  # pragma: no cover
-
-        region_info = self.regions[region_name]  # Can raise KeyError
+        region_info = self.regions[region_name]
 
         if region_info.kind == "point":
             point_nd = np.asarray(region_info.data).reshape(1, -1)
@@ -2051,77 +1976,11 @@ class Environment:
             )
             return np.flatnonzero(contained_mask)
 
-        elif region_info.kind == "mask":
-            mask_data = np.asarray(region_info.data, dtype=bool)
-
-            if (
-                self.grid_shape_ is None or self.active_mask_ is None
-            ):  # pragma: no cover
-                raise ValueError(
-                    "Mask regions are only supported for environments with "
-                    "a defined grid_shape and active_mask (typically grid-based layouts)."
-                )
-            if mask_data.shape != self.grid_shape_:
-                raise ValueError(
-                    f"Region mask shape {mask_data.shape} does not match "
-                    f"environment grid_shape {self.grid_shape_}."
-                )
-
-            # Mask from region applies to the *full original grid*
-            # We need active environment bins whose original grid positions fall in this mask
-            effective_mask_on_full_grid = mask_data & self.active_mask_
-
-            original_flat_indices_in_region_and_active = np.flatnonzero(
-                effective_mask_on_full_grid
-            )
-
-            if not original_flat_indices_in_region_and_active.size:
-                return np.array([], dtype=int)
-
-            # Map these original full grid flat indices to active bin IDs
-            # Need to ensure _source_flat_to_active_node_id_map is populated
-            if (
-                self._source_flat_to_active_node_id_map is None
-                or not self._source_flat_to_active_node_id_map
-            ):  # Check if empty
-                # This can happen if connectivity_graph_ has no 'source_grid_flat_index'
-                # For example, if it's a non-grid layout that doesn't add it.
-                # Or if all nodes are missing it.
-                # If the layout is a grid, this map should exist.
-                # If it's a GraphLayout, its source_grid_flat_index refers to linearized bins.
-                # The "mask" kind for GraphLayout means the mask_data should be 1D.
-                if (
-                    self.is_1d
-                    and mask_data.ndim == 1
-                    and len(mask_data) == self.grid_shape_[0]
-                ):
-                    # For GraphLayout, source_grid_flat_index is 0..n_linear_bins-1
-                    # and these are also the active_node_ids if all linearized bins are nodes.
-                    # The active_mask_ for GraphLayout is all True, shape (n_linear_bins,).
-                    # So effective_mask_on_full_grid is just mask_data.
-                    # The indices from np.flatnonzero(mask_data) are directly the active_bin_ids.
-                    return np.flatnonzero(mask_data)  # These are the active node IDs
-                else:
-                    warnings.warn(
-                        "Source flat to active node ID map is not available or not applicable. "
-                        "Cannot map mask region for this layout type accurately without it.",
-                        UserWarning,
-                    )
-                    return np.array([], dtype=int)
-
-            active_bin_ids_in_region = [
-                self._source_flat_to_active_node_id_map.get(orig_flat_idx, -1)
-                for orig_flat_idx in original_flat_indices_in_region_and_active
-            ]
-            return np.array(
-                [bid for bid in active_bin_ids_in_region if bid != -1], dtype=int
-            )
-
         else:  # pragma: no cover
             raise ValueError(f"Unsupported region kind: {region_info.kind}")
 
     @check_fitted
-    def region_mask(self, region_name: str) -> NDArray[np.bool_]:
+    def mask_for_region(self, region_name: str) -> NDArray[np.bool_]:
         """
         Get a boolean mask over active bins indicating membership in a region.
 
@@ -2161,11 +2020,6 @@ class Environment:
             if not _HAS_SHAPELY:  # pragma: no cover
                 raise RuntimeError("Polygon region queries require 'shapely'.")
             return np.array(region_info.data.centroid.coords[0])  # type: ignore
-        elif region_info.kind == "mask":
-            active_bin_ids = self.bins_in_region(region_name)
-            if active_bin_ids.size == 0:
-                return None
-            return np.mean(self.bin_centers_[active_bin_ids], axis=0)
         return None  # pragma: no cover
 
     @check_fitted
@@ -2185,12 +2039,6 @@ class Environment:
             if not _HAS_SHAPELY:  # pragma: no cover
                 raise RuntimeError("Polygon area calculation requires 'shapely'.")
             return region_info.data.area  # type: ignore
-        elif region_info.kind == "mask":
-            active_bin_ids = self.bins_in_region(region_name)
-            if active_bin_ids.size == 0:
-                return 0.0
-            bin_areas_volumes = self.get_bin_area_volume()
-            return np.sum(bin_areas_volumes[active_bin_ids])
         return 0.0  # pragma: no cover
 
     @check_fitted
@@ -2200,7 +2048,7 @@ class Environment:
         buffer_distance: float,
         new_region_name: str,
         **meta: Any,
-    ) -> CoreRegion:
+    ) -> Region:
         """
         Creates a new polygon region by buffering an existing region or a point.
         The new region is added to `self.regions`.
@@ -2219,7 +2067,7 @@ class Environment:
 
         Returns
         -------
-        CoreRegion
+        Region
             The newly created and added Region object.
 
         Raises
@@ -2232,42 +2080,9 @@ class Environment:
         if not _HAS_SHAPELY:  # pragma: no cover
             raise RuntimeError("Buffering requires Shapely.")
 
-        # This method now delegates to self.regions (CoreRegions instance)
-        # CoreRegions.buffer() already handles adding the region.
         return self.regions.buffer(
             source=source_region_name_or_point,
             distance=buffer_distance,
             new_name=new_region_name,
             **meta,
         )
-
-    @check_fitted
-    def get_indices_for_values_in_region(
-        self: "Environment", values: NDArray[np.float64], region_name: str
-    ) -> NDArray[np.bool_]:
-        """
-        Determines which time points (rows in `values` array) correspond
-        to locations falling within a specified named region of this environment.
-        ...
-        """
-        if not hasattr(self, "regions") or self.regions is None:  # pragma: no cover
-            raise AttributeError(f"Environment '{self.name}' has no 'regions' manager.")
-        if values.ndim != 2 or values.shape[1] != self.n_dims:
-            raise ValueError(
-                f"Values array must be 2D with shape (n_points, {self.n_dims}), "
-                f"got {values.shape}."
-            )
-
-        active_bin_indices_for_positions = self.get_bin_ind(values)
-
-        # Use the new Environment method
-        bins_in_target_region = self.bins_in_region(region_name)
-
-        if bins_in_target_region.size == 0:
-            return np.zeros(values.shape[0], dtype=bool)
-
-        is_in_region_mask = np.isin(
-            active_bin_indices_for_positions, bins_in_target_region
-        )
-
-        return is_in_region_mask
