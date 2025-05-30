@@ -85,7 +85,7 @@ def test_infer_active_bins_boundary_exists():
     assert mask[1]
 
 
-def test_create_regular_grid_connectivity_graph_2d_orthogonal():
+def test_create_regular_grid_connectivity_2d_orthogonal():
     # 2x2 grid, all bins active, orthogonal connections
     centers_list = [0.5, 1.5]
     mesh = np.meshgrid(centers_list, centers_list, indexing="ij")
@@ -105,7 +105,7 @@ def test_create_regular_grid_connectivity_graph_2d_orthogonal():
         assert "edge_id" in d
 
 
-def test_create_regular_grid_connectivity_graph_2d_diagonal():
+def test_create_regular_grid_connectivity_2d_diagonal():
     # 2x2 grid, all bins active, diagonal connections
     edges = (np.array([0, 1, 2]), np.array([0, 1, 2]))
     centers_list = [0.5, 1.5]

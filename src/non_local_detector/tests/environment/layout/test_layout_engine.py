@@ -64,7 +64,7 @@ def test_create_layout_regular_grid():
     )
     assert hasattr(layout, "bin_centers_")
     assert layout.bin_centers_.ndim == 2
-    assert layout.connectivity_graph_ is not None
+    assert layout.connectivity_ is not None
     assert layout.active_mask_ is not None
     assert layout.grid_edges_ is not None
     assert not layout.is_1d
@@ -111,7 +111,7 @@ def test_create_layout_hexagonal():
     )
     assert hasattr(layout, "bin_centers_")
     assert layout.bin_centers_.ndim == 2
-    assert layout.connectivity_graph_ is not None
+    assert layout.connectivity_ is not None
     assert not layout.is_1d
 
 
@@ -159,7 +159,7 @@ def test_create_layout_masked_grid():
     assert hasattr(layout, "bin_centers_")
     assert layout.bin_centers_.ndim == 2
     assert layout.bin_centers_.shape[0] == np.sum(mask)  # Should be 9
-    assert layout.connectivity_graph_ is not None
+    assert layout.connectivity_ is not None
     assert not layout.is_1d
 
 
@@ -173,7 +173,7 @@ def test_create_layout_image_mask():
     )
     assert hasattr(layout, "bin_centers_")
     assert layout.bin_centers_.ndim == 2
-    assert layout.connectivity_graph_ is not None
+    assert layout.connectivity_ is not None
     assert not layout.is_1d
 
 
@@ -212,7 +212,7 @@ def test_create_layout_graph():
     assert layout.bin_centers_.ndim == 2
     # Graph: 0 --1m-- 1 --1m-- 2. Total length 2m. Bin size 0.5m. Expected 4 bins.
     assert layout.bin_centers_.shape[0] == 4
-    assert layout.connectivity_graph_ is not None
+    assert layout.connectivity_ is not None
     assert layout.is_1d
 
 
@@ -384,9 +384,7 @@ def test_layout_engine_protocol_adherence(
 
     # 1. Check presence of all protocol attributes
     assert hasattr(layout, "bin_centers_"), f"{layout_kind} missing bin_centers_"
-    assert hasattr(
-        layout, "connectivity_graph_"
-    ), f"{layout_kind} missing connectivity_graph_"
+    assert hasattr(layout, "connectivity_"), f"{layout_kind} missing connectivity_"
     assert hasattr(
         layout, "dimension_ranges_"
     ), f"{layout_kind} missing dimension_ranges_"
@@ -409,17 +407,16 @@ def test_layout_engine_protocol_adherence(
         assert layout.bin_centers_.ndim == 2, f"{layout_kind}.bin_centers_ not 2D"
 
     if (
-        layout.connectivity_graph_ is not None
+        layout.connectivity_ is not None
     ):  # Optional for protocol, but usually present if active bins
         assert isinstance(
-            layout.connectivity_graph_, nx.Graph
-        ), f"{layout_kind}.connectivity_graph_ not nx.Graph"
+            layout.connectivity_, nx.Graph
+        ), f"{layout_kind}.connectivity_ not nx.Graph"
         if (
             layout.bin_centers_.shape[0] > 0
         ):  # If there are active bins, graph should not be None
             assert (
-                layout.connectivity_graph_.number_of_nodes()
-                == layout.bin_centers_.shape[0]
+                layout.connectivity_.number_of_nodes() == layout.bin_centers_.shape[0]
             )
 
     assert isinstance(layout.is_1d, bool), f"{layout_kind}.is_1d not bool"
@@ -459,9 +456,9 @@ def test_layout_engine_protocol_adherence(
                     ), f"{layout_kind} active_mask shape vs grid_shape"
 
     # 3. Connectivity Graph Node/Edge Attributes (if graph exists and has elements)
-    if layout.connectivity_graph_ and layout.connectivity_graph_.number_of_nodes() > 0:
-        sample_node = list(layout.connectivity_graph_.nodes())[0]
-        node_data = layout.connectivity_graph_.nodes[sample_node]
+    if layout.connectivity_ and layout.connectivity_.number_of_nodes() > 0:
+        sample_node = list(layout.connectivity_.nodes())[0]
+        node_data = layout.connectivity_.nodes[sample_node]
         assert "pos" in node_data, f"{layout_kind} node missing 'pos'"
         assert isinstance(
             node_data["pos"], tuple
@@ -479,8 +476,8 @@ def test_layout_engine_protocol_adherence(
             node_data["original_grid_nd_index"], tuple
         ), f"{layout_kind} node 'original_grid_nd_index' not tuple"
 
-        if layout.connectivity_graph_.number_of_edges() > 0:
-            u, v, edge_data = list(layout.connectivity_graph_.edges(data=True))[0]
+        if layout.connectivity_.number_of_edges() > 0:
+            u, v, edge_data = list(layout.connectivity_.edges(data=True))[0]
             assert "distance" in edge_data, f"{layout_kind} edge missing 'distance'"
             assert isinstance(
                 edge_data["distance"], (float, np.floating)

@@ -91,7 +91,7 @@ class Environment:
     bin_centers_ : NDArray[np.float64]
         Coordinates of the center of each *active* bin/node in the environment.
         Shape is (n_active_bins, n_dims). Populated by `_setup_from_layout`.
-    connectivity_graph_ : nx.Graph
+    connectivity_ : nx.Graph
         A NetworkX graph where nodes are integers from `0` to `n_active_bins - 1`,
         directly corresponding to the rows of `bin_centers_`. Edges represent
         adjacency between bins. Populated by `_setup_from_layout`.
@@ -135,7 +135,7 @@ class Environment:
 
     # --- Attributes populated from the layout instance ---
     bin_centers_: NDArray[np.float64] = field(init=False)
-    connectivity_graph_: nx.Graph = field(init=False)
+    connectivity_: nx.Graph = field(init=False)
     dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = field(init=False)
 
     # Grid-specific context (populated if layout is grid-based)
@@ -207,7 +207,7 @@ class Environment:
 
         # Initialize attributes that will be populated by _setup_from_layout
         self.bin_centers_ = np.empty((0, 0))  # Placeholder
-        self.connectivity_graph_ = nx.Graph()
+        self.connectivity_ = nx.Graph()
         self.dimension_ranges_ = None
         self.grid_edges_ = ()
         self.grid_shape_ = None
@@ -269,9 +269,7 @@ class Environment:
         """
 
         self.bin_centers_ = self.layout.bin_centers_
-        self.connectivity_graph_ = getattr(
-            self.layout, "connectivity_graph_", nx.Graph()
-        )
+        self.connectivity_ = getattr(self.layout, "connectivity_", nx.Graph())
         self.dimension_ranges_ = self.layout.dimension_ranges_
 
         # Grid-specific attributes
@@ -315,7 +313,7 @@ class Environment:
         """
         return {
             data["source_grid_flat_index"]: node_id
-            for node_id, data in self.connectivity_graph_.nodes(data=True)
+            for node_id, data in self.connectivity_.nodes(data=True)
             if "source_grid_flat_index" in data
         }
 
@@ -382,7 +380,7 @@ class Environment:
             boundary bins around the inferred active area. Defaults to False.
         connect_diagonal_neighbors : bool, optional
             For grid-based layouts, whether to connect diagonally adjacent bins
-            in the `connectivity_graph_`. Defaults to True.
+            in the `connectivity_`. Defaults to True.
         **layout_specific_kwargs : Any
             Additional keyword arguments passed directly to the constructor
             of the chosen `LayoutEngine`.
@@ -762,9 +760,9 @@ class Environment:
             If called before the environment is fitted.
 
         """
-        if self.connectivity_graph_ is None:
+        if self.connectivity_ is None:
             raise ValueError("Connectivity graph is not available.")
-        return self.connectivity_graph_
+        return self.connectivity_
 
     @cached_property
     @check_fitted
@@ -772,7 +770,7 @@ class Environment:
         """
         Compute shortest path distances between all pairs of active bins.
 
-        The distance is calculated using the `connectivity_graph_`, where
+        The distance is calculated using the `connectivity_`, where
         edge weights typically represent the Euclidean distance between
         connected bin centers.
 
@@ -818,7 +816,7 @@ class Environment:
         return self.layout.point_to_bin_index(points_nd)
 
     @check_fitted
-    def is_point_active(self, points_nd: NDArray[np.float64]) -> NDArray[np.bool_]:
+    def contains(self, points_nd: NDArray[np.float64]) -> NDArray[np.bool_]:
         """
         Check if N-dimensional continuous points fall within any active bin.
 
@@ -846,7 +844,7 @@ class Environment:
         Find indices of neighboring active bins for a given active bin index.
 
         This method delegates to the `get_bin_neighbors` method of the
-        underlying `LayoutEngine`, which typically uses the `connectivity_graph_`.
+        underlying `LayoutEngine`, which typically uses the `connectivity_`.
 
         Parameters
         ----------
@@ -864,7 +862,7 @@ class Environment:
         RuntimeError
             If called before the environment is fitted.
         """
-        return self.layout.get_bin_neighbors(bin_index)
+        return list(self.connectivity_.neighbors(bin_index))
 
     @check_fitted
     def get_bin_area_volume(self) -> NDArray[np.float64]:
@@ -893,7 +891,7 @@ class Environment:
         Create a Pandas DataFrame with attributes of each active bin.
 
         The DataFrame is constructed from the node data of the
-        `connectivity_graph_`. Each row corresponds to an active bin.
+        `connectivity_`. Each row corresponds to an active bin.
         Columns include the bin's N-D position (split into `pos_dim0`,
         `pos_dim1`, etc.) and any other attributes stored on the graph nodes.
 
@@ -918,9 +916,6 @@ class Environment:
         df.index.name = "active_bin_id"  # Index is 0..N-1
 
         if "pos" in df.columns and not df["pos"].dropna().empty:
-            # Ensure all 'pos' are consistently tuples/lists before converting
-            df["pos"] = df["pos"].apply(lambda x: x if isinstance(x, (list, tuple, np.ndarray)) else (np.nan,) * self.n_dims)  # type: ignore
-
             pos_df = pd.DataFrame(df["pos"].tolist(), index=df.index)
             pos_df.columns = [f"pos_dim{i}" for i in range(pos_df.shape[1])]
             df = pd.concat([df.drop(columns="pos"), pos_df], axis=1)
@@ -997,7 +992,7 @@ class Environment:
 
         The path is a sequence of active bin indices (0 to n_active_bins - 1)
         connecting the source to the target. Path calculation uses the
-        'distance' attribute on the edges of the `connectivity_graph_`
+        'distance' attribute on the edges of the `connectivity_`
         as weights.
 
         Parameters
@@ -1021,7 +1016,7 @@ class Environment:
             If called before the environment is fitted.
         nx.NodeNotFound
             If `source_active_bin_idx` or `target_active_bin_idx` is not
-            a node in the `connectivity_graph_`.
+            a node in the `connectivity_`.
         """
         graph = self.get_connectivity_graph()
 
@@ -1327,7 +1322,7 @@ class Environment:
                 "N-D index conversion is primarily for N-D grid-based layouts "
                 "with a defined N-D active_mask_ and grid_shape_."
             )
-        if self.connectivity_graph_ is None:
+        if self.connectivity_ is None:
             raise RuntimeError(
                 "Connectivity graph not available for mapping source indices."
             )
@@ -1338,15 +1333,15 @@ class Environment:
         output_nd_indices_list = []
 
         for active_flat_idx in flat_indices_arr:
-            if not (0 <= active_flat_idx < self.connectivity_graph_.number_of_nodes()):
+            if not (0 <= active_flat_idx < self.connectivity_.number_of_nodes()):
                 warnings.warn(
-                    f"Active flat_index {active_flat_idx} is out of bounds for connectivity_graph_ nodes. Returning NaNs.",
+                    f"Active flat_index {active_flat_idx} is out of bounds for connectivity_ nodes. Returning NaNs.",
                     UserWarning,
                 )
                 output_nd_indices_list.append(tuple([np.nan] * len(self.grid_shape_)))
                 continue
 
-            node_data = self.connectivity_graph_.nodes[active_flat_idx]
+            node_data = self.connectivity_.nodes[active_flat_idx]
 
             # Prefer 'original_grid_nd_index' if directly available
             if (
@@ -1365,7 +1360,7 @@ class Environment:
                 )
             else:
                 warnings.warn(
-                    f"Node {active_flat_idx} in connectivity_graph_ missing necessary source index information for N-D conversion. Returning NaNs.",
+                    f"Node {active_flat_idx} in connectivity_ missing necessary source index information for N-D conversion. Returning NaNs.",
                     UserWarning,
                 )
                 output_nd_indices_list.append(tuple([np.nan] * len(self.grid_shape_)))
@@ -1437,7 +1432,7 @@ class Environment:
             or self.active_mask_.ndim <= 1
         ):
             raise TypeError("N-D index conversion is for N-D grid-based layouts.")
-        if self.connectivity_graph_ is None:
+        if self.connectivity_ is None:
             raise RuntimeError(
                 "Connectivity graph not available for mapping to active indices."
             )

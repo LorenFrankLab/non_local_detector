@@ -101,7 +101,7 @@ class LayoutEngine(Protocol):
     bin_centers_ : NDArray[np.float64]
         Coordinates of the center of each *active* bin/node.
         Shape is (n_active_bins, n_dims).
-    connectivity_graph_ : Optional[nx.Graph]
+    connectivity_ : Optional[nx.Graph]
         Graph where nodes are integers from `0` to `n_active_bins - 1`,
         directly corresponding to rows in `bin_centers_`.
         **Mandatory Node Attributes**:
@@ -148,7 +148,7 @@ class LayoutEngine(Protocol):
 
     # --- Required Data Attributes ---
     bin_centers_: NDArray[np.float64]
-    connectivity_graph_: Optional[nx.Graph] = None
+    connectivity_: Optional[nx.Graph] = None
     dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
 
     # Attributes primarily for GRID-BASED Layouts
@@ -167,7 +167,7 @@ class LayoutEngine(Protocol):
 
         This method is responsible for populating all the attributes defined
         in the `LayoutEngine` protocol (e.g., `bin_centers_`,
-        `connectivity_graph_`, etc.) based on the provided keyword arguments.
+        `connectivity_`, etc.) based on the provided keyword arguments.
         The specific arguments required will vary depending on the concrete
         implementation of the layout engine.
         """
@@ -198,7 +198,7 @@ class LayoutEngine(Protocol):
         """
         Find indices of neighboring active bins for a given active bin index.
 
-        This typically uses the `connectivity_graph_`. The input `bin_index`
+        This typically uses the `connectivity_`. The input `bin_index`
         and returned indices are relative to the active bins (0 to N-1).
 
         Parameters
@@ -282,7 +282,7 @@ class _KDTreeMixin:
 
     Assumes the inheriting class defines:
     - `self.bin_centers_`: NDArray of active bin center coordinates.
-    - `self.connectivity_graph_`: NetworkX graph of active bins.
+    - `self.connectivity_`: NetworkX graph of active bins.
 
     The `_build_kdtree` method must be called by the inheriting layout's
     `build` method after `bin_centers_` is finalized.
@@ -452,7 +452,7 @@ class _KDTreeMixin:
         """
         Find indices of neighboring active bins for a given active bin index.
 
-        Uses the `connectivity_graph_` which should have nodes `0` to
+        Uses the `connectivity_` which should have nodes `0` to
         `n_active_bins - 1`.
 
         Parameters
@@ -469,20 +469,20 @@ class _KDTreeMixin:
         Raises
         ------
         AttributeError
-            If `connectivity_graph_` is not defined on the instance.
+            If `connectivity_` is not defined on the instance.
         ValueError
-            If `connectivity_graph_` is None (e.g., not built).
+            If `connectivity_` is None (e.g., not built).
         """
-        if not hasattr(self, "connectivity_graph_"):
+        if not hasattr(self, "connectivity_"):
             raise AttributeError(
-                f"{self.__class__.__name__} does not have 'connectivity_graph_' attribute."
+                f"{self.__class__.__name__} does not have 'connectivity_' attribute."
             )
 
-        graph_to_use: Optional[nx.Graph] = getattr(self, "connectivity_graph_", None)
+        graph_to_use: Optional[nx.Graph] = getattr(self, "connectivity_", None)
 
         if graph_to_use is None:
             raise ValueError(
-                f"{self.__class__.__name__}.connectivity_graph_ is None. "
+                f"{self.__class__.__name__}.connectivity_ is None. "
                 "Ensure the layout is built."
             )
 
@@ -490,7 +490,7 @@ class _KDTreeMixin:
             # This could happen if bin_index is out of range for the number of active bins
             # or if the graph was unexpectedly empty or misconfigured.
             warnings.warn(
-                f"Bin index {bin_index} not found in connectivity_graph_. Returning no neighbors.",
+                f"Bin index {bin_index} not found in connectivity_. Returning no neighbors.",
                 RuntimeWarning,
             )
             return []
@@ -508,14 +508,14 @@ class _GridMixin:
 
     Assumes the inheriting class defines grid-specific attributes like
     `grid_edges_`, `grid_shape_`, `active_mask_`, `bin_centers_`, and
-    `connectivity_graph_`.
+    `connectivity_`.
     """
 
     grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
     grid_shape_: Optional[Tuple[int, ...]] = None
     active_mask_: Optional[NDArray[np.bool_]] = None
     bin_centers_: Optional[NDArray[np.float64]] = None
-    connectivity_graph_: Optional[nx.Graph] = None
+    connectivity_: Optional[nx.Graph] = None
     dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
     _layout_type_tag: str = "_Grid_Layout"
 
@@ -568,18 +568,18 @@ class _GridMixin:
         Raises
         ------
         ValueError
-            If `connectivity_graph_` is None.
+            If `connectivity_` is None.
         """
-        if not hasattr(self, "connectivity_graph_"):
+        if not hasattr(self, "connectivity_"):
             raise AttributeError(
-                f"{self.__class__.__name__} does not have 'connectivity_graph_' attribute."
+                f"{self.__class__.__name__} does not have 'connectivity_' attribute."
             )
 
-        graph_to_use: Optional[nx.Graph] = getattr(self, "connectivity_graph_", None)
+        graph_to_use: Optional[nx.Graph] = getattr(self, "connectivity_", None)
 
         if graph_to_use is None:
             raise ValueError(
-                f"{self.__class__.__name__}.connectivity_graph_ is None. "
+                f"{self.__class__.__name__}.connectivity_ is None. "
                 "Ensure the layout is built."
             )
 
@@ -587,7 +587,7 @@ class _GridMixin:
             # This could happen if bin_index is out of range for the number of active bins
             # or if the graph was unexpectedly empty or misconfigured.
             warnings.warn(
-                f"Bin index {bin_index} not found in connectivity_graph_. Returning no neighbors.",
+                f"Bin index {bin_index} not found in connectivity_. Returning no neighbors.",
                 RuntimeWarning,
             )
             return []
@@ -608,7 +608,7 @@ class _GridMixin:
         Plot the grid-based layout.
 
         For 2D grids, displays the `active_mask_` using `pcolormesh` and
-        optionally overlays the `connectivity_graph_`.
+        optionally overlays the `connectivity_`.
 
         Parameters
         ----------
@@ -647,7 +647,7 @@ class _GridMixin:
             or self.grid_edges_ is None
             or self.active_mask_ is None
             or self.grid_shape_ is None
-            or self.connectivity_graph_ is None
+            or self.connectivity_ is None
         ):
             raise RuntimeError("Layout not built. Call `build` first.")
 
@@ -676,15 +676,15 @@ class _GridMixin:
                 ax.set_ylim(self.dimension_ranges_[1])
 
             if draw_connectivity_graph:
-                node_position = nx.get_node_attributes(self.connectivity_graph_, "pos")
+                node_position = nx.get_node_attributes(self.connectivity_, "pos")
                 nx.draw_networkx_nodes(
-                    self.connectivity_graph_,
+                    self.connectivity_,
                     node_position,
                     ax=ax,
                     node_size=node_size,
                     node_color=node_color,
                 )
-                for node_id1, node_id2 in self.connectivity_graph_.edges:
+                for node_id1, node_id2 in self.connectivity_.edges:
                     pos = np.stack((node_position[node_id1], node_position[node_id2]))
                     ax.plot(pos[:, 0], pos[:, 1], color="black", zorder=-1)
 
@@ -761,7 +761,7 @@ class RegularGridLayout(_GridMixin):
     """
 
     bin_centers_: NDArray[np.float64]
-    connectivity_graph_: Optional[nx.Graph] = None
+    connectivity_: Optional[nx.Graph] = None
     dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
     grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
     grid_shape_: Optional[Tuple[int, ...]] = None
@@ -776,7 +776,7 @@ class RegularGridLayout(_GridMixin):
         self._build_params_used = {}
         # Initialize all protocol attributes to satisfy type checkers, even if None
         self.bin_centers_ = np.empty((0, 0))
-        self.connectivity_graph_ = None
+        self.connectivity_ = None
         self.dimension_ranges_ = None
         self.grid_edges_ = None
         self.grid_shape_ = None
@@ -881,7 +881,7 @@ class RegularGridLayout(_GridMixin):
             )
 
         self.bin_centers_ = full_grid_bin_centers[self.active_mask_.ravel()]
-        self.connectivity_graph_ = _create_regular_grid_connectivity_graph(
+        self.connectivity_ = _create_regular_grid_connectivity_graph(
             full_grid_bin_centers=full_grid_bin_centers,
             active_mask_nd=self.active_mask_,
             grid_shape=self.grid_shape_,
@@ -900,7 +900,7 @@ class HexagonalLayout(_KDTreeMixin):
     """
 
     bin_centers_: NDArray[np.float64]
-    connectivity_graph_: Optional[nx.Graph] = None
+    connectivity_: Optional[nx.Graph] = None
     dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
 
     grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = ()
@@ -919,7 +919,7 @@ class HexagonalLayout(_KDTreeMixin):
         self._layout_type_tag = "Hexagonal"
         self._build_params_used = {}
         self.bin_centers_ = np.empty((0, 2))
-        self.connectivity_graph_ = None
+        self.connectivity_ = None
         self.dimension_ranges_ = None
         self.grid_edges_ = ()
         self.grid_shape_ = None
@@ -1005,7 +1005,7 @@ class HexagonalLayout(_KDTreeMixin):
 
         self.bin_centers_ = full_grid_bin_centers[active_bin_original_flat_indices]
 
-        self.connectivity_graph_ = _create_hex_connectivity_graph(
+        self.connectivity_ = _create_hex_connectivity_graph(
             active_original_flat_indices=active_bin_original_flat_indices,
             full_grid_bin_centers=full_grid_bin_centers,
             centers_shape=self.grid_shape_,
@@ -1013,7 +1013,7 @@ class HexagonalLayout(_KDTreeMixin):
 
         self._source_flat_to_active_id_map = {
             data["source_grid_flat_index"]: node_id
-            for node_id, data in self.connectivity_graph_.nodes(data=True)
+            for node_id, data in self.connectivity_.nodes(data=True)
         }
 
     @property
@@ -1046,7 +1046,7 @@ class HexagonalLayout(_KDTreeMixin):
         """
         ax = _generic_graph_plot(
             ax=ax,
-            graph=self.connectivity_graph_,
+            graph=self.connectivity_,
             name=self._layout_type_tag,
             **kwargs,
         )
@@ -1197,7 +1197,7 @@ class GraphLayout(_KDTreeMixin):
     """
 
     bin_centers_: NDArray[np.float64]
-    connectivity_graph_: Optional[nx.Graph] = None
+    connectivity_: Optional[nx.Graph] = None
     dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
 
     grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
@@ -1215,7 +1215,7 @@ class GraphLayout(_KDTreeMixin):
         self._layout_type_tag = "Graph"
         self._build_params_used = {}
         self.bin_centers_ = np.empty((0, 0), dtype=np.float64)
-        self.connectivity_graph_ = None
+        self.connectivity_ = None
         self.dimension_ranges_ = None
         self.grid_edges_ = None
         self.grid_shape_ = None
@@ -1282,7 +1282,7 @@ class GraphLayout(_KDTreeMixin):
             edge_spacing,
         )
         self.grid_shape_ = (len(self.bin_centers_),)
-        self.connectivity_graph_ = _create_graph_layout_connectivity_graph(
+        self.connectivity_ = _create_graph_layout_connectivity_graph(
             graph=graph_definition,
             bin_centers_nd=self.bin_centers_,
             linear_bin_centers=self.linear_bin_centers_,
@@ -1368,9 +1368,9 @@ class GraphLayout(_KDTreeMixin):
             )
 
         # Draw the bin centers
-        bin_centers = nx.get_node_attributes(self.connectivity_graph_, "pos")
+        bin_centers = nx.get_node_attributes(self.connectivity_, "pos")
         nx.draw_networkx_nodes(
-            self.connectivity_graph_,
+            self.connectivity_,
             bin_centers,
             ax=ax,
             node_size=30,
@@ -1378,7 +1378,7 @@ class GraphLayout(_KDTreeMixin):
         )
 
         # Draw connectivity graph edges
-        for node_id1, node_id2 in self.connectivity_graph_.edges:
+        for node_id1, node_id2 in self.connectivity_.edges:
             pos = np.stack((bin_centers[node_id1], bin_centers[node_id2]))
             ax.plot(pos[:, 0], pos[:, 1], color="black", zorder=-1)
 
@@ -1549,7 +1549,7 @@ if SHAPELY_AVAILABLE:
         """
 
         bin_centers_: NDArray[np.float64]
-        connectivity_graph_: Optional[nx.Graph] = None
+        connectivity_: Optional[nx.Graph] = None
         dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
 
         grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
@@ -1567,7 +1567,7 @@ if SHAPELY_AVAILABLE:
             self._layout_type_tag = "ShapelyPolygon"
             self._build_params_used = {}
             self.bin_centers_ = np.empty((0, 2), dtype=np.float64)  # 2D Layout
-            self.connectivity_graph_ = None
+            self.connectivity_ = None
             self.dimension_ranges_ = None
             self.grid_edges_ = None
             self.grid_shape_ = None
@@ -1595,7 +1595,7 @@ if SHAPELY_AVAILABLE:
                 (width, height).
             connect_diagonal_neighbors : bool, default=True
                 If True, connect diagonally adjacent active grid cells in the
-                `connectivity_graph_`.
+                `connectivity_`.
 
             Raises
             ------
@@ -1643,7 +1643,7 @@ if SHAPELY_AVAILABLE:
             self.active_mask_ = shapely_mask_flat.reshape(self.grid_shape_)
 
             self.bin_centers_ = full_grid_bin_centers[self.active_mask_.ravel()]
-            self.connectivity_graph_ = _create_regular_grid_connectivity_graph(
+            self.connectivity_ = _create_regular_grid_connectivity_graph(
                 full_grid_bin_centers=full_grid_bin_centers,
                 active_mask_nd=self.active_mask_,
                 grid_shape=self.grid_shape_,
@@ -1689,7 +1689,7 @@ if SHAPELY_AVAILABLE:
             or self.grid_edges_ is None
             or self.active_mask_ is None
             or self.grid_shape_ is None
-            or self.connectivity_graph_ is None
+            or self.connectivity_ is None
         ):
             raise RuntimeError("Layout not built. Call `build` first.")
 
@@ -1718,15 +1718,15 @@ if SHAPELY_AVAILABLE:
                 ax.set_ylim(self.dimension_ranges_[1])
 
             if draw_connectivity_graph:
-                node_position = nx.get_node_attributes(self.connectivity_graph_, "pos")
+                node_position = nx.get_node_attributes(self.connectivity_, "pos")
                 nx.draw_networkx_nodes(
-                    self.connectivity_graph_,
+                    self.connectivity_,
                     node_position,
                     ax=ax,
                     node_size=node_size,
                     node_color=node_color,
                 )
-                for node_id1, node_id2 in self.connectivity_graph_.edges:
+                for node_id1, node_id2 in self.connectivity_.edges:
                     pos = np.stack((node_position[node_id1], node_position[node_id2]))
                     ax.plot(pos[:, 0], pos[:, 1], color="black", zorder=-1)
 
@@ -1764,7 +1764,7 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
     """
 
     bin_centers_: NDArray[np.float64]
-    connectivity_graph_: Optional[nx.Graph] = None
+    connectivity_: Optional[nx.Graph] = None
     dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
 
     grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
@@ -1780,7 +1780,7 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
         self._layout_type_tag = "MaskedGrid"
         self._build_params_used = {}
         self.bin_centers_ = np.empty((0, 0), dtype=np.float64)
-        self.connectivity_graph_ = None
+        self.connectivity_ = None
         self.dimension_ranges_ = None
         self.grid_edges_ = None
         self.grid_shape_ = None
@@ -1844,7 +1844,7 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
         )
         self.bin_centers_ = full_grid_bin_centers[self.active_mask_.ravel()]
 
-        self.connectivity_graph_ = _create_regular_grid_connectivity_graph(
+        self.connectivity_ = _create_regular_grid_connectivity_graph(
             full_grid_bin_centers=full_grid_bin_centers,
             active_mask_nd=self.active_mask_,
             grid_shape=self.grid_shape_,
@@ -1868,7 +1868,7 @@ class ImageMaskLayout(_GridMixin):
     """
 
     bin_centers_: NDArray[np.float64]
-    connectivity_graph_: Optional[nx.Graph] = None
+    connectivity_: Optional[nx.Graph] = None
     dimension_ranges_: Optional[Sequence[Tuple[float, float]]] = None
 
     grid_edges_: Optional[Tuple[NDArray[np.float64], ...]] = None
@@ -1883,7 +1883,7 @@ class ImageMaskLayout(_GridMixin):
         self._layout_type_tag = "ImageMask"
         self._build_params_used = {}
         self.bin_centers_ = np.empty((0, 2), dtype=np.float64)
-        self.connectivity_graph_ = None
+        self.connectivity_ = None
         self.dimension_ranges_ = None
         self.grid_edges_ = None
         self.grid_shape_ = None
@@ -1971,7 +1971,7 @@ class ImageMaskLayout(_GridMixin):
 
         self.active_mask_ = image_mask
         self.bin_centers_ = full_grid_bin_centers[self.active_mask_.ravel()]
-        self.connectivity_graph_ = _create_regular_grid_connectivity_graph(
+        self.connectivity_ = _create_regular_grid_connectivity_graph(
             full_grid_bin_centers=full_grid_bin_centers,
             active_mask_nd=self.active_mask_,
             grid_shape=self.grid_shape_,

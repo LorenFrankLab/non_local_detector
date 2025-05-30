@@ -155,7 +155,7 @@ class TestEnvironmentFromGraph:
 
         assert graph_env.bin_centers_.shape[0] == 16
         assert graph_env.bin_centers_.shape[1] == 2
-        assert graph_env.connectivity_graph_.number_of_nodes() == 16
+        assert graph_env.connectivity_.number_of_nodes() == 16
         assert graph_env.active_mask_ is not None
         assert np.all(graph_env.active_mask_)
 
@@ -182,13 +182,13 @@ class TestEnvironmentFromGraph:
         assert bin_indices[1] != -1
         assert bin_indices[2] != -1
 
-    def test_is_point_active(self, graph_env: Environment):
+    def test_contains(self, graph_env: Environment):
         """Test checking if points are active."""
         point_on_track1 = np.array([[-1.0, 0.0]])
-        assert graph_env.is_point_active(point_on_track1)[0]
+        assert graph_env.contains(point_on_track1)[0]
 
         point_off_track = np.array([[10.0, 10.0]])
-        assert graph_env.is_point_active(point_off_track)[0]
+        assert graph_env.contains(point_off_track)[0]
 
     def test_get_bin_neighbors(self, graph_env: Environment):
         """Test getting neighbors of a bin."""
@@ -234,7 +234,7 @@ class TestEnvironmentFromGraph:
         bin_p2 = graph_env.get_bin_ind(p2)[0]
 
         expected_dist_via_path = nx.shortest_path_length(
-            graph_env.connectivity_graph_,
+            graph_env.connectivity_,
             source=bin_p1,
             target=bin_p2,
             weight="distance",
@@ -347,7 +347,7 @@ class TestEnvironmentFromDataSamplesGrid:
         assert grid_env_from_samples.bin_centers_.shape[0] == np.sum(
             grid_env_from_samples.active_mask_
         )
-        assert grid_env_from_samples.connectivity_graph_.number_of_nodes() == np.sum(
+        assert grid_env_from_samples.connectivity_.number_of_nodes() == np.sum(
             grid_env_from_samples.active_mask_
         )
 
@@ -463,12 +463,12 @@ class TestEnvironmentSerialization:
         assert loaded_env.n_dims == graph_env.n_dims
         assert np.array_equal(loaded_env.bin_centers_, graph_env.bin_centers_)
         assert (
-            loaded_env.connectivity_graph_.number_of_nodes()
-            == graph_env.connectivity_graph_.number_of_nodes()
+            loaded_env.connectivity_.number_of_nodes()
+            == graph_env.connectivity_.number_of_nodes()
         )
         assert (
-            loaded_env.connectivity_graph_.number_of_edges()
-            == graph_env.connectivity_graph_.number_of_edges()
+            loaded_env.connectivity_.number_of_edges()
+            == graph_env.connectivity_.number_of_edges()
         )
 
     def test_to_from_dict_graph(self, graph_env: Environment):
@@ -493,8 +493,8 @@ class TestEnvironmentSerialization:
         assert recreated_env.n_dims == graph_env.n_dims
         assert np.allclose(recreated_env.bin_centers_, graph_env.bin_centers_)
         assert (
-            recreated_env.connectivity_graph_.number_of_nodes()
-            == graph_env.connectivity_graph_.number_of_nodes()
+            recreated_env.connectivity_.number_of_nodes()
+            == graph_env.connectivity_.number_of_nodes()
         )
 
     def test_to_from_dict_grid(self, grid_env_from_samples: Environment):
@@ -517,8 +517,8 @@ class TestEnvironmentSerialization:
             recreated_env.active_mask_, grid_env_from_samples.active_mask_
         )
         assert (
-            recreated_env.connectivity_graph_.number_of_nodes()
-            == grid_env_from_samples.connectivity_graph_.number_of_nodes()
+            recreated_env.connectivity_.number_of_nodes()
+            == grid_env_from_samples.connectivity_.number_of_nodes()
         )
 
 

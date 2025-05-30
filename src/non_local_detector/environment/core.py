@@ -345,7 +345,7 @@ class Environment:
         return cls(
             name=name,
             bin_centers=layout_result.bin_centers_,
-            connectivity=layout_result.connectivity_graph_,
+            connectivity=layout_result.connectivity_,
             dimension_ranges=layout_result.dimension_ranges_,
             is_1d=layout_result.is_1d_,
             regions=regions,
