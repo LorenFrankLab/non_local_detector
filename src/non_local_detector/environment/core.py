@@ -25,7 +25,6 @@ from scipy.spatial.distance import pdist, squareform
 if TYPE_CHECKING:  # avoid run-time circular dep
     from matplotlib.axes import Axes as MatplotlibAxes
 
-    from ..regions.core import Regions  # noqa: F401
     from .layout_engine import (
         AreaFn,
         IdxArr,
@@ -36,6 +35,7 @@ if TYPE_CHECKING:  # avoid run-time circular dep
         PointToBin,
         PtArr,
     )
+    from .regions.core import Regions  # noqa: F401
 
 
 class LinearAdapter:
@@ -574,7 +574,7 @@ class Environment:
         """
         if self.regions is None:
             raise AttributeError("Environment has no Regions attached.")
-        from ..regions.core import _HAS_SHAPELY as _REGIONS_HAS_SHAPELY
+        from .regions.core import _HAS_SHAPELY as _REGIONS_HAS_SHAPELY
 
         if _REGIONS_HAS_SHAPELY:
             from shapely.geometry import Point as ShapelyPoint  # type: ignore
