@@ -383,25 +383,14 @@ class TriangularMeshLayout(LayoutEngine):
         """
         Map each 2D point to an active triangle index, or -1 if outside.
 
-        Uses Delaunay.find_simplex() and then maps to active triangle indices.
-        Note: This method assigns a point to an active triangle if the point falls
-        within the simplex corresponding to that active triangle. If the boundary
-        polygon is non-convex, a point might be outside the boundary polygon but
-        still within a simplex whose centroid was inside the boundary polygon.
-        For stricter checking, an additional `boundary_polygon.contains(point)`
-        test could be applied.
-
-        Parameters
-        ----------
-        points : NDArray[np.float64]
-            Points to map, shape (M, 2).
+        Uses Delaunay.find_simplex() → original‐simplex index → active‐triangle index via
+        a fast lookup array. Then enforces that the point itself must lie inside (or on)
+        the boundary polygon.
 
         Returns
         -------
         NDArray[np.int_]
-            Active triangle indices for each point, shape (M,).
-            -1 if point is outside the convex hull of mesh points or
-            if the simplex found is not among the active ones.
+            Each entry is in [0..n_active-1] or -1 if outside.
         """
         if (
             self._full_delaunay_tri is None
@@ -409,66 +398,39 @@ class TriangularMeshLayout(LayoutEngine):
         ):
             raise RuntimeError("TriangularMeshLayout is not built. Call build() first.")
 
-        points_2d = np.atleast_2d(points)
-        if points_2d.ndim != 2 or points_2d.shape[1] != 2:
-            raise ValueError(f"Expected points of shape (M, 2), got {points_2d.shape}.")
+        pts2d = np.atleast_2d(points).astype(np.float64, copy=False)
+        if pts2d.ndim != 2 or pts2d.shape[1] != 2:
+            raise ValueError(f"Expected points of shape (M, 2), got {pts2d.shape}.")
 
-        # Find which original Delaunay simplex each point belongs to
-        # Returns -1 if outside the convex hull of self._full_delaunay_tri.points
-        original_simplex_indices = self._full_delaunay_tri.find_simplex(points_2d)
+        # 1) Find which Delaunay simplex each point falls into (-1 if outside hull)
+        orig_simplices = self._full_delaunay_tri.find_simplex(pts2d)
 
-        # Map these original simplex indices to active triangle indices
-        # Default to -1 (unassigned)
-        active_triangle_idxs = np.full(original_simplex_indices.shape, -1, dtype=int)
+        # 2) Build a 1D lookup array once, mapping original simplex idx -> active idx
+        n_total = self._full_delaunay_tri.simplices.shape[0]
+        orig2active_arr = np.full(n_total, -1, dtype=int)
+        for orig_idx, active_idx in self._original_simplex_to_active_idx_map.items():
+            orig2active_arr[orig_idx] = active_idx
 
-        # Create a mask for points that fell into any simplex (not -1)
-        valid_simplex_mask = original_simplex_indices != -1
+        # 3) Initialize result array to -1
+        active_triangle_idxs = np.full(orig_simplices.shape, -1, dtype=int)
 
-        if np.any(valid_simplex_mask):
-            found_original_simplices = original_simplex_indices[valid_simplex_mask]
-            # Vectorized lookup array
-            n_total = self._full_delaunay_tri.simplices.shape[0]
-            orig2active_arr = np.full(n_total, -1, dtype=int)
-            for (
-                orig_idx,
-                active_idx,
-            ) in self._original_simplex_to_active_idx_map.items():
-                orig2active_arr[orig_idx] = active_idx
-
-            # Now do one vectorized assignment
-            active_triangle_idxs[valid_simplex_mask] = orig2active_arr[
-                found_original_simplices
-            ]
-
-        valid_mask = original_simplex_indices != -1
+        # 4) Wherever orig_simplices != -1, do a vectorized assignment
+        valid_mask = orig_simplices != -1
         if np.any(valid_mask):
-            found_orig = original_simplex_indices[valid_mask]
-            mapped_to_active = np.array(
-                [
-                    self._original_simplex_to_active_idx_map.get(orig_idx, -1)
-                    for orig_idx in found_orig
-                ],
-                dtype=int,
-            )
+            found_orig = orig_simplices[valid_mask]
+            active_triangle_idxs[valid_mask] = orig2active_arr[found_orig]
 
-            # Temporarily assign those bins
-            active_triangle_idxs[valid_mask] = mapped_to_active
-
-            # Now enforce: each point must itself be inside or on the boundary
+            # 5) Now ensure each point is itself inside (or on) the boundary
             if self._boundary_polygon_stored is not None:
-                import shapely.vectorized
-
-                xcoords = points_2d[valid_mask, 0]
-                ycoords = points_2d[valid_mask, 1]
-                # Use covers to allow points exactly on boundary
+                xcoords = pts2d[valid_mask, 0]
+                ycoords = pts2d[valid_mask, 1]
                 on_or_inside = shapely.vectorized.covers(
                     self._boundary_polygon_stored, xcoords, ycoords
                 )
-                # Wherever a “valid” point is not on or inside the polygon, override to -1
-                idxs_valid = np.flatnonzero(valid_mask)
-                for i_local, mask_val in enumerate(on_or_inside):
-                    if not mask_val:
-                        active_triangle_idxs[idxs_valid[i_local]] = -1
+                idxs = np.flatnonzero(valid_mask)
+                for local_i, keep in enumerate(on_or_inside):
+                    if not keep:
+                        active_triangle_idxs[idxs[local_i]] = -1
 
         return active_triangle_idxs
 
