@@ -939,7 +939,7 @@ class Environment:
 
         return df
 
-    def get_geodesic_distance(
+    def distance_between(
         self,
         point1: NDArray[np.float64],
         point2: NDArray[np.float64],
@@ -1240,6 +1240,7 @@ class Environment:
 
         return ax
 
+    @check_fitted
     def save(self, filename: str = "environment.pkl") -> None:
         """
         Save the Environment object to a file using pickle.

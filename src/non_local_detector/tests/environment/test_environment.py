@@ -211,12 +211,12 @@ class TestEnvironmentFromGraph:
         expected_neighbors_of_3 = {2, 4}  # Corrected expectation
         assert set(neighbors_of_3) == expected_neighbors_of_3
 
-    def test_get_geodesic_distance(self, graph_env: Environment):
+    def test_distance_between(self, graph_env: Environment):
         """Test manifold distance between points."""
         p1 = np.array([[-1.5, 0.0]])
         p2 = np.array([[0.0, 1.5]])
 
-        manifold_dist = graph_env.get_geodesic_distance(p1, p2)
+        manifold_dist = graph_env.distance_between(p1, p2)
 
         bin_p1 = graph_env.bin_at(p1)[0]
         bin_p2 = graph_env.bin_at(p2)[0]
