@@ -799,6 +799,10 @@ class Environment:
         """
         Calculate the area (for 2D) or volume (for 3D+) of each active bin.
 
+        This represent the actual size of each bin in the environment, as
+        opposed to the requested `bin_size` which is the nominal size used
+        during layout creation.
+
         For 1D environments, this typically returns the length of each bin.
         This method delegates to the `bin_sizes` method of the
         underlying `LayoutEngine`.
