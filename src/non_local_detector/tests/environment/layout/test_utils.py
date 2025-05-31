@@ -6,7 +6,6 @@ import pytest
 
 from non_local_detector.environment.layout.utils import (
     _generic_graph_plot,
-    _get_distance_between_bins,
     _infer_active_elements_from_samples,
     _infer_dimension_ranges_from_samples,
     get_centers,
@@ -178,29 +177,3 @@ def test_generic_graph_plot_empty_graph():
     G = nx.Graph()
     with pytest.raises(ValueError):
         _generic_graph_plot(G, "Empty")
-
-
-def test_get_distance_between_bins_basic():
-    G = nx.Graph()
-    G.add_node(0)
-    G.add_node(1)
-    G.add_node(2)
-    G.add_edge(0, 1, distance=1.0)
-    G.add_edge(1, 2, distance=2.0)
-    dist = _get_distance_between_bins(G)
-    assert dist.shape == (3, 3)
-    assert dist[0, 1] == 1.0
-    assert dist[0, 2] == 3.0
-    assert dist[1, 2] == 2.0
-    assert dist[2, 0] == 3.0
-    assert dist[0, 0] == 0.0
-
-
-def test_get_distance_between_bins_disconnected():
-    G = nx.Graph()
-    G.add_node(0)
-    G.add_node(1)
-    dist = _get_distance_between_bins(G)
-    assert np.isinf(dist[0, 1])
-    assert dist[0, 0] == 0.0
-    assert dist[1, 1] == 0.0
