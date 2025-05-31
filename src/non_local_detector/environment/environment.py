@@ -1240,6 +1240,14 @@ class Environment:
     @cached_property
     @check_fitted
     def boundary_bins(self) -> NDArray[np.int_]:
+        """Get the boundary bin indices.
+
+        Returns
+        -------
+        NDArray[np.int_], shape (n_boundary_bins,)
+            An array of indices of the boundary bins in the environment.
+            These are the bins that are at the edges of the active area.
+        """
         return find_boundary_nodes(
             graph=self.connectivity,
             grid_shape=self.grid_shape,
