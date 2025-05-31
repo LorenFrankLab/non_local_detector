@@ -251,21 +251,19 @@ class TestEnvironmentFromGraph:
     def test_linearized_coordinates(self, graph_env: Environment):
         """Test linearization and mapping back to N-D."""
         point_nd = np.array([[-1.0, 0.0]])
-        linear_coord = graph_env.get_linearized_coordinate(point_nd)
+        linear_coord = graph_env.to_linear(point_nd)
         assert linear_coord.shape == (1,)
         assert pytest.approx(linear_coord[0]) == 1.0
 
         point_nd_north = np.array([[0.0, 1.0]])
-        linear_coord_north = graph_env.get_linearized_coordinate(point_nd_north)
+        linear_coord_north = graph_env.to_linear(point_nd_north)
         assert pytest.approx(linear_coord_north[0]) == 3.0
 
-        mapped_nd_coord = graph_env.map_linear_to_grid_coordinate(linear_coord)
+        mapped_nd_coord = graph_env.linear_to_nd(linear_coord)
         assert mapped_nd_coord.shape == (1, 2)
         assert np.allclose(mapped_nd_coord, point_nd)
 
-        mapped_nd_coord_north = graph_env.map_linear_to_grid_coordinate(
-            linear_coord_north
-        )
+        mapped_nd_coord_north = graph_env.linear_to_nd(linear_coord_north)
         assert np.allclose(mapped_nd_coord_north, point_nd_north)
 
     def test_plot_methods(

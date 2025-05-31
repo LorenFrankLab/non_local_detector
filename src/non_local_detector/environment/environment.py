@@ -1049,15 +1049,13 @@ class Environment:
             ) from e
 
     @check_fitted
-    def get_linearized_coordinate(
-        self, points_nd: NDArray[np.float64]
-    ) -> NDArray[np.float64]:
+    def to_linear(self, points_nd: NDArray[np.float64]) -> NDArray[np.float64]:
         """
         Convert N-dimensional points to 1D linearized coordinates.
 
         This method is only applicable if the environment uses a `GraphLayout`
         and `is_1d` is True. It delegates to the layout's
-        `get_linearized_coordinate` method.
+        `to_linear` method.
 
         Parameters
         ----------
@@ -1078,10 +1076,10 @@ class Environment:
         """
         if not self.is_1d or not isinstance(self.layout, GraphLayout):
             raise TypeError("Linearized coordinate only for GraphLayout environments.")
-        return self.layout.get_linearized_coordinate(points_nd)
+        return self.layout.to_linear(points_nd)
 
     @check_fitted
-    def map_linear_to_grid_coordinate(
+    def linear_to_nd(
         self, linear_coordinates: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         """
@@ -1089,7 +1087,7 @@ class Environment:
 
         This method is only applicable if the environment uses a `GraphLayout`
         and `is_1d` is True. It delegates to the layout's
-        `map_linear_to_grid_coordinate` method.
+        `linear_to_nd` method.
 
         Parameters
         ----------
@@ -1110,7 +1108,7 @@ class Environment:
         """
         if not self.is_1d or not isinstance(self.layout, GraphLayout):
             raise TypeError("Mapping linear to N-D only for GraphLayout environments.")
-        return self.layout.map_linear_to_grid_coordinate(linear_coordinates)
+        return self.layout.linear_to_nd(linear_coordinates)
 
     @check_fitted
     def plot(
@@ -1176,9 +1174,6 @@ class Environment:
             plot_title += f" ({self.layout._layout_type_tag})"
 
         # Only set title if layout.plot didn't set one or user didn't pass one via kwargs to layout.plot
-        # This is hard to check perfectly. A common convention is for plotting functions to not
-        # override titles if the axes already has one.
-        # For simplicity, if ax.get_title() is empty, set it.
         if ax.get_title() == "":
             ax.set_title(plot_title)
 

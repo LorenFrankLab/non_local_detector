@@ -1441,9 +1441,7 @@ class GraphLayout(_KDTreeMixin):
 
         return ax
 
-    def get_linearized_coordinate(
-        self, data_points: NDArray[np.float64]
-    ) -> NDArray[np.float64]:
+    def to_linear(self, data_points: NDArray[np.float64]) -> NDArray[np.float64]:
         """
         Convert N-D points to 1D linearized coordinates along the track.
 
@@ -1467,7 +1465,7 @@ class GraphLayout(_KDTreeMixin):
             self._build_params_used["edge_spacing"],
         ).linear_position.to_numpy()
 
-    def map_linear_to_grid_coordinate(
+    def linear_to_nd(
         self, linear_coordinates: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         """
