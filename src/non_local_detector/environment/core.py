@@ -799,7 +799,7 @@ class Environment:
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             return np.inf
 
-    def get_shortest_path(
+    def shortest_path(
         self,
         source_bin_idx: int,
         target_bin_idx: int,
@@ -911,7 +911,7 @@ class Environment:
         full_grid_data[self.active_mask] = active_bin_data
         return full_grid_data
 
-    def get_bin_attributes_dataframe(self) -> pd.DataFrame:
+    def bin_attributes_dataframe(self) -> pd.DataFrame:
         """
         Create a Pandas DataFrame with attributes of each active bin.
 

@@ -229,12 +229,12 @@ class TestEnvironmentFromGraph:
         )
         assert pytest.approx(manifold_dist, abs=1e-9) == expected_dist_via_path
 
-    def test_get_shortest_path(self, graph_env: Environment):
+    def test_shortest_path(self, graph_env: Environment):
         """Test finding the shortest path between bins."""
         bin_idx_west = graph_env.bin_at(np.array([[-1.5, 0.0]]))[0]
         bin_idx_north = graph_env.bin_at(np.array([[0.0, 1.5]]))[0]
 
-        path = graph_env.get_shortest_path(bin_idx_west, bin_idx_north)
+        path = graph_env.shortest_path(bin_idx_west, bin_idx_north)
         assert isinstance(path, list)
         assert len(path) > 1
         assert path[0] == bin_idx_west
@@ -242,11 +242,11 @@ class TestEnvironmentFromGraph:
         for bin_idx_path in path:  # Renamed variable to avoid conflict
             assert 0 <= bin_idx_path < 16
 
-        path_to_self = graph_env.get_shortest_path(bin_idx_west, bin_idx_west)
+        path_to_self = graph_env.shortest_path(bin_idx_west, bin_idx_west)
         assert path_to_self == [bin_idx_west]
 
         with pytest.raises(nx.NodeNotFound):
-            graph_env.get_shortest_path(0, 100)
+            graph_env.shortest_path(0, 100)
 
     def test_linearized_coordinates(self, graph_env: Environment):
         """Test linearization and mapping back to N-D."""
@@ -282,9 +282,9 @@ class TestEnvironmentFromGraph:
         graph_env.plot_1D(ax=ax)
         plt.close(fig)
 
-    def test_get_bin_attributes_dataframe(self, graph_env: Environment):
+    def test_graph_attributes_dataframe(self, graph_env: Environment):
         """Test retrieval of bin attributes as a DataFrame."""
-        df = graph_env.get_bin_attributes_dataframe()
+        df = graph_env.bin_attributes_dataframe
         assert isinstance(df, pd.DataFrame)
         assert df.shape[0] == 16
         assert "pos_dim0" in df.columns
@@ -293,6 +293,13 @@ class TestEnvironmentFromGraph:
         assert "original_grid_nd_index" in df.columns
         assert "pos_1D" in df.columns
         assert "source_edge_id" in df.columns
+
+        df = graph_env.edge_attributes_dataframe
+        assert isinstance(df, pd.DataFrame)
+        assert df.shape[0] == 15
+        assert "distance" in df.columns
+        assert "weight" in df.columns
+        assert "angle_2d" in df.columns
 
     def test_nd_flat_bin_index_conversion_graph(self, graph_env: Environment):
         """

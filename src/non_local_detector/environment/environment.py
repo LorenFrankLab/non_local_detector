@@ -814,98 +814,6 @@ class Environment:
         """
         return self.layout.bin_size()
 
-    @cached_property
-    def get_all_euclidean_distances(self) -> NDArray[np.float64]:
-        """
-        Calculate the Euclidean distance between all pairs of active bin centers.
-
-        Returns
-        -------
-        euclidean_distances : NDArray[np.float64], shape (n_bins, n_bins)
-            A square distance matrix where element (i, j) is the Euclidean
-            distance between the centers of active bin i and active bin j.
-            The diagonal elements (distance from a bin to itself) are 0.
-        """
-        if self.n_bins == 0:
-            return np.empty((0, 0), dtype=float)
-        if self.n_bins == 1:
-            return np.zeros((self.n_bins, self.n_bins), dtype=float)
-
-        from scipy.spatial.distance import pdist, squareform
-
-        return squareform(pdist(self.bin_centers, metric="euclidean"))
-
-    @cached_property
-    def get_all_geodesic_distances(self) -> NDArray[np.float64]:
-        """
-        Calculate the shortest path (geodesic) distance between all
-        pairs of active bins in the environment, using the 'distance'
-        attribute of edges in the connectivity graph as weights.
-
-        Returns
-        -------
-        geodesic_distances : NDArray[np.float64], shape (n_bins, n_bins)
-            A square matrix where element (i, j) is the shortest
-            path distance between active bin i and active bin j.
-            Returns np.inf if no path exists between two bins.
-            Diagonal elements are 0.
-        """
-        if self.connectivity is None or self.n_bins == 0:
-            return np.empty((0, 0), dtype=np.float64)
-
-        dist_matrix = np.full((self.n_bins, self.n_bins), np.inf, dtype=np.float64)
-        np.fill_diagonal(dist_matrix, 0.0)
-
-        # path_lengths is an iterator of (source_node, {target_node: length})
-        path_lengths = nx.shortest_path_length(
-            G=self.connectivity, source=None, target=None, weight="distance"
-        )
-        for source_idx, targets in path_lengths:
-            for target_idx, length in targets.items():
-                dist_matrix[source_idx, target_idx] = length
-
-        return dist_matrix
-
-    def get_diffusion_kernel(
-        self, bandwidth_sigma: float, edge_weight: str = "weight"
-    ) -> NDArray[np.float64]:
-        """
-        Computes the diffusion kernel matrix for all active bins.
-
-        This method utilizes the `connectivity` graph of the environment and
-        delegates to an external `compute_diffusion_kernels` function.
-        The resulting matrix can represent the influence or probability flow
-        between bins after a diffusion process controlled by `bandwidth_sigma`.
-
-        Parameters
-        ----------
-        bandwidth_sigma : float
-            The bandwidth (standard deviation) of the Gaussian kernel used in
-            the diffusion process. Controls the spread of the kernel.
-        edge_weight : str, optional
-            The edge attribute from the connectivity graph to use as weights
-            for constructing the Graph Laplacian. Defaults to "weight".
-
-        Returns
-        -------
-        kernel_matrix : NDArray[np.float64], shape (n_bins, n_bins)
-            The diffusion kernel matrix. Element (i, j) can represent the
-            influence of bin j on bin i after diffusion. Columns typically
-            sum to 1 if normalized by the underlying computation.
-
-        Raises
-        ------
-        ValueError
-            If the connectivity graph is not available or if n_bins is 0.
-        ImportError
-            If JAX (a dependency of `compute_diffusion_kernels`) is not installed.
-        """
-        from non_local_detector.diffusion_kernels import compute_diffusion_kernels
-
-        return compute_diffusion_kernels(
-            self.connectivity, bandwidth_sigma=bandwidth_sigma, weight=edge_weight
-        )
-
     def get_geodesic_distance(
         self,
         point1: NDArray[np.float64],
@@ -953,8 +861,9 @@ class Environment:
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             return np.inf
 
+    @cached_property
     @check_fitted
-    def get_bin_attributes_dataframe(self) -> pd.DataFrame:  # Renamed
+    def bin_attributes_dataframe(self) -> pd.DataFrame:
         """
         Create a Pandas DataFrame with attributes of each active bin.
 
@@ -990,8 +899,9 @@ class Environment:
 
         return df
 
+    @cached_property
     @check_fitted
-    def get_edge_attributes_dataframe(self) -> pd.DataFrame:
+    def edge_attributes_dataframe(self) -> pd.DataFrame:
         """
         Return a Pandas DataFrame where each row corresponds to one directed edge
         (u → v) in the connectivity graph, and columns include all stored edge
@@ -1033,7 +943,7 @@ class Environment:
         return df
 
     @check_fitted
-    def get_shortest_path(
+    def shortest_path(
         self, source_active_bin_idx: int, target_active_bin_idx: int
     ) -> List[int]:
         """
@@ -1746,34 +1656,14 @@ class Environment:
         Optional[Dict[str, Any]]
             A dictionary with keys 'track_graph', 'edge_order', 'edge_spacing'
             if the layout is `GraphLayout` and parameters are available.
-            Returns `None` otherwise. The 'track_graph' herein refers to the
-            original graph definition used to build the `GraphLayout`.
+            Returns `None` otherwise.
         """
         if isinstance(self.layout, GraphLayout):
-            # _layout_params_used stores the kwargs passed to the layout's build method
-            graph_def = self._layout_params_used.get("graph_definition")
-            edge_order = self._layout_params_used.get("edge_order")
-            # edge_spacing can be 0.0, so check for None explicitly if it's optional
-            edge_spacing = self._layout_params_used.get("edge_spacing")
-
-            if (
-                graph_def is not None
-                and edge_order is not None
-                and edge_spacing is not None
-            ):
-                return {
-                    "track_graph": graph_def,
-                    "edge_order": edge_order,
-                    "edge_spacing": edge_spacing,
-                }
-            else:
-                warnings.warn(
-                    "GraphLayout instance is missing some expected build parameters "
-                    "('graph_definition', 'edge_order', or 'edge_spacing') "
-                    "in _layout_params_used.",
-                    UserWarning,
-                )
-        return None
+            return {
+                "track_graph": self._layout_params_used.get("graph_definition"),
+                "edge_order": self._layout_params_used.get("edge_order"),
+                "edge_spacing": self._layout_params_used.get("edge_spacing"),
+            }
 
     @check_fitted
     def bins_in_region(self, region_name: str) -> NDArray[np.int_]:
@@ -1798,10 +1688,10 @@ class Environment:
         ValueError
             If region kind is unsupported or mask dimensions mismatch.
         """
-        region_info = self.regions[region_name]
+        region = self.regions[region_name]
 
-        if region_info.kind == "point":
-            point_nd = np.asarray(region_info.data).reshape(1, -1)
+        if region.kind == "point":
+            point_nd = np.asarray(region.data).reshape(1, -1)
             if point_nd.shape[1] != self.n_dims:
                 raise ValueError(
                     f"Region point dimension {point_nd.shape[1]} "
@@ -1810,7 +1700,7 @@ class Environment:
             bin_idx = self.bin_at(point_nd)
             return bin_idx[bin_idx != -1]
 
-        elif region_info.kind == "polygon":
+        elif region.kind == "polygon":
             if not _HAS_SHAPELY:  # pragma: no cover
                 raise RuntimeError("Polygon region queries require 'shapely'.")
             if self.n_dims != 2:  # pragma: no cover
@@ -1818,15 +1708,15 @@ class Environment:
                     "Polygon regions are only supported for 2D environments."
                 )
 
-            polygon = region_info.data
-            contained_mask = np.array(
-                [polygon.contains(_shp.Point(center)) for center in self.bin_centers],
-                dtype=bool,
-            )
+            from shapely import vectorized
+
+            polygon = region.data
+            contained_mask = vectorized.contains(polygon, self.bin_centers)
+
             return np.flatnonzero(contained_mask)
 
         else:  # pragma: no cover
-            raise ValueError(f"Unsupported region kind: {region_info.kind}")
+            raise ValueError(f"Unsupported region kind: {region.kind}")
 
     @check_fitted
     def mask_for_region(self, region_name: str) -> NDArray[np.bool_]:
@@ -1844,47 +1734,3 @@ class Environment:
         if active_bins_for_mask.size > 0:
             mask[active_bins_for_mask] = True
         return mask
-
-    @check_fitted
-    def region_center(self, region_name: str) -> Optional[NDArray[np.float64]]:
-        """
-        Calculate the center of a specified named region.
-
-        - For 'point' regions, returns the point itself.
-        - For 'polygon' regions, returns the centroid of the polygon.
-        - For 'mask' regions, returns the mean of the bin_centers of the
-          active bins included in the region.
-
-        Returns
-        -------
-        Optional[NDArray[np.float64]]
-            N-D coordinates of the region's center, or None if the region
-            is empty or center cannot be determined.
-        """
-        region_info = self.regions[region_name]
-
-        if region_info.kind == "point":
-            return np.asarray(region_info.data)
-        elif region_info.kind == "polygon":
-            if not _HAS_SHAPELY:  # pragma: no cover
-                raise RuntimeError("Polygon region queries require 'shapely'.")
-            return np.array(region_info.data.centroid.coords[0])  # type: ignore
-        return None  # pragma: no cover
-
-    @check_fitted
-    def get_region_area(self, region_name: str) -> float:
-        """
-        Calculate the area/volume of a specified named region.
-
-        - For 'point' regions, area is 0.0.
-        - For 'polygon' regions, uses Shapely's area.
-        """
-        region_info = self.regions[region_name]
-
-        if region_info.kind == "point":
-            return 0.0
-        elif region_info.kind == "polygon":
-            if not _HAS_SHAPELY:  # pragma: no cover
-                raise RuntimeError("Polygon area calculation requires 'shapely'.")
-            return region_info.data.area  # type: ignore
-        return 0.0  # pragma: no cover
