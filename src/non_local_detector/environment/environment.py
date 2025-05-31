@@ -815,52 +815,48 @@ class Environment:
         """
         return self.layout.bin_size()
 
-    def get_geodesic_distance(
-        self,
-        point1: NDArray[np.float64],
-        point2: NDArray[np.float64],
-        edge_weight: str = "distance",
-    ) -> float:
-        """
-        Calculate the geodesic distance between two points in the environment.
-
-        Points are first mapped to their nearest active bins using `self.bin_at()`.
-        The geodesic distance is then the shortest path length in the
-        `connectivity` graph between these bins, using the specified `edge_weight`.
-
-        Parameters
-        ----------
-        point1 : PtArr, shape (n_dims,) or (1, n_dims)
-            The first N-dimensional point.
-        point2 : PtArr, shape (n_dims,) or (1, n_dims)
-            The second N-dimensional point.
-        edge_weight : str, optional
-            The edge attribute to use as weight for path calculation,
-            by default "distance". If None, the graph is treated as unweighted.
+    @cached_property
+    @check_fitted
+    def boundary_bins(self) -> NDArray[np.int_]:
+        """Get the boundary bin indices.
 
         Returns
         -------
-        float
-            The geodesic distance. Returns `np.inf` if points do not map to
-            valid active bins, if bins are disconnected, or if the connectivity
-            graph is not available.
+        NDArray[np.int_], shape (n_boundary_bins,)
+            An array of indices of the boundary bins in the environment.
+            These are the bins that are at the edges of the active area.
         """
-        source_bin = self.bin_at(np.atleast_2d(point1))[0]
-        target_bin = self.bin_at(np.atleast_2d(point2))[0]
+        return find_boundary_nodes(
+            graph=self.connectivity,
+            grid_shape=self.grid_shape,
+            active_mask=self.active_mask,
+            layout_kind=self._layout_type_used,
+        )
 
-        if source_bin == -1 or target_bin == -1:
-            # One or both points didn't map to a valid active bin
-            return np.inf
+    @cached_property
+    @check_fitted
+    def linearization_properties(
+        self: "Environment",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        If the environment uses a GraphLayout, returns properties needed
+        for linearization using the `track_linearization` library.
 
-        try:
-            return nx.shortest_path_length(
-                self.connectivity,
-                source=source_bin,
-                target=target_bin,
-                weight=edge_weight,
-            )
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
-            return np.inf
+        These properties are typically passed to `track_linearization.get_linearized_position`.
+
+        Returns
+        -------
+        Optional[Dict[str, Any]]
+            A dictionary with keys 'track_graph', 'edge_order', 'edge_spacing'
+            if the layout is `GraphLayout` and parameters are available.
+            Returns `None` otherwise.
+        """
+        if isinstance(self.layout, GraphLayout):
+            return {
+                "track_graph": self._layout_params_used.get("graph_definition"),
+                "edge_order": self._layout_params_used.get("edge_order"),
+                "edge_spacing": self._layout_params_used.get("edge_spacing"),
+            }
 
     @cached_property
     @check_fitted
@@ -942,6 +938,53 @@ class Environment:
         )
 
         return df
+
+    def get_geodesic_distance(
+        self,
+        point1: NDArray[np.float64],
+        point2: NDArray[np.float64],
+        edge_weight: str = "distance",
+    ) -> float:
+        """
+        Calculate the geodesic distance between two points in the environment.
+
+        Points are first mapped to their nearest active bins using `self.bin_at()`.
+        The geodesic distance is then the shortest path length in the
+        `connectivity` graph between these bins, using the specified `edge_weight`.
+
+        Parameters
+        ----------
+        point1 : PtArr, shape (n_dims,) or (1, n_dims)
+            The first N-dimensional point.
+        point2 : PtArr, shape (n_dims,) or (1, n_dims)
+            The second N-dimensional point.
+        edge_weight : str, optional
+            The edge attribute to use as weight for path calculation,
+            by default "distance". If None, the graph is treated as unweighted.
+
+        Returns
+        -------
+        float
+            The geodesic distance. Returns `np.inf` if points do not map to
+            valid active bins, if bins are disconnected, or if the connectivity
+            graph is not available.
+        """
+        source_bin = self.bin_at(np.atleast_2d(point1))[0]
+        target_bin = self.bin_at(np.atleast_2d(point2))[0]
+
+        if source_bin == -1 or target_bin == -1:
+            # One or both points didn't map to a valid active bin
+            return np.inf
+
+        try:
+            return nx.shortest_path_length(
+                self.connectivity,
+                source=source_bin,
+                target=target_bin,
+                weight=edge_weight,
+            )
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            return np.inf
 
     @check_fitted
     def shortest_path(
@@ -1237,49 +1280,6 @@ class Environment:
             raise TypeError(f"Loaded object is not type {cls.__name__}")
         return environment
 
-    @cached_property
-    @check_fitted
-    def boundary_bins(self) -> NDArray[np.int_]:
-        """Get the boundary bin indices.
-
-        Returns
-        -------
-        NDArray[np.int_], shape (n_boundary_bins,)
-            An array of indices of the boundary bins in the environment.
-            These are the bins that are at the edges of the active area.
-        """
-        return find_boundary_nodes(
-            graph=self.connectivity,
-            grid_shape=self.grid_shape,
-            active_mask=self.active_mask,
-            layout_kind=self._layout_type_used,
-        )
-
-    @cached_property
-    @check_fitted
-    def linearization_properties(
-        self: "Environment",
-    ) -> Optional[Dict[str, Any]]:
-        """
-        If the environment uses a GraphLayout, returns properties needed
-        for linearization using the `track_linearization` library.
-
-        These properties are typically passed to `track_linearization.get_linearized_position`.
-
-        Returns
-        -------
-        Optional[Dict[str, Any]]
-            A dictionary with keys 'track_graph', 'edge_order', 'edge_spacing'
-            if the layout is `GraphLayout` and parameters are available.
-            Returns `None` otherwise.
-        """
-        if isinstance(self.layout, GraphLayout):
-            return {
-                "track_graph": self._layout_params_used.get("graph_definition"),
-                "edge_order": self._layout_params_used.get("edge_order"),
-                "edge_spacing": self._layout_params_used.get("edge_spacing"),
-            }
-
     @check_fitted
     def bins_in_region(self, region_name: str) -> NDArray[np.int_]:
         """
@@ -1326,7 +1326,9 @@ class Environment:
             from shapely import vectorized
 
             polygon = region.data
-            contained_mask = vectorized.contains(polygon, self.bin_centers)
+            contained_mask = vectorized.contains(
+                polygon, self.bin_centers[:, 0], self.bin_centers[:, 1]
+            )
 
             return np.flatnonzero(contained_mask)
 
