@@ -833,75 +833,6 @@ def simple_graph_env(simple_graph_for_layout) -> Environment:
 
 
 @pytest.fixture
-def grid_env_for_indexing(plus_maze_data_samples) -> Environment:
-    """A 2D RegularGrid environment suitable for index testing."""
-    return Environment.from_samples(
-        data_samples=plus_maze_data_samples,  # Creates a reasonable grid
-        bin_size=1.0,
-        infer_active_bins=True,
-        bin_count_threshold=0,
-        name="GridForIndexing",
-    )
-
-
-class TestIndexConversions:
-
-    def test_flat_to_grid_on_grid_env(self, grid_env_for_indexing: Environment):
-        env = grid_env_for_indexing
-        if env.bin_centers.shape[0] == 0:
-            pytest.skip("Environment has no active bins.")
-
-        n_active = env.bin_centers.shape[0]
-
-        # Scalar valid input
-        nd_idx_scalar = env.flat_to_grid_bin_index(0)
-        assert isinstance(nd_idx_scalar, tuple)
-        assert len(nd_idx_scalar) == env.n_dims
-        assert all(
-            isinstance(i, (int, np.integer)) for i in nd_idx_scalar if not np.isnan(i)
-        )  # Allow nan for out of bounds mapping
-
-        # Array valid input
-        flat_indices_arr = np.array([0, n_active - 1], dtype=int)
-        nd_indices_tuple_of_arrs = env.flat_to_grid_bin_index(flat_indices_arr)
-        assert isinstance(nd_indices_tuple_of_arrs, tuple)
-        assert len(nd_indices_tuple_of_arrs) == env.n_dims
-        assert all(isinstance(arr, np.ndarray) for arr in nd_indices_tuple_of_arrs)
-        assert all(
-            arr.shape == flat_indices_arr.shape for arr in nd_indices_tuple_of_arrs
-        )
-
-        # Out-of-bounds scalar inputs
-        with pytest.warns(UserWarning, match="Active flat_index .* is out of bounds"):
-            nd_idx_neg = env.flat_to_grid_bin_index(-1)
-        assert all(np.isnan(i) for i in nd_idx_neg)
-
-        with pytest.warns(UserWarning, match="Active flat_index .* is out of bounds"):
-            nd_idx_large = env.flat_to_grid_bin_index(n_active + 10)
-        assert all(np.isnan(i) for i in nd_idx_large)
-
-        # Out-of-bounds array inputs
-        flat_indices_mixed_arr = np.array([-1, 0, n_active, n_active - 1], dtype=int)
-        # Expect warnings for -1 and n_active
-        with pytest.warns(UserWarning):  # Could check for multiple warnings if needed
-            nd_mixed_results = env.flat_to_grid_bin_index(flat_indices_mixed_arr)
-        assert np.isnan(
-            nd_mixed_results[0][0]
-        )  # First element of first dim array (for input -1)
-        assert np.isnan(
-            nd_mixed_results[1][0]
-        )  # First element of second dim array (for input -1)
-        assert np.isnan(
-            nd_mixed_results[0][2]
-        )  # Third element of first dim array (for input n_active)
-        assert np.isnan(
-            nd_mixed_results[1][2]
-        )  # Third element of second dim array (for input n_active)
-        assert not np.isnan(nd_mixed_results[0][1])  # For input 0
-        assert not np.isnan(nd_mixed_results[0][3])  # For input n_active - 1
-
-
-@pytest.fixture
 def env_all_active_2x2() -> Environment:
     """A 2x2 grid where all 4 cells are active."""
     active_mask = np.array([[True, True], [True, True]], dtype=bool)
@@ -1018,21 +949,21 @@ def env_1d_grid_3bins() -> Environment:
 
 
 def test_boundary_grid_all_active_2x2(env_all_active_2x2: Environment):
-    boundary_indices = env_all_active_2x2.boundary_bins()
+    boundary_indices = env_all_active_2x2.boundary_bins
     # All 4 active bins are at the edge of the 2x2 defined grid.
     assert boundary_indices.shape[0] == 4
     assert np.array_equal(np.sort(boundary_indices), np.arange(4))
 
 
 def test_boundary_grid_center_hole_3x3(env_center_hole_3x3: Environment):
-    boundary_indices = env_center_hole_3x3.boundary_bins()
+    boundary_indices = env_center_hole_3x3.boundary_bins
     # 8 active bins, all are adjacent to the central hole or the grid edge.
     assert boundary_indices.shape[0] == 8
     assert np.array_equal(np.sort(boundary_indices), np.arange(8))
 
 
 def test_boundary_grid_hollow_square_4x4(env_hollow_square_4x4: Environment):
-    boundary_indices = env_hollow_square_4x4.boundary_bins()
+    boundary_indices = env_hollow_square_4x4.boundary_bins
     # 12 active bins forming the perimeter, all are boundary.
     assert boundary_indices.shape[0] == 12
     assert np.array_equal(np.sort(boundary_indices), np.arange(12))
@@ -1045,20 +976,20 @@ def test_boundary_grid_line_in_larger_grid(env_line_1x3_in_3x3_grid: Environment
     # (1,1) is boundary (nbr (0,1) inactive, (2,1) inactive)
     # (1,2) is boundary (nbr (1,3) out, (0,2) inactive, (2,2) inactive)
     # All 3 should be boundary by grid logic.
-    boundary_indices = env_line_1x3_in_3x3_grid.boundary_bins()
+    boundary_indices = env_line_1x3_in_3x3_grid.boundary_bins
     assert boundary_indices.shape[0] == 3
     assert np.array_equal(np.sort(boundary_indices), np.arange(3))
 
 
 def test_boundary_grid_single_active_cell_3x3(env_single_active_cell_3x3: Environment):
-    boundary_indices = env_single_active_cell_3x3.boundary_bins()
+    boundary_indices = env_single_active_cell_3x3.boundary_bins
     # Single active cell is its own boundary.
     assert boundary_indices.shape[0] == 1
     assert np.array_equal(np.sort(boundary_indices), np.array([0]))
 
 
 def test_boundary_grid_no_active_cells(env_no_active_cells_nd_mask: Environment):
-    boundary_indices = env_no_active_cells_nd_mask.boundary_bins()
+    boundary_indices = env_no_active_cells_nd_mask.boundary_bins
     assert boundary_indices.shape[0] == 0
 
 
@@ -1095,5 +1026,5 @@ def test_boundary_1d_grid_degree_logic(env_1d_grid_3bins: Environment):
     # Layout type "MaskedGrid" (from from_mask).
     # For 1D grid (len(grid_shape) == 1), it hits `elif is_grid_layout_with_mask and len(self.grid_shape) == 1:`
     # threshold_degree = 1.5
-    boundary_indices = env_1d_grid_3bins.boundary_bins()
+    boundary_indices = env_1d_grid_3bins.boundary_bins
     assert np.array_equal(np.sort(boundary_indices), np.array([0, 2]))

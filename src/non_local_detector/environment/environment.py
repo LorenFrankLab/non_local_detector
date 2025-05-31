@@ -1237,112 +1237,7 @@ class Environment:
             raise TypeError(f"Loaded object is not type {cls.__name__}")
         return environment
 
-    @check_fitted
-    def flat_to_grid_bin_index(
-        self, flat_indices: Union[int, NDArray[np.int_]]
-    ) -> Union[Tuple[int, ...], Tuple[NDArray[np.int_], ...]]:
-        """
-        Convert active bin flat indices (0..N-1) to N-D grid indices.
-
-        This method translates a flat index (which refers to an active bin,
-        e.g., a row in `self.bin_centers`) back to its original N-dimensional
-        index within the environment's full conceptual grid. This is primarily
-        meaningful for grid-based layouts.
-
-        Parameters
-        ----------
-        flat_indices : Union[int, NDArray[np.int_]]
-            A single flat index or an array of flat indices for active bins.
-            These indices range from `0` to `n_active_bins - 1`.
-
-        Returns
-        -------
-        Union[Tuple[int, ...], Tuple[NDArray[np.int_], ...]]
-            If input is a single int: A tuple of N integers representing the
-            N-D grid index (e.g., `(row, col, ...)`). Contains `np.nan` if
-            conversion fails for an index.
-            If input is an array: A tuple of N arrays, where each array
-            contains the indices for one dimension. (e.g., `(rows_array, cols_array, ...)`).
-            Contains `np.nan` for failed conversions.
-
-        Raises
-        ------
-        TypeError
-            If the environment is not N-D grid-based (e.g., if it's 1D or
-            lacks a clear N-D `grid_shape` or `active_mask`).
-        RuntimeError
-            If called before the environment is fitted or if the connectivity
-            graph is unavailable.
-        """
-        if (
-            self.grid_shape is None
-            or len(self.grid_shape) <= 1
-            or self.active_mask is None
-            or self.active_mask.ndim <= 1
-        ):
-            raise TypeError(
-                "N-D index conversion is primarily for N-D grid-based layouts "
-                "with a defined N-D active_mask and grid_shape."
-            )
-        if self.connectivity is None:
-            raise RuntimeError(
-                "Connectivity graph not available for mapping source indices."
-            )
-
-        is_scalar = np.isscalar(flat_indices)
-        flat_indices_arr = np.atleast_1d(np.asarray(flat_indices, dtype=int))
-
-        output_nd_indices_list = []
-
-        for active_flat_idx in flat_indices_arr:
-            if not (0 <= active_flat_idx < self.connectivity.number_of_nodes()):
-                warnings.warn(
-                    f"Active flat_index {active_flat_idx} is out of bounds for connectivity nodes. Returning NaNs.",
-                    UserWarning,
-                )
-                output_nd_indices_list.append(tuple([np.nan] * len(self.grid_shape)))
-                continue
-
-            node_data = self.connectivity.nodes[active_flat_idx]
-
-            # Prefer 'original_grid_nd_index' if directly available
-            if (
-                "original_grid_nd_index" in node_data
-                and node_data["original_grid_nd_index"] is not None
-            ):
-                output_nd_indices_list.append(node_data["original_grid_nd_index"])
-            elif (
-                "source_grid_flat_index" in node_data
-            ):  # Fallback to unraveling source_grid_flat_index
-                original_full_grid_flat_idx = node_data["source_grid_flat_index"]
-                output_nd_indices_list.append(
-                    tuple(
-                        np.unravel_index(original_full_grid_flat_idx, self.grid_shape)
-                    )
-                )
-            else:
-                warnings.warn(
-                    f"Node {active_flat_idx} in connectivity missing necessary source index information for N-D conversion. Returning NaNs.",
-                    UserWarning,
-                )
-                output_nd_indices_list.append(tuple([np.nan] * len(self.grid_shape)))
-
-        if (
-            not output_nd_indices_list
-        ):  # Should not happen if flat_indices_arr was not empty
-            return tuple(np.array([], dtype=int) for _ in range(len(self.grid_shape)))  # type: ignore
-
-        # Convert list of tuples to tuple of arrays
-        final_output_nd_indices = tuple(
-            np.array([item[d] for item in output_nd_indices_list])
-            for d in range(len(self.grid_shape))
-        )
-
-        if is_scalar:
-            # For scalar input, return a tuple of ints/NaNs
-            return tuple(val[0] if not np.isnan(val[0]) else np.nan for val in final_output_nd_indices)  # type: ignore
-        return final_output_nd_indices
-
+    @cached_property
     @check_fitted
     def boundary_bins(self) -> NDArray[np.int_]:
         return find_boundary_nodes(
@@ -1352,6 +1247,7 @@ class Environment:
             layout_kind=self._layout_type_used,
         )
 
+    @cached_property
     @check_fitted
     def linearization_properties(
         self: "Environment",
