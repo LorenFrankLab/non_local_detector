@@ -1968,50 +1968,52 @@ def get_layout_parameters(layout_type: str) -> Dict[str, Dict[str, Any]]:
 
 def create_layout(kind: str, **kwargs) -> LayoutEngine:
     """
-    Instantiate and build a layout engine by its 'kind' string.
-
-    This factory function finds the appropriate `LayoutEngine` class based
-    on the `kind` string, instantiates it, and calls its `build` method
-    with the provided `**kwargs`.
+    Factory for creating and building a spatial-layout engine.
 
     Parameters
     ----------
     kind : str
-        The string identifier of the layout engine type to create
-        (case-insensitive, ignores non-alphanumeric characters).
-        See `list_available_layouts()` for options.
-    **kwargs : Any
-        Keyword arguments to be passed to the `build` method of the
-        selected layout engine.
+        Case-insensitive name of the layout engine to create
+        (e.g., "RegularGrid", "Hexagonal", "Graph", etc.).
+    **kwargs : any
+        Parameters passed to the chosen engine’s `build(...)` method.
 
     Returns
     -------
     LayoutEngine
-        A fully built instance of the specified layout engine.
+        A fully constructed layout engine.
 
     Raises
     ------
     ValueError
-        If `kind` is an unknown layout engine type.
+        - If `kind` is not one of the available layouts.
+        - If any unexpected keyword arguments are passed to `build`.
     """
-    normalized_kind_query = "".join(filter(str.isalnum, kind)).lower()
+    # 1) Normalize user input and find matching key
+    norm_query = "".join(ch for ch in kind if ch.isalnum()).lower()
     found_key = next(
         (
-            k
-            for k in _LAYOUT_MAP
-            if "".join(filter(str.isalnum, k)).lower() == normalized_kind_query
+            name
+            for name in _LAYOUT_MAP
+            if "".join(ch for ch in name if ch.isalnum()).lower() == norm_query
         ),
         None,
     )
-    if not found_key:
-        raise ValueError(
-            f"Unknown engine kind '{kind}'. Available: {list_available_layouts()}"
-        )
-    engine_class = _LAYOUT_MAP[found_key]
-    engine_instance = engine_class()
-    build_sig = inspect.signature(engine_instance.build)
-    valid_build_params = {p_name for p_name in build_sig.parameters if p_name != "self"}
-    actual_build_kwargs = {k: v for k, v in kwargs.items() if k in valid_build_params}
-    engine_instance.build(**actual_build_kwargs)
+    if found_key is None:
+        suggestions = ", ".join(list_available_layouts())
+        raise ValueError(f"Unknown layout kind '{kind}'. Available: {suggestions}")
 
-    return engine_instance
+    # 2) Instantiate the class
+    engine_cls = _LAYOUT_MAP[found_key]
+    engine = engine_cls()
+
+    # 3) Validate `kwargs` against `build(...)` signature
+    sig = inspect.signature(engine.build)
+    allowed = {param for param in sig.parameters if param != "self"}
+    unexpected = set(kwargs) - allowed
+    if unexpected:
+        raise ValueError(f"Unexpected arguments for {found_key}.build(): {unexpected}")
+
+    # 4) Call `build(...)` with validated params
+    engine.build(**{k: kwargs[k] for k in allowed if k in kwargs})
+    return engine
