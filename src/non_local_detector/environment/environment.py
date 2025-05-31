@@ -18,7 +18,6 @@ from non_local_detector.environment.layout.layout_engine import (
     RegularGridLayout,
     create_layout,
 )
-from non_local_detector.environment.layout.utils import _get_distance_between_bins
 from non_local_detector.environment.regions import Region, Regions
 
 if TYPE_CHECKING:
@@ -1837,7 +1836,6 @@ class Environment:
 
         - For 'point' regions, area is 0.0.
         - For 'polygon' regions, uses Shapely's area.
-        - For 'mask' regions, sums the area/volume of active bins in the region.
         """
         region_info = self.regions[region_name]
 
@@ -1848,49 +1846,3 @@ class Environment:
                 raise RuntimeError("Polygon area calculation requires 'shapely'.")
             return region_info.data.area  # type: ignore
         return 0.0  # pragma: no cover
-
-    @check_fitted
-    def create_buffered_region(
-        self,
-        source_region_name_or_point: Union[str, NDArray[np.float64]],
-        buffer_distance: float,
-        new_region_name: str,
-        **meta: Any,
-    ) -> Region:
-        """
-        Creates a new polygon region by buffering an existing region or a point.
-        The new region is added to `self.regions`.
-
-        Parameters
-        ----------
-        source_region_name_or_point : Union[str, NDArray[np.float64]]
-            If str, the name of an existing 'point' or 'polygon' region.
-            If NDArray, the N-D coordinates of a point to buffer.
-        buffer_distance : float
-            The distance for the buffer operation.
-        new_region_name : str
-            Name for the newly created buffered region.
-        **meta : Any
-            Additional metadata for the new region.
-
-        Returns
-        -------
-        Region
-            The newly created and added Region object.
-
-        Raises
-        ------
-        RuntimeError
-            If Shapely is not installed.
-        ValueError
-            If source region is not 2D, or other issues.
-        """
-        if not _HAS_SHAPELY:  # pragma: no cover
-            raise RuntimeError("Buffering requires Shapely.")
-
-        return self.regions.buffer(
-            source=source_region_name_or_point,
-            distance=buffer_distance,
-            new_name=new_region_name,
-            **meta,
-        )

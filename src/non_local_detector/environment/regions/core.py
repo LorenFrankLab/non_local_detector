@@ -17,7 +17,7 @@ from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 import numpy as np
 from numpy.typing import NDArray
@@ -233,6 +233,29 @@ class Regions(MutableMapping[str, Region]):
                 raise RuntimeError("Area computation requires Shapely.")
             return region.data.area  # type: ignore[attr-defined]
         return 0.0
+
+    def region_center(self, region_name: str) -> Optional[NDArray[np.float64]]:
+        """
+        Calculate the center of a specified named region.
+
+        - For 'point' regions, returns the point itself.
+        - For 'polygon' regions, returns the centroid of the polygon.
+
+        Returns
+        -------
+        Optional[NDArray[np.float64]]
+            N-D coordinates of the region's center, or None if the region
+            is empty or center cannot be determined.
+        """
+        region = self.regions[region_name]
+
+        if region.kind == "point":
+            return np.asarray(region.data)
+        elif region.kind == "polygon":
+            if not _HAS_SHAPELY:  # pragma: no cover
+                raise RuntimeError("Polygon region queries require 'shapely'.")
+            return np.array(region.data.centroid.coords[0])  # type: ignore
+        return None  # pragma: no cover
 
     def buffer(
         self,
