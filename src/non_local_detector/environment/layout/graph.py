@@ -19,7 +19,7 @@ These utilities are primarily used by the `GraphLayout` engine.
 """
 
 import math
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Sequence, Tuple, Union
 
 import networkx as nx
 import numpy as np
@@ -32,128 +32,129 @@ Edge = Tuple[Any, Any]
 def _get_graph_bins(
     graph: nx.Graph,
     edge_order: List[Tuple[object, object]],
-    edge_spacing: Union[float, List[float]],
+    edge_spacing: Union[float, Sequence[float]],
     bin_size: float,
 ) -> Tuple[np.ndarray, Tuple[np.ndarray, ...], np.ndarray, np.ndarray]:
     """
-    Bin node positions along graph edges into discrete spatial bins.
-
-    This function discretizes continuous node positions along a graph's edges
-    into bins of fixed size.
+    Discretize each edge of a linearized graph into fixed-length bins, optionally
+    inserting inactive “gap” bins between segments.
 
     Parameters
     ----------
     graph : networkx.Graph
-        The graph defining the track. Nodes are expected to have a 'pos'
-        attribute (e.g., `graph.nodes[node_id]['pos'] = (x, y)`).
-    edge_order : list[tuple[object, object]]
-        Ordered sequence of edge tuples (node_id_1, node_id_2) defining
-        the linearized track segments.
-    edge_spacing : float | list[float]
-        Spacing (gap length) between consecutive edges in `edge_order`.
-        If a float, applies uniformly to all gaps.
-        If a list, specifies spacing for each gap; its length must be
-        `len(edge_order) - 1`.
+        Must have `pos` attributes on each node: {node: (x, y, …)}.
+    edge_order : list of (u, v) tuples
+        Ordered edges defining the linear track. Each tuple’s nodes must exist in `graph`.
+    edge_spacing : float or sequence of floats
+        If float: uniform gap length inserted between every consecutive edge.
+        If sequence: length must be len(edge_order) - 1, specifying each gap individually.
     bin_size : float
-        Desired length of each bin along the linearized track. Must be positive.
+        Desired length of each bin along the edge; must be positive.
 
     Returns
     -------
-    bin_centers_1d : np.ndarray, shape (n_total_bins,)
-        1D coordinates of the center of each bin along the linearized track,
-        including bins within gaps (which will be marked inactive).
-    bin_edges_1d_tuple : tuple[np.ndarray, ...]
-        A tuple containing a single 1D NumPy array of bin edge coordinates
-        (shape `(n_total_bins + 1,)`). This structure matches `np.histogramdd` output.
-    active_mask_1d : np.ndarray, shape (n_total_bins,), dtype=bool
-        Boolean mask indicating active bins (True, on an actual edge segment)
-        vs. inactive bins (False, within a gap).
-    edge_ids_for_active_bins : np.ndarray, shape (n_active_bins,), dtype=int
-        Integer IDs corresponding to the original graph edges (from `graph.edges()`)
-        for each *active* bin. `n_active_bins = np.sum(active_mask_1d)`.
+    bin_centers_1d : ndarray, shape (n_total_bins,)
+        1D coordinates of the center of every bin (including gaps).
+    bin_edges_1d_tuple : tuple of one ndarray, shape (n_total_bins + 1,)
+        Unique sorted 1D edge coordinates (matches np.histogramdd format).
+    active_mask_1d : ndarray of bool, shape (n_total_bins,)
+        True for bins that lie on an actual graph edge, False for gap bins.
+    edge_ids_for_active_bins : ndarray of int, shape (n_active_bins,)
+        Original edge index (0..len(graph.edges)-1) for each active bin.
 
     Raises
     ------
     ValueError
-        If any edge in `edge_order` contains nodes not in `graph`.
-        If `bin_size` is not positive.
-        If `edge_spacing` (if a list) has an incorrect length.
-
-    Notes
-    -----
-    The function assumes edges are linear segments in space, and bins are created
-    by dividing each edge into segments of length `bin_size`. The last bin on each
-    edge may be shorter if the edge length is not an exact multiple of `bin_size`.
-
+        - If `bin_size` is not positive.
+        - If `edge_spacing` is a sequence but length != len(edge_order) - 1.
+        - If any node in `edge_order` is missing from `graph`.
     """
-    # Verify the nodes are in the graph
-    for edge in edge_order:
-        if not graph.has_node(edge[0]) or not graph.has_node(edge[1]):
-            raise ValueError(f"Edge {edge} contains nodes not in the graph")
-
-    # Verify the bin size is positive
+    # 1) Validate bin_size
     if bin_size <= 0:
-        raise ValueError("bin_size must be positive")
+        raise ValueError("`bin_size` must be a positive float.")
 
-    # Figure out the gap
+    # 2) Validate edge_order contents
+    missing_nodes = {
+        node for edge in edge_order for node in edge if node not in graph.nodes
+    }
+    if missing_nodes:
+        raise ValueError(f"Nodes {missing_nodes} in edge_order not found in graph.")
+
+    # 3) Build gap array
     n_edges = len(edge_order)
     if isinstance(edge_spacing, (int, float)):
-        # Ensure gaps are float, handles n_edges=0 or 1 correctly
         gaps = np.full(max(0, n_edges - 1), float(edge_spacing))
     else:
         gaps = np.asarray(edge_spacing, dtype=float)
-        if gaps.size != max(0, n_edges - 1):
-            raise ValueError(f"edge_spacing list length must be {max(0, n_edges - 1)}")
-
-    node_positions = nx.get_node_attributes(graph, "pos")
-    # Create a mapping from edge tuple to a unique integer ID
-    # This handles undirected nature: (u,v) and (v,u) map to the same ID if
-    # graph.edges stores them consistently or if we normalize.
-    # For simplicity, assuming graph.edges provides unique edge representations.
-    edge_id_map: Dict[Tuple[object, object], int] = {
-        edge: i for i, edge in enumerate(graph.edges())
-    }
-    bin_edges = []
-    active_mask = []
-    edge_ids = []
-    linear_start_pos = 0.0
-    for i, (start_node, end_node) in enumerate(edge_order):
-        start_node_pos = np.asarray(node_positions[start_node])
-        end_node_pos = np.asarray(node_positions[end_node])
-        edge_length = np.linalg.norm(end_node_pos - start_node_pos)
-
-        n_bins = max(1, np.ceil(edge_length / bin_size).astype(int))
-        bin_edges.extend(
-            np.linspace(
-                linear_start_pos,
-                linear_start_pos + edge_length,
-                n_bins + 1,
-                endpoint=True,
-            )
+        if gaps.ndim != 1 or gaps.shape[0] != max(0, n_edges - 1):
+            raise ValueError(f"`edge_spacing` length must be {max(0, n_edges - 1)}.")
+    # If there are zero edges, we return empty structures
+    if n_edges == 0:
+        return (
+            np.zeros((0,), dtype=float),
+            (np.zeros((0,), dtype=float),),
+            np.zeros((0,), dtype=bool),
+            np.zeros((0,), dtype=int),
         )
-        try:
-            edge_ids.extend([edge_id_map[(start_node, end_node)]] * n_bins)
-        except KeyError:
-            edge_ids.extend([edge_id_map[(end_node, start_node)]] * n_bins)
 
-        active_mask.extend([True] * n_bins)
-        linear_start_pos += edge_length
-        # Add the gap
-        if i < n_edges - 1:
-            if gaps[i] > 0:
-                linear_start_pos += gaps[i]
-                active_mask.append(False)
+    # 4) Precompute node positions; raise if any node lacks 'pos'
+    node_positions = nx.get_node_attributes(graph, "pos")
+    if len(node_positions) < len(graph.nodes):
+        raise ValueError("All nodes must have a 'pos' attribute (x,y,…).")
 
-    # Add the last bin edge
-    bin_edges.append(linear_start_pos)
-    # Convert to numpy array
-    bin_edges = np.array(bin_edges)
-    bin_edges = (np.unique(bin_edges),)
-    bin_centers = get_centers(bin_edges[0])
-    active_mask = np.array(active_mask, dtype=bool)
-    edge_ids = np.array(edge_ids, dtype=int)
+    # 5) Map each (u, v) or (v, u) in graph.edges() to an integer ID
+    #    Normalize edges so (u,v) and (v,u) map to the same ID:
+    edge_id_map: Dict[frozenset, int] = {
+        frozenset(edge): idx for idx, edge in enumerate(graph.edges())
+    }
 
-    return bin_centers, bin_edges, active_mask, edge_ids
+    bin_edges_list: List[float] = []
+    active_mask_list: List[bool] = []
+    edge_id_list: List[int] = []
+    cursor = 0.0
+
+    for idx, (u, v) in enumerate(edge_order):
+        pos_u = np.asarray(node_positions[u], dtype=float)
+        pos_v = np.asarray(node_positions[v], dtype=float)
+        segment_length = float(np.linalg.norm(pos_v - pos_u))
+        if segment_length <= 0.0:
+            # If the two nodes coincide, create exactly one bin of zero length
+            n_bins = 1
+        else:
+            n_bins = int(np.ceil(segment_length / bin_size))
+        # Create (n_bins + 1) edges from cursor to cursor + segment_length
+        edges_segment = np.linspace(
+            cursor, cursor + segment_length, n_bins + 1, dtype=float
+        )
+        bin_edges_list.extend(
+            edges_segment[:-1]
+        )  # all but last; last becomes next cursor
+        # Record edge IDs for each _active_ bin
+        mapped_id = edge_id_map.get(frozenset((u, v)))
+        edge_id_list.extend([mapped_id] * n_bins)
+        active_mask_list.extend([True] * n_bins)
+
+        cursor += segment_length
+        # Optionally insert a gap after this edge
+        if idx < n_edges - 1:
+            gap_len = float(gaps[idx])
+            if gap_len > 0.0:
+                bin_edges_list.append(cursor)
+                active_mask_list.append(False)
+                cursor += gap_len
+
+    # After the loop, append final edge
+    bin_edges_list.append(cursor)
+
+    # 6) Convert to arrays and dedupe
+    raw_edges = np.array(bin_edges_list, dtype=float)
+    unique_edges = np.unique(raw_edges)
+    bin_centers_1d = get_centers(unique_edges)
+
+    active_mask_1d = np.asarray(active_mask_list, dtype=bool)
+    edge_ids_for_active_bins = np.array(edge_id_list, dtype=int)
+
+    return bin_centers_1d, (unique_edges,), active_mask_1d, edge_ids_for_active_bins
 
 
 def _create_graph_layout_connectivity_graph(

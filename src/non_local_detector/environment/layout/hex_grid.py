@@ -30,7 +30,7 @@ from numpy.typing import NDArray
 
 
 def _create_hex_grid(
-    data_samples: NDArray[np.float64],
+    data_samples: Optional[NDArray[np.float64]],
     dimension_range: Optional[Sequence[Tuple[float, float]]] = None,
     hexagon_width: float = 1.0,
 ) -> Tuple[
@@ -40,127 +40,107 @@ def _create_hex_grid(
     float,  # hex_orientation
     float,  # min_x
     float,  # min_y
+    Sequence[Tuple[float, float]],  # effective_dimension_range
 ]:
     """
-    Create a hexagonal grid covering a specified area or data extent.
-
-    Generates the centers of all potential hexagons (pointy-top orientation)
-    that would tile a rectangular region. The region is determined either by
-    `dimension_range` or inferred from `data_samples`.
+    Generate a 2D hexagonal grid (pointy-top) that covers either:
+    - A user-specified bounding box (`dimension_range`), or
+    - The min/max extent of `data_samples`.
 
     Parameters
     ----------
-    data_samples : NDArray[np.float64], shape (n_samples, 2)
-        2D data samples. Used to determine grid extent if `dimension_range`
-        is None. NaNs are ignored.
-    dimension_range : Optional[Sequence[Tuple[float, float]]], optional
-        Explicit grid boundaries `[(min_x, max_x), (min_y, max_y)]`. If None
-        (default), boundaries are derived from `data_samples`.
-    hexagon_width : float, optional, default=1.0
-        The width of the hexagons (distance between parallel sides).
-        Must be positive.
+    data_samples : ndarray of shape (n_samples, 2), optional
+        2D points to infer bounding box if `dimension_range` is None.
+        NaNs are ignored. If None, `dimension_range` must be provided.
+    dimension_range : sequence of ((min_x, max_x), (min_y, max_y)), optional
+        If provided, must be length 2. Otherwise inferred from `data_samples`.
+    hexagon_width : float, default=1.0
+        Distance between parallel sides of each hexagon; must be positive.
 
     Returns
     -------
-    bin_centers : NDArray[np.float64], shape (n_total_hex_bins, 2)
-        Center (x, y) coordinates of every hexagon in the flattened full grid.
-    centers_shape : Tuple[int, int]
-        Shape of the conceptual full grid of hexagons (n_hex_rows, n_hex_cols).
+    bin_centers : ndarray, shape (n_hex_rows * n_hex_cols, 2)
+        (x, y) coordinates of every hexagon center in the full grid.
+    centers_shape : (n_hex_rows, n_hex_cols)
+        The 2D shape of the conceptual hex-grid, before flattening.
     hex_radius : float
-        The radius of the hexagons (distance from center to any vertex).
+        Distance from center to any vertex (hexagon side length).
     hex_orientation : float
-        Orientation of hexagons in radians (0.0 for pointy-top).
+        Orientation in radians (0.0 = point-up).
     min_x : float
-        Minimum x-coordinate of the grid's effective origin.
+        Minimum x coordinate of the bounding box (grid origin).
     min_y : float
-        Minimum y-coordinate of the grid's effective origin.
-    effective_dimension_range : Sequence[Tuple[float, float]]
-        The `[(min_x, max_x), (min_y, max_y)]` bounds actually used or
-        inferred for the grid generation.
+        Minimum y coordinate of the bounding box (grid origin).
+    effective_dimension_range : [ (min_x, max_x), (min_y, max_y) ]
+        The actual range used (either user‐provided or inferred).
 
     Raises
     ------
     ValueError
-        If `hexagon_width` is not positive.
-        If `data_samples` is empty or not 2D and no `dimension_range` is provided.
+        - If `hexagon_width <= 0`.
+        - If neither `dimension_range` nor `data_samples` (with valid shape) is provided.
+        - If `dimension_range` is provided but not length 2 or has min > max.
+        - If `data_samples` is not a 2D array of shape (n_samples, 2).
     """
+    # 1) Validate hexagon_width
     if hexagon_width <= 0:
-        raise ValueError("hexagon_width must be positive.")
+        raise ValueError("`hexagon_width` must be a positive float.")
 
-    # Orientation of hexagons (0.0 for point-up)
-    hex_orientation = 0.0
+    hex_orientation = 0.0  # point-up
 
-    # Filter out NaN values from data_samples
+    # 2) Clean & validate data_samples
     if data_samples is not None:
-        valid_data_mask = ~np.isnan(data_samples).any(axis=1)
-        data_samples = data_samples[valid_data_mask]
+        ds_arr = np.asarray(data_samples, dtype=float)
+        if ds_arr.ndim != 2 or ds_arr.shape[1] != 2:
+            raise ValueError("`data_samples` must be shape (n_samples, 2).")
+        # Remove any rows containing NaNs
+        ds_arr = ds_arr[~np.isnan(ds_arr).any(axis=1)]
     else:
-        data_samples = np.empty((0, 2))
+        ds_arr = np.empty((0, 2), dtype=float)
 
-    # Step 1: Calculate the bounding box
+    # 3) Determine bounding box
     if dimension_range is not None:
-        min_x_user, max_x_user = dimension_range[0]
-        min_y_user, max_y_user = dimension_range[1]
-
-        # Ensure min <= max for user-provided ranges and cast to float
-        min_x = min(float(min_x_user), float(max_x_user))
-        max_x = max(float(min_x_user), float(max_x_user))
-        min_y = min(float(min_y_user), float(max_y_user))
-        max_y = max(float(min_y_user), float(max_y_user))
-        dimension_range = [(min_x, max_x), (min_y, max_y)]
+        if len(dimension_range) != 2:
+            raise ValueError("`dimension_range` must be ((min_x,max_x),(min_y,max_y)).")
+        (ux0, ux1), (uy0, uy1) = dimension_range
+        min_x, max_x = sorted((float(ux0), float(ux1)))
+        min_y, max_y = sorted((float(uy0), float(uy1)))
+        effective_range = [(min_x, max_x), (min_y, max_y)]
     else:
-        if (
-            not isinstance(data_samples, np.ndarray)
-            or data_samples.ndim != 2
-            or data_samples.shape[1] != 2
-        ):
-            raise ValueError(
-                "data_samples must be a 2D NumPy array with shape (n_samples, 2)."
-            )
-        if data_samples.shape[0] == 0:
-            raise ValueError(
-                "data_samples is empty and no dimension_range is provided. "
-                "Cannot determine grid extent."
-            )
-        min_vals = np.min(data_samples, axis=0)
-        max_vals = np.max(data_samples, axis=0)
-        min_x, min_y = float(min_vals[0]), float(min_vals[1])
-        max_x, max_y = float(max_vals[0]), float(max_vals[1])
-        dimension_range = [(min_x, max_x), (min_y, max_y)]
+        if ds_arr.shape[0] == 0:
+            raise ValueError("`data_samples` is empty; cannot infer bounding box.")
+        min_vals = np.min(ds_arr, axis=0)
+        max_vals = np.max(ds_arr, axis=0)
+        min_x, max_x = float(min_vals[0]), float(max_vals[0])
+        min_y, max_y = float(min_vals[1]), float(max_vals[1])
+        effective_range = [(min_x, max_x), (min_y, max_y)]
 
-    grid_vertical_step = (np.sqrt(3.0) / 2.0) * hexagon_width
-
-    range_x = max_x - min_x
-    range_y = max_y - min_y
-
-    # radius = side length of hexagon (center to vertex)
+    # 4) Compute hex geometry constants
+    vertical_step = (np.sqrt(3.0) / 2.0) * hexagon_width
     hex_radius = hexagon_width / np.sqrt(3)
 
-    n_hex_x = int(np.ceil(range_x / hexagon_width)) + 1
-    n_hex_y = int(np.ceil(range_y / grid_vertical_step)) + 1
+    # 5) Compute how many hexes fit in x/y direction (ensure at least one)
+    span_x = max_x - min_x
+    span_y = max_y - min_y
+    n_hex_cols = max(1, int(np.ceil(span_x / hexagon_width)) + 1)
+    n_hex_rows = max(1, int(np.ceil(span_y / vertical_step)) + 1)
 
-    # Create grid of base indices
-    coord_x, coord_y = np.meshgrid(
-        np.arange(n_hex_x), np.arange(n_hex_y), indexing="xy"
+    # 6) Create a regular grid of (row, col) indices
+    col_idx, row_idx = np.meshgrid(
+        np.arange(n_hex_cols), np.arange(n_hex_rows), indexing="xy"
     )
+    col_idx = col_idx.astype(float)
+    row_idx = row_idx.astype(float)
 
-    # Cast to float for calculations
-    coord_x = coord_x.astype(float)
-    coord_y = coord_y.astype(float)
+    # 7) Shift odd rows horizontally by half‐cell
+    col_idx[1::2, :] += 0.5
 
-    # Shift odd rows by half a hexagon width
-    coord_x[1::2, :] += 0.5
+    # 8) Scale to physical coordinates, then translate by (min_x, min_y)
+    x_coords = col_idx * hexagon_width + min_x
+    y_coords = row_idx * vertical_step + min_y
 
-    # Scale to real-world coordinates relative to a (0,0) grid origin
-    coord_x = coord_x * hexagon_width
-    coord_y = coord_y * grid_vertical_step
-
-    # Shift the entire grid so its effective origin aligns with (min_x, min_y)
-    coord_x += min_x
-    coord_y += min_y
-
-    bin_centers = np.column_stack((coord_x.flatten(), coord_y.flatten()))
-    centers_shape: Tuple[int, int] = (n_hex_y, n_hex_x)
+    bin_centers = np.column_stack((x_coords.ravel(), y_coords.ravel()))
+    centers_shape = (n_hex_rows, n_hex_cols)
 
     return (
         bin_centers,
@@ -169,7 +149,7 @@ def _create_hex_grid(
         hex_orientation,
         min_x,
         min_y,
-        dimension_range,
+        effective_range,
     )
 
 

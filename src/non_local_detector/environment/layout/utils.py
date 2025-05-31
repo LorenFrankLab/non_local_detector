@@ -835,7 +835,6 @@ def find_boundary_nodes(
 
 
 def map_active_data_to_grid(
-    self,
     grid_shape: Tuple[int, ...],
     active_mask: np.ndarray,
     active_bin_data: np.ndarray,
@@ -876,10 +875,12 @@ def map_active_data_to_grid(
         )
     if not isinstance(active_bin_data, np.ndarray) or active_bin_data.ndim != 1:
         raise ValueError("active_bin_data must be a 1D NumPy array.")
-    if active_bin_data.shape[0] != self.n_bins:
+
+    n_bins = active_mask.sum()
+    if active_bin_data.shape[0] != n_bins:
         raise ValueError(
             f"Length of active_bin_data ({active_bin_data.shape[0]}) "
-            f"must match the number of active bins ({self.n_bins})."
+            f"must match the number of active bins ({n_bins})."
         )
 
     # Create an array for the full grid, filled with the fill_value

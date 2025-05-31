@@ -246,15 +246,25 @@ class Regions(MutableMapping[str, Region]):
         Optional[NDArray[np.float64]]
             N-D coordinates of the region's center, or None if the region
             is empty or center cannot be determined.
+
+        Raises
+        ------
+        KeyError
+            If `region_name` is not present in this collection.
+        RuntimeError
+            If attempting to compute a polygon centroid but Shapely is not installed.
         """
-        region = self.regions[region_name]
+        if region_name not in self._store:
+            raise KeyError(f"Region '{region_name}' not found in this collection.")
+
+        region = self._store[region_name]
 
         if region.kind == "point":
-            return np.asarray(region.data)
+            return np.asarray(region.data, dtype=float)
         elif region.kind == "polygon":
             if not _HAS_SHAPELY:  # pragma: no cover
                 raise RuntimeError("Polygon region queries require 'shapely'.")
-            return np.array(region.data.centroid.coords[0])  # type: ignore
+            return np.array(region.data.centroid.coords[0], dtype=float)  # type: ignore
         return None  # pragma: no cover
 
     def buffer(
