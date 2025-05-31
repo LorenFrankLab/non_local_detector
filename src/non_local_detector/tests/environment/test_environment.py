@@ -655,7 +655,7 @@ class TestHexagonalLayout:
             )  # Hexagonal point_to_bin_index should return -1 if outside
 
     def test_bin_size_hex(self, env_hexagonal: Environment):
-        areas = env_hexagonal.bin_size
+        areas = env_hexagonal.bin_sizes
         assert areas.ndim == 1
         assert areas.shape[0] == env_hexagonal.bin_centers.shape[0]
         # Area of hexagon = (3 * sqrt(3) / 2) * radius^2. Radius = width / sqrt(3).
@@ -742,7 +742,7 @@ class TestDimensionality:
         assert env.bin_centers.ndim == 2 and env.bin_centers.shape[1] == 1
         assert len(env.grid_edges) == 1
         assert len(env.grid_shape) == 1
-        areas = env.bin_size  # Should be lengths
+        areas = env.bin_sizes  # Should be lengths
         assert np.allclose(areas, 1.0)
 
     def test_3d_regular_grid(self):
@@ -760,10 +760,10 @@ class TestDimensionality:
         assert len(env.grid_edges) == 3
         assert len(env.grid_shape) == 3
 
-        volumes = env.bin_size
+        volumes = env.bin_sizes
 
         # Calculate expected volume from actual grid_edges
-        # _GridMixin.bin_size assumes uniform bins from the first diff
+        # _GridMixin.bin_sizes assumes uniform bins from the first diff
         expected_vol_per_bin = 1.0
         if env.grid_edges is not None and all(
             len(e_dim) > 1 for e_dim in env.grid_edges

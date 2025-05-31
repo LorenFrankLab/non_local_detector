@@ -70,7 +70,7 @@ def test_create_layout_regular_grid():
     assert not layout.is_1d
 
 
-def test_regular_grid_point_to_bin_index_and_neighbors():
+def test_regular_grid_point_to_bin_index():
     data = np.random.rand(100, 2) * 10
     layout = create_layout(
         "RegularGrid",
@@ -83,8 +83,6 @@ def test_regular_grid_point_to_bin_index_and_neighbors():
     inds = layout.point_to_bin_index(points)
     assert inds.shape == (3,)
     assert np.any(inds >= 0)
-    neighbors = layout.neighbors(inds[0])
-    assert isinstance(neighbors, list)
 
 
 def test_regular_grid_bin_area_volume():
@@ -96,7 +94,7 @@ def test_regular_grid_bin_area_volume():
         infer_active_bins=True,
         add_boundary_bins=False,
     )
-    areas = layout.bin_size()
+    areas = layout.bin_sizes()
     assert np.allclose(areas, areas[0])
     assert areas.shape[0] == layout.bin_centers.shape[0]
 
@@ -115,7 +113,7 @@ def test_create_layout_hexagonal():
     assert not layout.is_1d
 
 
-def test_hexagonal_point_to_bin_index_and_neighbors():
+def test_hexagonal_point_to_bin_index():
     data = np.random.rand(100, 2) * 10
     layout = create_layout(
         "Hexagonal",
@@ -127,8 +125,6 @@ def test_hexagonal_point_to_bin_index_and_neighbors():
     inds = layout.point_to_bin_index(points)
     assert inds.shape == (3,)
     assert np.any(inds >= 0)
-    neighbors = layout.neighbors(inds[0])
-    assert isinstance(neighbors, list)
 
 
 def test_hexagonal_bin_area_volume():
@@ -139,7 +135,7 @@ def test_hexagonal_bin_area_volume():
         data_samples=data,
         infer_active_bins=True,
     )
-    areas = layout.bin_size()
+    areas = layout.bin_sizes()
     assert np.allclose(areas, areas[0])
     assert areas.shape[0] == layout.bin_centers.shape[0]
 
@@ -177,7 +173,7 @@ def test_create_layout_image_mask():
     assert not layout.is_1d
 
 
-def test_image_mask_point_to_bin_index_and_neighbors():
+def test_image_mask_point_to_bin_index():
     mask = np.zeros((5, 5), dtype=bool)
     mask[2, 2] = True
     layout = create_layout(
@@ -189,8 +185,6 @@ def test_image_mask_point_to_bin_index_and_neighbors():
     inds = layout.point_to_bin_index(points)
     assert inds.shape == (2,)
     assert inds[0] >= 0
-    neighbors = layout.neighbors(inds[0])
-    assert isinstance(neighbors, list)
 
 
 def test_create_layout_graph():
@@ -216,7 +210,7 @@ def test_create_layout_graph():
     assert layout.is_1d
 
 
-def test_graph_point_to_bin_index_and_neighbors():
+def test_graph_point_to_bin_index():
     G = nx.Graph()
     G.add_node(0, pos=(0, 0))
     G.add_node(1, pos=(1, 0))
@@ -235,8 +229,6 @@ def test_graph_point_to_bin_index_and_neighbors():
     inds = layout.point_to_bin_index(points)
     assert inds.shape == (3,)
     assert np.any(inds >= 0)
-    neighbors = layout.neighbors(inds[0])
-    assert isinstance(neighbors, list)
 
 
 def test_graph_bin_area_volume():
@@ -254,7 +246,7 @@ def test_graph_bin_area_volume():
         edge_spacing=0.0,
         bin_size=0.5,
     )
-    lengths = layout.bin_size()
+    lengths = layout.bin_sizes()
     assert np.allclose(lengths, lengths[0])
     assert lengths.shape[0] == layout.bin_centers.shape[0]
 

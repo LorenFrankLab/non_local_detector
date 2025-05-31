@@ -194,26 +194,6 @@ class LayoutEngine(Protocol):
         """
         ...
 
-    def neighbors(self, bin_index: int) -> List[int]:
-        """
-        Find indices of neighboring active bins for a given active bin index.
-
-        This typically uses the `connectivity`. The input `bin_index`
-        and returned indices are relative to the active bins (0 to N-1).
-
-        Parameters
-        ----------
-        bin_index : int
-            The index (0 to `n_active_bins - 1`) of the active bin for which
-            to find neighbors.
-
-        Returns
-        -------
-        List[int]
-            A list of active bin indices that are neighbors to `bin_index`.
-        """
-        ...
-
     @property
     @abstractmethod
     def is_1d(self) -> bool:
@@ -252,7 +232,7 @@ class LayoutEngine(Protocol):
         ...
 
     @abstractmethod
-    def bin_size(self) -> NDArray[np.float64]:
+    def bin_sizes(self) -> NDArray[np.float64]:
         """
         Return the area (2D) or volume (3D+) of each active bin.
 
@@ -448,55 +428,6 @@ class _KDTreeMixin:
 
         return final_bin_indices.astype(np.int32)
 
-    def neighbors(self, bin_index: int) -> List[int]:
-        """
-        Find indices of neighboring active bins for a given active bin index.
-
-        Uses the `connectivity` which should have nodes `0` to
-        `n_active_bins - 1`.
-
-        Parameters
-        ----------
-        bin_index : int
-            Index (0 to `n_active_bins - 1`) of the active bin for which
-            to find neighbors.
-
-        Returns
-        -------
-        List[int]
-            List of indices of neighboring active bins.
-
-        Raises
-        ------
-        AttributeError
-            If `connectivity` is not defined on the instance.
-        ValueError
-            If `connectivity` is None (e.g., not built).
-        """
-        if not hasattr(self, "connectivity"):
-            raise AttributeError(
-                f"{self.__class__.__name__} does not have 'connectivity' attribute."
-            )
-
-        graph_to_use: Optional[nx.Graph] = getattr(self, "connectivity", None)
-
-        if graph_to_use is None:
-            raise ValueError(
-                f"{self.__class__.__name__}.connectivity is None. "
-                "Ensure the layout is built."
-            )
-
-        if bin_index not in graph_to_use:
-            # This could happen if bin_index is out of range for the number of active bins
-            # or if the graph was unexpectedly empty or misconfigured.
-            warnings.warn(
-                f"Bin index {bin_index} not found in connectivity. Returning no neighbors.",
-                RuntimeWarning,
-            )
-            return []
-
-        return list(graph_to_use.neighbors(bin_index))
-
 
 class _GridMixin:
     """
@@ -550,49 +481,6 @@ class _GridMixin:
             grid_shape=self.grid_shape,
             active_mask=self.active_mask,
         )
-
-    def neighbors(self, bin_index: int) -> List[int]:
-        """
-        Find indices of neighboring active bins using the connectivity graph.
-
-        Parameters
-        ----------
-        bin_index : int
-            Index (0 to `n_active_bins - 1`) of the active bin.
-
-        Returns
-        -------
-        List[int]
-            List of neighboring active bin indices.
-
-        Raises
-        ------
-        ValueError
-            If `connectivity` is None.
-        """
-        if not hasattr(self, "connectivity"):
-            raise AttributeError(
-                f"{self.__class__.__name__} does not have 'connectivity' attribute."
-            )
-
-        graph_to_use: Optional[nx.Graph] = getattr(self, "connectivity", None)
-
-        if graph_to_use is None:
-            raise ValueError(
-                f"{self.__class__.__name__}.connectivity is None. "
-                "Ensure the layout is built."
-            )
-
-        if bin_index not in graph_to_use:
-            # This could happen if bin_index is out of range for the number of active bins
-            # or if the graph was unexpectedly empty or misconfigured.
-            warnings.warn(
-                f"Bin index {bin_index} not found in connectivity. Returning no neighbors.",
-                RuntimeWarning,
-            )
-            return []
-
-        return list(graph_to_use.neighbors(bin_index))
 
     def plot(
         self,
@@ -710,7 +598,7 @@ class _GridMixin:
         """
         return False
 
-    def bin_size(self) -> NDArray[np.float64]:
+    def bin_sizes(self) -> NDArray[np.float64]:
         """
         Calculate area/volume for each active bin, assuming a uniform grid.
 
@@ -1160,7 +1048,7 @@ class HexagonalLayout(_KDTreeMixin):
             dtype=int,
         )
 
-    def bin_size(self) -> NDArray[np.float64]:
+    def bin_sizes(self) -> NDArray[np.float64]:
         """
         Calculate the area of each hexagonal bin.
 
@@ -1509,7 +1397,7 @@ class GraphLayout(_KDTreeMixin):
             data_points, bin_edges=self.grid_edges[0], active_mask=self.active_mask
         )
 
-    def bin_size(self) -> NDArray[np.float64]:
+    def bin_sizes(self) -> NDArray[np.float64]:
         """
         Return the length of each active 1D bin along the linearized track.
 

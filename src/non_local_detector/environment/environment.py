@@ -795,12 +795,12 @@ class Environment:
 
     @cached_property
     @check_fitted
-    def bin_size(self) -> NDArray[np.float64]:
+    def bin_sizes(self) -> NDArray[np.float64]:
         """
         Calculate the area (for 2D) or volume (for 3D+) of each active bin.
 
         For 1D environments, this typically returns the length of each bin.
-        This method delegates to the `bin_size` method of the
+        This method delegates to the `bin_sizes` method of the
         underlying `LayoutEngine`.
 
         Returns
@@ -813,7 +813,7 @@ class Environment:
         RuntimeError
             If called before the environment is fitted.
         """
-        return self.layout.bin_size()
+        return self.layout.bin_sizes()
 
     @cached_property
     @check_fitted
