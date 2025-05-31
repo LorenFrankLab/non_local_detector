@@ -832,3 +832,62 @@ def find_boundary_nodes(
                             boundary_bin_indices.append(node_id)
 
     return np.array(sorted(list(set(boundary_bin_indices))), dtype=int)
+
+
+def map_active_data_to_grid(
+    self,
+    grid_shape: Tuple[int, ...],
+    active_mask: np.ndarray,
+    active_bin_data: np.ndarray,
+    fill_value: float = np.nan,
+) -> np.ndarray:
+    """
+    Map a 1D array of data corresponding to active bins onto a full N-D grid.
+
+    This is useful for visualizing data (e.g., place fields, posterior
+    probabilities) on grid-based layouts using functions like `pcolormesh`.
+
+    Parameters
+    ----------
+    active_bin_data : NDArray[np.float64], shape (n_bins,)
+        A 1D array of values, one for each active bin, ordered consistently
+        with `self.bin_centers` (i.e., by active bin index 0 to `n_bins - 1`).
+    fill_value : float, optional
+        The value to use for bins in the full grid that are not active,
+        by default np.nan.
+
+    Returns
+    -------
+    NDArray[np.float64], shape (dim0_size, dim1_size, ...)
+        An N-D array with shape `self.grid_shape`. Active bin locations are
+        filled with `active_bin_data`, others with `fill_value`.
+
+    Raises
+    ------
+    ValueError
+        If the environment is not grid-based (missing `grid_shape` or
+        `active_mask`), or if `active_bin_data` has an incorrect shape
+        or incompatible data type.
+    """
+    if grid_shape is None or active_mask is None:
+        raise ValueError(
+            "This method is applicable only to grid-based environments "
+            "that have 'grid_shape' and 'active_mask' attributes."
+        )
+    if not isinstance(active_bin_data, np.ndarray) or active_bin_data.ndim != 1:
+        raise ValueError("active_bin_data must be a 1D NumPy array.")
+    if active_bin_data.shape[0] != self.n_bins:
+        raise ValueError(
+            f"Length of active_bin_data ({active_bin_data.shape[0]}) "
+            f"must match the number of active bins ({self.n_bins})."
+        )
+
+    # Create an array for the full grid, filled with the fill_value
+    # Ensure dtype compatibility, e.g., promote fill_value to active_bin_data.dtype
+    # or choose a suitable default like float if active_bin_data can be int.
+    dtype = np.result_type(active_bin_data.dtype, type(fill_value))
+    full_grid_data = np.full(grid_shape, fill_value, dtype=dtype)
+
+    # Place the active data into the grid using the N-D active_mask
+    full_grid_data[active_mask] = active_bin_data
+    return full_grid_data
