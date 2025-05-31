@@ -911,7 +911,7 @@ class Environment:
         full_grid_data[self.active_mask] = active_bin_data
         return full_grid_data
 
-    def bin_attributes_dataframe(self) -> pd.DataFrame:
+    def bin_attributes(self) -> pd.DataFrame:
         """
         Create a Pandas DataFrame with attributes of each active bin.
 

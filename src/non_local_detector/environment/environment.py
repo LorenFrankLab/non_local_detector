@@ -860,7 +860,7 @@ class Environment:
 
     @cached_property
     @check_fitted
-    def bin_attributes_dataframe(self) -> pd.DataFrame:
+    def bin_attributes(self) -> pd.DataFrame:
         """
         Create a Pandas DataFrame with attributes of each active bin.
 
@@ -898,7 +898,7 @@ class Environment:
 
     @cached_property
     @check_fitted
-    def edge_attributes_dataframe(self) -> pd.DataFrame:
+    def edge_attributes(self) -> pd.DataFrame:
         """
         Return a Pandas DataFrame where each row corresponds to one directed edge
         (u → v) in the connectivity graph, and columns include all stored edge

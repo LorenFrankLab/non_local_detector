@@ -284,7 +284,7 @@ class TestEnvironmentFromGraph:
 
     def test_graph_attributes_dataframe(self, graph_env: Environment):
         """Test retrieval of bin attributes as a DataFrame."""
-        df = graph_env.bin_attributes_dataframe
+        df = graph_env.bin_attributes
         assert isinstance(df, pd.DataFrame)
         assert df.shape[0] == 16
         assert "pos_dim0" in df.columns
@@ -294,7 +294,7 @@ class TestEnvironmentFromGraph:
         assert "pos_1D" in df.columns
         assert "source_edge_id" in df.columns
 
-        df = graph_env.edge_attributes_dataframe
+        df = graph_env.edge_attributes
         assert isinstance(df, pd.DataFrame)
         assert df.shape[0] == 15
         assert "distance" in df.columns
