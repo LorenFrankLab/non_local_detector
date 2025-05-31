@@ -137,14 +137,6 @@ def test_map_probabilities_to_nearest_target_bin_not_fitted():
         map_probabilities_to_nearest_target_bin(src_env, tgt_env, src_probs)
 
 
-def test_map_probabilities_to_nearest_target_bin_missing_bin_centers():
-    src_env = MockEnvironment(None, 2)
-    tgt_env = MockEnvironment(np.array([[0, 0]]), 2)
-    src_probs = np.array([])
-    with pytest.raises(ValueError):
-        map_probabilities_to_nearest_target_bin(src_env, tgt_env, src_probs)
-
-
 def test_map_probabilities_to_nearest_target_bin_shape_mismatch():
     src_bins = np.array([[0, 0], [1, 1]])
     tgt_bins = np.array([[0, 0], [1, 1]])

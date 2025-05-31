@@ -102,17 +102,19 @@ def apply_similarity_transform(
     -------
     NDArray[np.float64]
         Transformed points, shape (n_points, n_dims).
+        If `points` is empty, returns an empty array of shape (0, n_dims).
 
     Raises
     ------
     ValueError
         If dimensionality mismatches occur or rotation matrix is not square.
     """
-    if points.shape[0] == 0:
-        return np.array([])
+    n_dims = points.shape[1]
     if points.ndim != 2:
         raise ValueError(f"Points must be a 2D array, got shape {points.shape}")
-    n_dims = points.shape[1]
+
+    if points.shape[0] == 0:
+        return np.zeros((0, n_dims), dtype=points.dtype)
 
     if rotation_matrix.shape != (n_dims, n_dims):
         raise ValueError(
@@ -145,55 +147,41 @@ def map_probabilities_to_nearest_target_bin(
     source_translation_vector: Optional[NDArray[np.float64]] = None,
 ) -> NDArray[np.float64]:
     """
-    Maps probabilities from source_env to target_env by finding the nearest
-    target bin for each source bin and summing probabilities if multiple
-    source bins map to the same target bin.
-
-    An optional similarity transformation (rotation, scaling, translation)
-    can be applied to the source environment's bin centers before mapping
-    to align them with the target environment's coordinate space.
+    Maps a 1D array of probabilities defined on `source_env` bins to the
+    nearest bins of `target_env`, optionally applying a similarity transform
+    (rotation, scaling, translation) to source bin centers first.
 
     Parameters
     ----------
     source_env : Environment
-        The source environment with defined probabilities. Must be fitted
-        and have `bin_centers`.
+        Fitted Environment providing `bin_centers` and connectivity.
     target_env : Environment
-        The target environment to map probabilities onto. Must be fitted
-        and have `bin_centers`.
-    source_probabilities : NDArray[np.float64]
-        Probabilities associated with each active bin in `source_env`.
-        Shape must be (n_source_active_bins,).
-    source_rotation_matrix : Optional[NDArray[np.float64]], optional
-        Rotation matrix to apply to `source_env.bin_centers`.
-        Shape (n_dims, n_dims). Defaults to identity if None.
-    source_scale_factor : float, optional
-        Uniform scaling factor for `source_env.bin_centers`. Defaults to 1.0.
-    source_translation_vector : Optional[NDArray[np.float64]], optional
-        Translation vector for `source_env.bin_centers`.
-        Shape (n_dims,). Defaults to zero vector if None.
+        Fitted Environment providing `bin_centers` for mapping.
+    source_probabilities : array, shape (n_source_bins,)
+        Probability value for each active bin in `source_env`.
+    source_rotation_matrix : array, shape (n_dims, n_dims), optional
+        Rotation to apply to source bin centers before mapping.
+    source_scale_factor : float, default 1.0
+        Scale factor to apply to rotated source centers.
+    source_translation_vector : array, shape (n_dims,), optional
+        Translation to apply after scaling.
 
     Returns
     -------
-    target_probabilities : NDArray[np.float64]
-        Probabilities mapped to the active bins of `target_env`.
-        Shape (n_target_active_bins,). Bins in `target_env` that are not
-        the nearest neighbor to any source bin will have a probability of 0.
+    target_probabilities : array, shape (n_target_bins,)
+        Each entry is the sum of `source_probabilities` whose (transformed)
+        source bin center is nearest to that target bin center. If `n_target_bins == 0`,
+        returns an empty array of shape (0,).
 
     Raises
     ------
     RuntimeError
-        If environments are not fitted.
+        If either `source_env` or `target_env` is not fitted.
     ValueError
-        If `bin_centers` are missing, or if `source_probabilities`
-        shape mismatches, or if transformation parameters have incorrect dimensions.
+        If `source_probabilities` has incorrect shape, or if dims mismatch.
     """
     if not source_env._is_fitted or not target_env._is_fitted:
         raise RuntimeError("Both source and target environments must be fitted.")
-    if source_env.bin_centers is None:
-        raise ValueError("Source environment is missing 'bin_centers'.")
-    if target_env.bin_centers is None:
-        raise ValueError("Target environment is missing 'bin_centers'.")
 
     n_source_bins = source_env.bin_centers.shape[0]
     n_target_bins = target_env.bin_centers.shape[0]
@@ -202,12 +190,12 @@ def map_probabilities_to_nearest_target_bin(
     if source_probabilities.shape != (n_source_bins,):
         raise ValueError(
             f"source_probabilities shape {source_probabilities.shape} "
-            f"must match source_env.bin_centers shape ({n_source_bins},)."
+            f"must match (n_source_bins,) = ({n_source_bins},)."
         )
     if source_env.n_dims != target_env.n_dims:
         raise ValueError(
-            f"Source (dims={source_env.n_dims}) and Target (dims={target_env.n_dims}) "
-            "environments must have the same number of dimensions."
+            f"Dimension mismatch: source has {source_env.n_dims} dims, "
+            f"target has {target_env.n_dims} dims."
         )
 
     # Prepare transformed source bin centers
@@ -240,10 +228,10 @@ def map_probabilities_to_nearest_target_bin(
             "Source environment has no active bins. Returning all zeros for target.",
             UserWarning,
         )
-        return np.zeros(n_target_bins)
+        return np.zeros(n_target_bins, dtype=float)
     if n_target_bins == 0:
         warnings.warn("Target environment has no active bins to map to.", UserWarning)
-        return np.array([])
+        return np.zeros((0,), dtype=float)
 
     # Build KDTree on target_env bin centers for efficient nearest neighbor lookup
     try:
@@ -261,32 +249,19 @@ def map_probabilities_to_nearest_target_bin(
     # For each (transformed) source bin, find the index of the nearest target bin
     try:
         # query() returns (distances, indices)
-        _, nearest_target_indices_for_each_source = target_kdtree.query(
-            active_source_bin_centers
-        )
+        _, nearest_idxs = target_kdtree.query(active_source_bin_centers)
     except Exception as e:
         warnings.warn(
             f"KDTree query failed: {e}. "
             "Cannot perform nearest neighbor mapping. Returning zeros.",
             UserWarning,
         )
-        return np.zeros(n_target_bins)
+        return np.zeros(n_target_bins, dtype=float)
 
     # Ensure indices are integer type for np.add.at
-    nearest_target_indices_for_each_source = (
-        nearest_target_indices_for_each_source.astype(np.intp)
-    )
+    nearest_idxs = nearest_idxs.astype(np.intp)
 
-    # Initialize target probabilities
     target_probabilities = np.zeros(n_target_bins, dtype=float)
-
-    # Sum probabilities from source bins into their assigned nearest target bin
-    # np.add.at(array, indices, values_to_add)
-    # This efficiently handles cases where multiple source bins map to the same target_bin_index
-    np.add.at(
-        target_probabilities,
-        nearest_target_indices_for_each_source,
-        source_probabilities,
-    )
+    np.add.at(target_probabilities, nearest_idxs, source_probabilities)
 
     return target_probabilities

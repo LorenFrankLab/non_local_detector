@@ -335,74 +335,71 @@ class Environment:
         **layout_specific_kwargs: Any,
     ) -> Environment:
         """
-        Create an Environment, primarily inferring geometry from data samples.
-
-        This factory method initializes a `LayoutEngine` of the specified
-        `layout_type` using the provided `data_samples` to determine spatial
-        extents and, optionally, to infer which bins/regions are active.
+        Create an Environment by binning (discretizing) `data_samples` into a layout grid.
 
         Parameters
         ----------
-        data_samples : NDArray[np.float64], shape (n_samples, n_dims)
-            N-dimensional coordinates of data samples (e.g., animal positions)
-            used to define the environment's geometry and active areas.
-        name : str, optional
-            A name for the created environment. Defaults to "".
-        layout_kind : str, optional
-            The type of layout to use (e.g., "RegularGrid", "Hexagonal").
-            Defaults to "RegularGrid".
-        bin_size : Optional[Union[float, Sequence[float]]], optional
-            The characteristic size of the discretization bins.
-            For "RegularGrid", this is the side length(s) of the grid cells.
-            For "Hexagonal", this is interpreted as the hexagon width.
-            Defaults to 2.0.
-        infer_active_bins : bool, optional
-            If True, the layout will attempt to infer active bins based on
-            the density or presence of `data_samples`. Defaults to True.
-        bin_count_threshold : int, optional
-            If `infer_active_bins` is True, this is the minimum number of
-            samples a bin must contain to be initially considered active.
-            Defaults to 0.
-        dilate : bool, optional
-            If `infer_active_bins` is True (primarily for grid-based layouts),
-            whether to apply a dilation operation to expand the active area.
-            Defaults to False.
-        fill_holes : bool, optional
-            If `infer_active_bins` is True (primarily for grid-based layouts),
-            whether to fill holes within the inferred active area.
-            Defaults to False.
-        close_gaps : bool, optional
-            If `infer_active_bins` is True (primarily for grid-based layouts),
-            whether to close small gaps in the inferred active area.
-            Defaults to False.
-        add_boundary_bins : bool, optional
-            For "RegularGrid" layout, whether to add a layer of inactive
-            boundary bins around the inferred active area. Defaults to False.
-        connect_diagonal_neighbors : bool, optional
-            For grid-based layouts, whether to connect diagonally adjacent bins
-            in the `connectivity`. Defaults to True.
-        **layout_specific_kwargs : Any
-            Additional keyword arguments passed directly to the constructor
-            of the chosen `LayoutEngine`.
+        data_samples : array, shape (n_samples, n_dims)
+            Coordinates of sample points used to infer which bins are “active.”
+        name : str, default ""
+            Optional name for the resulting Environment.
+        layout_kind : str, default "RegularGrid"
+            Either "RegularGrid" or "Hexagonal" (case-insensitive). Determines
+            bin shape. For "Hexagonal", `bin_size` is interpreted as `hexagon_width`.
+        bin_size : float or sequence of floats, default 2.0
+            For RegularGrid: length of each square bin side. For Hexagonal: hexagon width.
+        infer_active_bins : bool, default True
+            If True, only bins containing ≥ `bin_count_threshold` samples are “active.”
+        bin_count_threshold : int, default 0
+            Minimum number of data points required for a bin to be considered “active.”
+        dilate : bool, default False
+            If True, apply morphological dilation to the active-bin mask.
+        fill_holes : bool, default False
+            If True, fill holes in the active-bin mask.
+        close_gaps : bool, default False
+            If True, close small gaps between active bins.
+        add_boundary_bins : bool, default False
+            If True, add peripheral bins around the bounding region of samples.
+        connect_diagonal_neighbors : bool, default True
+            If True, connect grid bins diagonally when building connectivity.
 
         Returns
         -------
-        Environment
-            A new Environment instance.
+        env : Environment
+            A newly created Environment, fitted to the discretized samples.
 
         Raises
         ------
+        ValueError
+            If `data_samples` is not 2D or contains invalid coordinates.
         NotImplementedError
-            If the specified `layout_kind` is not implemented.
-
+            If `layout_kind` is neither "RegularGrid" nor "Hexagonal".
         """
+        # Convert and validate data_samples array
+        data_samples = np.asarray(data_samples, dtype=float)
+        if data_samples.ndim != 2:
+            raise ValueError(
+                f"data_samples must be a 2D array of shape (n_points, n_dims), "
+                f"got shape {data_samples.shape}."
+            )
+
+        # Standardize layout_kind to lowercase for comparison
+        kind_lower = layout_kind.lower()
+        if kind_lower not in ("regulargrid", "hexagonal"):
+            raise NotImplementedError(
+                f"Layout kind '{layout_kind}' is not supported. "
+                "Use 'RegularGrid' or 'Hexagonal'."
+            )
+
+        # Build the dict of layout parameters
         layout_params: Dict[str, Any] = {
             "data_samples": data_samples,
             "infer_active_bins": infer_active_bins,
             "bin_count_threshold": bin_count_threshold,
             **layout_specific_kwargs,
         }
-        if layout_kind.lower() == "regulargrid":
+
+        if kind_lower == "regulargrid":
             layout_params.update(
                 {
                     "bin_size": bin_size,
@@ -413,16 +410,11 @@ class Environment:
                     "connect_diagonal_neighbors": connect_diagonal_neighbors,
                 }
             )
-        elif layout_kind.lower() == "hexagonal":
-            # For Hexagonal, bin_size is typically interpreted as hexagon_width
+        else:  # kind_lower == "hexagonal"
             layout_params.update(
                 {
                     "hexagon_width": bin_size,
                 }
-            )
-        else:
-            raise NotImplementedError(
-                f"Layout kind '{layout_kind}' is not implemented for from_samples."
             )
 
         return cls.from_layout(kind=layout_kind, layout_params=layout_params, name=name)
@@ -748,22 +740,30 @@ class Environment:
         """
         return self.bin_at(points_nd) != -1
 
-    def bin_center_of(self, bin_indices: NDArray[np.int_]) -> NDArray[np.float64]:
+    @check_fitted
+    def bin_center_of(
+        self, bin_indices: Union[int, Sequence[int], NDArray[np.int_]]
+    ) -> NDArray[np.float64]:
         """
-        Return the N-D center point(s) of the specified active bin index/indices.
-
-        This directly indexes the `bin_centers` attribute.
+        Given one or more active-bin indices, return their N-D center coordinates.
 
         Parameters
         ----------
-        bin_indices : NDArray[np.int_] or int
-            Integer index or array of indices for the active bin(s)
-            (0 to `n_bins - 1`).
+        bin_indices : int or sequence of int
+            Index (or list/array of indices) of active bins (0 <= idx < self.n_bins).
 
         Returns
         -------
-        NDArray[np.float64], shape (n_requested_bins, n_dims) or (n_dims,)
-            The N-D center point(s) corresponding to `bin_indices`.
+        centers : array, shape (len(bin_indices), n_dims) if multiple indices,
+                        (n_dims,) if single index
+            The center coordinate(s) of the requested bin(s).
+
+        Raises
+        ------
+        RuntimeError
+            If the environment is not fitted.
+        IndexError
+            If any bin index is out of range.
         """
         return self.bin_centers[np.asarray(bin_indices, dtype=int)]
 
@@ -866,25 +866,20 @@ class Environment:
     @check_fitted
     def bin_attributes(self) -> pd.DataFrame:
         """
-        Create a Pandas DataFrame with attributes of each active bin.
-
-        The DataFrame is constructed from the node data of the
-        `connectivity`. Each row corresponds to an active bin.
-        Columns include the bin's N-D position (split into `pos_dim0`,
-        `pos_dim1`, etc.) and any other attributes stored on the graph nodes.
+        Build a DataFrame of attributes for each active bin (node) in the environment's graph.
 
         Returns
         -------
-        pd.DataFrame
-            A DataFrame where the index is `active_bin_id` (0 to `n_active_bins - 1`)
-            and columns contain bin attributes.
+        df : pandas.DataFrame
+            Rows are indexed by `active_bin_id` (int), matching 0..(n_bins-1).
+            Columns correspond to node attributes. If a 'pos' attribute exists
+            for any node and is non-null, it will be expanded into columns
+            'pos_dim0', 'pos_dim1', ..., with numeric coordinates.
 
         Raises
         ------
         ValueError
-            If there are no active bins in the environment.
-        RuntimeError
-            If called before the environment is fitted.
+            If there are no active bins (graph has zero nodes).
         """
         graph = self.connectivity
         if graph.number_of_nodes() == 0:
