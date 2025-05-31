@@ -991,6 +991,48 @@ class Environment:
         return df
 
     @check_fitted
+    def get_edge_attributes_dataframe(self) -> pd.DataFrame:
+        """
+        Return a Pandas DataFrame where each row corresponds to one directed edge
+        (u → v) in the connectivity graph, and columns include all stored edge
+        attributes (e.g. 'distance', 'vector', 'weight', 'angle_2d', etc.).
+
+        The DataFrame will have a MultiIndex of (source_bin, target_bin). If you
+        prefer flat columns, you can reset the index.
+
+        Returns
+        -------
+        pd.DataFrame
+            A DataFrame whose index is a MultiIndex (source_bin, target_bin),
+            and whose columns are the union of all attribute-keys stored on each edge.
+
+        Raises
+        ------
+        ValueError
+            If there are no edges in the connectivity graph.
+        RuntimeError
+            If called before the environment is fitted.
+        """
+        G = self.connectivity
+        if G.number_of_edges() == 0:
+            raise ValueError("No edges in the connectivity graph.")
+
+        # Build a dict of edge_attr_dicts keyed by (u, v)
+        # networkx's G.edges(data=True) yields (u, v, attr_dict)
+        edge_dict: dict[tuple[int, int], dict] = {
+            (u, v): data.copy() for u, v, data in G.edges(data=True)
+        }
+
+        # Convert that to a DataFrame, using the (u, v) tuples as a MultiIndex
+        df = pd.DataFrame.from_dict(edge_dict, orient="index")
+        # The index is now a MultiIndex of (u, v)
+        df.index = pd.MultiIndex.from_tuples(
+            df.index, names=["source_bin", "target_bin"]
+        )
+
+        return df
+
+    @check_fitted
     def get_shortest_path(
         self, source_active_bin_idx: int, target_active_bin_idx: int
     ) -> List[int]:
