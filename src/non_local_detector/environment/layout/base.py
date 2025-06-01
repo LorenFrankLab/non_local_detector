@@ -67,8 +67,8 @@ class LayoutEngine(Protocol):
 
     # --- Required Data Attributes ---
     bin_centers: NDArray[np.float64]
-    connectivity: Optional[nx.Graph] = None
-    dimension_ranges: Optional[Sequence[Tuple[float, float]]] = None
+    connectivity: nx.Graph
+    dimension_ranges: Sequence[Tuple[float, float]]
 
     # Attributes primarily for GRID-BASED Layouts
     grid_edges: Optional[Tuple[NDArray[np.float64], ...]] = None
@@ -113,7 +113,7 @@ class LayoutEngine(Protocol):
         """
         ...
 
-    @property
+    @property  # pragma: no cover
     def is_1d(self) -> bool:
         """
         Indicate if the layout structure is primarily 1-dimensional.
@@ -123,6 +123,22 @@ class LayoutEngine(Protocol):
         bool
             True if the layout represents a 1D structure (e.g., a linearized
             track), False otherwise.
+        """
+        ...
+
+    def bin_sizes(self) -> NDArray[np.float64]:
+        """
+        Return the area (2D) or volume (3D+) of each active bin.
+
+        For 1D layouts, this typically returns the length of each bin.
+        The measures should correspond to the dimensionality of the space
+        the bins occupy.
+
+        Returns
+        -------
+        NDArray[np.float64], shape (n_active_bins,)
+            An array where each element is the area/volume/length of the
+            corresponding active bin.
         """
         ...
 
@@ -145,21 +161,5 @@ class LayoutEngine(Protocol):
         -------
         matplotlib.axes.Axes
             The axes on which the layout is plotted.
-        """
-        ...
-
-    def bin_sizes(self) -> NDArray[np.float64]:
-        """
-        Return the area (2D) or volume (3D+) of each active bin.
-
-        For 1D layouts, this typically returns the length of each bin.
-        The measure should correspond to the dimensionality of the space
-        the bins occupy.
-
-        Returns
-        -------
-        NDArray[np.float64], shape (n_active_bins,)
-            An array where each element is the area/volume/length of the
-            corresponding active bin.
         """
         ...
