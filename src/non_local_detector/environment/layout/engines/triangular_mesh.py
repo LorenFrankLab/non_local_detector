@@ -113,6 +113,12 @@ class TriangularMeshLayout:
                 "to form any triangle. Try decreasing point_spacing or ensuring "
                 "the polygon is large enough relative to the spacing."
             )
+        exterior_coords = np.array(boundary_polygon.exterior.coords)
+        # 4) Stack the interior grid points with the boundary vertices.
+        if sample_points.size == 0:
+            sample_points = exterior_coords.copy()
+        else:
+            sample_points = np.vstack([sample_points, exterior_coords])
 
         # 2. Perform Delaunay triangulation
         self._full_delaunay_tri = _triangulate_points(sample_points)
