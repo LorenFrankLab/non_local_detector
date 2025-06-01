@@ -1,5 +1,5 @@
 """
-transforms.py – minimal 2-D coordinate transforms
+transforms.py - minimal 2-D coordinate transforms
 =================================================
 
 Two complementary APIs
@@ -29,7 +29,7 @@ from numpy.typing import NDArray
 class SpatialTransform(Protocol):
     """Callable that maps an (N, 2) array of points → (N, 2) array."""
 
-    def __call__(self, pts: NDArray[np.floating]) -> NDArray[np.floating]: ...
+    def __call__(self, pts: NDArray[np.float64]) -> NDArray[np.float64]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,10 +40,10 @@ class Affine2D(SpatialTransform):
         [x', y', 1]^T  =  A @ [x, y, 1]^T
     """
 
-    A: NDArray[np.floating]  # shape (3, 3)
+    A: NDArray[np.float64]  # shape (3, 3)
 
     # ---- core --------------------------------------------------------
-    def __call__(self, pts: NDArray[np.floating]) -> NDArray[np.floating]:
+    def __call__(self, pts: NDArray[np.float64]) -> NDArray[np.float64]:
         pts = np.asanyarray(pts, dtype=float)
         pts_h = np.c_[pts.reshape(-1, 2), np.ones((pts.size // 2, 1))]
         out = pts_h @ self.A.T
@@ -70,7 +70,7 @@ def identity() -> Affine2D:
 
 
 # Factory helpers for the most common ops ---------------------------------
-def scale(sx: float = 1.0, sy: float | None = None) -> Affine2D:
+def scale_2d(sx: float = 1.0, sy: float | None = None) -> Affine2D:
     """Uniform or anisotropic scaling."""
     sy = sx if sy is None else sy
     return Affine2D(np.array([[sx, 0.0, 0.0], [0.0, sy, 0.0], [0.0, 0.0, 1.0]]))
@@ -100,9 +100,9 @@ def flip_y(frame_height_px: float) -> Affine2D:
 # Quick NumPy helpers that *internally* build and apply Affine2D
 # ---------------------------------------------------------------------
 def flip_y_data(
-    data: NDArray[np.floating] | tuple | list,
+    data: NDArray[np.float64] | tuple | list,
     frame_size_px: tuple[float, float],
-) -> NDArray[np.floating]:
+) -> NDArray[np.float64]:
     """
     Flip y-axis of coordinates so that the origin moves from
     image-space top-left to Cartesian bottom-left.
@@ -120,10 +120,10 @@ def flip_y_data(
 
 
 def convert_to_cm(
-    data_px: NDArray[np.floating] | tuple | list,
+    data_px: NDArray[np.float64] | tuple | list,
     frame_size_px: tuple[float, float],
     cm_per_px: float = 1.0,
-) -> NDArray[np.floating]:
+) -> NDArray[np.float64]:
     """
     Pixel  →  centimetre coordinates *and* y-flip in one shot.
 
@@ -134,14 +134,14 @@ def convert_to_cm(
 
 
 def convert_to_pixels(
-    data_cm: NDArray[np.floating] | tuple | list,
+    data_cm: NDArray[np.float64] | tuple | list,
     frame_size_px: tuple[float, float],
     cm_per_px: float = 1.0,
-) -> NDArray[np.floating]:
+) -> NDArray[np.float64]:
     """
     Centimeter  →  pixel coordinates with y-flip (inverse of `convert_to_cm`).
 
     Internally constructs ``flip_y(H) @ scale(1/cm_per_px)``.
     """
-    T = flip_y(frame_height_px=frame_size_px[1]) @ scale(1.0 / cm_per_px)
+    T = flip_y(frame_height_px=frame_size_px[1]) @ scale_2d(1.0 / cm_per_px)
     return T(np.asanyarray(data_cm, dtype=float))
