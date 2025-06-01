@@ -48,7 +48,7 @@ class GraphLayout(_KDTreeMixin):
         """Initialize a GraphLayout engine."""
         self._layout_type_tag = "Graph"
         self._build_params_used = {}
-        self.bin_centers = np.empty((0, 2), dtype=np.float64)
+        self.bin_centers = np.empty((0, 0), dtype=np.float64)
         self.connectivity = None
         self.dimension_ranges = None
         self.grid_edges = None
