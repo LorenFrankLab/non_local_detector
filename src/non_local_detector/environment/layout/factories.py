@@ -10,7 +10,7 @@ from non_local_detector.environment.layout.engines.regular_grid import RegularGr
 from non_local_detector.environment.layout.engines.shapely_polygon import (
     ShapelyPolygonLayout,
 )
-from non_local_detector.environment.layout.engines.triagular_mesh import (
+from non_local_detector.environment.layout.engines.triangular_mesh import (
     TriangularMeshLayout,
 )
 
