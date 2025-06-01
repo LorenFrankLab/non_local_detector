@@ -76,7 +76,11 @@ class _KDTreeMixin:
         ValueError
             If `mask_for_points_in_tree` has an incompatible shape.
         """
-        if points_for_tree.ndim != 2 or points_for_tree.shape[0] == 0:
+        if points_for_tree.ndim != 2:
+            raise ValueError(
+                "points_for_tree must be a 2D array with shape (n_points, n_dims)."
+            )
+        if points_for_tree.shape[0] == 0:
             self._kdtree = None
             self._kdtree_nodes_to_bin_indices_map = np.array([], dtype=np.int32)
             if points_for_tree.shape[0] == 0 and points_for_tree.ndim == 2:
