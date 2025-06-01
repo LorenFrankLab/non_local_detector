@@ -1,45 +1,34 @@
-"""
-tutorial_environment_for_neuroscientists.py
+# %% [markdown]
+# ## A Tutorial on Parameterizing Space
+# Our goal is often to understand how neural activity relates to the animal's
+# position, or to decode the animal's position from neural activity. This requires
+# a precise, discretized model of the experimental environment. This tutorial
+# demonstrates how to create, manipulate, and analyze such environmental models.
 
-A step-by-step tutorial guiding hippocampal neuroscientists through the `environment`
-package, focusing on its application to spatial analysis and Bayesian decoding.
+# Key Workflow & Features Covered:
+# ---------------------------------
+# 1.  **Initial Data**: Starting with raw animal position data (e.g., from video tracking).
+# 2.  **Coordinate Calibration**: Converting pixel coordinates to physical units (cm).
+# 3.  **Defining Environments from Position Data**: Creating a `RegularGrid` environment based on where the animal went.
+# 4.  **Core Environment Operations**:
+#     * Mapping between continuous positions and discrete bins (`bin_at`, `bin_center_of`).
+#     * Understanding spatial properties: `bin_sizes`, `active_mask`, `dimension_ranges`.
+#     * Analyzing connectivity: `neighbors`, `distance_between`, `shortest_path`.
+# 5.  **Defining Maze-Relevant Regions**: Segmenting the environment into meaningful parts like arms, choice points, and reward wells.
+# 6.  **Alternative Ways to Define Environments**:
+#     * From an image mask of the maze.
+#     * Using `GraphLayout` for linear tracks or abstract 1D spaces (like head direction).
+#     * Using `Polygon` or `TriangularMesh` for complex boundaries.
+#     * Briefly, other grid types like `HexagonalLayout` and `MaskedGridLayout`.
+# 7.  **Handling Complex Mazes & Multiple Sessions**:
+#     * `CompositeEnvironment`: Modeling mazes with distinct parts (e.g., a 2D central area plus linear arms).
+#     * `Alignment`: Mapping data (e.g., place fields) between slightly different environments or recording sessions.
+# 8.  **API Discovery**: Finding available layouts and their parameters.
+# 9.  **Saving and Loading Environments**: Persisting your environment configurations for future use.
+#
+# Let's begin our journey of parameterizing space! 🚀
 
-The Story:
-----------
-We, as neuroscientists, have recordings from an animal navigating a maze.
-Our goal is often to understand how neural activity relates to the animal's
-position, or to decode the animal's position from neural activity. This requires
-a precise, discretized model of the experimental environment. This tutorial
-demonstrates how to create, manipulate, and analyze such environmental models.
-
-Key Workflow & Features Covered:
----------------------------------
-1.  **Initial Data**: Starting with raw animal position data (e.g., from video tracking).
-2.  **Coordinate Calibration**: Converting pixel coordinates to physical units (cm).
-3.  **Defining Environments from Position Data**: Creating a `RegularGrid` environment based on where the animal went.
-4.  **Core Environment Operations**:
-    * Mapping between continuous positions and discrete bins (`bin_at`, `bin_center_of`).
-    * Understanding spatial properties: `bin_sizes`, `active_mask`, `dimension_ranges`.
-    * Analyzing connectivity: `neighbors`, `distance_between`, `shortest_path`.
-5.  **Defining Maze-Relevant Regions**: Segmenting the environment into meaningful parts like arms, choice points, and reward wells.
-6.  **Alternative Ways to Define Environments**:
-    * From an image mask of the maze.
-    * Using `GraphLayout` for linear tracks or abstract 1D spaces (like head direction).
-    * Using `Polygon` or `TriangularMesh` for complex boundaries.
-    * Briefly, other grid types like `HexagonalLayout` and `MaskedGridLayout`.
-7.  **Handling Complex Mazes & Multiple Sessions**:
-    * `CompositeEnvironment`: Modeling mazes with distinct parts (e.g., a central area плюс arms).
-    * `Alignment`: Mapping data (e.g., place fields) between slightly different environments or recording sessions.
-8.  **API Discovery**: Finding available layouts and their parameters.
-
-Prerequisites:
--------------
-- `non_local_detector` installed.
-- `matplotlib`, `scipy`, `shapely`, `track_linearization`.
-
-Let's begin our journey of parameterizing space! 🚀
-"""
-
+# Helper functions and imports
 import os
 import tempfile
 
@@ -127,7 +116,8 @@ plt.show()
 
 # %% [markdown]
 # ### 1.2 Coordinate Calibration: Pixels to Centimeters
-# The `Environment` typically works in physical units (like cm). We need to calibrate.
+# We need to work in common world coordinates and translate to physical units (like cm).
+# So we need to calibrate the pixel coordinates to a physical scale.
 # Let's say the horizontal segment (300 pixels wide: from 50px to 350px) is 60 cm long.
 # So, `px_per_cm = 300px / 60cm = 5 px/cm`.
 # Let's also define that the point (50px, 50px) in *our pixel data's coordinate system* (top-left origin)
@@ -140,8 +130,7 @@ px_per_cm_calibration = 5.0
 # The physical (0,0) cm origin corresponds to pixel (50, 50) in raw top-left pixel coords.
 
 # We use `non_local_detector.transforms.convert_to_cm` which combines y-flip and scaling.
-# It expects cm_per_px, so we need px_per_cm.
-# No, `convert_to_cm` takes `cm_per_px`. If 5 px = 1 cm, then 1 px = 1/5 cm = 0.2 cm.
+# `convert_to_cm` takes `cm_per_px`. If 5 px = 1 cm, then 1 px = 1/5 cm = 0.2 cm.
 cm_per_px_calibration = 1.0 / px_per_cm_calibration  # 0.2 cm per pixel
 
 # `convert_to_cm` assumes the scaling is applied around a (0,0) of the *y-flipped* frame.
@@ -156,12 +145,12 @@ from non_local_detector.environment.transforms import flip_y, scale_2d, translat
 
 # Transform 1: Flip Y axis (origin from top-left to bottom-left for pixels)
 T_flip = flip_y(frame_height_px=frame_height_px)
-# After T_flip, our point (50,50)px_raw becomes (50, 480-50=430)px_flipped. This should be (0,0)cm.
+# After T_flip, our point (50,50)px_raw becomes (50, 480-50=430)px_flipped. This should be (0,0) cm.
 
 # Transform 2: Scale from pixels (bottom-left origin) to cm
 T_scale = scale_2d(sx=cm_per_px_calibration, sy=cm_per_px_calibration)
 
-# Transform 3: Translate so that (50,430)px_flipped maps to (0,0)cm.
+# Transform 3: Translate so that (50,430)px_flipped maps to (0,0) cm.
 # We want ( (px_flipped_x * scale_x) + trans_x ) = cm_x
 # For (50,430) -> (0,0):
 # (50 * cm_per_px) + trans_x = 0  => trans_x = -50 * cm_per_px = -50 * 0.2 = -10
@@ -215,7 +204,7 @@ grid_env_main = Environment.from_samples(
     layout_kind="RegularGrid",  # Default, but good to be explicit
     bin_size=3.0,  # Each grid cell will be 3cm x 3cm
     infer_active_bins=True,  # Default, keeps only bins with data
-    bin_count_threshold=0,  # Bins with at least 0 sample are active
+    bin_count_threshold=0,  # Bins with samples are active.
 )
 
 print("\n--- Main RegularGrid Environment (from cm data) ---")
@@ -244,29 +233,27 @@ plt.show()
 # ### 2.1 Mapping Continuous Positions to Discrete Bins (and back)
 
 # %%
-if grid_env_main.n_bins > 0:
-    # Pick a test point (e.g., the first recorded cm position)
-    test_point_cm = position_data_cm[0].reshape(1, -1)
 
-    # Find which discrete bin this continuous point falls into
-    bin_idx = grid_env_main.bin_at(test_point_cm)[0]  # bin_at returns an array
-    print(f"\nContinuous point {test_point_cm[0]} cm maps to bin index: {bin_idx}")
+# Pick a test point (e.g., the first recorded cm position)
+test_point_cm = position_data_cm[0].reshape(1, -1)
 
-    if bin_idx != -1:
-        # Get the center coordinates of this bin
-        center_of_bin = grid_env_main.bin_center_of(bin_idx)
-        print(f"The center of bin {bin_idx} is at: {center_of_bin} cm")
+# Find which discrete bin this continuous point falls into
+bin_idx = grid_env_main.bin_at(test_point_cm)[0]  # bin_at returns an array
+print(f"\nContinuous point {test_point_cm[0]} cm maps to bin index: {bin_idx}")
 
-        # Check if other points are inside any active bin
-        far_away_point = np.array([[-1000.0, -1000.0]])
-        print(
-            f"Does {test_point_cm[0]} fall in an active bin? {grid_env_main.contains(test_point_cm)[0]}"
-        )
-        print(
-            f"Does {far_away_point[0]} fall in an active bin? {grid_env_main.contains(far_away_point)[0]}"
-        )
-else:
-    print("\nMain grid environment has no active bins, skipping interaction demo.")
+if bin_idx != -1:  # -1 means the point is outside the grid
+    # Get the center coordinates of this bin
+    center_of_bin = grid_env_main.bin_center_of(bin_idx)
+    print(f"The center of bin {bin_idx} is at: {center_of_bin} cm")
+
+    # Check if other points are inside any active bin
+    far_away_point = np.array([[-1000.0, -1000.0]])
+    print(
+        f"Does {test_point_cm[0]} fall in an active bin? {grid_env_main.contains(test_point_cm)[0]}"
+    )
+    print(
+        f"Does {far_away_point[0]} fall in an active bin? {grid_env_main.contains(far_away_point)[0]}"
+    )
 
 # %% [markdown]
 # ### 2.2 Understanding Bin Properties and Connectivity
@@ -274,58 +261,52 @@ else:
 # This connectivity is essential for modeling movement probabilities (transition matrix) in a decoder.
 
 # %%
-if grid_env_main.n_bins > 0:
-    print(f"\n--- Bin & Connectivity Properties for {grid_env_main.name} ---")
-    # Size of bins (area for 2D, length for 1D)
-    print(f"Size (area) of the first 5 active bins: {grid_env_main.bin_sizes[:5]} cm^2")
 
-    # Active mask: a boolean array showing active bins on the original *full* grid concept
-    print(
-        f"Shape of the active_mask (for the full conceptual grid): {grid_env_main.active_mask.shape}"
-    )
-    print(f"Number of True values in active_mask: {np.sum(grid_env_main.active_mask)}")
+print(f"\n--- Bin & Connectivity Properties for {grid_env_main.name} ---")
+# Size of bins (area for 2D, length for 1D)
+print(f"Size (area) of the first 5 active bins: {grid_env_main.bin_sizes[:5]} cm^2")
 
-    # Boundary bins: active bins at the "edge" of the environment
-    print(f"First 10 boundary bin indices: {grid_env_main.boundary_bins[:10]}")
+# Active mask: a boolean array showing active bins on the original *full* grid concept
+print(
+    f"Shape of the active_mask (for the full conceptual grid): {grid_env_main.active_mask.shape}"
+)
+print(f"Number of True values in active_mask: {np.sum(grid_env_main.active_mask)}")
 
-    # Neighbors of a bin
-    if bin_idx != -1 and bin_idx < grid_env_main.n_bins:  # Ensure bin_idx is valid
-        neighbors_of_bin = grid_env_main.neighbors(bin_idx)
-        print(f"Neighbors of bin {bin_idx}: {neighbors_of_bin}")
+# Boundary bins: active bins at the "edge" of the environment
+print(f"First 10 boundary bin indices: {grid_env_main.boundary_bins[:10]}")
 
-        # Geodesic distance (shortest path along the graph)
-        if len(neighbors_of_bin) > 0:
-            # Distance between bin_idx and its first neighbor
-            dist_to_neighbor = grid_env_main.distance_between(
-                grid_env_main.bin_center_of(bin_idx),
-                grid_env_main.bin_center_of(neighbors_of_bin[0]),
-            )
+# Neighbors of a bin
+if bin_idx != -1 and bin_idx < grid_env_main.n_bins:  # Ensure bin_idx is valid
+    neighbors_of_bin = grid_env_main.neighbors(bin_idx)
+    print(f"Neighbors of bin {bin_idx}: {neighbors_of_bin}")
+
+    # Geodesic distance (shortest path along the graph)
+    if len(neighbors_of_bin) > 0:
+        # Distance between bin_idx and its first neighbor
+        dist_to_neighbor = grid_env_main.distance_between(
+            grid_env_main.bin_center_of(bin_idx),
+            grid_env_main.bin_center_of(neighbors_of_bin[0]),
+        )
+        print(
+            f"Geodesic distance between bin {bin_idx} and neighbor {neighbors_of_bin[0]}: {dist_to_neighbor:.2f} cm"
+        )
+
+        # Shortest path (sequence of bin indices)
+        target_bin_idx_for_path = grid_env_main.boundary_bins[0]  # Example target
+        if bin_idx != target_bin_idx_for_path:
+            path = grid_env_main.shortest_path(bin_idx, target_bin_idx_for_path)
             print(
-                f"Geodesic distance between bin {bin_idx} and neighbor {neighbors_of_bin[0]}: {dist_to_neighbor:.2f} cm"
+                f"Shortest path from bin {bin_idx} to {target_bin_idx_for_path}: {path[:5]}... (first 5 steps)"
             )
 
-            # Shortest path (sequence of bin indices)
-            target_bin_idx_for_path = grid_env_main.boundary_bins[0]  # Example target
-            if bin_idx != target_bin_idx_for_path:
-                path = grid_env_main.shortest_path(bin_idx, target_bin_idx_for_path)
-                print(
-                    f"Shortest path from bin {bin_idx} to {target_bin_idx_for_path}: {path[:5]}... (first 5 steps)"
-                )
-
-    # Plot with connectivity
-    plt.figure(figsize=(6, 6))
-    ax_conn = grid_env_main.plot(
-        show_connectivity=True,
-        node_size=5,
-        # kwargs for _GridMixin.plot for edges:
-        # (No direct edge_kwargs, it draws lines manually)
-        # We can make nodes smaller to see edges
-        # Or, pass kwargs to underlying networkx draw for more control if layout's plot supports it
-    )
-    ax_conn.set_title(f"{grid_env_main.name} with Bin Connectivity")
-    plt.show()
-else:
-    print(f"\n{grid_env_main.name} has no active bins, skipping connectivity demo.")
+# Plot with connectivity
+plt.figure(figsize=(6, 6))
+ax_conn = grid_env_main.plot(
+    show_connectivity=True,
+    node_size=5,  # Smaller nodes for bin centers
+)
+ax_conn.set_title(f"{grid_env_main.name} with Bin Connectivity")
+plt.show()
 
 
 # %% [markdown]
@@ -422,13 +403,11 @@ fig_regions_adv, ax_regions_adv = plt.subplots(figsize=(8, 8))
 grid_env_main.plot(ax=ax_regions_adv, show_connectivity=False, alpha=0.3, cmap="Greys")
 
 # 2) Plot all polygonal regions with distinct fill colors.
-#    We prepare a dict of only the polygonal ones, in the form {name: RegionObject, ...}.
-
+# This uses the metadata `plot_kwargs` defined above.
 plot_regions(
     ax=ax_regions_adv,
     regions=grid_env_main.regions,
 )
-
 
 ax_regions_adv.set_title(f"Clearly Defined Maze Regions on {grid_env_main.name}")
 ax_regions_adv.set_aspect("equal", "box")
@@ -444,17 +423,19 @@ plt.show()
 # Create mock data: e.g., a "firing rate map" or "decoded probability map"
 # Higher values towards one corner for this example
 mock_data_per_bin = np.zeros(grid_env_main.n_bins)
-if grid_env_main.n_bins > 0:
-    for i in range(grid_env_main.n_bins):
-        x, y = grid_env_main.bin_centers[i]
-        mock_data_per_bin[i] = (x + y) / 20  # Simple gradient for illustration
-    mock_data_per_bin = np.clip(
-        mock_data_per_bin + np.random.rand(grid_env_main.n_bins) * 2, 0, None
-    )
+
+for i in range(grid_env_main.n_bins):
+    x, y = grid_env_main.bin_centers[i]
+    mock_data_per_bin[i] = (x + y) / 20  # Simple gradient for illustration
+mock_data_per_bin = np.clip(
+    mock_data_per_bin + np.random.rand(grid_env_main.n_bins) * 2, 0, None
+)
 
 print(f"\n--- Summarizing Mock Data per Region for {grid_env_main.name} ---")
 summary_stats = {}
 for region_name in grid_env_main.regions.list_names():
+    # Creat a mask for the current region
+    # This is a boolean array where True means the bin is in this region
     region_mask = grid_env_main.mask_for_region(region_name)
     data_in_region = mock_data_per_bin[region_mask]
 
@@ -557,7 +538,7 @@ tmaze_edge_order = [
 env_tmaze_graph = Environment.from_graph(
     graph=tmaze_graph_def,
     edge_order=tmaze_edge_order,
-    edge_spacing=0.1,  # Small gap between linearized segments for clarity
+    edge_spacing=5.0,  # Small gap between linearized segments for clarity
     bin_size=1.0,  # Each bin along the graph is 1cm long
     name="TMaze_Graph",
 )
@@ -618,48 +599,30 @@ env_circle_poly.plot(
 )
 ax_poly.set_title(f"{env_circle_poly.name}")
 plt.show()
+# %% [markdown]
+# For even more complex, organic boundaries, you could use a `hexagonal layout` or a `triangular mesh`.
+# These both avoid the orientation bias of square bins and can adapt to irregular shapes.
+# Triangular meshes can be defined by a boundary polygon and a point spacing.
+# %%
+env_tri_mesh = Environment.from_layout(
+    kind="TriangularMesh",
+    layout_params={
+        "boundary_polygon": circular_arena_poly,
+        "point_spacing": 3.0,  # Controls density of mesh vertices
+    },
+    name="Circular_TriMesh",
+)
+print(f"\n--- TriangularMesh Environment ({env_tri_mesh.name}) ---")
+print(f"Number of bins (triangles): {env_tri_mesh.n_bins}")
 
-# For even more complex, organic boundaries, or when you want a mesh representation:
-# (Reusing the U-shape polygon from your original script for TriangularMesh)
-w_mesh = 5.0
-u_shape_coords_mesh = [
-    (-w_mesh, 30.0 + w_mesh),
-    (-w_mesh, -w_mesh),
-    (30.0 + w_mesh, -w_mesh),
-    (30.0 + w_mesh, 30.0 + w_mesh),
-    (30.0 - w_mesh, 30.0 + w_mesh),
-    (30.0 - w_mesh, w_mesh),
-    (w_mesh, w_mesh),
-    (w_mesh, 30.0 + w_mesh),
-    (-w_mesh, 30.0 + w_mesh),
-]
-u_shape_polygon_mesh = Polygon(u_shape_coords_mesh)
-
-if u_shape_polygon_mesh.is_valid:
-    env_tri_mesh = Environment.from_layout(
-        kind="TriangularMesh",
-        layout_params={
-            "boundary_polygon": u_shape_polygon_mesh,
-            "point_spacing": 3.0,  # Controls density of mesh vertices
-        },
-        name="UShape_TriMesh",
-    )
-    print(f"\n--- TriangularMesh Environment ({env_tri_mesh.name}) ---")
-    print(f"Number of bins (triangles): {env_tri_mesh.n_bins}")
-
-    fig_mesh, ax_mesh = plt.subplots(figsize=(6, 6))
-    env_tri_mesh.plot(ax=ax_mesh, triangle_kwargs={"fc": "lightgreen", "alpha": 0.6})
-    ax_mesh.set_title(f"{env_tri_mesh.name}")
-    plt.show()
-else:
-    print(
-        f"U-shaped polygon for TriangularMesh is invalid: {u_shape_polygon_mesh.explain_validity()}. Skipping demo."
-    )
+fig_mesh, ax_mesh = plt.subplots(figsize=(6, 6))
+env_tri_mesh.plot(ax=ax_mesh, triangle_kwargs={"fc": "lightgreen", "alpha": 0.6})
+ax_mesh.set_title(f"{env_tri_mesh.name}")
+plt.show()
 
 # %% [markdown]
 # ### 4.4 Other Layouts (`HexagonalLayout`, `MaskedGridLayout`)
-# These were shown previously and offer alternative ways to tile space or define active areas.
-# `HexagonalLayout` can be useful for open fields to reduce orientation bias of square bins.
+# `HexagonalLayout` is also useful for open fields to reduce orientation bias of square bins.
 # `MaskedGridLayout` is great when you have explicit grid lines and a precise boolean mask of active cells.
 
 # %% [markdown]
@@ -674,18 +637,12 @@ print("\n--- Advanced Composite Environment (Plus Maze) ---")
 
 # Central Area (e.g., 20x20 cm, centered at (0,0))
 # Use a simple RegularGrid for the center, defining its extent
-center_pos_data = np.array(
-    [  # Some samples to define the center active area
-        [-8, -8],
-        [8, -8],
-        [8, 8],
-        [-8, 8],
-        [0, 0],
-    ]
-)
-env_center_plusmaze = Environment.from_samples(
-    data_samples=center_pos_data,
-    bin_size=4.0,  # Coarser bins for center
+env_center_plusmaze = Environment.from_layout(
+    kind="RegularGrid",
+    layout_params={
+        "bin_size": 4.0,  # Coarser bins for center
+        "dimension_ranges": [[-8, 8], [-8, 8]],  # Center area extent
+    },
     name="PlusMaze_CenterArea",
 )
 
@@ -979,6 +936,7 @@ else:
 # - Modeling complex, multi-part mazes with `CompositeEnvironment`.
 # - Aligning and mapping probability distributions (like place fields) across different sessions or environmental setups using the `alignment` tools.
 # - Discovering the available layout types and their parameters.
+# - Saving and loading environments for future use.
 #
 # This `environment` package provides a powerful and flexible toolkit for representing your experimental spaces,
 # which is a cornerstone for robust Bayesian decoding and many other types of spatial data analysis
