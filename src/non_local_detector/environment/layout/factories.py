@@ -25,6 +25,24 @@ _LAYOUT_MAP: Dict[str, type[LayoutEngine]] = {
 }
 
 
+def _normalize_name(name: str) -> str:
+    """
+    Normalize a layout name by removing non-alphanumeric characters and
+    converting to lowercase.
+
+    Parameters
+    ----------
+    name : str
+        The layout name to normalize.
+
+    Returns
+    -------
+    str
+        The normalized name.
+    """
+    return "".join(filter(str.isalnum, name)).lower()
+
+
 def list_available_layouts() -> List[str]:
     """
     List user-friendly type strings for all available layout engines.
@@ -38,11 +56,10 @@ def list_available_layouts() -> List[str]:
     unique_options: List[str] = []
     processed_normalized_options: set[str] = set()
     for opt in _LAYOUT_MAP.keys():
-        norm_opt = "".join(filter(str.isalnum, opt)).lower()
+        norm_opt = _normalize_name(opt)
         if norm_opt not in processed_normalized_options:
             is_alias = any(
-                "".join(filter(str.isalnum, added)).lower() == norm_opt
-                for added in unique_options
+                _normalize_name(added) == norm_opt for added in unique_options
             )
             if not is_alias:
                 unique_options.append(opt)
@@ -69,7 +86,7 @@ def get_layout_parameters(layout_type: str) -> Dict[str, Dict[str, Any]]:
         A dictionary where keys are parameter names for the `build` method.
         Each value is another dictionary containing:
         - 'annotation': The type annotation of the parameter.
-        - 'default': The default value, or `inspect.Parameter.empty` if no default.
+        - 'default': The default value, or `None` if no default.
         - 'kind': The parameter kind (e.g., 'keyword-only').
 
     Raises
@@ -77,13 +94,9 @@ def get_layout_parameters(layout_type: str) -> Dict[str, Dict[str, Any]]:
     ValueError
         If `layout_type` is unknown.
     """
-    normalized_kind_query = "".join(filter(str.isalnum, layout_type)).lower()
+    normalized_kind_query = _normalize_name(layout_type)
     found_key = next(
-        (
-            k
-            for k in _LAYOUT_MAP
-            if "".join(filter(str.isalnum, k)).lower() == normalized_kind_query
-        ),
+        (k for k in _LAYOUT_MAP if _normalize_name(k) == normalized_kind_query),
         None,
     )
     if not found_key:
@@ -103,9 +116,7 @@ def get_layout_parameters(layout_type: str) -> Dict[str, Dict[str, Any]]:
                 else None
             ),
             "default": (
-                param.default
-                if param.default is not inspect.Parameter.empty
-                else inspect.Parameter.empty
+                param.default if param.default is not inspect.Parameter.empty else None
             ),
             "kind": param.kind.description,
         }
