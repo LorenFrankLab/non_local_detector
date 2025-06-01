@@ -23,7 +23,7 @@ from numpy.typing import NDArray
 from sklearn.neighbors import KDTree
 
 from non_local_detector.environment.environment import Environment
-from non_local_detector.environment.regions import Regions
+from non_local_detector.environment.regions import Region, Regions
 
 
 class CompositeEnvironment:
@@ -64,7 +64,7 @@ class CompositeEnvironment:
             If provided, any automatically inferred bridge whose Euclidean distance exceeds
             this threshold is discarded. If None, no distance filtering is applied.
         """
-        if subenvs:
+        if len(subenvs) == 0:
             raise ValueError("At least one sub-environment is required.")
 
         # Validate that all sub-environments share the same n_dims and are fitted
@@ -131,7 +131,20 @@ class CompositeEnvironment:
         self.grid_edges = None
         self.grid_shape = None
         self.active_mask = None
-        self.regions = Regions([subenvs[i].regions for i in range(len(subenvs))])
+        # “all_regions” will hold every Region from every sub‐environment
+        all_regions: list[Region] = []
+        for child in subenvs:
+            # child.regions is itself a Regions (mapping name → Region).
+            # We want to pull out each Region object
+            for reg in child.regions.values():
+                # If you suspect two children might have regions with the same name,
+                # you can either rename here (e.g. prefix with child.name) or let
+                # Regions(...) raise a KeyError. Below we simply re‐use the original name,
+                # assuming no collisions.
+                all_regions.append(reg)
+
+        # Now create a single Regions object containing every Region from every child
+        self.regions = Regions(all_regions)
 
         self._layout_type_used = "Composite"
         self._layout_params_used = {
@@ -308,8 +321,10 @@ class CompositeEnvironment:
         bin2 = self.bin_at(arr2)[0]
         if bin1 < 0 or bin2 < 0:
             return float(np.inf)
-        return nx.shortest_path_length(
-            self.connectivity, source=bin1, target=bin2, weight=edge_weight
+        return float(
+            nx.shortest_path_length(
+                self.connectivity, source=bin1, target=bin2, weight=edge_weight
+            )
         )
 
     def bin_center_of(self, bin_indices: Union[int, np.ndarray]) -> np.ndarray:
