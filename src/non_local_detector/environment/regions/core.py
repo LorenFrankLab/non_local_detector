@@ -184,7 +184,12 @@ class Regions(MutableMapping[str, Region]):
             raise KeyError(f"Duplicate region name {name!r}.")
 
         if point is not None:
-            region = Region(name, "point", np.asarray(point), metadata or {})
+            # Accept either a coordinate array or a Shapely Point
+            if isinstance(point, Point):
+                coords = np.asarray(point.coords[0], dtype=float)
+            else:
+                coords = np.asarray(point, dtype=float)
+            region = Region(name, "point", coords, metadata or {})
         else:
             region = Region(name, "polygon", polygon, metadata or {})
 
