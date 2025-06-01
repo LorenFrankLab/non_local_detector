@@ -7,9 +7,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 
-# --------------------------
-# LayoutEngine protocol
-# --------------------------
 @runtime_checkable
 class LayoutEngine(Protocol):
     """
@@ -118,7 +115,6 @@ class LayoutEngine(Protocol):
         ...
 
     @property
-    @abstractmethod
     def is_1d(self) -> bool:
         """
         Indicate if the layout structure is primarily 1-dimensional.
@@ -131,7 +127,6 @@ class LayoutEngine(Protocol):
         """
         ...
 
-    @abstractmethod
     def plot(
         self, ax: Optional[matplotlib.axes.Axes] = None, **kwargs
     ) -> matplotlib.axes.Axes:
