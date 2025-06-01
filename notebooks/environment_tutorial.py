@@ -131,6 +131,8 @@ px_per_cm_calibration = 5.0
 
 # We use `non_local_detector.transforms.convert_to_cm` which combines y-flip and scaling.
 # `convert_to_cm` takes `cm_per_px`. If 5 px = 1 cm, then 1 px = 1/5 cm = 0.2 cm.
+from non_local_detector.environment.transforms import convert_to_cm
+
 cm_per_px_calibration = 1.0 / px_per_cm_calibration  # 0.2 cm per pixel
 
 # `convert_to_cm` assumes the scaling is applied around a (0,0) of the *y-flipped* frame.
@@ -140,29 +142,10 @@ cm_per_px_calibration = 1.0 / px_per_cm_calibration  # 0.2 cm per pixel
 #    x_cm = (x_px_bottom_left - offset_x_px_bottom_left) * cm_per_px
 #    y_cm = (y_px_bottom_left - offset_y_px_bottom_left) * cm_per_px
 #    So, (offset_x_px_bottom_left, offset_y_px_bottom_left) = (50, 430)
-# This is tricky. Let's use the Affine2D composition for clarity:
-from non_local_detector.environment.transforms import flip_y, scale_2d, translate
-
-# Transform 1: Flip Y axis (origin from top-left to bottom-left for pixels)
-T_flip = flip_y(frame_height_px=frame_height_px)
-# After T_flip, our point (50,50)px_raw becomes (50, 480-50=430)px_flipped. This should be (0,0) cm.
-
-# Transform 2: Scale from pixels (bottom-left origin) to cm
-T_scale = scale_2d(sx=cm_per_px_calibration, sy=cm_per_px_calibration)
-
-# Transform 3: Translate so that (50,430)px_flipped maps to (0,0) cm.
-# We want ( (px_flipped_x * scale_x) + trans_x ) = cm_x
-# For (50,430) -> (0,0):
-# (50 * cm_per_px) + trans_x = 0  => trans_x = -50 * cm_per_px = -50 * 0.2 = -10
-# (430 * cm_per_px) + trans_y = 0 => trans_y = -430 * cm_per_px = -430 * 0.2 = -86
-T_translate = translate(tx=-50 * cm_per_px_calibration, ty=-430 * cm_per_px_calibration)
-
-# Compose: apply flip first, then scale, then translate. Order: T_translate @ T_scale @ T_flip
-# Correct composition for p' = M3 @ M2 @ M1 @ p is T_translate.compose(T_scale.compose(T_flip))
-pixel_to_cm_transform = T_translate @ T_scale @ T_flip
-
-# Apply to our raw pixel positions
-position_data_cm = pixel_to_cm_transform(raw_pixel_positions)
+# `convert_to_cm` will apply this transformation to all points.
+position_data_cm = convert_to_cm(
+    raw_pixel_positions, cm_per_px=cm_per_px_calibration, frame_height=frame_height_px
+)
 
 print(f"\n--- Coordinate Calibration ---")
 print(
