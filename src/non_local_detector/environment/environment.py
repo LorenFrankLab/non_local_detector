@@ -16,7 +16,7 @@ from non_local_detector.environment.layout.base import LayoutEngine
 from non_local_detector.environment.layout.engines.graph import GraphLayout
 from non_local_detector.environment.layout.engines.regular_grid import RegularGridLayout
 from non_local_detector.environment.layout.factories import create_layout
-from non_local_detector.environment.layout.utils import find_boundary_nodes
+from non_local_detector.environment.layout.helpers.utils import find_boundary_nodes
 from non_local_detector.environment.regions import Regions
 
 if TYPE_CHECKING:

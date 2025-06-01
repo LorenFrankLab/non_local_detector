@@ -2,13 +2,13 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector.environment.layout.regular_grid import (
+from non_local_detector.environment.layout.helpers.regular_grid import (
     _create_regular_grid,
     _create_regular_grid_connectivity_graph,
     _infer_active_bins_from_regular_grid,
     _points_to_regular_grid_bin_ind,
 )
-from non_local_detector.environment.layout.utils import get_centers, get_n_bins
+from non_local_detector.environment.layout.helpers.utils import get_centers, get_n_bins
 
 
 def test_create_regular_grid_2d_basic():

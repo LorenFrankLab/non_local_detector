@@ -5,15 +5,15 @@ import numpy as np
 from numpy.typing import NDArray
 
 from non_local_detector.environment.layout.base import LayoutEngine
-from non_local_detector.environment.layout.mixins import _GridMixin
-from non_local_detector.environment.layout.regular_grid import (
+from non_local_detector.environment.layout.helpers.regular_grid import (
     _create_regular_grid,
     _create_regular_grid_connectivity_graph,
     _infer_active_bins_from_regular_grid,
 )
-from non_local_detector.environment.layout.utils import (
+from non_local_detector.environment.layout.helpers.utils import (
     _infer_dimension_ranges_from_samples,
 )
+from non_local_detector.environment.layout.mixins import _GridMixin
 
 
 class RegularGridLayout(_GridMixin):

@@ -2,7 +2,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector.environment.layout import hex_grid as hgu
+from non_local_detector.environment.layout.helpers import hexagonal as hgu
 
 
 def test_create_hex_grid_basic():

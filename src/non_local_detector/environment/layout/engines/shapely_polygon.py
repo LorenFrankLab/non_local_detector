@@ -8,11 +8,11 @@ from numpy.typing import NDArray
 from shapely.geometry import Point, Polygon
 
 from non_local_detector.environment.layout.base import LayoutEngine
-from non_local_detector.environment.layout.mixins import _GridMixin
-from non_local_detector.environment.layout.regular_grid import (
+from non_local_detector.environment.layout.helpers.regular_grid import (
     _create_regular_grid,
     _create_regular_grid_connectivity_graph,
 )
+from non_local_detector.environment.layout.mixins import _GridMixin
 
 
 class ShapelyPolygonLayout(_GridMixin):

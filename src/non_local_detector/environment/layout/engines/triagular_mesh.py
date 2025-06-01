@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 from scipy.spatial import Delaunay
 from shapely.geometry import Polygon
 
-from non_local_detector.environment.layout.triangular import (
+from non_local_detector.environment.layout.helpers.triangular_mesh import (
     _build_mesh_connectivity_graph,
     _compute_mesh_dimension_ranges,
     _filter_active_simplices_by_centroid,

@@ -7,7 +7,7 @@ try:
     import xarray as xr
 
     from non_local_detector.environment.environment import Environment
-    from non_local_detector.environment.layout.regular_grid import (
+    from non_local_detector.environment.layout.helpers.regular_grid import (
         _get_grid,
         _infer_track_interior,
     )

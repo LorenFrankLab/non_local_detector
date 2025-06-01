@@ -8,7 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial import KDTree
 
-from non_local_detector.environment.layout.regular_grid import (
+from non_local_detector.environment.layout.helpers.regular_grid import (
     _points_to_regular_grid_bin_ind,
 )
 

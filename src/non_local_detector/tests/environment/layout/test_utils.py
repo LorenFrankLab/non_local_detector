@@ -4,7 +4,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector.environment.layout.utils import (
+from non_local_detector.environment.layout.helpers.utils import (
     _generic_graph_plot,
     _infer_active_elements_from_samples,
     _infer_dimension_ranges_from_samples,

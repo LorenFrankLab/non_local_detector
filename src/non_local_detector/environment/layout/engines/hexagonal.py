@@ -10,14 +10,14 @@ from matplotlib.patches import RegularPolygon
 from numpy.typing import NDArray
 
 from non_local_detector.environment.layout.base import LayoutEngine
-from non_local_detector.environment.layout.hex_grid import (
+from non_local_detector.environment.layout.helpers.hexagonal import (
     _create_hex_connectivity_graph,
     _create_hex_grid,
     _infer_active_bins_from_hex_grid,
     _points_to_hex_bin_ind,
 )
+from non_local_detector.environment.layout.helpers.utils import _generic_graph_plot
 from non_local_detector.environment.layout.mixins import _KDTreeMixin
-from non_local_detector.environment.layout.utils import _generic_graph_plot
 
 
 class HexagonalLayout(_KDTreeMixin):

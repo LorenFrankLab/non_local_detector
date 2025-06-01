@@ -32,7 +32,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy import ndimage
 
-from non_local_detector.environment.layout.utils import get_centers, get_n_bins
+from non_local_detector.environment.layout.helpers.utils import get_centers, get_n_bins
 
 
 def _create_regular_grid_connectivity_graph(
@@ -307,129 +307,137 @@ def _create_regular_grid(
     Tuple[int, ...],  # centers_shape
 ]:
     """
-    Define bin edges and centers for a regular N-D Cartesian grid.
+    Calculate bin edges and centers for a regular N-dimensional spatial grid.
+
+    The grid can be defined based on the extent of `data_samples` or an
+    explicit `dimension_range`. Boundary bins can optionally be added.
 
     Parameters
     ----------
-    data_samples : ndarray of shape (n_samples, n_dims), optional
-        Used to infer dimension ranges if `dimension_range` is None.
-        NaNs are ignored. If None, `dimension_range` must be provided.
-    bin_size : float or sequence of floats, default=2.0
-        If float, same bin size along every dimension. If sequence, must match `n_dims`.
-    dimension_range : sequence of (min, max) tuples, length `n_dims`, optional
-        Explicit bounding box for each dimension, used if `data_samples` is None.
+    data_samples : Optional[NDArray[np.float64]], shape (n_samples, n_dims), optional
+        N-dimensional data samples. Used to determine grid extent if
+        `dimension_range` is None. NaNs are ignored. Required if
+        `dimension_range` is None. Defaults to None.
+    bin_size : Union[float, Sequence[float]], default=2.0
+        Desired approximate size of bins in each dimension. If a float,
+        applied to all dimensions. If a sequence, must match `n_dims`.
+    dimension_range : Optional[Sequence[Tuple[float, float]]], optional
+        Explicit grid boundaries `[(min_d0, max_d0), ..., (min_dN-1, max_dN-1)]`.
+        If None (default), boundaries are derived from `data_samples`.
     add_boundary_bins : bool, default=False
-        If True, extends each axis by one extra bin on both ends.
+        If True, add one bin on each side of the grid in each dimension,
+        effectively extending the `dimension_range` covered by the grid edges.
 
     Returns
     -------
-    edges_tuple : tuple of ndarrays
-        Each element is a 1D array of bin-edge coordinates for that dimension,
-        length = n_bins_dim + 1.
-    bin_centers : ndarray, shape (∏(n_bins_dim), n_dims)
-        Cartesian product of centers of each bin (flattened).
-    centers_shape : tuple of ints
-        Number of bins along each dimension, e.g. (n_x, n_y, n_z).
+    edges_tuple : Tuple[NDArray[np.float64], ...]
+        Tuple where each element is a 1D array of bin edge positions for one
+        dimension (shape `(n_bins_in_dim + 1,)`). Includes boundary bins if
+        `add_boundary_bins` is True.
+    full_grid_bin_centers : NDArray[np.float64], shape (n_total_bins, n_dims)
+        Center coordinates of *every* bin in the (potentially boundary-extended)
+        flattened grid, ordered row-major.
+    grid_shape : Tuple[int, ...]
+        N-D shape (number of bins in each dimension) of the created grid,
+        including boundary bins if added.
 
     Raises
     ------
     ValueError
-        - If both `data_samples` and `dimension_range` are None.
-        - If `data_samples` is provided but not a 2D array.
-        - If `dimension_range` length ≠ inferred `n_dims`.
-        - If `bin_size` sequence length ≠ `n_dims`, or any `bin_size` ≤ 0.
+        If both `data_samples` and `dimension_range` are None.
+        If `data_samples` (if used) are all NaN or empty.
+        If `bin_size` sequence length doesn't match `n_dims`.
+        If `dimension_range` (if used) sequence length doesn't match `n_dims`.
+        If any `bin_size` component is not positive.
     """
-    # 1) Determine dimensionality
     if data_samples is None and dimension_range is None:
         raise ValueError("Either `data_samples` or `dimension_range` must be provided.")
     if data_samples is not None:
-        samples = np.asarray(data_samples, dtype=float)
-        if samples.ndim != 2:
-            raise ValueError(f"`data_samples` must be 2D, got shape {samples.shape}.")
-        n_dims = samples.shape[1]
-        # Remove NaNs
-        samples = samples[~np.isnan(samples).any(axis=1)]
-        if samples.size == 0 and dimension_range is None:
+        pos_nd = np.atleast_2d(data_samples)
+        n_dims = pos_nd.shape[1]
+        pos_clean = pos_nd[~np.any(np.isnan(pos_nd), axis=1)]
+        if pos_clean.shape[0] == 0 and dimension_range is None:
             raise ValueError(
-                "`data_samples` has no valid points and no `dimension_range` given."
+                "data_samples data contains only NaNs and no dimension_range provided."
             )
-    else:
-        samples = None
+    elif dimension_range is not None:
         n_dims = len(dimension_range)
+        pos_clean = None  # No data_samples data needed if range is given
+    else:  # Should be unreachable due to first check, but added for safety
+        raise ValueError("Cannot determine number of dimensions.")
 
-    # 2) Normalize & validate bin_size
+    # Validate and process bin_size
     if isinstance(bin_size, (float, int)):
-        bin_sizes = np.full(n_dims, float(bin_size))
+        bin_sizes = np.array([float(bin_size)] * n_dims)
+    elif len(bin_size) == n_dims:
+        bin_sizes = np.array(bin_size, dtype=float)
     else:
-        bin_sizes = np.asarray(bin_size, dtype=float)
-        if bin_sizes.ndim != 1 or bin_sizes.shape[0] != n_dims:
-            raise ValueError(f"`bin_size` length must be {n_dims}, got {bin_sizes}.")
-    if np.any(bin_sizes <= 0.0):
-        raise ValueError("All elements of `bin_size` must be positive.")
+        raise ValueError(
+            f"`bin_size` sequence length ({len(bin_size)}) must match "
+            f"number of dimensions ({n_dims})."
+        )
+    if np.any(bin_sizes <= 0):
+        raise ValueError("All elements in `bin_size` must be positive.")
 
-    # 3) Determine dimension ranges
-    if dimension_range is not None:
-        if len(dimension_range) != n_dims:
-            raise ValueError(
-                f"`dimension_range` length ({len(dimension_range)}) must match n_dims ({n_dims})."
+    # Determine histogram range
+    hist_range = dimension_range
+    if hist_range is None and pos_clean is not None:
+        hist_range = [
+            (np.nanmin(pos_clean[:, dim]), np.nanmax(pos_clean[:, dim]))
+            for dim in range(n_dims)
+        ]
+        # Handle case where min == max in a dimension
+        hist_range = [
+            (
+                (r[0], r[1])
+                if r[0] < r[1]
+                else (r[0] - 0.5 * bin_sizes[i], r[0] + 0.5 * bin_sizes[i])
             )
-        ranges = []
-        for (lo, hi), size in zip(dimension_range, bin_sizes):
-            lo_f, hi_f = float(min(lo, hi)), float(max(lo, hi))
-            # If user gave a zero-span range (lo == hi), expand by 0.5 * bin_size
-            if np.isclose(lo_f, hi_f):
-                lo_f -= 0.5 * size
-                hi_f += 0.5 * size
-            ranges.append((lo_f, hi_f))
-    else:
-        # Infer from `samples`
-        ranges = []
-        for dim in range(n_dims):
-            dim_vals = samples[:, dim]
-            lo_f, hi_f = float(np.nanmin(dim_vals)), float(np.nanmax(dim_vals))
-            if np.isclose(lo_f, hi_f):
-                # If all data is constant, expand by half a bin
-                lo_f -= 0.5 * bin_sizes[dim]
-                hi_f += 0.5 * bin_sizes[dim]
-            ranges.append((lo_f, hi_f))
+            for i, r in enumerate(hist_range)
+        ]
 
-    # 4) Compute number of bins in each dimension
-    data_for_bins = samples if samples is not None else np.zeros((1, n_dims))
-    n_bins = get_n_bins(data_for_bins, bin_sizes, ranges)  # ensures at least 1
+    # Validate dimension_range dimensions if provided
+    if dimension_range is not None and len(dimension_range) != n_dims:
+        raise ValueError(
+            f"`dimension_range` length ({len(dimension_range)}) must match "
+            f"number of dimensions ({n_dims})."
+        )
 
-    # 5) Generate core edges via np.histogramdd
-    #    Use a dummy point at the center if `samples` is None
-    if samples is None:
-        dummy = np.array([[(lo + hi) / 2.0 for lo, hi in ranges]])
-        _, core_edges = np.histogramdd(dummy, bins=n_bins, range=ranges)
-    else:
-        _, core_edges = np.histogramdd(samples, bins=n_bins, range=ranges)
+    # Calculate number of bins for the core range
+    n_bins_core = get_n_bins(pos_clean, bin_sizes, hist_range)  # Pass array bin_sizes
 
-    # 6) Optionally add boundary bins by extending each edge array
-    final_edges = []
-    for edges_dim, size in zip(core_edges, bin_sizes):
-        diff = np.diff(edges_dim)
-        if diff.size == 0:
-            step = size
-        else:
-            step = diff[0]
-        if add_boundary_bins:
-            extended = np.concatenate(
-                ([edges_dim[0] - step], edges_dim, [edges_dim[-1] + step])
+    # Calculate core edges using histogramdd (even if data_samples is None, to get uniform bins)
+    # Need dummy data if no data_samples provided
+    dummy_data = (
+        np.array([[(r[0] + r[1]) / 2] for r in hist_range]).T
+        if pos_clean is None
+        else pos_clean
+    )
+    _, core_edges_list = np.histogramdd(dummy_data, bins=n_bins_core, range=hist_range)
+
+    if add_boundary_bins:
+        # Add boundary bins by extending edges
+        final_edges_list = []
+        for edges_dim in core_edges_list:
+            step = np.diff(edges_dim)[0]  # Assume uniform bins from histogramdd
+            extended_edges = np.insert(
+                edges_dim,
+                [0, len(edges_dim)],
+                [edges_dim[0] - step, edges_dim[-1] + step],
             )
-        else:
-            extended = edges_dim
-        final_edges.append(extended.astype(float))
+            final_edges_list.append(extended_edges)
+    else:
+        final_edges_list = list(core_edges_list)  # Ensure it's a list of arrays
 
-    edges_tuple = tuple(final_edges)
+    # Calculate centers and shape
+    centers_list = [get_centers(edge_dim) for edge_dim in final_edges_list]
+    centers_shape = tuple(len(c) for c in centers_list)
 
-    # 7) Compute centers for each dimension
-    centers_per_dim = [get_centers(e) for e in final_edges]
-    centers_shape = tuple(len(c) for c in centers_per_dim)
+    # Create meshgrid of centers and flatten
+    mesh_centers = np.meshgrid(*centers_list, indexing="ij")
+    bin_centers = np.stack([center.ravel() for center in mesh_centers], axis=1)
 
-    # 8) Build the full Cartesian product of centers
-    mesh = np.meshgrid(*centers_per_dim, indexing="ij")
-    bin_centers = np.stack([m.ravel() for m in mesh], axis=-1)
+    edges_tuple: Tuple[NDArray[np.float64], ...] = tuple(final_edges_list)
 
     return edges_tuple, bin_centers, centers_shape
 

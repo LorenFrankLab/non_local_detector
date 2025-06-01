@@ -2,7 +2,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector.environment.layout.graph import (
+from non_local_detector.environment.layout.helpers.graph import (
     _find_bin_for_linear_position,
     _get_graph_bins,
     _project_1d_to_2d,

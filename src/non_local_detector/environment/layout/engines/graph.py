@@ -10,7 +10,7 @@ from track_linearization import get_linearized_position as _get_linearized_posit
 from track_linearization import plot_graph_as_1D
 
 from non_local_detector.environment.layout.base import LayoutEngine
-from non_local_detector.environment.layout.graph import (
+from non_local_detector.environment.layout.helpers.graph import (
     _create_graph_layout_connectivity_graph,
     _find_bin_for_linear_position,
     _get_graph_bins,
