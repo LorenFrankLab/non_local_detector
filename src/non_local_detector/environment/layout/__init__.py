@@ -1,13 +1,8 @@
-# non_local_detector/environment/layout/__init__.py
-
-# Public interfaces
 from .base import LayoutEngine
 from .engines.graph import GraphLayout
 from .engines.hexagonal import HexagonalLayout
 from .engines.image_mask import ImageMaskLayout
 from .engines.masked_grid import MaskedGridLayout
-
-# Engines
 from .engines.regular_grid import RegularGridLayout
 from .engines.shapely_polygon import ShapelyPolygonLayout
 from .engines.triangular_mesh import TriangularMeshLayout
