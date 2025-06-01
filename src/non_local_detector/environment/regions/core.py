@@ -16,7 +16,6 @@ import warnings
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any, Literal, Optional
 
 import numpy as np
@@ -65,7 +64,7 @@ class Region:
     # -----------------------------------------------------------------
     def __post_init__(self) -> None:
         # Freeze metadata to prevent accidental mutation through aliasing
-        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+        object.__setattr__(self, "metadata", dict(self.metadata))
 
         if self.kind == "point":
             arr = np.asarray(self.data, dtype=float)
