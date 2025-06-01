@@ -127,7 +127,7 @@ def convert_to_cm(
     """
     Pixel  →  centimetre coordinates *and* y-flip in one shot.
 
-    Internally constructs ``scale(cm_per_px) @ flip_y(H)`` and applies it.
+    Internally constructs ``scale_2d(cm_per_px) @ flip_y(H)`` and applies it.
     """
     T = scale_2d(cm_per_px) @ flip_y(frame_height_px=frame_size_px[1])
     return T(np.asanyarray(data_px, dtype=float))
@@ -141,7 +141,7 @@ def convert_to_pixels(
     """
     Centimeter  →  pixel coordinates with y-flip (inverse of `convert_to_cm`).
 
-    Internally constructs ``flip_y(H) @ scale(1/cm_per_px)``.
+    Internally constructs ``flip_y(H) @ scale_2d(1/cm_per_px)``.
     """
     T = flip_y(frame_height_px=frame_size_px[1]) @ scale_2d(1.0 / cm_per_px)
     return T(np.asanyarray(data_cm, dtype=float))
