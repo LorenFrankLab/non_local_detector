@@ -670,6 +670,41 @@ class Environment:
 
     @property
     @check_fitted
+    def layout_parameters(self) -> Dict[str, Any]:
+        """
+        Return the parameters used to build the layout engine.
+
+        This includes all parameters that were passed to the `build` method
+        of the underlying `LayoutEngine`.
+
+        Returns
+        -------
+        Dict[str, Any]
+            A dictionary of parameters used to create the layout.
+            Useful for introspection and serialization.
+
+        Raises
+        ------
+        RuntimeError
+            If called before the environment is fitted.
+        """
+        return self._layout_params_used
+
+    @property
+    @check_fitted
+    def layout_type(self) -> str:
+        """
+        Return the type of layout used in the environment.
+
+        Returns
+        -------
+        str
+            The layout type (e.g., "RegularGrid", "Hexagonal").
+        """
+        return self._layout_type_used
+
+    @property
+    @check_fitted
     def n_bins(self) -> int:
         """
         Return the number of active bins in the environment.
