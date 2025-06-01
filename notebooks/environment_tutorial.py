@@ -190,6 +190,9 @@ grid_env_main = Environment.from_samples(
     bin_count_threshold=0,  # Bins with samples are active.
 )
 
+# Because bin_count_threshold=0, even a bin with a single sample is considered active.
+# If you want to ignore bins with very few visits, you could set bin_count_threshold=5 (for example).
+
 print("\n--- Main RegularGrid Environment (from cm data) ---")
 print(f"Environment Name: {grid_env_main.name}")
 print(f"Layout Type: {grid_env_main.layout_type}")
@@ -619,7 +622,9 @@ plt.show()
 print("\n--- Advanced Composite Environment (Plus Maze) ---")
 
 # Central Area (e.g., 20x20 cm, centered at (0,0))
-# Use a simple RegularGrid for the center, defining its extent
+# Use a simple RegularGrid for the center, defining its extent with `dimension_ranges`.
+# so that the grid covers a perfect 16×16 cm block at center.
+# Then each arm attaches seamlessly at ±8 cm.
 env_center_plusmaze = Environment.from_layout(
     kind="RegularGrid",
     layout_params={
