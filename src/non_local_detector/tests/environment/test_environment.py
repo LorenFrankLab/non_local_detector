@@ -2,7 +2,6 @@
 Tests for the Environment class using a plus maze example.
 """
 
-import warnings  # Import warnings
 from pathlib import Path
 from typing import List, Tuple
 
@@ -12,26 +11,17 @@ import numpy as np
 import pandas as pd
 import pytest
 from numpy.typing import NDArray
+from shapely.geometry import Polygon as ShapelyPoly
 
 from non_local_detector.environment.environment import Environment
-from non_local_detector.environment.layout.layout_engine import (
-    SHAPELY_AVAILABLE,
-    GraphLayout,
-    HexagonalLayout,
-    ImageMaskLayout,
-    MaskedGridLayout,
-    RegularGridLayout,
+from non_local_detector.environment.layout.engines.graph import GraphLayout
+from non_local_detector.environment.layout.engines.hexagonal import HexagonalLayout
+from non_local_detector.environment.layout.engines.image_mask import ImageMaskLayout
+from non_local_detector.environment.layout.engines.masked_grid import MaskedGridLayout
+from non_local_detector.environment.layout.engines.regular_grid import RegularGridLayout
+from non_local_detector.environment.layout.engines.shapely_polygon import (
     ShapelyPolygonLayout,
 )
-
-# Try to import shapely for relevant tests
-try:
-    from shapely.geometry import Point as ShapelyPoint  # Import Point
-    from shapely.geometry import Polygon as ShapelyPoly
-
-    _HAS_SHAPELY_FOR_TEST = SHAPELY_AVAILABLE
-except ImportError:
-    _HAS_SHAPELY_FOR_TEST = False
 
 
 # --- Fixtures ---
@@ -435,9 +425,6 @@ def test_from_image():
     assert env.grid_shape == image_mask_np.shape
 
 
-@pytest.mark.skipif(
-    not _HAS_SHAPELY_FOR_TEST, reason="Shapely not installed or not usable by test"
-)
 def test_from_polygon():
     """Basic test for Environment.from_polygon."""
     polygon = ShapelyPoly([(0, 0), (0, 2), (2, 2), (2, 0)])
@@ -701,7 +688,6 @@ class TestHexagonalLayout:
                 assert pytest.approx(dist, rel=0.1) == side_length  # Approx
 
 
-@pytest.mark.skipif(not _HAS_SHAPELY_FOR_TEST, reason="Shapely not installed")
 class TestShapelyPolygonLayoutDetailed:
     def test_polygon_with_hole(self):
         outer_coords = [(0, 0), (0, 3), (3, 3), (3, 0)]

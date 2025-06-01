@@ -21,26 +21,7 @@ from typing import Any, Literal, Optional
 
 import numpy as np
 from numpy.typing import NDArray
-
-# ---------------------------------------------------------------------
-# Optional Shapely import
-# ---------------------------------------------------------------------
-try:
-    import shapely.geometry as _shp
-
-    _HAS_SHAPELY = True
-    from shapely.geometry import (
-        Polygon as PolygonLike,  # type alias for static checkers
-    )
-except ModuleNotFoundError:  # pragma: no cover  – Shapely not installed
-    _HAS_SHAPELY = False
-
-    class _Dummy:  # pylint: disable=too-few-public-methods
-        """Fallback stand-in when Shapely is absent."""
-
-    _shp = _Dummy()  # type: ignore
-    PolygonLike = Any
-
+from shapely.geometry import Point, Polygon, mapping, shape
 
 # ---------------------------------------------------------------------
 # Public type aliases
@@ -73,7 +54,7 @@ class Region:
 
     name: str
     kind: Kind
-    data: NDArray[np.float64] | PolygonLike
+    data: NDArray[np.float64] | Polygon
     metadata: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     # filled in post-init
@@ -94,9 +75,7 @@ class Region:
             object.__setattr__(self, "n_dims", arr.shape[0])
 
         elif self.kind == "polygon":
-            if not _HAS_SHAPELY:
-                raise RuntimeError("Polygon regions require the 'shapely' package.")
-            if not isinstance(self.data, _shp.Polygon):
+            if not isinstance(self.data, Polygon):
                 raise TypeError("data must be a Shapely Polygon for kind='polygon'.")
             object.__setattr__(self, "n_dims", 2)
 
@@ -117,7 +96,7 @@ class Region:
         if self.kind == "point":
             geom = self.data.tolist()  # type: ignore[union-attr]
         else:  # polygon
-            geom = _shp.mapping(self.data)  # type: ignore[attr-defined]
+            geom = mapping(self.data)  # type: ignore[attr-defined]
 
         return {
             "name": self.name,
@@ -132,9 +111,7 @@ class Region:
         if kind == "point":
             data = np.asarray(payload["geom"], dtype=float)
         elif kind == "polygon":
-            if not _HAS_SHAPELY:
-                raise RuntimeError("Loading a polygon Region requires Shapely.")
-            data = _shp.shape(payload["geom"])  # type: ignore[attr-defined]
+            data = shape(payload["geom"])  # type: ignore[attr-defined]
         else:
             raise ValueError(f"Unknown kind {kind!r}")
         return cls(
@@ -194,7 +171,7 @@ class Regions(MutableMapping[str, Region]):
         name: str,
         *,
         point: PointCoords | None = None,
-        polygon: PolygonLike | None = None,
+        polygon: Polygon | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> Region:
         """
@@ -209,8 +186,6 @@ class Regions(MutableMapping[str, Region]):
         if point is not None:
             region = Region(name, "point", np.asarray(point), metadata or {})
         else:
-            if not _HAS_SHAPELY:
-                raise RuntimeError("'polygon' kind requires Shapely.")
             region = Region(name, "polygon", polygon, metadata or {})
 
         self[name] = region
@@ -229,8 +204,6 @@ class Regions(MutableMapping[str, Region]):
         """Return area for a polygon region; 0.0 for points."""
         region = self[name]
         if region.kind == "polygon":
-            if not _HAS_SHAPELY:
-                raise RuntimeError("Area computation requires Shapely.")
             return region.data.area  # type: ignore[attr-defined]
         return 0.0
 
@@ -262,8 +235,6 @@ class Regions(MutableMapping[str, Region]):
         if region.kind == "point":
             return np.asarray(region.data, dtype=float)
         elif region.kind == "polygon":
-            if not _HAS_SHAPELY:  # pragma: no cover
-                raise RuntimeError("Polygon region queries require 'shapely'.")
             return np.array(region.data.centroid.coords[0], dtype=float)  # type: ignore
         return None  # pragma: no cover
 
@@ -279,26 +250,23 @@ class Regions(MutableMapping[str, Region]):
 
         *source* may be an existing region name or a raw 2-D point array.
         """
-        if not _HAS_SHAPELY:
-            raise RuntimeError("Buffering requires Shapely.")
-
         # derive geometry in cm space
         if isinstance(source, str):
             src = self[source]
             if src.kind == "polygon":
                 geom = src.data
             elif src.kind == "point" and src.n_dims == 2:
-                geom = _shp.Point(src.data)  # type: ignore[attr-defined]
+                geom = Point(src.data)  # type: ignore[attr-defined]
             else:
                 raise ValueError("Can only buffer 2-D point or polygon regions.")
         else:  # raw coords
             arr = np.asarray(source, dtype=float)
             if arr.shape != (2,):
                 raise ValueError("Raw source must be shape (2,) for buffering.")
-            geom = _shp.Point(arr)  # type: ignore[attr-defined]
+            geom = Point(arr)  # type: ignore[attr-defined]
 
         poly = geom.buffer(distance)
-        if not isinstance(poly, _shp.Polygon):  # type: ignore[attr-defined]
+        if not isinstance(poly, Polygon):  # type: ignore[attr-defined]
             raise ValueError("Buffer produced non-polygon geometry.")
 
         return self.add(new_name, polygon=poly, metadata=meta)

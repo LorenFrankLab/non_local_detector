@@ -3,31 +3,16 @@ from typing import Any, Dict
 import networkx as nx
 import numpy as np
 import pytest
+from shapely.geometry import Polygon as ShapelyPoly
 
 from non_local_detector.environment.environment import Environment
+from non_local_detector.environment.layout.base import LayoutEngine
+from non_local_detector.environment.layout.engines.graph import GraphLayout
 from non_local_detector.environment.layout.factories import (
     create_layout,
     get_layout_parameters,
     list_available_layouts,
 )
-from non_local_detector.environment.layout.layout_engine import (
-    GraphLayout,
-    HexagonalLayout,
-    ImageMaskLayout,
-    LayoutEngine,
-    MaskedGridLayout,
-    RegularGridLayout,
-    ShapelyPolygonLayout,
-)
-from non_local_detector.tests.environment.test_environment import plus_maze_data_samples
-
-try:
-    from shapely.geometry import Polygon as ShapelyPoly
-
-    _HAS_SHAPELY_FOR_TEST = True
-except ImportError:
-    _HAS_SHAPELY_FOR_TEST = False
-    ShapelyPoly = None
 
 
 def add_edge_distances(graph: nx.Graph) -> nx.Graph:
@@ -345,11 +330,11 @@ MINIMAL_BUILD_PARAMS: Dict[str, Dict[str, Any]] = {
         "bin_size": 1.0,
     },
 }
-if _HAS_SHAPELY_FOR_TEST and ShapelyPoly is not None:
-    MINIMAL_BUILD_PARAMS["ShapelyPolygon"] = {
-        "polygon": ShapelyPoly([(0, 0), (0, 1), (1, 1), (1, 0)]),
-        "bin_size": 0.5,
-    }
+
+MINIMAL_BUILD_PARAMS["ShapelyPolygon"] = {
+    "polygon": ShapelyPoly([(0, 0), (0, 1), (1, 1), (1, 0)]),
+    "bin_size": 0.5,
+}
 
 
 @pytest.mark.parametrize("layout_kind", list_available_layouts())

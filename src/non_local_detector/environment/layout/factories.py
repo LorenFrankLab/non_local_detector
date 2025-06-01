@@ -1,15 +1,16 @@
 import inspect
 from typing import Any, Dict, List
 
-from non_local_detector.environment.layout.layout_engine import (
-    SHAPELY_AVAILABLE,
-    GraphLayout,
-    HexagonalLayout,
-    ImageMaskLayout,
-    LayoutEngine,
-    MaskedGridLayout,
-    RegularGridLayout,
+from non_local_detector.environment.layout.base import LayoutEngine
+from non_local_detector.environment.layout.engines.graph import GraphLayout
+from non_local_detector.environment.layout.engines.hexagonal import HexagonalLayout
+from non_local_detector.environment.layout.engines.image_mask import ImageMaskLayout
+from non_local_detector.environment.layout.engines.masked_grid import MaskedGridLayout
+from non_local_detector.environment.layout.engines.regular_grid import RegularGridLayout
+from non_local_detector.environment.layout.engines.shapely_polygon import (
     ShapelyPolygonLayout,
+)
+from non_local_detector.environment.layout.engines.triagular_mesh import (
     TriangularMeshLayout,
 )
 
@@ -20,9 +21,8 @@ _LAYOUT_MAP: Dict[str, type[LayoutEngine]] = {
     "Hexagonal": HexagonalLayout,
     "Graph": GraphLayout,
     "TriangularMesh": TriangularMeshLayout,
+    "ShapelyPolygon": ShapelyPolygonLayout,
 }
-if SHAPELY_AVAILABLE and ShapelyPolygonLayout is not None:
-    _LAYOUT_MAP["ShapelyPolygon"] = ShapelyPolygonLayout
 
 
 def list_available_layouts() -> List[str]:
