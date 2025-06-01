@@ -58,11 +58,7 @@ def list_available_layouts() -> List[str]:
     for opt in _LAYOUT_MAP.keys():
         norm_opt = _normalize_name(opt)
         if norm_opt not in processed_normalized_options:
-            is_alias = any(
-                _normalize_name(added) == norm_opt for added in unique_options
-            )
-            if not is_alias:
-                unique_options.append(opt)
+            unique_options.append(opt)
             processed_normalized_options.add(norm_opt)
     return sorted(unique_options)
 
@@ -96,7 +92,11 @@ def get_layout_parameters(layout_type: str) -> Dict[str, Dict[str, Any]]:
     """
     normalized_kind_query = _normalize_name(layout_type)
     found_key = next(
-        (k for k in _LAYOUT_MAP if _normalize_name(k) == normalized_kind_query),
+        (
+            name
+            for name in _LAYOUT_MAP
+            if _normalize_name(name) == normalized_kind_query
+        ),
         None,
     )
     if not found_key:
