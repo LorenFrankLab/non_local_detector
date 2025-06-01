@@ -126,6 +126,7 @@ plt.show()
 # %%
 # Calibration parameters
 frame_height_px = 480.0  # For y-flip
+frame_width_px = 640.0  # Width of the video frame in pixels
 px_per_cm_calibration = 5.0
 # The physical (0,0) cm origin corresponds to pixel (50, 50) in raw top-left pixel coords.
 
@@ -144,7 +145,9 @@ cm_per_px_calibration = 1.0 / px_per_cm_calibration  # 0.2 cm per pixel
 #    So, (offset_x_px_bottom_left, offset_y_px_bottom_left) = (50, 430)
 # `convert_to_cm` will apply this transformation to all points.
 position_data_cm = convert_to_cm(
-    raw_pixel_positions, cm_per_px=cm_per_px_calibration, frame_height=frame_height_px
+    raw_pixel_positions,
+    cm_per_px=cm_per_px_calibration,
+    frame_size_px=(frame_width_px, frame_height_px),
 )
 
 print(f"\n--- Coordinate Calibration ---")
@@ -294,7 +297,37 @@ ax_conn = grid_env_main.plot(
 ax_conn.set_title(f"{grid_env_main.name} with Bin Connectivity")
 plt.show()
 
+# %% [markdown]
+# ### 2.3 Alternative Layouts, Part 1: Hexagonal Grid
+# Hexagonal grids are useful for open fields or environments where orientation bias of square bins is a concern.
+# Let's create a hexagonal layout from the same position data.
 
+hex_env = Environment.from_layout(
+    kind="Hexagonal",
+    layout_params={
+        "data_samples": position_data_cm,
+        "hexagon_width": 4.0,  # Defines the width of hexagons (distance between parallel sides)
+        "infer_active_bins": True,
+        "bin_count_threshold": 1,  # Bins with at least 1 sample are active
+    },
+    name="OpenField_HexEnv",
+)
+
+print(f"\n--- Hexagonal Environment ({hex_env.name}) ---")
+print(f"Number of active bins: {hex_env.n_bins}")
+print(f"Spatial extent (dimension_ranges): {hex_env.dimension_ranges}")
+# Plot the hexagonal environment
+plt.figure(figsize=(6, 6))
+ax_hex = hex_env.plot(show_connectivity=True, cmap="Blues")
+ax_hex.scatter(
+    position_data_cm[:, 0],
+    position_data_cm[:, 1],
+    **RAW_DATA_STYLE,
+    zorder=5,
+)
+ax_hex.set_title(f"{hex_env.name}: Hexagonal Layout with Active Bins")
+plt.xlabel("X (cm)")
+plt.ylabel("Y (cm)")
 # %% [markdown]
 # ## Part 3: Defining and Using Maze-Relevant Regions 🗺️
 # For analysis (e.g., "is the animal decoded in the reward well?" or "average firing rate in the center arm"),
