@@ -408,11 +408,16 @@ class Environment:
                     "connect_diagonal_neighbors": connect_diagonal_neighbors,
                 }
             )
-        else:  # kind_lower == "hexagonal"
+        elif kind_lower == "hexagonal":
             layout_params.update(
                 {
                     "hexagon_width": bin_size,
                 }
+            )
+        else:
+            raise NotImplementedError(
+                f"Layout kind '{layout_kind}' is not supported. "
+                "Use 'RegularGrid' or 'Hexagonal'."
             )
 
         return cls.from_layout(kind=layout_kind, layout_params=layout_params, name=name)
