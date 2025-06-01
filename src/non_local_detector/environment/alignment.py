@@ -141,30 +141,45 @@ def apply_similarity_transform(
 def map_probabilities_to_nearest_target_bin(
     source_env: Environment,
     target_env: Environment,
-    source_probabilities: NDArray[np.float64],
-    source_rotation_matrix: Optional[NDArray[np.float64]] = None,
+    source_probs: NDArray[np.float64],
+    *,
+    mode: str = "nearest",
+    n_neighbors: int = 1,
+    eps: float = 1e-8,
     source_scale_factor: float = 1.0,
+    source_rotation_matrix: Optional[NDArray[np.float64]] = None,
     source_translation_vector: Optional[NDArray[np.float64]] = None,
 ) -> NDArray[np.float64]:
     """
-    Maps a 1D array of probabilities defined on `source_env` bins to the
-    nearest bins of `target_env`, optionally applying a similarity transform
-    (rotation, scaling, translation) to source bin centers first.
+    Map probabilities on source_env onto target_env, with optional scaling/translation
+    of the source bin-centers beforehand.
 
     Parameters
     ----------
     source_env : Environment
-        Fitted Environment providing `bin_centers` and connectivity.
+        A fitted Environment whose bins currently have centers `source_env.bin_centers`.
     target_env : Environment
-        Fitted Environment providing `bin_centers` for mapping.
-    source_probabilities : array, shape (n_source_bins,)
-        Probability value for each active bin in `source_env`.
-    source_rotation_matrix : array, shape (n_dims, n_dims), optional
-        Rotation to apply to source bin centers before mapping.
-    source_scale_factor : float, default 1.0
-        Scale factor to apply to rotated source centers.
-    source_translation_vector : array, shape (n_dims,), optional
-        Translation to apply after scaling.
+        A fitted Environment onto whose bins we want to map probabilities.
+    source_probs : NDArray[np.float64]
+        1D array of length source_env.n_bins (nonnegative).
+    mode : {'nearest', 'inverse-distance-weighted'}
+        - "nearest": each source bin's mass → its single nearest target bin.
+        - "inverse-distance-weighted" : spread each source bin's mass over
+            its `n_neighbors` nearest target bins,
+            weighted by inverse distance, and summing contributions.
+    n_neighbors : int
+        Number of neighbors to use when mode="inverse-distance-weighted"
+        (ignored if mode="nearest").
+    eps : float
+        Small constant to avoid division by zero in IDW weights.
+    source_scale_factor : float
+        Multiply every source bin-center by this scalar before querying.
+    source_rotation_matrix : Optional[NDArray[np.float64]]
+        If not None, must be a length-n_dims array; we add it to every source bin-center
+        (after scaling) before querying.
+    source_translation_vector : Optional[NDArray[np.float64]]
+        If not None, must be a length-n_dims array; we apply it to every source bin-center
+        (after scaling) before querying.
 
     Returns
     -------
@@ -180,88 +195,135 @@ def map_probabilities_to_nearest_target_bin(
     ValueError
         If `source_probabilities` has incorrect shape, or if dims mismatch.
     """
-    if not source_env._is_fitted or not target_env._is_fitted:
-        raise RuntimeError("Both source and target environments must be fitted.")
+    import warnings
 
-    n_source_bins = source_env.bin_centers.shape[0]
-    n_target_bins = target_env.bin_centers.shape[0]
-    n_dims = source_env.n_dims
+    import numpy as np
+    from scipy.spatial import cKDTree
 
-    if source_probabilities.shape != (n_source_bins,):
+    # 1) Basic sanity checks (same as before) -----------------------------
+    if not getattr(source_env, "_is_fitted", False) or not getattr(
+        target_env, "_is_fitted", False
+    ):
         raise ValueError(
-            f"source_probabilities shape {source_probabilities.shape} "
-            f"must match (n_source_bins,) = ({n_source_bins},)."
+            "Both source_env and target_env must be fitted before mapping probabilities."
         )
+
+    n_src = source_env.n_bins
+    n_tgt = target_env.n_bins
+
+    if n_src == 0 or n_tgt == 0:
+        warnings.warn(
+            "One of the environments has zero bins; returning zeros.", UserWarning
+        )
+        return np.zeros(n_tgt, dtype=float)
+
     if source_env.n_dims != target_env.n_dims:
         raise ValueError(
-            f"Dimension mismatch: source has {source_env.n_dims} dims, "
-            f"target has {target_env.n_dims} dims."
+            f"Source and target environments must have the same number of dimensions: "
+            f"{source_env.n_dims} != {target_env.n_dims}."
         )
 
-    # Prepare transformed source bin centers
-    active_source_bin_centers = source_env.bin_centers
-    if (
-        source_rotation_matrix is not None
-        or not np.isclose(source_scale_factor, 1.0)
-        or source_translation_vector is not None
+    if source_probs.ndim != 1 or source_probs.shape[0] != n_src:
+        raise ValueError(f"source_probs must be a 1D array of length {n_src}.")
+
+    if np.any(source_probs < 0):
+        raise ValueError("source_probs must be nonnegative.")
+
+    if mode not in ("nearest", "inverse-distance-weighted"):
+        raise ValueError(
+            f"Unrecognized mode '{mode}'. Supported: 'nearest' or 'inverse-distance-weighted'."
+        )
+
+    if mode == "inverse-distance-weighted" and (
+        n_neighbors < 1 or not isinstance(n_neighbors, int)
     ):
-
-        R = (
-            source_rotation_matrix
-            if source_rotation_matrix is not None
-            else np.eye(n_dims)
-        )
-        s = source_scale_factor
-        t = (
-            source_translation_vector
-            if source_translation_vector is not None
-            else np.zeros(n_dims)
+        raise ValueError(
+            f"In 'inverse-distance-weighted' mode, n_neighbors must be an integer ≥ 1 (got n_neighbors={n_neighbors})."
         )
 
-        active_source_bin_centers = apply_similarity_transform(
-            source_env.bin_centers, R, s, t
-        )
+    # 2) Fetch and “pre-transform” source bin centers -----------------------
+    #    (i.e. apply scale then translation if provided)
+    src_centers = source_env.bin_centers.copy().astype(float)  # shape = (n_src, n_dims)
+    # (a) scale
+    if source_scale_factor != 1.0:
+        src_centers *= float(source_scale_factor)
+    if source_rotation_matrix is not None:
+        source_rotation_matrix = np.asarray(source_rotation_matrix, dtype=float)
+        if source_rotation_matrix.shape != (2, 2):
+            raise ValueError("source_rotation_matrix must be a 2x2 array.")
+        src_centers = src_centers @ source_rotation_matrix.T
 
-    # Handle cases with no bins
-    if n_source_bins == 0:
-        warnings.warn(
-            "Source environment has no active bins. Returning all zeros for target.",
-            UserWarning,
-        )
-        return np.zeros(n_target_bins, dtype=float)
-    if n_target_bins == 0:
-        warnings.warn("Target environment has no active bins to map to.", UserWarning)
-        return np.zeros((0,), dtype=float)
+    # (b) translate if provided
+    if source_translation_vector is not None:
+        vec = np.asarray(source_translation_vector, dtype=float)
+        if vec.ndim != 1 or vec.shape[0] != src_centers.shape[1]:
+            raise ValueError(
+                f"source_translation_vector must be 1D of length {src_centers.shape[1]}"
+            )
+        src_centers += vec  # broadcast to every row
 
-    # Build KDTree on target_env bin centers for efficient nearest neighbor lookup
+    # 3) Build KDTree on target bin centers --------------------------------
     try:
-        target_kdtree = KDTree(target_env.bin_centers)
-    except Exception as e:
-        # This can happen if target_env.bin_centers is degenerate (e.g., all points identical)
-        # or other KDTree construction issues.
-        warnings.warn(
-            f"KDTree construction on target_env.bin_centers failed: {e}. "
-            "Cannot perform nearest neighbor mapping. Returning zeros.",
-            UserWarning,
-        )
-        return np.zeros(n_target_bins)
-
-    # For each (transformed) source bin, find the index of the nearest target bin
-    try:
-        # query() returns (distances, indices)
-        _, nearest_idxs = target_kdtree.query(active_source_bin_centers)
+        tgt_centers = target_env.bin_centers  # shape = (n_tgt, n_dims)
+        tree = cKDTree(tgt_centers, leafsize=16)
     except Exception as e:
         warnings.warn(
-            f"KDTree query failed: {e}. "
-            "Cannot perform nearest neighbor mapping. Returning zeros.",
-            UserWarning,
+            f"KDTree construction on target_env failed: {e}. Returning zeros.",
+            RuntimeWarning,
         )
-        return np.zeros(n_target_bins, dtype=float)
+        return np.zeros(n_tgt, dtype=float)
 
-    # Ensure indices are integer type for np.add.at
-    nearest_idxs = nearest_idxs.astype(np.intp)
+    # 4) Prepare output array ------------------------------------------------
+    target_probs = np.zeros(n_tgt, dtype=float)
 
-    target_probabilities = np.zeros(n_target_bins, dtype=float)
-    np.add.at(target_probabilities, nearest_idxs, source_probabilities)
+    # 5) Perform the requested mapping ---------------------------------------
+    if mode == "nearest":
+        # Query exactly one neighbor per source
+        try:
+            _, idxs = tree.query(src_centers, k=1)  # shape = (n_src,)
+        except Exception as e:
+            warnings.warn(
+                f"KDTree.query (nearest) failed: {e}. Returning zeros.", RuntimeWarning
+            )
+            return np.zeros(n_tgt, dtype=float)
 
-    return target_probabilities
+        # Accumulate each source's entire probability into its nearest target
+        np.add.at(target_probs, idxs, source_probs)
+
+    elif mode == "inverse-distance-weighted":
+        # Clamp n_neighbors if larger than number of target bins
+        k_eff = min(n_neighbors, n_tgt)
+        try:
+            dists, idxs = tree.query(
+                src_centers, k=k_eff
+            )  # each shape = (n_src, k_eff)
+        except Exception as e:
+            warnings.warn(
+                f"KDTree.query (inverse-distance-weighted) failed: {e}. Returning zeros.",
+                RuntimeWarning,
+            )
+            return np.zeros(n_tgt, dtype=float)
+
+        # If k_eff == 1, we may get 1D arrays; force them to 2D
+        if k_eff == 1:
+            dists = dists.reshape(-1, 1)
+            idxs = idxs.reshape(-1, 1)
+
+        # Compute inverse-distance weights w_ij = 1/(d_ij + eps), row-normalize
+        weights = 1.0 / (dists + eps)  # shape = (n_src, k_eff)
+        sums = np.sum(weights, axis=1, keepdims=True)  # shape = (n_src, 1)
+        normed = weights / sums  # each row now sums to 1
+
+        # Multiply each source's probability by its weight vector
+        src_col = source_probs.reshape(-1, 1)  # shape = (n_src, 1)
+        contribs = src_col * normed  # shape = (n_src, k_eff)
+
+        # Flatten indices & contributions so we can call add.at once
+        flat_idxs = idxs.ravel()  # length = n_src * k_eff
+        flat_contribs = contribs.ravel()  # same length
+
+        np.add.at(target_probs, flat_idxs, flat_contribs)
+    else:
+        raise ValueError(f"Unrecognized mode '{mode}'.")
+
+    return target_probs

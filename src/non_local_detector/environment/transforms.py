@@ -129,7 +129,7 @@ def convert_to_cm(
 
     Internally constructs ``scale(cm_per_px) @ flip_y(H)`` and applies it.
     """
-    T = scale(cm_per_px) @ flip_y(frame_height_px=frame_size_px[1])
+    T = scale_2d(cm_per_px) @ flip_y(frame_height_px=frame_size_px[1])
     return T(np.asanyarray(data_px, dtype=float))
 
 

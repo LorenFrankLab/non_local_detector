@@ -14,6 +14,7 @@ class MockEnvironment:
         self.bin_centers = bin_centers
         self.n_dims = n_dims
         self._is_fitted = is_fitted
+        self.n_bins = len(bin_centers)
 
 
 def test_get_2d_rotation_matrix_identity():
@@ -133,7 +134,7 @@ def test_map_probabilities_to_nearest_target_bin_not_fitted():
     src_probs = np.array([1.0])
     src_env = MockEnvironment(src_bins, 2, is_fitted=False)
     tgt_env = MockEnvironment(tgt_bins, 2)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError):
         map_probabilities_to_nearest_target_bin(src_env, tgt_env, src_probs)
 
 
