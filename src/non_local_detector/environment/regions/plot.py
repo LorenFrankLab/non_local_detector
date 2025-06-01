@@ -47,7 +47,7 @@ def plot_regions(
         Plot kwargs applied to every region (unless overridden).
     world_to_pixel : SpatialTransform, optional
         If supplied, coordinates are mapped **through** this transform
-        *before* plotting – handy for overlaying cm-space polygons on
+        *before* plotting - handy for overlaying cm-space polygons on
         pixel-space video frames.
     **per_region_kwargs
         Per-region overrides::
