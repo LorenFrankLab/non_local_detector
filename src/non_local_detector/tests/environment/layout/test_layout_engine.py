@@ -5,6 +5,11 @@ import numpy as np
 import pytest
 
 from non_local_detector.environment.environment import Environment
+from non_local_detector.environment.layout.factories import (
+    create_layout,
+    get_layout_parameters,
+    list_available_layouts,
+)
 from non_local_detector.environment.layout.layout_engine import (
     GraphLayout,
     HexagonalLayout,
@@ -13,9 +18,6 @@ from non_local_detector.environment.layout.layout_engine import (
     MaskedGridLayout,
     RegularGridLayout,
     ShapelyPolygonLayout,
-    create_layout,
-    get_layout_parameters,
-    list_available_layouts,
 )
 from non_local_detector.tests.environment.test_environment import plus_maze_data_samples
 

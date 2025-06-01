@@ -3,7 +3,7 @@ from non_local_detector.environment.alignment import (
     map_probabilities_to_nearest_target_bin,
 )
 from non_local_detector.environment.environment import Environment
-from non_local_detector.environment.layout.layout_engine import (
+from non_local_detector.environment.layout.factories import (
     get_layout_parameters,
     list_available_layouts,
 )
