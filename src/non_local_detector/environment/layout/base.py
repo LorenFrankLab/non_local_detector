@@ -1,4 +1,3 @@
-from abc import abstractmethod
 from typing import Any, Dict, Optional, Protocol, Sequence, Tuple, runtime_checkable
 
 import matplotlib
@@ -149,7 +148,6 @@ class LayoutEngine(Protocol):
         """
         ...
 
-    @abstractmethod
     def bin_sizes(self) -> NDArray[np.float64]:
         """
         Return the area (2D) or volume (3D+) of each active bin.
