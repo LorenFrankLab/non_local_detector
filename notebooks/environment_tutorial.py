@@ -42,10 +42,11 @@ Let's begin our journey of parameterizing space! 🚀
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Patch
 from scipy.stats import multivariate_normal
 from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry import Polygon
-from track_linearization import make_track_graph  # For graph-based environments
+from track_linearization import make_track_graph
 
 # Core imports from the environment package
 from non_local_detector.environment import get_layout_parameters, list_available_layouts
@@ -54,12 +55,8 @@ from non_local_detector.environment.alignment import (
     get_2d_rotation_matrix,
     map_probabilities_to_nearest_target_bin,
 )
-from non_local_detector.environment.calibration import simple_scale
 from non_local_detector.environment.composite import CompositeEnvironment
 from non_local_detector.environment.environment import Environment
-from non_local_detector.environment.layout.engines.hexagonal import (
-    HexagonalLayout,  # Example for isinstance
-)
 from non_local_detector.environment.regions import plot_regions
 
 # Consistent styling for raw data points in plots
@@ -69,10 +66,9 @@ REWARD_WELL_STYLE = {
     "s": 150,
     "marker": "*",
     "alpha": 0.9,
-    "label": "Reward Well",
     "zorder": 10,
 }
-ARM_REGION_STYLE = {"alpha": 0.2, "linewidth": 1.0, "edgecolor": "black"}
+ARM_REGION_BASE_STYLE = {"alpha": 0.3, "linewidth": 1.0, "edgecolor": "gray"}
 
 # %% [markdown]
 # ## Part 1: From Raw Tracking Data to a Usable Spatial Representation
@@ -336,116 +332,168 @@ else:
 # we need to define named spatial regions.
 
 # %%
-if grid_env_main.n_bins > 0:
-    print(f"\n--- Defining Regions for {grid_env_main.name} ---")
-    # Let's define regions based on our U-shaped maze structure (0,60)->(0,0)->(60,0)->(60,60) in cm
-    # after our calibration. The data `position_data_cm` has this extent.
+# First, define all of our point‐ and polygon‐based regions on grid_env_main.
+# -----------------------------------------------------------------------------------
 
-    # Reward Well 1 (near start of first arm, e.g., around (0,60) if data started there)
-    # Our calibrated data actually starts near (0,60) and goes to (0,0), then (60,0), then (60,60).
-    # Let's put wells at the "ends" or "corners".
-    # Well A: near (0,0) cm
-    well_A_center = ShapelyPoint(2, 2)  # A bit offset from exact corner
-    grid_env_main.regions.add(name="Well_A", point=well_A_center)
+xmin, ymin = grid_env_main.dimension_ranges[0][0], grid_env_main.dimension_ranges[1][0]
+xmax, ymax = grid_env_main.dimension_ranges[0][1], grid_env_main.dimension_ranges[1][1]
+print(
+    f"  Bin-centers span X ∈ [{xmin:.1f} … {xmax:.1f}],  Y ∈ [{ymin:.1f} … {ymax:.1f}]."
+)
 
-    # Well B: near (60,0) cm
-    well_B_center = ShapelyPoint(58, 2)
-    grid_env_main.regions.add(name="Well_B", point=well_B_center)
+arm_width = 8.0  # e.g. 8 cm total across (so each 3 cm bin × ~2–3 cells)
+center_size = 10.0  # a 10×10 cm center square (modify as desired)
 
-    # Well C: near (60,60) cm
-    well_C_center = ShapelyPoint(58, 58)
-    grid_env_main.regions.add(name="Well_C", point=well_C_center)
-
-    # Arm definitions as Polygons
-    # Bottom Arm (y ~ 0, x from 0 to 60)
-    # Polygon([(x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max)])
-    bottom_arm_poly = Polygon([(-2, -2), (62, -2), (62, 5), (-2, 5)])
-    grid_env_main.regions.add(name="BottomArm", polygon=bottom_arm_poly)
-
-    # Right Vertical Arm (x ~ 60, y from 0 to 60)
-    right_arm_poly = Polygon([(55, -2), (62, -2), (62, 62), (55, 62)])
-    grid_env_main.regions.add(name="RightArm", polygon=right_arm_poly)
-
-    # Left Vertical Arm (x ~ 0, y from 0 to 60)
-    left_arm_poly = Polygon([(-2, -2), (5, -2), (5, 62), (-2, 62)])
-    grid_env_main.regions.add(name="LeftArm", polygon=left_arm_poly)
-
-    print(f"Defined regions: {grid_env_main.regions.list_names()}")
-    print(f"Area of 'BottomArm': {grid_env_main.regions.area('BottomArm'):.1f} cm^2")
-    print(
-        f"Area of 'Well_A' (point region): {grid_env_main.regions.area('Well_A')}"
-    )  # Should be 0
-
-    # Get bins in 'BottomArm'
-    bins_in_bottom_arm = grid_env_main.bins_in_region("BottomArm")
-    print(f"Number of bins in 'BottomArm': {len(bins_in_bottom_arm)}")
-
-    # Get a boolean mask for 'Well_B' (useful for indexing data arrays)
-    mask_well_B = grid_env_main.mask_for_region("Well_B")
-    # Example: if `decoded_probs` is (n_time_bins, n_spatial_bins)
-    # `prob_in_well_B = decoded_probs[:, mask_well_B].sum(axis=1)`
-    print(f"Number of bins in 'Well_B' from mask: {np.sum(mask_well_B)}")
-
-    # Plot the environment with these defined regions
-    fig_regions, ax_regions = plt.subplots(figsize=(7, 7))
-    grid_env_main.plot(
-        ax=ax_regions, show_connectivity=False, alpha=0.1
-    )  # Faint background
-    plot_regions(
-        ax=ax_regions,
-        regions=grid_env_main.regions,
-        point_kwargs=REWARD_WELL_STYLE,  # Use pre-defined style for points
-        polygon_kwargs={**ARM_REGION_STYLE, "facecolor": "lightblue"},
-    )  # Style for polygons
-
-    # Create a custom legend
-    from matplotlib.lines import Line2D
-    from matplotlib.patches import Patch
-
-    legend_elements_regions = [
-        Line2D(
-            [0],
-            [0],
-            marker=REWARD_WELL_STYLE["marker"],
-            color="w",
-            label="Reward Well",
-            markerfacecolor="gold",
-            markersize=10,
-        ),  # Gold for wells in legend
-        Patch(
-            facecolor="lightblue",
-            edgecolor="black",
-            alpha=ARM_REGION_STYLE["alpha"],
-            label="Maze Arm/Zone",
-        ),
+top_arm_poly = Polygon(
+    [
+        (xmin, ymax - arm_width),
+        (xmax, ymax - arm_width),
+        (xmax, ymax),
+        (xmin, ymax),
     ]
-    # Override point colors for plotting to distinguish them if needed
-    # For now, plot_regions handles colors based on its defaults or passed kwargs
+)
 
-    # Manually plot well centers on top if plot_regions doesn't emphasize them enough
-    for well_name, style_color in [
-        ("Well_A", "red"),
-        ("Well_B", "green"),
-        ("Well_C", "purple"),
-    ]:
-        if well_name in grid_env_main.regions:
-            well_point = grid_env_main.regions[well_name].data
-            ax_regions.scatter(
-                well_point[0],
-                well_point[1],
-                s=REWARD_WELL_STYLE["s"],
-                marker=REWARD_WELL_STYLE["marker"],
-                color=style_color,  # Distinguish wells
-                label=well_name,
-                zorder=10,
-                edgecolor="black",
-            )
+left_arm_poly = Polygon(
+    [
+        (xmin, ymin),
+        (xmin + arm_width, ymin),
+        (xmin + arm_width, ymax),
+        (xmin, ymax),
+    ]
+)
 
-    ax_regions.legend(handles=legend_elements_regions)  # Use custom legend
-    ax_regions.set_title(f"Maze Regions on {grid_env_main.name}")
-    plt.show()
-else:
-    print(f"\nSkipping Regions demo as {grid_env_main.name} has no active bins.")
+right_arm_poly = Polygon(
+    [
+        (xmax - arm_width, ymin),
+        (xmax, ymin),
+        (xmax, ymax),
+        (xmax - arm_width, ymax),
+    ]
+)
+
+#    For instance, four wells at the four “corners” of the plus‐maze:
+well_A = ShapelyPoint(xmin + 2.0, ymin + 2.0)  # near bottom‐left
+well_B = ShapelyPoint(xmax - 2.0, ymin + 2.0)  # near bottom‐right
+well_C = ShapelyPoint(xmax - 2.0, ymax - 2.0)  # near top‐right
+well_D = ShapelyPoint(xmin + 2.0, ymax - 2.0)  # near top‐left
+
+# 5) Clear out the old regions, then add the new ones:
+grid_env_main.regions.clear()
+grid_env_main.regions.add(
+    name="RightArm",
+    polygon=right_arm_poly,
+    metadata={"plot_kwargs": {"facecolor": "mediumseagreen"}},
+)
+grid_env_main.regions.add(
+    name="TopArm",
+    polygon=top_arm_poly,
+    metadata={"plot_kwargs": {"facecolor": "deepskyblue"}},
+)
+grid_env_main.regions.add(
+    name="LeftArm",
+    polygon=left_arm_poly,
+    metadata={"plot_kwargs": {"facecolor": "mediumpurple"}},
+)
+
+grid_env_main.regions.add(
+    name="Well_A", point=well_A, metadata={"plot_kwargs": {"color": "red"}}
+)
+grid_env_main.regions.add(
+    name="Well_B", point=well_B, metadata={"plot_kwargs": {"color": "blue"}}
+)
+grid_env_main.regions.add(
+    name="Well_C", point=well_C, metadata={"plot_kwargs": {"color": "green"}}
+)
+grid_env_main.regions.add(
+    name="Well_D", point=well_D, metadata={"plot_kwargs": {"color": "magenta"}}
+)
+
+print(f"Defined regions: {grid_env_main.regions.list_names()}")
+
+
+# -----------------------------------------------------------------------------------
+# Now plot everything in one figure.
+# -----------------------------------------------------------------------------------
+fig_regions_adv, ax_regions_adv = plt.subplots(figsize=(8, 8))
+
+# 1) Start by drawing the grid itself (very faint), so regions float on top.
+grid_env_main.plot(ax=ax_regions_adv, show_connectivity=False, alpha=0.3, cmap="Greys")
+
+# 2) Plot all polygonal regions with distinct fill colors.
+#    We prepare a dict of only the polygonal ones, in the form {name: RegionObject, ...}.
+
+plot_regions(
+    ax=ax_regions_adv,
+    regions=grid_env_main.regions,
+)
+
+
+ax_regions_adv.set_title(f"Clearly Defined Maze Regions on {grid_env_main.name}")
+ax_regions_adv.set_aspect("equal", "box")
+plt.tight_layout(rect=[0, 0, 0.8, 1])
+plt.show()
+
+# %% [markdown]
+# ### 3.1 Summarizing Data Per Region
+# This is where regions become powerful. Let's say we have neural data (e.g., average firing rate
+# of a cell, or summed posterior probability from a decoder) for each bin in our environment.
+
+# %%
+# Create mock data: e.g., a "firing rate map" or "decoded probability map"
+# Higher values towards one corner for this example
+mock_data_per_bin = np.zeros(grid_env_main.n_bins)
+if grid_env_main.n_bins > 0:
+    for i in range(grid_env_main.n_bins):
+        x, y = grid_env_main.bin_centers[i]
+        mock_data_per_bin[i] = (x + y) / 20  # Simple gradient for illustration
+    mock_data_per_bin = np.clip(
+        mock_data_per_bin + np.random.rand(grid_env_main.n_bins) * 2, 0, None
+    )
+
+print(f"\n--- Summarizing Mock Data per Region for {grid_env_main.name} ---")
+summary_stats = {}
+for region_name in grid_env_main.regions.list_names():
+    region_mask = grid_env_main.mask_for_region(region_name)
+    data_in_region = mock_data_per_bin[region_mask]
+
+    if data_in_region.size > 0:
+        mean_val = np.mean(data_in_region)
+        sum_val = np.sum(data_in_region)
+        max_val = np.max(data_in_region)
+        summary_stats[region_name] = {
+            "mean": mean_val,
+            "sum": sum_val,
+            "max": max_val,
+            "n_bins": data_in_region.size,
+        }
+        print(
+            f"Region '{region_name}': {data_in_region.size} bins, "
+            f"Mean Value = {mean_val:.2f}, Sum Value = {sum_val:.2f}, Max Value = {max_val:.2f}"
+        )
+    else:
+        summary_stats[region_name] = {
+            "mean": np.nan,
+            "sum": 0,
+            "max": np.nan,
+            "n_bins": 0,
+        }
+        print(f"Region '{region_name}': No active bins found, or no data in bins.")
+
+# Visualizing the mock data map
+plt.figure(figsize=(7, 6))
+ax_data_map = grid_env_main.plot(show_connectivity=False, alpha=0.0)  # No grid fill
+sc_data = ax_data_map.scatter(
+    grid_env_main.bin_centers[:, 0],
+    grid_env_main.bin_centers[:, 1],
+    c=mock_data_per_bin,
+    cmap="viridis",
+    s=60,
+    edgecolor="gray",
+    linewidth=0.5,
+)
+plt.colorbar(sc_data, ax=ax_data_map, label="Mock Value (e.g., Firing Rate)")
+ax_data_map.set_title("Mock Data Map on Environment Bins")
+plt.show()
 
 
 # %% [markdown]
