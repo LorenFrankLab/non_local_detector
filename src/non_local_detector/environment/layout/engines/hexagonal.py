@@ -17,17 +17,15 @@ from non_local_detector.environment.layout.helpers.hexagonal import (
     _points_to_hex_bin_ind,
 )
 from non_local_detector.environment.layout.helpers.utils import _generic_graph_plot
-from non_local_detector.environment.layout.mixins import _KDTreeMixin
 
 
-class HexagonalLayout(_KDTreeMixin):
+class HexagonalLayout:
     """
     2D layout that tiles a rectangular area with a hexagonal lattice.
 
     Bin centers are the centers of the hexagons. Hexagons are connected to their
     immediate neighbors. Active hexagons can be inferred from data sample
-    occupancy. Uses `_KDTreeMixin` for neighbor finding after the connectivity
-    graph is built, but `point_to_bin_index` is specialized for hexagonal grids.
+    occupancy.
     """
 
     bin_centers: NDArray[np.float64]

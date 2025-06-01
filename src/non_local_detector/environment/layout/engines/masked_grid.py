@@ -12,7 +12,7 @@ from non_local_detector.environment.layout.helpers.utils import get_centers
 from non_local_detector.environment.layout.mixins import _GridMixin
 
 
-class MaskedGridLayout(_GridMixin):  # type: ignore
+class MaskedGridLayout(_GridMixin):
     """
     Layout from a pre-defined N-D boolean mask and explicit grid edges.
 
@@ -38,7 +38,7 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
         """Initialize a MaskedGridLayout engine."""
         self._layout_type_tag = "MaskedGrid"
         self._build_params_used = {}
-        self.bin_centers = np.empty((0, 0), dtype=np.float64)
+        self.bin_centers = np.empty((0, 2), dtype=np.float64)
         self.connectivity = None
         self.dimension_ranges = None
         self.grid_edges = None
@@ -109,9 +109,3 @@ class MaskedGridLayout(_GridMixin):  # type: ignore
             grid_shape=self.grid_shape,
             connect_diagonal=connect_diagonal_neighbors,
         )
-
-        self._build_params_used = {
-            "active_mask": active_mask,
-            "grid_edges": grid_edges,
-            "connect_diagonal_neighbors": connect_diagonal_neighbors,
-        }
