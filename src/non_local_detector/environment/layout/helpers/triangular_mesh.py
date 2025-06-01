@@ -59,8 +59,8 @@ def _generate_interior_points_for_mesh(
     if candidates.shape[0] == 0:
         return np.empty((0, 2), dtype=np.float64)
 
-    mask_pts = shapely.vectorized.contains(
-        boundary_polygon, candidates[:, 0], candidates[:, 1]
+    mask_pts = np.array(
+        [boundary_polygon.covers(Point(x, y)) for x, y in candidates], dtype=bool
     )
     return candidates[mask_pts]
 
@@ -120,8 +120,8 @@ def _filter_active_simplices_by_centroid(
     all_centroids = np.mean(triangle_vertices, axis=1)  # (M, 2)
 
     # (2) first pass: does the centroid lie in (or on) the boundary?
-    mask_centroids = shapely.vectorized.contains(
-        boundary_polygon, all_centroids[:, 0], all_centroids[:, 1]
+    mask_centroids = np.array(
+        [boundary_polygon.covers(Point(x, y)) for x, y in all_centroids], dtype=bool
     )
 
     active_mask = np.zeros(mask_centroids.shape[0], dtype=bool)
@@ -130,8 +130,7 @@ def _filter_active_simplices_by_centroid(
     for idx in np.flatnonzero(mask_centroids):
         # If centroid is covered, then check each of the 3 vertices
         verts = triangle_vertices[idx]  # shape (3, 2)
-        # Use `prepped.contains` to include boundary‐points as 'inside'
-        if all(prepped.contains(Point(v)) for v in verts):
+        if all(prepped.covers(Point(v)) for v in verts):
             active_mask[idx] = True
 
     active_original_indices = np.flatnonzero(active_mask)
