@@ -83,13 +83,6 @@ class _KDTreeMixin:
         if points_for_tree.shape[0] == 0:
             self._kdtree = None
             self._kdtree_nodes_to_bin_indices_map = np.array([], dtype=np.int32)
-            if points_for_tree.shape[0] == 0 and points_for_tree.ndim == 2:
-                # no points to build tree from
-                return
-            else:
-                raise ValueError(
-                    "points_for_tree must be a 2D array with shape (n_points, n_dims)."
-                )
 
         final_points_for_kdtree_construction: NDArray[np.float64]
 
