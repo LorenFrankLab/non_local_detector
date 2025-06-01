@@ -511,8 +511,8 @@ def flat_to_multi_index(
         data = node_data_lookup[active_idx]
 
         # If original N-D tuple is directly available, use it
-        original_index_key: str = ("original_grid_nd_index",)
-        fallback_key: str = ("source_grid_flat_index",)
+        original_index_key: str = "original_grid_nd_index"
+        fallback_key: str = "source_grid_flat_index"
         if original_index_key in data and data[original_index_key] is not None:
             orig_nd = data[original_index_key]
             if not (isinstance(orig_nd, (tuple, list)) and len(orig_nd) == n_dims):
