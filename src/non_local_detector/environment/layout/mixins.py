@@ -249,7 +249,7 @@ class _GridMixin:
         figsize=(7, 7),
         cmap: str = "bone_r",
         alpha: float = 0.7,
-        draw_connectivity_graph: bool = True,
+        show_connectivity: bool = True,
         node_size: float = 20,
         node_color: str = "blue",
     ) -> matplotlib.axes.Axes:
@@ -324,7 +324,7 @@ class _GridMixin:
                 ax.set_xlim(self.dimension_ranges[0])
                 ax.set_ylim(self.dimension_ranges[1])
 
-            if draw_connectivity_graph:
+            if show_connectivity:
                 node_position = nx.get_node_attributes(self.connectivity, "pos")
                 nx.draw_networkx_nodes(
                     self.connectivity,
