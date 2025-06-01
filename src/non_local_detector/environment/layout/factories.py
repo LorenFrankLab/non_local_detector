@@ -1,5 +1,5 @@
 import inspect
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Type
 
 from non_local_detector.environment.layout.base import LayoutEngine
 from non_local_detector.environment.layout.engines.graph import GraphLayout
@@ -14,7 +14,7 @@ from non_local_detector.environment.layout.engines.triangular_mesh import (
     TriangularMeshLayout,
 )
 
-_LAYOUT_MAP: Dict[str, type[LayoutEngine]] = {
+_LAYOUT_MAP: Dict[str, Type[LayoutEngine]] = {
     "RegularGrid": RegularGridLayout,
     "MaskedGrid": MaskedGridLayout,
     "ImageMask": ImageMaskLayout,
