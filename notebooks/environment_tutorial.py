@@ -40,9 +40,11 @@ Prerequisites:
 Let's begin our journey of parameterizing space! 🚀
 """
 
+import os
+import tempfile
+
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Patch
 from scipy.stats import multivariate_normal
 from shapely.geometry import Point as ShapelyPoint
 from shapely.geometry import Polygon
@@ -922,6 +924,48 @@ for layout_name in available_layout_types:
             print(f"  - {param_name}: (type: {p_type}, {default_str})")
     except Exception as e:  # Catch any error during introspection
         print(f"  Could not retrieve parameters for {layout_name}: {e}")
+# %% [markdown]
+# ## Part 7: Saving and Loading Environments 💾
+# Once you've configured an environment (which can involve computationally intensive steps like
+# inferring active bins from many samples), you'll want to save it for later use.
+# The `Environment` object can be easily saved and loaded using Python's `pickle` module.
+
+# %%
+print("\n--- Saving and Loading Environments ---")
+if grid_env_main is not None and grid_env_main.n_bins > 0:
+    # Create a temporary file path for this demo
+    temp_dir = tempfile.gettempdir()
+    env_filepath = os.path.join(temp_dir, "my_main_maze_env.pkl")
+
+    print(f"Attempting to save environment '{grid_env_main.name}' to: {env_filepath}")
+    grid_env_main.save(env_filepath)  # Uses pickle
+
+    # Now, let's load it back
+    loaded_env = Environment.load(env_filepath)
+    print(f"Successfully loaded environment: {loaded_env.name}")
+    print(
+        f"Loaded environment has {loaded_env.n_bins} bins and layout type '{loaded_env.layout_type}'."
+    )
+    print(
+        f"Original layout parameters were: {loaded_env.layout_parameters.get('bin_size')} bin_size."
+    )
+
+    # Basic check: are the number of bins the same?
+    if loaded_env.n_bins == grid_env_main.n_bins:
+        print(
+            "Loaded environment seems consistent with the saved one (checked n_bins)."
+        )
+    else:
+        print("Warning: Loaded environment n_bins mismatch!")
+
+    # Clean up the temporary file (optional for a real workflow)
+    try:
+        os.remove(env_filepath)
+        print(f"Cleaned up temporary file: {env_filepath}")
+    except OSError as e:
+        print(f"Error removing temporary file {env_filepath}: {e}")
+else:
+    print("Skipping Save/Load demo as grid_env_main is not available or has no bins.")
 
 
 # %% [markdown]
