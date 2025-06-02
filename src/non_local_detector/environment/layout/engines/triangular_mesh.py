@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
@@ -146,12 +147,11 @@ class TriangularMeshLayout:
 
         # 5. Populate core attributes for active triangles
         self.bin_centers = all_centroids[active_original_indices]
-        n_active_triangles = self.bin_centers.shape[0]
 
         # 6. Build connectivity graph for active triangles
         self.connectivity = _build_mesh_connectivity_graph(
             active_original_indices,
-            all_centroids,  # Pass all centroids
+            all_centroids,
             self._original_simplex_to_active_idx_map,
             self._full_delaunay_tri,
         )
@@ -161,9 +161,7 @@ class TriangularMeshLayout:
 
         # 8. Set grid-related attributes for protocol conformance
         # The "conceptual grid" here is the list of all Delaunay triangles.
-        self.grid_shape = (
-            n_total_delaunay_triangles,
-        )  # Shape of the full Delaunay triangle list
+        self.grid_shape = (n_total_delaunay_triangles,)
         self.active_mask = np.zeros(n_total_delaunay_triangles, dtype=bool)
         self.active_mask[active_original_indices] = True
         # self.grid_edges remains an empty tuple as it's not a rectilinear grid.
@@ -172,7 +170,7 @@ class TriangularMeshLayout:
         """
         Map each 2D point to an active triangle index, or -1 if outside.
 
-        Uses Delaunay.find_simplex() → original‐simplex index → active‐triangle index via
+        Uses Delaunay.find_simplex() → original-simplex index → active-triangle index via
         a fast lookup array. Then enforces that the point itself must lie inside (or on)
         the boundary polygon.
 
@@ -329,7 +327,7 @@ class TriangularMeshLayout:
                 self._full_delaunay_tri.simplices[self._active_original_simplex_indices]
             ]
 
-            for vertices in active_simplices_vertices:  # Iterate over (N_active, 3, 2)
+            for vertices in active_simplices_vertices:  # Iterate over (n_active, 3, 2)
                 patches.append(MplPolygon(vertices, closed=True))
 
             pc = PatchCollection(patches, **_triangle_kwargs)
@@ -364,42 +362,75 @@ class TriangularMeshLayout:
 
     def bin_sizes(self) -> NDArray[np.float64]:
         """
-        Return the area of each active triangle.
+        Return the N-dimensional volume of each active N-simplex (bin).
 
-        Uses the formula: 0.5 * |x1(y2 - y3) + x2(y3 - y1) + x3(y1 - y2)|.
-        Alternatively, via cross product: 0.5 * |(p1-p0) x (p2-p0)|.
+        For 2D, this is area. For 3D, this is volume, and so on.
+        The volume of an N-simplex with vertices v0, v1, ..., vn is calculated as:
+        V = (1 / n!) * |det([v1-v0, v2-v0, ..., vn-v0])|
+        where n is the number of dimensions.
 
         Returns
         -------
         NDArray[np.float64]
-            Array of areas, shape (n_active_triangles,).
+            Array of N-dimensional volumes, shape (n_active_simplices,).
+
+        Raises
+        ------
+        RuntimeError
+            If the layout is not built (e.g., `_full_delaunay_tri` or
+            `_active_original_simplex_indices` is None).
+        ValueError
+            If the dimensionality is less than 1.
         """
         if (
             self._full_delaunay_tri is None
             or self._active_original_simplex_indices is None
-        ):
+        ):  # pragma: no cover
             raise RuntimeError("TriangularMeshLayout is not built. Call build() first.")
 
-        active_simplices = self._full_delaunay_tri.simplices[
+        # Get the vertices of all active N-simplices
+        # .points has shape (total_points, n_dim)
+        # .simplices has shape (total_simplices, n_dim + 1)
+        all_mesh_points = self._full_delaunay_tri.points
+        active_simplices_vertex_indices = self._full_delaunay_tri.simplices[
             self._active_original_simplex_indices
         ]
-        mesh_points = self._full_delaunay_tri.points
 
-        # Get vertices for all active triangles: shape (n_active_triangles, 3, 2)
-        triangle_vertices = mesh_points[active_simplices]
+        if active_simplices_vertex_indices.shape[0] == 0:
+            return np.array([], dtype=float)  # No active simplices
 
-        # Vectorized area calculation using cross product
-        # p0, p1, p2 are arrays of shape (n_active_triangles, 2)
-        p0 = triangle_vertices[:, 0, :]
-        p1 = triangle_vertices[:, 1, :]
-        p2 = triangle_vertices[:, 2, :]
+        # nsimplex_vertices will have shape:
+        # (num_active_simplices, num_vertices_per_simplex, n_dim)
+        nsimplex_vertices = all_mesh_points[active_simplices_vertex_indices]
 
-        # (p1-p0) and (p2-p0)
-        vec1 = p1 - p0  # shape (n_active_triangles, 2)
-        vec2 = p2 - p0  # shape (n_active_triangles, 2)
+        n_dim = all_mesh_points.shape[1]
 
-        # Cross product for 2D vectors (v1x*v2y - v1y*v2x)
-        cross_product_values = vec1[:, 0] * vec2[:, 1] - vec1[:, 1] * vec2[:, 0]
+        if n_dim == 1:
+            # For 1D simplices (line segments), volume is length
+            # Vertices are (n_active, 2, 1)
+            # v0 is (n_active, 1), v1 is (n_active, 1)
+            v0 = nsimplex_vertices[:, 0, :]  # First vertex of each simplex
+            v1 = nsimplex_vertices[:, 1, :]  # Second vertex of each simplex
+            lengths = np.abs(v1 - v0).squeeze(axis=-1)
+            return lengths
 
-        areas = 0.5 * np.abs(cross_product_values)
-        return areas
+        # Select one vertex from each simplex as the origin (v0)
+        # v0 will have shape (num_active_simplices, n_dim)
+        v0 = nsimplex_vertices[:, 0, :]
+
+        # Create vectors from v0 to all other vertices (v1-v0, v2-v0, ..., vn-v0)
+        # These vectors form the rows (or columns) of the matrix for the determinant.
+        # nsimplex_vertices[:, 1:, :] has shape (n_active, n_dim, n_dim)
+        # v0[:, np.newaxis, :] broadcasts v0 to match for subtraction
+        # matrix_for_determinant will have shape (n_active, n_dim, n_dim)
+        matrix_for_determinant = nsimplex_vertices[:, 1:, :] - v0[:, np.newaxis, :]
+
+        # Calculate the determinant for each simplex's matrix
+        # np.linalg.det operates on the last two axes by default.
+        determinants = np.linalg.det(matrix_for_determinant)
+
+        # Volume = abs(determinant) / n!
+        n_factorial = float(math.factorial(n_dim))
+        volumes = np.abs(determinants) / n_factorial
+
+        return volumes
