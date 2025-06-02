@@ -229,3 +229,30 @@ def _compute_mesh_dimension_ranges(
         (float(min_coords[d]), float(max_coords[d]))
         for d in range(bin_centers_array.shape[1])
     ]
+
+
+def _sample_polygon_boundary(poly: Polygon, point_spacing: float) -> np.ndarray:
+    """
+    Given a Shapely Polygon, return an (M,2)-array of points sampled along
+    the exterior boundary (including the vertices) at approximately 'point_spacing' intervals.
+    """
+    coords = np.array(poly.exterior.coords)  # shape = (N_vertices+1, 2)
+    boundary_pts = []
+    for i in range(len(coords) - 1):
+        x0, y0 = coords[i]
+        x1, y1 = coords[i + 1]
+        edge_len = np.hypot(x1 - x0, y1 - y0)
+        if edge_len == 0:
+            continue
+
+        # How many samples along this edge? 1 point every ~point_spacing (plus both endpoints).
+        n_segs = max(int(np.ceil(edge_len / point_spacing)), 1)
+        # Generate n_segs+1 points equally spaced including both ends.
+        for t in np.linspace(0.0, 1.0, n_segs + 1):
+            px = x0 + t * (x1 - x0)
+            py = y0 + t * (y1 - y0)
+            boundary_pts.append([px, py])
+
+    # Deduplicate (because consecutive edges share endpoints):
+    boundary_pts = np.unique(np.array(boundary_pts), axis=0)
+    return boundary_pts  # shape = (M, 2)

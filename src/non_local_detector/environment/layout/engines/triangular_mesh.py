@@ -17,6 +17,7 @@ from non_local_detector.environment.layout.helpers.triangular_mesh import (
     _compute_mesh_dimension_ranges,
     _filter_active_simplices_by_centroid,
     _generate_interior_points_for_mesh,
+    _sample_polygon_boundary,
     _triangulate_points,
 )
 
@@ -113,7 +114,7 @@ class TriangularMeshLayout:
                 "to form any triangle. Try decreasing point_spacing or ensuring "
                 "the polygon is large enough relative to the spacing."
             )
-        exterior_coords = np.array(boundary_polygon.exterior.coords)
+        exterior_coords = _sample_polygon_boundary(boundary_polygon, point_spacing)
         # 4) Stack the interior grid points with the boundary vertices.
         if sample_points.size == 0:
             sample_points = exterior_coords.copy()
