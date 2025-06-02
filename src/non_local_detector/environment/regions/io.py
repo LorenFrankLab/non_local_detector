@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import json
 import warnings
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
+import shapely.geometry as shp
 from numpy.typing import NDArray
 
 from ..transforms import SpatialTransform
@@ -71,8 +73,6 @@ def load_labelme_json(
     Regions
         Every polygon becomes a :class:`Region` with ``kind="polygon"``.
     """
-    import shapely.geometry as shp  # heavy import
-
     data = json.loads(Path(json_path).read_text())
     regions: list[Region] = []
 
@@ -96,6 +96,136 @@ def load_labelme_json(
                 metadata={"source_json": Path(json_path).name},
             )
         )
+    return Regions(regions)
+
+
+def _parse_cvat_points(points_str: str) -> np.ndarray:
+    points = []
+    for pt in points_str.strip().split(";"):
+        x_str, y_str = pt.split(",")
+        points.append([float(x_str), float(y_str)])
+    return np.array(points)
+
+
+def load_cvat_xml(xml_path: str | Path, *, pixel_to_world=None) -> Regions:
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    regions = []
+
+    # Keep track of label counts to generate unique names
+    label_counts = {}
+
+    def unique_name(label: str) -> str:
+        count = label_counts.get(label, 0)
+        label_counts[label] = count + 1
+        if count == 0:
+            return label
+        else:
+            return f"{label}_{count}"
+
+    for image in root.findall("image"):
+        # Polygon shapes
+        for polygon in image.findall("polygon"):
+            label = polygon.get("label")
+            points_str = polygon.get("points")
+            color = polygon.get("color")  # CVAT color
+            if not points_str:
+                continue
+            pts_px = _parse_cvat_points(points_str)
+            pts_cm = pixel_to_world(pts_px) if pixel_to_world else pts_px
+            poly = shp.Polygon(pts_cm)
+            poly = shp.polygon.orient(poly, sign=1.0)
+            # Skip polygons that are still invalid or empty
+            if not poly.is_valid or poly.area == 0:
+                # Try to fix invalid polygon by buffering zero
+                poly = poly.buffer(0)
+            regions.append(
+                Region(
+                    name=unique_name(label),
+                    kind="polygon",
+                    data=poly,
+                    metadata={
+                        "source_xml": Path(xml_path).name,
+                        "plot_kwargs": dict(color=color) if color else {},
+                    },
+                )
+            )
+
+        # Polyline shapes
+        for polyline in image.findall("polyline"):
+            label = polyline.get("label")
+            points_str = polyline.get("points")
+            color = polyline.get("color")  # CVAT color
+            if not points_str:
+                continue
+            pts_px = _parse_cvat_points(points_str)
+            pts_cm = pixel_to_world(pts_px) if pixel_to_world else pts_px
+            if np.allclose(pts_cm[0], pts_cm[-1]):
+                poly = shp.Polygon(pts_cm)
+                kind = "polygon"
+            else:
+                continue
+            regions.append(
+                Region(
+                    name=unique_name(label),
+                    kind=kind,
+                    data=poly,
+                    metadata={
+                        "source_xml": Path(xml_path).name,
+                        "plot_kwargs": dict(color=color) if color else {},
+                    },
+                )
+            )
+
+        # Points shapes
+        for points in image.findall("points"):
+            label = points.get("label")
+            points_str = points.get("points")
+            if not points_str:
+                continue
+            pts_px = _parse_cvat_points(points_str)
+            pts_cm = pixel_to_world(pts_px) if pixel_to_world else pts_px
+            for i, pt in enumerate(pts_cm):
+                regions.append(
+                    Region(
+                        name=unique_name(f"{label}_{i}"),
+                        kind="point",
+                        data=pt,
+                        metadata={"source_xml": Path(xml_path).name},
+                    )
+                )
+
+        # Box shapes
+        for box in image.findall("box"):
+            label = box.get("label")
+            xtl = float(box.get("xtl"))
+            ytl = float(box.get("ytl"))
+            xbr = float(box.get("xbr"))
+            ybr = float(box.get("ybr"))
+            pts_px = np.array(
+                [
+                    [xtl, ytl],
+                    [xbr, ytl],
+                    [xbr, ybr],
+                    [xtl, ybr],
+                    [xtl, ytl],
+                ]
+            )
+            pts_cm = pixel_to_world(pts_px) if pixel_to_world else pts_px
+            poly = shp.Polygon(pts_cm)
+            regions.append(
+                Region(
+                    name=unique_name(label),
+                    kind="polygon",
+                    data=poly,
+                    metadata={"source_xml": Path(xml_path).name},
+                )
+            )
+
+        # Skip masks for now
+        for mask in image.findall("mask"):
+            continue
+
     return Regions(regions)
 
 
