@@ -3,7 +3,8 @@
 # Our goal is often to understand how neural activity relates to the animal's
 # position, or to decode the animal's position from neural activity. This requires
 # a precise, discretized model of the experimental environment. This tutorial
-# demonstrates how to create, manipulate, and analyze such environmental models.
+# demonstrates how to create, manipulate, and analyze such environmental models
+# using the `Environment` class and its various layouts in the `non_local_detector` package.
 
 # Key Workflow & Features Covered:
 # ---------------------------------
