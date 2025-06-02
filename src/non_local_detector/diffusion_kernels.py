@@ -1,13 +1,17 @@
-from typing import Any
+from typing import Literal, Optional
 
 import jax
 import jax.numpy as jnp
 import jax.scipy.linalg
 import networkx as nx
 import numpy as np
+from numpy.typing import NDArray
 
 
-def _assign_gaussian_weights_from_distance(G: nx.Graph, bandwidth_sigma: float) -> None:
+def _assign_gaussian_weights_from_distance(
+    G: nx.Graph,
+    bandwidth_sigma: float,
+) -> None:
     """
     Overwrites each edge's "weight" attribute with
         w_uv = exp( - (distance_uv)^2 / (2 * sigma^2) ).
@@ -18,48 +22,91 @@ def _assign_gaussian_weights_from_distance(G: nx.Graph, bandwidth_sigma: float) 
         d = data.get("distance", None)
         if d is None:
             raise KeyError(f"Edge ({u},{v}) has no 'distance' attribute.")
-        # compute the RBF weight
         data["weight"] = float(np.exp(-(d * d) / two_sigma2))
 
 
 def compute_diffusion_kernels(
     graph: nx.Graph,
     bandwidth_sigma: float,
+    bin_sizes: Optional[NDArray] = None,
+    mode: Literal["transition", "density"] = "transition",
 ) -> jnp.ndarray:
     """
-    Computes diffusion kernels for all valid bins using the
-    Graph Laplacian method and matrix exponential.
+    Computes a diffusion-based kernel for all bins (nodes) of `graph` via
+    matrix-exponential of a (possibly volume-corrected) graph-Laplacian.
 
-    Parameters
-    ----------
+    Args
+    ----
     graph : nx.Graph
-        The graph representing the track, where nodes are bins and edges are connections.
+        Nodes = bins.  Each edge must have a "distance" attribute (Euclidean length).
     bandwidth_sigma : float
-        The bandwidth of the Gaussian kernel. This controls the spread of the kernel.
+        The Gaussian-bandwidth (σ).  We exponentiate with t = σ^2 / 2.
+    bin_sizes : Optional[NDArray], shape (n_bins,)
+        If provided, bin_sizes[i] is the physical “area/volume” of node i.
+        If not provided, we treat all bins as unit-mass.
+    mode : "transition" or "density"
+        - "transition":  Return a purely discrete transition-matrix P so that ∑_i P[i,j] = 1.
+                         (You do *not* need `bin_sizes` in this mode; if you pass it,
+                         it will only be used in the exponent step to form L_vol = M^{-1} L,
+                         but the final column-normalization is "sum→1".)
+        - "density":     Return a continuous-KDE kernel so that ∑_i [K[i,j] * bin_sizes[i]] = 1.
+                         Requires `bin_sizes` ≢ None.  (You exponentiate M^{-1} L, then rescale
+                         each column so that its weighted-sum by bin_areas is 1.)
 
     Returns
     -------
-    kernel_matrix : jnp.ndarray, shape (n_bins, n_bins)
-        The diffusion kernel matrix for the bins.
-        Therepresents the amount of concentration (or probability mass, if u represents probability)
-        that has flowed from node j to node i after time t.
+    kernel : jnp.ndarray, shape (n_bins, n_bins)
+        If mode="transition":   each column j sums to 1 (∑_i K[i,j] = 1).
+        If mode="density":      each column j integrates to 1 over area
+                                 (∑_i K[i,j] * bin_sizes[i] = 1).
     """
-
     n_bins = graph.number_of_nodes()
+    # 1) Re-compute edge "weight" = exp( - dist^2/(2σ^2) )
     _assign_gaussian_weights_from_distance(graph, bandwidth_sigma)
-    laplacian_full = jnp.array(
+
+    # 2) Build unnormalized Laplacian L = D - W
+    L = jnp.array(
         nx.laplacian_matrix(graph, nodelist=range(n_bins), weight="weight").toarray(),
         dtype=jnp.float32,
     )
 
-    exponent_coefficient = bandwidth_sigma**2 / 2.0
-    kernel_matrix = jax.scipy.linalg.expm(-exponent_coefficient * laplacian_full)
+    # 3) If bin_sizes is given, form M⁻¹ = diag(1/bin_sizes),
+    #    then replace L ← M⁻¹ @ L (so we solve du/dt = - M⁻¹ L u).
+    if bin_sizes is not None:
+        areas = jnp.array(bin_sizes, dtype=jnp.float32)
+        if areas.shape != (n_bins,):
+            raise ValueError(
+                f"bin_sizes must have shape ({n_bins},), but got {areas.shape}."
+            )
+        M_inv = jnp.diag(1.0 / areas)  # shape = (n_bins, n_bins)
+        L = M_inv @ L  # now L = M⁻¹ (D - W)
+    else:
+        areas = None
 
-    # Clip to non-negative values
-    kernel_matrix = jnp.clip(kernel_matrix, a_min=0.0, a_max=None)
+    # 4) Exponentiate: kernel = exp( - (σ^2 / 2) * L )
+    t = bandwidth_sigma**2 / 2.0
+    kernel = jax.scipy.linalg.expm(-t * L)
 
-    # Normalize the kernel matrix so the sum of each column is 1.
-    col_sums = kernel_matrix.sum(axis=0, keepdims=True)
-    kernel_matrix = jnp.where(col_sums == 0.0, 0.0, kernel_matrix / col_sums)
+    # 5) Clip tiny negative noise to zero
+    kernel = jnp.clip(kernel, a_min=0.0, a_max=None)
 
-    return kernel_matrix
+    # 6) Final normalization:
+    #   - If mode="transition":  ∑_i K[i,j] = 1  (pure discrete)
+    #   - If mode="density":     ∑_i [K[i,j] * areas[i]] = 1  (continuous KDE)
+    if mode == "transition":
+        # Just normalize each column so it sums to 1
+        mass_out = kernel.sum(axis=0, keepdims=True)  # shape = (1, n_bins)
+        # scale = 1 / mass_out[j]  (so that ∑_i K[i,j] = 1)
+    elif mode == "density":
+        if areas is None:
+            raise ValueError("`mode='density'` requires a non-None `bin_sizes` array.")
+        # Compute mass_out[j] = ∑_i [kernel[i,j] * areas[i]]
+        # shape = (1, n_bins)
+        mass_out = (kernel * areas[:, None]).sum(axis=0, keepdims=True)
+        # scale[j] = 1 / mass_out[j]  (so that ∑_i [K[i,j]*areas[i]] = 1)
+    else:
+        raise ValueError(f"Invalid mode '{mode}'. Choose 'transition' or 'density'.")
+    scale = jnp.where(mass_out == 0.0, 0.0, 1.0 / mass_out)  # (1, n_bins)
+    kernel = kernel * scale
+
+    return kernel
