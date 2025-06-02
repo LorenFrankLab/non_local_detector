@@ -30,6 +30,7 @@ def plot_regions(
     region_names: Sequence[str] | None = None,
     default_kwargs: Mapping[str, Any] | None = None,
     world_to_pixel: SpatialTransform | None = None,
+    add_legend: bool = True,
     **per_region_kwargs: Mapping[str, Any],
 ) -> None:
     """
@@ -140,5 +141,5 @@ def plot_regions(
 
     # add a legend if *any* labels were produced
     handles, labels = ax.get_legend_handles_labels()
-    if handles:
-        ax.legend(handles, labels)
+    if handles and add_legend:
+        ax.legend(handles, labels, loc="center left", bbox_to_anchor=(1, 0.5))
