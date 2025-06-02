@@ -51,7 +51,8 @@ def _create_regular_grid_connectivity_graph(
     - 'original_grid_nd_index': Original N-D tuple index in the full grid.
 
     Edges connect active bins that are adjacent (orthogonally or, optionally,
-    diagonally) in the N-D grid. Edges store 'distance' and 'weight'.
+    diagonally) in the N-D grid. Edges store 'distance', 'vector', and 'angle_2d'
+    attributes.
 
     Parameters
     ----------
@@ -173,11 +174,9 @@ def _create_regular_grid_connectivity_graph(
                     pos_v = np.asarray(connectivity_graph.nodes[v_new]["pos"])
                     distance = float(np.linalg.norm(pos_u - pos_v))
                     displacement_vector = pos_v - pos_u
-                    weight = 1.0 / distance if distance > 0.0 else np.inf
                     edge_attrs: Dict[str, Any] = {
                         "distance": distance,
                         "vector": tuple(displacement_vector.tolist()),
-                        "weight": weight,
                     }
                     if n_dims == 2:
                         edge_attrs["angle_2d"] = math.atan2(

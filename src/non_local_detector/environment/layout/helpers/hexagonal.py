@@ -508,7 +508,7 @@ def _create_hex_connectivity_graph(
     - 'original_grid_nd_index': (row, col) index in the full conceptual hex grid.
 
     Edges connect active hexagons that are immediate neighbors in the lattice.
-    Edges store 'distance', 'vector', 'weight', and 'angle_2d'.
+    Edges store 'distance', 'vector', and 'angle_2d'.
 
     Parameters
     ----------
@@ -594,11 +594,9 @@ def _create_hex_connectivity_graph(
                     )
                     distance = float(np.linalg.norm(pos_u - pos_v))
                     displacement_vector = pos_v - pos_u
-                    weight = 1.0 / distance if distance > 0.0 else np.inf
                     edge_attrs: Dict[str, Any] = {
                         "distance": distance,
                         "vector": tuple(displacement_vector.tolist()),
-                        "weight": weight,
                         "angle_2d": math.atan2(
                             displacement_vector[1], displacement_vector[0]
                         ),

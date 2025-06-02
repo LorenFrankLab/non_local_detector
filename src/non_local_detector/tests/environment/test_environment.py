@@ -178,7 +178,6 @@ class TestEnvironmentFromGraph:
         assert isinstance(df, pd.DataFrame)
         assert df.shape[0] == 15
         assert "distance" in df.columns
-        assert "weight" in df.columns
         assert "angle_2d" in df.columns
 
 

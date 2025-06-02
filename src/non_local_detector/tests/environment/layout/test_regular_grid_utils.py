@@ -101,7 +101,6 @@ def test_create_regular_grid_connectivity_2d_orthogonal():
     # Check edge attributes
     for u, v, d in graph.edges(data=True):
         assert "distance" in d
-        assert "weight" in d
         assert "vector" in d
         assert "edge_id" in d
 

@@ -31,11 +31,11 @@ class LayoutEngine(Protocol):
               in the original full conceptual grid.
         **Mandatory Edge Attributes**:
             - 'distance': float - Euclidean distance between connected bin centers.
-            - 'weight': float - Cost for pathfinding, often equals 'distance'.
-        **Recommended Edge Attributes**:
             - 'vector': Tuple[float, ...] - Displacement vector between centers.
-            - 'angle_2d': Optional[float] - Angle of displacement for 2D layouts.
             - 'edge_id': int - Unique ID for the edge within this graph.
+        **Recommended Edge Attributes**:
+            - 'angle_2d': Optional[float] - Angle of displacement for 2D layouts.
+
     is_1d : bool
         True if the layout represents a primarily 1-dimensional structure
         (e.g., a linearized track), False otherwise.

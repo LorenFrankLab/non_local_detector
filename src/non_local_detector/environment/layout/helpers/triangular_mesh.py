@@ -210,7 +210,6 @@ def _build_mesh_connectivity_graph(
                         active_idx_u,
                         active_idx_v,
                         distance=distance,
-                        weight=1 / distance if distance != 0 else np.inf,
                         vector=tuple(displacement_vector.tolist()),
                         angle_2d=angle,
                     )

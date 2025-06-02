@@ -459,7 +459,4 @@ def test_layout_engine_protocol_adherence(
             assert isinstance(
                 edge_data["distance"], (float, np.floating)
             ), f"{layout_kind} edge 'distance' not float"
-            assert (
-                "weight" in edge_data
-            ), f"{layout_kind} edge missing 'weight'"  # Usually present
             assert "edge_id" in edge_data  # Usually present

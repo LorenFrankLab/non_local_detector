@@ -202,7 +202,6 @@ def _create_graph_layout_connectivity_graph(
         - 'source_edge_id': int, ID of the original graph edge this bin is on.
         Edge attributes:
         - 'distance': float, Euclidean distance between connected N-D bin centers.
-        - 'weight': float, Typically same as 'distance'.
         - 'vector': tuple, Displacement vector in N-D.
         - 'angle_2d': float, (For 2D) angle of the displacement vector.
         - 'edge_id': int, Unique ID for this edge within the connectivity graph.
@@ -256,7 +255,6 @@ def _create_graph_layout_connectivity_graph(
                 - bin_centers_nd[active_mask][bin_ind2]
             )
             dist = float(np.linalg.norm(displacement_vector))
-            weight = 1 / dist if dist > 0 else np.inf
 
             edges_to_add.append(
                 (
@@ -264,7 +262,6 @@ def _create_graph_layout_connectivity_graph(
                     int(bin_ind2),
                     {
                         "distance": dist,
-                        "weight": float(weight),
                         "vector": tuple(displacement_vector.tolist()),
                         "angle_2d": math.atan2(
                             displacement_vector[1], displacement_vector[0]

@@ -140,12 +140,11 @@ def test_create_hex_connectivity_graph():
             and "source_grid_flat_index" in attrs
             and "original_grid_nd_index" in attrs
         )
-    # Edges should have 'distance', 'vector', 'weight', 'angle_2d', 'edge_id'
+    # Edges should have 'distance', 'vector', 'angle_2d', 'edge_id'
     for u, v, attrs in G.edges(data=True):
         assert (
             "distance" in attrs
             and "vector" in attrs
-            and "weight" in attrs
             and "angle_2d" in attrs
             and "edge_id" in attrs
         )
