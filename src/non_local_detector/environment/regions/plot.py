@@ -143,3 +143,4 @@ def plot_regions(
     handles, labels = ax.get_legend_handles_labels()
     if handles and add_legend:
         ax.legend(handles, labels, loc="center left", bbox_to_anchor=(1, 0.5))
+    ax.autoscale(enable=True, axis="both", tight=True)
