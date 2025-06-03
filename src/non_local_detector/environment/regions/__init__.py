@@ -26,6 +26,7 @@ from .io import (
     regions_from_json,
     regions_to_json,
 )
+from .ops import points_in_any_region, regions_containing_points
 from .plot import plot_regions
 
 __all__ = [
@@ -37,4 +38,6 @@ __all__ = [
     "load_cvat_xml",
     "mask_to_region",
     "plot_regions",
+    "points_in_any_region",
+    "regions_containing_points",
 ]
