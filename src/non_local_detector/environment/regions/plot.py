@@ -11,9 +11,13 @@ you call :func:`plot_regions`.
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
+import matplotlib.axes
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import PathPatch
+from matplotlib.path import Path as MplPath
 from numpy.typing import NDArray
 
 from ..transforms import SpatialTransform
@@ -24,9 +28,9 @@ from .core import Region, Regions
 # public helper
 # ---------------------------------------------------------------------
 def plot_regions(
-    ax,
     regions: Regions,
     *,
+    ax: Optional[matplotlib.axes.Axes] = None,
     region_names: Sequence[str] | None = None,
     default_kwargs: Mapping[str, Any] | None = None,
     world_to_pixel: SpatialTransform | None = None,
@@ -63,10 +67,6 @@ def plot_regions(
     * Polygons → `matplotlib.patches.PathPatch`
     * Legend labels default to the region name.
     """
-    # Lazy (and local) heavy imports
-    import matplotlib.pyplot as _mpl
-    from matplotlib.patches import PathPatch
-    from matplotlib.path import Path as MplPath
 
     try:
         import shapely.geometry as _shp
@@ -79,9 +79,12 @@ def plot_regions(
     if not region_names:
         return  # nothing to draw
 
+    if ax is None:
+        ax = plt.gca()
+
     for name in region_names:
         if name not in regions:
-            _mpl.warning(f"plot_regions: '{name}' not in collection; skipping.")
+            plt.warning(f"plot_regions: '{name}' not in collection; skipping.")
             continue
 
         reg: Region = regions[name]
@@ -113,7 +116,7 @@ def plot_regions(
 
         elif reg.kind == "polygon":
             if _shp is None:
-                _mpl.warning(f"Can't draw polygon '{name}': shapely not installed.")
+                plt.warning(f"Can't draw polygon '{name}': shapely not installed.")
                 continue
 
             poly = reg.data  # already shapely.Polygon
@@ -137,7 +140,7 @@ def plot_regions(
             )
             ax.add_patch(patch)
         else:
-            _mpl.warning(f"Unknown region kind '{reg.kind}' for '{name}'; skipping.")
+            plt.warning(f"Unknown region kind '{reg.kind}' for '{name}'; skipping.")
 
     # add a legend if *any* labels were produced
     handles, labels = ax.get_legend_handles_labels()
