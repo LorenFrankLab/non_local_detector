@@ -18,11 +18,10 @@ from typing import Dict, List, Optional, Tuple
 
 import networkx as nx
 import numpy as np
-import shapely.vectorized
+import shapely
 from numpy.typing import NDArray
 from scipy.spatial import Delaunay, QhullError
 from shapely.geometry import Point, Polygon
-from shapely.prepared import prep
 
 
 # --------------------------------------------------------------------------
@@ -59,9 +58,7 @@ def _generate_interior_points_for_mesh(
     if candidates.shape[0] == 0:
         return np.empty((0, 2), dtype=np.float64)
 
-    mask_pts = np.array(
-        [boundary_polygon.covers(Point(x, y)) for x, y in candidates], dtype=bool
-    )
+    mask_pts = shapely.covers(boundary_polygon, shapely.points(candidates))
     return candidates[mask_pts]
 
 
@@ -118,13 +115,7 @@ def _filter_active_simplices_by_centroid(
     # (1) compute centroids of each triangle
     triangle_vertices = points[simplices]  # (M, 3, 2)
     all_centroids = np.mean(triangle_vertices, axis=1)  # (M, 2)
-
-    prepped_boundary = prep(boundary_polygon)
-
-    active_mask = np.array(
-        [prepped_boundary.covers(Point(centroid)) for centroid in all_centroids],
-        dtype=bool,
-    )
+    active_mask = shapely.covers(boundary_polygon, shapely.points(all_centroids))
 
     active_original_indices = np.flatnonzero(active_mask)
     return active_original_indices, all_centroids

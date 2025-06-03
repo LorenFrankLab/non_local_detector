@@ -4,8 +4,9 @@ import matplotlib
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+import shapely
 from numpy.typing import NDArray
-from shapely.geometry import Point, Polygon
+from shapely.geometry import Polygon
 
 from non_local_detector.environment.layout.base import LayoutEngine
 from non_local_detector.environment.layout.helpers.regular_grid import (
@@ -111,7 +112,7 @@ class ShapelyPolygonLayout(_GridMixin):
             else np.empty((0, 2))
         )
         shapely_mask_flat = (
-            np.array([polygon.contains(Point(*p)) for p in pts_to_check])
+            shapely.contains(polygon, shapely.points(pts_to_check))
             if pts_to_check.shape[0] > 0
             else np.array([], dtype=bool)
         )
