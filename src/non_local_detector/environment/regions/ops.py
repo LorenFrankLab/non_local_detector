@@ -44,19 +44,137 @@ Examples
 ... )
 """
 
+import warnings
 from typing import TYPE_CHECKING, List, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
 import shapely.vectorized as sv
 from numpy.typing import NDArray
+from shapely.geometry import Polygon
 
 from ..transforms import SpatialTransform
 from .core import Region, Regions
 
 
+def _prepare_points(
+    pts: Union[Sequence[Sequence[float]], NDArray[np.float64]],
+    transform: Optional[SpatialTransform] = None,
+) -> NDArray[np.float64]:
+    """
+    Convert input points to a NumPy array and optionally transform them.
+
+    Parameters
+    ----------
+    pts : Union[Sequence[Sequence[float]], NDArray[np.float64]], shape (n_points, 2)
+    transform : Optional[SpatialTransform], default=None
+        If provided, a callable that maps input coordinates to the
+        Regions' coordinate space.
+
+    Returns
+    -------
+    NDArray[np.float64]
+        Processed points as an (N, 2) NumPy array of float64.
+
+    Raises
+    ------
+    ValueError
+        If points cannot be converted to shape (N, 2).
+    """
+    try:
+        processed_pts = np.asarray(pts, dtype=np.float64)
+    except Exception as e:
+        raise ValueError(f"Could not convert points to NumPy array: {e}") from e
+
+    if processed_pts.ndim == 1:  # Handle single point case [x, y]
+        if processed_pts.shape[0] == 2:
+            processed_pts = processed_pts.reshape(1, 2)
+        else:
+            raise ValueError(
+                f"Single point must have 2 coordinates, got shape {processed_pts.shape}"
+            )
+    elif processed_pts.ndim != 2 or processed_pts.shape[1] != 2:
+        raise ValueError(
+            f"Points array must be of shape (N, 2), got {processed_pts.shape}"
+        )
+
+    if processed_pts.size == 0:  # Handle empty array of points (0, 2)
+        return processed_pts  # Return as is, (0,2) array
+
+    if transform is not None:
+        processed_pts = transform(processed_pts)  # Assuming transform is callable
+    return processed_pts
+
+
+def _get_points_in_single_region_mask(
+    transformed_pts: NDArray[np.float64],
+    region: Region,
+    point_tolerance: float,
+) -> NDArray[np.bool_]:
+    """
+    Determine which points lie within a single Region.
+
+    Parameters
+    ----------
+    transformed_pts : NDArray[np.float64], shape (n_points, 2)
+        Points already in the Region's coordinate space.
+    region : Region
+        The Region object to test against.
+    point_tolerance : float
+        Tolerance for comparing query points to point Regions.
+
+    Returns
+    -------
+    in_region_mask : NDArray[np.bool_], shape (n_points,)
+        A boolean array of shape (N,) where True indicates the point is inside.
+    """
+    if transformed_pts.shape[0] == 0:
+        return np.array([], dtype=bool)
+
+    xs = transformed_pts[:, 0]
+    ys = transformed_pts[:, 1]
+
+    if region.kind == "point":
+        # Region.data for "point" is NDArray[np.float64] of shape (n_dims,)
+        if not isinstance(region.data, np.ndarray):
+            # This should ideally not happen if Region construction is correct
+            raise TypeError(
+                f"Region '{region.name}' of kind 'point' has data of type {type(region.data)}, expected np.ndarray."
+            )
+        if region.data.shape[0] != 2:  # Assuming 2D points for this module
+            warnings.warn(
+                f"Region '{region.name}' is a point of dimension {region.data.shape[0]}, but 2D comparison is being performed. This may lead to unexpected results if not 2D."
+            )
+            # Fallback or specific handling for non-2D points might be needed,
+            # for now, proceed if it's (2,) or raise error
+            if region.data.ndim != 1 or region.data.shape[0] != 2:
+                raise ValueError(
+                    f"Point region '{region.name}' data must be a 1D array of 2 coordinates for 2D comparison."
+                )
+
+        px, py = region.data[0], region.data[1]
+        return (np.abs(xs - px) <= point_tolerance) & (
+            np.abs(ys - py) <= point_tolerance
+        )
+    elif region.kind == "polygon":
+        # Region.data for "polygon" is shapely.geometry.Polygon
+        if not isinstance(region.data, Polygon):
+            # This should ideally not happen
+            raise TypeError(
+                f"Region '{region.name}' of kind 'polygon' has data of type {type(region.data)}, expected shapely.geometry.Polygon."
+            )
+        return sv.contains(
+            region.data, xs, ys
+        )  # pyright: ignore [reportUnknownMemberType]
+    else:  # Should not be reached if Region.kind is properly constrained by Literal type
+        warnings.warn(
+            f"Region '{region.name}' has unknown kind '{region.kind}'. Skipping."
+        )
+        return np.zeros(transformed_pts.shape[0], dtype=bool)
+
+
 def points_in_any_region(
-    pts: Union[Sequence[Sequence[float]], NDArray[np.floating]],
+    pts: Union[Sequence[Sequence[float]], NDArray[np.float64]],
     regions: Regions,
     *,
     transform: Optional[SpatialTransform] = None,
@@ -67,167 +185,144 @@ def points_in_any_region(
 
     Parameters
     ----------
-    pts : Union[Sequence[Sequence[float]], NDArray[np.floating]]
-        Array-like of shape (n_points, 2). If `transform` is not None, coordinates
-        are assumed to be in pixel space; otherwise, they must match the coordinate
-        space of each Region.data (Shapely geometry).
+    pts : Union[Sequence[Sequence[float]], NDArray[np.float64]], shape (n_points, 2)
+        Array-like of points. If `transform` is not None, coordinates
+        are assumed to be in the input space of the transform; otherwise,
+        they must match the coordinate space of each Region.data.
     regions : Regions
-        A container of Region objects whose `data` attribute is a Shapely geometry
-        (e.g., polygon or point). Polygons may be tested with `contains` or `covers`.
+        A container of Region objects.
     transform : Optional[SpatialTransform], default=None
-        If provided, a SpatialTransform with a `.forward()` method that maps
-        pixel→world coordinates. The entire (n_points, 2) array is passed through
-        `transform.forward` before testing.
+        If provided, a callable that maps input coordinates to
+        the Regions' coordinate space.
     point_tolerance : float, default=1e-8
-        Tolerance for comparing query points to point Regions. Two coordinates are
-        considered equal if their absolute difference is less than `point_tolerance`.
-
+        Tolerance for comparing query points to point Regions.
 
     Returns
     -------
-    mask : NDArray[np.bool_]
-        A boolean array of shape (n_points,) where `mask[i]` is True if and only
-        if the i-th point is inside at least one Region.
-
-    Notes
-    -----
-    - Uses Shapely's vectorized predicates (`shapely.vectorized.contains` / `.covers`)
-      to test all points against each polygon in one call, which is significantly
-      faster than looping over points in Python.
-    - Early exits once all points are marked inside at least one region.
+    mask : NDArray[np.bool_], shape (n_points,)
+        A boolean array where `mask[i]` is True if the i-th point
+        is inside at least one Region.
     """
-    pts = np.asarray(pts, dtype=float).reshape(-1, 2)
-    n_points = pts.shape[0]
+    transformed_pts = _prepare_points(pts, transform)
+    n_points = transformed_pts.shape[0]
 
-    if transform is not None:
-        pts = transform(pts)
+    if n_points == 0:
+        return np.array([], dtype=bool)
+    if not regions:  # No regions to check against
+        return np.zeros(n_points, dtype=bool)
 
-    xs = pts[:, 0]
-    ys = pts[:, 1]
-    mask_any = np.zeros(n_points, dtype=bool)
+    overall_mask = np.zeros(n_points, dtype=bool)
 
-    for reg in regions.values():
-        if reg.kind == "point":
-            # Point Region: data is a NumPy array [px, py]
-            px, py = reg.data  # type: ignore[attr-defined]
-            # Compute mask where both |x - px| < tol and |y - py| < tol
-            point_mask = (np.abs(xs - px) <= point_tolerance) & (
-                np.abs(ys - py) <= point_tolerance
-            )
-            mask_any |= point_mask
-        else:
-            # Polygon or other geometry: data is a Shapely geometry
-            geom = reg.data  # type: ignore[attr-defined]
-            mask_any |= sv.contains(geom, xs, ys)
-
-        if mask_any.all():
+    for region in regions.values():
+        region_mask = _get_points_in_single_region_mask(
+            transformed_pts, region, point_tolerance
+        )
+        overall_mask |= region_mask
+        if overall_mask.all():  # Early exit if all points are already covered
             break
-
-    return mask_any
+    return overall_mask
 
 
 def regions_containing_points(
-    pts: Union[Sequence[Sequence[float]], NDArray[np.floating]],
+    pts: Union[Sequence[Sequence[float]], NDArray[np.float64]],
     regions: Regions,
     *,
     transform: Optional[SpatialTransform] = None,
     region_names: Optional[Sequence[str]] = None,
     return_dataframe: bool = True,
     point_tolerance: float = 1e-8,
-) -> Union[List[List[Region]], NDArray[np.bool_], pd.DataFrame]:
+) -> Union[List[List[Region]], pd.DataFrame]:
     """
-    For each point, return either a list of all Regions that contain it, or a DataFrame
-    where each column corresponds to a region and values are booleans indicating
-    membership.
+    For each point, identify all Regions that contain it.
 
     Parameters
     ----------
-    pts : Union[Sequence[Sequence[float]], NDArray[np.floating]]
-        Array-like of shape (n_points, 2). If `transform` is not None, these are
-        assumed to be in pixel space; otherwise they must match the coordinate
-        space of Region.data.
+    pts : Union[Sequence[Sequence[float]], NDArray[np.float64]], shape (n_points, 2)
+        Array-like of points. If `transform` is not None, these are
+        assumed to be in the input space of the transform; otherwise,
+        they must match the coordinate space of Region.data.
     regions : Regions
-        A container of Region objects (each with a Shapely geometry in `.data`).
+        A container of Region objects.
     transform : Optional[SpatialTransform], default=None
-        If provided, a SpatialTransform with a `.forward()` method that maps pixel→world.
-        Applied once to the entire (n_points, 2) array.
+        If provided, a callable that maps input coordinates to
+        the Regions' coordinate space.
     region_names : Optional[Sequence[str]], default=None
-        If provided, only consider Regions whose `name` is in this sequence. If None,
-        all regions in `regions` are used.
-    return_dataframe : bool, default=False
+        If provided, only consider Regions whose `name` is in this sequence.
+        If None, all regions in `regions` are used.
+    return_dataframe : bool, default=True
         If True, return a pandas DataFrame of shape (n_points, n_selected_regions),
-        where each column is the region name and each value is True/False for membership.
+        where each column is the region name and each value is True/False.
         If False, return a list of lists: each sublist contains Region objects
         that contain the corresponding point.
     point_tolerance : float, default=1e-8
-        Tolerance for comparing query points to point Regions. Two coordinates are
-        considered equal if their absolute difference is less than `point_tolerance`.
+        Tolerance for comparing query points to point Regions.
 
     Returns
     -------
-    result : Union[List[List[Region]], pandas.DataFrame]
-        - If `return_dataframe` is False: a list of length n_points. Each element is
-          a list of Region objects that contain the corresponding point. If no region
-          contains the point, the list is empty.
-        - If `return_dataframe` is True: a pandas DataFrame with index range(n_points)
-          and columns equal to selected region names. Entry (i, col) is True if pts[i]
-          is inside that region.
+    Union[List[List[Region]], pd.DataFrame], length n_points
+        - If `return_dataframe` is False: A list of length n_points. Each element is
+          a list of :class:`Region` objects that contain the corresponding point.
+        - If `return_dataframe` is True: A pandas DataFrame with index
+          range(n_points) and columns equal to selected region names.
+          Entry (i, col) is True if pts[i] is inside that region.
 
     Notes
     -----
     - If `region_names` contains names not found in `regions`, they are silently ignored.
-    - Requires pandas if `return_dataframe` is True (imported within function).
     """
-    pts = np.asarray(pts, dtype=float).reshape(-1, 2)
-    n_points = pts.shape[0]
+    transformed_pts = _prepare_points(pts, transform)
+    n_points = transformed_pts.shape[0]
 
-    if transform is not None:
-        pts = transform(pts)
-
-    xs, ys = pts.T
+    if n_points == 0:  # Handle case with no input points
+        if return_dataframe:
+            return pd.DataFrame(
+                columns=(
+                    region_names
+                    if region_names is not None
+                    else [r.name for r in regions.values()]
+                )
+            )
+        else:
+            return []
 
     # Filter regions by name if requested
+    selected_regions: List[Region]
     if region_names is not None:
-        selected = [reg for reg in regions.values() if reg.name in set(region_names)]
+        # Maintain order of region_names if possible, and ensure uniqueness
+        name_set = set(region_names)
+        selected_regions = [
+            regions[name]
+            for name in region_names
+            if name in regions and name in name_set
+        ]
     else:
-        selected = list(regions.values())
+        selected_regions = list(regions.values())
+
+    if not selected_regions and return_dataframe:  # No regions to form columns
+        return pd.DataFrame(index=np.arange(n_points))
 
     if return_dataframe:
-        # Initialize a DataFrame with shape (n_points, len(selected))
+        # Initialize a DataFrame with shape (n_points, len(selected_regions))
+        # Using list comprehension for column names ensures they match selected_regions order
+        df_columns = [reg.name for reg in selected_regions]
         df = pd.DataFrame(
-            data=np.zeros((n_points, len(selected)), dtype=bool),
             index=np.arange(n_points),
-            columns=[reg.name for reg in selected],
+            columns=df_columns,
+            dtype=bool,
         )
-        # Fill each column by vectorized test
-        for idx, reg in enumerate(selected):
-            if reg.kind == "point":
-                # Point Region: data is a NumPy array [px, py]
-                px, py = reg.data
-                # Compute mask where both |x - px| < tol and |y - py| < tol
-                point_mask = (np.abs(xs - px) <= point_tolerance) & (
-                    np.abs(ys - py) <= point_tolerance
-                )
-                df.iloc[:, idx] = point_mask
-            else:
-                df.iloc[:, idx] = sv.contains(reg.data, xs, ys)
-        return df
-
-    # Otherwise, build list of lists of Region objects
-    output: List[List[Region]] = [[] for _ in range(n_points)]
-    for region in selected:
-        if region.kind == "point":
-            # Point Region: data is a NumPy array [px, py]
-            px, py = region.data
-            # Compute mask where both |x - px| < tol and |y - py| < tol
-            point_mask = (np.abs(xs - px) <= point_tolerance) & (
-                np.abs(ys - py) <= point_tolerance
+        for reg in selected_regions:
+            df[reg.name] = _get_points_in_single_region_mask(
+                transformed_pts, reg, point_tolerance
             )
-            matching_indices = np.nonzero(point_mask)[0]
-        else:
-            # Polygon or other geometry: data is a Shapely geometry
-            matching_indices = np.nonzero(sv.contains(region.data, xs, ys))[0]
-        for i in matching_indices:
-            output[i].append(region.name)
-
-    return output
+        return df
+    else:
+        # Build list of lists of Region objects
+        output: List[List[Region]] = [[] for _ in range(n_points)]
+        for region in selected_regions:
+            point_mask = _get_points_in_single_region_mask(
+                transformed_pts, region, point_tolerance
+            )
+            # Iterate through points that are in the current region
+            for i in np.flatnonzero(point_mask):
+                output[i].append(region.name)
+        return output
