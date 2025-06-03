@@ -13,7 +13,7 @@ import json
 import warnings
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 import numpy as np
 import shapely.geometry as shp
@@ -48,7 +48,7 @@ def regions_from_json(path: str | Path) -> Regions:
 
 
 # --------------------------------------------------------------------------
-# 2.  LabelMe / CVAT / VIA-style polygon JSON  → Regions
+# 2.  LabelMe / CVAT / VIA-style polygon JSON/XML  → Regions
 # --------------------------------------------------------------------------
 def load_labelme_json(
     json_path: str | Path,
@@ -112,6 +112,16 @@ def load_cvat_xml(xml_path: str | Path, *, pixel_to_world=None) -> Regions:
     root = tree.getroot()
     regions = []
 
+    # Extract label → color mapping from XML
+    label_colors = {}
+    labels_elem = root.find(".//labels")
+    if labels_elem is not None:
+        for label_elem in labels_elem.findall("label"):
+            name = label_elem.findtext("name")
+            color = label_elem.findtext("color")
+            if name and color:
+                label_colors[name] = color
+
     # Keep track of label counts to generate unique names
     label_counts = {}
 
@@ -128,17 +138,12 @@ def load_cvat_xml(xml_path: str | Path, *, pixel_to_world=None) -> Regions:
         for polygon in image.findall("polygon"):
             label = polygon.get("label")
             points_str = polygon.get("points")
-            color = polygon.get("color")  # CVAT color
             if not points_str:
                 continue
+            color = label_colors.get(label)
             pts_px = _parse_cvat_points(points_str)
             pts_cm = pixel_to_world(pts_px) if pixel_to_world else pts_px
             poly = shp.Polygon(pts_cm)
-            poly = shp.polygon.orient(poly, sign=1.0)
-            # Skip polygons that are still invalid or empty
-            if not poly.is_valid or poly.area == 0:
-                # Try to fix invalid polygon by buffering zero
-                poly = poly.buffer(0)
             regions.append(
                 Region(
                     name=unique_name(label),
@@ -236,7 +241,7 @@ def mask_to_region(
     mask_img: NDArray[np.bool_],
     *,
     region_name: str,
-    pixel_to_world: SpatialTransform | None = None,
+    pixel_to_world: Optional[SpatialTransform] = None,
     approx_tol_px: float = 1.0,
 ) -> Region:
     """
@@ -247,8 +252,7 @@ def mask_to_region(
     """
     try:
         import cv2  # heavy import
-        import shapely.geometry as shp
-    except ModuleNotFoundError as exc:
+    except ImportError as exc:
         raise RuntimeError("mask_to_region() needs opencv-python and shapely") from exc
 
     if mask_img.dtype != np.uint8:
@@ -274,7 +278,7 @@ def mask_to_region(
 # 4.  Utility: Regions → pandas DataFrame  (optional dependency)
 # --------------------------------------------------------------------------
 def regions_to_dataframe(regions: Regions):
-    """Return a *pandas* DataFrame summary (no heavy deps in caller)."""
+    """Return a *pandas* DataFrame summary."""
     import pandas as pd  # optional import
 
     records: list[Mapping[str, Any]] = []
