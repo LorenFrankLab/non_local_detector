@@ -119,19 +119,12 @@ def _filter_active_simplices_by_centroid(
     triangle_vertices = points[simplices]  # (M, 3, 2)
     all_centroids = np.mean(triangle_vertices, axis=1)  # (M, 2)
 
-    # (2) first pass: does the centroid lie in (or on) the boundary?
-    mask_centroids = np.array(
-        [boundary_polygon.covers(Point(x, y)) for x, y in all_centroids], dtype=bool
+    prepped_boundary = prep(boundary_polygon)
+
+    active_mask = np.array(
+        [prepped_boundary.covers(Point(centroid)) for centroid in all_centroids],
+        dtype=bool,
     )
-
-    active_mask = np.zeros(mask_centroids.shape[0], dtype=bool)
-    prepped = prep(boundary_polygon)
-
-    for idx in np.flatnonzero(mask_centroids):
-        # If centroid is covered, then check each of the 3 vertices
-        verts = triangle_vertices[idx]  # shape (3, 2)
-        if all(prepped.covers(Point(v)) for v in verts):
-            active_mask[idx] = True
 
     active_original_indices = np.flatnonzero(active_mask)
     return active_original_indices, all_centroids
