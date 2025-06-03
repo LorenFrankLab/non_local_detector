@@ -163,6 +163,7 @@ class Environment:
         layout: LayoutEngine = RegularGridLayout,
         layout_type_used: Optional[str] = None,
         layout_params_used: Optional[Dict[str, Any]] = None,
+        regions: Optional[Regions] = None,
     ):
         """
         Initialize the Environment.
@@ -213,7 +214,15 @@ class Environment:
         self._is_fitted = False  # Will be set by _setup_from_layout
 
         self._setup_from_layout()  # Populate attributes from the built layout
-        self.regions = Regions()
+        if regions is not None:
+            if not isinstance(regions, Regions):
+                raise TypeError(
+                    f"Expected 'regions' to be a Regions instance, got {type(regions)}."
+                )
+            self.regions = regions
+        else:
+            # Initialize with an empty Regions instance if not provided
+            self.regions = Regions()
 
     def __repr__(self: "Environment") -> str:
         """
@@ -614,6 +623,7 @@ class Environment:
         kind: str,
         layout_params: Dict[str, Any],
         name: str = "",
+        regions: Optional[Regions] = None,
     ) -> Environment:
         """
         Create an Environment with a specified layout type and its build parameters.
@@ -628,6 +638,8 @@ class Environment:
             method of the chosen `LayoutEngine`.
         name : str, optional
             A name for the created environment. Defaults to "".
+        regions : Optional[Regions], optional
+            A Regions instance to manage symbolic spatial regions within the environment.
 
         Returns
         -------
@@ -636,7 +648,7 @@ class Environment:
 
         """
         layout_instance = create_layout(kind=kind, **layout_params)
-        return cls(name, layout_instance, kind, layout_params)
+        return cls(name, layout_instance, kind, layout_params, regions=regions)
 
     @property
     def is_1d(self) -> bool:
