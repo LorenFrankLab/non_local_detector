@@ -16,7 +16,7 @@ the x-axis unless you chain additional transforms.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Optional, Protocol, Union, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -70,7 +70,7 @@ def identity() -> Affine2D:
 
 
 # Factory helpers for the most common ops ---------------------------------
-def scale_2d(sx: float = 1.0, sy: float | None = None) -> Affine2D:
+def scale_2d(sx: float = 1.0, sy: Optional[float] = None) -> Affine2D:
     """Uniform or anisotropic scaling."""
     sy = sx if sy is None else sy
     return Affine2D(np.array([[sx, 0.0, 0.0], [0.0, sy, 0.0], [0.0, 0.0, 1.0]]))
@@ -100,7 +100,7 @@ def flip_y(frame_height_px: float) -> Affine2D:
 # Quick NumPy helpers that *internally* build and apply Affine2D
 # ---------------------------------------------------------------------
 def flip_y_data(
-    data: NDArray[np.float64] | tuple | list,
+    data: Union[NDArray[np.float64], tuple, list],
     frame_size_px: tuple[float, float],
 ) -> NDArray[np.float64]:
     """
@@ -120,21 +120,37 @@ def flip_y_data(
 
 
 def convert_to_cm(
-    data_px: NDArray[np.float64] | tuple | list,
+    data_px: Union[NDArray[np.float64], tuple, list],
     frame_size_px: tuple[float, float],
     cm_per_px: float = 1.0,
 ) -> NDArray[np.float64]:
-    """
-    Pixel  →  centimetre coordinates *and* y-flip in one shot.
+    """Convert pixel coordinates to centimeter coordinates.
+
+    Pixel  →  centimeter coordinates *and* y-flip in one shot.
 
     Internally constructs ``scale_2d(cm_per_px) @ flip_y(H)`` and applies it.
+
+    Parameters
+    ----------
+    data_px : array-like
+        Input coordinates in pixel space, shape (..., 2).
+    frame_size_px : tuple[float, float]
+        Size of the video frame in pixels (width, height).
+    cm_per_px : float, optional
+        Conversion factor from pixels to centimeters (default is 1.0).
+
+    Returns
+    -------
+    NDArray[np.float64]
+        Converted coordinates in centimeters, shape (..., 2).
+
     """
     T = scale_2d(cm_per_px) @ flip_y(frame_height_px=frame_size_px[1])
     return T(np.asanyarray(data_px, dtype=float))
 
 
 def convert_to_pixels(
-    data_cm: NDArray[np.float64] | tuple | list,
+    data_cm: Union[NDArray[np.float64], tuple, list],
     frame_size_px: tuple[float, float],
     cm_per_px: float = 1.0,
 ) -> NDArray[np.float64]:
