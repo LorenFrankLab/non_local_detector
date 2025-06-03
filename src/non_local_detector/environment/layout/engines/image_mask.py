@@ -120,7 +120,13 @@ class ImageMaskLayout(_GridMixin):
         xv, yv = np.meshgrid(
             x_centers, y_centers, indexing="xy"
         )  # x is cols, y is rows
-        full_grid_bin_centers = np.stack((xv.ravel(), yv.ravel()), axis=1)
+        full_grid_bin_centers = np.stack(
+            (
+                yv.ravel(),
+                xv.ravel(),
+            ),
+            axis=1,
+        )
 
         self.active_mask = image_mask
         self.bin_centers = full_grid_bin_centers[self.active_mask.ravel()]
