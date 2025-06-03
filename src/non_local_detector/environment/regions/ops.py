@@ -45,12 +45,13 @@ Examples
 """
 
 import warnings
-from typing import TYPE_CHECKING, List, Optional, Sequence, Union
+from typing import List, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
-import shapely.vectorized as sv
+import shapely
 from numpy.typing import NDArray
+from shapely import Polygon, points
 from shapely.geometry import Polygon
 
 from ..transforms import SpatialTransform
@@ -110,6 +111,7 @@ def _get_points_in_single_region_mask(
     transformed_pts: NDArray[np.float64],
     region: Region,
     point_tolerance: float,
+    include_boundary: bool = True,
 ) -> NDArray[np.bool_]:
     """
     Determine which points lie within a single Region.
@@ -122,6 +124,8 @@ def _get_points_in_single_region_mask(
         The Region object to test against.
     point_tolerance : float
         Tolerance for comparing query points to point Regions.
+    include_boundary : bool, default=True
+        If True, points on the boundary of the polygon are considered inside.
 
     Returns
     -------
@@ -135,7 +139,6 @@ def _get_points_in_single_region_mask(
     ys = transformed_pts[:, 1]
 
     if region.kind == "point":
-        # Region.data for "point" is NDArray[np.float64] of shape (n_dims,)
         if not isinstance(region.data, np.ndarray):
             # This should ideally not happen if Region construction is correct
             raise TypeError(
@@ -143,7 +146,8 @@ def _get_points_in_single_region_mask(
             )
         if region.data.shape[0] != 2:  # Assuming 2D points for this module
             warnings.warn(
-                f"Region '{region.name}' is a point of dimension {region.data.shape[0]}, but 2D comparison is being performed. This may lead to unexpected results if not 2D."
+                f"Region '{region.name}' is a point of dimension {region.data.shape[0]}, but 2D comparison "
+                "is being performed. This may lead to unexpected results if not 2D."
             )
             # Fallback or specific handling for non-2D points might be needed,
             # for now, proceed if it's (2,) or raise error
@@ -163,9 +167,14 @@ def _get_points_in_single_region_mask(
             raise TypeError(
                 f"Region '{region.name}' of kind 'polygon' has data of type {type(region.data)}, expected shapely.geometry.Polygon."
             )
-        return sv.contains(
-            region.data, xs, ys
-        )  # pyright: ignore [reportUnknownMemberType]
+        point_geometries = points(
+            transformed_pts
+        )  # Vectorized creation of Point objects
+
+        if include_boundary:
+            return shapely.covers(region.data, point_geometries)
+        else:
+            return shapely.contains(region.data, point_geometries)
     else:  # Should not be reached if Region.kind is properly constrained by Literal type
         warnings.warn(
             f"Region '{region.name}' has unknown kind '{region.kind}'. Skipping."
