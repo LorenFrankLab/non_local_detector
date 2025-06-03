@@ -1,10 +1,8 @@
 from typing import Literal, Optional
 
-import jax
-import jax.numpy as jnp
-import jax.scipy.linalg
 import networkx as nx
 import numpy as np
+import scipy.sparse.linalg
 from numpy.typing import NDArray
 
 
@@ -30,7 +28,7 @@ def compute_diffusion_kernels(
     bandwidth_sigma: float,
     bin_sizes: Optional[NDArray] = None,
     mode: Literal["transition", "density"] = "transition",
-) -> jnp.ndarray:
+) -> np.ndarray:
     """
     Computes a diffusion-based kernel for all bins (nodes) of `graph` via
     matrix-exponential of a (possibly volume-corrected) graph-Laplacian.
@@ -65,30 +63,25 @@ def compute_diffusion_kernels(
     _assign_gaussian_weights_from_distance(graph, bandwidth_sigma)
 
     # 2) Build unnormalized Laplacian L = D - W
-    L = jnp.array(
-        nx.laplacian_matrix(graph, nodelist=range(n_bins), weight="weight").toarray(),
-        dtype=jnp.float32,
-    )
+    L = nx.laplacian_matrix(graph, nodelist=range(n_bins), weight="weight")
 
     # 3) If bin_sizes is given, form M⁻¹ = diag(1/bin_sizes),
     #    then replace L ← M⁻¹ @ L (so we solve du/dt = - M⁻¹ L u).
     if bin_sizes is not None:
-        areas = jnp.array(bin_sizes, dtype=jnp.float32)
-        if areas.shape != (n_bins,):
+
+        if bin_sizes.shape != (n_bins,):
             raise ValueError(
-                f"bin_sizes must have shape ({n_bins},), but got {areas.shape}."
+                f"bin_sizes must have shape ({n_bins},), but got {bin_sizes.shape}."
             )
-        M_inv = jnp.diag(1.0 / areas)  # shape = (n_bins, n_bins)
+        M_inv = np.diag(1.0 / bin_sizes)  # shape = (n_bins, n_bins)
         L = M_inv @ L  # now L = M⁻¹ (D - W)
-    else:
-        areas = None
 
     # 4) Exponentiate: kernel = exp( - (σ^2 / 2) * L )
     t = bandwidth_sigma**2 / 2.0
-    kernel = jax.scipy.linalg.expm(-t * L)
+    kernel = scipy.sparse.linalg.expm(-t * L)
 
     # 5) Clip tiny negative noise to zero
-    kernel = jnp.clip(kernel, a_min=0.0, a_max=None)
+    kernel = np.clip(kernel, a_min=0.0, a_max=None)
 
     # 6) Final normalization:
     #   - If mode="transition":  ∑_i K[i,j] = 1  (pure discrete)
@@ -98,15 +91,15 @@ def compute_diffusion_kernels(
         mass_out = kernel.sum(axis=0, keepdims=True)  # shape = (1, n_bins)
         # scale = 1 / mass_out[j]  (so that ∑_i K[i,j] = 1)
     elif mode == "density":
-        if areas is None:
+        if bin_sizes is None:
             raise ValueError("`mode='density'` requires a non-None `bin_sizes` array.")
         # Compute mass_out[j] = ∑_i [kernel[i,j] * areas[i]]
         # shape = (1, n_bins)
-        mass_out = (kernel * areas[:, None]).sum(axis=0, keepdims=True)
+        mass_out = (kernel * bin_sizes[:, None]).sum(axis=0, keepdims=True)
         # scale[j] = 1 / mass_out[j]  (so that ∑_i [K[i,j]*areas[i]] = 1)
     else:
         raise ValueError(f"Invalid mode '{mode}'. Choose 'transition' or 'density'.")
-    scale = jnp.where(mass_out == 0.0, 0.0, 1.0 / mass_out)  # (1, n_bins)
+    scale = np.where(mass_out == 0.0, 0.0, 1.0 / mass_out)  # (1, n_bins)
     kernel = kernel * scale
 
     return kernel
