@@ -13,9 +13,10 @@ import json
 import warnings
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Union
 
 import numpy as np
+import pandas as pd
 import shapely.geometry as shp
 from numpy.typing import NDArray
 
@@ -28,8 +29,21 @@ from .core import Region, Regions
 _SCHEMA_TAG = "Regions-v1"
 
 
-def regions_to_json(regions: Regions, path: str | Path, *, indent: int = 2) -> None:
-    """Write a list-of-dicts file that any language can read."""
+def regions_to_json(
+    regions: Regions, path: Union[str, Path], *, indent: int = 2
+) -> None:
+    """Write a list-of-dicts file that any language can read.
+
+    Parameters
+    ----------
+    regions : Regions
+        Collection of regions to write.
+    path : str or Path
+        Destination file path.
+    indent : int, optional
+        Indentation level for the JSON file. Default is 2 spaces.
+
+    """
     payload = {
         "format": _SCHEMA_TAG,
         "regions": [reg.to_dict() for reg in regions.values()],
@@ -37,8 +51,19 @@ def regions_to_json(regions: Regions, path: str | Path, *, indent: int = 2) -> N
     Path(path).write_text(json.dumps(payload, indent=indent))
 
 
-def regions_from_json(path: str | Path) -> Regions:
-    """Load the schema written by :func:`regions_to_json`."""
+def regions_from_json(path: Union[str, Path]) -> Regions:
+    """Load the schema written by :func:`regions_to_json`.
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to the JSON file containing regions.
+
+    Returns
+    -------
+    Regions
+        A collection of :class:`Region` objects representing the shapes in the JSON.
+    """
     blob = json.loads(Path(path).read_text())
     if blob.get("format") != _SCHEMA_TAG:
         warnings.warn(
@@ -51,9 +76,9 @@ def regions_from_json(path: str | Path) -> Regions:
 # 2.  LabelMe / CVAT / VIA-style polygon JSON/XML  → Regions
 # --------------------------------------------------------------------------
 def load_labelme_json(
-    json_path: str | Path,
+    json_path: Union[str, Path],
     *,
-    pixel_to_world: SpatialTransform | None = None,
+    pixel_to_world: Optional[SpatialTransform] = None,
     label_key: str = "label",
     points_key: str = "points",
 ) -> Regions:
@@ -62,9 +87,9 @@ def load_labelme_json(
 
     Parameters
     ----------
-    pixel_to_world
-        Callable mapping *(N,2)* **pixel** coords → centimetre coords.
-        Pass ``None`` if the file is *already* in cm.
+    pixel_to_world : SpatialTransform, optional
+        Callable mapping *(N,2)* **pixel** coords → centimeter coords.
+        If `None`, the coordinates are assumed to be in pixels.
     label_key, points_key
         Keys used by the specific flavour (LabelMe default shown).
 
@@ -100,6 +125,20 @@ def load_labelme_json(
 
 
 def _parse_cvat_points(points_str: str) -> np.ndarray:
+    """Parse a CVAT-style points string into a NumPy array.
+    CVAT points are formatted as "x1,y1;x2,y2;...;xn,yn".
+
+    Parameters
+    ----------
+    points_str : str
+        String containing points in the format "x1,y1;x2,y2;...;xn,yn".
+
+    Returns
+    -------
+    parsed_points : np.ndarray, shape (N, 2)
+        Parsed points as floats.
+
+    """
     points = []
     for pt in points_str.strip().split(";"):
         x_str, y_str = pt.split(",")
@@ -107,7 +146,27 @@ def _parse_cvat_points(points_str: str) -> np.ndarray:
     return np.array(points)
 
 
-def load_cvat_xml(xml_path: str | Path, *, pixel_to_world=None) -> Regions:
+def load_cvat_xml(
+    xml_path: Union[str, Path], *, pixel_to_world: Optional[SpatialTransform] = None
+) -> Regions:
+    """
+    Parse a *.xml* file produced by CVAT (Computer Vision Annotation Tool).
+    This function extracts polygons, polylines, points, and boxes from the XML
+    and converts them into a collection of :class:`Region` objects.
+
+    Parameters
+    ----------
+    xml_path : str or Path
+        Path to the CVAT XML file.
+    pixel_to_world : SpatialTransform, optional
+        Callable mapping *(N,2)* **pixel** coords → centimeter coords.
+        If `None`, the coordinates are assumed to be in pixels.
+
+    Returns
+    -------
+    Regions
+        A collection of :class:`Region` objects representing the shapes in the XML.
+    """
     tree = ET.parse(xml_path)
     root = tree.getroot()
     regions = []
@@ -248,7 +307,25 @@ def mask_to_region(
     Trace the largest contour of a boolean mask into a polygon Region.
 
     * Requires **opencv-python**.
-    * Assumes **2-D** image; Y axis is *not* flipped – handle upstream if needed.
+    * Assumes **2-D** image; Y axis is *not* flipped - handle upstream if needed.
+
+    Parameters
+    ----------
+    mask_img : NDArray[np.bool_], shape (H, W)
+        Binary mask image, where `True` indicates the region of interest.
+    region_name : str
+        Name for the resulting region.
+    pixel_to_world : SpatialTransform, optional
+        Callable mapping *(N,2)* **pixel** coords → centimeter coords.
+        If `None`, the coordinates are assumed to be in pixels.
+    approx_tol_px : float, optional
+        Approximation tolerance for contour simplification in pixels.
+        Default is 1.0 pixel.
+
+    Returns
+    -------
+    Region
+        A single :class:`Region` object representing the largest contour in the mask.
     """
     try:
         import cv2  # heavy import
@@ -275,11 +352,21 @@ def mask_to_region(
 
 
 # --------------------------------------------------------------------------
-# 4.  Utility: Regions → pandas DataFrame  (optional dependency)
+# 4.  Utility: Regions → pandas DataFrame
 # --------------------------------------------------------------------------
-def regions_to_dataframe(regions: Regions):
-    """Return a *pandas* DataFrame summary."""
-    import pandas as pd  # optional import
+def regions_to_dataframe(regions: Regions) -> pd.DataFrame:
+    """Return a *pandas* DataFrame summary.
+
+    Parameters
+    ----------
+    regions : Regions
+        Collection of regions to summarize.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame with columns for region name, kind, area, and metadata.
+    """
 
     records: list[Mapping[str, Any]] = []
     for reg in regions.values():

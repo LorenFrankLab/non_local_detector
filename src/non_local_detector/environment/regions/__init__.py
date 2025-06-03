@@ -19,15 +19,24 @@ from __future__ import annotations
 from .core import Region, Regions
 
 # --- thin adapters --------------------------------------
-from .io import load_labelme_json, mask_to_region, regions_from_json, regions_to_json
+from .io import (
+    load_cvat_xml,
+    load_labelme_json,
+    mask_to_region,
+    regions_from_json,
+    regions_to_dataframe,
+    regions_to_json,
+)
 from .plot import plot_regions
 
 __all__ = [
     "Region",
     "Regions",
+    "regions_to_dataframe",
     "regions_from_json",
     "regions_to_json",
     "load_labelme_json",
+    "load_cvat_xml",
     "mask_to_region",
     "plot_regions",
 ]
