@@ -3,10 +3,6 @@ regions/core.py
 ===============
 
 Pure data layer for *continuous* regions of interest (ROIs).
-
-* Depends only on the standard library and NumPy.
-* Shapely is **optional** and imported lazily—only when you create
-  or load a polygon region.
 """
 
 from __future__ import annotations
@@ -16,16 +12,19 @@ import warnings
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 import numpy as np
 from numpy.typing import NDArray
 from shapely.geometry import Point, Polygon, mapping, shape
 
+if TYPE_CHECKING:
+    from pandas import DataFrame
+
 # ---------------------------------------------------------------------
 # Public type aliases
 # ---------------------------------------------------------------------
-PointCoords = NDArray[np.float64] | Iterable[float]
+PointCoords = NDArray[np.float64] | Iterable[float] | Point
 Kind = Literal["point", "polygon"]
 
 # ---------------------------------------------------------------------
@@ -53,7 +52,7 @@ class Region:
 
     name: str
     kind: Kind
-    data: NDArray[np.float64] | Polygon
+    data: NDArray[np.float64] | Polygon | Point
     metadata: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     # filled in post-init
@@ -67,6 +66,10 @@ class Region:
         object.__setattr__(self, "metadata", dict(self.metadata))
 
         if self.kind == "point":
+            if isinstance(self.data, Point):
+                object.__setattr__(
+                    self, "data", np.array(self.data.coords[0], dtype=float)
+                )
             arr = np.asarray(self.data, dtype=float)
             if arr.ndim != 1:
                 raise ValueError("Point data must be a 1-D array-like.")
@@ -139,7 +142,7 @@ class Regions(MutableMapping[str, Region]):
         self._store: dict[str, Region] = {}
         if items is not None:
             for reg in items:
-                self[reg.name] = reg  # reuse validation in __setitem__
+                self[reg.name] = reg
 
     def __getitem__(self, key: str) -> Region:
         return self._store[key]
@@ -228,8 +231,6 @@ class Regions(MutableMapping[str, Region]):
         ------
         KeyError
             If `region_name` is not present in this collection.
-        RuntimeError
-            If attempting to compute a polygon centroid but Shapely is not installed.
         """
         if region_name not in self._store:
             raise KeyError(f"Region '{region_name}' not found in this collection.")
@@ -275,7 +276,7 @@ class Regions(MutableMapping[str, Region]):
 
         return self.add(new_name, polygon=poly, metadata=meta)
 
-    def to_dataframe(self) -> NDArray[np.float64]:
+    def to_dataframe(self) -> DataFrame:
         """
         Convert this collection to a Pandas DataFrame.
         Requires Pandas to be installed.
@@ -299,7 +300,9 @@ class Regions(MutableMapping[str, Region]):
             "format": self._FMT,
             "regions": [r.to_dict() for r in self._store.values()],
         }
-        Path(path).write_text(json.dumps(payload, indent=indent))
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, indent=indent))
 
     @classmethod
     def from_json(cls, path: str | Path) -> "Regions":
