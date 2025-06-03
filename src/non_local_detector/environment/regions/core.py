@@ -275,6 +275,21 @@ class Regions(MutableMapping[str, Region]):
 
         return self.add(new_name, polygon=poly, metadata=meta)
 
+    def to_dataframe(self) -> NDArray[np.float64]:
+        """
+        Convert this collection to a Pandas DataFrame.
+        Requires Pandas to be installed.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with columns ['name', 'kind', 'data', 'metadata'].
+            The 'data' column contains the coordinates for points or polygons.
+        """
+        from .io import regions_to_dataframe
+
+        return regions_to_dataframe(self)
+
     # -------------- Serialization helpers ---------------------------
     _FMT = "Regions-v1"
 

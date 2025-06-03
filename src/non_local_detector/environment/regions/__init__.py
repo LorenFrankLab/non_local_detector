@@ -24,7 +24,6 @@ from .io import (
     load_labelme_json,
     mask_to_region,
     regions_from_json,
-    regions_to_dataframe,
     regions_to_json,
 )
 from .plot import plot_regions
@@ -32,7 +31,6 @@ from .plot import plot_regions
 __all__ = [
     "Region",
     "Regions",
-    "regions_to_dataframe",
     "regions_from_json",
     "regions_to_json",
     "load_labelme_json",
