@@ -11,6 +11,7 @@ dependencies:
 - pandas
 - networkx
 - xarray
+- shapely
 - scikit-learn
 - patsy
 - tqdm
