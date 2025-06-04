@@ -246,7 +246,7 @@ def _mask_to_polygon(mask: NDArray[np.uint8]) -> Polygon:
     shapely.geometry.Polygon
         A Shapely Polygon representing the mask.
     """
-    import cv2
+    import cv2  # type: ignore
 
     contours, _ = cv2.findContours(
         mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -691,7 +691,7 @@ def mask_to_region(
         A single :class:`Region` object representing the largest contour in the mask.
     """
     try:
-        import cv2  # heavy import
+        import cv2  # type: ignore
     except ImportError as exc:
         raise RuntimeError("mask_to_region() needs opencv-python and shapely") from exc
 
