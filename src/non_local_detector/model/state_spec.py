@@ -55,6 +55,30 @@ class StateSpec:
     encoding_model: Optional[EncodingModel] = None
     encoding_time_mask: Optional[Callable[..., "np.ndarray"]] = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise TypeError(f"State name must be a string, got {type(self.name)}.")
+        if self.env is not None and not isinstance(self.env, Environment):
+            raise TypeError(f"env must be an Environment, got {type(self.env)}.")
+        if not isinstance(self.obs_model, ObservationModel):
+            raise TypeError(
+                f"obs_model must be an ObservationModel, got {type(self.obs_model)}."
+            )
+        if self.encoding_model is not None and not isinstance(
+            self.encoding_model, EncodingModel
+        ):
+            raise TypeError(
+                f"encoding_model must be an EncodingModel, got {type(self.encoding_model)}."
+            )
+        if self.encoding_time_mask is not None and not callable(
+            self.encoding_time_mask
+        ):
+            raise TypeError(
+                f"encoding_time_mask must be callable, got {type(self.encoding_time_mask)}."
+            )
+        if not hasattr(self.obs_model, "log_likelihood"):
+            raise ValueError("obs_model must implement method `log_likelihood(bundle)`")
+
     # ------------------------------------------------------------------ #
     #  Convenience properties                                            #
     # ------------------------------------------------------------------ #
