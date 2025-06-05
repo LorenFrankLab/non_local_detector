@@ -46,16 +46,16 @@ def compute_diffusion_kernels(
         - "transition":  Return a purely discrete transition-matrix P so that ∑_i P[i,j] = 1.
                          (You do *not* need `bin_sizes` in this mode; if you pass it,
                          it will only be used in the exponent step to form L_vol = M^{-1} L,
-                         but the final column-normalization is "sum→1".)
+                         but the final row-normalization is "sum→1".)
         - "density":     Return a continuous-KDE kernel so that ∑_i [K[i,j] * bin_sizes[i]] = 1.
                          Requires `bin_sizes` ≢ None.  (You exponentiate M^{-1} L, then rescale
-                         each column so that its weighted-sum by bin_areas is 1.)
+                         each row so that its weighted-sum by bin_areas is 1.)
 
     Returns
     -------
     kernel : jnp.ndarray, shape (n_bins, n_bins)
-        If mode="transition":   each column j sums to 1 (∑_i K[i,j] = 1).
-        If mode="density":      each column j integrates to 1 over area
+        If mode="transition":   each row i sums to 1 (∑_i K[i,j] = 1).
+        If mode="density":      each row i integrates to 1 over area
                                  (∑_i K[i,j] * bin_sizes[i] = 1).
     """
     n_bins = graph.number_of_nodes()
@@ -87,19 +87,19 @@ def compute_diffusion_kernels(
     #   - If mode="transition":  ∑_i K[i,j] = 1  (pure discrete)
     #   - If mode="density":     ∑_i [K[i,j] * areas[i]] = 1  (continuous KDE)
     if mode == "transition":
-        # Just normalize each column so it sums to 1
-        mass_out = kernel.sum(axis=0, keepdims=True)  # shape = (1, n_bins)
+        # Just normalize each row so it sums to 1
+        mass_out = kernel.sum(axis=1, keepdims=True)  # shape = (n_bins, 1)
         # scale = 1 / mass_out[j]  (so that ∑_i K[i,j] = 1)
     elif mode == "density":
         if bin_sizes is None:
             raise ValueError("`mode='density'` requires a non-None `bin_sizes` array.")
         # Compute mass_out[j] = ∑_i [kernel[i,j] * areas[i]]
-        # shape = (1, n_bins)
-        mass_out = (kernel * bin_sizes[:, None]).sum(axis=0, keepdims=True)
+        # shape = (n_bins, 1)
+        mass_out = (kernel * bin_sizes[:, None]).sum(axis=1, keepdims=True)
         # scale[j] = 1 / mass_out[j]  (so that ∑_i [K[i,j]*areas[i]] = 1)
     else:
         raise ValueError(f"Invalid mode '{mode}'. Choose 'transition' or 'density'.")
-    scale = np.where(mass_out == 0.0, 0.0, 1.0 / mass_out)  # (1, n_bins)
+    scale = np.where(mass_out == 0.0, 0.0, 1.0 / mass_out)  # (n_bins, 1)
     kernel = kernel * scale
 
     return kernel

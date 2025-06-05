@@ -9,7 +9,7 @@ def test_diag_stickiness_basic():
     expected_P = np.array([[0.8, 0.2], [0.4, 0.6]])
     np.testing.assert_allclose(result.matrix(), expected_P)
     assert result.concentration == 1.0
-    assert result.stickiness == 0.0
+    assert np.all(result.stickiness == 0.0)
 
 
 def test_diag_stickiness_single_state():

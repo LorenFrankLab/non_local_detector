@@ -1,6 +1,6 @@
 import numpy as np
 
-from non_local_detector.transitions.discrete.stationary import Stationary
+from non_local_detector.transitions.discrete.kernels.stationary import Stationary
 
 
 class DummyDiscreteTransitionModel:

@@ -31,11 +31,11 @@ from __future__ import annotations
 
 # ---- protocol (duck-typing contract) -------------------------------------
 from .base import DiscreteTransitionModel
-from .glm import CategoricalGLM
-from .priors import get_dirichlet_prior
+from .kernels.glm import CategoricalGLM
 
 # ---- concrete implementations -------------------------------------------
-from .stationary import Stationary
+from .kernels.stationary import Stationary
+from .priors import get_dirichlet_prior
 
 # ---- convenience helpers -------------------------------------------------
 from .wrappers import diag_stickiness

@@ -2,11 +2,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .base import DiscreteTransitionModel
-from .estimation import estimate_stationary_state_transition
+from ..base import DiscreteTransitionModel
+from ..estimation import estimate_stationary_state_transition
+from ..registry import register_discrete_transition
 
 
 @dataclass
+@register_discrete_transition("stationary")
 class Stationary(DiscreteTransitionModel):
     """P(z_{t+1}|z_t) = constant matrix.
 

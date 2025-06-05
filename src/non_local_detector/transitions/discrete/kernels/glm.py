@@ -15,11 +15,12 @@ import numpy as np
 import pandas as pd
 from patsy import DesignMatrix, build_design_matrices, dmatrix
 
-from .base import DiscreteTransitionModel
-from .estimation import (
+from ..base import DiscreteTransitionModel
+from ..estimation import (
     estimate_non_stationary_state_transition,
     predict_discrete_state_transitions,
 )
+from ..registry import register_discrete_transition
 
 # --------------------------------------------------------------------------- #
 #  Type aliases                                                               #
@@ -33,6 +34,7 @@ Covariates = Union[pd.DataFrame, CovariateDict]
 #  Concrete implementation                                                    #
 # --------------------------------------------------------------------------- #
 @dataclass
+@register_discrete_transition("glm")
 class CategoricalGLM(DiscreteTransitionModel):
     """
     Categorical-GLM transition model

@@ -2,7 +2,7 @@ from typing import Union
 
 import numpy as np
 
-from .stationary import Stationary
+from .kernels.stationary import Stationary
 
 
 def _make_transition_from_diag(diag: np.ndarray) -> np.ndarray:

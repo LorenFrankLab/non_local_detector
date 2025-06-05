@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from non_local_detector.transitions.discrete.glm import CategoricalGLM
+from non_local_detector.transitions.discrete.kernels.glm import CategoricalGLM
 
 # Mocks for dependencies from .estimation
 
@@ -47,7 +47,7 @@ mock_estimation.estimate_non_stationary_state_transition = (
 sys.modules["non_local_detector.transitions.discrete.estimation"] = mock_estimation
 
 # Patch the imports in the module under test
-import non_local_detector.transitions.discrete.glm as glm_mod
+import non_local_detector.transitions.discrete.kernels.glm as glm_mod
 
 importlib.reload(glm_mod)
 CategoricalGLM = glm_mod.CategoricalGLM
