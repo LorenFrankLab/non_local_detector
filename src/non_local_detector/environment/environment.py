@@ -214,6 +214,25 @@ class Environment:
         self._is_fitted = False  # Will be set by _setup_from_layout
 
         self._setup_from_layout()  # Populate attributes from the built layout
+        if self.bin_centers is None:
+            raise RuntimeError(
+                "The provided layout does not have bin_centers defined. "
+                "Ensure the layout is properly built before creating an Environment."
+            )
+        if self.connectivity is None:
+            raise RuntimeError(
+                "The provided layout does not have connectivity defined. "
+                "Ensure the layout is properly built before creating an Environment."
+            )
+        if self.bin_centers.ndim != 2:
+            raise RuntimeError(
+                f"Expected 'bin_centers' to be a 2D array, got shape {self.bin_centers.shape}."
+            )
+        if self.connectivity.number_of_nodes() != self.bin_centers.shape[0]:
+            raise RuntimeError(
+                "The number of nodes in the connectivity graph does not match "
+                "the number of bin centers. Ensure the layout is correctly built."
+            )
         if regions is not None:
             if not isinstance(regions, Regions):
                 raise TypeError(
