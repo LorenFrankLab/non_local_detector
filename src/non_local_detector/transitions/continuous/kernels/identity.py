@@ -6,6 +6,7 @@ import numpy as np
 from ....environment import Environment
 from ..base import Array, Covariates, Kernel
 from ..registry import register_continuous_transition
+from ..utils import _handle_intra_env_kernel_edges
 
 
 @dataclass
@@ -22,8 +23,9 @@ class IdentityKernel(Kernel):
         dst_env: Optional[Environment],
         covariates: Optional[Covariates] = None,  # covariates are ignored
     ) -> Array:
-        # Only valid when both sides are atomic or identical env
-        if src_env.name != dst_env.name:
-            raise ValueError("IdentityKernel requires src_env == dst_env.")
+        transition = _handle_intra_env_kernel_edges(src_env, dst_env)
+        if transition is not None:
+            return transition
+
         src_bins = 1 if src_env is None else src_env.n_bins
         return np.eye(src_bins)

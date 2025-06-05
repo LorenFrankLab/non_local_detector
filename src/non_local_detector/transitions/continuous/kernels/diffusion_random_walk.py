@@ -53,7 +53,6 @@ class DiffusionRandomWalkKernel(Kernel):
     ) -> Array:
         # Atomic case or cross-environment jump
         transition = _handle_intra_env_kernel_edges(src_env, dst_env)
-
         if transition is not None:
             return transition
 
