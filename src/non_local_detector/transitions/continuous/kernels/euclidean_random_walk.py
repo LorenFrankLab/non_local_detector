@@ -76,12 +76,25 @@ class EuclideanRandomWalkKernel(Kernel):
         if transition is not None:
             return transition
 
+        if self.mean.shape[0] != src_env.n_dims:
+            raise ValueError(
+                "EuclideanRandomWalkKernel: mean vector length "
+                f"{self.mean.shape[0]} does not match environment dimension {src_env.n_dims}."
+            )
         # distance: shape (src_env.n_bins * src_env.n_bins, n_dims)
-        distance = (
-            src_env.bin_centers[None, :, :] - src_env.bin_centers[:, None, :]
-        ).reshape((src_env.n_bins * src_env.n_bins, src_env.n_dims))
-        gaussian = multivariate_normal(mean=self.mean, cov=self.var)
-        transition = gaussian.pdf(distance)
-        transition = transition.reshape((src_env.n_bins, src_env.n_bins))
+        n_bins, n_dims = src_env.n_bins, src_env.n_dims
+        centers = src_env.bin_centers
+        if n_bins == 0:
+            return np.zeros((0, 0))
 
-        return _normalize_row_probability(transition)
+        distance = (centers[None, :, :] - centers[:, None, :]).reshape(
+            (n_bins * n_bins, n_dims)
+        )
+        gaussian = multivariate_normal(
+            mean=self.mean, cov=self.var, allow_singular=True
+        )
+        log_pdf = gaussian.logpdf(distance)  # shape (n_bins*n_bins,)
+        log_pdf = log_pdf.reshape(n_bins, n_bins)
+        # subtract row‐max for stability
+        row_max = np.max(log_pdf, axis=1, keepdims=True)
+        return _normalize_row_probability(np.exp(log_pdf - row_max))

@@ -16,14 +16,19 @@ class EmpiricalKernel(Kernel):
     mask_key: Optional[str] = None
     speedup: int = 1
     is_time_reversed: bool = False
-    _cache: dict[int, np.ndarray] = field(default_factory=dict, init=False, repr=False)
+    _env_cache: dict[str, np.ndarray] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def _fit_empirical_matrix(
         self, env: Environment, coords: Array, mask: Array
     ) -> Array:
         coords = coords[mask]
         if coords.shape[0] < 2:
-            raise ValueError("Not enough samples after masking.")
+            raise ValueError(
+                "Not enough samples after masking. Found only "
+                f"{coords.shape[0]} samples, expected at least 2."
+            )
 
         bin_seq = env.bin_at(coords)
         src, dst = bin_seq[:-1], bin_seq[1:]
@@ -42,9 +47,14 @@ class EmpiricalKernel(Kernel):
         if transition is not None:
             return transition
 
-        env_id = id(src_env)
-        if env_id not in self._cache:
-            coords = covariates[self.samples_key]
+        env_id = src_env.name
+        if env_id not in self._env_cache:
+            try:
+                coords = covariates[self.samples_key]
+            except KeyError:
+                raise ValueError(
+                    f"EmpiricalKernel requires covariate '{self.samples_key}'."
+                )
             mask = covariates.get(self.mask_key, np.ones(len(coords), dtype=bool))
-            self._cache[env_id] = self._fit_empirical_matrix(src_env, coords, mask)
-        return self._cache[env_id]
+            self._env_cache[env_id] = self._fit_empirical_matrix(src_env, coords, mask)
+        return self._env_cache[env_id]

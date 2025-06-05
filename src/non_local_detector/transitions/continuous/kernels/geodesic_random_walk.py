@@ -96,9 +96,16 @@ class GeodesicRandomWalkKernel(Kernel):
         if transition is not None:
             return transition
 
-        distance = _geodesic_distance_matrix(src_env.connectivity, src_env.n_bins)
+        n_bins = src_env.n_bins
+        distance = _geodesic_distance_matrix(src_env.connectivity, n_bins)
         distance = distance.ravel()
-        transition = norm.pdf(distance, loc=self.mean, scale=np.sqrt(self.var))
-        transition = transition.reshape((src_env.n_bins, src_env.n_bins))
-
-        return _normalize_row_probability(transition)
+        log_pdf = norm.logpdf(distance, loc=self.mean, scale=np.sqrt(self.var))
+        log_pdf = log_pdf.reshape(n_bins, n_bins)
+        # subtract row‐max for stability
+        row_max = np.max(log_pdf, axis=1, keepdims=True)
+        transition = _normalize_row_probability(np.exp(log_pdf - row_max))
+        zero_rows = np.isclose(transition.sum(axis=1), 0.0)
+        if np.any(zero_rows):
+            transition[zero_rows, :] = 0.0
+            transition[zero_rows, zero_rows.nonzero()[0]] = 1.0
+        return transition

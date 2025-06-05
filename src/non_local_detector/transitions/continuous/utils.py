@@ -68,9 +68,11 @@ def _handle_intra_env_kernel_edges(
     n_dst_bins = get_n_bins(dst_env)
 
     if src_env is None or dst_env is None:
+        # If either environment is None, treat as atomic case (1 bin each)
         return _atomic_matrix(n_src_bins, n_dst_bins)
 
-    if src_env is not dst_env:
+    if src_env.name != dst_env.name:
+        # Cross-environment transition
         if n_dst_bins == 0:
             return np.zeros((n_src_bins, 0))
         return np.full((n_src_bins, n_dst_bins), 1.0 / n_dst_bins)  # uniform entry

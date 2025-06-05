@@ -49,6 +49,12 @@ class BlockTransition(ContinuousTransition):
     # ------------------------------------------------------------------ #
     def __post_init__(self) -> None:
         cursor = 0
+        # Order of state specs dictates the order of slices in the matrix.
+        # Check if all state names are unique.
+        state_names = {spec.name for spec in self.state_specs}
+        if len(state_names) != len(self.state_specs):
+            raise ValueError("State names must be unique.")
+
         for spec in self.state_specs:
             self._slice_of[spec.name] = slice(cursor, cursor + spec.n_bins)
             self._env_of[spec.name] = spec.env
@@ -79,9 +85,10 @@ class BlockTransition(ContinuousTransition):
             )
 
         # 2) Fill missing blocks with uniform entry
+        filled_pairs = set(self.state_map.keys())
         for src_name, src_slice in self._slice_of.items():
             for dst_name, dst_slice in self._slice_of.items():
-                if flat[src_slice, dst_slice].sum() == 0.0:
+                if (src_name, dst_name) not in filled_pairs:
                     dst_bins = dst_slice.stop - dst_slice.start
                     flat[src_slice, dst_slice] = 1.0 / dst_bins
 

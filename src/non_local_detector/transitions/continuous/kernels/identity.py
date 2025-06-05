@@ -23,7 +23,7 @@ class IdentityKernel(Kernel):
         covariates: Optional[Covariates] = None,  # covariates are ignored
     ) -> Array:
         # Only valid when both sides are atomic or identical env
-        if src_env is not dst_env:
+        if src_env.name != dst_env.name:
             raise ValueError("IdentityKernel requires src_env == dst_env.")
         src_bins = 1 if src_env is None else src_env.n_bins
         return np.eye(src_bins)

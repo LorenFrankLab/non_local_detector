@@ -26,4 +26,9 @@ class UniformKernel(Kernel):
     ) -> Array:
         src_bins = 1 if src_env is None else src_env.n_bins
         dst_bins = 1 if dst_env is None else dst_env.n_bins
+
+        if dst_bins == 0:
+            raise ValueError("Destination environment must have at least one bin.")
+        if src_bins == 0:
+            raise ValueError("Source environment must have at least one bin.")
         return np.full((src_bins, dst_bins), 1.0 / dst_bins)

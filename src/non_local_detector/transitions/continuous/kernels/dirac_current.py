@@ -22,6 +22,7 @@ import numpy as np
 from ....environment import Environment
 from ..base import Array, Covariates, Kernel
 from ..registry import register_continuous_transition
+from ..utils import _handle_intra_env_kernel_edges
 
 
 @dataclass
@@ -52,8 +53,9 @@ class DiracToCurrentSample(Kernel):
         covariates: Optional[Covariates] = None,
     ) -> Array:
         # ------------------ sanity checks -----------------------------
-        if dst_env is None:
-            return np.ones((1 if src_env is None else src_env.n_bins, 1))
+        transition = _handle_intra_env_kernel_edges(src_env, dst_env)
+        if transition is not None:
+            return transition
 
         if covariates is None or self.sample_key not in covariates:
             raise ValueError(
