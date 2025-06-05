@@ -1,8 +1,15 @@
 """
-DiracToCurrentPosition kernel
------------------------------
+DiracToCurrentSample kernel
+---------------------------
 
-Collapse from any source bin to the *current physical position* bin.
+Collapse every source bin into *one* destination bin - the bin that
+corresponds to the **current sample** of an arbitrary covariate.
+
+Examples
+--------
+*   `sample_key="pos_bin"`     - an integer bin index already in the bundle
+*   `sample_key="pos_xy"`      - a 2-D coordinate; the kernel calls
+    `dst_env.bin_at()` to obtain the index.
 """
 
 from __future__ import annotations
@@ -12,23 +19,29 @@ from typing import Optional
 
 import numpy as np
 
-from ....environment import Environment
+from ....environment import Environment  # your existing class
 from ..base import Array, Covariates, Kernel
 
 
 @dataclass
-class DiracToCurrentPosition(Kernel):
+class DiracToCurrentSample(Kernel):
     """
     Parameters
     ----------
-    position_key
-        Name of the covariate that contains the **integer** position bin index
-        for each time step (e.g., ``covariates["pos_bin"]``).
+    sample_key
+        Name of the covariate that encodes the **current location** in the
+        destination environment.  It can be either
+
+        * an **integer** array of shape ``(n_time,)`` with valid bin indices, or
+        * a **coordinate** array of shape ``(n_time, dst_env.n_dims)`` that
+          will be converted via :pyfunc:`Environment.coords_to_bins`.
     """
 
-    position_key: str = "pos_bin"
+    sample_key: str = "pos_bin"
 
-    # This kernel ignores src_env and dst_env sizes; they are supplied below.
+    # ------------------------------------------------------------------ #
+    #  Kernel API                                                        #
+    # ------------------------------------------------------------------ #
     def block(
         self,
         *,
@@ -36,22 +49,30 @@ class DiracToCurrentPosition(Kernel):
         dst_env: Optional[Environment],
         covariates: Optional[Covariates] = None,
     ) -> Array:
-        if covariates is None or self.position_key not in covariates:
+        # ------------------ sanity checks -----------------------------
+        if dst_env is None:  # collapsing into an atomic state?
+            return np.ones((1 if src_env is None else src_env.n_bins, 1))
+
+        if covariates is None or self.sample_key not in covariates:
             raise ValueError(
-                f"DiracToCurrentPosition requires covariate '{self.position_key}'."
+                f"DiracToCurrentSample requires covariate '{self.sample_key}'."
             )
 
-        # n_src and n_dst define matrix shape
+        samples: Array = covariates[self.sample_key]  # view, not copy
         n_src = 1 if src_env is None else src_env.n_bins
-        n_dst = 1 if dst_env is None else dst_env.n_bins
+        n_dst = dst_env.n_bins
 
-        pos_index: Array = covariates[self.position_key]  # shape (n_time,)
-        if pos_index.max() >= n_dst or pos_index.min() < 0:
-            raise ValueError("position index out of destination-env range.")
+        # ------------------ convert sample → bin index ----------------
+        if samples.ndim == 1 and np.issubdtype(samples.dtype, np.integer):
+            bin_indices = samples
+        else:
+            # Assume coordinates; let Environment handle discretisation
+            bin_indices = dst_env.bin_at(samples)  # shape (n_time,)
 
-        # Build the time-varying matrices and average them (if you need
-        # time-specific matrices, move this logic up one level).
-        # For static flattened kernel we produce row-identical mapping.
+        if bin_indices.max() >= n_dst or bin_indices.min() < 0:
+            raise ValueError("Sample indices out of destination-env range.")
+
+        # ------------------ build deterministic mapping ---------------
         mapping = np.zeros((n_src, n_dst))
-        mapping[:, pos_index[-1]] = 1.0  # use last observed pos for this chunk
+        mapping[:, int(bin_indices[-1])] = 1.0  # use *current* sample (last of chunk)
         return mapping

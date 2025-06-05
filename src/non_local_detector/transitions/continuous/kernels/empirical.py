@@ -14,7 +14,7 @@ from ..utils import _handle_intra_env_kernel_edges, _normalize_row_probability
 @register_continuous_transition("empirical")
 class EmpiricalKernel(Kernel):
     samples_key: str  # e.g. "pos_xy"
-    mask_key: str = "enc_mask"
+    mask_key: Optional[str] = None
     speedup: int = 1
     is_time_reversed: bool = False
     _cache: dict[int, np.ndarray] = field(default_factory=dict, init=False, repr=False)
@@ -26,7 +26,7 @@ class EmpiricalKernel(Kernel):
         if coords.shape[0] < 2:
             raise ValueError("Not enough samples after masking.")
 
-        bin_seq = env.coords_to_bins(coords)
+        bin_seq = env.bin_at(coords)
         src, dst = bin_seq[:-1], bin_seq[1:]
         H = np.histogram2d(src, dst, bins=(env.n_bins, env.n_bins))[0]
         P = _normalize_row_probability(H)
