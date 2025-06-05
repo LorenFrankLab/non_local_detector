@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Optional
 
@@ -7,7 +9,7 @@ from ....diffusion_kernels import compute_diffusion_kernels
 from ....environment import Environment
 from ..base import Array, Covariates, Kernel
 from ..registry import register_continuous_transition
-from ..utils import _handle_intra_env_kernel_edges, _normalize_row_probability
+from ..utils import _handle_intra_env_kernel_edges
 
 
 @dataclass

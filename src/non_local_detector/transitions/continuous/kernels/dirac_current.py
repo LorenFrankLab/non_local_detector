@@ -19,11 +19,13 @@ from typing import Optional
 
 import numpy as np
 
-from ....environment import Environment  # your existing class
+from ....environment import Environment
 from ..base import Array, Covariates, Kernel
+from ..registry import register_continuous_transition
 
 
 @dataclass
+@register_continuous_transition("dirac_current")
 class DiracToCurrentSample(Kernel):
     """
     Parameters
@@ -34,7 +36,7 @@ class DiracToCurrentSample(Kernel):
 
         * an **integer** array of shape ``(n_time,)`` with valid bin indices, or
         * a **coordinate** array of shape ``(n_time, dst_env.n_dims)`` that
-          will be converted via :pyfunc:`Environment.coords_to_bins`.
+          will be converted via :pyfunc:`Environment.bin_at`.
     """
 
     sample_key: str = "pos_bin"
@@ -50,7 +52,7 @@ class DiracToCurrentSample(Kernel):
         covariates: Optional[Covariates] = None,
     ) -> Array:
         # ------------------ sanity checks -----------------------------
-        if dst_env is None:  # collapsing into an atomic state?
+        if dst_env is None:
             return np.ones((1 if src_env is None else src_env.n_bins, 1))
 
         if covariates is None or self.sample_key not in covariates:
@@ -58,7 +60,7 @@ class DiracToCurrentSample(Kernel):
                 f"DiracToCurrentSample requires covariate '{self.sample_key}'."
             )
 
-        samples: Array = covariates[self.sample_key]  # view, not copy
+        samples: Array = covariates[self.sample_key]
         n_src = 1 if src_env is None else src_env.n_bins
         n_dst = dst_env.n_bins
 

@@ -12,7 +12,8 @@ file ensures all standard kernels are imported and thus registered.
 """
 
 from .diffusion_random_walk import DiffusionRandomWalkKernel
-from .dirac_current import DiracToCurrentPosition
+from .dirac_current import DiracToCurrentSample
+from .empirical import EmpiricalKernel
 from .euclidean_random_walk import EuclideanRandomWalkKernel
 from .geodesic_random_walk import GeodesicRandomWalkKernel
 from .identity import IdentityKernel
@@ -20,7 +21,8 @@ from .uniform import UniformKernel
 
 __all__ = [
     "DiffusionRandomWalkKernel",
-    "DiracToCurrentPosition",
+    "DiracToCurrentSample",
+    "EmpiricalKernel",
     "EuclideanRandomWalkKernel",
     "GeodesicRandomWalkKernel",
     "IdentityKernel",

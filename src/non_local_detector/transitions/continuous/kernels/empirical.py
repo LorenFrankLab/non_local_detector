@@ -1,8 +1,7 @@
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, Union
+from typing import Optional
 
 import numpy as np
-from scipy.stats import multivariate_normal
 
 from ....environment import Environment
 from ..base import Array, Covariates, Kernel
@@ -22,7 +21,7 @@ class EmpiricalKernel(Kernel):
     def _fit_empirical_matrix(
         self, env: Environment, coords: Array, mask: Array
     ) -> Array:
-        coords = coords[mask]  # time filter in one line
+        coords = coords[mask]
         if coords.shape[0] < 2:
             raise ValueError("Not enough samples after masking.")
 
@@ -32,15 +31,20 @@ class EmpiricalKernel(Kernel):
         P = _normalize_row_probability(H)
         return np.linalg.matrix_power(P, self.speedup) if self.speedup > 1 else P
 
+    def block(
+        self,
+        *,
+        src_env: Environment,
+        dst_env: Environment,
+        covariates: Covariates = None,
+    ) -> Array:
+        transition = _handle_intra_env_kernel_edges(src_env, dst_env)
+        if transition is not None:
+            return transition
 
-def block(self, *, src_env, dst_env, covariates=None) -> Array:
-    transition = _handle_intra_env_kernel_edges(src_env, dst_env)
-    if transition is not None:
-        return transition
-
-    env_id = id(src_env)
-    if env_id not in self._cache:
-        coords = covariates[self.samples_key]
-        mask = covariates.get(self.mask_key, np.ones(len(coords), dtype=bool))
-        self._cache[env_id] = self._fit_empirical_matrix(src_env, coords, mask)
-    return self._cache[env_id]
+        env_id = id(src_env)
+        if env_id not in self._cache:
+            coords = covariates[self.samples_key]
+            mask = covariates.get(self.mask_key, np.ones(len(coords), dtype=bool))
+            self._cache[env_id] = self._fit_empirical_matrix(src_env, coords, mask)
+        return self._cache[env_id]
