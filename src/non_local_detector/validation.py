@@ -8,11 +8,11 @@ to end-users through bundle.validate_sources().
 
 from typing import Iterable
 
-from .bundle import DecoderBatch
+from non_local_detector.bundle import DecoderBatch
 
 
 def validate_sources(batch: DecoderBatch, models: Iterable) -> None:
-    missing = set()
+    missing: set[str] = set()
     for model in models:
         for src in getattr(model, "required_sources", ()):
             # direct attribute or signal dict
