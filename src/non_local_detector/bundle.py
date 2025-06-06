@@ -36,7 +36,7 @@ def _common_length(arrays: Sequence[Array]) -> Optional[int]:
     return lengths.pop()
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class DataBundle:
     """
     Typed container for *one contiguous time chunk*.
@@ -51,10 +51,9 @@ class DataBundle:
 
     # ---- continuous recordings ----------------------------------------
     lfp: Optional[Array] = None  # (n_time,) or (n_time, n_ch)
-    calcium: Optional[Array] = None  # same
+    calcium_trace: Optional[Array] = None  # same
 
     # ---- behavioural / covariate data ---------------------------------
-    position: Optional[Array] = None  # (n_time, dims)
     covariates: Optional[Dict[str, Array]] = None
 
     # internal cache (filled in __post_init__)
@@ -63,34 +62,30 @@ class DataBundle:
     # ------------------------------------------------------------------ #
     #  Validation                                                        #
     # ------------------------------------------------------------------ #
-    def __post_init__(self) -> None:
-        time_axes: list[Array] = []
 
-        # Collect all arrays that imply a time axis
-        for arr in (
-            self.counts,
-            self.lfp,
-            self.calcium,
-            self.position,
-        ):
+    def __post_init__(self) -> None:
+        time_axes: dict[str, Array] = {}
+
+        for name in ("counts", "lfp", "calcium_trace"):
+            arr = getattr(self, name)
             if arr is not None:
-                time_axes.append(arr)
+                time_axes[name] = arr
 
         if self.covariates:
-            time_axes.extend(self.covariates.values())
+            time_axes.update(self.covariates)
 
-        # Derive common length from arrays, else from spikes / waveforms
-        n_time_arrays = _common_length(time_axes)
-        if n_time_arrays is None:
-            # Use spike-count bins length if present
-            if self.spikes is not None or self.waveforms is not None:
+        if time_axes:
+            lengths = {arr.shape[0] for arr in time_axes.values()}
+            if len(lengths) != 1:
                 raise ValueError(
-                    "Provide at least one time-binned array (e.g. `counts`) "
-                    "so `n_time` can be inferred from spike data."
+                    "Time-axis mismatch: "
+                    + ", ".join(f"{n}={arr.shape[0]}" for n, arr in time_axes.items())
                 )
-            raise ValueError("Cannot infer n_time — no time-indexed arrays provided.")
-
-        self._n_time = n_time_arrays
+            self._n_time = lengths.pop()
+        elif self.spikes:
+            self._n_time = max(st[-1] for st in self.spikes) + 1  # crude fallback
+        else:
+            raise ValueError("Cannot infer n_time — no time-indexed arrays present.")
 
     # ------------------------------------------------------------------ #
     #  Convenience properties                                            #
