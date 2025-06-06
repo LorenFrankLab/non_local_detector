@@ -27,12 +27,20 @@ def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
     softmax : np.ndarray, shape (..., n_states + 1)
         The softmax of the input values
 
+    Raises
+    ------
+    ValueError
+        If the input `y` has less than 1 dimension.
+
     Example
     -------
     >>> y = np.log([2, 3, 4])
     >>> np.allclose(centered_softmax_forward(y), [0.2, 0.3, 0.4, 0.1])
     True
     """
+    if y.ndim == 0:
+        raise ValueError("Input to centered_softmax_forward must have ndim >= 1.")
+
     if y.ndim == 1:
         y = np.append(y, 0)
     else:
@@ -60,6 +68,11 @@ def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
     >>> np.allclose(np.exp(centered_softmax_inverse(y)), np.asarray([2,3,4]))
     True
     """
+    if not np.allclose(y.sum(axis=-1), 1.0, atol=1e-8):
+        raise ValueError(
+            "Input to centered_softmax_inverse must sum to 1 along the last axis."
+        )
+
     return np.log(y[..., :-1]) - np.log(y[..., [-1]])
 
 
@@ -88,8 +101,19 @@ def estimate_joint_distribution(
     -------
     joint_distribution : np.ndarray, shape (n_time - 1, n_states, n_states)
 
+    Raises
+    ------
+    ValueError
+        If `transition_matrix` is not 2D or 3D.
+
     """
     EPS = 1e-16
+
+    if transition_matrix.ndim not in (2, 3):
+        raise ValueError(
+            f"transition_matrix must be 2D or 3D, got ndim={transition_matrix.ndim}"
+        )
+
     relative_distribution = np.where(
         np.isclose(predictive_distribution[1:], 0.0),
         EPS,
@@ -242,6 +266,11 @@ def estimate_non_stationary_state_transition(
         Optimized transition coefficients.
     estimated_transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
         Resulting non-stationary transition matrix.
+
+    Raises
+    ------
+    RuntimeError
+        If the optimization fails for any state.
     """
     # p(x_t, x_{t+1} | O_{1:T})
     joint_distribution = estimate_joint_distribution(
@@ -277,6 +306,10 @@ def estimate_non_stationary_state_transition(
             ),
             options={"disp": disp, "maxiter": maxiter},
         )
+        if not result.success:
+            raise RuntimeError(
+                f"Optimal transition coefficients failed for state {from_state}: {result.message}"
+            )
 
         estimated_transition_coefficients[:, from_state, :] = result.x.reshape(
             (n_coefficients, n_states - 1)
@@ -292,6 +325,10 @@ def estimate_non_stationary_state_transition(
     # # if any is zero, set to small number
     EPS = 1e-16
     estimated_transition_matrix = np.clip(estimated_transition_matrix, EPS, 1.0 - EPS)
+    # re-normalize each row to ensure it sums to 1
+    estimated_transition_matrix /= estimated_transition_matrix.sum(
+        axis=-1, keepdims=True
+    )
 
     return estimated_transition_coefficients, estimated_transition_matrix
 
@@ -319,6 +356,35 @@ def estimate_stationary_state_transition(
     -------
     new_transition_matrix : np.ndarray, shape (n_states, n_states)
     """
+    if transition_matrix.ndim != 2:
+        raise ValueError(
+            f"transition_matrix must be 2D, got ndim={transition_matrix.ndim}"
+        )
+    if causal_posterior.ndim != 2 or predictive_distribution.ndim != 2:
+        raise ValueError(
+            "causal_posterior and predictive_distribution must be 2D arrays."
+        )
+    if acausal_posterior.ndim != 2:
+        raise ValueError("acausal_posterior must be a 2D array.")
+    if causal_posterior.shape[0] != predictive_distribution.shape[0]:
+        raise ValueError(
+            "causal_posterior and predictive_distribution must have the same number of time steps."
+        )
+    if causal_posterior.shape[1] != transition_matrix.shape[0]:
+        raise ValueError(
+            "causal_posterior must have the same number of states as transition_matrix."
+        )
+    if predictive_distribution.shape[1] != transition_matrix.shape[0]:
+        raise ValueError(
+            "predictive_distribution must have the same number of states as transition_matrix."
+        )
+    if acausal_posterior.shape[1] != transition_matrix.shape[0]:
+        raise ValueError(
+            "acausal_posterior must have the same number of states as transition_matrix."
+        )
+    if concentration < 0.0:
+        raise ValueError("concentration must be non-negative.")
+
     # p(x_t, x_{t+1} | O_{1:T})
     joint_distribution = estimate_joint_distribution(
         causal_posterior,
@@ -337,6 +403,11 @@ def estimate_stationary_state_transition(
     # if any is zero, set to small number
     EPS = 1e-16
     new_transition_matrix = np.clip(new_transition_matrix, a_min=EPS, a_max=1.0 - EPS)
+    # re-normalize each row to ensure it sums to 1
+    row_sums = new_transition_matrix.sum(axis=1, keepdims=True)
+    if np.any(row_sums == 0):
+        raise RuntimeError("Row sum zero in stationary transition update.")
+    new_transition_matrix /= row_sums
 
     return new_transition_matrix
 
