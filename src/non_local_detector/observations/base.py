@@ -11,7 +11,7 @@ Concrete examples: Poisson-GLM, KDE, Gaussian-Ca²⁺ model.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
@@ -20,6 +20,7 @@ from ..bundle import DataBundle  # typed container used across package
 Array = np.ndarray
 
 
+@runtime_checkable
 class ObservationModel(Protocol):
     """
     Compute log-likelihoods for ALL time points in one vectorised pass.

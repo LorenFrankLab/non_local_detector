@@ -17,11 +17,11 @@ A lower-level **Kernel** object describes motion for a single
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Protocol
+from typing import Dict, Optional, Protocol, runtime_checkable
 
 import numpy as np
 
-from ...environment import Environment
+from non_local_detector.environment import Environment
 
 # --------------------------------------------------------------------------- #
 #  Type aliases                                                               #
@@ -33,6 +33,7 @@ Covariates = Dict[str, Array]
 # --------------------------------------------------------------------------- #
 #  Public protocol objects                                                    #
 # --------------------------------------------------------------------------- #
+@runtime_checkable
 class ContinuousTransition(Protocol):
     """
     High-level interface: returns the full flattened transition matrix.
@@ -61,6 +62,7 @@ class ContinuousTransition(Protocol):
         """
 
 
+@runtime_checkable
 class Kernel(Protocol):
     """
     Local motion rule for **one** discrete-state transition
