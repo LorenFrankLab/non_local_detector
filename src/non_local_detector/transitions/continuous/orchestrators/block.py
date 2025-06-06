@@ -1,120 +1,140 @@
-"""
-non_local_detector.transitions.continuous.block
-==============================================
-
-`BlockTransition` stitches together per-state *Kernel* objects into the large
-``(n_bins_total, n_bins_total)`` matrix required by the core HMM code.
-"""
-
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, Mapping, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 
-from ...continuous.base import Array, ContinuousTransition, Covariates, Kernel
 from non_local_detector.environment import Environment
 from non_local_detector.model.state_spec import StateSpec
+
+from ..base import ContinuousTransition, Kernel
 
 
 @dataclass
 class BlockTransition(ContinuousTransition):
     """
-    Combine per-(src, dst) Kernels into one flattened continuous-transition
-    matrix.
+    Assemble a full transition matrix from a mapping of (source_state, dest_state) to Kernel blocks,
+    and a sequence of StateSpec defining the names and number of bins per state.
 
-    Parameters
-    ----------
-    state_map
-        Mapping ``(src_state_name, dst_state_name) → Kernel``.
-        Omitted pairs default to *row-uniform* entry into the destination
-        state's bins.
-    state_specs
-        List of `StateSpec` objects (same list you pass to `HHMMDetector`).
+    State bins are laid out in the order provided by `state_specs`. The slice indices for each state
+    are determined by summing `n_bins` for previous specs.
+
+    For any (src, dst) pair not in `state_map`, a uniform block is used (unless overridden by a zero-
+    probability user block). All rows are renormalized to ensure row-stochasticity.
     """
 
-    state_map: Mapping[Tuple[str, str], Kernel]
-    state_specs: list[StateSpec]
+    state_map: Dict[tuple[str, str], Kernel]
+    state_specs: Sequence[StateSpec]
 
-    # Filled in __post_init__
-    _slice_of: Dict[str, slice] = field(init=False, repr=False, default_factory=dict)
-    _env_of: Dict[str, Optional[Environment]] = field(
-        init=False, repr=False, default_factory=dict
+    # Internal attributes (populated in __post_init__)
+    n_bins_total: int = 0
+    _slice_of: dict[str, slice] = (
+        None  # mapping state name -> slice in flattened matrix
     )
-    n_bins_total: int = field(init=False)
+    _env_of: dict[str, Optional[Environment]] = (
+        None  # state name -> environment or None
+    )
 
-    # ------------------------------------------------------------------ #
-    #  Dataclass initialisation                                          #
-    # ------------------------------------------------------------------ #
-    def __post_init__(self) -> None:
-        cursor = 0
-        # Order of state specs dictates the order of slices in the matrix.
-        # Check if all state names are unique.
-        state_names = {spec.name for spec in self.state_specs}
-        if len(state_names) != len(self.state_specs):
-            raise ValueError("State names must be unique.")
+    def __post_init__(self):
+        # Ensure state_spec names are unique
+        names = [spec.name for spec in self.state_specs]
+        if len(names) != len(set(names)):
+            duplicates = {n for n in names if names.count(n) > 1}
+            raise ValueError(f"Duplicate StateSpec names found: {sorted(duplicates)}")
 
+        # Build a mapping from each state name to its bin-slice and record environment
+        self._slice_of = {}
+        self._env_of = {}
+        start = 0
         for spec in self.state_specs:
-            self._slice_of[spec.name] = slice(cursor, cursor + spec.n_bins)
+            n = spec.n_bins
+            if n < 1:
+                raise ValueError(
+                    f"State '{spec.name}' has invalid number of bins: {n}. Must be >= 1."
+                )
+            end = start + n
+            self._slice_of[spec.name] = slice(start, end)
             self._env_of[spec.name] = spec.env
-            cursor += spec.n_bins
-        self.n_bins_total = cursor
+            start = end
+        self.n_bins_total = start
 
-    # ------------------------------------------------------------------ #
-    #  ContinuousTransition API                                          #
-    # ------------------------------------------------------------------ #
-    def matrix(
-        self,
-        *,
-        covariates: Optional[Covariates] = None,
-    ) -> Array:
+    def matrix(self, covariates: Dict[str, np.ndarray]) -> np.ndarray:
         """
-        Assemble and return the row-stochastic flattened matrix.
-        """
-        flat = np.zeros((self.n_bins_total, self.n_bins_total), dtype=float)
+        Build the full transition matrix of shape (n_bins_total, n_bins_total).
 
-        # 1) Place all user-provided kernels
+        - For each (src, dst) in state_map, obtain block = kernel.block(src_env, dst_env, covariates).
+          Validate its shape matches (n_src_bins, n_dst_bins).
+        - For any (src, dst) not provided in state_map, fill a uniform block.
+        - After placing all blocks, renormalize each row to sum to 1.
+
+        Returns:
+            A dense (n_bins_total x n_bins_total) row-stochastic matrix.
+        """
+        total = self.n_bins_total
+        flat = np.zeros((total, total), dtype=float)
+
+        # Track which (src_name, dst_name) pairs have an explicit block
+        provided_pairs = set(self.state_map.keys())
+
+        # Place user-provided kernel blocks
         for (src_name, dst_name), kernel in self.state_map.items():
-            src_slice = self._slice_of[src_name]
-            dst_slice = self._slice_of[dst_name]
-            flat[src_slice, dst_slice] = kernel.block(
-                src_env=self._env_of[src_name],
-                dst_env=self._env_of[dst_name],
-                covariates=covariates,
+            if src_name not in self._slice_of or dst_name not in self._slice_of:
+                raise KeyError(
+                    f"Unknown state in state_map key: ({src_name}, {dst_name})"
+                )
+            s_slice = self._slice_of[src_name]
+            d_slice = self._slice_of[dst_name]
+            src_env = self._env_of[src_name]
+            dst_env = self._env_of[dst_name]
+
+            # Compute the block from the kernel
+            block = kernel.block(
+                src_env=src_env, dst_env=dst_env, covariates=covariates
             )
+            n_src = s_slice.stop - s_slice.start
+            n_dst = d_slice.stop - d_slice.start
+            expected_shape = (n_src, n_dst)
+            if block.shape != expected_shape:
+                raise ValueError(
+                    f"Kernel {kernel.__class__.__name__} for {src_name}->{dst_name} returned shape {block.shape}, "
+                    f"expected {expected_shape}."
+                )
+            flat[s_slice, d_slice] = block
 
-        # 2) Fill missing blocks with uniform entry
-        filled_pairs = set(self.state_map.keys())
+        # Fill missing blocks uniformly
         for src_name, src_slice in self._slice_of.items():
+            n_src = src_slice.stop - src_slice.start
             for dst_name, dst_slice in self._slice_of.items():
-                if (src_name, dst_name) not in filled_pairs:
-                    dst_bins = dst_slice.stop - dst_slice.start
-                    flat[src_slice, dst_slice] = 1.0 / dst_bins
+                if (src_name, dst_name) not in provided_pairs:
+                    n_dst = dst_slice.stop - dst_slice.start
+                    if n_dst < 1:
+                        raise ValueError(
+                            f"Destination state '{dst_name}' has zero bins."
+                        )
+                    uniform_block = np.full((n_src, n_dst), 1.0 / n_dst, dtype=float)
+                    flat[src_slice, dst_slice] = uniform_block
 
-        # 3) Ensure every row sums to 1.0 (safe re-normalisation)
+        # Re-normalize rows to ensure row-stochasticity
         row_sums = flat.sum(axis=1, keepdims=True)
-        row_sums[row_sums == 0.0] = 1.0
-        flat /= row_sums
+        # Prevent division by zero: if a row sums to zero, fill it uniformly across all bins
+        zero_rows = row_sums.flatten() == 0.0
+        if np.any(zero_rows):
+            flat[zero_rows, :] = 1.0 / total
+            row_sums = flat.sum(axis=1, keepdims=True)
 
+        flat = flat / row_sums
         return flat
 
-    # ------------------------------------------------------------------ #
-    #  Alternate constructor                                             #
-    # ------------------------------------------------------------------ #
     @classmethod
     def from_state_map(
-        cls,
-        state_map: Mapping[Tuple[str, str], Kernel],
-        state_specs: list[StateSpec],
-    ) -> "BlockTransition":
+        cls, state_map: Dict[tuple[str, str], Kernel], state_specs: Sequence[StateSpec]
+    ) -> BlockTransition:
+        """
+        Alternate constructor alias for clarity.
+        """
         return cls(state_map=state_map, state_specs=state_specs)
 
-    # ------------------------------------------------------------------ #
-    #  Debug representation                                              #
-    # ------------------------------------------------------------------ #
-    def __repr__(self) -> str:  # pragma: no cover
-        state_names = ", ".join(self._slice_of)
-        return (
-            f"BlockTransition(n_bins_total={self.n_bins_total}, states=[{state_names}])"
-        )
+    def __repr__(self):
+        state_names = ", ".join(self._slice_of.keys())
+        return f"<BlockTransition size={self.n_bins_total} states=({state_names})>"
