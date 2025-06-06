@@ -65,6 +65,19 @@ class CategoricalGLM(DiscreteTransitionModel):
     _design_matrix: DesignMatrix | None = field(init=False, default=None, repr=False)
     _coefficients: Array | None = field(init=False, default=None, repr=False)
 
+    def __post_init__(self) -> None:
+        """
+        Validate the number of states and formula.
+        """
+        if self.n_states < 2:
+            raise ValueError("`n_states` must be at least 2 for a categorical GLM.")
+        if not isinstance(self.formula, str):
+            raise TypeError("`formula` must be a string representing a patsy formula.")
+
+        # Initialize design matrix and coefficients to None
+        self._design_matrix = None
+        self._coefficients = None
+
     # --------------------------------------------------------------------- #
     #  Lifecycle helper                                                     #
     # --------------------------------------------------------------------- #
@@ -96,7 +109,21 @@ class CategoricalGLM(DiscreteTransitionModel):
         ValueError
             If `intercept_matrix` is provided but does not match the expected shape.
         """
+        if covariate_data is None:
+            raise ValueError(
+                "`covariate_data` must be provided to initialize parameters."
+            )
+        if not isinstance(covariate_data, (pd.DataFrame, dict)):
+            raise TypeError(
+                "`covariate_data` must be a pandas DataFrame or a dictionary of arrays."
+            )
+
         design_matrix: DesignMatrix = dmatrix(self.formula, covariate_data)
+        if design_matrix.ndim != 2:
+            raise ValueError(
+                f"Expected 2D design matrix, got ndim={design_matrix.ndim}."
+            )
+
         n_features: int = design_matrix.shape[1]
 
         self._design_matrix = design_matrix

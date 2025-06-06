@@ -23,6 +23,10 @@ def get_dirichlet_prior(
     np.ndarray, shape (n_states, n_states)
         A 2D array representing the prior for each state.
     """
+    if n_states <= 0:
+        raise ValueError("n_states must be a positive integer.")
+    if not isinstance(stickiness, (float, int, np.ndarray)):
+        raise TypeError("stickiness must be a float, int, or np.ndarray.")
     if isinstance(stickiness, (int, float)):
         stickiness_arr = stickiness * np.eye(n_states)
     else:

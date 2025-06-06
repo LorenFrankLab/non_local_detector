@@ -45,18 +45,20 @@ class Stationary(DiscreteTransitionModel):
             != self.initial_transition_matrix.shape[1]
         ):
             raise ValueError("initial_transition_matrix must be square.")
-        if (
-            np.testing.assert_array_almost_equal(
-                self.initial_transition_matrix.sum(axis=1), 1.0
-            )
-            is not None
+        row_sums = self.initial_transition_matrix.sum(axis=1)
+        if not np.allclose(row_sums, 1.0, atol=1e-8):
+            raise ValueError("Rows of initial_transition_matrix must sum to 1.")
+        if np.any(self.initial_transition_matrix < 0) or np.any(
+            self.initial_transition_matrix > 1
         ):
             raise ValueError(
-                "initial_transition_matrix rows must sum to 1.0 (probability distribution)."
+                "initial_transition_matrix must have entries in the range [0, 1]."
             )
         if self.concentration <= 0:
             raise ValueError("concentration must be a positive float.")
         if isinstance(self.stickiness, (int, float)):
+            if self.stickiness < 0:
+                raise ValueError("stickiness must be a non-negative float.")
             self.stickiness = np.full(self.n_states, self.stickiness)
         elif isinstance(self.stickiness, np.ndarray):
             if self.stickiness.ndim != 1 or len(self.stickiness) != self.n_states:
@@ -111,6 +113,24 @@ class Stationary(DiscreteTransitionModel):
         -------
             None
         """
+        if causal_posterior.ndim != 2:
+            raise ValueError("causal_posterior must be a 2D array.")
+        if predictive_distribution.ndim != 2:
+            raise ValueError("predictive_distribution must be a 2D array.")
+        if acausal_posterior.ndim != 2:
+            raise ValueError("acausal_posterior must be a 2D array.")
+        if (
+            (causal_posterior.shape[1] != self.n_states)
+            or (predictive_distribution.shape[1] != self.n_states)
+            or (acausal_posterior.shape[1] != self.n_states)
+        ):
+            raise ValueError(
+                "All input arrays must have the same number of states as the model."
+            )
+        if (causal_posterior.shape[0] != predictive_distribution.shape[0]) or (
+            causal_posterior.shape[0] != acausal_posterior.shape[0]
+        ):
+            raise ValueError("All input arrays must have the same time dimension.")
 
         transition_matrix = (
             self._matrix if self._matrix is not None else self.initial_transition_matrix
