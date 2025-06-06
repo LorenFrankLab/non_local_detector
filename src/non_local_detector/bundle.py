@@ -2,134 +2,242 @@
 non_local_detector.bundle
 =========================
 
-`DataBundle` is a **typed, immutable container** that holds every raw data
-stream your detector might need:
+* RecordingBundle —— immutable, native-rate archive.
+* DecoderBatch     —— time-aligned slice at the decoder's Δt.
 
-* spike counts or spike times (clustered or unclustered),
-* spike waveforms,
-* continuous traces (LFP, Ca²⁺, etc.),
-* behavioural covariates (speed, head-direction, theta phase, …).
-
-It guarantees that **all time-series arrays share the same first-dimension
-length**, so downstream algorithms can trust `bundle.n_time`.
+All *modalities* live in the open ``signals`` dictionary.
+Common ones (`counts`, `lfp`, `calcium`) remain discoverable through
+read-only properties for neuroscientist convenience.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence, Union
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
 import numpy as np
 
 Array = np.ndarray
-SpikeTimes = List[Array]  # one array per neuron
-SpikeWaveforms = List[Array]  # shape[i] = (n_spikes_i, n_features)
 
 
-def _common_length(arrays: Sequence[Array]) -> Optional[int]:
-    """Return common length along axis-0, or ``None`` if no arrays given."""
-    lengths = {arr.shape[0] for arr in arrays if arr is not None}
-    if not lengths:
-        return None
-    if len(lengths) != 1:
-        raise ValueError(f"Inconsistent time lengths found: {lengths}")
-    return lengths.pop()
+# --------------------------------------------------------------------------- #
+#  Helper: generic time-series container                                      #
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True, slots=True)
+class TimeSeries:
+    data: Array  # shape (n_samples, …)
+    sampling_rate_hz: float  # samples per second
+    start_s: float = 0.0  # session time of first sample
+
+    def __post_init__(self):
+        if self.sampling_rate_hz <= 0:
+            raise ValueError("sampling_rate_hz must be positive.")
+        if self.data.ndim < 1:
+            raise ValueError("TimeSeries.data must be at least 1-D.")
 
 
-@dataclass(slots=True, frozen=True)
-class DataBundle:
+# --------------------------------------------------------------------------- #
+#  Native-rate archive                                                        #
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True, slots=True)
+class RecordingBundle:
     """
-    Typed container for *one contiguous time chunk*.
-
-    All **time-based** arrays must have equal length along axis-0.
+    Immutable store for raw session data at native sampling rates.
     """
 
-    # ---- spike data ----------------------------------------------------
-    counts: Optional[Array] = None  # (n_time,) or (n_time, n_cells)
-    spikes: Optional[SpikeTimes] = None  # list of spike-time arrays
-    waveforms: Optional[SpikeWaveforms] = None  # list aligned with `spikes`
+    # List of spike times for each neuron, in seconds.
+    spike_times_s: Optional[List[Array]] = None
+    # List of spike waveforms, one for each neuron.
+    spike_waveforms: Optional[List[np.ndarray]] = None
+    signals: Dict[str, TimeSeries] = field(default_factory=dict)
 
-    # ---- continuous recordings ----------------------------------------
-    lfp: Optional[Array] = None  # (n_time,) or (n_time, n_ch)
-    calcium_trace: Optional[Array] = None  # same
+    def __post_init__(self) -> None:
+        # ---- 1. waveforms without timestamps → fatal -----------------
+        if self.spike_waveforms is not None and self.spike_times_s is None:
+            raise ValueError(
+                "spike_waveforms were provided but spike_times_s is None. "
+                "Waveforms cannot be aligned without spike times."
+            )
 
-    # ---- behavioural / covariate data ---------------------------------
-    covariates: Optional[Dict[str, Array]] = None
+        # ---- 2. no timestamps → nothing else to check ----------------
+        if self.spike_times_s is None:
+            return  # (case 1 above)
 
-    # internal cache (filled in __post_init__)
+        # ---- 3. timestamps present, waveforms missing → fine ---------
+        if self.spike_waveforms is None:
+            return  # (case 2 above)
+
+        # ---- 4. both present → validate lengths & per-unit matches ---
+        if len(self.spike_times_s) != len(self.spike_waveforms):
+            raise ValueError(
+                "Length mismatch between spike_times_s "
+                f"({len(self.spike_times_s)}) and spike_waveforms "
+                f"({len(self.spike_waveforms)})."
+            )
+
+        for idx, (t, w) in enumerate(zip(self.spike_times_s, self.spike_waveforms)):
+            if t.size != w.shape[0]:
+                raise ValueError(
+                    f"Neuron {idx}: {t.size} spike times but "
+                    f"{w.shape[0]} waveform rows."
+                )
+
+
+# --------------------------------------------------------------------------- #
+#  Decoder-aligned batch                                                      #
+# --------------------------------------------------------------------------- #
+@dataclass(slots=True)
+class DecoderBatch:
+    """
+    Time-aligned view at the decoder's bin width Δt (e.g. 50 Hz).
+    Every array in ``signals`` **must** share the first-axis length ``n_time``.
+    signals can be any time-series modality, such as:
+    - `counts` (spike counts, shape (n_time,))
+    - `lfp` (local field potential, shape (n_time, n_channels))
+    - `calcium` (fluorescence, shape (n_time, n_channels))
+    Optionally, it can also contain raw spike times and waveforms.
+
+    Attributes
+    ----------
+    signals : Dict[str, Array]
+        Dictionary of time-series arrays, where each key is a modality name
+        and the value is the corresponding data array.
+    bin_edges_s : Optional[Array]
+        Optional array of bin edges in seconds, with length equal to `n_time + 1`.
+        If provided, it defines the time intervals for each bin.
+    spike_times_s : Optional[List[Array]]
+        Optional list of spike times for each neuron, where each array
+        corresponds to a different neuron and contains spike times in seconds.
+    spike_waveforms : Optional[List[Array]]
+        Optional list of spike waveforms, where each array corresponds to
+        a different neuron and contains the waveforms of spikes.
+    """
+
+    signals: Dict[str, Array] = field(default_factory=dict)  # open namespace
+
+    # Per-bin meta
+    bin_edges_s: Optional[Array] = None  # len = n_time + 1
+
+    # Raw spikes (optional; not aligned)
+    spike_times_s: Optional[List[Array]] = None
+    spike_waveforms: Optional[List[Array]] = None
+
     _n_time: int = field(init=False, repr=False)
 
     # ------------------------------------------------------------------ #
-    #  Validation                                                        #
+    #  Validation at construction                                        #
     # ------------------------------------------------------------------ #
+    def __post_init__(self):
+        if not self.signals:
+            raise ValueError("DecoderBatch needs at least one signal array.")
 
-    def __post_init__(self) -> None:
-        time_axes: dict[str, Array] = {}
+        lengths = {name: arr.shape[0] for name, arr in self.signals.items()}
+        bad_types = [
+            k for k, v in self.signals.items() if not isinstance(v, np.ndarray)
+        ]
+        if bad_types:
+            raise TypeError(f"signals must be np.ndarray. Offenders: {bad_types}")
 
-        for name in ("counts", "lfp", "calcium_trace"):
-            arr = getattr(self, name)
-            if arr is not None:
-                time_axes[name] = arr
+        if len(set(lengths.values())) != 1:
+            detail = ", ".join(f"{k}={v}" for k, v in lengths.items())
+            raise ValueError(f"Time-axis mismatch among signals: {detail}")
 
-        if self.covariates:
-            time_axes.update(self.covariates)
+        # optional numeric-dtype check
+        non_numeric = [k for k, a in self.signals.items() if a.dtype.kind not in "fib?"]
+        if non_numeric:
+            raise TypeError(f"signals must be numeric. Non-numeric: {non_numeric}")
 
-        if time_axes:
-            lengths = {arr.shape[0] for arr in time_axes.values()}
-            if len(lengths) != 1:
-                raise ValueError(
-                    "Time-axis mismatch: "
-                    + ", ".join(f"{n}={arr.shape[0]}" for n, arr in time_axes.items())
-                )
-            self._n_time = lengths.pop()
-        elif self.spikes:
-            self._n_time = max(st[-1] for st in self.spikes) + 1  # crude fallback
-        else:
-            raise ValueError("Cannot infer n_time — no time-indexed arrays present.")
+        self._n_time = next(iter(lengths.values()))
 
     # ------------------------------------------------------------------ #
-    #  Convenience properties                                            #
+    #  Convenience read-only attributes                                  #
     # ------------------------------------------------------------------ #
     @property
-    def n_time(self) -> int:  # number of time steps
+    def counts(self) -> Optional[Array]:
+        return self.signals.get("counts")
+
+    @property
+    def lfp(self) -> Optional[Array]:
+        return self.signals.get("lfp")
+
+    @property
+    def calcium(self) -> Optional[Array]:
+        return self.signals.get("calcium")
+
+    @property
+    def n_time(self) -> int:
         return self._n_time
 
-    # Aliased for coherence with earlier docs
+    # Legacy alias
     T = n_time
 
     # ------------------------------------------------------------------ #
-    #  Utility methods                                                   #
+    #  Shallow slice helper                                              #
     # ------------------------------------------------------------------ #
-    def slice(self, start: int, stop: int) -> "DataBundle":
+    def slice(
+        self, start: int, stop: int, *, slice_spikes: bool = False
+    ) -> "DecoderBatch":
         """
-        Return a **shallow** copy containing [`start:stop`] along the time axis.
+        Return a DecoderBatch view of [start:stop) along the time axis.
 
-        All non-time-indexed attributes (e.g., spike times) are shared
-        unchanged because their slicing semantics are experiment-specific.
+        Parameters
+        ----------
+        slice_spikes : bool, default False
+            If True, spike_times and waveforms are filtered to the window.
+            Times are *shifted* so that ``t0`` becomes 0.
         """
+        new_signals = {k: v[start:stop] for k, v in self.signals.items()}
 
-        def _slice_or_same(arr: Optional[Array]) -> Optional[Array]:
-            return None if arr is None else arr[start:stop]
+        # Optionally filter spikes
+        st, wf = self.spike_times_s, self.spike_waveforms
+        if slice_spikes and st is not None and self.bin_edges_s is not None:
+            t0, t1 = self.bin_edges_s[start], self.bin_edges_s[stop]
+            st_new, wf_new = [], []
+            for times, wave in zip(st, wf or []):
+                idx = (times >= t0) & (times < t1)
+                st_new.append(times[idx] - t0)
+                if wf is not None:
+                    wf_new.append(wave[idx])
+            st, wf = st_new, (wf_new if wf is not None else None)
 
-        return DataBundle(
-            counts=_slice_or_same(self.counts),
-            spikes=self.spikes,  # left untouched
-            waveforms=self.waveforms,
-            lfp=_slice_or_same(self.lfp),
-            calcium=_slice_or_same(self.calcium),
-            position=_slice_or_same(self.position),
-            covariates=(
-                {k: v[start:stop] for k, v in self.covariates.items()}
-                if self.covariates
-                else None
-            ),
+        new_edges = (
+            None if self.bin_edges_s is None else self.bin_edges_s[start : stop + 1]
         )
 
-    # Simple pretty-print
+        return DecoderBatch(
+            signals=new_signals,
+            bin_edges_s=new_edges,
+            spike_times_s=st,
+            spike_waveforms=wf,
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Pretty-print                                                      #
+    # ------------------------------------------------------------------ #
     def __repr__(self) -> str:  # pragma: no cover
-        attrs = ", ".join(
-            f"{name}={getattr(self, name).__class__.__name__}"
-            for name in self.__dataclass_fields__  # type: ignore
-            if getattr(self, name) is not None and not name.startswith("_")
+        sigs = ", ".join(self.signals.keys())
+        return f"<DecoderBatch n_time={self.n_time} signals=[{sigs}]>"
+
+
+# --------------------------------------------------------------------------- #
+#  Public helper: bundle-level validation                                     #
+# --------------------------------------------------------------------------- #
+def validate_sources(batch: "DecoderBatch", observation_models: list) -> None:
+    """
+    Check that every ObservationModel's ``required_sources`` are
+    present in *this* batch.
+
+    Usage
+    -----
+    >>> validate_sources(batch, detector.observation_models)
+    """
+    missing: set[str] = set()
+    for model in observation_models:
+        for src in getattr(model, "required_sources", ()):
+            if src not in batch.signals and not hasattr(batch, src):
+                missing.add(src)
+    if missing:
+        raise ValueError(
+            "DecoderBatch missing required fields:\n  • "
+            + "\n  • ".join(sorted(missing))
         )
-        return f"DataBundle(n_time={self.n_time}, {attrs})"

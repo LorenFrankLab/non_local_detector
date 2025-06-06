@@ -2,36 +2,46 @@
 non_local_detector.encoding.base
 --------------------------------
 
-An *EncodingModel* owns the *parameter-learning* logic for a state's
-observation model.  It sees the posteriors γₜ(i) and — optionally — an
-explicit time mask, then updates the parameters **in place**.
-
-Concrete examples: place-field KDE update, Poisson rate re-estimate.
+Parameter-update interface invoked in the **M-step**.
 """
 
 from __future__ import annotations
 
-from typing import Optional, Protocol
+from enum import Enum, auto
+from typing import Optional, Protocol, runtime_checkable
 
 import numpy as np
 
-from ..bundle import DataBundle
+from ..bundle import DecoderBatch
 
 Array = np.ndarray
 
 
+class UpdatePolicy(Enum):
+    NEVER = auto()  # frozen parameters
+    INITIAL_FIT = auto()  # only initial_fit() then freeze
+    ALWAYS = auto()  # call update each EM iteration
+    PERIODIC = auto()  # every k iterations (k in model)
+
+
+@runtime_checkable
 class EncodingModel(Protocol):
     """
-    Called during the *M-step* of EM; mutates its internal parameters.
+    Updates an associated ObservationModel **in-place** using smoothed
+    posteriors γₜ(i).
     """
+
+    update_policy: UpdatePolicy  # NEW required property
+    update_period: int | None = None  # only for PERIODIC
+
+    def initial_fit(
+        self, batch: DecoderBatch, mask: np.ndarray | None = None
+    ) -> None: ...
 
     def update_from_posteriors(
         self,
-        bundle: DataBundle,
-        discrete_state_probability: Array,
+        batch: DecoderBatch,
+        posterior_probability: Array,  # shape (n_time,) or (n_time, n_bins)
         *,
         mask: Optional[Array] = None,
-    ) -> None:
-        """
-        Update the model in-place using smoothed posteriors.
-        """
+    ) -> None: ...

@@ -2,20 +2,16 @@
 non_local_detector.observations.base
 ------------------------------------
 
-An *ObservationModel* scores data likelihoods given **fixed** parameters.
-It is called in the *E-step* of EM and never mutates itself during that
-step.
-
-Concrete examples: Poisson-GLM, KDE, Gaussian-Ca²⁺ model.
+Read-only scoring interface used during the **E-step**.
 """
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Tuple, runtime_checkable
 
 import numpy as np
 
-from ..bundle import DataBundle  # typed container used across package
+from ..bundle import DecoderBatch
 
 Array = np.ndarray
 
@@ -23,17 +19,18 @@ Array = np.ndarray
 @runtime_checkable
 class ObservationModel(Protocol):
     """
-    Compute log-likelihoods for ALL time points in one vectorised pass.
-
-    Implementations MUST be side-effect free — no parameter updates here.
+    *Implementations must not mutate internal parameters.*
     """
 
-    required_sources: tuple[str, ...] = ()
+    # ---- metadata ----------------------------------------------------
+    required_sources: Tuple[str, ...] = ()  # bundle field names
 
     @property
-    def n_bins(self) -> int: ...  # number of continuous bins
+    def n_bins(self) -> int:  # continuous bins
+        ...
 
-    def log_likelihood(self, bundle: DataBundle) -> Array: ...
+    # ---- main API ----------------------------------------------------
+    def log_likelihood(self, batch: DecoderBatch) -> Array: ...
 
-    # optional hook
-    def precompute(self, bundle: DataBundle) -> None: ...
+    # optional cache step
+    def precompute(self, batch: DecoderBatch) -> None: ...  # pragma: no cover
