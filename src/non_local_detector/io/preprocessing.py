@@ -46,10 +46,10 @@ def _fill_linear(vec: np.ndarray, mask: np.ndarray):
 
 
 # --------------------------------------------------------------------------- #
-#  Main conversion function                                                   #
+#  Main conversion functions                                                  #
 # --------------------------------------------------------------------------- #
 def to_decoder_batch(
-    rec: RecordingBundle,
+    rec: "RecordingBundle",
     bin_width_s: float,
     *,
     signals_to_use: Sequence[str],
@@ -77,25 +77,14 @@ def to_decoder_batch(
     signals_to_use : Sequence[str]
         Keys to extract from rec.signals.  "counts" triggers spike binning.
 
-    count_method : str
-        How to assign spikes exactly on a bin edge:
-        - "hist"   - numpy.histogram default (edge→lower bin).
-        - "center" - shift times by ½ bin so edges round to nearest bin.
+    count_method : str = "hist" | "center"
+        How to assign spikes exactly on a bin edge.
 
-    float_downsample : str = "mean" | "median"
-        Agg when multiple float samples land in one decoder bin.
+    float_downsample, float_fill, int_fill, bool_fill : str
+        How to aggregate or fill gaps for numeric/bool streams.
 
-    float_fill : str = "ffill" | "linear"
-        How to fill a float bin with zero native samples.
-
-    int_fill : str = "ffill" | "pad_zero"
-        How to fill an int bin with zero native samples.
-
-    bool_fill : str = "or" | "ffill"
-        How to fill a bool bin with zero native samples.
-
-    start_s, stop_s : float, optional
-        If provided, force the overall time window.  Otherwise inferred
+    start_s, stop_s : float | None
+        If provided, force the overall time window. Otherwise inferred
         from rec.spike_times_s and rec.signals.
 
     nan_policy : str = "raise" | "warn" | "ignore"
@@ -103,24 +92,13 @@ def to_decoder_batch(
 
     one_hot_categories : bool
         If False (default), use OrdinalEncoder → one integer per category.
-        If True, use OneHotEncoder → expand to N_binary columns.
+        If True, use OneHotEncoder → expand to N binary columns.
 
     Returns
     -------
     batch : DecoderBatch
         Holds aligned `signals: Dict[str, np.ndarray]`, plus `bin_edges_s`,
         and raw `spike_times_s`, `spike_waveforms`.
-
-    Notes
-    -----
-    1. Categorical arrays (dtype.kind in ("U","O")) are detected *before*
-       binning.  We fit an OrdinalEncoder or OneHotEncoder to the *raw*
-       samples, then bin the resulting codes/one-hot vectors.
-    2. `batch._categorical_maps` (private) holds:
-       - If `one_hot_categories=False`: a dict mapping key→list_of_labels.
-       - If `one_hot_categories=True`: a dict mapping key→(labels, encoder)
-       so you can invert or inspect categories.
-    3. Everything else (binning, gap-fill, NaN policy) is identical to before.
     """
     # ------------------------------ sanity ---------------------------------
     if count_method not in {"hist", "center"}:
@@ -147,8 +125,8 @@ def to_decoder_batch(
 
     # ------------------ build signals dict ---------------------------------
     signals: Dict[str, np.ndarray] = {}
-    categorical_maps: Dict[str, list[str]] = {}  # key→list_of_labels
-    onehot_maps: Dict[str, OneHotEncoder] = {}  # key→fitted OneHotEncoder
+    categorical_maps: Dict[str, list[str]] = {}  # key → label list (for ordinal)
+    onehot_maps: Dict[str, OneHotEncoder] = {}  # key → fitted OneHotEncoder
 
     # 1) Spike counts ("counts")
     if "counts" in signals_to_use:
@@ -159,7 +137,7 @@ def to_decoder_batch(
             np.histogram(st.times_s + shift, bins=edges_s)[0]
             for st in rec.spike_times_s
         ]
-        signals["counts"] = np.stack(counts_list, axis=1)  # (n_bins, n_units)
+        signals["counts"] = np.stack(counts_list, axis=1)  # shape (n_bins, n_units)
 
     # 2) Generic signals: numeric, bool, or str/object
     for key in signals_to_use:
@@ -168,30 +146,38 @@ def to_decoder_batch(
         if key not in rec.signals:
             raise KeyError(f"{key!r} not found in RecordingBundle.signals")
 
-        ts: TimeSeries = rec.signals[key]
+        ts = rec.signals[key]
         raw = ts.data
         sample_times = ts.start_s + np.arange(len(raw)) / ts.sampling_rate_hz
         bin_idx = np.floor((sample_times - start_s) / bin_width_s).astype(int)
 
-        # 2a) If str/object dtype → fit encoder on raw samples
+        # Determine if any raw sample actually falls into [0, n_bins-1]
+        valid_bins_mask = (bin_idx >= 0) & (bin_idx < n_bins)
+        if not valid_bins_mask.any():
+            # Fully unaligned → warn/raise and skip
+            msg = f"All samples of signal {key!r} fall outside [{start_s}, {stop_s}]"
+            if nan_policy == "raise":
+                raise ValueError(msg)
+            warnings.warn(msg, RuntimeWarning)
+            continue
+
+        # 2a) If string/object dtype → fit encoder on raw samples
         if raw.dtype.kind in ("U", "O"):
-            flat_raw = raw.reshape(-1, 1)  # ensure 2D for sklearn
+            flattened = raw.reshape(-1, 1)  # 2D for sklearn
             if one_hot_categories:
-                enc = OneHotEncoder(sparse=False, handle_unknown="ignore")
-                codes = enc.fit_transform(flat_raw)  # shape (N_samples, n_categories)
+                # Modern sklearn: use sparse_output=False
+                enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+                codes = enc.fit_transform(flattened)  # shape (N_samples, n_categories)
                 onehot_maps[key] = enc
                 labels = enc.categories_[0].tolist()
                 categorical_maps[key] = labels
-                # Temporarily store codes; will bin each column separately
                 data_for_binning = codes
-                dtype_kind = "f"  # treat each code column as float
+                dtype_kind = "f"  # each column is 0/1 float
             else:
                 enc = OrdinalEncoder(
                     handle_unknown="use_encoded_value", unknown_value=-1
                 )
-                codes = (
-                    enc.fit_transform(flat_raw).astype(int).flatten()
-                )  # (N_samples,)
+                codes = enc.fit_transform(flattened).astype(int).flatten()
                 labels = enc.categories_[0].tolist()
                 categorical_maps[key] = labels
                 data_for_binning = codes
@@ -200,8 +186,7 @@ def to_decoder_batch(
             data_for_binning = raw
             dtype_kind = raw.dtype.kind
 
-        # 2b) Initialize output:
-        #    if one_hot: we need shape (n_bins, n_categories)
+        # 2b) Initialize output array
         if raw.dtype.kind in ("U", "O") and one_hot_categories:
             n_cat = len(categorical_maps[key])
             out = np.full((n_bins, n_cat), np.nan, dtype=float)
@@ -209,24 +194,23 @@ def to_decoder_batch(
             if dtype_kind == "f":
                 out = np.full((n_bins, *raw.shape[1:]), np.nan, dtype=raw.dtype)
             elif dtype_kind in "ui":
-                out = np.zeros((n_bins, *raw.shape[1:]), dtype=raw.dtype)
+                # Use integer dtype explicitly, not raw.dtype (which might be string)
+                out = np.zeros((n_bins, *raw.shape[1:]), dtype=int)
             elif dtype_kind == "b":
                 out = np.zeros((n_bins, *raw.shape[1:]), dtype=raw.dtype)
             else:
                 raise TypeError(f"Unsupported dtype '{raw.dtype}' for signal '{key}'")
 
-        # 2c) Aggregate native samples into each bin
+        # 2c) Populate each decoder bin
         if raw.dtype.kind in ("U", "O") and one_hot_categories:
-            # Bin each category-column separately
+            # Bin each category‐column separately
             for cat_idx in range(out.shape[1]):
                 for b in range(n_bins):
                     sel = data_for_binning[bin_idx == b, cat_idx]
                     if sel.size == 0:
                         continue
-                    # Any 1’s in sel → 1, else 0
                     out[b, cat_idx] = bool(sel.any())
         else:
-            # Standard numeric/bool/or ordinal-code binning
             for b in range(n_bins):
                 sel = data_for_binning[bin_idx == b]
                 if sel.size == 0:
@@ -239,16 +223,6 @@ def to_decoder_batch(
                     agg = np.nanmean if float_downsample == "mean" else np.nanmedian
                     out[b] = agg(sel, axis=0)
 
-        # 2d) Detect fully unaligned stream
-        if out.size and (
-            (np.isnan(out).all()) if out.dtype.kind == "f" else ((out == 0).all())
-        ):
-            msg = f"All samples of signal {key!r} fall outside [{start_s}, {stop_s}]"
-            if nan_policy == "raise":
-                raise ValueError(msg)
-            warnings.warn(msg, RuntimeWarning)
-            continue
-
         # 2e) Gap-fill missing bins
         if out.dtype.kind == "f":
             missing = (
@@ -260,7 +234,7 @@ def to_decoder_batch(
                 for b in range(1, n_bins):
                     if missing[b]:
                         out[b] = out[b - 1]
-            else:
+            else:  # "linear"
                 if out.ndim == 1:
                     _fill_linear(out, missing)
                 else:
@@ -275,7 +249,7 @@ def to_decoder_batch(
                 for b in range(1, n_bins):
                     if missing[b]:
                         out[b] = out[b - 1]
-            else:
+            else:  # "pad_zero"
                 out[missing] = 0
         else:  # bool
             seen_true = np.isin(True, data_for_binning)
@@ -289,7 +263,7 @@ def to_decoder_batch(
 
         signals[key] = out
 
-    # ------------------ NaN policy enforcement -----------------------------
+    # ------------------ enforce NaN policy on floats ----------------------
     if nan_policy in ("raise", "warn"):
         for k, v in signals.items():
             if np.issubdtype(v.dtype, np.floating) and np.isnan(v).any():
@@ -298,7 +272,7 @@ def to_decoder_batch(
                     raise ValueError(msg)
                 warnings.warn(msg, RuntimeWarning)
 
-    # ------------------ Build DecoderBatch ---------------------------------
+    # ------------------ Build and return DecoderBatch -----------------------
     batch = DecoderBatch(
         signals=signals,
         bin_edges_s=edges_s,
@@ -306,14 +280,12 @@ def to_decoder_batch(
         spike_waveforms=rec.spike_waveforms,
     )
 
-    # 3) Attach categorical maps for user reference (private)
-    #    If one_hot_categories=False: key→list of labels
-    #    If one_hot_categories=True: key→fitted OneHotEncoder
+    # Attach categorical maps for user reference (private)
     if categorical_maps:
         setattr(batch, "_categorical_maps", {})
         for key in categorical_maps:
             if one_hot_categories:
-                setattr(batch, "_categorical_maps", {key: onehot_maps[key]})
+                getattr(batch, "_categorical_maps")[key] = onehot_maps[key]
             else:
                 getattr(batch, "_categorical_maps")[key] = categorical_maps[key]
 
@@ -326,7 +298,7 @@ def df_to_recording_bundle(
     time_column: str | None = None,
     sampling_rate_hz: float | None = None,
     signals_to_include: list[str] | None = None,
-) -> RecordingBundle:
+) -> "RecordingBundle":
     """
     Convert a pandas DataFrame of uniformly sampled signals
     into a RecordingBundle.signals dict.
@@ -334,13 +306,16 @@ def df_to_recording_bundle(
     Parameters
     ----------
     df : pd.DataFrame
-      Must have either a DatetimeIndex or a numeric index in seconds
-      (float).  Each column is one signal channel.
+      Must have either a DatetimeIndex or a numeric index in seconds (float).
+      Each column is one signal channel.
+
     time_column : str | None
       If the DataFrame has a dedicated “time” column rather than an index,
       set this name; it will be moved into the index.
+
     sampling_rate_hz : float | None
       If provided, overrides any inferred rate.
+
     signals_to_include : list[str] | None
       Subset of columns to include; if None, take all columns.
 
@@ -348,22 +323,23 @@ def df_to_recording_bundle(
     -------
     RecordingBundle
     """
-    # 1) Move a column into a numeric index if requested:
+
+    # 1) Move a column into a numeric index if requested
     if time_column is not None:
         df = df.set_index(time_column)
-    # 2) Ensure the index is numeric (float seconds) or Datetime:
+
+    # 2) Ensure index is numeric (float seconds) or Datetime
     idx = df.index
     if isinstance(idx, pd.DatetimeIndex):
-        # Convert to seconds since first timestamp:
+        # Convert to seconds since first timestamp
         t0 = idx[0]
         times_s = (idx - t0).total_seconds().astype(float)
     else:
         # Assume numeric already in seconds
         times_s = idx.to_numpy().astype(float)
 
-    # 3) Infer sampling_rate if not given:
+    # 3) Infer sampling_rate if not given
     if sampling_rate_hz is None:
-        # Take median Δ
         deltas = np.diff(times_s)
         median_dt = np.nanmedian(deltas)
         if not np.allclose(deltas, median_dt, rtol=1e-3, atol=1e-4):
@@ -372,12 +348,11 @@ def df_to_recording_bundle(
             )
         sampling_rate_hz = 1.0 / median_dt
 
-    # 4) Build TimeSeries for each column
+    # 4) Build a TimeSeries for each column
     signals: dict[str, TimeSeries] = {}
     keys = signals_to_include if signals_to_include is not None else list(df.columns)
     for key in keys:
         arr = df[key].to_numpy()
-        # If there are any NaNs in the DataFrame, those carry over
         ts = TimeSeries(data=arr, sampling_rate_hz=sampling_rate_hz, start_s=times_s[0])
         signals[key] = ts
 
