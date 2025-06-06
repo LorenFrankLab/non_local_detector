@@ -159,7 +159,9 @@ class DecoderBatch:
                 k for k, v in self.signals.items() if not isinstance(v, np.ndarray)
             ]
             bad_dtype = [
-                k for k, v in self.signals.items() if v.dtype.kind not in "fi?"
+                k
+                for k, v in self.signals.items()
+                if v.dtype.kind not in "fi?uO"  # float, int, bool, unicode, object
             ]
             if bad_type:
                 raise TypeError(f"signals must be np.ndarray; offenders: {bad_type}")
