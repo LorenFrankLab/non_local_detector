@@ -324,6 +324,9 @@ def df_to_recording_bundle(
     RecordingBundle
     """
 
+    if df.shape[0] == 0:
+        raise ValueError("Input DataFrame is empty; cannot convert to RecordingBundle.")
+
     # 1) Move a column into a numeric index if requested
     if time_column is not None:
         df = df.set_index(time_column)
