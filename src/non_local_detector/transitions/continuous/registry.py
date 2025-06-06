@@ -22,12 +22,12 @@ def register_continuous_transition(name: str) -> Callable:
     return _decorator
 
 
-def get(name: str, **kwargs) -> Kernel:
+def get_continuous_transitions(name: str, **kwargs) -> Kernel:
     try:
         return _KERNELS[name](**kwargs)
     except KeyError as exc:
         raise ValueError(f"Unknown kernel {name!r}") from exc
 
 
-def list_all() -> list[str]:
+def list_all_continuous_transitions() -> list[str]:
     return sorted(_KERNELS)
