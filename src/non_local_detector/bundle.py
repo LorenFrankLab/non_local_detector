@@ -13,7 +13,7 @@ read-only properties for neuroscientist convenience.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 import numpy as np
 
@@ -219,6 +219,31 @@ class DecoderBatch:
         return DecoderBatch(
             signals=new_signals,
             bin_edges_s=new_edges,
+            spike_times_s=st,
+            spike_waveforms=wf,
+        )
+
+    def select_signals(self, keys: Iterable[str]) -> "DecoderBatch":
+        return DecoderBatch(
+            signals={k: self.signals[k] for k in keys},
+            bin_edges_s=self.bin_edges_s,
+            spike_times_s=self.spike_times_s,
+            spike_waveforms=self.spike_waveforms,
+        )
+
+    def select_spikes(self, keys: Iterable[int]) -> "DecoderBatch":
+        """
+        Return a DecoderBatch with only the specified neurons' spikes.
+        """
+        if self.spike_times_s is None:
+            raise ValueError("No spike_times_s available in this DecoderBatch.")
+
+        st = [self.spike_times_s[i] for i in keys]
+        wf = [self.spike_waveforms[i] for i in keys] if self.spike_waveforms else None
+
+        return DecoderBatch(
+            signals=self.signals,
+            bin_edges_s=self.bin_edges_s,
             spike_times_s=st,
             spike_waveforms=wf,
         )
