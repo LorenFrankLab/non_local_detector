@@ -113,12 +113,12 @@ class DecoderBatch:
         a different neuron and contains the waveforms of spikes.
     """
 
-    signals: Dict[str, Array] = field(default_factory=dict)  # open namespace
+    signals: Dict[str, Array] = field(default_factory=dict)
 
-    # Per-bin meta
+    # Per-bin metadata
     bin_edges_s: Optional[Array] = None  # len = n_time + 1
 
-    # Raw spikes (optional; not aligned)
+    # Raw spikes
     spike_times_s: Optional[List[Array]] = None
     spike_waveforms: Optional[List[Array]] = None
 
@@ -128,26 +128,42 @@ class DecoderBatch:
     #  Validation at construction                                        #
     # ------------------------------------------------------------------ #
     def __post_init__(self):
-        if not self.signals:
-            raise ValueError("DecoderBatch needs at least one signal array.")
+        if not self.signals and self.spike_times_s is None:
+            raise ValueError(
+                "DecoderBatch must contain at least one signal or spike_times_s."
+            )
 
-        lengths = {name: arr.shape[0] for name, arr in self.signals.items()}
-        bad_types = [
-            k for k, v in self.signals.items() if not isinstance(v, np.ndarray)
-        ]
-        if bad_types:
-            raise TypeError(f"signals must be np.ndarray. Offenders: {bad_types}")
+        if self.signals:
+            bad_type = [
+                k for k, v in self.signals.items() if not isinstance(v, np.ndarray)
+            ]
+            bad_dtype = [
+                k for k, v in self.signals.items() if v.dtype.kind not in "fi?"
+            ]
+            if bad_type:
+                raise TypeError(f"signals must be np.ndarray; offenders: {bad_type}")
+            if bad_dtype:
+                raise TypeError(
+                    f"signals must be numeric or bool; offenders: {bad_dtype}"
+                )
 
-        if len(set(lengths.values())) != 1:
-            detail = ", ".join(f"{k}={v}" for k, v in lengths.items())
-            raise ValueError(f"Time-axis mismatch among signals: {detail}")
+            lengths = {k: v.shape[0] for k, v in self.signals.items()}
+            if len(set(lengths.values())) != 1:
+                detail = ", ".join(f"{k}={n}" for k, n in lengths.items())
+                raise ValueError(f"Time-axis mismatch among signals: {detail}")
 
-        # optional numeric-dtype check
-        non_numeric = [k for k, a in self.signals.items() if a.dtype.kind not in "fib?"]
-        if non_numeric:
-            raise TypeError(f"signals must be numeric. Non-numeric: {non_numeric}")
+            self._n_time = next(iter(lengths.values()))
+        else:
+            if self.bin_edges_s is None:
+                raise ValueError(
+                    "When no signals are provided, bin_edges_s "
+                    "must be supplied to define n_time."
+                )
+            self._n_time = len(self.bin_edges_s) - 1
 
-        self._n_time = next(iter(lengths.values()))
+        # Final bin_edges length check
+        if self.bin_edges_s is not None and len(self.bin_edges_s) != self._n_time + 1:
+            raise ValueError("len(bin_edges_s) must equal n_time + 1.")
 
     # ------------------------------------------------------------------ #
     #  Convenience read-only attributes                                  #
@@ -168,23 +184,19 @@ class DecoderBatch:
     def n_time(self) -> int:
         return self._n_time
 
-    # Legacy alias
-    T = n_time
-
     # ------------------------------------------------------------------ #
     #  Shallow slice helper                                              #
     # ------------------------------------------------------------------ #
     def slice(
-        self, start: int, stop: int, *, slice_spikes: bool = False
+        self, start: int, stop: int, *, slice_spikes: bool = True
     ) -> "DecoderBatch":
         """
         Return a DecoderBatch view of [start:stop) along the time axis.
 
         Parameters
         ----------
-        slice_spikes : bool, default False
+        slice_spikes : bool, default True
             If True, spike_times and waveforms are filtered to the window.
-            Times are *shifted* so that ``t0`` becomes 0.
         """
         new_signals = {k: v[start:stop] for k, v in self.signals.items()}
 
@@ -195,7 +207,7 @@ class DecoderBatch:
             st_new, wf_new = [], []
             for times, wave in zip(st, wf or []):
                 idx = (times >= t0) & (times < t1)
-                st_new.append(times[idx] - t0)
+                st_new.append(times[idx])
                 if wf is not None:
                     wf_new.append(wave[idx])
             st, wf = st_new, (wf_new if wf is not None else None)
