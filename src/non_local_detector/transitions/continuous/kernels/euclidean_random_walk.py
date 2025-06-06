@@ -4,7 +4,8 @@ from typing import Optional, Union
 import numpy as np
 from scipy.stats import multivariate_normal
 
-from ....environment import Environment
+from non_local_detector.environment import Environment
+
 from ..base import Array, Covariates, Kernel
 from ..registry import register_continuous_transition
 from ..utils import _handle_intra_env_kernel_edges, _normalize_row_probability

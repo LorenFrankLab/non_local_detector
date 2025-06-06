@@ -3,12 +3,8 @@ non_local_detector.transitions.continuous.kernels
 =================================================
 
 This package contains various `Kernel` implementations that define specific
-local motion rules for transitions between states.
+local motion rules for transitions between continuous states.
 
-Each kernel is automatically registered with the central kernel registry
-(see `non_local_detector.transitions.continuous.registry`) upon import of
-its module, allowing them to be instantiated by name. This `__init__.py`
-file ensures all standard kernels are imported and thus registered.
 """
 
 from .diffusion_random_walk import DiffusionRandomWalkKernel

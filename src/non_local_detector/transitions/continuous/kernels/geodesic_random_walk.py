@@ -1,16 +1,15 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional, Union
+from typing import Optional
 
+import networkx as nx
 import numpy as np
 from scipy.stats import norm
 
-from ....environment import Environment
+from non_local_detector.environment import Environment
+
 from ..base import Array, Covariates, Kernel
 from ..registry import register_continuous_transition
 from ..utils import _handle_intra_env_kernel_edges, _normalize_row_probability
-
-if TYPE_CHECKING:
-    import networkx as nx
 
 
 def _geodesic_distance_matrix(

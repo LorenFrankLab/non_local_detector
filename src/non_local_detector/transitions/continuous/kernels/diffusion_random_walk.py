@@ -5,8 +5,9 @@ from typing import Optional
 
 import numpy as np
 
-from ....diffusion_kernels import compute_diffusion_kernels
-from ....environment import Environment
+from non_local_detector.diffusion_kernels import compute_diffusion_kernels
+from non_local_detector.environment import Environment
+
 from ..base import Array, Covariates, Kernel
 from ..registry import register_continuous_transition
 from ..utils import _handle_intra_env_kernel_edges

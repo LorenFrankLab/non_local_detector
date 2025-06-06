@@ -13,9 +13,9 @@ from typing import Dict, Mapping, Optional, Tuple
 
 import numpy as np
 
-from ....environment import Environment
-from ....model.state_spec import StateSpec
 from ...continuous.base import Array, ContinuousTransition, Covariates, Kernel
+from non_local_detector.environment import Environment
+from non_local_detector.model.state_spec import StateSpec
 
 
 @dataclass

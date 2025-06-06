@@ -3,7 +3,8 @@ from typing import Optional
 
 import numpy as np
 
-from ....environment import Environment
+from non_local_detector.environment import Environment
+
 from ..base import Array, Covariates, Kernel
 from ..registry import register_continuous_transition
 from ..utils import _handle_intra_env_kernel_edges
