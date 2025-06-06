@@ -97,10 +97,12 @@ class RecordingBundle:
             )
 
         for idx, (t, w) in enumerate(zip(self.spike_times_s, self.spike_waveforms)):
-            if t.size != w.shape[0]:
+            ntimes = t.times_s.size
+            nwaves = w.data.shape[0]
+            if ntimes != nwaves:
                 raise ValueError(
-                    f"Neuron {idx}: {t.size} spike times but "
-                    f"{w.shape[0]} waveform rows."
+                    f"Neuron {idx}: {ntimes} spike times but "
+                    f"{nwaves} waveform rows."
                 )
 
 
@@ -149,44 +151,51 @@ class DecoderBatch:
     #  Validation at construction                                        #
     # ------------------------------------------------------------------ #
     def __post_init__(self):
+        # 1) Neither signals nor spikes → error
         if not self.signals and self.spike_times_s is None:
             raise ValueError(
                 "DecoderBatch must contain at least one signal or spike_times_s."
             )
 
         if self.signals:
+            # a) Disallow any non-ndarray
             bad_type = [
                 k for k, v in self.signals.items() if not isinstance(v, np.ndarray)
             ]
-            bad_dtype = [
-                k
-                for k, v in self.signals.items()
-                if v.dtype.kind not in "fi?uO"  # float, int, bool, unicode, object
-            ]
             if bad_type:
                 raise TypeError(f"signals must be np.ndarray; offenders: {bad_type}")
+
+            # b) Now each v is an ndarray → check dtype
+            bad_dtype = [
+                k for k, v in self.signals.items() if v.dtype.kind not in "fi?uO"
+            ]
             if bad_dtype:
                 raise TypeError(
                     f"signals must be numeric or bool; offenders: {bad_dtype}"
                 )
 
+            # c) Ensure all signals share the same n_time
             lengths = {k: v.shape[0] for k, v in self.signals.items()}
             if len(set(lengths.values())) != 1:
                 detail = ", ".join(f"{k}={n}" for k, n in lengths.items())
                 raise ValueError(f"Time-axis mismatch among signals: {detail}")
-
             self._n_time = next(iter(lengths.values()))
-        else:
-            if self.bin_edges_s is None:
-                raise ValueError(
-                    "When no signals are provided, bin_edges_s "
-                    "must be supplied to define n_time."
-                )
-            self._n_time = len(self.bin_edges_s) - 1
 
-        # Final bin_edges length check
-        if self.bin_edges_s is not None and len(self.bin_edges_s) != self._n_time + 1:
-            raise ValueError("len(bin_edges_s) must equal n_time + 1.")
+        else:
+            # No signals, but spike_times_s is not None (otherwise we would have raised above).
+            # We allow “spikes + bin_edges only” → set n_time from bin_edges_s.
+            if self.spike_times_s is not None and self.bin_edges_s is not None:
+                self._n_time = len(self.bin_edges_s) - 1
+            else:
+                # If spike_times_s exists but bin_edges_s is missing, we cannot infer n_time.
+                raise ValueError(
+                    "DecoderBatch must contain either signals or both spike_times_s and bin_edges_s."
+                )
+
+        # Final check on bin_edges_s length (if provided)
+        if self.bin_edges_s is not None:
+            if len(self.bin_edges_s) != self._n_time + 1:
+                raise ValueError("len(bin_edges_s) must equal n_time + 1.")
 
     # ------------------------------------------------------------------ #
     #  Convenience read-only attributes                                  #
@@ -213,32 +222,25 @@ class DecoderBatch:
     def slice(
         self, start: int, stop: int, *, slice_spikes: bool = True
     ) -> "DecoderBatch":
-        """
-        Return a DecoderBatch view of [start:stop) along the time axis.
-
-        Parameters
-        ----------
-        slice_spikes : bool, default True
-            If True, spike_times and waveforms are filtered to the window.
-        """
         new_signals = {k: v[start:stop] for k, v in self.signals.items()}
 
-        # Optionally filter spikes
         st, wf = self.spike_times_s, self.spike_waveforms
         if slice_spikes and st is not None and self.bin_edges_s is not None:
             t0, t1 = self.bin_edges_s[start], self.bin_edges_s[stop]
-            st_new, wf_new = [], []
-            for times, wave in zip(st, wf or []):
-                idx = (times >= t0) & (times < t1)
-                st_new.append(times[idx])
+            st_new = []
+            wf_new = [] if wf is not None else None
+
+            for i, times in enumerate(st):
+                mask = (times >= t0) & (times < t1)
+                st_new.append(times[mask])
                 if wf is not None:
-                    wf_new.append(wave[idx])
+                    wf_new.append(wf[i][mask])
+
             st, wf = st_new, (wf_new if wf is not None else None)
 
         new_edges = (
             None if self.bin_edges_s is None else self.bin_edges_s[start : stop + 1]
         )
-
         return DecoderBatch(
             signals=new_signals,
             bin_edges_s=new_edges,
@@ -255,20 +257,36 @@ class DecoderBatch:
         )
 
     def select_spikes(self, keys: Iterable[int]) -> "DecoderBatch":
-        """
-        Return a DecoderBatch with only the specified neurons' spikes.
-        """
         if self.spike_times_s is None:
             raise ValueError("No spike_times_s available in this DecoderBatch.")
 
-        st = [self.spike_times_s[i] for i in keys]
-        wf = [self.spike_waveforms[i] for i in keys] if self.spike_waveforms else None
+        orig_st = self.spike_times_s
+        orig_wf = self.spike_waveforms
+
+        new_times = []
+        for i in keys:
+            t = orig_st[i]
+            if hasattr(t, "times_s"):
+                new_times.append(t.times_s)
+            else:
+                new_times.append(t)
+
+        if orig_wf is not None:
+            new_wf = []
+            for i in keys:
+                w = orig_wf[i]
+                if hasattr(w, "data"):
+                    new_wf.append(w.data)
+                else:
+                    new_wf.append(w)
+        else:
+            new_wf = None
 
         return DecoderBatch(
             signals=self.signals,
             bin_edges_s=self.bin_edges_s,
-            spike_times_s=st,
-            spike_waveforms=wf,
+            spike_times_s=new_times,
+            spike_waveforms=new_wf,
         )
 
     # ------------------------------------------------------------------ #
@@ -294,8 +312,14 @@ def validate_sources(batch: "DecoderBatch", observation_models: list) -> None:
     missing: set[str] = set()
     for model in observation_models:
         for src in getattr(model, "required_sources", ()):
-            if src not in batch.signals and not hasattr(batch, src):
-                missing.add(src)
+            # OK if it’s in signals dict
+            if src in batch.signals:
+                continue
+            # OK if there is an attribute with that name AND it’s not None
+            if hasattr(batch, src) and getattr(batch, src) is not None:
+                continue
+            # Otherwise, it’s missing
+            missing.add(src)
     if missing:
         raise ValueError(
             "DecoderBatch missing required fields:\n  • "
