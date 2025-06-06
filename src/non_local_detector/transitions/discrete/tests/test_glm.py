@@ -1,3 +1,8 @@
+import non_local_detector.transitions.discrete.registry as discrete_registry
+
+for name in list(discrete_registry._TRANSITIONS.keys()):
+    discrete_registry._TRANSITIONS.pop(name)
+
 import importlib
 import sys
 import types

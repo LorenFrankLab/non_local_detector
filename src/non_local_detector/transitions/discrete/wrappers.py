@@ -55,10 +55,20 @@ def diag_stickiness(
     Stationary
         An instance of the Stationary class with the constructed transition matrix.
     """
+    if diag_probs is np.isscalar(diag_probs):
+        raise ValueError(
+            "diag_probs must be a list, tuple, or numpy array, not a scalar"
+        )
     if isinstance(diag_probs, (list, tuple)):
         diag_probs = np.array(diag_probs)
     elif not isinstance(diag_probs, np.ndarray):
-        raise TypeError("diag_probs must be a list, tuple, or numpy array")
+        raise ValueError("diag_probs must be a list, tuple, or numpy array")
+    if diag_probs.ndim != 1:
+        raise ValueError(f"diag_probs must be 1D, got shape {diag_probs.shape}")
+
+    if np.any(diag_probs < 0) or np.any(diag_probs > 1):
+        raise ValueError("diag_probs must be in the range [0, 1]")
+
     transition_matrix = _make_transition_from_diag(diag_probs)
     return Stationary(
         transition_matrix, concentration=concentration, stickiness=stickiness
