@@ -20,6 +20,22 @@ import numpy as np
 Array = np.ndarray
 
 
+@dataclass(frozen=True, slots=True)
+class SpikeTrain:
+    times_s: np.ndarray  # strictly increasing
+    unit_id: int | str  # cluster or channel label
+    channel_position: tuple[float, ...] | None = None  # (x, y, z) if known
+    quality_metrics: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class WaveformSeries:
+    data: np.ndarray  # (n_spikes, n_channels, n_samples)
+    channel_positions: np.ndarray | None = None  # (n_channels, ndim)
+    channel_ids: tuple[int, ...] | None = None
+    feature_names: tuple[str, ...] | None = None  # e.g. ("amp", "width")
+
+
 # --------------------------------------------------------------------------- #
 #  Helper: generic time-series container                                      #
 # --------------------------------------------------------------------------- #
@@ -28,6 +44,11 @@ class TimeSeries:
     data: Array  # shape (n_samples, …)
     sampling_rate_hz: float  # samples per second
     start_s: float = 0.0  # session time of first sample
+
+    # OPTIONAL metadata  ──────────────────────────────────────────────
+    channel_ids: tuple[int, ...] | None = None  # length = n_channels
+    channel_positions: np.ndarray | None = None
+    units: str | None = None  # "uV", "raw_adc", "deg"
 
     def __post_init__(self):
         if self.sampling_rate_hz <= 0:
@@ -46,9 +67,9 @@ class RecordingBundle:
     """
 
     # List of spike times for each neuron, in seconds.
-    spike_times_s: Optional[List[Array]] = None
+    spike_times_s: Optional[List[SpikeTrain]] = None
     # List of spike waveforms, one for each neuron.
-    spike_waveforms: Optional[List[np.ndarray]] = None
+    spike_waveforms: Optional[List[WaveformSeries]] = None
     signals: Dict[str, TimeSeries] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
