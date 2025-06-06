@@ -28,10 +28,12 @@ class ObservationModel(Protocol):
     Implementations MUST be side-effect free — no parameter updates here.
     """
 
-    def log_likelihood(self, bundle: DataBundle) -> Array:
-        """
-        Returns
-        -------
-        log_lik : ndarray, shape (n_time, n_bins_in_state)
-        """
-        ...
+    required_sources: tuple[str, ...] = ()
+
+    @property
+    def n_bins(self) -> int: ...  # number of continuous bins
+
+    def log_likelihood(self, bundle: DataBundle) -> Array: ...
+
+    # optional hook
+    def precompute(self, bundle: DataBundle) -> None: ...
