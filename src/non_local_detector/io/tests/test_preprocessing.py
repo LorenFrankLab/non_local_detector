@@ -371,3 +371,18 @@ def test_df_to_recording_bundle_subset_of_columns():
     )
     bundle = preprocessing.df_to_recording_bundle(df, signals_to_include=["b", "c"])
     assert set(bundle.signals.keys()) == {"b", "c"}
+
+
+def test_df_to_recordingbundle_nonzero_start():
+    df = pd.DataFrame({"x": [10, 20, 30]}, index=[5.0, 5.5, 6.0])
+    rb = preprocessing.df_to_recording_bundle(df)
+    # The returned TimeSeries.start_s should equal the first index = 5.0
+    assert rb.signals["x"].start_s == 5.0
+    # And sampling_rate inferred = 1/(0.5) = 2 Hz
+    assert np.isclose(rb.signals["x"].sampling_rate_hz, 2.0)
+
+
+def test_df_to_recordingbundle_empty_df():
+    df = pd.DataFrame([], columns=["a", "b"])
+    with pytest.raises(ValueError):
+        preprocessing.df_to_recording_bundle(df)
