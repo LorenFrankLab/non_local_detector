@@ -27,6 +27,17 @@ class SpikeTrain:
     channel_position: tuple[float, ...] | None = None  # (x, y, z) if known
     quality_metrics: dict[str, float] = field(default_factory=dict)
 
+    def __len__(self) -> int:
+        return self.times_s.size
+
+    def __getitem__(self, idx):
+        # Allow st[i] or st[2:10] to return times_s sliced
+        return self.times_s[idx]
+
+    def __repr__(self) -> str:
+        uid = f", unit_id={self.unit_id}" if self.unit_id is not None else ""
+        return f"SpikeTrain(times_s=array(shape={self.times_s.shape}){uid})"
+
 
 @dataclass(frozen=True, slots=True)
 class WaveformSeries:
@@ -34,6 +45,17 @@ class WaveformSeries:
     channel_positions: np.ndarray | None = None  # (n_channels, ndim)
     channel_ids: tuple[int, ...] | None = None
     feature_names: tuple[str, ...] | None = None  # e.g. ("amp", "width")
+
+    def __len__(self) -> int:
+        return self.data.shape[0]
+
+    def __getitem__(self, idx):
+        # Allow wf[i] or wf[2:10] to return data sliced
+        return self.data[idx]
+
+    def __repr__(self) -> str:
+        ch_ids = f", channel_ids={self.channel_ids}" if self.channel_ids else ""
+        return f"WaveformSeries(data=array(shape={self.data.shape}){ch_ids})"
 
 
 # --------------------------------------------------------------------------- #
@@ -67,42 +89,66 @@ class RecordingBundle:
     """
 
     # List of spike times for each neuron, in seconds.
-    spike_times_s: Optional[List[SpikeTrain]] = None
+    spike_times_s: Optional[List[SpikeTrain | np.ndarray]] = None
     # List of spike waveforms, one for each neuron.
     spike_waveforms: Optional[List[WaveformSeries]] = None
     signals: Dict[str, TimeSeries] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # ---- 1. waveforms without timestamps → fatal -----------------
+
+        # 1) If the user supplied anything for spike_times_s, it must be a list
+        if self.spike_times_s is not None:
+            if not isinstance(self.spike_times_s, list):
+                raise TypeError(
+                    "spike_times_s must be a list of SpikeTrain or np.ndarray."
+                )
+
+            new_spike_times = []
+            for idx, st in enumerate(self.spike_times_s):
+                if isinstance(st, SpikeTrain):
+                    # Already a SpikeTrain → just keep it
+                    new_spike_times.append(st)
+                elif isinstance(st, np.ndarray):
+                    # Wrap raw array into a SpikeTrain
+                    new_spike_times.append(SpikeTrain(times_s=st, unit_id=idx))
+                else:
+                    raise TypeError(
+                        f"spike_times_s[{idx}] must be a SpikeTrain or numpy.ndarray, "
+                        f"got {type(st).__name__}"
+                    )
+
+            # Replace with our wrapped list of SpikeTrain objects
+            object.__setattr__(self, "spike_times_s", new_spike_times)
+
+        # 2) waveforms without timestamps → fatal
         if self.spike_waveforms is not None and self.spike_times_s is None:
             raise ValueError(
-                "spike_waveforms were provided but spike_times_s is None. "
-                "Waveforms cannot be aligned without spike times."
+                "spike_waveforms provided but spike_times_s is None. "
+                "Waveforms require spike times."
             )
 
-        # ---- 2. no timestamps → nothing else to check ----------------
+        # 3) no spike_times → nothing more to check
         if self.spike_times_s is None:
-            return  # (case 1 above)
+            return
 
-        # ---- 3. timestamps present, waveforms missing → fine ---------
+        # 4) spike_times present, no waveforms → fine
         if self.spike_waveforms is None:
-            return  # (case 2 above)
+            return
 
-        # ---- 4. both present → validate lengths & per-unit matches ---
+        # 5) both present → check lengths
         if len(self.spike_times_s) != len(self.spike_waveforms):
             raise ValueError(
-                "Length mismatch between spike_times_s "
-                f"({len(self.spike_times_s)}) and spike_waveforms "
-                f"({len(self.spike_waveforms)})."
+                f"Length mismatch: spike_times_s has {len(self.spike_times_s)} entries "
+                f"but spike_waveforms has {len(self.spike_waveforms)}."
             )
 
+        # 6) per‐unit row counts must match
         for idx, (t, w) in enumerate(zip(self.spike_times_s, self.spike_waveforms)):
             ntimes = t.times_s.size
             nwaves = w.data.shape[0]
             if ntimes != nwaves:
                 raise ValueError(
-                    f"Neuron {idx}: {ntimes} spike times but "
-                    f"{nwaves} waveform rows."
+                    f"Neuron {idx}: {ntimes} spike times but {nwaves} waveform rows."
                 )
 
 
