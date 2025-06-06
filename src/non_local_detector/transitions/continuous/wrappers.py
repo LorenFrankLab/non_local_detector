@@ -1,4 +1,5 @@
-from ...models import StateSpec
+from non_local_detector.model.state_spec import StateSpec
+
 from .base import Kernel
 from .kernels import EuclideanRandomWalkKernel
 from .orchestrators.block import BlockTransition

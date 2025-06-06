@@ -2,7 +2,8 @@ from typing import Optional
 
 import numpy as np
 
-from ...environment import Environment
+from non_local_detector.environment import Environment
+
 from .base import Array
 
 
