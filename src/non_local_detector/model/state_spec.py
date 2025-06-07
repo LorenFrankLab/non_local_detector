@@ -64,6 +64,16 @@ class StateSpec:
             raise TypeError(
                 f"obs_model must be an ObservationModel, got {type(self.obs_model)}."
             )
+        try:
+            req = self.obs_model.required_sources
+        except AttributeError:
+            raise ValueError(
+                f"{self.obs_model!r} must implement `required_sources` attribute."
+            )
+        if not isinstance(req, tuple) or len(req) == 0:
+            raise ValueError(
+                f"{self.obs_model!r} must implement `required_sources` as a non-empty tuple."
+            )
         if self.encoding_model is not None and not isinstance(
             self.encoding_model, EncodingModel
         ):

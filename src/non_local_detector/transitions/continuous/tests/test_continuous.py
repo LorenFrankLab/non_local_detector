@@ -50,8 +50,18 @@ def simple_environments():
         bin_count_threshold=0,
     )
 
-    spec_A = StateSpec(name="A", env=env_A, obs_model=ObservationModel)
-    spec_B = StateSpec(name="B", env=env_B, obs_model=ObservationModel)
+    class ShamObservationModel(ObservationModel):
+        required_sources = ("x",)
+
+        @property
+        def n_bins(self):
+            return 1
+
+        def log_likelihood(self, batch):
+            return 1.0  # Placeholder for actual log-likelihood computation
+
+    spec_A = StateSpec(name="A", env=env_A, obs_model=ShamObservationModel())
+    spec_B = StateSpec(name="B", env=env_B, obs_model=ShamObservationModel())
 
     return env_A, env_B, spec_A, spec_B
 
