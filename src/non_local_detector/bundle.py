@@ -13,7 +13,7 @@ read-only properties for neuroscientist convenience.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 
@@ -31,6 +31,15 @@ class SpikeTrain:
     channel_position: tuple[float, ...] | None = None  # (x, y, z) if known
     quality_metrics: dict[str, float] = field(default_factory=dict)
 
+    def __post_init__(self):
+        times = np.asarray(self.times_s, dtype=float)
+        if times.ndim != 1:
+            raise ValueError(f"times_s must be 1D; got shape {times.shape}")
+        if not np.all(np.diff(times) >= 0):
+            raise ValueError("times_s must be strictly increasing.")
+        # Use object.__setattr__ because the class is frozen
+        object.__setattr__(self, "times_s", times)
+
     def __len__(self) -> int:
         return self.times_s.size
 
@@ -45,10 +54,46 @@ class SpikeTrain:
 
 @dataclass(frozen=True, slots=True)
 class WaveformSeries:
-    data: np.ndarray  # (n_spikes, n_channels, n_samples)
+    data: np.ndarray  # (n_spikes, n_channels, n_features)
     channel_positions: np.ndarray | None = None  # (n_channels, ndim)
     channel_ids: tuple[int, ...] | None = None
     feature_names: tuple[str, ...] | None = None  # e.g. ("amp", "width")
+
+    def __post_init__(self):
+        data = np.asarray(self.data, dtype=float)
+        if data.ndim == 2:
+            # If 2D, assume (n_spikes, n_features) and add a dummy channel axis
+            data = data[:, np.newaxis, :]
+        elif data.ndim != 3:
+            raise ValueError(f"data must be 2D or 3D; got shape {data.shape}")
+        if data.shape[0] == 0:
+            raise ValueError("data must have at least one spike (n_spikes > 0).")
+        if self.channel_ids is not None:
+            if len(self.channel_ids) != data.shape[1]:
+                raise ValueError(
+                    f"channel_ids length {len(self.channel_ids)} does not match "
+                    f"data shape {data.shape[1]} (n_channels)."
+                )
+        if self.channel_positions is not None:
+            if self.channel_positions.ndim != 2:
+                raise ValueError(
+                    f"channel_positions must be 2D; got shape {self.channel_positions.shape}"
+                )
+            if self.channel_positions.shape[0] != data.shape[1]:
+                raise ValueError(
+                    f"channel_positions has {self.channel_positions.shape[0]} rows, "
+                    f"but data has {data.shape[1]} channels."
+                )
+        if self.feature_names is not None:
+            if not isinstance(self.feature_names, tuple):
+                raise TypeError("feature_names must be a tuple of strings.")
+            if len(self.feature_names) != data.shape[2]:
+                raise ValueError(
+                    f"feature_names length {len(self.feature_names)} does not match "
+                    f"data shape {data.shape[2]} (n_features)."
+                )
+        # Use object.__setattr__ because the class is frozen
+        object.__setattr__(self, "data", data)
 
     def __len__(self) -> int:
         return self.data.shape[0]
@@ -81,6 +126,39 @@ class TimeSeries:
             raise ValueError("sampling_rate_hz must be positive.")
         if self.data.ndim < 1:
             raise ValueError("TimeSeries.data must be at least 1-D.")
+        if self.data.ndim == 1:
+            # If 1D, assume (n_samples,) and add a dummy channel axis
+            data = self.data[:, np.newaxis]
+        else:
+            data = self.data
+        if data.shape[0] == 0:
+            raise ValueError(
+                "TimeSeries.data must have at least one sample (n_samples > 0)."
+            )
+        if self.channel_ids is not None:
+            if len(self.channel_ids) != data.shape[1]:
+                raise ValueError(
+                    f"channel_ids length {len(self.channel_ids)} does not match "
+                    f"data shape {data.shape[1]} (n_channels)."
+                )
+        if self.channel_positions is not None:
+            if self.channel_positions.ndim != 2:
+                raise ValueError(
+                    f"channel_positions must be 2D; got shape {self.channel_positions.shape}"
+                )
+            if self.channel_positions.shape[0] != data.shape[1]:
+                raise ValueError(
+                    f"channel_positions has {self.channel_positions.shape[0]} rows, "
+                    f"but data has {data.shape[1]} channels."
+                )
+        # Use object.__setattr__ because the class is frozen
+        object.__setattr__(self, "data", data)
+        object.__setattr__(self, "start_s", float(self.start_s))
+        object.__setattr__(self, "sampling_rate_hz", float(self.sampling_rate_hz))
+        if self.units is not None and not isinstance(self.units, str):
+            raise TypeError("units must be a string or None.")
+        if self.channel_ids is not None and not isinstance(self.channel_ids, tuple):
+            raise TypeError("channel_ids must be a tuple of integers or None.")
 
 
 # --------------------------------------------------------------------------- #
@@ -93,18 +171,18 @@ class RecordingBundle:
     """
 
     # List of spike times for each neuron, in seconds.
-    spike_times_s: Optional[List[SpikeTrain | np.ndarray]] = None
+    spike_times_s: Optional[Sequence[SpikeTrain | np.ndarray]] = None
     # List of spike waveforms, one for each neuron.
-    spike_waveforms: Optional[List[WaveformSeries]] = None
+    spike_waveforms: Optional[Sequence[WaveformSeries]] = None
     signals: Dict[str, TimeSeries] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
 
-        # 1) If the user supplied anything for spike_times_s, it must be a list
+        # 1) If the user supplied anything for spike_times_s, it must be a sequence
         if self.spike_times_s is not None:
-            if not isinstance(self.spike_times_s, list):
+            if not isinstance(self.spike_times_s, Sequence):
                 raise TypeError(
-                    "spike_times_s must be a list of SpikeTrain or np.ndarray."
+                    "spike_times_s must be a sequence of SpikeTrain or np.ndarray."
                 )
             if len(self.spike_times_s) == 0:
                 raise ValueError("spike_times_s cannot be an empty list.")

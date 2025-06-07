@@ -20,12 +20,12 @@ def make_spiketrain(n, unit_id=0):
     )
 
 
-def make_waveformseries(n, n_ch=2, n_samp=10):
+def make_waveformseries(n, n_ch=2, n_samp=3):
     return WaveformSeries(
         data=np.random.randn(n, n_ch, n_samp),
         channel_positions=np.random.randn(n_ch, 2),
         channel_ids=tuple(range(n_ch)),
-        feature_names=("amp", "width"),
+        feature_names=("amp", "width", "pc1"),
     )
 
 
