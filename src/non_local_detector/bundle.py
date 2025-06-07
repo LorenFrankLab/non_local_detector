@@ -347,38 +347,49 @@ class DecoderBatch:
             spike_waveforms=self.spike_waveforms,
         )
 
-    def select_spikes(self, keys: Iterable[int]) -> "DecoderBatch":
-        if self.spike_times_s is None:
-            raise ValueError("No spike_times_s available in this DecoderBatch.")
 
-        orig_st = self.spike_times_s
-        orig_wf = self.spike_waveforms
+def select_spikes(self, keys: Iterable[int]) -> "DecoderBatch":
+    """
+    Creates a new DecoderBatch containing only a subset of spike data.
 
-        new_times = []
-        for i in keys:
-            t = orig_st[i]
-            if hasattr(t, "times_s"):
-                new_times.append(t.times_s)
-            else:
-                new_times.append(t)
+    This method preserves the SpikeTrain and WaveformSeries object types
+    in the new batch.
 
-        if orig_wf is not None:
-            new_wf = []
-            for i in keys:
-                w = orig_wf[i]
-                if hasattr(w, "data"):
-                    new_wf.append(w.data)
-                else:
-                    new_wf.append(w)
-        else:
-            new_wf = None
+    Parameters
+    ----------
+    keys : Iterable[int]
+        An iterable of integer indices for the spikes to select.
 
-        return DecoderBatch(
-            signals=self.signals,
-            bin_edges_s=self.bin_edges_s,
-            spike_times_s=new_times,
-            spike_waveforms=new_wf,
-        )
+    Returns
+    -------
+    DecoderBatch
+        A new batch with the selected spike data objects.
+
+    Raises
+    ------
+    ValueError
+        If the batch does not contain any spike times to select from.
+    """
+    if self.spike_times_s is None:
+        raise ValueError("No spike_times_s available in this DecoderBatch.")
+
+    orig_st = self.spike_times_s
+    orig_wf = self.spike_waveforms
+
+    # Create a new list containing the selected SpikeTrain objects
+    new_times = [orig_st[i] for i in keys]
+
+    new_wf = None
+    if orig_wf is not None:
+        # Create a new list containing the selected WaveformSeries objects
+        new_wf = [orig_wf[i] for i in keys]
+
+    return DecoderBatch(
+        signals=self.signals,
+        bin_edges_s=self.bin_edges_s,
+        spike_times_s=new_times,
+        spike_waveforms=new_wf,
+    )
 
     # ------------------------------------------------------------------ #
     #  Pretty-print                                                      #

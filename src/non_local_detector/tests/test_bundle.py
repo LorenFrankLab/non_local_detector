@@ -288,6 +288,7 @@ def test_decoderbatch_select_signals():
 
 
 def test_decoderbatch_select_spikes_and_errors():
+
     class FakeSpikeTrain:
         def __init__(self, times):
             self.times_s = np.array(times)
@@ -304,7 +305,7 @@ def test_decoderbatch_select_spikes_and_errors():
     # valid selection
     sub = batch.select_spikes([1])
     assert len(sub.spike_times_s) == 1
-    assert np.allclose(sub.spike_times_s[0], [0.3])
+    assert np.allclose(sub.spike_times_s[0].times_s, [0.3])
     # no spike_times → should raise
     empty_batch = DecoderBatch(signals={"a": np.arange(3)}, bin_edges_s=edges)
     with pytest.raises(ValueError):
