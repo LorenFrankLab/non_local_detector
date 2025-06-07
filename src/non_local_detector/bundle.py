@@ -26,7 +26,7 @@ def _is_array_like(x):
 
 @dataclass(frozen=True, slots=True)
 class SpikeTrain:
-    times_s: np.ndarray  # strictly increasing
+    times_s: Sequence[float]  # strictly increasing
     unit_id: int | str  # cluster or channel label
     channel_position: tuple[float, ...] | None = None  # (x, y, z) if known
     quality_metrics: dict[str, float] = field(default_factory=dict)
@@ -75,15 +75,15 @@ class WaveformSeries:
                     f"data shape {data.shape[1]} (n_channels)."
                 )
         if self.channel_positions is not None:
-            if self.channel_positions.ndim != 2:
+            pos = np.asarray(self.channel_positions, dtype=float)
+            if pos.ndim != 2:
+                raise ValueError(f"channel_positions must be 2D; got shape {pos.shape}")
+            if pos.shape[0] != data.shape[1]:
                 raise ValueError(
-                    f"channel_positions must be 2D; got shape {self.channel_positions.shape}"
-                )
-            if self.channel_positions.shape[0] != data.shape[1]:
-                raise ValueError(
-                    f"channel_positions has {self.channel_positions.shape[0]} rows, "
+                    f"channel_positions has {pos.shape[0]} rows, "
                     f"but data has {data.shape[1]} channels."
                 )
+            object.__setattr__(self, "channel_positions", pos)
         if self.feature_names is not None:
             if not isinstance(self.feature_names, tuple):
                 raise TypeError("feature_names must be a tuple of strings.")
