@@ -31,7 +31,6 @@ class EncodingModel(Protocol):
     """
 
     update_policy: UpdatePolicy  # NEW required property
-    update_period: int | None = None  # only for PERIODIC
 
     def initial_fit(
         self, batch: DecoderBatch, mask: np.ndarray | None = None
