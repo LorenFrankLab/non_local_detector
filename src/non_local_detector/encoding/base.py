@@ -21,7 +21,6 @@ class UpdatePolicy(Enum):
     NEVER = auto()  # frozen parameters
     INITIAL_FIT = auto()  # only initial_fit() then freeze
     ALWAYS = auto()  # call update each EM iteration
-    PERIODIC = auto()  # every k iterations (k in model)
 
 
 @runtime_checkable
