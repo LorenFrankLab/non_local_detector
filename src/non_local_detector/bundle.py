@@ -74,6 +74,10 @@ class WaveformSeries:
                     f"channel_ids length {len(self.channel_ids)} does not match "
                     f"data shape {data.shape[1]} (n_channels)."
                 )
+            # Ensure channel_ids is a tuple of integers or None
+            if not all(isinstance(cid, int) for cid in self.channel_ids):
+                raise TypeError("channel_ids must be a tuple of integers or None.")
+            self.channel_ids = tuple(self.channel_ids)
         if self.channel_positions is not None:
             pos = np.asarray(self.channel_positions, dtype=float)
             if pos.ndim != 2:
@@ -136,11 +140,16 @@ class TimeSeries:
                 "TimeSeries.data must have at least one sample (n_samples > 0)."
             )
         if self.channel_ids is not None:
+
             if len(self.channel_ids) != data.shape[1]:
                 raise ValueError(
                     f"channel_ids length {len(self.channel_ids)} does not match "
                     f"data shape {data.shape[1]} (n_channels)."
                 )
+            if not all(isinstance(cid, int) for cid in self.channel_ids):
+                raise TypeError("channel_ids must be a tuple of integers or None.")
+            # Use object.__setattr__ to set the tuple
+            object.__setattr__(self, "channel_ids", tuple(self.channel_ids))
         if self.channel_positions is not None:
             if self.channel_positions.ndim != 2:
                 raise ValueError(
