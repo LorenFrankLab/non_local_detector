@@ -12,23 +12,27 @@ class DiscreteTransitionModel(Protocol):
 
     # ---------- forward pass ----------
     def matrix(
-        self, *, covars: Optional[Dict[str, np.ndarray]] = None
+        self, *, covariate_data: Optional[Dict[str, np.ndarray]] = None
     ) -> np.ndarray: ...
 
     # ---------- EM helper  ----------
     def update_parameters(
-        self, *, causal: np.ndarray, predictive: np.ndarray, acausal: np.ndarray
+        self,
+        *,
+        causal_posterior: np.ndarray,
+        predictive_distribution: np.ndarray,
+        acausal_posterior: np.ndarray,
     ) -> np.ndarray: ...
 
     """Return the transition matrix after updating parameters.
 
     Parameters
     ----------
-    causal : np.ndarray, shape (n_time, n_states)
+    causal_posterior : np.ndarray, shape (n_time, n_states)
         Causal posterior distribution
-    predictive : np.ndarray, shape (n_time, n_states)
+    predictive_distribution : np.ndarray, shape (n_time, n_states)
         Predictive distribution
-    acausal : np.ndarray, shape (n_time, n_states)
+    acausal_posterior : np.ndarray, shape (n_time, n_states)
         Acausal posterior distribution
 
     Returns
