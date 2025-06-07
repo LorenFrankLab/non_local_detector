@@ -289,6 +289,24 @@ class DecoderBatch:
     def n_time(self) -> int:
         return self._n_time
 
+    def get_categorical_encoder(self, signal_name: str) -> Any | None:
+        """
+        Retrieves the scikit-learn encoder or label map for a given
+        categorical signal.
+
+        Parameters
+        ----------
+        signal_name : str
+            The name of the categorical signal.
+
+        Returns
+        -------
+        Any or None
+            The fitted encoder instance (e.g., OneHotEncoder, OrdinalEncoder)
+            or a list of labels, if it exists. Otherwise, None.
+        """
+        return self._categorical_maps.get(signal_name)
+
     # ------------------------------------------------------------------ #
     #  Shallow slice helper                                              #
     # ------------------------------------------------------------------ #
