@@ -13,11 +13,15 @@ read-only properties for neuroscientist convenience.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import numpy as np
 
 Array = np.ndarray
+
+
+def _is_array_like(x):
+    return hasattr(x, "shape") and hasattr(x, "dtype")
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,13 +106,14 @@ class RecordingBundle:
                 raise TypeError(
                     "spike_times_s must be a list of SpikeTrain or np.ndarray."
                 )
-
+            if len(self.spike_times_s) == 0:
+                raise ValueError("spike_times_s cannot be an empty list.")
             new_spike_times = []
             for idx, st in enumerate(self.spike_times_s):
                 if isinstance(st, SpikeTrain):
                     # Already a SpikeTrain → just keep it
                     new_spike_times.append(st)
-                elif isinstance(st, np.ndarray):
+                elif _is_array_like(st):
                     # Wrap raw array into a SpikeTrain
                     new_spike_times.append(SpikeTrain(times_s=st, unit_id=idx))
                 else:
@@ -119,6 +124,26 @@ class RecordingBundle:
 
             # Replace with our wrapped list of SpikeTrain objects
             object.__setattr__(self, "spike_times_s", new_spike_times)
+
+        if self.spike_waveforms is not None:
+            if not isinstance(self.spike_waveforms, list):
+                raise TypeError("spike_waveforms must be a list of WaveformSeries.")
+            if len(self.spike_waveforms) == 0:
+                raise ValueError("spike_waveforms cannot be an empty list.")
+            new_waveforms = []
+            for idx, wf in enumerate(self.spike_waveforms):
+                if isinstance(wf, WaveformSeries):
+                    new_waveforms.append(wf)
+                elif _is_array_like(wf):
+                    new_waveforms.append(WaveformSeries(data=wf))
+                else:
+                    raise TypeError(
+                        f"spike_waveforms[{idx}] must be a WaveformSeries or numpy.ndarray, "
+                        f"got {type(wf).__name__}"
+                    )
+
+            # Replace with our wrapped list of WaveformSeries objects
+            object.__setattr__(self, "spike_waveforms", new_waveforms)
 
         # 2) waveforms without timestamps → fatal
         if self.spike_waveforms is not None and self.spike_times_s is None:
@@ -191,6 +216,10 @@ class DecoderBatch:
     spike_times_s: Optional[List[Array]] = None
     spike_waveforms: Optional[List[Array]] = None
 
+    _categorical_maps: dict[str, Any] = field(
+        default_factory=dict, init=False, repr=False
+    )
+
     _n_time: int = field(init=False, repr=False)
 
     # ------------------------------------------------------------------ #
@@ -205,9 +234,7 @@ class DecoderBatch:
 
         if self.signals:
             # a) Disallow any non-ndarray
-            bad_type = [
-                k for k, v in self.signals.items() if not isinstance(v, np.ndarray)
-            ]
+            bad_type = [k for k, v in self.signals.items() if not _is_array_like(v)]
             if bad_type:
                 raise TypeError(f"signals must be np.ndarray; offenders: {bad_type}")
 
