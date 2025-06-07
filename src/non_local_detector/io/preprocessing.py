@@ -10,8 +10,7 @@ arrays. All other behavior (binning, gap-fill, NaN policy) remains the same.
 from __future__ import annotations
 
 import warnings
-from collections import Counter
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
