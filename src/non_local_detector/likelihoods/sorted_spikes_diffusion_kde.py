@@ -43,7 +43,7 @@ def fit_sorted_spikes_diffusion_kde_encoding_model(
         List where each element is an array of spike times for a single neuron.
     environment : Environment
         A *fitted* Environment object defining the spatial grid, interior,
-        and connectivity graph (track_graph_nd_). Must be 2D.
+        and connectivity graph (connectivity). Must be 2D.
     position_std : float
         Spatial bandwidth (standard deviation) for the diffusion kernel. Controls
         the amount of smoothing. Units should match environment units.
@@ -71,27 +71,21 @@ def fit_sorted_spikes_diffusion_kde_encoding_model(
             The Environment object used for fitting.
         'no_spike_part_log_likelihood': jnp.ndarray, shape (n_total_bins,)
             Sum of place fields, used in likelihood calculation.
-        'is_track_interior' : jnp.ndarray, shape (n_total_bins,)
-             Flattened boolean mask of track interior bins.
         'disable_progress_bar': bool
     """
     # --- Input Validation and Setup ---
     if not environment._is_fitted:
         raise ValueError("Environment object must be fitted first.")
 
-    track_graph_nd_ = environment.get_fitted_track_graph()
+    connectivity = environment.get_fitted_track_graph()
 
     position = position if position.ndim > 1 else np.expand_dims(position, axis=1)
-    n_total_bins = environment.place_bin_centers_.shape[0]
-    interior_mask = environment.is_track_interior_
-    interior_mask_flat = interior_mask.ravel()
-    interior_indices = jnp.where(interior_mask_flat)[0]
+    n_total_bins = environment.n_bins
 
     # --- Diffusion Kernels ---
     print("Computing diffusion kernels...")
     kernel_matrix = compute_diffusion_kernels(
-        track_graph=track_graph_nd_,
-        interior_mask=interior_mask,
+        track_graph=connectivity,
         bandwidth_sigma=position_std,
     )
     print(f"Computed {kernel_matrix.shape} kernel matrix.")
@@ -118,7 +112,7 @@ def fit_sorted_spikes_diffusion_kde_encoding_model(
     np.add.at(full_occupancy_hist, position_bin_inds_valid, weights)
 
     # Filter to interior bins
-    interior_occupancy_hist = jnp.asarray(full_occupancy_hist[interior_indices])
+    interior_occupancy_hist = jnp.asarray(full_occupancy_hist)
 
     # Smooth using the kernel matrix
     smoothed_interior_occupancy = kernel_matrix @ interior_occupancy_hist
@@ -134,13 +128,6 @@ def fit_sorted_spikes_diffusion_kde_encoding_model(
         smoothed_interior_occupancy_density = jnp.zeros_like(
             smoothed_interior_occupancy
         )
-
-    # Map back to full grid (zero elsewhere)
-    smoothed_occupancy_full = (
-        jnp.zeros(n_total_bins)
-        .at[interior_indices]
-        .set(smoothed_interior_occupancy_density)
-    )
 
     # --- Compute Smoothed Spike Marginals and Place Fields (Per Neuron) ---
     place_fields = []
@@ -195,11 +182,8 @@ def fit_sorted_spikes_diffusion_kde_encoding_model(
             if spike_bin_inds_valid.size > 0:
                 np.add.at(full_spike_hist, spike_bin_inds_valid, time_weights_at_spikes)
 
-            # Filter to interior bins
-            interior_spike_hist = jnp.asarray(full_spike_hist[interior_indices])
-
             # Smooth using the kernel matrix
-            smoothed_interior_spike_density = kernel_matrix @ interior_spike_hist
+            smoothed_interior_spike_density = kernel_matrix @ full_spike_hist
 
             # Calculate smoothed marginal density (normalized)
             total_interior_spikes = smoothed_interior_spike_density.sum()
@@ -220,12 +204,7 @@ def fit_sorted_spikes_diffusion_kde_encoding_model(
                 0.0,  # Rate is zero if occupancy is zero
             )
             # Clip to avoid negative values (shouldn't happen) and ensure minimum rate
-            place_field_interior = jnp.clip(place_field_interior, a_min=EPS)
-
-            # Map back to full grid
-            neuron_place_field = (
-                jnp.zeros(n_total_bins).at[interior_indices].set(place_field_interior)
-            )
+            neuron_place_field = jnp.clip(place_field_interior, a_min=EPS)
 
         else:
             # No spikes, place field is EPS everywhere
@@ -242,8 +221,6 @@ def fit_sorted_spikes_diffusion_kde_encoding_model(
         "mean_rates": mean_rates,
         "environment": environment,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
-        "interior_bin_indices_flat": interior_indices,
-        "is_track_interior": interior_mask_flat,
         "disable_progress_bar": disable_progress_bar,
     }
 
@@ -257,8 +234,6 @@ def predict_sorted_spikes_diffusion_kde_log_likelihood(
     mean_rates: List[float],
     no_spike_part_log_likelihood: jnp.ndarray,
     environment: Environment,
-    interior_bin_indices_flat: jnp.ndarray,
-    is_track_interior: jnp.ndarray,  # Flattened boolean mask
     disable_progress_bar: bool = False,
     is_local: bool = False,
 ) -> jnp.ndarray:
@@ -282,8 +257,6 @@ def predict_sorted_spikes_diffusion_kde_log_likelihood(
         The *fitted* Environment object used during encoding.
     interior_bin_indices_flat : jnp.ndarray, shape (n_interior_bins,)
         Flat indices of the bins considered part of the track interior.
-    is_track_interior : jnp.ndarray, shape (n_total_bins,)
-        Flattened boolean mask of track interior bins.
     disable_progress_bar : bool, optional
         If True, suppresses progress bars. Defaults to False.
     is_local : bool, optional
@@ -342,7 +315,7 @@ def predict_sorted_spikes_diffusion_kde_log_likelihood(
             n_time, -1, dtype=int
         )  # Initialize with invalid index
         if valid_interp_pos.shape[0] > 0:
-            interior_centers = environment.place_bin_centers_[interior_bin_indices_flat]
+            interior_centers = environment.bin_centers
             if interior_centers.shape[0] == 0:
                 raise ValueError("No interior bin centers found in environment.")
             # Use KDTree for efficient nearest neighbor search
@@ -368,9 +341,7 @@ def predict_sorted_spikes_diffusion_kde_log_likelihood(
             )  # Shape (n_time,)
 
             # Get the rate for this neuron at the nearest interior bin for each time point
-            neuron_place_field_interior = place_fields[neuron_id][
-                interior_bin_indices_flat
-            ]
+            neuron_place_field_interior = place_fields[neuron_id]
 
             # Initialize local rates with EPS (for invalid positions or bins)
             local_rates = jnp.full((n_time,), EPS)
@@ -399,7 +370,7 @@ def predict_sorted_spikes_diffusion_kde_log_likelihood(
     else:
         # --- Non-Local Likelihood Calculation ---
         print("Calculating non-local likelihood...")
-        n_interior_bins = interior_bin_indices_flat.shape[0]
+        n_interior_bins = environment.n_bins
         if n_interior_bins == 0:
             print("Warning: No interior bins found. Returning empty likelihood array.")
             return jnp.zeros((n_time, 0))
@@ -407,12 +378,8 @@ def predict_sorted_spikes_diffusion_kde_log_likelihood(
         log_likelihood_nonlocal = jnp.zeros((n_time, n_interior_bins))
 
         # Pre-filter place fields and summed rate for interior bins only
-        place_fields_interior = place_fields[
-            :, interior_bin_indices_flat
-        ]  # (n_neurons, n_interior_bins)
-        no_spike_ll_interior = no_spike_part_log_likelihood[
-            interior_bin_indices_flat
-        ]  # (n_interior_bins,)
+        place_fields_interior = place_fields
+        no_spike_ll_interior = no_spike_part_log_likelihood
 
         for neuron_id, neuron_spike_times in enumerate(
             tqdm(

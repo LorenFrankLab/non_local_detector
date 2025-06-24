@@ -389,17 +389,17 @@ try:
         bin_height : float
         upper_left_points : np.ndarray, shape (n_track_bins, 2)
         """
-        (edges, _, place_bin_centers, _) = _get_grid(position, bin_size)
+        (edges, _, bin_centers, _) = _get_grid(position, bin_size)
         is_track_interior = _infer_track_interior(position, edges)
 
         # bin dimensions are the difference between bin centers in the x and y directions.
-        bin_width = np.max(np.diff(place_bin_centers, axis=0)[:, 0])
-        bin_height = np.max(np.diff(place_bin_centers, axis=0)[:, 1])
+        bin_width = np.max(np.diff(bin_centers, axis=0)[:, 0])
+        bin_height = np.max(np.diff(bin_centers, axis=0)[:, 1])
 
         # so we can represent the track as a collection of rectangles of width bin_width and height bin_height,
-        # centered on the values of place_bin_centers where track_interior = true.
+        # centered on the values of bin_centers where track_interior = true.
         # Note, the original code uses Fortran ordering.
-        true_ctrs = place_bin_centers[is_track_interior.ravel()]
+        true_ctrs = bin_centers[is_track_interior.ravel()]
         upper_left_points = get_ul_corners(bin_width, bin_height, true_ctrs)
 
         return bin_width, bin_height, upper_left_points
@@ -407,7 +407,7 @@ try:
     def create_2D_decode_view(
         position_time: np.ndarray,
         position: np.ndarray,
-        interior_place_bin_centers: np.ndarray,
+        interior_bin_centers: np.ndarray,
         place_bin_size: np.ndarray,
         posterior: xr.DataArray,
         head_dir: np.ndarray = None,
@@ -418,7 +418,7 @@ try:
         ----------
         position_time : np.ndarray, shape (n_time,)
         position : np.ndarray, shape (n_time, 2)
-        interior_place_bin_centers: np.ndarray, shape (n_track_bins, 2)
+        interior_bin_centers: np.ndarray, shape (n_track_bins, 2)
         place_bin_size : np.ndarray, shape (2, 1)
         posterior : xr.DataArray, shape (n_time, n_position_bins)
         head_dir : np.ndarray, optional
@@ -442,7 +442,7 @@ try:
 
         track_bin_width, track_bin_height = place_bin_size
         upper_left_points = get_ul_corners(
-            track_bin_width, track_bin_height, interior_place_bin_centers
+            track_bin_width, track_bin_height, interior_bin_centers
         )
 
         data = create_static_track_animation(
@@ -492,9 +492,7 @@ try:
         -------
         url : str
         """
-        interior_place_bin_centers = env.place_bin_centers_[
-            env.is_track_interior_.ravel()
-        ]
+        interior_bin_centers = env.bin_centers_[env.is_track_interior_.ravel()]
         if posterior is None:
             posterior = results.acausal_posterior.unstack("state_bins").sum("state")
         place_bin_size = (
@@ -505,7 +503,7 @@ try:
             position_time=position_time,
             position=position,
             posterior=posterior,
-            interior_place_bin_centers=interior_place_bin_centers,
+            interior_bin_centers=interior_bin_centers,
             place_bin_size=place_bin_size,
             head_dir=head_dir,
         )

@@ -59,22 +59,22 @@ try:
         return 1000 / median_delta_t_ms  # from time-delta to Hz
 
     def get_trimmed_bin_center_index(
-        place_bin_centers: np.ndarray, trimmed_place_bin_centers: np.ndarray
+        bin_centers: np.ndarray, trimmed_bin_centers: np.ndarray
     ) -> np.ndarray:
         """Get the index of the trimmed bin centers in the full bin centers.
 
         Parameters
         ----------
-        place_bin_centers : np.ndarray, shape (n_position_bins, )
-        trimmed_place_bin_centers : np.ndarray, shape (n_trimmed_position_bins, )
+        bin_centers : np.ndarray, shape (n_position_bins, )
+        trimmed_bin_centers : np.ndarray, shape (n_trimmed_position_bins, )
 
         Returns
         -------
         bin_ind : np.ndarray, shape (n_trimmed_position_bins, )
         """
-        return np.searchsorted(
-            place_bin_centers, trimmed_place_bin_centers, side="left"
-        ).astype(np.uint16)
+        return np.searchsorted(bin_centers, trimmed_bin_centers, side="left").astype(
+            np.uint16
+        )
 
     def create_1D_decode_view(
         posterior: xr.DataArray,

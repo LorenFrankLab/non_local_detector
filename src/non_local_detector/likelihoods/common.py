@@ -36,16 +36,17 @@ def get_position_at_time(
     position_at_spike_times = scipy.interpolate.interpn(
         (time,), position, spike_times, bounds_error=False, fill_value=None
     )
-    if env is not None and env.track_graph is not None:
-        if position_at_spike_times.shape[0] > 0:
-            position_at_spike_times = get_linearized_position(
-                position_at_spike_times,
-                env.track_graph,
-                edge_order=env.edge_order,
-                edge_spacing=env.edge_spacing,
-            ).linear_position.to_numpy()[:, None]
-        else:
-            position_at_spike_times = jnp.array([])[:, None]
+    if env is not None and env.is_1d:
+        props = env.linearization_properties
+        if props is None:
+            # Handle case where it's 1D but props are missing, maybe warn or return
+            return position_at_spike_times
+        position_at_spike_times = get_linearized_position(
+            position_at_spike_times,
+            track_graph=props.get("track_graph"),
+            edge_order=props.get("edge_order"),
+            edge_spacing=props.get("edge_spacing"),
+        ).linear_position.to_numpy()[:, None]
 
     return position_at_spike_times
 

@@ -287,6 +287,7 @@ class _DetectorBase(BaseEstimator):
         environment_labels : np.ndarray, optional, shape (n_time,)
             Labels for each time points about which environment it corresponds to, by default None
         """
+        environments = []
         for environment in self.environments:
             if environment_labels is None:
                 is_environment = np.ones((position.shape[0],), dtype=bool)
@@ -294,18 +295,10 @@ class _DetectorBase(BaseEstimator):
                 is_environment = environment_labels == environment.name
 
             env_position = position[is_environment]
-            if environment.track_graph is not None:
-                # convert to 1D
-                env_position = get_linearized_position(
-                    env_position,
-                    environment.track_graph,
-                    edge_order=environment.edge_order,
-                    edge_spacing=environment.edge_spacing,
-                ).linear_position.to_numpy()
-
-            environment.fit(
-                env_position, infer_track_interior=self.infer_track_interior
-            )
+            if not environment._is_fitted:
+                environment = environment.from_samples(env_position)
+            environments.append(environment)
+        self.environments = environments
 
     def initialize_state_index(self) -> None:
         """Initialize indices and parameters related to the combined state space.
@@ -329,30 +322,24 @@ class _DetectorBase(BaseEstimator):
         bin_sizes_ : np.ndarray, shape (n_discrete_states_,)
              Number of bins associated with each discrete state (e.g., number
              of place bins for spatial states, 1 for non-spatial states).
-        is_track_interior_state_bins_ : np.ndarray, shape (n_total_bins,)
-             Boolean array indicating if a combined state bin corresponds to the
-             track interior. For non-spatial states, this is typically True.
 
         """
         self.n_discrete_states_ = len(self.state_names)
         bin_sizes = []
         state_ind = []
-        is_track_interior = []
+
         for ind, obs in enumerate(self.observation_models):
             if obs.is_local or obs.is_no_spike:
                 bin_sizes.append(1)
                 state_ind.append(ind * np.ones((1,), dtype=int))
-                is_track_interior.append(np.ones((1,), dtype=bool))
             else:
                 environment = self.environments[self.environments.index(obs.name)]
-                bin_sizes.append(environment.place_bin_centers_.shape[0])
+                bin_sizes.append(environment.n_bins)
                 state_ind.append(ind * np.ones((bin_sizes[-1],), dtype=int))
-                is_track_interior.append(environment.is_track_interior_.ravel())
 
         self.state_ind_ = np.concatenate(state_ind)
         self.n_state_bins_ = len(self.state_ind_)
         self.bin_sizes_ = np.array(bin_sizes)
-        self.is_track_interior_state_bins_ = np.concatenate(is_track_interior)
 
     def initialize_initial_conditions(self) -> None:
         """Constructs the initial probability for the state and each spatial bin.
@@ -453,8 +440,7 @@ class _DetectorBase(BaseEstimator):
                             self.environments.index(transition.name)
                         ]
                         self.continuous_state_transitions_[inds] = (
-                            environment.is_track_interior_.ravel()
-                            / environment.is_track_interior_.sum()
+                            np.ones((environment.n_bins,)) / environment.n_bins
                         ).astype(float)
                     else:
                         self.continuous_state_transitions_[inds] = (
@@ -781,17 +767,16 @@ class _DetectorBase(BaseEstimator):
         log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
         """
         logger.info("Computing posterior...")
-        is_track_interior = self.is_track_interior_state_bins_
-        cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
-        state_ind = self.state_ind_[is_track_interior]
+
+        state_ind = self.state_ind_
 
         if self.discrete_state_transitions_.ndim == 2:
             return chunked_filter_smoother(
                 time=time,
                 state_ind=state_ind,
-                initial_distribution=self.initial_conditions_[is_track_interior],
+                initial_distribution=self.initial_conditions_,
                 transition_matrix=(
-                    self.continuous_state_transitions_[cross_is_track_interior]
+                    self.continuous_state_transitions_
                     * self.discrete_state_transitions_[np.ix_(state_ind, state_ind)]
                 ),
                 log_likelihood_func=self.compute_log_likelihood,
@@ -805,11 +790,9 @@ class _DetectorBase(BaseEstimator):
             return chunked_filter_smoother_covariate_dependent(
                 time=time,
                 state_ind=state_ind,
-                initial_distribution=self.initial_conditions_[is_track_interior],
+                initial_distribution=self.initial_conditions_,
                 discrete_transition_matrix=self.discrete_state_transitions_,
-                continuous_transition_matrix=self.continuous_state_transitions_[
-                    cross_is_track_interior
-                ],
+                continuous_transition_matrix=self.continuous_state_transitions_,
                 log_likelihood_func=self.compute_log_likelihood,
                 log_likelihood_args=log_likelihood_args,
                 is_missing=is_missing,
@@ -945,9 +928,7 @@ class _DetectorBase(BaseEstimator):
                 )
 
             if estimate_initial_conditions:
-                self.initial_conditions_[self.is_track_interior_state_bins_] = (
-                    acausal_posterior[0]
-                )
+                self.initial_conditions_ = acausal_posterior[0]
                 self.discrete_initial_conditions = acausal_state_probabilities[0]
 
                 expanded_discrete_ic = acausal_state_probabilities[0][self.state_ind_]
@@ -1013,15 +994,13 @@ class _DetectorBase(BaseEstimator):
             and corresponding positions/metadata at each time step.
 
         """
-        is_track_interior = self.is_track_interior_state_bins_
-        cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
-        state_ind = self.state_ind_[is_track_interior]
+        state_ind = self.state_ind_
         if self.discrete_state_transitions_.ndim == 2:
             sequence_ind = most_likely_sequence(
                 time=time,
-                initial_distribution=self.initial_conditions_[is_track_interior],
+                initial_distribution=self.initial_conditions_,
                 transition_matrix=(
-                    self.continuous_state_transitions_[cross_is_track_interior]
+                    self.continuous_state_transitions_
                     * self.discrete_state_transitions_[np.ix_(state_ind, state_ind)]
                 ),
                 log_likelihood_func=self.compute_log_likelihood,
@@ -1034,11 +1013,9 @@ class _DetectorBase(BaseEstimator):
             sequence_ind = most_likely_sequence_covariate_dependent(
                 time=time,
                 state_ind=state_ind,
-                initial_distribution=self.initial_conditions_[is_track_interior],
+                initial_distribution=self.initial_conditions_,
                 discrete_transition_matrix=self.discrete_state_transitions_,
-                continuous_transition_matrix=self.continuous_state_transitions_[
-                    cross_is_track_interior
-                ],
+                continuous_transition_matrix=self.continuous_state_transitions_,
                 log_likelihood_func=self.compute_log_likelihood,
                 log_likelihood_args=log_likelihood_args,
                 is_missing=is_missing,
@@ -1174,19 +1151,17 @@ class _DetectorBase(BaseEstimator):
         xr.Dataset
             Decoding results in an xarray Dataset.
         """
-        is_track_interior = self.is_track_interior_state_bins_
-
         names = [obs.name for obs in self.observation_models]
         encoding_group_names = [obs.encoding_group for obs in self.observation_models]
 
         position = []
-        n_position_dims = self.environments[0].place_bin_centers_.shape[1]
+        n_position_dims = self.environments[0].bin_centers.shape[1]
         for obs in self.observation_models:
             if obs.is_local or obs.is_no_spike:
                 position.append(np.full((1, n_position_dims), np.nan))
             else:
                 environment = self.environments[self.environments.index(obs.name)]
-                position.append(environment.place_bin_centers_)
+                position.append(environment.bin_centers)
         position = np.concatenate(position, axis=0)
 
         states = np.asarray(self.state_names)
@@ -1213,13 +1188,11 @@ class _DetectorBase(BaseEstimator):
 
         attrs = {"marginal_log_likelihoods": np.asarray(marginal_log_likelihoods)}
 
-        posterior_shape = (acausal_posterior.shape[0], len(is_track_interior))
-
         results = xr.Dataset(
             data_vars={
                 "acausal_posterior": (
                     ("time", "state_bins"),
-                    np.full(posterior_shape, np.nan, dtype=np.float32),
+                    acausal_posterior,
                 ),
                 "acausal_state_probabilities": (
                     ("time", "states"),
@@ -1230,14 +1203,11 @@ class _DetectorBase(BaseEstimator):
             attrs=attrs,
         )
 
-        results["acausal_posterior"][:, is_track_interior] = acausal_posterior
-
         if log_likelihood is not None:
             results["log_likelihood"] = (
                 ("time", "state_bins"),
-                np.full(posterior_shape, np.nan, dtype=np.float32),
+                log_likelihood,
             )
-            results["log_likelihood"][:, is_track_interior] = log_likelihood
 
         return results.squeeze()
 
@@ -1257,7 +1227,7 @@ class _DetectorBase(BaseEstimator):
         results : pd.DataFrame, shape (n_time, n_cols)
         """
         position = []
-        n_position_dims = self.environments[0].place_bin_centers_.shape[1]
+        n_position_dims = self.environments[0].bin_centers_.shape[1]
         names = []
         encoding_group_names = []
         for obs in self.observation_models:
@@ -1267,10 +1237,10 @@ class _DetectorBase(BaseEstimator):
                 encoding_group_names.append([None])
             else:
                 environment = self.environments[self.environments.index(obs.name)]
-                position.append(environment.place_bin_centers_)
-                names.append([obs.name] * environment.place_bin_centers_.shape[0])
+                position.append(environment.bin_centers_)
+                names.append([obs.name] * environment.bin_centers_.shape[0])
                 encoding_group_names.append(
-                    [obs.encoding_group] * environment.place_bin_centers_.shape[0]
+                    [obs.encoding_group] * environment.bin_centers_.shape[0]
                 )
 
         position = np.concatenate(position, axis=0)
@@ -1291,7 +1261,7 @@ class _DetectorBase(BaseEstimator):
                 "environment": names,
                 "encoding_group_names": encoding_group_names,
             }
-        ).iloc[self.is_track_interior_state_bins_]
+        )
 
         return state_bins.iloc[sequence_ind].set_index(pd.Index(time, name="time"))
 
@@ -1625,17 +1595,13 @@ class ClusterlessDetector(_DetectorBase):
         if is_missing is None:
             is_missing = jnp.zeros((n_time,), dtype=bool)
 
-        log_likelihood = jnp.zeros(
-            (n_time, self.is_track_interior_state_bins_.sum()), dtype=np.float32
-        )
+        log_likelihood = jnp.zeros((n_time, len(self.state_ind_)), dtype=np.float32)
 
         _, likelihood_func = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
         computed_likelihoods = []
 
         for state_id, obs in enumerate(self.observation_models):
-            is_state_bin = (
-                self.state_ind_[self.is_track_interior_state_bins_] == state_id
-            )
+            is_state_bin = self.state_ind_ == state_id
             likelihood_name = (
                 obs.name,
                 obs.encoding_group,
@@ -1664,9 +1630,9 @@ class ClusterlessDetector(_DetectorBase):
                 )
             else:
                 # Use previously computed likelihoods
-                previously_computed_bins = self.state_ind_[
-                    self.is_track_interior_state_bins_
-                ] == computed_likelihoods.index(likelihood_name)
+                previously_computed_bins = (
+                    self.state_ind_ == computed_likelihoods.index(likelihood_name)
+                )
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     log_likelihood[:, previously_computed_bins]
                 )
@@ -2225,15 +2191,13 @@ class SortedSpikesDetector(_DetectorBase):
         if is_missing is None:
             is_missing = np.zeros((n_time,), dtype=bool)
 
-        log_likelihood = jnp.zeros((n_time, self.is_track_interior_state_bins_.sum()))
+        log_likelihood = jnp.zeros((n_time, len(self.state_ind_)), dtype=np.float32)
 
         _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
         computed_likelihoods = []
 
         for state_id, obs in enumerate(self.observation_models):
-            is_state_bin = (
-                self.state_ind_[self.is_track_interior_state_bins_] == state_id
-            )
+            is_state_bin = self.state_ind_ == state_id
             likelihood_name = (
                 obs.name,
                 obs.encoding_group,
@@ -2261,9 +2225,9 @@ class SortedSpikesDetector(_DetectorBase):
                 )
             else:
                 # Use previously computed likelihoods
-                previously_computed_bins = self.state_ind_[
-                    self.is_track_interior_state_bins_
-                ] == computed_likelihoods.index(likelihood_name)
+                previously_computed_bins = (
+                    self.state_ind_ == computed_likelihoods.index(likelihood_name)
+                )
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     log_likelihood[:, previously_computed_bins]
                 )

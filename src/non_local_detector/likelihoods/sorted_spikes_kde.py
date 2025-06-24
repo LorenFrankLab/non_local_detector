@@ -102,23 +102,23 @@ def fit_sorted_spikes_kde_encoding_model(
     """
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
-        if environment.track_graph is not None and position.shape[1] > 1:
+        if environment.is_1d and position.shape[1] > 1:
             position_std = jnp.array([position_std])
         else:
             position_std = jnp.array([position_std] * position.shape[1])
 
-    is_track_interior = environment.is_track_interior_.ravel()
-    interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
+    interior_bin_centers = environment.bin_centers
     if weights is None:
         weights = jnp.ones((position.shape[0],))
 
-    if environment.track_graph is not None and position.shape[1] > 1:
+    if environment.is_1d and position.shape[1] > 1:
         # convert to 1D
+        props = environment.linearization_properties
         position1D = get_linearized_position(
             position,
-            environment.track_graph,
-            edge_order=environment.edge_order,
-            edge_spacing=environment.edge_spacing,
+            props.track_graph,
+            edge_order=props.edge_order,
+            edge_spacing=props.edge_spacing,
         ).linear_position.to_numpy()[:, None]
         occupancy_model = KDEModel(
             std=position_std,
@@ -136,7 +136,7 @@ def fit_sorted_spikes_kde_encoding_model(
             weights=weights,
         )
 
-    occupancy = occupancy_model.predict(interior_place_bin_centers)
+    occupancy = occupancy_model.predict(interior_bin_centers)
 
     mean_rates = []
     place_fields = []
@@ -175,18 +175,14 @@ def fit_sorted_spikes_kde_encoding_model(
             weights=weights_at_spike_times,
         )
         marginal_models.append(neuron_marginal_model)
-        marginal_density = neuron_marginal_model.predict(interior_place_bin_centers)
+        marginal_density = neuron_marginal_model.predict(interior_bin_centers)
         marginal_density = jnp.where(jnp.isnan(marginal_density), 0.0, marginal_density)
         place_fields.append(
-            jnp.zeros((is_track_interior.shape[0],))
-            .at[is_track_interior]
-            .set(
-                jnp.clip(
-                    mean_rates[-1]
-                    * jnp.where(occupancy > 0.0, marginal_density / occupancy, EPS),
-                    a_min=EPS,
-                    a_max=None,
-                )
+            jnp.clip(
+                mean_rates[-1]
+                * jnp.where(occupancy > 0.0, marginal_density / occupancy, EPS),
+                a_min=EPS,
+                a_max=None,
             )
         )
 
@@ -201,7 +197,6 @@ def fit_sorted_spikes_kde_encoding_model(
         "mean_rates": mean_rates,
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
-        "is_track_interior": is_track_interior,
         "disable_progress_bar": disable_progress_bar,
     }
 
@@ -218,7 +213,6 @@ def predict_sorted_spikes_kde_log_likelihood(
     mean_rates: jnp.ndarray,
     place_fields: jnp.ndarray,
     no_spike_part_log_likelihood: jnp.ndarray,
-    is_track_interior: jnp.ndarray,
     disable_progress_bar: bool = False,
     is_local: bool = False,
 ) -> jnp.ndarray:
@@ -248,8 +242,6 @@ def predict_sorted_spikes_kde_log_likelihood(
         Place fields for each neuron.
     no_spike_part_log_likelihood : jnp.ndarray, shape (n_place_bins,)
         Log likelihood of no spike for each place bin.
-    is_track_interior : jnp.ndarray, shape (n_place_bins,)
-        Boolean mask for track interior.
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
     is_local : bool, optional
@@ -306,7 +298,7 @@ def predict_sorted_spikes_kde_log_likelihood(
 
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
-        n_interior_bins = is_track_interior.sum()
+        n_interior_bins = environment.n_bins
         log_likelihood = jnp.zeros((n_time, n_interior_bins))
         for neuron_spike_times, place_field in zip(
             tqdm(
@@ -328,9 +320,9 @@ def predict_sorted_spikes_kde_log_likelihood(
             )
             log_likelihood += jax.scipy.special.xlogy(
                 np.expand_dims(spike_count_per_time_bin, axis=1),
-                jnp.expand_dims(place_field[is_track_interior], axis=0),
+                jnp.expand_dims(place_field, axis=0),
             )
 
-        log_likelihood -= no_spike_part_log_likelihood[is_track_interior]
+        log_likelihood -= no_spike_part_log_likelihood
 
     return log_likelihood

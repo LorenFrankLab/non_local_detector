@@ -25,16 +25,14 @@ class UniformInitialConditions:
 
         Returns
         -------
-        initial_conditions : np.ndarray, shape (n_place_bins,)
+        initial_conditions : np.ndarray, shape (n_bins,)
         """
 
         if observation_model.is_local or observation_model.is_no_spike:
             initial_conditions = np.ones((1,), dtype=np.float32)
         else:
             environment = environments[environments.index(observation_model.name)]
-            initial_conditions = environment.is_track_interior_.ravel().astype(
-                np.float32
-            )
+            initial_conditions = np.ones((environment.n_bins,), dtype=np.float32)
 
         initial_conditions /= initial_conditions.sum()
 

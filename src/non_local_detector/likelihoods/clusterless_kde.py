@@ -274,20 +274,20 @@ def fit_clusterless_kde_encoding_model(
     if isinstance(waveform_std, (int, float)):
         waveform_std = jnp.array([waveform_std] * spike_waveform_features[0].shape[1])
 
-    is_track_interior = environment.is_track_interior_.ravel()
-    interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
+    interior_bin_centers = environment.bin_centers
 
     if weights is None:
         weights = jnp.ones((position.shape[0],))
     total_weight = np.sum(weights)
 
-    if environment.track_graph is not None and position.shape[1] > 1:
+    if environment.is_1d:
+        props = environment.linearization_properties
         # convert to 1D
         position1D = get_linearized_position(
             position,
-            environment.track_graph,
-            edge_order=environment.edge_order,
-            edge_spacing=environment.edge_spacing,
+            props.get("track_graph", None),
+            edge_order=props.get("edge_order", None),
+            edge_spacing=props.get("edge_spacing", None),
         ).linear_position.to_numpy()[:, None]
         occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
             position1D, weights=weights
@@ -297,7 +297,7 @@ def fit_clusterless_kde_encoding_model(
             position, weights=weights
         )
 
-    occupancy = occupancy_model.predict(interior_place_bin_centers)
+    occupancy = occupancy_model.predict(interior_bin_centers)
     encoding_positions = []
     encoding_spike_weights = []
     mean_rates = []
@@ -341,7 +341,7 @@ def fit_clusterless_kde_encoding_model(
         gpi_models.append(gpi_model)
 
         summed_ground_process_intensity += jnp.clip(
-            mean_rates[-1] * gpi_model.predict(interior_place_bin_centers) / occupancy,
+            mean_rates[-1] * gpi_model.predict(interior_bin_centers) / occupancy,
             a_min=EPS,
             a_max=None,
         )
@@ -452,8 +452,7 @@ def predict_clusterless_kde_log_likelihood(
             disable_progress_bar,
         )
     else:
-        is_track_interior = environment.is_track_interior_.ravel()
-        interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
+        interior_bin_centers = environment.bin_centers
 
         log_likelihood = -1.0 * summed_ground_process_intensity * jnp.ones((n_time, 1))
 
@@ -486,7 +485,7 @@ def predict_clusterless_kde_log_likelihood(
                 electrode_decoding_spike_waveform_features[is_in_bounds]
             )
             position_distance = kde_distance(
-                interior_place_bin_centers,
+                interior_bin_centers,
                 electrode_encoding_positions,
                 std=position_std,
             )

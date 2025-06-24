@@ -128,7 +128,7 @@ def plot_non_local_model(
     try:
         place_fields = detector.encoding_model_[("", 0)]["place_fields"]
         neuron_sort_ind = np.argsort(
-            env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()
+            env.bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()
         )
         cell_label = "Neuron"
     except KeyError:
@@ -152,13 +152,13 @@ def plot_non_local_model(
         gridspec_kw={"height_ratios": [2, 1, 3, 1]},
     )
 
-    t, x = np.meshgrid(results_time, env.place_bin_centers_)
+    t, x = np.meshgrid(results_time, env.bin_centers_)
 
     non_local_inds = np.nonzero(
         ["Non-Local" in state for state in detector.state_names]
     )[0]
     conditional_non_local_acausal_posterior = np.zeros(
-        (len(results_time), len(env.place_bin_centers_))
+        (len(results_time), len(env.bin_centers_))
     )
     for non_local_ind in non_local_inds:
         conditional_non_local_acausal_posterior += acausal_posterior[

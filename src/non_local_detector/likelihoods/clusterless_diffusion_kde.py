@@ -90,7 +90,7 @@ def fit_clusterless_diffusion_encoding_model(
     spike_waveform_features : list[np.ndarray]
         List where each element is shape (n_spikes, n_features) for an electrode.
     environment : Environment
-        A *fitted* Environment object (2D grid) with `is_track_interior_` and `track_graph_nd_`.
+        A *fitted* Environment object
     diffusion_bandwidth_sigma : float
         Spatial bandwidth (std dev) for the diffusion kernel.
     feature_bandwidth_sigma : float or np.ndarray, shape (n_features,)
@@ -108,14 +108,14 @@ def fit_clusterless_diffusion_encoding_model(
         Contains fitted components: 'smoothed_spatial_spike_density', 'feature_samples',
         'feature_bandwidth_sigma', 'smoothed_occupancy', 'mean_rates',
         'interior_bin_indices_flat', 'diffusion_bandwidth_sigma', 'environment',
-        'summed_spatial_intensity', 'is_track_interior', 'disable_progress_bar'.
+        'summed_spatial_intensity', 'disable_progress_bar'.
     """
     # --- Input Validation and Setup ---
     if not environment._is_fitted:
         raise ValueError("Environment object must be fitted first.")
     if environment.is_1d:
         raise ValueError("Diffusion model requires N-D grid environment.")
-    if environment.place_bin_centers_.shape[1] != 2:
+    if environment.bin_centers_.shape[1] != 2:
         raise ValueError("Diffusion model currently requires a 2D environment.")
 
     if len(spike_times) != len(spike_waveform_features):
@@ -132,22 +132,14 @@ def fit_clusterless_diffusion_encoding_model(
 
     position = position if position.ndim > 1 else np.expand_dims(position, axis=1)
     n_electrodes = len(spike_times)
-    n_total_bins = environment.place_bin_centers_.shape[0]
-    interior_mask_2d = environment.is_track_interior_
-    interior_indices = np.where(interior_mask_2d.ravel())[0]
-    interior_mask_flat = interior_mask_2d.ravel()
 
     # --- Precompute Diffusion Kernels ---
     print("Precomputing diffusion kernels...")
     kernel_matrix = compute_diffusion_kernels(
-        track_graph_nd=environment.track_graph_nd_,
-        interior_mask_2d=interior_mask_2d,
+        track_graph_nd=environment.connectivity,
         bandwidth_sigma=diffusion_bandwidth_sigma,
         diffusion_coeff=diffusion_coeff,
     )
-    n_interior_bins = interior_indices.shape[0]
-    if n_interior_bins == 0:
-        raise ValueError("No interior bins found in the environment.")
     print(f"Computed {kernel_matrix.shape} kernel matrix.")
 
     # --- Compute Smoothed Occupancy (Density) ---
@@ -165,11 +157,11 @@ def fit_clusterless_diffusion_encoding_model(
     else:
         position_bin_inds_valid = np.array([], dtype=int)
 
-    full_occupancy_hist = np.zeros(n_total_bins)
+    full_occupancy_hist = np.zeros((environment.n_bins,))
     if position_bin_inds_valid.size > 0:
         np.add.at(full_occupancy_hist, position_bin_inds_valid, time_weights)
 
-    interior_occupancy_hist = jnp.asarray(full_occupancy_hist[interior_indices])
+    interior_occupancy_hist = jnp.asarray(full_occupancy_hist)
     smoothed_interior_occupancy = kernel_matrix @ interior_occupancy_hist
     total_interior_time = smoothed_interior_occupancy.sum()
 
@@ -183,17 +175,15 @@ def fit_clusterless_diffusion_encoding_model(
             smoothed_interior_occupancy
         )
 
-    smoothed_occupancy_full = (
-        jnp.zeros(n_total_bins)
-        .at[interior_indices]
-        .set(smoothed_interior_occupancy_density)
-    )
+    smoothed_occupancy_full = smoothed_interior_occupancy_density
 
     # --- Compute Smoothed Spatial Spike Density and Store Feature Samples (Per Electrode) ---
     smoothed_spatial_spike_densities = []
     encoding_feature_samples = []  # Store raw feature samples
     mean_rates = []
     total_encoding_time = weights.sum()  # Total time from weights
+
+    n_total_bins = environment.n_bins
 
     for elec_id, (elec_spike_times, elec_features) in enumerate(
         tqdm(
@@ -239,7 +229,7 @@ def fit_clusterless_diffusion_encoding_model(
             if spike_bin_inds_valid.size > 0:
                 np.add.at(full_spike_hist, spike_bin_inds_valid, 1)
 
-            interior_spike_hist = jnp.asarray(full_spike_hist[interior_indices])
+            interior_spike_hist = jnp.asarray(full_spike_hist)
             smoothed_interior_spike_counts = kernel_matrix @ interior_spike_hist
             total_interior_spikes = smoothed_interior_spike_counts.sum()
             if total_interior_spikes > EPS:
@@ -251,11 +241,7 @@ def fit_clusterless_diffusion_encoding_model(
                     smoothed_interior_spike_counts
                 )
 
-            smoothed_spatial_density_full = (
-                jnp.zeros(n_total_bins)
-                .at[interior_indices]
-                .set(smoothed_interior_spike_density)
-            )
+            smoothed_spatial_density_full = smoothed_interior_spike_density
         else:
             smoothed_spatial_density_full = jnp.zeros(n_total_bins)
 
@@ -282,11 +268,9 @@ def fit_clusterless_diffusion_encoding_model(
         # Removed 'feature_kde_models'
         "smoothed_occupancy": smoothed_occupancy_full,
         "mean_rates": mean_rates,
-        "interior_bin_indices_flat": interior_indices,
         "diffusion_bandwidth_sigma": diffusion_bandwidth_sigma,
         "environment": environment,
         "summed_spatial_intensity": summed_spatial_intensity,
-        "is_track_interior": interior_mask_flat,
         "disable_progress_bar": disable_progress_bar,
         # Removed 'kde_block_size' as it's not relevant here
     }
@@ -340,7 +324,6 @@ def predict_clusterless_diffusion_log_likelihood(
     interior_indices = encoding_model["interior_bin_indices_flat"]
     summed_spatial_intensity = encoding_model["summed_spatial_intensity"]
     environment = encoding_model["environment"]
-    is_track_interior = encoding_model["is_track_interior"]
     disable_progress_bar = encoding_model["disable_progress_bar"]
 
     n_time = len(time)
@@ -383,7 +366,7 @@ def predict_clusterless_diffusion_log_likelihood(
         nearest_flat_bin_indices = np.full(n_time, -1, dtype=int)
 
         if valid_interp_pos.shape[0] > 0:
-            interior_centers = environment.place_bin_centers_[interior_indices]
+            interior_centers = environment.bin_centers_[interior_indices]
             if interior_centers.shape[0] == 0:
                 raise ValueError("No interior bin centers found.")
             tree = KDTree(interior_centers)

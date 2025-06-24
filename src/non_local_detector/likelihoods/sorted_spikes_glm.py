@@ -197,7 +197,6 @@ def fit_sorted_spikes_glm_encoding_model(
     environment: Environment,
     place_bin_edges: np.ndarray,
     edges: np.ndarray,
-    is_track_interior: np.ndarray,
     is_track_boundary: np.ndarray,
     weights: Optional[np.ndarray] = None,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
@@ -219,8 +218,6 @@ def fit_sorted_spikes_glm_encoding_model(
         The edges of the place bins.
     edges : np.ndarray, shape (n_edges, 2)
         The edges of the place bins.
-    is_track_interior : np.ndarray, shape (n_position_bins,)
-        Identifies if the bin is on the track interior.
     is_track_boundary : np.ndarray, shape (n_position_bins,)
         Identifies if the bin is on the track boundary.
     emission_knot_spacing : float, optional
@@ -243,8 +240,6 @@ def fit_sorted_spikes_glm_encoding_model(
             Place fields for each neuron.
         no_spike_part_log_likelihood : jnp.ndarray, shape (n_bins,)
             Contribution to the log likelihood from no spikes.
-        is_track_interior : jnp.ndarray, shape (n_bins,)
-            Boolean array indicating track interior.
         disable_progress_bar : bool
             If True, suppresses the progress bar display.
 
@@ -254,10 +249,7 @@ def fit_sorted_spikes_glm_encoding_model(
     n_time_bins = int(np.ceil((time_range[-1] - time_range[0]) * sampling_frequency))
     time = time_range[0] + np.arange(n_time_bins) / sampling_frequency
 
-    is_track_interior = environment.is_track_interior_.ravel()
-    interior_place_bin_centers = jnp.asarray(
-        environment.place_bin_centers_[is_track_interior]
-    )
+    interior_bin_centers = jnp.asarray(environment.bin_centers)
 
     emission_design_matrix = make_spline_design_matrix(
         position, place_bin_edges, knot_spacing=emission_knot_spacing
@@ -266,7 +258,7 @@ def fit_sorted_spikes_glm_encoding_model(
     emission_design_matrix = jnp.asarray(emission_design_matrix)
 
     emission_predict_matrix = make_spline_predict_matrix(
-        emission_design_info, interior_place_bin_centers
+        emission_design_info, interior_bin_centers
     )
     if weights is None:
         weights = jnp.ones((position.shape[0],))
@@ -288,14 +280,11 @@ def fit_sorted_spikes_glm_encoding_model(
             l2_penalty=l2_penalty,
         )
         coefficients.append(coef)
-        place_field = jnp.zeros((is_track_interior.shape[0],))
         place_fields.append(
-            place_field.at[is_track_interior].set(
-                jnp.clip(
-                    jnp.exp(emission_predict_matrix @ coef),
-                    a_min=EPS,
-                    a_max=None,
-                )
+            jnp.clip(
+                jnp.exp(emission_predict_matrix @ coef),
+                a_min=EPS,
+                a_max=None,
             )
         )
 
@@ -307,7 +296,6 @@ def fit_sorted_spikes_glm_encoding_model(
         "emission_design_info": emission_design_info,
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
-        "is_track_interior": is_track_interior,
         "disable_progress_bar": disable_progress_bar,
     }
 
@@ -322,7 +310,6 @@ def predict_sorted_spikes_glm_log_likelihood(
     emission_design_info: DesignInfo,
     place_fields: jnp.ndarray,
     no_spike_part_log_likelihood: jnp.ndarray,
-    is_track_interior: jnp.ndarray,
     disable_progress_bar: bool = False,
     is_local: bool = False,
 ) -> jnp.ndarray:
@@ -355,9 +342,6 @@ def predict_sorted_spikes_glm_log_likelihood(
     no_spike_part_log_likelihood : jnp.ndarray, shape (n_position_bins,)
         The contribution to the log likelihood from the possibility of no spikes
         occurring in a time bin, summed across neurons (`sum(place_fields)`).
-    is_track_interior : jnp.ndarray, shape (n_position_bins,)
-        Boolean array indicating which position bins are part of the valid
-        track area.
     disable_progress_bar : bool, optional
         If True, suppresses the progress bar display. By default False.
     is_local : bool, optional
@@ -402,7 +386,7 @@ def predict_sorted_spikes_glm_log_likelihood(
 
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
-        n_interior_bins = is_track_interior.sum()
+        n_interior_bins = environment.n_bins
         log_likelihood = jnp.zeros((n_time, n_interior_bins))
         for neuron_spike_times, place_field in zip(
             tqdm(
@@ -425,9 +409,9 @@ def predict_sorted_spikes_glm_log_likelihood(
             )
             log_likelihood += jax.scipy.special.xlogy(
                 np.expand_dims(spike_count_per_time_bin, axis=1),
-                jnp.expand_dims(place_field[is_track_interior], axis=0),
+                jnp.expand_dims(place_field, axis=0),
             )
 
-        log_likelihood -= no_spike_part_log_likelihood[is_track_interior]
+        log_likelihood -= no_spike_part_log_likelihood
 
     return log_likelihood

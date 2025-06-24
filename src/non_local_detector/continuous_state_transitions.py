@@ -8,6 +8,7 @@ import numpy as np
 from scipy.stats import multivariate_normal
 from track_linearization import get_linearized_position
 
+from non_local_detector.environment.distance import geodesic_distance_matrix
 from non_local_detector.environment.environment import Environment
 
 
@@ -60,7 +61,7 @@ def estimate_movement_var(position: np.ndarray) -> np.ndarray:
 
 
 def _random_walk_on_track_graph(
-    place_bin_centers: np.ndarray,
+    bin_centers: np.ndarray,
     movement_mean: float,
     movement_var: float,
     place_bin_center_ind_to_node: np.ndarray,
@@ -71,7 +72,7 @@ def _random_walk_on_track_graph(
 
     Parameters
     ----------
-    place_bin_centers : np.ndarray, shape (n_position_bins,)
+    bin_centers : np.ndarray, shape (n_position_bins,)
         Center positions of the bins (assumed 1D for track graph).
     movement_mean : float
         Mean displacement for the random walk.
@@ -89,7 +90,7 @@ def _random_walk_on_track_graph(
     random_walk : np.ndarray, shape (n_position_bins, n_position_bins)
         Transition probabilities between place bins based on graph distance.
     """
-    state_transition = np.zeros((place_bin_centers.size, place_bin_centers.size))
+    state_transition = np.zeros((bin_centers.size, bin_centers.size))
     gaussian = multivariate_normal(mean=movement_mean, cov=movement_var)
 
     for bin_ind1, node1 in enumerate(place_bin_center_ind_to_node):
@@ -125,9 +126,9 @@ def _euclidean_random_walk(
     return np.stack(
         [
             multivariate_normal(mean=center + movement_mean, cov=movement_var).pdf(
-                environment.place_bin_centers_
+                environment.bin_centers
             )
-            for center in environment.place_bin_centers_
+            for center in environment.bin_centers
         ],
         axis=1,
     )
@@ -174,14 +175,11 @@ class RandomWalk:
             Row-normalized transition probability matrix.
         """
         self.environment = environments[environments.index(self.name)]
-        if self.environment.track_graph is None:
+        if not self.environment.is_1d:
             transition_matrix = self._handle_no_track_graph()
         else:
             # Linearized position
             transition_matrix = self._handle_with_track_graph()
-        is_track_interior = self.environment.is_track_interior_.ravel()
-        transition_matrix[~is_track_interior] = 0.0
-        transition_matrix[:, ~is_track_interior] = 0.0
         return _normalize_row_probability(transition_matrix)
 
     def _handle_no_track_graph(self) -> np.ndarray:
@@ -191,10 +189,15 @@ class RandomWalk:
                 self.environment, self.movement_mean, self.movement_var
             )
         else:
+            distance_between_bins = geodesic_distance_matrix(
+                self.environment.connectivity,
+                self.environment.n_bins,
+                weight="distance",
+            )
             transition_matrix = (
                 multivariate_normal(mean=self.movement_mean, cov=self.movement_var)
-                .pdf(self.environment.distance_between_bins.flat)
-                .reshape(self.environment.distance_between_bins.shape)
+                .pdf(distance_between_bins.flat)
+                .reshape(distance_between_bins.shape)
             )
 
             if self.direction is not None:
@@ -204,7 +207,7 @@ class RandomWalk:
                 }.get(self.direction.lower(), None)
 
                 centrality = nx.closeness_centrality(
-                    self.environment.track_graph_nd_, distance="distance"
+                    self.environment.connectivity, distance="distance"
                 )
                 center_node_id = list(centrality.keys())[
                     np.argmax(list(centrality.values()))
@@ -218,7 +221,7 @@ class RandomWalk:
 
     def _handle_with_track_graph(self) -> np.ndarray:
         """Calculate transition for environments with a defined track graph (typically 1D)."""
-        n_position_dims = self.environment.place_bin_centers_.shape[1]
+        n_position_dims = self.environment.n_bins
         if n_position_dims != 1:
             raise NotImplementedError(
                 "Random walk with track graph is only implemented for 1D environments"
@@ -228,7 +231,7 @@ class RandomWalk:
             self.environment.get_bin_center_dataframe().reset_index().node_id.to_numpy()
         )
         return _random_walk_on_track_graph(
-            self.environment.place_bin_centers_,
+            self.environment.bin_centers,
             self.movement_mean,
             self.movement_var,
             place_bin_center_ind_to_node,
@@ -266,21 +269,16 @@ class Uniform:
             Row-normalized uniform transition probability matrix.
         """
         self.environment1 = environments[environments.index(self.name)]
-        n_bins1 = self.environment1.place_bin_centers_.shape[0]
-        is_track_interior1 = self.environment1.is_track_interior_.ravel()
+        n_bins1 = self.environment1.n_bins
 
         if self.environment2_name is None:
             n_bins2 = n_bins1
-            is_track_interior2 = is_track_interior1.copy()
+
         else:
             self.environment2 = environments[environments.index(self.environment2_name)]
-            n_bins2 = self.environment2.place_bin_centers_.shape[0]
-            is_track_interior2 = self.environment2.is_track_interior_.ravel()
+            n_bins2 = self.environment2.n_bins
 
         transition_matrix = np.ones((n_bins1, n_bins2))
-
-        transition_matrix[~is_track_interior1] = 0.0
-        transition_matrix[:, ~is_track_interior2] = 0.0
 
         return _normalize_row_probability(transition_matrix)
 
@@ -311,13 +309,9 @@ class Identity:
             Identity matrix where invalid bins have zero probability.
         """
         self.environment = environments[environments.index(self.name)]
-        n_bins = self.environment.place_bin_centers_.shape[0]
+        n_bins = self.environment.n_bins
 
         transition_matrix = np.identity(n_bins)
-
-        is_track_interior = self.environment.is_track_interior_.ravel()
-        transition_matrix[~is_track_interior] = 0.0
-        transition_matrix[:, ~is_track_interior] = 0.0
 
         return _normalize_row_probability(transition_matrix)
 

@@ -146,7 +146,7 @@ def gaussian_pdf(x: np.ndarray, mean: float, sigma: float) -> np.ndarray:
 
 
 def estimate_position_distance(
-    place_bin_centers: np.ndarray,
+    bin_centers: np.ndarray,
     positions: np.ndarray,
     position_std: np.ndarray,
 ) -> np.ndarray:
@@ -154,7 +154,7 @@ def estimate_position_distance(
 
     Parameters
     ----------
-    place_bin_centers : np.ndarray, shape (n_position_bins, n_position_dims)
+    bin_centers : np.ndarray, shape (n_position_bins, n_position_dims)
     positions : np.ndarray, shape (n_time, n_position_dims)
     position_std : array_like, shape (n_position_dims,)
 
@@ -163,7 +163,7 @@ def estimate_position_distance(
     position_distance : np.ndarray, shape (n_time, n_position_bins)
     """
     n_time, n_position_dims = positions.shape
-    n_position_bins = place_bin_centers.shape[0]
+    n_position_bins = bin_centers.shape[0]
 
     position_distance = np.ones((n_time, n_position_bins), dtype=np.float32)
 
@@ -172,7 +172,7 @@ def estimate_position_distance(
 
     for position_ind, std in enumerate(position_std):
         position_distance *= gaussian_pdf(
-            np.expand_dims(place_bin_centers[:, position_ind], axis=0),
+            np.expand_dims(bin_centers[:, position_ind], axis=0),
             np.expand_dims(positions[:, position_ind], axis=1),
             std,
         )
@@ -181,7 +181,7 @@ def estimate_position_distance(
 
 
 def estimate_position_density(
-    place_bin_centers: np.ndarray,
+    bin_centers: np.ndarray,
     positions: np.ndarray,
     position_std: np.ndarray,
     block_size: int = 100,
@@ -192,7 +192,7 @@ def estimate_position_density(
 
     Parameters
     ----------
-    place_bin_centers : np.ndarray, shape (n_position_bins, n_position_dims)
+    bin_centers : np.ndarray, shape (n_position_bins, n_position_dims)
     positions : np.ndarray, shape (n_time, n_position_dims)
     position_std : float or array_like, shape (n_position_dims,)
     sample_weights : None or np.ndarray, shape (n_time,)
@@ -201,7 +201,7 @@ def estimate_position_density(
     -------
     position_density : np.ndarray, shape (n_position_bins,)
     """
-    n_position_bins = place_bin_centers.shape[0]
+    n_position_bins = bin_centers.shape[0]
 
     if block_size is None:
         block_size = n_position_bins
@@ -211,7 +211,7 @@ def estimate_position_density(
         block_inds = slice(start_ind, start_ind + block_size)
         position_density[block_inds] = np.average(
             estimate_position_distance(
-                place_bin_centers[block_inds], positions, position_std
+                bin_centers[block_inds], positions, position_std
             ),
             axis=0,
             weights=sample_weights,
@@ -222,8 +222,7 @@ def estimate_position_density(
 def get_firing_rate(
     is_spike: np.ndarray,
     position: np.ndarray,
-    place_bin_centers: np.ndarray,
-    is_track_interior: np.ndarray,
+    bin_centers: np.ndarray,
     not_nan_position: np.ndarray,
     occupancy: np.ndarray,
     position_std: np.ndarray,
@@ -236,8 +235,7 @@ def get_firing_rate(
     ----------
     is_spike : np.ndarray, shape (n_time,)
     position : np.ndarray, shape (n_time, n_position_dims)
-    place_bin_centers : np.ndarray, shape (n_position_bins, n_position_dims)
-    is_track_interior : np.ndarray, shape (n_position_bins,)
+    bin_centers : np.ndarray, shape (n_position_bins, n_position_dims)
     not_nan_position : np.ndarray, shape (n_time,)
     occupancy : np.ndarray, shape (n_position_bins,)
     position_std : np.ndarray, shape (n_position_dims,
@@ -250,10 +248,10 @@ def get_firing_rate(
     """
     if is_spike.sum() > 0:
         mean_rate = np.average(is_spike, weights=weights)
-        marginal_density = np.zeros((place_bin_centers.shape[0],), dtype=np.float32)
+        marginal_density = np.zeros((bin_centers.shape[0],), dtype=np.float32)
 
-        marginal_density[is_track_interior] = estimate_position_density(
-            place_bin_centers[is_track_interior],
+        marginal_density = estimate_position_density(
+            bin_centers,
             np.asarray(
                 position[is_spike.astype(bool) & not_nan_position], dtype=np.float32
             ),

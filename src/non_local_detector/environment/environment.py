@@ -212,8 +212,8 @@ class Environment:
         self.grid_shape = None
         self.active_mask = None
         self._is_fitted = False  # Will be set by _setup_from_layout
-
-        self._setup_from_layout()  # Populate attributes from the built layout
+        if layout_type_used is not None:
+            self._setup_from_layout()  # Populate attributes from the built layout
         if regions is not None:
             if not isinstance(regions, Regions):
                 raise TypeError(
@@ -223,6 +223,9 @@ class Environment:
         else:
             # Initialize with an empty Regions instance if not provided
             self.regions = Regions()
+
+    def __eq__(self, other: str) -> bool:
+        return self.name == other
 
     def __repr__(self: "Environment") -> str:
         """
