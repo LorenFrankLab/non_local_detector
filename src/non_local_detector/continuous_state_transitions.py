@@ -175,15 +175,6 @@ class RandomWalk:
             Row-normalized transition probability matrix.
         """
         self.environment = environments[environments.index(self.name)]
-        if not self.environment.is_1d:
-            transition_matrix = self._handle_no_track_graph()
-        else:
-            # Linearized position
-            transition_matrix = self._handle_with_track_graph()
-        return _normalize_row_probability(transition_matrix)
-
-    def _handle_no_track_graph(self) -> np.ndarray:
-        """Calculate transition for environments without a defined track graph."""
         if not self.use_manifold_distance:
             transition_matrix = _euclidean_random_walk(
                 self.environment, self.movement_mean, self.movement_var
@@ -216,27 +207,7 @@ class RandomWalk:
                     self.environment.distance_between_bins[:, [center_node_id]],
                     self.environment.distance_between_bins[[center_node_id]],
                 )
-
-        return transition_matrix
-
-    def _handle_with_track_graph(self) -> np.ndarray:
-        """Calculate transition for environments with a defined track graph (typically 1D)."""
-        n_position_dims = self.environment.n_bins
-        if n_position_dims != 1:
-            raise NotImplementedError(
-                "Random walk with track graph is only implemented for 1D environments"
-            )
-
-        place_bin_center_ind_to_node = (
-            self.environment.get_bin_center_dataframe().reset_index().node_id.to_numpy()
-        )
-        return _random_walk_on_track_graph(
-            self.environment.bin_centers,
-            self.movement_mean,
-            self.movement_var,
-            place_bin_center_ind_to_node,
-            self.environment.distance_between_bins,
-        )
+        return _normalize_row_probability(transition_matrix)
 
 
 @dataclass
