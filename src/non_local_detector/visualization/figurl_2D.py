@@ -492,7 +492,7 @@ try:
         -------
         url : str
         """
-        interior_bin_centers = env.bin_centers_[env.is_track_interior_.ravel()]
+        interior_bin_centers = env.bin_centers[env.active_mask.ravel()]
         if posterior is None:
             posterior = results.acausal_posterior.unstack("state_bins").sum("state")
         place_bin_size = (
