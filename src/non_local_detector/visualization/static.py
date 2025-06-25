@@ -125,6 +125,8 @@ def plot_non_local_model(
         time_slice = slice(results.time.values[0], results.time.values[-1])
 
     env = detector.environments[0]
+    linear_bin_centers = env.to_linear(env.bin_centers)
+    linear_position = env.to_linear(position)
     try:
         place_fields = detector.encoding_model_[("", 0)]["place_fields"]
         neuron_sort_ind = np.argsort(
@@ -158,6 +160,7 @@ def plot_non_local_model(
         ["Non-Local" in state for state in detector.state_names]
     )[0]
     conditional_non_local_acausal_posterior = np.zeros(
+        (len(results_time), len(linear_bin_centers))
     )
     for non_local_ind in non_local_inds:
         conditional_non_local_acausal_posterior += acausal_posterior[

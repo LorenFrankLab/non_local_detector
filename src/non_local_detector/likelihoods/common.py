@@ -37,16 +37,8 @@ def get_position_at_time(
         (time,), position, spike_times, bounds_error=False, fill_value=None
     )
     if env is not None and env.is_1d:
-        props = env.linearization_properties
-        if props is None:
-            # Handle case where it's 1D but props are missing, maybe warn or return
-            return position_at_spike_times
-        position_at_spike_times = get_linearized_position(
-            position_at_spike_times,
-            track_graph=props.get("track_graph"),
-            edge_order=props.get("edge_order"),
-            edge_spacing=props.get("edge_spacing"),
-        ).linear_position.to_numpy()[:, None]
+        # If the environment is 1D, we need to linearize the position
+        position_at_spike_times = env.to_linear(position_at_spike_times)[:, None]
 
     return position_at_spike_times
 

@@ -1161,12 +1161,15 @@ class _DetectorBase(BaseEstimator):
                 position.append(np.full((1, n_position_dims), np.nan))
             else:
                 environment = self.environments[self.environments.index(obs.name)]
-                position.append(environment.bin_centers)
+                if environment.is_1d:
+                    position.append(environment.to_linear(environment.bin_centers))
+                else:
+                    position.append(environment.bin_centers)
         position = np.concatenate(position, axis=0)
 
         states = np.asarray(self.state_names)
 
-        if n_position_dims == 1:
+        if self.environments[0].is_1d:
             position_names = ["position"]
         else:
             position_names = [
@@ -1227,7 +1230,7 @@ class _DetectorBase(BaseEstimator):
         results : pd.DataFrame, shape (n_time, n_cols)
         """
         position = []
-        n_position_dims = self.environments[0].bin_centers_.shape[1]
+        n_position_dims = self.environments[0].bin_centers.shape[1]
         names = []
         encoding_group_names = []
         for obs in self.observation_models:

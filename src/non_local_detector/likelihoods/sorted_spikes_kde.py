@@ -111,15 +111,9 @@ def fit_sorted_spikes_kde_encoding_model(
     if weights is None:
         weights = jnp.ones((position.shape[0],))
 
-    if environment.is_1d and position.shape[1] > 1:
+    if environment.is_1d:
         # convert to 1D
-        props = environment.linearization_properties
-        position1D = get_linearized_position(
-            position,
-            props.track_graph,
-            edge_order=props.edge_order,
-            edge_spacing=props.edge_spacing,
-        ).linear_position.to_numpy()[:, None]
+        position1D = environment.to_linear(position)[:, None]
         occupancy_model = KDEModel(
             std=position_std,
             block_size=block_size,

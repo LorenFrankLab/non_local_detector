@@ -281,14 +281,8 @@ def fit_clusterless_kde_encoding_model(
     total_weight = np.sum(weights)
 
     if environment.is_1d:
-        props = environment.linearization_properties
         # convert to 1D
-        position1D = get_linearized_position(
-            position,
-            props.get("track_graph", None),
-            edge_order=props.get("edge_order", None),
-            edge_spacing=props.get("edge_spacing", None),
-        ).linear_position.to_numpy()[:, None]
+        position1D = environment.to_linear(position)[:, None]
         occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
             position1D, weights=weights
         )
