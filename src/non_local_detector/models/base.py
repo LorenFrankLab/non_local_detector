@@ -1237,10 +1237,10 @@ class _DetectorBase(BaseEstimator):
                 encoding_group_names.append([None])
             else:
                 environment = self.environments[self.environments.index(obs.name)]
-                position.append(environment.bin_centers_)
-                names.append([obs.name] * environment.bin_centers_.shape[0])
+                position.append(environment.bin_centers)
+                names.append([obs.name] * environment.bin_centers.shape[0])
                 encoding_group_names.append(
-                    [obs.encoding_group] * environment.bin_centers_.shape[0]
+                    [obs.encoding_group] * environment.bin_centers.shape[0]
                 )
 
         position = np.concatenate(position, axis=0)

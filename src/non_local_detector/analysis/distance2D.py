@@ -26,7 +26,7 @@ def make_2D_track_graph_from_environment(
 
     for node_id, (node_position, is_interior) in enumerate(
         zip(
-            environment.bin_centers_,
+            environment.bin_centers,
             environment.is_track_interior_.ravel(),
         )
     ):

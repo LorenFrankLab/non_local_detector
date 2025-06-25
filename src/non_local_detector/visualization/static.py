@@ -128,7 +128,7 @@ def plot_non_local_model(
     try:
         place_fields = detector.encoding_model_[("", 0)]["place_fields"]
         neuron_sort_ind = np.argsort(
-            env.bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()
+            linear_bin_centers[np.nanargmax(place_fields, axis=1)].squeeze()
         )
         cell_label = "Neuron"
     except KeyError:
@@ -152,13 +152,12 @@ def plot_non_local_model(
         gridspec_kw={"height_ratios": [2, 1, 3, 1]},
     )
 
-    t, x = np.meshgrid(results_time, env.bin_centers_)
+    t, x = np.meshgrid(results_time, linear_bin_centers)
 
     non_local_inds = np.nonzero(
         ["Non-Local" in state for state in detector.state_names]
     )[0]
     conditional_non_local_acausal_posterior = np.zeros(
-        (len(results_time), len(env.bin_centers_))
     )
     for non_local_ind in non_local_inds:
         conditional_non_local_acausal_posterior += acausal_posterior[
@@ -167,7 +166,6 @@ def plot_non_local_model(
     conditional_non_local_acausal_posterior /= np.nansum(
         conditional_non_local_acausal_posterior, axis=1
     )[:, np.newaxis]
-    conditional_non_local_acausal_posterior[:, ~env.is_track_interior_] = np.nan
 
     new_spike_times = [
         spike_times[neuron_id][
@@ -202,7 +200,7 @@ def plot_non_local_model(
     )
     axes[2].scatter(
         position_time[is_valid_position_time],
-        position[is_valid_position_time],
+        linear_position[is_valid_position_time],
         s=1,
         color="magenta",
         zorder=2,

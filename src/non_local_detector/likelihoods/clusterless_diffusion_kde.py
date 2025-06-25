@@ -115,7 +115,7 @@ def fit_clusterless_diffusion_encoding_model(
         raise ValueError("Environment object must be fitted first.")
     if environment.is_1d:
         raise ValueError("Diffusion model requires N-D grid environment.")
-    if environment.bin_centers_.shape[1] != 2:
+    if environment.bin_centers.shape[1] != 2:
         raise ValueError("Diffusion model currently requires a 2D environment.")
 
     if len(spike_times) != len(spike_waveform_features):
@@ -366,7 +366,7 @@ def predict_clusterless_diffusion_log_likelihood(
         nearest_flat_bin_indices = np.full(n_time, -1, dtype=int)
 
         if valid_interp_pos.shape[0] > 0:
-            interior_centers = environment.bin_centers_[interior_indices]
+            interior_centers = environment.bin_centers[interior_indices]
             if interior_centers.shape[0] == 0:
                 raise ValueError("No interior bin centers found.")
             tree = KDTree(interior_centers)
