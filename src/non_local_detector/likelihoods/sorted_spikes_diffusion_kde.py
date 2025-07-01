@@ -77,7 +77,7 @@ def fit_sorted_spikes_diffusion_kde_encoding_model(
     if not environment._is_fitted:
         raise ValueError("Environment object must be fitted first.")
 
-    connectivity = environment.get_fitted_track_graph()
+    connectivity = environment.connectivity
 
     position = position if position.ndim > 1 else np.expand_dims(position, axis=1)
     n_total_bins = environment.n_bins

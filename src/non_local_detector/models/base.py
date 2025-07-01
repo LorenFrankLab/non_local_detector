@@ -1162,7 +1162,9 @@ class _DetectorBase(BaseEstimator):
             else:
                 environment = self.environments[self.environments.index(obs.name)]
                 if environment.is_1d:
-                    position.append(environment.to_linear(environment.bin_centers))
+                    position.append(
+                        environment.to_linear(environment.bin_centers)[:, np.newaxis]
+                    )
                 else:
                     position.append(environment.bin_centers)
         position = np.concatenate(position, axis=0)

@@ -113,10 +113,6 @@ def fit_clusterless_diffusion_encoding_model(
     # --- Input Validation and Setup ---
     if not environment._is_fitted:
         raise ValueError("Environment object must be fitted first.")
-    if environment.is_1d:
-        raise ValueError("Diffusion model requires N-D grid environment.")
-    if environment.bin_centers.shape[1] != 2:
-        raise ValueError("Diffusion model currently requires a 2D environment.")
 
     if len(spike_times) != len(spike_waveform_features):
         raise ValueError(

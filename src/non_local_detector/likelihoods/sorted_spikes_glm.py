@@ -249,7 +249,13 @@ def fit_sorted_spikes_glm_encoding_model(
     n_time_bins = int(np.ceil((time_range[-1] - time_range[0]) * sampling_frequency))
     time = time_range[0] + np.arange(n_time_bins) / sampling_frequency
 
-    interior_bin_centers = jnp.asarray(environment.bin_centers)
+    if environment.is_1d:
+        # convert to 1D
+        interior_bin_centers = environment.to_linear(environment.bin_centers)[:, None]
+    else:
+        interior_bin_centers = environment.bin_centers
+
+    interior_bin_centers = jnp.asarray(interior_bin_centers)
 
     emission_design_matrix = make_spline_design_matrix(
         position, place_bin_edges, knot_spacing=emission_knot_spacing

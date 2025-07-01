@@ -107,28 +107,24 @@ def fit_sorted_spikes_kde_encoding_model(
         else:
             position_std = jnp.array([position_std] * position.shape[1])
 
-    interior_bin_centers = environment.bin_centers
     if weights is None:
         weights = jnp.ones((position.shape[0],))
 
     if environment.is_1d:
         # convert to 1D
-        position1D = environment.to_linear(position)[:, None]
-        occupancy_model = KDEModel(
-            std=position_std,
-            block_size=block_size,
-        ).fit(
-            position1D,
-            weights=weights,
-        )
+        interior_bin_centers = environment.to_linear(environment.bin_centers)[:, None]
     else:
-        occupancy_model = KDEModel(
-            std=position_std,
-            block_size=block_size,
-        ).fit(
-            position,
-            weights=weights,
-        )
+        interior_bin_centers = environment.bin_centers
+
+    occupancy_model = KDEModel(
+        std=position_std,
+        block_size=block_size,
+    ).fit(
+        samples=(
+            environment.to_linear(position)[:, None] if environment.is_1d else position
+        ),
+        weights=weights,
+    )
 
     occupancy = occupancy_model.predict(interior_bin_centers)
 
