@@ -1155,7 +1155,11 @@ class _DetectorBase(BaseEstimator):
         encoding_group_names = [obs.encoding_group for obs in self.observation_models]
 
         position = []
-        n_position_dims = self.environments[0].bin_centers.shape[1]
+        n_position_dims = (
+            1
+            if self.environments[0].is_1d
+            else self.environments[0].bin_centers.shape[1]
+        )
         for obs in self.observation_models:
             if obs.is_local or obs.is_no_spike:
                 position.append(np.full((1, n_position_dims), np.nan))
