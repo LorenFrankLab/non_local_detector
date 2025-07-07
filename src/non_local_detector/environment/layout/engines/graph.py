@@ -101,7 +101,7 @@ class GraphLayout(_KDTreeMixin):
         if bin_size <= 0:
             raise ValueError("bin_size must be positive.")
 
-        (self.linear_bin_centers_, self.grid_edges, self.active_mask, edge_ids) = (
+        (linear_bin_centers, self.grid_edges, self.active_mask, edge_ids) = (
             _get_graph_bins(
                 graph=graph_definition,
                 edge_order=edge_order,
@@ -109,19 +109,20 @@ class GraphLayout(_KDTreeMixin):
                 bin_size=bin_size,
             )
         )
+
+        self.linear_bin_centers_ = linear_bin_centers[self.active_mask]
         self.bin_centers = _project_1d_to_2d(
             self.linear_bin_centers_,
             graph_definition,
             edge_order,
             edge_spacing,
         )
-        self.grid_shape = (len(self.bin_centers),)
+        self.grid_shape = (len(self.grid_edges[0]),)
         self.connectivity = _create_graph_layout_connectivity_graph(
             graph=graph_definition,
             bin_centers_nd=self.bin_centers,
             linear_bin_centers=self.linear_bin_centers_,
             original_edge_ids=edge_ids,
-            active_mask=self.active_mask,
             edge_order=edge_order,
         )
         self.dimension_ranges = (
@@ -130,7 +131,7 @@ class GraphLayout(_KDTreeMixin):
         ), (np.min(self.bin_centers[:, 1]), np.max(self.bin_centers[:, 1]))
 
         # --- Build KDTree ---
-        self._build_kdtree(points_for_tree=self.bin_centers[self.active_mask])
+        self._build_kdtree(points_for_tree=self.bin_centers)
 
     @property
     def is_1d(self) -> bool:

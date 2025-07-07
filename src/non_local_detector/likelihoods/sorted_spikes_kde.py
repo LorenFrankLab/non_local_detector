@@ -158,10 +158,17 @@ def fit_sorted_spikes_kde_encoding_model(
             pass
 
         mean_rates.append(weights_at_spike_times.sum() / weights.sum())
+
+        position_at_spike_times = get_position_at_time(
+            position_time, position, neuron_spike_times, environment
+        )
+        if environment is not None and environment.is_1d:
+            # If the environment is 1D, we need to linearize the position
+            position_at_spike_times = environment.to_linear(position_at_spike_times)[
+                :, None
+            ]
         neuron_marginal_model = KDEModel(std=position_std, block_size=block_size).fit(
-            get_position_at_time(
-                position_time, position, neuron_spike_times, environment
-            ),
+            position_at_spike_times,
             weights=weights_at_spike_times,
         )
         marginal_models.append(neuron_marginal_model)

@@ -36,9 +36,6 @@ def get_position_at_time(
     position_at_spike_times = scipy.interpolate.interpn(
         (time,), position, spike_times, bounds_error=False, fill_value=None
     )
-    if env is not None and env.is_1d:
-        # If the environment is 1D, we need to linearize the position
-        position_at_spike_times = env.to_linear(position_at_spike_times)[:, None]
 
     return position_at_spike_times
 

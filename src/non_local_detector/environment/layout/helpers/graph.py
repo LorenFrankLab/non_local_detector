@@ -108,7 +108,7 @@ def _get_graph_bins(
         frozenset(edge): idx for idx, edge in enumerate(graph.edges())
     }
 
-    bin_edges_list: List[float] = []
+    bin_edges: List[float] = []
     active_mask_list: List[bool] = []
     edge_id_list: List[int] = []
     cursor = 0.0
@@ -126,9 +126,7 @@ def _get_graph_bins(
         edges_segment = np.linspace(
             cursor, cursor + segment_length, n_bins + 1, dtype=float
         )
-        bin_edges_list.extend(
-            edges_segment[:-1]
-        )  # all but last; last becomes next cursor
+        bin_edges.extend(edges_segment[:-1])  # all but last; last becomes next cursor
         # Record edge IDs for each _active_ bin
         mapped_id = edge_id_map.get(frozenset((u, v)))
         edge_id_list.extend([mapped_id] * n_bins)
@@ -139,22 +137,21 @@ def _get_graph_bins(
         if idx < n_edges - 1:
             gap_len = float(gaps[idx])
             if gap_len > 0.0:
-                bin_edges_list.append(cursor)
+                bin_edges.append(cursor)
                 active_mask_list.append(False)
                 cursor += gap_len
 
     # After the loop, append final edge
-    bin_edges_list.append(cursor)
+    bin_edges.append(cursor)
 
     # 6) Convert to arrays and dedupe
-    raw_edges = np.array(bin_edges_list, dtype=float)
-    unique_edges = np.unique(raw_edges)
-    bin_centers_1d = get_centers(unique_edges)
+    bin_edges = np.array(bin_edges, dtype=float)
+    bin_centers_1d = get_centers(bin_edges)
 
     active_mask_1d = np.asarray(active_mask_list, dtype=bool)
     edge_ids_for_active_bins = np.array(edge_id_list, dtype=int)
 
-    return bin_centers_1d, (unique_edges,), active_mask_1d, edge_ids_for_active_bins
+    return bin_centers_1d, (bin_edges,), active_mask_1d, edge_ids_for_active_bins
 
 
 def _create_graph_layout_connectivity_graph(
@@ -162,7 +159,6 @@ def _create_graph_layout_connectivity_graph(
     bin_centers_nd: np.ndarray,
     linear_bin_centers: np.ndarray,
     original_edge_ids: np.ndarray,
-    active_mask: np.ndarray,
     edge_order: List[Tuple[object, object]],
 ) -> nx.Graph:
     """Create a connectivity graph from binned graph segments.
@@ -217,10 +213,10 @@ def _create_graph_layout_connectivity_graph(
     # Add active bin centers to the graph
     for node_id, (center_2D, center_1D, original_edge_id, b_ind) in enumerate(
         zip(
-            bin_centers_nd[active_mask],
-            linear_bin_centers[active_mask],
+            bin_centers_nd,
+            linear_bin_centers,
             original_edge_ids,
-            bin_ind[active_mask],
+            bin_ind,
         )
     ):
         nodes_to_add.append(
@@ -250,10 +246,7 @@ def _create_graph_layout_connectivity_graph(
         for bin_ind1, bin_ind2 in zip(
             edge_active_bin_ind[:-1], edge_active_bin_ind[1:]
         ):
-            displacement_vector = (
-                bin_centers_nd[active_mask][bin_ind1]
-                - bin_centers_nd[active_mask][bin_ind2]
-            )
+            displacement_vector = bin_centers_nd[bin_ind1] - bin_centers_nd[bin_ind2]
             dist = float(np.linalg.norm(displacement_vector))
 
             edges_to_add.append(
@@ -284,8 +277,7 @@ def _create_graph_layout_connectivity_graph(
         if len(connections) > 1:
             for i in range(len(connections) - 1):
                 displacement_vector = (
-                    bin_centers_nd[active_mask][connections[i]]
-                    - bin_centers_nd[active_mask][connections[i + 1]]
+                    bin_centers_nd[connections[i]] - bin_centers_nd[connections[i + 1]]
                 )
                 bins_to_connect.append(
                     (

@@ -77,16 +77,16 @@ def fit_sorted_spikes_diffusion_kde_encoding_model(
     if not environment._is_fitted:
         raise ValueError("Environment object must be fitted first.")
 
-    connectivity = environment.connectivity
-
     position = position if position.ndim > 1 else np.expand_dims(position, axis=1)
     n_total_bins = environment.n_bins
 
     # --- Diffusion Kernels ---
     print("Computing diffusion kernels...")
     kernel_matrix = compute_diffusion_kernels(
-        track_graph=connectivity,
+        graph=environment.connectivity,
         bandwidth_sigma=position_std,
+        bin_sizes=environment.bin_sizes,
+        mode="density",
     )
     print(f"Computed {kernel_matrix.shape} kernel matrix.")
 
@@ -161,6 +161,9 @@ def fit_sorted_spikes_diffusion_kde_encoding_model(
             pos_at_spike = get_position_at_time(
                 position_time, position, neuron_spike_times, environment
             )
+            if environment is not None and environment.is_1d:
+                # If the environment is 1D, we need to linearize the position
+                pos_at_spike = environment.to_linear(pos_at_spike)[:, None]
             time_weights_at_spikes = get_position_at_time(
                 position_time, weights, neuron_spike_times, environment
             )

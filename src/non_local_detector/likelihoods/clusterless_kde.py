@@ -267,7 +267,7 @@ def fit_clusterless_kde_encoding_model(
     """
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
-        if environment.track_graph is not None and position.shape[1] > 1:
+        if environment.connectivity is not None and position.shape[1] > 1:
             position_std = jnp.array([position_std])
         else:
             position_std = jnp.array([position_std] * position.shape[1])
@@ -325,11 +325,16 @@ def fit_clusterless_kde_encoding_model(
         )
         encoding_spike_weights.append(electrode_weights_at_spike_times)
         mean_rates.append(np.sum(electrode_weights_at_spike_times) / total_weight)
-        encoding_positions.append(
-            get_position_at_time(
-                position_time, position, electrode_spike_times, environment
-            )
+
+        position_at_spike_times = get_position_at_time(
+            position_time, position, electrode_spike_times, environment
         )
+        if environment is not None and environment.is_1d:
+            # If the environment is 1D, we need to linearize the position
+            position_at_spike_times = environment.to_linear(position_at_spike_times)[
+                :, None
+            ]
+        encoding_positions.append(position_at_spike_times)
 
         gpi_model = KDEModel(std=position_std, block_size=block_size).fit(
             encoding_positions[-1], weights=electrode_weights_at_spike_times
