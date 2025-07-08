@@ -5,7 +5,7 @@ channels:
 - edeno
 dependencies:
 - python >=3.8,<3.11
-- numpy
+- numpy >=1.25
 - scipy
 - jax
 - pandas
