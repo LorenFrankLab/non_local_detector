@@ -52,18 +52,18 @@ continuous_initial_conditions = [
     UniformInitialConditions(),
     UniformInitialConditions(),
 ]
-
-discrete_transition_stickiness = np.array([10_000.0, 150.0, 150.0, 150.0])
+discrete_transition_stickiness = np.array([1e6, 1e6, 300.0, 300.0])
 discrete_transition_concentration = 1.0
 
 # transition probability to no spike state
 no_spike_trans_prob = 1e-5
-# probability of staying in local or continuous non-local state
-local_prob = cont_non_local_prob = 0.9
+# probability of staying in local state
+local_prob = 0.999
+cont_non_local_prob = 0.98
 # probability of staying in non-local fragmented state
 non_local_frag_prob = 0.98
 # probability of staying in no-spike state
-no_spike_prob = 0.99
+no_spike_prob = 0.98
 
 discrete_transition_matrix_values = np.array(
     [
