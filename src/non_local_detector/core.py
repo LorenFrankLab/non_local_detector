@@ -531,9 +531,9 @@ def chunked_filter_smoother_covariate_dependent(
     continuous_transition_matrix: np.ndarray,
     log_likelihood_func: callable,
     log_likelihood_args: tuple,
-    is_missing: np.array | None = None,
+    is_missing: np.ndarray | None = None,
     n_chunks: int = 1,
-    log_likelihoods: np.array | None = None,
+    log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
 ):
     """Filter and smooth the state probabilities in chunks with covariate dependent transitions.
