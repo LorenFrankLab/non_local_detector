@@ -485,14 +485,13 @@ class _DetectorBase(BaseEstimator):
                             ).astype(float)
                         else:
                             # Default fallback: uniform transition
-                             if environment.place_bin_centers_ is not None:
-                                n_bins = (
-                                    environment.place_bin_centers_.shape[0]
-
-                            else:
-                                        raise ValueError("Environment must have place_bin_centers_ for discrete to continuous transitions")
-                                )
+                            if environment.place_bin_centers_ is not None:
+                                n_bins = environment.place_bin_centers_.shape[0]
                                 self.continuous_state_transitions_[inds] = 1.0 / n_bins
+                            else:
+                                raise ValueError(
+                                    "Environment must have place_bin_centers_ for discrete to continuous transitions"
+                                )
                     else:
                         self.continuous_state_transitions_[inds] = (
                             transition.make_state_transition(self.environments)
