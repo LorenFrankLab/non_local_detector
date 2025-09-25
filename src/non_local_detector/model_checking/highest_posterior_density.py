@@ -23,13 +23,13 @@ def get_highest_posterior_threshold(
     """
     # Reshape non-time dimensions into a single dimension
     n_time = posterior.shape[0]
-    posterior = np.asarray(posterior).reshape((n_time, -1))
+    posterior_array = np.asarray(posterior).reshape((n_time, -1))
     # Remove NaN values from the posterior
-    posterior = posterior[:, ~np.any(np.isnan(posterior), axis=0)]
+    posterior_array = posterior_array[:, ~np.any(np.isnan(posterior_array), axis=0)]
 
     # Sort the posterior values in descending order
-    const = np.sum(posterior, axis=1, keepdims=True)
-    sorted_norm_posterior = np.sort(posterior, axis=1)[:, ::-1] / const
+    const = np.sum(posterior_array, axis=1, keepdims=True)
+    sorted_norm_posterior = np.sort(posterior_array, axis=1)[:, ::-1] / const
 
     # Find the threshold that corresponds to the coverage
     # by finding the first index where the cumulative sum is greater than the coverage
@@ -37,9 +37,10 @@ def get_highest_posterior_threshold(
     crit_ind = np.argmax(posterior_less_than_coverage, axis=1)
 
     # Handle case when there are no points in the posterior less than coverage
-    crit_ind[posterior_less_than_coverage.sum(axis=1) == 0] = posterior.shape[1] - 1
+    crit_ind[posterior_less_than_coverage.sum(axis=1) == 0] = int(posterior_array.shape[1]) - 1
 
-    return sorted_norm_posterior[(np.arange(n_time), crit_ind)] * const.squeeze()
+    threshold_values = sorted_norm_posterior[np.arange(n_time), crit_ind] * const.squeeze()
+    return np.asarray(threshold_values)
 
 
 def get_HPD_spatial_coverage(
@@ -60,4 +61,4 @@ def get_HPD_spatial_coverage(
         Amount of the environment covered by the higest posterior values.
     """
     isin_hpd = posterior >= hpd_threshold[:, np.newaxis]
-    return (isin_hpd * np.diff(posterior.position)[0]).sum("position").values
+    return np.asarray((isin_hpd * np.diff(posterior.position)[0]).sum("position").values)
