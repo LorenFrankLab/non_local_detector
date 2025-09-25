@@ -6,14 +6,14 @@ import jax.numpy as jnp
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-import scipy.ndimage
-import seaborn as sns
-import sklearn
+import pandas as pd  # type: ignore[import-untyped]
+import scipy.ndimage  # type: ignore[import-untyped]
+import seaborn as sns  # type: ignore[import-untyped]
+import sklearn  # type: ignore[import-untyped]
 import xarray as xr
-from patsy import build_design_matrices
-from sklearn.base import BaseEstimator
-from track_linearization import get_linearized_position
+from patsy import build_design_matrices  # type: ignore[import-untyped]
+from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
+from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.continuous_state_transitions import EmpiricalMovement
 from non_local_detector.core import (

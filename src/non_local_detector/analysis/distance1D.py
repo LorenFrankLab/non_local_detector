@@ -1,9 +1,9 @@
 from collections.abc import Hashable
 
-import networkx as nx
+import networkx as nx  # type: ignore[import-untyped]
 import numpy as np
 import xarray as xr
-from scipy.ndimage import gaussian_filter1d
+from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
 from non_local_detector.models.base import _DetectorBase
 

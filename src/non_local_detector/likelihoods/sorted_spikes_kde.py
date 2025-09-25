@@ -49,9 +49,9 @@ It utilizes JAX and SciPy for efficient computation and interpolation.
 import jax
 import jax.numpy as jnp
 import numpy as np
-import scipy.interpolate
-from tqdm.autonotebook import tqdm
-from track_linearization import get_linearized_position
+import scipy.interpolate  # type: ignore[import-untyped]
+from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
+from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import (

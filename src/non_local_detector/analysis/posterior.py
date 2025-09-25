@@ -1,6 +1,6 @@
 import numpy as np
 import xarray as xr
-from scipy.stats import rv_histogram
+from scipy.stats import rv_histogram  # type: ignore[import-untyped]
 
 
 def maximum_a_posteriori_estimate(posterior: xr.DataArray) -> np.ndarray:

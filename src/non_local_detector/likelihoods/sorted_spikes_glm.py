@@ -52,10 +52,10 @@ interpolation.
 import jax
 import jax.numpy as jnp
 import numpy as np
-from patsy import build_design_matrices, dmatrix
-from patsy.design_info import DesignInfo
-from scipy.optimize import minimize
-from tqdm.autonotebook import tqdm
+from patsy import build_design_matrices, dmatrix  # type: ignore[import-untyped]
+from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
+from scipy.optimize import minimize  # type: ignore[import-untyped]
+from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment, get_n_bins
 from non_local_detector.likelihoods.common import (

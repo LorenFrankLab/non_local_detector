@@ -7,7 +7,7 @@ from typing import Literal
 import jax
 import jax.numpy as jnp
 import numpy as np
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans  # type: ignore[import-untyped]
 
 # ---------------------------------------------------------------------
 # Type aliases

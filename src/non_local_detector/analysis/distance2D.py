@@ -1,6 +1,6 @@
-import networkx as nx
+import networkx as nx  # type: ignore[import-untyped]
 import numpy as np
-from scipy.ndimage import gaussian_filter1d
+from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
 
@@ -22,10 +22,15 @@ def make_2D_track_graph_from_environment(
 
     track_graph = nx.Graph()
 
+    if environment.is_track_interior_ is not None:
+        interior_data = environment.is_track_interior_.ravel()
+    else:
+        interior_data = np.ones(len(environment.place_bin_centers_), dtype=bool)
+
     for node_id, (node_position, is_interior) in enumerate(
         zip(
             environment.place_bin_centers_,
-            environment.is_track_interior_.ravel(),
+            interior_data,
             strict=False,
         )
     ):
@@ -231,7 +236,10 @@ def get_2D_distance(
         node_positions = np.asarray(list(node_positions.values()))
 
         # remove outer boundary edge
-        bin_edges = [e[1:-1] for e in edges]
+        if edges is not None:
+            bin_edges = [e[1:-1] for e in edges]
+        else:
+            bin_edges = []
 
         if precomputed_distance:
             bin_ind1 = get_bin_ind(position1, bin_edges)

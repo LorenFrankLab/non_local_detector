@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.stats import multivariate_normal, norm
+from scipy.stats import multivariate_normal, norm  # type: ignore[import-untyped]
 
 TRACK_HEIGHT = 170
 SAMPLING_FREQUENCY = 1500

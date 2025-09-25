@@ -55,13 +55,13 @@ from dataclasses import dataclass
 
 import matplotlib
 import matplotlib.pyplot as plt
-import networkx as nx
+import networkx as nx  # type: ignore[import-untyped]
 import numpy as np
-import pandas as pd
-from scipy import ndimage
-from scipy.interpolate import interp1d
-from sklearn.neighbors import NearestNeighbors
-from track_linearization import plot_graph_as_1D
+import pandas as pd  # type: ignore[import-untyped]
+from scipy import ndimage  # type: ignore[import-untyped]
+from scipy.interpolate import interp1d  # type: ignore[import-untyped]
+from sklearn.neighbors import NearestNeighbors  # type: ignore[import-untyped]
+from track_linearization import plot_graph_as_1D  # type: ignore[import-untyped]
 
 
 def get_centers(bin_edges: np.ndarray) -> np.ndarray:

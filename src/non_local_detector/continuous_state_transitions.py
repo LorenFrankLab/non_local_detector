@@ -2,10 +2,10 @@
 
 from dataclasses import dataclass
 
-import networkx as nx
+import networkx as nx  # type: ignore[import-untyped]
 import numpy as np
-from scipy.stats import multivariate_normal
-from track_linearization import get_linearized_position
+from scipy.stats import multivariate_normal  # type: ignore[import-untyped]
+from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
 
@@ -115,12 +115,17 @@ def _euclidean_random_walk(
     transition : np.ndarray, shape (n_position_bins, n_position_bins)
 
     """
+    if environment.place_bin_centers_ is not None:
+        place_bin_centers = environment.place_bin_centers_
+    else:
+        raise ValueError("Environment must have defined place bin centers")
+
     return np.stack(
         [
             multivariate_normal(mean=center + movement_mean, cov=movement_var).pdf(
-                environment.place_bin_centers_
+                place_bin_centers
             )
-            for center in environment.place_bin_centers_
+            for center in place_bin_centers
         ],
         axis=1,
     )
@@ -172,7 +177,12 @@ class RandomWalk:
         else:
             # Linearized position
             transition_matrix = self._handle_with_track_graph()
-        is_track_interior = self.environment.is_track_interior_.ravel()
+        if self.environment.is_track_interior_ is not None:
+            is_track_interior = self.environment.is_track_interior_.ravel()
+        else:
+            is_track_interior = np.ones(
+                len(self.environment.place_bin_centers_), dtype=bool
+            )
         transition_matrix[~is_track_interior] = 0.0
         transition_matrix[:, ~is_track_interior] = 0.0
         return _normalize_row_probability(transition_matrix)
@@ -184,11 +194,21 @@ class RandomWalk:
                 self.environment, self.movement_mean, self.movement_var
             )
         else:
-            transition_matrix = (
-                multivariate_normal(mean=self.movement_mean, cov=self.movement_var)
-                .pdf(self.environment.distance_between_nodes_.flat)
-                .reshape(self.environment.distance_between_nodes_.shape)
-            )
+            if (
+                isinstance(self.environment.distance_between_nodes_, np.ndarray)
+                and self.environment.distance_between_nodes_ is not None
+            ):
+                distance_data = self.environment.distance_between_nodes_
+                transition_matrix = (
+                    multivariate_normal(mean=self.movement_mean, cov=self.movement_var)
+                    .pdf(distance_data.flat)
+                    .reshape(distance_data.shape)
+                )
+            else:
+                # Fallback for dict or None case
+                transition_matrix = _euclidean_random_walk(
+                    self.environment, self.movement_mean, self.movement_var
+                )
 
             if self.direction is not None:
                 direction_func = {
@@ -211,15 +231,23 @@ class RandomWalk:
 
     def _handle_with_track_graph(self) -> np.ndarray:
         """Calculate transition for environments with a defined track graph (typically 1D)."""
-        n_position_dims = self.environment.place_bin_centers_.shape[1]
+        if self.environment.place_bin_centers_ is not None:
+            n_position_dims = self.environment.place_bin_centers_.shape[1]
+        else:
+            raise ValueError("Environment must have defined place bin centers")
         if n_position_dims != 1:
             raise NotImplementedError(
                 "Random walk with track graph is only implemented for 1D environments"
             )
 
-        place_bin_center_ind_to_node = np.asarray(
-            self.environment.place_bin_centers_nodes_df_.node_id
-        )
+        if self.environment.place_bin_centers_nodes_df_ is not None:
+            place_bin_center_ind_to_node = np.asarray(
+                self.environment.place_bin_centers_nodes_df_.node_id
+            )
+        else:
+            raise ValueError(
+                "Environment must have defined place_bin_centers_nodes_df_ for track graph"
+            )
         return _random_walk_on_track_graph(
             self.environment.place_bin_centers_,
             self.movement_mean,
@@ -259,16 +287,30 @@ class Uniform:
             Row-normalized uniform transition probability matrix.
         """
         self.environment1 = environments[environments.index(self.environment_name)]
-        n_bins1 = self.environment1.place_bin_centers_.shape[0]
-        is_track_interior1 = self.environment1.is_track_interior_.ravel()
+        if self.environment1.place_bin_centers_ is not None:
+            n_bins1 = self.environment1.place_bin_centers_.shape[0]
+        else:
+            raise ValueError("Environment must have defined place bin centers")
+
+        if self.environment1.is_track_interior_ is not None:
+            is_track_interior1 = self.environment1.is_track_interior_.ravel()
+        else:
+            is_track_interior1 = np.ones(n_bins1, dtype=bool)
 
         if self.environment2_name is None:
             n_bins2 = n_bins1
             is_track_interior2 = is_track_interior1.copy()
         else:
             self.environment2 = environments[environments.index(self.environment2_name)]
-            n_bins2 = self.environment2.place_bin_centers_.shape[0]
-            is_track_interior2 = self.environment2.is_track_interior_.ravel()
+            if self.environment2.place_bin_centers_ is not None:
+                n_bins2 = self.environment2.place_bin_centers_.shape[0]
+            else:
+                raise ValueError("Environment must have defined place bin centers")
+
+            if self.environment2.is_track_interior_ is not None:
+                is_track_interior2 = self.environment2.is_track_interior_.ravel()
+            else:
+                is_track_interior2 = np.ones(n_bins2, dtype=bool)
 
         transition_matrix = np.ones((n_bins1, n_bins2))
 
@@ -304,11 +346,17 @@ class Identity:
             Identity matrix where invalid bins have zero probability.
         """
         self.environment = environments[environments.index(self.environment_name)]
-        n_bins = self.environment.place_bin_centers_.shape[0]
+        if self.environment.place_bin_centers_ is not None:
+            n_bins = self.environment.place_bin_centers_.shape[0]
+        else:
+            raise ValueError("Environment must have defined place bin centers")
 
         transition_matrix = np.identity(n_bins)
 
-        is_track_interior = self.environment.is_track_interior_.ravel()
+        if self.environment.is_track_interior_ is not None:
+            is_track_interior = self.environment.is_track_interior_.ravel()
+        else:
+            is_track_interior = np.ones(n_bins, dtype=bool)
         transition_matrix[~is_track_interior] = 0.0
         transition_matrix[:, ~is_track_interior] = 0.0
 

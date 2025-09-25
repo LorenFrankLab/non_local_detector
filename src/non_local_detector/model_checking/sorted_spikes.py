@@ -13,9 +13,9 @@ References
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy import integrate
-from scipy.signal import correlate
-from scipy.stats import expon, norm
+from scipy import integrate  # type: ignore[import-untyped]
+from scipy.signal import correlate  # type: ignore[import-untyped]
+from scipy.stats import expon, norm  # type: ignore[import-untyped]
 
 
 class TimeRescaling:

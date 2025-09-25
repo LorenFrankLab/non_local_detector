@@ -3,9 +3,9 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 import numpy as np
-import scipy.interpolate
+import scipy.interpolate  # type: ignore[import-untyped]
 from jax.nn import logsumexp
-from track_linearization import get_linearized_position
+from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
 

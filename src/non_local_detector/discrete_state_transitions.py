@@ -3,11 +3,11 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 from jax.nn import log_softmax
-from patsy import DesignMatrix, build_design_matrices, dmatrix
-from scipy.optimize import minimize
-from scipy.special import softmax
+from patsy import DesignMatrix, build_design_matrices, dmatrix  # type: ignore[import-untyped]
+from scipy.optimize import minimize  # type: ignore[import-untyped]
+from scipy.special import softmax  # type: ignore[import-untyped]
 
 
 def centered_softmax_forward(y: np.ndarray) -> np.ndarray:

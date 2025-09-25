@@ -3,9 +3,9 @@ import copy
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
+import pandas as pd  # type: ignore[import-untyped]
 import xarray as xr
-from scipy.ndimage import gaussian_filter1d
+from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
 from non_local_detector.models import (
     NonLocalClusterlessDetector,

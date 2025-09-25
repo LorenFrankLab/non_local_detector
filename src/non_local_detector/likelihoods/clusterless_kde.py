@@ -49,8 +49,8 @@ Constants like `EPS` and `LOG_EPS` are used for numerical stability.
 import jax
 import jax.numpy as jnp
 import numpy as np
-from tqdm.autonotebook import tqdm
-from track_linearization import get_linearized_position
+from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
+from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import (
