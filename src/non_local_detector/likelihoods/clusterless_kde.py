@@ -273,7 +273,12 @@ def fit_clusterless_kde_encoding_model(
     if isinstance(waveform_std, (int, float)):
         waveform_std = jnp.array([waveform_std] * spike_waveform_features[0].shape[1])
 
-    is_track_interior = environment.is_track_interior_.ravel()
+    if environment.is_track_interior_ is not None:
+        is_track_interior = environment.is_track_interior_.ravel()
+    else:
+        is_track_interior = jnp.ones(
+            environment.place_bin_centers_.shape[0], dtype=bool
+        )
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
     if weights is None:
@@ -453,7 +458,12 @@ def predict_clusterless_kde_log_likelihood(
             disable_progress_bar,
         )
     else:
-        is_track_interior = environment.is_track_interior_.ravel()
+        if environment.is_track_interior_ is not None:
+            is_track_interior = environment.is_track_interior_.ravel()
+        else:
+            is_track_interior = jnp.ones(
+                environment.place_bin_centers_.shape[0], dtype=bool
+            )
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
         log_likelihood = -1.0 * summed_ground_process_intensity * jnp.ones((n_time, 1))

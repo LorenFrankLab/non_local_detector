@@ -456,7 +456,7 @@ class EmpiricalMovement:
         )
         original_shape = state_transition.shape
         n_position_dims = position.shape[1]
-        shape_2d = np.product(original_shape[:n_position_dims])
+        shape_2d = np.prod(original_shape[:n_position_dims])
         state_transition = _normalize_row_probability(
             state_transition.reshape((shape_2d, shape_2d))
         )
