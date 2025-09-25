@@ -17,8 +17,7 @@ classifiers = [
 dependencies = [
     "numpy >=1.25",
     "scipy",
-    "jax",
-    "jaxlib",
+    "jax>=0.4.27",
     "pandas",
     "networkx",
     "xarray",
