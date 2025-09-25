@@ -784,7 +784,7 @@ class _DetectorBase(BaseEstimator):
 
     def _predict(
         self,
-        time: np.ndarray | None = None,
+        time: np.ndarray,
         log_likelihood_args: tuple = (),
         is_missing: np.ndarray | None = None,
         log_likelihoods: np.ndarray | None = None,
@@ -818,8 +818,6 @@ class _DetectorBase(BaseEstimator):
         predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
         log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
         """
-        if time is None:
-            time = np.arange(log_likelihoods.shape[0])
 
         logger.info("Computing posterior...")
         is_track_interior = self.is_track_interior_state_bins_

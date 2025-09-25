@@ -1,4 +1,4 @@
-from typing import Callable
+from collections.abc import Callable
 
 from non_local_detector.likelihoods.clusterless_gmm import (  # noqa
     fit_clusterless_gmm_encoding_model,
