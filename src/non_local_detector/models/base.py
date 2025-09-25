@@ -587,7 +587,8 @@ class _DetectorBase(BaseEstimator):
             state_names = self.state_names
 
             predict_matrix = build_design_matrices(
-                [discrete_transition_design_matrix.design_info], covariate_data  # type: ignore[union-attr]
+                [discrete_transition_design_matrix.design_info],
+                covariate_data,  # type: ignore[union-attr]
             )[0]
 
             n_states = len(state_names)
@@ -818,6 +819,9 @@ class _DetectorBase(BaseEstimator):
         predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
         log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
         """
+        if time is None:
+            time = np.arange(log_likelihoods.shape[0])
+
         logger.info("Computing posterior...")
         is_track_interior = self.is_track_interior_state_bins_
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
