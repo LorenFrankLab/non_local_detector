@@ -1,5 +1,4 @@
 import numpy as np
-import xarray as xr
 
 from non_local_detector.continuous_state_transitions import (
     Discrete,

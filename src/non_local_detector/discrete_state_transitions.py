@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -191,7 +190,7 @@ multinomial_hessian = jax.hessian(multinomial_neg_log_likelihood)
 
 
 def get_transition_prior(
-    concentration: float, stickiness: Union[float, np.ndarray], n_states: int
+    concentration: float, stickiness: float | np.ndarray, n_states: int
 ) -> np.ndarray:
     """Creates a Dirichlet prior for the transition matrix rows."""
     if isinstance(stickiness, (int, float)):
@@ -210,12 +209,12 @@ def estimate_non_stationary_state_transition(
     transition_matrix: np.ndarray,
     acausal_posterior: np.ndarray,
     concentration: float = 1.0,
-    stickiness: Union[float, np.ndarray] = 0.0,
+    stickiness: float | np.ndarray = 0.0,
     transition_regularization: float = 1e-5,
     optimization_method: str = "Newton-CG",
-    maxiter: Optional[int] = 100,
+    maxiter: int | None = 100,
     disp: bool = False,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Estimate the non-stationary state transition model using Dirichlet likelihood.
 
     Parameters
@@ -357,7 +356,7 @@ def dirichlet_neg_log_likelihood(
     coefficients: jnp.ndarray,
     design_matrix: jnp.ndarray,
     response: jnp.ndarray,
-    alpha: Union[float, jnp.ndarray] = 1.0,
+    alpha: float | jnp.ndarray = 1.0,
     l2_penalty: float = 1e-5,
 ) -> float:
     """Negative expected complete log likelihood for Dirichlet-Multinomial model.
@@ -433,9 +432,9 @@ def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
 
 def set_initial_discrete_transition(
     speed: np.ndarray,
-    speed_knots: Optional[np.ndarray] = None,
+    speed_knots: np.ndarray | None = None,
     is_stationary: bool = False,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Set the initial discrete transition matrix for the local/non-local model
 
     Parameters
@@ -518,12 +517,12 @@ def _estimate_discrete_transition(
     predictive_state_probabilities: np.ndarray,
     acausal_state_probabilities: np.ndarray,
     discrete_transition: np.ndarray,
-    discrete_transition_coefficients: Optional[np.ndarray],
-    discrete_transition_design_matrix: Optional[DesignMatrix],
+    discrete_transition_coefficients: np.ndarray | None,
+    discrete_transition_design_matrix: DesignMatrix | None,
     transition_concentration: float,
-    transition_stickiness: Union[float, np.ndarray],
+    transition_stickiness: float | np.ndarray,
     transition_regularization: float,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Estimate the discrete transition matrix (stationary or non-stationary).
 
     Parameters
@@ -605,7 +604,7 @@ class DiscreteStationaryDiagonal:
 
     diagonal_values: np.ndarray
 
-    def make_state_transition(self, *args, **kwargs) -> Tuple[np.ndarray, None, None]:
+    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:
         """Constructs the initial discrete transition matrix.
 
         Returns
@@ -638,7 +637,7 @@ class DiscreteStationaryCustom:
 
     values: np.ndarray
 
-    def make_state_transition(self, *args, **kwargs) -> Tuple[np.ndarray, None, None]:
+    def make_state_transition(self, *args, **kwargs) -> tuple[np.ndarray, None, None]:
         """Constructs the initial discrete transition matrix.
 
         Returns
@@ -676,8 +675,8 @@ class DiscreteNonStationaryDiagonal:
     formula: str = "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])"
 
     def make_state_transition(
-        self, covariate_data: Union[pd.DataFrame, dict]
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        self, covariate_data: pd.DataFrame | dict
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Constructs the initial non-stationary discrete transition structures.
 
         Parameters
@@ -741,8 +740,8 @@ class DiscreteNonStationaryCustom:
     formula: str = "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])"
 
     def make_state_transition(
-        self, covariate_data: Tuple[pd.DataFrame, dict]
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        self, covariate_data: tuple[pd.DataFrame, dict]
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Constructs the initial non-stationary discrete transition structures.
 
         Parameters
@@ -793,7 +792,7 @@ class DiscreteNonStationaryCustom:
 def predict_discrete_state_transitions(
     discrete_transition_design_matrix: DesignMatrix,
     discrete_transition_coefficients: np.ndarray,
-    discrete_transition_covariate_data: Union[pd.DataFrame, dict],
+    discrete_transition_covariate_data: pd.DataFrame | dict,
 ) -> np.ndarray:
     """Predict the discrete state transitions based on new covariate data.
 

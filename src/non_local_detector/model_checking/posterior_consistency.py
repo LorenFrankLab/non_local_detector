@@ -1,4 +1,4 @@
-"""State space goodness of fit for """
+"""State space goodness of fit for"""
 
 import numpy as np
 from scipy.stats import entropy

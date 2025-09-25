@@ -39,7 +39,9 @@ try:
         """
         times, counts = np.unique(trimmed_posterior.time.values, return_counts=True)
         indexed_counts = xr.DataArray(counts, coords={"time": times})
-        _, good_counts = xr.align(base_data.time, indexed_counts, join="left", fill_value=0)  # type: ignore
+        _, good_counts = xr.align(
+            base_data.time, indexed_counts, join="left", fill_value=0
+        )  # type: ignore
 
         return good_counts.values.astype(np.uint8)
 
@@ -78,8 +80,8 @@ try:
 
     def create_1D_decode_view(
         posterior: xr.DataArray,
-        linear_position: Optional[np.ndarray] = None,
-        ref_time_sec: Optional[float] = None,
+        linear_position: np.ndarray | None = None,
+        ref_time_sec: float | None = None,
     ) -> vvf.DecodedLinearPositionData:
         """Creates a view of an interactive heatmap of position vs. time.
 
@@ -150,7 +152,7 @@ try:
             "#bcbd22",
             "#17becf",
         ]
-        for state, color in zip(results.states.values, COLOR_CYCLE):
+        for state, color in zip(results.states.values, COLOR_CYCLE, strict=False):
             probability_view.add_line_series(
                 name=state,
                 t=np.asarray(results.time),

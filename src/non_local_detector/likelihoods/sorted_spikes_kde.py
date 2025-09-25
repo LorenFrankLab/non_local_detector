@@ -46,8 +46,6 @@ sorted spikes, relying on density estimation rather than fitted coefficients.
 It utilizes JAX and SciPy for efficient computation and interpolation.
 """
 
-from typing import Optional
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -69,7 +67,7 @@ def fit_sorted_spikes_kde_encoding_model(
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
     environment: Environment,
-    weights: Optional[jnp.ndarray] = None,
+    weights: jnp.ndarray | None = None,
     sampling_frequency: int = 500,
     position_std: float = np.sqrt(12.5),
     block_size: int = 100,
@@ -281,6 +279,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             ),
             marginal_models,
             mean_rates,
+            strict=False,
         ):
             neuron_spike_times = neuron_spike_times[
                 np.logical_and(
@@ -316,6 +315,7 @@ def predict_sorted_spikes_kde_log_likelihood(
                 disable=disable_progress_bar,
             ),
             place_fields,
+            strict=False,
         ):
             neuron_spike_times = neuron_spike_times[
                 np.logical_and(

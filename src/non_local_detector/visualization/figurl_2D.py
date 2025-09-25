@@ -1,5 +1,6 @@
 try:
-    from typing import Callable, Dict, Optional, Tuple
+    from collections.abc import Callable
+    from typing import Dict, Optional, Tuple
 
     import numpy as np
     import sortingview.views as vv
@@ -17,7 +18,7 @@ try:
         timestamps: np.ndarray,
         positions: np.ndarray,
         compute_real_time_rate: bool = False,
-        head_dir: Optional[np.ndarray] = None,
+        head_dir: np.ndarray | None = None,
     ) -> dict:
         """Create a static track animation object.
 
@@ -84,9 +85,9 @@ try:
         return (x_count, x_min, x_width, y_count, y_min, y_width)
 
     def memo_linearize(
-        t: Tuple[float, float, float],
+        t: tuple[float, float, float],
         /,
-        location_lookup: Dict[Tuple[float, float], int],
+        location_lookup: dict[tuple[float, float], int],
         x_count: int,
         x_min: float,
         x_width: float,
@@ -117,13 +118,13 @@ try:
         return location_lookup[my_tuple]
 
     def generate_linearization_function(
-        location_lookup: Dict[Tuple[float, float], int],
+        location_lookup: dict[tuple[float, float], int],
         x_count: int,
         x_min: float,
         x_width: float,
         y_min: float,
         y_width: float,
-    ) -> Callable[[Tuple[float, float]], int]:
+    ) -> Callable[[tuple[float, float]], int]:
         """Generate a linearization function.
 
         Parameters
@@ -148,7 +149,7 @@ try:
             "y_width": y_width,
         }
 
-        def inner(t: Tuple[float, float, float]):
+        def inner(t: tuple[float, float, float]):
             return memo_linearize(t, **args)
 
         return inner
@@ -170,7 +171,7 @@ try:
         return i_stack.where(i_stack > 0, drop=True).astype(np.uint8)
 
     def get_positions(
-        i_trim: xr.Dataset, linearization_fn: Callable[[Tuple[float, float]], int]
+        i_trim: xr.Dataset, linearization_fn: Callable[[tuple[float, float]], int]
     ) -> np.ndarray:
         """Get the positions.
 
@@ -208,8 +209,8 @@ try:
         return observations_per_frame
 
     def extract_slice_data(
-        base_slice: xr.DataArray, location_fn: Callable[[Tuple[float, float]], int]
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        base_slice: xr.DataArray, location_fn: Callable[[tuple[float, float]], int]
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Extract slice data.
 
         Parameters
@@ -229,7 +230,7 @@ try:
         observations_per_frame = get_observations_per_frame(i_trim, base_slice)
         return i_trim.values, positions, observations_per_frame
 
-    def process_decoded_data(posterior: xr.DataArray) -> Dict[str, np.ndarray]:
+    def process_decoded_data(posterior: xr.DataArray) -> dict[str, np.ndarray]:
         """Process decoded data.
 
         Parameters
@@ -371,7 +372,7 @@ try:
 
     def make_track(
         position: np.ndarray, bin_size: float = 1.0
-    ) -> Tuple[float, float, np.ndarray]:
+    ) -> tuple[float, float, np.ndarray]:
         """Make a track.
 
         Parameters
@@ -424,12 +425,12 @@ try:
         view : vvf.TrackPositionAnimationV1
 
         """
-        assert (
-            position_time.shape[0] == position.shape[0]
-        ), "position_time and position must have the same length"
-        assert (
-            posterior.shape[0] == position.shape[0]
-        ), "posterior and position must have the same length"
+        assert position_time.shape[0] == position.shape[0], (
+            "position_time and position must have the same length"
+        )
+        assert posterior.shape[0] == position.shape[0], (
+            "posterior and position must have the same length"
+        )
 
         position_time = np.squeeze(np.asarray(position_time)).copy()
         position = np.asarray(position)
@@ -460,9 +461,9 @@ try:
         env: Environment,
         results: xr.Dataset,
         posterior: xr.DataArray = None,
-        spike_times: Optional[list[np.ndarray]] = None,
-        head_dir: Optional[np.ndarray] = None,
-        speed: Optional[np.ndarray] = None,
+        spike_times: list[np.ndarray] | None = None,
+        head_dir: np.ndarray | None = None,
+        speed: np.ndarray | None = None,
         view_height: int = 800,
     ) -> str:
         """Create an interactive 2D decoding figure.
@@ -519,7 +520,7 @@ try:
             "#bcbd22",
             "#17becf",
         ]
-        for state, color in zip(results.states.values, COLOR_CYCLE):
+        for state, color in zip(results.states.values, COLOR_CYCLE, strict=False):
             probability_view.add_line_series(
                 name=state,
                 t=np.asarray(results.time),

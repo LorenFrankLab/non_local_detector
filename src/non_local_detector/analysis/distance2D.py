@@ -1,5 +1,3 @@
-from typing import Optional
-
 import networkx as nx
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
@@ -28,6 +26,7 @@ def make_2D_track_graph_from_environment(
         zip(
             environment.place_bin_centers_,
             environment.is_track_interior_.ravel(),
+            strict=False,
         )
     ):
         track_graph.add_node(
@@ -35,7 +34,7 @@ def make_2D_track_graph_from_environment(
         )
 
     edges = []
-    for x_ind, y_ind in zip(*np.nonzero(environment.is_track_interior_)):
+    for x_ind, y_ind in zip(*np.nonzero(environment.is_track_interior_), strict=False):
         x_inds, y_inds = np.meshgrid(
             x_ind + np.asarray([-1, 0, 1]),
             y_ind + np.asarray([-1, 0, 1]),
@@ -170,7 +169,7 @@ def get_map_estimate_direction_from_track_graph(
         map_estimate_nodes = node_ids[get_bin_ind(map_estimate, bin_edges)]
 
         for i, (head_position_node, map_estimate_node) in enumerate(
-            zip(head_position_nodes, map_estimate_nodes)
+            zip(head_position_nodes, map_estimate_nodes, strict=False)
         ):
             try:
                 first_node_on_path = nx.shortest_path(
@@ -269,7 +268,7 @@ def head_direction_simliarity(
     head_direction: np.ndarray,
     map_estimate: np.ndarray,
     track_graph: nx.Graph = None,
-    edges: Optional[list] = None,
+    edges: list | None = None,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Cosine similarity of the head direction vector with the vector from the
@@ -396,7 +395,7 @@ def _gaussian_smooth(
 
 def get_velocity(
     position: np.ndarray,
-    time: Optional[np.ndarray] = None,
+    time: np.ndarray | None = None,
     sigma: float = 0.0025,
     sampling_frequency: float = 500,
 ) -> np.ndarray:

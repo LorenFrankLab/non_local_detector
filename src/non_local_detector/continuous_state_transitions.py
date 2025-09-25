@@ -1,7 +1,6 @@
 """Classes for constructing different types of movement models."""
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
 
 import networkx as nx
 import numpy as np
@@ -58,7 +57,7 @@ def _random_walk_on_track_graph(
     movement_mean: float,
     movement_var: float,
     place_bin_center_ind_to_node: np.ndarray,
-    distance_between_nodes: Dict[int, Dict[int, float]],
+    distance_between_nodes: dict[int, dict[int, float]],
 ) -> np.ndarray:
     """Estimates the random walk probabilities based on the spatial
     topology given by the track graph.
@@ -152,9 +151,9 @@ class RandomWalk:
     movement_var: float = 6.0
     movement_mean: float = 0.0
     use_manifold_distance: bool = False
-    direction: Optional[str] = None
+    direction: str | None = None
 
-    def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
+    def make_state_transition(self, environments: tuple[Environment]) -> np.ndarray:
         """Creates a transition matrix for a given environment.
 
         Parameters
@@ -246,7 +245,7 @@ class Uniform:
     environment_name: str = ""
     environment2_name: str = None
 
-    def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
+    def make_state_transition(self, environments: tuple[Environment]) -> np.ndarray:
         """Creates a uniform transition matrix between environments.
 
         Parameters
@@ -291,7 +290,7 @@ class Identity:
 
     environment_name: str = ""
 
-    def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
+    def make_state_transition(self, environments: tuple[Environment]) -> np.ndarray:
         """Creates an identity transition matrix for a given environment.
 
         Parameters
@@ -341,11 +340,11 @@ class EmpiricalMovement:
 
     def make_state_transition(
         self,
-        environments: Tuple[Environment],
+        environments: tuple[Environment],
         position: np.ndarray,
-        is_training: Optional[np.ndarray] = None,
-        encoding_group_labels: Optional[np.ndarray] = None,
-        environment_labels: Optional[np.ndarray] = None,
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
     ) -> np.ndarray:
         """Creates a transition matrix based on observed animal movement.
 
@@ -434,7 +433,7 @@ class RandomWalkDirection1:
     environment_name: str = ""
     movement_var: float = 6.0
 
-    def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
+    def make_state_transition(self, environments: tuple[Environment]) -> np.ndarray:
         """Creates a unidirectional transition matrix.
 
         Parameters
@@ -472,7 +471,7 @@ class RandomWalkDirection2:
     environment_name: str = ""
     movement_var: float = 6.0
 
-    def make_state_transition(self, environments: Tuple[Environment]) -> np.ndarray:
+    def make_state_transition(self, environments: tuple[Environment]) -> np.ndarray:
         """Creates a unidirectional transition matrix.
 
         Parameters

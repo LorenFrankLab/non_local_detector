@@ -1,5 +1,4 @@
 import copy
-from typing import Optional, Tuple, Union
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -101,10 +100,10 @@ def plot_non_local_model(
     position: np.ndarray,
     spike_times: list[np.ndarray],
     speed: np.ndarray,
-    detector: Union[NonLocalClusterlessDetector, NonLocalSortedSpikesDetector],
+    detector: NonLocalClusterlessDetector | NonLocalSortedSpikesDetector,
     results: xr.Dataset,
-    figsize: Tuple[int, int] = (20, 10),
-    time_slice: Optional[slice] = None,
+    figsize: tuple[int, int] = (20, 10),
+    time_slice: slice | None = None,
     posterior_max: float = 0.25,
 ) -> None:
     """Plot the results of a non-local model.

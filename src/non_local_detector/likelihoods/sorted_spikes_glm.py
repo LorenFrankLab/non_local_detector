@@ -49,8 +49,6 @@ context and uses common helper functions for spike counting and position
 interpolation.
 """
 
-from typing import Optional
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -87,7 +85,7 @@ def make_spline_design_matrix(
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     inner_knots = []
-    for pos, edges in zip(position.T, place_bin_edges.T):
+    for pos, edges in zip(position.T, place_bin_edges.T, strict=False):
         n_points = get_n_bins(edges, bin_size=knot_spacing)
         knots = np.linspace(edges.min(), edges.max(), n_points)[1:-1]
         knots = knots[(knots > pos.min()) & (knots < pos.max())]
@@ -198,7 +196,7 @@ def fit_sorted_spikes_glm_encoding_model(
     edges: np.ndarray,
     is_track_interior: np.ndarray,
     is_track_boundary: np.ndarray,
-    weights: Optional[np.ndarray] = None,
+    weights: np.ndarray | None = None,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
     l2_penalty: float = 1e-3,
     disable_progress_bar: bool = False,
@@ -390,6 +388,7 @@ def predict_sorted_spikes_glm_log_likelihood(
                 disable=disable_progress_bar,
             ),
             coefficients,
+            strict=False,
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(spike_times, time)
             local_rate = jnp.exp(emission_predict_matrix @ coef)
@@ -411,6 +410,7 @@ def predict_sorted_spikes_glm_log_likelihood(
                 disable=disable_progress_bar,
             ),
             place_fields,
+            strict=False,
         ):
             neuron_spike_times = neuron_spike_times[
                 np.logical_and(

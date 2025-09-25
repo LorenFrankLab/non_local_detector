@@ -11,8 +11,6 @@ References
 
 """
 
-from typing import Optional
-
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import integrate
@@ -56,7 +54,7 @@ class TimeRescaling:
         self,
         conditional_intensity: np.ndarray,
         is_spike: np.ndarray,
-        trial_id: Optional[np.ndarray] = None,
+        trial_id: np.ndarray | None = None,
         adjust_for_short_trials: bool = False,
     ):
         """Initialize the TimeRescaling object.
@@ -140,7 +138,7 @@ class TimeRescaling:
     def plot_ks(
         self,
         ax: plt.Axes = None,
-        scatter_kwargs: Optional[dict] = None,
+        scatter_kwargs: dict | None = None,
         ci_color: str = "red",
     ) -> plt.Axes:
         """Plots the empirical CDF versus the expected CDF to examine how
@@ -170,7 +168,7 @@ class TimeRescaling:
     def plot_qq(
         self,
         ax: plt.Axes = None,
-        scatter_kwargs: Optional[dict] = None,
+        scatter_kwargs: dict | None = None,
         ci_color: str = "red",
     ) -> plt.Axes:
         """Plots the rescaled ISIs versus a uniform distribution to examine
@@ -199,11 +197,11 @@ class TimeRescaling:
 
     def plot_rescaled_ISI_autocorrelation(
         self,
-        ax: Optional[plt.Axes] = None,
-        scatter_kwargs: Optional[dict] = None,
+        ax: plt.Axes | None = None,
+        scatter_kwargs: dict | None = None,
         ci_color: str = "red",
         sampling_frequency: float = 1.0,
-        lag_max: Optional[float] = None,
+        lag_max: float | None = None,
     ) -> plt.Axes:
         """Plot the rescaled ISI dependence.
 
@@ -402,8 +400,8 @@ def point_process_residuals(
 
 def plot_ks(
     uniform_rescaled_ISIs: np.ndarray,
-    ax: Optional[plt.Axes] = None,
-    scatter_kwargs: Optional[dict] = None,
+    ax: plt.Axes | None = None,
+    scatter_kwargs: dict | None = None,
     ci_color: str = "red",
 ) -> plt.Axes:
     """Plots the rescaled ISIs versus a uniform distribution to examine
@@ -444,11 +442,10 @@ def plot_ks(
 
 def plot_qq(
     uniform_rescaled_ISIs: np.ndarray,
-    ax: Optional[plt.Axes] = None,
-    scatter_kwargs: Optional[dict] = None,
+    ax: plt.Axes | None = None,
+    scatter_kwargs: dict | None = None,
     ci_color: str = "red",
 ) -> plt.Axes:
-
     n_spikes = uniform_rescaled_ISIs.size
     uniform_quantiles = (np.arange(1, n_spikes + 1) - 0.5) / n_spikes
     sorted_ISIs = np.sort(uniform_rescaled_ISIs)
@@ -473,11 +470,11 @@ def plot_qq(
 
 def plot_rescaled_ISI_autocorrelation(
     rescaled_ISI_autocorrelation: np.ndarray,
-    ax: Optional[plt.Axes] = None,
-    scatter_kwargs: Optional[dict] = None,
+    ax: plt.Axes | None = None,
+    scatter_kwargs: dict | None = None,
     ci_color: str = "red",
     sampling_frequency: float = 1.0,
-    lag_max: Optional[float] = None,
+    lag_max: float | None = None,
 ) -> plt.Axes:
     n_spikes = rescaled_ISI_autocorrelation.size // 2 + 1
     lag = np.arange(-n_spikes + 1, n_spikes) / sampling_frequency

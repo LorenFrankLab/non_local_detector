@@ -1,7 +1,6 @@
 import copy
 import pickle
 from logging import getLogger
-from typing import Optional, Tuple, Union
 
 import jax.numpy as jnp
 import matplotlib
@@ -275,7 +274,7 @@ class _DetectorBase(BaseEstimator):
         return state_names
 
     def initialize_environments(
-        self, position: np.ndarray, environment_labels: Optional[np.ndarray] = None
+        self, position: np.ndarray, environment_labels: np.ndarray | None = None
     ) -> None:
         """
         Fits the Environment class on the position data to get information about the spatial environment.
@@ -373,6 +372,7 @@ class _DetectorBase(BaseEstimator):
                 for obs, cont_ic in zip(
                     self.observation_models,
                     self.continuous_initial_conditions_types,
+                    strict=False,
                 )
             ]
         )
@@ -384,10 +384,10 @@ class _DetectorBase(BaseEstimator):
     def initialize_continuous_state_transition(
         self,
         continuous_transition_types: ContinuousTransitions,
-        position: Optional[np.ndarray] = None,
-        is_training: Optional[np.ndarray] = None,
-        encoding_group_labels: Optional[np.ndarray] = None,
-        environment_labels: Optional[np.ndarray] = None,
+        position: np.ndarray | None = None,
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
     ) -> None:
         """
         Constructs the transition matrices for the continuous states.
@@ -464,7 +464,7 @@ class _DetectorBase(BaseEstimator):
                         )
 
     def initialize_discrete_state_transition(
-        self, covariate_data: Union[pd.DataFrame, dict, None] = None
+        self, covariate_data: pd.DataFrame | dict | None = None
     ) -> None:
         """
         Constructs the transition matrix for the discrete states.
@@ -493,10 +493,10 @@ class _DetectorBase(BaseEstimator):
     def plot_discrete_state_transition(
         self,
         cmap: str = "Oranges",
-        ax: Optional[matplotlib.axes.Axes] = None,
+        ax: matplotlib.axes.Axes | None = None,
         convert_to_seconds: bool = False,
         sampling_frequency: int = 1,
-        covariate_data: Union[pd.DataFrame, dict, None] = None,
+        covariate_data: pd.DataFrame | dict | None = None,
     ) -> None:
         """
         Plot heatmap of discrete transition matrix.
@@ -563,7 +563,7 @@ class _DetectorBase(BaseEstimator):
                 )
 
                 for from_state_ind, (ax, from_state) in enumerate(
-                    zip(axes.flat, state_names)
+                    zip(axes.flat, state_names, strict=False)
                 ):
                     from_local_transition = centered_softmax_forward(
                         predict_matrix
@@ -696,11 +696,11 @@ class _DetectorBase(BaseEstimator):
 
     def _fit(
         self,
-        position: Optional[np.ndarray] = None,
-        is_training: Optional[np.ndarray] = None,
-        encoding_group_labels: Optional[np.ndarray] = None,
-        environment_labels: Optional[np.ndarray] = None,
-        discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
+        position: np.ndarray | None = None,
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
     ) -> "_DetectorBase":
         """
         Fit the model to the data.
@@ -748,10 +748,10 @@ class _DetectorBase(BaseEstimator):
 
     def _predict(
         self,
-        time: Optional[np.ndarray] = None,
+        time: np.ndarray | None = None,
         log_likelihood_args: tuple = (),
-        is_missing: Optional[np.ndarray] = None,
-        log_likelihoods: Optional[np.ndarray] = None,
+        is_missing: np.ndarray | None = None,
+        log_likelihoods: np.ndarray | None = None,
         cache_likelihood: bool = True,
         n_chunks: int = 1,
     ) -> tuple[np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray]:
@@ -830,9 +830,9 @@ class _DetectorBase(BaseEstimator):
 
     def estimate_parameters(
         self,
-        time: Optional[np.ndarray] = None,
-        log_likelihood_args: Optional[tuple] = None,
-        is_missing: Optional[np.ndarray] = None,
+        time: np.ndarray | None = None,
+        log_likelihood_args: tuple | None = None,
+        is_missing: np.ndarray | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = True,
@@ -981,8 +981,7 @@ class _DetectorBase(BaseEstimator):
                 )
             else:
                 logger.info(
-                    f"iteration {n_iter}, "
-                    f"likelihood: {marginal_log_likelihoods[-1]}"
+                    f"iteration {n_iter}, likelihood: {marginal_log_likelihoods[-1]}"
                 )
 
         if store_log_likelihood:
@@ -1002,8 +1001,8 @@ class _DetectorBase(BaseEstimator):
     def most_likely_sequence(
         self,
         time: np.ndarray,
-        log_likelihood_args: Optional[tuple] = None,
-        is_missing: Optional[np.ndarray] = None,
+        log_likelihood_args: tuple | None = None,
+        is_missing: np.ndarray | None = None,
         n_chunks: int = 1,
     ) -> np.ndarray:
         """Find the most likely sequence of states.
@@ -1153,7 +1152,7 @@ class _DetectorBase(BaseEstimator):
         acausal_posterior: np.ndarray,
         acausal_state_probabilities: np.ndarray,
         marginal_log_likelihoods: list[float],
-        log_likelihood: Optional[np.ndarray] = None,
+        log_likelihood: np.ndarray | None = None,
     ) -> xr.Dataset:
         """
         Convert the results to an xarray Dataset.
@@ -1199,7 +1198,8 @@ class _DetectorBase(BaseEstimator):
             position_names = ["position"]
         else:
             position_names = [
-                f"{name}_position" for name, _ in zip(["x", "y", "z", "w"], position.T)
+                f"{name}_position"
+                for name, _ in zip(["x", "y", "z", "w"], position.T, strict=False)
             ]
         state_bins = pd.MultiIndex.from_arrays(
             ((states[self.state_ind_], *[pos for pos in position.T])),
@@ -1290,12 +1290,16 @@ class _DetectorBase(BaseEstimator):
             position_names = ["position"]
         else:
             position_names = [
-                f"{name}_position" for name, _ in zip(["x", "y", "z", "w"], position.T)
+                f"{name}_position"
+                for name, _ in zip(["x", "y", "z", "w"], position.T, strict=False)
             ]
         state_bins = pd.DataFrame(
             {
                 "state": states[self.state_ind_],
-                **{name: pos for name, pos in zip(position_names, position.T)},
+                **{
+                    name: pos
+                    for name, pos in zip(position_names, position.T, strict=False)
+                },
                 "environment": environment_names,
                 "encoding_group_names": encoding_group_names,
             }
@@ -1387,7 +1391,7 @@ class ClusterlessDetector(_DetectorBase):
         spike_waveform_features: list[np.ndarray],
         is_group: np.ndarray,
         position_time: np.ndarray,
-    ) -> Tuple[list[np.ndarray], list[np.ndarray]]:
+    ) -> tuple[list[np.ndarray], list[np.ndarray]]:
         """
         Get group spike data based on is_group mask.
 
@@ -1415,7 +1419,7 @@ class ClusterlessDetector(_DetectorBase):
         group_spike_times = []
         group_spike_waveform_features = []
         for electrode_spike_times, electrode_spike_waveform_features in zip(
-            spike_times, spike_waveform_features
+            spike_times, spike_waveform_features, strict=False
         ):
             group_electrode_spike_times = []
             group_electrode_waveform_features = []
@@ -1449,10 +1453,10 @@ class ClusterlessDetector(_DetectorBase):
         position: np.ndarray,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
-        is_training: Optional[np.ndarray] = None,
-        encoding_group_labels: Optional[np.ndarray] = None,
-        environment_labels: Optional[np.ndarray] = None,
-        weights: Optional[np.ndarray] = None,
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
+        weights: np.ndarray | None = None,
     ) -> None:
         """
         Fit the encoding model to the data.
@@ -1546,10 +1550,10 @@ class ClusterlessDetector(_DetectorBase):
         position: np.ndarray,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
-        is_training: Optional[np.ndarray] = None,
-        encoding_group_labels: Optional[np.ndarray] = None,
-        environment_labels: Optional[np.ndarray] = None,
-        discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
     ) -> "ClusterlessDetector":
         """
         Fit the detector to the data.
@@ -1600,10 +1604,10 @@ class ClusterlessDetector(_DetectorBase):
         self,
         time: np.ndarray,
         position_time: np.ndarray,
-        position: Optional[np.ndarray],
+        position: np.ndarray | None,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
-        is_missing: Optional[np.ndarray] = None,
+        is_missing: np.ndarray | None = None,
     ) -> jnp.ndarray:
         """
         Compute the log likelihood for the given data.
@@ -1693,10 +1697,10 @@ class ClusterlessDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         time: np.ndarray,
-        position: Optional[np.ndarray] = None,
-        position_time: Optional[np.ndarray] = None,
-        is_missing: Optional[np.ndarray] = None,
-        discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
+        position: np.ndarray | None = None,
+        position_time: np.ndarray | None = None,
+        is_missing: np.ndarray | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
         save_log_likelihood_to_results: bool = False,
@@ -1786,11 +1790,11 @@ class ClusterlessDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         time: np.ndarray,
-        is_missing: Optional[np.ndarray] = None,
-        is_training: Optional[np.ndarray] = None,
-        encoding_group_labels: Optional[np.ndarray] = None,
-        environment_labels: Optional[np.ndarray] = None,
-        discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
+        is_missing: np.ndarray | None = None,
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = True,
@@ -1897,7 +1901,7 @@ class ClusterlessDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         time: np.ndarray,
-        is_missing: Optional[np.ndarray] = None,
+        is_missing: np.ndarray | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
         """Find the most likely sequence of states.
@@ -2066,10 +2070,10 @@ class SortedSpikesDetector(_DetectorBase):
         position_time: np.ndarray,
         position: np.ndarray,
         spike_times: list[np.ndarray],
-        is_training: Optional[np.ndarray] = None,
-        encoding_group_labels: Optional[np.ndarray] = None,
-        environment_labels: Optional[np.ndarray] = None,
-        weights: Optional[np.ndarray] = None,
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
+        weights: np.ndarray | None = None,
     ) -> None:
         """
         Fit place fields to the data.
@@ -2155,10 +2159,10 @@ class SortedSpikesDetector(_DetectorBase):
         position_time: np.ndarray,
         position: np.ndarray,
         spike_times: list[np.ndarray],
-        is_training: Optional[np.ndarray] = None,
-        encoding_group_labels: Optional[np.ndarray] = None,
-        environment_labels: Optional[np.ndarray] = None,
-        discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
     ) -> "SortedSpikesDetector":
         """
         Fit the detector to the data.
@@ -2206,9 +2210,9 @@ class SortedSpikesDetector(_DetectorBase):
         self,
         time: np.ndarray,
         position_time: np.ndarray,
-        position: Optional[np.ndarray],
+        position: np.ndarray | None,
         spike_times: list[np.ndarray],
-        is_missing: Optional[np.ndarray] = None,
+        is_missing: np.ndarray | None = None,
     ) -> jnp.ndarray:
         """
         Compute the log likelihood for the given data.
@@ -2293,10 +2297,10 @@ class SortedSpikesDetector(_DetectorBase):
         self,
         spike_times: list[np.ndarray],
         time: np.ndarray,
-        position: Optional[np.ndarray] = None,
-        position_time: Optional[np.ndarray] = None,
-        is_missing: Optional[np.ndarray] = None,
-        discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
+        position: np.ndarray | None = None,
+        position_time: np.ndarray | None = None,
+        is_missing: np.ndarray | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
         save_log_likelihood_to_results: bool = False,
@@ -2383,11 +2387,11 @@ class SortedSpikesDetector(_DetectorBase):
         position: np.ndarray,
         spike_times: list[np.ndarray],
         time: np.ndarray,
-        is_missing: Optional[np.ndarray] = None,
-        is_training: Optional[np.ndarray] = None,
-        encoding_group_labels: Optional[np.ndarray] = None,
-        environment_labels: Optional[np.ndarray] = None,
-        discrete_transition_covariate_data: Union[pd.DataFrame, dict, None] = None,
+        is_missing: np.ndarray | None = None,
+        is_training: np.ndarray | None = None,
+        encoding_group_labels: np.ndarray | None = None,
+        environment_labels: np.ndarray | None = None,
+        discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         estimate_initial_conditions: bool = True,
         estimate_discrete_transition: bool = True,
         estimate_encoding_model: bool = True,
@@ -2493,7 +2497,7 @@ class SortedSpikesDetector(_DetectorBase):
         position: np.ndarray,
         spike_times: list[np.ndarray],
         time: np.ndarray,
-        is_missing: Optional[np.ndarray] = None,
+        is_missing: np.ndarray | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
         """Find the most likely sequence of states.

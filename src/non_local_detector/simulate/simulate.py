@@ -1,7 +1,5 @@
 """Main code for simulating position and sorted spikes or clusterless spikes and waveforms."""
 
-from typing import Optional
-
 import numpy as np
 from scipy.stats import multivariate_normal
 
@@ -112,7 +110,7 @@ def simulate_place_field_firing_rate(
     position: np.ndarray,
     max_rate: float = 15.0,
     variance: float = 12.5,
-    is_condition: Optional[np.ndarray] = None,
+    is_condition: np.ndarray | None = None,
 ) -> np.ndarray:
     """Simulates the firing rate of a neuron with a place field at `means`.
 
@@ -146,7 +144,7 @@ def simulate_neuron_with_place_field(
     max_rate: float = 15.0,
     variance: float = 12.5,
     sampling_frequency: int = 500,
-    is_condition: Optional[np.ndarray] = None,
+    is_condition: np.ndarray | None = None,
 ) -> np.ndarray:
     """Simulates the spiking of a neuron with a place field at `means`.
 
@@ -179,7 +177,7 @@ def simulate_multiunit_with_place_fields(
     mark_variance: float = 1.0,
     max_rate: float = 100.0,
     sampling_frequency: int = 1000,
-    is_condition: Optional[np.ndarray] = None,
+    is_condition: np.ndarray | None = None,
 ) -> np.ndarray:
     """Simulates a multiunit with neurons at `place_means`
 
@@ -203,7 +201,7 @@ def simulate_multiunit_with_place_fields(
     mark_centers = np.arange(0, n_neurons * mark_spacing, mark_spacing)
     n_time = position.shape[0]
     marks = np.full((n_time, n_mark_dims), np.nan)
-    for mean, mark_center in zip(place_means, mark_centers):
+    for mean, mark_center in zip(place_means, mark_centers, strict=False):
         is_spike = (
             simulate_neuron_with_place_field(
                 mean,

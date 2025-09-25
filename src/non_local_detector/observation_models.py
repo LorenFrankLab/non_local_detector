@@ -1,7 +1,6 @@
 """Class for representing an environment and a condition (trial type, etc.)"""
 
 from dataclasses import dataclass
-from typing import Union
 
 
 @dataclass(order=True)
@@ -18,7 +17,7 @@ class ObservationModel:
     """
 
     environment_name: str = ""
-    encoding_group: Union[str, int] = 0
+    encoding_group: str | int = 0
     is_local: bool = False
     is_no_spike: bool = False
 

@@ -1,5 +1,3 @@
-from typing import Optional, Tuple
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -10,7 +8,7 @@ np.seterr(divide="ignore", invalid="ignore")
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
 def _normalize(
     u: jnp.ndarray, axis: int = 0, eps: float = 1e-15
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Normalizes the values within the axis in a way that they sum up to 1.
 
     Parameters
@@ -35,7 +33,7 @@ def _normalize(
 
 
 # Helper functions for the two key filtering steps
-def _condition_on(probs: jnp.ndarray, ll: jnp.ndarray) -> Tuple[jnp.ndarray, float]:
+def _condition_on(probs: jnp.ndarray, ll: jnp.ndarray) -> tuple[jnp.ndarray, float]:
     """Condition on new emissions, given in the form of log likelihoods
     for each discrete state, while avoiding numerical underflow.
 
@@ -77,7 +75,7 @@ def filter(
     initial_distribution: jnp.ndarray,
     transition_matrix: jnp.ndarray,
     log_likelihoods: jnp.ndarray,
-) -> Tuple[Tuple[float, jnp.ndarray], Tuple[jnp.ndarray, jnp.ndarray]]:
+) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
     """Performs the forward pass of the forward-backward algorithm (filtering).
 
     Computes the filtered state probabilities P(z_t | x_{1:t}) and the
@@ -127,9 +125,9 @@ def filter(
 def smoother(
     transition_matrix: jnp.ndarray,
     filtered_probs: jnp.ndarray,
-    initial: Optional[jnp.ndarray] = None,
-    ind: Optional[jnp.ndarray] = None,
-    n_time: Optional[int] = None,
+    initial: jnp.ndarray | None = None,
+    ind: jnp.ndarray | None = None,
+    n_time: int | None = None,
 ) -> jnp.ndarray:
     """Smoother step.
 
@@ -159,8 +157,8 @@ def smoother(
         initial = filtered_probs[-1]
 
     def _step(
-        smoothed_probs_next: jnp.ndarray, args: Tuple[jnp.ndarray, int]
-    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        smoothed_probs_next: jnp.ndarray, args: tuple[jnp.ndarray, int]
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
         filtered_probs_t, t = args
 
         smoothed_probs = filtered_probs_t * (
@@ -186,11 +184,11 @@ def chunked_filter_smoother(
     transition_matrix: np.ndarray,
     log_likelihood_func: callable,
     log_likelihood_args: tuple,
-    is_missing: Optional[np.ndarray] = None,
+    is_missing: np.ndarray | None = None,
     n_chunks: int = 1,
-    log_likelihoods: Optional[np.ndarray] = None,
+    log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
-) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray]:
     """Filter and smooth the state probabilities in chunks.
 
     Parameters
@@ -364,11 +362,10 @@ def most_likely_sequence(
     transition_matrix: np.ndarray,
     log_likelihood_func: callable,
     log_likelihood_args: tuple,
-    is_missing: Optional[np.ndarray] = None,
-    log_likelihoods: Optional[np.ndarray] = None,
+    is_missing: np.ndarray | None = None,
+    log_likelihoods: np.ndarray | None = None,
     n_chunks: int = 1,
-) -> Tuple[np.ndarray, np.ndarray]:
-
+) -> tuple[np.ndarray, np.ndarray]:
     if n_chunks > 1:
         raise NotImplementedError("Chunked Viterbi is not yet implemented.")
 
@@ -418,7 +415,7 @@ def filter_covariate_dependent(
     continuous_transition_matrix: jnp.ndarray,
     state_ind: jnp.ndarray,
     log_likelihoods: jnp.ndarray,
-) -> Tuple[Tuple[float, jnp.ndarray], Tuple[jnp.ndarray, jnp.ndarray]]:
+) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
     """Filtering step with covariate dependent transitions.
 
     Parameters
@@ -441,8 +438,8 @@ def filter_covariate_dependent(
     """
 
     def _step(
-        carry: Tuple[float, jnp.ndarray], args: Tuple[jnp.ndarray, jnp.ndarray]
-    ) -> Tuple[Tuple[float, jnp.ndarray], Tuple[jnp.ndarray, jnp.ndarray]]:
+        carry: tuple[float, jnp.ndarray], args: tuple[jnp.ndarray, jnp.ndarray]
+    ) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
         log_normalizer, predicted_probs = carry
         ll, discrete_transition_matrix_t = args
 
@@ -467,9 +464,9 @@ def smoother_covariate_dependent(
     continuous_transition_matrix: jnp.ndarray,
     state_ind: jnp.ndarray,
     filtered_probs: jnp.ndarray,
-    initial: Optional[jnp.ndarray] = None,
-    ind: Optional[jnp.ndarray] = None,
-    n_time: Optional[int] = None,
+    initial: jnp.ndarray | None = None,
+    ind: jnp.ndarray | None = None,
+    n_time: int | None = None,
 ) -> jnp.ndarray:
     """Smoother step with covariate dependent transitions.
 
@@ -530,9 +527,9 @@ def chunked_filter_smoother_covariate_dependent(
     continuous_transition_matrix: np.ndarray,
     log_likelihood_func: callable,
     log_likelihood_args: tuple,
-    is_missing: Optional[np.array] = None,
+    is_missing: np.array | None = None,
     n_chunks: int = 1,
-    log_likelihoods: Optional[np.array] = None,
+    log_likelihoods: np.array | None = None,
     cache_log_likelihoods: bool = True,
 ):
     """Filter and smooth the state probabilities in chunks with covariate dependent transitions.
@@ -721,10 +718,10 @@ def most_likely_sequence_covariate_dependent(
     continuous_transition_matrix: np.ndarray,
     log_likelihood_func: callable,
     log_likelihood_args: tuple,
-    is_missing: Optional[np.ndarray] = None,
-    log_likelihoods: Optional[np.ndarray] = None,
+    is_missing: np.ndarray | None = None,
+    log_likelihoods: np.ndarray | None = None,
     n_chunks: int = 1,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     if n_chunks > 1:
         raise NotImplementedError("Chunked Viterbi is not yet implemented.")
 
@@ -748,7 +745,7 @@ def check_converged(
     log_likelihood: np.ndarray,
     previous_log_likelihood: np.ndarray,
     tolerance: float = 1e-4,
-) -> Tuple[bool, bool]:
+) -> tuple[bool, bool]:
     """We have converged if the slope of the log-likelihood function falls below 'tolerance',
 
     i.e., |f(t) - f(t-1)| / avg < tolerance,

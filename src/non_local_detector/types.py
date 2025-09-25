@@ -1,4 +1,4 @@
-from typing import Union
+from __future__ import annotations
 
 import numpy as np
 
@@ -20,26 +20,24 @@ from non_local_detector.environment import Environment
 from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.observation_models import ObservationModel
 
-Environments = Union[Environment, list[Environment], None]
+Environments = Environment | list[Environment] | None
 ContinuousTransitions = list[
     list[
-        Union[
-            Discrete,
-            EmpiricalMovement,
-            RandomWalk,
-            RandomWalkDirection1,
-            RandomWalkDirection2,
-            Uniform,
-        ]
+        Discrete
+        | EmpiricalMovement
+        | RandomWalk
+        | RandomWalkDirection1
+        | RandomWalkDirection2
+        | Uniform
     ]
 ]
-Observations = Union[list[ObservationModel], ObservationModel, None]
+Observations = list[ObservationModel] | ObservationModel | None
 ContinuousInitialConditions = list[UniformInitialConditions]
-Stickiness = Union[float, np.ndarray]
-DiscreteTransitions = Union[
-    DiscreteStationaryDiagonal,
-    DiscreteNonStationaryCustom,
-    DiscreteNonStationaryDiagonal,
-    DiscreteStationaryCustom,
-]
-StateNames = Union[list[str], None]
+Stickiness = float | np.ndarray
+DiscreteTransitions = (
+    DiscreteStationaryDiagonal
+    | DiscreteNonStationaryCustom
+    | DiscreteNonStationaryDiagonal
+    | DiscreteStationaryCustom
+)
+StateNames = list[str] | None

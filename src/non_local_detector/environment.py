@@ -50,8 +50,8 @@ environment definitions using `pickle`.
 """
 
 import pickle
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -143,33 +143,31 @@ class Environment:
     """
 
     environment_name: str = ""
-    place_bin_size: Union[float, Tuple[float, ...]] = 2.0
-    track_graph: Optional[nx.Graph] = None
-    edge_order: Optional[List[Tuple]] = None
-    edge_spacing: Optional[Union[float, List[float]]] = 0.0
-    is_track_interior: Optional[np.ndarray] = None
-    position_range: Optional[Sequence[Tuple[float, float]]] = None
+    place_bin_size: float | tuple[float, ...] = 2.0
+    track_graph: nx.Graph | None = None
+    edge_order: list[tuple] | None = None
+    edge_spacing: float | list[float] | None = 0.0
+    is_track_interior: np.ndarray | None = None
+    position_range: Sequence[tuple[float, float]] | None = None
     infer_track_interior: bool = True
     fill_holes: bool = False
     dilate: bool = False
     bin_count_threshold: int = 0
 
     # Attributes to be fitted
-    edges_: Optional[Tuple[np.ndarray, ...]] = None
-    place_bin_edges_: Optional[np.ndarray] = None
-    place_bin_centers_: Optional[np.ndarray] = None
-    centers_shape_: Optional[Tuple[int, ...]] = None
-    is_track_interior_: Optional[np.ndarray] = None
-    is_track_boundary_: Optional[np.ndarray] = None
-    track_graphDD: Optional[nx.Graph] = None  # For N-D case
-    distance_between_nodes_: Optional[
-        Union[Dict[int, Dict[int, float]], np.ndarray]
-    ] = None
-    track_graph_with_bin_centers_edges_: Optional[nx.Graph] = None  # For 1D case
-    original_nodes_df_: Optional[pd.DataFrame] = None
-    place_bin_edges_nodes_df_: Optional[pd.DataFrame] = None
-    place_bin_centers_nodes_df_: Optional[pd.DataFrame] = None
-    nodes_df_: Optional[pd.DataFrame] = None
+    edges_: tuple[np.ndarray, ...] | None = None
+    place_bin_edges_: np.ndarray | None = None
+    place_bin_centers_: np.ndarray | None = None
+    centers_shape_: tuple[int, ...] | None = None
+    is_track_interior_: np.ndarray | None = None
+    is_track_boundary_: np.ndarray | None = None
+    track_graphDD: nx.Graph | None = None  # For N-D case
+    distance_between_nodes_: dict[int, dict[int, float]] | np.ndarray | None = None
+    track_graph_with_bin_centers_edges_: nx.Graph | None = None  # For 1D case
+    original_nodes_df_: pd.DataFrame | None = None
+    place_bin_edges_nodes_df_: pd.DataFrame | None = None
+    place_bin_centers_nodes_df_: pd.DataFrame | None = None
+    nodes_df_: pd.DataFrame | None = None
     # Internal flag
     _is_fitted: bool = False
 
@@ -177,7 +175,7 @@ class Environment:
         return self.environment_name == other
 
     def fit_place_grid(
-        self, position: Optional[np.ndarray] = None, infer_track_interior: bool = True
+        self, position: np.ndarray | None = None, infer_track_interior: bool = True
     ) -> "Environment":
         """Fits a discrete grid of the spatial environment.
 
@@ -446,9 +444,9 @@ class Environment:
     def get_direction(
         self,
         position: np.ndarray,
-        position_time: Optional[np.ndarray] = None,
+        position_time: np.ndarray | None = None,
         sigma: float = 0.1,
-        sampling_frequency: Optional[float] = None,
+        sampling_frequency: float | None = None,
         classify_stop: bool = False,
         stop_speed_threshold: float = 1e-3,
     ) -> np.ndarray:
@@ -525,7 +523,7 @@ class Environment:
 def get_n_bins(
     position: np.ndarray,
     bin_size: float = 2.5,
-    position_range: Optional[list[np.ndarray]] = None,
+    position_range: list[np.ndarray] | None = None,
 ) -> int:
     """Get number of bins need to span a range given a bin size.
 
@@ -552,8 +550,8 @@ def get_n_bins(
 def get_grid(
     position: np.ndarray,
     bin_size: float = 2.5,
-    position_range: Optional[list[np.ndarray]] = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, tuple]:
+    position_range: list[np.ndarray] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple]:
     """Calculate bin edges and centers for a spatial grid.
 
     Creates a grid based on the provided position data or range, using
@@ -617,7 +615,7 @@ def get_grid(
 
 def get_track_interior(
     position: np.ndarray,
-    bins: Union[int, Sequence[int]],
+    bins: int | Sequence[int],
     fill_holes: bool = False,
     dilate: bool = False,
     bin_count_threshold: int = 0,
@@ -721,8 +719,8 @@ def _calculate_linear_position(
     position: np.ndarray,
     track_segment_id: np.ndarray,
     edge_order: list[tuple],
-    edge_spacing: Union[float, list],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    edge_spacing: float | list,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Determines the linear position given a 2D position and a track graph.
 
     Parameters
@@ -772,7 +770,7 @@ def _calculate_linear_position(
 
     track_segment_id_to_start_node_linear_position = {
         track_graph.edges[e]["edge_id"]: snlp
-        for e, snlp in zip(edge_order, start_node_linear_position)
+        for e, snlp in zip(edge_order, start_node_linear_position, strict=False)
     }
 
     start_node_linear_position = np.asarray(
@@ -851,7 +849,7 @@ def make_track_graph_with_bin_centers_edges(
             track_graph_with_bin_centers_edges, [node2, new_node_ids[-1]], distance=0
         )
         track_graph_with_bin_centers_edges.remove_edge(node1, node2)
-        for ind, (node_id, pos) in enumerate(zip(new_node_ids, xy)):
+        for ind, (node_id, pos) in enumerate(zip(new_node_ids, xy, strict=False)):
             track_graph_with_bin_centers_edges.nodes[node_id]["pos"] = pos
             track_graph_with_bin_centers_edges.nodes[node_id]["edge_id"] = edge_ind
             if ind % 2:
@@ -871,7 +869,7 @@ def extract_bin_info_from_track_graph(
     track_graph: nx.Graph,
     track_graph_with_bin_centers_edges: nx.Graph,
     edge_order: list[tuple],
-    edge_spacing: Union[float, list],
+    edge_spacing: float | list,
 ) -> pd.DataFrame:
     """For each node, find edge_id, is_bin_edge, x_position, y_position, and
     linear_position.
@@ -925,9 +923,9 @@ def extract_bin_info_from_track_graph(
 def get_track_grid(
     track_graph: nx.Graph,
     edge_order: list[tuple],
-    edge_spacing: Union[float, list],
+    edge_spacing: float | list,
     place_bin_size: float,
-) -> Tuple[
+) -> tuple[
     np.ndarray,
     np.ndarray,
     np.ndarray,
@@ -1144,7 +1142,9 @@ def get_track_boundary_points(
 
     inds = np.nonzero(boundary)
     centers = [get_centers(x) for x in edges]
-    boundary = np.stack([center[ind] for center, ind in zip(centers, inds)], axis=1)
+    boundary = np.stack(
+        [center[ind] for center, ind in zip(centers, inds, strict=False)], axis=1
+    )
     return order_boundary(boundary)
 
 
@@ -1169,6 +1169,7 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
         zip(
             environment.place_bin_centers_,
             environment.is_track_interior_.ravel(),
+            strict=False,
         )
     ):
         track_graph.add_node(
@@ -1177,14 +1178,16 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
 
     edges = []
     # Enumerate over nodes in the track interior
-    for ind in zip(*np.nonzero(environment.is_track_interior_)):
+    for ind in zip(*np.nonzero(environment.is_track_interior_), strict=False):
         ind = np.array(ind)
         # Indices of adjacent nodes
         adj_inds = np.meshgrid(*[axis_offsets + i for i in ind], indexing="ij")
         # Remove out of bounds indices
         adj_inds = [
             inds[np.logical_and(inds >= 0, inds < dim_size)]
-            for inds, dim_size in zip(adj_inds, environment.centers_shape_)
+            for inds, dim_size in zip(
+                adj_inds, environment.centers_shape_, strict=False
+            )
         ]
 
         # Is the adjacent node on the track?

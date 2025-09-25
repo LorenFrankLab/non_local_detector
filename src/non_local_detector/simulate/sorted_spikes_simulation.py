@@ -1,5 +1,3 @@
-from typing import Optional, Tuple
-
 import numpy as np
 from scipy.stats import multivariate_normal, norm
 
@@ -49,7 +47,7 @@ def create_place_field(
     place_field_mean: float,
     position: np.ndarray,
     sampling_frequency: float = SAMPLING_FREQUENCY,
-    is_condition: Optional[np.ndarray] = None,
+    is_condition: np.ndarray | None = None,
     place_field_std_deviation: float = np.sqrt(12.5),
     max_firing_rate: float = 20.0,
     baseline_firing_rate: float = 0.001,
@@ -67,7 +65,7 @@ def simulate_place_field_firing_rate(
     position: np.ndarray,
     max_rate: float = 15.0,
     variance: float = 12.5,
-    is_condition: Optional[np.ndarray] = None,
+    is_condition: np.ndarray | None = None,
 ) -> np.ndarray:
     """Simulates the firing rate of a neuron with a place field at `means`.
 
@@ -99,7 +97,7 @@ def simulate_neuron_with_place_field(
     max_rate: float = 15.0,
     variance: float = 12.5,
     sampling_frequency: float = 500.0,
-    is_condition: Optional[np.ndarray] = None,
+    is_condition: np.ndarray | None = None,
 ):
     """Simulates the spiking of a neuron with a place field at `means`.
 
@@ -123,7 +121,7 @@ def simulate_neuron_with_place_field(
     return simulate_poisson_spikes(firing_rate, sampling_frequency)
 
 
-def get_trajectory_direction(position: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def get_trajectory_direction(position: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Get the direction of the trajectory.
 
     Parameters
@@ -185,7 +183,7 @@ def estimate_position_density(
     positions: np.ndarray,
     position_std: np.ndarray,
     block_size: int = 100,
-    sample_weights: Optional[np.ndarray] = None,
+    sample_weights: np.ndarray | None = None,
 ) -> np.ndarray:
     """Estimates a kernel density estimate over position bins using
     Euclidean distances.
@@ -268,9 +266,9 @@ def get_firing_rate(
         return np.zeros_like(occupancy)
 
 
-def simulate_two_state_inhomogenous_poisson() -> (
-    Tuple[np.ndarray, np.ndarray, np.ndarray]
-):
+def simulate_two_state_inhomogenous_poisson() -> tuple[
+    np.ndarray, np.ndarray, np.ndarray
+]:
     """Simulate a two-state inhomogenous Poisson process.
 
     Returns
@@ -419,7 +417,7 @@ def make_simulated_data(
     sampling_frequency: int = SAMPLING_FREQUENCY,
     replay_speed: float = 6.0,  # m/s
     n_neurons: int = 25,
-) -> Tuple[
+) -> tuple[
     np.ndarray, np.ndarray, list[np.ndarray], np.ndarray, np.ndarray, int, np.ndarray
 ]:
     """Make simulated data for testing.

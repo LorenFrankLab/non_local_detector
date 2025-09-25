@@ -5,7 +5,6 @@ Clusterless decoding using Gaussian Mixture Models (GMM)
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
 
 import jax
 import jax.numpy as jnp
@@ -62,9 +61,9 @@ def _gmm_density(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
 
 def _fit_gmm_density(
     X: jnp.ndarray,
-    weights: Optional[jnp.ndarray],
+    weights: jnp.ndarray | None,
     n_components: int,
-    random_state: Optional[int],
+    random_state: int | None,
     covariance_type: str = "full",
     reg_covar: float = 1e-6,
     max_iter: int = 200,
@@ -127,8 +126,8 @@ class EncodingModel:
     interior_place_bin_centers: jnp.ndarray
     occupancy_bins: jnp.ndarray
     log_occupancy_bins: jnp.ndarray
-    gpi_models: List[GaussianMixtureModel]
-    joint_models: List[GaussianMixtureModel]
+    gpi_models: list[GaussianMixtureModel]
+    joint_models: list[GaussianMixtureModel]
     mean_rates: jnp.ndarray
     summed_ground_process_intensity: jnp.ndarray
     position_time: jnp.ndarray
@@ -142,15 +141,15 @@ class EncodingModel:
 def fit_clusterless_gmm_encoding_model(
     position_time: jnp.ndarray,
     position: jnp.ndarray,
-    spike_times: List[jnp.ndarray],
-    spike_waveform_features: List[jnp.ndarray],
+    spike_times: list[jnp.ndarray],
+    spike_waveform_features: list[jnp.ndarray],
     environment: Environment,
-    weights: Optional[jnp.ndarray] = None,
+    weights: jnp.ndarray | None = None,
     *,
     gmm_components_occupancy: int = 32,
     gmm_components_gpi: int = 32,
     gmm_components_joint: int = 64,
-    gmm_random_state: Optional[int] = 0,
+    gmm_random_state: int | None = 0,
     disable_progress_bar: bool = False,
 ) -> EncodingModel:
     """
@@ -220,14 +219,14 @@ def fit_clusterless_gmm_encoding_model(
         occupancy_model, interior_place_bin_centers
     )  # (n_bins,)
 
-    gpi_models: List[GaussianMixtureModel] = []
-    joint_models: List[GaussianMixtureModel] = []
-    mean_rates: List[float] = []
+    gpi_models: list[GaussianMixtureModel] = []
+    joint_models: list[GaussianMixtureModel] = []
+    mean_rates: list[float] = []
     summed_ground_process_intensity = jnp.zeros_like(occupancy_bins)
 
     # Fit per-electrode models
     for elect_feats, elect_times in tqdm(
-        zip(spike_waveform_features, spike_times),
+        zip(spike_waveform_features, spike_times, strict=False),
         desc="Encoding models (GMM)",
         unit="electrode",
         disable=disable_progress_bar,
@@ -305,8 +304,8 @@ def predict_clusterless_gmm_log_likelihood(
     time: jnp.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
-    spike_times: List[jnp.ndarray],
-    spike_waveform_features: List[jnp.ndarray],
+    spike_times: list[jnp.ndarray],
+    spike_waveform_features: list[jnp.ndarray],
     encoding_model: EncodingModel,
     is_local: bool = False,
     disable_progress_bar: bool = False,
@@ -370,7 +369,9 @@ def predict_clusterless_gmm_log_likelihood(
 
     # Per-electrode contributions in log-space
     for elect_feats, elect_times, joint_gmm, mean_rate in tqdm(
-        zip(spike_waveform_features, spike_times, joint_models, mean_rates),
+        zip(
+            spike_waveform_features, spike_times, joint_models, mean_rates, strict=False
+        ),
         desc="Non-Local Likelihood (GMM, log-space)",
         unit="electrode",
         disable=disable_progress_bar,
@@ -421,8 +422,8 @@ def compute_local_log_likelihood(
     time: jnp.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
-    spike_times: List[jnp.ndarray],
-    spike_waveform_features: List[jnp.ndarray],
+    spike_times: list[jnp.ndarray],
+    spike_waveform_features: list[jnp.ndarray],
     encoding_model: EncodingModel,
     disable_progress_bar: bool = False,
 ) -> jnp.ndarray:
@@ -464,6 +465,7 @@ def compute_local_log_likelihood(
             joint_models,
             gpi_models,
             mean_rates,
+            strict=False,
         ),
         desc="Local Likelihood (GMM, log-space)",
         unit="electrode",

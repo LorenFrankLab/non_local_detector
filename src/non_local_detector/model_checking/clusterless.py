@@ -9,8 +9,6 @@ References
 
 """
 
-from typing import Tuple
-
 import numpy as np
 import scipy
 
@@ -22,7 +20,7 @@ def interval_rescaling_transform(
     ground_process_intensity: np.ndarray,
     joint_mark_intensity: np.ndarray,
     permute_waveform_features: bool = False,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Rescale the interspike intervals and mark intensities for a single electrode.
 
     Parameters
@@ -85,7 +83,7 @@ def _compute_rescaled_isi(
     return np.diff(ici_at_spike)
 
 
-def empirical_cdf(sample: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def empirical_cdf(sample: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Compute the empirical CDF of a sample.
 
     Parameters

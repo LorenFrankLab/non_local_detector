@@ -2,18 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Literal, Optional, Tuple
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from sklearn.cluster import KMeans, kmeans_plusplus
+from sklearn.cluster import KMeans
 
 # ---------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------
 Array = jnp.ndarray
-Params = Tuple[Array, Array, Array]  # (weights, means, covariances)
+Params = tuple[Array, Array, Array]  # (weights, means, covariances)
 CovType = Literal["full", "tied", "diag", "spherical"]
 
 
@@ -259,8 +259,8 @@ def _estimate_gaussian_parameters(
     resp_unweighted: Array,
     reg_covar: float,
     covariance_type: CovType,
-    sample_weight: Optional[Array] = None,
-) -> Tuple[Array, Array, Array]:
+    sample_weight: Array | None = None,
+) -> tuple[Array, Array, Array]:
     """
     Compute (nk, means, covariances) given responsibilities and optional sample weights.
 
@@ -402,7 +402,7 @@ def _estimate_log_prob_resp(
     precisions_chol: Array,
     covariance_type: CovType,
     weights: Array,
-) -> Tuple[Array, Array]:
+) -> tuple[Array, Array]:
     """
     Compute per-sample log p(x) and log responsibilities.
 
@@ -435,7 +435,7 @@ def _estimate_log_prob_resp(
 # ---------------------------------------------------------------------
 def _e_step_func(
     X: Array, params: Params, covariance_type: CovType
-) -> Tuple[Array, Array]:
+) -> tuple[Array, Array]:
     """
     E-step helper.
 
@@ -463,7 +463,7 @@ def _m_step_func(
     log_resp: Array,
     reg_covar: float,
     covariance_type: CovType,
-    sample_weight: Optional[Array] = None,
+    sample_weight: Array | None = None,
 ) -> Params:
     """
     M-step helper.
@@ -501,8 +501,8 @@ def _em_fit_while_loop(
     max_iter: int,
     reg_covar: float,
     covariance_type: CovType,
-    sample_weight: Optional[Array] = None,
-) -> Tuple[Params, Array, Array, Array]:
+    sample_weight: Array | None = None,
+) -> tuple[Params, Array, Array, Array]:
     """
     Run EM with a while_loop until convergence.
 
@@ -628,19 +628,19 @@ class GaussianMixtureModel:
     init_params: Literal["kmeans", "random"] = "kmeans"
     kmeans_init: Literal["k-means++", "random"] = "k-means++"
     kmeans_n_init: int = 1
-    random_state: Optional[int] = None
+    random_state: int | None = None
 
-    weights_init: Optional[Array] = None
-    means_init: Optional[Array] = None
-    covariances_init: Optional[Array] = None
+    weights_init: Array | None = None
+    means_init: Array | None = None
+    covariances_init: Array | None = None
 
-    weights_: Optional[Array] = field(init=False, default=None)
-    means_: Optional[Array] = field(init=False, default=None)
-    covariances_: Optional[Array] = field(init=False, default=None)
-    precisions_chol_: Optional[Array] = field(init=False, default=None)
-    converged_: Optional[bool] = field(init=False, default=None)
-    n_iter_: Optional[int] = field(init=False, default=None)
-    lower_bound_: Optional[float] = field(init=False, default=None)
+    weights_: Array | None = field(init=False, default=None)
+    means_: Array | None = field(init=False, default=None)
+    covariances_: Array | None = field(init=False, default=None)
+    precisions_chol_: Array | None = field(init=False, default=None)
+    converged_: bool | None = field(init=False, default=None)
+    n_iter_: int | None = field(init=False, default=None)
+    lower_bound_: float | None = field(init=False, default=None)
 
     # ----------------- Validation & conversion -----------------
     def __post_init__(self) -> None:
@@ -666,8 +666,8 @@ class GaussianMixtureModel:
 
     # ----------------- Public API -----------------
     def fit(
-        self, X: Array, key: jax.Array, sample_weight: Optional[Array] = None
-    ) -> "GaussianMixtureModel":
+        self, X: Array, key: jax.Array, sample_weight: Array | None = None
+    ) -> GaussianMixtureModel:
         """
         Fit the model by EM.
 
@@ -824,7 +824,7 @@ class GaussianMixtureModel:
         self,
         X: Array,
         key: jax.Array,
-        sample_weight: Optional[Array] = None,
+        sample_weight: Array | None = None,
     ) -> Params:
         """
         Construct initial (weights, means, covariances).
@@ -901,8 +901,8 @@ class GaussianMixtureModel:
         self,
         X: Array,
         params: Params,
-        sample_weight: Optional[Array] = None,
-    ) -> Tuple[Array, Array, Array, float, int]:
+        sample_weight: Array | None = None,
+    ) -> tuple[Array, Array, Array, float, int]:
         """
         Run a single EM fit from given initial parameters.
 

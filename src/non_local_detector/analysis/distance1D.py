@@ -1,4 +1,4 @@
-from typing import Hashable
+from collections.abc import Hashable
 
 import networkx as nx
 import numpy as np
@@ -219,7 +219,7 @@ def _setup_track_graph(
         )
         track_graph.add_edge("mental_position", mental_edge[1], distance=distance)
 
-    for node1, node2 in zip(node_order[:-1], node_order[1:]):
+    for node1, node2 in zip(node_order[:-1], node_order[1:], strict=False):
         distance = _get_distance_between_nodes(track_graph, node1, node2)
         track_graph.add_edge(node1, node2, distance=distance)
 
@@ -397,6 +397,7 @@ def get_ahead_behind_distance(
         actual_orientation,
         mental_position_2d,
         mental_position_edges,
+        strict=False,
     ):
         # Insert nodes for actual position, mental position, head
         copy_graph = _setup_track_graph(
@@ -455,21 +456,25 @@ def get_map_speed(
     if n_time == 1:
         return np.asarray([np.nan])
     elif n_time == 2:
-        speed = np.asarray([
-            nx.shortest_path_length(
-                track_graph_with_bin_centers_edges,
-                source=node_ids[0],
-                target=node_ids[1],
-                weight="distance",
-            ),
-            nx.shortest_path_length(
-                track_graph_with_bin_centers_edges,
-                source=node_ids[-2],
-                target=node_ids[-1],
-                weight="distance",
+        speed = (
+            np.asarray(
+                [
+                    nx.shortest_path_length(
+                        track_graph_with_bin_centers_edges,
+                        source=node_ids[0],
+                        target=node_ids[1],
+                        weight="distance",
+                    ),
+                    nx.shortest_path_length(
+                        track_graph_with_bin_centers_edges,
+                        source=node_ids[-2],
+                        target=node_ids[-1],
+                        weight="distance",
+                    ),
+                ]
             )
-
-        ]) / dt
+            / dt
+        )
     else:
         shortest_path_lengths = dict(
             nx.shortest_path_length(
@@ -479,7 +484,7 @@ def get_map_speed(
         speed = np.array(
             [
                 shortest_path_lengths[node1][node2]
-                for node1, node2 in zip(node_ids[:-2], node_ids[2:])
+                for node1, node2 in zip(node_ids[:-2], node_ids[2:], strict=False)
             ]
         ) / (2.0 * dt)
         speed = np.insert(

@@ -113,7 +113,6 @@ state_names = [
 
 
 class NonLocalSortedSpikesDetector(SortedSpikesDetector):
-
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray = discrete_initial_conditions,
@@ -159,7 +158,6 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
 
 
 class NonLocalClusterlessDetector(ClusterlessDetector):
-
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray = discrete_initial_conditions,

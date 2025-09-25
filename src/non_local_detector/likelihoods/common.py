@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -18,7 +17,7 @@ def get_position_at_time(
     time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: jnp.ndarray,
-    env: Optional[Environment] = None,
+    env: Environment | None = None,
 ) -> jnp.ndarray:
     """Get the position at the time of each spike.
 
@@ -120,7 +119,9 @@ def kde(
     """
     distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
 
-    for dim_eval_points, dim_samples, dim_std in zip(eval_points.T, samples.T, std):
+    for dim_eval_points, dim_samples, dim_std in zip(
+        eval_points.T, samples.T, std, strict=False
+    ):
         distance *= gaussian_pdf(
             jnp.expand_dims(dim_eval_points, axis=0),
             jnp.expand_dims(dim_samples, axis=1),
@@ -134,7 +135,7 @@ def block_kde(
     samples: jnp.ndarray,
     std: jnp.ndarray,
     block_size: int = 100,
-    weights: Optional[jnp.ndarray] = None,
+    weights: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Kernel density estimation split into blocks.
 
@@ -192,7 +193,7 @@ def log_kde(
 
     # build log-kernel matrix K_log with shape (n_samp, n_eval)
     K_log = jnp.zeros((samples.shape[0], eval_points.shape[0]))
-    for dim_eval, dim_samp, dim_std in zip(eval_points.T, samples.T, std):
+    for dim_eval, dim_samp, dim_std in zip(eval_points.T, samples.T, std, strict=False):
         K_log += log_gaussian_pdf(
             jnp.expand_dims(dim_eval, axis=0),
             jnp.expand_dims(dim_samp, axis=1),
@@ -210,7 +211,7 @@ def block_log_kde(
     samples: jnp.ndarray,
     std: jnp.ndarray,
     block_size: int = 100,
-    weights: Optional[jnp.ndarray] = None,
+    weights: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """
     Log KDE split into blocks over eval points. Returns (n_eval,)
@@ -231,10 +232,10 @@ def block_log_kde(
 @dataclass
 class KDEModel:
     std: jnp.ndarray
-    block_size: Optional[int] = None
+    block_size: int | None = None
 
     def fit(
-        self, samples: jnp.ndarray, weights: Optional[jnp.ndarray] = None
+        self, samples: jnp.ndarray, weights: jnp.ndarray | None = None
     ) -> "KDEModel":
         """Fit the model.
 
