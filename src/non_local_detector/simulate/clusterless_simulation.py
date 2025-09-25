@@ -107,7 +107,7 @@ def make_continuous_replay(
     track_height: float = TRACK_HEIGHT,
     running_speed: float = RUNNING_SPEED,
     place_field_means: np.ndarray = PLACE_FIELD_MEANS,
-    replay_speedup: int = REPLAY_SPEEDUP,
+    replay_speedup: float = REPLAY_SPEEDUP,
     n_tetrodes: int = N_TETRODES,
     n_features: int = N_FEATURES,
     mark_spacing: float = MARK_SPACING,
@@ -167,7 +167,7 @@ def make_continuous_replay(
 
 
 def make_hover_replay(
-    hover_neuron_ind: int = None,
+    hover_neuron_ind: int | None = None,
     place_field_means: np.ndarray = PLACE_FIELD_MEANS,
     sampling_frequency: int = SAMPLING_FREQUENCY,
     n_tetrodes: int = N_TETRODES,

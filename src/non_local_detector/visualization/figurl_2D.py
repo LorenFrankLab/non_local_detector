@@ -406,7 +406,7 @@ try:
         interior_place_bin_centers: np.ndarray,
         place_bin_size: np.ndarray,
         posterior: xr.DataArray,
-        head_dir: np.ndarray = None,
+        head_dir: np.ndarray | None = None,
     ) -> vvf.TrackPositionAnimationV1:
         """Creates a 2D decoding movie view
 
@@ -459,7 +459,7 @@ try:
         position: np.ndarray,
         env: Environment,
         results: xr.Dataset,
-        posterior: xr.DataArray = None,
+        posterior: xr.DataArray | None = None,
         spike_times: list[np.ndarray] | None = None,
         head_dir: np.ndarray | None = None,
         speed: np.ndarray | None = None,

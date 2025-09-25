@@ -262,7 +262,7 @@ class Environment:
 
         return self
 
-    def plot_grid(self, ax: matplotlib.axes.Axes = None) -> matplotlib.axes.Axes:
+    def plot_grid(self, ax: matplotlib.axes.Axes | None = None) -> matplotlib.axes.Axes:
         """Plot the fitted spatial grid of the environment.
 
         Parameters

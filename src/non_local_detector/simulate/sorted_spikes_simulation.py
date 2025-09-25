@@ -225,8 +225,8 @@ def get_firing_rate(
     not_nan_position: np.ndarray,
     occupancy: np.ndarray,
     position_std: np.ndarray,
-    block_size: int = None,
-    weights: np.ndarray = None,
+    block_size: int | None = None,
+    weights: np.ndarray | None = None,
 ) -> np.ndarray:
     """Estimate the firing rate of a neuron for each position bin.
 

@@ -197,7 +197,7 @@ def get_2D_distance(
     position1: np.ndarray,
     position2: np.ndarray,
     track_graph: nx.Graph = None,
-    edges: list = None,
+    edges: list | None = None,
     precomputed_distance: bool = True,
 ) -> np.ndarray:
     """Distance of two points along the graph of the track.
@@ -317,7 +317,7 @@ def get_ahead_behind_distance2D(
     head_direction: np.ndarray,
     map_position: np.ndarray,
     track_graph: nx.Graph = None,
-    edges: list = None,
+    edges: list | None = None,
     precomputed_distance: bool = False,
 ) -> np.ndarray:
     """Distance of the MAP decoded position to the animal's head position where

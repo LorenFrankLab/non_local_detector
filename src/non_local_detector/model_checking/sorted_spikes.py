@@ -137,7 +137,7 @@ class TimeRescaling:
 
     def plot_ks(
         self,
-        ax: plt.Axes = None,
+        ax: plt.Axes | None = None,
         scatter_kwargs: dict | None = None,
         ci_color: str = "red",
     ) -> plt.Axes:
@@ -167,7 +167,7 @@ class TimeRescaling:
 
     def plot_qq(
         self,
-        ax: plt.Axes = None,
+        ax: plt.Axes | None = None,
         scatter_kwargs: dict | None = None,
         ci_color: str = "red",
     ) -> plt.Axes:
