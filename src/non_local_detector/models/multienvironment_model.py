@@ -26,17 +26,6 @@ environments = [
     Environment(environment_name="env2"),
 ]
 
-continuous_transition_types = [
-    [
-        RandomWalk(environment_name="env1"),
-        Uniform(environment_name="env1", environment2_name="env2"),
-    ],
-    [
-        Uniform(environment_name="env2", environment2_name="env1"),
-        RandomWalk(environment_name="env2"),
-    ],
-]
-
 observation_models = [
     ObservationModel(environment_name="env1"),
     ObservationModel(environment_name="env2"),
@@ -69,7 +58,7 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
         discrete_transition_concentration: float = 1.1,
         discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
         discrete_transition_regularization: float = 1e-10,
-        continuous_transition_types: ContinuousTransitions = continuous_transition_types,
+        continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations = observation_models,
         environments: Environments = environments,
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
@@ -79,6 +68,17 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
         sampling_frequency: float = 500,
         no_spike_rate: float = 1e-10,
     ):
+        if continuous_transition_types is None:
+            continuous_transition_types = [
+                [
+                    RandomWalk(environment_name="env1"),
+                    Uniform(environment_name="env1", environment2_name="env2"),
+                ],
+                [
+                    Uniform(environment_name="env2", environment2_name="env1"),
+                    RandomWalk(environment_name="env2"),
+                ],
+            ]
         super().__init__(
             discrete_initial_conditions,
             continuous_initial_conditions_types,
@@ -107,7 +107,7 @@ class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
         discrete_transition_concentration: float = 1.1,
         discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
         discrete_transition_regularization: float = 1e-10,
-        continuous_transition_types: ContinuousTransitions = continuous_transition_types,
+        continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations = observation_models,
         environments: Environments = environments,
         clusterless_algorithm: str = "clusterless_kde",
@@ -117,6 +117,10 @@ class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
+        if continuous_transition_types is None:
+            continuous_transition_types = [
+                [RandomWalk()],
+            ]
         super().__init__(
             discrete_initial_conditions,
             continuous_initial_conditions_types,

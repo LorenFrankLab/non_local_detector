@@ -23,10 +23,6 @@ from non_local_detector.types import (
 
 environment = Environment(environment_name="")
 
-continuous_transition_types = [
-    [RandomWalk()],
-]
-
 observation_models = [
     ObservationModel(),
 ]
@@ -54,7 +50,7 @@ class SortedSpikesDecoder(SortedSpikesDetector):
         discrete_transition_concentration: float = 1.0,
         discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
         discrete_transition_regularization: float = 1e-10,
-        continuous_transition_types: ContinuousTransitions = continuous_transition_types,
+        continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations = observation_models,
         environments: Environments = environment,
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
@@ -64,6 +60,10 @@ class SortedSpikesDecoder(SortedSpikesDetector):
         sampling_frequency: float = 500,
         no_spike_rate: float = 1e-10,
     ):
+        if continuous_transition_types is None:
+            continuous_transition_types = [
+                [RandomWalk()],
+            ]
         super().__init__(
             discrete_initial_conditions,
             continuous_initial_conditions_types,
@@ -92,7 +92,7 @@ class ClusterlessDecoder(ClusterlessDetector):
         discrete_transition_concentration: float = 1.1,
         discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
         discrete_transition_regularization: float = 1e-10,
-        continuous_transition_types: ContinuousTransitions = continuous_transition_types,
+        continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations = observation_models,
         environments: Environments = environment,
         clusterless_algorithm: str = "clusterless_kde",
@@ -102,6 +102,10 @@ class ClusterlessDecoder(ClusterlessDetector):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
+        if continuous_transition_types is None:
+            continuous_transition_types = [
+                [RandomWalk()],
+            ]
         super().__init__(
             discrete_initial_conditions,
             continuous_initial_conditions_types,

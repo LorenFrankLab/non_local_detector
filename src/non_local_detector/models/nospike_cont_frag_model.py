@@ -30,12 +30,6 @@ from non_local_detector.types import (
 
 environment = Environment(environment_name="")
 
-continuous_transition_types = [
-    [Discrete(), Uniform(), Uniform()],
-    [Discrete(), RandomWalk(), Uniform()],
-    [Discrete(), Uniform(), Uniform()],
-]
-
 observation_models = [
     ObservationModel(is_no_spike=True),
     ObservationModel(),
@@ -106,7 +100,7 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         discrete_transition_concentration: float = 1.1,
         discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
         discrete_transition_regularization: float = 1e-10,
-        continuous_transition_types: ContinuousTransitions = continuous_transition_types,
+        continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations = observation_models,
         environments: Environments = environment,
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
@@ -116,6 +110,12 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = no_spike_rate,
     ):
+        if continuous_transition_types is None:
+            continuous_transition_types = [
+                [Discrete(), Uniform(), Uniform()],
+                [Discrete(), RandomWalk(), Uniform()],
+                [Discrete(), Uniform(), Uniform()],
+            ]
         super().__init__(
             discrete_initial_conditions,
             continuous_initial_conditions_types,
@@ -144,7 +144,7 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         discrete_transition_concentration: float = 1.1,
         discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
         discrete_transition_regularization: float = 1e-10,
-        continuous_transition_types: ContinuousTransitions = continuous_transition_types,
+        continuous_transition_types: ContinuousTransitions | None = None,
         observation_models: Observations = observation_models,
         environments: Environments = environment,
         clusterless_algorithm: str = "clusterless_kde",
@@ -154,6 +154,11 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = no_spike_rate,
     ):
+        if continuous_transition_types is None:
+            continuous_transition_types = [
+                [RandomWalk(), Uniform()],
+                [Uniform(), Uniform()],
+            ]
         super().__init__(
             discrete_initial_conditions,
             continuous_initial_conditions_types,
