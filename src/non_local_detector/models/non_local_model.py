@@ -204,4 +204,5 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         acausal_posterior = results.acausal_posterior.sel(state="Non-Local Continuous")
         acausal_posterior += results.acausal_posterior.sel(state="Non-Local Fragmented")
 
-        return acausal_posterior / acausal_posterior.sum("position")
+        result = acausal_posterior / acausal_posterior.sum("position")
+        return xr.DataArray(result)
