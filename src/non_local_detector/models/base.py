@@ -1203,7 +1203,7 @@ class _DetectorBase(BaseEstimator):
                 for name, _ in zip(["x", "y", "z", "w"], position.T, strict=False)
             ]
         state_bins = pd.MultiIndex.from_arrays(
-            ((states[self.state_ind_], *[pos for pos in position.T])),
+            ((states[self.state_ind_], *list(position.T))),
             names=("state", *position_names),
         )
 
@@ -1297,10 +1297,7 @@ class _DetectorBase(BaseEstimator):
         state_bins = pd.DataFrame(
             {
                 "state": states[self.state_ind_],
-                **{
-                    name: pos
-                    for name, pos in zip(position_names, position.T, strict=False)
-                },
+                **dict(zip(position_names, position.T, strict=False)),
                 "environment": environment_names,
                 "encoding_group_names": encoding_group_names,
             }
