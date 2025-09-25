@@ -158,7 +158,7 @@ class RandomWalk:
     use_manifold_distance: bool = False
     direction: str | None = None
 
-    def make_state_transition(self, environments: tuple[Environment]) -> np.ndarray:
+    def make_state_transition(self, environments: tuple[Environment, ...]) -> np.ndarray:
         """Creates a transition matrix for a given environment.
 
         Parameters
@@ -273,7 +273,7 @@ class Uniform:
     environment_name: str = ""
     environment2_name: str = None
 
-    def make_state_transition(self, environments: tuple[Environment]) -> np.ndarray:
+    def make_state_transition(self, environments: tuple[Environment, ...]) -> np.ndarray:
         """Creates a uniform transition matrix between environments.
 
         Parameters
@@ -332,7 +332,7 @@ class Identity:
 
     environment_name: str = ""
 
-    def make_state_transition(self, environments: tuple[Environment]) -> np.ndarray:
+    def make_state_transition(self, environments: tuple[Environment, ...]) -> np.ndarray:
         """Creates an identity transition matrix for a given environment.
 
         Parameters
@@ -388,7 +388,7 @@ class EmpiricalMovement:
 
     def make_state_transition(
         self,
-        environments: tuple[Environment],
+        environments: tuple[Environment, ...],
         position: np.ndarray,
         is_training: np.ndarray | None = None,
         encoding_group_labels: np.ndarray | None = None,
@@ -481,7 +481,7 @@ class RandomWalkDirection1:
     environment_name: str = ""
     movement_var: float = 6.0
 
-    def make_state_transition(self, environments: tuple[Environment]) -> np.ndarray:
+    def make_state_transition(self, environments: tuple[Environment, ...]) -> np.ndarray:
         """Creates a unidirectional transition matrix.
 
         Parameters
@@ -519,7 +519,7 @@ class RandomWalkDirection2:
     environment_name: str = ""
     movement_var: float = 6.0
 
-    def make_state_transition(self, environments: tuple[Environment]) -> np.ndarray:
+    def make_state_transition(self, environments: tuple[Environment, ...]) -> np.ndarray:
         """Creates a unidirectional transition matrix.
 
         Parameters

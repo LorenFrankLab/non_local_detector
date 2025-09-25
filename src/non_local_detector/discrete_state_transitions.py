@@ -744,7 +744,7 @@ class DiscreteNonStationaryCustom:
     formula: str = "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])"
 
     def make_state_transition(
-        self, covariate_data: tuple[pd.DataFrame, dict]
+        self, covariate_data: pd.DataFrame | dict | None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Constructs the initial non-stationary discrete transition structures.
 

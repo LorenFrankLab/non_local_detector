@@ -11,7 +11,7 @@ import scipy.ndimage  # type: ignore[import-untyped]
 import seaborn as sns  # type: ignore[import-untyped]
 import sklearn  # type: ignore[import-untyped]
 import xarray as xr
-from patsy import build_design_matrices  # type: ignore[import-untyped]
+from patsy import build_design_matrices, DesignMatrix  # type: ignore[import-untyped]
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
@@ -62,6 +62,11 @@ _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS = {
 
 class _DetectorBase(BaseEstimator):
     """Base class for detector objects."""
+
+    # Type annotations for attributes assigned during fit
+    discrete_state_transitions_: np.ndarray
+    discrete_transition_coefficients_: np.ndarray | None
+    discrete_transition_design_matrix_: DesignMatrix | None
 
     def __init__(
         self,
@@ -182,9 +187,9 @@ class _DetectorBase(BaseEstimator):
             raise ValueError(
                 "Number of discrete initial conditions must match number of continuous transition types."
             )
-        if len(discrete_initial_conditions) != len(
+        if not isinstance(discrete_transition_stickiness, float) and len(discrete_initial_conditions) != len(
             discrete_transition_stickiness
-        ) and not isinstance(discrete_transition_stickiness, float):
+        ):
             raise ValueError(
                 "Discrete transition stickiness must be set for all states or a float"
             )
@@ -454,6 +459,8 @@ class _DetectorBase(BaseEstimator):
                             )
 
                     is_training = np.asarray(is_training).squeeze()
+                    # Validation above ensures position is not None when needed
+                    assert position is not None
                     self.continuous_state_transitions_[inds] = (
                         transition.make_state_transition(
                             self.environments,

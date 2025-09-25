@@ -14,14 +14,14 @@ class UniformInitialConditions:
     def make_initial_conditions(
         self,
         observation_model: ObservationModel,
-        environments: list[Environment],
+        environments: tuple[Environment, ...],
     ) -> np.ndarray:
         """Creates initial conditions array
 
         Parameters
         ----------
         observation_model : ObservationModel
-        environments : list[Environment]
+        environments : tuple[Environment, ...]
 
         Returns
         -------
