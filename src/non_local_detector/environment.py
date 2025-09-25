@@ -295,7 +295,10 @@ class Environment:
                 _, ax = plt.subplots(figsize=(6, 7))
             if self.is_track_interior_ is not None:
                 ax.pcolormesh(
-                    self.edges_[0], self.edges_[1], self.is_track_interior_.T, cmap="bone_r"
+                    self.edges_[0],
+                    self.edges_[1],
+                    self.is_track_interior_.T,
+                    cmap="bone_r",
                 )
             ax.set_xticks(self.edges_[0], minor=True)
             ax.set_yticks(self.edges_[1], minor=True)
