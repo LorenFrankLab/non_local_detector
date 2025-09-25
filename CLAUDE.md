@@ -26,6 +26,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Type checking**: `mypy src/non_local_detector/`
 - **Check all quality tools**: `ruff check src/ && ruff format --check src/ && black --check src/ && mypy src/non_local_detector/`
 
+#### Quality Gates
+
+The CI pipeline enforces code quality standards on all pull requests:
+
+1. **Ruff Linting**: All code must pass `ruff check src/` with zero issues
+2. **Code Formatting**: Must pass both `ruff format --check src/` and `black --check src/`
+3. **Type Checking**: `mypy` runs but currently allows errors (gradual adoption)
+4. **Tests**: All existing tests must pass
+
+**For Contributors**: Run the full quality check locally before pushing:
+```bash
+ruff check src/ && ruff format --check src/ && black --check src/ && pytest
+```
+
 ### Building
 
 - **Build package**: Uses hatchling build system (defined in pyproject.toml)
