@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.interpolate
+from jax.nn import logsumexp
 from track_linearization import get_linearized_position
 
 from non_local_detector.environment import Environment
@@ -169,6 +170,64 @@ def block_kde(
     return density
 
 
+@jax.jit
+def log_kde(
+    eval_points: jnp.ndarray,
+    samples: jnp.ndarray,
+    std: jnp.ndarray,
+    weights: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    Log kernel density estimate:
+        log p(x) = logsumexp_i [ log w_i + sum_d log N(x_d | s_{i,d}, std_d) ] - logsumexp_i [log w_i]
+    Shapes:
+      eval_points: (n_eval, n_dims)
+      samples:     (n_samp, n_dims)
+      std:         (n_dims,)
+      weights:     (n_samp,)
+    Returns: (n_eval,)
+    """
+    if eval_points.ndim == 1:
+        eval_points = jnp.expand_dims(eval_points, axis=1)
+
+    # build log-kernel matrix K_log with shape (n_samp, n_eval)
+    K_log = jnp.zeros((samples.shape[0], eval_points.shape[0]))
+    for dim_eval, dim_samp, dim_std in zip(eval_points.T, samples.T, std):
+        K_log += log_gaussian_pdf(
+            jnp.expand_dims(dim_eval, axis=0),
+            jnp.expand_dims(dim_samp, axis=1),
+            dim_std,
+        )
+
+    log_w = safe_log(weights)  # (n_samp,)
+    log_num = logsumexp(log_w[:, None] + K_log, axis=0)  # (n_eval,)
+    log_den = logsumexp(log_w)  # scalar
+    return log_num - log_den
+
+
+def block_log_kde(
+    eval_points: jnp.ndarray,
+    samples: jnp.ndarray,
+    std: jnp.ndarray,
+    block_size: int = 100,
+    weights: Optional[jnp.ndarray] = None,
+) -> jnp.ndarray:
+    """
+    Log KDE split into blocks over eval points. Returns (n_eval,)
+    """
+    n_eval = eval_points.shape[0]
+    out = jnp.full((n_eval,), LOG_EPS)
+
+    if weights is None:
+        weights = jnp.ones((samples.shape[0],))
+
+    for start in range(0, n_eval, block_size):
+        sl = slice(start, start + block_size)
+        block_vals = log_kde(eval_points[sl], samples, std, weights)
+        out = jax.lax.dynamic_update_slice(out, block_vals, (start,))
+    return out
+
+
 @dataclass
 class KDEModel:
     std: jnp.ndarray
@@ -223,6 +282,22 @@ class KDEModel:
 
         return block_kde(eval_points, self.samples_, std, block_size, self.weights_)
 
+    def predict_log(self, eval_points: jnp.ndarray) -> jnp.ndarray:
+        """
+        Log-density version of predict(). Same inputs, returns log p(eval_points).
+        """
+        if eval_points.ndim == 1:
+            eval_points = jnp.expand_dims(eval_points, axis=1)
+        std = (
+            jnp.array([self.std] * eval_points.shape[1])
+            if isinstance(self.std, (int, float))
+            else self.std
+        )
+        block_size = (
+            eval_points.shape[0] if self.block_size is None else self.block_size
+        )
+        return block_log_kde(eval_points, self.samples_, std, block_size, self.weights_)
+
 
 def get_spikecount_per_time_bin(
     spike_times: np.ndarray, time: np.ndarray
@@ -245,3 +320,48 @@ def get_spikecount_per_time_bin(
         np.digitize(spike_times, time[1:-1]),
         minlength=time.shape[0],
     )
+
+
+def safe_divide(numerator, denominator, eps=EPS, condition=None):
+    """Safely divide two arrays, avoiding division by zero.
+
+    Parameters
+    ----------
+    numerator : jnp.ndarray
+    denominator : jnp.ndarray
+    eps : float, optional
+        Small value to avoid division by zero, by default 1e-8
+    condition : jnp.ndarray, optional
+        Condition to apply the division, by default None
+        Useful if pre-computing the condition is more efficient.
+
+    Returns
+    -------
+    jnp.ndarray
+    """
+    if condition is None:
+        condition = jnp.abs(denominator) < eps
+
+    return jnp.where(condition, eps, numerator / denominator)
+
+
+def safe_log(x, eps=EPS, condition=None):
+    """Safely compute the logarithm of an array, avoiding log(0).
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+    eps : float, optional
+        Small value to avoid log(0), by default 1e-8
+    condition : jnp.ndarray, optional
+        Condition to apply the logarithm, by default None
+        Useful if pre-computing the condition is more efficient.
+
+    Returns
+    -------
+    jnp.ndarray
+    """
+    if condition is None:
+        condition = jnp.abs(x) < eps
+
+    return jnp.log(jnp.where(condition, eps, x))
