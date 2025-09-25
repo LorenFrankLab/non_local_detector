@@ -230,8 +230,8 @@ def fit_clusterless_kde_encoding_model(
     environment: Environment,
     weights: jnp.ndarray | None = None,
     sampling_frequency: int = 500,
-    position_std: float = np.sqrt(12.5),
-    waveform_std: float = 24.0,
+    position_std: float | jnp.ndarray = np.sqrt(12.5),
+    waveform_std: float | jnp.ndarray = 24.0,
     block_size: int = 100,
     disable_progress_bar: bool = False,
 ) -> dict:
@@ -270,8 +270,13 @@ def fit_clusterless_kde_encoding_model(
             position_std = jnp.array([position_std])
         else:
             position_std = jnp.array([position_std] * position.shape[1])
+    # Ensure position_std is a JAX array for KDEModel
+    assert isinstance(position_std, jnp.ndarray)
+
     if isinstance(waveform_std, (int, float)):
         waveform_std = jnp.array([waveform_std] * spike_waveform_features[0].shape[1])
+    # Ensure waveform_std is a JAX array for KDEModel
+    assert isinstance(waveform_std, jnp.ndarray)
 
     if environment.is_track_interior_ is not None:
         is_track_interior = environment.is_track_interior_.ravel()
@@ -341,7 +346,7 @@ def fit_clusterless_kde_encoding_model(
         )
 
         gpi_model = KDEModel(std=position_std, block_size=block_size).fit(
-            encoding_positions[-1], weights=electrode_weights_at_spike_times
+            encoding_positions[-1], weights=jnp.array(electrode_weights_at_spike_times)
         )
         gpi_models.append(gpi_model)
 
