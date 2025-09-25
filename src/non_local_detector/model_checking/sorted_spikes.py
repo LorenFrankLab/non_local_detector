@@ -427,7 +427,7 @@ def plot_ks(
         ax = plt.gca()
 
     if scatter_kwargs is None:
-        scatter_kwargs = dict()
+        scatter_kwargs = {}
 
     ax.plot(uniform_cdf_values, uniform_cdf_values - ci, linestyle="--", color=ci_color)
     ax.plot(uniform_cdf_values, uniform_cdf_values + ci, linestyle="--", color=ci_color)
@@ -454,7 +454,7 @@ def plot_qq(
         ax = plt.gca()
 
     if scatter_kwargs is None:
-        scatter_kwargs = dict()
+        scatter_kwargs = {}
 
     ci = 1.96 * np.sqrt(sorted_ISIs * (1 - sorted_ISIs) / n_spikes)
 
@@ -485,7 +485,7 @@ def plot_rescaled_ISI_autocorrelation(
     if ax is None:
         ax = plt.gca()
     if scatter_kwargs is None:
-        scatter_kwargs = dict()
+        scatter_kwargs = {}
     ci = 1.96 / np.sqrt(n_spikes)
     ax.scatter(lag[lag_ind], rescaled_ISI_autocorrelation[lag_ind], **scatter_kwargs)
     ax.axhline(ci, linestyle="--", color=ci_color)

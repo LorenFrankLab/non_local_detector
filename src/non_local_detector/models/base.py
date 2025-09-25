@@ -596,9 +596,10 @@ class _DetectorBase(BaseEstimator):
         fig, axes = plt.subplots(
             self.n_discrete_states_,
             self.n_discrete_states_,
-            gridspec_kw=dict(
-                width_ratios=self.bin_sizes_, height_ratios=self.bin_sizes_
-            ),
+            gridspec_kw={
+                "width_ratios": self.bin_sizes_,
+                "height_ratios": self.bin_sizes_,
+            },
             constrained_layout=True,
             figsize=(
                 self.n_discrete_states_ * figsize_scaling * GOLDEN_RATIO,
@@ -658,7 +659,7 @@ class _DetectorBase(BaseEstimator):
         fig, axes = plt.subplots(
             1,
             self.n_discrete_states_,
-            gridspec_kw=dict(width_ratios=self.bin_sizes_),
+            gridspec_kw={"width_ratios": self.bin_sizes_},
             constrained_layout=True,
             figsize=(self.n_discrete_states_ * figsize_scaling * GOLDEN_RATIO, 1.1),
         )

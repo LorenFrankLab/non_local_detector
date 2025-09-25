@@ -1,6 +1,4 @@
 try:
-    from typing import Optional
-
     import numpy as np
     import sortingview.views as vv
     import sortingview.views.franklab as vvf

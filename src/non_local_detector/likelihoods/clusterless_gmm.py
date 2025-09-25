@@ -391,15 +391,17 @@ def predict_clusterless_gmm_log_likelihood(
         seg_ids = get_spike_time_bin_ind(elect_times, time)  # (n_spikes,)
 
         # Joint logp for each mark vs all bins — VMAP for lower memory
-        def mark_logp(mark: jnp.ndarray) -> jnp.ndarray:
+        def mark_logp(mark: jnp.ndarray, gmm_model: object) -> jnp.ndarray:
             # Build [bin_centers, mark] without forming (B*n_bins, ...) at once
             tiled_mark = jnp.repeat(mark[None, :], n_bins, axis=0)  # (n_bins, M)
             eval_points = jnp.concatenate(
                 [bin_centers, tiled_mark], axis=1
             )  # (n_bins, P+M)
-            return _gmm_logp(joint_gmm, eval_points)  # (n_bins,)
+            return _gmm_logp(gmm_model, eval_points)  # (n_bins,)
 
-        joint_logp = jax.vmap(mark_logp)(elect_feats)  # (n_spikes, n_bins)
+        joint_logp = jax.vmap(mark_logp, in_axes=(0, None))(
+            elect_feats, joint_gmm
+        )  # (n_spikes, n_bins)
 
         # log contribution: log(mean_rate) + log p(pos, mark) - log occupancy(pos)
         log_contrib = (

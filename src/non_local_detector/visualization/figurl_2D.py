@@ -1,6 +1,5 @@
 try:
     from collections.abc import Callable
-    from typing import Dict, Optional, Tuple
 
     import numpy as np
     import sortingview.views as vv

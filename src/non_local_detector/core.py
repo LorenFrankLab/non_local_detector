@@ -236,6 +236,10 @@ def chunked_filter_smoother(
         state_ind
     ]  # shape (n_state_inds, n_states)
 
+    # Initialize variables that may be referenced in loop conditionals
+    predicted_probs_next = None
+    acausal_posterior_chunk = None
+
     if cache_log_likelihoods and log_likelihoods is None:
         log_likelihoods = log_likelihood_func(
             time,
@@ -578,6 +582,10 @@ def chunked_filter_smoother_covariate_dependent(
     state_mask = np.identity(n_states, dtype=np.float32)[
         state_ind
     ]  # shape (n_state_inds, n_states)
+
+    # Initialize variables that may be referenced in loop conditionals
+    predicted_probs_next = None
+    acausal_posterior_chunk = None
 
     if cache_log_likelihoods and log_likelihoods is None:
         log_likelihoods = log_likelihood_func(
