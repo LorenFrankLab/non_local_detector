@@ -346,7 +346,7 @@ def estimate_stationary_state_transition(
 
     # if any is zero, set to small number
     # new_transition_matrix = np.clip(
-    #     new_transition_matrix, a_min=1e-16, a_max=1.0 - 1e-16
+    #     new_transition_matrix, min=1e-16, max=1.0 - 1e-16
     # )
 
     return new_transition_matrix

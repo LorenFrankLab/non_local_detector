@@ -917,7 +917,7 @@ class _DetectorBase(BaseEstimator):
                     ]
                     # Ensure local_state_weights are not zero
                     local_state_weights = np.clip(
-                        local_state_weights, a_min=1e-15, a_max=1.0
+                        local_state_weights, min=1e-15, max=1.0
                     )
                     # Re-fit the encoding model using the posterior weights
                     self.fit_encoding_model(

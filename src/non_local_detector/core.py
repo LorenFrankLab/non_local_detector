@@ -29,7 +29,7 @@ def _normalize(
     c : jnp.ndarray
         Normalization constant
     """
-    u = jnp.clip(u, a_min=eps, a_max=None)
+    u = jnp.clip(u, min=eps, max=None)
     c = u.sum(axis=axis)
     return u / c, c
 

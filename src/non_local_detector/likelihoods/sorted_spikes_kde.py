@@ -184,8 +184,8 @@ def fit_sorted_spikes_kde_encoding_model(
                 jnp.clip(
                     mean_rates[-1]
                     * jnp.where(occupancy > 0.0, marginal_density / occupancy, EPS),
-                    a_min=EPS,
-                    a_max=None,
+                    min=EPS,
+                    max=None,
                 )
             )
         )
@@ -298,7 +298,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             local_rate = neuron_mean_rate * jnp.where(
                 occupancy > 0.0, marginal_density / occupancy, EPS
             )
-            local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
+            local_rate = jnp.clip(local_rate, min=EPS, max=None)
             log_likelihood += (
                 jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
                 - local_rate

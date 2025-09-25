@@ -220,7 +220,7 @@ def block_estimate_log_joint_mark_intensity(
             (start_ind, 0),
         )
 
-    return jnp.clip(log_joint_mark_intensity, a_min=LOG_EPS, a_max=None)
+    return jnp.clip(log_joint_mark_intensity, min=LOG_EPS, max=None)
 
 
 def fit_clusterless_kde_encoding_model(

@@ -162,7 +162,7 @@ def fit_poisson_regression(
         coefficients, spikes=spikes, design_matrix=design_matrix, weights=weights
     ):
         conditional_intensity = jnp.exp(design_matrix @ coefficients)
-        conditional_intensity = jnp.clip(conditional_intensity, a_min=EPS, a_max=None)
+        conditional_intensity = jnp.clip(conditional_intensity, min=EPS, max=None)
         log_likelihood_term = weights * (
             jax.scipy.special.xlogy(spikes, conditional_intensity)
             - conditional_intensity
@@ -292,8 +292,8 @@ def fit_sorted_spikes_glm_encoding_model(
             place_field.at[is_track_interior].set(
                 jnp.clip(
                     jnp.exp(emission_predict_matrix @ coef),
-                    a_min=EPS,
-                    a_max=None,
+                    min=EPS,
+                    max=None,
                 )
             )
         )
@@ -393,7 +393,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(spike_times, time)
             local_rate = jnp.exp(emission_predict_matrix @ coef)
-            local_rate = jnp.clip(local_rate, a_min=EPS, a_max=None)
+            local_rate = jnp.clip(local_rate, min=EPS, max=None)
             log_likelihood += (
                 jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
                 - local_rate
