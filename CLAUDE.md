@@ -21,8 +21,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Code Quality
 
-- **Format code**: `black .` (Black formatter is included in test dependencies)
-- **Lint and format check**: `black --check .`
+- **Lint and fix**: `ruff check --fix src/`
+- **Format code**: `ruff format src/` or `black src/`
+- **Type checking**: `mypy src/non_local_detector/`
+- **Check all quality tools**: `ruff check src/ && ruff format --check src/ && black --check src/ && mypy src/non_local_detector/`
 
 ### Building
 
