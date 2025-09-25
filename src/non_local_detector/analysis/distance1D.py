@@ -448,49 +448,40 @@ def get_map_speed(
     """
     dt = 1 / sampling_frequency
     posterior = np.asarray(posterior)
-    map_position_ind = np.argmax(posterior, axis=1)
+    map_position_ind = np.nanargmax(posterior, axis=1)
     node_ids = place_bin_center_ind_to_node[map_position_ind]
     n_time = len(node_ids)
 
     if n_time == 1:
         return np.asarray([np.nan])
     elif n_time == 2:
-        speed = np.asarray([])
-        speed = np.insert(
-            speed,
-            0,
+        speed = np.asarray([
             nx.shortest_path_length(
                 track_graph_with_bin_centers_edges,
                 source=node_ids[0],
                 target=node_ids[1],
                 weight="distance",
-            )
-            / dt,
-        )
-        speed = np.insert(
-            speed,
-            -1,
+            ),
             nx.shortest_path_length(
                 track_graph_with_bin_centers_edges,
                 source=node_ids[-2],
                 target=node_ids[-1],
                 weight="distance",
             )
-            / dt,
-        )
+
+        ]) / dt
     else:
-        speed = []
-        for node1, node2 in zip(node_ids[:-2], node_ids[2:]):
-            speed.append(
-                nx.shortest_path_length(
-                    track_graph_with_bin_centers_edges,
-                    source=node1,
-                    target=node2,
-                    weight="distance",
-                )
-                / (2.0 * dt)
+        shortest_path_lengths = dict(
+            nx.shortest_path_length(
+                track_graph_with_bin_centers_edges, weight="distance"
             )
-        speed = np.asarray(speed)
+        )
+        speed = np.array(
+            [
+                shortest_path_lengths[node1][node2]
+                for node1, node2 in zip(node_ids[:-2], node_ids[2:])
+            ]
+        ) / (2.0 * dt)
         speed = np.insert(
             speed,
             0,
