@@ -37,9 +37,12 @@ def get_highest_posterior_threshold(
     crit_ind = np.argmax(posterior_less_than_coverage, axis=1)
 
     # Handle case when there are no points in the posterior less than coverage
-    crit_ind[posterior_less_than_coverage.sum(axis=1) == 0] = int(posterior_array.shape[1]) - 1
+    # Use the last valid index instead of accessing shape directly
+    crit_ind[posterior_less_than_coverage.sum(axis=1) == 0] = posterior_array.shape[1] - 1  # type: ignore[misc]
 
-    threshold_values = sorted_norm_posterior[np.arange(n_time), crit_ind] * const.squeeze()
+    threshold_values = (
+        sorted_norm_posterior[np.arange(n_time), crit_ind] * const.squeeze()
+    )
     return np.asarray(threshold_values)
 
 
@@ -61,4 +64,6 @@ def get_HPD_spatial_coverage(
         Amount of the environment covered by the higest posterior values.
     """
     isin_hpd = posterior >= hpd_threshold[:, np.newaxis]
-    return np.asarray((isin_hpd * np.diff(posterior.position)[0]).sum("position").values)
+    return np.asarray(
+        (isin_hpd * np.diff(posterior.position)[0]).sum("position").values
+    )
