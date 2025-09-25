@@ -189,7 +189,9 @@ class _DetectorBase(BaseEstimator):
                 "Discrete transition stickiness must be set for all states or a float"
             )
 
-    def _initialize_environments(self, environments: Environments) -> Environments:
+    def _initialize_environments(
+        self, environments: Environments
+    ) -> tuple[Environment, ...]:
         """
         Initialize environments.
 
@@ -200,8 +202,8 @@ class _DetectorBase(BaseEstimator):
 
         Returns
         -------
-        Environments
-            Initialized environments.
+        tuple[Environment, ...]
+            Initialized environments as a tuple.
         """
         if environments is None:
             environments = (Environment(),)
@@ -214,7 +216,7 @@ class _DetectorBase(BaseEstimator):
         observation_models: Observations,
         continuous_transition_types: ContinuousTransitions,
         environments: Environments,
-    ) -> Observations:
+    ) -> tuple[ObservationModel, ...]:
         """
         Initialize observation models.
 
@@ -229,8 +231,8 @@ class _DetectorBase(BaseEstimator):
 
         Returns
         -------
-        Observations
-            Initialized observation models.
+        tuple[ObservationModel, ...]
+            Initialized observation models as a tuple.
         """
         if observation_models is None:
             n_states = len(continuous_transition_types)
@@ -346,9 +348,16 @@ class _DetectorBase(BaseEstimator):
                 environment = self.environments[
                     self.environments.index(obs.environment_name)
                 ]
-                bin_sizes.append(environment.place_bin_centers_.shape[0])
-                state_ind.append(ind * np.ones((bin_sizes[-1],), dtype=int))
-                is_track_interior.append(environment.is_track_interior_.ravel())
+                if environment.place_bin_centers_ is not None:
+                    bin_sizes.append(environment.place_bin_centers_.shape[0])
+                    state_ind.append(ind * np.ones((bin_sizes[-1],), dtype=int))
+                else:
+                    raise ValueError("Environment place_bin_centers_ cannot be None")
+                if environment.is_track_interior_ is not None:
+                    is_track_interior.append(environment.is_track_interior_.ravel())
+                else:
+                    # Default fallback: all positions are track interior
+                    is_track_interior.append(np.ones(bin_sizes[-1], dtype=bool))
 
         self.state_ind_ = np.concatenate(state_ind)
         self.n_state_bins_ = len(self.state_ind_)
@@ -427,12 +436,22 @@ class _DetectorBase(BaseEstimator):
 
                 if isinstance(transition, EmpiricalMovement):
                     if is_training is None:
-                        n_time = position.shape[0]
-                        is_training = np.ones((n_time,), dtype=bool)
+                        if position is not None:
+                            n_time = position.shape[0]
+                            is_training = np.ones((n_time,), dtype=bool)
+                        else:
+                            raise ValueError(
+                                "Position cannot be None when is_training is None"
+                            )
 
                     if encoding_group_labels is None:
-                        n_time = position.shape[0]
-                        encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
+                        if position is not None:
+                            n_time = position.shape[0]
+                            encoding_group_labels = np.zeros((n_time,), dtype=np.int32)
+                        else:
+                            raise ValueError(
+                                "Position cannot be None when encoding_group_labels is None"
+                            )
 
                     is_training = np.asarray(is_training).squeeze()
                     self.continuous_state_transitions_[inds] = (
@@ -451,13 +470,29 @@ class _DetectorBase(BaseEstimator):
                     if np.logical_and(n_row_bins == 1, n_col_bins > 1):
                         # transition from discrete to continuous
                         # ASSUME uniform for now
-                        environment = self.environments[
-                            self.environments.index(transition.environment_name)
-                        ]
-                        self.continuous_state_transitions_[inds] = (
-                            environment.is_track_interior_.ravel()
-                            / environment.is_track_interior_.sum()
-                        ).astype(float)
+                        if hasattr(transition, "environment_name"):
+                            environment = self.environments[
+                                self.environments.index(transition.environment_name)
+                            ]
+                        else:
+                            raise ValueError(
+                                "Transition must have an environment_name attribute for discrete to continuous transitions"
+                            )
+                        if environment.is_track_interior_ is not None:
+                            self.continuous_state_transitions_[inds] = (
+                                environment.is_track_interior_.ravel()
+                                / environment.is_track_interior_.sum()
+                            ).astype(float)
+                        else:
+                            # Default fallback: uniform transition
+                             if environment.place_bin_centers_ is not None:
+                                n_bins = (
+                                    environment.place_bin_centers_.shape[0]
+
+                            else:
+                                        raise ValueError("Environment must have place_bin_centers_ for discrete to continuous transitions")
+                                )
+                                self.continuous_state_transitions_[inds] = 1.0 / n_bins
                     else:
                         self.continuous_state_transitions_[inds] = (
                             transition.make_state_transition(self.environments)
@@ -552,12 +587,12 @@ class _DetectorBase(BaseEstimator):
             state_names = self.state_names
 
             predict_matrix = build_design_matrices(
-                [discrete_transition_design_matrix.design_info], covariate_data
+                [discrete_transition_design_matrix.design_info], covariate_data  # type: ignore[union-attr]
             )[0]
 
             n_states = len(state_names)
 
-            for covariate in covariate_data:
+            for covariate in covariate_data:  # type: ignore[union-attr]
                 fig, axes = plt.subplots(
                     1, n_states, sharex=True, constrained_layout=True, figsize=(10, 5)
                 )
@@ -724,7 +759,7 @@ class _DetectorBase(BaseEstimator):
         _DetectorBase
             Fitted model.
         """
-        position = position[:, np.newaxis] if position.ndim == 1 else position
+        position = position[:, np.newaxis] if position.ndim == 1 else position  # type: ignore[union-attr]
         self.initialize_environments(
             position=position, environment_labels=environment_labels
         )
@@ -1182,7 +1217,7 @@ class _DetectorBase(BaseEstimator):
         encoding_group_names = [obs.encoding_group for obs in self.observation_models]
 
         position = []
-        n_position_dims = self.environments[0].place_bin_centers_.shape[1]
+        n_position_dims = self.environments[0].place_bin_centers_.shape[1]  # type: ignore[union-attr]
         for obs in self.observation_models:
             if obs.is_local or obs.is_no_spike:
                 position.append(np.full((1, n_position_dims), np.nan))
@@ -1262,7 +1297,7 @@ class _DetectorBase(BaseEstimator):
         results : pd.DataFrame, shape (n_time, n_cols)
         """
         position = []
-        n_position_dims = self.environments[0].place_bin_centers_.shape[1]
+        n_position_dims = self.environments[0].place_bin_centers_.shape[1]  # type: ignore[union-attr]
         environment_names = []
         encoding_group_names = []
         for obs in self.observation_models:
@@ -1276,10 +1311,10 @@ class _DetectorBase(BaseEstimator):
                 ]
                 position.append(environment.place_bin_centers_)
                 environment_names.append(
-                    [obs.environment_name] * environment.place_bin_centers_.shape[0]
+                    [obs.environment_name] * environment.place_bin_centers_.shape[0]  # type: ignore[union-attr]
                 )
                 encoding_group_names.append(
-                    [obs.encoding_group] * environment.place_bin_centers_.shape[0]
+                    [obs.encoding_group] * environment.place_bin_centers_.shape[0]  # type: ignore[union-attr]
                 )
 
         position = np.concatenate(position, axis=0)
