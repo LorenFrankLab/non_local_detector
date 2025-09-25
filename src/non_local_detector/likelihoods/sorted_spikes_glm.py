@@ -390,7 +390,9 @@ def predict_sorted_spikes_glm_log_likelihood(
             coefficients,
             strict=False,
         ):
-            spike_count_per_time_bin = get_spikecount_per_time_bin(spike_times, time)
+            spike_count_per_time_bin = get_spikecount_per_time_bin(
+                neuron_spike_times, time
+            )
             local_rate = jnp.exp(emission_predict_matrix @ coef)
             local_rate = jnp.clip(local_rate, min=EPS, max=None)
             log_likelihood += (
