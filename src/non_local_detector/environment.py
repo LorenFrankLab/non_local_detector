@@ -293,9 +293,10 @@ class Environment:
         else:
             if ax is None:
                 _, ax = plt.subplots(figsize=(6, 7))
-            ax.pcolormesh(
-                self.edges_[0], self.edges_[1], self.is_track_interior_.T, cmap="bone_r"
-            )
+            if self.is_track_interior_ is not None:
+                ax.pcolormesh(
+                    self.edges_[0], self.edges_[1], self.is_track_interior_.T, cmap="bone_r"
+                )
             ax.set_xticks(self.edges_[0], minor=True)
             ax.set_yticks(self.edges_[1], minor=True)
             ax.grid(visible=True, which="minor")
@@ -1165,10 +1166,15 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
     axis_offsets = [-1, 0, 1]
 
     # Enumerate over nodes
+    if environment.is_track_interior_ is not None:
+        interior_data = environment.is_track_interior_.ravel()
+    else:
+        interior_data = np.ones(len(environment.place_bin_centers_), dtype=bool)
+
     for node_id, (node_position, is_interior) in enumerate(
         zip(
             environment.place_bin_centers_,
-            environment.is_track_interior_.ravel(),
+            interior_data,
             strict=False,
         )
     ):

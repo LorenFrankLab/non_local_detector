@@ -14,7 +14,7 @@ It utilizes JAX for efficient computation.
 import jax.numpy as jnp
 import jax.scipy
 import numpy as np
-from tqdm.autonotebook import tqdm
+from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
 

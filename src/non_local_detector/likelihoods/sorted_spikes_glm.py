@@ -251,7 +251,10 @@ def fit_sorted_spikes_glm_encoding_model(
     n_time_bins = int(np.ceil((time_range[-1] - time_range[0]) * sampling_frequency))
     time = time_range[0] + np.arange(n_time_bins) / sampling_frequency
 
-    is_track_interior = environment.is_track_interior_.ravel()
+    if environment.is_track_interior_ is not None:
+        is_track_interior = environment.is_track_interior_.ravel()
+    else:
+        is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
     interior_place_bin_centers = jnp.asarray(
         environment.place_bin_centers_[is_track_interior]
     )

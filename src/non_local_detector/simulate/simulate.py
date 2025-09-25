@@ -1,7 +1,7 @@
 """Main code for simulating position and sorted spikes or clusterless spikes and waveforms."""
 
 import numpy as np
-from scipy.stats import multivariate_normal
+from scipy.stats import multivariate_normal  # type: ignore[import-untyped]
 
 
 def simulate_time(n_samples: int, sampling_frequency: float) -> np.ndarray:
@@ -130,7 +130,7 @@ def simulate_place_field_firing_rate(
     if is_condition is None:
         is_condition = np.ones(position.shape[0], dtype=bool)
     position = position if position.ndim > 1 else position[:, np.newaxis]
-    firing_rate = multivariate_normal(means, variance).pdf(position)
+    firing_rate = np.asarray(multivariate_normal(means, variance).pdf(position))
     firing_rate /= firing_rate.max()
     firing_rate *= max_rate
     firing_rate[~is_condition] = 0.0

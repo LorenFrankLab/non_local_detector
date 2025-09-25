@@ -10,7 +10,7 @@ References
 """
 
 import numpy as np
-import scipy
+import scipy  # type: ignore[import-untyped]
 
 
 def interval_rescaling_transform(

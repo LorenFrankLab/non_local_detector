@@ -34,9 +34,12 @@ class UniformInitialConditions:
             environment = environments[
                 environments.index(observation_model.environment_name)
             ]
-            initial_conditions = environment.is_track_interior_.ravel().astype(
-                np.float32
-            )
+            if environment.is_track_interior_ is not None:
+                initial_conditions = environment.is_track_interior_.ravel().astype(
+                    np.float32
+                )
+            else:
+                initial_conditions = np.ones((1,), dtype=np.float32)
 
         initial_conditions /= initial_conditions.sum()
 

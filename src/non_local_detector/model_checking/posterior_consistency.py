@@ -1,7 +1,7 @@
 """State space goodness of fit for"""
 
 import numpy as np
-from scipy.stats import entropy
+from scipy.stats import entropy  # type: ignore[import-untyped]
 
 from non_local_detector.model_checking.highest_posterior_density import (
     get_highest_posterior_threshold,

@@ -180,7 +180,10 @@ def fit_clusterless_gmm_encoding_model(
     position_time = _as_jnp(position_time)
 
     # Interior bins (cached)
-    is_track_interior = environment.is_track_interior_.ravel()
+    if environment.is_track_interior_ is not None:
+        is_track_interior = environment.is_track_interior_.ravel()
+    else:
+        is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
     interior_place_bin_centers = _as_jnp(
         environment.place_bin_centers_[is_track_interior]
     )

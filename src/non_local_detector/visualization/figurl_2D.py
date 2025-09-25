@@ -165,7 +165,7 @@ try:
         trimmed : xr.DataArray
         """
         i = np.multiply(base_slice, 255).astype(np.uint8)
-        i_stack = i.stack(unified_index=["time", "y_position", "x_position"])
+        i_stack = i.stack(unified_index=["time", "y_position", "x_position"])  # type: ignore[union-attr]
 
         return i_stack.where(i_stack > 0, drop=True).astype(np.uint8)
 
@@ -488,9 +488,12 @@ try:
         -------
         url : str
         """
-        interior_place_bin_centers = env.place_bin_centers_[
-            env.is_track_interior_.ravel()
-        ]
+        if env.is_track_interior_ is not None:
+            interior_place_bin_centers = env.place_bin_centers_[
+                env.is_track_interior_.ravel()
+            ]
+        else:
+            interior_place_bin_centers = env.place_bin_centers_
         if posterior is None:
             posterior = results.acausal_posterior.unstack("state_bins").sum("state")
         place_bin_size = (

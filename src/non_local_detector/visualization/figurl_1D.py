@@ -18,7 +18,7 @@ try:
         xr.DataArray
         """
         discretized = np.multiply(series, 255).astype(np.uint8)  # type: ignore
-        stacked = discretized.stack(unified_index=["time", "position"])
+        stacked = discretized.stack(unified_index=["time", "position"])  # type: ignore[union-attr]
         return stacked.where(stacked > 0, drop=True).astype(np.uint8)
 
     def get_observations_per_time(

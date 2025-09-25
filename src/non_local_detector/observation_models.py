@@ -24,6 +24,7 @@ class ObservationModel:
     def __eq__(self, other: object) -> bool:
         if other.__class__ is not self.__class__:
             return NotImplemented
+        assert isinstance(other, ObservationModel)
         return (self.environment_name, self.encoding_group) == (
             other.environment_name,
             other.encoding_group,
