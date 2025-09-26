@@ -137,7 +137,7 @@ def get_trajectory_direction(position: np.ndarray) -> tuple[np.ndarray, np.ndarr
     return np.where(is_inbound, "Inbound", "Outbound"), is_inbound
 
 
-def gaussian_pdf(x: np.ndarray, mean: float, sigma: float) -> np.ndarray:
+def gaussian_pdf(x: np.ndarray, mean: np.ndarray | float, sigma: float) -> np.ndarray:
     """Compute the value of a Gaussian probability density function at x with
     given mean and sigma."""
     return np.exp(-0.5 * ((x - mean) / sigma) ** 2) / (sigma * np.sqrt(2.0 * np.pi))
