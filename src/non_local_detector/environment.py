@@ -1181,6 +1181,9 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
     axis_offsets = [-1, 0, 1]
 
     # Enumerate over nodes
+    if environment.place_bin_centers_ is None:
+        raise ValueError("place_bin_centers_ is required for track graph construction")
+
     if environment.is_track_interior_ is not None:
         interior_data = environment.is_track_interior_.ravel()
     else:
@@ -1196,6 +1199,11 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
         track_graph.add_node(
             node_id, pos=tuple(node_position), is_track_interior=is_interior
         )
+
+    if environment.is_track_interior_ is None:
+        raise ValueError("is_track_interior_ is required for edge construction")
+    if environment.centers_shape_ is None:
+        raise ValueError("centers_shape_ is required for edge construction")
 
     edges = []
     # Enumerate over nodes in the track interior

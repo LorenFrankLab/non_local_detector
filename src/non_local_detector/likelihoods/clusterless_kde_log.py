@@ -227,6 +227,10 @@ def fit_clusterless_kde_encoding_model(
     if isinstance(waveform_std, (int, float)):
         waveform_std = jnp.array([waveform_std] * spike_waveform_features[0].shape[1])
 
+    # Ensure std parameters are JAX arrays for KDEModel
+    assert isinstance(position_std, jnp.ndarray)
+    assert isinstance(waveform_std, jnp.ndarray)
+
     if environment.is_track_interior_ is not None:
         is_track_interior = environment.is_track_interior_.ravel()
     else:

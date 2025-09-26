@@ -769,7 +769,11 @@ class _DetectorBase(BaseEstimator):
         _DetectorBase
             Fitted model.
         """
-        position = position[:, np.newaxis] if position.ndim == 1 else position  # type: ignore[union-attr]
+        # Validate required parameters
+        if position is None:
+            raise ValueError("position parameter is required and cannot be None")
+
+        position = position[:, np.newaxis] if position.ndim == 1 else position
         self.initialize_environments(
             position=position, environment_labels=environment_labels
         )
@@ -1332,12 +1336,14 @@ class _DetectorBase(BaseEstimator):
                 environment = self.environments[
                     self.environments.index(obs.environment_name)
                 ]
+                if environment.place_bin_centers_ is None:
+                    raise ValueError(f"place_bin_centers_ is None for environment {obs.environment_name}")
                 position.append(environment.place_bin_centers_)
                 environment_names.append(
-                    [obs.environment_name] * environment.place_bin_centers_.shape[0]  # type: ignore[union-attr]
+                    [obs.environment_name] * environment.place_bin_centers_.shape[0]
                 )
                 encoding_group_names.append(
-                    [obs.encoding_group] * environment.place_bin_centers_.shape[0]  # type: ignore[union-attr]
+                    [obs.encoding_group] * environment.place_bin_centers_.shape[0]
                 )
 
         position = np.concatenate(position, axis=0)
@@ -1806,6 +1812,8 @@ class ClusterlessDetector(_DetectorBase):
             )
 
         if discrete_transition_covariate_data is not None:
+            if self.discrete_transition_coefficients_ is None:
+                raise ValueError("discrete_transition_coefficients_ is None but covariate data provided")
             self.discrete_state_transitions_ = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,
@@ -2404,6 +2412,8 @@ class SortedSpikesDetector(_DetectorBase):
             )
 
         if discrete_transition_covariate_data is not None:
+            if self.discrete_transition_coefficients_ is None:
+                raise ValueError("discrete_transition_coefficients_ is None but covariate data provided")
             self.discrete_state_transitions_ = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,
