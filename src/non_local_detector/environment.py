@@ -539,7 +539,7 @@ class Environment:
 def get_n_bins(
     position: np.ndarray,
     bin_size: float = 2.5,
-    position_range: list[np.ndarray] | None = None,
+    position_range: Sequence[tuple[float, float]] | None = None,
 ) -> int:
     """Get number of bins need to span a range given a bin size.
 
@@ -566,7 +566,7 @@ def get_n_bins(
 def get_grid(
     position: np.ndarray,
     bin_size: float = 2.5,
-    position_range: list[np.ndarray] | None = None,
+    position_range: Sequence[tuple[float, float]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple]:
     """Calculate bin edges and centers for a spatial grid.
 
@@ -631,7 +631,7 @@ def get_grid(
 
 def get_track_interior(
     position: np.ndarray,
-    bins: int | Sequence[int],
+    bins: int | Sequence[int] | Sequence[np.ndarray],
     fill_holes: bool = False,
     dilate: bool = False,
     bin_count_threshold: int = 0,
