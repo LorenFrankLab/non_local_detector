@@ -592,6 +592,9 @@ class _DetectorBase(BaseEstimator):
             discrete_transition_coefficients = self.discrete_transition_coefficients_
             state_names = self.state_names
 
+            if discrete_transition_design_matrix is None:
+                raise ValueError("discrete_transition_design_matrix_ is None for covariate-dependent prediction")
+
             predict_matrix = build_design_matrices(
                 [discrete_transition_design_matrix.design_info],
                 covariate_data,  # type: ignore[union-attr]
@@ -926,6 +929,12 @@ class _DetectorBase(BaseEstimator):
         n_iter = 0
         converged = False
 
+        # Validate required parameters
+        if time is None:
+            raise ValueError("time parameter is required and cannot be None")
+        if log_likelihood_args is None:
+            log_likelihood_args = ()
+
         while not converged and (n_iter < max_iter):
             # Expectation step
             logger.info("Expectation step...")
@@ -1058,6 +1067,10 @@ class _DetectorBase(BaseEstimator):
             and corresponding positions/metadata at each time step.
 
         """
+        # Validate parameters
+        if log_likelihood_args is None:
+            log_likelihood_args = ()
+
         is_track_interior = self.is_track_interior_state_bins_
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
         state_ind = self.state_ind_[is_track_interior]
@@ -1233,6 +1246,8 @@ class _DetectorBase(BaseEstimator):
                 environment = self.environments[
                     self.environments.index(obs.environment_name)
                 ]
+                if environment.place_bin_centers_ is None:
+                    raise ValueError(f"place_bin_centers_ is None for environment {obs.environment_name}")
                 position.append(environment.place_bin_centers_)
         position = np.concatenate(position, axis=0)
 

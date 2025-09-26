@@ -216,7 +216,7 @@ class Environment:
             elif self.is_track_interior is None and not self.infer_track_interior:
                 self.is_track_interior_ = np.ones(self.centers_shape_, dtype=bool)
 
-            if len(self.edges_) > 1:
+            if self.edges_ is not None and len(self.edges_) > 1 and self.is_track_interior_ is not None:
                 self.is_track_boundary_ = get_track_boundary(
                     self.is_track_interior_,
                     n_position_dims=len(self.edges_),
@@ -240,6 +240,18 @@ class Environment:
             self.distance_between_nodes_ = distance
 
         else:
+            # Validate required parameters for track_graph mode
+            if self.edge_order is None:
+                raise ValueError("edge_order is required when track_graph is provided")
+            if self.edge_spacing is None:
+                raise ValueError("edge_spacing is required when track_graph is provided")
+
+            # Handle place_bin_size conversion for get_track_grid
+            bin_size = self.place_bin_size
+            if isinstance(bin_size, tuple):
+                # For multi-dimensional, take the first value or convert appropriately
+                bin_size = bin_size[0]
+
             (
                 self.place_bin_centers_,
                 self.place_bin_edges_,

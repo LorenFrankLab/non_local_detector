@@ -230,6 +230,8 @@ def fit_clusterless_kde_encoding_model(
     if environment.is_track_interior_ is not None:
         is_track_interior = environment.is_track_interior_.ravel()
     else:
+        if environment.place_bin_centers_ is None:
+            raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
         is_track_interior = jnp.ones(environment.place_bin_centers_.shape[0], dtype=bool)
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
@@ -413,6 +415,8 @@ def predict_clusterless_kde_log_likelihood(
         if environment.is_track_interior_ is not None:
             is_track_interior = environment.is_track_interior_.ravel()
         else:
+            if environment.place_bin_centers_ is None:
+                raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
             is_track_interior = jnp.ones(environment.place_bin_centers_.shape[0], dtype=bool)
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
