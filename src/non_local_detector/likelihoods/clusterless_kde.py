@@ -249,6 +249,9 @@ def fit_clusterless_kde_encoding_model(
         Spike waveform features for each electrode.
     environment : Environment
         The spatial environment.
+    weights : jnp.ndarray, shape (n_time_position,), optional
+        Sample weights for each position time point, by default None.
+        If None, uniform weights are used.
     sampling_frequency : int, optional
         Samples per second, by default 500
     position_std : float, optional
@@ -263,6 +266,20 @@ def fit_clusterless_kde_encoding_model(
     Returns
     -------
     encoding_model : dict
+        Dictionary containing fitted encoding model components:
+        - 'occupancy': Occupancy density at interior place bins
+        - 'occupancy_model': Fitted KDE model for occupancy
+        - 'gpi_models': Ground process intensity KDE models per electrode
+        - 'encoding_spike_waveform_features': Bounded spike features per electrode
+        - 'encoding_positions': Position at spike times per electrode
+        - 'encoding_spike_weights': Weights at spike times per electrode
+        - 'environment': The spatial environment
+        - 'mean_rates': Mean firing rates per electrode
+        - 'summed_ground_process_intensity': Summed GPI across electrodes
+        - 'position_std': Position kernel standard deviations
+        - 'waveform_std': Waveform kernel standard deviations
+        - 'block_size': Block size used for computation
+        - 'disable_progress_bar': Progress bar setting
     """
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
@@ -282,7 +299,9 @@ def fit_clusterless_kde_encoding_model(
         is_track_interior = environment.is_track_interior_.ravel()
     else:
         if environment.place_bin_centers_ is None:
-            raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
+            raise ValueError(
+                "place_bin_centers_ is required when is_track_interior_ is None"
+            )
         is_track_interior = jnp.ones(
             environment.place_bin_centers_.shape[0], dtype=bool
         )
@@ -469,7 +488,9 @@ def predict_clusterless_kde_log_likelihood(
             is_track_interior = environment.is_track_interior_.ravel()
         else:
             if environment.place_bin_centers_ is None:
-                raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
+                raise ValueError(
+                    "place_bin_centers_ is required when is_track_interior_ is None"
+                )
             is_track_interior = jnp.ones(
                 environment.place_bin_centers_.shape[0], dtype=bool
             )
@@ -580,6 +601,8 @@ def compute_local_log_likelihood(
         Gaussian smoothing standard deviation for position.
     waveform_std : jnp.ndarray
         Gaussian smoothing standard deviation for waveform.
+    weights : jnp.ndarray, shape (n_time_position,), optional
+        Sample weights for position, by default None.
     block_size : int, optional
         Divide computation into blocks, by default 100
     disable_progress_bar : bool, optional

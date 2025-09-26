@@ -37,6 +37,26 @@ def simulate_time(n_samples: int, sampling_frequency: float) -> np.ndarray:
 def simulate_position(
     time: np.ndarray, track_height: float, running_speed: float = 10.0
 ) -> np.ndarray:
+    """Simulate sinusoidal position trajectory for a linear track.
+
+    Generates a sinusoidal position trajectory that oscillates between
+    0 and track_height, simulating an animal running back and forth
+    on a linear track.
+
+    Parameters
+    ----------
+    time : np.ndarray, shape (n_time,)
+        Time points for simulation.
+    track_height : float
+        Total height/length of the linear track.
+    running_speed : float, optional
+        Period of the sinusoidal motion, by default 10.0.
+
+    Returns
+    -------
+    position : np.ndarray, shape (n_time,)
+        Simulated position values ranging from 0 to track_height.
+    """
     half_height = track_height / 2
     return (
         half_height * np.sin(2 * np.pi * time / running_speed - np.pi / 2) + half_height
@@ -51,7 +71,35 @@ def create_place_field(
     place_field_std_deviation: float = np.sqrt(12.5),
     max_firing_rate: float = 20.0,
     baseline_firing_rate: float = 0.001,
-):
+) -> np.ndarray:
+    """Create a Gaussian place field firing rate.
+
+    Generates a firing rate based on a Gaussian place field centered
+    at a specific location, with baseline firing rate outside the field.
+
+    Parameters
+    ----------
+    place_field_mean : float
+        Center location of the place field.
+    position : np.ndarray, shape (n_time,)
+        Position trajectory.
+    sampling_frequency : float, optional
+        Sampling frequency in Hz, by default SAMPLING_FREQUENCY.
+    is_condition : np.ndarray, shape (n_time,), optional
+        Boolean mask for when the place field is active, by default None.
+        If None, the field is always active.
+    place_field_std_deviation : float, optional
+        Standard deviation of the Gaussian place field, by default sqrt(12.5).
+    max_firing_rate : float, optional
+        Maximum firing rate at the field center, by default 20.0.
+    baseline_firing_rate : float, optional
+        Baseline firing rate outside the field, by default 0.001.
+
+    Returns
+    -------
+    firing_rate : np.ndarray, shape (n_time,)
+        Firing rate at each time point.
+    """
     if is_condition is None:
         is_condition = np.ones_like(position, dtype=bool)
     field_firing_rate = norm(place_field_mean, place_field_std_deviation).pdf(position)

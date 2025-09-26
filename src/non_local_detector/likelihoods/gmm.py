@@ -1,3 +1,14 @@
+"""JAX-based Gaussian Mixture Model implementation for clusterless neural decoding.
+
+This module provides a high-performance implementation of Gaussian Mixture Models
+using JAX for automatic differentiation and GPU acceleration. It's specifically
+designed for modeling clusterless (continuous) spike waveform features in neural
+decoding applications.
+
+The main class GaussianMixtureModel follows scikit-learn conventions while
+leveraging JAX for efficient computation on both CPU and GPU.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

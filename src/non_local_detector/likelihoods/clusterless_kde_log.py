@@ -90,8 +90,30 @@ def estimate_log_joint_mark_intensity(
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms (log-space).
 
-    Same signature & output as before:
-      returns log λ(mark, pos) with shape (n_decoding_spikes, n_position_bins).
+    Computes the log of the joint intensity λ(mark, pos) for marked point processes
+    using kernel density estimation in log space for numerical stability.
+
+    Parameters
+    ----------
+    decoding_spike_waveform_features : jnp.ndarray, shape (n_decoding_spikes, n_features)
+        Waveform features for spikes during decoding period.
+    encoding_spike_waveform_features : jnp.ndarray, shape (n_encoding_spikes, n_features)
+        Waveform features for spikes during encoding period.
+    encoding_weights : jnp.ndarray, shape (n_encoding_spikes,)
+        Weights for each encoding spike.
+    waveform_stds : jnp.ndarray, shape (n_features,)
+        Standard deviations for Gaussian kernels over waveform dimensions.
+    occupancy : jnp.ndarray, shape (n_position_bins,)
+        Spatial occupancy density.
+    mean_rate : float
+        Mean firing rate for the electrode.
+    log_position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
+        Log of position-based kernel distances between encoding spikes and position bins.
+
+    Returns
+    -------
+    log_joint_intensity : jnp.ndarray, shape (n_decoding_spikes, n_position_bins)
+        Log joint mark intensity λ(mark, pos) for each decoding spike at each position.
     """
 
     # 2) Build log-kernel matrix for marks in a block: (n_enc, n_dec_block)
@@ -149,7 +171,35 @@ def block_estimate_log_joint_mark_intensity(
     log_position_distance: jnp.ndarray,
     block_size: int = 100,
 ) -> jnp.ndarray:
-    """Estimate the log joint mark intensity in blocks over decoding spikes (log-space)."""
+    """Estimate the log joint mark intensity in blocks over decoding spikes (log-space).
+
+    Processes decoding spikes in blocks to manage memory usage when computing
+    joint mark intensity. Calls estimate_log_joint_mark_intensity for each block.
+
+    Parameters
+    ----------
+    decoding_spike_waveform_features : jnp.ndarray, shape (n_decoding_spikes, n_features)
+        Waveform features for spikes during decoding period.
+    encoding_spike_waveform_features : jnp.ndarray, shape (n_encoding_spikes, n_features)
+        Waveform features for spikes during encoding period.
+    encoding_weights : jnp.ndarray, shape (n_encoding_spikes,)
+        Weights for each encoding spike.
+    waveform_stds : jnp.ndarray, shape (n_features,)
+        Standard deviations for Gaussian kernels over waveform dimensions.
+    occupancy : jnp.ndarray, shape (n_position_bins,)
+        Spatial occupancy density.
+    mean_rate : float
+        Mean firing rate for the electrode.
+    log_position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
+        Log of position-based kernel distances between encoding spikes and position bins.
+    block_size : int, optional
+        Number of decoding spikes to process per block, by default 100.
+
+    Returns
+    -------
+    log_joint_intensity : jnp.ndarray, shape (n_decoding_spikes, n_position_bins)
+        Log joint mark intensity for all decoding spikes, clipped to LOG_EPS minimum.
+    """
 
     n_decoding_spikes = decoding_spike_waveform_features.shape[0]
     n_position_bins = occupancy.shape[0]
@@ -203,6 +253,9 @@ def fit_clusterless_kde_encoding_model(
         Spike waveform features for each electrode.
     environment : Environment
         The spatial environment.
+    weights : jnp.ndarray, shape (n_time_position,), optional
+        Sample weights for each position time point, by default None.
+        If None, uniform weights are used.
     sampling_frequency : int, optional
         Samples per second, by default 500
     position_std : float, optional
@@ -217,6 +270,20 @@ def fit_clusterless_kde_encoding_model(
     Returns
     -------
     encoding_model : dict
+        Dictionary containing fitted encoding model components:
+        - 'occupancy': Occupancy density at interior place bins
+        - 'occupancy_model': Fitted KDE model for occupancy
+        - 'gpi_models': Ground process intensity KDE models per electrode
+        - 'encoding_spike_waveform_features': Bounded spike features per electrode
+        - 'encoding_positions': Position at spike times per electrode
+        - 'encoding_spike_weights': Weights at spike times per electrode
+        - 'environment': The spatial environment
+        - 'mean_rates': Mean firing rates per electrode
+        - 'summed_ground_process_intensity': Summed GPI across electrodes
+        - 'position_std': Position kernel standard deviations
+        - 'waveform_std': Waveform kernel standard deviations
+        - 'block_size': Block size used for computation
+        - 'disable_progress_bar': Progress bar setting
     """
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
@@ -235,8 +302,12 @@ def fit_clusterless_kde_encoding_model(
         is_track_interior = environment.is_track_interior_.ravel()
     else:
         if environment.place_bin_centers_ is None:
-            raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
-        is_track_interior = jnp.ones(environment.place_bin_centers_.shape[0], dtype=bool)
+            raise ValueError(
+                "place_bin_centers_ is required when is_track_interior_ is None"
+            )
+        is_track_interior = jnp.ones(
+            environment.place_bin_centers_.shape[0], dtype=bool
+        )
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
     if weights is None:
@@ -338,7 +409,7 @@ def predict_clusterless_kde_log_likelihood(
     gpi_models: list[KDEModel],
     encoding_spike_waveform_features: list[jnp.ndarray],
     encoding_positions: list[jnp.ndarray],
-    encoding_spike_weights: jnp.ndarray,
+    encoding_spike_weights: list[jnp.ndarray],
     environment: Environment,
     mean_rates: jnp.ndarray,
     summed_ground_process_intensity: jnp.ndarray,
@@ -372,6 +443,8 @@ def predict_clusterless_kde_log_likelihood(
         Spike waveform features for each electrode used for encoding.
     encoding_positions : list[jnp.ndarray], shape (n_encoding_spikes, n_position_dims)
         Position samples used for encoding.
+    encoding_spike_weights : list[jnp.ndarray]
+        Weights for encoding spikes per electrode.
     environment : Environment
         The spatial environment
     mean_rates : jnp.ndarray, shape (n_electrodes,)
@@ -420,8 +493,12 @@ def predict_clusterless_kde_log_likelihood(
             is_track_interior = environment.is_track_interior_.ravel()
         else:
             if environment.place_bin_centers_ is None:
-                raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
-            is_track_interior = jnp.ones(environment.place_bin_centers_.shape[0], dtype=bool)
+                raise ValueError(
+                    "place_bin_centers_ is required when is_track_interior_ is None"
+                )
+            is_track_interior = jnp.ones(
+                environment.place_bin_centers_.shape[0], dtype=bool
+            )
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
         log_likelihood = -1.0 * summed_ground_process_intensity * jnp.ones((n_time, 1))

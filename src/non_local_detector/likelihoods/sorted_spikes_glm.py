@@ -220,6 +220,9 @@ def fit_sorted_spikes_glm_encoding_model(
         Identifies if the bin is on the track interior.
     is_track_boundary : np.ndarray, shape (n_position_bins,)
         Identifies if the bin is on the track boundary.
+    weights : np.ndarray, shape (n_time_position,), optional
+        Sample weights for each position time point, by default None.
+        If None, uniform weights are used.
     emission_knot_spacing : float, optional
         Knots over position, by default 10.0
     l2_penalty : float, optional
@@ -255,7 +258,9 @@ def fit_sorted_spikes_glm_encoding_model(
         is_track_interior = environment.is_track_interior_.ravel()
     else:
         if environment.place_bin_centers_ is None:
-            raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
+            raise ValueError(
+                "place_bin_centers_ is required when is_track_interior_ is None"
+            )
         is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
     interior_place_bin_centers = jnp.asarray(
         environment.place_bin_centers_[is_track_interior]
@@ -378,7 +383,6 @@ def predict_sorted_spikes_glm_log_likelihood(
     n_time = time.shape[0]
 
     if is_local:
-        log_likelihood = jnp.zeros((n_time,))
         log_likelihood = jnp.zeros((n_time,))
 
         # Need to interpolate position

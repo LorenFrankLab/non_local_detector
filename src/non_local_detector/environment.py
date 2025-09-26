@@ -216,7 +216,11 @@ class Environment:
             elif self.is_track_interior is None and not self.infer_track_interior:
                 self.is_track_interior_ = np.ones(self.centers_shape_, dtype=bool)
 
-            if self.edges_ is not None and len(self.edges_) > 1 and self.is_track_interior_ is not None:
+            if (
+                self.edges_ is not None
+                and len(self.edges_) > 1
+                and self.is_track_interior_ is not None
+            ):
                 self.is_track_boundary_ = get_track_boundary(
                     self.is_track_interior_,
                     n_position_dims=len(self.edges_),
@@ -244,7 +248,9 @@ class Environment:
             if self.edge_order is None:
                 raise ValueError("edge_order is required when track_graph is provided")
             if self.edge_spacing is None:
-                raise ValueError("edge_spacing is required when track_graph is provided")
+                raise ValueError(
+                    "edge_spacing is required when track_graph is provided"
+                )
 
             # Handle place_bin_size conversion for get_track_grid
             bin_size = self.place_bin_size
@@ -1273,15 +1279,21 @@ def gaussian_smooth(
 
     Parameters
     ----------
-    data : array_like
+    data : np.ndarray, shape (..., n_time, ...)
+        Input data array to be smoothed.
     sigma : float
-    sampling_frequency : int
+        Standard deviation of the Gaussian kernel in time units.
+    sampling_frequency : float
+        Sampling frequency of the data in Hz.
     axis : int, optional
+        Axis along which to apply the smoothing, by default 0.
     truncate : int, optional
+        Truncate the filter at this many standard deviations, by default 8.
 
     Returns
     -------
-    smoothed_data : array_like
+    smoothed_data : np.ndarray, same shape as data
+        Gaussian smoothed data array.
 
     """
     return ndimage.gaussian_filter1d(

@@ -85,6 +85,9 @@ def fit_sorted_spikes_kde_encoding_model(
         Spike times for each neuron.
     environment : Environment
         The spatial environment.
+    weights : jnp.ndarray, shape (n_time_position,), optional
+        Sample weights for each position time point, by default None.
+        If None, uniform weights are used.
     sampling_frequency : int, optional
         Samples per second, by default 500
     position_std : float, optional
@@ -97,6 +100,16 @@ def fit_sorted_spikes_kde_encoding_model(
     Returns
     -------
     encoding_model : dict
+        Dictionary containing fitted encoding model components:
+        - 'environment': The spatial environment
+        - 'marginal_models': KDE models for each neuron's spatial firing
+        - 'occupancy_model': KDE model for spatial occupancy
+        - 'occupancy': Occupancy density at interior place bins
+        - 'mean_rates': Mean firing rates per neuron
+        - 'place_fields': Derived place fields (firing rates) per neuron
+        - 'no_spike_part_log_likelihood': Summed place fields across neurons
+        - 'is_track_interior': Boolean mask for interior track bins
+        - 'disable_progress_bar': Progress bar setting
     """
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
@@ -112,7 +125,9 @@ def fit_sorted_spikes_kde_encoding_model(
         is_track_interior = environment.is_track_interior_.ravel()
     else:
         if environment.place_bin_centers_ is None:
-            raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
+            raise ValueError(
+                "place_bin_centers_ is required when is_track_interior_ is None"
+            )
         is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
     if weights is None:

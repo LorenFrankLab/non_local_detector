@@ -50,6 +50,71 @@ state_names = [
 
 
 class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
+    """Classifier for multi-environment neural activity using sorted spike data.
+
+    This classifier uses a two-state Hidden Markov Model to distinguish between
+    neural activity corresponding to two different spatial environments using
+    sorted spike data. Each state represents neural activity associated with
+    a specific environment, allowing classification of which environment the
+    animal is mentally representing.
+
+    The model transitions:
+    - Environment 1: Uses RandomWalk within env1, Uniform transition to env2
+    - Environment 2: Uses Uniform transition from env1, RandomWalk within env2
+
+    Parameters
+    ----------
+    discrete_initial_conditions : np.ndarray, shape (2,), optional
+        Initial probabilities for [env1, env2] states, by default
+        np.array([1.0, 0.0]) (starts in environment 1).
+    continuous_initial_conditions_types : ContinuousInitialConditions, optional
+        Initial condition types for continuous states, by default uniform
+        initial conditions for both environments.
+    discrete_transition_type : DiscreteTransitions, optional
+        Type of discrete state transitions, by default stationary diagonal
+        with high self-transition probabilities [99.9%, 98%].
+    discrete_transition_concentration : float, optional
+        Concentration parameter for discrete transitions, by default 1.1.
+    discrete_transition_stickiness : Stickiness, shape (2,), optional
+        Stickiness parameters for state persistence, by default [200.0, 30.0]
+        favoring environment 1 persistence.
+    discrete_transition_regularization : float, optional
+        Regularization parameter for transitions, by default 1e-10.
+    continuous_transition_types : ContinuousTransitions or None, optional
+        Transition types for continuous states. If None, uses environment-specific
+        transitions with RandomWalk within environments and Uniform between.
+    observation_models : Observations, optional
+        Observation models for each environment, by default environment-specific
+        ObservationModel instances.
+    environments : Environments, optional
+        Environment specifications, by default [env1, env2] Environment instances.
+    sorted_spikes_algorithm : str, optional
+        Algorithm for sorted spikes likelihood, by default 'sorted_spikes_kde'.
+    sorted_spikes_algorithm_params : dict, optional
+        Parameters for the sorted spikes algorithm, by default uses package defaults.
+    infer_track_interior : bool, optional
+        Whether to infer track interior during decoding, by default True.
+    state_names : StateNames, optional
+        Names for the environments, by default ['env1', 'env2'].
+    sampling_frequency : float, optional
+        Data sampling frequency in Hz, by default 500.
+    no_spike_rate : float, optional
+        Rate parameter for no-spike periods, by default 1e-10.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from non_local_detector.models.multienvironment_model import MultiEnvironmentSortedSpikesClassifier
+    >>> # Create classifier with default parameters
+    >>> classifier = MultiEnvironmentSortedSpikesClassifier()
+    >>> # Fit to training data from both environments
+    >>> classifier.fit(position, spikes)
+    >>> # Classify test data
+    >>> results = classifier.predict(test_spikes)
+    >>> # Extract environment probabilities
+    >>> env_probs = results.acausal_posterior.sum('position')
+    """
+
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray = discrete_initial_conditions,
@@ -99,6 +164,70 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
 
 
 class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
+    """Classifier for multi-environment neural activity using clusterless data.
+
+    This classifier uses a two-state Hidden Markov Model to distinguish between
+    neural activity corresponding to two different spatial environments using
+    clusterless (continuous) spike data. Each state represents neural activity
+    associated with a specific environment, allowing classification of which
+    environment the animal is mentally representing.
+
+    The model uses simplified transitions with RandomWalk dynamics, suitable
+    for clusterless data analysis in multi-environment contexts.
+
+    Parameters
+    ----------
+    discrete_initial_conditions : np.ndarray, shape (2,), optional
+        Initial probabilities for [env1, env2] states, by default
+        np.array([1.0, 0.0]) (starts in environment 1).
+    continuous_initial_conditions_types : ContinuousInitialConditions, optional
+        Initial condition types for continuous states, by default uniform
+        initial conditions for both environments.
+    discrete_transition_type : DiscreteTransitions, optional
+        Type of discrete state transitions, by default stationary diagonal
+        with high self-transition probabilities [99.9%, 98%].
+    discrete_transition_concentration : float, optional
+        Concentration parameter for discrete transitions, by default 1.1.
+    discrete_transition_stickiness : Stickiness, shape (2,), optional
+        Stickiness parameters for state persistence, by default [200.0, 30.0]
+        favoring environment 1 persistence.
+    discrete_transition_regularization : float, optional
+        Regularization parameter for transitions, by default 1e-10.
+    continuous_transition_types : ContinuousTransitions or None, optional
+        Transition types for continuous states. If None, uses RandomWalk
+        dynamics for clusterless data.
+    observation_models : Observations, optional
+        Observation models for each environment, by default environment-specific
+        ObservationModel instances.
+    environments : Environments, optional
+        Environment specifications, by default [env1, env2] Environment instances.
+    clusterless_algorithm : str, optional
+        Algorithm for clusterless data likelihood, by default 'clusterless_kde'.
+    clusterless_algorithm_params : dict, optional
+        Parameters for the clusterless algorithm, by default uses package defaults.
+    infer_track_interior : bool, optional
+        Whether to infer track interior during decoding, by default True.
+    state_names : StateNames, optional
+        Names for the environments, by default ['env1', 'env2'].
+    sampling_frequency : float, optional
+        Data sampling frequency in Hz, by default 500.0.
+    no_spike_rate : float, optional
+        Rate parameter for no-spike periods, by default 1e-10.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from non_local_detector.models.multienvironment_model import MultiEnvironmentClusterlessClassifier
+    >>> # Create classifier with default parameters
+    >>> classifier = MultiEnvironmentClusterlessClassifier()
+    >>> # Fit to training data from both environments
+    >>> classifier.fit(position, clusterless_spikes)
+    >>> # Classify test data
+    >>> results = classifier.predict(test_clusterless_spikes)
+    >>> # Extract environment probabilities
+    >>> env_probs = results.acausal_posterior.sum('position')
+    """
+
     def __init__(
         self,
         discrete_initial_conditions: np.ndarray = discrete_initial_conditions,

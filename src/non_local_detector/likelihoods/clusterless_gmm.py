@@ -23,23 +23,37 @@ from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 
 
 def _as_jnp(x) -> jnp.ndarray:
+    """Convert input to JAX array if not already.
+
+    Parameters
+    ----------
+    x : array-like
+        Input to convert to JAX array.
+
+    Returns
+    -------
+    jnp.ndarray
+        JAX array version of input.
+    """
     return x if isinstance(x, jnp.ndarray) else jnp.asarray(x)
 
 
 def get_spike_time_bin_ind(
     spike_times: jnp.ndarray, time_bin_edges: jnp.ndarray
 ) -> jnp.ndarray:
-    """
-    Map spike times to decoding time-bin indices on device.
+    """Map spike times to decoding time-bin indices on device.
 
     Parameters
     ----------
     spike_times : jnp.ndarray, shape (n_spikes,)
+        Array of spike times to map to bins.
     time_bin_edges : jnp.ndarray, shape (n_bins + 1,)
+        Edges of time bins defining intervals [t0, t1), ..., [t_{n-1}, tn].
 
     Returns
     -------
     bin_indices : jnp.ndarray, shape (n_spikes,)
+        Index of time bin for each spike (0 to n_bins-1).
     """
     # Right-closed bins [t_i, t_{i+1}), except the last edge which is included
     inds = np.searchsorted(time_bin_edges, spike_times, side="right") - 1
@@ -50,12 +64,38 @@ def get_spike_time_bin_ind(
 
 
 def _gmm_logp(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
-    """Log density under a fitted GMM."""
+    """Log density under a fitted GMM.
+
+    Parameters
+    ----------
+    gmm : GaussianMixtureModel
+        Fitted Gaussian mixture model.
+    X : jnp.ndarray, shape (n_samples, n_features)
+        Input samples to evaluate.
+
+    Returns
+    -------
+    log_density : jnp.ndarray, shape (n_samples,)
+        Log probability density for each sample.
+    """
     return gmm.score_samples(X)
 
 
 def _gmm_density(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
-    """Density under a fitted GMM."""
+    """Density under a fitted GMM.
+
+    Parameters
+    ----------
+    gmm : GaussianMixtureModel
+        Fitted Gaussian mixture model.
+    X : jnp.ndarray, shape (n_samples, n_features)
+        Input samples to evaluate.
+
+    Returns
+    -------
+    density : jnp.ndarray, shape (n_samples,)
+        Probability density for each sample.
+    """
     return jnp.exp(gmm.score_samples(X))
 
 
@@ -69,7 +109,34 @@ def _fit_gmm_density(
     max_iter: int = 200,
     tol: float = 1e-3,
 ) -> GaussianMixtureModel:
-    """Fit a GMM density model on samples X (optionally weighted)."""
+    """Fit a GMM density model on samples X (optionally weighted).
+
+    Parameters
+    ----------
+    X : jnp.ndarray, shape (n_samples, n_features)
+        Input samples for fitting.
+    weights : jnp.ndarray, shape (n_samples,), optional
+        Sample weights, by default None (uniform weights).
+    n_components : int
+        Number of Gaussian components in the mixture.
+    random_state : int, optional
+        Random seed for reproducible initialization, by default None.
+    covariance_type : str, optional
+        Covariance parameterization {'full', 'tied', 'diag', 'spherical'},
+        by default "full".
+    reg_covar : float, optional
+        Regularization term added to diagonal of covariance matrices,
+        by default 1e-6.
+    max_iter : int, optional
+        Maximum EM iterations, by default 200.
+    tol : float, optional
+        Convergence threshold, by default 1e-3.
+
+    Returns
+    -------
+    gmm : GaussianMixtureModel
+        Fitted Gaussian mixture model.
+    """
     key = jax.random.PRNGKey(0 if random_state is None else random_state)
     gmm = GaussianMixtureModel(
         n_components=n_components,
@@ -184,7 +251,9 @@ def fit_clusterless_gmm_encoding_model(
         is_track_interior = environment.is_track_interior_.ravel()
     else:
         if environment.place_bin_centers_ is None:
-            raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
+            raise ValueError(
+                "place_bin_centers_ is required when is_track_interior_ is None"
+            )
         is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
     interior_place_bin_centers = _as_jnp(
         environment.place_bin_centers_[is_track_interior]
@@ -397,6 +466,20 @@ def predict_clusterless_gmm_log_likelihood(
 
         # Joint logp for each mark vs all bins — VMAP for lower memory
         def mark_logp(mark: jnp.ndarray, gmm_model: object) -> jnp.ndarray:
+            """Compute joint log probability for mark across all position bins.
+
+            Parameters
+            ----------
+            mark : jnp.ndarray, shape (n_features,)
+                Spike waveform features.
+            gmm_model : GaussianMixtureModel
+                Joint position-mark GMM model.
+
+            Returns
+            -------
+            jnp.ndarray, shape (n_bins,)
+                Log probability of joint (position, mark) for each position bin.
+            """
             # Build [bin_centers, mark] without forming (B*n_bins, ...) at once
             tiled_mark = jnp.repeat(mark[None, :], n_bins, axis=0)  # (n_bins, M)
             eval_points = jnp.concatenate(
@@ -434,12 +517,32 @@ def compute_local_log_likelihood(
     encoding_model: EncodingModel,
     disable_progress_bar: bool = False,
 ) -> jnp.ndarray:
-    """
-    Local log-likelihood at the animal's interpolated position.
+    """Local log-likelihood at the animal's interpolated position.
+
+    Computes the likelihood of observing spikes at the animal's true position
+    at each time bin, using the fitted GMM encoding model.
+
+    Parameters
+    ----------
+    time : jnp.ndarray, shape (n_time + 1,)
+        Time bin edges for decoding.
+    position_time : jnp.ndarray, shape (n_time_position,)
+        Timestamps for position samples.
+    position : jnp.ndarray, shape (n_time_position, n_position_dims)
+        Position samples during decoding period.
+    spike_times : list[jnp.ndarray]
+        Spike times per electrode during decoding.
+    spike_waveform_features : list[jnp.ndarray]
+        Spike waveform features per electrode during decoding.
+    encoding_model : EncodingModel
+        Fitted encoding model containing GMM components.
+    disable_progress_bar : bool, optional
+        Turn off progress bar display, by default False.
 
     Returns
     -------
     log_likelihood : jnp.ndarray, shape (n_time, 1)
+        Log likelihood at the animal's position for each time bin.
     """
     time = _as_jnp(time)
     position_time = _as_jnp(position_time)

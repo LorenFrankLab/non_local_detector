@@ -196,7 +196,26 @@ multinomial_hessian = jax.hessian(multinomial_neg_log_likelihood)
 def get_transition_prior(
     concentration: float, stickiness: float | np.ndarray, n_states: int
 ) -> np.ndarray:
-    """Creates a Dirichlet prior for the transition matrix rows."""
+    """Creates a Dirichlet prior for the transition matrix rows.
+
+    Constructs prior parameters for a Dirichlet distribution over transition
+    matrix rows, incorporating base concentration and state-specific stickiness.
+
+    Parameters
+    ----------
+    concentration : float
+        Base concentration parameter for the Dirichlet prior.
+    stickiness : float or np.ndarray, shape (n_states,)
+        Stickiness parameter(s) for diagonal entries. If float, same value
+        is applied to all states. If array, per-state stickiness values.
+    n_states : int
+        Number of discrete states.
+
+    Returns
+    -------
+    prior_params : np.ndarray, shape (n_states, n_states)
+        Dirichlet prior parameters for each transition matrix row.
+    """
     if isinstance(stickiness, (int, float)):
         stickiness_arr = stickiness * np.eye(n_states)
     else:

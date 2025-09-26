@@ -80,16 +80,25 @@ def make_2D_track_graph_from_environment(
 
 
 def get_bin_ind(sample: np.ndarray, edges: list) -> np.ndarray:
-    """Find the indices of the bins to which each value in input array belongs.
+    """Find the bin indices for multidimensional sample points.
+
+    Determines which bin each sample point belongs to in a multidimensional
+    histogram, similar to numpy's digitize but for multiple dimensions.
+    Handles edge cases where points fall exactly on bin edges.
 
     Parameters
     ----------
     sample : np.ndarray, shape (n_time, n_dim)
-    edges : list of np.ndarray, shape (n_bins,)
+        Sample points to bin. Each row is a point, each column is a dimension.
+    edges : list of np.ndarray
+        List of bin edge arrays, one per dimension. Each array has shape
+        (n_bins + 1,) defining the bin boundaries.
 
     Returns
     -------
     bin_ind : np.ndarray, shape (n_time,)
+        Flattened bin indices for each sample point. Uses row-major ordering
+        to convert multidimensional bin coordinates to linear indices.
 
     """
     try:
@@ -386,24 +395,31 @@ def _gaussian_smooth(
     axis: int = 0,
     truncate: int = 8,
 ) -> np.ndarray:
-    """1D convolution of the data with a Gaussian.
+    """Apply 1D Gaussian smoothing to data along specified axis.
 
     The standard deviation of the gaussian is in the units of the sampling
     frequency. The function is just a wrapper around scipy's
-    `gaussian_filter1d`, The support is truncated at 8 by default, instead
-    of 4 in `gaussian_filter1d`
+    `gaussian_filter1d`. The support is truncated at 8 by default, instead
+    of 4 in `gaussian_filter1d`.
 
     Parameters
     ----------
-    data : array_like
+    data : np.ndarray
+        Input data to be smoothed.
     sigma : float
-    sampling_frequency : int
+        Standard deviation of the Gaussian kernel in units of sampling frequency.
+    sampling_frequency : float
+        Sampling rate of the data in Hz.
     axis : int, optional
+        Axis along which to apply smoothing, by default 0.
     truncate : int, optional
+        Truncate the Gaussian kernel at this many standard deviations,
+        by default 8.
 
     Returns
     -------
-    smoothed_data : array_like
+    smoothed_data : np.ndarray
+        Smoothed data with same shape as input.
 
     """
     return gaussian_filter1d(

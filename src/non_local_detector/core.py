@@ -65,7 +65,14 @@ def _divide_safe(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.ndarra
     Parameters
     ----------
     numerator : jnp.ndarray
+        Numerator array.
     denominator : jnp.ndarray
+        Denominator array.
+
+    Returns
+    -------
+    result : jnp.ndarray
+        Element-wise division result with safe handling of zero denominators.
     """
     return jnp.where(denominator == 0.0, 0.0, numerator / denominator)
 
@@ -370,6 +377,34 @@ def most_likely_sequence(
     log_likelihoods: np.ndarray | None = None,
     n_chunks: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Compute the most likely state sequence using the Viterbi algorithm.
+
+    Parameters
+    ----------
+    time : np.ndarray, shape (n_time,)
+        Time indices.
+    initial_distribution : np.ndarray, shape (n_states,)
+        Initial state distribution.
+    transition_matrix : np.ndarray, shape (n_states, n_states)
+        State transition probability matrix.
+    log_likelihood_func : callable
+        Function to compute log likelihoods.
+    log_likelihood_args : tuple
+        Arguments to pass to log_likelihood_func.
+    is_missing : np.ndarray, shape (n_time,), optional
+        Boolean array indicating missing observations, by default None.
+    log_likelihoods : np.ndarray, shape (n_time, n_states), optional
+        Pre-computed log likelihoods, by default None.
+    n_chunks : int, optional
+        Number of chunks (not yet implemented for > 1), by default 1.
+
+    Returns
+    -------
+    most_likely_sequence : np.ndarray, shape (n_time,)
+        Most likely state sequence.
+    log_likelihoods : np.ndarray, shape (n_time, n_states)
+        Log likelihoods for each state at each time point.
+    """
     if n_chunks > 1:
         raise NotImplementedError("Chunked Viterbi is not yet implemented.")
 
@@ -667,21 +702,27 @@ def viterbi_covariate_dependent(
     state_ind: jnp.ndarray,
     log_likelihoods: jnp.ndarray,
 ) -> jnp.ndarray:
-    r"""Compute the most likely state sequence. This is called the Viterbi algorithm.
+    r"""Compute the most likely state sequence with covariate dependent transitions.
+
+    Uses the Viterbi algorithm with time-varying transition matrices.
 
     Parameters
     ----------
-    initial_distribution : jnp.ndarray, shape (n_states,)
-        Initial state distribution
-    transition_matrix : jnp.ndarray, shape (n_states, n_states)
-        Transition matrix
-    log_likelihoods : jnp.ndarray, shape (n_time, n_states)
-        Log likelihoods for each state at each time point
+    initial_distribution : jnp.ndarray, shape (n_state_bins,)
+        Initial state distribution.
+    discrete_transition_matrix : jnp.ndarray, shape (n_time, n_states, n_states)
+        Time-varying discrete transition matrices.
+    continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
+        Continuous transition matrix.
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+        State indices connecting discrete states to state space bins.
+    log_likelihoods : jnp.ndarray, shape (n_time, n_state_bins)
+        Log likelihoods for each state bin at each time point.
 
     Returns
     -------
     most_likely_state_sequence : jnp.ndarray, shape (n_time,)
-
+        Most likely state sequence.
     """
 
     # Run the backward pass
@@ -730,6 +771,40 @@ def most_likely_sequence_covariate_dependent(
     log_likelihoods: np.ndarray | None = None,
     n_chunks: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Compute the most likely state sequence with covariate dependent transitions.
+
+    Wrapper function for Viterbi algorithm with time-varying transition matrices.
+
+    Parameters
+    ----------
+    time : np.ndarray, shape (n_time,)
+        Time indices.
+    state_ind : np.ndarray, shape (n_state_bins,)
+        State indices connecting discrete states to state space bins.
+    initial_distribution : np.ndarray, shape (n_state_bins,)
+        Initial state distribution.
+    discrete_transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
+        Time-varying discrete transition matrices.
+    continuous_transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
+        Continuous transition matrix.
+    log_likelihood_func : callable
+        Function to compute log likelihoods.
+    log_likelihood_args : tuple
+        Arguments to pass to log_likelihood_func.
+    is_missing : np.ndarray, shape (n_time,), optional
+        Boolean array indicating missing observations, by default None.
+    log_likelihoods : np.ndarray, shape (n_time, n_state_bins), optional
+        Pre-computed log likelihoods, by default None.
+    n_chunks : int, optional
+        Number of chunks (not yet implemented for > 1), by default 1.
+
+    Returns
+    -------
+    most_likely_sequence : np.ndarray, shape (n_time,)
+        Most likely state sequence.
+    log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
+        Log likelihoods for each state bin at each time point.
+    """
     if n_chunks > 1:
         raise NotImplementedError("Chunked Viterbi is not yet implemented.")
 

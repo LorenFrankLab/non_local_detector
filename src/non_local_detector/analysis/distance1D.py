@@ -15,24 +15,31 @@ def _gaussian_smooth(
     axis: int = 0,
     truncate: int = 8,
 ) -> np.ndarray:
-    """1D convolution of the data with a Gaussian.
+    """Apply 1D Gaussian smoothing to data along specified axis.
 
     The standard deviation of the gaussian is in the units of the sampling
     frequency. The function is just a wrapper around scipy's
     `gaussian_filter1d`, The support is truncated at 8 by default, instead
-    of 4 in `gaussian_filter1d`
+    of 4 in `gaussian_filter1d`.
 
     Parameters
     ----------
-    data : array_like
+    data : np.ndarray
+        Input data to be smoothed.
     sigma : float
-    sampling_frequency : int
+        Standard deviation of the Gaussian kernel in units of sampling frequency.
+    sampling_frequency : float
+        Sampling rate of the data in Hz.
     axis : int, optional
+        Axis along which to apply smoothing, by default 0.
     truncate : int, optional
+        Truncate the Gaussian kernel at this many standard deviations,
+        by default 8.
 
     Returns
     -------
-    smoothed_data : array_like
+    smoothed_data : np.ndarray
+        Smoothed data with same shape as input.
 
     """
     return gaussian_filter1d(
@@ -46,27 +53,32 @@ def _get_MAP_estimate_2d_position_edges(
     decoder: _DetectorBase,
     environment_name: str = "",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Get the most likely position of the posterior position and the edges
-    of the track graph that the position corresponds to.
+    """Extract MAP estimate 2D positions and corresponding track graph edges.
+
+    Computes the maximum a posteriori (MAP) estimate of position from the
+    posterior distribution and identifies which edges of the track graph
+    these positions correspond to.
 
     Parameters
     ----------
-    posterior : xarray.DataArray, shape (n_time, n_position_bins)
-        Decoded probability of position
-    track_graph : networkx.Graph
-        Graph representation of the environment
-    decoder : SortedSpikesDecoder, ClusterlessDecoder, SortedSpikesClassifier,
-                ClusterlessClassifier
-            Model used to decode the data
+    posterior : xr.DataArray, shape (n_time, n_position_bins)
+        Decoded posterior probability distribution over position bins.
+    track_graph : nx.Graph
+        Graph representation of the track environment with nodes and edges.
+    decoder : _DetectorBase
+        Fitted decoder model containing environment information and place
+        bin mappings.
     environment_name : str, optional
-        Name of the environment
+        Name of the specific environment to use, by default "".
+        If empty, uses the decoder's default environment.
 
     Returns
     -------
-    mental_position_2d : numpy.ndarray, shape (n_time, 2)
-        Most likely decoded position
-    mental_position_edges : numpy.ndarray, shape (n_time,)
-        Edge of the `track_graph` that most likely decoded position corresponds
+    mental_position_2d : np.ndarray, shape (n_time, 2)
+        Most likely decoded 2D position coordinates for each time point.
+    mental_position_edges : np.ndarray, shape (n_time, 2)
+        Corresponding track graph edges (node pairs) for each MAP position.
+
     """
     try:
         environments = decoder.environments
@@ -105,18 +117,25 @@ def _get_MAP_estimate_2d_position_edges(
 def _points_toward_node(
     track_graph: nx.Graph, edge: np.ndarray, head_direction: np.ndarray
 ) -> object:
-    """Given an edge, determine the node the head is pointed toward
+    """Determine which node of an edge the head direction vector points toward.
+
+    Given an edge defined by two nodes and a head direction angle, computes
+    which node the head is pointing toward based on the dot product of the
+    edge vector and head direction vector.
 
     Parameters
     ----------
-    track_graph : networkx.Graph
-    edge : array-like, shape (2,)
-    head_direction : array-like
-        Angle of head in radians
+    track_graph : nx.Graph
+        Graph containing node position information.
+    edge : np.ndarray, shape (2,)
+        Array containing two node identifiers defining the edge.
+    head_direction : np.ndarray, shape ()
+        Head orientation angle in radians.
 
     Returns
     -------
     node : object
+        Node identifier of the node that the head direction points toward.
 
     """
     edge = np.asarray(edge)
@@ -130,18 +149,26 @@ def _points_toward_node(
 
 def _get_distance_between_nodes(
     track_graph: nx.Graph, node1: Hashable, node2: Hashable
-):
-    """Get the distance between two nodes in the track graph
+) -> float:
+    """Calculate Euclidean distance between two nodes in the track graph.
+
+    Computes the straight-line distance between two nodes using their
+    2D position coordinates stored in the graph.
 
     Parameters
     ----------
     track_graph : nx.Graph
+        Graph containing node position data in 'pos' attribute.
     node1 : Hashable
+        Identifier for the first node.
     node2 : Hashable
+        Identifier for the second node.
 
     Returns
     -------
     distance : float
+        Euclidean distance between the two nodes.
+
     """
     node1_pos = np.asarray(track_graph.nodes[node1]["pos"])
     node2_pos = np.asarray(track_graph.nodes[node2]["pos"])
@@ -156,21 +183,32 @@ def _setup_track_graph(
     mental_pos: np.ndarray,
     mental_edge: np.ndarray,
 ) -> nx.Graph:
-    """Takes the track graph and add nodes for the animal's actual position,
-    mental position, and head direction.
+    """Add temporary nodes and edges for actual and mental positions.
+
+    Modifies the track graph by inserting temporary nodes representing
+    the animal's actual position, head position, and mental (decoded)
+    position. Connects these nodes to the existing track structure with
+    appropriate edge weights based on distances.
 
     Parameters
     ----------
     track_graph : nx.Graph
-    actual_pos : array-like, shape (2,)
-    actual_edge : array-like, shape (2,)
+        Original track graph to be modified.
+    actual_pos : np.ndarray, shape (2,)
+        2D coordinates of animal's actual position.
+    actual_edge : np.ndarray, shape (2,)
+        Node identifiers defining the edge where actual position lies.
     head_direction : float
-    mental_pos : array-like, shape (2,)
-    mental_edge : array-like, shape (2,)
+        Head orientation angle in radians.
+    mental_pos : np.ndarray, shape (2,)
+        2D coordinates of decoded mental position.
+    mental_edge : np.ndarray, shape (2,)
+        Node identifiers defining the edge where mental position lies.
 
     Returns
     -------
     track_graph : nx.Graph
+        Modified graph with temporary nodes and connecting edges added.
 
     """
     track_graph.add_node("actual_position", pos=actual_pos)
@@ -231,20 +269,28 @@ def _calculate_ahead_behind(
     source: Hashable = "actual_position",
     target: Hashable = "mental_position",
 ) -> int:
-    """Calculate whether the animal is ahead or behind the mental position
+    """Determine if target position is ahead or behind source along track.
+
+    Calculates the directional relationship between two positions by finding
+    the shortest path and checking if the head direction node lies on this path.
+    If the head node is on the path, the target is ahead; otherwise, it's behind.
 
     Parameters
     ----------
     track_graph : nx.Graph
+        Track graph containing temporary nodes for actual position, mental
+        position, and head direction.
     source : Hashable, optional
-        Node ID, by default "actual_position"
+        Starting node identifier, by default "actual_position".
     target : Hashable, optional
-        Node ID, by default "mental_position"
+        Target node identifier, by default "mental_position".
 
     Returns
     -------
     sign : int
-        1 if ahead, -1 if behind
+        Direction indicator: 1 if target is ahead of source,
+        -1 if target is behind source.
+
     """
     path = nx.shortest_path(
         track_graph,
@@ -261,19 +307,25 @@ def _calculate_distance(
     source: Hashable = "actual_position",
     target: Hashable = "mental_position",
 ) -> float:
-    """Calculate the distance between two nodes in the track graph
+    """Calculate shortest path distance between two nodes in track graph.
+
+    Computes the weighted shortest path distance between source and target
+    nodes using the 'distance' edge attribute as weights.
 
     Parameters
     ----------
     track_graph : nx.Graph
+        Track graph with distance-weighted edges.
     source : Hashable, optional
-        Node ID, by default "actual_position"
+        Starting node identifier, by default "actual_position".
     target : Hashable, optional
-        Node ID, by default "mental_position"
+        Target node identifier, by default "mental_position".
 
     Returns
     -------
     shortest_path_distance : float
+        Total distance along the shortest path from source to target.
+
     """
     return nx.shortest_path_length(
         track_graph, source=source, target=target, weight="distance"

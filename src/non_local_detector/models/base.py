@@ -11,7 +11,7 @@ import scipy.ndimage  # type: ignore[import-untyped]
 import seaborn as sns  # type: ignore[import-untyped]
 import sklearn  # type: ignore[import-untyped]
 import xarray as xr
-from patsy import build_design_matrices, DesignMatrix  # type: ignore[import-untyped]
+from patsy import DesignMatrix, build_design_matrices  # type: ignore[import-untyped]
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
@@ -187,9 +187,9 @@ class _DetectorBase(BaseEstimator):
             raise ValueError(
                 "Number of discrete initial conditions must match number of continuous transition types."
             )
-        if not isinstance(discrete_transition_stickiness, float) and len(discrete_initial_conditions) != len(
-            discrete_transition_stickiness
-        ):
+        if not isinstance(discrete_transition_stickiness, float) and len(
+            discrete_initial_conditions
+        ) != len(discrete_transition_stickiness):
             raise ValueError(
                 "Discrete transition stickiness must be set for all states or a float"
             )
@@ -593,7 +593,9 @@ class _DetectorBase(BaseEstimator):
             state_names = self.state_names
 
             if discrete_transition_design_matrix is None:
-                raise ValueError("discrete_transition_design_matrix_ is None for covariate-dependent prediction")
+                raise ValueError(
+                    "discrete_transition_design_matrix_ is None for covariate-dependent prediction"
+                )
 
             predict_matrix = build_design_matrices(
                 [discrete_transition_design_matrix.design_info],
@@ -1251,7 +1253,9 @@ class _DetectorBase(BaseEstimator):
                     self.environments.index(obs.environment_name)
                 ]
                 if environment.place_bin_centers_ is None:
-                    raise ValueError(f"place_bin_centers_ is None for environment {obs.environment_name}")
+                    raise ValueError(
+                        f"place_bin_centers_ is None for environment {obs.environment_name}"
+                    )
                 position.append(environment.place_bin_centers_)
         position = np.concatenate(position, axis=0)
 
@@ -1337,7 +1341,9 @@ class _DetectorBase(BaseEstimator):
                     self.environments.index(obs.environment_name)
                 ]
                 if environment.place_bin_centers_ is None:
-                    raise ValueError(f"place_bin_centers_ is None for environment {obs.environment_name}")
+                    raise ValueError(
+                        f"place_bin_centers_ is None for environment {obs.environment_name}"
+                    )
                 position.append(environment.place_bin_centers_)
                 environment_names.append(
                     [obs.environment_name] * environment.place_bin_centers_.shape[0]
@@ -1813,7 +1819,9 @@ class ClusterlessDetector(_DetectorBase):
 
         if discrete_transition_covariate_data is not None:
             if self.discrete_transition_coefficients_ is None:
-                raise ValueError("discrete_transition_coefficients_ is None but covariate data provided")
+                raise ValueError(
+                    "discrete_transition_coefficients_ is None but covariate data provided"
+                )
             self.discrete_state_transitions_ = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,
@@ -2413,7 +2421,9 @@ class SortedSpikesDetector(_DetectorBase):
 
         if discrete_transition_covariate_data is not None:
             if self.discrete_transition_coefficients_ is None:
-                raise ValueError("discrete_transition_coefficients_ is None but covariate data provided")
+                raise ValueError(
+                    "discrete_transition_coefficients_ is None but covariate data provided"
+                )
             self.discrete_state_transitions_ = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,

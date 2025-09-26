@@ -543,7 +543,9 @@ try:
         )
 
         if spike_times is None:
-            raise ValueError("spike_times is required for multiunit firing rate visualization")
+            raise ValueError(
+                "spike_times is required for multiunit firing rate visualization"
+            )
         multiunit_firing_rate = get_multiunit_firing_rate(
             spike_times, results.time.values
         )

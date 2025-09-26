@@ -329,16 +329,21 @@ def safe_divide(numerator, denominator, eps=EPS, condition=None):
     Parameters
     ----------
     numerator : jnp.ndarray
+        Numerator array of any shape.
     denominator : jnp.ndarray
+        Denominator array, must be broadcastable with numerator.
     eps : float, optional
-        Small value to avoid division by zero, by default 1e-8
+        Small value to avoid division by zero, by default 1e-8.
     condition : jnp.ndarray, optional
-        Condition to apply the division, by default None
+        Boolean condition array to apply the division, by default None.
+        If None, condition is computed as abs(denominator) < eps.
         Useful if pre-computing the condition is more efficient.
 
     Returns
     -------
-    jnp.ndarray
+    result : jnp.ndarray
+        Result of safe division with same shape as broadcast of inputs.
+        Where condition is True, returns eps instead of dividing.
     """
     if condition is None:
         condition = jnp.abs(denominator) < eps
@@ -352,15 +357,19 @@ def safe_log(x, eps=EPS, condition=None):
     Parameters
     ----------
     x : jnp.ndarray
+        Input array of any shape.
     eps : float, optional
-        Small value to avoid log(0), by default 1e-8
+        Small value to avoid log(0), by default 1e-8.
     condition : jnp.ndarray, optional
-        Condition to apply the logarithm, by default None
+        Boolean condition array to apply the logarithm, by default None.
+        If None, condition is computed as abs(x) < eps.
         Useful if pre-computing the condition is more efficient.
 
     Returns
     -------
-    jnp.ndarray
+    result : jnp.ndarray
+        Logarithm of input array with same shape as x.
+        Where condition is True, returns log(eps) instead of log(0).
     """
     if condition is None:
         condition = jnp.abs(x) < eps

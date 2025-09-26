@@ -158,7 +158,9 @@ class RandomWalk:
     use_manifold_distance: bool = False
     direction: str | None = None
 
-    def make_state_transition(self, environments: tuple[Environment, ...]) -> np.ndarray:
+    def make_state_transition(
+        self, environments: tuple[Environment, ...]
+    ) -> np.ndarray:
         """Creates a transition matrix for a given environment.
 
         Parameters
@@ -181,7 +183,9 @@ class RandomWalk:
             is_track_interior = self.environment.is_track_interior_.ravel()
         else:
             if self.environment.place_bin_centers_ is None:
-                raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
+                raise ValueError(
+                    "place_bin_centers_ is required when is_track_interior_ is None"
+                )
             is_track_interior = np.ones(
                 len(self.environment.place_bin_centers_), dtype=bool
             )
@@ -252,7 +256,9 @@ class RandomWalk:
             )
 
         if self.environment.distance_between_nodes_ is None:
-            raise ValueError("Environment must have defined distance_between_nodes_ for track graph")
+            raise ValueError(
+                "Environment must have defined distance_between_nodes_ for track graph"
+            )
 
         return _random_walk_on_track_graph(
             self.environment.place_bin_centers_,
@@ -279,7 +285,9 @@ class Uniform:
     environment_name: str = ""
     environment2_name: str = None
 
-    def make_state_transition(self, environments: tuple[Environment, ...]) -> np.ndarray:
+    def make_state_transition(
+        self, environments: tuple[Environment, ...]
+    ) -> np.ndarray:
         """Creates a uniform transition matrix between environments.
 
         Parameters
@@ -338,7 +346,9 @@ class Identity:
 
     environment_name: str = ""
 
-    def make_state_transition(self, environments: tuple[Environment, ...]) -> np.ndarray:
+    def make_state_transition(
+        self, environments: tuple[Environment, ...]
+    ) -> np.ndarray:
         """Creates an identity transition matrix for a given environment.
 
         Parameters
@@ -457,7 +467,9 @@ class EmpiricalMovement:
         else:
             samples = np.concatenate((position[:-1], position[1:]), axis=1)
         if self.environment.position_range is None:
-            raise ValueError("Environment must have defined position_range for histogram computation")
+            raise ValueError(
+                "Environment must have defined position_range for histogram computation"
+            )
         state_transition, _ = np.histogramdd(
             samples,
             bins=self.environment.edges_ * 2,
@@ -490,7 +502,9 @@ class RandomWalkDirection1:
     environment_name: str = ""
     movement_var: float = 6.0
 
-    def make_state_transition(self, environments: tuple[Environment, ...]) -> np.ndarray:
+    def make_state_transition(
+        self, environments: tuple[Environment, ...]
+    ) -> np.ndarray:
         """Creates a unidirectional transition matrix.
 
         Parameters
@@ -528,7 +542,9 @@ class RandomWalkDirection2:
     environment_name: str = ""
     movement_var: float = 6.0
 
-    def make_state_transition(self, environments: tuple[Environment, ...]) -> np.ndarray:
+    def make_state_transition(
+        self, environments: tuple[Environment, ...]
+    ) -> np.ndarray:
         """Creates a unidirectional transition matrix.
 
         Parameters

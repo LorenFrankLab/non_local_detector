@@ -446,6 +446,34 @@ def plot_qq(
     scatter_kwargs: dict | None = None,
     ci_color: str = "red",
 ) -> plt.Axes:
+    """Create a Q-Q plot of rescaled ISIs against uniform distribution.
+
+    Plots the quantiles of the rescaled interspike intervals against the
+    expected quantiles from a uniform distribution to assess goodness-of-fit
+    of the point process model.
+
+    Parameters
+    ----------
+    uniform_rescaled_ISIs : np.ndarray, shape (n_spikes,)
+        Rescaled interspike intervals that should be uniformly distributed
+        if the model fits well.
+    ax : plt.Axes, optional
+        Matplotlib axes object to plot on. If None, uses current axes.
+    scatter_kwargs : dict, optional
+        Additional keyword arguments passed to scatter plot.
+    ci_color : str, optional
+        Color for confidence interval lines. Default is "red".
+
+    Returns
+    -------
+    ax : plt.Axes
+        Matplotlib axes object containing the plot.
+
+    Notes
+    -----
+    Points should lie approximately on the diagonal line if the rescaled
+    ISIs follow a uniform distribution, indicating good model fit.
+    """
     n_spikes = uniform_rescaled_ISIs.size
     uniform_quantiles = (np.arange(1, n_spikes + 1) - 0.5) / n_spikes
     sorted_ISIs = np.sort(uniform_rescaled_ISIs)
@@ -476,6 +504,37 @@ def plot_rescaled_ISI_autocorrelation(
     sampling_frequency: float = 1.0,
     lag_max: float | None = None,
 ) -> plt.Axes:
+    """Plot autocorrelation function of rescaled interspike intervals.
+
+    Visualizes the temporal dependence in rescaled ISIs. For a well-fitting
+    model, the autocorrelation should be near zero at all non-zero lags,
+    indicating independence of rescaled intervals.
+
+    Parameters
+    ----------
+    rescaled_ISI_autocorrelation : np.ndarray, shape (2*n_spikes-1,)
+        Autocorrelation function of rescaled ISIs computed using correlation.
+    ax : plt.Axes, optional
+        Matplotlib axes object to plot on. If None, uses current axes.
+    scatter_kwargs : dict, optional
+        Additional keyword arguments passed to scatter plot.
+    ci_color : str, optional
+        Color for confidence interval lines. Default is "red".
+    sampling_frequency : float, optional
+        Sampling frequency of the data in Hz. Default is 1.0.
+    lag_max : float, optional
+        Maximum lag to display in time units. If None, shows all lags.
+
+    Returns
+    -------
+    ax : plt.Axes
+        Matplotlib axes object containing the plot.
+
+    Notes
+    -----
+    Points outside the confidence interval lines suggest temporal dependence
+    in the rescaled ISIs, indicating potential model misfit.
+    """
     n_spikes = rescaled_ISI_autocorrelation.size // 2 + 1
     lag = np.arange(-n_spikes + 1, n_spikes) / sampling_frequency
 
