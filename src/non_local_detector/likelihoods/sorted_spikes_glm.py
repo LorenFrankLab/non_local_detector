@@ -254,6 +254,8 @@ def fit_sorted_spikes_glm_encoding_model(
     if environment.is_track_interior_ is not None:
         is_track_interior = environment.is_track_interior_.ravel()
     else:
+        if environment.place_bin_centers_ is None:
+            raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
         is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
     interior_place_bin_centers = jnp.asarray(
         environment.place_bin_centers_[is_track_interior]
@@ -270,6 +272,9 @@ def fit_sorted_spikes_glm_encoding_model(
     )
     if weights is None:
         weights = jnp.ones((position.shape[0],))
+
+    # Ensure weights is not None for type checking
+    assert weights is not None
 
     coefficients = []
     place_fields = []

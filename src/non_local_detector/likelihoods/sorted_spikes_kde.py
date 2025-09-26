@@ -105,9 +105,14 @@ def fit_sorted_spikes_kde_encoding_model(
         else:
             position_std = jnp.array([position_std] * position.shape[1])
 
+    # Ensure position_std is a JAX array for KDEModel
+    assert isinstance(position_std, jnp.ndarray)
+
     if environment.is_track_interior_ is not None:
         is_track_interior = environment.is_track_interior_.ravel()
     else:
+        if environment.place_bin_centers_ is None:
+            raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
         is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
     if weights is None:

@@ -246,6 +246,10 @@ def get_firing_rate(
     -------
     rate : np.ndarray, shape (n_position_bins,)
     """
+    # Set default block_size if None
+    if block_size is None:
+        block_size = len(position)
+
     if is_spike.sum() > 0:
         mean_rate = np.average(is_spike, weights=weights)
         marginal_density = np.zeros((place_bin_centers.shape[0],), dtype=np.float32)

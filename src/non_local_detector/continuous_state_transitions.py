@@ -180,6 +180,8 @@ class RandomWalk:
         if self.environment.is_track_interior_ is not None:
             is_track_interior = self.environment.is_track_interior_.ravel()
         else:
+            if self.environment.place_bin_centers_ is None:
+                raise ValueError("place_bin_centers_ is required when is_track_interior_ is None")
             is_track_interior = np.ones(
                 len(self.environment.place_bin_centers_), dtype=bool
             )
@@ -248,6 +250,10 @@ class RandomWalk:
             raise ValueError(
                 "Environment must have defined place_bin_centers_nodes_df_ for track graph"
             )
+
+        if self.environment.distance_between_nodes_ is None:
+            raise ValueError("Environment must have defined distance_between_nodes_ for track graph")
+
         return _random_walk_on_track_graph(
             self.environment.place_bin_centers_,
             self.movement_mean,
@@ -434,7 +440,8 @@ class EmpiricalMovement:
         position = position[is_training & is_encoding & is_environment]
 
         if (
-            len(self.environment.edges_) == 1
+            self.environment.edges_ is not None
+            and len(self.environment.edges_) == 1
             and self.environment.track_graph is not None
         ):
             position = get_linearized_position(
@@ -449,6 +456,8 @@ class EmpiricalMovement:
             samples = np.concatenate((position[1:], position[:-1]), axis=1)
         else:
             samples = np.concatenate((position[:-1], position[1:]), axis=1)
+        if self.environment.position_range is None:
+            raise ValueError("Environment must have defined position_range for histogram computation")
         state_transition, _ = np.histogramdd(
             samples,
             bins=self.environment.edges_ * 2,

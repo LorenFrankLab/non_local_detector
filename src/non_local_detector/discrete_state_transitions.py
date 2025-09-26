@@ -578,13 +578,19 @@ def _estimate_discrete_transition(
         )
 
     else:
+        # Convert stickiness to float if needed
+        if isinstance(transition_stickiness, np.ndarray):
+            stickiness_value = float(transition_stickiness.item())
+        else:
+            stickiness_value = transition_stickiness
+
         discrete_transition = estimate_stationary_state_transition(
             causal_state_probabilities,
             predictive_state_probabilities,
             discrete_transition,
             acausal_state_probabilities,
             concentration=transition_concentration,
-            stickiness=transition_stickiness,
+            stickiness=stickiness_value,
         )
 
     return (

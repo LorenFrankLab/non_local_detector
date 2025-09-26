@@ -22,6 +22,9 @@ def make_2D_track_graph_from_environment(
 
     track_graph = nx.Graph()
 
+    if environment.place_bin_centers_ is None:
+        raise ValueError("place_bin_centers_ is required for track graph construction")
+
     if environment.is_track_interior_ is not None:
         interior_data = environment.is_track_interior_.ravel()
     else:
@@ -37,6 +40,11 @@ def make_2D_track_graph_from_environment(
         track_graph.add_node(
             node_id, pos=tuple(node_position), is_track_interior=is_interior
         )
+
+    if environment.is_track_interior_ is None:
+        raise ValueError("is_track_interior_ is required for edge construction")
+    if environment.centers_shape_ is None:
+        raise ValueError("centers_shape_ is required for edge construction")
 
     edges = []
     for x_ind, y_ind in zip(*np.nonzero(environment.is_track_interior_), strict=False):
@@ -313,6 +321,8 @@ def head_direction_simliarity(
             map_estimate[:, 0] - head_position[:, 0],
         )
     else:
+        if edges is None:
+            raise ValueError("edges parameter is required when track_graph is provided")
         map_estimate_direction = get_map_estimate_direction_from_track_graph(
             head_position, map_estimate, track_graph, edges, precomputed_distance
         )
