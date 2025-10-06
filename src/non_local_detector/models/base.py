@@ -1213,6 +1213,32 @@ class _DetectorBase(BaseEstimator):
         """
         return copy.deepcopy(self)
 
+    @staticmethod
+    def _create_masked_posterior(
+        data: np.ndarray, is_track_interior: np.ndarray, n_total_bins: int
+    ) -> np.ndarray:
+        """
+        Create full posterior array with NaN for non-interior bins.
+
+        Parameters
+        ----------
+        data : np.ndarray, shape (n_time, n_interior_bins)
+            Posterior data for interior bins only.
+        is_track_interior : np.ndarray, shape (n_total_bins,)
+            Boolean mask indicating which bins are track interior.
+        n_total_bins : int
+            Total number of bins including non-interior.
+
+        Returns
+        -------
+        full_array : np.ndarray, shape (n_time, n_total_bins)
+            Full array with NaN for non-interior bins.
+        """
+        n_time = data.shape[0]
+        full_array = np.full((n_time, n_total_bins), np.nan, dtype=np.float32)
+        full_array[:, is_track_interior] = data
+        return full_array
+
     def _convert_results_to_xarray(
         self,
         time: np.ndarray,
@@ -1250,18 +1276,29 @@ class _DetectorBase(BaseEstimator):
         """
         is_track_interior = self.is_track_interior_state_bins_
 
+        # Extract environment and encoding group names in single pass
         environment_names = [obs.environment_name for obs in self.observation_models]
         encoding_group_names = [obs.encoding_group for obs in self.observation_models]
 
-        position = []
+        # Create environment lookup dict for O(1) access
+        env_dict = {env.environment_name: env for env in self.environments}
+
+        # Get position dimensionality
+        if not self.environments:
+            raise ValueError("No environments found")
         n_position_dims = self.environments[0].place_bin_centers_.shape[1]  # type: ignore[union-attr]
+
+        # Build position array
+        position = []
         for obs in self.observation_models:
             if obs.is_local or obs.is_no_spike:
                 position.append(np.full((1, n_position_dims), np.nan))
             else:
-                environment = self.environments[
-                    self.environments.index(obs.environment_name)
-                ]
+                environment = env_dict.get(obs.environment_name)
+                if environment is None:
+                    raise ValueError(
+                        f"Environment '{obs.environment_name}' not found in environments list"
+                    )
                 if environment.place_bin_centers_ is None:
                     raise ValueError(
                         f"place_bin_centers_ is None for environment {obs.environment_name}"
@@ -1271,13 +1308,19 @@ class _DetectorBase(BaseEstimator):
 
         states = np.asarray(self.state_names)
 
+        # Generate position dimension names
         if n_position_dims == 1:
             position_names = ["position"]
         else:
-            position_names = [
-                f"{name}_position"
-                for name, _ in zip(["x", "y", "z", "w"], position.T, strict=False)
-            ]
+            # Support arbitrary number of dimensions
+            dim_labels = ["x", "y", "z", "w", "v", "u"]  # Up to 6 dimensions
+            if n_position_dims <= len(dim_labels):
+                position_names = [
+                    f"{dim_labels[i]}_position" for i in range(n_position_dims)
+                ]
+            else:
+                # Fall back to numbered dimensions if > 6
+                position_names = [f"dim{i}_position" for i in range(n_position_dims)]
         state_bins = pd.MultiIndex.from_arrays(
             ((states[self.state_ind_], *list(position.T))),
             names=("state", *position_names),
@@ -1294,44 +1337,44 @@ class _DetectorBase(BaseEstimator):
 
         attrs = {"marginal_log_likelihoods": np.asarray(marginal_log_likelihoods)}
 
-        posterior_shape = (acausal_posterior.shape[0], len(is_track_interior))
-
-        results = xr.Dataset(
-            data_vars={
-                "acausal_posterior": (
-                    ("time", "state_bins"),
-                    np.full(posterior_shape, np.nan, dtype=np.float32),
+        # Build data_vars dict with masked posteriors
+        n_total_bins = len(is_track_interior)
+        data_vars = {
+            "acausal_posterior": (
+                ("time", "state_bins"),
+                self._create_masked_posterior(
+                    acausal_posterior, is_track_interior, n_total_bins
                 ),
-                "acausal_state_probabilities": (
-                    ("time", "states"),
-                    acausal_state_probabilities,
-                ),
-            },
-            coords=coords,
-            attrs=attrs,
-        )
-
-        results["acausal_posterior"][:, is_track_interior] = acausal_posterior
+            ),
+            "acausal_state_probabilities": (
+                ("time", "states"),
+                acausal_state_probabilities,
+            ),
+        }
 
         if log_likelihood is not None:
-            results["log_likelihood"] = (
+            data_vars["log_likelihood"] = (
                 ("time", "state_bins"),
-                np.full(posterior_shape, np.nan, dtype=np.float32),
+                self._create_masked_posterior(
+                    log_likelihood, is_track_interior, n_total_bins
+                ),
             )
-            results["log_likelihood"][:, is_track_interior] = log_likelihood
 
         if causal_posterior is not None:
-            results["causal_posterior"] = (
+            data_vars["causal_posterior"] = (
                 ("time", "state_bins"),
-                np.full(posterior_shape, np.nan, dtype=np.float32),
+                self._create_masked_posterior(
+                    causal_posterior, is_track_interior, n_total_bins
+                ),
             )
-            results["causal_posterior"][:, is_track_interior] = causal_posterior
 
         if causal_state_probabilities is not None:
-            results["causal_state_probabilities"] = (
+            data_vars["causal_state_probabilities"] = (
                 ("time", "states"),
                 causal_state_probabilities,
             )
+
+        results = xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
 
         return results.squeeze()
 
