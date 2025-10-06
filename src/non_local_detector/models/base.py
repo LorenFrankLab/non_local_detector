@@ -350,9 +350,7 @@ class _DetectorBase(BaseEstimator):
                 state_ind.append(ind * np.ones((1,), dtype=int))
                 is_track_interior.append(np.ones((1,), dtype=bool))
             else:
-                environment = self.environments[
-                    self.environments.index(obs.environment_name)
-                ]
+                environment = self._get_environment_by_name(obs.environment_name)
                 if environment.place_bin_centers_ is not None:
                     bin_sizes.append(environment.place_bin_centers_.shape[0])
                     state_ind.append(ind * np.ones((bin_sizes[-1],), dtype=int))
@@ -478,9 +476,9 @@ class _DetectorBase(BaseEstimator):
                         # transition from discrete to continuous
                         # ASSUME uniform for now
                         if hasattr(transition, "environment_name"):
-                            environment = self.environments[
-                                self.environments.index(transition.environment_name)
-                            ]
+                            environment = self._get_environment_by_name(
+                                transition.environment_name
+                            )
                         else:
                             raise ValueError(
                                 "Transition must have an environment_name attribute for discrete to continuous transitions"
@@ -1213,6 +1211,38 @@ class _DetectorBase(BaseEstimator):
         """
         return copy.deepcopy(self)
 
+    def _get_environment_by_name(self, environment_name: str) -> Environment:
+        """
+        Get environment by name with O(1) lookup using cached dictionary.
+
+        Parameters
+        ----------
+        environment_name : str
+            Name of the environment to retrieve.
+
+        Returns
+        -------
+        Environment
+            The environment object.
+
+        Raises
+        ------
+        ValueError
+            If environment not found.
+        """
+        # Create cached lookup dict if not exists
+        if not hasattr(self, "_env_lookup_cache_"):
+            self._env_lookup_cache_ = {
+                env.environment_name: env for env in self.environments
+            }
+
+        environment = self._env_lookup_cache_.get(environment_name)
+        if environment is None:
+            raise ValueError(
+                f"Environment '{environment_name}' not found in environments list"
+            )
+        return environment
+
     @staticmethod
     def _create_masked_posterior(
         data: np.ndarray, is_track_interior: np.ndarray, n_total_bins: int
@@ -1403,9 +1433,7 @@ class _DetectorBase(BaseEstimator):
                 environment_names.append([None])
                 encoding_group_names.append([None])
             else:
-                environment = self.environments[
-                    self.environments.index(obs.environment_name)
-                ]
+                environment = self._get_environment_by_name(obs.environment_name)
                 if environment.place_bin_centers_ is None:
                     raise ValueError(
                         f"place_bin_centers_ is None for environment {obs.environment_name}"
@@ -1652,9 +1680,7 @@ class ClusterlessDetector(_DetectorBase):
         self.encoding_model_ = {}
 
         for obs in np.unique(self.observation_models):
-            environment = self.environments[
-                self.environments.index(obs.environment_name)
-            ]
+            environment = self._get_environment_by_name(obs.environment_name)
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
@@ -2279,9 +2305,7 @@ class SortedSpikesDetector(_DetectorBase):
         self.encoding_model_ = {}
 
         for obs in np.unique(self.observation_models):
-            environment = self.environments[
-                self.environments.index(obs.environment_name)
-            ]
+            environment = self._get_environment_by_name(obs.environment_name)
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
