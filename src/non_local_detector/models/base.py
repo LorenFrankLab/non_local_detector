@@ -1801,10 +1801,6 @@ class ClusterlessDetector(_DetectorBase):
         if is_missing is None:
             is_missing = jnp.zeros((n_time,), dtype=bool)
 
-        log_likelihood = jnp.zeros(
-            (n_time, self.is_track_interior_state_bins_.sum()), dtype=np.float32
-        )
-
         _, likelihood_func = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
 
         # Pre-compute state bins mask for all states (avoid recomputation in loop)
@@ -1817,8 +1813,9 @@ class ClusterlessDetector(_DetectorBase):
         # Use dict for O(1) lookup instead of list
         computed_likelihoods = {}
 
+        # Compute all likelihoods first (stays in JAX/GPU if available)
+        likelihood_results = {}
         for state_id, obs in enumerate(self.observation_models):
-            is_state_bin = state_bin_masks[state_id]
             likelihood_name = (
                 obs.environment_name,
                 obs.encoding_group,
@@ -1827,34 +1824,44 @@ class ClusterlessDetector(_DetectorBase):
             )
 
             if obs.is_no_spike:
-                # Likelihood of no spike times
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(
-                    predict_no_spike_log_likelihood(
-                        time, spike_times, self.no_spike_rate
-                    )
+                likelihood_results[state_id] = predict_no_spike_log_likelihood(
+                    time, spike_times, self.no_spike_rate
                 )
             elif likelihood_name not in computed_likelihoods:
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(
-                    likelihood_func(
-                        time,
-                        position_time,
-                        position,
-                        spike_times,
-                        spike_waveform_features,
-                        **self.encoding_model_[likelihood_name[:2]],
-                        is_local=obs.is_local,
-                    )
+                likelihood_results[state_id] = likelihood_func(
+                    time,
+                    position_time,
+                    position,
+                    spike_times,
+                    spike_waveform_features,
+                    **self.encoding_model_[likelihood_name[:2]],
+                    is_local=obs.is_local,
                 )
                 computed_likelihoods[likelihood_name] = state_id
             else:
-                # Use previously computed likelihoods (O(1) lookup)
-                previously_computed_state = computed_likelihoods[likelihood_name]
-                previously_computed_bins = state_bin_masks[previously_computed_state]
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(
-                    log_likelihood[:, previously_computed_bins]
-                )
+                # Will reuse previously computed likelihood
+                likelihood_results[state_id] = computed_likelihoods[likelihood_name]
 
-        # missing data should be 0.0 because there is no information
+        # Assemble final array (single pass, stays in JAX)
+        log_likelihood = jnp.zeros(
+            (n_time, self.is_track_interior_state_bins_.sum()), dtype=jnp.float32
+        )
+
+        for state_id in range(len(self.observation_models)):
+            is_state_bin = state_bin_masks[state_id]
+            result = likelihood_results[state_id]
+
+            if isinstance(result, int):
+                # Reuse from previously computed state
+                source_mask = state_bin_masks[result]
+                log_likelihood = log_likelihood.at[:, is_state_bin].set(
+                    log_likelihood[:, source_mask]
+                )
+            else:
+                # Set new likelihood values
+                log_likelihood = log_likelihood.at[:, is_state_bin].set(result)
+
+        # Apply missing data mask
         return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
 
     def predict(
@@ -2422,8 +2429,6 @@ class SortedSpikesDetector(_DetectorBase):
         if is_missing is None:
             is_missing = np.zeros((n_time,), dtype=bool)
 
-        log_likelihood = jnp.zeros((n_time, self.is_track_interior_state_bins_.sum()))
-
         _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
 
         # Pre-compute state bins mask for all states (avoid recomputation in loop)
@@ -2436,8 +2441,9 @@ class SortedSpikesDetector(_DetectorBase):
         # Use dict for O(1) lookup instead of list
         computed_likelihoods = {}
 
+        # Compute all likelihoods first (stays in JAX/GPU if available)
+        likelihood_results = {}
         for state_id, obs in enumerate(self.observation_models):
-            is_state_bin = state_bin_masks[state_id]
             likelihood_name = (
                 obs.environment_name,
                 obs.encoding_group,
@@ -2446,33 +2452,44 @@ class SortedSpikesDetector(_DetectorBase):
             )
 
             if obs.is_no_spike:
-                # Likelihood of no spike times
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(
-                    predict_no_spike_log_likelihood(
-                        time, spike_times, self.no_spike_rate
-                    )
+                likelihood_results[state_id] = predict_no_spike_log_likelihood(
+                    time, spike_times, self.no_spike_rate
                 )
             elif likelihood_name not in computed_likelihoods:
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(
-                    likelihood_func(
-                        time,
-                        position_time,
-                        position,
-                        spike_times,
-                        **self.encoding_model_[likelihood_name[:2]],
-                        is_local=obs.is_local,
-                    )
+                likelihood_results[state_id] = likelihood_func(
+                    time,
+                    position_time,
+                    position,
+                    spike_times,
+                    **self.encoding_model_[likelihood_name[:2]],
+                    is_local=obs.is_local,
                 )
                 computed_likelihoods[likelihood_name] = state_id
             else:
-                # Use previously computed likelihoods (O(1) lookup)
-                previously_computed_state = computed_likelihoods[likelihood_name]
-                previously_computed_bins = state_bin_masks[previously_computed_state]
-                log_likelihood = log_likelihood.at[:, is_state_bin].set(
-                    log_likelihood[:, previously_computed_bins]
-                )
+                # Will reuse previously computed likelihood
+                likelihood_results[state_id] = computed_likelihoods[likelihood_name]
 
-        # missing data should be 0.0 because there is no information
+        # Assemble final array (single pass, stays in JAX)
+        log_likelihood = jnp.zeros(
+            (n_time, self.is_track_interior_state_bins_.sum()), dtype=jnp.float32
+        )
+
+        for state_id in range(len(self.observation_models)):
+            is_state_bin = state_bin_masks[state_id]
+            result = likelihood_results[state_id]
+
+            if isinstance(result, int):
+                # Reuse from previously computed state
+                source_mask = state_bin_masks[result]
+                log_likelihood = log_likelihood.at[:, is_state_bin].set(
+                    log_likelihood[:, source_mask]
+                )
+            else:
+                # Set new likelihood values
+                log_likelihood = log_likelihood.at[:, is_state_bin].set(result)
+
+        # Apply missing data mask
+        is_missing = jnp.asarray(is_missing)
         return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
 
     def predict(
