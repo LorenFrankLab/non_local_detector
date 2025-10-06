@@ -347,13 +347,13 @@ class _DetectorBase(BaseEstimator):
         for ind, obs in enumerate(self.observation_models):
             if obs.is_local or obs.is_no_spike:
                 bin_sizes.append(1)
-                state_ind.append(ind * np.ones((1,), dtype=int))
-                is_track_interior.append(np.ones((1,), dtype=bool))
+                state_ind.append(np.full(1, ind, dtype=int))
+                is_track_interior.append(np.ones(1, dtype=bool))
             else:
                 environment = self._get_environment_by_name(obs.environment_name)
                 if environment.place_bin_centers_ is not None:
                     bin_sizes.append(environment.place_bin_centers_.shape[0])
-                    state_ind.append(ind * np.ones((bin_sizes[-1],), dtype=int))
+                    state_ind.append(np.full(bin_sizes[-1], ind, dtype=int))
                 else:
                     raise ValueError("Environment place_bin_centers_ cannot be None")
                 if environment.is_track_interior_ is not None:
