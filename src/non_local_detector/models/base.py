@@ -1352,7 +1352,7 @@ class _DetectorBase(BaseEstimator):
                 # Fall back to numbered dimensions if > 6
                 position_names = [f"dim{i}_position" for i in range(n_position_dims)]
         state_bins = pd.MultiIndex.from_arrays(
-            ((states[self.state_ind_], *list(position.T))),
+            ((states[self.state_ind_], *position.T)),
             names=("state", *position_names),
         )
 
@@ -1806,12 +1806,19 @@ class ClusterlessDetector(_DetectorBase):
         )
 
         _, likelihood_func = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
-        computed_likelihoods = []
+
+        # Pre-compute state bins mask for all states (avoid recomputation in loop)
+        interior_state_ind = self.state_ind_[self.is_track_interior_state_bins_]
+        state_bin_masks = {
+            state_id: interior_state_ind == state_id
+            for state_id in range(len(self.observation_models))
+        }
+
+        # Use dict for O(1) lookup instead of list
+        computed_likelihoods = {}
 
         for state_id, obs in enumerate(self.observation_models):
-            is_state_bin = (
-                self.state_ind_[self.is_track_interior_state_bins_] == state_id
-            )
+            is_state_bin = state_bin_masks[state_id]
             likelihood_name = (
                 obs.environment_name,
                 obs.encoding_group,
@@ -1838,16 +1845,14 @@ class ClusterlessDetector(_DetectorBase):
                         is_local=obs.is_local,
                     )
                 )
+                computed_likelihoods[likelihood_name] = state_id
             else:
-                # Use previously computed likelihoods
-                previously_computed_bins = self.state_ind_[
-                    self.is_track_interior_state_bins_
-                ] == computed_likelihoods.index(likelihood_name)
+                # Use previously computed likelihoods (O(1) lookup)
+                previously_computed_state = computed_likelihoods[likelihood_name]
+                previously_computed_bins = state_bin_masks[previously_computed_state]
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     log_likelihood[:, previously_computed_bins]
                 )
-
-            computed_likelihoods.append(likelihood_name)
 
         # missing data should be 0.0 because there is no information
         return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
@@ -2420,12 +2425,19 @@ class SortedSpikesDetector(_DetectorBase):
         log_likelihood = jnp.zeros((n_time, self.is_track_interior_state_bins_.sum()))
 
         _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
-        computed_likelihoods = []
+
+        # Pre-compute state bins mask for all states (avoid recomputation in loop)
+        interior_state_ind = self.state_ind_[self.is_track_interior_state_bins_]
+        state_bin_masks = {
+            state_id: interior_state_ind == state_id
+            for state_id in range(len(self.observation_models))
+        }
+
+        # Use dict for O(1) lookup instead of list
+        computed_likelihoods = {}
 
         for state_id, obs in enumerate(self.observation_models):
-            is_state_bin = (
-                self.state_ind_[self.is_track_interior_state_bins_] == state_id
-            )
+            is_state_bin = state_bin_masks[state_id]
             likelihood_name = (
                 obs.environment_name,
                 obs.encoding_group,
@@ -2451,16 +2463,14 @@ class SortedSpikesDetector(_DetectorBase):
                         is_local=obs.is_local,
                     )
                 )
+                computed_likelihoods[likelihood_name] = state_id
             else:
-                # Use previously computed likelihoods
-                previously_computed_bins = self.state_ind_[
-                    self.is_track_interior_state_bins_
-                ] == computed_likelihoods.index(likelihood_name)
+                # Use previously computed likelihoods (O(1) lookup)
+                previously_computed_state = computed_likelihoods[likelihood_name]
+                previously_computed_bins = state_bin_masks[previously_computed_state]
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(
                     log_likelihood[:, previously_computed_bins]
                 )
-
-            computed_likelihoods.append(likelihood_name)
 
         # missing data should be 0.0 because there is no information
         return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
