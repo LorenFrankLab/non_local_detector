@@ -1351,19 +1351,31 @@ class _DetectorBase(BaseEstimator):
             else:
                 # Fall back to numbered dimensions if > 6
                 position_names = [f"dim{i}_position" for i in range(n_position_dims)]
-        state_bins = pd.MultiIndex.from_arrays(
+        # Create MultiIndex for state_bins coordinate
+        state_bins_mindex = pd.MultiIndex.from_arrays(
             ((states[self.state_ind_], *position.T)),
             names=("state", *position_names),
         )
 
         coords = {
             "time": time,
-            "state_bins": state_bins,
             "state_ind": self.state_ind_,
             "states": states,
             "environments": ("states", environment_names),
             "encoding_groups": ("states", encoding_group_names),
         }
+
+        # Handle MultiIndex: use new API if available (xarray >= 2022.06.0),
+        # otherwise use old direct assignment (for backward compatibility)
+        if hasattr(xr.Coordinates, "from_pandas_multiindex"):
+            # New method (preferred, avoids FutureWarning)
+            mindex_coords = xr.Coordinates.from_pandas_multiindex(
+                state_bins_mindex, "state_bins"
+            )
+        else:
+            # Old method (backward compatible)
+            coords["state_bins"] = state_bins_mindex
+            mindex_coords = None
 
         attrs = {"marginal_log_likelihoods": np.asarray(marginal_log_likelihoods)}
 
@@ -1404,7 +1416,12 @@ class _DetectorBase(BaseEstimator):
                 causal_state_probabilities,
             )
 
+        # Create Dataset with MultiIndex coordinates
         results = xr.Dataset(data_vars=data_vars, coords=coords, attrs=attrs)
+
+        # Assign MultiIndex coordinates if using new API
+        if mindex_coords is not None:
+            results = results.assign_coords(mindex_coords)
 
         return results.squeeze()
 
