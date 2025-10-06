@@ -806,7 +806,9 @@ class _DetectorBase(BaseEstimator):
         log_likelihoods: np.ndarray | None = None,
         cache_likelihood: bool = True,
         n_chunks: int = 1,
-    ) -> tuple[np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[
+        np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+    ]:
         """
         Compute the posterior probabilities.
 
@@ -833,6 +835,7 @@ class _DetectorBase(BaseEstimator):
         causal_state_probabilities : np.ndarray, shape (n_time, n_states)
         predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
         log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
+        causal_posterior : np.ndarray, shape (n_time, n_state_bins)
         """
 
         logger.info("Computing posterior...")
@@ -951,6 +954,7 @@ class _DetectorBase(BaseEstimator):
                 causal_state_probabilities,
                 predictive_state_probabilities,
                 log_likelihood,
+                _,
             ) = self._predict(
                 time=time,
                 log_likelihood_args=log_likelihood_args,
@@ -1216,6 +1220,8 @@ class _DetectorBase(BaseEstimator):
         acausal_state_probabilities: np.ndarray,
         marginal_log_likelihoods: list[float],
         log_likelihood: np.ndarray | None = None,
+        causal_posterior: np.ndarray | None = None,
+        causal_state_probabilities: np.ndarray | None = None,
     ) -> xr.Dataset:
         """
         Convert the results to an xarray Dataset.
@@ -1232,6 +1238,10 @@ class _DetectorBase(BaseEstimator):
             Marginal log likelihoods for each iteration.
         log_likelihood : np.ndarray, optional, shape (n_time, n_state_bins)
             Log likelihoods, by default None.
+        causal_posterior : np.ndarray, optional, shape (n_time, n_state_bins)
+            Causal (filtered) posterior probabilities, by default None.
+        causal_state_probabilities : np.ndarray, optional, shape (n_time, n_states)
+            Causal state probabilities, by default None.
 
         Returns
         -------
@@ -1309,6 +1319,19 @@ class _DetectorBase(BaseEstimator):
                 np.full(posterior_shape, np.nan, dtype=np.float32),
             )
             results["log_likelihood"][:, is_track_interior] = log_likelihood
+
+        if causal_posterior is not None:
+            results["causal_posterior"] = (
+                ("time", "state_bins"),
+                np.full(posterior_shape, np.nan, dtype=np.float32),
+            )
+            results["causal_posterior"][:, is_track_interior] = causal_posterior
+
+        if causal_state_probabilities is not None:
+            results["causal_state_probabilities"] = (
+                ("time", "states"),
+                causal_state_probabilities,
+            )
 
         return results.squeeze()
 
@@ -1772,6 +1795,7 @@ class ClusterlessDetector(_DetectorBase):
         cache_likelihood: bool = False,
         n_chunks: int = 1,
         save_log_likelihood_to_results: bool = False,
+        save_causal_posterior_to_results: bool = False,
     ) -> xr.Dataset:
         """
         Predict the posterior probabilities for the given data.
@@ -1798,6 +1822,8 @@ class ClusterlessDetector(_DetectorBase):
             Splits data into chunks for processing, by default 1
         save_log_likelihood_to_results : bool, optional
             Whether to save the log likelihood to the results, by default False.
+        save_causal_posterior_to_results : bool, optional
+            Whether to save the causal (filtered) posterior to the results, by default False.
 
         Returns
         -------
@@ -1831,9 +1857,10 @@ class ClusterlessDetector(_DetectorBase):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihood,
-            _,
+            causal_state_probabilities,
             _,
             log_likelihood,
+            causal_posterior,
         ) = self._predict(
             time=time,
             log_likelihood_args=(
@@ -1853,6 +1880,12 @@ class ClusterlessDetector(_DetectorBase):
             acausal_state_probabilities,
             marginal_log_likelihood,
             log_likelihood if save_log_likelihood_to_results else None,
+            causal_posterior=(
+                causal_posterior if save_causal_posterior_to_results else None
+            ),
+            causal_state_probabilities=(
+                causal_state_probabilities if save_causal_posterior_to_results else None
+            ),
         )
 
     def estimate_parameters(
@@ -2437,6 +2470,7 @@ class SortedSpikesDetector(_DetectorBase):
             _,
             _,
             log_likelihood,
+            _,
         ) = self._predict(
             time=time,
             log_likelihood_args=(

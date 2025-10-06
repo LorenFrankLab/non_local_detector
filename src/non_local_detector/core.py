@@ -195,7 +195,9 @@ def chunked_filter_smoother(
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
-) -> tuple[np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[
+    np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+]:
     """Filter and smooth the state probabilities in chunks.
 
     Parameters
@@ -227,6 +229,8 @@ def chunked_filter_smoother(
         One-step-ahead predicted state probabilities for each state index
     log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
         Log likelihoods for each state at each time point
+    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        Filtered state probabilities
     """
     causal_posterior = []
     predictive_state_probabilities = []
@@ -313,6 +317,7 @@ def chunked_filter_smoother(
         causal_state_probabilities,
         predictive_state_probabilities,
         log_likelihoods,
+        causal_posterior,
     )
 
 
@@ -570,7 +575,9 @@ def chunked_filter_smoother_covariate_dependent(
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
-):
+) -> tuple[
+    np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+]:
     """Filter and smooth the state probabilities in chunks with covariate dependent transitions.
 
     Parameters
@@ -602,6 +609,8 @@ def chunked_filter_smoother_covariate_dependent(
         One-step-ahead predicted state probabilities for each state index
     log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
         Log likelihoods for each state at each time point
+    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        Filtered state probabilities
     """
     causal_posterior = []
     predictive_state_probabilities = []
@@ -691,6 +700,7 @@ def chunked_filter_smoother_covariate_dependent(
         causal_state_probabilities,
         predictive_state_probabilities,
         log_likelihoods,
+        causal_posterior,
     )
 
 
