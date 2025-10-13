@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.typing import ArrayLike
 
 # Note: This only affects NumPy operations, not JAX operations
 # Most computation is in JAX, so this has minimal effect
@@ -9,7 +10,7 @@ np.seterr(divide="ignore", invalid="ignore")
 
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
 def _normalize(
-    u: jnp.ndarray, axis: int = 0, eps: float = 1e-15
+    u: ArrayLike, axis: int = 0, eps: float = 1e-15
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Normalizes the values within the axis in a way that they sum up to 1.
 
@@ -38,7 +39,7 @@ def _normalize(
 
 
 # Helper functions for the two key filtering steps
-def _condition_on(probs: jnp.ndarray, ll: jnp.ndarray) -> tuple[jnp.ndarray, float]:
+def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jnp.ndarray, float]:
     """Condition on new emissions, given in the form of log likelihoods
     for each discrete state, while avoiding numerical underflow.
 
@@ -63,7 +64,7 @@ def _condition_on(probs: jnp.ndarray, ll: jnp.ndarray) -> tuple[jnp.ndarray, flo
     return new_probs, log_norm
 
 
-def _safe_log(p: jnp.ndarray) -> jnp.ndarray:
+def _safe_log(p: ArrayLike) -> jnp.ndarray:
     """Compute log of probabilities safely, handling zeros.
 
     Returns -inf for zero probabilities (valid in log space) instead of NaN.
@@ -81,7 +82,7 @@ def _safe_log(p: jnp.ndarray) -> jnp.ndarray:
     return jnp.where(p > 0, jnp.log(p), -jnp.inf)
 
 
-def _divide_safe(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.ndarray:
+def _divide_safe(numerator: ArrayLike, denominator: ArrayLike) -> jnp.ndarray:
     """Divides two arrays, while setting the result to 0.0
     if the denominator is 0.0.
 
@@ -102,9 +103,9 @@ def _divide_safe(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.ndarra
 
 
 def filter(
-    initial_distribution: jnp.ndarray,
-    transition_matrix: jnp.ndarray,
-    log_likelihoods: jnp.ndarray,
+    initial_distribution: ArrayLike,
+    transition_matrix: ArrayLike,
+    log_likelihoods: ArrayLike,
 ) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
     """Performs the forward pass of the forward-backward algorithm (filtering).
 
@@ -161,10 +162,10 @@ _filter_internal = jax.jit(filter.__wrapped__, donate_argnums=(0, 2))
 
 
 def smoother(
-    transition_matrix: jnp.ndarray,
-    filtered_probs: jnp.ndarray,
-    initial: jnp.ndarray | None = None,
-    ind: jnp.ndarray | None = None,
+    transition_matrix: ArrayLike,
+    filtered_probs: ArrayLike,
+    initial: ArrayLike | None = None,
+    ind: ArrayLike | None = None,
     n_time: int | None = None,
 ) -> jnp.ndarray:
     """Smoother step.
@@ -380,9 +381,9 @@ def chunked_filter_smoother(
 
 
 def viterbi(
-    initial_distribution: jnp.ndarray,
-    transition_matrix: jnp.ndarray,
-    log_likelihoods: jnp.ndarray,
+    initial_distribution: ArrayLike,
+    transition_matrix: ArrayLike,
+    log_likelihoods: ArrayLike,
 ) -> jnp.ndarray:
     r"""Compute the most likely state sequence. This is called the Viterbi algorithm.
 
@@ -496,9 +497,9 @@ def most_likely_sequence(
 
 ## Covariate dependent filtering and smoothing ##
 def _get_transition_matrix(
-    discrete_transition_matrix_t: jnp.ndarray,
-    continuous_transition_matrix: jnp.ndarray,
-    state_ind: jnp.ndarray,
+    discrete_transition_matrix_t: ArrayLike,
+    continuous_transition_matrix: ArrayLike,
+    state_ind: ArrayLike | None = None,
 ) -> jnp.ndarray:
     """Get the transition matrix for the current time point.
 
@@ -521,11 +522,11 @@ def _get_transition_matrix(
 
 
 def filter_covariate_dependent(
-    initial_distribution: jnp.ndarray,
-    discrete_transition_matrix: jnp.ndarray,
-    continuous_transition_matrix: jnp.ndarray,
-    state_ind: jnp.ndarray,
-    log_likelihoods: jnp.ndarray,
+    initial_distribution: ArrayLike,
+    discrete_transition_matrix: ArrayLike,
+    continuous_transition_matrix: ArrayLike,
+    state_ind: ArrayLike,
+    log_likelihoods: ArrayLike,
 ) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
     """Filtering step with covariate dependent transitions.
 
@@ -580,12 +581,12 @@ _filter_covariate_dependent_internal = jax.jit(
 
 
 def smoother_covariate_dependent(
-    discrete_transition_matrix: jnp.ndarray,
-    continuous_transition_matrix: jnp.ndarray,
-    state_ind: jnp.ndarray,
-    filtered_probs: jnp.ndarray,
-    initial: jnp.ndarray | None = None,
-    ind: jnp.ndarray | None = None,
+    discrete_transition_matrix: ArrayLike,
+    continuous_transition_matrix: ArrayLike,
+    state_ind: ArrayLike,
+    filtered_probs: ArrayLike,
+    initial: ArrayLike | None = None,
+    ind: ArrayLike | None = None,
     n_time: int | None = None,
 ) -> jnp.ndarray:
     """Smoother step with covariate dependent transitions.
@@ -812,11 +813,11 @@ def chunked_filter_smoother_covariate_dependent(
 
 
 def viterbi_covariate_dependent(
-    initial_distribution: jnp.ndarray,
-    discrete_transition_matrix: jnp.ndarray,
-    continuous_transition_matrix: jnp.ndarray,
-    state_ind: jnp.ndarray,
-    log_likelihoods: jnp.ndarray,
+    initial_distribution: ArrayLike,
+    discrete_transition_matrix: ArrayLike,
+    continuous_transition_matrix: ArrayLike,
+    state_ind: ArrayLike,
+    log_likelihoods: ArrayLike,
 ) -> jnp.ndarray:
     r"""Compute the most likely state sequence with covariate dependent transitions.
 
