@@ -2,6 +2,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+# Note: This only affects NumPy operations, not JAX operations
+# Most computation is in JAX, so this has minimal effect
 np.seterr(divide="ignore", invalid="ignore")
 
 
@@ -56,6 +58,24 @@ def _condition_on(probs: jnp.ndarray, ll: jnp.ndarray) -> tuple[jnp.ndarray, flo
     new_probs, norm = _normalize(probs * jnp.exp(ll - ll_max))
     log_norm = jnp.log(norm) + ll_max
     return new_probs, log_norm
+
+
+def _safe_log(p: jnp.ndarray) -> jnp.ndarray:
+    """Compute log of probabilities safely, handling zeros.
+
+    Returns -inf for zero probabilities (valid in log space) instead of NaN.
+
+    Parameters
+    ----------
+    p : jnp.ndarray
+        Probability array (may contain zeros)
+
+    Returns
+    -------
+    log_p : jnp.ndarray
+        Log probabilities with -inf for zeros
+    """
+    return jnp.where(p > 0, jnp.log(p), -jnp.inf)
 
 
 def _divide_safe(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.ndarray:
@@ -197,7 +217,8 @@ smoother = jax.jit(smoother)
 
 
 # Internal version with buffer donation for use in chunked drivers
-_smoother_internal = jax.jit(smoother.__wrapped__, donate_argnums=(1,))
+# Donates filtered_probs (arg 1) and initial (arg 2) - both are single-use in chunked loops
+_smoother_internal = jax.jit(smoother.__wrapped__, donate_argnums=(1, 2))
 
 
 def chunked_filter_smoother(
@@ -279,20 +300,25 @@ def chunked_filter_smoother(
     )
 
     # Forward pass: accumulate JAX arrays
-    for chunk_id, time_inds in enumerate(time_chunks):
+    for chunk_id, time_inds_np in enumerate(time_chunks):
+        # Convert time_inds to JAX once to avoid repeated host↔device syncs
+        time_inds = jnp.asarray(time_inds_np)
+
         if log_likelihoods_jax is not None:
             log_likelihood_chunk = log_likelihoods_jax[time_inds]
         else:
-            is_missing_chunk = is_missing[time_inds] if is_missing is not None else None
+            is_missing_chunk = (
+                is_missing[time_inds_np] if is_missing is not None else None
+            )
             log_likelihood_chunk = log_likelihood_func(
-                time[time_inds],
+                time[time_inds_np],
                 *log_likelihood_args,
                 is_missing=is_missing_chunk,
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk)
 
-        # Use internal version with buffer donation for memory efficiency
-        # Safe because log_likelihood_chunk is created fresh each iteration
+        # Donated: log_likelihood_chunk (created fresh), initial_distribution
+        # Do not read these after the call - they are consumed by the JIT function
         (
             (marginal_likelihood_chunk, predicted_probs_next),
             (causal_posterior_chunk, predicted_probs_chunk),
@@ -370,10 +396,14 @@ def viterbi(
     -------
     most_likely_state_sequence : jnp.ndarray, shape (n_time,)
 
+    Notes
+    -----
+    Base case at t=T: terminal cost is 0, we accumulate from t=T-1 down.
     """
-    # Precompute logs once outside the scan loop
-    log_transition_matrix = jnp.log(transition_matrix)
-    log_initial_distribution = jnp.log(initial_distribution)
+    # Precompute logs once outside the scan loop using safe log
+    # Handles zero probabilities correctly (returns -inf, not NaN)
+    log_transition_matrix = _safe_log(transition_matrix)
+    log_initial_distribution = _safe_log(initial_distribution)
 
     # Run the backward pass
     def _backward_pass(best_next_score, t):
@@ -611,8 +641,9 @@ smoother_covariate_dependent = jax.jit(smoother_covariate_dependent)
 
 
 # Internal version with buffer donation for use in chunked drivers
+# Donates filtered_probs (arg 3) and initial (arg 4) - both are single-use in chunked loops
 _smoother_covariate_dependent_internal = jax.jit(
-    smoother_covariate_dependent.__wrapped__, donate_argnums=(3,)
+    smoother_covariate_dependent.__wrapped__, donate_argnums=(3, 4)
 )
 
 
@@ -697,20 +728,25 @@ def chunked_filter_smoother_covariate_dependent(
     )
 
     # Forward pass: accumulate JAX arrays
-    for chunk_id, time_inds in enumerate(time_chunks):
+    for chunk_id, time_inds_np in enumerate(time_chunks):
+        # Convert time_inds to JAX once to avoid repeated host↔device syncs
+        time_inds = jnp.asarray(time_inds_np)
+
         if log_likelihoods_jax is not None:
             log_likelihood_chunk = log_likelihoods_jax[time_inds]
         else:
-            is_missing_chunk = is_missing[time_inds] if is_missing is not None else None
+            is_missing_chunk = (
+                is_missing[time_inds_np] if is_missing is not None else None
+            )
             log_likelihood_chunk = log_likelihood_func(
-                time[time_inds],
+                time[time_inds_np],
                 *log_likelihood_args,
                 is_missing=is_missing_chunk,
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk)
 
-        # Use internal version with buffer donation for memory efficiency
-        # Safe because log_likelihood_chunk is created fresh each iteration
+        # Donated: log_likelihood_chunk (created fresh), initial_distribution
+        # Do not read these after the call - they are consumed by the JIT function
         (
             (marginal_likelihood_chunk, predicted_probs_next),
             (causal_posterior_chunk, predicted_probs_chunk),
@@ -800,16 +836,21 @@ def viterbi_covariate_dependent(
     -------
     most_likely_state_sequence : jnp.ndarray, shape (n_time,)
         Most likely state sequence.
+
+    Notes
+    -----
+    Base case at t=T: terminal cost is 0, we accumulate from t=T-1 down.
     """
-    # Precompute logs once outside the scan loop
-    log_continuous_transition_matrix = jnp.log(continuous_transition_matrix)
-    log_initial_distribution = jnp.log(initial_distribution)
+    # Precompute logs once outside the scan loop using safe log
+    # Handles zero probabilities correctly (returns -inf, not NaN)
+    log_continuous_transition_matrix = _safe_log(continuous_transition_matrix)
+    log_initial_distribution = _safe_log(initial_distribution)
 
     # Run the backward pass
     def _backward_pass(best_next_score, args):
         t, discrete_transition_matrix_t = args
         # Build log-space transition matrix: log(A * B) = log(A) + log(B)
-        log_transition_matrix = log_continuous_transition_matrix + jnp.log(
+        log_transition_matrix = log_continuous_transition_matrix + _safe_log(
             discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
         )
         scores = log_transition_matrix + best_next_score + log_likelihoods[t + 1]
