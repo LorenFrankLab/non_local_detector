@@ -129,8 +129,12 @@ def filter(
 
 
 # Apply JIT without donation - tests reuse inputs
-# Donation is applied strategically within chunked drivers
 filter = jax.jit(filter)
+
+
+# Internal version with buffer donation for use in chunked drivers
+# This is safe because chunked drivers control the data flow and don't reuse donated arrays
+_filter_internal = jax.jit(filter.__wrapped__, donate_argnums=(0, 2))
 
 
 def smoother(
@@ -190,6 +194,10 @@ def smoother(
 
 # Apply JIT without donation - tests reuse inputs
 smoother = jax.jit(smoother)
+
+
+# Internal version with buffer donation for use in chunked drivers
+_smoother_internal = jax.jit(smoother.__wrapped__, donate_argnums=(1,))
 
 
 def chunked_filter_smoother(
@@ -283,10 +291,12 @@ def chunked_filter_smoother(
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk)
 
+        # Use internal version with buffer donation for memory efficiency
+        # Safe because log_likelihood_chunk is created fresh each iteration
         (
             (marginal_likelihood_chunk, predicted_probs_next),
             (causal_posterior_chunk, predicted_probs_chunk),
-        ) = filter(
+        ) = _filter_internal(
             initial_distribution=(
                 initial_distribution_jax if chunk_id == 0 else predicted_probs_next
             ),
@@ -308,7 +318,9 @@ def chunked_filter_smoother(
 
     # Backward pass: accumulate JAX arrays
     for chunk_id, time_inds in enumerate(reversed(time_chunks)):
-        acausal_posterior_chunk = smoother(
+        # Use internal version with buffer donation
+        # Safe because causal_posterior_jax[time_inds] creates a slice (copy)
+        acausal_posterior_chunk = _smoother_internal(
             transition_matrix=transition_matrix_jax,
             filtered_probs=causal_posterior_jax[time_inds],
             initial=(
@@ -528,6 +540,12 @@ def filter_covariate_dependent(
 filter_covariate_dependent = jax.jit(filter_covariate_dependent)
 
 
+# Internal version with buffer donation for use in chunked drivers
+_filter_covariate_dependent_internal = jax.jit(
+    filter_covariate_dependent.__wrapped__, donate_argnums=(0, 4)
+)
+
+
 def smoother_covariate_dependent(
     discrete_transition_matrix: jnp.ndarray,
     continuous_transition_matrix: jnp.ndarray,
@@ -590,6 +608,12 @@ def smoother_covariate_dependent(
 
 # Apply JIT without donation - tests reuse inputs
 smoother_covariate_dependent = jax.jit(smoother_covariate_dependent)
+
+
+# Internal version with buffer donation for use in chunked drivers
+_smoother_covariate_dependent_internal = jax.jit(
+    smoother_covariate_dependent.__wrapped__, donate_argnums=(3,)
+)
 
 
 def chunked_filter_smoother_covariate_dependent(
@@ -685,10 +709,12 @@ def chunked_filter_smoother_covariate_dependent(
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk)
 
+        # Use internal version with buffer donation for memory efficiency
+        # Safe because log_likelihood_chunk is created fresh each iteration
         (
             (marginal_likelihood_chunk, predicted_probs_next),
             (causal_posterior_chunk, predicted_probs_chunk),
-        ) = filter_covariate_dependent(
+        ) = _filter_covariate_dependent_internal(
             initial_distribution=(
                 initial_distribution_jax if chunk_id == 0 else predicted_probs_next
             ),
@@ -712,7 +738,9 @@ def chunked_filter_smoother_covariate_dependent(
 
     # Backward pass: accumulate JAX arrays
     for chunk_id, time_inds in enumerate(reversed(time_chunks)):
-        acausal_posterior_chunk = smoother_covariate_dependent(
+        # Use internal version with buffer donation
+        # Safe because causal_posterior_jax[time_inds] creates a slice (copy)
+        acausal_posterior_chunk = _smoother_covariate_dependent_internal(
             discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
             continuous_transition_matrix=continuous_transition_matrix_jax,
             state_ind=state_ind_jax,
