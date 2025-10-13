@@ -885,13 +885,17 @@ def viterbi_covariate_dependent(
     log_continuous_transition_matrix = _safe_log(continuous_transition_matrix)
     log_initial_distribution = _safe_log(initial_distribution)
 
+    # Pre-index and precompute log of discrete transitions to avoid repeated operations in scan
+    # This eliminates both the expensive gather operation AND the repeated log computation
+    discrete_indexed = discrete_transition_matrix[:, state_ind[:, None], state_ind]
+    log_discrete_transition_matrix = _safe_log(discrete_indexed)
+
     # Run the backward pass
     def _backward_pass(best_next_score, args):
-        t, discrete_transition_matrix_t = args
+        t, log_discrete_t = args
         # Build log-space transition matrix: log(A * B) = log(A) + log(B)
-        log_transition_matrix = log_continuous_transition_matrix + _safe_log(
-            discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
-        )
+        # Both operands are already in log space, just add them
+        log_transition_matrix = log_continuous_transition_matrix + log_discrete_t
         scores = log_transition_matrix + best_next_score + log_likelihoods[t + 1]
         best_next_state = jnp.argmax(scores, axis=1)
         best_next_score = jnp.max(scores, axis=1)
@@ -901,7 +905,7 @@ def viterbi_covariate_dependent(
     best_second_score, best_next_states = jax.lax.scan(
         _backward_pass,
         jnp.zeros(num_states),
-        (jnp.arange(num_timesteps - 1), discrete_transition_matrix[:-1]),
+        (jnp.arange(num_timesteps - 1), log_discrete_transition_matrix[:-1]),
         reverse=True,
     )
 
