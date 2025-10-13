@@ -47,6 +47,7 @@ def get_spike_time_bin_ind(
     return bin_indices
 
 
+@jax.jit
 def log_kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
@@ -140,15 +141,18 @@ def estimate_log_joint_mark_intensity(
     log_w = safe_log(encoding_weights)  # (n_enc,)
     log_n_enc = safe_log(jnp.sum(encoding_weights))  # scalar
 
-    def reduce_over_enc(y_col: jnp.ndarray) -> jnp.ndarray:
+    # Use scan instead of vmap to avoid materializing (n_enc × n_dec × n_pos) array
+    # This reduces memory from O(n_enc * n_dec * n_pos) to O(n_enc * n_pos)
+    def scan_over_dec(carry, y_col: jnp.ndarray) -> tuple[None, jnp.ndarray]:
         # y_col: (n_enc,), the column of logK_mark for one decoding spike
         # returns: (n_pos,), logsumexp over enc dimension
-        return jax.nn.logsumexp(
+        result = jax.nn.logsumexp(
             log_w[:, None] + log_position_distance + y_col[:, None], axis=0
         )
+        return None, result
 
-    # vmap over decoding spikes’ columns -> (n_dec, n_pos)
-    log_num = jax.vmap(reduce_over_enc, in_axes=1, out_axes=0)(logK_mark)
+    # scan over decoding spikes' columns -> (n_dec, n_pos)
+    _, log_num = jax.lax.scan(scan_over_dec, None, logK_mark.T)
 
     # normalize by total weight sum (same as dividing by n_encoding_spikes in linear space)
     log_marginal = log_num - log_n_enc  # (n_dec, n_pos)
