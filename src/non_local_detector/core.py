@@ -367,6 +367,10 @@ def chunked_filter_smoother(
 
         # Donated: log_likelihood_chunk (created fresh), initial_distribution
         # Do not read these after the call - they are consumed by the JIT function
+        # Note: On first iteration, initial_distribution_jax may trigger a donation warning
+        # if the array is small (< ~1 KB). This is benign - JAX skips donation for small
+        # arrays where the overhead exceeds the benefit. The optimization works correctly
+        # for large production workloads.
         (
             (marginal_likelihood_chunk, predicted_probs_next),
             (causal_posterior_chunk, predicted_probs_chunk),
@@ -399,6 +403,7 @@ def chunked_filter_smoother(
     for chunk_id, time_inds in enumerate(reversed(time_chunks)):
         # Use internal version with buffer donation
         # Safe because causal_posterior_jax[time_inds] creates a slice (copy)
+        # Note: Small arrays may trigger benign donation warnings in tests
         acausal_posterior_chunk = _smoother_internal(
             transition_matrix=transition_matrix_jax,
             filtered_probs=causal_posterior_jax[time_inds],
@@ -856,6 +861,7 @@ def chunked_filter_smoother_covariate_dependent(
 
         # Donated: log_likelihood_chunk, dtm_chunk_indexed, initial_distribution
         # All are single-use per iteration - safe to donate
+        # Note: Small arrays may trigger benign donation warnings in tests
         (
             (marginal_likelihood_chunk, predicted_probs_next),
             (causal_posterior_chunk, predicted_probs_chunk),
@@ -896,6 +902,7 @@ def chunked_filter_smoother_covariate_dependent(
 
         # Donated: dtm_chunk_indexed, filtered_probs slice, initial boundary
         # All are single-use per iteration
+        # Note: Small arrays may trigger benign donation warnings in tests
         acausal_posterior_chunk = _smoother_covariate_dependent_internal(
             discrete_transition_matrix=dtm_chunk_indexed,
             continuous_transition_matrix=continuous_transition_matrix_jax,
