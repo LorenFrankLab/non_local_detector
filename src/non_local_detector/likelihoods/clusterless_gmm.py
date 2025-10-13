@@ -382,6 +382,8 @@ def predict_clusterless_gmm_log_likelihood(
     spike_waveform_features: list[jnp.ndarray],
     encoding_model: EncodingModel,
     is_local: bool = False,
+    spike_block_size: int = 1000,
+    bin_tile_size: int | None = None,
     disable_progress_bar: bool = False,
 ) -> jnp.ndarray:
     """
@@ -404,6 +406,13 @@ def predict_clusterless_gmm_log_likelihood(
     is_local : bool, default=False
         If True, compute local likelihood at the animal's position.
         Else compute non-local likelihood across interior bins.
+    spike_block_size : int, default=1000
+        Process spikes in blocks of this size to reduce peak memory.
+        Reduces memory from O(n_spikes × n_bins) to O(spike_block_size × n_bins).
+    bin_tile_size : int | None, default=None
+        If provided, tile computation over position bins in chunks of this size.
+        Reduces memory from O(spike_block_size × n_bins) to O(spike_block_size × bin_tile_size).
+        Useful for very large position grids (> 2000 bins).
     disable_progress_bar : bool, default=False
 
     Returns
@@ -464,46 +473,66 @@ def predict_clusterless_gmm_log_likelihood(
         # Bin spikes
         seg_ids = get_spike_time_bin_ind(elect_times, time)  # (n_spikes,)
 
-        # Joint logp for each mark vs all bins — VMAP for lower memory
-        def mark_logp(mark: jnp.ndarray, gmm_model: object) -> jnp.ndarray:
-            """Compute joint log probability for mark across all position bins.
+        # Process spikes in blocks to reduce peak memory
+        # Memory: O(spike_block_size × n_bins) instead of O(n_spikes × n_bins)
+        n_spikes = elect_feats.shape[0]
 
-            Parameters
-            ----------
-            mark : jnp.ndarray, shape (n_features,)
-                Spike waveform features.
-            gmm_model : GaussianMixtureModel
-                Joint position-mark GMM model.
+        # JIT-compiled function to accumulate contributions
+        # Note: GMM evaluation can't be JITed (Python object), so we separate it
+        def _accumulate_contrib(log_lik_array, log_contrib, block_seg_ids, num_segments):
+            """Accumulate time-binned contributions."""
+            block_contrib = segment_sum(
+                log_contrib,
+                block_seg_ids,
+                num_segments=num_segments,
+                indices_are_sorted=True,
+            )
+            return log_lik_array + block_contrib
 
-            Returns
-            -------
-            jnp.ndarray, shape (n_bins,)
-                Log probability of joint (position, mark) for each position bin.
-            """
-            # Build [bin_centers, mark] without forming (B*n_bins, ...) at once
-            tiled_mark = jnp.repeat(mark[None, :], n_bins, axis=0)  # (n_bins, M)
-            eval_points = jnp.concatenate(
-                [bin_centers, tiled_mark], axis=1
-            )  # (n_bins, P+M)
-            return _gmm_logp(gmm_model, eval_points)  # (n_bins,)
+        accumulate_contrib = jax.jit(_accumulate_contrib, donate_argnums=(0,), static_argnames=("num_segments",))
 
-        joint_logp = jax.vmap(mark_logp, in_axes=(0, None))(
-            elect_feats, joint_gmm
-        )  # (n_spikes, n_bins)
+        # Process spikes in blocks
+        for spike_start in range(0, n_spikes, spike_block_size):
+            spike_end = min(spike_start + spike_block_size, n_spikes)
+            block_feats = elect_feats[spike_start:spike_end]
+            block_seg_ids = seg_ids[spike_start:spike_end]
+            block_size = block_feats.shape[0]
 
-        # log contribution: log(mean_rate) + log p(pos, mark) - log occupancy(pos)
-        log_contrib = (
-            jnp.log(mean_rate) + joint_logp - log_occ_bins
-        )  # (n_spikes, n_bins)
+            # Compute joint log-probabilities for this block
+            if bin_tile_size is None or bin_tile_size >= n_bins:
+                # No bin tiling: process all bins at once (default)
+                tiled_bins = jnp.tile(bin_centers, (block_size, 1))
+                repeated_feats = jnp.repeat(block_feats, n_bins, axis=0)
+                eval_points = jnp.concatenate([tiled_bins, repeated_feats], axis=1)
 
-        # Sum per time bin
-        log_likelihood = log_likelihood + segment_sum(
-            log_contrib,
-            seg_ids,
-            n_time,
-            indices_are_sorted=True,
-            num_segments=n_time,
-        )
+                joint_logp_flat = _gmm_logp(joint_gmm, eval_points)
+                joint_logp = joint_logp_flat.reshape(block_size, n_bins)
+            else:
+                # Bin tiling: process bins in chunks
+                joint_logp = jnp.zeros((block_size, n_bins))
+                for bin_start in range(0, n_bins, bin_tile_size):
+                    bin_end = min(bin_start + bin_tile_size, n_bins)
+                    bin_slice = slice(bin_start, bin_end)
+                    n_tile_bins = bin_end - bin_start
+
+                    tiled_bins_tile = jnp.tile(bin_centers[bin_slice], (block_size, 1))
+                    repeated_feats_tile = jnp.repeat(block_feats, n_tile_bins, axis=0)
+                    eval_points_tile = jnp.concatenate(
+                        [tiled_bins_tile, repeated_feats_tile], axis=1
+                    )
+
+                    joint_logp_tile = _gmm_logp(joint_gmm, eval_points_tile).reshape(
+                        block_size, n_tile_bins
+                    )
+                    joint_logp = joint_logp.at[:, bin_slice].set(joint_logp_tile)
+
+            # log contribution
+            log_contrib = jnp.log(mean_rate) + joint_logp - log_occ_bins
+
+            # Accumulate using JIT-compiled function with buffer donation
+            log_likelihood = accumulate_contrib(
+                log_likelihood, log_contrib, block_seg_ids, n_time
+            )
 
     return log_likelihood
 
