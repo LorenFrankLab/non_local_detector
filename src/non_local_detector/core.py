@@ -319,6 +319,13 @@ def chunked_filter_smoother(
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
     transition_matrix_jax = jnp.asarray(transition_matrix, dtype=dtype)
 
+    # Create aggregation matrix for marginalizing state bins -> discrete states
+    # This is reused across all chunks
+    n_discrete_states = int(jnp.max(state_ind_jax)) + 1
+    state_aggregation_matrix = jax.nn.one_hot(
+        state_ind_jax, n_discrete_states
+    )  # (n_state_bins, n_states)
+
     # Initialize variables that may be referenced in loop conditionals
     predicted_probs_next = None
     acausal_posterior_chunk = None
@@ -372,9 +379,14 @@ def chunked_filter_smoother(
         )
 
         # Keep as JAX arrays - no conversion to NumPy yet
+        # Marginalize state bins -> discrete states by summing probabilities
         causal_posterior.append(causal_posterior_chunk)
-        causal_state_probabilities.append(causal_posterior_chunk[:, state_ind_jax])
-        predictive_state_probabilities.append(predicted_probs_chunk[:, state_ind_jax])
+        causal_state_probabilities.append(
+            causal_posterior_chunk @ state_aggregation_matrix
+        )
+        predictive_state_probabilities.append(
+            predicted_probs_chunk @ state_aggregation_matrix
+        )
 
         marginal_likelihood += marginal_likelihood_chunk
 
@@ -399,7 +411,9 @@ def chunked_filter_smoother(
             n_time=n_time,
         )
         acausal_posterior.append(acausal_posterior_chunk)
-        acausal_state_probabilities.append(acausal_posterior_chunk[:, state_ind_jax])
+        acausal_state_probabilities.append(
+            acausal_posterior_chunk @ state_aggregation_matrix
+        )
 
     # Concatenate JAX arrays on device
     acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
@@ -789,6 +803,13 @@ def chunked_filter_smoother_covariate_dependent(
         discrete_transition_matrix, dtype=dtype
     )
 
+    # Create aggregation matrix for marginalizing state bins -> discrete states
+    # This is reused across all chunks
+    n_discrete_states = int(jnp.max(state_ind_jax)) + 1
+    state_aggregation_matrix = jax.nn.one_hot(
+        state_ind_jax, n_discrete_states
+    )  # (n_state_bins, n_states)
+
     # Initialize variables that may be referenced in loop conditionals
     predicted_probs_next = None
     acausal_posterior_chunk = None
@@ -849,9 +870,14 @@ def chunked_filter_smoother_covariate_dependent(
         )
 
         # Keep as JAX arrays - no conversion to NumPy yet
+        # Marginalize state bins -> discrete states by summing probabilities
         causal_posterior.append(causal_posterior_chunk)
-        causal_state_probabilities.append(causal_posterior_chunk[:, state_ind_jax])
-        predictive_state_probabilities.append(predicted_probs_chunk[:, state_ind_jax])
+        causal_state_probabilities.append(
+            causal_posterior_chunk @ state_aggregation_matrix
+        )
+        predictive_state_probabilities.append(
+            predicted_probs_chunk @ state_aggregation_matrix
+        )
 
         marginal_likelihood += marginal_likelihood_chunk
 
@@ -884,7 +910,9 @@ def chunked_filter_smoother_covariate_dependent(
             n_time=n_time,
         )
         acausal_posterior.append(acausal_posterior_chunk)
-        acausal_state_probabilities.append(acausal_posterior_chunk[:, state_ind_jax])
+        acausal_state_probabilities.append(
+            acausal_posterior_chunk @ state_aggregation_matrix
+        )
 
     # Concatenate JAX arrays on device
     acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
