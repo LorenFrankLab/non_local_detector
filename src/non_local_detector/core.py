@@ -200,9 +200,11 @@ def smoother(
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         filtered_probs_t, t = args
 
+        # Compute predicted probs once and reuse (avoids redundant matmul)
+        predicted_probs = filtered_probs_t @ transition_matrix
+
         smoothed_probs = filtered_probs_t * (
-            transition_matrix
-            @ _divide_safe(smoothed_probs_next, filtered_probs_t @ transition_matrix)
+            transition_matrix @ _divide_safe(smoothed_probs_next, predicted_probs)
         ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
         smoothed_probs /= smoothed_probs.sum(keepdims=True)
 
@@ -236,6 +238,7 @@ def chunked_filter_smoother(
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
+    dtype: jnp.dtype = jnp.float32,
 ) -> tuple[
     np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray, np.ndarray
 ]:
@@ -256,6 +259,10 @@ def chunked_filter_smoother(
     log_likelihoods : Optional[np.ndarray], optional
     cache_log_likelihoods : bool, optional
         If True, log likelihoods are cached, by default True
+    dtype : jnp.dtype, optional
+        Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
+        Use float64 for numerically challenging problems.
+        Note: Requires JAX_ENABLE_X64=1 environment variable for float64.
 
     Returns
     -------
@@ -284,9 +291,10 @@ def chunked_filter_smoother(
     time_chunks = np.array_split(np.arange(n_time), n_chunks)
 
     # Convert inputs to JAX arrays once at the top - keep data on device
-    state_ind_jax = jnp.asarray(state_ind)
-    initial_distribution_jax = jnp.asarray(initial_distribution)
-    transition_matrix_jax = jnp.asarray(transition_matrix)
+    # Cast to desired dtype for precision control
+    state_ind_jax = jnp.asarray(state_ind)  # Keep as integer
+    initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
+    transition_matrix_jax = jnp.asarray(transition_matrix, dtype=dtype)
 
     # Initialize variables that may be referenced in loop conditionals
     predicted_probs_next = None
@@ -300,7 +308,9 @@ def chunked_filter_smoother(
             is_missing=is_missing,
         )
     log_likelihoods_jax = (
-        jnp.asarray(log_likelihoods) if log_likelihoods is not None else None
+        jnp.asarray(log_likelihoods, dtype=dtype)
+        if log_likelihoods is not None
+        else None
     )
 
     # Forward pass: accumulate JAX arrays
@@ -319,7 +329,7 @@ def chunked_filter_smoother(
                 *log_likelihood_args,
                 is_missing=is_missing_chunk,
             )
-            log_likelihood_chunk = jnp.asarray(log_likelihood_chunk)
+            log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
 
         # Donated: log_likelihood_chunk (created fresh), initial_distribution
         # Do not read these after the call - they are consumed by the JIT function
@@ -507,18 +517,26 @@ def _get_transition_matrix(
 
     Parameters
     ----------
-    discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
+    discrete_transition_matrix_t : jnp.ndarray, shape (n_state_bins, n_state_bins) or (n_states, n_states)
+        If state_ind is provided, expected shape is (n_states, n_states) and will be indexed.
+        If state_ind is None, expected shape is (n_state_bins, n_state_bins) (pre-indexed).
     continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
-    state_ind : jnp.ndarray, shape (n_state_bins,)
+    state_ind : jnp.ndarray, shape (n_state_bins,), optional
+        If provided, used to index discrete_transition_matrix_t.
+        If None, assumes discrete_transition_matrix_t is already indexed.
 
     Returns
     -------
     transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
     """
-    return (
-        continuous_transition_matrix
-        * discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
-    )
+    if state_ind is not None:
+        # Need to index - used by public API functions
+        discrete_indexed = discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
+    else:
+        # Already indexed - used by optimized chunked functions
+        discrete_indexed = discrete_transition_matrix_t
+
+    return continuous_transition_matrix * discrete_indexed
 
 
 def filter_covariate_dependent(
@@ -621,12 +639,11 @@ def smoother_covariate_dependent(
             state_ind,
         )
 
+        # Compute predicted probs once and reuse (avoids redundant matmul)
+        predicted_probs = filtered_probs_t @ transition_matrix
+
         smoothed_probs = filtered_probs_t * (
-            transition_matrix
-            @ _divide_safe(
-                smoothed_probs_next,
-                filtered_probs_t @ transition_matrix,
-            )
+            transition_matrix @ _divide_safe(smoothed_probs_next, predicted_probs)
         ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
         smoothed_probs /= smoothed_probs.sum(keepdims=True)
 
@@ -663,6 +680,7 @@ def chunked_filter_smoother_covariate_dependent(
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
+    dtype: jnp.dtype = jnp.float32,
 ) -> tuple[
     np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray, np.ndarray
 ]:
@@ -683,6 +701,10 @@ def chunked_filter_smoother_covariate_dependent(
     log_likelihoods : np.ndarray, optional
     cache_log_likelihoods : bool, optional
         If True, log likelihoods are cached instead of recomputed for each chunk, by default True
+    dtype : jnp.dtype, optional
+        Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
+        Use float64 for numerically challenging problems.
+        Note: Requires JAX_ENABLE_X64=1 environment variable for float64.
 
     Returns
     -------
@@ -711,10 +733,21 @@ def chunked_filter_smoother_covariate_dependent(
     time_chunks = np.array_split(np.arange(n_time), n_chunks)
 
     # Convert inputs to JAX arrays once at the top - keep data on device
-    state_ind_jax = jnp.asarray(state_ind)
-    initial_distribution_jax = jnp.asarray(initial_distribution)
-    discrete_transition_matrix_jax = jnp.asarray(discrete_transition_matrix)
-    continuous_transition_matrix_jax = jnp.asarray(continuous_transition_matrix)
+    # Cast to desired dtype for precision control
+    state_ind_jax = jnp.asarray(state_ind)  # Keep as integer
+    initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
+    continuous_transition_matrix_jax = jnp.asarray(
+        continuous_transition_matrix, dtype=dtype
+    )
+
+    # Precompute indexed discrete blocks to reduce repeated advanced indexing in scans
+    # This slices discrete_transition_matrix[:, state_ind][:, :, state_ind] once
+    discrete_transition_matrix_jax = jnp.asarray(
+        discrete_transition_matrix, dtype=dtype
+    )
+    discrete_transition_matrix_indexed = discrete_transition_matrix_jax[
+        :, state_ind_jax[:, None], state_ind_jax
+    ]
 
     # Initialize variables that may be referenced in loop conditionals
     predicted_probs_next = None
@@ -728,7 +761,9 @@ def chunked_filter_smoother_covariate_dependent(
             is_missing=is_missing,
         )
     log_likelihoods_jax = (
-        jnp.asarray(log_likelihoods) if log_likelihoods is not None else None
+        jnp.asarray(log_likelihoods, dtype=dtype)
+        if log_likelihoods is not None
+        else None
     )
 
     # Forward pass: accumulate JAX arrays
@@ -747,7 +782,7 @@ def chunked_filter_smoother_covariate_dependent(
                 *log_likelihood_args,
                 is_missing=is_missing_chunk,
             )
-            log_likelihood_chunk = jnp.asarray(log_likelihood_chunk)
+            log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
 
         # Donated: log_likelihood_chunk (created fresh), initial_distribution
         # Do not read these after the call - they are consumed by the JIT function
@@ -758,9 +793,9 @@ def chunked_filter_smoother_covariate_dependent(
             initial_distribution=(
                 initial_distribution_jax if chunk_id == 0 else predicted_probs_next
             ),
-            discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
+            discrete_transition_matrix=discrete_transition_matrix_indexed[time_inds],
             continuous_transition_matrix=continuous_transition_matrix_jax,
-            state_ind=state_ind_jax,
+            state_ind=None,  # Pre-indexed, don't index again
             log_likelihoods=log_likelihood_chunk,
         )
 
@@ -781,9 +816,9 @@ def chunked_filter_smoother_covariate_dependent(
         # Use internal version with buffer donation
         # Safe because causal_posterior_jax[time_inds] creates a slice (copy)
         acausal_posterior_chunk = _smoother_covariate_dependent_internal(
-            discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
+            discrete_transition_matrix=discrete_transition_matrix_indexed[time_inds],
             continuous_transition_matrix=continuous_transition_matrix_jax,
-            state_ind=state_ind_jax,
+            state_ind=None,  # Pre-indexed, don't index again
             filtered_probs=causal_posterior_jax[time_inds],
             initial=(
                 causal_posterior_jax[-1]
