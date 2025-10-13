@@ -13,6 +13,9 @@ def _normalize(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Normalizes the values within the axis in a way that they sum up to 1.
 
+    Avoids clipping to preserve probability mass. Adds eps to denominator
+    for numerical stability instead of clipping the input.
+
     Parameters
     ----------
     u : jnp.ndarray
@@ -27,11 +30,11 @@ def _normalize(
     normalized_u : jnp.ndarray
         Normalized array
     c : jnp.ndarray
-        Normalization constant
+        Normalization constant (squeezed along normalized axis)
     """
-    u = jnp.clip(u, min=eps, max=None)
-    c = u.sum(axis=axis)
-    return u / c, c
+    c = u.sum(axis=axis, keepdims=True)
+    u = u / (c + eps)  # Add eps to denominator, don't clip input
+    return u, c.squeeze(axis)
 
 
 # Helper functions for the two key filtering steps
