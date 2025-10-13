@@ -74,10 +74,10 @@ def _divide_safe(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.ndarra
     result : jnp.ndarray
         Element-wise division result with safe handling of zero denominators.
     """
-    return jnp.where(denominator == 0.0, 0.0, numerator / denominator)
+    # Use jnp.where for conditional division - XLA can optimize this well
+    return jnp.where(denominator != 0.0, numerator / denominator, 0.0)
 
 
-@jax.jit
 def filter(
     initial_distribution: jnp.ndarray,
     transition_matrix: jnp.ndarray,
@@ -128,7 +128,11 @@ def filter(
     return jax.lax.scan(_step, (0.0, initial_distribution), log_likelihoods)
 
 
-@jax.jit
+# Apply JIT without donation - tests reuse inputs
+# Donation is applied strategically within chunked drivers
+filter = jax.jit(filter)
+
+
 def smoother(
     transition_matrix: jnp.ndarray,
     filtered_probs: jnp.ndarray,
@@ -143,7 +147,7 @@ def smoother(
     transition_matrix : jnp.ndarray, shape (n_states, n_states)
         Transition matrix
     filtered_probs : jnp.ndarray, shape (n_time, n_states)
-        Filtered state probabilities
+        Filtered state probabilities.
     initial : jnp.ndarray, optional
         Initial state distribution, by default None
     ind : jnp.ndarray, optional
@@ -182,6 +186,10 @@ def smoother(
         (filtered_probs, ind),
         reverse=True,
     )[1]
+
+
+# Apply JIT without donation - tests reuse inputs
+smoother = jax.jit(smoother)
 
 
 def chunked_filter_smoother(
@@ -242,25 +250,30 @@ def chunked_filter_smoother(
     n_time = len(time)
     time_chunks = np.array_split(np.arange(n_time), n_chunks)
 
-    n_states = len(np.unique(state_ind))
-    state_mask = np.identity(n_states, dtype=np.float32)[
-        state_ind
-    ]  # shape (n_state_inds, n_states)
+    # Convert inputs to JAX arrays once at the top - keep data on device
+    state_ind_jax = jnp.asarray(state_ind)
+    initial_distribution_jax = jnp.asarray(initial_distribution)
+    transition_matrix_jax = jnp.asarray(transition_matrix)
 
     # Initialize variables that may be referenced in loop conditionals
     predicted_probs_next = None
     acausal_posterior_chunk = None
 
+    # Precompute or convert log_likelihoods to JAX once
     if cache_log_likelihoods and log_likelihoods is None:
         log_likelihoods = log_likelihood_func(
             time,
             *log_likelihood_args,
             is_missing=is_missing,
         )
+    log_likelihoods_jax = (
+        jnp.asarray(log_likelihoods) if log_likelihoods is not None else None
+    )
 
+    # Forward pass: accumulate JAX arrays
     for chunk_id, time_inds in enumerate(time_chunks):
-        if log_likelihoods is not None:
-            log_likelihood_chunk = log_likelihoods[time_inds]
+        if log_likelihoods_jax is not None:
+            log_likelihood_chunk = log_likelihoods_jax[time_inds]
         else:
             is_missing_chunk = is_missing[time_inds] if is_missing is not None else None
             log_likelihood_chunk = log_likelihood_func(
@@ -268,60 +281,63 @@ def chunked_filter_smoother(
                 *log_likelihood_args,
                 is_missing=is_missing_chunk,
             )
+            log_likelihood_chunk = jnp.asarray(log_likelihood_chunk)
 
         (
             (marginal_likelihood_chunk, predicted_probs_next),
             (causal_posterior_chunk, predicted_probs_chunk),
         ) = filter(
             initial_distribution=(
-                initial_distribution if chunk_id == 0 else predicted_probs_next
+                initial_distribution_jax if chunk_id == 0 else predicted_probs_next
             ),
-            transition_matrix=transition_matrix,
+            transition_matrix=transition_matrix_jax,
             log_likelihoods=log_likelihood_chunk,
         )
 
-        causal_posterior_chunk = np.asarray(causal_posterior_chunk)
+        # Keep as JAX arrays - no conversion to NumPy yet
         causal_posterior.append(causal_posterior_chunk)
-        causal_state_probabilities.append(causal_posterior_chunk @ state_mask)
-        predictive_state_probabilities.append(
-            np.asarray(predicted_probs_chunk) @ state_mask
-        )
+        causal_state_probabilities.append(causal_posterior_chunk[:, state_ind_jax])
+        predictive_state_probabilities.append(predicted_probs_chunk[:, state_ind_jax])
 
         marginal_likelihood += marginal_likelihood_chunk
 
-    causal_posterior = np.concatenate(causal_posterior)
-    causal_state_probabilities = np.concatenate(causal_state_probabilities)
-    predictive_state_probabilities = np.concatenate(predictive_state_probabilities)
+    # Concatenate JAX arrays on device
+    causal_posterior_jax = jnp.concatenate(causal_posterior)
+    causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
+    predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
 
+    # Backward pass: accumulate JAX arrays
     for chunk_id, time_inds in enumerate(reversed(time_chunks)):
         acausal_posterior_chunk = smoother(
-            transition_matrix=transition_matrix,
-            filtered_probs=causal_posterior[time_inds],
+            transition_matrix=transition_matrix_jax,
+            filtered_probs=causal_posterior_jax[time_inds],
             initial=(
-                causal_posterior[-1] if chunk_id == 0 else acausal_posterior_chunk[0]
+                causal_posterior_jax[-1]
+                if chunk_id == 0
+                else acausal_posterior_chunk[0]
             ),
-            ind=time_inds,
+            ind=jnp.asarray(time_inds),
             n_time=n_time,
         )
-        acausal_posterior_chunk = np.asarray(acausal_posterior_chunk)
         acausal_posterior.append(acausal_posterior_chunk)
-        acausal_state_probabilities.append(acausal_posterior_chunk @ state_mask)
+        acausal_state_probabilities.append(acausal_posterior_chunk[:, state_ind_jax])
 
-    acausal_posterior = np.concatenate(acausal_posterior[::-1])
-    acausal_state_probabilities = np.concatenate(acausal_state_probabilities[::-1])
+    # Concatenate JAX arrays on device
+    acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
+    acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
 
+    # Convert to NumPy only at the very end for API compatibility
     return (
-        acausal_posterior,
-        acausal_state_probabilities,
-        marginal_likelihood,
-        causal_state_probabilities,
-        predictive_state_probabilities,
-        log_likelihoods,
-        causal_posterior,
+        np.asarray(acausal_posterior_jax),
+        np.asarray(acausal_state_probabilities_jax),
+        float(marginal_likelihood),
+        np.asarray(causal_state_probabilities_jax),
+        np.asarray(predictive_state_probabilities_jax),
+        log_likelihoods,  # Keep as original (may be None or NumPy)
+        np.asarray(causal_posterior_jax),
     )
 
 
-@jax.jit
 def viterbi(
     initial_distribution: jnp.ndarray,
     transition_matrix: jnp.ndarray,
@@ -336,17 +352,20 @@ def viterbi(
     transition_matrix : jnp.ndarray, shape (n_states, n_states)
         Transition matrix
     log_likelihoods : jnp.ndarray, shape (n_time, n_states)
-        Log likelihoods for each state at each time point
+        Log likelihoods for each state at each time point.
 
     Returns
     -------
     most_likely_state_sequence : jnp.ndarray, shape (n_time,)
 
     """
+    # Precompute logs once outside the scan loop
+    log_transition_matrix = jnp.log(transition_matrix)
+    log_initial_distribution = jnp.log(initial_distribution)
 
     # Run the backward pass
     def _backward_pass(best_next_score, t):
-        scores = jnp.log(transition_matrix) + best_next_score + log_likelihoods[t + 1]
+        scores = log_transition_matrix + best_next_score + log_likelihoods[t + 1]
         best_next_state = jnp.argmax(scores, axis=1)
         best_next_score = jnp.max(scores, axis=1)
         return best_next_score, best_next_state
@@ -365,11 +384,15 @@ def viterbi(
         return next_state, next_state
 
     first_state = jnp.argmax(
-        jnp.log(initial_distribution) + log_likelihoods[0] + best_second_score
+        log_initial_distribution + log_likelihoods[0] + best_second_score
     )
     _, states = jax.lax.scan(_forward_pass, first_state, best_next_states)
 
     return jnp.concatenate([jnp.array([first_state]), states])
+
+
+# Apply JIT without donation - tests reuse inputs
+viterbi = jax.jit(viterbi)
 
 
 def most_likely_sequence(
@@ -452,7 +475,6 @@ def _get_transition_matrix(
     )
 
 
-@jax.jit
 def filter_covariate_dependent(
     initial_distribution: jnp.ndarray,
     discrete_transition_matrix: jnp.ndarray,
@@ -502,7 +524,10 @@ def filter_covariate_dependent(
     )
 
 
-@jax.jit
+# Apply JIT without donation - tests reuse inputs
+filter_covariate_dependent = jax.jit(filter_covariate_dependent)
+
+
 def smoother_covariate_dependent(
     discrete_transition_matrix: jnp.ndarray,
     continuous_transition_matrix: jnp.ndarray,
@@ -561,6 +586,10 @@ def smoother_covariate_dependent(
         (filtered_probs, discrete_transition_matrix, ind),
         reverse=True,
     )[1]
+
+
+# Apply JIT without donation - tests reuse inputs
+smoother_covariate_dependent = jax.jit(smoother_covariate_dependent)
 
 
 def chunked_filter_smoother_covariate_dependent(
@@ -622,25 +651,31 @@ def chunked_filter_smoother_covariate_dependent(
     n_time = len(time)
     time_chunks = np.array_split(np.arange(n_time), n_chunks)
 
-    n_states = len(np.unique(state_ind))
-    state_mask = np.identity(n_states, dtype=np.float32)[
-        state_ind
-    ]  # shape (n_state_inds, n_states)
+    # Convert inputs to JAX arrays once at the top - keep data on device
+    state_ind_jax = jnp.asarray(state_ind)
+    initial_distribution_jax = jnp.asarray(initial_distribution)
+    discrete_transition_matrix_jax = jnp.asarray(discrete_transition_matrix)
+    continuous_transition_matrix_jax = jnp.asarray(continuous_transition_matrix)
 
     # Initialize variables that may be referenced in loop conditionals
     predicted_probs_next = None
     acausal_posterior_chunk = None
 
+    # Precompute or convert log_likelihoods to JAX once
     if cache_log_likelihoods and log_likelihoods is None:
         log_likelihoods = log_likelihood_func(
             time,
             *log_likelihood_args,
             is_missing=is_missing,
         )
+    log_likelihoods_jax = (
+        jnp.asarray(log_likelihoods) if log_likelihoods is not None else None
+    )
 
+    # Forward pass: accumulate JAX arrays
     for chunk_id, time_inds in enumerate(time_chunks):
-        if log_likelihoods is not None:
-            log_likelihood_chunk = log_likelihoods[time_inds]
+        if log_likelihoods_jax is not None:
+            log_likelihood_chunk = log_likelihoods_jax[time_inds]
         else:
             is_missing_chunk = is_missing[time_inds] if is_missing is not None else None
             log_likelihood_chunk = log_likelihood_func(
@@ -648,63 +683,67 @@ def chunked_filter_smoother_covariate_dependent(
                 *log_likelihood_args,
                 is_missing=is_missing_chunk,
             )
+            log_likelihood_chunk = jnp.asarray(log_likelihood_chunk)
 
         (
             (marginal_likelihood_chunk, predicted_probs_next),
             (causal_posterior_chunk, predicted_probs_chunk),
         ) = filter_covariate_dependent(
             initial_distribution=(
-                initial_distribution if chunk_id == 0 else predicted_probs_next
+                initial_distribution_jax if chunk_id == 0 else predicted_probs_next
             ),
-            discrete_transition_matrix=discrete_transition_matrix[time_inds],
-            continuous_transition_matrix=continuous_transition_matrix,
-            state_ind=state_ind,
+            discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
+            continuous_transition_matrix=continuous_transition_matrix_jax,
+            state_ind=state_ind_jax,
             log_likelihoods=log_likelihood_chunk,
         )
-        causal_posterior_chunk = np.asarray(causal_posterior_chunk)
+
+        # Keep as JAX arrays - no conversion to NumPy yet
         causal_posterior.append(causal_posterior_chunk)
-        causal_state_probabilities.append(causal_posterior_chunk @ state_mask)
-        predictive_state_probabilities.append(
-            np.asarray(predicted_probs_chunk) @ state_mask
-        )
+        causal_state_probabilities.append(causal_posterior_chunk[:, state_ind_jax])
+        predictive_state_probabilities.append(predicted_probs_chunk[:, state_ind_jax])
 
         marginal_likelihood += marginal_likelihood_chunk
 
-    causal_posterior = np.concatenate(causal_posterior)
-    causal_state_probabilities = np.concatenate(causal_state_probabilities)
-    predictive_state_probabilities = np.concatenate(predictive_state_probabilities)
+    # Concatenate JAX arrays on device
+    causal_posterior_jax = jnp.concatenate(causal_posterior)
+    causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
+    predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
 
+    # Backward pass: accumulate JAX arrays
     for chunk_id, time_inds in enumerate(reversed(time_chunks)):
         acausal_posterior_chunk = smoother_covariate_dependent(
-            discrete_transition_matrix=discrete_transition_matrix[time_inds],
-            continuous_transition_matrix=continuous_transition_matrix,
-            state_ind=state_ind,
-            filtered_probs=causal_posterior[time_inds],
+            discrete_transition_matrix=discrete_transition_matrix_jax[time_inds],
+            continuous_transition_matrix=continuous_transition_matrix_jax,
+            state_ind=state_ind_jax,
+            filtered_probs=causal_posterior_jax[time_inds],
             initial=(
-                causal_posterior[-1] if chunk_id == 0 else acausal_posterior_chunk[0]
+                causal_posterior_jax[-1]
+                if chunk_id == 0
+                else acausal_posterior_chunk[0]
             ),
-            ind=time_inds,
+            ind=jnp.asarray(time_inds),
             n_time=n_time,
         )
-        acausal_posterior_chunk = np.asarray(acausal_posterior_chunk)
         acausal_posterior.append(acausal_posterior_chunk)
-        acausal_state_probabilities.append(acausal_posterior_chunk @ state_mask)
+        acausal_state_probabilities.append(acausal_posterior_chunk[:, state_ind_jax])
 
-    acausal_posterior = np.concatenate(acausal_posterior[::-1])
-    acausal_state_probabilities = np.concatenate(acausal_state_probabilities[::-1])
+    # Concatenate JAX arrays on device
+    acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
+    acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
 
+    # Convert to NumPy only at the very end for API compatibility
     return (
-        acausal_posterior,
-        acausal_state_probabilities,
-        marginal_likelihood,
-        causal_state_probabilities,
-        predictive_state_probabilities,
-        log_likelihoods,
-        causal_posterior,
+        np.asarray(acausal_posterior_jax),
+        np.asarray(acausal_state_probabilities_jax),
+        float(marginal_likelihood),
+        np.asarray(causal_state_probabilities_jax),
+        np.asarray(predictive_state_probabilities_jax),
+        log_likelihoods,  # Keep as original (may be None or NumPy)
+        np.asarray(causal_posterior_jax),
     )
 
 
-@jax.jit
 def viterbi_covariate_dependent(
     initial_distribution: jnp.ndarray,
     discrete_transition_matrix: jnp.ndarray,
@@ -734,16 +773,18 @@ def viterbi_covariate_dependent(
     most_likely_state_sequence : jnp.ndarray, shape (n_time,)
         Most likely state sequence.
     """
+    # Precompute logs once outside the scan loop
+    log_continuous_transition_matrix = jnp.log(continuous_transition_matrix)
+    log_initial_distribution = jnp.log(initial_distribution)
 
     # Run the backward pass
     def _backward_pass(best_next_score, args):
         t, discrete_transition_matrix_t = args
-        transition_matrix = _get_transition_matrix(
-            discrete_transition_matrix_t,
-            continuous_transition_matrix,
-            state_ind,
+        # Build log-space transition matrix: log(A * B) = log(A) + log(B)
+        log_transition_matrix = log_continuous_transition_matrix + jnp.log(
+            discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
         )
-        scores = jnp.log(transition_matrix) + best_next_score + log_likelihoods[t + 1]
+        scores = log_transition_matrix + best_next_score + log_likelihoods[t + 1]
         best_next_state = jnp.argmax(scores, axis=1)
         best_next_score = jnp.max(scores, axis=1)
         return best_next_score, best_next_state
@@ -762,11 +803,15 @@ def viterbi_covariate_dependent(
         return next_state, next_state
 
     first_state = jnp.argmax(
-        jnp.log(initial_distribution) + log_likelihoods[0] + best_second_score
+        log_initial_distribution + log_likelihoods[0] + best_second_score
     )
     _, states = jax.lax.scan(_forward_pass, first_state, best_next_states)
 
     return jnp.concatenate([jnp.array([first_state]), states])
+
+
+# Apply JIT without donation - tests reuse inputs
+viterbi_covariate_dependent = jax.jit(viterbi_covariate_dependent)
 
 
 def most_likely_sequence_covariate_dependent(
