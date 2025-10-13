@@ -47,6 +47,68 @@ def get_spike_time_bin_ind(
     return bin_indices
 
 
+def _compute_log_mark_kernel_gemm(
+    decoding_features: jnp.ndarray,
+    encoding_features: jnp.ndarray,
+    waveform_stds: jnp.ndarray,
+) -> jnp.ndarray:
+    """Compute log mark kernel using GEMM (matrix multiplication) instead of per-dimension loop.
+
+    This is mathematically equivalent to the loop-based approach but much faster for
+    multi-dimensional features. The Gaussian kernel in log-space:
+
+        log K(x, y) = -0.5 * sum_d [(x_d - y_d)^2 / sigma_d^2] - log_norm_const
+                    = -0.5 * sum_d [(x_d/sigma_d)^2 + (y_d/sigma_d)^2 - 2*(x_d/sigma_d)*(y_d/sigma_d)] - log_norm_const
+                    = -0.5 * (||x_scaled||^2 + ||y_scaled||^2 - 2 * x_scaled @ y_scaled^T) - log_norm_const
+
+    The cross term x_scaled @ y_scaled^T is a single matrix multiply (GEMM).
+
+    Parameters
+    ----------
+    decoding_features : jnp.ndarray, shape (n_decoding_spikes, n_features)
+        Waveform features for decoding spikes.
+    encoding_features : jnp.ndarray, shape (n_encoding_spikes, n_features)
+        Waveform features for encoding spikes.
+    waveform_stds : jnp.ndarray, shape (n_features,)
+        Standard deviations for each feature dimension.
+
+    Returns
+    -------
+    logK_mark : jnp.ndarray, shape (n_encoding_spikes, n_decoding_spikes)
+        Log kernel matrix K[i, j] = log(Gaussian kernel between encoding spike i and decoding spike j).
+    """
+    n_features = waveform_stds.shape[0]
+
+    # Precompute inverse standard deviations and normalization constant
+    inv_sigma = 1.0 / waveform_stds  # (n_features,)
+
+    # Log normalization constant: -0.5 * (D * log(2π) + 2 * sum(log(sigma)))
+    # Factor of 2 because we have sum of log(sigma), not log(sigma^2)
+    log_norm_const = -0.5 * (
+        n_features * jnp.log(2.0 * jnp.pi) + 2.0 * jnp.sum(jnp.log(waveform_stds))
+    )
+
+    # Scale features by inverse standard deviations
+    Y = encoding_features * inv_sigma[None, :]  # (n_enc, n_features)
+    X = decoding_features * inv_sigma[None, :]  # (n_dec, n_features)
+
+    # Compute squared norms
+    y2 = jnp.sum(Y**2, axis=1)  # (n_enc,)
+    x2 = jnp.sum(X**2, axis=1)  # (n_dec,)
+
+    # GEMM: compute cross terms X @ Y^T = (n_dec, n_features) @ (n_features, n_enc)
+    cross_term = X @ Y.T  # (n_dec, n_enc)
+
+    # Combine: log K[i,j] = -0.5 * (y2[i] + x2[j] - 2*cross_term[j,i]) + log_norm_const
+    # Note: We need (n_enc, n_dec) output, so transpose the cross term
+    logK_mark = (
+        log_norm_const
+        - 0.5 * (y2[:, None] + x2[None, :] - 2.0 * cross_term.T)
+    )  # (n_enc, n_dec)
+
+    return logK_mark
+
+
 @jax.jit
 def log_kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
@@ -88,6 +150,7 @@ def estimate_log_joint_mark_intensity(
     occupancy: jnp.ndarray,
     mean_rate: float,
     log_position_distance: jnp.ndarray,
+    use_gemm: bool = True,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms (log-space).
 
@@ -110,6 +173,9 @@ def estimate_log_joint_mark_intensity(
         Mean firing rate for the electrode.
     log_position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
         Log of position-based kernel distances between encoding spikes and position bins.
+    use_gemm : bool, optional
+        If True (default), use GEMM-based computation for mark kernel (faster for multi-dimensional features).
+        If False, use per-dimension loop (slower but equivalent).
 
     Returns
     -------
@@ -117,23 +183,35 @@ def estimate_log_joint_mark_intensity(
         Log joint mark intensity λ(mark, pos) for each decoding spike at each position.
     """
 
-    # 2) Build log-kernel matrix for marks in a block: (n_enc, n_dec_block)
-    #    Sum log-Gaussians over mark dimensions instead of multiplying PDFs.
-    n_enc = encoding_spike_waveform_features.shape[0]
-    n_dec = decoding_spike_waveform_features.shape[0]
-    logK_mark = jnp.zeros((n_enc, n_dec))
-    for dec_dim, enc_dim, std_d in zip(
-        decoding_spike_waveform_features.T,
-        encoding_spike_waveform_features.T,
-        waveform_stds,
-        strict=False,
-    ):
-        # broadcast to (n_enc, n_dec): each column is a decoding spike, rows are encoding spikes
-        logK_mark += log_gaussian_pdf(
-            x=jnp.expand_dims(dec_dim, axis=0),  # (1, n_dec)
-            mean=jnp.expand_dims(enc_dim, axis=1),  # (n_enc, 1)
-            sigma=std_d,
+    # 2) Build log-kernel matrix for marks: (n_enc, n_dec)
+    #    Two equivalent approaches:
+    #    - GEMM: Single matrix multiply (faster, especially for many features)
+    #    - Loop: Sum log-Gaussians over mark dimensions (slower but simpler)
+
+    if use_gemm:
+        # GEMM approach: O(n_enc * n_dec * n_features) via single matmul
+        logK_mark = _compute_log_mark_kernel_gemm(
+            decoding_spike_waveform_features,
+            encoding_spike_waveform_features,
+            waveform_stds,
         )
+    else:
+        # Loop approach: O(n_enc * n_dec * n_features) via n_features separate operations
+        n_enc = encoding_spike_waveform_features.shape[0]
+        n_dec = decoding_spike_waveform_features.shape[0]
+        logK_mark = jnp.zeros((n_enc, n_dec))
+        for dec_dim, enc_dim, std_d in zip(
+            decoding_spike_waveform_features.T,
+            encoding_spike_waveform_features.T,
+            waveform_stds,
+            strict=False,
+        ):
+            # broadcast to (n_enc, n_dec): each column is a decoding spike, rows are encoding spikes
+            logK_mark += log_gaussian_pdf(
+                x=jnp.expand_dims(dec_dim, axis=0),  # (1, n_dec)
+                mean=jnp.expand_dims(enc_dim, axis=1),  # (n_enc, 1)
+                sigma=std_d,
+            )
 
     # 3) Weighted log-sum-exp across encoding spikes for each (decoding, position) pair
     #    log sum_i [ w_i * exp(logK_mark[i,dec]) * exp(logK_pos[i,pos]) ]
@@ -174,6 +252,7 @@ def block_estimate_log_joint_mark_intensity(
     mean_rate: float,
     log_position_distance: jnp.ndarray,
     block_size: int = 100,
+    use_gemm: bool = True,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity in blocks over decoding spikes (log-space).
 
@@ -198,6 +277,9 @@ def block_estimate_log_joint_mark_intensity(
         Log of position-based kernel distances between encoding spikes and position bins.
     block_size : int, optional
         Number of decoding spikes to process per block, by default 100.
+    use_gemm : bool, optional
+        If True (default), use GEMM-based computation for mark kernel (faster for multi-dimensional features).
+        If False, use per-dimension loop (slower but equivalent).
 
     Returns
     -------
@@ -223,6 +305,7 @@ def block_estimate_log_joint_mark_intensity(
                 occupancy,
                 mean_rate,
                 log_position_distance,
+                use_gemm=use_gemm,
             ),
             (start, 0),
         )
