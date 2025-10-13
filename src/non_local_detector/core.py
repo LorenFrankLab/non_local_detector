@@ -487,6 +487,7 @@ def most_likely_sequence(
     is_missing: np.ndarray | None = None,
     log_likelihoods: np.ndarray | None = None,
     n_chunks: int = 1,
+    dtype: jnp.dtype = jnp.float32,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute the most likely state sequence using the Viterbi algorithm.
 
@@ -508,6 +509,9 @@ def most_likely_sequence(
         Pre-computed log likelihoods, by default None.
     n_chunks : int, optional
         Number of chunks (not yet implemented for > 1), by default 1.
+    dtype : jnp.dtype, optional
+        Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
+        Note: Requires JAX_ENABLE_X64=1 environment variable for float64.
 
     Returns
     -------
@@ -525,11 +529,20 @@ def most_likely_sequence(
             *log_likelihood_args,
             is_missing=is_missing,
         )
-    return viterbi(
-        initial_distribution=initial_distribution,
-        transition_matrix=transition_matrix,
-        log_likelihoods=log_likelihoods,
+
+    # Cast to desired dtype for precision control
+    initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
+    transition_matrix_jax = jnp.asarray(transition_matrix, dtype=dtype)
+    log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
+
+    most_likely_states = viterbi(
+        initial_distribution=initial_distribution_jax,
+        transition_matrix=transition_matrix_jax,
+        log_likelihoods=log_likelihoods_jax,
     )
+
+    # Return NumPy array for API consistency
+    return np.asarray(most_likely_states), log_likelihoods
 
 
 ## Covariate dependent filtering and smoothing ##
@@ -927,16 +940,15 @@ def viterbi_covariate_dependent(
     log_continuous_transition_matrix = _safe_log(continuous_transition_matrix)
     log_initial_distribution = _safe_log(initial_distribution)
 
-    # Pre-index and precompute log of discrete transitions to avoid repeated operations in scan
-    # This eliminates both the expensive gather operation AND the repeated log computation
-    discrete_indexed = discrete_transition_matrix[:, state_ind[:, None], state_ind]
-    log_discrete_transition_matrix = _safe_log(discrete_indexed)
-
     # Run the backward pass
+    # Index discrete transitions per-step to avoid materializing T×N_bins×N_bins array
     def _backward_pass(best_next_score, args):
-        t, log_discrete_t = args
+        t, discrete_transition_matrix_t = args
+        # Index states and compute log per-step (avoids T×N×N materialization)
+        discrete_t_indexed = discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
+        log_discrete_t = _safe_log(discrete_t_indexed)
+
         # Build log-space transition matrix: log(A * B) = log(A) + log(B)
-        # Both operands are already in log space, just add them
         log_transition_matrix = log_continuous_transition_matrix + log_discrete_t
         scores = log_transition_matrix + best_next_score + log_likelihoods[t + 1]
         best_next_state = jnp.argmax(scores, axis=1)
@@ -947,7 +959,7 @@ def viterbi_covariate_dependent(
     best_second_score, best_next_states = jax.lax.scan(
         _backward_pass,
         jnp.zeros(num_states),
-        (jnp.arange(num_timesteps - 1), log_discrete_transition_matrix[:-1]),
+        (jnp.arange(num_timesteps - 1), discrete_transition_matrix[:-1]),
         reverse=True,
     )
 
@@ -979,6 +991,7 @@ def most_likely_sequence_covariate_dependent(
     is_missing: np.ndarray | None = None,
     log_likelihoods: np.ndarray | None = None,
     n_chunks: int = 1,
+    dtype: jnp.dtype = jnp.float32,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute the most likely state sequence with covariate dependent transitions.
 
@@ -1006,6 +1019,9 @@ def most_likely_sequence_covariate_dependent(
         Pre-computed log likelihoods, by default None.
     n_chunks : int, optional
         Number of chunks (not yet implemented for > 1), by default 1.
+    dtype : jnp.dtype, optional
+        Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
+        Note: Requires JAX_ENABLE_X64=1 environment variable for float64.
 
     Returns
     -------
@@ -1023,13 +1039,28 @@ def most_likely_sequence_covariate_dependent(
             *log_likelihood_args,
             is_missing=is_missing,
         )
-    return viterbi_covariate_dependent(
-        initial_distribution=initial_distribution,
-        discrete_transition_matrix=discrete_transition_matrix,
-        continuous_transition_matrix=continuous_transition_matrix,
-        state_ind=state_ind,
-        log_likelihoods=log_likelihoods,
+
+    # Cast to desired dtype for precision control
+    initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
+    discrete_transition_matrix_jax = jnp.asarray(
+        discrete_transition_matrix, dtype=dtype
     )
+    continuous_transition_matrix_jax = jnp.asarray(
+        continuous_transition_matrix, dtype=dtype
+    )
+    state_ind_jax = jnp.asarray(state_ind)  # Keep as integer
+    log_likelihoods_jax = jnp.asarray(log_likelihoods, dtype=dtype)
+
+    most_likely_states = viterbi_covariate_dependent(
+        initial_distribution=initial_distribution_jax,
+        discrete_transition_matrix=discrete_transition_matrix_jax,
+        continuous_transition_matrix=continuous_transition_matrix_jax,
+        state_ind=state_ind_jax,
+        log_likelihoods=log_likelihoods_jax,
+    )
+
+    # Return NumPy array for API consistency
+    return np.asarray(most_likely_states), log_likelihoods
 
 
 ## Convergence check ##
