@@ -134,6 +134,7 @@ def estimate_log_joint_mark_intensity(
     occupancy: jnp.ndarray,
     mean_rate: float,
     position_distance: jnp.ndarray,
+    pos_tile_size: int | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -146,6 +147,10 @@ def estimate_log_joint_mark_intensity(
     occupancy : jnp.ndarray, shape (n_position_bins,)
     mean_rate : float
     position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
+    pos_tile_size : int | None, optional
+        If provided, tile computation over position dimension in chunks of this size.
+        Reduces peak memory from O(n_enc * n_pos) to O(n_enc * pos_tile_size).
+        If None (default), process all positions at once (fastest but more memory).
 
     Returns
     -------
@@ -159,11 +164,34 @@ def estimate_log_joint_mark_intensity(
     )  # shape (n_encoding_spikes, n_decoding_spikes)
 
     n_encoding_spikes = jnp.sum(encoding_weights)
-    marginal_density = (
-        spike_waveform_feature_distance.T
-        @ (encoding_weights[:, None] * position_distance)
-        / n_encoding_spikes
-    )  # shape (n_decoding_spikes, n_position_bins)
+    n_pos = position_distance.shape[1]
+    n_dec = spike_waveform_feature_distance.shape[1]
+
+    if pos_tile_size is None or pos_tile_size >= n_pos:
+        # No tiling: process all positions at once (default)
+        marginal_density = (
+            spike_waveform_feature_distance.T
+            @ (encoding_weights[:, None] * position_distance)
+            / n_encoding_spikes
+        )  # shape (n_decoding_spikes, n_position_bins)
+    else:
+        # Tiled: process positions in chunks to reduce peak memory
+        marginal_density = jnp.zeros((n_dec, n_pos))
+
+        for pos_start in range(0, n_pos, pos_tile_size):
+            pos_end = min(pos_start + pos_tile_size, n_pos)
+            pos_slice = slice(pos_start, pos_end)
+
+            # Compute for this tile
+            marginal_density_tile = (
+                spike_waveform_feature_distance.T
+                @ (encoding_weights[:, None] * position_distance[:, pos_slice])
+                / n_encoding_spikes
+            )  # shape (n_decoding_spikes, tile_size)
+
+            # Update output
+            marginal_density = marginal_density.at[:, pos_slice].set(marginal_density_tile)
+
     return jnp.log(mean_rate * safe_divide(marginal_density, occupancy))
 
 
@@ -176,6 +204,7 @@ def block_estimate_log_joint_mark_intensity(
     mean_rate: float,
     position_distance: jnp.ndarray,
     block_size: int = 100,
+    pos_tile_size: int | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -189,6 +218,8 @@ def block_estimate_log_joint_mark_intensity(
     mean_rate : float
     position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
     block_size : int, optional
+    pos_tile_size : int | None, optional
+        If provided, tile computation over position dimension. Passed to estimate_log_joint_mark_intensity.
 
     Returns
     -------
@@ -216,6 +247,7 @@ def block_estimate_log_joint_mark_intensity(
                 occupancy,
                 mean_rate,
                 position_distance,
+                pos_tile_size=pos_tile_size,
             ),
             (start_ind, 0),
         )

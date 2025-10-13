@@ -151,6 +151,7 @@ def estimate_log_joint_mark_intensity(
     mean_rate: float,
     log_position_distance: jnp.ndarray,
     use_gemm: bool = True,
+    pos_tile_size: int | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms (log-space).
 
@@ -176,6 +177,11 @@ def estimate_log_joint_mark_intensity(
     use_gemm : bool, optional
         If True (default), use GEMM-based computation for mark kernel (faster for multi-dimensional features).
         If False, use per-dimension loop (slower but equivalent).
+    pos_tile_size : int | None, optional
+        If provided, tile computation over position dimension in chunks of this size.
+        Reduces peak memory from O(n_enc * n_pos) to O(n_enc * pos_tile_size).
+        If None (default), process all positions at once (fastest but more memory).
+        Useful for very large position grids (> 2000 bins).
 
     Returns
     -------
@@ -221,16 +227,47 @@ def estimate_log_joint_mark_intensity(
 
     # Use scan instead of vmap to avoid materializing (n_enc × n_dec × n_pos) array
     # This reduces memory from O(n_enc * n_dec * n_pos) to O(n_enc * n_pos)
-    def scan_over_dec(carry, y_col: jnp.ndarray) -> tuple[None, jnp.ndarray]:
-        # y_col: (n_enc,), the column of logK_mark for one decoding spike
-        # returns: (n_pos,), logsumexp over enc dimension
-        result = jax.nn.logsumexp(
-            log_w[:, None] + log_position_distance + y_col[:, None], axis=0
-        )
-        return None, result
 
-    # scan over decoding spikes' columns -> (n_dec, n_pos)
-    _, log_num = jax.lax.scan(scan_over_dec, None, logK_mark.T)
+    n_pos = log_position_distance.shape[1]
+    n_dec = logK_mark.shape[1]
+
+    if pos_tile_size is None or pos_tile_size >= n_pos:
+        # No tiling: process all positions at once (default, fastest)
+        def scan_over_dec(carry, y_col: jnp.ndarray) -> tuple[None, jnp.ndarray]:
+            # y_col: (n_enc,), the column of logK_mark for one decoding spike
+            # returns: (n_pos,), logsumexp over enc dimension
+            result = jax.nn.logsumexp(
+                log_w[:, None] + log_position_distance + y_col[:, None], axis=0
+            )
+            return None, result
+
+        # scan over decoding spikes' columns -> (n_dec, n_pos)
+        _, log_num = jax.lax.scan(scan_over_dec, None, logK_mark.T)
+    else:
+        # Tiled: process positions in chunks to reduce peak memory
+        # Memory: O(n_enc * pos_tile_size) instead of O(n_enc * n_pos)
+        log_num = jnp.zeros((n_dec, n_pos))
+
+        for pos_start in range(0, n_pos, pos_tile_size):
+            pos_end = min(pos_start + pos_tile_size, n_pos)
+            pos_slice = slice(pos_start, pos_end)
+
+            # Tile: slice of log_position_distance for this chunk of positions
+            log_pos_tile = log_position_distance[:, pos_slice]  # (n_enc, tile_size)
+
+            def scan_over_dec_tile(carry, y_col: jnp.ndarray) -> tuple[None, jnp.ndarray]:
+                # y_col: (n_enc,)
+                # returns: (tile_size,), logsumexp over enc dimension
+                result = jax.nn.logsumexp(
+                    log_w[:, None] + log_pos_tile + y_col[:, None], axis=0
+                )
+                return None, result
+
+            # scan over decoding spikes for this position tile -> (n_dec, tile_size)
+            _, log_num_tile = jax.lax.scan(scan_over_dec_tile, None, logK_mark.T)
+
+            # Update output with this tile
+            log_num = log_num.at[:, pos_slice].set(log_num_tile)
 
     # normalize by total weight sum (same as dividing by n_encoding_spikes in linear space)
     log_marginal = log_num - log_n_enc  # (n_dec, n_pos)
@@ -253,6 +290,7 @@ def block_estimate_log_joint_mark_intensity(
     log_position_distance: jnp.ndarray,
     block_size: int = 100,
     use_gemm: bool = True,
+    pos_tile_size: int | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity in blocks over decoding spikes (log-space).
 
@@ -280,6 +318,8 @@ def block_estimate_log_joint_mark_intensity(
     use_gemm : bool, optional
         If True (default), use GEMM-based computation for mark kernel (faster for multi-dimensional features).
         If False, use per-dimension loop (slower but equivalent).
+    pos_tile_size : int | None, optional
+        If provided, tile computation over position dimension. Passed to estimate_log_joint_mark_intensity.
 
     Returns
     -------
@@ -306,6 +346,7 @@ def block_estimate_log_joint_mark_intensity(
                 mean_rate,
                 log_position_distance,
                 use_gemm=use_gemm,
+                pos_tile_size=pos_tile_size,
             ),
             (start, 0),
         )
