@@ -56,11 +56,10 @@ def get_spike_time_bin_ind(
         Index of time bin for each spike (0 to n_bins-1).
     """
     # Right-closed bins [t_i, t_{i+1}), except the last edge which is included
-    inds = np.searchsorted(time_bin_edges, spike_times, side="right") - 1
-    last = np.isclose(spike_times, time_bin_edges[-1])
-    return jnp.asarray(
-        np.where(last, time_bin_edges.shape[0] - 2, inds), dtype=jnp.int32
-    )
+    # Use JAX ops to keep everything on device
+    inds = jnp.searchsorted(time_bin_edges, spike_times, side="right") - 1
+    last = jnp.isclose(spike_times, time_bin_edges[-1])
+    return jnp.where(last, time_bin_edges.shape[0] - 2, inds).astype(jnp.int32)
 
 
 def _gmm_logp(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:
@@ -216,6 +215,9 @@ def fit_clusterless_gmm_encoding_model(
     gmm_components_occupancy: int = 32,
     gmm_components_gpi: int = 32,
     gmm_components_joint: int = 64,
+    gmm_covariance_type_occupancy: str = "full",
+    gmm_covariance_type_gpi: str = "full",
+    gmm_covariance_type_joint: str = "full",
     gmm_random_state: int | None = 0,
     disable_progress_bar: bool = False,
 ) -> EncodingModel:
@@ -234,10 +236,22 @@ def fit_clusterless_gmm_encoding_model(
     weights : Optional[jnp.ndarray], shape (n_time_position,), default=None
         Per-position sample weights for occupancy.
     gmm_components_occupancy : int, default=32
+        Number of mixture components for occupancy GMM.
     gmm_components_gpi : int, default=32
+        Number of mixture components for GPI (position-only) GMM.
     gmm_components_joint : int, default=64
+        Number of mixture components for joint (position+mark) GMM.
+    gmm_covariance_type_occupancy : str, default="full"
+        Covariance type for occupancy GMM. Options: "full", "tied", "diag", "spherical".
+    gmm_covariance_type_gpi : str, default="full"
+        Covariance type for GPI GMM. Options: "full", "tied", "diag", "spherical".
+    gmm_covariance_type_joint : str, default="full"
+        Covariance type for joint GMM. Options: "full", "tied", "diag", "spherical".
+        Note: "diag" may offer speedups but currently has JIT compatibility issues.
     gmm_random_state : Optional[int], default=0
+        Random state for reproducibility.
     disable_progress_bar : bool, default=False
+        If True, disable progress bar.
 
     Returns
     -------
@@ -255,9 +269,6 @@ def fit_clusterless_gmm_encoding_model(
                 "place_bin_centers_ is required when is_track_interior_ is None"
             )
         is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
-    interior_place_bin_centers = _as_jnp(
-        environment.place_bin_centers_[is_track_interior]
-    )
 
     # Occupancy weights over trajectory
     if weights is None:
@@ -275,8 +286,21 @@ def fit_clusterless_gmm_encoding_model(
             edge_spacing=environment.edge_spacing,
         ).linear_position.to_numpy()[:, None]
         pos_for_occ = _as_jnp(position1D)
+
+        # CRITICAL: Linearize bin centers too (must match occupancy space)
+        raw_bin_centers = environment.place_bin_centers_[is_track_interior]
+        lin_bins = get_linearized_position(
+            np.asarray(raw_bin_centers),
+            environment.track_graph,
+            edge_order=environment.edge_order,
+            edge_spacing=environment.edge_spacing,
+        ).linear_position.to_numpy()[:, None]
+        interior_place_bin_centers = _as_jnp(lin_bins)
     else:
         pos_for_occ = position
+        interior_place_bin_centers = _as_jnp(
+            environment.place_bin_centers_[is_track_interior]
+        )
 
     # Fit occupancy GMM and precompute per-bin terms
     occupancy_model = _fit_gmm_density(
@@ -284,7 +308,7 @@ def fit_clusterless_gmm_encoding_model(
         weights=weights,
         n_components=gmm_components_occupancy,
         random_state=gmm_random_state,
-        covariance_type="full",
+        covariance_type=gmm_covariance_type_occupancy,
     )
     occupancy_bins = _gmm_density(
         occupancy_model, interior_place_bin_centers
@@ -334,7 +358,7 @@ def fit_clusterless_gmm_encoding_model(
             weights=elect_weights,
             n_components=gmm_components_gpi,
             random_state=gmm_random_state,
-            covariance_type="full",
+            covariance_type=gmm_covariance_type_gpi,
         )
         gpi_models.append(gpi_gmm)
 
@@ -345,7 +369,7 @@ def fit_clusterless_gmm_encoding_model(
             weights=elect_weights,
             n_components=gmm_components_joint,
             random_state=gmm_random_state,
-            covariance_type="full",
+            covariance_type=gmm_covariance_type_joint,
         )
         joint_models.append(joint_gmm)
 
@@ -477,10 +501,24 @@ def predict_clusterless_gmm_log_likelihood(
         # Memory: O(spike_block_size × n_bins) instead of O(n_spikes × n_bins)
         n_spikes = elect_feats.shape[0]
 
-        # JIT-compiled function to accumulate contributions
-        # Note: GMM evaluation can't be JITed (Python object), so we separate it
-        def _accumulate_contrib(log_lik_array, log_contrib, block_seg_ids, num_segments):
-            """Accumulate time-binned contributions."""
+        # Precompute log(mean_rate) outside loop
+        log_mean_rate = jnp.log(mean_rate)
+
+        # Larger JIT boundary: include log contribution computation and accumulation
+        # This reduces dispatch overhead and helps XLA fuse operations
+        def _update_block_all_bins(
+            log_lik_array,
+            joint_logp_block,
+            block_seg_ids,
+            log_rate,
+            log_occ,
+            num_segments,
+        ):
+            """Update likelihood with block contributions (all bins, no tiling)."""
+            # Compute log contributions: log(rate) + joint_logp - log_occ
+            log_contrib = log_rate + joint_logp_block - log_occ
+
+            # Accumulate per time bin
             block_contrib = segment_sum(
                 log_contrib,
                 block_seg_ids,
@@ -489,7 +527,38 @@ def predict_clusterless_gmm_log_likelihood(
             )
             return log_lik_array + block_contrib
 
-        accumulate_contrib = jax.jit(_accumulate_contrib, donate_argnums=(0,), static_argnames=("num_segments",))
+        update_block_all_bins = jax.jit(
+            _update_block_all_bins,
+            donate_argnums=(0,),
+            static_argnames=("num_segments",),
+        )
+
+        # For tiled path: accumulate per-tile contributions directly
+        # This avoids materializing a full (block_size × n_bins) array
+        def _update_block_one_tile(
+            log_lik_array,
+            joint_logp_tile,
+            block_seg_ids,
+            log_rate,
+            log_occ_tile,
+            num_segments,
+        ):
+            """Update likelihood with one tile's contributions."""
+            log_contrib_tile = log_rate + joint_logp_tile - log_occ_tile
+
+            block_contrib = segment_sum(
+                log_contrib_tile,
+                block_seg_ids,
+                num_segments=num_segments,
+                indices_are_sorted=True,
+            )
+            return log_lik_array + block_contrib
+
+        update_block_one_tile = jax.jit(
+            _update_block_one_tile,
+            donate_argnums=(0,),
+            static_argnames=("num_segments",),
+        )
 
         # Process spikes in blocks
         for spike_start in range(0, n_spikes, spike_block_size):
@@ -498,41 +567,55 @@ def predict_clusterless_gmm_log_likelihood(
             block_seg_ids = seg_ids[spike_start:spike_end]
             block_size = block_feats.shape[0]
 
-            # Compute joint log-probabilities for this block
             if bin_tile_size is None or bin_tile_size >= n_bins:
                 # No bin tiling: process all bins at once (default)
                 tiled_bins = jnp.tile(bin_centers, (block_size, 1))
                 repeated_feats = jnp.repeat(block_feats, n_bins, axis=0)
                 eval_points = jnp.concatenate([tiled_bins, repeated_feats], axis=1)
 
+                # GMM evaluation (not JIT-able)
                 joint_logp_flat = _gmm_logp(joint_gmm, eval_points)
-                joint_logp = joint_logp_flat.reshape(block_size, n_bins)
+                joint_logp_block = joint_logp_flat.reshape(block_size, n_bins)
+
+                # JIT-compiled update with larger boundary (better fusion)
+                log_likelihood = update_block_all_bins(
+                    log_likelihood,
+                    joint_logp_block,
+                    block_seg_ids,
+                    log_mean_rate,
+                    log_occ_bins,
+                    n_time,
+                )
             else:
-                # Bin tiling: process bins in chunks
-                joint_logp = jnp.zeros((block_size, n_bins))
+                # Bin tiling: accumulate per-tile directly (no full block×bins array)
+                # Memory: O(block_size × tile_size) instead of O(block_size × n_bins)
                 for bin_start in range(0, n_bins, bin_tile_size):
                     bin_end = min(bin_start + bin_tile_size, n_bins)
-                    bin_slice = slice(bin_start, bin_end)
-                    n_tile_bins = bin_end - bin_start
+                    n_tile = bin_end - bin_start
 
-                    tiled_bins_tile = jnp.tile(bin_centers[bin_slice], (block_size, 1))
-                    repeated_feats_tile = jnp.repeat(block_feats, n_tile_bins, axis=0)
+                    # Build eval points for this tile
+                    tiled_bins_tile = jnp.tile(
+                        bin_centers[bin_start:bin_end], (block_size, 1)
+                    )
+                    repeated_feats_tile = jnp.repeat(block_feats, n_tile, axis=0)
                     eval_points_tile = jnp.concatenate(
                         [tiled_bins_tile, repeated_feats_tile], axis=1
                     )
 
+                    # GMM evaluation (not JIT-able)
                     joint_logp_tile = _gmm_logp(joint_gmm, eval_points_tile).reshape(
-                        block_size, n_tile_bins
+                        block_size, n_tile
                     )
-                    joint_logp = joint_logp.at[:, bin_slice].set(joint_logp_tile)
 
-            # log contribution
-            log_contrib = jnp.log(mean_rate) + joint_logp - log_occ_bins
-
-            # Accumulate using JIT-compiled function with buffer donation
-            log_likelihood = accumulate_contrib(
-                log_likelihood, log_contrib, block_seg_ids, n_time
-            )
+                    # Accumulate this tile directly (no intermediate full array)
+                    log_likelihood = update_block_one_tile(
+                        log_likelihood,
+                        joint_logp_tile,
+                        block_seg_ids,
+                        log_mean_rate,
+                        log_occ_bins[bin_start:bin_end],
+                        n_time,
+                    )
 
     return log_likelihood
 
