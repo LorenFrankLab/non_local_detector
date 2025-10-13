@@ -94,6 +94,7 @@ def get_spike_time_bin_ind(
     return bin_indices
 
 
+@jax.jit
 def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
