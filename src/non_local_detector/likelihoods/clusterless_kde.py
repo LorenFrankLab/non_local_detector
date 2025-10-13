@@ -233,24 +233,28 @@ def block_estimate_log_joint_mark_intensity(
             (0, n_position_bins), LOG_EPS
         )  # Return empty if no decoding spikes
 
+    # Use JIT-compiled update with buffer donation for memory efficiency
+    # Donate the accumulator buffer (arg 0) so it can be reused in-place
+    def _update_block(out_array, block_result, start_idx):
+        return jax.lax.dynamic_update_slice(out_array, block_result, (start_idx, 0))
+
+    update_block = jax.jit(_update_block, donate_argnums=(0,))
+
     log_joint_mark_intensity = jnp.zeros((n_decoding_spikes, n_position_bins))
 
     for start_ind in range(0, n_decoding_spikes, block_size):
         block_inds = slice(start_ind, start_ind + block_size)
-        log_joint_mark_intensity = jax.lax.dynamic_update_slice(
-            log_joint_mark_intensity,
-            estimate_log_joint_mark_intensity(
-                decoding_spike_waveform_features[block_inds],
-                encoding_spike_waveform_features,
-                encoding_weights,
-                waveform_stds,
-                occupancy,
-                mean_rate,
-                position_distance,
-                pos_tile_size=pos_tile_size,
-            ),
-            (start_ind, 0),
+        block_result = estimate_log_joint_mark_intensity(
+            decoding_spike_waveform_features[block_inds],
+            encoding_spike_waveform_features,
+            encoding_weights,
+            waveform_stds,
+            occupancy,
+            mean_rate,
+            position_distance,
+            pos_tile_size=pos_tile_size,
         )
+        log_joint_mark_intensity = update_block(log_joint_mark_intensity, block_result, start_ind)
 
     return jnp.clip(log_joint_mark_intensity, min=LOG_EPS, max=None)
 
@@ -594,7 +598,7 @@ def compute_local_log_likelihood(
     occupancy_model: KDEModel,
     gpi_models: list[KDEModel],
     encoding_spike_waveform_features: list[jnp.ndarray],
-    encoding_positions: jnp.ndarray,
+    encoding_positions: list[jnp.ndarray],
     encoding_spike_weights: list[jnp.ndarray],
     environment: Environment,
     mean_rates: jnp.ndarray,

@@ -223,7 +223,8 @@ def estimate_log_joint_mark_intensity(
     #    log sum_i [ w_i * exp(logK_mark[i,dec]) * exp(logK_pos[i,pos]) ]
     #  = logsumexp_i ( log w_i + logK_mark[i,dec] + logK_pos[i,pos] )
     log_w = safe_log(encoding_weights)  # (n_enc,)
-    log_n_enc = safe_log(jnp.sum(encoding_weights))  # scalar
+    # Use logsumexp for denominator (more numerically stable when weights vary by orders of magnitude)
+    log_den = jax.nn.logsumexp(log_w)  # scalar
 
     # Use scan instead of vmap to avoid materializing (n_enc × n_dec × n_pos) array
     # This reduces memory from O(n_enc * n_dec * n_pos) to O(n_enc * n_pos)
@@ -270,7 +271,7 @@ def estimate_log_joint_mark_intensity(
             log_num = log_num.at[:, pos_slice].set(log_num_tile)
 
     # normalize by total weight sum (same as dividing by n_encoding_spikes in linear space)
-    log_marginal = log_num - log_n_enc  # (n_dec, n_pos)
+    log_marginal = log_num - log_den  # (n_dec, n_pos)
 
     # 4) Add mean rate and subtract occupancy (in log)
     log_mean_rate = safe_log(mean_rate)
@@ -332,24 +333,28 @@ def block_estimate_log_joint_mark_intensity(
     if n_decoding_spikes == 0:
         return jnp.full((0, n_position_bins), LOG_EPS)
 
+    # Use JIT-compiled update with buffer donation for memory efficiency
+    # Donate the accumulator buffer (arg 0) so it can be reused in-place
+    def _update_block(out_array, block_result, start_idx):
+        return jax.lax.dynamic_update_slice(out_array, block_result, (start_idx, 0))
+
+    update_block = jax.jit(_update_block, donate_argnums=(0,))
+
     out = jnp.zeros((n_decoding_spikes, n_position_bins))
     for start in range(0, n_decoding_spikes, block_size):
         sl = slice(start, start + block_size)
-        out = jax.lax.dynamic_update_slice(
-            out,
-            estimate_log_joint_mark_intensity(
-                decoding_spike_waveform_features[sl],
-                encoding_spike_waveform_features,
-                encoding_weights,
-                waveform_stds,
-                occupancy,
-                mean_rate,
-                log_position_distance,
-                use_gemm=use_gemm,
-                pos_tile_size=pos_tile_size,
-            ),
-            (start, 0),
+        block_result = estimate_log_joint_mark_intensity(
+            decoding_spike_waveform_features[sl],
+            encoding_spike_waveform_features,
+            encoding_weights,
+            waveform_stds,
+            occupancy,
+            mean_rate,
+            log_position_distance,
+            use_gemm=use_gemm,
+            pos_tile_size=pos_tile_size,
         )
+        out = update_block(out, block_result, start)
 
     return jnp.clip(out, min=LOG_EPS, max=None)
 
@@ -694,7 +699,7 @@ def compute_local_log_likelihood(
     occupancy_model: KDEModel,
     gpi_models: list[KDEModel],
     encoding_spike_waveform_features: list[jnp.ndarray],
-    encoding_positions: jnp.ndarray,
+    encoding_positions: list[jnp.ndarray],
     encoding_spike_weights: list[jnp.ndarray],
     environment: Environment,
     mean_rates: jnp.ndarray,
