@@ -101,9 +101,8 @@ def _compute_log_mark_kernel_gemm(
 
     # Combine: log K[i,j] = -0.5 * (y2[i] + x2[j] - 2*cross_term[j,i]) + log_norm_const
     # Note: We need (n_enc, n_dec) output, so transpose the cross term
-    logK_mark = (
-        log_norm_const
-        - 0.5 * (y2[:, None] + x2[None, :] - 2.0 * cross_term.T)
+    logK_mark = log_norm_const - 0.5 * (
+        y2[:, None] + x2[None, :] - 2.0 * cross_term.T
     )  # (n_enc, n_dec)
 
     return logK_mark
@@ -256,7 +255,9 @@ def estimate_log_joint_mark_intensity(
             # Tile: slice of log_position_distance for this chunk of positions
             log_pos_tile = log_position_distance[:, pos_slice]  # (n_enc, tile_size)
 
-            def scan_over_dec_tile(carry, y_col: jnp.ndarray) -> tuple[None, jnp.ndarray]:
+            def scan_over_dec_tile(
+                carry, y_col: jnp.ndarray
+            ) -> tuple[None, jnp.ndarray]:
                 # y_col: (n_enc,)
                 # returns: (tile_size,), logsumexp over enc dimension
                 result = jax.nn.logsumexp(
