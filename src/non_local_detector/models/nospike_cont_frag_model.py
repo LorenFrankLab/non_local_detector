@@ -294,8 +294,9 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
     ):
         if continuous_transition_types is None:
             continuous_transition_types = [
-                [RandomWalk(), Uniform()],
-                [Uniform(), Uniform()],
+                [Discrete(), Uniform(), Uniform()],
+                [Discrete(), RandomWalk(), Uniform()],
+                [Discrete(), Uniform(), Uniform()],
             ]
         super().__init__(
             discrete_initial_conditions,
