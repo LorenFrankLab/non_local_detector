@@ -415,13 +415,13 @@ def chunked_filter_smoother(
             ind=jnp.asarray(time_inds),
             n_time=n_time,
         )
-        acausal_posterior.append(acausal_posterior_chunk)
+        acausal_posterior.append(np.asarray(acausal_posterior_chunk))
         acausal_state_probabilities.append(
             acausal_posterior_chunk @ state_aggregation_matrix
         )
 
-    # Concatenate JAX arrays on device
-    acausal_posterior_jax = jnp.concatenate(acausal_posterior[::-1])
+    # Concatenate
+    acausal_posterior_jax = np.concatenate(acausal_posterior[::-1])
     acausal_state_probabilities_jax = jnp.concatenate(acausal_state_probabilities[::-1])
 
     # Convert to NumPy only at the very end for API compatibility
