@@ -248,7 +248,14 @@ class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
     ):
         if continuous_transition_types is None:
             continuous_transition_types = [
-                [RandomWalk()],
+                [
+                    RandomWalk(environment_name="env1"),
+                    Uniform(environment_name="env1", environment2_name="env2"),
+                ],
+                [
+                    Uniform(environment_name="env2", environment2_name="env1"),
+                    RandomWalk(environment_name="env2"),
+                ],
             ]
         super().__init__(
             discrete_initial_conditions,

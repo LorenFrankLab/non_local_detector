@@ -300,8 +300,10 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
     ):
         if continuous_transition_types is None:
             continuous_transition_types = [
-                [RandomWalk(), Uniform()],
-                [Uniform(), Uniform()],
+                [Discrete(), Discrete(), Uniform(), Uniform()],
+                [Discrete(), Discrete(), Uniform(), Uniform()],
+                [Discrete(), Discrete(), RandomWalk(), Uniform()],
+                [Discrete(), Discrete(), Uniform(), Uniform()],
             ]
         super().__init__(
             discrete_initial_conditions,
