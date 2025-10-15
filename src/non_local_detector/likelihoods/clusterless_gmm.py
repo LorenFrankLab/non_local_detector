@@ -210,6 +210,7 @@ def fit_clusterless_gmm_encoding_model(
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
     environment: Environment,
+    sampling_frequency: int = 500,
     weights: jnp.ndarray | None = None,
     *,
     gmm_components_occupancy: int = 32,

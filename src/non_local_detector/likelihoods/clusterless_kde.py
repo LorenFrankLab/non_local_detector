@@ -190,7 +190,9 @@ def estimate_log_joint_mark_intensity(
             )  # shape (n_decoding_spikes, tile_size)
 
             # Update output
-            marginal_density = marginal_density.at[:, pos_slice].set(marginal_density_tile)
+            marginal_density = marginal_density.at[:, pos_slice].set(
+                marginal_density_tile
+            )
 
     return jnp.log(mean_rate * safe_divide(marginal_density, occupancy))
 
@@ -254,7 +256,9 @@ def block_estimate_log_joint_mark_intensity(
             position_distance,
             pos_tile_size=pos_tile_size,
         )
-        log_joint_mark_intensity = update_block(log_joint_mark_intensity, block_result, start_ind)
+        log_joint_mark_intensity = update_block(
+            log_joint_mark_intensity, block_result, start_ind
+        )
 
     return jnp.clip(log_joint_mark_intensity, min=LOG_EPS, max=None)
 
@@ -265,8 +269,8 @@ def fit_clusterless_kde_encoding_model(
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
     environment: Environment,
-    weights: jnp.ndarray | None = None,
     sampling_frequency: int = 500,
+    weights: jnp.ndarray | None = None,
     position_std: float | jnp.ndarray = np.sqrt(12.5),
     waveform_std: float | jnp.ndarray = 24.0,
     block_size: int = 100,
