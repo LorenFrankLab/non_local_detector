@@ -1712,7 +1712,7 @@ class ClusterlessDetector(_DetectorBase):
                 spike_times, spike_waveform_features, is_group, position_time
             )
             self.encoding_model_[likelihood_name] = encoding_algorithm(
-                time=position_time[is_group],
+                position_time=position_time[is_group],
                 position=position[is_group],
                 spike_times=group_spike_times,
                 spike_waveform_features=group_spike_waveform_features,
