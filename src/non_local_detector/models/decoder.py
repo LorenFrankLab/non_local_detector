@@ -1,16 +1,15 @@
 import numpy as np
 
-from non_local_detector.continuous_state_transitions import RandomWalk
-from non_local_detector.discrete_state_transitions import DiscreteStationaryDiagonal
-from non_local_detector.environment import Environment
-from non_local_detector.initial_conditions import UniformInitialConditions
+from non_local_detector.models._defaults import (
+    _initialize_params,
+    _ModelDefaults,
+)
 from non_local_detector.models.base import (
     _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
     _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
     ClusterlessDetector,
     SortedSpikesDetector,
 )
-from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -20,25 +19,6 @@ from non_local_detector.types import (
     StateNames,
     Stickiness,
 )
-
-environment = Environment(environment_name="")
-
-observation_models = [
-    ObservationModel(),
-]
-
-discrete_initial_conditions = np.ones((1,))
-continuous_initial_conditions = [
-    UniformInitialConditions(),
-]
-
-discrete_transition_stickiness = np.array([0.0])
-
-discrete_transition_type = DiscreteStationaryDiagonal(diagonal_values=np.array([1.0]))
-
-state_names = [
-    "Continuous",
-]
 
 
 class SortedSpikesDecoder(SortedSpikesDetector):
@@ -106,47 +86,32 @@ class SortedSpikesDecoder(SortedSpikesDetector):
         sampling_frequency: float = 500,
         no_spike_rate: float = 1e-10,
     ):
-        if discrete_initial_conditions is None:
-            discrete_initial_conditions = np.ones((1,))
-        if continuous_initial_conditions_types is None:
-            continuous_initial_conditions_types = [
-                UniformInitialConditions(),
-            ]
-        if discrete_transition_type is None:
-            discrete_transition_type = DiscreteStationaryDiagonal(
-                diagonal_values=np.array([1.0])
-            )
-        if discrete_transition_stickiness is None:
-            discrete_transition_stickiness = np.array([0.0])
-        if observation_models is None:
-            observation_models = [
-                ObservationModel(),
-            ]
-        if environments is None:
-            environments = Environment(environment_name="")
-        if state_names is None:
-            state_names = [
-                "Continuous",
-            ]
+        params = _initialize_params(
+            _ModelDefaults.decoder_defaults(),
+            discrete_initial_conditions=discrete_initial_conditions,
+            continuous_initial_conditions_types=continuous_initial_conditions_types,
+            discrete_transition_type=discrete_transition_type,
+            discrete_transition_stickiness=discrete_transition_stickiness,
+            observation_models=observation_models,
+            environments=environments,
+            state_names=state_names,
+            continuous_transition_types=continuous_transition_types,
+        )
 
-        if continuous_transition_types is None:
-            continuous_transition_types = [
-                [RandomWalk()],
-            ]
         super().__init__(
-            discrete_initial_conditions,
-            continuous_initial_conditions_types,
-            discrete_transition_type,
+            params["discrete_initial_conditions"],
+            params["continuous_initial_conditions_types"],
+            params["discrete_transition_type"],
             discrete_transition_concentration,
-            discrete_transition_stickiness,
+            params["discrete_transition_stickiness"],
             discrete_transition_regularization,
-            continuous_transition_types,
-            observation_models,
-            environments,
+            params["continuous_transition_types"],
+            params["observation_models"],
+            params["environments"],
             sorted_spikes_algorithm,
             sorted_spikes_algorithm_params,
             infer_track_interior,
-            state_names,
+            params["state_names"],
             sampling_frequency,
             no_spike_rate,
         )
@@ -217,47 +182,32 @@ class ClusterlessDecoder(ClusterlessDetector):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
-        if discrete_initial_conditions is None:
-            discrete_initial_conditions = np.ones((1,))
-        if continuous_initial_conditions_types is None:
-            continuous_initial_conditions_types = [
-                UniformInitialConditions(),
-            ]
-        if discrete_transition_type is None:
-            discrete_transition_type = DiscreteStationaryDiagonal(
-                diagonal_values=np.array([1.0])
-            )
-        if discrete_transition_stickiness is None:
-            discrete_transition_stickiness = np.array([0.0])
-        if observation_models is None:
-            observation_models = [
-                ObservationModel(),
-            ]
-        if environments is None:
-            environments = Environment(environment_name="")
-        if state_names is None:
-            state_names = [
-                "Continuous",
-            ]
+        params = _initialize_params(
+            _ModelDefaults.decoder_defaults(),
+            discrete_initial_conditions=discrete_initial_conditions,
+            continuous_initial_conditions_types=continuous_initial_conditions_types,
+            discrete_transition_type=discrete_transition_type,
+            discrete_transition_stickiness=discrete_transition_stickiness,
+            observation_models=observation_models,
+            environments=environments,
+            state_names=state_names,
+            continuous_transition_types=continuous_transition_types,
+        )
 
-        if continuous_transition_types is None:
-            continuous_transition_types = [
-                [RandomWalk()],
-            ]
         super().__init__(
-            discrete_initial_conditions,
-            continuous_initial_conditions_types,
-            discrete_transition_type,
+            params["discrete_initial_conditions"],
+            params["continuous_initial_conditions_types"],
+            params["discrete_transition_type"],
             discrete_transition_concentration,
-            discrete_transition_stickiness,
+            params["discrete_transition_stickiness"],
             discrete_transition_regularization,
-            continuous_transition_types,
-            observation_models,
-            environments,
+            params["continuous_transition_types"],
+            params["observation_models"],
+            params["environments"],
             clusterless_algorithm,
             clusterless_algorithm_params,
             infer_track_interior,
-            state_names,
+            params["state_names"],
             sampling_frequency,
             no_spike_rate,
         )

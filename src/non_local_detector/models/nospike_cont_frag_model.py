@@ -1,23 +1,15 @@
 import numpy as np
 
-from non_local_detector.continuous_state_transitions import (
-    Discrete,
-    RandomWalk,
-    Uniform,
+from non_local_detector.models._defaults import (
+    _initialize_params,
+    _ModelDefaults,
 )
-from non_local_detector.discrete_state_transitions import (
-    DiscreteNonStationaryCustom,
-    DiscreteStationaryCustom,
-)
-from non_local_detector.environment import Environment
-from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.models.base import (
     _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
     _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
     ClusterlessDetector,
     SortedSpikesDetector,
 )
-from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -27,68 +19,6 @@ from non_local_detector.types import (
     StateNames,
     Stickiness,
 )
-
-environment = Environment(environment_name="")
-
-observation_models = [
-    ObservationModel(is_no_spike=True),
-    ObservationModel(),
-    ObservationModel(),
-]
-
-discrete_initial_conditions = np.ones((3,)) / 3
-continuous_initial_conditions = [
-    UniformInitialConditions(),
-    UniformInitialConditions(),
-    UniformInitialConditions(),
-]
-
-discrete_transition_stickiness = np.array([100_000.0, 30.0, 200.0])
-
-# transition probability to no spike state
-no_spike_trans_prob = 1e-5
-# probability of staying in continuous non-local state
-cont_non_local_prob = 0.9
-# probability of staying in non-local fragmented state
-non_local_frag_prob = 0.98
-# probability of staying in no-spike state
-no_spike_prob = 0.99
-
-discrete_transition_matrix_values = np.array(
-    [
-        [
-            no_spike_prob,
-            (1 - no_spike_prob) / 2,
-            (1 - no_spike_prob) / 2,
-        ],
-        [
-            no_spike_trans_prob,
-            cont_non_local_prob,
-            (1 - cont_non_local_prob - no_spike_trans_prob),
-        ],
-        [
-            no_spike_trans_prob,
-            (1 - non_local_frag_prob - no_spike_trans_prob),
-            non_local_frag_prob,
-        ],
-    ]
-)
-
-discrete_transition_type = DiscreteStationaryCustom(
-    values=discrete_transition_matrix_values
-)
-
-non_stationary_discrete_transition_type = DiscreteNonStationaryCustom(
-    values=discrete_transition_matrix_values
-)
-
-no_spike_rate = 1e-10
-
-state_names = [
-    "No-Spike",
-    "Continuous",
-    "Fragmented",
-]
 
 
 class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
@@ -179,73 +109,32 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
-        if discrete_initial_conditions is None:
-            discrete_initial_conditions = np.ones((3,)) / 3
-        if continuous_initial_conditions_types is None:
-            continuous_initial_conditions_types = [
-                UniformInitialConditions(),
-                UniformInitialConditions(),
-                UniformInitialConditions(),
-            ]
-        if discrete_transition_type is None:
-            discrete_transition_type = DiscreteStationaryCustom(
-                values=np.array(
-                    [
-                        [
-                            0.99,
-                            (1 - 0.99) / 2,
-                            (1 - 0.99) / 2,
-                        ],
-                        [
-                            1e-5,
-                            0.9,
-                            (1 - 0.9 - 1e-5),
-                        ],
-                        [
-                            1e-5,
-                            (1 - 0.98 - 1e-5),
-                            0.98,
-                        ],
-                    ]
-                )
-            )
-        if discrete_transition_stickiness is None:
-            discrete_transition_stickiness = np.array([100_000.0, 30.0, 200.0])
-        if observation_models is None:
-            observation_models = [
-                ObservationModel(is_no_spike=True),
-                ObservationModel(),
-                ObservationModel(),
-            ]
-        if environments is None:
-            environments = Environment(environment_name="")
-        if state_names is None:
-            state_names = [
-                "No-Spike",
-                "Continuous",
-                "Fragmented",
-            ]
+        params = _initialize_params(
+            _ModelDefaults.nospike_cont_frag_defaults(),
+            discrete_initial_conditions=discrete_initial_conditions,
+            continuous_initial_conditions_types=continuous_initial_conditions_types,
+            discrete_transition_type=discrete_transition_type,
+            discrete_transition_stickiness=discrete_transition_stickiness,
+            observation_models=observation_models,
+            environments=environments,
+            state_names=state_names,
+            continuous_transition_types=continuous_transition_types,
+        )
 
-        if continuous_transition_types is None:
-            continuous_transition_types = [
-                [Discrete(), Uniform(), Uniform()],
-                [Discrete(), RandomWalk(), Uniform()],
-                [Discrete(), Uniform(), Uniform()],
-            ]
         super().__init__(
-            discrete_initial_conditions,
-            continuous_initial_conditions_types,
-            discrete_transition_type,
+            params["discrete_initial_conditions"],
+            params["continuous_initial_conditions_types"],
+            params["discrete_transition_type"],
             discrete_transition_concentration,
-            discrete_transition_stickiness,
+            params["discrete_transition_stickiness"],
             discrete_transition_regularization,
-            continuous_transition_types,
-            observation_models,
-            environments,
+            params["continuous_transition_types"],
+            params["observation_models"],
+            params["environments"],
             sorted_spikes_algorithm,
             sorted_spikes_algorithm_params,
             infer_track_interior,
-            state_names,
+            params["state_names"],
             sampling_frequency,
             no_spike_rate,
         )
@@ -339,73 +228,32 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
-        if discrete_initial_conditions is None:
-            discrete_initial_conditions = np.ones((3,)) / 3
-        if continuous_initial_conditions_types is None:
-            continuous_initial_conditions_types = [
-                UniformInitialConditions(),
-                UniformInitialConditions(),
-                UniformInitialConditions(),
-            ]
-        if discrete_transition_type is None:
-            discrete_transition_type = DiscreteStationaryCustom(
-                values=np.array(
-                    [
-                        [
-                            0.99,
-                            (1 - 0.99) / 2,
-                            (1 - 0.99) / 2,
-                        ],
-                        [
-                            1e-5,
-                            0.9,
-                            (1 - 0.9 - 1e-5),
-                        ],
-                        [
-                            1e-5,
-                            (1 - 0.98 - 1e-5),
-                            0.98,
-                        ],
-                    ]
-                )
-            )
-        if discrete_transition_stickiness is None:
-            discrete_transition_stickiness = np.array([100_000.0, 30.0, 200.0])
-        if observation_models is None:
-            observation_models = [
-                ObservationModel(is_no_spike=True),
-                ObservationModel(),
-                ObservationModel(),
-            ]
-        if environments is None:
-            environments = Environment(environment_name="")
-        if state_names is None:
-            state_names = [
-                "No-Spike",
-                "Continuous",
-                "Fragmented",
-            ]
+        params = _initialize_params(
+            _ModelDefaults.nospike_cont_frag_defaults(),
+            discrete_initial_conditions=discrete_initial_conditions,
+            continuous_initial_conditions_types=continuous_initial_conditions_types,
+            discrete_transition_type=discrete_transition_type,
+            discrete_transition_stickiness=discrete_transition_stickiness,
+            observation_models=observation_models,
+            environments=environments,
+            state_names=state_names,
+            continuous_transition_types=continuous_transition_types,
+        )
 
-        if continuous_transition_types is None:
-            continuous_transition_types = [
-                [Discrete(), Uniform(), Uniform()],
-                [Discrete(), RandomWalk(), Uniform()],
-                [Discrete(), Uniform(), Uniform()],
-            ]
         super().__init__(
-            discrete_initial_conditions,
-            continuous_initial_conditions_types,
-            discrete_transition_type,
+            params["discrete_initial_conditions"],
+            params["continuous_initial_conditions_types"],
+            params["discrete_transition_type"],
             discrete_transition_concentration,
-            discrete_transition_stickiness,
+            params["discrete_transition_stickiness"],
             discrete_transition_regularization,
-            continuous_transition_types,
-            observation_models,
-            environments,
+            params["continuous_transition_types"],
+            params["observation_models"],
+            params["environments"],
             clusterless_algorithm,
             clusterless_algorithm_params,
             infer_track_interior,
-            state_names,
+            params["state_names"],
             sampling_frequency,
             no_spike_rate,
         )
