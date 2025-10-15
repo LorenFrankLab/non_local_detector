@@ -161,22 +161,81 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
 
     def __init__(
         self,
-        discrete_initial_conditions: np.ndarray = discrete_initial_conditions,
-        continuous_initial_conditions_types: ContinuousInitialConditions = continuous_initial_conditions,
-        discrete_transition_type: DiscreteTransitions = discrete_transition_type,
-        discrete_transition_concentration: float = discrete_transition_concentration,
-        discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
+        discrete_initial_conditions: np.ndarray | None = None,
+        continuous_initial_conditions_types: ContinuousInitialConditions | None = None,
+        discrete_transition_type: DiscreteTransitions | None = None,
+        discrete_transition_concentration: float = 1.0,
+        discrete_transition_stickiness: Stickiness | None = None,
         discrete_transition_regularization: float = 1e-10,
         continuous_transition_types: ContinuousTransitions | None = None,
-        observation_models: Observations = observation_models,
-        environments: Environments = environment,
+        observation_models: Observations | None = None,
+        environments: Environments | None = None,
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
         sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: StateNames = state_names,
+        state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,
-        no_spike_rate: float = no_spike_rate,
+        no_spike_rate: float = 1e-10,
     ):
+        if discrete_initial_conditions is None:
+            discrete_initial_conditions = np.array([1.0, 0.0, 0.0, 0.0])
+        if continuous_initial_conditions_types is None:
+            continuous_initial_conditions_types = [
+                UniformInitialConditions(),
+                UniformInitialConditions(),
+                UniformInitialConditions(),
+                UniformInitialConditions(),
+            ]
+        if discrete_transition_type is None:
+            discrete_transition_type = DiscreteStationaryCustom(
+                values=np.array(
+                    [
+                        [
+                            0.999,
+                            1e-5,
+                            (1 - 0.999 - 1e-5) / 2,
+                            (1 - 0.999 - 1e-5) / 2,
+                        ],
+                        [
+                            (1 - 0.98) / 3,
+                            0.98,
+                            (1 - 0.98) / 3,
+                            (1 - 0.98) / 3,
+                        ],
+                        [
+                            (1 - 0.98 - 1e-5) / 2,
+                            1e-5,
+                            0.98,
+                            (1 - 0.98 - 1e-5) / 2,
+                        ],
+                        [
+                            (1 - 0.98 - 1e-5) / 2,
+                            1e-5,
+                            (1 - 0.98 - 1e-5) / 2,
+                            0.98,
+                        ],
+                    ]
+                )
+            )
+        if discrete_transition_stickiness is None:
+            discrete_transition_stickiness = np.array([1e6, 1e6, 300.0, 300.0])
+        if observation_models is None:
+            observation_models = [
+                ObservationModel(is_local=True),
+                ObservationModel(is_no_spike=True),
+                ObservationModel(),
+                ObservationModel(),
+            ]
+        if environments is None:
+            environments = Environment(environment_name="")
+        if state_names is None:
+            state_names = [
+                "Local",
+                "No-Spike",
+                "Non-Local Continuous",
+                "Non-Local Fragmented",
+            ]
+
         if continuous_transition_types is None:
             continuous_transition_types = [
                 [Discrete(), Discrete(), Uniform(), Uniform()],
@@ -282,22 +341,81 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
 
     def __init__(
         self,
-        discrete_initial_conditions: np.ndarray = discrete_initial_conditions,
-        continuous_initial_conditions_types: ContinuousInitialConditions = continuous_initial_conditions,
-        discrete_transition_type: DiscreteTransitions = discrete_transition_type,
-        discrete_transition_concentration: float = discrete_transition_concentration,
-        discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
+        discrete_initial_conditions: np.ndarray | None = None,
+        continuous_initial_conditions_types: ContinuousInitialConditions | None = None,
+        discrete_transition_type: DiscreteTransitions | None = None,
+        discrete_transition_concentration: float = 1.0,
+        discrete_transition_stickiness: Stickiness | None = None,
         discrete_transition_regularization: float = 1e-10,
         continuous_transition_types: ContinuousTransitions | None = None,
-        observation_models: Observations = observation_models,
-        environments: Environments = environment,
+        observation_models: Observations | None = None,
+        environments: Environments | None = None,
         clusterless_algorithm: str = "clusterless_kde",
         clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: StateNames = state_names,
+        state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,
-        no_spike_rate: float = no_spike_rate,
+        no_spike_rate: float = 1e-10,
     ):
+        if discrete_initial_conditions is None:
+            discrete_initial_conditions = np.array([1.0, 0.0, 0.0, 0.0])
+        if continuous_initial_conditions_types is None:
+            continuous_initial_conditions_types = [
+                UniformInitialConditions(),
+                UniformInitialConditions(),
+                UniformInitialConditions(),
+                UniformInitialConditions(),
+            ]
+        if discrete_transition_type is None:
+            discrete_transition_type = DiscreteStationaryCustom(
+                values=np.array(
+                    [
+                        [
+                            0.999,
+                            1e-5,
+                            (1 - 0.999 - 1e-5) / 2,
+                            (1 - 0.999 - 1e-5) / 2,
+                        ],
+                        [
+                            (1 - 0.98) / 3,
+                            0.98,
+                            (1 - 0.98) / 3,
+                            (1 - 0.98) / 3,
+                        ],
+                        [
+                            (1 - 0.98 - 1e-5) / 2,
+                            1e-5,
+                            0.98,
+                            (1 - 0.98 - 1e-5) / 2,
+                        ],
+                        [
+                            (1 - 0.98 - 1e-5) / 2,
+                            1e-5,
+                            (1 - 0.98 - 1e-5) / 2,
+                            0.98,
+                        ],
+                    ]
+                )
+            )
+        if discrete_transition_stickiness is None:
+            discrete_transition_stickiness = np.array([1e6, 1e6, 300.0, 300.0])
+        if observation_models is None:
+            observation_models = [
+                ObservationModel(is_local=True),
+                ObservationModel(is_no_spike=True),
+                ObservationModel(),
+                ObservationModel(),
+            ]
+        if environments is None:
+            environments = Environment(environment_name="")
+        if state_names is None:
+            state_names = [
+                "Local",
+                "No-Spike",
+                "Non-Local Continuous",
+                "Non-Local Fragmented",
+            ]
+
         if continuous_transition_types is None:
             continuous_transition_types = [
                 [Discrete(), Discrete(), Uniform(), Uniform()],

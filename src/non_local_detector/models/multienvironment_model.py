@@ -117,22 +117,51 @@ class MultiEnvironmentSortedSpikesClassifier(SortedSpikesDetector):
 
     def __init__(
         self,
-        discrete_initial_conditions: np.ndarray = discrete_initial_conditions,
-        continuous_initial_conditions_types: ContinuousInitialConditions = continuous_initial_conditions,
-        discrete_transition_type: DiscreteTransitions = discrete_transition_type,
+        discrete_initial_conditions: np.ndarray | None = None,
+        continuous_initial_conditions_types: ContinuousInitialConditions | None = None,
+        discrete_transition_type: DiscreteTransitions | None = None,
         discrete_transition_concentration: float = 1.1,
-        discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
+        discrete_transition_stickiness: Stickiness | None = None,
         discrete_transition_regularization: float = 1e-10,
         continuous_transition_types: ContinuousTransitions | None = None,
-        observation_models: Observations = observation_models,
-        environments: Environments = environments,
+        observation_models: Observations | None = None,
+        environments: Environments | None = None,
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
         sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: StateNames = state_names,
+        state_names: StateNames | None = None,
         sampling_frequency: float = 500,
         no_spike_rate: float = 1e-10,
     ):
+        if discrete_initial_conditions is None:
+            discrete_initial_conditions = np.array([1.0, 0.0])
+        if continuous_initial_conditions_types is None:
+            continuous_initial_conditions_types = [
+                UniformInitialConditions(),
+                UniformInitialConditions(),
+            ]
+        if discrete_transition_type is None:
+            discrete_transition_type = DiscreteStationaryDiagonal(
+                diagonal_values=np.array([0.999, 0.98])
+            )
+        if discrete_transition_stickiness is None:
+            discrete_transition_stickiness = np.array([200.0, 30.0])
+        if observation_models is None:
+            observation_models = [
+                ObservationModel(environment_name="env1"),
+                ObservationModel(environment_name="env2"),
+            ]
+        if environments is None:
+            environments = [
+                Environment(environment_name="env1"),
+                Environment(environment_name="env2"),
+            ]
+        if state_names is None:
+            state_names = [
+                "env1",
+                "env2",
+            ]
+
         if continuous_transition_types is None:
             continuous_transition_types = [
                 [
@@ -230,22 +259,51 @@ class MultiEnvironmentClusterlessClassifier(ClusterlessDetector):
 
     def __init__(
         self,
-        discrete_initial_conditions: np.ndarray = discrete_initial_conditions,
-        continuous_initial_conditions_types: ContinuousInitialConditions = continuous_initial_conditions,
-        discrete_transition_type: DiscreteTransitions = discrete_transition_type,
+        discrete_initial_conditions: np.ndarray | None = None,
+        continuous_initial_conditions_types: ContinuousInitialConditions | None = None,
+        discrete_transition_type: DiscreteTransitions | None = None,
         discrete_transition_concentration: float = 1.1,
-        discrete_transition_stickiness: Stickiness = discrete_transition_stickiness,
+        discrete_transition_stickiness: Stickiness | None = None,
         discrete_transition_regularization: float = 1e-10,
         continuous_transition_types: ContinuousTransitions | None = None,
-        observation_models: Observations = observation_models,
-        environments: Environments = environments,
+        observation_models: Observations | None = None,
+        environments: Environments | None = None,
         clusterless_algorithm: str = "clusterless_kde",
         clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
         infer_track_interior: bool = True,
-        state_names: StateNames = state_names,
+        state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
     ):
+        if discrete_initial_conditions is None:
+            discrete_initial_conditions = np.array([1.0, 0.0])
+        if continuous_initial_conditions_types is None:
+            continuous_initial_conditions_types = [
+                UniformInitialConditions(),
+                UniformInitialConditions(),
+            ]
+        if discrete_transition_type is None:
+            discrete_transition_type = DiscreteStationaryDiagonal(
+                diagonal_values=np.array([0.999, 0.98])
+            )
+        if discrete_transition_stickiness is None:
+            discrete_transition_stickiness = np.array([200.0, 30.0])
+        if observation_models is None:
+            observation_models = [
+                ObservationModel(environment_name="env1"),
+                ObservationModel(environment_name="env2"),
+            ]
+        if environments is None:
+            environments = [
+                Environment(environment_name="env1"),
+                Environment(environment_name="env2"),
+            ]
+        if state_names is None:
+            state_names = [
+                "env1",
+                "env2",
+            ]
+
         if continuous_transition_types is None:
             continuous_transition_types = [
                 [
