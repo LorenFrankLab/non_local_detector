@@ -423,9 +423,7 @@ class TestChunkedEdgeCases:
             return log_likes[time_idx]
 
         # Act & Assert - Should raise ValueError
-        with pytest.raises(
-            ValueError, match="n_chunks .* cannot exceed n_time"
-        ):
+        with pytest.raises(ValueError, match="n_chunks .* cannot exceed n_time"):
             chunked_filter_smoother(
                 time=time,
                 state_ind=state_ind,
