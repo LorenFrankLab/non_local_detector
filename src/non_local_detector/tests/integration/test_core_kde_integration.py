@@ -1,22 +1,24 @@
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
-from non_local_detector.core import filter as hmm_filter, smoother, viterbi
-from non_local_detector.core import chunked_filter_smoother
+from non_local_detector.core import chunked_filter_smoother, smoother, viterbi
+from non_local_detector.core import filter as hmm_filter
 from non_local_detector.environment import Environment
-from non_local_detector.likelihoods.sorted_spikes_kde import (
-    fit_sorted_spikes_kde_encoding_model,
-    predict_sorted_spikes_kde_log_likelihood,
-)
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.sorted_spikes_kde import (
+    fit_sorted_spikes_kde_encoding_model,
+    predict_sorted_spikes_kde_log_likelihood,
+)
 
 
 def make_env_1d():
-    env = Environment(environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),))
+    env = Environment(
+        environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),)
+    )
     # Provide dummy position to fit grid reliably
     dummy_pos = np.linspace(0.0, 10.0, 11)[:, None]
     env = env.fit_place_grid(position=dummy_pos, infer_track_interior=False)
@@ -141,7 +143,7 @@ def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(n_chunks):
     dec_times = [np.array([2.1, 5.2])]
     dec_feats = [np.array([[0.1, 0.05], [1.1, -0.9]], dtype=float)]
 
-    ll = pred_cl = predict_clusterless_kde_log_likelihood(
+    ll = predict_clusterless_kde_log_likelihood(
         time=t_edges,
         position_time=t_pos,
         position=pos,
@@ -169,7 +171,9 @@ def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(n_chunks):
     init = np.ones((n_states,)) / n_states
 
     # Non-chunked
-    (marg_like, _), (filtered, _) = hmm_filter(jnp.asarray(init), jnp.asarray(tm), jnp.asarray(ll))
+    (marg_like, _), (filtered, _) = hmm_filter(
+        jnp.asarray(init), jnp.asarray(tm), jnp.asarray(ll)
+    )
     smoothed = smoother(jnp.asarray(tm), filtered)
 
     # Chunked

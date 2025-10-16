@@ -1,14 +1,14 @@
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
     block_estimate_log_joint_mark_intensity,
     estimate_log_joint_mark_intensity,
+    fit_clusterless_kde_encoding_model,
     get_spike_time_bin_ind,
     kde_distance,
-    fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.common import get_position_at_time, safe_divide
@@ -19,7 +19,9 @@ def rng(seed=0):
 
 
 def make_simple_env_1d():
-    env = Environment(environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),))
+    env = Environment(
+        environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),)
+    )
     dummy_pos = np.linspace(0.0, 10.0, 11)[:, None]
     env = env.fit_place_grid(position=dummy_pos, infer_track_interior=False)
     assert env.place_bin_centers_ is not None
@@ -52,13 +54,22 @@ def test_block_estimate_log_joint_mark_intensity_matches_unblocked():
     wstd = jnp.array([1.0, 1.0])
     occupancy = jnp.asarray(r.uniform(0.1, 1.0, size=(6,)))
     mean_rate = 3.0
-    pos_dist = jnp.asarray(r.uniform(0.0, 1.0, size=(enc_feats.shape[0], occupancy.shape[0])))
+    pos_dist = jnp.asarray(
+        r.uniform(0.0, 1.0, size=(enc_feats.shape[0], occupancy.shape[0]))
+    )
 
     base = estimate_log_joint_mark_intensity(
         dec_feats, enc_feats, weights, wstd, occupancy, mean_rate, pos_dist
     )
     blk = block_estimate_log_joint_mark_intensity(
-        dec_feats, enc_feats, weights, wstd, occupancy, mean_rate, pos_dist, block_size=4
+        dec_feats,
+        enc_feats,
+        weights,
+        wstd,
+        occupancy,
+        mean_rate,
+        pos_dist,
+        block_size=4,
     )
     assert base.shape == blk.shape
     assert jnp.allclose(base, blk, rtol=1e-5, atol=1e-7)
@@ -215,7 +226,9 @@ def test_clusterless_local_zero_spikes_equals_negative_gpi_sum():
 
 def test_get_spike_time_bin_ind_unsorted_and_interior_edges():
     edges = np.array([0.0, 1.0, 2.0, 3.0])
-    spikes = np.array([2.0, 0.0, 1.0, 1.0, 0.5])  # unsorted, includes interior edges 1.0
+    spikes = np.array(
+        [2.0, 0.0, 1.0, 1.0, 0.5]
+    )  # unsorted, includes interior edges 1.0
     inds = get_spike_time_bin_ind(spikes, edges)
     # bins: [0,1), [1,2), [2,3]; interior edge 1.0 -> bin 1 (right side)
     assert inds.tolist() == [2, 0, 1, 1, 0]
@@ -266,4 +279,6 @@ def test_encoding_spike_weights_and_mean_rates_match_interpolation():
 
     # Mean rate = sum(weights_at_spikes) / sum(all weights)
     expected_mean = expected_w.sum() / float(weights.sum())
-    assert np.allclose(float(encoding["mean_rates"][0]), expected_mean, rtol=1e-7, atol=1e-9)
+    assert np.allclose(
+        float(encoding["mean_rates"][0]), expected_mean, rtol=1e-7, atol=1e-9
+    )

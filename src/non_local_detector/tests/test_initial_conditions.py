@@ -1,12 +1,19 @@
 import numpy as np
 
 from non_local_detector.environment import Environment
+from non_local_detector.initial_conditions import (
+    UniformInitialConditions,
+    estimate_initial_conditions,
+)
 from non_local_detector.observation_models import ObservationModel
-from non_local_detector.initial_conditions import UniformInitialConditions, estimate_initial_conditions
 
 
 def make_env_1d(n_bins=11):
-    env = Environment(environment_name="line", place_bin_size=1.0, position_range=((0.0, float(n_bins - 1)),))
+    env = Environment(
+        environment_name="line",
+        place_bin_size=1.0,
+        position_range=((0.0, float(n_bins - 1)),),
+    )
     pos = np.linspace(0.0, float(n_bins - 1), n_bins)[:, None]
     env = env.fit_place_grid(position=pos, infer_track_interior=False)
     return env
@@ -17,13 +24,17 @@ def test_uniform_initial_conditions_local_and_no_spike():
     envs = (make_env_1d(),)
 
     # Local decoding => single-bin initial conditions
-    local_obs = ObservationModel(environment_name=envs[0].environment_name, is_local=True)
+    local_obs = ObservationModel(
+        environment_name=envs[0].environment_name, is_local=True
+    )
     arr = ic.make_initial_conditions(local_obs, envs)
     assert arr.shape == (1,)
     assert np.isclose(arr.sum(), 1.0) and np.isclose(arr[0], 1.0)
 
     # No-spike => single-bin initial conditions
-    ns_obs = ObservationModel(environment_name=envs[0].environment_name, is_no_spike=True)
+    ns_obs = ObservationModel(
+        environment_name=envs[0].environment_name, is_no_spike=True
+    )
     arr2 = ic.make_initial_conditions(ns_obs, envs)
     assert arr2.shape == (1,) and np.isclose(arr2[0], 1.0)
 
@@ -52,4 +63,3 @@ def test_estimate_initial_conditions_returns_first_row():
     init = estimate_initial_conditions(post)
     assert init.shape == (post.shape[1],)
     assert np.allclose(init, post[0])
-

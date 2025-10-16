@@ -119,9 +119,15 @@ def test_gemm_various_feature_dimensions():
     n_dec = 20
 
     for n_features in [1, 2, 4, 8, 16]:
-        encoding_features = jnp.array(np.random.randn(n_enc, n_features).astype(np.float32))
-        decoding_features = jnp.array(np.random.randn(n_dec, n_features).astype(np.float32))
-        waveform_stds = jnp.array(np.abs(np.random.randn(n_features).astype(np.float32)) + 0.5)
+        encoding_features = jnp.array(
+            np.random.randn(n_enc, n_features).astype(np.float32)
+        )
+        decoding_features = jnp.array(
+            np.random.randn(n_dec, n_features).astype(np.float32)
+        )
+        waveform_stds = jnp.array(
+            np.abs(np.random.randn(n_features).astype(np.float32)) + 0.5
+        )
 
         # GEMM
         logK_gemm = _compute_log_mark_kernel_gemm(
@@ -152,14 +158,18 @@ def test_gemm_edge_cases():
     # Single encoding spike
     encoding_single = jnp.array([[1.0, 2.0, 3.0]])
     decoding_multi = jnp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-    logK_gemm = _compute_log_mark_kernel_gemm(decoding_multi, encoding_single, waveform_stds)
+    logK_gemm = _compute_log_mark_kernel_gemm(
+        decoding_multi, encoding_single, waveform_stds
+    )
     assert logK_gemm.shape == (1, 2)
     assert jnp.all(jnp.isfinite(logK_gemm))
 
     # Single decoding spike
     encoding_multi = jnp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
     decoding_single = jnp.array([[1.0, 2.0, 3.0]])
-    logK_gemm = _compute_log_mark_kernel_gemm(decoding_single, encoding_multi, waveform_stds)
+    logK_gemm = _compute_log_mark_kernel_gemm(
+        decoding_single, encoding_multi, waveform_stds
+    )
     assert logK_gemm.shape == (2, 1)
     assert jnp.all(jnp.isfinite(logK_gemm))
 
@@ -182,21 +192,12 @@ def test_gemm_edge_cases():
 
 def test_gemm_normalization_constant():
     """Verify that GEMM includes proper Gaussian normalization constant."""
-    np.random.seed(456)
-
     n_features = 4
-    encoding_features = jnp.array(np.random.randn(10, n_features).astype(np.float32))
-    decoding_features = jnp.array(np.random.randn(5, n_features).astype(np.float32))
     waveform_stds = jnp.array([0.5, 1.0, 1.5, 2.0])
 
     # Expected normalization constant
     expected_log_norm = -0.5 * (
         n_features * jnp.log(2.0 * jnp.pi) + 2.0 * jnp.sum(jnp.log(waveform_stds))
-    )
-
-    # Compute GEMM kernel
-    logK_gemm = _compute_log_mark_kernel_gemm(
-        decoding_features, encoding_features, waveform_stds
     )
 
     # For identical points, kernel should be exp(log_norm_const)
@@ -223,7 +224,9 @@ def test_gemm_gradient_compatibility():
 
     # Define function to differentiate
     def loss_fn(dec_features):
-        logK = _compute_log_mark_kernel_gemm(dec_features, encoding_features, waveform_stds)
+        logK = _compute_log_mark_kernel_gemm(
+            dec_features, encoding_features, waveform_stds
+        )
         return jnp.sum(logK)
 
     # Should be able to compute gradient

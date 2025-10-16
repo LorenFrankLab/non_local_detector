@@ -1,16 +1,16 @@
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 
 from non_local_detector.environment import Environment
-from non_local_detector.likelihoods.sorted_spikes_kde import (
-    fit_sorted_spikes_kde_encoding_model,
-    predict_sorted_spikes_kde_log_likelihood,
-)
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.common import EPS
+from non_local_detector.likelihoods.sorted_spikes_kde import (
+    fit_sorted_spikes_kde_encoding_model,
+    predict_sorted_spikes_kde_log_likelihood,
+)
 
 
 def make_env_1d(n_bins=21, name="line"):
@@ -27,7 +27,11 @@ def make_env_1d(n_bins=21, name="line"):
 def interior_index_for_position(env: Environment, x: float) -> int:
     centers = env.place_bin_centers_.squeeze()
     full_idx = int(np.argmin(np.abs(centers - x)))
-    mask = env.is_track_interior_.ravel() if env.is_track_interior_ is not None else np.ones_like(centers, dtype=bool)
+    mask = (
+        env.is_track_interior_.ravel()
+        if env.is_track_interior_ is not None
+        else np.ones_like(centers, dtype=bool)
+    )
     interior_inds = np.flatnonzero(mask)
     return int(np.where(interior_inds == full_idx)[0][0])
 
@@ -139,7 +143,9 @@ def test_clusterless_kde_nonlocal_argmax_snapshot():
 
     # One electrode: encoding spikes at times near 7.0 with simple 2D waveform features around (0,0)
     enc_times = [jnp.asarray(np.array([7.0, 7.1, 6.9]))]
-    enc_feats = [jnp.asarray(np.array([[0.0, 0.0], [0.05, -0.05], [-0.05, 0.05]], dtype=float))]
+    enc_feats = [
+        jnp.asarray(np.array([[0.0, 0.0], [0.05, -0.05], [-0.05, 0.05]], dtype=float))
+    ]
 
     enc = fit_clusterless_kde_encoding_model(
         position_time=jnp.asarray(t_pos),
@@ -184,7 +190,11 @@ def test_clusterless_kde_nonlocal_argmax_snapshot():
 
     argmax_bin = int(np.asarray(jnp.argmax(ll, axis=1))[0])
     expected_interior_idx = interior_index_for_position(env, 7.0)
-    ok_set = {expected_interior_idx, max(0, expected_interior_idx - 1), min(ll.shape[1] - 1, expected_interior_idx + 1)}
+    ok_set = {
+        expected_interior_idx,
+        max(0, expected_interior_idx - 1),
+        min(ll.shape[1] - 1, expected_interior_idx + 1),
+    }
     assert argmax_bin in ok_set
 
 
@@ -195,7 +205,9 @@ def test_clusterless_kde_nonlocal_profile_monotone_decay_snapshot():
     pos = np.linspace(0.0, 10.0, 201)[:, None]
     weights = np.ones_like(t_pos)
     enc_times = [jnp.asarray(np.array([7.0, 7.1, 6.9]))]
-    enc_feats = [jnp.asarray(np.array([[0.0, 0.0], [0.05, -0.05], [-0.05, 0.05]], dtype=float))]
+    enc_feats = [
+        jnp.asarray(np.array([[0.0, 0.0], [0.05, -0.05], [-0.05, 0.05]], dtype=float))
+    ]
     enc = fit_clusterless_kde_encoding_model(
         position_time=jnp.asarray(t_pos),
         position=jnp.asarray(pos),

@@ -51,9 +51,7 @@ class TestValidationError:
 
     def test_message_with_expected_and_got(self):
         """Test ValidationError with expected and got parameters."""
-        error = ValidationError(
-            "Invalid value", expected="x > 0", got="x = -1"
-        )
+        error = ValidationError("Invalid value", expected="x > 0", got="x = -1")
         msg = str(error)
         assert "Invalid value" in msg
         assert "Expected: x > 0" in msg
@@ -177,9 +175,7 @@ class TestConvergenceError:
 
     def test_message_with_iterations_and_tolerance(self):
         """Test ConvergenceError with both iterations and tolerance."""
-        error = ConvergenceError(
-            "Failed to converge", iterations=1000, tolerance=1e-4
-        )
+        error = ConvergenceError("Failed to converge", iterations=1000, tolerance=1e-4)
         msg = str(error)
         assert "Failed to converge" in msg
         assert "iterations: 1000" in msg
@@ -262,9 +258,7 @@ class TestExceptionIntegration:
         from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 
         with pytest.raises(ValidationError) as exc_info:
-            GaussianMixtureModel(
-                n_components=3, covariance_type="invalid_type"
-            )
+            GaussianMixtureModel(n_components=3, covariance_type="invalid_type")
 
         error_msg = str(exc_info.value)
         assert "covariance" in error_msg.lower()

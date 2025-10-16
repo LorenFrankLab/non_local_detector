@@ -56,7 +56,9 @@ def gmm_simulation_data():
 
     # Create and fit environment
     environment = Environment(position_range=[(0, 10), (-3, 3)])
-    environment = environment.fit_place_grid(position=position, infer_track_interior=True)
+    environment = environment.fit_place_grid(
+        position=position, infer_track_interior=True
+    )
 
     return {
         "time": time,
@@ -285,9 +287,11 @@ def test_gmm_memory_scaling():
     assert mem_both == pytest.approx(1.024, abs=0.01)  # ~1 MB
 
     # Print for documentation
-    print(f"\nMemory scaling verification:")
+    print("\nMemory scaling verification:")
     print(f"  Full processing: {mem_full:.1f} MB")
-    print(f"  Spike blocking only: {mem_spike_block:.1f} MB ({reduction_spike_block:.0f}× reduction)")
+    print(
+        f"  Spike blocking only: {mem_spike_block:.1f} MB ({reduction_spike_block:.0f}× reduction)"
+    )
     print(f"  Both optimizations: {mem_both:.3f} MB ({reduction_both:.0f}× reduction)")
 
 
@@ -303,8 +307,12 @@ def test_gmm_edge_cases(gmm_simulation_data):
         "time": gmm_simulation_data["time"][:10],
         "position_time": gmm_simulation_data["position_time"][:30],
         "position": gmm_simulation_data["position"][:30],
-        "spike_times": [times[:5] for times in gmm_simulation_data["spike_times"]],  # 5 spikes each
-        "spike_features": [feats[:5] for feats in gmm_simulation_data["spike_features"]],
+        "spike_times": [
+            times[:5] for times in gmm_simulation_data["spike_times"]
+        ],  # 5 spikes each
+        "spike_features": [
+            feats[:5] for feats in gmm_simulation_data["spike_features"]
+        ],
     }
 
     # Fit the encoding model (reuse environment from fixture, use very few components)

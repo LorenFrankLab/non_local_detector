@@ -1,5 +1,5 @@
-import numpy as np
 import networkx as nx
+import numpy as np
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import get_position_at_time
@@ -45,4 +45,3 @@ def test_linear_position_monotonic_across_multiple_edges():
     # Next increment should be slightly larger due to spacing
     diffs = np.diff(lin.squeeze())
     assert diffs[boundary_idx] >= diffs.max() * 0.5  # rough check for a bump
-

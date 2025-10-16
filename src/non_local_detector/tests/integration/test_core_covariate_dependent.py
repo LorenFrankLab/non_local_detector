@@ -1,11 +1,11 @@
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from non_local_detector.core import (
+    chunked_filter_smoother_covariate_dependent,
     filter_covariate_dependent,
     smoother_covariate_dependent,
-    chunked_filter_smoother_covariate_dependent,
     viterbi_covariate_dependent,
 )
 
@@ -49,7 +49,11 @@ def test_covariate_dependent_chunked_equals_nonchunked(n_chunks):
 
     # Non-chunked
     (marg_like, pred_next), (filtered, predicted) = filter_covariate_dependent(
-        jnp.asarray(init), jnp.asarray(d_tm), jnp.asarray(c_tm), jnp.asarray(state_ind), jnp.asarray(ll)
+        jnp.asarray(init),
+        jnp.asarray(d_tm),
+        jnp.asarray(c_tm),
+        jnp.asarray(state_ind),
+        jnp.asarray(ll),
     )
     smoothed = smoother_covariate_dependent(
         jnp.asarray(d_tm), jnp.asarray(c_tm), jnp.asarray(state_ind), filtered
@@ -83,8 +87,11 @@ def test_covariate_dependent_chunked_equals_nonchunked(n_chunks):
 
     # Viterbi covariate-dependent path validity
     path = viterbi_covariate_dependent(
-        jnp.asarray(init), jnp.asarray(d_tm), jnp.asarray(c_tm), jnp.asarray(state_ind), jnp.asarray(ll)
+        jnp.asarray(init),
+        jnp.asarray(d_tm),
+        jnp.asarray(c_tm),
+        jnp.asarray(state_ind),
+        jnp.asarray(ll),
     )
     assert path.shape == (n_time,)
     assert int(path.min()) >= 0 and int(path.max()) < n_states
-

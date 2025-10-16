@@ -1,17 +1,19 @@
+import jax.numpy as jnp
 import numpy as np
 import pytest
-import jax.numpy as jnp
 
 from non_local_detector.environment import Environment
+from non_local_detector.likelihoods.common import EPS, get_position_at_time
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.common import get_position_at_time, EPS
 
 
 def make_simple_env_1d():
-    env = Environment(environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),))
+    env = Environment(
+        environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),)
+    )
     # Provide a simple position array so fit_place_grid can determine dims
     dummy_pos = np.linspace(0.0, 10.0, 11)[:, None]
     # Fit grid (no graph); do not infer interior
@@ -168,10 +170,14 @@ def test_local_likelihood_zero_spikes_equals_negative_rate_sum():
     interpolated_position = get_position_at_time(t_pos, pos, t_edges, env)
     occupancy_at_time = enc["occupancy_model"].predict(interpolated_position)
     expected = jnp.zeros((t_edges.shape[0],))
-    for m, mean_rate in zip(enc["marginal_models"], jnp.asarray(enc["mean_rates"])):
+    for m, mean_rate in zip(
+        enc["marginal_models"], jnp.asarray(enc["mean_rates"]), strict=False
+    ):
         marginal = m.predict(interpolated_position)
         marginal = jnp.where(jnp.isnan(marginal), 0.0, marginal)
-        local_rate = mean_rate * jnp.where(occupancy_at_time > 0.0, marginal / occupancy_at_time, EPS)
+        local_rate = mean_rate * jnp.where(
+            occupancy_at_time > 0.0, marginal / occupancy_at_time, EPS
+        )
         local_rate = jnp.clip(local_rate, min=EPS)
         expected -= local_rate
     expected = jnp.expand_dims(expected, axis=1)

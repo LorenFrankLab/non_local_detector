@@ -1,12 +1,12 @@
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 
 from non_local_detector.likelihoods.common import (
     KDEModel,
     block_kde,
     block_log_kde,
-    get_spikecount_per_time_bin,
     get_position_at_time,
+    get_spikecount_per_time_bin,
     kde,
     log_kde,
     safe_divide,
@@ -28,7 +28,11 @@ def test_kde_and_block_kde_match_1d():
     base = kde(jnp.asarray(eval_points), jnp.asarray(samples), std, w)
     for bs in (1, 5, 17, 1000):
         blk = block_kde(
-            jnp.asarray(eval_points), jnp.asarray(samples), std, block_size=bs, weights=w
+            jnp.asarray(eval_points),
+            jnp.asarray(samples),
+            std,
+            block_size=bs,
+            weights=w,
         )
         assert jnp.allclose(base, blk, rtol=1e-5, atol=1e-7)
 
@@ -42,7 +46,11 @@ def test_kde_and_block_kde_match_2d_weighted():
 
     base = kde(jnp.asarray(eval_points), jnp.asarray(samples), std, weights)
     blk = block_kde(
-        jnp.asarray(eval_points), jnp.asarray(samples), std, block_size=7, weights=weights
+        jnp.asarray(eval_points),
+        jnp.asarray(samples),
+        std,
+        block_size=7,
+        weights=weights,
     )
     assert jnp.allclose(base, blk, rtol=1e-5, atol=1e-7)
 
@@ -71,7 +79,11 @@ def test_block_log_kde_matches_log_kde():
     base = log_kde(jnp.asarray(eval_points), jnp.asarray(samples), std, weights)
     for bs in (1, 4, 16, 128):
         blk = block_log_kde(
-            jnp.asarray(eval_points), jnp.asarray(samples), std, block_size=bs, weights=weights
+            jnp.asarray(eval_points),
+            jnp.asarray(samples),
+            std,
+            block_size=bs,
+            weights=weights,
         )
         assert jnp.allclose(base, blk, rtol=1e-5, atol=1e-7)
 
@@ -96,9 +108,9 @@ def test_safe_divide_and_safe_log_stability_and_broadcast():
     assert jnp.all(jnp.isfinite(out))
 
     x = jnp.array([0.0, 1e-20, 1.0])
-    l = safe_log(x)
-    assert l.shape == x.shape
-    assert jnp.all(jnp.isfinite(l))
+    log_x = safe_log(x)
+    assert log_x.shape == x.shape
+    assert jnp.all(jnp.isfinite(log_x))
 
 
 def test_get_spikecount_per_time_bin_edges_and_outliers():
@@ -116,7 +128,9 @@ def test_get_spikecount_per_time_bin_edges_and_outliers():
 def test_weights_scaling_invariance_and_reweighting_effect():
     r = rng(10)
     # Two clusters: near 0 and near 5
-    samples = np.concatenate([r.normal(0.0, 0.5, size=(200, 1)), r.normal(5.0, 0.5, size=(200, 1))], axis=0)
+    samples = np.concatenate(
+        [r.normal(0.0, 0.5, size=(200, 1)), r.normal(5.0, 0.5, size=(200, 1))], axis=0
+    )
     eval_points = np.array([[0.0]])
     std = jnp.array([0.7])
     w_uniform = jnp.ones((samples.shape[0],))
@@ -129,7 +143,9 @@ def test_weights_scaling_invariance_and_reweighting_effect():
     w = np.ones(samples.shape[0])
     w[:200] = 2.0  # near 0
     w[200:] = 0.5  # near 5
-    dens_reweighted = kde(jnp.asarray(eval_points), jnp.asarray(samples), std, jnp.asarray(w))
+    dens_reweighted = kde(
+        jnp.asarray(eval_points), jnp.asarray(samples), std, jnp.asarray(w)
+    )
     assert dens_reweighted > dens1
 
 
@@ -139,9 +155,13 @@ def test_std_extremes_are_finite_and_reasonable():
     eval_points = r.normal(size=(20, 2))
     w = jnp.ones((samples.shape[0],))
     # Very small std -> densities peaked but finite
-    d_small = kde(jnp.asarray(eval_points), jnp.asarray(samples), jnp.array([1e-6, 1e-6]), w)
+    d_small = kde(
+        jnp.asarray(eval_points), jnp.asarray(samples), jnp.array([1e-6, 1e-6]), w
+    )
     # Very large std -> densities smoother and close across eval points
-    d_large = kde(jnp.asarray(eval_points), jnp.asarray(samples), jnp.array([100.0, 100.0]), w)
+    d_large = kde(
+        jnp.asarray(eval_points), jnp.asarray(samples), jnp.array([100.0, 100.0]), w
+    )
     assert jnp.all(jnp.isfinite(d_small)) and jnp.all(jnp.isfinite(d_large))
     assert d_large.ptp() < 1e-2
 
@@ -152,7 +172,9 @@ def test_empty_eval_points_returns_empty():
     eval_points = np.zeros((0, 2))
     std = jnp.array([1.0, 1.0])
     w = jnp.ones((samples.shape[0],))
-    out = block_kde(jnp.asarray(eval_points), jnp.asarray(samples), std, block_size=7, weights=w)
+    out = block_kde(
+        jnp.asarray(eval_points), jnp.asarray(samples), std, block_size=7, weights=w
+    )
     assert out.shape == (0,)
 
 

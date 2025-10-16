@@ -318,9 +318,9 @@ def get_firing_rate(
         return np.zeros_like(occupancy)
 
 
-def simulate_two_state_inhomogenous_poisson() -> (
-    tuple[np.ndarray, np.ndarray, np.ndarray]
-):
+def simulate_two_state_inhomogenous_poisson() -> tuple[
+    np.ndarray, np.ndarray, np.ndarray
+]:
     """Simulate a two-state inhomogenous Poisson process.
 
     Returns

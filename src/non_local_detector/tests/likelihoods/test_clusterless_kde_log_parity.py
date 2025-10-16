@@ -1,19 +1,25 @@
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model as fit_lin,
+)
+from non_local_detector.likelihoods.clusterless_kde import (
     predict_clusterless_kde_log_likelihood as pred_lin,
 )
 from non_local_detector.likelihoods.clusterless_kde_log import (
     fit_clusterless_kde_encoding_model as fit_log,
+)
+from non_local_detector.likelihoods.clusterless_kde_log import (
     predict_clusterless_kde_log_likelihood as pred_log,
 )
 
 
 def make_env_1d():
-    env = Environment(environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),))
+    env = Environment(
+        environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),)
+    )
     dummy_pos = np.linspace(0.0, 10.0, 11)[:, None]
     env = env.fit_place_grid(position=dummy_pos, infer_track_interior=False)
     return env
@@ -107,4 +113,3 @@ def test_clusterless_log_vs_linear_parity_nonlocal():
     assert ll_lin.shape == ll_log.shape
     # Allow small numeric differences; focus on relative closeness
     assert np.allclose(np.asarray(ll_lin), np.asarray(ll_log), rtol=1e-4, atol=1e-5)
-

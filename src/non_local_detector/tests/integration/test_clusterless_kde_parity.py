@@ -10,16 +10,28 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
-    fit_clusterless_kde_encoding_model as fit_original,
-    predict_clusterless_kde_log_likelihood as predict_original,
-    kde_distance,
     estimate_log_joint_mark_intensity as estimate_original,
+)
+from non_local_detector.likelihoods.clusterless_kde import (
+    fit_clusterless_kde_encoding_model as fit_original,
+)
+from non_local_detector.likelihoods.clusterless_kde import (
+    kde_distance,
+)
+from non_local_detector.likelihoods.clusterless_kde import (
+    predict_clusterless_kde_log_likelihood as predict_original,
+)
+from non_local_detector.likelihoods.clusterless_kde_log import (
+    estimate_log_joint_mark_intensity as estimate_log,
 )
 from non_local_detector.likelihoods.clusterless_kde_log import (
     fit_clusterless_kde_encoding_model as fit_log,
-    predict_clusterless_kde_log_likelihood as predict_log,
+)
+from non_local_detector.likelihoods.clusterless_kde_log import (
     log_kde_distance,
-    estimate_log_joint_mark_intensity as estimate_log,
+)
+from non_local_detector.likelihoods.clusterless_kde_log import (
+    predict_clusterless_kde_log_likelihood as predict_log,
 )
 
 
@@ -87,9 +99,9 @@ def test_kde_distance_vs_log_kde_distance():
     log_distance = log_kde_distance(eval_points, samples, std)
 
     # Check consistency: exp(log_distance) ≈ distance
-    assert np.allclose(
-        np.exp(log_distance), distance, rtol=1e-5, atol=1e-8
-    ), "kde_distance and log_kde_distance are inconsistent"
+    assert np.allclose(np.exp(log_distance), distance, rtol=1e-5, atol=1e-8), (
+        "kde_distance and log_kde_distance are inconsistent"
+    )
 
 
 def test_estimate_intensity_moderate_features():
@@ -146,9 +158,9 @@ def test_estimate_intensity_moderate_features():
     assert ll_log.shape == (n_dec_spikes, n_pos_bins), "Log-space shape wrong"
 
     # Check values are close (moderate features should agree well)
-    assert np.allclose(
-        ll_original, ll_log, rtol=1e-3, atol=1e-4
-    ), f"Implementations differ: max diff = {np.abs(ll_original - ll_log).max()}"
+    assert np.allclose(ll_original, ll_log, rtol=1e-3, atol=1e-4), (
+        f"Implementations differ: max diff = {np.abs(ll_original - ll_log).max()}"
+    )
 
     # Check all values are finite
     assert np.all(np.isfinite(ll_original)), "Original has non-finite values"
@@ -206,7 +218,9 @@ def test_estimate_intensity_extreme_features():
     )
 
     # Log-space should always be finite
-    assert np.all(np.isfinite(ll_log)), "Log-space has non-finite values even with extreme features"
+    assert np.all(np.isfinite(ll_log)), (
+        "Log-space has non-finite values even with extreme features"
+    )
 
     # Original may have issues, but shouldn't crash
     # (May have -inf values due to underflow, which is OK)
@@ -269,7 +283,9 @@ def test_fit_encoding_model_parity(synthetic_clusterless_data, simple_environmen
         ), f"Encoding positions differ for electrode {i}"
 
 
-def test_predict_local_likelihood_parity(synthetic_clusterless_data, simple_environment):
+def test_predict_local_likelihood_parity(
+    synthetic_clusterless_data, simple_environment
+):
     """Test that local likelihood predictions are consistent."""
     data = synthetic_clusterless_data
     env = simple_environment
@@ -342,16 +358,18 @@ def test_predict_local_likelihood_parity(synthetic_clusterless_data, simple_envi
 
     # Check values are close
     # Note: Local likelihood uses different code paths, may have larger differences
-    assert np.allclose(
-        ll_original, ll_log, rtol=1e-2, atol=1e-3
-    ), f"Local likelihoods differ: max diff = {np.abs(ll_original - ll_log).max()}"
+    assert np.allclose(ll_original, ll_log, rtol=1e-2, atol=1e-3), (
+        f"Local likelihoods differ: max diff = {np.abs(ll_original - ll_log).max()}"
+    )
 
     # Check finite
     assert np.all(np.isfinite(ll_original)), "Original has non-finite local likelihood"
     assert np.all(np.isfinite(ll_log)), "Log-space has non-finite local likelihood"
 
 
-def test_predict_nonlocal_likelihood_parity(synthetic_clusterless_data, simple_environment):
+def test_predict_nonlocal_likelihood_parity(
+    synthetic_clusterless_data, simple_environment
+):
     """Test that non-local likelihood predictions are consistent."""
     data = synthetic_clusterless_data
     env = simple_environment
@@ -425,12 +443,14 @@ def test_predict_nonlocal_likelihood_parity(synthetic_clusterless_data, simple_e
 
     # Check values are close
     # Non-local likelihood is the critical test - this is where scan fix matters
-    assert np.allclose(
-        ll_original, ll_log, rtol=1e-2, atol=1e-3
-    ), f"Non-local likelihoods differ: max diff = {np.abs(ll_original - ll_log).max()}"
+    assert np.allclose(ll_original, ll_log, rtol=1e-2, atol=1e-3), (
+        f"Non-local likelihoods differ: max diff = {np.abs(ll_original - ll_log).max()}"
+    )
 
     # Check finite
-    assert np.all(np.isfinite(ll_original)), "Original has non-finite non-local likelihood"
+    assert np.all(np.isfinite(ll_original)), (
+        "Original has non-finite non-local likelihood"
+    )
     assert np.all(np.isfinite(ll_log)), "Log-space has non-finite non-local likelihood"
 
 
