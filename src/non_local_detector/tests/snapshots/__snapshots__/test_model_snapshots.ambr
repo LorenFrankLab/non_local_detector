@@ -1,0 +1,254 @@
+# serializer version: 1
+# name: test_contfrag_sorted_spikes_classifier_snapshot[posterior_summary]
+  dict({
+    'dtype': 'float32',
+    'first_5': list([
+      0.006768127903342247,
+      0.006764749996364117,
+      0.006758098024874926,
+      0.0067468504421412945,
+      0.006730006076395512,
+    ]),
+    'last_5': list([
+      0.003981655463576317,
+      0.003983573988080025,
+      0.003985262010246515,
+      0.003986570052802563,
+      0.003987553063780069,
+    ]),
+    'max': 0.2635471820831299,
+    'mean': 0.005813951604068279,
+    'min': 3.2700172214875083e-32,
+    'shape': tuple(
+      97500,
+      172,
+    ),
+    'std': 0.015846993774175644,
+    'sum': 97499.96875,
+  })
+# ---
+# name: test_contfrag_sorted_spikes_classifier_snapshot[state_probabilities]
+  dict({
+    'max_per_state': dict({
+      'Continuous': 0.9996130466461182,
+      'Fragmented': 0.9879675507545471,
+    }),
+    'mean_per_state': dict({
+      'Continuous': 0.7746369242668152,
+      'Fragmented': 0.22536304593086243,
+    }),
+    'min_per_state': dict({
+      'Continuous': 0.01203252375125885,
+      'Fragmented': 0.0003870317596010864,
+    }),
+    'shape': tuple(
+      97500,
+      2,
+    ),
+    'states': list([
+      np.str_('Continuous'),
+      np.str_('Fragmented'),
+    ]),
+  })
+# ---
+# name: test_contfrag_sorted_spikes_classifier_snapshot[transitions_summary]
+  dict({
+    'shape': tuple(
+      172,
+      172,
+    ),
+    'sum_axis1_max': 2.000000000000001,
+    'sum_axis1_mean': 2.0,
+    'sum_axis1_min': 1.9999999999999996,
+    'sum_axis1_std': 1.967174500689789e-16,
+  })
+# ---
+# name: test_detector_encoding_model_snapshot[occupancy_summary]
+  dict({
+    'max': 0.022265903651714325,
+    'mean': 0.0047567603178322315,
+    'min': 0.0028880496975034475,
+    'shape': tuple(
+      86,
+    ),
+    'sum': 0.409081369638443,
+  })
+# ---
+# name: test_detector_encoding_model_snapshot[place_fields_summary]
+  dict({
+    'argmax_positions': list([
+      0,
+      2,
+      6,
+      9,
+      12,
+    ]),
+    'max_rates': list([
+      0.010007889941334724,
+      0.00782169308513403,
+      0.005721024703234434,
+      0.006649218033999205,
+      0.007192997727543116,
+    ]),
+    'mean_rates': list([
+      0.0005419200169853866,
+      0.0006632493459619582,
+      0.0005599220166914165,
+      0.0006957132718525827,
+      0.0007200327236205339,
+    ]),
+    'n_neurons': 30,
+    'place_field_shape': tuple(
+      86,
+    ),
+  })
+# ---
+# name: test_nonlocal_detector_different_algorithms_snapshot[sorted_spikes_kde-algorithm_params0]
+  dict({
+    'max_per_state': dict({
+      'Local': 1.0,
+      'No-Spike': 0.009047353640198708,
+      'Non-Local Continuous': 0.9979763627052307,
+      'Non-Local Fragmented': 0.9968060255050659,
+    }),
+    'mean_per_state': dict({
+      'Local': 0.9769073724746704,
+      'No-Spike': 0.0002997303963638842,
+      'Non-Local Continuous': 0.015173702500760555,
+      'Non-Local Fragmented': 0.007619204465299845,
+    }),
+    'min_per_state': dict({
+      'Local': 3.682806573081021e-28,
+      'No-Spike': 0.0,
+      'Non-Local Continuous': 0.0,
+      'Non-Local Fragmented': 0.0,
+    }),
+    'shape': tuple(
+      97500,
+      4,
+    ),
+    'states': list([
+      np.str_('Local'),
+      np.str_('No-Spike'),
+      np.str_('Non-Local Continuous'),
+      np.str_('Non-Local Fragmented'),
+    ]),
+  })
+# ---
+# name: test_nonlocal_sorted_spikes_detector_snapshot[model_summary]
+  dict({
+    'discrete_state_transitions_shape': tuple(
+      4,
+      4,
+    ),
+    'discrete_state_transitions_sum_axis1': list([
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+    ]),
+    'initial_conditions_shape': tuple(
+      174,
+    ),
+    'initial_conditions_sum': 1.0,
+    'n_position_bins': 86,
+  })
+# ---
+# name: test_nonlocal_sorted_spikes_detector_snapshot[posterior_summary]
+  dict({
+    'dtype': 'float32',
+    'first_5': list([
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+    ]),
+    'last_5': list([
+      0.00010889424447668716,
+      0.00010894671868300065,
+      0.00010899288463406265,
+      0.00010902863868977875,
+      0.00010905553062912077,
+    ]),
+    'max': 1.0,
+    'mean': 0.005747124087065458,
+    'min': 0.0,
+    'shape': tuple(
+      97500,
+      174,
+    ),
+    'std': 0.07421762496232986,
+    'sum': 97499.9609375,
+  })
+# ---
+# name: test_nonlocal_sorted_spikes_detector_snapshot[state_probabilities]
+  dict({
+    'max_per_state': dict({
+      'Local': 1.0,
+      'No-Spike': 0.009047353640198708,
+      'Non-Local Continuous': 0.9979763627052307,
+      'Non-Local Fragmented': 0.9968060255050659,
+    }),
+    'mean_per_state': dict({
+      'Local': 0.9769073724746704,
+      'No-Spike': 0.0002997303963638842,
+      'Non-Local Continuous': 0.015173702500760555,
+      'Non-Local Fragmented': 0.007619204465299845,
+    }),
+    'min_per_state': dict({
+      'Local': 3.682806573081021e-28,
+      'No-Spike': 0.0,
+      'Non-Local Continuous': 0.0,
+      'Non-Local Fragmented': 0.0,
+    }),
+    'shape': tuple(
+      97500,
+      4,
+    ),
+    'states': list([
+      np.str_('Local'),
+      np.str_('No-Spike'),
+      np.str_('Non-Local Continuous'),
+      np.str_('Non-Local Fragmented'),
+    ]),
+  })
+# ---
+# name: test_sorted_spikes_decoder_snapshot[posterior_summary]
+  dict({
+    'dtype': 'float32',
+    'first_5': list([
+      0.04842440038919449,
+      0.04827294498682022,
+      0.047986868768930435,
+      0.04752686992287636,
+      0.04688208922743797,
+    ]),
+    'last_5': list([
+      1.5011404559406161e-21,
+      1.3662777043517948e-21,
+      1.2380085677531727e-21,
+      1.0630517902625379e-21,
+      7.597737230011151e-22,
+    ]),
+    'max': 0.26409852504730225,
+    'mean': 0.01162790134549141,
+    'min': 0.0,
+    'shape': tuple(
+      97500,
+      86,
+    ),
+    'std': 0.027638118714094162,
+    'sum': 97499.953125,
+  })
+# ---
+# name: test_sorted_spikes_decoder_snapshot[state_probabilities]
+  dict({
+    'max': 1.0000004768371582,
+    'mean': 1.0,
+    'min': 0.9999996423721313,
+    'shape': tuple(
+      97500,
+    ),
+  })
+# ---
