@@ -547,16 +547,21 @@ def make_simulated_data(
         is_outbound=True,
     )
     event_ends[0] = event_ends[0] + event1_spikes.shape[0] / sampling_frequency
-    spikes[(time >= event_starts[0]) & (time < event_ends[0])] = 0
-    spikes[(time >= event_starts[0]) & (time < event_ends[0])] = event1_spikes
+    event1_mask = (time >= event_starts[0]) & (time < event_ends[0])
+    spikes[event1_mask] = 0
+    # Handle potential shape mismatch due to floating point precision
+    n_event1_samples = min(event1_spikes.shape[0], event1_mask.sum())
+    spikes[event1_mask][:n_event1_samples] = event1_spikes[:n_event1_samples]
 
     # Event 2 - Fragmented
     event2_spikes = make_fragmented_replay(
         place_field_means, sampling_frequency, replay_speed
     )
     event_ends[1] = event_ends[1] + event2_spikes.shape[0] / sampling_frequency
-    spikes[(time >= event_starts[1]) & (time < event_ends[1])] = 0
-    spikes[(time >= event_starts[1]) & (time < event_ends[1])] = event2_spikes
+    event2_mask = (time >= event_starts[1]) & (time < event_ends[1])
+    spikes[event2_mask] = 0
+    n_event2_samples = min(event2_spikes.shape[0], event2_mask.sum())
+    spikes[event2_mask][:n_event2_samples] = event2_spikes[:n_event2_samples]
 
     # Event 3 - Continuous inbound
     event3_spikes = make_continuous_replay(
@@ -565,7 +570,9 @@ def make_simulated_data(
         is_outbound=False,
     )
     event_ends[2] = event_ends[2] + event3_spikes.shape[0] / sampling_frequency
-    spikes[(time >= event_starts[2]) & (time < event_ends[2])] = event3_spikes
+    event3_mask = (time >= event_starts[2]) & (time < event_ends[2])
+    n_event3_samples = min(event3_spikes.shape[0], event3_mask.sum())
+    spikes[event3_mask][:n_event3_samples] = event3_spikes[:n_event3_samples]
 
     # Event 4 - No spike
     event_ends[3] = event_ends[3] + 0.5
