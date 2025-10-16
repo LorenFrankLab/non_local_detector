@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -13,15 +14,19 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
 )
 
 
-def make_env_1d(n_bins=21, name="line"):
-    env = Environment(
-        environment_name=name,
-        place_bin_size=1.0,
-        position_range=((0.0, float(n_bins - 1)),),
-    )
-    pos = np.linspace(0.0, float(n_bins - 1), n_bins)[:, None]
-    env = env.fit_place_grid(position=pos, infer_track_interior=False)
-    return env
+@pytest.fixture
+def make_env_1d():
+    """Factory fixture for creating 1D environments with custom parameters."""
+    def _make_env(n_bins=21, name="line"):
+        env = Environment(
+            environment_name=name,
+            place_bin_size=1.0,
+            position_range=((0.0, float(n_bins - 1)),),
+        )
+        pos = np.linspace(0.0, float(n_bins - 1), n_bins)[:, None]
+        env = env.fit_place_grid(position=pos, infer_track_interior=False)
+        return env
+    return _make_env
 
 
 def interior_index_for_position(env: Environment, x: float) -> int:
@@ -36,7 +41,7 @@ def interior_index_for_position(env: Environment, x: float) -> int:
     return int(np.where(interior_inds == full_idx)[0][0])
 
 
-def test_sorted_kde_nonlocal_argmax_snapshot():
+def test_sorted_kde_nonlocal_argmax_snapshot(make_env_1d):
     # Environment and simple encoding centered near x=3.0
     env = make_env_1d(n_bins=11, name="env_sorted_snap")
     t_pos = np.linspace(0.0, 10.0, 201)
@@ -91,7 +96,7 @@ def test_sorted_kde_nonlocal_argmax_snapshot():
     assert np.sum(argmax_bins == pf_argmax) >= len(argmax_bins) - 1
 
 
-def test_sorted_kde_nonlocal_topk_ranking_snapshot():
+def test_sorted_kde_nonlocal_topk_ranking_snapshot(make_env_1d):
     # Same setup as above but verify local ranking structure around the mode
     env = make_env_1d(n_bins=11, name="env_sorted_snap_topk")
     t_pos = np.linspace(0.0, 10.0, 201)
@@ -137,7 +142,7 @@ def test_sorted_kde_nonlocal_topk_ranking_snapshot():
         assert topk == pf_top3
 
 
-def test_clusterless_kde_nonlocal_argmax_snapshot():
+def test_clusterless_kde_nonlocal_argmax_snapshot(make_env_1d):
     # Environment and encoding centered near x=7.0
     env = make_env_1d(n_bins=21, name="env_clusterless_snap")
     t_pos = np.linspace(0.0, 10.0, 201)
@@ -201,7 +206,7 @@ def test_clusterless_kde_nonlocal_argmax_snapshot():
     assert argmax_bin in ok_set
 
 
-def test_clusterless_kde_nonlocal_profile_monotone_decay_snapshot():
+def test_clusterless_kde_nonlocal_profile_monotone_decay_snapshot(make_env_1d):
     # Verify likelihood decays with distance from mode around the center
     env = make_env_1d(n_bins=31, name="env_clusterless_snap_profile")
     t_pos = np.linspace(0.0, 10.0, 201)

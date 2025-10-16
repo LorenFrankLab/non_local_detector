@@ -1,7 +1,6 @@
 import jax.numpy as jnp
 import numpy as np
 
-from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model as fit_lin,
 )
@@ -16,17 +15,8 @@ from non_local_detector.likelihoods.clusterless_kde_log import (
 )
 
 
-def make_env_1d():
-    env = Environment(
-        environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),)
-    )
-    dummy_pos = np.linspace(0.0, 10.0, 11)[:, None]
-    env = env.fit_place_grid(position=dummy_pos, infer_track_interior=False)
-    return env
-
-
-def test_clusterless_log_vs_linear_parity_nonlocal():
-    env = make_env_1d()
+def test_clusterless_log_vs_linear_parity_nonlocal(simple_1d_environment):
+    env = simple_1d_environment
     t_pos = np.linspace(0.0, 10.0, 101)
     pos = np.linspace(0.0, 10.0, 101)[:, None]
     weights = np.ones_like(t_pos)

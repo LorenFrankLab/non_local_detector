@@ -14,20 +14,10 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
 )
 
 
-def make_env_1d():
-    env = Environment(
-        environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),)
-    )
-    # Provide dummy position to fit grid reliably
-    dummy_pos = np.linspace(0.0, 10.0, 11)[:, None]
-    env = env.fit_place_grid(position=dummy_pos, infer_track_interior=False)
-    return env
-
-
 @pytest.mark.parametrize("n_chunks", [2, 3, 5])
-def test_filter_smoother_with_sorted_kde_nonlocal(n_chunks):
+def test_filter_smoother_with_sorted_kde_nonlocal(n_chunks, simple_1d_environment):
     # Encoding data
-    env = make_env_1d()
+    env = simple_1d_environment
     t_pos = np.linspace(0.0, 10.0, 101)
     pos = np.linspace(0.0, 10.0, 101)[:, None]
     spikes = [np.array([2.0, 5.0, 5.1]), np.array([1.5, 7.2])]
@@ -117,9 +107,9 @@ def test_filter_smoother_with_sorted_kde_nonlocal(n_chunks):
 
 
 @pytest.mark.parametrize("n_chunks", [2, 4])
-def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(n_chunks):
+def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(n_chunks, simple_1d_environment):
     # Encoding data
-    env = make_env_1d()
+    env = simple_1d_environment
     t_pos = np.linspace(0.0, 10.0, 101)
     pos = np.linspace(0.0, 10.0, 101)[:, None]
     enc_times = [np.array([2.0, 5.0, 7.5])]
