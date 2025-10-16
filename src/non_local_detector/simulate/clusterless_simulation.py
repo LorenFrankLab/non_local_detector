@@ -12,12 +12,14 @@ See tests._sim_contract.ClusterlessSimOutput for the full contract definition.
 
 import numpy as np
 
+from non_local_detector.environment import Environment
 from non_local_detector.simulate.simulate import (
     get_trajectory_direction,
     simulate_multiunit_with_place_fields,
     simulate_position,
     simulate_time,
 )
+from non_local_detector.tests._sim_contract import ClusterlessSimOutput
 
 SAMPLING_FREQUENCY = 1000
 TRACK_HEIGHT = 175
@@ -40,50 +42,77 @@ def make_simulated_run_data(
     place_field_means: np.ndarray = PLACE_FIELD_MEANS,
     n_tetrodes: int = N_TETRODES,
     make_inbound_outbound_neurons: bool = False,
-):
-    """Make simulated data of a rat running back and forth
-    on a linear maze with unclustered spikes.
+    seed: int | None = 0,
+) -> ClusterlessSimOutput:
+    """Make simulated data of a rat running back and forth on a linear maze.
+
+    Generates clusterless spike data (spike times + waveform features) for a
+    simulated animal running on a linear track. Returns decoder-ready outputs
+    with per-electrode spike lists (no NaN padding).
 
     Parameters
     ----------
     sampling_frequency : int, optional
+        Samples per second for position sampling. Default is 1000 Hz.
     track_height : float, optional
-        Height of the simulated track
+        Height of the simulated track in spatial units. Default is 175.
     running_speed : float, optional
-        Speed of the simulated animal
+        Speed of the simulated animal in spatial units/second. Default is 15.
     n_runs : int, optional
-        Number of runs across the track the simulated animal will perform
+        Number of runs across the track the simulated animal will perform.
+        Default is 15.
     place_field_variance : float, optional
-        Spatial extent of place fields
+        Spatial extent of place fields (variance of Gaussian). Default is 12.5.
     place_field_means : np.ndarray, shape (n_neurons,), optional
-        Location of the center of the Gaussian place fields.
+        Location of the center of the Gaussian place fields. Default is
+        np.arange(0, 200, 10).
     n_tetrodes : int, optional
-        Total number of tetrodes to simulate
+        Total number of tetrodes to simulate. Default is 5.
     make_inbound_outbound_neurons : bool, optional
-        Create neurons with directional place fields
+        If True, create neurons with directional place fields (separate neurons
+        for inbound vs outbound trajectories). Default is False.
+    seed : int | None, optional
+        Random seed for reproducibility. If None, uses system randomness.
+        Default is 0.
 
     Returns
     -------
-    time : np.ndarray, shape (n_time,)
-    position : np.ndarray, shape (n_time,)
-    sampling_frequency : float
-    multiunits : np.ndarray, shape (n_time, n_features, n_electrodes)
-    multiunits_spikes : np.ndarray (n_time, n_electrodes)
-    place_field_means : np.ndarray (n_tetrodes, n_place_fields)
+    sim_output : ClusterlessSimOutput
+        Dataclass containing:
+        - position_time: timestamps for position samples (seconds)
+        - position: 2D position array (n_time, n_pos_dims)
+        - edges: decoding bin edges (seconds)
+        - spike_times: list of spike time arrays per electrode (seconds)
+        - spike_waveform_features: list of feature arrays per electrode
+        - environment: Environment object
+        - bin_widths: bin widths (seconds)
+
+    Notes
+    -----
+    - All times are in seconds
+    - Spike times are strictly increasing per electrode
+    - Empty electrodes have shape (0,) for times and (0, n_features) for features
+    - No NaN values in spike waveform features
 
     """
+    # Set random seed for reproducibility
+    if seed is not None:
+        np.random.seed(seed)
+
+    # Generate position trajectory
     n_samples = int(n_runs * sampling_frequency * 2 * track_height / running_speed)
+    position_time = simulate_time(n_samples, sampling_frequency)
+    position_1d = simulate_position(position_time, track_height, running_speed)
+    position = position_1d[:, np.newaxis]  # Shape: (n_time, 1)
 
-    time = simulate_time(n_samples, sampling_frequency)
-    position = simulate_position(time, track_height, running_speed)
-
+    # Generate multiunit data (NaN-padded format) using existing simulator
     multiunits = []
     if not make_inbound_outbound_neurons:
         for place_means in place_field_means.reshape((n_tetrodes, -1)):
             multiunits.append(
                 simulate_multiunit_with_place_fields(
                     place_means,
-                    position,
+                    position_1d,
                     mark_spacing=10,
                     n_mark_dims=4,
                     place_variance=place_field_variance,
@@ -91,14 +120,14 @@ def make_simulated_run_data(
                 )
             )
     else:
-        trajectory_direction = get_trajectory_direction(position)
+        trajectory_direction = get_trajectory_direction(position_1d)
         for direction in np.unique(trajectory_direction):
             is_condition = trajectory_direction == direction
             for place_means in place_field_means.reshape((n_tetrodes, -1)):
                 multiunits.append(
                     simulate_multiunit_with_place_fields(
                         place_means,
-                        position,
+                        position_1d,
                         mark_spacing=10,
                         n_mark_dims=4,
                         sampling_frequency=sampling_frequency,
@@ -106,10 +135,49 @@ def make_simulated_run_data(
                         is_condition=is_condition,
                     )
                 )
+
+    # Stack: (n_time, n_features, n_electrodes)
     multiunits = np.stack(multiunits, axis=-1)
     multiunits_spikes = np.any(~np.isnan(multiunits), axis=1)
 
-    return (time, position, sampling_frequency, multiunits, multiunits_spikes)
+    # Convert NaN-padded format to per-electrode lists
+    n_electrodes = multiunits.shape[2]
+    spike_times = []
+    spike_waveform_features = []
+
+    for electrode_id in range(n_electrodes):
+        spike_indicator = multiunits_spikes[:, electrode_id]
+        electrode_spike_times = position_time[spike_indicator].astype(np.float64)
+        electrode_features = multiunits[spike_indicator, :, electrode_id].astype(
+            np.float64
+        )
+
+        # Ensure strictly increasing times (should already be sorted)
+        if electrode_spike_times.size > 0:
+            assert np.all(np.diff(electrode_spike_times) > 0), (
+                "Spike times must be strictly increasing"
+            )
+
+        spike_times.append(electrode_spike_times)
+        spike_waveform_features.append(electrode_features)
+
+    # Create decoding bin edges (use position sampling rate)
+    edges = np.arange(0.0, position_time[-1] + 1e-12, 1.0 / sampling_frequency)
+    bin_widths = np.diff(edges)
+
+    # Create environment
+    environment = Environment(place_bin_size=1.0)
+    environment.fit_place_grid(position)
+
+    return ClusterlessSimOutput(
+        position_time=position_time.astype(np.float64),
+        position=position.astype(np.float64),
+        edges=edges.astype(np.float64),
+        spike_times=spike_times,
+        spike_waveform_features=spike_waveform_features,
+        environment=environment,
+        bin_widths=bin_widths.astype(np.float64),
+    )
 
 
 def make_continuous_replay(
