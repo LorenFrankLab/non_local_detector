@@ -173,6 +173,204 @@ class Environment:
     # Internal flag
     _is_fitted: bool = False
 
+    def __post_init__(self) -> None:
+        """Validate Environment parameters after initialization."""
+        # Import locally to avoid circular dependency
+        from non_local_detector import _validation as val
+
+        # Validate place_bin_size
+        if isinstance(self.place_bin_size, tuple):
+            for i, size in enumerate(self.place_bin_size):
+                val.ensure_positive_scalar(
+                    size,
+                    f"place_bin_size[{i}]",
+                    minimum=0.0,
+                    strict=True,
+                )
+        else:
+            val.ensure_positive_scalar(
+                self.place_bin_size,
+                "place_bin_size",
+                minimum=0.0,
+                strict=True,
+            )
+
+        # Validate bin_count_threshold
+        val.ensure_positive_scalar(
+            self.bin_count_threshold,
+            "bin_count_threshold",
+            minimum=0.0,
+            strict=False,
+        )
+
+        # If track_graph is provided, validate it and its dependencies
+        if self.track_graph is not None:
+            self._validate_track_graph()
+
+        # Validate position_range if provided
+        if self.position_range is not None:
+            self._validate_position_range()
+
+        # Validate is_track_interior if provided
+        if self.is_track_interior is not None:
+            val.ensure_ndarray(self.is_track_interior, "is_track_interior")
+            # Note: We can't validate shape until we know the grid dimensions
+
+    def _validate_track_graph(self) -> None:
+        """Validate track_graph and its required parameters.
+
+        Raises
+        ------
+        ValidationError
+            If track_graph is invalid or required parameters are missing
+        ConfigurationError
+            If edge_order or edge_spacing are missing when track_graph is provided
+        """
+        # Import locally to avoid circular dependency
+        from non_local_detector import _validation as val
+
+        # Validate track_graph is a NetworkX Graph
+        val.ensure_networkx_graph(self.track_graph, "track_graph")
+
+        # Validate graph has sufficient nodes and edges
+        val.ensure_graph_has_nodes(self.track_graph, "track_graph", min_nodes=2)
+        val.ensure_graph_has_edges(self.track_graph, "track_graph", min_edges=1)
+
+        # Validate required node attributes
+        val.ensure_graph_nodes_have_attribute(self.track_graph, "track_graph", "pos")
+
+        # Validate required edge attributes
+        val.ensure_graph_edges_have_attribute(
+            self.track_graph, "track_graph", "distance"
+        )
+        val.ensure_graph_edges_have_attribute(
+            self.track_graph, "track_graph", "edge_id"
+        )
+
+        # Validate that edge_order is provided
+        if self.edge_order is None:
+            raise ConfigurationError(
+                "Missing edge_order for track_graph environment",
+                hint="When using track_graph, you must provide edge_order to specify how edges connect. Example: env = Environment(track_graph=graph, edge_order=edge_order, edge_spacing=15.0)",
+            )
+
+        # Validate that edge_spacing is provided
+        if self.edge_spacing is None:
+            raise ConfigurationError(
+                "Missing edge_spacing for track_graph environment",
+                hint="When using track_graph, you must provide edge_spacing to define bin size along edges. Example: env = Environment(track_graph=graph, edge_order=edge_order, edge_spacing=15.0)",
+            )
+
+        # Validate edge_order structure
+        if not isinstance(self.edge_order, list):
+            raise ValidationError(
+                "edge_order must be a list of tuples",
+                expected="list of 2-tuples",
+                got=f"{type(self.edge_order).__name__}",
+                hint="edge_order should be a list like [(0, 1), (1, 2), ...]",
+                example="    edge_order = [(0, 1), (1, 2), (2, 3)]",
+            )
+
+        # Validate each edge in edge_order
+        for i, edge in enumerate(self.edge_order):
+            if not isinstance(edge, tuple) or len(edge) != 2:
+                raise ValidationError(
+                    f"edge_order[{i}] must be a 2-tuple",
+                    expected="tuple of length 2",
+                    got=f"{type(edge).__name__} of length {len(edge) if isinstance(edge, (tuple, list)) else 'N/A'}",
+                    hint="Each edge should be a 2-tuple like (node1, node2)",
+                    example=f"    edge_order[{i}] = (0, 1)  # Not {edge}",
+                )
+
+            # Check that edge exists in graph
+            if edge not in self.track_graph.edges():
+                # Try reversed edge (undirected graph)
+                reversed_edge = (edge[1], edge[0])
+                if reversed_edge not in self.track_graph.edges():
+                    available_edges = list(self.track_graph.edges())[:5]
+                    raise ValidationError(
+                        f"edge_order[{i}] references non-existent edge {edge}",
+                        expected="edge that exists in track_graph",
+                        got=f"edge {edge} not found",
+                        hint=f"Available edges: {available_edges}...",
+                        example=f"    # Check track_graph.edges(): {list(self.track_graph.edges())[:3]}",
+                    )
+
+        # Validate edge_spacing
+        if isinstance(self.edge_spacing, (int, float)):
+            val.ensure_positive_scalar(
+                self.edge_spacing,
+                "edge_spacing",
+                minimum=0.0,
+                strict=False,
+            )
+        elif isinstance(self.edge_spacing, list):
+            expected_len = len(self.edge_order) - 1
+            if len(self.edge_spacing) != expected_len:
+                raise ValidationError(
+                    "edge_spacing list has wrong length",
+                    expected=f"length {expected_len} (one less than edge_order)",
+                    got=f"length {len(self.edge_spacing)}",
+                    hint="edge_spacing should have one entry for each gap between consecutive edges",
+                    example=f"    # For {len(self.edge_order)} edges:\n    edge_spacing = [{', '.join(['15.0'] * expected_len)}]",
+                )
+
+            for i, spacing in enumerate(self.edge_spacing):
+                val.ensure_positive_scalar(
+                    spacing,
+                    f"edge_spacing[{i}]",
+                    minimum=0.0,
+                    strict=False,
+                )
+
+    def _validate_position_range(self) -> None:
+        """Validate position_range parameter.
+
+        Raises
+        ------
+        ValidationError
+            If position_range is invalid
+        """
+        if not isinstance(self.position_range, Sequence):
+            raise ValidationError(
+                "position_range must be a sequence",
+                expected="list or tuple of (min, max) tuples",
+                got=f"{type(self.position_range).__name__}",
+                hint="position_range should be like [(xmin, xmax), (ymin, ymax)]",
+                example="    position_range = [(0, 100), (0, 100)]",
+            )
+
+        for i, dim_range in enumerate(self.position_range):
+            if not isinstance(dim_range, tuple) or len(dim_range) != 2:
+                raise ValidationError(
+                    f"position_range[{i}] must be a 2-tuple",
+                    expected="(min, max) tuple",
+                    got=f"{type(dim_range).__name__}",
+                    hint="Each dimension range should be (min_value, max_value)",
+                    example=f"    position_range[{i}] = (0.0, 100.0)",
+                )
+
+            min_val, max_val = dim_range
+            if not isinstance(min_val, (int, float)) or not isinstance(
+                max_val, (int, float)
+            ):
+                raise ValidationError(
+                    f"position_range[{i}] must contain numeric values",
+                    expected="(float, float)",
+                    got=f"({type(min_val).__name__}, {type(max_val).__name__})",
+                    hint="Range values must be numbers",
+                    example=f"    position_range[{i}] = (0.0, 100.0)",
+                )
+
+            if min_val >= max_val:
+                raise ValidationError(
+                    f"position_range[{i}] has min >= max",
+                    expected="min < max",
+                    got=f"min={min_val}, max={max_val}",
+                    hint="The minimum value must be less than the maximum value",
+                    example=f"    position_range[{i}] = ({min_val}, {max_val + 1.0})",
+                )
+
     def __eq__(self, other: str) -> bool:
         return self.environment_name == other
 
@@ -193,6 +391,32 @@ class Environment:
         self
 
         """
+        # Import locally to avoid circular dependency
+        from non_local_detector import _validation as val
+
+        # Validate position if provided
+        if position is not None:
+            val.ensure_ndarray(position, "position")
+            val.ensure_all_finite(position, "position")
+
+            if position.ndim not in [1, 2]:
+                raise ValidationError(
+                    "position must be 1D or 2D",
+                    expected="shape (n_time,) or (n_time, n_dims)",
+                    got=f"shape {position.shape} (ndim={position.ndim})",
+                    hint="Ensure position is a 1D or 2D array with time as first dimension",
+                    example="    position = np.array([[0, 0], [1, 1], [2, 2]])  # Shape (n_time, n_dims)",
+                )
+
+            if position.shape[0] == 0:
+                raise ValidationError(
+                    "position has no time points",
+                    expected="at least 1 time point",
+                    got="0 time points (empty array)",
+                    hint="Provide position data with at least one time point",
+                    example="    position = np.array([[0, 0]])  # At least one position",
+                )
+
         if self.track_graph is None:
             (
                 self.edges_,
@@ -246,20 +470,7 @@ class Environment:
             self.distance_between_nodes_ = distance
 
         else:
-            # Validate required parameters for track_graph mode
-            if self.edge_order is None:
-                raise ConfigurationError(
-                    "Missing edge_order for track_graph environment",
-                    hint="When using track_graph, you must provide edge_order to specify how edges connect",
-                    example="    env = Environment(track_graph=graph, edge_order=edge_order, edge_spacing=15.0)",
-                )
-            if self.edge_spacing is None:
-                raise ConfigurationError(
-                    "Missing edge_spacing for track_graph environment",
-                    hint="When using track_graph, you must provide edge_spacing to define bin size along edges",
-                    example="    env = Environment(track_graph=graph, edge_order=edge_order, edge_spacing=15.0)",
-                )
-
+            # Note: track_graph validation is done in __post_init__
             # Handle place_bin_size conversion for get_track_grid
             bin_size = self.place_bin_size
             if isinstance(bin_size, tuple):
