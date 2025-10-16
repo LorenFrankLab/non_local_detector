@@ -4,6 +4,8 @@ Tests the Poisson GLM implementation for sorted spike data, including spline
 basis generation, model fitting, and likelihood prediction.
 """
 
+import sys
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -15,6 +17,17 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
     make_spline_design_matrix,
     make_spline_predict_matrix,
     predict_sorted_spikes_glm_log_likelihood,
+)
+
+# Skip all GLM tests if using Python 3.13+ with NumPy 2.0+
+# This is due to a known patsy compatibility issue with NumPy 2.0
+# See: https://github.com/pydata/patsy/issues/200
+SKIP_GLM_TESTS = sys.version_info >= (3, 13) and tuple(
+    int(x) for x in np.__version__.split(".")[:2]
+) >= (2, 0)
+pytestmark = pytest.mark.skipif(
+    SKIP_GLM_TESTS,
+    reason="patsy has compatibility issues with NumPy 2.0+ on Python 3.13+",
 )
 
 

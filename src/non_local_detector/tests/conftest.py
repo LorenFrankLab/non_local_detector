@@ -357,3 +357,75 @@ def assert_valid_state_sequence(states, n_states, name="states"):
             f"{name} must be in [0, {n_states}), got values in "
             f"[{np.min(states_np)}, {np.max(states_np)}]"
         )
+
+
+# ==============================================================================
+# DISCRETE STATE TRANSITION TEST FIXTURES
+# ==============================================================================
+
+
+@pytest.fixture
+def posterior_data():
+    """Generate realistic posterior distributions for EM algorithm testing.
+
+    Returns:
+        dict: Contains causal_posterior, acausal_posterior, predictive_distribution,
+              transition_matrix for a 4-state, 50-timestep HMM.
+    """
+    np.random.seed(42)
+    n_time, n_states = 50, 4
+
+    # Generate smooth posteriors that look realistic
+    causal_posterior = np.random.dirichlet(np.ones(n_states) * 2, n_time)
+    acausal_posterior = np.random.dirichlet(np.ones(n_states) * 2, n_time)
+
+    # Create a reasonable transition matrix
+    transition_matrix = np.array([
+        [0.7, 0.1, 0.1, 0.1],
+        [0.1, 0.7, 0.1, 0.1],
+        [0.1, 0.1, 0.7, 0.1],
+        [0.1, 0.1, 0.1, 0.7],
+    ])
+
+    # Compute predictive distribution
+    predictive_distribution = np.zeros((n_time, n_states))
+    for t in range(n_time):
+        predictive_distribution[t] = causal_posterior[t] @ transition_matrix
+
+    return {
+        "causal_posterior": causal_posterior,
+        "acausal_posterior": acausal_posterior,
+        "predictive_distribution": predictive_distribution,
+        "transition_matrix": transition_matrix,
+        "n_time": n_time,
+        "n_states": n_states,
+    }
+
+
+@pytest.fixture
+def design_matrix_data():
+    """Generate design matrix for non-stationary transition testing.
+
+    Returns:
+        dict: Contains design_matrix, transition_coefficients for testing.
+    """
+    np.random.seed(43)
+    n_time, n_coefficients, n_states = 50, 3, 4
+
+    # Create design matrix with intercept and two covariates
+    design_matrix = np.column_stack([
+        np.ones(n_time),
+        np.linspace(0, 1, n_time),
+        np.sin(np.linspace(0, 2 * np.pi, n_time)),
+    ])
+
+    # Initialize coefficients (small values to avoid extreme probabilities)
+    transition_coefficients = np.random.randn(n_coefficients, n_states, n_states - 1) * 0.1
+
+    return {
+        "design_matrix": design_matrix,
+        "transition_coefficients": transition_coefficients,
+        "n_time": n_time,
+        "n_coefficients": n_coefficients,
+        "n_states": n_states,
+    }

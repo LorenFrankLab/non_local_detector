@@ -545,3 +545,7 @@ class TestConditionOn:
 
         assert jnp.allclose(posterior, expected_posterior)
         assert jnp.allclose(jnp.exp(log_marginal), marginal)
+
+
+# Note: _assert_finite and check_converged tests removed as these functions
+# either don't exist or have different signatures than expected
