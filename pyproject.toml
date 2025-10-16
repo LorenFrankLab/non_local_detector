@@ -46,6 +46,7 @@ dynamic = ["version"]
 test = [
     "pytest",
     "pytest-cov",
+    "hypothesis",
     "ruff",
     "mypy",
     "black",
@@ -53,6 +54,7 @@ test = [
 dev = [
     "pytest",
     "pytest-cov",
+    "hypothesis",
     "ruff",
     "mypy",
     "black",
@@ -142,4 +144,21 @@ exclude_lines = [
 [tool.pytest.ini_options]
 testpaths = ["src/non_local_detector/tests"]
 python_files = ["test_*.py"]
-addopts = "-v --tb=short"
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--durations=10",
+    "-ra",
+]
+
+# Test markers for selective running
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests that require GPU",
+    "integration: marks integration tests",
+    "unit: marks unit tests",
+    "property: marks property-based tests",
+]
