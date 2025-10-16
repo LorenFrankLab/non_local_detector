@@ -5,7 +5,10 @@ simulated data where we know the ground truth. They test fundamental correctness
 of the encoding/decoding pipeline.
 """
 
+from typing import Any
+
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -14,10 +17,21 @@ from non_local_detector.likelihoods.clusterless_kde import (
 )
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
+# Test configuration constants
+POSITION_STD = 6.0
+WAVEFORM_STD = 24.0
+POSITION_TOLERANCE = 10.0
+TOP1_ACCURACY_THRESHOLD = 0.80
+TOP3_ACCURACY_THRESHOLD = 0.90
+DELTA_T_STANDARD_ACCURACY_THRESHOLD = 0.60
+DELTA_T_WIDE_ACCURACY_THRESHOLD = 0.50
+DELTA_T_MAX_DIFFERENCE = 0.30
+
 
 def get_decoded_position_bins(
-    log_likelihood: np.ndarray, place_bin_centers: np.ndarray
-) -> np.ndarray:
+    log_likelihood: npt.NDArray[np.floating],
+    place_bin_centers: npt.NDArray[np.floating],
+) -> npt.NDArray[np.floating]:
     """Get the most likely position bin for each time point.
 
     Parameters
@@ -39,11 +53,11 @@ def get_decoded_position_bins(
 
 
 def compute_top_k_accuracy(
-    true_positions: np.ndarray,
-    log_likelihood: np.ndarray,
-    place_bin_centers: np.ndarray,
+    true_positions: npt.NDArray[np.floating],
+    log_likelihood: npt.NDArray[np.floating],
+    place_bin_centers: npt.NDArray[np.floating],
     k: int = 1,
-    position_tolerance: float = 10.0,
+    position_tolerance: float = POSITION_TOLERANCE,
 ) -> float:
     """Compute top-k accuracy: fraction of times true position is in top k bins.
 
@@ -84,12 +98,19 @@ def compute_top_k_accuracy(
     return correct_count / n_time
 
 
-@pytest.mark.slow
-def test_nonlocal_kde_top1_accuracy_high() -> None:
-    """Test that KDE can decode position with >80% top-1 accuracy on simulated data.
+@pytest.fixture
+def kde_decoding_setup() -> dict[str, Any]:
+    """Generate simulated data and encoding model for KDE decoding tests.
 
-    This is an oracle test: we simulate data where we know the true position,
-    fit an encoding model, and verify we can accurately decode that position.
+    Returns
+    -------
+    dict with keys:
+        - sim: ClusterlessSimOutput with full simulation data
+        - encoding_model: Fitted KDE encoding model
+        - test_edges: Time bin edges for decoding
+        - log_likelihood: Log-likelihood array (n_time_bins, n_position_bins)
+        - true_positions: True positions at test bin centers
+        - place_bin_centers: Position bin centers from environment
     """
     # Generate simulated data with good coverage
     n_tetrodes = 4
@@ -115,8 +136,8 @@ def test_nonlocal_kde_top1_accuracy_high() -> None:
             for i, swf in enumerate(sim.spike_waveform_features)
         ],
         environment=sim.environment,
-        position_std=6.0,
-        waveform_std=24.0,
+        position_std=POSITION_STD,
+        waveform_std=WAVEFORM_STD,
         block_size=100,
         disable_progress_bar=True,
     )
@@ -168,102 +189,53 @@ def test_nonlocal_kde_top1_accuracy_high() -> None:
         ]
     )
 
-    # Compute top-1 accuracy
-    place_bin_centers = sim.environment.place_bin_centers_
+    return {
+        "sim": sim,
+        "encoding_model": encoding_model,
+        "test_edges": test_edges,
+        "log_likelihood": log_likelihood,
+        "true_positions": true_positions,
+        "place_bin_centers": sim.environment.place_bin_centers_,
+    }
+
+
+@pytest.mark.slow
+def test_nonlocal_kde_top1_accuracy_high(kde_decoding_setup: dict[str, Any]) -> None:
+    """Test that KDE can decode position with >80% top-1 accuracy on simulated data.
+
+    This is an oracle test: we simulate data where we know the true position,
+    fit an encoding model, and verify we can accurately decode that position.
+    """
+    # Compute top-1 accuracy using shared fixture
     accuracy = compute_top_k_accuracy(
-        true_positions, log_likelihood, place_bin_centers, k=1, position_tolerance=10.0
+        kde_decoding_setup["true_positions"],
+        kde_decoding_setup["log_likelihood"],
+        kde_decoding_setup["place_bin_centers"],
+        k=1,
     )
 
     # Oracle test: we should be able to decode with high accuracy
-    assert accuracy >= 0.80, (
-        f"Top-1 accuracy {accuracy:.2%} is below threshold 80%. "
+    assert accuracy >= TOP1_ACCURACY_THRESHOLD, (
+        f"Top-1 accuracy {accuracy:.2%} is below threshold {TOP1_ACCURACY_THRESHOLD:.0%}. "
         f"Decoding should accurately recover true position from simulated data."
     )
 
 
 @pytest.mark.slow
-def test_nonlocal_kde_top3_accuracy_very_high() -> None:
+def test_nonlocal_kde_top3_accuracy_very_high(
+    kde_decoding_setup: dict[str, Any],
+) -> None:
     """Test that true position is in top-3 decoded positions >90% of the time."""
-    # Use same setup as top-1 test
-    n_tetrodes = 4
-    place_field_means = np.arange(0, 160, 10)
-    sim = make_simulated_run_data(
-        n_tetrodes=n_tetrodes,
-        place_field_means=place_field_means,
-        sampling_frequency=500,
-        n_runs=3,
-        seed=42,
-    )
-
-    n_encode = int(0.7 * len(sim.position_time))
-
-    encoding_model = fit_clusterless_kde_encoding_model(
-        position_time=sim.position_time[:n_encode],
-        position=sim.position[:n_encode],
-        spike_times=[st[st < sim.position_time[n_encode]] for st in sim.spike_times],
-        spike_waveform_features=[
-            swf[sim.spike_times[i] < sim.position_time[n_encode]]
-            for i, swf in enumerate(sim.spike_waveform_features)
-        ],
-        environment=sim.environment,
-        position_std=6.0,
-        waveform_std=24.0,
-        block_size=100,
-        disable_progress_bar=True,
-    )
-
-    test_time = sim.position_time[n_encode:]
-    test_edges = np.linspace(test_time[0], test_time[-1], 50)
-
-    log_likelihood = predict_clusterless_kde_log_likelihood(
-        time=test_edges,
-        position_time=sim.position_time,
-        position=sim.position,
-        spike_times=[
-            st[(st >= test_time[0]) & (st <= test_time[-1])] for st in sim.spike_times
-        ],
-        spike_waveform_features=[
-            swf[
-                (sim.spike_times[i] >= test_time[0])
-                & (sim.spike_times[i] <= test_time[-1])
-            ]
-            for i, swf in enumerate(sim.spike_waveform_features)
-        ],
-        occupancy=encoding_model["occupancy"],
-        occupancy_model=encoding_model["occupancy_model"],
-        gpi_models=encoding_model["gpi_models"],
-        encoding_spike_waveform_features=encoding_model[
-            "encoding_spike_waveform_features"
-        ],
-        encoding_positions=encoding_model["encoding_positions"],
-        encoding_spike_weights=encoding_model["encoding_spike_weights"],
-        environment=sim.environment,
-        mean_rates=encoding_model["mean_rates"],
-        summed_ground_process_intensity=encoding_model[
-            "summed_ground_process_intensity"
-        ],
-        position_std=encoding_model["position_std"],
-        waveform_std=encoding_model["waveform_std"],
-        is_local=False,
-        block_size=100,
-        disable_progress_bar=True,
-    )
-
-    test_bin_centers = (test_edges[:-1] + test_edges[1:]) / 2
-    true_positions = np.array(
-        [
-            sim.position[np.argmin(np.abs(sim.position_time - t))]
-            for t in test_bin_centers
-        ]
-    )
-
-    place_bin_centers = sim.environment.place_bin_centers_
+    # Compute top-3 accuracy using shared fixture
     accuracy = compute_top_k_accuracy(
-        true_positions, log_likelihood, place_bin_centers, k=3, position_tolerance=10.0
+        kde_decoding_setup["true_positions"],
+        kde_decoding_setup["log_likelihood"],
+        kde_decoding_setup["place_bin_centers"],
+        k=3,
     )
 
-    assert accuracy >= 0.90, (
-        f"Top-3 accuracy {accuracy:.2%} is below threshold 90%. "
+    assert accuracy >= TOP3_ACCURACY_THRESHOLD, (
+        f"Top-3 accuracy {accuracy:.2%} is below threshold {TOP3_ACCURACY_THRESHOLD:.0%}. "
         f"True position should be in top-3 decoded bins most of the time."
     )
 
