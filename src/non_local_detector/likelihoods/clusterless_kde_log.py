@@ -256,17 +256,22 @@ def estimate_log_joint_mark_intensity(
             log_pos_tile = log_position_distance[:, pos_slice]  # (n_enc, tile_size)
 
             def scan_over_dec_tile(
-                carry, y_col: jnp.ndarray
+                log_pos_tile_arg: jnp.ndarray,
             ) -> tuple[None, jnp.ndarray]:
-                # y_col: (n_enc,)
-                # returns: (tile_size,), logsumexp over enc dimension
-                result = jax.nn.logsumexp(
-                    log_w[:, None] + log_pos_tile + y_col[:, None], axis=0
-                )
-                return None, result
+                def inner_scan(carry, y_col: jnp.ndarray) -> tuple[None, jnp.ndarray]:
+                    # y_col: (n_enc,)
+                    # returns: (tile_size,), logsumexp over enc dimension
+                    result = jax.nn.logsumexp(
+                        log_w[:, None] + log_pos_tile_arg + y_col[:, None], axis=0
+                    )
+                    return None, result
+
+                return inner_scan
 
             # scan over decoding spikes for this position tile -> (n_dec, tile_size)
-            _, log_num_tile = jax.lax.scan(scan_over_dec_tile, None, logK_mark.T)
+            _, log_num_tile = jax.lax.scan(
+                scan_over_dec_tile(log_pos_tile), None, logK_mark.T
+            )
 
             # Update output with this tile
             log_num = log_num.at[:, pos_slice].set(log_num_tile)
