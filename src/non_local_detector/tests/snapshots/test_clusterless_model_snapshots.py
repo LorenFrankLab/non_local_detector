@@ -19,41 +19,24 @@ from non_local_detector.simulate.clusterless_simulation import make_simulated_ru
 @pytest.fixture
 def clusterless_simulated_data():
     """Generate simulated clusterless data with fixed random seed."""
-    np.random.seed(42)  # Fixed seed for reproducibility
     n_tetrodes = 4
     place_field_means = np.arange(0, 160, 10)  # 16 place fields evenly divisible by 4
-    (
-        time,
-        position,
-        sampling_frequency,
-        multiunit_waveforms,
-        multiunit_spikes,
-    ) = make_simulated_run_data(
+
+    # Use new API that returns ClusterlessSimOutput directly
+    sim = make_simulated_run_data(
         sampling_frequency=500,
         n_runs=5,
         n_tetrodes=n_tetrodes,
         place_field_means=place_field_means,
+        seed=42,  # Fixed seed for reproducibility
     )
 
-    # Convert to spike times and waveform features
-    n_electrodes = multiunit_waveforms.shape[2]
-    spike_times = []
-    spike_waveform_features = []
-
-    for electrode_id in range(n_electrodes):
-        spike_indicator = multiunit_spikes[:, electrode_id]
-        electrode_spike_times = time[spike_indicator]
-        electrode_features = multiunit_waveforms[spike_indicator, :, electrode_id]
-
-        spike_times.append(electrode_spike_times)
-        spike_waveform_features.append(electrode_features)
-
     return {
-        "time": time,
-        "position": position[:, np.newaxis],  # Add dimension for consistency
-        "spike_times": spike_times,
-        "spike_waveform_features": spike_waveform_features,
-        "sampling_frequency": sampling_frequency,
+        "time": sim.position_time,
+        "position": sim.position,  # Already 2D from new API
+        "spike_times": sim.spike_times,
+        "spike_waveform_features": sim.spike_waveform_features,
+        "sampling_frequency": 500,
     }
 
 
