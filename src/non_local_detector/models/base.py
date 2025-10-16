@@ -15,6 +15,7 @@ from patsy import DesignMatrix, build_design_matrices  # type: ignore[import-unt
 from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
+from non_local_detector import _validation as val
 from non_local_detector.continuous_state_transitions import EmpiricalMovement
 from non_local_detector.core import (
     check_converged,
@@ -117,11 +118,22 @@ class _DetectorBase(BaseEstimator):
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
         """
+        # Validate all parameters early (Tier 1 & 2)
         self._validate_initial_conditions(
             discrete_initial_conditions,
             continuous_initial_conditions_types,
             continuous_transition_types,
             discrete_transition_stickiness,
+        )
+        self._validate_probability_distributions(discrete_initial_conditions)
+        self._validate_numerical_parameters(
+            discrete_transition_concentration,
+            discrete_transition_regularization,
+            sampling_frequency,
+            no_spike_rate,
+        )
+        self._validate_discrete_transition_type(
+            discrete_transition_type, len(discrete_initial_conditions)
         )
 
         # Initial conditions parameters
@@ -217,6 +229,149 @@ class _DetectorBase(BaseEstimator):
                 hint="Use a float for uniform stickiness across all states, or an array with one value per state",
                 example=f"    discrete_transition_stickiness=0.0  # uniform\n    # OR\n    discrete_transition_stickiness=np.array([{', '.join(['0.0'] * n_discrete)}])  # per-state",
             )
+
+    def _validate_probability_distributions(
+        self, discrete_initial_conditions: np.ndarray
+    ) -> None:
+        """Validate that probability distributions sum to 1.
+
+        Parameters
+        ----------
+        discrete_initial_conditions : np.ndarray
+            Initial conditions for discrete states
+
+        Raises
+        ------
+        ValidationError
+            If discrete_initial_conditions is not 1D, contains invalid values,
+            or does not sum to 1
+        DataError
+            If array contains NaN or Inf values
+        """
+        # Check array is 1D
+        val.ensure_array_1d(discrete_initial_conditions, "discrete_initial_conditions")
+
+        # Check for NaN/Inf
+        val.ensure_all_finite(
+            discrete_initial_conditions, "discrete_initial_conditions"
+        )
+
+        # Check non-negative
+        val.ensure_all_non_negative(
+            discrete_initial_conditions, "discrete_initial_conditions"
+        )
+
+        # Check sums to 1
+        val.ensure_probability_distribution(
+            discrete_initial_conditions, "discrete_initial_conditions"
+        )
+
+    def _validate_numerical_parameters(
+        self,
+        discrete_transition_concentration: float,
+        discrete_transition_regularization: float,
+        sampling_frequency: float,
+        no_spike_rate: float,
+    ) -> None:
+        """Validate numerical parameters are in valid ranges.
+
+        Parameters
+        ----------
+        discrete_transition_concentration : float
+            Concentration parameter (must be > 0)
+        discrete_transition_regularization : float
+            Regularization parameter (must be >= 0)
+        sampling_frequency : float
+            Sampling frequency in Hz (must be > 0)
+        no_spike_rate : float
+            No-spike rate (must be > 0)
+
+        Raises
+        ------
+        ValidationError
+            If any parameter is outside its valid range
+        """
+        val.ensure_positive_scalar(
+            discrete_transition_concentration,
+            "discrete_transition_concentration",
+            minimum=0.0,
+            strict=True,
+        )
+
+        val.ensure_positive_scalar(
+            discrete_transition_regularization,
+            "discrete_transition_regularization",
+            minimum=0.0,
+            strict=False,  # Can be exactly 0
+        )
+
+        val.ensure_positive_scalar(
+            sampling_frequency,
+            "sampling_frequency",
+            minimum=0.0,
+            strict=True,
+        )
+
+        val.ensure_positive_scalar(
+            no_spike_rate,
+            "no_spike_rate",
+            minimum=0.0,
+            strict=True,
+        )
+
+    def _validate_discrete_transition_type(
+        self, discrete_transition_type, n_states: int
+    ) -> None:
+        """Validate discrete transition type configuration.
+
+        Parameters
+        ----------
+        discrete_transition_type : DiscreteTransitions
+            Discrete transition type object
+        n_states : int
+            Number of states in the model
+
+        Raises
+        ------
+        ValidationError
+            If transition matrix is invalid (wrong shape, doesn't sum to 1, etc.)
+        DataError
+            If transition matrix contains NaN or Inf
+        """
+        from non_local_detector.discrete_state_transitions import (
+            DiscreteStationaryCustom,
+        )
+
+        # If it's a custom transition matrix, validate it
+        if isinstance(discrete_transition_type, DiscreteStationaryCustom):
+            matrix = discrete_transition_type.values
+
+            # Check it's a numpy array
+            val.ensure_ndarray(matrix, "discrete_transition_type.values")
+
+            # Check for NaN/Inf
+            val.ensure_all_finite(matrix, "discrete_transition_type.values")
+
+            # Check square
+            val.ensure_square_matrix(matrix, "discrete_transition_type.values")
+
+            # Check correct size
+            if matrix.shape[0] != n_states:
+                raise ValidationError(
+                    "Discrete transition matrix size must match number of states",
+                    expected=f"matrix with shape ({n_states}, {n_states})",
+                    got=f"matrix with shape {matrix.shape}",
+                    hint=f"Your model has {n_states} states, so transition matrix needs {n_states}x{n_states} shape",
+                )
+
+            # Check non-negative
+            val.ensure_all_non_negative(matrix, "discrete_transition_type.values")
+
+            # Check values in [0, 1]
+            val.ensure_in_range(matrix, "discrete_transition_type.values", 0.0, 1.0)
+
+            # Check row-stochastic (rows sum to 1)
+            val.ensure_stochastic_matrix(matrix, "discrete_transition_type.values")
 
     def _initialize_environments(
         self, environments: Environments
@@ -809,6 +964,10 @@ class _DetectorBase(BaseEstimator):
                 example="    detector.fit(position=position_train, spikes=spikes_train, time=time_train)",
             )
 
+        # Tier 2: Validate data types and properties
+        val.ensure_ndarray(position, "position")
+        val.ensure_all_finite(position, "position")
+
         position = position[:, np.newaxis] if position.ndim == 1 else position
         self.initialize_environments(
             position=position, environment_labels=environment_labels
@@ -981,6 +1140,12 @@ class _DetectorBase(BaseEstimator):
                 hint="Provide timestamps corresponding to your data",
                 example="    results = detector.predict(spikes=spikes_test, time=time_test)",
             )
+
+        # Tier 2: Validate time properties
+        val.ensure_ndarray(time, "time")
+        val.ensure_all_finite(time, "time")
+        val.ensure_monotonic_increasing(time, "time", strict=False)
+
         if log_likelihood_args is None:
             log_likelihood_args = ()
 
