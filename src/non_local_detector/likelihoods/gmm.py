@@ -655,18 +655,58 @@ class GaussianMixtureModel:
 
     # ----------------- Validation & conversion -----------------
     def __post_init__(self) -> None:
+        # Import locally to avoid circular dependency:
+        # gmm.py -> exceptions.py (if at top level, would create cycle through likelihoods/__init__.py)
+        from non_local_detector.exceptions import ValidationError
+
         if self.n_components <= 0:
-            raise ValueError("n_components must be > 0")
+            raise ValidationError(
+                "Number of GMM components must be positive",
+                expected="n_components > 0",
+                got=f"n_components = {self.n_components}",
+                hint="Use at least 1 component for the Gaussian mixture",
+                example="    GaussianMixture(n_components=3, ...)",
+            )
         if self.covariance_type not in ["full", "tied", "diag", "spherical"]:
-            raise ValueError(f"Invalid covariance_type: {self.covariance_type}")
+            raise ValidationError(
+                "Invalid covariance type for GMM",
+                expected="One of: 'full', 'tied', 'diag', 'spherical'",
+                got=f"covariance_type = '{self.covariance_type}'",
+                hint="Use 'full' for full covariance matrices, 'tied' for shared covariance, 'diag' for diagonal, or 'spherical' for single variance",
+                example="    GaussianMixture(covariance_type='full', ...)",
+            )
         if self.tol < 0:
-            raise ValueError("tol must be non-negative")
+            raise ValidationError(
+                "Convergence tolerance must be non-negative",
+                expected="tol >= 0",
+                got=f"tol = {self.tol}",
+                hint="Use a small positive value like 1e-4 for stricter convergence",
+                example="    GaussianMixture(tol=1e-4, ...)",
+            )
         if self.reg_covar < 0:
-            raise ValueError("reg_covar must be non-negative")
+            raise ValidationError(
+                "Covariance regularization must be non-negative",
+                expected="reg_covar >= 0",
+                got=f"reg_covar = {self.reg_covar}",
+                hint="Use a small positive value like 1e-6 to prevent singular covariance matrices",
+                example="    GaussianMixture(reg_covar=1e-6, ...)",
+            )
         if self.max_iter <= 0:
-            raise ValueError("max_iter must be > 0")
+            raise ValidationError(
+                "Maximum iterations must be positive",
+                expected="max_iter > 0",
+                got=f"max_iter = {self.max_iter}",
+                hint="Increase max_iter to allow more time for convergence",
+                example="    GaussianMixture(max_iter=1000, ...)",
+            )
         if self.n_init <= 0:
-            raise ValueError("n_init must be > 0")
+            raise ValidationError(
+                "Number of initializations must be positive",
+                expected="n_init > 0",
+                got=f"n_init = {self.n_init}",
+                hint="Use multiple initializations (e.g., 10) to find better solutions",
+                example="    GaussianMixture(n_init=10, ...)",
+            )
 
         if self.weights_init is not None:
             self.weights_init = jnp.asarray(self.weights_init)

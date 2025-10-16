@@ -29,6 +29,7 @@ from non_local_detector.discrete_state_transitions import (
     predict_discrete_state_transitions,
 )
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ConfigurationError, ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
@@ -176,22 +177,45 @@ class _DetectorBase(BaseEstimator):
 
         Raises
         ------
-        ValueError
+        ValidationError
             If the number of discrete initial conditions does not match the number of continuous initial conditions or transition types.
         """
-        if len(discrete_initial_conditions) != len(continuous_initial_conditions_types):
-            raise ValueError(
-                "Number of discrete initial conditions must match number of continuous initial conditions."
+        n_discrete = len(discrete_initial_conditions)
+        n_continuous_init = len(continuous_initial_conditions_types)
+        n_continuous_trans = len(continuous_transition_types)
+
+        if n_discrete != n_continuous_init:
+            raise ValidationError(
+                "Mismatch between discrete initial conditions and continuous initial conditions",
+                expected=f"{n_continuous_init} discrete initial condition(s) (one per continuous initial condition type)",
+                got=f"{n_discrete} discrete initial condition(s)",
+                hint="Each continuous initial condition type needs a corresponding discrete initial probability",
+                example=f"    discrete_initial_conditions=np.array([{', '.join(['1.0/' + str(n_continuous_init)] * n_continuous_init)}])",
             )
-        if len(discrete_initial_conditions) != len(continuous_transition_types):
-            raise ValueError(
-                "Number of discrete initial conditions must match number of continuous transition types."
+
+        if n_discrete != n_continuous_trans:
+            state_names_str = (
+                f" ({self.state_names})"
+                if hasattr(self, "state_names") and self.state_names
+                else ""
             )
+            raise ValidationError(
+                "Mismatch between discrete initial conditions and continuous transition types",
+                expected=f"{n_continuous_trans} discrete initial condition(s) (one per state{state_names_str})",
+                got=f"{n_discrete} discrete initial condition(s)",
+                hint="Each state needs an initial probability. Check that your discrete_initial_conditions array has the same length as continuous_transition_types list.",
+                example=f"    # For {n_continuous_trans} states:\n    discrete_initial_conditions=np.array([{', '.join(['1.0/' + str(n_continuous_trans)] * n_continuous_trans)}])",
+            )
+
         if not isinstance(discrete_transition_stickiness, float) and len(
             discrete_initial_conditions
         ) != len(discrete_transition_stickiness):
-            raise ValueError(
-                "Discrete transition stickiness must be set for all states or a float"
+            raise ValidationError(
+                f"Discrete transition stickiness must be set for all {n_discrete} states or be a single float",
+                expected=f"Either a float or array of length {n_discrete}",
+                got=f"Array of length {len(discrete_transition_stickiness)}",
+                hint="Use a float for uniform stickiness across all states, or an array with one value per state",
+                example=f"    discrete_transition_stickiness=0.0  # uniform\n    # OR\n    discrete_transition_stickiness=np.array([{', '.join(['0.0'] * n_discrete)}])  # per-state",
             )
 
     def _initialize_environments(
@@ -277,7 +301,13 @@ class _DetectorBase(BaseEstimator):
                 for state_ind in range(len(discrete_initial_conditions))
             ]
         if len(state_names) != len(discrete_initial_conditions):
-            raise ValueError("Number of state names must match number of states.")
+            raise ValidationError(
+                "Number of state names must match number of states",
+                expected=f"{len(discrete_initial_conditions)} state name(s)",
+                got=f"{len(state_names)} state name(s)",
+                hint="Provide one name per state in your model",
+                example=f"    state_names={state_names[: len(discrete_initial_conditions)]}  # truncate to {len(discrete_initial_conditions)}",
+            )
         return state_names
 
     def initialize_environments(
@@ -771,7 +801,13 @@ class _DetectorBase(BaseEstimator):
         """
         # Validate required parameters
         if position is None:
-            raise ValueError("position parameter is required and cannot be None")
+            raise ValidationError(
+                "Missing required parameter: position",
+                expected="position array with shape (n_time, n_dims)",
+                got="None",
+                hint="Provide the animal's position data during training",
+                example="    detector.fit(position=position_train, spikes=spikes_train, time=time_train)",
+            )
 
         position = position[:, np.newaxis] if position.ndim == 1 else position
         self.initialize_environments(
@@ -938,7 +974,13 @@ class _DetectorBase(BaseEstimator):
 
         # Validate required parameters
         if time is None:
-            raise ValueError("time parameter is required and cannot be None")
+            raise ValidationError(
+                "Missing required parameter: time",
+                expected="time array with shape (n_time,)",
+                got="None",
+                hint="Provide timestamps corresponding to your data",
+                example="    results = detector.predict(spikes=spikes_test, time=time_test)",
+            )
         if log_likelihood_args is None:
             log_likelihood_args = ()
 
@@ -1315,7 +1357,10 @@ class _DetectorBase(BaseEstimator):
 
         # Get position dimensionality
         if not self.environments:
-            raise ValueError("No environments found")
+            raise ConfigurationError(
+                "No environments found in model",
+                hint="Environments are set up during fit(). Either fit the model first, or check that position data was provided",
+            )
         n_position_dims = self.environments[0].place_bin_centers_.shape[1]  # type: ignore[union-attr]
 
         # Build position array
@@ -1813,7 +1858,13 @@ class ClusterlessDetector(_DetectorBase):
         if position is None and np.any(
             [obs.is_local for obs in self.observation_models]
         ):
-            raise ValueError("Position must be provided for local observations.")
+            raise ValidationError(
+                "Missing required parameter: position for local observations",
+                expected="position array with shape (n_time, n_dims)",
+                got="None",
+                hint="Local observation models require position data to compute likelihoods",
+                example="    results = detector.predict(spikes=spikes_test, time=time_test, position=position_test)",
+            )
 
         n_time = len(time)
         if is_missing is None:
@@ -2442,7 +2493,13 @@ class SortedSpikesDetector(_DetectorBase):
         if position is None and np.any(
             [obs.is_local for obs in self.observation_models]
         ):
-            raise ValueError("Position must be provided for local observations.")
+            raise ValidationError(
+                "Missing required parameter: position for local observations",
+                expected="position array with shape (n_time, n_dims)",
+                got="None",
+                hint="Local observation models require position data to compute likelihoods",
+                example="    results = detector.predict(spikes=spikes_test, time=time_test, position=position_test)",
+            )
 
         if is_missing is None:
             is_missing = np.zeros((n_time,), dtype=bool)

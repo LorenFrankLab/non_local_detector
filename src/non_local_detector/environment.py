@@ -63,6 +63,8 @@ from scipy.interpolate import interp1d  # type: ignore[import-untyped]
 from sklearn.neighbors import NearestNeighbors  # type: ignore[import-untyped]
 from track_linearization import plot_graph_as_1D  # type: ignore[import-untyped]
 
+from non_local_detector.exceptions import ConfigurationError, ValidationError
+
 
 def get_centers(bin_edges: np.ndarray) -> np.ndarray:
     """Given a set of bin edges, return the center of the bin.
@@ -246,10 +248,16 @@ class Environment:
         else:
             # Validate required parameters for track_graph mode
             if self.edge_order is None:
-                raise ValueError("edge_order is required when track_graph is provided")
+                raise ConfigurationError(
+                    "Missing edge_order for track_graph environment",
+                    hint="When using track_graph, you must provide edge_order to specify how edges connect",
+                    example="    env = Environment(track_graph=graph, edge_order=edge_order, edge_spacing=15.0)",
+                )
             if self.edge_spacing is None:
-                raise ValueError(
-                    "edge_spacing is required when track_graph is provided"
+                raise ConfigurationError(
+                    "Missing edge_spacing for track_graph environment",
+                    hint="When using track_graph, you must provide edge_spacing to define bin size along edges",
+                    example="    env = Environment(track_graph=graph, edge_order=edge_order, edge_spacing=15.0)",
                 )
 
             # Handle place_bin_size conversion for get_track_grid
@@ -369,11 +377,16 @@ class Environment:
             Flat index of the bin for each data point in `sample`.
         """
         if not self._is_fitted:
-            raise RuntimeError(
-                "Environment has not been fitted yet. Call `fit_place_grid` first."
+            raise ConfigurationError(
+                "Environment has not been fitted yet",
+                hint="Call fit_place_grid() before using this method",
+                example="    env = Environment(place_bin_size=5.0)\n    env.fit_place_grid(position=position_data)",
             )
         if self.edges_ is None:
-            raise ValueError("Environment edges `edges_` are not defined.")
+            raise ConfigurationError(
+                "Environment edges not defined",
+                hint="Edges are created during fit_place_grid(). Ensure the environment was fitted properly",
+            )
 
         # remove outer boundary edge
         edges = [e[1:-1] for e in self.edges_]
@@ -449,7 +462,12 @@ class Environment:
 
         # Validate input shapes
         if position1.shape != position2.shape:
-            raise ValueError("Shapes of position1 and position2 must match.")
+            raise ValidationError(
+                "Position array shapes must match",
+                expected=f"position2 with shape {position1.shape}",
+                got=f"position2 with shape {position2.shape}",
+                hint="Both position arrays must have the same shape (n_points, n_dims)",
+            )
 
         bin_ind1 = self.get_bin_ind(position1)
         bin_ind2 = self.get_bin_ind(position2)

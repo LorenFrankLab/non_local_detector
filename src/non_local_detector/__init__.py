@@ -14,6 +14,14 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryDiagonal,
 )
 from non_local_detector.environment import Environment  # noqa
+from non_local_detector.exceptions import (  # noqa
+    ConfigurationError,
+    ConvergenceError,
+    DataError,
+    FittingError,
+    NonLocalDetectorError,
+    ValidationError,
+)
 from non_local_detector.initial_conditions import UniformInitialConditions  # noqa
 from non_local_detector.models import (  # noqa
     ClusterlessDecoder,
