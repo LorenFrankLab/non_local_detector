@@ -89,19 +89,25 @@ def simulate_position_with_pauses(
     return pause_position[: time.size]
 
 
-def simulate_poisson_spikes(rate: np.ndarray, sampling_frequency: int) -> np.ndarray:
+def simulate_poisson_spikes(
+    rate: np.ndarray, sampling_frequency: int, seed: int | None = None
+) -> np.ndarray:
     """Given a rate, returns a time series of spikes.
 
     Parameters
     ----------
     rate : np.ndarray, shape (n_time,)
     sampling_frequency : int
+    seed : int | None, optional
+        Random seed for reproducibility. If None, uses current random state.
 
     Returns
     -------
     spikes : np.ndarray, shape (n_time,)
 
     """
+    if seed is not None:
+        np.random.seed(seed)
     return 1.0 * (np.random.poisson(rate / sampling_frequency) > 0)
 
 
@@ -178,6 +184,7 @@ def simulate_multiunit_with_place_fields(
     max_rate: float = 100.0,
     sampling_frequency: int = 1000,
     is_condition: np.ndarray | None = None,
+    seed: int | None = None,
 ) -> np.ndarray:
     """Simulates a multiunit with neurons at `place_means`
 
@@ -191,12 +198,16 @@ def simulate_multiunit_with_place_fields(
     max_rate : float
     sampling_frequency : int
     is_condition : np.ndarray or None
+    seed : int | None, optional
+        Random seed for reproducibility. If None, uses current random state.
 
     Returns
     -------
     multiunit : np.ndarray, shape (n_time, n_mark_dims)
 
     """
+    if seed is not None:
+        np.random.seed(seed)
     n_neurons = place_means.shape[0]
     mark_centers = np.arange(0, n_neurons * mark_spacing, mark_spacing)
     n_time = position.shape[0]
