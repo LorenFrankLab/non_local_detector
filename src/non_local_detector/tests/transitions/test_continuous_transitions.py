@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from non_local_detector.continuous_state_transitions import (
     Discrete,
@@ -10,25 +11,29 @@ from non_local_detector.continuous_state_transitions import (
     Uniform,
 )
 from non_local_detector.environment import Environment
+from non_local_detector.tests.conftest import assert_stochastic_matrix
 
 
-def make_env_1d(n_bins=11, name="line"):
-    env = Environment(
-        environment_name=name,
-        place_bin_size=1.0,
-        position_range=((0.0, float(n_bins - 1)),),
-    )
-    # Provide dummy position to fit grid reliably
-    pos = np.linspace(0.0, float(n_bins - 1), n_bins)[:, None]
-    env = env.fit_place_grid(position=pos, infer_track_interior=False)
-    return env
+@pytest.fixture
+def make_env_1d():
+    """Factory fixture for creating 1D environments with custom parameters."""
+    def _make_env(n_bins=11, name="line"):
+        env = Environment(
+            environment_name=name,
+            place_bin_size=1.0,
+            position_range=((0.0, float(n_bins - 1)),),
+        )
+        pos = np.linspace(0.0, float(n_bins - 1), n_bins)[:, None]
+        env = env.fit_place_grid(position=pos, infer_track_interior=False)
+        return env
+    return _make_env
 
 
 def rows_sum_to_one(mat: np.ndarray, atol=1e-7) -> bool:
     return np.allclose(mat.sum(axis=1), 1.0, atol=atol)
 
 
-def test_random_walk_row_stochastic_and_spread_var():
+def test_random_walk_row_stochastic_and_spread_var(make_env_1d):
     env = make_env_1d(n_bins=21)
     envs = (env,)
     rw_tight = RandomWalk(
@@ -48,7 +53,7 @@ def test_random_walk_row_stochastic_and_spread_var():
     assert offdiag_wide > offdiag_tight
 
 
-def test_random_walk_with_directional_constraints():
+def test_random_walk_with_directional_constraints(make_env_1d):
     env = make_env_1d(n_bins=15)
     envs = (env,)
     base = RandomWalk(
@@ -72,7 +77,7 @@ def test_random_walk_with_directional_constraints():
     )
 
 
-def test_identity_transition_is_identity_masked():
+def test_identity_transition_is_identity_masked(make_env_1d):
     env = make_env_1d(n_bins=10)
     envs = (env,)
     tm = Identity(environment_name=env.environment_name).make_state_transition(envs)
@@ -82,7 +87,7 @@ def test_identity_transition_is_identity_masked():
     assert np.allclose(tm - np.diag(np.diag(tm)), 0.0)
 
 
-def test_uniform_transition_within_env():
+def test_uniform_transition_within_env(make_env_1d):
     env = make_env_1d(n_bins=12)
     envs = (env,)
     tm = Uniform(environment_name=env.environment_name).make_state_transition(envs)
@@ -93,7 +98,7 @@ def test_uniform_transition_within_env():
     assert np.allclose(tm, np.ones((n, n)) / n)
 
 
-def test_uniform_transition_between_envs():
+def test_uniform_transition_between_envs(make_env_1d):
     env1 = make_env_1d(n_bins=8, name="env1")
     env2 = make_env_1d(n_bins=5, name="env2")
     envs = (env1, env2)
@@ -109,7 +114,7 @@ def test_uniform_transition_between_envs():
     assert np.allclose(np.unique(tm, axis=1), np.ones((tm.shape[0], 1)) / tm.shape[1])
 
 
-def test_empirical_movement_row_stochastic_and_locality():
+def test_empirical_movement_row_stochastic_and_locality(make_env_1d):
     # Create a simple path that marches right
     env = make_env_1d(n_bins=11)
     # Ensure histogram range set for 2D (pre- and post- positions)

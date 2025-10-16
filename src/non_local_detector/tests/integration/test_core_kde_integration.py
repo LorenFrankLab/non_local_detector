@@ -4,7 +4,6 @@ import pytest
 
 from non_local_detector.core import chunked_filter_smoother, smoother, viterbi
 from non_local_detector.core import filter as hmm_filter
-from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,

@@ -2,7 +2,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import EPS, get_position_at_time
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
@@ -10,20 +9,8 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
 )
 
 
-def make_simple_env_1d():
-    env = Environment(
-        environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),)
-    )
-    # Provide a simple position array so fit_place_grid can determine dims
-    dummy_pos = np.linspace(0.0, 10.0, 11)[:, None]
-    # Fit grid (no graph); do not infer interior
-    env = env.fit_place_grid(position=dummy_pos, infer_track_interior=False)
-    assert env.place_bin_centers_ is not None
-    return env
-
-
-def test_fit_sorted_spikes_kde_encoding_model_minimal():
-    env = make_simple_env_1d()
+def test_fit_sorted_spikes_kde_encoding_model_minimal(simple_1d_environment):
+    env = simple_1d_environment
     t = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 10.0, 101)[:, None]
     # two neurons with a couple spikes each inside [0,10]
@@ -62,8 +49,8 @@ def test_fit_sorted_spikes_kde_encoding_model_minimal():
     assert jnp.all(pf > 0)
 
 
-def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal():
-    env = make_simple_env_1d()
+def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(simple_1d_environment):
+    env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 10.0, 101)[:, None]
     spikes = [jnp.array([2.0, 5.0, 5.1]), jnp.array([1.5, 7.2])]
@@ -126,8 +113,8 @@ def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal():
     assert jnp.all(jnp.isfinite(ll_local))
 
 
-def test_local_likelihood_zero_spikes_equals_negative_rate_sum():
-    env = make_simple_env_1d()
+def test_local_likelihood_zero_spikes_equals_negative_rate_sum(simple_1d_environment):
+    env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 10.0, 101)[:, None]
     # Use some spikes to build encoding, but no spikes in decoding window
@@ -185,8 +172,8 @@ def test_local_likelihood_zero_spikes_equals_negative_rate_sum():
     assert jnp.allclose(ll_local, expected, rtol=1e-5, atol=1e-6)
 
 
-def test_nonlocal_with_no_spikes_equals_negative_no_spike_part():
-    env = make_simple_env_1d()
+def test_nonlocal_with_no_spikes_equals_negative_no_spike_part(simple_1d_environment):
+    env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 10.0, 101)[:, None]
     spikes_enc = [jnp.array([2.0, 5.0, 5.1]), jnp.array([1.5, 7.2])]

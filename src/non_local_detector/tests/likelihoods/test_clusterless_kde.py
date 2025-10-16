@@ -18,14 +18,6 @@ def rng(seed=0):
     return np.random.default_rng(seed)
 
 
-def make_simple_env_1d():
-    env = Environment(
-        environment_name="line", place_bin_size=1.0, position_range=((0.0, 10.0),)
-    )
-    dummy_pos = np.linspace(0.0, 10.0, 11)[:, None]
-    env = env.fit_place_grid(position=dummy_pos, infer_track_interior=False)
-    assert env.place_bin_centers_ is not None
-    return env
 
 
 def test_get_spike_time_bin_ind_right_edge_last_bin():
@@ -75,8 +67,8 @@ def test_block_estimate_log_joint_mark_intensity_matches_unblocked():
     assert jnp.allclose(base, blk, rtol=1e-5, atol=1e-7)
 
 
-def test_fit_and_predict_clusterless_kde_minimal():
-    env = make_simple_env_1d()
+def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
+    env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 10.0, 101)[:, None]
     weights = jnp.ones_like(t_pos)
@@ -167,8 +159,8 @@ def test_fit_and_predict_clusterless_kde_minimal():
     assert jnp.all(jnp.isfinite(ll_local))
 
 
-def test_clusterless_local_zero_spikes_equals_negative_gpi_sum():
-    env = make_simple_env_1d()
+def test_clusterless_local_zero_spikes_equals_negative_gpi_sum(simple_1d_environment):
+    env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 10.0, 101)[:, None]
     weights = jnp.ones_like(t_pos)
@@ -248,8 +240,8 @@ def test_fit_clusterless_kde_raises_without_place_grid():
         )
 
 
-def test_encoding_spike_weights_and_mean_rates_match_interpolation():
-    env = make_simple_env_1d()
+def test_encoding_spike_weights_and_mean_rates_match_interpolation(simple_1d_environment):
+    env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 10.0, 101)[:, None]
     # weights ramp from 0 to 1
