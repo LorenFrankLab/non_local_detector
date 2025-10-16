@@ -137,7 +137,6 @@ def estimate_log_joint_mark_intensity(
     occupancy: jnp.ndarray,
     mean_rate: float,
     position_distance: jnp.ndarray,
-    pos_tile_size: int | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -150,10 +149,6 @@ def estimate_log_joint_mark_intensity(
     occupancy : jnp.ndarray, shape (n_position_bins,)
     mean_rate : float
     position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
-    pos_tile_size : int | None, optional
-        If provided, tile computation over position dimension in chunks of this size.
-        Reduces peak memory from O(n_enc * n_pos) to O(n_enc * pos_tile_size).
-        If None (default), process all positions at once (fastest but more memory).
 
     Returns
     -------
@@ -167,36 +162,11 @@ def estimate_log_joint_mark_intensity(
     )  # shape (n_encoding_spikes, n_decoding_spikes)
 
     n_encoding_spikes = jnp.sum(encoding_weights)
-    n_pos = position_distance.shape[1]
-    n_dec = spike_waveform_feature_distance.shape[1]
-
-    if pos_tile_size is None or pos_tile_size >= n_pos:
-        # No tiling: process all positions at once (default)
-        marginal_density = (
-            spike_waveform_feature_distance.T
-            @ (encoding_weights[:, None] * position_distance)
-            / n_encoding_spikes
-        )  # shape (n_decoding_spikes, n_position_bins)
-    else:
-        # Tiled: process positions in chunks to reduce peak memory
-        marginal_density = jnp.zeros((n_dec, n_pos))
-
-        for pos_start in range(0, n_pos, pos_tile_size):
-            pos_end = min(pos_start + pos_tile_size, n_pos)
-            pos_slice = slice(pos_start, pos_end)
-
-            # Compute for this tile
-            marginal_density_tile = (
-                spike_waveform_feature_distance.T
-                @ (encoding_weights[:, None] * position_distance[:, pos_slice])
-                / n_encoding_spikes
-            )  # shape (n_decoding_spikes, tile_size)
-
-            # Update output
-            marginal_density = marginal_density.at[:, pos_slice].set(
-                marginal_density_tile
-            )
-
+    marginal_density = (
+        spike_waveform_feature_distance.T
+        @ (encoding_weights[:, None] * position_distance)
+        / n_encoding_spikes
+    )  # shape (n_decoding_spikes, n_position_bins)
     return jnp.log(mean_rate * safe_divide(marginal_density, occupancy))
 
 
@@ -209,7 +179,6 @@ def block_estimate_log_joint_mark_intensity(
     mean_rate: float,
     position_distance: jnp.ndarray,
     block_size: int = 100,
-    pos_tile_size: int | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -223,8 +192,6 @@ def block_estimate_log_joint_mark_intensity(
     mean_rate : float
     position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
     block_size : int, optional
-    pos_tile_size : int | None, optional
-        If provided, tile computation over position dimension. Passed to estimate_log_joint_mark_intensity.
 
     Returns
     -------
@@ -238,29 +205,22 @@ def block_estimate_log_joint_mark_intensity(
             (0, n_position_bins), LOG_EPS
         )  # Return empty if no decoding spikes
 
-    # Use JIT-compiled update with buffer donation for memory efficiency
-    # Donate the accumulator buffer (arg 0) so it can be reused in-place
-    def _update_block(out_array, block_result, start_idx):
-        return jax.lax.dynamic_update_slice(out_array, block_result, (start_idx, 0))
-
-    update_block = jax.jit(_update_block, donate_argnums=(0,))
-
     log_joint_mark_intensity = jnp.zeros((n_decoding_spikes, n_position_bins))
 
     for start_ind in range(0, n_decoding_spikes, block_size):
         block_inds = slice(start_ind, start_ind + block_size)
-        block_result = estimate_log_joint_mark_intensity(
-            decoding_spike_waveform_features[block_inds],
-            encoding_spike_waveform_features,
-            encoding_weights,
-            waveform_stds,
-            occupancy,
-            mean_rate,
-            position_distance,
-            pos_tile_size=pos_tile_size,
-        )
-        log_joint_mark_intensity = update_block(
-            log_joint_mark_intensity, block_result, start_ind
+        log_joint_mark_intensity = jax.lax.dynamic_update_slice(
+            log_joint_mark_intensity,
+            estimate_log_joint_mark_intensity(
+                decoding_spike_waveform_features[block_inds],
+                encoding_spike_waveform_features,
+                encoding_weights,
+                waveform_stds,
+                occupancy,
+                mean_rate,
+                position_distance,
+            ),
+            (start_ind, 0),
         )
 
     return jnp.clip(log_joint_mark_intensity, min=LOG_EPS, max=None)
