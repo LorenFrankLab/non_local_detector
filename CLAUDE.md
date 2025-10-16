@@ -18,6 +18,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Run tests**: `pytest` (uses pytest framework defined in pyproject.toml)
 - **Run single test**: `pytest src/non_local_detector/tests/test_version_import.py`
 - **Test with coverage**: `pytest --cov`
+- **Run snapshot tests**: `pytest -m snapshot` (regression tests using syrupy)
+- **Update snapshots**: `pytest --snapshot-update` (after intentional behavior changes)
 
 ### Code Quality
 
@@ -90,9 +92,14 @@ ruff check src/ && ruff format --check src/ && black --check src/ && pytest
 
 ### Testing Structure
 
-- Minimal test suite in `src/non_local_detector/tests/`
+- Test suite in `src/non_local_detector/tests/`
+  - Unit tests for individual components
+  - Integration tests for full workflows
+  - Property-based tests using hypothesis
+  - **Snapshot tests** (`tests/snapshots/`) for regression detection
 - Extensive notebook-based testing and validation in `notebooks/`
 - Test notebooks cover different likelihood models, simulation, and real data analysis
+- Snapshot tests use `syrupy` to capture expected model outputs and detect regressions
 
 ### Key Files to Understand
 
