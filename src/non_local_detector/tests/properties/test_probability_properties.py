@@ -9,7 +9,7 @@ import hypothesis.extra.numpy as npst
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import assume, given
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from non_local_detector.core import (
@@ -91,6 +91,7 @@ class TestProbabilityProperties:
                 normalized_ratio = normalized[j] / (normalized[i] + 1e-10)
                 assert jnp.allclose(original_ratio, normalized_ratio, rtol=1e-4)
 
+    @settings(deadline=500)  # Increased deadline for JAX JIT compilation
     @given(probability_distribution(), st.integers(min_value=0, max_value=1000000))
     def test_condition_on_preserves_probability_property(self, prior, seed):
         """Property: conditioning always produces valid distribution."""
@@ -121,6 +122,7 @@ class TestProbabilityProperties:
         assert jnp.all(next_dist >= 0)
         assert jnp.all(next_dist <= 1)
 
+    @settings(deadline=500)  # Increased deadline for JAX JIT compilation
     @given(
         st.lists(
             # Limit range to avoid overflow in log for float32

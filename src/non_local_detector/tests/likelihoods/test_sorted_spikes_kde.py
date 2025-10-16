@@ -2,6 +2,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import EPS, get_position_at_time
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
@@ -49,7 +50,9 @@ def test_fit_sorted_spikes_kde_encoding_model_minimal(simple_1d_environment):
     assert jnp.all(pf > 0)
 
 
-def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(simple_1d_environment):
+def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(
+    simple_1d_environment,
+):
     env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 10.0, 101)[:, None]

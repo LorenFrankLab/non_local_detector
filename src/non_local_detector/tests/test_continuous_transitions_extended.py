@@ -167,3 +167,174 @@ class TestEstimateMovementVar:
         # Assert
         assert isinstance(var, (float, np.ndarray))
         assert var > 0
+
+
+# Tests for RandomWalk class error handling
+class TestRandomWalkErrorHandling:
+    """Test RandomWalk error handling for missing place bin centers."""
+
+    def test_random_walk_error_without_place_bin_centers(self):
+        """Test that RandomWalk raises error when environment lacks place bin centers."""
+        from non_local_detector.environment import Environment
+        from non_local_detector.continuous_state_transitions import RandomWalk
+
+        env = Environment(environment_name="test")
+        envs = (env,)
+
+        rw = RandomWalk(environment_name="test", movement_var=1.0)
+
+        with pytest.raises(ValueError, match="must have defined place bin centers"):
+            rw.make_state_transition(envs)
+
+
+# Tests for Uniform class comprehensive coverage
+class TestUniformComprehensive:
+    """Comprehensive tests for Uniform transition class."""
+
+    def test_uniform_error_without_place_bin_centers(self):
+        """Test that Uniform raises error when environment lacks place bin centers."""
+        from non_local_detector.environment import Environment
+        from non_local_detector.continuous_state_transitions import Uniform
+
+        env = Environment(environment_name="test")
+        envs = (env,)
+
+        uniform = Uniform(environment_name="test")
+
+        with pytest.raises(ValueError, match="must have defined place bin centers"):
+            uniform.make_state_transition(envs)
+
+    def test_uniform_with_no_track_interior(self):
+        """Test Uniform when environment has no track interior mask."""
+        from non_local_detector.environment import Environment
+        from non_local_detector.continuous_state_transitions import Uniform
+
+        env = Environment(environment_name="test", place_bin_size=1.0,
+                         position_range=((0.0, 5.0),))
+        pos = np.linspace(0.0, 5.0, 6)[:, None]
+        env = env.fit_place_grid(position=pos, infer_track_interior=False)
+        n_bins = env.place_bin_centers_.shape[0]
+        env.is_track_interior_ = None
+        envs = (env,)
+
+        uniform = Uniform(environment_name="test")
+        trans = uniform.make_state_transition(envs)
+
+        assert trans.shape == (n_bins, n_bins)
+        assert np.allclose(trans, 1.0 / n_bins)
+
+
+# Tests for Identity class comprehensive coverage  
+class TestIdentityComprehensive:
+    """Comprehensive tests for Identity transition class."""
+
+    def test_identity_error_without_place_bin_centers(self):
+        """Test that Identity raises error when environment lacks place bin centers."""
+        from non_local_detector.environment import Environment
+        from non_local_detector.continuous_state_transitions import Identity
+
+        env = Environment(environment_name="test")
+        envs = (env,)
+
+        identity = Identity(environment_name="test")
+
+        with pytest.raises(ValueError, match="must have defined place bin centers"):
+            identity.make_state_transition(envs)
+
+    def test_identity_with_no_track_interior(self):
+        """Test Identity when environment has no track interior mask."""
+        from non_local_detector.environment import Environment
+        from non_local_detector.continuous_state_transitions import Identity
+
+        env = Environment(environment_name="test", place_bin_size=1.0,
+                         position_range=((0.0, 5.0),))
+        pos = np.linspace(0.0, 5.0, 6)[:, None]
+        env = env.fit_place_grid(position=pos, infer_track_interior=False)
+        n_bins = env.place_bin_centers_.shape[0]
+        env.is_track_interior_ = None
+        envs = (env,)
+
+        identity = Identity(environment_name="test")
+        trans = identity.make_state_transition(envs)
+
+        assert trans.shape == (n_bins, n_bins)
+        assert np.allclose(trans, np.eye(n_bins))
+
+
+# Tests for EmpiricalMovement class
+# Tests for RandomWalkDirection1 class
+class TestRandomWalkDirection1Comprehensive:
+    """Comprehensive tests for RandomWalkDirection1 transition class."""
+
+    def test_random_walk_direction1_error_without_place_bin_centers(self):
+        """Test that RandomWalkDirection1 raises error when environment lacks place bin centers."""
+        from non_local_detector.environment import Environment
+        from non_local_detector.continuous_state_transitions import RandomWalkDirection1
+
+        env = Environment(environment_name="test")
+        envs = (env,)
+
+        rwd1 = RandomWalkDirection1(environment_name="test", movement_var=1.0)
+
+        with pytest.raises(ValueError, match="must have defined place bin centers"):
+            rwd1.make_state_transition(envs)
+
+
+# Tests for RandomWalkDirection2 class
+class TestRandomWalkDirection2Comprehensive:
+    """Comprehensive tests for RandomWalkDirection2 transition class."""
+
+    def test_random_walk_direction2_error_without_place_bin_centers(self):
+        """Test that RandomWalkDirection2 raises error when environment lacks place bin centers."""
+        from non_local_detector.environment import Environment
+        from non_local_detector.continuous_state_transitions import RandomWalkDirection2
+
+        env = Environment(environment_name="test")
+        envs = (env,)
+
+        rwd2 = RandomWalkDirection2(environment_name="test", movement_var=1.0)
+
+        with pytest.raises(ValueError, match="must have defined place bin centers"):
+            rwd2.make_state_transition(envs)
+
+
+# Tests for Discrete class
+class TestDiscreteComprehensive:
+    """Comprehensive tests for Discrete transition class."""
+
+    def test_discrete_returns_single_element(self):
+        """Test that Discrete returns a 1x1 matrix of ones."""
+        from non_local_detector.continuous_state_transitions import Discrete
+
+        discrete = Discrete()
+        trans = discrete.make_state_transition()
+
+        assert trans.shape == (1, 1)
+        assert np.isclose(trans[0, 0], 1.0)
+
+
+# Additional tests to reach 80%+ coverage
+class TestRandomWalkWithTrackGraph:
+    """Test RandomWalk with track graphs to cover _random_walk_on_track_graph."""
+
+    def test_random_walk_with_1d_environment(self):
+        """Test RandomWalk on simple 1D environment (uses Euclidean)."""
+        from non_local_detector.environment import Environment
+        from non_local_detector.continuous_state_transitions import RandomWalk
+
+        env = Environment(environment_name="test", place_bin_size=2.0,
+                         position_range=((0.0, 10.0),))
+        pos = np.linspace(0.0, 10.0, 20)[:, None]
+        env = env.fit_place_grid(position=pos, infer_track_interior=False)
+        envs = (env,)
+
+        rw = RandomWalk(environment_name="test", movement_var=4.0)
+        trans = rw.make_state_transition(envs)
+
+        # Verify it's a valid stochastic matrix
+        assert trans.ndim == 2
+        assert np.all(trans >= 0)
+        assert np.allclose(trans.sum(axis=1), 1.0)
+
+
+# Tests for EmpiricalMovement class
