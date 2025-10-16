@@ -1,4 +1,14 @@
-"""Simulate clusterless spikes and associated spike waveform features."""
+"""Simulate clusterless spikes and associated spike waveform features.
+
+Simulator return contract (decoder-ready):
+- spike_times: List[np.ndarray], per electrode, seconds, strictly increasing
+- spike_waveform_features: List[np.ndarray], per electrode, shape (n_spikes_e, n_features)
+- edges: decoding bin edges in seconds, shape (n_time_bins+1), bin_widths = np.diff(edges)
+- position_time / position: used for local decoding & encoding interpolation
+All times are in SECONDS. No NaNs in marks. Empty electrodes: (0,), (0, n_features).
+
+See tests._sim_contract.ClusterlessSimOutput for the full contract definition.
+"""
 
 import numpy as np
 
