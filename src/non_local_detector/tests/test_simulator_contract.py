@@ -11,7 +11,7 @@ import pytest
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
 
-def test_shapes_and_lengths_per_electrode():
+def test_shapes_and_lengths_per_electrode() -> None:
     """Verify output shapes and per-electrode array lengths match."""
     n_tetrodes = 3
     place_field_means = np.arange(0, 120, 10)  # 12 neurons, divisible by 3
@@ -28,15 +28,15 @@ def test_shapes_and_lengths_per_electrode():
     assert sim.edges.size >= 2, "Must have at least 2 bin edges"
     assert sim.position_time.ndim == 1, "Position time must be 1D"
     assert sim.position.ndim == 2, "Position must be 2D (n_time, n_pos_dims)"
-    assert sim.position.shape[0] == sim.position_time.shape[0], (
-        "Position and position_time must have same length"
-    )
+    assert (
+        sim.position.shape[0] == sim.position_time.shape[0]
+    ), "Position and position_time must have same length"
 
     # Per-electrode list lengths
     n_electrodes = len(sim.spike_times)
-    assert len(sim.spike_waveform_features) == n_electrodes, (
-        "spike_times and spike_waveform_features must have same length"
-    )
+    assert (
+        len(sim.spike_waveform_features) == n_electrodes
+    ), "spike_times and spike_waveform_features must have same length"
     assert n_electrodes == 3, f"Expected 3 electrodes, got {n_electrodes}"
 
     # Per-electrode array shapes
@@ -45,37 +45,37 @@ def test_shapes_and_lengths_per_electrode():
     ):
         assert times.ndim == 1, f"Electrode {i}: spike times must be 1D"
         assert features.ndim == 2, f"Electrode {i}: features must be 2D"
-        assert features.shape[0] == times.shape[0], (
-            f"Electrode {i}: feature count must match spike count"
-        )
+        assert (
+            features.shape[0] == times.shape[0]
+        ), f"Electrode {i}: feature count must match spike count"
         assert features.shape[1] == 4, f"Electrode {i}: expected 4 features per spike"
 
     # Dtypes
-    assert np.issubdtype(sim.position_time.dtype, np.floating), (
-        "position_time must be float"
-    )
+    assert np.issubdtype(
+        sim.position_time.dtype, np.floating
+    ), "position_time must be float"
     assert np.issubdtype(sim.position.dtype, np.floating), "position must be float"
     assert np.issubdtype(sim.edges.dtype, np.floating), "edges must be float"
     for i, times in enumerate(sim.spike_times):
-        assert np.issubdtype(times.dtype, np.floating), (
-            f"Electrode {i}: spike times must be float"
-        )
+        assert np.issubdtype(
+            times.dtype, np.floating
+        ), f"Electrode {i}: spike times must be float"
     for i, features in enumerate(sim.spike_waveform_features):
-        assert np.issubdtype(features.dtype, np.floating), (
-            f"Electrode {i}: features must be float"
-        )
+        assert np.issubdtype(
+            features.dtype, np.floating
+        ), f"Electrode {i}: features must be float"
 
 
-def test_times_sorted_and_in_bounds():
+def test_times_sorted_and_in_bounds() -> None:
     """Verify times are sorted and within valid bounds."""
     sim = make_simulated_run_data(
         n_tetrodes=2, sampling_frequency=500, n_runs=1, seed=1
     )
 
     # Position time must be sorted
-    assert np.all(np.diff(sim.position_time) > 0), (
-        "position_time must be strictly increasing"
-    )
+    assert np.all(
+        np.diff(sim.position_time) > 0
+    ), "position_time must be strictly increasing"
 
     # Edges must be sorted
     assert np.all(np.diff(sim.edges) > 0), "edges must be strictly increasing"
@@ -86,16 +86,16 @@ def test_times_sorted_and_in_bounds():
         if times.size == 0:
             continue  # Empty electrode is valid
         assert np.all(np.isfinite(times)), f"Electrode {i}: times must be finite"
-        assert np.all((times >= t_min) & (times <= t_max)), (
-            f"Electrode {i}: spike times must be within [t_min, t_max]"
-        )
+        assert np.all(
+            (times >= t_min) & (times <= t_max)
+        ), f"Electrode {i}: spike times must be within [t_min, t_max]"
         if times.size > 1:
-            assert np.all(np.diff(times) > 0), (
-                f"Electrode {i}: spike times must be strictly increasing"
-            )
+            assert np.all(
+                np.diff(times) > 0
+            ), f"Electrode {i}: spike times must be strictly increasing"
 
 
-def test_no_nans_finite_features():
+def test_no_nans_finite_features() -> None:
     """Verify no NaN values in features and all values are finite."""
     sim = make_simulated_run_data(
         n_tetrodes=2, sampling_frequency=500, n_runs=1, seed=2
@@ -115,7 +115,7 @@ def test_no_nans_finite_features():
     assert not np.any(np.isnan(sim.position_time)), "position_time must not contain NaN"
 
 
-def test_optional_empty_electrode():
+def test_optional_empty_electrode() -> None:
     """Verify that empty electrodes have correct shapes."""
     # Use very short duration to potentially get empty electrodes
     sim = make_simulated_run_data(
@@ -128,18 +128,19 @@ def test_optional_empty_electrode():
         if times.size == 0:
             # Empty electrode
             assert times.shape == (0,), f"Electrode {i}: empty times must be shape (0,)"
-            assert features.shape[0] == 0, (
-                f"Electrode {i}: empty features must have 0 rows"
-            )
-            assert features.shape[1] == 4, (
-                f"Electrode {i}: empty features must still have 4 columns"
-            )
-            assert features.shape == (0, 4), (
-                f"Electrode {i}: empty features must be shape (0, 4)"
-            )
+            assert (
+                features.shape[0] == 0
+            ), f"Electrode {i}: empty features must have 0 rows"
+            assert (
+                features.shape[1] == 4
+            ), f"Electrode {i}: empty features must still have 4 columns"
+            assert features.shape == (
+                0,
+                4,
+            ), f"Electrode {i}: empty features must be shape (0, 4)"
 
 
-def test_bin_widths_consistency():
+def test_bin_widths_consistency() -> None:
     """Verify bin_widths matches np.diff(edges)."""
     sim = make_simulated_run_data(
         n_tetrodes=2, sampling_frequency=500, n_runs=1, seed=4
@@ -155,7 +156,7 @@ def test_bin_widths_consistency():
         )
 
 
-def test_environment_fitted():
+def test_environment_fitted() -> None:
     """Verify that environment is fitted with position data."""
     sim = make_simulated_run_data(
         n_tetrodes=2, sampling_frequency=500, n_runs=1, seed=5
@@ -163,15 +164,15 @@ def test_environment_fitted():
 
     # Check that environment exists and has expected attributes after fitting
     assert sim.environment is not None, "environment must be provided"
-    assert hasattr(sim.environment, "place_bin_centers_"), (
-        "environment must be fitted (has place_bin_centers_)"
-    )
-    assert sim.environment.place_bin_centers_ is not None, (
-        "place_bin_centers_ must be set after fitting"
-    )
+    assert hasattr(
+        sim.environment, "place_bin_centers_"
+    ), "environment must be fitted (has place_bin_centers_)"
+    assert (
+        sim.environment.place_bin_centers_ is not None
+    ), "place_bin_centers_ must be set after fitting"
 
 
-def test_deterministic_seeding():
+def test_deterministic_seeding() -> None:
     """Verify that same seed produces identical outputs."""
     seed = 42
     n_tetrodes = 3
@@ -213,7 +214,7 @@ def test_deterministic_seeding():
         )
 
 
-def test_different_seeds_produce_different_outputs():
+def test_different_seeds_produce_different_outputs() -> None:
     """Verify that different seeds produce different outputs."""
     n_tetrodes = 3
     place_field_means = np.arange(0, 120, 10)  # 12 neurons, divisible by 3
@@ -244,7 +245,7 @@ def test_different_seeds_produce_different_outputs():
     ), "Different seeds should produce different outputs"
 
 
-def test_spike_times_units_are_seconds():
+def test_spike_times_units_are_seconds() -> None:
     """Verify that spike times are in seconds (not samples)."""
     sampling_frequency = 500  # Hz
     duration_runs = 1
@@ -264,27 +265,27 @@ def test_spike_times_units_are_seconds():
     )
 
     # Check position time is in reasonable range (seconds, not samples)
-    assert sim.position_time[-1] < expected_duration * 2, (
-        "position_time should be in seconds"
-    )
-    assert sim.position_time[-1] > expected_duration * 0.5, (
-        "position_time seems too small"
-    )
+    assert (
+        sim.position_time[-1] < expected_duration * 2
+    ), "position_time should be in seconds"
+    assert (
+        sim.position_time[-1] > expected_duration * 0.5
+    ), "position_time seems too small"
 
     # Check spike times are in same range as position time
     for i, times in enumerate(sim.spike_times):
         if times.size > 0:
-            assert times[-1] <= sim.position_time[-1], (
-                f"Electrode {i}: spike times must be within position time range"
-            )
+            assert (
+                times[-1] <= sim.position_time[-1]
+            ), f"Electrode {i}: spike times must be within position time range"
             # Spike times should be in seconds (< 100), not samples (> 1000)
-            assert times[-1] < 1000, (
-                f"Electrode {i}: spike times appear to be in samples, not seconds"
-            )
+            assert (
+                times[-1] < 1000
+            ), f"Electrode {i}: spike times appear to be in samples, not seconds"
 
 
 @pytest.mark.parametrize("n_tetrodes", [1, 2, 4, 8])
-def test_variable_electrode_counts(n_tetrodes):
+def test_variable_electrode_counts(n_tetrodes: int) -> None:
     """Test that simulator works with different numbers of electrodes."""
     # Adjust place fields to be divisible by n_tetrodes
     n_neurons = n_tetrodes * 4  # 4 neurons per tetrode
@@ -298,12 +299,12 @@ def test_variable_electrode_counts(n_tetrodes):
         seed=7,
     )
 
-    assert len(sim.spike_times) == n_tetrodes, (
-        f"Expected {n_tetrodes} electrodes in spike_times"
-    )
-    assert len(sim.spike_waveform_features) == n_tetrodes, (
-        f"Expected {n_tetrodes} electrodes in spike_waveform_features"
-    )
+    assert (
+        len(sim.spike_times) == n_tetrodes
+    ), f"Expected {n_tetrodes} electrodes in spike_times"
+    assert (
+        len(sim.spike_waveform_features) == n_tetrodes
+    ), f"Expected {n_tetrodes} electrodes in spike_waveform_features"
 
 
 def test_position_is_2d():
@@ -313,6 +314,6 @@ def test_position_is_2d():
     )
 
     assert sim.position.ndim == 2, "position must be 2D"
-    assert sim.position.shape[1] == 1, (
-        "position must have 1 spatial dimension for 1D track"
-    )
+    assert (
+        sim.position.shape[1] == 1
+    ), "position must have 1 spatial dimension for 1D track"
