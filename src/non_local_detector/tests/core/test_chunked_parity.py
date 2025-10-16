@@ -409,7 +409,7 @@ class TestChunkedEdgeCases:
     """Test edge cases specific to chunked implementation."""
 
     def test_chunked_with_more_chunks_than_timesteps(self):
-        """Should handle n_chunks > n_time gracefully."""
+        """Should raise ValueError when n_chunks > n_time."""
         # Arrange
         n_time = 5
         n_states = 3
@@ -422,29 +422,20 @@ class TestChunkedEdgeCases:
         def log_likelihood_func(time_idx, *args):
             return log_likes[time_idx]
 
-        # Act - Request more chunks than timesteps
-        (
-            _,
-            acausal_state_probs,
-            _,
-            causal_state_probs,  # causal_state_probabilities (filtered)
-            _,  # predictive_state_probabilities
-            _,
-            _,
-        ) = chunked_filter_smoother(
-            time=time,
-            state_ind=state_ind,
-            initial_distribution=np.array(init),
-            transition_matrix=np.array(trans),
-            log_likelihood_func=log_likelihood_func,
-            log_likelihood_args=(),
-            n_chunks=10,  # More than n_time
-            log_likelihoods=np.array(log_likes),
-        )
-
-        # Assert - Should still work
-        assert acausal_state_probs.shape == (n_time, n_states)
-        assert jnp.all(jnp.isfinite(acausal_state_probs))
+        # Act & Assert - Should raise ValueError
+        with pytest.raises(
+            ValueError, match="n_chunks .* cannot exceed n_time"
+        ):
+            chunked_filter_smoother(
+                time=time,
+                state_ind=state_ind,
+                initial_distribution=np.array(init),
+                transition_matrix=np.array(trans),
+                log_likelihood_func=log_likelihood_func,
+                log_likelihood_args=(),
+                n_chunks=10,  # More than n_time
+                log_likelihoods=np.array(log_likes),
+            )
 
     def test_chunked_with_single_timestep(self):
         """Should handle single timestep."""

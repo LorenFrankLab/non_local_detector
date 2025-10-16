@@ -83,6 +83,9 @@ def get_spike_time_bin_ind(
         Index of the bin for each spike. Bins are indexed 0 to n_bins-1.
         Doesn't handle out of bounds spikes.
     """
+    # Ensure we use numpy arrays for in-place operations (JAX arrays are immutable)
+    spike_times = np.asarray(spike_times)
+    time_bin_edges = np.asarray(time_bin_edges)
 
     bin_indices = np.searchsorted(time_bin_edges, spike_times, side="right") - 1
     is_last_bin = np.isclose(

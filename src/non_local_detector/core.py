@@ -311,6 +311,12 @@ def chunked_filter_smoother(
     marginal_likelihood = 0.0
 
     n_time = len(time)
+    # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
+    if n_chunks > n_time:
+        raise ValueError(
+            f"n_chunks ({n_chunks}) cannot exceed n_time ({n_time}). "
+            f"Each chunk must contain at least one time point."
+        )
     time_chunks = np.array_split(np.arange(n_time), n_chunks)
 
     # Convert inputs to JAX arrays once at the top - keep data on device
@@ -793,6 +799,12 @@ def chunked_filter_smoother_covariate_dependent(
     marginal_likelihood = 0.0
 
     n_time = len(time)
+    # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
+    if n_chunks > n_time:
+        raise ValueError(
+            f"n_chunks ({n_chunks}) cannot exceed n_time ({n_time}). "
+            f"Each chunk must contain at least one time point."
+        )
     time_chunks = np.array_split(np.arange(n_time), n_chunks)
 
     # Convert inputs to JAX arrays once at the top - keep data on device
