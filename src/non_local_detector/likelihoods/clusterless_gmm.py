@@ -416,8 +416,8 @@ def predict_clusterless_gmm_log_likelihood(
 
     Parameters
     ----------
-    time : jnp.ndarray, shape (n_time + 1,)
-        Decoding time bin edges.
+    time : jnp.ndarray
+        Decoding time bins.
     position_time : jnp.ndarray, shape (n_time_position,)
         Time of each position sample for the decoding period.
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
@@ -467,7 +467,7 @@ def predict_clusterless_gmm_log_likelihood(
     joint_models = encoding_model.joint_models
     summed_ground = encoding_model.summed_ground_process_intensity
 
-    n_time = time.shape[0] - 1
+    n_time = time.shape[0]
     n_bins = bin_centers.shape[0]
 
     # Start with the expected-counts (ground process) term, broadcast over time
