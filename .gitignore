@@ -156,3 +156,6 @@ _version.py
 *.npz
 *.pkl
 *.png
+
+# Git worktrees
+.worktrees/
