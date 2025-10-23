@@ -77,8 +77,11 @@ def serialize_state_probabilities(state_probs):
 
 
 @pytest.mark.snapshot
-@pytest.mark.slow  # This test is slow and sometimes has data sparsity issues
-@pytest.mark.skip(reason="Skipping due to data sparsity issues with small test subset")
+@pytest.mark.slow
+@pytest.mark.skip(
+    reason="Skipped due to known issues in clusterless_kde likelihood code. "
+    "Will be re-enabled once clusterless_kde is fixed."
+)
 @pytest.mark.parametrize(
     "algorithm,algorithm_params",
     [
