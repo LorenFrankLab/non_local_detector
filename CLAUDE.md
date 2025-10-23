@@ -2,6 +2,86 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+---
+
+## 🚨 CRITICAL: Claude Code Operational Rules
+
+### Mandatory Skills Usage
+
+Before starting any task, check if a skill applies and use it:
+
+- **New features/algorithms** → Use `scientific-tdd` skill
+- **Mathematical/algorithmic changes** → Use `numerical-validation` skill
+- **Code restructuring** → Use `safe-refactoring` skill
+- **JAX code (transformations, performance, debugging)** → Use `jax` skill
+
+**Announce skill usage:** "I'm using the [skill-name] skill to [purpose]."
+
+### Environment Rules (ENFORCED BY HOOKS)
+
+- **Conda environment `non_local_detector` must be activated before Python commands**
+- Hooks will warn if wrong environment detected
+- Use full conda paths or activate environment first:
+  ```bash
+  conda activate non_local_detector
+  ```
+
+### Guided Autonomy Boundaries
+
+**YOU CAN do automatically:**
+- Read files, search code, explore codebase
+- Run tests to check current behavior
+- Make code changes
+- Run tests to verify changes
+- Run quality checks (ruff, black, mypy)
+- Run numerical validation
+
+**YOU MUST ASK PERMISSION before:**
+- **Updating snapshots** (`--snapshot-update`) - REQUIRES FULL ANALYSIS FIRST
+- **Committing changes** (`git commit`)
+- **Pushing to remote** (`git push`)
+- **Modifying golden regression data files**
+- **Changing numerical tolerances or convergence criteria**
+
+### Snapshot Update Approval Process
+
+When snapshot tests show changes, YOU MUST provide this analysis before requesting approval:
+
+1. **Diff**: Exact changes in snapshot/output (show the actual differences)
+2. **Explanation**: Why the change occurred (code change → output change causality)
+3. **Validation**: Proof mathematical properties still hold (invariants verified)
+4. **Test case**: Before/after comparison demonstrating correctness
+
+**Format:**
+```
+Snapshot Analysis:
+
+1. DIFF:
+   - test_model_output: posterior[10] changed from [0.342156, 0.657844] to [0.342157, 0.657843]
+   - Max difference: 1e-6
+
+2. EXPLANATION:
+   Changed optimizer tolerance from 1e-6 to 1e-8, resulting in more precise convergence.
+
+3. VALIDATION:
+   ✓ Probabilities sum to 1.0 (deviation < 1e-14)
+   ✓ Transition matrices stochastic
+   ✓ No NaN/Inf values
+   ✓ Property tests: 42/42 passed
+   ✓ Golden regression: All invariants hold
+
+4. TEST CASE:
+   Old: State 2 probability = 0.6578 (strong preference)
+   New: State 2 probability = 0.6578 (strong preference)
+   Scientific conclusion: Unchanged
+
+Approve snapshot update?
+```
+
+Only after user approval can snapshots be updated.
+
+---
+
 ## Project Overview
 
 `non_local_detector` is a Python package for decoding non-local neural activity from electrophysiological data. It uses Bayesian inference with Hidden Markov Models (HMMs) and various likelihood models to detect spatial replay events and decode position from neural spike data.
@@ -61,6 +141,151 @@ ruff check src/ && ruff format --check src/ && black --check src/ && pytest
 
 - **Build package**: Uses hatchling build system (defined in pyproject.toml)
 - **Version management**: Automatic versioning via hatch-vcs from git tags
+
+## Numerical Accuracy Standards
+
+### When Numerical Validation is Required
+
+Run numerical validation (use `numerical-validation` skill) when modifying:
+- `src/non_local_detector/core.py` (HMM algorithms)
+- `src/non_local_detector/likelihoods/` (any likelihood model)
+- `src/non_local_detector/continuous_state_transitions.py`
+- `src/non_local_detector/discrete_state_transitions.py`
+- `src/non_local_detector/initial_conditions.py`
+- Any code with JAX transformations or numerical computations
+
+### Tolerance Specifications
+
+| Change Type | Max Acceptable Difference | Approval Required |
+|-------------|---------------------------|-------------------|
+| Pure refactoring | 1e-14 (floating-point noise) | No (informational) |
+| Code optimization | 1e-10 | Yes |
+| Algorithm modification | 1e-10 | Yes (with justification) |
+| Differences > 1e-10 | Any magnitude | Yes (strong justification) |
+
+### Mathematical Invariants (MUST ALWAYS HOLD)
+
+These properties must be verified after any change to mathematical code:
+
+1. **Probability distributions sum to 1.0**
+   - Tolerance: 1e-10
+   - Check: `np.allclose(probs.sum(axis=-1), 1.0, atol=1e-10)`
+
+2. **Transition matrices are stochastic**
+   - Rows sum to 1.0 (tolerance: 1e-10)
+   - All values in [0, 1]
+   - Check: `np.allclose(T.sum(axis=-1), 1.0, atol=1e-10) and np.all((T >= 0) & (T <= 1))`
+
+3. **Log-probabilities are finite**
+   - No NaN or Inf values
+   - Check: `np.all(np.isfinite(log_probs))`
+
+4. **Covariance matrices are positive semi-definite**
+   - All eigenvalues >= 0 (tolerance: -1e-10 for numerical noise)
+   - Check: `np.all(np.linalg.eigvalsh(cov) >= -1e-10)`
+
+5. **Likelihoods are non-negative**
+   - Check: `np.all(likelihood >= 0)`
+
+### Validation Commands
+
+After mathematical changes, run:
+
+```bash
+# Property-based tests (verify invariants with many random inputs)
+/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -m property -v
+
+# Golden regression (validate against real scientific data)
+/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest src/non_local_detector/tests/test_golden_regression.py -v
+
+# Snapshot tests (detect any output changes)
+/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -m snapshot -v
+```
+
+## Workflow Selection Guide
+
+Use this decision tree to select the appropriate workflow for your task:
+
+### Task: "Add new feature" or "Implement new algorithm"
+→ **Use `scientific-tdd` skill**
+- Write test first (RED)
+- Implement to pass test (GREEN)
+- Refactor if needed
+- Run numerical validation if mathematical code
+
+### Task: "Fix bug"
+→ **Check: Do existing tests cover this bug?**
+- **Yes**: Fix directly, run tests to verify
+- **No**: Use `scientific-tdd` skill to add test first
+
+### Task: "Refactor code" or "Improve code structure"
+→ **Use `safe-refactoring` skill**
+- Verify zero behavioral changes
+- All tests must match baseline exactly
+- No snapshot differences allowed
+
+### Task: "Modify algorithm" or "Change mathematical code"
+→ **Use `scientific-tdd` + `numerical-validation` skills**
+1. Use `scientific-tdd` to implement change with tests
+2. Use `numerical-validation` to verify correctness and invariants
+
+### Task: "Work with JAX code"
+→ **Use `jax` skill for:**
+- JAX transformations (jit, grad, vmap, scan)
+- Performance optimization
+- Debugging NaN/Inf issues
+- Memory profiling
+- Refactoring NumPy to JAX
+- Analyzing JAXprs
+- Understanding recompilation
+
+### Task: "Optimize JAX performance" or "Debug JAX issues"
+→ **Use `jax` + `numerical-validation` skills**
+1. Use `jax` skill for optimization approach
+2. Use `numerical-validation` to verify numerical equivalence
+
+### Task: "Update dependencies" or "Upgrade packages"
+→ **Comprehensive testing required:**
+1. Run full test suite
+2. Run numerical validation
+3. Check for deprecation warnings
+4. Verify no behavioral changes
+
+### Task: "Add tests" or "Improve test coverage"
+→ **Follow existing test patterns:**
+- See `src/non_local_detector/tests/` for examples
+- Use fixtures from `conftest.py`
+- Add test markers if appropriate (unit, integration, property, snapshot)
+
+## JAX Code Requirements
+
+This codebase uses JAX as the primary computational backend for GPU acceleration and automatic differentiation.
+
+### When to Use the JAX Skill
+
+Use the `jax` skill when working with:
+- **Core algorithms**: `src/non_local_detector/core.py` (HMM with jit/vmap/scan)
+- **Likelihood models**: JAX transformations for likelihood calculations
+- **Performance issues**: Optimization, memory profiling, compilation
+- **Debugging**: NaN/Inf issues, shape mismatches, gradient problems
+- **Refactoring**: Converting NumPy to JAX or vice versa
+
+### JAX-Specific Validation
+
+After changing JAX code, verify:
+- ✓ No unexpected recompilation (check compilation warnings)
+- ✓ No NaN/Inf in outputs (`np.all(np.isfinite(result))`)
+- ✓ Shapes match expectations
+- ✓ Both CPU and GPU code paths work (if applicable)
+- ✓ Performance is acceptable (profile if critical)
+
+### JAX Best Practices
+
+- Prefer pure functions (no side effects)
+- Use `jax.lax.scan` instead of Python loops
+- Avoid in-place operations (JAX arrays are immutable)
+- Use `jax.vmap` for vectorization
+- Be mindful of memory with large arrays
 
 ## Architecture Overview
 
