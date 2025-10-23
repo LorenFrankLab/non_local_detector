@@ -70,30 +70,30 @@ def test_nonlocal_sorted_spikes_detector(simulated_data):
     )
 
     # Check output shapes
-    assert results.acausal_posterior.shape[0] == len(
-        time
-    ), "Posterior has wrong time dimension"
-    assert results.acausal_state_probabilities.shape[0] == len(
-        time
-    ), "State probs have wrong time dimension"
+    assert results.acausal_posterior.shape[0] == len(time), (
+        "Posterior has wrong time dimension"
+    )
+    assert results.acausal_state_probabilities.shape[0] == len(time), (
+        "State probs have wrong time dimension"
+    )
 
     # Check state probabilities
     n_states = results.acausal_state_probabilities.shape[1]
-    assert (
-        n_states == 4
-    ), f"Expected 4 states (Local, No-Spike, Non-Local Continuous, Non-Local Fragmented), got {n_states}"
+    assert n_states == 4, (
+        f"Expected 4 states (Local, No-Spike, Non-Local Continuous, Non-Local Fragmented), got {n_states}"
+    )
 
     # State probabilities should sum to 1 at each time point
     state_prob_sums = results.acausal_state_probabilities.sum(axis=1)
-    assert np.allclose(
-        state_prob_sums, 1.0, rtol=1e-5, atol=1e-6
-    ), "State probabilities don't sum to 1"
+    assert np.allclose(state_prob_sums, 1.0, rtol=1e-5, atol=1e-6), (
+        "State probabilities don't sum to 1"
+    )
 
     # Posterior probabilities should sum to 1 at each time point
     posterior_sums = results.acausal_posterior.sum(axis=1)
-    assert np.allclose(
-        posterior_sums, 1.0, rtol=1e-5, atol=1e-6
-    ), "Posterior probabilities don't sum to 1"
+    assert np.allclose(posterior_sums, 1.0, rtol=1e-5, atol=1e-6), (
+        "Posterior probabilities don't sum to 1"
+    )
 
     # Check that encoding model was fitted
     assert hasattr(detector, "encoding_model_"), "Encoding model not fitted"
@@ -128,12 +128,12 @@ def test_contfrag_sorted_spikes_classifier(simulated_data):
     )
 
     # Check output shapes
-    assert results.acausal_posterior.shape[0] == len(
-        time
-    ), "Posterior has wrong time dimension"
-    assert results.acausal_state_probabilities.shape[0] == len(
-        time
-    ), "State probs have wrong time dimension"
+    assert results.acausal_posterior.shape[0] == len(time), (
+        "Posterior has wrong time dimension"
+    )
+    assert results.acausal_state_probabilities.shape[0] == len(time), (
+        "State probs have wrong time dimension"
+    )
 
     # Check state probabilities
     n_states = results.acausal_state_probabilities.shape[1]
@@ -141,41 +141,41 @@ def test_contfrag_sorted_spikes_classifier(simulated_data):
 
     # State probabilities should sum to 1
     state_prob_sums = results.acausal_state_probabilities.sum(axis=1)
-    assert np.allclose(
-        state_prob_sums, 1.0, rtol=1e-5, atol=1e-6
-    ), "State probabilities don't sum to 1"
+    assert np.allclose(state_prob_sums, 1.0, rtol=1e-5, atol=1e-6), (
+        "State probabilities don't sum to 1"
+    )
 
     # Posterior probabilities should sum to 1
     posterior_sums = results.acausal_posterior.sum(axis=1)
-    assert np.allclose(
-        posterior_sums, 1.0, rtol=1e-5, atol=1e-6
-    ), "Posterior probabilities don't sum to 1"
+    assert np.allclose(posterior_sums, 1.0, rtol=1e-5, atol=1e-6), (
+        "Posterior probabilities don't sum to 1"
+    )
 
     # Check transition matrix properties
-    assert hasattr(
-        classifier, "continuous_state_transitions_"
-    ), "Continuous transitions not fitted"
+    assert hasattr(classifier, "continuous_state_transitions_"), (
+        "Continuous transitions not fitted"
+    )
     # Continuous transitions should be a valid transition matrix (non-negative, 3D array)
-    assert (
-        classifier.continuous_state_transitions_.ndim == 2
-    ), "Continuous transitions should be 2D"
-    assert np.all(
-        classifier.continuous_state_transitions_ >= 0
-    ), "Transition matrix should be non-negative"
+    assert classifier.continuous_state_transitions_.ndim == 2, (
+        "Continuous transitions should be 2D"
+    )
+    assert np.all(classifier.continuous_state_transitions_ >= 0), (
+        "Transition matrix should be non-negative"
+    )
     # Each position bin should have valid transitions between discrete states
     # Note: rows sum to n_discrete_states (2) not 1, because the matrix represents
     # transitions for all discrete states at each position
     trans_row_sums = classifier.continuous_state_transitions_.sum(axis=1)
-    assert np.all(
-        trans_row_sums > 0
-    ), "All position bins should have some transition probability"
+    assert np.all(trans_row_sums > 0), (
+        "All position bins should have some transition probability"
+    )
 
     # Initial conditions should sum to ~1
     assert hasattr(classifier, "initial_conditions_"), "Initial conditions not fitted"
     init_sum = classifier.initial_conditions_.sum()
-    assert np.isclose(
-        init_sum, 1.0, rtol=1e-5, atol=1e-6
-    ), f"Initial conditions sum to {init_sum}, not 1"
+    assert np.isclose(init_sum, 1.0, rtol=1e-5, atol=1e-6), (
+        f"Initial conditions sum to {init_sum}, not 1"
+    )
 
 
 def test_sorted_spikes_decoder(simulated_data):
@@ -209,12 +209,12 @@ def test_sorted_spikes_decoder(simulated_data):
     )
 
     # Check output shapes
-    assert results.acausal_posterior.shape[0] == len(
-        time
-    ), "Posterior has wrong time dimension"
-    assert results.acausal_state_probabilities.shape[0] == len(
-        time
-    ), "State probs have wrong time dimension"
+    assert results.acausal_posterior.shape[0] == len(time), (
+        "Posterior has wrong time dimension"
+    )
+    assert results.acausal_state_probabilities.shape[0] == len(time), (
+        "State probs have wrong time dimension"
+    )
 
     # For basic decoder, there's only one state (Continuous)
     n_states = (
@@ -229,15 +229,15 @@ def test_sorted_spikes_decoder(simulated_data):
         state_prob_sums = results.acausal_state_probabilities.sum(axis=1)
     else:
         state_prob_sums = results.acausal_state_probabilities
-    assert np.allclose(
-        state_prob_sums, 1.0, rtol=1e-5, atol=1e-6
-    ), "State probabilities don't equal 1"
+    assert np.allclose(state_prob_sums, 1.0, rtol=1e-5, atol=1e-6), (
+        "State probabilities don't equal 1"
+    )
 
     # Posterior probabilities should sum to 1
     posterior_sums = results.acausal_posterior.sum(axis=1)
-    assert np.allclose(
-        posterior_sums, 1.0, rtol=1e-5, atol=1e-6
-    ), "Posterior probabilities don't sum to 1"
+    assert np.allclose(posterior_sums, 1.0, rtol=1e-5, atol=1e-6), (
+        "Posterior probabilities don't sum to 1"
+    )
 
     # Test log likelihood computation
     log_likelihood = decoder.compute_log_likelihood(
@@ -248,17 +248,17 @@ def test_sorted_spikes_decoder(simulated_data):
     )
 
     # Check log likelihood shape
-    assert log_likelihood.shape[0] == len(
-        time
-    ), "Log likelihood has wrong time dimension"
-    assert (
-        log_likelihood.ndim == 2
-    ), f"Expected 2D log likelihood, got {log_likelihood.ndim}D"
+    assert log_likelihood.shape[0] == len(time), (
+        "Log likelihood has wrong time dimension"
+    )
+    assert log_likelihood.ndim == 2, (
+        f"Expected 2D log likelihood, got {log_likelihood.ndim}D"
+    )
 
     # Log likelihoods should be finite
-    assert np.all(
-        np.isfinite(log_likelihood)
-    ), "Log likelihoods contain non-finite values"
+    assert np.all(np.isfinite(log_likelihood)), (
+        "Log likelihoods contain non-finite values"
+    )
 
 
 def test_models_handle_missing_data(simulated_data):

@@ -99,9 +99,9 @@ def test_kde_distance_vs_log_kde_distance():
     log_distance = log_kde_distance(eval_points, samples, std)
 
     # Check consistency: exp(log_distance) ≈ distance
-    assert np.allclose(
-        np.exp(log_distance), distance, rtol=1e-5, atol=1e-8
-    ), "kde_distance and log_kde_distance are inconsistent"
+    assert np.allclose(np.exp(log_distance), distance, rtol=1e-5, atol=1e-8), (
+        "kde_distance and log_kde_distance are inconsistent"
+    )
 
 
 def test_estimate_intensity_moderate_features():
@@ -158,9 +158,9 @@ def test_estimate_intensity_moderate_features():
     assert ll_log.shape == (n_dec_spikes, n_pos_bins), "Log-space shape wrong"
 
     # Check values are close (moderate features should agree well)
-    assert np.allclose(
-        ll_original, ll_log, rtol=1e-3, atol=1e-4
-    ), f"Implementations differ: max diff = {np.abs(ll_original - ll_log).max()}"
+    assert np.allclose(ll_original, ll_log, rtol=1e-3, atol=1e-4), (
+        f"Implementations differ: max diff = {np.abs(ll_original - ll_log).max()}"
+    )
 
     # Check all values are finite
     assert np.all(np.isfinite(ll_original)), "Original has non-finite values"
@@ -218,9 +218,9 @@ def test_estimate_intensity_extreme_features():
     )
 
     # Log-space should always be finite
-    assert np.all(
-        np.isfinite(ll_log)
-    ), "Log-space has non-finite values even with extreme features"
+    assert np.all(np.isfinite(ll_log)), (
+        "Log-space has non-finite values even with extreme features"
+    )
 
     # Original may have issues, but shouldn't crash
     # (May have -inf values due to underflow, which is OK)
@@ -358,9 +358,9 @@ def test_predict_local_likelihood_parity(
 
     # Check values are close
     # Note: Local likelihood uses different code paths, may have larger differences
-    assert np.allclose(
-        ll_original, ll_log, rtol=1e-2, atol=1e-3
-    ), f"Local likelihoods differ: max diff = {np.abs(ll_original - ll_log).max()}"
+    assert np.allclose(ll_original, ll_log, rtol=1e-2, atol=1e-3), (
+        f"Local likelihoods differ: max diff = {np.abs(ll_original - ll_log).max()}"
+    )
 
     # Check finite
     assert np.all(np.isfinite(ll_original)), "Original has non-finite local likelihood"
@@ -443,14 +443,14 @@ def test_predict_nonlocal_likelihood_parity(
 
     # Check values are close
     # Non-local likelihood is the critical test - this is where scan fix matters
-    assert np.allclose(
-        ll_original, ll_log, rtol=1e-2, atol=1e-3
-    ), f"Non-local likelihoods differ: max diff = {np.abs(ll_original - ll_log).max()}"
+    assert np.allclose(ll_original, ll_log, rtol=1e-2, atol=1e-3), (
+        f"Non-local likelihoods differ: max diff = {np.abs(ll_original - ll_log).max()}"
+    )
 
     # Check finite
-    assert np.all(
-        np.isfinite(ll_original)
-    ), "Original has non-finite non-local likelihood"
+    assert np.all(np.isfinite(ll_original)), (
+        "Original has non-finite non-local likelihood"
+    )
     assert np.all(np.isfinite(ll_log)), "Log-space has non-finite non-local likelihood"
 
 

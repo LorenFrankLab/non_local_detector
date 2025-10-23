@@ -78,9 +78,9 @@ class TestFilter:
 
         # Assert
         # After many steps, should be almost entirely in state 0
-        assert (
-            filtered[-1, 0] > 0.99
-        ), f"Expected convergence to state 0, got {filtered[-1]}"
+        assert filtered[-1, 0] > 0.99, (
+            f"Expected convergence to state 0, got {filtered[-1]}"
+        )
 
     def test_filter_with_uniform_likelihood_follows_transition(self):
         """With uniform likelihood, should follow transition dynamics only."""

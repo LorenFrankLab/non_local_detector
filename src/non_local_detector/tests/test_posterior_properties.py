@@ -155,9 +155,9 @@ def test_acausal_smoother_than_causal(decoder_with_results: dict[str, Any]) -> N
     mean_acausal_entropy = np.mean(acausal_entropy)
     mean_causal_entropy = np.mean(causal_entropy)
 
-    assert (
-        mean_acausal_entropy <= mean_causal_entropy
-    ), f"Acausal entropy ({mean_acausal_entropy:.3f}) should be <= causal entropy ({mean_causal_entropy:.3f})"
+    assert mean_acausal_entropy <= mean_causal_entropy, (
+        f"Acausal entropy ({mean_acausal_entropy:.3f}) should be <= causal entropy ({mean_causal_entropy:.3f})"
+    )
 
 
 @pytest.mark.slow
@@ -180,15 +180,15 @@ def test_posterior_entropy_reasonable(decoder_with_results: dict[str, Any]) -> N
 
     # All entropy values should be in [0, log(n_bins)]
     assert np.all(entropy >= 0), f"Found negative entropy: min={entropy.min():.3f}"
-    assert np.all(
-        entropy <= max_entropy
-    ), f"Entropy {entropy.max():.3f} exceeds maximum {max_entropy:.3f}"
+    assert np.all(entropy <= max_entropy), (
+        f"Entropy {entropy.max():.3f} exceeds maximum {max_entropy:.3f}"
+    )
 
     # Check that we're not always at maximum entropy (would indicate uniform posterior)
     mean_entropy = np.mean(entropy)
-    assert (
-        mean_entropy < 0.95 * max_entropy
-    ), f"Mean entropy {mean_entropy:.3f} too close to maximum {max_entropy:.3f} (uniform)"
+    assert mean_entropy < 0.95 * max_entropy, (
+        f"Mean entropy {mean_entropy:.3f} too close to maximum {max_entropy:.3f} (uniform)"
+    )
 
 
 @pytest.mark.slow
@@ -200,9 +200,9 @@ def test_posterior_no_nans_or_infs(decoder_with_results: dict[str, Any]) -> None
     results = decoder_with_results["results"]
     acausal_posterior = results.acausal_posterior.values
 
-    assert np.all(
-        np.isfinite(acausal_posterior)
-    ), "Posterior contains NaN or Inf values"
+    assert np.all(np.isfinite(acausal_posterior)), (
+        "Posterior contains NaN or Inf values"
+    )
     assert not np.any(np.isnan(acausal_posterior)), "Posterior contains NaN values"
     assert not np.any(np.isinf(acausal_posterior)), "Posterior contains Inf values"
 
@@ -217,9 +217,9 @@ def test_posterior_all_nonnegative(decoder_with_results: dict[str, Any]) -> None
     results = decoder_with_results["results"]
     acausal_posterior = results.acausal_posterior.values
 
-    assert np.all(
-        acausal_posterior >= 0
-    ), f"Found negative probabilities: min={acausal_posterior.min():.10f}"
+    assert np.all(acausal_posterior >= 0), (
+        f"Found negative probabilities: min={acausal_posterior.min():.10f}"
+    )
 
 
 @pytest.mark.slow

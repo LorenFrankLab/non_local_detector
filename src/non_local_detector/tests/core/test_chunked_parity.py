@@ -125,13 +125,13 @@ class TestChunkedFilterSmootherParity:
         )
 
         # Assert
-        assert jnp.allclose(
-            smoothed_std, acausal_state_probs, rtol=1e-4, atol=1e-5
-        ), "Smoothed posteriors don't match with multiple chunks"
+        assert jnp.allclose(smoothed_std, acausal_state_probs, rtol=1e-4, atol=1e-5), (
+            "Smoothed posteriors don't match with multiple chunks"
+        )
 
-        assert jnp.allclose(
-            filtered_std, causal_state_probs, rtol=1e-4, atol=1e-5
-        ), "Filtered posteriors don't match with multiple chunks"
+        assert jnp.allclose(filtered_std, causal_state_probs, rtol=1e-4, atol=1e-5), (
+            "Filtered posteriors don't match with multiple chunks"
+        )
 
     @pytest.mark.parametrize("n_chunks", [1, 2, 5, 10])
     def test_chunked_consistent_across_chunk_sizes(self, n_chunks):
@@ -186,13 +186,13 @@ class TestChunkedFilterSmootherParity:
         )
 
         # Assert
-        assert jnp.allclose(
-            acausal_ref, acausal_test, rtol=1e-5, atol=1e-6
-        ), f"Acausal differs for n_chunks={n_chunks}"
+        assert jnp.allclose(acausal_ref, acausal_test, rtol=1e-5, atol=1e-6), (
+            f"Acausal differs for n_chunks={n_chunks}"
+        )
 
-        assert jnp.allclose(
-            causal_ref, causal_test, rtol=1e-5, atol=1e-6
-        ), f"Causal differs for n_chunks={n_chunks}"
+        assert jnp.allclose(causal_ref, causal_test, rtol=1e-5, atol=1e-6), (
+            f"Causal differs for n_chunks={n_chunks}"
+        )
 
     def test_chunked_log_likelihood_matches_standard(self):
         """Chunked should return same total log likelihood as standard."""
@@ -298,12 +298,12 @@ class TestChunkedFilterSmootherParity:
 
         # Assert - All probabilities sum to 1
         for t in range(n_time):
-            assert jnp.allclose(
-                acausal_state_probs[t].sum(), 1.0, atol=1e-5
-            ), f"Acausal probs don't sum to 1 at t={t}"
-            assert jnp.allclose(
-                causal_state_probs[t].sum(), 1.0, atol=1e-5
-            ), f"Causal probs don't sum to 1 at t={t}"
+            assert jnp.allclose(acausal_state_probs[t].sum(), 1.0, atol=1e-5), (
+                f"Acausal probs don't sum to 1 at t={t}"
+            )
+            assert jnp.allclose(causal_state_probs[t].sum(), 1.0, atol=1e-5), (
+                f"Causal probs don't sum to 1 at t={t}"
+            )
 
     def test_chunked_with_missing_data(self):
         """Chunked should handle missing data (if supported)."""

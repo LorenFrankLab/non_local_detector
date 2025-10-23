@@ -364,12 +364,12 @@ def test_delta_t_scaling_normalized() -> None:
     )
 
     # Both should have reasonable accuracy
-    assert (
-        accuracy_standard >= 0.60
-    ), f"Standard bin width accuracy {accuracy_standard:.2%} is too low"
-    assert (
-        accuracy_wide >= 0.50
-    ), f"Wide bin width accuracy {accuracy_wide:.2%} is too low"
+    assert accuracy_standard >= 0.60, (
+        f"Standard bin width accuracy {accuracy_standard:.2%} is too low"
+    )
+    assert accuracy_wide >= 0.50, (
+        f"Wide bin width accuracy {accuracy_wide:.2%} is too low"
+    )
 
     # Accuracies should be comparable (within 30 percentage points)
     accuracy_diff = abs(accuracy_standard - accuracy_wide)
