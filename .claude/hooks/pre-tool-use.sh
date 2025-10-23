@@ -39,7 +39,7 @@ fi
 if [[ "$TOOL_COMMAND" =~ ^git[[:space:]]+commit ]]; then
     # Check if tests have run recently (within last 5 minutes)
     if [ -d ".pytest_cache" ]; then
-        CACHE_AGE=$(find .pytest_cache -name "*.pytest_cache" -mmin -5 2>/dev/null | wc -l)
+        CACHE_AGE=$(find .pytest_cache -type f -mmin -5 2>/dev/null | wc -l)
         if [ "$CACHE_AGE" -eq 0 ]; then
             echo "⚠️  No recent test runs detected"
             echo "Recommendation: Run tests before committing"
