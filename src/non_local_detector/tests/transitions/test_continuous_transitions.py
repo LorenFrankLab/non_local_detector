@@ -11,12 +11,12 @@ from non_local_detector.continuous_state_transitions import (
     Uniform,
 )
 from non_local_detector.environment import Environment
-from non_local_detector.tests.conftest import assert_stochastic_matrix
 
 
 @pytest.fixture
 def make_env_1d():
     """Factory fixture for creating 1D environments with custom parameters."""
+
     def _make_env(n_bins=11, name="line"):
         env = Environment(
             environment_name=name,
@@ -26,6 +26,7 @@ def make_env_1d():
         pos = np.linspace(0.0, float(n_bins - 1), n_bins)[:, None]
         env = env.fit_place_grid(position=pos, infer_track_interior=False)
         return env
+
     return _make_env
 
 

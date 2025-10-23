@@ -8,11 +8,8 @@ Tests the core EM algorithm functions that are currently untested:
 
 import numpy as np
 import pytest
-from patsy import dmatrix
 
 from non_local_detector.discrete_state_transitions import (
-    DiscreteNonStationaryDiagonal,
-    DiscreteStationaryDiagonal,
     _estimate_discrete_transition,
     estimate_non_stationary_state_transition,
     estimate_stationary_state_transition,
@@ -28,21 +25,21 @@ class TestEstimateNonStationaryStateTransition:
         # Arrange
         post = posterior_data
         dm = design_matrix_data
-        
+
         # Act
         coeffs, trans_matrix = estimate_non_stationary_state_transition(
             causal_posterior=post["causal_posterior"],
             predictive_distribution=post["predictive_distribution"],
             acausal_posterior=post["acausal_posterior"],
             transition_matrix=post["transition_matrix"],
-            design_matrix=dm["design_matrix"][:post["n_time"]],
+            design_matrix=dm["design_matrix"][: post["n_time"]],
             transition_coefficients=dm["transition_coefficients"],
             concentration=1.0,
             stickiness=0.0,  # No stickiness (uniform prior)
             transition_regularization=1e-5,
             maxiter=10,  # Limit iterations for speed
         )
-        
+
         # Assert
         n_coeffs, n_states = dm["n_coefficients"], post["n_states"]
         assert coeffs.shape == (n_coeffs, n_states, n_states - 1)
@@ -53,21 +50,21 @@ class TestEstimateNonStationaryStateTransition:
         # Arrange
         post = posterior_data
         dm = design_matrix_data
-        
+
         # Act
         _, trans_matrix = estimate_non_stationary_state_transition(
             causal_posterior=post["causal_posterior"],
             predictive_distribution=post["predictive_distribution"],
             acausal_posterior=post["acausal_posterior"],
             transition_matrix=post["transition_matrix"],
-            design_matrix=dm["design_matrix"][:post["n_time"]],
+            design_matrix=dm["design_matrix"][: post["n_time"]],
             transition_coefficients=dm["transition_coefficients"],
             concentration=1.0,
             stickiness=0.0,  # uniform prior
             transition_regularization=1e-5,
             maxiter=10,
         )
-        
+
         # Assert - check each time step
         for t in range(trans_matrix.shape[0]):
             assert_stochastic_matrix(trans_matrix[t])
@@ -76,35 +73,35 @@ class TestEstimateNonStationaryStateTransition:
         """Test with different concentration (prior strength) values."""
         post = posterior_data
         dm = design_matrix_data
-        
+
         # Test with weak prior (concentration=1.0)
         _, trans_weak = estimate_non_stationary_state_transition(
             causal_posterior=post["causal_posterior"],
             predictive_distribution=post["predictive_distribution"],
             acausal_posterior=post["acausal_posterior"],
             transition_matrix=post["transition_matrix"],
-            design_matrix=dm["design_matrix"][:post["n_time"]],
+            design_matrix=dm["design_matrix"][: post["n_time"]],
             transition_coefficients=dm["transition_coefficients"],
             concentration=1.0,
             stickiness=0.0,  # uniform prior
             transition_regularization=1e-5,
             maxiter=10,
         )
-        
+
         # Test with strong prior (concentration=10.0)
         _, trans_strong = estimate_non_stationary_state_transition(
             causal_posterior=post["causal_posterior"],
             predictive_distribution=post["predictive_distribution"],
             acausal_posterior=post["acausal_posterior"],
             transition_matrix=post["transition_matrix"],
-            design_matrix=dm["design_matrix"][:post["n_time"]],
+            design_matrix=dm["design_matrix"][: post["n_time"]],
             transition_coefficients=dm["transition_coefficients"],
             concentration=10.0,
             stickiness=0.0,  # uniform prior
             transition_regularization=1e-5,
             maxiter=10,
         )
-        
+
         # Both should be valid
         for t in range(min(5, trans_weak.shape[0])):  # Check first 5 timesteps
             assert_stochastic_matrix(trans_weak[t])
@@ -114,26 +111,42 @@ class TestEstimateNonStationaryStateTransition:
         """Test with diagonal stickiness prior."""
         post = posterior_data
         dm = design_matrix_data
-        
+
         # Act
         _, trans_matrix = estimate_non_stationary_state_transition(
             causal_posterior=post["causal_posterior"],
             predictive_distribution=post["predictive_distribution"],
             acausal_posterior=post["acausal_posterior"],
             transition_matrix=post["transition_matrix"],
-            design_matrix=dm["design_matrix"][:post["n_time"]],
+            design_matrix=dm["design_matrix"][: post["n_time"]],
             transition_coefficients=dm["transition_coefficients"],
             concentration=1.0,
             stickiness=1.0,  # Diagonal stickiness - favors self-transitions
             transition_regularization=1e-5,
             maxiter=10,
         )
-        
+
         # Assert - diagonal should be larger than off-diagonal on average
-        diagonal_mean = np.mean([trans_matrix[t, i, i] for t in range(trans_matrix.shape[0]) for i in range(post["n_states"])])
-        off_diagonal_mean = np.mean([trans_matrix[t, i, j] for t in range(trans_matrix.shape[0]) for i in range(post["n_states"]) for j in range(post["n_states"]) if i != j])
-        
-        assert diagonal_mean > off_diagonal_mean, "Diagonal stickiness should favor self-transitions"
+        diagonal_mean = np.mean(
+            [
+                trans_matrix[t, i, i]
+                for t in range(trans_matrix.shape[0])
+                for i in range(post["n_states"])
+            ]
+        )
+        off_diagonal_mean = np.mean(
+            [
+                trans_matrix[t, i, j]
+                for t in range(trans_matrix.shape[0])
+                for i in range(post["n_states"])
+                for j in range(post["n_states"])
+                if i != j
+            ]
+        )
+
+        assert diagonal_mean > off_diagonal_mean, (
+            "Diagonal stickiness should favor self-transitions"
+        )
 
 
 class TestEstimateStationaryStateTransition:
@@ -143,7 +156,7 @@ class TestEstimateStationaryStateTransition:
         """Verify output is a valid stochastic matrix."""
         # Arrange
         post = posterior_data
-        
+
         # Act
         trans_matrix = estimate_stationary_state_transition(
             causal_posterior=post["causal_posterior"],
@@ -153,7 +166,7 @@ class TestEstimateStationaryStateTransition:
             concentration=1.0,
             stickiness=0.0,  # uniform prior
         )
-        
+
         # Assert
         assert trans_matrix.shape == (post["n_states"], post["n_states"])
         assert_stochastic_matrix(trans_matrix)
@@ -161,7 +174,7 @@ class TestEstimateStationaryStateTransition:
     def test_respects_uniform_prior(self, posterior_data):
         """Test with uniform prior (concentration=1.0)."""
         post = posterior_data
-        
+
         # Act
         trans_matrix = estimate_stationary_state_transition(
             causal_posterior=post["causal_posterior"],
@@ -171,11 +184,13 @@ class TestEstimateStationaryStateTransition:
             concentration=1.0,
             stickiness=0.0,  # uniform prior
         )
-        
+
         # Assert - should be a valid stochastic matrix
         assert_stochastic_matrix(trans_matrix)
         # All probabilities should be reasonable (not extreme)
-        assert np.all(trans_matrix > 1e-6), "No probability should be exactly zero with uniform prior"
+        assert np.all(trans_matrix > 1e-6), (
+            "No probability should be exactly zero with uniform prior"
+        )
 
     def test_respects_diagonal_prior(self, posterior_data):
         """Test with diagonal stickiness prior."""
@@ -205,12 +220,12 @@ class TestEstimateStationaryStateTransition:
         causal_posterior = np.ones((n_time, n_states)) * 1e-8
         causal_posterior[:, 0] = 1.0 - 3e-8
         acausal_posterior = causal_posterior.copy()
-        
+
         transition_matrix = np.eye(n_states) * 0.9 + 0.025
         predictive_distribution = np.zeros((n_time, n_states))
         for t in range(n_time):
             predictive_distribution[t] = causal_posterior[t] @ transition_matrix
-        
+
         # Act
         trans_matrix = estimate_stationary_state_transition(
             causal_posterior=causal_posterior,
@@ -220,7 +235,7 @@ class TestEstimateStationaryStateTransition:
             concentration=1.0,
             stickiness=0.0,  # uniform prior
         )
-        
+
         # Assert - should not contain NaN or inf
         assert np.all(np.isfinite(trans_matrix))
         assert_stochastic_matrix(trans_matrix)
@@ -267,7 +282,7 @@ class TestEstimateDiscreteTransition:
             acausal_state_probabilities=post["acausal_posterior"],
             discrete_transition=time_varying_trans,
             discrete_transition_coefficients=dm["transition_coefficients"],
-            discrete_transition_design_matrix=dm["design_matrix"][:post["n_time"]],
+            discrete_transition_design_matrix=dm["design_matrix"][: post["n_time"]],
             transition_concentration=1.0,
             transition_stickiness=1.0,  # Diagonal stickiness
             transition_regularization=1e-5,

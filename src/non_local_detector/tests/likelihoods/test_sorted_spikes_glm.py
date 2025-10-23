@@ -48,7 +48,6 @@ def simple_1d_environment():
 def simple_spike_data():
     """Generate simple synthetic spike data for testing."""
     n_time = 100
-    n_neurons = 3
     sampling_frequency = 500.0
 
     # Create position trajectory
@@ -113,10 +112,9 @@ class TestSplineDesignMatrix:
         """Should handle 2D position data."""
         # Arrange
         n_time = 30
-        position = np.column_stack([
-            np.linspace(0, 100, n_time),
-            np.linspace(0, 50, n_time)
-        ])
+        position = np.column_stack(
+            [np.linspace(0, 100, n_time), np.linspace(0, 50, n_time)]
+        )
         place_bin_edges = np.array([[0, 100], [0, 50]])
         knot_spacing = 20.0
 
@@ -146,7 +144,9 @@ class TestSplineDesignMatrix:
 
         # Assert
         assert predict_matrix.shape[0] == n_predict
-        assert predict_matrix.shape[1] == design_matrix.shape[1]  # Same number of basis functions
+        assert (
+            predict_matrix.shape[1] == design_matrix.shape[1]
+        )  # Same number of basis functions
 
     def test_make_spline_predict_matrix_handles_nan_positions(self):
         """Should handle NaN positions gracefully."""
@@ -161,7 +161,9 @@ class TestSplineDesignMatrix:
         position_predict = np.array([[10.0], [np.nan], [50.0], [np.nan]])
 
         # Act
-        predict_matrix = make_spline_predict_matrix(design_info, jnp.asarray(position_predict))
+        predict_matrix = make_spline_predict_matrix(
+            design_info, jnp.asarray(position_predict)
+        )
 
         # Assert
         assert predict_matrix.shape[0] == 4
@@ -248,7 +250,7 @@ class TestPoissonRegression:
 
         # Fit with non-uniform weights (down-weight second half)
         weights_skewed = np.ones(n_time)
-        weights_skewed[n_time // 2:] = 0.1
+        weights_skewed[n_time // 2 :] = 0.1
         coef_skewed = fit_poisson_regression(design_matrix, spikes, weights_skewed)
 
         # Assert - coefficients should differ

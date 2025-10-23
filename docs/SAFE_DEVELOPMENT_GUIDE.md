@@ -18,6 +18,7 @@ You don't need to remember all the rules - the system guides both you and Claude
 ### For Claude
 
 Read CLAUDE.md at session start. The system will:
+
 - Tell you which skill to use
 - Enforce environment requirements via hooks
 - Block dangerous operations
@@ -30,11 +31,13 @@ Read CLAUDE.md at session start. The system will:
 ### Layer 1: Hooks (Automatic Enforcement)
 
 **What they do:**
+
 - Check conda environment before Python commands
 - Warn before commits without tests
 - Block snapshot updates without approval
 
 **You'll see:**
+
 - Warnings like "⚠️ Wrong conda environment"
 - Errors like "❌ Snapshot update requires approval"
 
@@ -45,11 +48,13 @@ Read CLAUDE.md at session start. The system will:
 ### Layer 2: Skills (Workflow Guidance)
 
 **What they do:**
+
 - Guide Claude through complex workflows step-by-step
 - Create todo lists for tracking progress
 - Enforce best practices (TDD, numerical validation, safe refactoring)
 
 **You'll see:**
+
 - Claude announcing: "I'm using the scientific-tdd skill..."
 - Todo lists showing progress through workflow steps
 
@@ -60,12 +65,14 @@ Read CLAUDE.md at session start. The system will:
 ### Layer 3: Documentation (Context & Rules)
 
 **What it does:**
+
 - Explains when to use which skill
 - Defines numerical tolerances
 - Provides decision trees
 - Documents the "why" behind rules
 
 **You'll see:**
+
 - Claude following patterns from CLAUDE.md
 - References to specific sections
 
@@ -80,6 +87,7 @@ Read CLAUDE.md at session start. The system will:
 **You:** "Add a new likelihood model based on Gaussian mixtures"
 
 **System does:**
+
 1. Claude announces: "Using scientific-tdd skill"
 2. Claude writes failing test first (RED)
 3. Claude implements minimal code (GREEN)
@@ -89,6 +97,7 @@ Read CLAUDE.md at session start. The system will:
 7. **YOU APPROVE** commit
 
 **Your checkpoints:**
+
 - Review test (does it test the right thing?)
 - Review implementation (makes sense?)
 - Review numerical validation (no unexpected changes?)
@@ -101,6 +110,7 @@ Read CLAUDE.md at session start. The system will:
 **You:** "Fix the bug where transition matrix isn't normalized"
 
 **System does:**
+
 1. If existing tests cover bug: Claude fixes directly, runs tests
 2. If no coverage: Claude uses scientific-tdd to add test first
 3. Claude runs full test suite
@@ -109,6 +119,7 @@ Read CLAUDE.md at session start. The system will:
 6. **YOU APPROVE** commit after reviewing analysis
 
 **Your checkpoints:**
+
 - Does fix make sense?
 - Are numerical changes expected?
 - Do invariants still hold?
@@ -120,6 +131,7 @@ Read CLAUDE.md at session start. The system will:
 **You:** "Refactor the HMM filtering to use JAX scan instead of loops"
 
 **System does:**
+
 1. Claude announces: "Using safe-refactoring skill"
 2. Claude captures test baseline
 3. Claude captures snapshot baseline
@@ -129,6 +141,7 @@ Read CLAUDE.md at session start. The system will:
 7. **YOU APPROVE** commit
 
 **Your checkpoints:**
+
 - No test changes? (must be exactly same)
 - No snapshot changes? (must be exactly same)
 - Numerical differences < 1e-14? (floating-point noise only)
@@ -140,6 +153,7 @@ Read CLAUDE.md at session start. The system will:
 **You:** "Optimize the likelihood calculation for better performance"
 
 **System does:**
+
 1. Claude announces: "Using jax + numerical-validation skills"
 2. Claude captures performance baseline
 3. Claude uses jax skill for optimization approach
@@ -150,6 +164,7 @@ Read CLAUDE.md at session start. The system will:
 8. **YOU APPROVE** commit
 
 **Your checkpoints:**
+
 - Performance actually improved?
 - Numerical differences acceptable?
 - No degradation in accuracy?
@@ -189,6 +204,7 @@ Approve snapshot update?
 ```
 
 **Review checklist:**
+
 - [ ] Do I understand why it changed?
 - [ ] Are mathematical properties preserved?
 - [ ] Is the magnitude of change acceptable?
@@ -200,12 +216,14 @@ Approve snapshot update?
 ### Commit Approval
 
 Claude will present:
+
 - What changed (files + summary)
 - What tests verified the change
 - Numerical validation results (if applicable)
 - Proposed commit message
 
 **Review checklist:**
+
 - [ ] Changes make sense?
 - [ ] Tests cover the changes?
 - [ ] No unexpected side effects?
@@ -270,6 +288,7 @@ Understanding when to approve numerical changes:
 **Cause:** Change introduced regression
 
 **Solution:**
+
 1. Ask Claude to show which tests failed
 2. Review the failures
 3. Decide: Fix the bug OR revert the change
@@ -283,12 +302,14 @@ Understanding when to approve numerical changes:
 **Cause:** Change affected algorithm behavior more than anticipated
 
 **Solution:**
+
 1. Ask Claude for detailed numerical analysis
 2. Check if mathematical properties still hold
 3. Verify against golden regression tests
 4. Decide if magnitude is scientifically acceptable
 
 **Don't approve if:**
+
 - You don't understand why it changed
 - Invariants are violated
 - Magnitude seems too large
@@ -376,11 +397,13 @@ A: You're the domain expert. If Claude says "differences are acceptable" but you
 ## Support
 
 **System not working?**
+
 1. Run `./tests/test_safe_dev_system.sh` to verify installation
 2. Check hook permissions: `ls -l .claude/hooks/*.sh`
 3. Review recent changes to CLAUDE.md
 
 **Need help?**
+
 - Check `.claude/skills/README.md` for skill details
 - Check `.claude/hooks/README.md` for hook troubleshooting
 - Review this guide's troubleshooting section
@@ -396,11 +419,13 @@ The safe scientific development system provides three layers of protection:
 3. **Documentation** provides context and decision criteria
 
 **Your role:**
+
 - Review analyses at approval gates
 - Verify numerical changes make sense
 - Trust the system, but verify the results
 
 **Claude's role:**
+
 - Follow appropriate skills
 - Provide complete analyses
 - Ask for approval at gates

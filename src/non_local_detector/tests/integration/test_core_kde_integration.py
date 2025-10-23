@@ -107,7 +107,9 @@ def test_filter_smoother_with_sorted_kde_nonlocal(n_chunks, simple_1d_environmen
 
 
 @pytest.mark.parametrize("n_chunks", [2, 4])
-def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(n_chunks, simple_1d_environment):
+def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(
+    n_chunks, simple_1d_environment
+):
     # Encoding data
     env = simple_1d_environment
     t_pos = np.linspace(0.0, 10.0, 101)
