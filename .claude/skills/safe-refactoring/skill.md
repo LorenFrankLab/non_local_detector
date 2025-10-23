@@ -1,3 +1,10 @@
+---
+name: safe-refactoring
+description: Change code structure without changing behavior, with zero tolerance for behavioral changes
+tags: [refactoring, testing, scientific, quality]
+version: 1.0
+---
+
 # Safe Refactoring for Scientific Code
 
 ## Overview

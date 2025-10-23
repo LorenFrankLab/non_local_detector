@@ -1,3 +1,10 @@
+---
+name: scientific-tdd
+description: Pragmatic test-driven development for scientific code with numerical validation
+tags: [testing, tdd, scientific, numerical]
+version: 1.0
+---
+
 # Scientific Test-Driven Development
 
 ## Overview

@@ -1,3 +1,10 @@
+---
+name: numerical-validation
+description: Verify mathematical correctness and numerical accuracy after code changes
+tags: [testing, numerical, validation, mathematical, scientific]
+version: 1.0
+---
+
 # Numerical Validation for Scientific Code
 
 ## Overview
@@ -11,6 +18,7 @@ Verify that changes to mathematical/algorithmic code maintain numerical accuracy
 ## When to Use This Skill
 
 **MUST use when modifying:**
+
 - `src/non_local_detector/core.py` (HMM algorithms)
 - `src/non_local_detector/likelihoods/` (likelihood models)
 - `src/non_local_detector/continuous_state_transitions.py`
@@ -19,6 +27,7 @@ Verify that changes to mathematical/algorithmic code maintain numerical accuracy
 - Any code involving JAX transformations or numerical computations
 
 **Also use when:**
+
 - Refactoring mathematical code (tolerance: 1e-14)
 - Optimizing algorithms (tolerance: 1e-10)
 - Changing convergence criteria or tolerances
@@ -88,17 +97,20 @@ After making changes:
 ### Step 4: Compare Numerical Differences
 
 **Difference tolerances:**
+
 - **Refactoring (no behavior change):** Max 1e-14 (floating-point noise only)
 - **Intentional algorithm changes:** Max 1e-10 (must be justified)
 - **Any larger difference:** Requires investigation and explanation
 
 **Compare outputs:**
+
 ```bash
 # Check if outputs differ
 diff /tmp/baseline_output.txt /tmp/new_output.txt
 ```
 
 **For each difference:**
+
 - Is it expected based on the change?
 - What is the magnitude? (< 1e-14 is floating-point noise, < 1e-10 is acceptable for algorithm changes)
 - Does it affect scientific conclusions?
@@ -108,11 +120,13 @@ diff /tmp/baseline_output.txt /tmp/new_output.txt
 **Critical invariants that must ALWAYS hold:**
 
 1. **Probability distributions sum to 1.0:**
+
    ```python
    assert np.allclose(probabilities.sum(axis=-1), 1.0, atol=1e-10)
    ```
 
 2. **Transition matrices are stochastic:**
+
    ```python
    assert np.allclose(transition_matrix.sum(axis=-1), 1.0, atol=1e-10)
    assert np.all(transition_matrix >= 0)
@@ -120,17 +134,20 @@ diff /tmp/baseline_output.txt /tmp/new_output.txt
    ```
 
 3. **Log-probabilities are finite:**
+
    ```python
    assert np.all(np.isfinite(log_probs))
    ```
 
 4. **Covariance matrices are positive semi-definite:**
+
    ```python
    eigenvalues = np.linalg.eigvalsh(covariance)
    assert np.all(eigenvalues >= -1e-10)
    ```
 
 5. **Likelihoods are non-negative:**
+
    ```python
    assert np.all(likelihood >= 0)
    ```
@@ -146,6 +163,7 @@ diff /tmp/baseline_output.txt /tmp/new_output.txt
 **Expected:** All property tests pass
 
 **Property tests verify:**
+
 - Invariants hold across many random inputs (hypothesis library)
 - Edge cases are handled correctly
 - Mathematical properties are maintained
@@ -160,6 +178,7 @@ diff /tmp/baseline_output.txt /tmp/new_output.txt
 ```
 
 **Golden regression tests:**
+
 - Use real scientific data
 - Compare against validated reference outputs
 - Catch subtle numerical changes that affect scientific results
@@ -172,6 +191,7 @@ diff /tmp/baseline_output.txt /tmp/new_output.txt
 Create a comprehensive report with:
 
 **1. Diff - What Changed:**
+
 ```
 Snapshot changes:
 - test_model_output: posterior probabilities differ by max 2.3e-11
@@ -182,6 +202,7 @@ Test output changes:
 ```
 
 **2. Explanation - Why It Changed:**
+
 ```
 Changed optimizer tolerance from 1e-6 to 1e-8, resulting in:
 - More precise convergence
@@ -190,6 +211,7 @@ Changed optimizer tolerance from 1e-6 to 1e-8, resulting in:
 ```
 
 **3. Validation - Invariants Still Hold:**
+
 ```
 Verified:
 ✓ All probabilities sum to 1.0 (max deviation: 3.4e-15)
@@ -200,6 +222,7 @@ Verified:
 ```
 
 **4. Test Case - Demonstrate Correctness:**
+
 ```python
 # Before change:
 old_result = [0.342156, 0.657844]  # Posterior at time 10
@@ -215,17 +238,20 @@ new_result = [0.342156023, 0.657843977]  # Posterior at time 10
 ### Step 9: Present Analysis and Request Approval
 
 **If differences are within tolerance (< 1e-14 for refactoring):**
+
 - Present analysis for information
 - Proceed with change
 - No approval needed
 
 **If differences are 1e-14 to 1e-10:**
+
 - Present full analysis
 - Explain why differences are acceptable
 - Request approval: "These differences are expected and scientifically acceptable. Approve?"
 - Wait for user response
 
 **If differences are > 1e-10:**
+
 - Present full analysis
 - Explain significance of differences
 - Provide scientific justification
@@ -240,6 +266,7 @@ new_result = [0.342156023, 0.657843977]  # Posterior at time 10
 2. Present to user
 3. Ask: "These changes are [expected/acceptable/significant]. Approve snapshot update?"
 4. If approved: User will set approval flag, then run:
+
    ```bash
    /Users/edeno/miniconda3/envs/non_local_detector/bin/pytest --snapshot-update
    ```
@@ -294,6 +321,7 @@ new_result = [0.342156023, 0.657843977]  # Posterior at time 10
 ## Red Flags
 
 **Don't:**
+
 - Skip baseline capture
 - Ignore numerical differences > 1e-14
 - Assume "small" differences don't matter
@@ -302,6 +330,7 @@ new_result = [0.342156023, 0.657843977]  # Posterior at time 10
 - Proceed with NaN/Inf in outputs
 
 **Do:**
+
 - Always capture baseline before changes
 - Investigate all unexpected differences
 - Verify mathematical invariants explicitly
