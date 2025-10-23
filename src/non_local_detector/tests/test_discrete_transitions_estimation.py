@@ -144,9 +144,9 @@ class TestEstimateNonStationaryStateTransition:
             ]
         )
 
-        assert diagonal_mean > off_diagonal_mean, (
-            "Diagonal stickiness should favor self-transitions"
-        )
+        assert (
+            diagonal_mean > off_diagonal_mean
+        ), "Diagonal stickiness should favor self-transitions"
 
 
 class TestEstimateStationaryStateTransition:
@@ -188,9 +188,9 @@ class TestEstimateStationaryStateTransition:
         # Assert - should be a valid stochastic matrix
         assert_stochastic_matrix(trans_matrix)
         # All probabilities should be reasonable (not extreme)
-        assert np.all(trans_matrix > 1e-6), (
-            "No probability should be exactly zero with uniform prior"
-        )
+        assert np.all(
+            trans_matrix > 1e-6
+        ), "No probability should be exactly zero with uniform prior"
 
     def test_respects_diagonal_prior(self, posterior_data):
         """Test with diagonal stickiness prior."""

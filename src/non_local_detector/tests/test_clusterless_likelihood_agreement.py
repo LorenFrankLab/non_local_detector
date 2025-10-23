@@ -199,9 +199,9 @@ def test_kde_gmm_top_position_agreement(
     # Compute agreement (fraction of times they agree on position bin)
     agreement = np.mean(np.all(kde_positions == gmm_positions, axis=1))
 
-    assert agreement >= TOP_POSITION_AGREEMENT_THRESHOLD, (
-        f"KDE/GMM top position agreement {agreement:.2%} below threshold {TOP_POSITION_AGREEMENT_THRESHOLD:.2%}"
-    )
+    assert (
+        agreement >= TOP_POSITION_AGREEMENT_THRESHOLD
+    ), f"KDE/GMM top position agreement {agreement:.2%} below threshold {TOP_POSITION_AGREEMENT_THRESHOLD:.2%}"
 
 
 @pytest.mark.slow
@@ -223,9 +223,9 @@ def test_kde_gmm_likelihood_correlation(
     # Compute Pearson correlation
     correlation = np.corrcoef(kde_flat, gmm_flat)[0, 1]
 
-    assert correlation >= LIKELIHOOD_CORRELATION_THRESHOLD, (
-        f"KDE/GMM likelihood correlation {correlation:.3f} below threshold {LIKELIHOOD_CORRELATION_THRESHOLD:.3f}"
-    )
+    assert (
+        correlation >= LIKELIHOOD_CORRELATION_THRESHOLD
+    ), f"KDE/GMM likelihood correlation {correlation:.3f} below threshold {LIKELIHOOD_CORRELATION_THRESHOLD:.3f}"
 
 
 @pytest.mark.slow
@@ -257,6 +257,6 @@ def test_kde_gmm_rank_correlation(
     # Average rank correlation across time bins
     mean_rank_correlation = np.mean(rank_correlations)
 
-    assert mean_rank_correlation >= LIKELIHOOD_CORRELATION_THRESHOLD, (
-        f"Mean rank correlation {mean_rank_correlation:.3f} below threshold {LIKELIHOOD_CORRELATION_THRESHOLD:.3f}"
-    )
+    assert (
+        mean_rank_correlation >= LIKELIHOOD_CORRELATION_THRESHOLD
+    ), f"Mean rank correlation {mean_rank_correlation:.3f} below threshold {LIKELIHOOD_CORRELATION_THRESHOLD:.3f}"

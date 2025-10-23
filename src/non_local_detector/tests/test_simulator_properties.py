@@ -57,28 +57,28 @@ def test_simulator_always_produces_valid_output(
 
     # Should always satisfy basic contracts
     assert len(sim.spike_times) == n_tetrodes, "Wrong number of electrodes"
-    assert len(sim.spike_waveform_features) == n_tetrodes, (
-        "Wrong number of feature arrays"
-    )
+    assert (
+        len(sim.spike_waveform_features) == n_tetrodes
+    ), "Wrong number of feature arrays"
 
     # All spike times should be strictly increasing per electrode
     for electrode_id, st_array in enumerate(sim.spike_times):
         if len(st_array) > 1:
-            assert np.all(np.diff(st_array) > 0), (
-                f"Electrode {electrode_id} times not strictly increasing"
-            )
+            assert np.all(
+                np.diff(st_array) > 0
+            ), f"Electrode {electrode_id} times not strictly increasing"
 
     # All data should be finite
     assert np.all(np.isfinite(sim.position)), "Position contains non-finite values"
-    assert np.all(np.isfinite(sim.position_time)), (
-        "Position time contains non-finite values"
-    )
+    assert np.all(
+        np.isfinite(sim.position_time)
+    ), "Position time contains non-finite values"
 
     # Spike features should be finite
     for electrode_id, features in enumerate(sim.spike_waveform_features):
-        assert np.all(np.isfinite(features)), (
-            f"Electrode {electrode_id} features contain non-finite values"
-        )
+        assert np.all(
+            np.isfinite(features)
+        ), f"Electrode {electrode_id} features contain non-finite values"
 
 
 @settings(max_examples=10, deadline=None)
@@ -125,14 +125,14 @@ def test_encoding_model_fits_with_random_parameters(
     # Should produce valid outputs
     assert "occupancy" in encoding_model, "Missing occupancy in encoding model"
     assert "mean_rates" in encoding_model, "Missing mean_rates in encoding model"
-    assert len(encoding_model["mean_rates"]) == len(sim.spike_times), (
-        "Wrong number of mean rates"
-    )
+    assert len(encoding_model["mean_rates"]) == len(
+        sim.spike_times
+    ), "Wrong number of mean rates"
 
     # All outputs should be finite
-    assert np.all(np.isfinite(encoding_model["occupancy"])), (
-        "Occupancy contains non-finite values"
-    )
+    assert np.all(
+        np.isfinite(encoding_model["occupancy"])
+    ), "Occupancy contains non-finite values"
     for rate in encoding_model["mean_rates"]:
         assert np.isfinite(rate), "Mean rate contains non-finite values"
 
@@ -218,9 +218,9 @@ def test_decoder_output_shapes_consistent(
     # Check output shapes
     posterior = results.acausal_posterior.values
     assert posterior.ndim == 2, f"Posterior should be 2D, got {posterior.ndim}D"
-    assert posterior.shape[0] == n_time_bins, (
-        f"Wrong time dimension: expected {n_time_bins}, got {posterior.shape[0]}"
-    )
+    assert (
+        posterior.shape[0] == n_time_bins
+    ), f"Wrong time dimension: expected {n_time_bins}, got {posterior.shape[0]}"
 
     # Note: Normalization is tested in test_posterior_properties.py
     # This test focuses on shape consistency across random parameters
@@ -262,9 +262,9 @@ def test_different_seeds_produce_different_outputs(
     spike_counts1 = [len(st) for st in sim1.spike_times]
     spike_counts2 = [len(st) for st in sim2.spike_times]
 
-    assert spike_counts1 != spike_counts2, (
-        f"Different seeds produced same spike counts: {spike_counts1}"
-    )
+    assert (
+        spike_counts1 != spike_counts2
+    ), f"Different seeds produced same spike counts: {spike_counts1}"
 
 
 @settings(max_examples=10, deadline=None)
@@ -293,9 +293,9 @@ def test_same_seed_produces_identical_outputs(
     for i, (st1, st2) in enumerate(
         zip(sim1.spike_times, sim2.spike_times, strict=True)
     ):
-        assert len(st1) == len(st2), (
-            f"Electrode {i}: Different spike counts with same seed"
-        )
+        assert len(st1) == len(
+            st2
+        ), f"Electrode {i}: Different spike counts with same seed"
         np.testing.assert_array_equal(
             st1, st2, err_msg=f"Electrode {i}: Different spike times with same seed"
         )

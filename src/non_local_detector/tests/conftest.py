@@ -212,9 +212,9 @@ def assert_probability_distribution(arr, axis=-1, rtol=1e-5, atol=1e-6):
     assert np.all(arr >= 0), "Probabilities must be non-negative"
     assert np.all(arr <= 1), "Probabilities must be <= 1"
     sums = arr.sum(axis=axis)
-    assert np.allclose(sums, 1.0, rtol=rtol, atol=atol), (
-        f"Probabilities must sum to 1 along axis {axis}, got sums: {sums}"
-    )
+    assert np.allclose(
+        sums, 1.0, rtol=rtol, atol=atol
+    ), f"Probabilities must sum to 1 along axis {axis}, got sums: {sums}"
 
 
 def assert_stochastic_matrix(matrix, rtol=1e-5, atol=1e-6):
@@ -233,9 +233,9 @@ def assert_stochastic_matrix(matrix, rtol=1e-5, atol=1e-6):
     assert np.all(matrix >= 0), "Elements must be non-negative"
 
     row_sums = matrix.sum(axis=1)
-    assert np.allclose(row_sums, 1.0, rtol=rtol, atol=atol), (
-        f"Rows must sum to 1, got row sums: {row_sums}"
-    )
+    assert np.allclose(
+        row_sums, 1.0, rtol=rtol, atol=atol
+    ), f"Rows must sum to 1, got row sums: {row_sums}"
 
 
 def assert_all_finite(arr, name="array"):
@@ -269,9 +269,9 @@ def assert_valid_shape(arr, expected_shape, name="array"):
     Raises:
         AssertionError: If shapes don't match.
     """
-    assert arr.shape == expected_shape, (
-        f"{name} has shape {arr.shape}, expected {expected_shape}"
-    )
+    assert (
+        arr.shape == expected_shape
+    ), f"{name} has shape {arr.shape}, expected {expected_shape}"
 
 
 def assert_non_negative(arr, name="array"):
@@ -299,12 +299,12 @@ def assert_in_range(arr, min_val, max_val, name="array"):
     Raises:
         AssertionError: If any values are outside range.
     """
-    assert np.all(arr >= min_val), (
-        f"{name} contains values below {min_val}. Min: {np.min(arr)}"
-    )
-    assert np.all(arr <= max_val), (
-        f"{name} contains values above {max_val}. Max: {np.max(arr)}"
-    )
+    assert np.all(
+        arr >= min_val
+    ), f"{name} contains values below {min_val}. Min: {np.min(arr)}"
+    assert np.all(
+        arr <= max_val
+    ), f"{name} contains values above {max_val}. Max: {np.max(arr)}"
 
 
 def assert_entropy_decreased(filtered, smoothed, name="entropy"):
