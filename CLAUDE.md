@@ -8,6 +8,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Commands
 
+### Environment Setup
+
+The project uses a conda environment called `non_local_detector`. When running development commands, use the full path to the environment's executables:
+
+- **Python**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/python`
+- **Pytest**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest`
+- **Ruff**: Use ruff from another conda environment (e.g., `/Users/edeno/miniconda3/envs/spectral_connectivity/bin/ruff`)
+- **Black**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/black`
+
+Alternatively, activate the environment first:
+```bash
+conda activate non_local_detector
+```
+
 ### Installation
 
 - **Development setup**: `mamba create env -f environment.yml` (CPU) or `mamba create env -f environment_gpu.yml` (GPU)
@@ -15,11 +29,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Testing
 
-- **Run tests**: `pytest` (uses pytest framework defined in pyproject.toml)
-- **Run single test**: `pytest src/non_local_detector/tests/test_version_import.py`
-- **Test with coverage**: `pytest --cov`
-- **Run snapshot tests**: `pytest -m snapshot` (regression tests using syrupy)
-- **Update snapshots**: `pytest --snapshot-update` (after intentional behavior changes)
+- **Run tests**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest` (uses pytest framework defined in pyproject.toml)
+- **Run single test**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest src/non_local_detector/tests/test_version_import.py`
+- **Test with coverage**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest --cov`
+- **Run snapshot tests**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -m snapshot` (regression tests using syrupy)
+- **Run golden regression tests**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest src/non_local_detector/tests/test_golden_regression.py -v`
+- **Update snapshots**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest --snapshot-update` (after intentional behavior changes)
 
 ### Code Quality
 
