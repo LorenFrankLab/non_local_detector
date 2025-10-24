@@ -38,11 +38,15 @@
 
 ### Task 2.1: Add Sorted Spikes GLM Golden Test
 
-- [ ] Add `test_sorted_spikes_glm_golden_regression()` to `test_golden_regression.py`
-- [ ] Run test to create golden data
-- [ ] Verify golden data file created
-- [ ] Run test again to verify it passes
-- [ ] Commit: "test: add golden regression test for sorted_spikes_glm"
+**SKIPPED** - GLM integration issue discovered:
+
+- `sorted_spikes_glm` algorithm requires environment-specific parameters (`place_bin_edges`, `edges`, `is_track_interior`, `is_track_boundary`) that aren't properly passed through the `SortedSpikesDecoder` API
+- No existing tests use `SortedSpikesDecoder` with GLM algorithm
+- This appears to be a missing integration point in the base model
+- Issue should be addressed separately - not blocking regression detection system
+- Can revisit after base GLM integration is fixed
+- [~] Attempted to add test but discovered GLM not fully integrated
+- [~] Documented issue for future investigation
 
 ### Task 2.2: Add Clusterless GMM Golden Test
 
