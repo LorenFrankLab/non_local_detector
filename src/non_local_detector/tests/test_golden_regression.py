@@ -16,6 +16,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from non_local_detector.continuous_state_transitions import RandomWalk
 from non_local_detector.models.decoder import ClusterlessDecoder, SortedSpikesDecoder
 from non_local_detector.models.non_local_model import NonLocalClusterlessDetector
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
@@ -26,6 +27,7 @@ GOLDEN_DIR = Path(__file__).parent / "golden_data"
 
 # Test parameters (must be deterministic)
 CLUSTERLESS_SEED = 12345
+RANDOM_WALK_SEED = 33333
 SORTED_SPIKES_SEED = 54321
 NONLOCAL_SEED = 99999
 
@@ -196,6 +198,87 @@ def test_clusterless_decoder_golden_regression(golden_path: Path) -> None:
         pytest.skip("Golden data created, skipping comparison")
 
     # Load golden data and compare
+    golden = load_golden_data(golden_file)
+    compare_golden_data(
+        actual_posterior=results.acausal_posterior.values,
+        golden_posterior=golden["posterior"],
+    )
+
+
+@pytest.mark.slow
+def test_random_walk_transition_golden_regression(golden_path: Path) -> None:
+    """Test decoder with RandomWalk continuous state transition.
+
+    Tests different movement model from default Identity transition.
+    """
+    # Generate simulation
+    sim = make_simulated_run_data(
+        n_tetrodes=4,
+        place_field_means=np.arange(0, 160, 10),  # 16 neurons
+        sampling_frequency=500,
+        n_runs=3,
+        seed=RANDOM_WALK_SEED,
+    )
+
+    # Split train/test
+    n_encode = int(0.7 * len(sim.position_time))
+    is_training = np.ones(len(sim.position_time), dtype=bool)
+    is_training[n_encode:] = False
+
+    # Fit decoder with RandomWalk transition
+    decoder = ClusterlessDecoder(
+        clusterless_algorithm="clusterless_kde",
+        clusterless_algorithm_params={
+            "position_std": 6.0,
+            "waveform_std": 24.0,
+            "block_size": 100,
+        },
+        continuous_transition_types=[[RandomWalk(movement_var=25.0)]],
+    )
+    decoder.fit(
+        sim.position_time,
+        sim.position,
+        sim.spike_times,
+        sim.spike_waveform_features,
+        is_training=is_training,
+    )
+
+    # Predict on test data
+    test_start_idx = n_encode
+    test_end_idx = min(n_encode + 50, len(sim.position_time))
+
+    results = decoder.predict(
+        spike_times=[
+            st[
+                (st >= sim.position_time[test_start_idx])
+                & (st < sim.position_time[test_end_idx])
+            ]
+            for st in sim.spike_times
+        ],
+        spike_waveform_features=[
+            wf[
+                (st >= sim.position_time[test_start_idx])
+                & (st < sim.position_time[test_end_idx])
+            ]
+            for st, wf in zip(
+                sim.spike_times, sim.spike_waveform_features, strict=False
+            )
+        ],
+        time=sim.position_time[test_start_idx:test_end_idx],
+        position=sim.position[test_start_idx:test_end_idx],
+        position_time=sim.position_time[test_start_idx:test_end_idx],
+    )
+
+    # Golden data file
+    golden_file = golden_path / "random_walk_transition_golden.pkl"
+
+    if not golden_file.exists():
+        save_golden_data(
+            golden_file,
+            posterior=results.acausal_posterior.values,
+        )
+        pytest.skip("Golden data created, skipping comparison")
+
     golden = load_golden_data(golden_file)
     compare_golden_data(
         actual_posterior=results.acausal_posterior.values,

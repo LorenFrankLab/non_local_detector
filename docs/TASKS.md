@@ -62,10 +62,10 @@
 
 ### Task 2.3: Add RandomWalk Transition Golden Test
 
-- [ ] Add `test_random_walk_transition_golden_regression()` to `test_golden_regression.py`
-- [ ] Run test to create golden data
-- [ ] Run test again to verify it passes
-- [ ] Commit: "test: add golden regression test for RandomWalk transition"
+- [x] Add `test_random_walk_transition_golden_regression()` to `test_golden_regression.py`
+- [x] Run test to create golden data
+- [x] Run test again to verify it passes
+- [x] Commit: "test: add golden regression test for RandomWalk transition"
 
 ### Task 2.4: Add Multi-Environment Golden Test
 
