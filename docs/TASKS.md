@@ -28,9 +28,9 @@
 
 ### Task 1.3: Create Regression Report Generator
 
-- [ ] Create `src/non_local_detector/tests/regression_report.py`
-- [ ] Test regression report generation
-- [ ] Commit: "feat: add regression report generator for gated autonomy workflow"
+- [x] Create `src/non_local_detector/tests/regression_report.py`
+- [x] Test regression report generation
+- [x] Commit: "feat: add regression report generator for gated autonomy workflow"
 
 ---
 
