@@ -598,7 +598,10 @@ def _estimate_discrete_transition(
 
     else:
         # Convert stickiness to float if needed
-        if isinstance(transition_stickiness, np.ndarray):
+        if (
+            isinstance(transition_stickiness, np.ndarray)
+            and transition_stickiness.size == 1
+        ):
             stickiness_value = float(transition_stickiness.item())
         else:
             stickiness_value = transition_stickiness
