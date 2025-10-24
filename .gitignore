@@ -155,6 +155,8 @@ _version.py
 .DS_Store
 *.npz
 *.pkl
+# Exception: commit golden regression data for version control
+!src/non_local_detector/tests/golden_data/*.pkl
 *.png
 
 # Git worktrees
