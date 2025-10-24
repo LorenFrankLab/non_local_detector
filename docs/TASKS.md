@@ -50,10 +50,15 @@
 
 ### Task 2.2: Add Clusterless GMM Golden Test
 
-- [ ] Add `test_clusterless_gmm_golden_regression()` to `test_golden_regression.py`
-- [ ] Run test to create golden data
-- [ ] Run test again to verify it passes
-- [ ] Commit: "test: add golden regression test for clusterless_gmm"
+**SKIPPED** - GMM integration issue discovered:
+
+- `clusterless_gmm` algorithm has TypeError in prediction step: "argument after ** must be a mapping, not EncodingModel"
+- Encoding (fit) works but prediction fails
+- Similar to GLM issue - suggests newer algorithms not fully integrated with decoder API
+- No existing tests use `ClusterlessDecoder` with GMM algorithm
+- Issue should be addressed separately - not blocking regression detection system
+- [~] Attempted to add test but discovered GMM prediction API issue
+- [~] Documented issue for future investigation
 
 ### Task 2.3: Add RandomWalk Transition Golden Test
 
