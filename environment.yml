@@ -21,3 +21,4 @@ dependencies:
 - black
 - pytest
 - pytest-cov
+- hypothesis
