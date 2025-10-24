@@ -16,7 +16,7 @@ def make_single_environment_movie(
     classifier,
     results,
     position_info,
-    marks,
+    spike_times,
     movie_name="video_name.mp4",
     sampling_frequency=500,
     video_slowdown=8,
@@ -32,14 +32,10 @@ def make_single_environment_movie(
         else position_name
     )
 
-    # Prepare all data upfront (must be pickle-able)
-    if marks.ndim > 2:
-        multiunit_spikes = (np.any(~np.isnan(marks), axis=1)).astype(float)
-    else:
-        multiunit_spikes = np.asarray(marks, dtype=float)
-
     multiunit_firing_rate = pd.DataFrame(
-        get_multiunit_firing_rate(multiunit_spikes, sampling_frequency),
+        get_multiunit_firing_rate(
+            spike_times, position_info.index.to_numpy().squeeze()
+        ),
         index=position_info.index,
         columns=["firing_rate"],
     )
@@ -48,6 +44,7 @@ def make_single_environment_movie(
     is_track_interior = classifier.environments[0].is_track_interior_
     posterior = (
         results.acausal_posterior.isel(time=time_slice)
+        .unstack("state_bins")
         .sum("state")
         .where(is_track_interior)
     )
