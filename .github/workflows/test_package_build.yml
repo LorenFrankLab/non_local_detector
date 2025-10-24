@@ -31,8 +31,6 @@ jobs:
         run: ruff check src/ --output-format=github
       - name: Run ruff formatting check
         run: ruff format --check src/
-      - name: Run black formatting check
-        run: black --check src/
       - name: Run mypy type checking
         run: mypy src/non_local_detector/
         continue-on-error: true  # Start lenient, can remove later
