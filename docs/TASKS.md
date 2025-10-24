@@ -91,14 +91,25 @@
 
 ## Phase 3: Property Test Enhancement
 
-### Task 3.1: Expand Probability Distribution Properties
+### Task 3.1: Expand Probability Distribution Properties ✅
 
-- [ ] Review existing `test_probability_properties.py`
-- [ ] Add `test_posterior_probabilities_sum_to_one()` property
-- [ ] Add `test_posteriors_nonnegative_and_bounded()` property
-- [ ] Add `test_log_probabilities_finite()` property
-- [ ] Run property tests with hypothesis statistics
+- [x] Review existing `test_probability_properties.py`
+- [x] Add `test_posterior_probabilities_sum_to_one()` property
+- [x] Add `test_posteriors_nonnegative_and_bounded()` property
+- [x] Add `test_log_probabilities_finite()` property
+- [x] Run property tests - all 13 tests pass (10 original + 3 new)
 - [ ] Commit: "test: expand property tests for probability distributions"
+
+**Implementation Notes:**
+
+- Added 3 new property tests that verify decoder posteriors maintain mathematical invariants
+- Tests use RandomWalk transition with full simulation data (n_runs=3, all 35000 samples for training)
+- Only decode 10 time bins for speed (tests run in ~7-8 seconds each)
+- Key learnings:
+  - RandomWalk requires substantial training data to build position bins (100 samples insufficient)
+  - Decoder uses "state_bins" dimension name, not "position"
+  - Must use `infer_track_interior=True` (default) for proper bin creation
+- All tests verify critical invariants: posteriors sum to 1, values in [0,1], log values finite
 
 ### Task 3.2: Add Transition Matrix Properties
 

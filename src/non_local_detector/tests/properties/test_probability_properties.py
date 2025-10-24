@@ -12,12 +12,15 @@ import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
+from non_local_detector.continuous_state_transitions import RandomWalk
 from non_local_detector.core import (
     _condition_on,
     _divide_safe,
     _normalize,
     _safe_log,
 )
+from non_local_detector.models.decoder import ClusterlessDecoder
+from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
 
 # Custom strategies for probability distributions
@@ -223,3 +226,198 @@ class TestProbabilityProperties:
         normalized_scaled, _ = _normalize(jnp.asarray(scaled))
 
         assert jnp.allclose(normalized_original, normalized_scaled, rtol=1e-6)
+
+    @settings(deadline=5000, max_examples=10)  # Decoder tests are slower
+    @given(st.integers(min_value=42, max_value=9999))
+    def test_posterior_probabilities_sum_to_one(self, seed):
+        """Property: decoder posteriors sum to 1 across position dimension."""
+        # Generate simulation
+        # NOTE: n_runs must be >= 3 to create proper 2D position data
+        # NOTE: Need substantial data for RandomWalk to build proper position bins
+        sim = make_simulated_run_data(
+            n_tetrodes=2,
+            place_field_means=np.arange(0, 80, 20),  # 4 neurons
+            sampling_frequency=500,
+            n_runs=3,  # Multiple runs to ensure 2D position array
+            seed=seed,
+        )
+
+        # Use 70/30 train/test split on all data
+        n_encode = int(0.7 * len(sim.position_time))
+        is_training = np.ones(len(sim.position_time), dtype=bool)
+        is_training[n_encode:] = False
+
+        decoder = ClusterlessDecoder(
+            clusterless_algorithm="clusterless_kde",
+            clusterless_algorithm_params={
+                "position_std": 6.0,
+                "waveform_std": 24.0,
+                "block_size": 50,
+            },
+            continuous_transition_types=[[RandomWalk(movement_var=25.0)]],
+        )
+
+        decoder.fit(
+            sim.position_time,
+            sim.position,
+            sim.spike_times,
+            sim.spike_waveform_features,
+            is_training=is_training,
+        )
+
+        # Predict on small test set (10 time bins only for speed)
+        test_start_idx = n_encode
+        test_end_idx = min(n_encode + 10, len(sim.position_time))
+        results = decoder.predict(
+            spike_times=[
+                st[
+                    (st >= sim.position_time[test_start_idx])
+                    & (st < sim.position_time[test_end_idx])
+                ]
+                for st in sim.spike_times
+            ],
+            spike_waveform_features=[
+                swf[
+                    (sim.spike_times[i] >= sim.position_time[test_start_idx])
+                    & (sim.spike_times[i] < sim.position_time[test_end_idx])
+                ]
+                for i, swf in enumerate(sim.spike_waveform_features)
+            ],
+            time=sim.position_time[test_start_idx:test_end_idx],
+            position=sim.position[test_start_idx:test_end_idx],
+            position_time=sim.position_time[test_start_idx:test_end_idx],
+        )
+
+        # Check posterior sums to 1 across spatial dimension (state_bins)
+        posterior_sums = results.acausal_posterior.sum(dim="state_bins")
+        assert np.allclose(posterior_sums.values, 1.0, atol=1e-10)
+
+    @settings(deadline=5000, max_examples=10)
+    @given(st.integers(min_value=42, max_value=9999))
+    def test_posteriors_nonnegative_and_bounded(self, seed):
+        """Property: decoder posteriors are in [0, 1]."""
+        # NOTE: n_runs must be >= 3 to create proper 2D position data
+        # NOTE: Need substantial data for RandomWalk to build proper position bins
+        sim = make_simulated_run_data(
+            n_tetrodes=2,
+            place_field_means=np.arange(0, 80, 20),
+            sampling_frequency=500,
+            n_runs=3,
+            seed=seed,
+        )
+
+        n_encode = int(0.7 * len(sim.position_time))
+        is_training = np.ones(len(sim.position_time), dtype=bool)
+        is_training[n_encode:] = False
+
+        decoder = ClusterlessDecoder(
+            clusterless_algorithm="clusterless_kde",
+            clusterless_algorithm_params={
+                "position_std": 6.0,
+                "waveform_std": 24.0,
+                "block_size": 50,
+            },
+            continuous_transition_types=[[RandomWalk(movement_var=25.0)]],
+        )
+
+        decoder.fit(
+            sim.position_time,
+            sim.position,
+            sim.spike_times,
+            sim.spike_waveform_features,
+            is_training=is_training,
+        )
+
+        test_start_idx = n_encode
+        test_end_idx = min(n_encode + 10, len(sim.position_time))
+        results = decoder.predict(
+            spike_times=[
+                st[
+                    (st >= sim.position_time[test_start_idx])
+                    & (st < sim.position_time[test_end_idx])
+                ]
+                for st in sim.spike_times
+            ],
+            spike_waveform_features=[
+                swf[
+                    (sim.spike_times[i] >= sim.position_time[test_start_idx])
+                    & (sim.spike_times[i] < sim.position_time[test_end_idx])
+                ]
+                for i, swf in enumerate(sim.spike_waveform_features)
+            ],
+            time=sim.position_time[test_start_idx:test_end_idx],
+            position=sim.position[test_start_idx:test_end_idx],
+            position_time=sim.position_time[test_start_idx:test_end_idx],
+        )
+
+        # Check all values in [0, 1]
+        assert np.all(results.acausal_posterior.values >= 0.0)
+        assert np.all(results.acausal_posterior.values <= 1.0)
+
+    @settings(deadline=5000, max_examples=10)
+    @given(st.integers(min_value=42, max_value=9999))
+    def test_log_probabilities_finite(self, seed):
+        """Property: log probabilities should be finite (or -inf for zero prob)."""
+        # NOTE: n_runs must be >= 3 to create proper 2D position data
+        # NOTE: Need substantial data for RandomWalk to build proper position bins
+        sim = make_simulated_run_data(
+            n_tetrodes=2,
+            place_field_means=np.arange(0, 80, 20),
+            sampling_frequency=500,
+            n_runs=3,
+            seed=seed,
+        )
+
+        n_encode = int(0.7 * len(sim.position_time))
+        is_training = np.ones(len(sim.position_time), dtype=bool)
+        is_training[n_encode:] = False
+
+        decoder = ClusterlessDecoder(
+            clusterless_algorithm="clusterless_kde",
+            clusterless_algorithm_params={
+                "position_std": 6.0,
+                "waveform_std": 24.0,
+                "block_size": 50,
+            },
+            continuous_transition_types=[[RandomWalk(movement_var=25.0)]],
+        )
+
+        decoder.fit(
+            sim.position_time,
+            sim.position,
+            sim.spike_times,
+            sim.spike_waveform_features,
+            is_training=is_training,
+        )
+
+        test_start_idx = n_encode
+        test_end_idx = min(n_encode + 10, len(sim.position_time))
+        results = decoder.predict(
+            spike_times=[
+                st[
+                    (st >= sim.position_time[test_start_idx])
+                    & (st < sim.position_time[test_end_idx])
+                ]
+                for st in sim.spike_times
+            ],
+            spike_waveform_features=[
+                swf[
+                    (sim.spike_times[i] >= sim.position_time[test_start_idx])
+                    & (sim.spike_times[i] < sim.position_time[test_end_idx])
+                ]
+                for i, swf in enumerate(sim.spike_waveform_features)
+            ],
+            time=sim.position_time[test_start_idx:test_end_idx],
+            position=sim.position[test_start_idx:test_end_idx],
+            position_time=sim.position_time[test_start_idx:test_end_idx],
+        )
+
+        # Take log of posteriors
+        log_posterior = np.log(
+            results.acausal_posterior.values + 1e-300
+        )  # Avoid log(0)
+
+        # Should not have NaN
+        assert not np.any(np.isnan(log_posterior))
+        # Should be finite or -inf
+        assert np.all(np.isfinite(log_posterior) | np.isneginf(log_posterior))

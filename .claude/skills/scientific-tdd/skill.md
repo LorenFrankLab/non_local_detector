@@ -18,12 +18,14 @@ Pragmatic test-driven development for scientific code: write tests first for new
 ## When to Use This Skill
 
 **MUST use for:**
+
 - New features or algorithms
 - Complex modifications to existing code
 - Adding new mathematical models
 - Implementing new likelihood functions or state transitions
 
 **Can skip test-first for:**
+
 - Simple bug fixes where existing tests already cover the behavior
 - Documentation changes
 - Refactoring with existing comprehensive tests (use safe-refactoring instead)
@@ -41,6 +43,7 @@ Scientific TDD Progress:
 - [ ] Run test to confirm GREEN (passes)
 - [ ] Run full test suite (check for regressions)
 - [ ] Run numerical validation if mathematical code changed
+- [ ] Run code-reviewer agent (and/or ux-reviewer when appropriate)
 - [ ] Refactor if needed (keep tests green)
 - [ ] Commit with descriptive message
 ```
@@ -57,6 +60,7 @@ Before writing new tests, understand current state:
 - Identify what needs to change
 
 **Commands:**
+
 ```bash
 # Find relevant tests
 pytest --collect-only -q | grep <relevant_term>
@@ -70,6 +74,7 @@ pytest --collect-only -q | grep <relevant_term>
 Write test that captures desired behavior:
 
 **Test Structure:**
+
 ```python
 def test_descriptive_name_of_behavior():
     """Test that [specific behavior] works correctly.
@@ -88,6 +93,7 @@ def test_descriptive_name_of_behavior():
 ```
 
 **For mathematical code, verify:**
+
 - Correct output shapes
 - Mathematical invariants (probabilities sum to 1, matrices are stochastic)
 - Expected numerical values (with appropriate tolerances)
@@ -115,6 +121,7 @@ Write simplest code that makes test pass:
 - Use existing patterns from codebase
 
 **For scientific code:**
+
 - Maintain numerical stability
 - Use JAX operations where appropriate
 - Follow existing conventions for shapes and broadcasting
@@ -146,11 +153,13 @@ Check for regressions:
 If you modified mathematical/algorithmic code:
 
 **Use numerical-validation skill:**
+
 ```
 @numerical-validation
 ```
 
 This verifies:
+
 - Mathematical invariants still hold
 - Property-based tests pass
 - Golden regression tests pass
@@ -165,6 +174,7 @@ If code can be improved while keeping tests green:
 - Optimize performance (but verify numerics don't change)
 
 **After each refactor:**
+
 ```bash
 /Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -v
 ```
@@ -210,6 +220,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ## Red Flags
 
 **Don't:**
+
 - Write implementation before test (except for documented bug fixes)
 - Skip running test to see it fail
 - Add untested code "for future use"
@@ -218,6 +229,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Skip numerical validation for mathematical code
 
 **Do:**
+
 - Write descriptive test names
 - Test one behavior per test
 - Use appropriate numerical tolerances (1e-10 for probabilities)
