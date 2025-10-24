@@ -1,0 +1,480 @@
+{
+  "classes": {
+    "ClusterlessDecoder": {
+      "methods": {
+        "__init__": "(self, discrete_initial_conditions: numpy.ndarray | None = None, continuous_initial_conditions_types: list[non_local_detector.initial_conditions.UniformInitialConditions] | None = None, discrete_transition_type: non_local_detector.discrete_state_transitions.DiscreteStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteNonStationaryCustom | non_local_detector.discrete_state_transitions.DiscreteNonStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteStationaryCustom | None = None, discrete_transition_concentration: float = 1.1, discrete_transition_stickiness: float | numpy.ndarray | None = None, discrete_transition_regularization: float = 1e-10, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]] | None = None, observation_models: list[non_local_detector.observation_models.ObservationModel] | non_local_detector.observation_models.ObservationModel | None = None, environments: non_local_detector.environment.Environment | list[non_local_detector.environment.Environment] | None = None, clusterless_algorithm: str = 'clusterless_kde', clusterless_algorithm_params: dict = {'waveform_std': 24.0, 'position_std': 6.0, 'block_size': 10000}, infer_track_interior: bool = True, state_names: list[str] | None = None, sampling_frequency: float = 500.0, no_spike_rate: float = 1e-10)",
+        "calculate_time_bins": "(self, time_range: numpy.ndarray) -> numpy.ndarray",
+        "compute_log_likelihood": "(self, time: numpy.ndarray, position_time: numpy.ndarray, position: numpy.ndarray | None, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_missing: numpy.ndarray | None = None) -> jax.Array",
+        "copy": "(self) -> '_DetectorBase'",
+        "estimate_parameters": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, estimate_initial_conditions: bool = True, estimate_discrete_transition: bool = True, estimate_encoding_model: bool = True, max_iter: int = 20, tolerance: float = 0.0001, cache_likelihood: bool = True, store_log_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "fit": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> 'ClusterlessDetector'",
+        "fit_encoding_model": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, weights: numpy.ndarray | None = None) -> None",
+        "fit_predict": "(self) -> xarray.core.dataset.Dataset",
+        "get_metadata_routing": "(self)",
+        "get_params": "(self, deep=True)",
+        "initialize_continuous_state_transition": "(self, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]], position: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_discrete_state_transition": "(self, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "initialize_environments": "(self, position: numpy.ndarray, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_initial_conditions": "(self) -> None",
+        "initialize_state_index": "(self) -> None",
+        "load_model": "(filename: str = 'model.pkl') -> '_DetectorBase'",
+        "load_results": "(filename: str = 'results.nc') -> xarray.core.dataset.Dataset",
+        "most_likely_sequence": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, n_chunks: int = 1) -> pandas.core.frame.DataFrame",
+        "plot_continuous_state_transition": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "plot_discrete_state_transition": "(self, cmap: str = 'Oranges', ax: matplotlib.axes._axes.Axes | None = None, convert_to_seconds: bool = False, sampling_frequency: int = 1, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "plot_initial_conditions": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "predict": "(self, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, position: numpy.ndarray | None = None, position_time: numpy.ndarray | None = None, is_missing: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, cache_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False, save_causal_posterior_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "save_model": "(self, filename: str = 'model.pkl') -> None",
+        "save_results": "(results: xarray.core.dataset.Dataset, filename: str = 'results.nc') -> None",
+        "set_fit_request": "(self: non_local_detector.models.decoder.ClusterlessDecoder, *, discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', encoding_group_labels: Union[bool, NoneType, str] = '$UNCHANGED$', environment_labels: Union[bool, NoneType, str] = '$UNCHANGED$', is_training: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', spike_waveform_features: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.decoder.ClusterlessDecoder",
+        "set_params": "(self, **params)",
+        "set_predict_request": "(self: non_local_detector.models.decoder.ClusterlessDecoder, *, cache_likelihood: Union[bool, NoneType, str] = '$UNCHANGED$', discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', is_missing: Union[bool, NoneType, str] = '$UNCHANGED$', n_chunks: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', save_causal_posterior_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', save_log_likelihood_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', spike_waveform_features: Union[bool, NoneType, str] = '$UNCHANGED$', time: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.decoder.ClusterlessDecoder"
+      },
+      "module": "non_local_detector.models.decoder"
+    },
+    "ConfigurationError": {
+      "methods": {
+        "__init__": "(self, message: str, hint: str | None = None) -> None",
+        "with_traceback": "<builtin>"
+      },
+      "module": "non_local_detector.exceptions"
+    },
+    "ContFragClusterlessClassifier": {
+      "methods": {
+        "__init__": "(self, discrete_initial_conditions: numpy.ndarray | None = None, continuous_initial_conditions_types: list[non_local_detector.initial_conditions.UniformInitialConditions] | None = None, discrete_transition_type: non_local_detector.discrete_state_transitions.DiscreteStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteNonStationaryCustom | non_local_detector.discrete_state_transitions.DiscreteNonStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteStationaryCustom | None = None, discrete_transition_concentration: float = 1.1, discrete_transition_stickiness: float | numpy.ndarray | None = None, discrete_transition_regularization: float = 1e-10, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]] | None = None, observation_models: list[non_local_detector.observation_models.ObservationModel] | non_local_detector.observation_models.ObservationModel | None = None, environments: non_local_detector.environment.Environment | list[non_local_detector.environment.Environment] | None = None, clusterless_algorithm: str = 'clusterless_kde', clusterless_algorithm_params: dict = {'waveform_std': 24.0, 'position_std': 6.0, 'block_size': 10000}, infer_track_interior: bool = True, state_names: list[str] | None = None, sampling_frequency: float = 500.0, no_spike_rate: float = 1e-10)",
+        "calculate_time_bins": "(self, time_range: numpy.ndarray) -> numpy.ndarray",
+        "compute_log_likelihood": "(self, time: numpy.ndarray, position_time: numpy.ndarray, position: numpy.ndarray | None, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_missing: numpy.ndarray | None = None) -> jax.Array",
+        "copy": "(self) -> '_DetectorBase'",
+        "estimate_parameters": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, estimate_initial_conditions: bool = True, estimate_discrete_transition: bool = True, estimate_encoding_model: bool = True, max_iter: int = 20, tolerance: float = 0.0001, cache_likelihood: bool = True, store_log_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "fit": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> 'ClusterlessDetector'",
+        "fit_encoding_model": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, weights: numpy.ndarray | None = None) -> None",
+        "fit_predict": "(self) -> xarray.core.dataset.Dataset",
+        "get_metadata_routing": "(self)",
+        "get_params": "(self, deep=True)",
+        "get_posterior": "(results: xarray.core.dataset.Dataset) -> xarray.core.dataarray.DataArray",
+        "initialize_continuous_state_transition": "(self, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]], position: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_discrete_state_transition": "(self, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "initialize_environments": "(self, position: numpy.ndarray, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_initial_conditions": "(self) -> None",
+        "initialize_state_index": "(self) -> None",
+        "load_model": "(filename: str = 'model.pkl') -> '_DetectorBase'",
+        "load_results": "(filename: str = 'results.nc') -> xarray.core.dataset.Dataset",
+        "most_likely_sequence": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, n_chunks: int = 1) -> pandas.core.frame.DataFrame",
+        "plot_continuous_state_transition": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "plot_discrete_state_transition": "(self, cmap: str = 'Oranges', ax: matplotlib.axes._axes.Axes | None = None, convert_to_seconds: bool = False, sampling_frequency: int = 1, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "plot_initial_conditions": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "predict": "(self, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, position: numpy.ndarray | None = None, position_time: numpy.ndarray | None = None, is_missing: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, cache_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False, save_causal_posterior_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "save_model": "(self, filename: str = 'model.pkl') -> None",
+        "save_results": "(results: xarray.core.dataset.Dataset, filename: str = 'results.nc') -> None",
+        "set_fit_request": "(self: non_local_detector.models.cont_frag_model.ContFragClusterlessClassifier, *, discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', encoding_group_labels: Union[bool, NoneType, str] = '$UNCHANGED$', environment_labels: Union[bool, NoneType, str] = '$UNCHANGED$', is_training: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', spike_waveform_features: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.cont_frag_model.ContFragClusterlessClassifier",
+        "set_params": "(self, **params)",
+        "set_predict_request": "(self: non_local_detector.models.cont_frag_model.ContFragClusterlessClassifier, *, cache_likelihood: Union[bool, NoneType, str] = '$UNCHANGED$', discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', is_missing: Union[bool, NoneType, str] = '$UNCHANGED$', n_chunks: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', save_causal_posterior_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', save_log_likelihood_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', spike_waveform_features: Union[bool, NoneType, str] = '$UNCHANGED$', time: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.cont_frag_model.ContFragClusterlessClassifier"
+      },
+      "module": "non_local_detector.models.cont_frag_model"
+    },
+    "ContFragSortedSpikesClassifier": {
+      "methods": {
+        "__init__": "(self, discrete_initial_conditions: numpy.ndarray | None = None, continuous_initial_conditions_types: list[non_local_detector.initial_conditions.UniformInitialConditions] | None = None, discrete_transition_type: non_local_detector.discrete_state_transitions.DiscreteStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteNonStationaryCustom | non_local_detector.discrete_state_transitions.DiscreteNonStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteStationaryCustom | None = None, discrete_transition_concentration: float = 1.1, discrete_transition_stickiness: float | numpy.ndarray | None = None, discrete_transition_regularization: float = 1e-10, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]] | None = None, observation_models: list[non_local_detector.observation_models.ObservationModel] | non_local_detector.observation_models.ObservationModel | None = None, environments: non_local_detector.environment.Environment | list[non_local_detector.environment.Environment] | None = None, sorted_spikes_algorithm: str = 'sorted_spikes_kde', sorted_spikes_algorithm_params: dict = {'position_std': 6.0, 'block_size': 10000}, infer_track_interior: bool = True, state_names: list[str] | None = None, sampling_frequency: float = 500, no_spike_rate: float = 1e-10)",
+        "calculate_time_bins": "(self, time_range: numpy.ndarray) -> numpy.ndarray",
+        "compute_log_likelihood": "(self, time: numpy.ndarray, position_time: numpy.ndarray, position: numpy.ndarray | None, spike_times: list[numpy.ndarray], is_missing: numpy.ndarray | None = None) -> jax.Array",
+        "copy": "(self) -> '_DetectorBase'",
+        "estimate_parameters": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, estimate_initial_conditions: bool = True, estimate_discrete_transition: bool = True, estimate_encoding_model: bool = True, max_iter: int = 20, tolerance: float = 0.0001, cache_likelihood: bool = True, store_log_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "fit": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> 'SortedSpikesDetector'",
+        "fit_encoding_model": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, weights: numpy.ndarray | None = None) -> None",
+        "fit_predict": "(self) -> xarray.core.dataset.Dataset",
+        "get_metadata_routing": "(self)",
+        "get_params": "(self, deep=True)",
+        "get_posterior": "(results: xarray.core.dataset.Dataset) -> xarray.core.dataarray.DataArray",
+        "initialize_continuous_state_transition": "(self, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]], position: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_discrete_state_transition": "(self, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "initialize_environments": "(self, position: numpy.ndarray, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_initial_conditions": "(self) -> None",
+        "initialize_state_index": "(self) -> None",
+        "load_model": "(filename: str = 'model.pkl') -> '_DetectorBase'",
+        "load_results": "(filename: str = 'results.nc') -> xarray.core.dataset.Dataset",
+        "most_likely_sequence": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, n_chunks: int = 1) -> pandas.core.frame.DataFrame",
+        "plot_continuous_state_transition": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "plot_discrete_state_transition": "(self, cmap: str = 'Oranges', ax: matplotlib.axes._axes.Axes | None = None, convert_to_seconds: bool = False, sampling_frequency: int = 1, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "plot_initial_conditions": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "predict": "(self, spike_times: list[numpy.ndarray], time: numpy.ndarray, position: numpy.ndarray | None = None, position_time: numpy.ndarray | None = None, is_missing: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, cache_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "save_model": "(self, filename: str = 'model.pkl') -> None",
+        "save_results": "(results: xarray.core.dataset.Dataset, filename: str = 'results.nc') -> None",
+        "set_fit_request": "(self: non_local_detector.models.cont_frag_model.ContFragSortedSpikesClassifier, *, discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', encoding_group_labels: Union[bool, NoneType, str] = '$UNCHANGED$', environment_labels: Union[bool, NoneType, str] = '$UNCHANGED$', is_training: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.cont_frag_model.ContFragSortedSpikesClassifier",
+        "set_params": "(self, **params)",
+        "set_predict_request": "(self: non_local_detector.models.cont_frag_model.ContFragSortedSpikesClassifier, *, cache_likelihood: Union[bool, NoneType, str] = '$UNCHANGED$', discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', is_missing: Union[bool, NoneType, str] = '$UNCHANGED$', n_chunks: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', save_log_likelihood_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', time: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.cont_frag_model.ContFragSortedSpikesClassifier"
+      },
+      "module": "non_local_detector.models.cont_frag_model"
+    },
+    "ConvergenceError": {
+      "methods": {
+        "__init__": "(self, message: str, iterations: int | None = None, tolerance: float | None = None, hint: str | None = None) -> None",
+        "with_traceback": "<builtin>"
+      },
+      "module": "non_local_detector.exceptions"
+    },
+    "DataError": {
+      "methods": {
+        "__init__": "(self, message: str, data_name: str | None = None, hint: str | None = None) -> None",
+        "with_traceback": "<builtin>"
+      },
+      "module": "non_local_detector.exceptions"
+    },
+    "Discrete": {
+      "methods": {
+        "__init__": "(self, /, *args, **kwargs)",
+        "make_state_transition": "(self, *args, **kwargs) -> numpy.ndarray"
+      },
+      "module": "non_local_detector.continuous_state_transitions"
+    },
+    "DiscreteNonStationaryCustom": {
+      "methods": {
+        "__init__": "(self, values: numpy.ndarray, formula: str = '1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])') -> None",
+        "make_state_transition": "(self, covariate_data: pandas.core.frame.DataFrame | dict | None) -> tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray]"
+      },
+      "module": "non_local_detector.discrete_state_transitions"
+    },
+    "DiscreteNonStationaryDiagonal": {
+      "methods": {
+        "__init__": "(self, diagonal_values: numpy.ndarray, formula: str = '1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])') -> None",
+        "make_state_transition": "(self, covariate_data: pandas.core.frame.DataFrame | dict) -> tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray]"
+      },
+      "module": "non_local_detector.discrete_state_transitions"
+    },
+    "DiscreteStationaryCustom": {
+      "methods": {
+        "__init__": "(self, values: numpy.ndarray) -> None",
+        "make_state_transition": "(self, *args, **kwargs) -> tuple[numpy.ndarray, None, None]"
+      },
+      "module": "non_local_detector.discrete_state_transitions"
+    },
+    "DiscreteStationaryDiagonal": {
+      "methods": {
+        "__init__": "(self, diagonal_values: numpy.ndarray) -> None",
+        "make_state_transition": "(self, *args, **kwargs) -> tuple[numpy.ndarray, None, None]"
+      },
+      "module": "non_local_detector.discrete_state_transitions"
+    },
+    "EmpiricalMovement": {
+      "methods": {
+        "__init__": "(self, environment_name: str = '', encoding_group: str = 0, speedup: int = 1, is_time_reversed: bool = False) -> None",
+        "make_state_transition": "(self, environments: tuple[non_local_detector.environment.Environment, ...], position: numpy.ndarray, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None) -> numpy.ndarray"
+      },
+      "module": "non_local_detector.continuous_state_transitions"
+    },
+    "Environment": {
+      "methods": {
+        "__init__": "(self, environment_name: str = '', place_bin_size: float | tuple[float, ...] = 2.0, track_graph: networkx.classes.graph.Graph | None = None, edge_order: list[tuple] | None = None, edge_spacing: float | list[float] | None = 0.0, is_track_interior: numpy.ndarray | None = None, position_range: collections.abc.Sequence[tuple[float, float]] | None = None, infer_track_interior: bool = True, fill_holes: bool = False, dilate: bool = False, bin_count_threshold: int = 0, edges_: tuple[numpy.ndarray, ...] | None = None, place_bin_edges_: numpy.ndarray | None = None, place_bin_centers_: numpy.ndarray | None = None, centers_shape_: tuple[int, ...] | None = None, is_track_interior_: numpy.ndarray | None = None, is_track_boundary_: numpy.ndarray | None = None, track_graphDD: networkx.classes.graph.Graph | None = None, distance_between_nodes_: dict[int, dict[int, float]] | numpy.ndarray | None = None, track_graph_with_bin_centers_edges_: networkx.classes.graph.Graph | None = None, original_nodes_df_: pandas.core.frame.DataFrame | None = None, place_bin_edges_nodes_df_: pandas.core.frame.DataFrame | None = None, place_bin_centers_nodes_df_: pandas.core.frame.DataFrame | None = None, nodes_df_: pandas.core.frame.DataFrame | None = None, _is_fitted: bool = False) -> None",
+        "fit_place_grid": "(self, position: numpy.ndarray | None = None, infer_track_interior: bool = True) -> 'Environment'",
+        "get_bin_ind": "(self, sample: numpy.ndarray) -> numpy.ndarray",
+        "get_direction": "(self, position: numpy.ndarray, position_time: numpy.ndarray | None = None, sigma: float = 0.1, sampling_frequency: float | None = None, classify_stop: bool = False, stop_speed_threshold: float = 0.001) -> numpy.ndarray",
+        "get_manifold_distances": "(self, position1: numpy.ndarray, position2: numpy.ndarray) -> numpy.ndarray",
+        "load_environment": "(filename: str = 'environment.pkl') -> 'Environment'",
+        "plot_grid": "(self, ax: matplotlib.axes._axes.Axes | None = None) -> matplotlib.axes._axes.Axes",
+        "save_environment": "(self, filename: str = 'environment.pkl') -> None"
+      },
+      "module": "non_local_detector.environment"
+    },
+    "FittingError": {
+      "methods": {
+        "__init__": "(self, message: str, hint: str | None = None) -> None",
+        "with_traceback": "<builtin>"
+      },
+      "module": "non_local_detector.exceptions"
+    },
+    "Identity": {
+      "methods": {
+        "__init__": "(self, environment_name: str = '') -> None",
+        "make_state_transition": "(self, environments: tuple[non_local_detector.environment.Environment, ...]) -> numpy.ndarray"
+      },
+      "module": "non_local_detector.continuous_state_transitions"
+    },
+    "MultiEnvironmentClusterlessClassifier": {
+      "methods": {
+        "__init__": "(self, discrete_initial_conditions: numpy.ndarray | None = None, continuous_initial_conditions_types: list[non_local_detector.initial_conditions.UniformInitialConditions] | None = None, discrete_transition_type: non_local_detector.discrete_state_transitions.DiscreteStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteNonStationaryCustom | non_local_detector.discrete_state_transitions.DiscreteNonStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteStationaryCustom | None = None, discrete_transition_concentration: float = 1.1, discrete_transition_stickiness: float | numpy.ndarray | None = None, discrete_transition_regularization: float = 1e-10, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]] | None = None, observation_models: list[non_local_detector.observation_models.ObservationModel] | non_local_detector.observation_models.ObservationModel | None = None, environments: non_local_detector.environment.Environment | list[non_local_detector.environment.Environment] | None = None, clusterless_algorithm: str = 'clusterless_kde', clusterless_algorithm_params: dict = {'waveform_std': 24.0, 'position_std': 6.0, 'block_size': 10000}, infer_track_interior: bool = True, state_names: list[str] | None = None, sampling_frequency: float = 500.0, no_spike_rate: float = 1e-10)",
+        "calculate_time_bins": "(self, time_range: numpy.ndarray) -> numpy.ndarray",
+        "compute_log_likelihood": "(self, time: numpy.ndarray, position_time: numpy.ndarray, position: numpy.ndarray | None, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_missing: numpy.ndarray | None = None) -> jax.Array",
+        "copy": "(self) -> '_DetectorBase'",
+        "estimate_parameters": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, estimate_initial_conditions: bool = True, estimate_discrete_transition: bool = True, estimate_encoding_model: bool = True, max_iter: int = 20, tolerance: float = 0.0001, cache_likelihood: bool = True, store_log_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "fit": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> 'ClusterlessDetector'",
+        "fit_encoding_model": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, weights: numpy.ndarray | None = None) -> None",
+        "fit_predict": "(self) -> xarray.core.dataset.Dataset",
+        "get_metadata_routing": "(self)",
+        "get_params": "(self, deep=True)",
+        "initialize_continuous_state_transition": "(self, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]], position: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_discrete_state_transition": "(self, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "initialize_environments": "(self, position: numpy.ndarray, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_initial_conditions": "(self) -> None",
+        "initialize_state_index": "(self) -> None",
+        "load_model": "(filename: str = 'model.pkl') -> '_DetectorBase'",
+        "load_results": "(filename: str = 'results.nc') -> xarray.core.dataset.Dataset",
+        "most_likely_sequence": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, n_chunks: int = 1) -> pandas.core.frame.DataFrame",
+        "plot_continuous_state_transition": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "plot_discrete_state_transition": "(self, cmap: str = 'Oranges', ax: matplotlib.axes._axes.Axes | None = None, convert_to_seconds: bool = False, sampling_frequency: int = 1, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "plot_initial_conditions": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "predict": "(self, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, position: numpy.ndarray | None = None, position_time: numpy.ndarray | None = None, is_missing: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, cache_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False, save_causal_posterior_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "save_model": "(self, filename: str = 'model.pkl') -> None",
+        "save_results": "(results: xarray.core.dataset.Dataset, filename: str = 'results.nc') -> None",
+        "set_fit_request": "(self: non_local_detector.models.multienvironment_model.MultiEnvironmentClusterlessClassifier, *, discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', encoding_group_labels: Union[bool, NoneType, str] = '$UNCHANGED$', environment_labels: Union[bool, NoneType, str] = '$UNCHANGED$', is_training: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', spike_waveform_features: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.multienvironment_model.MultiEnvironmentClusterlessClassifier",
+        "set_params": "(self, **params)",
+        "set_predict_request": "(self: non_local_detector.models.multienvironment_model.MultiEnvironmentClusterlessClassifier, *, cache_likelihood: Union[bool, NoneType, str] = '$UNCHANGED$', discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', is_missing: Union[bool, NoneType, str] = '$UNCHANGED$', n_chunks: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', save_causal_posterior_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', save_log_likelihood_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', spike_waveform_features: Union[bool, NoneType, str] = '$UNCHANGED$', time: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.multienvironment_model.MultiEnvironmentClusterlessClassifier"
+      },
+      "module": "non_local_detector.models.multienvironment_model"
+    },
+    "MultiEnvironmentSortedSpikesClassifier": {
+      "methods": {
+        "__init__": "(self, discrete_initial_conditions: numpy.ndarray | None = None, continuous_initial_conditions_types: list[non_local_detector.initial_conditions.UniformInitialConditions] | None = None, discrete_transition_type: non_local_detector.discrete_state_transitions.DiscreteStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteNonStationaryCustom | non_local_detector.discrete_state_transitions.DiscreteNonStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteStationaryCustom | None = None, discrete_transition_concentration: float = 1.1, discrete_transition_stickiness: float | numpy.ndarray | None = None, discrete_transition_regularization: float = 1e-10, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]] | None = None, observation_models: list[non_local_detector.observation_models.ObservationModel] | non_local_detector.observation_models.ObservationModel | None = None, environments: non_local_detector.environment.Environment | list[non_local_detector.environment.Environment] | None = None, sorted_spikes_algorithm: str = 'sorted_spikes_kde', sorted_spikes_algorithm_params: dict = {'position_std': 6.0, 'block_size': 10000}, infer_track_interior: bool = True, state_names: list[str] | None = None, sampling_frequency: float = 500, no_spike_rate: float = 1e-10)",
+        "calculate_time_bins": "(self, time_range: numpy.ndarray) -> numpy.ndarray",
+        "compute_log_likelihood": "(self, time: numpy.ndarray, position_time: numpy.ndarray, position: numpy.ndarray | None, spike_times: list[numpy.ndarray], is_missing: numpy.ndarray | None = None) -> jax.Array",
+        "copy": "(self) -> '_DetectorBase'",
+        "estimate_parameters": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, estimate_initial_conditions: bool = True, estimate_discrete_transition: bool = True, estimate_encoding_model: bool = True, max_iter: int = 20, tolerance: float = 0.0001, cache_likelihood: bool = True, store_log_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "fit": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> 'SortedSpikesDetector'",
+        "fit_encoding_model": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, weights: numpy.ndarray | None = None) -> None",
+        "fit_predict": "(self) -> xarray.core.dataset.Dataset",
+        "get_metadata_routing": "(self)",
+        "get_params": "(self, deep=True)",
+        "initialize_continuous_state_transition": "(self, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]], position: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_discrete_state_transition": "(self, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "initialize_environments": "(self, position: numpy.ndarray, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_initial_conditions": "(self) -> None",
+        "initialize_state_index": "(self) -> None",
+        "load_model": "(filename: str = 'model.pkl') -> '_DetectorBase'",
+        "load_results": "(filename: str = 'results.nc') -> xarray.core.dataset.Dataset",
+        "most_likely_sequence": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, n_chunks: int = 1) -> pandas.core.frame.DataFrame",
+        "plot_continuous_state_transition": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "plot_discrete_state_transition": "(self, cmap: str = 'Oranges', ax: matplotlib.axes._axes.Axes | None = None, convert_to_seconds: bool = False, sampling_frequency: int = 1, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "plot_initial_conditions": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "predict": "(self, spike_times: list[numpy.ndarray], time: numpy.ndarray, position: numpy.ndarray | None = None, position_time: numpy.ndarray | None = None, is_missing: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, cache_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "save_model": "(self, filename: str = 'model.pkl') -> None",
+        "save_results": "(results: xarray.core.dataset.Dataset, filename: str = 'results.nc') -> None",
+        "set_fit_request": "(self: non_local_detector.models.multienvironment_model.MultiEnvironmentSortedSpikesClassifier, *, discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', encoding_group_labels: Union[bool, NoneType, str] = '$UNCHANGED$', environment_labels: Union[bool, NoneType, str] = '$UNCHANGED$', is_training: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.multienvironment_model.MultiEnvironmentSortedSpikesClassifier",
+        "set_params": "(self, **params)",
+        "set_predict_request": "(self: non_local_detector.models.multienvironment_model.MultiEnvironmentSortedSpikesClassifier, *, cache_likelihood: Union[bool, NoneType, str] = '$UNCHANGED$', discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', is_missing: Union[bool, NoneType, str] = '$UNCHANGED$', n_chunks: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', save_log_likelihood_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', time: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.multienvironment_model.MultiEnvironmentSortedSpikesClassifier"
+      },
+      "module": "non_local_detector.models.multienvironment_model"
+    },
+    "NoSpikeContFragClusterlessClassifier": {
+      "methods": {
+        "__init__": "(self, discrete_initial_conditions: numpy.ndarray | None = None, continuous_initial_conditions_types: list[non_local_detector.initial_conditions.UniformInitialConditions] | None = None, discrete_transition_type: non_local_detector.discrete_state_transitions.DiscreteStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteNonStationaryCustom | non_local_detector.discrete_state_transitions.DiscreteNonStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteStationaryCustom | None = None, discrete_transition_concentration: float = 1.1, discrete_transition_stickiness: float | numpy.ndarray | None = None, discrete_transition_regularization: float = 1e-10, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]] | None = None, observation_models: list[non_local_detector.observation_models.ObservationModel] | non_local_detector.observation_models.ObservationModel | None = None, environments: non_local_detector.environment.Environment | list[non_local_detector.environment.Environment] | None = None, clusterless_algorithm: str = 'clusterless_kde', clusterless_algorithm_params: dict = {'waveform_std': 24.0, 'position_std': 6.0, 'block_size': 10000}, infer_track_interior: bool = True, state_names: list[str] | None = None, sampling_frequency: float = 500.0, no_spike_rate: float = 1e-10)",
+        "calculate_time_bins": "(self, time_range: numpy.ndarray) -> numpy.ndarray",
+        "compute_log_likelihood": "(self, time: numpy.ndarray, position_time: numpy.ndarray, position: numpy.ndarray | None, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_missing: numpy.ndarray | None = None) -> jax.Array",
+        "copy": "(self) -> '_DetectorBase'",
+        "estimate_parameters": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, estimate_initial_conditions: bool = True, estimate_discrete_transition: bool = True, estimate_encoding_model: bool = True, max_iter: int = 20, tolerance: float = 0.0001, cache_likelihood: bool = True, store_log_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "fit": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> 'ClusterlessDetector'",
+        "fit_encoding_model": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, weights: numpy.ndarray | None = None) -> None",
+        "fit_predict": "(self) -> xarray.core.dataset.Dataset",
+        "get_metadata_routing": "(self)",
+        "get_params": "(self, deep=True)",
+        "initialize_continuous_state_transition": "(self, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]], position: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_discrete_state_transition": "(self, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "initialize_environments": "(self, position: numpy.ndarray, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_initial_conditions": "(self) -> None",
+        "initialize_state_index": "(self) -> None",
+        "load_model": "(filename: str = 'model.pkl') -> '_DetectorBase'",
+        "load_results": "(filename: str = 'results.nc') -> xarray.core.dataset.Dataset",
+        "most_likely_sequence": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, n_chunks: int = 1) -> pandas.core.frame.DataFrame",
+        "plot_continuous_state_transition": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "plot_discrete_state_transition": "(self, cmap: str = 'Oranges', ax: matplotlib.axes._axes.Axes | None = None, convert_to_seconds: bool = False, sampling_frequency: int = 1, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "plot_initial_conditions": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "predict": "(self, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, position: numpy.ndarray | None = None, position_time: numpy.ndarray | None = None, is_missing: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, cache_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False, save_causal_posterior_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "save_model": "(self, filename: str = 'model.pkl') -> None",
+        "save_results": "(results: xarray.core.dataset.Dataset, filename: str = 'results.nc') -> None",
+        "set_fit_request": "(self: non_local_detector.models.nospike_cont_frag_model.NoSpikeContFragClusterlessClassifier, *, discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', encoding_group_labels: Union[bool, NoneType, str] = '$UNCHANGED$', environment_labels: Union[bool, NoneType, str] = '$UNCHANGED$', is_training: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', spike_waveform_features: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.nospike_cont_frag_model.NoSpikeContFragClusterlessClassifier",
+        "set_params": "(self, **params)",
+        "set_predict_request": "(self: non_local_detector.models.nospike_cont_frag_model.NoSpikeContFragClusterlessClassifier, *, cache_likelihood: Union[bool, NoneType, str] = '$UNCHANGED$', discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', is_missing: Union[bool, NoneType, str] = '$UNCHANGED$', n_chunks: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', save_causal_posterior_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', save_log_likelihood_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', spike_waveform_features: Union[bool, NoneType, str] = '$UNCHANGED$', time: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.nospike_cont_frag_model.NoSpikeContFragClusterlessClassifier"
+      },
+      "module": "non_local_detector.models.nospike_cont_frag_model"
+    },
+    "NoSpikeContFragSortedSpikesClassifier": {
+      "methods": {
+        "__init__": "(self, discrete_initial_conditions: numpy.ndarray | None = None, continuous_initial_conditions_types: list[non_local_detector.initial_conditions.UniformInitialConditions] | None = None, discrete_transition_type: non_local_detector.discrete_state_transitions.DiscreteStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteNonStationaryCustom | non_local_detector.discrete_state_transitions.DiscreteNonStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteStationaryCustom | None = None, discrete_transition_concentration: float = 1.1, discrete_transition_stickiness: float | numpy.ndarray | None = None, discrete_transition_regularization: float = 1e-10, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]] | None = None, observation_models: list[non_local_detector.observation_models.ObservationModel] | non_local_detector.observation_models.ObservationModel | None = None, environments: non_local_detector.environment.Environment | list[non_local_detector.environment.Environment] | None = None, sorted_spikes_algorithm: str = 'sorted_spikes_kde', sorted_spikes_algorithm_params: dict = {'position_std': 6.0, 'block_size': 10000}, infer_track_interior: bool = True, state_names: list[str] | None = None, sampling_frequency: float = 500.0, no_spike_rate: float = 1e-10)",
+        "calculate_time_bins": "(self, time_range: numpy.ndarray) -> numpy.ndarray",
+        "compute_log_likelihood": "(self, time: numpy.ndarray, position_time: numpy.ndarray, position: numpy.ndarray | None, spike_times: list[numpy.ndarray], is_missing: numpy.ndarray | None = None) -> jax.Array",
+        "copy": "(self) -> '_DetectorBase'",
+        "estimate_parameters": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, estimate_initial_conditions: bool = True, estimate_discrete_transition: bool = True, estimate_encoding_model: bool = True, max_iter: int = 20, tolerance: float = 0.0001, cache_likelihood: bool = True, store_log_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "fit": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> 'SortedSpikesDetector'",
+        "fit_encoding_model": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, weights: numpy.ndarray | None = None) -> None",
+        "fit_predict": "(self) -> xarray.core.dataset.Dataset",
+        "get_metadata_routing": "(self)",
+        "get_params": "(self, deep=True)",
+        "initialize_continuous_state_transition": "(self, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]], position: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_discrete_state_transition": "(self, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "initialize_environments": "(self, position: numpy.ndarray, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_initial_conditions": "(self) -> None",
+        "initialize_state_index": "(self) -> None",
+        "load_model": "(filename: str = 'model.pkl') -> '_DetectorBase'",
+        "load_results": "(filename: str = 'results.nc') -> xarray.core.dataset.Dataset",
+        "most_likely_sequence": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, n_chunks: int = 1) -> pandas.core.frame.DataFrame",
+        "plot_continuous_state_transition": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "plot_discrete_state_transition": "(self, cmap: str = 'Oranges', ax: matplotlib.axes._axes.Axes | None = None, convert_to_seconds: bool = False, sampling_frequency: int = 1, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "plot_initial_conditions": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "predict": "(self, spike_times: list[numpy.ndarray], time: numpy.ndarray, position: numpy.ndarray | None = None, position_time: numpy.ndarray | None = None, is_missing: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, cache_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "save_model": "(self, filename: str = 'model.pkl') -> None",
+        "save_results": "(results: xarray.core.dataset.Dataset, filename: str = 'results.nc') -> None",
+        "set_fit_request": "(self: non_local_detector.models.nospike_cont_frag_model.NoSpikeContFragSortedSpikesClassifier, *, discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', encoding_group_labels: Union[bool, NoneType, str] = '$UNCHANGED$', environment_labels: Union[bool, NoneType, str] = '$UNCHANGED$', is_training: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.nospike_cont_frag_model.NoSpikeContFragSortedSpikesClassifier",
+        "set_params": "(self, **params)",
+        "set_predict_request": "(self: non_local_detector.models.nospike_cont_frag_model.NoSpikeContFragSortedSpikesClassifier, *, cache_likelihood: Union[bool, NoneType, str] = '$UNCHANGED$', discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', is_missing: Union[bool, NoneType, str] = '$UNCHANGED$', n_chunks: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', save_log_likelihood_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', time: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.nospike_cont_frag_model.NoSpikeContFragSortedSpikesClassifier"
+      },
+      "module": "non_local_detector.models.nospike_cont_frag_model"
+    },
+    "NonLocalClusterlessDetector": {
+      "methods": {
+        "__init__": "(self, discrete_initial_conditions: numpy.ndarray | None = None, continuous_initial_conditions_types: list[non_local_detector.initial_conditions.UniformInitialConditions] | None = None, discrete_transition_type: non_local_detector.discrete_state_transitions.DiscreteStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteNonStationaryCustom | non_local_detector.discrete_state_transitions.DiscreteNonStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteStationaryCustom | None = None, discrete_transition_concentration: float = 1.0, discrete_transition_stickiness: float | numpy.ndarray | None = None, discrete_transition_regularization: float = 1e-10, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]] | None = None, observation_models: list[non_local_detector.observation_models.ObservationModel] | non_local_detector.observation_models.ObservationModel | None = None, environments: non_local_detector.environment.Environment | list[non_local_detector.environment.Environment] | None = None, clusterless_algorithm: str = 'clusterless_kde', clusterless_algorithm_params: dict = {'waveform_std': 24.0, 'position_std': 6.0, 'block_size': 10000}, infer_track_interior: bool = True, state_names: list[str] | None = None, sampling_frequency: float = 500.0, no_spike_rate: float = 1e-10)",
+        "calculate_time_bins": "(self, time_range: numpy.ndarray) -> numpy.ndarray",
+        "compute_log_likelihood": "(self, time: numpy.ndarray, position_time: numpy.ndarray, position: numpy.ndarray | None, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_missing: numpy.ndarray | None = None) -> jax.Array",
+        "copy": "(self) -> '_DetectorBase'",
+        "estimate_parameters": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, estimate_initial_conditions: bool = True, estimate_discrete_transition: bool = True, estimate_encoding_model: bool = True, max_iter: int = 20, tolerance: float = 0.0001, cache_likelihood: bool = True, store_log_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "fit": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> 'ClusterlessDetector'",
+        "fit_encoding_model": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, weights: numpy.ndarray | None = None) -> None",
+        "fit_predict": "(self) -> xarray.core.dataset.Dataset",
+        "get_conditional_non_local_posterior": "(results: xarray.core.dataset.Dataset) -> xarray.core.dataarray.DataArray",
+        "get_metadata_routing": "(self)",
+        "get_params": "(self, deep=True)",
+        "initialize_continuous_state_transition": "(self, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]], position: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_discrete_state_transition": "(self, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "initialize_environments": "(self, position: numpy.ndarray, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_initial_conditions": "(self) -> None",
+        "initialize_state_index": "(self) -> None",
+        "load_model": "(filename: str = 'model.pkl') -> '_DetectorBase'",
+        "load_results": "(filename: str = 'results.nc') -> xarray.core.dataset.Dataset",
+        "most_likely_sequence": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, n_chunks: int = 1) -> pandas.core.frame.DataFrame",
+        "plot_continuous_state_transition": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "plot_discrete_state_transition": "(self, cmap: str = 'Oranges', ax: matplotlib.axes._axes.Axes | None = None, convert_to_seconds: bool = False, sampling_frequency: int = 1, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "plot_initial_conditions": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "predict": "(self, spike_times: list[numpy.ndarray], spike_waveform_features: list[numpy.ndarray], time: numpy.ndarray, position: numpy.ndarray | None = None, position_time: numpy.ndarray | None = None, is_missing: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, cache_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False, save_causal_posterior_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "save_model": "(self, filename: str = 'model.pkl') -> None",
+        "save_results": "(results: xarray.core.dataset.Dataset, filename: str = 'results.nc') -> None",
+        "set_fit_request": "(self: non_local_detector.models.non_local_model.NonLocalClusterlessDetector, *, discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', encoding_group_labels: Union[bool, NoneType, str] = '$UNCHANGED$', environment_labels: Union[bool, NoneType, str] = '$UNCHANGED$', is_training: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', spike_waveform_features: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.non_local_model.NonLocalClusterlessDetector",
+        "set_params": "(self, **params)",
+        "set_predict_request": "(self: non_local_detector.models.non_local_model.NonLocalClusterlessDetector, *, cache_likelihood: Union[bool, NoneType, str] = '$UNCHANGED$', discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', is_missing: Union[bool, NoneType, str] = '$UNCHANGED$', n_chunks: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', save_causal_posterior_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', save_log_likelihood_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', spike_waveform_features: Union[bool, NoneType, str] = '$UNCHANGED$', time: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.non_local_model.NonLocalClusterlessDetector"
+      },
+      "module": "non_local_detector.models.non_local_model"
+    },
+    "NonLocalDetectorError": {
+      "methods": {
+        "__init__": "(self, /, *args, **kwargs)",
+        "with_traceback": "<builtin>"
+      },
+      "module": "non_local_detector.exceptions"
+    },
+    "NonLocalSortedSpikesDetector": {
+      "methods": {
+        "__init__": "(self, discrete_initial_conditions: numpy.ndarray | None = None, continuous_initial_conditions_types: list[non_local_detector.initial_conditions.UniformInitialConditions] | None = None, discrete_transition_type: non_local_detector.discrete_state_transitions.DiscreteStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteNonStationaryCustom | non_local_detector.discrete_state_transitions.DiscreteNonStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteStationaryCustom | None = None, discrete_transition_concentration: float = 1.0, discrete_transition_stickiness: float | numpy.ndarray | None = None, discrete_transition_regularization: float = 1e-10, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]] | None = None, observation_models: list[non_local_detector.observation_models.ObservationModel] | non_local_detector.observation_models.ObservationModel | None = None, environments: non_local_detector.environment.Environment | list[non_local_detector.environment.Environment] | None = None, sorted_spikes_algorithm: str = 'sorted_spikes_kde', sorted_spikes_algorithm_params: dict = {'position_std': 6.0, 'block_size': 10000}, infer_track_interior: bool = True, state_names: list[str] | None = None, sampling_frequency: float = 500.0, no_spike_rate: float = 1e-10)",
+        "calculate_time_bins": "(self, time_range: numpy.ndarray) -> numpy.ndarray",
+        "compute_log_likelihood": "(self, time: numpy.ndarray, position_time: numpy.ndarray, position: numpy.ndarray | None, spike_times: list[numpy.ndarray], is_missing: numpy.ndarray | None = None) -> jax.Array",
+        "copy": "(self) -> '_DetectorBase'",
+        "estimate_parameters": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, estimate_initial_conditions: bool = True, estimate_discrete_transition: bool = True, estimate_encoding_model: bool = True, max_iter: int = 20, tolerance: float = 0.0001, cache_likelihood: bool = True, store_log_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "fit": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> 'SortedSpikesDetector'",
+        "fit_encoding_model": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, weights: numpy.ndarray | None = None) -> None",
+        "fit_predict": "(self) -> xarray.core.dataset.Dataset",
+        "get_conditional_non_local_posterior": "(results: xarray.core.dataset.Dataset) -> xarray.core.dataarray.DataArray",
+        "get_metadata_routing": "(self)",
+        "get_params": "(self, deep=True)",
+        "initialize_continuous_state_transition": "(self, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]], position: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_discrete_state_transition": "(self, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "initialize_environments": "(self, position: numpy.ndarray, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_initial_conditions": "(self) -> None",
+        "initialize_state_index": "(self) -> None",
+        "load_model": "(filename: str = 'model.pkl') -> '_DetectorBase'",
+        "load_results": "(filename: str = 'results.nc') -> xarray.core.dataset.Dataset",
+        "most_likely_sequence": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, n_chunks: int = 1) -> pandas.core.frame.DataFrame",
+        "plot_continuous_state_transition": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "plot_discrete_state_transition": "(self, cmap: str = 'Oranges', ax: matplotlib.axes._axes.Axes | None = None, convert_to_seconds: bool = False, sampling_frequency: int = 1, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "plot_initial_conditions": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "predict": "(self, spike_times: list[numpy.ndarray], time: numpy.ndarray, position: numpy.ndarray | None = None, position_time: numpy.ndarray | None = None, is_missing: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, cache_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "save_model": "(self, filename: str = 'model.pkl') -> None",
+        "save_results": "(results: xarray.core.dataset.Dataset, filename: str = 'results.nc') -> None",
+        "set_fit_request": "(self: non_local_detector.models.non_local_model.NonLocalSortedSpikesDetector, *, discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', encoding_group_labels: Union[bool, NoneType, str] = '$UNCHANGED$', environment_labels: Union[bool, NoneType, str] = '$UNCHANGED$', is_training: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.non_local_model.NonLocalSortedSpikesDetector",
+        "set_params": "(self, **params)",
+        "set_predict_request": "(self: non_local_detector.models.non_local_model.NonLocalSortedSpikesDetector, *, cache_likelihood: Union[bool, NoneType, str] = '$UNCHANGED$', discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', is_missing: Union[bool, NoneType, str] = '$UNCHANGED$', n_chunks: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', save_log_likelihood_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', time: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.non_local_model.NonLocalSortedSpikesDetector"
+      },
+      "module": "non_local_detector.models.non_local_model"
+    },
+    "RandomWalk": {
+      "methods": {
+        "__init__": "(self, environment_name: str = '', movement_var: float = 6.0, movement_mean: float = 0.0, use_manifold_distance: bool = False, direction: str | None = None) -> None",
+        "make_state_transition": "(self, environments: tuple[non_local_detector.environment.Environment, ...]) -> numpy.ndarray"
+      },
+      "module": "non_local_detector.continuous_state_transitions"
+    },
+    "RandomWalkDirection1": {
+      "methods": {
+        "__init__": "(self, environment_name: str = '', movement_var: float = 6.0) -> None",
+        "make_state_transition": "(self, environments: tuple[non_local_detector.environment.Environment, ...]) -> numpy.ndarray"
+      },
+      "module": "non_local_detector.continuous_state_transitions"
+    },
+    "RandomWalkDirection2": {
+      "methods": {
+        "__init__": "(self, environment_name: str = '', movement_var: float = 6.0) -> None",
+        "make_state_transition": "(self, environments: tuple[non_local_detector.environment.Environment, ...]) -> numpy.ndarray"
+      },
+      "module": "non_local_detector.continuous_state_transitions"
+    },
+    "SortedSpikesDecoder": {
+      "methods": {
+        "__init__": "(self, discrete_initial_conditions: numpy.ndarray | None = None, continuous_initial_conditions_types: list[non_local_detector.initial_conditions.UniformInitialConditions] | None = None, discrete_transition_type: non_local_detector.discrete_state_transitions.DiscreteStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteNonStationaryCustom | non_local_detector.discrete_state_transitions.DiscreteNonStationaryDiagonal | non_local_detector.discrete_state_transitions.DiscreteStationaryCustom | None = None, discrete_transition_concentration: float = 1.0, discrete_transition_stickiness: float | numpy.ndarray | None = None, discrete_transition_regularization: float = 1e-10, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]] | None = None, observation_models: list[non_local_detector.observation_models.ObservationModel] | non_local_detector.observation_models.ObservationModel | None = None, environments: non_local_detector.environment.Environment | list[non_local_detector.environment.Environment] | None = None, sorted_spikes_algorithm: str = 'sorted_spikes_kde', sorted_spikes_algorithm_params: dict = {'position_std': 6.0, 'block_size': 10000}, infer_track_interior: bool = True, state_names: list[str] | None = None, sampling_frequency: float = 500, no_spike_rate: float = 1e-10)",
+        "calculate_time_bins": "(self, time_range: numpy.ndarray) -> numpy.ndarray",
+        "compute_log_likelihood": "(self, time: numpy.ndarray, position_time: numpy.ndarray, position: numpy.ndarray | None, spike_times: list[numpy.ndarray], is_missing: numpy.ndarray | None = None) -> jax.Array",
+        "copy": "(self) -> '_DetectorBase'",
+        "estimate_parameters": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, estimate_initial_conditions: bool = True, estimate_discrete_transition: bool = True, estimate_encoding_model: bool = True, max_iter: int = 20, tolerance: float = 0.0001, cache_likelihood: bool = True, store_log_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "fit": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> 'SortedSpikesDetector'",
+        "fit_encoding_model": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None, weights: numpy.ndarray | None = None) -> None",
+        "fit_predict": "(self) -> xarray.core.dataset.Dataset",
+        "get_metadata_routing": "(self)",
+        "get_params": "(self, deep=True)",
+        "initialize_continuous_state_transition": "(self, continuous_transition_types: list[list[non_local_detector.continuous_state_transitions.Discrete | non_local_detector.continuous_state_transitions.EmpiricalMovement | non_local_detector.continuous_state_transitions.RandomWalk | non_local_detector.continuous_state_transitions.RandomWalkDirection1 | non_local_detector.continuous_state_transitions.RandomWalkDirection2 | non_local_detector.continuous_state_transitions.Uniform]], position: numpy.ndarray | None = None, is_training: numpy.ndarray | None = None, encoding_group_labels: numpy.ndarray | None = None, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_discrete_state_transition": "(self, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "initialize_environments": "(self, position: numpy.ndarray, environment_labels: numpy.ndarray | None = None) -> None",
+        "initialize_initial_conditions": "(self) -> None",
+        "initialize_state_index": "(self) -> None",
+        "load_model": "(filename: str = 'model.pkl') -> '_DetectorBase'",
+        "load_results": "(filename: str = 'results.nc') -> xarray.core.dataset.Dataset",
+        "most_likely_sequence": "(self, position_time: numpy.ndarray, position: numpy.ndarray, spike_times: list[numpy.ndarray], time: numpy.ndarray, is_missing: numpy.ndarray | None = None, n_chunks: int = 1) -> pandas.core.frame.DataFrame",
+        "plot_continuous_state_transition": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "plot_discrete_state_transition": "(self, cmap: str = 'Oranges', ax: matplotlib.axes._axes.Axes | None = None, convert_to_seconds: bool = False, sampling_frequency: int = 1, covariate_data: pandas.core.frame.DataFrame | dict | None = None) -> None",
+        "plot_initial_conditions": "(self, figsize_scaling: float = 1.5, vmax: float = 0.3) -> None",
+        "predict": "(self, spike_times: list[numpy.ndarray], time: numpy.ndarray, position: numpy.ndarray | None = None, position_time: numpy.ndarray | None = None, is_missing: numpy.ndarray | None = None, discrete_transition_covariate_data: pandas.core.frame.DataFrame | dict | None = None, cache_likelihood: bool = False, n_chunks: int = 1, save_log_likelihood_to_results: bool = False) -> xarray.core.dataset.Dataset",
+        "save_model": "(self, filename: str = 'model.pkl') -> None",
+        "save_results": "(results: xarray.core.dataset.Dataset, filename: str = 'results.nc') -> None",
+        "set_fit_request": "(self: non_local_detector.models.decoder.SortedSpikesDecoder, *, discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', encoding_group_labels: Union[bool, NoneType, str] = '$UNCHANGED$', environment_labels: Union[bool, NoneType, str] = '$UNCHANGED$', is_training: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.decoder.SortedSpikesDecoder",
+        "set_params": "(self, **params)",
+        "set_predict_request": "(self: non_local_detector.models.decoder.SortedSpikesDecoder, *, cache_likelihood: Union[bool, NoneType, str] = '$UNCHANGED$', discrete_transition_covariate_data: Union[bool, NoneType, str] = '$UNCHANGED$', is_missing: Union[bool, NoneType, str] = '$UNCHANGED$', n_chunks: Union[bool, NoneType, str] = '$UNCHANGED$', position: Union[bool, NoneType, str] = '$UNCHANGED$', position_time: Union[bool, NoneType, str] = '$UNCHANGED$', save_log_likelihood_to_results: Union[bool, NoneType, str] = '$UNCHANGED$', spike_times: Union[bool, NoneType, str] = '$UNCHANGED$', time: Union[bool, NoneType, str] = '$UNCHANGED$') -> non_local_detector.models.decoder.SortedSpikesDecoder"
+      },
+      "module": "non_local_detector.models.decoder"
+    },
+    "Uniform": {
+      "methods": {
+        "__init__": "(self, environment_name: str = '', environment2_name: str = None) -> None",
+        "make_state_transition": "(self, environments: tuple[non_local_detector.environment.Environment, ...]) -> numpy.ndarray"
+      },
+      "module": "non_local_detector.continuous_state_transitions"
+    },
+    "UniformInitialConditions": {
+      "methods": {
+        "__init__": "(self) -> None",
+        "make_initial_conditions": "(self, observation_model: non_local_detector.observation_models.ObservationModel, environments: tuple[non_local_detector.environment.Environment, ...]) -> numpy.ndarray"
+      },
+      "module": "non_local_detector.initial_conditions"
+    },
+    "ValidationError": {
+      "methods": {
+        "__init__": "(self, message: str, expected: str | None = None, got: str | None = None, hint: str | None = None, example: str | None = None)",
+        "with_traceback": "<builtin>"
+      },
+      "module": "non_local_detector.exceptions"
+    }
+  },
+  "constants": {
+    "continuous_state_transitions": "module",
+    "core": "module",
+    "discrete_state_transitions": "module",
+    "environment": "module",
+    "exceptions": "module",
+    "initial_conditions": "module",
+    "likelihoods": "module",
+    "models": "module",
+    "observation_models": "module",
+    "types": "module"
+  },
+  "functions": {}
+}

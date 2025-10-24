@@ -19,12 +19,12 @@
 
 ### Task 1.2: Create API Surface Monitoring Infrastructure
 
-- [ ] Create `src/non_local_detector/tests/api_snapshots/` directory
-- [ ] Create `src/non_local_detector/tests/test_api_surface.py` with API monitoring
-- [ ] Add `.gitkeep` to api_snapshots directory
-- [ ] Run test to create API baseline
-- [ ] Run test again to verify it passes
-- [ ] Commit: "feat: add API surface monitoring for regression detection"
+- [x] Create `src/non_local_detector/tests/api_snapshots/` directory
+- [x] Create `src/non_local_detector/tests/test_api_surface.py` with API monitoring
+- [x] Add `.gitkeep` to api_snapshots directory
+- [x] Run test to create API baseline
+- [x] Run test again to verify it passes
+- [x] Commit: "feat: add API surface monitoring for regression detection"
 
 ### Task 1.3: Create Regression Report Generator
 
