@@ -1,56 +1,8 @@
-"""Clusterless decoding using Kernel Density Estimation (KDE).
-
-This module implements a clusterless decoding algorithm based on Kernel Density
-Estimation (KDE). Unlike traditional methods that rely on pre-sorted neural
-units (clusters), this approach uses the waveform features of detected spikes
-directly, treating them as "marks" in a marked point process.
-
-The core idea is to model the joint distribution of spike times, spike waveform
-features, and the animal's position during an "encoding" period (typically
-when the animal is actively exploring the environment). This model is then used
-during a "decoding" period (e.g., during sleep or quiet wakefulness) to compute
-the likelihood of observing spikes with specific waveform features occurring at
-various positions.
-
-Key components:
-1.  **Encoding Model Fitting (`fit_clusterless_kde_encoding_model`):**
-    - Takes position data, spike times, and spike waveform features from the
-      encoding period.
-    - Uses KDE with Gaussian kernels to estimate:
-        - Spatial occupancy (how much time the animal spends where).
-        - Ground process intensity (spatial firing rate density, marginalizing
-          over features) for each electrode.
-        - Implicitly models the joint distribution of position and waveform
-          features for spikes on each electrode.
-    - Handles both 2D environments and 1D linearized tracks.
-    - Returns a dictionary containing the fitted models (occupancy, GPI models),
-      processed encoding data, and parameters.
-
-2.  **Log-Likelihood Prediction (`predict_clusterless_kde_log_likelihood`):**
-    - Takes time bins for decoding, new spike data (times and features), and
-      the fitted encoding model.
-    - Calculates the log-likelihood of the observed spikes under the model for
-      each time bin.
-    - Can compute either:
-        - **Non-local likelihood:** Log-likelihood across all spatial bins,
-          suitable for estimating a posterior probability distribution over
-          position.
-        - **Local likelihood:** Log-likelihood specifically at the animal's
-          actual (interpolated) position at each time bin.
-    - Leverages JAX for efficient computation, particularly the KDE steps,
-      often using blocking (`block_estimate_log_joint_mark_intensity`) to
-      manage memory for large datasets.
-
-Helper functions are included for tasks like mapping spike times to time bins
-(`get_spike_time_bin_ind`) and computing KDE distances (`kde_distance`).
-Constants like `EPS` and `LOG_EPS` are used for numerical stability.
-"""
-
 import jax
 import jax.numpy as jnp
 import numpy as np
-from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
-from track_linearization import get_linearized_position  # type: ignore[import-untyped]
+from tqdm.autonotebook import tqdm
+from track_linearization import get_linearized_position
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import (
@@ -60,44 +12,25 @@ from non_local_detector.likelihoods.common import (
     block_kde,
     gaussian_pdf,
     get_position_at_time,
-    safe_divide,
 )
 
 
-def get_spike_time_bin_ind(
-    spike_times: np.ndarray, time_bin_edges: np.ndarray
-) -> np.ndarray:
-    """Gets the index of the time bin for each spike time.
+def get_spike_time_bin_ind(spike_times: np.ndarray, time: np.ndarray) -> np.ndarray:
+    """Get the index of the time bin for each spike time.
 
     Parameters
     ----------
     spike_times : np.ndarray, shape (n_spikes,)
-        Times of occurrences (spikes).
-    time_bin_edges : np.ndarray, shape (n_bins + 1,)
-        Sorted array defining the edges of the time bins [t0, t1, ..., tN].
-        Defines n_bins intervals: [t0, t1), ..., [t_{N-1}, tN].
+    time : np.ndarray, shape (n_time_bins,)
+        Bin edges.
 
     Returns
     -------
-    bin_indices : np.ndarray, shape (n_spikes,)
-        Index of the bin for each spike. Bins are indexed 0 to n_bins-1.
-        Doesn't handle out of bounds spikes.
+    ind : np.ndarray, shape (n_spikes,)
     """
-    # Ensure we use numpy arrays for in-place operations (JAX arrays are immutable)
-    spike_times = np.asarray(spike_times)
-    time_bin_edges = np.asarray(time_bin_edges)
-
-    bin_indices = np.searchsorted(time_bin_edges, spike_times, side="right") - 1
-    is_last_bin = np.isclose(
-        spike_times,
-        time_bin_edges[-1],
-    )
-    bin_indices[is_last_bin] = len(time_bin_edges) - 2
-
-    return bin_indices
+    return np.digitize(spike_times, time[1:-1])
 
 
-@jax.jit
 def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
@@ -118,9 +51,7 @@ def kde_distance(
 
     """
     distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
-    for dim_eval_points, dim_samples, dim_std in zip(
-        eval_points.T, samples.T, std, strict=False
-    ):
+    for dim_eval_points, dim_samples, dim_std in zip(eval_points.T, samples.T, std):
         distance *= gaussian_pdf(
             jnp.expand_dims(dim_eval_points, axis=0),
             jnp.expand_dims(dim_samples, axis=1),
@@ -132,7 +63,6 @@ def kde_distance(
 def estimate_log_joint_mark_intensity(
     decoding_spike_waveform_features: jnp.ndarray,
     encoding_spike_waveform_features: jnp.ndarray,
-    encoding_weights: jnp.ndarray,
     waveform_stds: jnp.ndarray,
     occupancy: jnp.ndarray,
     mean_rate: float,
@@ -144,7 +74,6 @@ def estimate_log_joint_mark_intensity(
     ----------
     decoding_spike_waveform_features : jnp.ndarray, shape (n_decoding_spikes, n_features)
     encoding_spike_waveform_features : jnp.ndarray, shape (n_encoding_spikes, n_features)
-    encoding_weights : jnp.ndarray, shape (n_encoding_spikes,)
     waveform_stds : jnp.ndarray, shape (n_features,)
     occupancy : jnp.ndarray, shape (n_position_bins,)
     mean_rate : float
@@ -161,19 +90,18 @@ def estimate_log_joint_mark_intensity(
         waveform_stds,
     )  # shape (n_encoding_spikes, n_decoding_spikes)
 
-    n_encoding_spikes = jnp.sum(encoding_weights)
+    n_encoding_spikes = encoding_spike_waveform_features.shape[0]
     marginal_density = (
-        spike_waveform_feature_distance.T
-        @ (encoding_weights[:, None] * position_distance)
-        / n_encoding_spikes
+        spike_waveform_feature_distance.T @ position_distance / n_encoding_spikes
     )  # shape (n_decoding_spikes, n_position_bins)
-    return jnp.log(mean_rate * safe_divide(marginal_density, occupancy))
+    return jnp.log(
+        mean_rate * jnp.where(occupancy > 0.0, marginal_density / occupancy, 0.0)
+    )
 
 
 def block_estimate_log_joint_mark_intensity(
     decoding_spike_waveform_features: jnp.ndarray,
     encoding_spike_waveform_features: jnp.ndarray,
-    encoding_weights: jnp.ndarray,
     waveform_stds: jnp.ndarray,
     occupancy: jnp.ndarray,
     mean_rate: float,
@@ -186,7 +114,6 @@ def block_estimate_log_joint_mark_intensity(
     ----------
     decoding_spike_waveform_features : jnp.ndarray, shape (n_decoding_spikes, n_features)
     encoding_spike_waveform_features : jnp.ndarray, shape (n_encoding_spikes, n_features)
-    encoding_weights : jnp.ndarray, shape (n_encoding_spikes,)
     waveform_stds : jnp.ndarray, shape (n_features,)
     occupancy : jnp.ndarray, shape (n_position_bins,)
     mean_rate : float
@@ -200,10 +127,6 @@ def block_estimate_log_joint_mark_intensity(
     """
     n_decoding_spikes = decoding_spike_waveform_features.shape[0]
     n_position_bins = occupancy.shape[0]
-    if n_decoding_spikes == 0:
-        return jnp.full(
-            (0, n_position_bins), LOG_EPS
-        )  # Return empty if no decoding spikes
 
     log_joint_mark_intensity = jnp.zeros((n_decoding_spikes, n_position_bins))
 
@@ -214,7 +137,6 @@ def block_estimate_log_joint_mark_intensity(
             estimate_log_joint_mark_intensity(
                 decoding_spike_waveform_features[block_inds],
                 encoding_spike_waveform_features,
-                encoding_weights,
                 waveform_stds,
                 occupancy,
                 mean_rate,
@@ -223,7 +145,7 @@ def block_estimate_log_joint_mark_intensity(
             (start_ind, 0),
         )
 
-    return jnp.clip(log_joint_mark_intensity, min=LOG_EPS, max=None)
+    return jnp.clip(log_joint_mark_intensity, a_min=LOG_EPS, a_max=None)
 
 
 def fit_clusterless_kde_encoding_model(
@@ -234,8 +156,8 @@ def fit_clusterless_kde_encoding_model(
     environment: Environment,
     sampling_frequency: int = 500,
     weights: jnp.ndarray | None = None,
-    position_std: float | jnp.ndarray = np.sqrt(12.5),
-    waveform_std: float | jnp.ndarray = 24.0,
+    position_std: float = np.sqrt(12.5),
+    waveform_std: float = 24.0,
     block_size: int = 100,
     disable_progress_bar: bool = False,
 ) -> dict:
@@ -253,9 +175,6 @@ def fit_clusterless_kde_encoding_model(
         Spike waveform features for each electrode.
     environment : Environment
         The spatial environment.
-    weights : jnp.ndarray, shape (n_time_position,), optional
-        Sample weights for each position time point, by default None.
-        If None, uniform weights are used.
     sampling_frequency : int, optional
         Samples per second, by default 500
     position_std : float, optional
@@ -270,20 +189,6 @@ def fit_clusterless_kde_encoding_model(
     Returns
     -------
     encoding_model : dict
-        Dictionary containing fitted encoding model components:
-        - 'occupancy': Occupancy density at interior place bins
-        - 'occupancy_model': Fitted KDE model for occupancy
-        - 'gpi_models': Ground process intensity KDE models per electrode
-        - 'encoding_spike_waveform_features': Bounded spike features per electrode
-        - 'encoding_positions': Position at spike times per electrode
-        - 'encoding_spike_weights': Weights at spike times per electrode
-        - 'environment': The spatial environment
-        - 'mean_rates': Mean firing rates per electrode
-        - 'summed_ground_process_intensity': Summed GPI across electrodes
-        - 'position_std': Position kernel standard deviations
-        - 'waveform_std': Waveform kernel standard deviations
-        - 'block_size': Block size used for computation
-        - 'disable_progress_bar': Progress bar setting
     """
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
@@ -291,29 +196,11 @@ def fit_clusterless_kde_encoding_model(
             position_std = jnp.array([position_std])
         else:
             position_std = jnp.array([position_std] * position.shape[1])
-    # Ensure position_std is a JAX array for KDEModel
-    assert isinstance(position_std, jnp.ndarray)
-
     if isinstance(waveform_std, (int, float)):
         waveform_std = jnp.array([waveform_std] * spike_waveform_features[0].shape[1])
-    # Ensure waveform_std is a JAX array for KDEModel
-    assert isinstance(waveform_std, jnp.ndarray)
 
-    if environment.is_track_interior_ is not None:
-        is_track_interior = environment.is_track_interior_.ravel()
-    else:
-        if environment.place_bin_centers_ is None:
-            raise ValueError(
-                "place_bin_centers_ is required when is_track_interior_ is None"
-            )
-        is_track_interior = jnp.ones(
-            environment.place_bin_centers_.shape[0], dtype=bool
-        )
+    is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
-
-    if weights is None:
-        weights = jnp.ones((position.shape[0],))
-    total_weight = np.sum(weights)
 
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D
@@ -324,20 +211,20 @@ def fit_clusterless_kde_encoding_model(
             edge_spacing=environment.edge_spacing,
         ).linear_position.to_numpy()[:, None]
         occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
-            position1D, weights=weights
+            position1D
         )
     else:
         occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
-            position, weights=weights
+            position
         )
 
     occupancy = occupancy_model.predict(interior_place_bin_centers)
     encoding_positions = []
-    encoding_spike_weights = []
     mean_rates = []
     gpi_models = []
     summed_ground_process_intensity = jnp.zeros_like(occupancy)
 
+    n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
     bounded_spike_waveform_features = []
 
     for electrode_spike_waveform_features, electrode_spike_times in zip(
@@ -348,7 +235,7 @@ def fit_clusterless_kde_encoding_model(
             disable=disable_progress_bar,
         ),
         spike_times,
-        strict=False,
+        strict=True,
     ):
         is_in_bounds = jnp.logical_and(
             electrode_spike_times >= position_time[0],
@@ -358,12 +245,7 @@ def fit_clusterless_kde_encoding_model(
         bounded_spike_waveform_features.append(
             electrode_spike_waveform_features[is_in_bounds]
         )
-
-        electrode_weights_at_spike_times = np.interp(
-            electrode_spike_times, position_time, weights
-        )
-        encoding_spike_weights.append(electrode_weights_at_spike_times)
-        mean_rates.append(np.sum(electrode_weights_at_spike_times) / total_weight)
+        mean_rates.append(len(electrode_spike_times) / n_time_bins)
         encoding_positions.append(
             get_position_at_time(
                 position_time, position, electrode_spike_times, environment
@@ -371,15 +253,14 @@ def fit_clusterless_kde_encoding_model(
         )
 
         gpi_model = KDEModel(std=position_std, block_size=block_size).fit(
-            encoding_positions[-1], weights=jnp.array(electrode_weights_at_spike_times)
+            encoding_positions[-1]
         )
         gpi_models.append(gpi_model)
 
         summed_ground_process_intensity += jnp.clip(
-            mean_rates[-1]
-            * safe_divide(gpi_model.predict(interior_place_bin_centers), occupancy),
-            min=EPS,
-            max=None,
+            mean_rates[-1] * gpi_model.predict(interior_place_bin_centers) / occupancy,
+            a_min=EPS,
+            a_max=None,
         )
 
     return {
@@ -388,7 +269,6 @@ def fit_clusterless_kde_encoding_model(
         "gpi_models": gpi_models,
         "encoding_spike_waveform_features": bounded_spike_waveform_features,
         "encoding_positions": encoding_positions,
-        "encoding_spike_weights": encoding_spike_weights,
         "environment": environment,
         "mean_rates": mean_rates,
         "summed_ground_process_intensity": summed_ground_process_intensity,
@@ -409,13 +289,13 @@ def predict_clusterless_kde_log_likelihood(
     occupancy_model: KDEModel,
     gpi_models: list[KDEModel],
     encoding_spike_waveform_features: list[jnp.ndarray],
-    encoding_positions: list[jnp.ndarray],
-    encoding_spike_weights: jnp.ndarray,
+    encoding_positions: jnp.ndarray,
     environment: Environment,
     mean_rates: jnp.ndarray,
     summed_ground_process_intensity: jnp.ndarray,
     position_std: jnp.ndarray,
     waveform_std: jnp.ndarray,
+    encoding_spike_weights: list[jnp.ndarray] | None = None,
     is_local: bool = False,
     block_size: int = 100,
     disable_progress_bar: bool = False,
@@ -442,7 +322,7 @@ def predict_clusterless_kde_log_likelihood(
         KDE models for the ground process intensity.
     encoding_spike_waveform_features : list[jnp.ndarray]
         Spike waveform features for each electrode used for encoding.
-    encoding_positions : list[jnp.ndarray], shape (n_encoding_spikes, n_position_dims)
+    encoding_positions : jnp.ndarray, shape (n_encoding_spikes, n_position_dims)
         Position samples used for encoding.
     environment : Environment
         The spatial environment
@@ -479,7 +359,6 @@ def predict_clusterless_kde_log_likelihood(
             gpi_models,
             encoding_spike_waveform_features,
             encoding_positions,
-            encoding_spike_weights,
             environment,
             mean_rates,
             position_std,
@@ -488,16 +367,7 @@ def predict_clusterless_kde_log_likelihood(
             disable_progress_bar,
         )
     else:
-        if environment.is_track_interior_ is not None:
-            is_track_interior = environment.is_track_interior_.ravel()
-        else:
-            if environment.place_bin_centers_ is None:
-                raise ValueError(
-                    "place_bin_centers_ is required when is_track_interior_ is None"
-                )
-            is_track_interior = jnp.ones(
-                environment.place_bin_centers_.shape[0], dtype=bool
-            )
+        is_track_interior = environment.is_track_interior_.ravel()
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
         log_likelihood = -1.0 * summed_ground_process_intensity * jnp.ones((n_time, 1))
@@ -505,7 +375,6 @@ def predict_clusterless_kde_log_likelihood(
         for (
             electrode_encoding_spike_waveform_features,
             electrode_encoding_positions,
-            electrode_encoding_weights,
             electrode_mean_rate,
             electrode_decoding_spike_waveform_features,
             electrode_spike_times,
@@ -517,11 +386,10 @@ def predict_clusterless_kde_log_likelihood(
                 disable=disable_progress_bar,
             ),
             encoding_positions,
-            encoding_spike_weights,
             mean_rates,
             spike_waveform_features,
             spike_times,
-            strict=False,
+            strict=True,
         ):
             is_in_bounds = jnp.logical_and(
                 electrode_spike_times >= time[0],
@@ -536,12 +404,10 @@ def predict_clusterless_kde_log_likelihood(
                 electrode_encoding_positions,
                 std=position_std,
             )
-
             log_likelihood += jax.ops.segment_sum(
                 block_estimate_log_joint_mark_intensity(
                     electrode_decoding_spike_waveform_features,
                     electrode_encoding_spike_waveform_features,
-                    electrode_encoding_weights,
                     waveform_std,
                     occupancy,
                     electrode_mean_rate,
@@ -565,13 +431,11 @@ def compute_local_log_likelihood(
     occupancy_model: KDEModel,
     gpi_models: list[KDEModel],
     encoding_spike_waveform_features: list[jnp.ndarray],
-    encoding_positions: list[jnp.ndarray],
-    encoding_spike_weights: list[jnp.ndarray],
+    encoding_positions: jnp.ndarray,
     environment: Environment,
     mean_rates: jnp.ndarray,
     position_std: jnp.ndarray,
     waveform_std: jnp.ndarray,
-    weights: jnp.ndarray | None = None,
     block_size: int = 100,
     disable_progress_bar: bool = False,
 ) -> jnp.ndarray:
@@ -605,8 +469,6 @@ def compute_local_log_likelihood(
         Gaussian smoothing standard deviation for position.
     waveform_std : jnp.ndarray
         Gaussian smoothing standard deviation for waveform.
-    weights : jnp.ndarray, shape (n_time_position,), optional
-        Sample weights for position, by default None.
     block_size : int, optional
         Divide computation into blocks, by default 100
     disable_progress_bar : bool, optional
@@ -628,7 +490,6 @@ def compute_local_log_likelihood(
     for (
         electrode_encoding_spike_waveform_features,
         electrode_encoding_positions,
-        electrode_encoding_weights,
         electrode_mean_rate,
         electrode_gpi_model,
         electrode_decoding_spike_waveform_features,
@@ -641,12 +502,10 @@ def compute_local_log_likelihood(
             disable=disable_progress_bar,
         ),
         encoding_positions,
-        encoding_spike_weights,
         mean_rates,
         gpi_models,
         spike_waveform_features,
         spike_times,
-        strict=False,
     ):
         is_in_bounds = jnp.logical_and(
             electrode_spike_times >= time[0],
@@ -678,22 +537,26 @@ def compute_local_log_likelihood(
             ),
             std=jnp.concatenate((position_std, waveform_std)),
             block_size=block_size,
-            weights=electrode_encoding_weights,
         )
         occupancy_at_spike_time = occupancy_model.predict(position_at_spike_time)
 
         log_likelihood += jax.ops.segment_sum(
             jnp.log(
                 electrode_mean_rate
-                * safe_divide(marginal_density, occupancy_at_spike_time)
+                * jnp.where(
+                    occupancy_at_spike_time > 0.0,
+                    marginal_density / occupancy_at_spike_time,
+                    0.0,
+                )
             ),
             get_spike_time_bin_ind(electrode_spike_times, time),
             indices_are_sorted=True,
             num_segments=n_time,
         )
 
-        log_likelihood -= electrode_mean_rate * safe_divide(
-            electrode_gpi_model.predict(interpolated_position), occupancy
+        log_likelihood -= electrode_mean_rate * jnp.where(
+            occupancy > 0.0,
+            electrode_gpi_model.predict(interpolated_position) / occupancy,
+            0.0,
         )
-
     return log_likelihood[:, jnp.newaxis]
