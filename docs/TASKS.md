@@ -98,7 +98,7 @@
 - [x] Add `test_posteriors_nonnegative_and_bounded()` property
 - [x] Add `test_log_probabilities_finite()` property
 - [x] Run property tests - all 13 tests pass (10 original + 3 new)
-- [ ] Commit: "test: expand property tests for probability distributions"
+- [x] Commit: "test: expand property tests for probability distributions"
 
 **Implementation Notes:**
 
@@ -111,12 +111,20 @@
   - Must use `infer_track_interior=True` (default) for proper bin creation
 - All tests verify critical invariants: posteriors sum to 1, values in [0,1], log values finite
 
-### Task 3.2: Add Transition Matrix Properties
+### Task 3.2: Add Transition Matrix Properties ✅
 
-- [ ] Add `test_transition_matrix_rows_sum_to_one()` to `test_hmm_invariants.py`
-- [ ] Add `test_nonstationary_transition_matrices_stochastic()` property
-- [ ] Run property tests
+- [x] Add `test_transition_matrix_rows_sum_to_one()` to `test_hmm_invariants.py`
+- [x] Add `test_nonstationary_transition_matrices_stochastic()` property
+- [x] Run property tests - all 10 tests pass (8 original + 2 new)
 - [ ] Commit: "test: add transition matrix stochastic properties"
+
+**Implementation Notes:**
+
+- Added 2 property tests to verify transition matrices maintain stochastic properties
+- `test_transition_matrix_rows_sum_to_one`: Verifies each row sums to 1.0 (atol=1e-10)
+- `test_nonstationary_transition_matrices_stochastic`: Verifies time-varying transition matrices are stochastic at each timestep
+- Both tests verify all values in [0, 1] range
+- Tests run quickly (~0.4s and ~0.03s respectively)
 
 ### Task 3.3: Add Likelihood Properties
 

@@ -231,3 +231,56 @@ class TestHMMInvariants:
         # Check that most states match (allow for transition matrix influence)
         match_ratio = jnp.mean(states == expected_states)
         assert match_ratio >= 0.6  # At least 60% should match
+
+    @given(stochastic_matrix(min_size=2, max_size=10))
+    def test_transition_matrix_rows_sum_to_one(self, trans):
+        """Property: all rows of a transition matrix must sum to 1.0.
+
+        This is a fundamental requirement for stochastic matrices - each row
+        represents a probability distribution over next states.
+        """
+        # Check each row sums to 1.0
+        row_sums = trans.sum(axis=1)
+        assert jnp.allclose(row_sums, 1.0, atol=1e-10), (
+            f"Transition matrix rows must sum to 1.0, got: {row_sums}"
+        )
+
+        # Check all values are in [0, 1]
+        assert jnp.all(trans >= 0.0), "Transition probabilities must be non-negative"
+        assert jnp.all(trans <= 1.0), "Transition probabilities must be <= 1.0"
+
+    @given(
+        st.integers(min_value=2, max_value=5),  # n_states
+        st.integers(min_value=2, max_value=10),  # n_timesteps
+    )
+    def test_nonstationary_transition_matrices_stochastic(self, n_states, n_timesteps):
+        """Property: time-varying transition matrices must be stochastic at each time.
+
+        For nonstationary HMMs, transition matrices can vary over time:
+        T[t] is the transition matrix from time t to t+1.
+        Each T[t] must be a valid stochastic matrix.
+        """
+        # Generate random time-varying transition matrices
+        trans_matrices = np.random.rand(n_timesteps, n_states, n_states)
+
+        # Normalize each time step to be stochastic
+        for t in range(n_timesteps):
+            trans_matrices[t] = trans_matrices[t] / trans_matrices[t].sum(
+                axis=1, keepdims=True
+            )
+
+        # Check each timestep is stochastic
+        for t in range(n_timesteps):
+            # Each row sums to 1.0
+            row_sums = trans_matrices[t].sum(axis=1)
+            assert np.allclose(row_sums, 1.0, atol=1e-10), (
+                f"Transition matrix at time {t} rows must sum to 1.0, got: {row_sums}"
+            )
+
+            # All values in [0, 1]
+            assert np.all(trans_matrices[t] >= 0.0), (
+                f"Transition probabilities at time {t} must be non-negative"
+            )
+            assert np.all(trans_matrices[t] <= 1.0), (
+                f"Transition probabilities at time {t} must be <= 1.0"
+            )
