@@ -400,7 +400,7 @@ def create_parallel_video(
             # Wait for all chunks to complete
             for i, fut in enumerate(futures):
                 fut.result()
-                print(f"[parallel] Chunk {i+1}/{len(futures)} complete")
+                print(f"[parallel] Chunk {i + 1}/{len(futures)} complete")
 
         # Stitch frames into video
         _ffmpeg_stitch(
@@ -482,7 +482,7 @@ def _render_chunk(
 
             except Exception as e:
                 raise RuntimeError(
-                    f"Failed rendering frame {frame_idx} (range {start_frame}-{end_frame-1}):\n"
+                    f"Failed rendering frame {frame_idx} (range {start_frame}-{end_frame - 1}):\n"
                     f"Error: {e}\n"
                     f"Check your render_frame_func for errors."
                 ) from e
@@ -493,7 +493,7 @@ def _render_chunk(
         if isinstance(e, RuntimeError) and "Failed rendering frame" in str(e):
             raise  # Re-raise frame-specific errors
         raise RuntimeError(
-            f"Failed in chunk {start_frame}-{end_frame-1} during setup:\n"
+            f"Failed in chunk {start_frame}-{end_frame - 1} during setup:\n"
             f"Error: {e}\n"
             f"Check your setup_figure_func for errors."
         ) from e

@@ -5,11 +5,8 @@ Tests cover the core public functions that can be tested in isolation.
 
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 from non_local_detector.discrete_state_transitions import (
-    DiscreteNonStationaryCustom,
-    DiscreteNonStationaryDiagonal,
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
     centered_softmax_forward,
@@ -21,7 +18,6 @@ from non_local_detector.discrete_state_transitions import (
     make_transition_from_diag,
     multinomial_neg_log_likelihood,
 )
-
 from non_local_detector.tests.conftest import assert_stochastic_matrix
 
 
@@ -164,7 +160,9 @@ class TestEstimateJointDistribution:
         n_time = 10
         n_states = 3
         causal_posterior = np.random.rand(n_time, n_states)
-        causal_posterior = causal_posterior / causal_posterior.sum(axis=1, keepdims=True)
+        causal_posterior = causal_posterior / causal_posterior.sum(
+            axis=1, keepdims=True
+        )
 
         predictive = np.random.rand(n_time, n_states)
         predictive = predictive / predictive.sum(axis=1, keepdims=True)
@@ -294,7 +292,9 @@ class TestGetTransitionPrior:
         """Test with scalar stickiness parameter."""
         n_states = 3
         # Note: parameter order is (concentration, stickiness, n_states)
-        prior = get_transition_prior(concentration=1.0, stickiness=2.0, n_states=n_states)
+        prior = get_transition_prior(
+            concentration=1.0, stickiness=2.0, n_states=n_states
+        )
 
         assert prior.shape == (n_states, n_states)
         # Diagonal should have stickiness added
@@ -306,7 +306,9 @@ class TestGetTransitionPrior:
         """Test with per-state stickiness array."""
         n_states = 3
         stickiness = np.array([1.0, 2.0, 3.0])
-        prior = get_transition_prior(concentration=0.5, stickiness=stickiness, n_states=n_states)
+        prior = get_transition_prior(
+            concentration=0.5, stickiness=stickiness, n_states=n_states
+        )
 
         assert prior.shape == (n_states, n_states)
         # Each diagonal element should have its own stickiness

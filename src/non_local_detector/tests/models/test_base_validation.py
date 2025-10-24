@@ -14,7 +14,7 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
 )
-from non_local_detector.exceptions import ValidationError, DataError
+from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.models import SortedSpikesDecoder
 
 
@@ -37,7 +37,10 @@ class TestValidateInitialConditions:
             # Act: Try to create decoder with mismatched initial conditions
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([0.5, 0.3, 0.2]),  # 3 values
-                continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],  # 2 types
+                continuous_initial_conditions_types=[
+                    "uniform_on_track",
+                    "uniform_on_track",
+                ],  # 2 types
                 continuous_transition_types=["random_walk", "random_walk"],  # 2 types
             )
 
@@ -51,8 +54,16 @@ class TestValidateInitialConditions:
             # Act: Try to create decoder with mismatched counts
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([0.5, 0.5]),  # 2 values
-                continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track", "uniform_on_track"],  # 3 types
-                continuous_transition_types=["random_walk", "random_walk", "random_walk"],  # 3 types
+                continuous_initial_conditions_types=[
+                    "uniform_on_track",
+                    "uniform_on_track",
+                    "uniform_on_track",
+                ],  # 3 types
+                continuous_transition_types=[
+                    "random_walk",
+                    "random_walk",
+                    "random_walk",
+                ],  # 3 types
             )
 
     def test_mismatched_stickiness_array_length(self):
@@ -65,9 +76,14 @@ class TestValidateInitialConditions:
             # Act: Try to create decoder with wrong stickiness array length
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([0.5, 0.5]),  # 2 states
-                continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+                continuous_initial_conditions_types=[
+                    "uniform_on_track",
+                    "uniform_on_track",
+                ],
                 continuous_transition_types=["random_walk", "random_walk"],
-                discrete_transition_stickiness=np.array([0.0, 0.5, 1.0]),  # 3 values - WRONG!
+                discrete_transition_stickiness=np.array(
+                    [0.0, 0.5, 1.0]
+                ),  # 3 values - WRONG!
             )
 
     def test_valid_configuration_passes(self, two_state_environment):
@@ -75,7 +91,10 @@ class TestValidateInitialConditions:
         # Arrange & Act: Create decoder with correct configuration
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([0.5, 0.5]),
-            continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+            continuous_initial_conditions_types=[
+                "uniform_on_track",
+                "uniform_on_track",
+            ],
             continuous_transition_types=["random_walk", "random_walk"],
             discrete_transition_stickiness=0.0,  # Float is always valid
             state_names=["state1", "state2"],
@@ -93,10 +112,15 @@ class TestValidateProbabilityDistributions:
     def test_non_1d_array_raises_error(self, two_state_environment):
         """Test that 2D array for initial conditions raises ValidationError."""
         # Arrange & Act: Try to create decoder with 2D initial conditions
-        with pytest.raises(ValidationError):  # Will fail with Mismatch error due to shape
+        with pytest.raises(
+            ValidationError
+        ):  # Will fail with Mismatch error due to shape
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([[0.5, 0.5]]),  # 2D array
-                continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+                continuous_initial_conditions_types=[
+                    "uniform_on_track",
+                    "uniform_on_track",
+                ],
                 continuous_transition_types=["random_walk", "random_walk"],
                 discrete_transition_stickiness=0.0,  # Float to avoid stickiness validation error
                 state_names=["state1", "state2"],
@@ -109,7 +133,10 @@ class TestValidateProbabilityDistributions:
         with pytest.raises(DataError, match="non-finite"):
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([0.5, np.nan]),
-                continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+                continuous_initial_conditions_types=[
+                    "uniform_on_track",
+                    "uniform_on_track",
+                ],
                 continuous_transition_types=["random_walk", "random_walk"],
                 discrete_transition_stickiness=0.0,  # Float to avoid stickiness validation error
                 environments=two_state_environment,
@@ -121,7 +148,10 @@ class TestValidateProbabilityDistributions:
         with pytest.raises(DataError, match="non-finite"):
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([0.5, np.inf]),
-                continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+                continuous_initial_conditions_types=[
+                    "uniform_on_track",
+                    "uniform_on_track",
+                ],
                 continuous_transition_types=["random_walk", "random_walk"],
                 discrete_transition_stickiness=0.0,  # Float to avoid stickiness validation error
                 environments=two_state_environment,
@@ -133,7 +163,10 @@ class TestValidateProbabilityDistributions:
         with pytest.raises(ValidationError, match="non-negative"):
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([1.5, -0.5]),  # Negative!
-                continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+                continuous_initial_conditions_types=[
+                    "uniform_on_track",
+                    "uniform_on_track",
+                ],
                 continuous_transition_types=["random_walk", "random_walk"],
                 discrete_transition_stickiness=0.0,  # Float to avoid stickiness validation error
                 environments=two_state_environment,
@@ -145,7 +178,10 @@ class TestValidateProbabilityDistributions:
         with pytest.raises(ValidationError, match="probability distribution"):
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([0.3, 0.5]),  # Sums to 0.8
-                continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+                continuous_initial_conditions_types=[
+                    "uniform_on_track",
+                    "uniform_on_track",
+                ],
                 continuous_transition_types=["random_walk", "random_walk"],
                 discrete_transition_stickiness=0.0,  # Float to avoid stickiness validation error
                 state_names=["state1", "state2"],
@@ -156,8 +192,13 @@ class TestValidateProbabilityDistributions:
         """Test that valid probability distribution passes."""
         # Arrange & Act: Create decoder with valid probabilities
         decoder = SortedSpikesDecoder(
-            discrete_initial_conditions=np.array([0.3, 0.7]),  # Valid: sum to 1, all positive
-            continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+            discrete_initial_conditions=np.array(
+                [0.3, 0.7]
+            ),  # Valid: sum to 1, all positive
+            continuous_initial_conditions_types=[
+                "uniform_on_track",
+                "uniform_on_track",
+            ],
             continuous_transition_types=["random_walk", "random_walk"],
             discrete_transition_stickiness=0.0,  # Float to avoid stickiness validation error
             state_names=["state1", "state2"],
@@ -263,68 +304,84 @@ class TestValidateDiscreteTransitionType:
     def test_custom_transition_with_nan_raises_error(self, two_state_environment):
         """Test that custom transition matrix with NaN raises DataError."""
         # Arrange: Create transition matrix with NaN
-        transition_matrix = np.array([
-            [0.7, 0.3],
-            [np.nan, 0.5],  # NaN value
-        ])
+        transition_matrix = np.array(
+            [
+                [0.7, 0.3],
+                [np.nan, 0.5],  # NaN value
+            ]
+        )
 
         # Act & Assert: Try to create decoder with NaN in transition matrix
         with pytest.raises(DataError, match="non-finite"):
             SortedSpikesDecoder(
-                discrete_transition_type=DiscreteStationaryCustom(values=transition_matrix),
+                discrete_transition_type=DiscreteStationaryCustom(
+                    values=transition_matrix
+                ),
                 environments=two_state_environment,
             )
 
     def test_custom_transition_with_inf_raises_error(self, two_state_environment):
         """Test that custom transition matrix with Inf raises DataError."""
         # Arrange: Create transition matrix with Inf
-        transition_matrix = np.array([
-            [0.7, 0.3],
-            [np.inf, 0.0],  # Inf value
-        ])
+        transition_matrix = np.array(
+            [
+                [0.7, 0.3],
+                [np.inf, 0.0],  # Inf value
+            ]
+        )
 
         # Act & Assert: Try to create decoder with Inf in transition matrix
         with pytest.raises(DataError, match="non-finite"):
             SortedSpikesDecoder(
-                discrete_transition_type=DiscreteStationaryCustom(values=transition_matrix),
+                discrete_transition_type=DiscreteStationaryCustom(
+                    values=transition_matrix
+                ),
                 environments=two_state_environment,
             )
 
     def test_custom_transition_non_square_raises_error(self, two_state_environment):
         """Test that non-square transition matrix raises ValidationError."""
         # Arrange: Create non-square matrix
-        transition_matrix = np.array([
-            [0.5, 0.5],
-            [0.3, 0.7],
-            [0.2, 0.8],  # 3x2 matrix
-        ])
+        transition_matrix = np.array(
+            [
+                [0.5, 0.5],
+                [0.3, 0.7],
+                [0.2, 0.8],  # 3x2 matrix
+            ]
+        )
 
         # Act & Assert: Try to create decoder with non-square matrix
         with pytest.raises(ValidationError, match="square"):
             SortedSpikesDecoder(
-                discrete_transition_type=DiscreteStationaryCustom(values=transition_matrix),
+                discrete_transition_type=DiscreteStationaryCustom(
+                    values=transition_matrix
+                ),
                 environments=two_state_environment,
             )
 
     def test_custom_transition_wrong_size_raises_error(self, two_state_environment):
         """Test that transition matrix with wrong size raises ValidationError."""
         # Arrange: Create 3x3 matrix but model expects 2x2 (2 states)
-        transition_matrix = np.array([
-            [0.8, 0.1, 0.1],
-            [0.1, 0.8, 0.1],
-            [0.1, 0.1, 0.8],
-        ])
+        transition_matrix = np.array(
+            [
+                [0.8, 0.1, 0.1],
+                [0.1, 0.8, 0.1],
+                [0.1, 0.1, 0.8],
+            ]
+        )
 
         # Act & Assert: Try to create decoder with wrong-sized matrix
-        with pytest.raises(
-            ValidationError,
-            match="size must match"
-        ):
+        with pytest.raises(ValidationError, match="size must match"):
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([0.5, 0.5]),  # 2 states
-                continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],  # 2 states
+                continuous_initial_conditions_types=[
+                    "uniform_on_track",
+                    "uniform_on_track",
+                ],  # 2 states
                 continuous_transition_types=["random_walk", "random_walk"],  # 2 states
-                discrete_transition_type=DiscreteStationaryCustom(values=transition_matrix),  # 3x3 matrix
+                discrete_transition_type=DiscreteStationaryCustom(
+                    values=transition_matrix
+                ),  # 3x3 matrix
                 discrete_transition_stickiness=0.0,
                 state_names=["state1", "state2"],  # Match 2 states
                 environments=two_state_environment,
@@ -333,58 +390,83 @@ class TestValidateDiscreteTransitionType:
     def test_custom_transition_negative_values_raise_error(self, two_state_environment):
         """Test that negative values in transition matrix raise ValidationError."""
         # Arrange: Create matrix with negative value
-        transition_matrix = np.array([
-            [1.5, -0.5],  # Negative value
-            [0.2, 0.8],
-        ])
+        transition_matrix = np.array(
+            [
+                [1.5, -0.5],  # Negative value
+                [0.2, 0.8],
+            ]
+        )
 
         # Act & Assert: Try to create decoder with negative values
         with pytest.raises(ValidationError, match="non-negative"):
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([0.5, 0.5]),
-                continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+                continuous_initial_conditions_types=[
+                    "uniform_on_track",
+                    "uniform_on_track",
+                ],
                 continuous_transition_types=["random_walk", "random_walk"],
-                discrete_transition_type=DiscreteStationaryCustom(values=transition_matrix),
+                discrete_transition_type=DiscreteStationaryCustom(
+                    values=transition_matrix
+                ),
                 discrete_transition_stickiness=0.0,
                 state_names=["state1", "state2"],
                 environments=two_state_environment,
             )
 
-    def test_custom_transition_values_outside_range_raise_error(self, two_state_environment):
+    def test_custom_transition_values_outside_range_raise_error(
+        self, two_state_environment
+    ):
         """Test that values > 1 in transition matrix raise ValidationError."""
         # Arrange: Create matrix with value > 1
-        transition_matrix = np.array([
-            [0.5, 0.5],
-            [1.2, -0.2],  # 1.2 > 1.0 AND -0.2 < 0
-        ])
+        transition_matrix = np.array(
+            [
+                [0.5, 0.5],
+                [1.2, -0.2],  # 1.2 > 1.0 AND -0.2 < 0
+            ]
+        )
 
         # Act & Assert: Try to create decoder with out-of-range values (will catch negative first)
         with pytest.raises(ValidationError):
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([0.5, 0.5]),
-                continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+                continuous_initial_conditions_types=[
+                    "uniform_on_track",
+                    "uniform_on_track",
+                ],
                 continuous_transition_types=["random_walk", "random_walk"],
-                discrete_transition_type=DiscreteStationaryCustom(values=transition_matrix),
+                discrete_transition_type=DiscreteStationaryCustom(
+                    values=transition_matrix
+                ),
                 discrete_transition_stickiness=0.0,
                 state_names=["state1", "state2"],
                 environments=two_state_environment,
             )
 
-    def test_custom_transition_rows_not_summing_to_one_raise_error(self, two_state_environment):
+    def test_custom_transition_rows_not_summing_to_one_raise_error(
+        self, two_state_environment
+    ):
         """Test that non-stochastic transition matrix raises ValidationError."""
         # Arrange: Create matrix where rows don't sum to 1
-        transition_matrix = np.array([
-            [0.5, 0.3],  # Sums to 0.8
-            [0.2, 0.8],
-        ])
+        transition_matrix = np.array(
+            [
+                [0.5, 0.3],  # Sums to 0.8
+                [0.2, 0.8],
+            ]
+        )
 
         # Act & Assert: Try to create decoder with non-stochastic matrix
         with pytest.raises(ValidationError, match="stochastic"):
             SortedSpikesDecoder(
                 discrete_initial_conditions=np.array([0.5, 0.5]),
-                continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+                continuous_initial_conditions_types=[
+                    "uniform_on_track",
+                    "uniform_on_track",
+                ],
                 continuous_transition_types=["random_walk", "random_walk"],
-                discrete_transition_type=DiscreteStationaryCustom(values=transition_matrix),
+                discrete_transition_type=DiscreteStationaryCustom(
+                    values=transition_matrix
+                ),
                 discrete_transition_stickiness=0.0,
                 state_names=["state1", "state2"],
                 environments=two_state_environment,
@@ -393,15 +475,20 @@ class TestValidateDiscreteTransitionType:
     def test_valid_custom_transition_passes(self, two_state_environment):
         """Test that valid custom transition matrix passes validation."""
         # Arrange: Create valid stochastic matrix
-        transition_matrix = np.array([
-            [0.7, 0.3],
-            [0.2, 0.8],
-        ])
+        transition_matrix = np.array(
+            [
+                [0.7, 0.3],
+                [0.2, 0.8],
+            ]
+        )
 
         # Act: Create decoder with valid custom transition
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([0.5, 0.5]),
-            continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+            continuous_initial_conditions_types=[
+                "uniform_on_track",
+                "uniform_on_track",
+            ],
             continuous_transition_types=["random_walk", "random_walk"],
             discrete_transition_type=DiscreteStationaryCustom(values=transition_matrix),
             discrete_transition_stickiness=0.0,
@@ -418,7 +505,10 @@ class TestValidateDiscreteTransitionType:
         # Arrange & Act: Create decoder with diagonal transition type
         decoder = SortedSpikesDecoder(
             discrete_initial_conditions=np.array([0.5, 0.5]),
-            continuous_initial_conditions_types=["uniform_on_track", "uniform_on_track"],
+            continuous_initial_conditions_types=[
+                "uniform_on_track",
+                "uniform_on_track",
+            ],
             continuous_transition_types=["random_walk", "random_walk"],
             discrete_transition_type=DiscreteStationaryDiagonal(
                 diagonal_values=np.array([0.9, 0.8])

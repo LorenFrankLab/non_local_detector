@@ -18,7 +18,6 @@ import pytest
 
 from non_local_detector.environment import Environment
 
-
 # ==============================================================================
 # ENVIRONMENT FIXTURES
 # ==============================================================================
@@ -178,9 +177,7 @@ def synthetic_spike_data():
     spike_times = [np.sort(np.random.uniform(0, 10, 20)) for _ in range(n_neurons)]
 
     # Generate spike features (e.g., waveform features)
-    spike_features = [
-        np.random.randn(len(st), n_features) for st in spike_times
-    ]
+    spike_features = [np.random.randn(len(st), n_features) for st in spike_times]
 
     return {
         "spike_times": spike_times,
@@ -287,9 +284,7 @@ def assert_non_negative(arr, name="array"):
     Raises:
         AssertionError: If array contains negative values.
     """
-    assert np.all(arr >= 0), (
-        f"{name} contains negative values. Min: {np.min(arr)}"
-    )
+    assert np.all(arr >= 0), f"{name} contains negative values. Min: {np.min(arr)}"
 
 
 def assert_in_range(arr, min_val, max_val, name="array"):
@@ -380,12 +375,14 @@ def posterior_data():
     acausal_posterior = np.random.dirichlet(np.ones(n_states) * 2, n_time)
 
     # Create a reasonable transition matrix
-    transition_matrix = np.array([
-        [0.7, 0.1, 0.1, 0.1],
-        [0.1, 0.7, 0.1, 0.1],
-        [0.1, 0.1, 0.7, 0.1],
-        [0.1, 0.1, 0.1, 0.7],
-    ])
+    transition_matrix = np.array(
+        [
+            [0.7, 0.1, 0.1, 0.1],
+            [0.1, 0.7, 0.1, 0.1],
+            [0.1, 0.1, 0.7, 0.1],
+            [0.1, 0.1, 0.1, 0.7],
+        ]
+    )
 
     # Compute predictive distribution
     predictive_distribution = np.zeros((n_time, n_states))
@@ -413,14 +410,18 @@ def design_matrix_data():
     n_time, n_coefficients, n_states = 50, 3, 4
 
     # Create design matrix with intercept and two covariates
-    design_matrix = np.column_stack([
-        np.ones(n_time),
-        np.linspace(0, 1, n_time),
-        np.sin(np.linspace(0, 2 * np.pi, n_time)),
-    ])
+    design_matrix = np.column_stack(
+        [
+            np.ones(n_time),
+            np.linspace(0, 1, n_time),
+            np.sin(np.linspace(0, 2 * np.pi, n_time)),
+        ]
+    )
 
     # Initialize coefficients (small values to avoid extreme probabilities)
-    transition_coefficients = np.random.randn(n_coefficients, n_states, n_states - 1) * 0.1
+    transition_coefficients = (
+        np.random.randn(n_coefficients, n_states, n_states - 1) * 0.1
+    )
 
     return {
         "design_matrix": design_matrix,

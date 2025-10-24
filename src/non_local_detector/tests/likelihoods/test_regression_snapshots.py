@@ -17,6 +17,7 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
 @pytest.fixture
 def make_env_1d():
     """Factory fixture for creating 1D environments with custom parameters."""
+
     def _make_env(n_bins=21, name="line"):
         env = Environment(
             environment_name=name,
@@ -26,6 +27,7 @@ def make_env_1d():
         pos = np.linspace(0.0, float(n_bins - 1), n_bins)[:, None]
         env = env.fit_place_grid(position=pos, infer_track_interior=False)
         return env
+
     return _make_env
 
 

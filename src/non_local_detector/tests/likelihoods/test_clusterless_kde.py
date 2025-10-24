@@ -18,8 +18,6 @@ def rng(seed=0):
     return np.random.default_rng(seed)
 
 
-
-
 def test_get_spike_time_bin_ind_right_edge_last_bin():
     edges = np.array([0.0, 1.0, 2.0, 3.0])
     spikes = np.array([0.0, 0.5, 2.0, 3.0])
@@ -240,7 +238,9 @@ def test_fit_clusterless_kde_raises_without_place_grid():
         )
 
 
-def test_encoding_spike_weights_and_mean_rates_match_interpolation(simple_1d_environment):
+def test_encoding_spike_weights_and_mean_rates_match_interpolation(
+    simple_1d_environment,
+):
     env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 10.0, 101)[:, None]
