@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from syrupy.assertion import SnapshotAssertion
 
 from non_local_detector.environment import Environment
 from non_local_detector.initial_conditions import (
@@ -114,3 +115,96 @@ def test_estimate_initial_conditions_preserves_distribution():
     # Assert
     assert_probability_distribution(init)
     assert np.array_equal(init, post[0])
+
+
+# ============================================================================
+# SNAPSHOT TESTS
+# ============================================================================
+
+
+def serialize_initial_conditions_summary(ic: np.ndarray) -> dict:
+    """Serialize initial conditions to summary for snapshot comparison.
+
+    Parameters
+    ----------
+    ic : np.ndarray
+        Initial conditions array
+
+    Returns
+    -------
+    summary : dict
+        Summary statistics suitable for snapshot comparison
+    """
+    return {
+        "shape": ic.shape,
+        "dtype": str(ic.dtype),
+        "sum": float(np.sum(ic)),
+        "mean": float(np.mean(ic)),
+        "std": float(np.std(ic)),
+        "min": float(np.min(ic)),
+        "max": float(np.max(ic)),
+        "values": ic.tolist(),
+    }
+
+
+@pytest.mark.snapshot
+def test_uniform_initial_conditions_local_snapshot(
+    make_env_1d, snapshot: SnapshotAssertion
+):
+    """Snapshot test for uniform initial conditions with local observation model."""
+    ic = UniformInitialConditions()
+    envs = (make_env_1d(n_bins=10),)
+    local_obs = ObservationModel(
+        environment_name=envs[0].environment_name, is_local=True
+    )
+
+    arr = ic.make_initial_conditions(local_obs, envs)
+
+    assert serialize_initial_conditions_summary(arr) == snapshot
+
+
+@pytest.mark.snapshot
+def test_uniform_initial_conditions_nonlocal_snapshot(
+    make_env_1d, snapshot: SnapshotAssertion
+):
+    """Snapshot test for uniform initial conditions with non-local observation model."""
+    ic = UniformInitialConditions()
+    env = make_env_1d(n_bins=15)
+    envs = (env,)
+    obs = ObservationModel(environment_name=env.environment_name, is_local=False)
+
+    arr = ic.make_initial_conditions(obs, envs)
+
+    assert serialize_initial_conditions_summary(arr) == snapshot
+
+
+@pytest.mark.snapshot
+def test_uniform_initial_conditions_with_mask_snapshot(
+    make_env_1d, snapshot: SnapshotAssertion
+):
+    """Snapshot test for uniform initial conditions with track interior mask."""
+    ic = UniformInitialConditions()
+    env = make_env_1d(n_bins=12)
+    # Mask out some bins
+    mask = np.ones(env.centers_shape_, dtype=bool)
+    mask[2:4] = False
+    mask[-3:] = False
+    env.is_track_interior_ = mask
+    envs = (env,)
+    obs = ObservationModel(environment_name=env.environment_name, is_local=False)
+
+    arr = ic.make_initial_conditions(obs, envs)
+
+    assert serialize_initial_conditions_summary(arr) == snapshot
+
+
+@pytest.mark.snapshot
+def test_estimate_initial_conditions_snapshot(snapshot: SnapshotAssertion):
+    """Snapshot test for estimating initial conditions from posterior."""
+    np.random.seed(42)
+    # Create a posterior with non-uniform distribution
+    post = np.random.dirichlet(np.ones(8), size=20)
+
+    init = estimate_initial_conditions(post)
+
+    assert serialize_initial_conditions_summary(init) == snapshot

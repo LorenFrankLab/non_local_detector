@@ -1,0 +1,502 @@
+# serializer version: 1
+# name: test_environment_1d_snapshot
+  dict({
+    'edges': list([
+      dict({
+        'dim': 0,
+        'max': 10.0,
+        'min': 0.0,
+        'n_edges': 11,
+        'values': list([
+          0.0,
+          1.0,
+          2.0,
+          3.0,
+          4.0,
+          5.0,
+          6.0,
+          7.0,
+          8.0,
+          9.0,
+          10.0,
+        ]),
+      }),
+    ]),
+    'environment_name': 'test_1d',
+    'is_track_interior': dict({
+      'dtype': 'bool',
+      'n_false': 0,
+      'n_true': 10,
+      'shape': tuple(
+        10,
+      ),
+      'values': list([
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+      ]),
+    }),
+    'place_bin_centers': dict({
+      'dtype': 'float64',
+      'first_5': list([
+        list([
+          0.5,
+        ]),
+        list([
+          1.5,
+        ]),
+        list([
+          2.5,
+        ]),
+        list([
+          3.5,
+        ]),
+        list([
+          4.5,
+        ]),
+      ]),
+      'last_5': list([
+        list([
+          5.5,
+        ]),
+        list([
+          6.5,
+        ]),
+        list([
+          7.5,
+        ]),
+        list([
+          8.5,
+        ]),
+        list([
+          9.5,
+        ]),
+      ]),
+      'max': 9.5,
+      'mean': 5.0,
+      'min': 0.5,
+      'shape': tuple(
+        10,
+        1,
+      ),
+      'std': 2.8722813232690143,
+    }),
+    'place_bin_edges': dict({
+      'dtype': 'float64',
+      'first_5': list([
+        list([
+          0.0,
+        ]),
+        list([
+          1.0,
+        ]),
+        list([
+          2.0,
+        ]),
+        list([
+          3.0,
+        ]),
+        list([
+          4.0,
+        ]),
+      ]),
+      'max': 10.0,
+      'mean': 5.0,
+      'min': 0.0,
+      'shape': tuple(
+        11,
+        1,
+      ),
+    }),
+    'place_bin_size': 1.0,
+  })
+# ---
+# name: test_environment_2d_snapshot
+  dict({
+    'edges': list([
+      dict({
+        'dim': 0,
+        'max': 22.0,
+        'min': -2.0,
+        'n_edges': 13,
+        'values': list([
+          -2.0,
+          0.0,
+          2.0,
+          4.0,
+          6.0,
+          8.0,
+          10.0,
+          12.0,
+          14.0,
+          16.0,
+          18.0,
+          20.0,
+          22.0,
+        ]),
+      }),
+      dict({
+        'dim': 1,
+        'max': 16.875,
+        'min': -1.875,
+        'n_edges': 11,
+        'values': list([
+          -1.875,
+          0.0,
+          1.875,
+          3.75,
+          5.625,
+          7.5,
+          9.375,
+          11.25,
+          13.125,
+          15.0,
+          16.875,
+        ]),
+      }),
+    ]),
+    'environment_name': 'test_2d',
+    'is_track_interior': dict({
+      'dtype': 'bool',
+      'n_false': 40,
+      'n_true': 80,
+      'shape': tuple(
+        12,
+        10,
+      ),
+      'values': 'too_large',
+    }),
+    'place_bin_centers': dict({
+      'dtype': 'float64',
+      'first_5': list([
+        list([
+          -1.0,
+          -0.9375,
+        ]),
+        list([
+          -1.0,
+          0.9375,
+        ]),
+        list([
+          -1.0,
+          2.8125,
+        ]),
+        list([
+          -1.0,
+          4.6875,
+        ]),
+        list([
+          -1.0,
+          6.5625,
+        ]),
+      ]),
+      'last_5': list([
+        list([
+          21.0,
+          8.4375,
+        ]),
+        list([
+          21.0,
+          10.3125,
+        ]),
+        list([
+          21.0,
+          12.1875,
+        ]),
+        list([
+          21.0,
+          14.0625,
+        ]),
+        list([
+          21.0,
+          15.9375,
+        ]),
+      ]),
+      'max': 21.0,
+      'mean': 8.75,
+      'min': -1.0,
+      'shape': tuple(
+        120,
+        2,
+      ),
+      'std': 6.3164694615214705,
+    }),
+    'place_bin_edges': dict({
+      'dtype': 'float64',
+      'first_5': list([
+        list([
+          -2.0,
+          -1.875,
+        ]),
+        list([
+          -2.0,
+          0.0,
+        ]),
+        list([
+          -2.0,
+          1.875,
+        ]),
+        list([
+          -2.0,
+          3.75,
+        ]),
+        list([
+          -2.0,
+          5.625,
+        ]),
+      ]),
+      'max': 22.0,
+      'mean': 8.75,
+      'min': -2.0,
+      'shape': tuple(
+        143,
+        2,
+      ),
+    }),
+    'place_bin_size': tuple(
+      2.0,
+      2.0,
+    ),
+  })
+# ---
+# name: test_environment_edges_snapshot
+  dict({
+    'edges': list([
+      dict({
+        'dim': 0,
+        'max': 25.0,
+        'min': 0.0,
+        'n_edges': 11,
+        'values': list([
+          0.0,
+          2.5,
+          5.0,
+          7.5,
+          10.0,
+          12.5,
+          15.0,
+          17.5,
+          20.0,
+          22.5,
+          25.0,
+        ]),
+      }),
+    ]),
+    'environment_name': 'test_edges',
+    'is_track_interior': dict({
+      'dtype': 'bool',
+      'n_false': 0,
+      'n_true': 10,
+      'shape': tuple(
+        10,
+      ),
+      'values': list([
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+      ]),
+    }),
+    'place_bin_centers': dict({
+      'dtype': 'float64',
+      'first_5': list([
+        list([
+          1.25,
+        ]),
+        list([
+          3.75,
+        ]),
+        list([
+          6.25,
+        ]),
+        list([
+          8.75,
+        ]),
+        list([
+          11.25,
+        ]),
+      ]),
+      'last_5': list([
+        list([
+          13.75,
+        ]),
+        list([
+          16.25,
+        ]),
+        list([
+          18.75,
+        ]),
+        list([
+          21.25,
+        ]),
+        list([
+          23.75,
+        ]),
+      ]),
+      'max': 23.75,
+      'mean': 12.5,
+      'min': 1.25,
+      'shape': tuple(
+        10,
+        1,
+      ),
+      'std': 7.180703308172536,
+    }),
+    'place_bin_edges': dict({
+      'dtype': 'float64',
+      'first_5': list([
+        list([
+          0.0,
+        ]),
+        list([
+          2.5,
+        ]),
+        list([
+          5.0,
+        ]),
+        list([
+          7.5,
+        ]),
+        list([
+          10.0,
+        ]),
+      ]),
+      'max': 25.0,
+      'mean': 12.5,
+      'min': 0.0,
+      'shape': tuple(
+        11,
+        1,
+      ),
+    }),
+    'place_bin_size': 2.5,
+  })
+# ---
+# name: test_environment_with_track_interior_mask_snapshot
+  dict({
+    'edges': list([
+      dict({
+        'dim': 0,
+        'max': 12.0,
+        'min': 0.0,
+        'n_edges': 9,
+        'values': list([
+          0.0,
+          1.5,
+          3.0,
+          4.5,
+          6.0,
+          7.5,
+          9.0,
+          10.5,
+          12.0,
+        ]),
+      }),
+    ]),
+    'environment_name': 'test_masked',
+    'is_track_interior': dict({
+      'dtype': 'bool',
+      'n_false': 0,
+      'n_true': 8,
+      'shape': tuple(
+        8,
+      ),
+      'values': list([
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+      ]),
+    }),
+    'place_bin_centers': dict({
+      'dtype': 'float64',
+      'first_5': list([
+        list([
+          0.75,
+        ]),
+        list([
+          2.25,
+        ]),
+        list([
+          3.75,
+        ]),
+        list([
+          5.25,
+        ]),
+        list([
+          6.75,
+        ]),
+      ]),
+      'last_5': list([
+        list([
+          5.25,
+        ]),
+        list([
+          6.75,
+        ]),
+        list([
+          8.25,
+        ]),
+        list([
+          9.75,
+        ]),
+        list([
+          11.25,
+        ]),
+      ]),
+      'max': 11.25,
+      'mean': 6.0,
+      'min': 0.75,
+      'shape': tuple(
+        8,
+        1,
+      ),
+      'std': 3.43693177121688,
+    }),
+    'place_bin_edges': dict({
+      'dtype': 'float64',
+      'first_5': list([
+        list([
+          0.0,
+        ]),
+        list([
+          1.5,
+        ]),
+        list([
+          3.0,
+        ]),
+        list([
+          4.5,
+        ]),
+        list([
+          6.0,
+        ]),
+      ]),
+      'max': 12.0,
+      'mean': 6.0,
+      'min': 0.0,
+      'shape': tuple(
+        9,
+        1,
+      ),
+    }),
+    'place_bin_size': 1.5,
+  })
+# ---

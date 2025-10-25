@@ -3,6 +3,7 @@
 import networkx as nx
 import numpy as np
 import pytest
+from syrupy.assertion import SnapshotAssertion
 
 from non_local_detector import Environment
 from non_local_detector.exceptions import ConfigurationError, ValidationError
@@ -371,3 +372,160 @@ class TestIsTrackInteriorValidation:
         is_interior = np.array([True, False, True, False])
         env = Environment(is_track_interior=is_interior)
         assert np.array_equal(env.is_track_interior, is_interior)
+
+
+# ============================================================================
+# SNAPSHOT TESTS
+# ============================================================================
+
+
+def serialize_environment_summary(env: Environment) -> dict:
+    """Serialize fitted environment to summary for snapshot comparison.
+
+    Parameters
+    ----------
+    env : Environment
+        Fitted environment object
+
+    Returns
+    -------
+    summary : dict
+        Summary statistics suitable for snapshot comparison
+    """
+    summary = {
+        "environment_name": env.environment_name,
+        "place_bin_size": (
+            env.place_bin_size
+            if isinstance(env.place_bin_size, (int, float))
+            else tuple(env.place_bin_size)
+        ),
+    }
+
+    if env.place_bin_centers_ is not None:
+        summary["place_bin_centers"] = {
+            "shape": env.place_bin_centers_.shape,
+            "dtype": str(env.place_bin_centers_.dtype),
+            "mean": float(np.mean(env.place_bin_centers_)),
+            "std": float(np.std(env.place_bin_centers_)),
+            "min": float(np.min(env.place_bin_centers_)),
+            "max": float(np.max(env.place_bin_centers_)),
+            "first_5": env.place_bin_centers_[:5].tolist()
+            if env.place_bin_centers_.shape[0] >= 5
+            else env.place_bin_centers_.tolist(),
+            "last_5": env.place_bin_centers_[-5:].tolist()
+            if env.place_bin_centers_.shape[0] >= 5
+            else env.place_bin_centers_.tolist(),
+        }
+
+    if env.place_bin_edges_ is not None:
+        summary["place_bin_edges"] = {
+            "shape": env.place_bin_edges_.shape,
+            "dtype": str(env.place_bin_edges_.dtype),
+            "mean": float(np.mean(env.place_bin_edges_)),
+            "min": float(np.min(env.place_bin_edges_)),
+            "max": float(np.max(env.place_bin_edges_)),
+            "first_5": env.place_bin_edges_[:5].tolist()
+            if env.place_bin_edges_.shape[0] >= 5
+            else env.place_bin_edges_.tolist(),
+        }
+
+    if env.is_track_interior_ is not None:
+        interior_arr = np.asarray(env.is_track_interior_)
+        summary["is_track_interior"] = {
+            "shape": interior_arr.shape,
+            "dtype": str(interior_arr.dtype),
+            "n_true": int(np.sum(interior_arr)),
+            "n_false": int(np.sum(~interior_arr)),
+            "values": interior_arr.tolist() if interior_arr.size <= 50 else "too_large",
+        }
+
+    if env.edges_ is not None:
+        summary["edges"] = []
+        for i, edge in enumerate(env.edges_):
+            summary["edges"].append(
+                {
+                    "dim": i,
+                    "n_edges": len(edge),
+                    "min": float(np.min(edge)),
+                    "max": float(np.max(edge)),
+                    "values": edge.tolist() if len(edge) <= 20 else "too_large",
+                }
+            )
+
+    return summary
+
+
+@pytest.mark.snapshot
+def test_environment_1d_snapshot(snapshot: SnapshotAssertion):
+    """Snapshot test for 1D environment with fitted place grid."""
+    env = Environment(
+        environment_name="test_1d",
+        place_bin_size=1.0,
+        position_range=((0.0, 10.0),),
+    )
+
+    # Generate position data
+    position = np.linspace(0.0, 10.0, 100)[:, None]
+
+    # Fit the place grid
+    env = env.fit_place_grid(position=position, infer_track_interior=False)
+
+    assert serialize_environment_summary(env) == snapshot
+
+
+@pytest.mark.snapshot
+def test_environment_2d_snapshot(snapshot: SnapshotAssertion):
+    """Snapshot test for 2D environment with fitted place grid."""
+    env = Environment(
+        environment_name="test_2d",
+        place_bin_size=(2.0, 2.0),
+        position_range=((0.0, 20.0), (0.0, 15.0)),
+    )
+
+    # Generate 2D position data
+    np.random.seed(42)
+    x = np.random.uniform(0, 20, 500)
+    y = np.random.uniform(0, 15, 500)
+    position = np.column_stack([x, y])
+
+    # Fit the place grid
+    env = env.fit_place_grid(position=position, infer_track_interior=True)
+
+    assert serialize_environment_summary(env) == snapshot
+
+
+@pytest.mark.snapshot
+def test_environment_with_track_interior_mask_snapshot(snapshot: SnapshotAssertion):
+    """Snapshot test for environment with explicit track interior mask."""
+    env = Environment(
+        environment_name="test_masked",
+        place_bin_size=1.5,
+        position_range=((0.0, 12.0),),
+        bin_count_threshold=2,
+    )
+
+    # Generate position data
+    position = np.linspace(0.0, 12.0, 80)[:, None]
+
+    # Fit with inferred track interior
+    env = env.fit_place_grid(position=position, infer_track_interior=True)
+
+    assert serialize_environment_summary(env) == snapshot
+
+
+@pytest.mark.snapshot
+def test_environment_edges_snapshot(snapshot: SnapshotAssertion):
+    """Snapshot test focusing on bin edges for 1D environment."""
+    env = Environment(
+        environment_name="test_edges",
+        place_bin_size=2.5,
+        position_range=((0.0, 25.0),),
+    )
+
+    # Generate 1D position data covering the full range
+    position = np.linspace(0, 25, 100)[:, None]
+
+    # Fit the place grid
+    env = env.fit_place_grid(position=position, infer_track_interior=False)
+
+    assert serialize_environment_summary(env) == snapshot

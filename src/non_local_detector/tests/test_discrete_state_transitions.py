@@ -5,8 +5,11 @@ Tests cover the core public functions that can be tested in isolation.
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
+from syrupy.assertion import SnapshotAssertion
 
 from non_local_detector.discrete_state_transitions import (
+    DiscreteNonStationaryDiagonal,
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
     centered_softmax_forward,
@@ -392,3 +395,151 @@ class TestDiscreteStationaryCustom:
         assert_stochastic_matrix(trans_mat)
         assert coeffs is None
         assert design is None
+
+
+# ============================================================================
+# SNAPSHOT TESTS
+# ============================================================================
+
+
+def serialize_transition_matrix_summary(trans_mat: np.ndarray) -> dict:
+    """Serialize transition matrix to summary for snapshot comparison.
+
+    Parameters
+    ----------
+    trans_mat : np.ndarray
+        Transition matrix
+
+    Returns
+    -------
+    summary : dict
+        Summary statistics suitable for snapshot comparison
+    """
+    return {
+        "shape": trans_mat.shape,
+        "dtype": str(trans_mat.dtype),
+        "diagonal": np.diag(trans_mat).tolist() if trans_mat.ndim == 2 else None,
+        "row_sums": np.sum(trans_mat, axis=-1).tolist(),
+        "mean": float(np.mean(trans_mat)),
+        "std": float(np.std(trans_mat)),
+        "min": float(np.min(trans_mat)),
+        "max": float(np.max(trans_mat)),
+        "values": trans_mat.tolist() if trans_mat.size <= 100 else "too_large",
+    }
+
+
+@pytest.mark.snapshot
+def test_make_transition_from_diag_snapshot(snapshot: SnapshotAssertion):
+    """Snapshot test for making transition matrix from diagonal values."""
+    diag = np.array([0.9, 0.85, 0.8, 0.95])
+    trans_mat = make_transition_from_diag(diag)
+
+    assert serialize_transition_matrix_summary(trans_mat) == snapshot
+
+
+@pytest.mark.snapshot
+def test_centered_softmax_forward_snapshot(snapshot: SnapshotAssertion):
+    """Snapshot test for centered softmax forward transformation."""
+    y = np.array([np.log(2), np.log(3), np.log(4), np.log(5)])
+    result = centered_softmax_forward(y)
+
+    assert {
+        "shape": result.shape,
+        "dtype": str(result.dtype),
+        "sum": float(np.sum(result)),
+        "values": result.tolist(),
+    } == snapshot
+
+
+@pytest.mark.snapshot
+def test_get_transition_prior_snapshot(snapshot: SnapshotAssertion):
+    """Snapshot test for Dirichlet prior generation."""
+    n_states = 4
+    concentration = 1.5
+    stickiness = np.array([0.5, 1.0, 1.5, 2.0])
+
+    prior = get_transition_prior(
+        concentration=concentration, stickiness=stickiness, n_states=n_states
+    )
+
+    assert serialize_transition_matrix_summary(prior) == snapshot
+
+
+@pytest.mark.snapshot
+def test_discrete_stationary_diagonal_snapshot(snapshot: SnapshotAssertion):
+    """Snapshot test for DiscreteStationaryDiagonal."""
+    diag_values = np.array([0.92, 0.88, 0.90, 0.96])
+    model = DiscreteStationaryDiagonal(diagonal_values=diag_values)
+
+    trans_mat, coeffs, design = model.make_state_transition()
+
+    assert serialize_transition_matrix_summary(trans_mat) == snapshot
+
+
+@pytest.mark.snapshot
+def test_discrete_stationary_custom_snapshot(snapshot: SnapshotAssertion):
+    """Snapshot test for DiscreteStationaryCustom."""
+    custom_matrix = np.array([[0.7, 0.2, 0.1], [0.15, 0.75, 0.1], [0.1, 0.2, 0.7]])
+    model = DiscreteStationaryCustom(values=custom_matrix)
+
+    trans_mat, coeffs, design = model.make_state_transition()
+
+    assert serialize_transition_matrix_summary(trans_mat) == snapshot
+
+
+@pytest.mark.snapshot
+def test_discrete_nonstationary_diagonal_snapshot(snapshot: SnapshotAssertion):
+    """Snapshot test for DiscreteNonStationaryDiagonal."""
+    import pandas as pd
+
+    diag_values = np.array([0.9, 0.85, 0.9, 0.95])
+    model = DiscreteNonStationaryDiagonal(
+        diagonal_values=diag_values,
+        formula="1 + bs(speed, knots=[2.0, 10.0, 30.0])",
+    )
+
+    # Create covariate data
+    speed = np.array([1.0, 5.0, 15.0, 25.0, 35.0, 10.0, 20.0])
+    covariate_data = pd.DataFrame({"speed": speed})
+
+    trans_mat, coeffs, design = model.make_state_transition(covariate_data)
+
+    # Serialize transition matrix and coefficients
+    summary = {
+        "transition_matrix": serialize_transition_matrix_summary(trans_mat),
+        "coefficients_shape": coeffs.shape,
+        "design_matrix_shape": design.shape,
+        "transition_matrix_time_0": trans_mat[0].tolist(),
+        "transition_matrix_time_last": trans_mat[-1].tolist(),
+    }
+
+    assert summary == snapshot
+
+
+@pytest.mark.snapshot
+def test_estimate_joint_distribution_snapshot(snapshot: SnapshotAssertion):
+    """Snapshot test for joint distribution estimation."""
+    np.random.seed(123)
+    n_time, n_states = 10, 3
+
+    # Create probability distributions
+    causal_posterior = np.random.dirichlet(np.ones(n_states), size=n_time)
+    predictive = np.random.dirichlet(np.ones(n_states), size=n_time)
+    acausal_posterior = np.random.dirichlet(np.ones(n_states), size=n_time)
+    trans = make_transition_from_diag(np.array([0.8, 0.85, 0.9]))
+
+    joint = estimate_joint_distribution(
+        causal_posterior, predictive, trans, acausal_posterior
+    )
+
+    summary = {
+        "shape": joint.shape,
+        "dtype": str(joint.dtype),
+        "sum_per_timestep": [float(joint[t].sum()) for t in range(joint.shape[0])],
+        "mean": float(np.mean(joint)),
+        "std": float(np.std(joint)),
+        "first_timestep": joint[0].tolist(),
+        "last_timestep": joint[-1].tolist(),
+    }
+
+    assert summary == snapshot
