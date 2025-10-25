@@ -190,6 +190,12 @@ def fit_clusterless_kde_encoding_model(
     -------
     encoding_model : dict
     """
+    if environment.place_bin_centers_ is None:
+        raise ValueError(
+            "Environment must be fitted with place_bin_centers_. "
+            "Call environment.fit_place_grid() first."
+        )
+
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, (int, float)):
         if environment.track_graph is not None and position.shape[1] > 1:

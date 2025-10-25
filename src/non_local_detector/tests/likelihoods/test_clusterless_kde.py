@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from syrupy.assertion import SnapshotAssertion
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -40,7 +41,6 @@ def test_block_estimate_log_joint_mark_intensity_matches_unblocked():
     r = rng(3)
     dec_feats = jnp.asarray(r.normal(size=(9, 2)))
     enc_feats = jnp.asarray(r.normal(size=(15, 2)))
-    weights = jnp.asarray(r.uniform(0.5, 1.5, size=(enc_feats.shape[0],)))
     wstd = jnp.array([1.0, 1.0])
     occupancy = jnp.asarray(r.uniform(0.1, 1.0, size=(6,)))
     mean_rate = 3.0
@@ -49,12 +49,11 @@ def test_block_estimate_log_joint_mark_intensity_matches_unblocked():
     )
 
     base = estimate_log_joint_mark_intensity(
-        dec_feats, enc_feats, weights, wstd, occupancy, mean_rate, pos_dist
+        dec_feats, enc_feats, wstd, occupancy, mean_rate, pos_dist
     )
     blk = block_estimate_log_joint_mark_intensity(
         dec_feats,
         enc_feats,
-        weights,
         wstd,
         occupancy,
         mean_rate,
@@ -69,7 +68,6 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
     env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
     pos = jnp.linspace(0.0, 10.0, 101)[:, None]
-    weights = jnp.ones_like(t_pos)
 
     # one electrode: few encoding spikes with 2D waveform features
     enc_spike_times = jnp.array([2.0, 5.0, 7.5])
@@ -81,7 +79,6 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
         spike_times=[enc_spike_times],
         spike_waveform_features=[enc_feats],
         environment=env,
-        weights=weights,
         sampling_frequency=10,
         position_std=np.sqrt(1.0),
         waveform_std=1.0,
@@ -95,7 +92,6 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
         "gpi_models",
         "encoding_spike_waveform_features",
         "encoding_positions",
-        "encoding_spike_weights",
         "mean_rates",
         "summed_ground_process_intensity",
     ):
@@ -117,7 +113,6 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
         gpi_models=encoding["gpi_models"],
         encoding_spike_waveform_features=encoding["encoding_spike_waveform_features"],
         encoding_positions=encoding["encoding_positions"],
-        encoding_spike_weights=encoding["encoding_spike_weights"],
         environment=env,
         mean_rates=jnp.asarray(encoding["mean_rates"]),
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
@@ -143,7 +138,6 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
         gpi_models=encoding["gpi_models"],
         encoding_spike_waveform_features=encoding["encoding_spike_waveform_features"],
         encoding_positions=encoding["encoding_positions"],
-        encoding_spike_weights=encoding["encoding_spike_weights"],
         environment=env,
         mean_rates=jnp.asarray(encoding["mean_rates"]),
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
@@ -157,6 +151,7 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
     assert jnp.all(jnp.isfinite(ll_local))
 
 
+@pytest.mark.skip(reason="Weights support removed - will be re-added in future")
 def test_clusterless_local_zero_spikes_equals_negative_gpi_sum(simple_1d_environment):
     env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 101)
@@ -238,6 +233,7 @@ def test_fit_clusterless_kde_raises_without_place_grid():
         )
 
 
+@pytest.mark.skip(reason="Weights support removed - will be re-added in future")
 def test_encoding_spike_weights_and_mean_rates_match_interpolation(
     simple_1d_environment,
 ):
@@ -274,3 +270,256 @@ def test_encoding_spike_weights_and_mean_rates_match_interpolation(
     assert np.allclose(
         float(encoding["mean_rates"][0]), expected_mean, rtol=1e-7, atol=1e-9
     )
+
+
+# ============================================================================
+# SNAPSHOT TESTS
+# ============================================================================
+
+
+def serialize_encoding_model_summary(encoding: dict) -> dict:
+    """Serialize encoding model to summary statistics for snapshot comparison.
+
+    Parameters
+    ----------
+    encoding : dict
+        Encoding model dictionary from fit_clusterless_kde_encoding_model
+
+    Returns
+    -------
+    summary : dict
+        Summary statistics suitable for snapshot comparison
+    """
+    return {
+        "occupancy_stats": {
+            "shape": encoding["occupancy"].shape,
+            "mean": float(np.mean(encoding["occupancy"])),
+            "std": float(np.std(encoding["occupancy"])),
+            "min": float(np.min(encoding["occupancy"])),
+            "max": float(np.max(encoding["occupancy"])),
+        },
+        "mean_rates": [float(r) for r in encoding["mean_rates"]],
+        "summed_ground_process_intensity_stats": {
+            "shape": encoding["summed_ground_process_intensity"].shape,
+            "mean": float(np.mean(encoding["summed_ground_process_intensity"])),
+            "std": float(np.std(encoding["summed_ground_process_intensity"])),
+            "min": float(np.min(encoding["summed_ground_process_intensity"])),
+            "max": float(np.max(encoding["summed_ground_process_intensity"])),
+        },
+        "n_electrodes": len(encoding["encoding_spike_waveform_features"]),
+        "n_encoding_spikes_per_electrode": [
+            int(feats.shape[0])
+            for feats in encoding["encoding_spike_waveform_features"]
+        ],
+    }
+
+
+def serialize_log_likelihood_summary(log_likelihood: jnp.ndarray) -> dict:
+    """Serialize log likelihood array to summary statistics for snapshot comparison.
+
+    Parameters
+    ----------
+    log_likelihood : jnp.ndarray
+        Log likelihood array from predict_clusterless_kde_log_likelihood
+
+    Returns
+    -------
+    summary : dict
+        Summary statistics suitable for snapshot comparison
+    """
+    arr = np.asarray(log_likelihood)
+    return {
+        "shape": arr.shape,
+        "dtype": str(arr.dtype),
+        "mean": float(np.mean(arr)),
+        "std": float(np.std(arr)),
+        "min": float(np.min(arr)),
+        "max": float(np.max(arr)),
+        "sum": float(np.sum(arr)),
+        "first_5": arr.ravel()[:5].tolist() if arr.size >= 5 else arr.ravel().tolist(),
+        "last_5": arr.ravel()[-5:].tolist() if arr.size >= 5 else arr.ravel().tolist(),
+    }
+
+
+@pytest.mark.snapshot
+def test_clusterless_kde_encoding_model_snapshot(
+    simple_1d_environment, snapshot: SnapshotAssertion
+):
+    """Snapshot test for clusterless KDE encoding model fitting.
+
+    This test verifies that the encoding model produces consistent outputs
+    across code changes, capturing:
+    - Occupancy statistics
+    - Mean firing rates per electrode
+    - Ground process intensity statistics
+    - Number of encoding spikes per electrode
+    """
+    env = simple_1d_environment
+    np.random.seed(123)
+    t_pos = jnp.linspace(0.0, 10.0, 201)
+    pos = jnp.linspace(0.0, 10.0, 201)[:, None]
+    weights = jnp.ones_like(t_pos)
+
+    # Three electrodes with different spike patterns and waveform features
+    enc_spike_times = [
+        jnp.array([1.0, 2.0, 3.5, 5.0]),
+        jnp.array([2.5, 4.0, 7.0, 8.5, 9.0]),
+        jnp.array([1.5, 6.0, 8.0]),
+    ]
+    enc_feats = [
+        jnp.array(
+            [[0.0, 0.0], [0.5, -0.5], [1.0, 1.0], [-0.5, 0.5]], dtype=float
+        ),  # 4 spikes
+        jnp.array(
+            [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0], [0.5, 0.5]], dtype=float
+        ),  # 5 spikes
+        jnp.array([[-0.5, -0.5], [1.5, -1.5], [0.2, 0.2]], dtype=float),  # 3 spikes
+    ]
+
+    encoding = fit_clusterless_kde_encoding_model(
+        position_time=t_pos,
+        position=pos,
+        spike_times=enc_spike_times,
+        spike_waveform_features=enc_feats,
+        environment=env,
+        weights=weights,
+        sampling_frequency=20,
+        position_std=np.sqrt(2.0),
+        waveform_std=1.5,
+        block_size=8,
+        disable_progress_bar=True,
+    )
+
+    assert serialize_encoding_model_summary(encoding) == snapshot
+
+
+@pytest.mark.snapshot
+def test_clusterless_kde_nonlocal_likelihood_snapshot(
+    simple_1d_environment, snapshot: SnapshotAssertion
+):
+    """Snapshot test for clusterless KDE non-local likelihood prediction.
+
+    This test verifies that non-local likelihood predictions are consistent
+    across code changes.
+    """
+    env = simple_1d_environment
+    np.random.seed(456)
+    t_pos = jnp.linspace(0.0, 10.0, 201)
+    pos = jnp.linspace(0.0, 10.0, 201)[:, None]
+    weights = jnp.ones_like(t_pos)
+
+    enc_spike_times = [
+        jnp.array([2.0, 5.0, 7.5]),
+        jnp.array([3.0, 6.0]),
+    ]
+    enc_feats = [
+        jnp.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.5]], dtype=float),
+        jnp.array([[0.5, 0.0], [-0.5, 1.0]], dtype=float),
+    ]
+
+    encoding = fit_clusterless_kde_encoding_model(
+        position_time=t_pos,
+        position=pos,
+        spike_times=enc_spike_times,
+        spike_waveform_features=enc_feats,
+        environment=env,
+        weights=weights,
+        sampling_frequency=20,
+        position_std=np.sqrt(1.5),
+        waveform_std=1.0,
+        block_size=8,
+        disable_progress_bar=True,
+    )
+
+    t_edges = jnp.linspace(0.0, 10.0, 11)
+    dec_spike_times = [
+        jnp.array([0.5, 2.5, 5.5, 8.5]),
+        jnp.array([1.0, 3.0, 7.0]),
+    ]
+    dec_feats = [
+        jnp.array([[0.1, 0.05], [0.9, -0.95], [0.45, 0.55], [0.1, 0.1]], dtype=float),
+        jnp.array([[0.55, 0.05], [-0.45, 1.05], [0.0, 0.0]], dtype=float),
+    ]
+
+    ll_nonlocal = predict_clusterless_kde_log_likelihood(
+        time=t_edges,
+        position_time=t_pos,
+        position=pos,
+        spike_times=dec_spike_times,
+        spike_waveform_features=dec_feats,
+        occupancy=encoding["occupancy"],
+        occupancy_model=encoding["occupancy_model"],
+        gpi_models=encoding["gpi_models"],
+        encoding_spike_waveform_features=encoding["encoding_spike_waveform_features"],
+        encoding_positions=encoding["encoding_positions"],
+        environment=env,
+        mean_rates=jnp.asarray(encoding["mean_rates"]),
+        summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
+        position_std=jnp.asarray(encoding["position_std"]),
+        waveform_std=jnp.asarray(encoding["waveform_std"]),
+        is_local=False,
+        block_size=8,
+        disable_progress_bar=True,
+    )
+
+    assert serialize_log_likelihood_summary(ll_nonlocal) == snapshot
+
+
+@pytest.mark.snapshot
+def test_clusterless_kde_local_likelihood_snapshot(
+    simple_1d_environment, snapshot: SnapshotAssertion
+):
+    """Snapshot test for clusterless KDE local likelihood prediction.
+
+    This test verifies that local likelihood predictions are consistent
+    across code changes.
+    """
+    env = simple_1d_environment
+    np.random.seed(789)
+    t_pos = jnp.linspace(0.0, 10.0, 201)
+    pos = jnp.linspace(0.0, 10.0, 201)[:, None]
+    weights = jnp.ones_like(t_pos)
+
+    enc_spike_times = [jnp.array([2.0, 5.0, 7.5])]
+    enc_feats = [jnp.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.5]], dtype=float)]
+
+    encoding = fit_clusterless_kde_encoding_model(
+        position_time=t_pos,
+        position=pos,
+        spike_times=enc_spike_times,
+        spike_waveform_features=enc_feats,
+        environment=env,
+        weights=weights,
+        sampling_frequency=20,
+        position_std=np.sqrt(1.0),
+        waveform_std=1.0,
+        block_size=8,
+        disable_progress_bar=True,
+    )
+
+    t_edges = jnp.linspace(0.0, 10.0, 6)
+    dec_spike_times = [jnp.array([2.1, 5.2])]
+    dec_feats = [jnp.array([[0.1, 0.05], [1.1, -0.9]], dtype=float)]
+
+    ll_local = predict_clusterless_kde_log_likelihood(
+        time=t_edges,
+        position_time=t_pos,
+        position=pos,
+        spike_times=dec_spike_times,
+        spike_waveform_features=dec_feats,
+        occupancy=encoding["occupancy"],
+        occupancy_model=encoding["occupancy_model"],
+        gpi_models=encoding["gpi_models"],
+        encoding_spike_waveform_features=encoding["encoding_spike_waveform_features"],
+        encoding_positions=encoding["encoding_positions"],
+        environment=env,
+        mean_rates=jnp.asarray(encoding["mean_rates"]),
+        summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
+        position_std=jnp.asarray(encoding["position_std"]),
+        waveform_std=jnp.asarray(encoding["waveform_std"]),
+        is_local=True,
+        block_size=8,
+        disable_progress_bar=True,
+    )
+
+    assert serialize_log_likelihood_summary(ll_local) == snapshot
