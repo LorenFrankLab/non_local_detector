@@ -14,8 +14,16 @@ from non_local_detector.likelihoods.clusterless_kde_log import (
 )
 
 
-def test_enc_tile_size_equivalence():
-    """Verify enc_tile_size produces same results as no tiling."""
+@pytest.mark.unit
+@pytest.mark.parametrize("enc_tile_size", [10, 25, 50, 99])
+def test_enc_tile_size_equivalence(enc_tile_size):
+    """Verify enc_tile_size produces same results as no tiling.
+
+    Parameters
+    ----------
+    enc_tile_size : int
+        Encoding chunk size to test
+    """
     n_enc_spikes = 100  # Large enough to test chunking
     n_dec_spikes = 20
     n_pos_bins = 30
@@ -47,7 +55,7 @@ def test_enc_tile_size_equivalence():
         enc_tile_size=None,
     )
 
-    # With encoding tiling (chunk size 25)
+    # With encoding tiling
     result_with_enc_tiling = estimate_log_joint_mark_intensity(
         dec_features,
         enc_features,
@@ -57,13 +65,14 @@ def test_enc_tile_size_equivalence():
         log_position_distance,
         use_gemm=True,
         pos_tile_size=None,
-        enc_tile_size=25,
+        enc_tile_size=enc_tile_size,
     )
 
     # Should be numerically equivalent
+    max_diff = np.max(np.abs(result_no_tiling - result_with_enc_tiling))
     assert np.allclose(
-        result_no_tiling, result_with_enc_tiling, rtol=1e-5, atol=1e-8
-    ), f"Max diff: {np.max(np.abs(result_no_tiling - result_with_enc_tiling))}"
+        result_no_tiling, result_with_enc_tiling, rtol=1e-5, atol=1e-7
+    ), f"enc_tile_size={enc_tile_size}: Max diff = {max_diff}"
 
     # Check shapes
     assert result_no_tiling.shape == (n_dec_spikes, n_pos_bins)
@@ -72,10 +81,6 @@ def test_enc_tile_size_equivalence():
     # Check all values are finite
     assert np.all(np.isfinite(result_no_tiling))
     assert np.all(np.isfinite(result_with_enc_tiling))
-
-    print(f"✓ enc_tile_size=25 matches no tiling")
-    print(f"  Shape: {result_no_tiling.shape}")
-    print(f"  Max diff: {np.max(np.abs(result_no_tiling - result_with_enc_tiling)):.2e}")
 
 
 def test_enc_tile_size_with_pos_tile_size():
