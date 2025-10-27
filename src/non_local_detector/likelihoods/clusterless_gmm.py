@@ -369,14 +369,18 @@ def fit_clusterless_gmm_encoding_model(
         # Interpolate position weights at spike times
         elect_weights = jnp.interp(elect_times, position_time, weights)
 
-        # Mean rate contribution
-        mean_rate = float(jnp.sum(elect_weights) / total_weight)
+        # Mean rate contribution: spikes per time bin (matching KDE)
+        # BUG FIX: Was using n_position_samples, should use n_time_bins
+        # to match units required by Poisson likelihood formula
+        n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
+        mean_rate = float(len(elect_times) / n_time_bins)
         mean_rate = jnp.clip(mean_rate, a_min=EPS)  # avoid 0 rate
         mean_rates.append(mean_rate)
 
         # Positions at spike times
+        # Note: get_position_at_time uses scipy.interpolate.interpn which requires numpy arrays
         enc_pos = get_position_at_time(
-            position_time, position, elect_times, environment
+            np.asarray(position_time), np.asarray(position), elect_times, environment
         )
 
         # GPI GMM (position only)
@@ -444,6 +448,7 @@ def predict_clusterless_gmm_log_likelihood(
     spike_block_size: int = 1000,
     bin_tile_size: int | None = None,
     disable_progress_bar: bool = False,
+    **kwargs,  # Accept and ignore extra kwargs for compatibility with model interface
 ) -> jnp.ndarray:
     """
     Predict the (non-local or local) log likelihood using the fitted GMM model.
@@ -706,8 +711,9 @@ def compute_local_log_likelihood(
     # Interpolate position at bin times (use bin centers)
     # We'll take the midpoints as "time of interest" for local evaluation
     t_centers = 0.5 * (time[:-1] + time[1:])
+    # Note: get_position_at_time uses scipy.interpolate.interpn which requires numpy arrays
     interp_pos = get_position_at_time(
-        position_time, position, t_centers, env
+        np.asarray(position_time), np.asarray(position), t_centers, env
     )  # (n_time, pos_dims)
 
     # Occupancy density and its log at the animal's position
@@ -738,8 +744,9 @@ def compute_local_log_likelihood(
 
         # Spike contributions at their true positions
         if elect_times.shape[0] > 0:
+            # Note: get_position_at_time uses scipy.interpolate.interpn which requires numpy arrays
             pos_at_spike_time = get_position_at_time(
-                position_time, position, elect_times, env
+                np.asarray(position_time), np.asarray(position), elect_times, env
             )  # (n_spikes, pos_dims)
             eval_points = jnp.concatenate(
                 [pos_at_spike_time, elect_feats], axis=1
@@ -759,9 +766,8 @@ def compute_local_log_likelihood(
                 + segment_sum(
                     terms[:, None],
                     seg_ids,
-                    n_time,
-                    indices_are_sorted=True,
                     num_segments=n_time,
+                    indices_are_sorted=True,
                 ).ravel()
             )
 
