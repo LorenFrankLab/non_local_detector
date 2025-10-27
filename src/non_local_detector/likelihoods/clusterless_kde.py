@@ -51,7 +51,9 @@ def kde_distance(
 
     """
     distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
-    for dim_eval_points, dim_samples, dim_std in zip(eval_points.T, samples.T, std):
+    for dim_eval_points, dim_samples, dim_std in zip(
+        eval_points.T, samples.T, std, strict=True
+    ):
         distance *= gaussian_pdf(
             jnp.expand_dims(dim_eval_points, axis=0),
             jnp.expand_dims(dim_samples, axis=1),
@@ -263,8 +265,9 @@ def fit_clusterless_kde_encoding_model(
         )
         gpi_models.append(gpi_model)
 
+        gpi_density = gpi_model.predict(interior_place_bin_centers)
         summed_ground_process_intensity += jnp.clip(
-            mean_rates[-1] * gpi_model.predict(interior_place_bin_centers) / occupancy,
+            mean_rates[-1] * jnp.where(occupancy > 0.0, gpi_density / occupancy, EPS),
             a_min=EPS,
             a_max=None,
         )
@@ -301,7 +304,6 @@ def predict_clusterless_kde_log_likelihood(
     summed_ground_process_intensity: jnp.ndarray,
     position_std: jnp.ndarray,
     waveform_std: jnp.ndarray,
-    encoding_spike_weights: list[jnp.ndarray] | None = None,
     is_local: bool = False,
     block_size: int = 100,
     disable_progress_bar: bool = False,
@@ -512,6 +514,7 @@ def compute_local_log_likelihood(
         gpi_models,
         spike_waveform_features,
         spike_times,
+        strict=True,
     ):
         is_in_bounds = jnp.logical_and(
             electrode_spike_times >= time[0],
