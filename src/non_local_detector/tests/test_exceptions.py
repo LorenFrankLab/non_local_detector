@@ -46,8 +46,8 @@ class TestExceptionHierarchy:
 class TestValidationError:
     """Test ValidationError message formatting."""
 
-    def test_basic_message(self):
-        """Test ValidationError with just a message."""
+    def test_validation_error_formats_simple_message_correctly(self):
+        """Test ValidationError with just a message produces clean output."""
         error = ValidationError("Something went wrong")
         assert str(error) == "Something went wrong"
 
@@ -83,8 +83,8 @@ class TestValidationError:
         assert "Example:" in msg
         assert "x = 10" in msg
 
-    def test_full_structured_message(self):
-        """Test ValidationError with all parameters."""
+    def test_validation_error_formats_complete_structured_message_with_all_fields(self):
+        """Test ValidationError with all parameters produces comprehensive formatted output."""
         error = ValidationError(
             "Array shape mismatch",
             expected="shape (100, 2)",
@@ -120,8 +120,8 @@ class TestValidationError:
 class TestFittingError:
     """Test FittingError message formatting."""
 
-    def test_basic_message(self):
-        """Test FittingError with just a message."""
+    def test_fitting_error_formats_simple_message_correctly(self):
+        """Test FittingError with just a message produces clean output."""
         error = FittingError("Model fitting failed")
         assert str(error) == "Model fitting failed"
 
@@ -139,8 +139,8 @@ class TestFittingError:
 class TestConfigurationError:
     """Test ConfigurationError message formatting."""
 
-    def test_basic_message(self):
-        """Test ConfigurationError with just a message."""
+    def test_configuration_error_formats_simple_message_correctly(self):
+        """Test ConfigurationError with just a message produces clean output."""
         error = ConfigurationError("Invalid configuration")
         assert str(error) == "Invalid configuration"
 
@@ -159,8 +159,8 @@ class TestConfigurationError:
 class TestConvergenceError:
     """Test ConvergenceError message formatting."""
 
-    def test_basic_message(self):
-        """Test ConvergenceError with just a message."""
+    def test_convergence_error_formats_simple_message_correctly(self):
+        """Test ConvergenceError with just a message produces clean output."""
         error = ConvergenceError("Failed to converge")
         assert str(error) == "Failed to converge"
 
@@ -201,8 +201,8 @@ class TestConvergenceError:
 class TestDataError:
     """Test DataError message formatting."""
 
-    def test_basic_message(self):
-        """Test DataError with just a message."""
+    def test_data_error_formats_simple_message_correctly(self):
+        """Test DataError with just a message produces clean output."""
         error = DataError("Found NaN values")
         assert str(error) == "Found NaN values"
 
@@ -291,8 +291,8 @@ class TestEdgeCases:
         assert "Hint:" not in msg
         assert "Example:" not in msg
 
-    def test_empty_string_parameters(self):
-        """Test that empty string parameters are handled."""
+    def test_exception_handles_empty_string_parameters_gracefully(self):
+        """Test that empty string parameters are displayed without error."""
         error = ValidationError("Problem", expected="", got="", hint="")
         msg = str(error)
         # Empty strings should still appear (they're not None)
@@ -314,16 +314,16 @@ class TestEdgeCases:
         assert "Problem with special chars" in msg
         assert "x > 0" in msg
 
-    def test_very_long_messages(self):
-        """Test that very long messages are handled."""
+    def test_exception_handles_very_long_messages_without_truncation(self):
+        """Test that very long messages are preserved completely."""
         long_message = "A" * 1000
         error = ValidationError(long_message)
         msg = str(error)
         assert len(msg) >= 1000
         assert long_message in msg
 
-    def test_unicode_in_messages(self):
-        """Test that unicode characters are handled correctly."""
+    def test_exception_preserves_unicode_characters_in_messages(self):
+        """Test that unicode characters are handled correctly without corruption."""
         error = ValidationError(
             "Problem with unicode: α β γ δ",
             hint="Use ASCII characters: alpha beta gamma delta",
@@ -353,8 +353,8 @@ class TestExceptionReRaise:
             except ValidationError as e:
                 raise NonLocalDetectorError(f"Wrapped: {e}") from e
 
-    def test_exception_chaining(self):
-        """Test that exception chaining works correctly."""
+    def test_exception_chaining_preserves_original_cause(self):
+        """Test that exception chaining preserves the original exception as __cause__."""
         with pytest.raises(FittingError) as exc_info:
             try:
                 raise ValidationError("Input problem")

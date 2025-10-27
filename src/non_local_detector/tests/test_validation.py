@@ -50,8 +50,8 @@ class TestPositiveScalar:
         """Test that zero passes with strict=False."""
         val.ensure_positive_scalar(0.0, "param", strict=False)  # Should not raise
 
-    def test_negative_raises(self):
-        """Test that negative value raises."""
+    def test_ensure_positive_scalar_raises_validation_error_for_negative_value(self):
+        """Test that negative value raises ValidationError."""
         with pytest.raises(ValidationError):
             val.ensure_positive_scalar(-1.0, "param")
 
@@ -60,8 +60,8 @@ class TestPositiveScalar:
 class TestArray1D:
     """Test ensure_array_1d."""
 
-    def test_valid_1d_array(self):
-        """Test that 1D array passes."""
+    def test_ensure_array_1d_accepts_one_dimensional_array(self):
+        """Test that 1D array passes validation."""
         arr = np.array([1, 2, 3])
         val.ensure_array_1d(arr, "arr")  # Should not raise
 
@@ -83,15 +83,15 @@ class TestAllFinite:
         arr = np.array([1.0, 2.0, 3.0])
         val.ensure_all_finite(arr, "arr")  # Should not raise
 
-    def test_nan_raises(self):
-        """Test that NaN raises DataError."""
+    def test_ensure_all_finite_raises_data_error_when_array_contains_nan(self):
+        """Test that NaN raises DataError with clear message."""
         arr = np.array([1.0, np.nan, 3.0])
         with pytest.raises(DataError) as exc_info:
             val.ensure_all_finite(arr, "arr")
         assert "NaN" in str(exc_info.value)
 
-    def test_inf_raises(self):
-        """Test that Inf raises DataError."""
+    def test_ensure_all_finite_raises_data_error_when_array_contains_inf(self):
+        """Test that Inf raises DataError with clear message."""
         arr = np.array([1.0, np.inf, 3.0])
         with pytest.raises(DataError) as exc_info:
             val.ensure_all_finite(arr, "arr")
@@ -107,8 +107,8 @@ class TestAllNonNegative:
         arr = np.array([0.0, 1.0, 2.0])
         val.ensure_all_non_negative(arr, "arr")  # Should not raise
 
-    def test_negative_raises(self):
-        """Test that negative values raise."""
+    def test_ensure_all_non_negative_raises_validation_error_when_array_contains_negative(self):
+        """Test that negative values raise ValidationError with value shown."""
         arr = np.array([1.0, -0.5, 2.0])
         with pytest.raises(ValidationError) as exc_info:
             val.ensure_all_non_negative(arr, "arr")
@@ -120,8 +120,8 @@ class TestAllNonNegative:
 class TestInRange:
     """Test ensure_in_range."""
 
-    def test_valid_range(self):
-        """Test that values in range pass."""
+    def test_ensure_in_range_accepts_values_within_specified_bounds(self):
+        """Test that values in range pass validation without error."""
         arr = np.array([0.2, 0.5, 0.8])
         val.ensure_in_range(arr, "arr", 0.0, 1.0)  # Should not raise
 
@@ -185,13 +185,13 @@ class TestStochasticMatrix:
 class TestNdarray:
     """Test ensure_ndarray."""
 
-    def test_valid_ndarray(self):
-        """Test that ndarray passes."""
+    def test_ensure_ndarray_accepts_numpy_array_without_error(self):
+        """Test that numpy array passes validation."""
         arr = np.array([1, 2, 3])
         val.ensure_ndarray(arr, "arr")  # Should not raise
 
-    def test_list_raises(self):
-        """Test that list raises."""
+    def test_ensure_ndarray_raises_validation_error_when_given_list(self):
+        """Test that list raises ValidationError with type information."""
         lst = [1, 2, 3]
         with pytest.raises(ValidationError) as exc_info:
             val.ensure_ndarray(lst, "arr")
