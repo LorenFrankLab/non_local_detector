@@ -615,9 +615,8 @@ def block_estimate_log_joint_mark_intensity(
     if n_decoding_spikes == 0:
         return jnp.full((0, n_position_bins), LOG_EPS)
 
-    # Use JIT-compiled update with buffer donation for memory efficiency
-    # Donate the accumulator buffer (arg 0) so it can be reused in-place
-    @jax.jit
+    # Use dynamic_update_slice to build output
+    # Note: JAX will JIT-compile this in the calling context
     def _update_block(out_array, block_result, start_idx):
         return jax.lax.dynamic_update_slice(out_array, block_result, (start_idx, 0))
 

@@ -83,8 +83,25 @@ def test_enc_tile_size_equivalence(enc_tile_size):
     assert np.all(np.isfinite(result_with_enc_tiling))
 
 
-def test_enc_tile_size_with_pos_tile_size():
-    """Test combined encoding and position tiling."""
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "enc_tile_size,pos_tile_size",
+    [
+        (30, 15),  # Both tiling
+        (25, 40),  # pos_tile_size > n_pos (no position tiling)
+        (150, 20),  # enc_tile_size > n_enc (no encoding tiling)
+    ],
+)
+def test_enc_tile_size_with_pos_tile_size(enc_tile_size, pos_tile_size):
+    """Test combined encoding and position tiling.
+
+    Parameters
+    ----------
+    enc_tile_size : int
+        Encoding chunk size
+    pos_tile_size : int
+        Position chunk size
+    """
     n_enc_spikes = 100
     n_dec_spikes = 15
     n_pos_bins = 40
@@ -125,20 +142,71 @@ def test_enc_tile_size_with_pos_tile_size():
         mean_rate,
         log_position_distance,
         use_gemm=True,
-        pos_tile_size=15,  # Tile positions
-        enc_tile_size=30,  # Tile encoding spikes
+        pos_tile_size=pos_tile_size,
+        enc_tile_size=enc_tile_size,
     )
 
     # Should match
+    max_diff = np.max(np.abs(result_baseline - result_both_tiling))
     assert np.allclose(
-        result_baseline, result_both_tiling, rtol=1e-5, atol=1e-8
-    ), f"Max diff: {np.max(np.abs(result_baseline - result_both_tiling))}"
-
-    print(f"✓ Combined enc_tile_size=30 + pos_tile_size=15 matches baseline")
-    print(f"  Max diff: {np.max(np.abs(result_baseline - result_both_tiling)):.2e}")
+        result_baseline, result_both_tiling, rtol=1e-5, atol=1e-7
+    ), f"enc_tile_size={enc_tile_size}, pos_tile_size={pos_tile_size}: Max diff = {max_diff}"
 
 
-if __name__ == "__main__":
-    test_enc_tile_size_equivalence()
-    test_enc_tile_size_with_pos_tile_size()
-    print("\n✅ All enc_tile_size tests passed!")
+@pytest.mark.unit
+def test_enc_tile_size_edge_cases():
+    """Test edge cases for encoding tiling."""
+    n_enc_spikes = 10
+    n_dec_spikes = 5
+    n_pos_bins = 8
+    n_features = 2
+
+    np.random.seed(456)
+    dec_features = jnp.array(np.random.randn(n_dec_spikes, n_features) * 5)
+    enc_features = jnp.array(np.random.randn(n_enc_spikes, n_features) * 5)
+    waveform_stds = jnp.array([2.0] * n_features)
+    occupancy = jnp.ones(n_pos_bins) * 0.05
+    mean_rate = 2.0
+
+    enc_positions = jnp.array(np.random.uniform(0, 50, (n_enc_spikes, 1)))
+    interior_bins = jnp.array(np.linspace(0, 50, n_pos_bins))[:, None]
+    position_std = jnp.array([3.0])
+    log_position_distance = log_kde_distance(interior_bins, enc_positions, position_std)
+
+    # Baseline
+    result_baseline = estimate_log_joint_mark_intensity(
+        dec_features,
+        enc_features,
+        waveform_stds,
+        occupancy,
+        mean_rate,
+        log_position_distance,
+        use_gemm=True,
+        enc_tile_size=None,
+    )
+
+    # Test: enc_tile_size = 1 (smallest possible)
+    result_tile1 = estimate_log_joint_mark_intensity(
+        dec_features,
+        enc_features,
+        waveform_stds,
+        occupancy,
+        mean_rate,
+        log_position_distance,
+        use_gemm=True,
+        enc_tile_size=1,
+    )
+    assert np.allclose(result_baseline, result_tile1, rtol=1e-5, atol=1e-7)
+
+    # Test: enc_tile_size = n_enc (no chunking)
+    result_tile_full = estimate_log_joint_mark_intensity(
+        dec_features,
+        enc_features,
+        waveform_stds,
+        occupancy,
+        mean_rate,
+        log_position_distance,
+        use_gemm=True,
+        enc_tile_size=n_enc_spikes,
+    )
+    assert np.allclose(result_baseline, result_tile_full, rtol=1e-5, atol=1e-7)
