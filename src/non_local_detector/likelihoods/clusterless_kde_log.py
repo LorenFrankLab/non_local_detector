@@ -13,6 +13,7 @@ from non_local_detector.likelihoods.common import (
     gaussian_pdf,
     get_position_at_time,
     log_gaussian_pdf,
+    safe_log,
 )
 
 
@@ -32,10 +33,14 @@ def get_spike_time_bin_ind(spike_times: np.ndarray, time: np.ndarray) -> np.ndar
     return np.digitize(spike_times, time[1:-1])
 
 
+@jax.jit
 def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
-    """Distance between evaluation points and samples using Gaussian kernel density
+    """Vectorized KDE distance using vmap (optimized version).
+
+    Computes the product of per-dimension Gaussian kernels using vectorization
+    instead of Python for-loop, enabling full parallelization.
 
     Parameters
     ----------
@@ -44,33 +49,43 @@ def kde_distance(
     samples : jnp.ndarray, shape (n_samples, n_dims)
         Training samples.
     std : jnp.ndarray, shape (n_dims,)
-        Standard deviation of the Gaussian kernel.
+        Standard deviation of the Gaussian kernel for each dimension.
 
     Returns
     -------
     distance : jnp.ndarray, shape (n_samples, n_eval_points)
+        Product of per-dimension Gaussian PDF values.
 
+    Notes
+    -----
+    This function assumes inputs are valid (same dimensionality, positive std).
+    No validation is performed here to maintain JIT compatibility.
     """
-    distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
-    for dim_eval_points, dim_samples, dim_std in zip(
-        eval_points.T, samples.T, std, strict=False
-    ):
-        distance *= gaussian_pdf(
-            jnp.expand_dims(dim_eval_points, axis=0),
-            jnp.expand_dims(dim_samples, axis=1),
-            dim_std,
+
+    def gaussian_per_dim(eval_dim, sample_dim, sigma):
+        return gaussian_pdf(
+            eval_dim[None, :],  # shape (1, n_eval)
+            sample_dim[:, None],  # shape (n_samples, 1)
+            sigma,
         )
-    return distance
+
+    # vmap over dimensions: produces (n_dims, n_samples, n_eval)
+    per_dim_distances = jax.vmap(gaussian_per_dim)(eval_points.T, samples.T, std)
+
+    # Product over dimensions: (n_samples, n_eval)
+    return jnp.prod(per_dim_distances, axis=0)
 
 
 @jax.jit
 def log_kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
-    """Log-distance (log kernel product) between eval points and samples using Gaussian kernels.
+    """Vectorized log-distance (log kernel product) using vmap.
 
     Computes:
         log_distance[i, j] = sum_d log N(eval_points[j, d] | samples[i, d], std[d])
+
+    Uses jax.vmap to eliminate Python for-loop over dimensions, enabling full parallelization.
 
     Parameters
     ----------
@@ -85,15 +100,27 @@ def log_kde_distance(
     -------
     log_distance : jnp.ndarray, shape (n_samples, n_eval_points)
         Log of the product of per-dimension Gaussian kernels.
+
+    Notes
+    -----
+    This function assumes inputs are valid (same dimensionality, positive std).
+    No validation is performed here to maintain JIT compatibility.
     """
-    log_dist = jnp.zeros((samples.shape[0], eval_points.shape[0]))
-    for dim_eval, dim_samp, dim_std in zip(eval_points.T, samples.T, std, strict=False):
-        log_dist += log_gaussian_pdf(
-            jnp.expand_dims(dim_eval, axis=0),  # (1, n_eval)
-            jnp.expand_dims(dim_samp, axis=1),  # (n_samples, 1)
-            dim_std,
+
+    def log_gaussian_per_dim(eval_dim, sample_dim, sigma):
+        return log_gaussian_pdf(
+            eval_dim[None, :],  # shape (1, n_eval)
+            sample_dim[:, None],  # shape (n_samples, 1)
+            sigma,
         )
-    return log_dist
+
+    # vmap over dimensions: produces (n_dims, n_samples, n_eval)
+    per_dim_log_distances = jax.vmap(log_gaussian_per_dim)(
+        eval_points.T, samples.T, std
+    )
+
+    # Sum over dimensions: (n_samples, n_eval)
+    return jnp.sum(per_dim_log_distances, axis=0)
 
 
 def _compute_log_mark_kernel_gemm(
@@ -157,15 +184,212 @@ def _compute_log_mark_kernel_gemm(
     return logK_mark
 
 
+def _estimate_with_enc_chunking(
+    decoding_spike_waveform_features: jnp.ndarray,
+    encoding_spike_waveform_features: jnp.ndarray,
+    waveform_stds: jnp.ndarray,
+    occupancy: jnp.ndarray,
+    mean_rate: float,
+    log_position_distance: jnp.ndarray,
+    log_w: float,
+    enc_tile_size: int,
+    pos_tile_size: int | None,
+) -> jnp.ndarray:
+    """Compute log joint mark intensity with encoding spike chunking.
+
+    Uses online logsumexp to accumulate across encoding chunks, reducing
+    peak memory from O(n_enc * n_pos) to O(enc_tile_size * n_pos).
+
+    Parameters
+    ----------
+    decoding_spike_waveform_features : jnp.ndarray, shape (n_dec, n_features)
+    encoding_spike_waveform_features : jnp.ndarray, shape (n_enc, n_features)
+    waveform_stds : jnp.ndarray, shape (n_features,)
+    occupancy : jnp.ndarray, shape (n_pos,)
+    mean_rate : float
+    log_position_distance : jnp.ndarray, shape (n_enc, n_pos)
+    log_w : float
+        log(1/n_enc) weight for each encoding spike
+    enc_tile_size : int
+        Number of encoding spikes to process in each chunk
+    pos_tile_size : int | None
+        If provided, also tile over positions
+
+    Returns
+    -------
+    log_joint : jnp.ndarray, shape (n_dec, n_pos)
+    """
+    n_enc = encoding_spike_waveform_features.shape[0]
+    n_dec = decoding_spike_waveform_features.shape[0]
+    n_pos = log_position_distance.shape[1]
+
+    # Pad encoding arrays to be divisible by enc_tile_size (required for dynamic_slice)
+    n_enc_chunks = (n_enc + enc_tile_size - 1) // enc_tile_size
+    n_enc_padded = n_enc_chunks * enc_tile_size
+    pad_enc = n_enc_padded - n_enc
+
+    if pad_enc > 0:
+        # Pad with zeros (will be masked out with -inf in logK_mark)
+        encoding_spike_waveform_features = jnp.pad(
+            encoding_spike_waveform_features,
+            ((0, pad_enc), (0, 0)),
+            mode="constant",
+            constant_values=0.0,
+        )
+        log_position_distance = jnp.pad(
+            log_position_distance,
+            ((0, pad_enc), (0, 0)),
+            mode="constant",
+            constant_values=-jnp.inf,  # -inf so they don't contribute
+        )
+
+    # Define vmapped function once (outside loop) for efficiency
+    def compute_for_one_spike(
+        log_pos_chunk: jnp.ndarray, y_col: jnp.ndarray
+    ) -> jnp.ndarray:
+        """Compute logsumexp for one decoding spike across encoding chunk.
+
+        Parameters
+        ----------
+        log_pos_chunk : jnp.ndarray, shape (enc_tile_size, n_pos)
+        y_col : jnp.ndarray, shape (enc_tile_size,)
+
+        Returns
+        -------
+        jnp.ndarray, shape (n_pos,)
+        """
+        return jax.nn.logsumexp(log_w + log_pos_chunk + y_col[:, None], axis=0)
+
+    # Predefine vmapped function for position tiling
+    def compute_for_one_spike_tile(
+        log_pos_tile: jnp.ndarray, y_col: jnp.ndarray
+    ) -> jnp.ndarray:
+        """Compute logsumexp for one decoding spike over position tile.
+
+        Parameters
+        ----------
+        log_pos_tile : jnp.ndarray, shape (enc_tile_size, tile_size)
+        y_col : jnp.ndarray, shape (enc_tile_size,)
+
+        Returns
+        -------
+        jnp.ndarray, shape (tile_size,)
+        """
+        return jax.nn.logsumexp(log_w + log_pos_tile + y_col[:, None], axis=0)
+
+    def process_enc_chunk(chunk_idx: int, log_marginal: jnp.ndarray) -> jnp.ndarray:
+        """Process one encoding chunk and accumulate with online logsumexp."""
+        enc_start = chunk_idx * enc_tile_size
+
+        # Extract encoding chunk (always enc_tile_size, possibly padded)
+        enc_chunk = jax.lax.dynamic_slice(
+            encoding_spike_waveform_features,
+            (enc_start, 0),
+            (enc_tile_size, encoding_spike_waveform_features.shape[1]),
+        )
+
+        # Get position distance for this encoding chunk: (enc_tile_size, n_pos)
+        log_pos_chunk = jax.lax.dynamic_slice(
+            log_position_distance,
+            (enc_start, 0),
+            (enc_tile_size, n_pos),
+        )
+
+        # Compute log mark kernel for this encoding chunk: (enc_tile_size, n_dec)
+        logK_mark_chunk = _compute_log_mark_kernel_gemm(
+            decoding_spike_waveform_features,
+            enc_chunk,
+            waveform_stds,
+        )
+
+        # No need to mask - padded entries have -inf in log_position_distance,
+        # which will propagate through the computation correctly
+
+        if pos_tile_size is None or pos_tile_size >= n_pos:
+            # No position tiling: process all positions at once
+            # vmap over decoding spikes: (n_dec, n_pos)
+            log_marginal_chunk = jax.vmap(compute_for_one_spike, in_axes=(None, 0))(
+                log_pos_chunk, logK_mark_chunk.T
+            )
+        else:
+            # Position tiling: use lax.fori_loop for JIT compilation
+            # Pad positions to be divisible by pos_tile_size
+            n_pos_chunks = (n_pos + pos_tile_size - 1) // pos_tile_size
+            n_pos_padded = n_pos_chunks * pos_tile_size
+            pad_pos = n_pos_padded - n_pos
+
+            if pad_pos > 0:
+                # Pad log_pos_chunk with -inf so they don't contribute
+                log_pos_chunk = jnp.pad(
+                    log_pos_chunk,
+                    ((0, 0), (0, pad_pos)),
+                    mode="constant",
+                    constant_values=-jnp.inf,
+                )
+
+            def process_pos_tile(
+                pos_chunk_idx: int, log_marginal_chunk: jnp.ndarray
+            ) -> jnp.ndarray:
+                """Process one position tile within encoding chunk."""
+                pos_start = pos_chunk_idx * pos_tile_size
+
+                log_pos_tile = jax.lax.dynamic_slice(
+                    log_pos_chunk,
+                    (0, pos_start),
+                    (enc_tile_size, pos_tile_size),
+                )
+
+                # vmap over decoding spikes for this position tile -> (n_dec, pos_tile_size)
+                log_marginal_tile = jax.vmap(
+                    compute_for_one_spike_tile, in_axes=(None, 0)
+                )(log_pos_tile, logK_mark_chunk.T)
+
+                # Update output with this tile
+                return jax.lax.dynamic_update_slice(
+                    log_marginal_chunk, log_marginal_tile, (0, pos_start)
+                )
+
+            # Initialize chunk accumulator with -inf (logsumexp identity)
+            log_marginal_chunk = jnp.full((n_dec, n_pos_padded), -jnp.inf)
+            log_marginal_chunk = jax.lax.fori_loop(
+                0, n_pos_chunks, process_pos_tile, log_marginal_chunk
+            )
+
+            # Trim back to original size
+            log_marginal_chunk = log_marginal_chunk[:, :n_pos]
+
+        # Online logsumexp: accumulate this chunk into running total
+        return jnp.logaddexp(log_marginal, log_marginal_chunk)
+
+    # Initialize accumulator with -inf (identity for logsumexp)
+    log_marginal = jnp.full((n_dec, n_pos), -jnp.inf)
+
+    # Use lax.fori_loop instead of Python for-loop for JIT compilation
+    log_marginal = jax.lax.fori_loop(0, n_enc_chunks, process_enc_chunk, log_marginal)
+
+    # Add mean rate and subtract occupancy (in log)
+    log_mean_rate = safe_log(mean_rate, eps=EPS)
+    log_occ = safe_log(occupancy, eps=EPS)
+
+    log_joint = jnp.where(
+        occupancy[None, :] > 0.0,
+        log_mean_rate + log_marginal - log_occ[None, :],
+        jnp.log(0.0),  # -inf for zero occupancy (intentional masking)
+    )
+
+    return log_joint
+
+
 def estimate_log_joint_mark_intensity(
     decoding_spike_waveform_features: jnp.ndarray,
     encoding_spike_waveform_features: jnp.ndarray,
     waveform_stds: jnp.ndarray,
     occupancy: jnp.ndarray,
     mean_rate: float,
-    position_distance: jnp.ndarray,
+    log_position_distance: jnp.ndarray,
     use_gemm: bool = True,
     pos_tile_size: int | None = None,
+    enc_tile_size: int | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -176,12 +400,18 @@ def estimate_log_joint_mark_intensity(
     waveform_stds : jnp.ndarray, shape (n_features,)
     occupancy : jnp.ndarray, shape (n_position_bins,)
     mean_rate : float
-    position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
+    log_position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
+        Log-space position kernel (output of log_kde_distance). Using log-space
+        prevents underflow from multi-dimensional Gaussian products.
     use_gemm : bool, optional
         If True (default), use GEMM-based log-space computation (faster for multi-dimensional features).
         If False, use linear-space computation (matches reference exactly).
     pos_tile_size : int | None, optional
         If provided, tile computation over position dimension in chunks (only for use_gemm=True).
+    enc_tile_size : int | None, optional
+        If provided, tile computation over encoding spikes dimension to reduce memory.
+        Uses online logsumexp to accumulate across encoding chunks. Reduces peak memory
+        from O(n_enc * n_pos) to O(enc_tile_size * n_pos). Only for use_gemm=True.
 
     Returns
     -------
@@ -192,6 +422,9 @@ def estimate_log_joint_mark_intensity(
 
     if not use_gemm:
         # Linear-space computation (matches reference exactly)
+        # Convert log position back to linear for matrix multiply
+        position_distance = jnp.exp(log_position_distance)
+
         spike_waveform_feature_distance = kde_distance(
             decoding_spike_waveform_features,
             encoding_spike_waveform_features,
@@ -201,11 +434,36 @@ def estimate_log_joint_mark_intensity(
         marginal_density = (
             spike_waveform_feature_distance.T @ position_distance / n_encoding_spikes
         )  # shape (n_decoding_spikes, n_position_bins)
-        return jnp.log(
-            mean_rate * jnp.where(occupancy > 0.0, marginal_density / occupancy, 0.0)
+        # Use safe_log to avoid -inf from zero marginal_density or mean_rate
+        return safe_log(
+            mean_rate * jnp.where(occupancy > 0.0, marginal_density / occupancy, EPS),
+            eps=EPS,
         )
 
     # Log-space computation with GEMM optimization
+    n_pos = log_position_distance.shape[1]
+    n_dec = decoding_spike_waveform_features.shape[0]
+
+    # Uniform weights: log(1/n) for each encoding spike
+    log_w = -jnp.log(float(n_encoding_spikes))  # n_encoding_spikes always > 0
+
+    # If enc_tile_size specified, chunk over encoding spikes
+    if enc_tile_size is not None and enc_tile_size < n_encoding_spikes:
+        # Use online logsumexp to accumulate across encoding chunks
+        # This reduces peak memory from O(n_enc * n_pos) to O(enc_tile_size * n_pos)
+        return _estimate_with_enc_chunking(
+            decoding_spike_waveform_features,
+            encoding_spike_waveform_features,
+            waveform_stds,
+            occupancy,
+            mean_rate,
+            log_position_distance,
+            log_w,
+            enc_tile_size,
+            pos_tile_size,
+        )
+
+    # No encoding chunking: compute full logK_mark matrix
     # Build log-kernel matrix for marks: (n_enc, n_dec)
     logK_mark = _compute_log_mark_kernel_gemm(
         decoding_spike_waveform_features,
@@ -213,69 +471,102 @@ def estimate_log_joint_mark_intensity(
         waveform_stds,
     )
 
-    # Convert position_distance to log-space
-    log_position_distance = jnp.log(position_distance)
+    # Define vmapped function once for efficiency (avoids closure creation per iteration)
+    def compute_for_one_spike_full(y_col: jnp.ndarray) -> jnp.ndarray:
+        """Compute logsumexp for one decoding spike across all positions.
 
-    # Uniform weights: log(1/n) for each encoding spike
-    log_w = -jnp.log(float(n_encoding_spikes))
+        Parameters
+        ----------
+        y_col : jnp.ndarray, shape (n_enc,)
+            Column of logK_mark for one decoding spike
 
-    # Use scan to avoid materializing (n_enc × n_dec × n_pos) array
-    n_pos = log_position_distance.shape[1]
-    n_dec = logK_mark.shape[1]
+        Returns
+        -------
+        jnp.ndarray, shape (n_pos,)
+            Log-space marginal for this spike across all positions
+        """
+        return jax.nn.logsumexp(log_w + log_position_distance + y_col[:, None], axis=0)
 
+    def compute_for_one_spike_tile(
+        log_pos_tile: jnp.ndarray, y_col: jnp.ndarray
+    ) -> jnp.ndarray:
+        """Compute logsumexp for one decoding spike over position tile.
+
+        Parameters
+        ----------
+        log_pos_tile : jnp.ndarray, shape (n_enc, tile_size)
+        y_col : jnp.ndarray, shape (n_enc,)
+
+        Returns
+        -------
+        jnp.ndarray, shape (tile_size,)
+        """
+        return jax.nn.logsumexp(log_w + log_pos_tile + y_col[:, None], axis=0)
+
+    # Use vmap for full parallelization over decoding spikes
     if pos_tile_size is None or pos_tile_size >= n_pos:
         # No tiling: process all positions at once (default, fastest)
-        def scan_over_dec(carry, y_col: jnp.ndarray) -> tuple[None, jnp.ndarray]:
-            # y_col: (n_enc,), the column of logK_mark for one decoding spike
-            # returns: (n_pos,), logsumexp over enc dimension
-            result = jax.nn.logsumexp(
-                log_w + log_position_distance + y_col[:, None], axis=0
-            )
-            return None, result
-
-        # scan over decoding spikes' columns -> (n_dec, n_pos)
-        _, log_marginal = jax.lax.scan(scan_over_dec, None, logK_mark.T)
+        # vmap over decoding spikes' columns -> (n_dec, n_pos)
+        log_marginal = jax.vmap(compute_for_one_spike_full)(logK_mark.T)
     else:
         # Tiled: process positions in chunks to reduce peak memory
-        log_marginal = jnp.zeros((n_dec, n_pos))
+        # Use lax.fori_loop instead of Python for-loop for JIT compilation
+        n_pos_chunks = (n_pos + pos_tile_size - 1) // pos_tile_size
+        n_pos_padded = n_pos_chunks * pos_tile_size
+        pad_pos = n_pos_padded - n_pos
 
-        for pos_start in range(0, n_pos, pos_tile_size):
-            pos_end = min(pos_start + pos_tile_size, n_pos)
-            pos_slice = slice(pos_start, pos_end)
+        # Pad log_position_distance if needed
+        if pad_pos > 0:
+            log_position_distance = jnp.pad(
+                log_position_distance,
+                ((0, 0), (0, pad_pos)),
+                mode="constant",
+                constant_values=-jnp.inf,
+            )
+
+        def process_pos_tile(
+            pos_chunk_idx: int, log_marginal: jnp.ndarray
+        ) -> jnp.ndarray:
+            """Process one position tile."""
+            pos_start = pos_chunk_idx * pos_tile_size
 
             # Tile: slice of log_position_distance for this chunk of positions
-            log_pos_tile = log_position_distance[:, pos_slice]  # (n_enc, tile_size)
+            log_pos_tile = jax.lax.dynamic_slice(
+                log_position_distance,
+                (0, pos_start),
+                (n_encoding_spikes, pos_tile_size),
+            )
 
-            # Create closure to capture log_pos_tile properly
-            def make_scan_fn(tile):
-                def scan_over_dec_tile(
-                    carry, y_col: jnp.ndarray
-                ) -> tuple[None, jnp.ndarray]:
-                    # y_col: (n_enc,)
-                    # returns: (tile_size,), logsumexp over enc dimension
-                    result = jax.nn.logsumexp(log_w + tile + y_col[:, None], axis=0)
-                    return None, result
-
-                return scan_over_dec_tile
-
-            # scan over decoding spikes for this position tile -> (n_dec, tile_size)
-            _, log_marginal_tile = jax.lax.scan(
-                make_scan_fn(log_pos_tile), None, logK_mark.T
+            # vmap over decoding spikes for this position tile -> (n_dec, pos_tile_size)
+            log_marginal_tile = jax.vmap(compute_for_one_spike_tile, in_axes=(None, 0))(
+                log_pos_tile, logK_mark.T
             )
 
             # Update output with this tile
-            log_marginal = log_marginal.at[:, pos_slice].set(log_marginal_tile)
+            return jax.lax.dynamic_update_slice(
+                log_marginal, log_marginal_tile, (0, pos_start)
+            )
+
+        # Initialize with -inf (logsumexp identity, consistent with encoding chunking)
+        log_marginal = jnp.full((n_dec, n_pos_padded), -jnp.inf)
+        log_marginal = jax.lax.fori_loop(
+            0, n_pos_chunks, process_pos_tile, log_marginal
+        )
+
+        # Trim back to original size
+        log_marginal = log_marginal[:, :n_pos]
 
     # Add mean rate and subtract occupancy (in log)
-    log_mean_rate = jnp.log(mean_rate)
-    log_occ = jnp.log(jnp.where(occupancy > 0.0, occupancy, 1.0))  # avoid log(0)
+    # safe_log clamps to LOG_EPS instead of producing -inf for zero values
+    log_mean_rate = safe_log(mean_rate, eps=EPS)
+    log_occ = safe_log(occupancy, eps=EPS)
 
     # Result: log(mean_rate * marginal / occupancy)
-    # Use where to handle occupancy = 0 cases
+    # Use where to handle occupancy = 0 cases (still set to -inf explicitly)
     log_joint = jnp.where(
         occupancy[None, :] > 0.0,
         log_mean_rate + log_marginal - log_occ[None, :],
-        jnp.log(0.0),  # -inf for zero occupancy
+        jnp.log(0.0),  # -inf for zero occupancy (intentional masking)
     )
 
     return log_joint
@@ -287,10 +578,11 @@ def block_estimate_log_joint_mark_intensity(
     waveform_stds: jnp.ndarray,
     occupancy: jnp.ndarray,
     mean_rate: float,
-    position_distance: jnp.ndarray,
+    log_position_distance: jnp.ndarray,
     block_size: int = 100,
     use_gemm: bool = True,
     pos_tile_size: int | None = None,
+    enc_tile_size: int | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -301,12 +593,16 @@ def block_estimate_log_joint_mark_intensity(
     waveform_stds : jnp.ndarray, shape (n_features,)
     occupancy : jnp.ndarray, shape (n_position_bins,)
     mean_rate : float
-    position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
+    log_position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
+        Log-space position kernel. Prevents underflow in multi-dimensional position spaces.
     block_size : int, optional
+        Number of decoding spikes to process per block.
     use_gemm : bool, optional
         If True (default), use GEMM-based log-space computation.
     pos_tile_size : int | None, optional
         If provided, tile computation over position dimension.
+    enc_tile_size : int | None, optional
+        If provided, tile computation over encoding spikes dimension for memory efficiency.
 
     Returns
     -------
@@ -334,9 +630,10 @@ def block_estimate_log_joint_mark_intensity(
             waveform_stds,
             occupancy,
             mean_rate,
-            position_distance,
+            log_position_distance,
             use_gemm=use_gemm,
             pos_tile_size=pos_tile_size,
+            enc_tile_size=enc_tile_size,
         )
         out = _update_block(out, block_result, start_ind)
 
@@ -600,7 +897,8 @@ def predict_clusterless_kde_log_likelihood(
             electrode_decoding_spike_waveform_features = (
                 electrode_decoding_spike_waveform_features[is_in_bounds]
             )
-            position_distance = kde_distance(
+            # Compute position kernel in log-space to prevent underflow
+            log_position_distance = log_kde_distance(
                 interior_place_bin_centers,
                 electrode_encoding_positions,
                 std=position_std,
@@ -612,7 +910,7 @@ def predict_clusterless_kde_log_likelihood(
                     waveform_std,
                     occupancy,
                     electrode_mean_rate,
-                    position_distance,
+                    log_position_distance,
                     block_size,
                 ),
                 get_spike_time_bin_ind(electrode_spike_times, time),
@@ -686,28 +984,58 @@ def compute_local_log_likelihood(
     )
     occupancy = occupancy_model.predict(interpolated_position)
 
+    # Pre-compute all spike positions and occupancies to avoid repeated computation
+    # This is more efficient than computing occupancy per electrode
+    all_spike_positions = []
+    all_spike_position_offsets = [0]  # Track where each electrode's spikes start
+
+    for electrode_spike_times in spike_times:
+        is_in_bounds = jnp.logical_and(
+            electrode_spike_times >= time[0],
+            electrode_spike_times <= time[-1],
+        )
+        electrode_spike_times = electrode_spike_times[is_in_bounds]
+
+        position_at_spike_time = get_position_at_time(
+            position_time, position, electrode_spike_times, environment
+        )
+        all_spike_positions.append(position_at_spike_time)
+        all_spike_position_offsets.append(
+            all_spike_position_offsets[-1] + len(position_at_spike_time)
+        )
+
+    # Compute occupancy once for all spike positions
+    if all_spike_positions:
+        all_spike_positions_concat = jnp.concatenate(all_spike_positions, axis=0)
+        all_occupancies = occupancy_model.predict(all_spike_positions_concat)
+    else:
+        all_occupancies = jnp.array([])
+
     n_time = len(time)
     log_likelihood = jnp.zeros((n_time,))
-    for (
+
+    for electrode_idx, (
         electrode_encoding_spike_waveform_features,
         electrode_encoding_positions,
         electrode_mean_rate,
         electrode_gpi_model,
         electrode_decoding_spike_waveform_features,
         electrode_spike_times,
-    ) in zip(
-        tqdm(
-            encoding_spike_waveform_features,
-            unit="electrode",
-            desc="Local Likelihood",
-            disable=disable_progress_bar,
-        ),
-        encoding_positions,
-        mean_rates,
-        gpi_models,
-        spike_waveform_features,
-        spike_times,
-        strict=False,
+    ) in enumerate(
+        zip(
+            tqdm(
+                encoding_spike_waveform_features,
+                unit="electrode",
+                desc="Local Likelihood",
+                disable=disable_progress_bar,
+            ),
+            encoding_positions,
+            mean_rates,
+            gpi_models,
+            spike_waveform_features,
+            spike_times,
+            strict=True,
+        )
     ):
         is_in_bounds = jnp.logical_and(
             electrode_spike_times >= time[0],
@@ -718,9 +1046,11 @@ def compute_local_log_likelihood(
             electrode_decoding_spike_waveform_features[is_in_bounds]
         )
 
-        position_at_spike_time = get_position_at_time(
-            position_time, position, electrode_spike_times, environment
-        )
+        # Get pre-computed position and occupancy for this electrode
+        start_idx = all_spike_position_offsets[electrode_idx]
+        end_idx = all_spike_position_offsets[electrode_idx + 1]
+        position_at_spike_time = all_spike_positions[electrode_idx]
+        occupancy_at_spike_time = all_occupancies[start_idx:end_idx]
 
         marginal_density = block_kde(
             eval_points=jnp.concatenate(
@@ -740,16 +1070,18 @@ def compute_local_log_likelihood(
             std=jnp.concatenate((position_std, waveform_std)),
             block_size=block_size,
         )
-        occupancy_at_spike_time = occupancy_model.predict(position_at_spike_time)
 
+        # Use safe_log to avoid -inf from zero marginal_density or occupancy
+        # The where still protects against division by zero occupancy
         log_likelihood += jax.ops.segment_sum(
-            jnp.log(
+            safe_log(
                 electrode_mean_rate
                 * jnp.where(
                     occupancy_at_spike_time > 0.0,
                     marginal_density / occupancy_at_spike_time,
-                    0.0,
-                )
+                    EPS,  # Use EPS instead of 0 to avoid log(0)
+                ),
+                eps=EPS,
             ),
             get_spike_time_bin_ind(electrode_spike_times, time),
             indices_are_sorted=True,

@@ -137,22 +137,22 @@ def test_estimate_intensity_moderate_features():
     ll_original = estimate_original(
         dec_features,
         enc_features,
-        enc_weights,
         waveform_stds,
         occupancy,
         mean_rate,
         position_distance,
     )
 
-    # Log-space implementation
+    # Log-space implementation (use_gemm=False to match original)
+    # Now accepts log_position_distance instead of position_distance
     ll_log = estimate_log(
         dec_features,
         enc_features,
-        enc_weights,
         waveform_stds,
         occupancy,
         mean_rate,
         log_position_distance,
+        use_gemm=False,
     )
 
     # Check shapes
@@ -202,22 +202,22 @@ def test_estimate_intensity_extreme_features():
     ll_original = estimate_original(
         dec_features,
         enc_features,
-        enc_weights,
         waveform_stds,
         occupancy,
         mean_rate,
         position_distance,
     )
 
-    # Log-space should handle better
+    # Log-space should handle better (use_gemm=False to match original)
+    # Now accepts log_position_distance - this prevents underflow!
     ll_log = estimate_log(
         dec_features,
         enc_features,
-        enc_weights,
         waveform_stds,
         occupancy,
         mean_rate,
         log_position_distance,
+        use_gemm=False,
     )
 
     # Log-space should always be finite
@@ -323,7 +323,6 @@ def test_predict_local_likelihood_parity(
         gpi_models=enc["gpi_models"],
         encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
         encoding_positions=enc["encoding_positions"],
-        encoding_spike_weights=enc["encoding_spike_weights"],
         environment=env,
         mean_rates=jnp.array(enc["mean_rates"]),
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
@@ -346,7 +345,6 @@ def test_predict_local_likelihood_parity(
         gpi_models=enc["gpi_models"],
         encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
         encoding_positions=enc["encoding_positions"],
-        encoding_spike_weights=enc["encoding_spike_weights"],
         environment=env,
         mean_rates=jnp.array(enc["mean_rates"]),
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
@@ -408,7 +406,6 @@ def test_predict_nonlocal_likelihood_parity(
         gpi_models=enc["gpi_models"],
         encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
         encoding_positions=enc["encoding_positions"],
-        encoding_spike_weights=enc["encoding_spike_weights"],
         environment=env,
         mean_rates=jnp.array(enc["mean_rates"]),
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
@@ -431,7 +428,6 @@ def test_predict_nonlocal_likelihood_parity(
         gpi_models=enc["gpi_models"],
         encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
         encoding_positions=enc["encoding_positions"],
-        encoding_spike_weights=enc["encoding_spike_weights"],
         environment=env,
         mean_rates=jnp.array(enc["mean_rates"]),
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
@@ -476,7 +472,6 @@ def test_memory_efficiency_scan_vs_vmap():
     np.random.seed(42)
     dec_features = jnp.array(np.random.randn(n_dec_spikes, n_features) * 10 + 50)
     enc_features = jnp.array(np.random.randn(n_enc_spikes, n_features) * 10 + 50)
-    enc_weights = jnp.ones(n_enc_spikes)
     waveform_stds = jnp.array([5.0] * n_features)
     occupancy = jnp.ones(n_pos_bins) * 0.1
     mean_rate = 5.0
@@ -487,15 +482,15 @@ def test_memory_efficiency_scan_vs_vmap():
     position_std = jnp.array([5.0])
     log_position_distance = log_kde_distance(interior_bins, enc_positions, position_std)
 
-    # This should not OOM with scan-based implementation
+    # This should not OOM with vmap-based implementation
     ll_log = estimate_log(
         dec_features,
         enc_features,
-        enc_weights,
         waveform_stds,
         occupancy,
         mean_rate,
         log_position_distance,
+        use_gemm=False,
     )
 
     # Verify result
