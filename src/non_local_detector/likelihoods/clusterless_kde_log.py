@@ -123,6 +123,75 @@ def log_kde_distance(
     return jnp.sum(per_dim_log_distances, axis=0)
 
 
+def log_kde_distance_streaming(
+    eval_points: jnp.ndarray,
+    samples: jnp.ndarray,
+    std: jnp.ndarray,
+) -> jnp.ndarray:
+    """Compute log KDE distance in streaming fashion to avoid D×n_samp×n_eval intermediate.
+
+    This is mathematically equivalent to log_kde_distance but uses a fori_loop over
+    dimensions instead of vmap. This avoids materializing a (n_dims, n_samples, n_eval)
+    intermediate array, reducing peak memory from O(D×n_samp×n_eval) to O(n_samp×n_eval).
+
+    For large D (many position dimensions), this can significantly reduce memory usage.
+
+    Parameters
+    ----------
+    eval_points : jnp.ndarray, shape (n_eval, n_dims)
+        Points at which to evaluate the KDE.
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+        Sample points from which to build the KDE.
+    std : jnp.ndarray, shape (n_dims,)
+        Standard deviation for each dimension.
+
+    Returns
+    -------
+    log_distance : jnp.ndarray, shape (n_samples, n_eval)
+        Log of the Gaussian kernel distance for each sample-evaluation pair.
+
+    Notes
+    -----
+    Memory usage:
+    - log_kde_distance (vmap): O(D×n_samp×n_eval) peak
+    - log_kde_distance_streaming (fori_loop): O(n_samp×n_eval) peak
+
+    For D=10, n_samp=1000, n_eval=100: 10× memory reduction
+    """
+    n_dims = eval_points.shape[1]
+    n_samp = samples.shape[0]
+    n_eval = eval_points.shape[0]
+
+    # Clamp std to avoid division by zero
+    std = jnp.clip(std, EPS, jnp.inf)
+
+    # Initialize accumulator: (n_samp, n_eval)
+    log_distance_acc = jnp.zeros((n_samp, n_eval))
+
+    def accumulate_dim(dim_idx: int, acc: jnp.ndarray) -> jnp.ndarray:
+        """Accumulate log-Gaussian contribution from one dimension."""
+        # Extract 1D slices for this dimension
+        eval_d = jax.lax.dynamic_slice_in_dim(eval_points, dim_idx, 1, axis=1).squeeze(
+            axis=1
+        )  # (n_eval,)
+        samp_d = jax.lax.dynamic_slice_in_dim(samples, dim_idx, 1, axis=1).squeeze(
+            axis=1
+        )  # (n_samp,)
+
+        # Compute log Gaussian for this dimension: (n_samp, n_eval)
+        logp_d = log_gaussian_pdf(
+            eval_d[None, :],  # (1, n_eval) -> broadcast to (n_samp, n_eval)
+            samp_d[:, None],  # (n_samp, 1) -> broadcast to (n_samp, n_eval)
+            std[dim_idx],
+        )
+
+        # Accumulate (sum in log-space is just addition)
+        return acc + logp_d
+
+    # Loop over dimensions, accumulating log-distance contributions
+    return jax.lax.fori_loop(0, n_dims, accumulate_dim, log_distance_acc)
+
+
 def _compute_log_mark_kernel_gemm(
     decoding_features: jnp.ndarray,
     encoding_features: jnp.ndarray,
@@ -190,15 +259,23 @@ def _estimate_with_enc_chunking(
     waveform_stds: jnp.ndarray,
     occupancy: jnp.ndarray,
     mean_rate: float,
-    log_position_distance: jnp.ndarray,
+    log_position_distance: jnp.ndarray | None,
     log_w: float,
     enc_tile_size: int,
     pos_tile_size: int | None,
+    encoding_positions: jnp.ndarray | None = None,
+    position_eval_points: jnp.ndarray | None = None,
+    position_std: jnp.ndarray | None = None,
+    use_streaming: bool = False,
 ) -> jnp.ndarray:
     """Compute log joint mark intensity with encoding spike chunking.
 
     Uses online logsumexp to accumulate across encoding chunks, reducing
     peak memory from O(n_enc * n_pos) to O(enc_tile_size * n_pos).
+
+    Supports two modes:
+    1. Precomputed: Uses precomputed log_position_distance matrix
+    2. Streaming: Computes position distances on-the-fly per chunk (saves memory)
 
     Parameters
     ----------
@@ -207,13 +284,22 @@ def _estimate_with_enc_chunking(
     waveform_stds : jnp.ndarray, shape (n_features,)
     occupancy : jnp.ndarray, shape (n_pos,)
     mean_rate : float
-    log_position_distance : jnp.ndarray, shape (n_enc, n_pos)
+    log_position_distance : jnp.ndarray | None, shape (n_enc, n_pos)
+        Precomputed log position distances. Required if use_streaming=False.
     log_w : float
         log(1/n_enc) weight for each encoding spike
     enc_tile_size : int
         Number of encoding spikes to process in each chunk
     pos_tile_size : int | None
         If provided, also tile over positions
+    encoding_positions : jnp.ndarray | None, shape (n_enc, n_pos_dims)
+        Encoding positions. Required if use_streaming=True.
+    position_eval_points : jnp.ndarray | None, shape (n_pos, n_pos_dims)
+        Position evaluation points (e.g., interior_place_bin_centers). Required if use_streaming=True.
+    position_std : jnp.ndarray | None, shape (n_pos_dims,)
+        Position standard deviations. Required if use_streaming=True.
+    use_streaming : bool, default=False
+        If True, compute position distances on-the-fly. Reduces memory but adds computation.
 
     Returns
     -------
@@ -221,27 +307,56 @@ def _estimate_with_enc_chunking(
     """
     n_enc = encoding_spike_waveform_features.shape[0]
     n_dec = decoding_spike_waveform_features.shape[0]
-    n_pos = log_position_distance.shape[1]
+
+    if use_streaming:
+        if (
+            position_eval_points is None
+            or encoding_positions is None
+            or position_std is None
+        ):
+            raise ValueError(
+                "use_streaming=True requires encoding_positions, position_eval_points, and position_std"
+            )
+        n_pos = position_eval_points.shape[0]
+    else:
+        if log_position_distance is None:
+            raise ValueError("use_streaming=False requires log_position_distance")
+        n_pos = log_position_distance.shape[1]
 
     # Pad encoding arrays to be divisible by enc_tile_size (required for dynamic_slice)
     n_enc_chunks = (n_enc + enc_tile_size - 1) // enc_tile_size
     n_enc_padded = n_enc_chunks * enc_tile_size
     pad_enc = n_enc_padded - n_enc
 
+    # Create validity mask for encoding spikes (used in streaming mode)
+    if use_streaming:
+        enc_valid_mask = jnp.arange(n_enc_padded) < n_enc  # Shape: (n_enc_padded,)
+
     if pad_enc > 0:
-        # Pad with zeros (will be masked out with -inf in logK_mark)
+        # Pad waveform features with zeros
         encoding_spike_waveform_features = jnp.pad(
             encoding_spike_waveform_features,
             ((0, pad_enc), (0, 0)),
             mode="constant",
             constant_values=0.0,
         )
-        log_position_distance = jnp.pad(
-            log_position_distance,
-            ((0, pad_enc), (0, 0)),
-            mode="constant",
-            constant_values=-jnp.inf,  # -inf so they don't contribute
-        )
+
+        if use_streaming:
+            # Streaming mode: pad encoding positions with zeros (will be masked with -inf later)
+            encoding_positions = jnp.pad(
+                encoding_positions,
+                ((0, pad_enc), (0, 0)),
+                mode="constant",
+                constant_values=0.0,
+            )
+        else:
+            # Precomputed mode: pad log_position_distance with -inf
+            log_position_distance = jnp.pad(
+                log_position_distance,
+                ((0, pad_enc), (0, 0)),
+                mode="constant",
+                constant_values=-jnp.inf,
+            )
 
     # Define vmapped function once (outside loop) for efficiency
     def compute_for_one_spike(
@@ -282,28 +397,57 @@ def _estimate_with_enc_chunking(
         enc_start = chunk_idx * enc_tile_size
 
         # Extract encoding chunk (always enc_tile_size, possibly padded)
-        enc_chunk = jax.lax.dynamic_slice(
+        enc_chunk_features = jax.lax.dynamic_slice(
             encoding_spike_waveform_features,
             (enc_start, 0),
             (enc_tile_size, encoding_spike_waveform_features.shape[1]),
         )
 
         # Get position distance for this encoding chunk: (enc_tile_size, n_pos)
-        log_pos_chunk = jax.lax.dynamic_slice(
-            log_position_distance,
-            (enc_start, 0),
-            (enc_tile_size, n_pos),
-        )
+        if use_streaming:
+            # Streaming mode: compute position kernel on-the-fly
+            # Extract encoding positions for this chunk
+            enc_chunk_positions = jax.lax.dynamic_slice(
+                encoding_positions,
+                (enc_start, 0),
+                (enc_tile_size, encoding_positions.shape[1]),
+            )
+
+            # Compute position distances using streaming (avoids D×n_enc×n_pos intermediate)
+            log_pos_chunk = log_kde_distance_streaming(
+                position_eval_points,  # (n_pos, n_pos_dims)
+                enc_chunk_positions,  # (enc_tile_size, n_pos_dims)
+                position_std,  # (n_pos_dims,)
+            )
+            # Returns: (enc_tile_size, n_pos)
+
+            # Mask padded entries (beyond n_enc) with -inf
+            # Extract validity mask for this chunk
+            chunk_valid_mask = jax.lax.dynamic_slice(
+                enc_valid_mask,
+                (enc_start,),
+                (enc_tile_size,),
+            )
+            # Apply mask: invalid entries → -inf
+            log_pos_chunk = jnp.where(
+                chunk_valid_mask[:, None], log_pos_chunk, -jnp.inf
+            )
+        else:
+            # Precomputed mode: slice from full matrix
+            log_pos_chunk = jax.lax.dynamic_slice(
+                log_position_distance,
+                (enc_start, 0),
+                (enc_tile_size, n_pos),
+            )
 
         # Compute log mark kernel for this encoding chunk: (enc_tile_size, n_dec)
         logK_mark_chunk = _compute_log_mark_kernel_gemm(
             decoding_spike_waveform_features,
-            enc_chunk,
+            enc_chunk_features,
             waveform_stds,
         )
 
-        # No need to mask - padded entries have -inf in log_position_distance,
-        # which will propagate through the computation correctly
+        # No need to mask logK_mark_chunk - padded entries already have -inf in log_pos_chunk
 
         if pos_tile_size is None or pos_tile_size >= n_pos:
             # No position tiling: process all positions at once
@@ -386,10 +530,14 @@ def estimate_log_joint_mark_intensity(
     waveform_stds: jnp.ndarray,
     occupancy: jnp.ndarray,
     mean_rate: float,
-    log_position_distance: jnp.ndarray,
+    log_position_distance: jnp.ndarray | None = None,
     use_gemm: bool = True,
     pos_tile_size: int | None = None,
     enc_tile_size: int | None = None,
+    use_streaming: bool = False,
+    encoding_positions: jnp.ndarray | None = None,
+    position_eval_points: jnp.ndarray | None = None,
+    position_std: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -400,9 +548,9 @@ def estimate_log_joint_mark_intensity(
     waveform_stds : jnp.ndarray, shape (n_features,)
     occupancy : jnp.ndarray, shape (n_position_bins,)
     mean_rate : float
-    log_position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
-        Log-space position kernel (output of log_kde_distance). Using log-space
-        prevents underflow from multi-dimensional Gaussian products.
+    log_position_distance : jnp.ndarray | None, shape (n_encoding_spikes, n_position_bins)
+        Log-space position kernel (output of log_kde_distance). Required if use_streaming=False.
+        Using log-space prevents underflow from multi-dimensional Gaussian products.
     use_gemm : bool, optional
         If True (default), use GEMM-based log-space computation (faster for multi-dimensional features).
         If False, use linear-space computation (matches reference exactly).
@@ -412,6 +560,17 @@ def estimate_log_joint_mark_intensity(
         If provided, tile computation over encoding spikes dimension to reduce memory.
         Uses online logsumexp to accumulate across encoding chunks. Reduces peak memory
         from O(n_enc * n_pos) to O(enc_tile_size * n_pos). Only for use_gemm=True.
+    use_streaming : bool, optional, default=False
+        If True, compute position kernel on-the-fly per encoding chunk (streaming mode).
+        Avoids materializing full (n_enc × n_pos) position distance matrix.
+        Requires encoding_positions, position_eval_points, and position_std.
+        Only valid with enc_tile_size (requires chunking).
+    encoding_positions : jnp.ndarray | None, shape (n_encoding_spikes, n_position_dims)
+        Encoding spike positions. Required if use_streaming=True.
+    position_eval_points : jnp.ndarray | None, shape (n_position_bins, n_position_dims)
+        Position evaluation points (e.g., interior_place_bin_centers). Required if use_streaming=True.
+    position_std : jnp.ndarray | None, shape (n_position_dims,)
+        Position standard deviations. Required if use_streaming=True.
 
     Returns
     -------
@@ -440,8 +599,34 @@ def estimate_log_joint_mark_intensity(
             eps=EPS,
         )
 
+    # Validation: streaming requires chunking and streaming parameters
+    if use_streaming:
+        if enc_tile_size is None:
+            raise ValueError(
+                "use_streaming=True requires enc_tile_size to be specified"
+            )
+        if enc_tile_size >= n_encoding_spikes:
+            raise ValueError(
+                f"use_streaming=True requires enc_tile_size < n_encoding_spikes "
+                f"(got enc_tile_size={enc_tile_size}, n_encoding_spikes={n_encoding_spikes}). "
+                f"Streaming is only beneficial when chunking encoding spikes."
+            )
+        if (
+            encoding_positions is None
+            or position_eval_points is None
+            or position_std is None
+        ):
+            raise ValueError(
+                "use_streaming=True requires encoding_positions, position_eval_points, "
+                "and position_std to be specified"
+            )
+
     # Log-space computation with GEMM optimization
-    n_pos = log_position_distance.shape[1]
+    if use_streaming:
+        # When streaming, we don't use log_position_distance at all
+        n_pos = position_eval_points.shape[0]
+    else:
+        n_pos = log_position_distance.shape[1]
     n_dec = decoding_spike_waveform_features.shape[0]
 
     # Uniform weights: log(1/n) for each encoding spike
@@ -461,6 +646,10 @@ def estimate_log_joint_mark_intensity(
             log_w,
             enc_tile_size,
             pos_tile_size,
+            encoding_positions=encoding_positions,
+            position_eval_points=position_eval_points,
+            position_std=position_std,
+            use_streaming=use_streaming,
         )
 
     # No encoding chunking: compute full logK_mark matrix
@@ -578,11 +767,15 @@ def block_estimate_log_joint_mark_intensity(
     waveform_stds: jnp.ndarray,
     occupancy: jnp.ndarray,
     mean_rate: float,
-    log_position_distance: jnp.ndarray,
+    log_position_distance: jnp.ndarray | None = None,
     block_size: int = 100,
     use_gemm: bool = True,
     pos_tile_size: int | None = None,
     enc_tile_size: int | None = None,
+    use_streaming: bool = False,
+    encoding_positions: jnp.ndarray | None = None,
+    position_eval_points: jnp.ndarray | None = None,
+    position_std: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -593,8 +786,9 @@ def block_estimate_log_joint_mark_intensity(
     waveform_stds : jnp.ndarray, shape (n_features,)
     occupancy : jnp.ndarray, shape (n_position_bins,)
     mean_rate : float
-    log_position_distance : jnp.ndarray, shape (n_encoding_spikes, n_position_bins)
+    log_position_distance : jnp.ndarray | None, shape (n_encoding_spikes, n_position_bins)
         Log-space position kernel. Prevents underflow in multi-dimensional position spaces.
+        Can be None if use_streaming=True.
     block_size : int, optional
         Number of decoding spikes to process per block.
     use_gemm : bool, optional
@@ -603,6 +797,15 @@ def block_estimate_log_joint_mark_intensity(
         If provided, tile computation over position dimension.
     enc_tile_size : int | None, optional
         If provided, tile computation over encoding spikes dimension for memory efficiency.
+    use_streaming : bool, optional
+        If True, compute position kernel on-the-fly using streaming log_kde_distance.
+        Requires enc_tile_size, encoding_positions, position_eval_points, position_std.
+    encoding_positions : jnp.ndarray | None, shape (n_encoding_spikes, n_position_dims)
+        Required when use_streaming=True. Positions where encoding spikes occurred.
+    position_eval_points : jnp.ndarray | None, shape (n_position_bins, n_position_dims)
+        Required when use_streaming=True. Positions to evaluate (e.g., place bin centers).
+    position_std : jnp.ndarray | None, shape (n_position_dims,)
+        Required when use_streaming=True. Position kernel bandwidth per dimension.
 
     Returns
     -------
@@ -633,6 +836,10 @@ def block_estimate_log_joint_mark_intensity(
             use_gemm=use_gemm,
             pos_tile_size=pos_tile_size,
             enc_tile_size=enc_tile_size,
+            use_streaming=use_streaming,
+            encoding_positions=encoding_positions,
+            position_eval_points=position_eval_points,
+            position_std=position_std,
         )
         out = _update_block(out, block_result, start_ind)
 
@@ -796,6 +1003,9 @@ def predict_clusterless_kde_log_likelihood(
     is_local: bool = False,
     block_size: int = 100,
     disable_progress_bar: bool = False,
+    enc_tile_size: int | None = None,
+    pos_tile_size: int | None = None,
+    use_streaming: bool = False,
 ) -> jnp.ndarray:
     """Predict the log likelihood of the clusterless KDE model.
 
@@ -837,6 +1047,18 @@ def predict_clusterless_kde_log_likelihood(
         Divide computation into blocks, by default 100
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
+    enc_tile_size : int | None, optional
+        If provided, tile computation over encoding spikes dimension to reduce memory.
+        Uses online logsumexp accumulation. Reduces peak memory from O(n_enc * n_pos)
+        to O(enc_tile_size * n_pos). By default None (no tiling).
+    pos_tile_size : int | None, optional
+        If provided, tile computation over position dimension to reduce memory.
+        By default None (no tiling).
+    use_streaming : bool, optional
+        If True, compute position kernel on-the-fly per encoding chunk (streaming mode).
+        Avoids materializing full (n_enc × n_pos) position distance matrix.
+        Provides D× memory reduction where D is position dimensionality.
+        Requires enc_tile_size to be specified and < n_enc. By default False.
 
     Returns
     -------
@@ -897,11 +1119,16 @@ def predict_clusterless_kde_log_likelihood(
                 electrode_decoding_spike_waveform_features[is_in_bounds]
             )
             # Compute position kernel in log-space to prevent underflow
-            log_position_distance = log_kde_distance(
-                interior_place_bin_centers,
-                electrode_encoding_positions,
-                std=position_std,
-            )
+            # (Skip if using streaming mode - computed on-the-fly)
+            if use_streaming:
+                log_position_distance = None
+            else:
+                log_position_distance = log_kde_distance(
+                    interior_place_bin_centers,
+                    electrode_encoding_positions,
+                    std=position_std,
+                )
+
             log_likelihood += jax.ops.segment_sum(
                 block_estimate_log_joint_mark_intensity(
                     electrode_decoding_spike_waveform_features,
@@ -910,7 +1137,17 @@ def predict_clusterless_kde_log_likelihood(
                     occupancy,
                     electrode_mean_rate,
                     log_position_distance,
-                    block_size,
+                    block_size=block_size,
+                    enc_tile_size=enc_tile_size,
+                    pos_tile_size=pos_tile_size,
+                    use_streaming=use_streaming,
+                    encoding_positions=electrode_encoding_positions
+                    if use_streaming
+                    else None,
+                    position_eval_points=interior_place_bin_centers
+                    if use_streaming
+                    else None,
+                    position_std=position_std if use_streaming else None,
                 ),
                 get_spike_time_bin_ind(electrode_spike_times, time),
                 indices_are_sorted=True,
