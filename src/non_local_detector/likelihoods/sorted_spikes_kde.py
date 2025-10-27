@@ -112,7 +112,7 @@ def fit_sorted_spikes_kde_encoding_model(
         - 'disable_progress_bar': Progress bar setting
     """
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
-    if isinstance(position_std, (int, float)):
+    if isinstance(position_std, int | float):
         if environment.track_graph is not None and position.shape[1] > 1:
             position_std = jnp.array([position_std])
         else:

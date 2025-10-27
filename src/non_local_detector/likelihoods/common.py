@@ -274,7 +274,7 @@ class KDEModel:
             eval_points = jnp.expand_dims(eval_points, axis=1)
         std = (
             jnp.array([self.std] * eval_points.shape[1])
-            if isinstance(self.std, (int, float))
+            if isinstance(self.std, int | float)
             else self.std
         )
         block_size = (
@@ -291,7 +291,7 @@ class KDEModel:
             eval_points = jnp.expand_dims(eval_points, axis=1)
         std = (
             jnp.array([self.std] * eval_points.shape[1])
-            if isinstance(self.std, (int, float))
+            if isinstance(self.std, int | float)
             else self.std
         )
         block_size = (

@@ -277,7 +277,7 @@ class Environment:
                 raise ValidationError(
                     f"edge_order[{i}] must be a 2-tuple",
                     expected="tuple of length 2",
-                    got=f"{type(edge).__name__} of length {len(edge) if isinstance(edge, (tuple, list)) else 'N/A'}",
+                    got=f"{type(edge).__name__} of length {len(edge) if isinstance(edge, tuple | list) else 'N/A'}",
                     hint="Each edge should be a 2-tuple like (node1, node2)",
                     example=f"    edge_order[{i}] = (0, 1)  # Not {edge}",
                 )
@@ -297,7 +297,7 @@ class Environment:
                     )
 
         # Validate edge_spacing
-        if isinstance(self.edge_spacing, (int, float)):
+        if isinstance(self.edge_spacing, int | float):
             val.ensure_positive_scalar(
                 self.edge_spacing,
                 "edge_spacing",
@@ -351,8 +351,8 @@ class Environment:
                 )
 
             min_val, max_val = dim_range
-            if not isinstance(min_val, (int, float)) or not isinstance(
-                max_val, (int, float)
+            if not isinstance(min_val, int | float) or not isinstance(
+                max_val, int | float
             ):
                 raise ValidationError(
                     f"position_range[{i}] must contain numeric values",

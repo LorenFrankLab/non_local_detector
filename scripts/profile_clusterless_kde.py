@@ -400,7 +400,7 @@ Examples:
     print(f"  Decoding spikes: ~{size.n_decoding_spikes_per_electrode * size.n_electrodes} total")
     print(f"  Position bins: {size.n_position_bins}")
 
-    print(f"\nCreating synthetic dataset...")
+    print("\nCreating synthetic dataset...")
     data = create_synthetic_data(size, seed=args.seed)
 
     # Profile Reference Implementation
@@ -427,13 +427,13 @@ Examples:
 
     total_ref = enc_ref_timing["mean"] + ll_ref_timing["mean"]
     total_log = enc_log_timing["mean"] + ll_log_timing["mean"]
-    print(f"\nTotal Time:")
+    print("\nTotal Time:")
     print(f"  Reference: {total_ref:.4f} s")
     print(f"  Log-space: {total_log:.4f} s")
     print(f"  Speedup:   {total_ref / total_log:.2f}x")
 
     # Verify numerical agreement
-    print(f"\nNumerical Agreement:")
+    print("\nNumerical Agreement:")
     diff = np.abs(np.asarray(ll_ref) - np.asarray(ll_log))
     print(f"  Max difference: {np.max(diff):.2e}")
     print(f"  Mean difference: {np.mean(diff):.2e}")

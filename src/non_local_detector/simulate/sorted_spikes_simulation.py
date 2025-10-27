@@ -219,7 +219,7 @@ def estimate_position_distance(
 
     position_distance = np.ones((n_time, n_position_bins), dtype=np.float32)
 
-    if isinstance(position_std, (int, float)):
+    if isinstance(position_std, int | float):
         position_std = [position_std] * n_position_dims
 
     for position_ind, std in enumerate(position_std):

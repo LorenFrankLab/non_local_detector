@@ -216,7 +216,7 @@ def get_transition_prior(
     prior_params : np.ndarray, shape (n_states, n_states)
         Dirichlet prior parameters for each transition matrix row.
     """
-    if isinstance(stickiness, (int, float)):
+    if isinstance(stickiness, int | float):
         stickiness_arr = stickiness * np.eye(n_states)
     else:
         # Assume stickiness provided per state

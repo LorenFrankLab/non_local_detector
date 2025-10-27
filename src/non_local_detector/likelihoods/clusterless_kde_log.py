@@ -392,12 +392,12 @@ def fit_clusterless_kde_encoding_model(
         )
 
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
-    if isinstance(position_std, (int, float)):
+    if isinstance(position_std, int | float):
         if environment.track_graph is not None and position.shape[1] > 1:
             position_std = jnp.array([position_std])
         else:
             position_std = jnp.array([position_std] * position.shape[1])
-    if isinstance(waveform_std, (int, float)):
+    if isinstance(waveform_std, int | float):
         waveform_std = jnp.array([waveform_std] * spike_waveform_features[0].shape[1])
 
     is_track_interior = environment.is_track_interior_.ravel()

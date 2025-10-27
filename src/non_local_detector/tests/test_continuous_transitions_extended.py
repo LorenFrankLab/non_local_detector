@@ -111,7 +111,7 @@ class TestEstimateMovementVar:
         var = estimate_movement_var(position)
 
         # Assert
-        assert isinstance(var, (float, np.ndarray))
+        assert isinstance(var, float | np.ndarray)
         assert var > 0
 
     def test_estimate_movement_var_2d_position(self):
@@ -166,7 +166,7 @@ class TestEstimateMovementVar:
         var = estimate_movement_var(position)
 
         # Assert
-        assert isinstance(var, (float, np.ndarray))
+        assert isinstance(var, float | np.ndarray)
         assert var > 0
 
 

@@ -47,7 +47,7 @@ def main():
 
     data = create_simple_test_data()
 
-    print(f"\nTest data shapes:")
+    print("\nTest data shapes:")
     print(f"  Decoding features: {data['decoding_features'].shape}")
     print(f"  Encoding features: {data['encoding_features'].shape}")
     print(f"  Position distance: {data['position_distance'].shape}")
@@ -143,13 +143,13 @@ def main():
     print("COMPARISON")
     print("="*70)
 
-    print(f"\nLinear version:")
+    print("\nLinear version:")
     print(f"  Total operations: {sum(operations.values())}")
     print(f"  Matrix multiplies (dot): {operations['dot']}")
     print(f"  Logs: {operations['log']}")
     print(f"  Exps: {operations['exp']}")
 
-    print(f"\nGEMM version:")
+    print("\nGEMM version:")
     print(f"  Total operations: {sum(operations_gemm.values())}")
     print(f"  Matrix multiplies (dot): {operations_gemm['dot']}")
     print(f"  Logs: {operations_gemm['log']}")

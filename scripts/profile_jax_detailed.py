@@ -12,7 +12,6 @@ Usage:
 """
 
 import sys
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -22,7 +21,6 @@ sys.path.insert(0, "src")
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde_log import (
-    block_estimate_log_joint_mark_intensity,
     estimate_log_joint_mark_intensity,
     fit_clusterless_kde_encoding_model,
     kde_distance,
@@ -158,8 +156,8 @@ def profile_memory_usage():
 
         # Estimate memory from array sizes
         total_bytes = 0
-        for key, val in data.items():
-            if isinstance(val, (jnp.ndarray, np.ndarray)):
+        for _key, val in data.items():
+            if isinstance(val, jnp.ndarray | np.ndarray):
                 total_bytes += val.nbytes
         total_bytes += result.nbytes
 
@@ -217,7 +215,7 @@ def profile_optimization_strategies():
     gemm = time_variant("GEMM optimization (default)", use_gemm=True)
     gemm_tiled = time_variant("GEMM + tiling", use_gemm=True, pos_tile_size=100)
 
-    print(f"\nSpeedup vs baseline:")
+    print("\nSpeedup vs baseline:")
     print(f"  GEMM:        {baseline / gemm:.2f}x")
     print(f"  GEMM+tiling: {baseline / gemm_tiled:.2f}x")
 
@@ -251,18 +249,18 @@ def analyze_compilation_cache():
     print("\nSequential calls (same arguments):")
     t1 = time_call("  Call 1 (compiles)")
     t2 = time_call("  Call 2 (cached)")
-    t3 = time_call("  Call 3 (cached)")
+    time_call("  Call 3 (cached)")
 
     print(f"\nCaching benefit: {t1 / t2:.1f}x faster after compilation")
 
     # Different input shapes trigger recompilation
     print("\nCalls with different input shapes:")
-    data_small = create_test_data(n_encoding=50, n_decoding=25, n_positions=100)
-    t4 = time_call("  Small input (recompiles)")
-    t5 = time_call("  Small input again (cached)")
+    create_test_data(n_encoding=50, n_decoding=25, n_positions=100)
+    time_call("  Small input (recompiles)")
+    time_call("  Small input again (cached)")
 
-    print(f"\nNote: Changing input shapes triggers recompilation")
-    print(f"      Keep consistent shapes for best performance!")
+    print("\nNote: Changing input shapes triggers recompilation")
+    print("      Keep consistent shapes for best performance!")
 
 
 def main():

@@ -403,7 +403,7 @@ def serialize_environment_summary(env: Environment) -> dict:
         "environment_name": env.environment_name,
         "place_bin_size": (
             env.place_bin_size
-            if isinstance(env.place_bin_size, (int, float))
+            if isinstance(env.place_bin_size, int | float)
             else tuple(env.place_bin_size)
         ),
     }

@@ -44,7 +44,7 @@ class TestFilter:
         carry, outputs = result
         assert len(carry) == 2
         log_marginal, predicted_next = carry
-        assert isinstance(log_marginal, (float, jnp.ndarray))  # Scalar
+        assert isinstance(log_marginal, float | jnp.ndarray)  # Scalar
         assert predicted_next.shape == (2,)  # n_states
 
         filtered_probs, predicted_probs = outputs

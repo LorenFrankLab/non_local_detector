@@ -101,7 +101,7 @@ class TestInitializeEnvironments:
         # Assert
         assert len(decoder.environments) == 2
         # Environments are converted to tuple or kept as list depending on implementation
-        assert isinstance(decoder.environments, (tuple, list))
+        assert isinstance(decoder.environments, tuple | list)
 
 
 @pytest.mark.unit

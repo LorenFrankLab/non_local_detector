@@ -269,7 +269,7 @@ class TestMultinomialNegLogLikelihood:
         )
 
         # Assert
-        assert isinstance(nll, (float, jnp.ndarray))
+        assert isinstance(nll, float | jnp.ndarray)
         assert nll > 0  # Negative log likelihood should be positive
 
     def test_multinomial_neg_log_likelihood_with_penalty(self):
@@ -341,7 +341,7 @@ class TestDirichletNegLogLikelihood:
         )
 
         # Assert
-        assert isinstance(nll, (float, jnp.ndarray))
+        assert isinstance(nll, float | jnp.ndarray)
         assert nll > 0  # Should be positive
 
     def test_dirichlet_neg_log_likelihood_with_strong_prior(self):
