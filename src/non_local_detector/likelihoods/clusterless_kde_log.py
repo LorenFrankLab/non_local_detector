@@ -881,6 +881,9 @@ def fit_clusterless_kde_encoding_model(
     position_std: float = np.sqrt(12.5),
     waveform_std: float = 24.0,
     block_size: int = 100,
+    enc_tile_size: int | None = None,
+    pos_tile_size: int | None = None,
+    use_streaming: bool = False,
     disable_progress_bar: bool = False,
 ) -> dict:
     """Fit the clusterless KDE encoding model.
@@ -1005,6 +1008,9 @@ def fit_clusterless_kde_encoding_model(
         "waveform_std": waveform_std,
         "block_size": block_size,
         "disable_progress_bar": disable_progress_bar,
+        "enc_tile_size": enc_tile_size,
+        "pos_tile_size": pos_tile_size,
+        "use_streaming": use_streaming,
     }
 
 
