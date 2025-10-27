@@ -28,6 +28,7 @@ def make_time_varying_transitions(n_time: int, n_states: int) -> np.ndarray:
 
 
 @pytest.mark.parametrize("n_chunks", [2, 3, 5])
+@pytest.mark.integration
 def test_covariate_dependent_chunked_equals_nonchunked(n_chunks):
     n_time = 30
     n_states = 7

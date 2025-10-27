@@ -17,6 +17,7 @@ from non_local_detector.discrete_state_transitions import (
 from non_local_detector.tests.conftest import assert_stochastic_matrix
 
 
+@pytest.mark.unit
 class TestEstimateNonStationaryStateTransition:
     """Test non-stationary state transition estimation (EM algorithm)."""
 
@@ -149,6 +150,7 @@ class TestEstimateNonStationaryStateTransition:
         )
 
 
+@pytest.mark.unit
 class TestEstimateStationaryStateTransition:
     """Test stationary state transition estimation."""
 
@@ -241,6 +243,7 @@ class TestEstimateStationaryStateTransition:
         assert_stochastic_matrix(trans_matrix)
 
 
+@pytest.mark.unit
 class TestEstimateDiscreteTransition:
     """Test _estimate_discrete_transition wrapper function."""
 

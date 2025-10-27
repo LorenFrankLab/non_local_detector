@@ -43,6 +43,7 @@ def synthetic_waveform_data():
     }
 
 
+@pytest.mark.integration
 def test_gemm_vs_loop_mark_kernel(synthetic_waveform_data):
     """Test that GEMM-based mark kernel matches loop-based implementation."""
     encoding_features = synthetic_waveform_data["encoding_features"]
@@ -76,6 +77,7 @@ def test_gemm_vs_loop_mark_kernel(synthetic_waveform_data):
     )
 
 
+@pytest.mark.integration
 def test_estimate_intensity_gemm_vs_loop(synthetic_waveform_data):
     """Test that estimate_log_joint_mark_intensity produces same results with GEMM vs loop."""
     # Compute with GEMM (default)
@@ -111,6 +113,7 @@ def test_estimate_intensity_gemm_vs_loop(synthetic_waveform_data):
     )
 
 
+@pytest.mark.integration
 def test_gemm_various_feature_dimensions():
     """Test GEMM parity with different numbers of features."""
     np.random.seed(123)
@@ -151,6 +154,7 @@ def test_gemm_various_feature_dimensions():
         )
 
 
+@pytest.mark.integration
 def test_gemm_edge_cases():
     """Test GEMM with edge cases like single spike, identical features, etc."""
     waveform_stds = jnp.array([1.0, 1.0, 1.0])
@@ -190,6 +194,7 @@ def test_gemm_edge_cases():
     assert logK_gemm_identical[0, 0] > logK_gemm_different[0, 0]
 
 
+@pytest.mark.integration
 def test_gemm_normalization_constant():
     """Verify that GEMM includes proper Gaussian normalization constant."""
     n_features = 4
@@ -212,6 +217,7 @@ def test_gemm_normalization_constant():
     )
 
 
+@pytest.mark.integration
 def test_gemm_gradient_compatibility():
     """Verify that GEMM implementation is compatible with JAX autodiff."""
     import jax

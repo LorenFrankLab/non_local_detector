@@ -15,6 +15,7 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
 
 
 @pytest.mark.parametrize("n_chunks", [2, 3, 5])
+@pytest.mark.integration
 def test_filter_smoother_with_sorted_kde_nonlocal(n_chunks, simple_1d_environment):
     # Encoding data
     env = simple_1d_environment
@@ -107,6 +108,7 @@ def test_filter_smoother_with_sorted_kde_nonlocal(n_chunks, simple_1d_environmen
 
 
 @pytest.mark.parametrize("n_chunks", [2, 4])
+@pytest.mark.integration
 def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(
     n_chunks, simple_1d_environment
 ):

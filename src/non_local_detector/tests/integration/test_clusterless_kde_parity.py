@@ -85,6 +85,7 @@ def simple_environment():
     return env
 
 
+@pytest.mark.integration
 def test_kde_distance_vs_log_kde_distance():
     """Test that kde_distance and log_kde_distance are consistent.
 
@@ -104,6 +105,7 @@ def test_kde_distance_vs_log_kde_distance():
     )
 
 
+@pytest.mark.integration
 def test_estimate_intensity_moderate_features():
     """Test joint mark intensity estimation with moderate feature distances.
 
@@ -167,6 +169,7 @@ def test_estimate_intensity_moderate_features():
     assert np.all(np.isfinite(ll_log)), "Log-space has non-finite values"
 
 
+@pytest.mark.integration
 def test_estimate_intensity_extreme_features():
     """Test joint mark intensity with extreme feature distances.
 
@@ -227,6 +230,7 @@ def test_estimate_intensity_extreme_features():
     assert ll_original.shape == (n_dec_spikes, n_pos_bins), "Original shape wrong"
 
 
+@pytest.mark.integration
 def test_fit_encoding_model_parity(synthetic_clusterless_data, simple_environment):
     """Test that both fit functions produce equivalent encoding models."""
     data = synthetic_clusterless_data
@@ -283,6 +287,7 @@ def test_fit_encoding_model_parity(synthetic_clusterless_data, simple_environmen
         ), f"Encoding positions differ for electrode {i}"
 
 
+@pytest.mark.integration
 def test_predict_local_likelihood_parity(
     synthetic_clusterless_data, simple_environment
 ):
@@ -367,6 +372,7 @@ def test_predict_local_likelihood_parity(
     assert np.all(np.isfinite(ll_log)), "Log-space has non-finite local likelihood"
 
 
+@pytest.mark.integration
 def test_predict_nonlocal_likelihood_parity(
     synthetic_clusterless_data, simple_environment
 ):
@@ -454,6 +460,7 @@ def test_predict_nonlocal_likelihood_parity(
     assert np.all(np.isfinite(ll_log)), "Log-space has non-finite non-local likelihood"
 
 
+@pytest.mark.integration
 def test_memory_efficiency_scan_vs_vmap():
     """Verify that scan-based implementation doesn't materialize huge arrays.
 

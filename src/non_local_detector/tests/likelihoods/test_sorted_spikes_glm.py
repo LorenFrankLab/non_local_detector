@@ -76,6 +76,7 @@ def simple_spike_data():
     }
 
 
+@pytest.mark.unit
 class TestSplineDesignMatrix:
     """Test spline design matrix generation."""
 
@@ -175,6 +176,7 @@ class TestSplineDesignMatrix:
         assert jnp.all(jnp.isfinite(predict_matrix[2, :]))
 
 
+@pytest.mark.unit
 class TestPoissonRegression:
     """Test Poisson regression fitting."""
 
@@ -257,6 +259,7 @@ class TestPoissonRegression:
         assert not jnp.allclose(coef_uniform, coef_skewed, rtol=0.1)
 
 
+@pytest.mark.unit
 class TestFitGLMEncodingModel:
     """Test full GLM encoding model fitting."""
 
@@ -366,6 +369,7 @@ class TestFitGLMEncodingModel:
         assert n_coef_fine >= n_coef_coarse
 
 
+@pytest.mark.unit
 class TestPredictGLMLogLikelihood:
     """Test GLM log-likelihood prediction."""
 

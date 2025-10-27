@@ -17,6 +17,7 @@ from non_local_detector.models import SortedSpikesDecoder
 from non_local_detector.models.base import ObservationModel
 
 
+@pytest.mark.unit
 class TestInitializeEnvironments:
     """Test _initialize_environments method."""
 
@@ -102,6 +103,7 @@ class TestInitializeEnvironments:
         assert isinstance(decoder.environments, (tuple, list))
 
 
+@pytest.mark.unit
 class TestInitializeObservationModels:
     """Test _initialize_observation_models method."""
 
@@ -190,6 +192,7 @@ class TestInitializeObservationModels:
         assert decoder.observation_models[1] is obs2
 
 
+@pytest.mark.unit
 class TestInitializeStateNames:
     """Test _initialize_state_names method."""
 
@@ -281,6 +284,7 @@ class TestInitializeStateNames:
             )
 
 
+@pytest.mark.unit
 class TestInitializeEnvironmentsFitting:
     """Test initialize_environments method (environment fitting)."""
 
@@ -336,6 +340,7 @@ class TestInitializeEnvironmentsFitting:
         assert decoder.environments[1].place_bin_centers_ is not None
 
 
+@pytest.mark.unit
 class TestInitializeStateIndex:
     """Test initialize_state_index method."""
 

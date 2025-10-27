@@ -24,6 +24,7 @@ from non_local_detector.discrete_state_transitions import (
 from non_local_detector.tests.conftest import assert_stochastic_matrix
 
 
+@pytest.mark.unit
 class TestCenteredSoftmax:
     """Test centered softmax transformation and its inverse."""
 
@@ -105,6 +106,7 @@ class TestCenteredSoftmax:
         assert jnp.allclose(result, expected_log_softmax)
 
 
+@pytest.mark.unit
 class TestTransitionMatrixConstruction:
     """Test functions for constructing transition matrices."""
 
@@ -154,6 +156,7 @@ class TestTransitionMatrixConstruction:
         assert np.allclose(trans[1, 1], 1.0)
 
 
+@pytest.mark.unit
 class TestEstimateJointDistribution:
     """Test joint distribution estimation for EM algorithm."""
 

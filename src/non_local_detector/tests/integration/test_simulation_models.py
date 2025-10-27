@@ -44,6 +44,7 @@ def simulated_data():
     }
 
 
+@pytest.mark.integration
 def test_nonlocal_sorted_spikes_detector(simulated_data):
     """Test NonLocalSortedSpikesDetector fit and predict."""
     time = simulated_data["time"]
@@ -100,6 +101,7 @@ def test_nonlocal_sorted_spikes_detector(simulated_data):
     assert len(detector.encoding_model_) > 0, "Encoding model is empty"
 
 
+@pytest.mark.integration
 def test_contfrag_sorted_spikes_classifier(simulated_data):
     """Test ContFragSortedSpikesClassifier fit and predict."""
     time = simulated_data["time"]
@@ -178,6 +180,7 @@ def test_contfrag_sorted_spikes_classifier(simulated_data):
     )
 
 
+@pytest.mark.integration
 def test_sorted_spikes_decoder(simulated_data):
     """Test SortedSpikesDecoder fit and predict."""
     time = simulated_data["time"]
@@ -261,6 +264,7 @@ def test_sorted_spikes_decoder(simulated_data):
     )
 
 
+@pytest.mark.integration
 def test_models_handle_missing_data(simulated_data):
     """Test that models handle missing data (no spikes in some time bins) gracefully."""
     time = simulated_data["time"]

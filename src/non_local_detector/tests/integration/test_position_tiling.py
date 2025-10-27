@@ -57,6 +57,7 @@ def tiling_test_data():
     }
 
 
+@pytest.mark.integration
 def test_log_space_no_tiling_vs_tiling(tiling_test_data):
     """Test that log-space tiled computation matches non-tiled."""
     # No tiling (default)
@@ -92,6 +93,7 @@ def test_log_space_no_tiling_vs_tiling(tiling_test_data):
     )
 
 
+@pytest.mark.integration
 def test_original_no_tiling_vs_tiling(tiling_test_data):
     """Test that original (non-log) tiled computation matches non-tiled."""
     # No tiling (default)
@@ -125,6 +127,7 @@ def test_original_no_tiling_vs_tiling(tiling_test_data):
     )
 
 
+@pytest.mark.integration
 def test_various_tile_sizes(tiling_test_data):
     """Test that various tile sizes all produce same result."""
     # Reference (no tiling)
@@ -160,6 +163,7 @@ def test_various_tile_sizes(tiling_test_data):
         )
 
 
+@pytest.mark.integration
 def test_tiling_edge_cases():
     """Test tiling with edge cases."""
     np.random.seed(123)
@@ -220,6 +224,7 @@ def test_tiling_edge_cases():
     assert np.allclose(reference, result_tile_3, rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.integration
 def test_tiling_gemm_vs_loop(tiling_test_data):
     """Test that tiling works with both GEMM and loop methods."""
     # GEMM with tiling
@@ -252,6 +257,7 @@ def test_tiling_gemm_vs_loop(tiling_test_data):
     assert np.allclose(result_gemm_tiled, result_loop_tiled, rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.integration
 def test_tiling_very_large_grid():
     """Test that tiling enables computation on very large position grids."""
     np.random.seed(456)
@@ -288,6 +294,7 @@ def test_tiling_very_large_grid():
     assert jnp.all(jnp.isfinite(result))
 
 
+@pytest.mark.integration
 def test_tiling_memory_estimation():
     """Verify memory scaling with tiling."""
     n_enc = 1000

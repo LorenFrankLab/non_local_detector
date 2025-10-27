@@ -9,6 +9,7 @@ from non_local_detector import Environment
 from non_local_detector.exceptions import ConfigurationError, ValidationError
 
 
+@pytest.mark.unit
 class TestEnvironmentBasicValidation:
     """Test basic parameter validation for Environment."""
 
@@ -54,6 +55,7 @@ class TestEnvironmentBasicValidation:
         assert "bin_count_threshold" in str(exc_info.value)
 
 
+@pytest.mark.unit
 class TestTrackGraphValidation:
     """Test validation of track_graph parameter."""
 
@@ -142,6 +144,7 @@ class TestTrackGraphValidation:
         assert env.track_graph is g
 
 
+@pytest.mark.unit
 class TestEdgeOrderValidation:
     """Test validation of edge_order parameter."""
 
@@ -189,6 +192,7 @@ class TestEdgeOrderValidation:
         assert env.edge_order == [(1, 0)]
 
 
+@pytest.mark.unit
 class TestEdgeSpacingValidation:
     """Test validation of edge_spacing parameter."""
 
@@ -254,6 +258,7 @@ class TestEdgeSpacingValidation:
         assert "edge_spacing[0]" in str(exc_info.value)
 
 
+@pytest.mark.unit
 class TestPositionRangeValidation:
     """Test validation of position_range parameter."""
 
@@ -299,6 +304,7 @@ class TestPositionRangeValidation:
         assert env.position_range == [(0, 100), (0, 100)]
 
 
+@pytest.mark.unit
 class TestFitPlaceGridValidation:
     """Test validation in fit_place_grid method."""
 
@@ -357,6 +363,7 @@ class TestFitPlaceGridValidation:
         assert env.place_bin_centers_ is not None
 
 
+@pytest.mark.unit
 class TestIsTrackInteriorValidation:
     """Test validation of is_track_interior parameter."""
 

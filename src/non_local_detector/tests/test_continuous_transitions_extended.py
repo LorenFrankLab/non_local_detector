@@ -13,6 +13,7 @@ from non_local_detector.continuous_state_transitions import (
 )
 
 
+@pytest.mark.unit
 class TestNormalizeRowProbability:
     """Test _normalize_row_probability helper function."""
 
@@ -96,6 +97,7 @@ class TestNormalizeRowProbability:
         assert np.allclose(result[0, 2] / result[0, 0], 3.0)
 
 
+@pytest.mark.unit
 class TestEstimateMovementVar:
     """Test estimate_movement_var function."""
 

@@ -19,6 +19,7 @@ import pytest
 from non_local_detector.core import filter, smoother, viterbi
 
 
+@pytest.mark.unit
 class TestFilter:
     """Test forward filtering algorithm.
 
@@ -211,6 +212,7 @@ class TestFilter:
         assert jnp.isfinite(total_log_marginal)
 
 
+@pytest.mark.unit
 class TestSmoother:
     """Test backward smoothing algorithm.
 
@@ -362,6 +364,7 @@ class TestSmoother:
         )
 
 
+@pytest.mark.unit
 class TestViterbi:
     """Test Viterbi algorithm for most likely state sequence.
 

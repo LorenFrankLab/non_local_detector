@@ -19,6 +19,7 @@ from non_local_detector.core import (
 )
 
 
+@pytest.mark.unit
 class TestNormalize:
     """Test _normalize function for probability normalization.
 
@@ -184,6 +185,7 @@ class TestNormalize:
         assert jnp.allclose(normalized.sum(), 1.0)
 
 
+@pytest.mark.unit
 class TestSafeLog:
     """Test _safe_log function for numerically stable logarithms.
 
@@ -304,6 +306,7 @@ class TestSafeLog:
         assert jnp.all(jnp.isfinite(result))
 
 
+@pytest.mark.unit
 class TestDivideSafe:
     """Test _divide_safe for division without inf/nan.
 
@@ -413,6 +416,7 @@ class TestDivideSafe:
         assert jnp.allclose(result, jnp.array([-2.0, -2.0]))
 
 
+@pytest.mark.unit
 class TestConditionOn:
     """Test _condition_on for Bayesian conditioning.
 

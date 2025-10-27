@@ -13,6 +13,7 @@ from non_local_detector.exceptions import (
 )
 
 
+@pytest.mark.unit
 class TestExceptionHierarchy:
     """Test that exception inheritance works correctly."""
 
@@ -41,6 +42,7 @@ class TestExceptionHierarchy:
             raise ConvergenceError("test")
 
 
+@pytest.mark.unit
 class TestValidationError:
     """Test ValidationError message formatting."""
 
@@ -114,6 +116,7 @@ class TestValidationError:
         assert "\n\nExample:" in msg
 
 
+@pytest.mark.unit
 class TestFittingError:
     """Test FittingError message formatting."""
 
@@ -132,6 +135,7 @@ class TestFittingError:
         assert "Hint: Try increasing max_iterations" in msg
 
 
+@pytest.mark.unit
 class TestConfigurationError:
     """Test ConfigurationError message formatting."""
 
@@ -151,6 +155,7 @@ class TestConfigurationError:
         assert "Hint: Use either A or B, not both" in msg
 
 
+@pytest.mark.unit
 class TestConvergenceError:
     """Test ConvergenceError message formatting."""
 
@@ -192,6 +197,7 @@ class TestConvergenceError:
         assert "Hint: Try increasing max_iterations or relaxing tolerance" in msg
 
 
+@pytest.mark.unit
 class TestDataError:
     """Test DataError message formatting."""
 
@@ -220,6 +226,7 @@ class TestDataError:
         assert "Hint: Use np.nan_to_num() to replace NaN values" in msg
 
 
+@pytest.mark.unit
 class TestExceptionIntegration:
     """Test that exceptions work correctly in actual validation scenarios."""
 
@@ -268,6 +275,7 @@ class TestExceptionIntegration:
         assert "spherical" in error_msg
 
 
+@pytest.mark.unit
 class TestEdgeCases:
     """Test edge cases and special scenarios."""
 
@@ -325,6 +333,7 @@ class TestEdgeCases:
         assert "alpha beta gamma delta" in msg
 
 
+@pytest.mark.unit
 class TestExceptionReRaise:
     """Test that exceptions can be caught and re-raised."""
 

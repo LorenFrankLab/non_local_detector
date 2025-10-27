@@ -7,6 +7,7 @@ from non_local_detector import _validation as val
 from non_local_detector.exceptions import DataError, ValidationError
 
 
+@pytest.mark.unit
 class TestProbabilityDistribution:
     """Test ensure_probability_distribution."""
 
@@ -31,6 +32,7 @@ class TestProbabilityDistribution:
         assert "sum = 0.400000" in str(exc_info.value)
 
 
+@pytest.mark.unit
 class TestPositiveScalar:
     """Test ensure_positive_scalar."""
 
@@ -54,6 +56,7 @@ class TestPositiveScalar:
             val.ensure_positive_scalar(-1.0, "param")
 
 
+@pytest.mark.unit
 class TestArray1D:
     """Test ensure_array_1d."""
 
@@ -71,6 +74,7 @@ class TestArray1D:
         assert "(2, 2)" in str(exc_info.value)
 
 
+@pytest.mark.unit
 class TestAllFinite:
     """Test ensure_all_finite."""
 
@@ -94,6 +98,7 @@ class TestAllFinite:
         assert "Inf" in str(exc_info.value)
 
 
+@pytest.mark.unit
 class TestAllNonNegative:
     """Test ensure_all_non_negative."""
 
@@ -111,6 +116,7 @@ class TestAllNonNegative:
         assert "-0.5" in str(exc_info.value)
 
 
+@pytest.mark.unit
 class TestInRange:
     """Test ensure_in_range."""
 
@@ -133,6 +139,7 @@ class TestInRange:
             val.ensure_in_range(arr, "arr", 0.0, 1.0)
 
 
+@pytest.mark.unit
 class TestSquareMatrix:
     """Test ensure_square_matrix."""
 
@@ -155,6 +162,7 @@ class TestSquareMatrix:
             val.ensure_square_matrix(arr, "arr")
 
 
+@pytest.mark.unit
 class TestStochasticMatrix:
     """Test ensure_stochastic_matrix."""
 
@@ -173,6 +181,7 @@ class TestStochasticMatrix:
         assert "0.9" in str(exc_info.value) or "0.899" in str(exc_info.value)
 
 
+@pytest.mark.unit
 class TestNdarray:
     """Test ensure_ndarray."""
 
@@ -190,6 +199,7 @@ class TestNdarray:
         assert "list" in str(exc_info.value)
 
 
+@pytest.mark.unit
 class TestMonotonicIncreasing:
     """Test ensure_monotonic_increasing."""
 
@@ -217,6 +227,7 @@ class TestMonotonicIncreasing:
         assert "index 1" in str(exc_info.value)
 
 
+@pytest.mark.unit
 class TestMatchingLengths:
     """Test ensure_matching_lengths."""
 
@@ -237,6 +248,7 @@ class TestMatchingLengths:
         assert "3" in str(exc_info.value)
 
 
+@pytest.mark.unit
 class TestIntegration:
     """Test validation in actual model usage."""
 

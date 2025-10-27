@@ -24,6 +24,7 @@ def two_state_environment(simple_1d_environment):
     return [simple_1d_environment, simple_1d_environment]
 
 
+@pytest.mark.unit
 class TestValidateInitialConditions:
     """Test _validate_initial_conditions method."""
 
@@ -106,6 +107,7 @@ class TestValidateInitialConditions:
         assert len(decoder.discrete_initial_conditions) == 2
 
 
+@pytest.mark.unit
 class TestValidateProbabilityDistributions:
     """Test _validate_probability_distributions method."""
 
@@ -210,6 +212,7 @@ class TestValidateProbabilityDistributions:
         assert np.allclose(decoder.discrete_initial_conditions.sum(), 1.0)
 
 
+@pytest.mark.unit
 class TestValidateNumericalParameters:
     """Test _validate_numerical_parameters method."""
 
@@ -298,6 +301,7 @@ class TestValidateNumericalParameters:
         assert decoder.no_spike_rate == 1e-10
 
 
+@pytest.mark.unit
 class TestValidateDiscreteTransitionType:
     """Test _validate_discrete_transition_type method."""
 

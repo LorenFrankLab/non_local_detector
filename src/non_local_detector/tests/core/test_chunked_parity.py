@@ -22,6 +22,7 @@ from non_local_detector.core import (
 )
 
 
+@pytest.mark.unit
 class TestChunkedFilterSmootherParity:
     """Verify chunked_filter_smoother matches filter + smoother.
 
@@ -405,6 +406,7 @@ class TestChunkedFilterSmootherParity:
         assert jnp.allclose(acausal_f32, acausal_f64, rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.unit
 class TestChunkedEdgeCases:
     """Test edge cases specific to chunked implementation."""
 
