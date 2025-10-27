@@ -8,6 +8,7 @@ These tests cover the initialization methods that set up model components:
 - initialize_state_index
 """
 
+import networkx as nx
 import numpy as np
 import pytest
 
@@ -196,36 +197,6 @@ class TestInitializeObservationModels:
 class TestInitializeStateNames:
     """Test _initialize_state_names method."""
 
-    @pytest.mark.skip(
-        reason="Default state name initialization requires proper observation_models setup. "
-        "Covered by integration tests instead of isolated unit test."
-    )
-    def test_initialize_state_names_with_none_creates_defaults(self):
-        """Test that omitting state_names creates defaults.
-
-        When state_names is not provided (left as default None), the decoder
-        creates default state names based on the number of states.
-
-        Note: Skipped because this requires complex setup of observation_models
-        and environments to work properly. The behavior is tested in integration tests.
-        """
-        # Arrange & Act - Don't pass state_names at all, let it default
-        decoder = SortedSpikesDecoder(
-            discrete_initial_conditions=np.array([0.5, 0.3, 0.2]),
-            continuous_initial_conditions_types=[
-                "uniform_on_track",
-                "uniform_on_track",
-                "uniform_on_track",
-            ],
-            continuous_transition_types=["random_walk", "random_walk", "random_walk"],
-            discrete_transition_stickiness=0.0,
-            # Not passing state_names - let it use default
-        )
-
-        # Assert
-        assert len(decoder.state_names) == 3
-        assert decoder.state_names == ["state 0", "state 1", "state 2"]
-
     def test_initialize_state_names_with_custom_names(self):
         """Test that custom state names are preserved."""
         # Arrange
@@ -338,6 +309,54 @@ class TestInitializeEnvironmentsFitting:
         # Assert
         assert decoder.environments[0].place_bin_centers_ is not None
         assert decoder.environments[1].place_bin_centers_ is not None
+
+    def test_initialize_environments_linearizes_2d_position_with_track_graph(self):
+        """Test that initialize_environments linearizes 2D positions when track_graph is provided.
+
+        This tests line 490 in base.py where get_linearized_position is called
+        to convert 2D positions to 1D when a track_graph is present.
+        """
+        # Arrange: Create a simple line graph
+        g = nx.Graph()
+        g.add_node(0, pos=(0.0, 0.0))
+        g.add_node(1, pos=(10.0, 0.0))
+        g.add_edge(0, 1, distance=10.0)
+        # Assign stable edge ids
+        for eid, e in enumerate(g.edges):
+            g.edges[e]["edge_id"] = eid
+        edge_order = [(0, 1)]
+        edge_spacing = 0.0
+
+        env = Environment(
+            environment_name="line_graph",
+            place_bin_size=1.0,
+            track_graph=g,
+            edge_order=edge_order,
+            edge_spacing=edge_spacing,
+        )
+        decoder = SortedSpikesDecoder(
+            discrete_initial_conditions=np.array([1.0]),
+            continuous_initial_conditions_types=["uniform_on_track"],
+            continuous_transition_types=["random_walk"],
+            discrete_transition_stickiness=0.0,
+            environments=env,
+        )
+
+        # 2D positions along the x-axis from 0 to 10
+        position_2d = np.stack(
+            [np.linspace(0, 10, 50), np.zeros(50)], axis=1
+        )  # (50, 2)
+
+        # Act - This should trigger the linearization path (line 490)
+        decoder.initialize_environments(position_2d)
+
+        # Assert
+        assert decoder.environments[0].place_bin_centers_ is not None
+        # Should be linearized to 1D
+        assert decoder.environments[0].place_bin_centers_.shape[1] == 1
+        # Centers should be monotonically increasing for a simple line
+        centers = decoder.environments[0].place_bin_centers_.squeeze()
+        assert np.all(np.diff(centers) > 0)
 
 
 @pytest.mark.unit
