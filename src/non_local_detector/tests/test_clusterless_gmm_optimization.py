@@ -391,3 +391,81 @@ def test_gmm_edge_cases(gmm_simulation_data):
         result_combined,
         rtol=1e-5,
     )
+
+
+def test_gmm_jax_array_inputs(gmm_simulation_data):
+    """Test that GMM works with JAX arrays as inputs (scipy.interpn compatibility).
+
+    This verifies the fix for the issue where converting position_time to JAX
+    arrays caused scipy.interpolate.interpn to fail with "must be strictly
+    ascending or descending" error.
+    """
+    # Fit the encoding model with JAX arrays (tests scipy compatibility)
+    encoding_model = fit_clusterless_gmm_encoding_model(
+        jnp.asarray(gmm_simulation_data["position_time"]),  # JAX array
+        jnp.asarray(gmm_simulation_data["position"]),  # JAX array
+        [jnp.asarray(st) for st in gmm_simulation_data["spike_times"]],  # JAX arrays
+        [jnp.asarray(sf) for sf in gmm_simulation_data["spike_features"]],  # JAX arrays
+        gmm_simulation_data["environment"],
+        gmm_components_occupancy=4,
+        gmm_components_gpi=4,
+        gmm_components_joint=8,
+        disable_progress_bar=True,
+    )
+
+    # Test with numpy arrays for comparison
+    encoding_model_numpy = fit_clusterless_gmm_encoding_model(
+        gmm_simulation_data["position_time"],  # Numpy array
+        gmm_simulation_data["position"],  # Numpy array
+        gmm_simulation_data["spike_times"],  # Numpy arrays
+        gmm_simulation_data["spike_features"],  # Numpy arrays
+        gmm_simulation_data["environment"],
+        gmm_components_occupancy=4,
+        gmm_components_gpi=4,
+        gmm_components_joint=8,
+        gmm_random_state=0,  # Same random state
+        disable_progress_bar=True,
+    )
+
+    # Results should be identical (JAX vs numpy inputs)
+    assert_allclose(
+        encoding_model["occupancy_bins"],
+        encoding_model_numpy["occupancy_bins"],
+        rtol=1e-5,
+        err_msg="JAX array inputs produced different results than numpy arrays",
+    )
+
+    # Test prediction with JAX arrays
+    time = jnp.asarray(gmm_simulation_data["time"])
+    position_time = jnp.asarray(gmm_simulation_data["position_time"])
+    position = jnp.asarray(gmm_simulation_data["position"])
+    spike_times = [jnp.asarray(st) for st in gmm_simulation_data["spike_times"]]
+    spike_features = [jnp.asarray(sf) for sf in gmm_simulation_data["spike_features"]]
+
+    # This should not raise "must be strictly ascending" error
+    result_jax = predict_clusterless_gmm_log_likelihood(
+        time,
+        position_time,
+        position,
+        spike_times,
+        spike_features,
+        encoding_model,
+        is_local=False,
+        disable_progress_bar=True,
+    )
+
+    # Test local likelihood as well (uses different code path)
+    result_local_jax = predict_clusterless_gmm_log_likelihood(
+        time,
+        position_time,
+        position,
+        spike_times,
+        spike_features,
+        encoding_model,
+        is_local=True,
+        disable_progress_bar=True,
+    )
+
+    # Verify results are valid (no NaN/Inf)
+    assert np.all(np.isfinite(result_jax)), "Non-local prediction contains NaN/Inf"
+    assert np.all(np.isfinite(result_local_jax)), "Local prediction contains NaN/Inf"
