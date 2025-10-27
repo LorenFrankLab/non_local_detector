@@ -155,14 +155,21 @@ def _fit_gmm_density(
 
 
 # ---------------------------------------------------------------------
-# Encoded model container
+# Encoded model container (DEPRECATED: Use dictionary for now)
 # ---------------------------------------------------------------------
+# NOTE: EncodingModel dataclass is kept for future migration but not currently used.
+# All functions now use dictionary-based encoding models for compatibility with
+# existing architecture. Eventually, all likelihood models should transition to
+# using dataclasses for better type safety and IDE support.
 
 
 @dataclass
 class EncodingModel:
     """
     Container for everything the decoder needs (precomputed & cached).
+
+    DEPRECATED: This dataclass is not currently used. Use dictionary format instead.
+    Kept for future migration.
 
     Attributes
     ----------
@@ -256,7 +263,26 @@ def fit_clusterless_gmm_encoding_model(
 
     Returns
     -------
-    model : EncodingModel
+    encoding_model : dict
+        Dictionary containing the fitted encoding model with keys:
+        - environment
+        - occupancy_model
+        - interior_place_bin_centers
+        - occupancy_bins
+        - log_occupancy_bins
+        - gpi_models
+        - joint_models
+        - mean_rates
+        - summed_ground_process_intensity
+        - position_time
+        - gmm_components_occupancy
+        - gmm_components_gpi
+        - gmm_components_joint
+        - gmm_covariance_type_occupancy
+        - gmm_covariance_type_gpi
+        - gmm_covariance_type_joint
+        - gmm_random_state
+        - disable_progress_bar
     """
     position = _as_jnp(position if position.ndim > 1 else position[:, None])
     position_time = _as_jnp(position_time)
@@ -380,18 +406,26 @@ def fit_clusterless_gmm_encoding_model(
             mean_rate * safe_divide(gpi_bins, occupancy_bins), a_min=EPS
         )
 
-    return EncodingModel(
-        environment=environment,
-        occupancy_model=occupancy_model,
-        interior_place_bin_centers=interior_place_bin_centers,
-        occupancy_bins=occupancy_bins,
-        log_occupancy_bins=log_occupancy_bins,
-        gpi_models=gpi_models,
-        joint_models=joint_models,
-        mean_rates=jnp.asarray(mean_rates),
-        summed_ground_process_intensity=summed_ground_process_intensity,
-        position_time=position_time,
-    )
+    return {
+        "environment": environment,
+        "occupancy_model": occupancy_model,
+        "interior_place_bin_centers": interior_place_bin_centers,
+        "occupancy_bins": occupancy_bins,
+        "log_occupancy_bins": log_occupancy_bins,
+        "gpi_models": gpi_models,
+        "joint_models": joint_models,
+        "mean_rates": jnp.asarray(mean_rates),
+        "summed_ground_process_intensity": summed_ground_process_intensity,
+        "position_time": position_time,
+        "gmm_components_occupancy": gmm_components_occupancy,
+        "gmm_components_gpi": gmm_components_gpi,
+        "gmm_components_joint": gmm_components_joint,
+        "gmm_covariance_type_occupancy": gmm_covariance_type_occupancy,
+        "gmm_covariance_type_gpi": gmm_covariance_type_gpi,
+        "gmm_covariance_type_joint": gmm_covariance_type_joint,
+        "gmm_random_state": gmm_random_state,
+        "disable_progress_bar": disable_progress_bar,
+    }
 
 
 # ---------------------------------------------------------------------
@@ -405,7 +439,7 @@ def predict_clusterless_gmm_log_likelihood(
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
-    encoding_model: EncodingModel,
+    encoding_model: dict,
     is_local: bool = False,
     spike_block_size: int = 1000,
     bin_tile_size: int | None = None,
@@ -426,7 +460,7 @@ def predict_clusterless_gmm_log_likelihood(
         Decoding spike times per electrode.
     spike_waveform_features : list[jnp.ndarray]
         Decoding spike waveform features per electrode.
-    encoding_model : EncodingModel
+    encoding_model : dict
         Output of fit_clusterless_gmm_encoding_model.
     is_local : bool, default=False
         If True, compute local likelihood at the animal's position.
@@ -461,11 +495,11 @@ def predict_clusterless_gmm_log_likelihood(
             disable_progress_bar=disable_progress_bar,
         )
 
-    bin_centers = encoding_model.interior_place_bin_centers
-    log_occ_bins = encoding_model.log_occupancy_bins  # log density
-    mean_rates = encoding_model.mean_rates
-    joint_models = encoding_model.joint_models
-    summed_ground = encoding_model.summed_ground_process_intensity
+    bin_centers = encoding_model["interior_place_bin_centers"]
+    log_occ_bins = encoding_model["log_occupancy_bins"]  # log density
+    mean_rates = encoding_model["mean_rates"]
+    joint_models = encoding_model["joint_models"]
+    summed_ground = encoding_model["summed_ground_process_intensity"]
 
     n_time = time.shape[0]
     n_bins = bin_centers.shape[0]
@@ -627,7 +661,7 @@ def compute_local_log_likelihood(
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
-    encoding_model: EncodingModel,
+    encoding_model: dict,
     disable_progress_bar: bool = False,
 ) -> jnp.ndarray:
     """Local log-likelihood at the animal's interpolated position.
@@ -647,7 +681,7 @@ def compute_local_log_likelihood(
         Spike times per electrode during decoding.
     spike_waveform_features : list[jnp.ndarray]
         Spike waveform features per electrode during decoding.
-    encoding_model : EncodingModel
+    encoding_model : dict
         Fitted encoding model containing GMM components.
     disable_progress_bar : bool, optional
         Turn off progress bar display, by default False.
@@ -661,11 +695,11 @@ def compute_local_log_likelihood(
     position_time = _as_jnp(position_time)
     position = _as_jnp(position if position.ndim > 1 else position[:, None])
 
-    env = encoding_model.environment
-    occupancy_model = encoding_model.occupancy_model
-    gpi_models = encoding_model.gpi_models
-    joint_models = encoding_model.joint_models
-    mean_rates = encoding_model.mean_rates
+    env = encoding_model["environment"]
+    occupancy_model = encoding_model["occupancy_model"]
+    gpi_models = encoding_model["gpi_models"]
+    joint_models = encoding_model["joint_models"]
+    mean_rates = encoding_model["mean_rates"]
 
     n_time = time.shape[0] - 1
 
