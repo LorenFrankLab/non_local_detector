@@ -228,6 +228,7 @@ def fit_clusterless_gmm_encoding_model(
     gmm_covariance_type_joint: str = "full",
     gmm_random_state: int | None = 0,
     disable_progress_bar: bool = False,
+    **kwargs,  # Accept but ignore KDE-specific parameters for API compatibility
 ) -> EncodingModel:
     """
     Fit the clusterless encoding model using GMMs.
@@ -285,7 +286,10 @@ def fit_clusterless_gmm_encoding_model(
         - disable_progress_bar
     """
     position = _as_jnp(position if position.ndim > 1 else position[:, None])
-    position_time = _as_jnp(position_time)
+    # NOTE: Do NOT convert position_time to JAX! It causes float64→float32 precision loss
+    # with large timestamp values (e.g., Unix timestamps), creating apparent duplicates.
+    # Keep as numpy for interpolation (scipy.interpolate.interpn requires numpy anyway).
+    position_time = np.asarray(position_time)
 
     # Interior bins (cached)
     if environment.is_track_interior_ is not None:
@@ -302,7 +306,6 @@ def fit_clusterless_gmm_encoding_model(
         weights = jnp.ones((position.shape[0],), dtype=position.dtype)
     else:
         weights = _as_jnp(weights)
-    total_weight = float(jnp.sum(weights))
 
     # If environment has a graph and positions are 2D+, linearize to 1D for occupancy/GPI
     if environment.track_graph is not None and position.shape[1] > 1:
@@ -378,9 +381,8 @@ def fit_clusterless_gmm_encoding_model(
         mean_rates.append(mean_rate)
 
         # Positions at spike times
-        # Note: get_position_at_time uses scipy.interpolate.interpn which requires numpy arrays
         enc_pos = get_position_at_time(
-            np.asarray(position_time), np.asarray(position), elect_times, environment
+            position_time, np.asarray(position), elect_times, environment
         )
 
         # GPI GMM (position only)
@@ -711,9 +713,8 @@ def compute_local_log_likelihood(
     # Interpolate position at bin times (use bin centers)
     # We'll take the midpoints as "time of interest" for local evaluation
     t_centers = 0.5 * (time[:-1] + time[1:])
-    # Note: get_position_at_time uses scipy.interpolate.interpn which requires numpy arrays
     interp_pos = get_position_at_time(
-        np.asarray(position_time), np.asarray(position), t_centers, env
+        position_time, np.asarray(position), t_centers, env
     )  # (n_time, pos_dims)
 
     # Occupancy density and its log at the animal's position
@@ -744,9 +745,8 @@ def compute_local_log_likelihood(
 
         # Spike contributions at their true positions
         if elect_times.shape[0] > 0:
-            # Note: get_position_at_time uses scipy.interpolate.interpn which requires numpy arrays
             pos_at_spike_time = get_position_at_time(
-                np.asarray(position_time), np.asarray(position), elect_times, env
+                position_time, np.asarray(position), elect_times, env
             )  # (n_spikes, pos_dims)
             eval_points = jnp.concatenate(
                 [pos_at_spike_time, elect_feats], axis=1
