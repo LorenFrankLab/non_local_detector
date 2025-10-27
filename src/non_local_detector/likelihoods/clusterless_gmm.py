@@ -369,6 +369,10 @@ def fit_clusterless_gmm_encoding_model(
         elect_times = elect_times[in_bounds]
         elect_feats = elect_feats[in_bounds]
 
+        # Skip electrodes with no spikes in encoding window
+        if elect_times.shape[0] == 0:
+            continue
+
         # Interpolate position weights at spike times
         elect_weights = jnp.interp(elect_times, position_time, weights)
 
@@ -422,7 +426,8 @@ def fit_clusterless_gmm_encoding_model(
         "joint_models": joint_models,
         "mean_rates": jnp.asarray(mean_rates),
         "summed_ground_process_intensity": summed_ground_process_intensity,
-        "position_time": position_time,
+        # NOTE: Don't store position_time - it's passed as a separate argument to predict()
+        # Storing it causes "multiple values for argument 'position_time'" error
         "gmm_components_occupancy": gmm_components_occupancy,
         "gmm_components_gpi": gmm_components_gpi,
         "gmm_components_joint": gmm_components_joint,
@@ -488,7 +493,8 @@ def predict_clusterless_gmm_log_likelihood(
         If local    : jnp.ndarray, shape (n_time, 1)
     """
     time = _as_jnp(time)
-    position_time = _as_jnp(position_time)
+    # NOTE: Keep position_time as numpy to avoid float64→float32 precision loss
+    position_time = np.asarray(position_time)
     position = _as_jnp(position if position.ndim > 1 else position[:, None])
 
     if is_local:
@@ -699,7 +705,8 @@ def compute_local_log_likelihood(
         Log likelihood at the animal's position for each time bin.
     """
     time = _as_jnp(time)
-    position_time = _as_jnp(position_time)
+    # NOTE: Keep position_time as numpy to avoid float64→float32 precision loss
+    position_time = np.asarray(position_time)
     position = _as_jnp(position if position.ndim > 1 else position[:, None])
 
     env = encoding_model["environment"]
