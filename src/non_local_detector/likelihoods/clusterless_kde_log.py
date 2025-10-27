@@ -576,6 +576,18 @@ def estimate_log_joint_mark_intensity(
     -------
     log_joint_mark_intensity : jnp.ndarray, shape (n_decoding_spikes, n_position_bins)
 
+    Notes
+    -----
+    This function is JIT-compiled automatically when called from higher-level functions.
+    For manual JIT compilation with custom settings, use:
+
+        jitted_fn = jax.jit(
+            estimate_log_joint_mark_intensity,
+            static_argnames=('use_gemm', 'pos_tile_size', 'enc_tile_size', 'use_streaming')
+        )
+
+    Buffer donation can further reduce memory usage for the _update_block helper (already applied).
+
     """
     n_encoding_spikes = encoding_spike_waveform_features.shape[0]
 
@@ -761,6 +773,14 @@ def estimate_log_joint_mark_intensity(
     return log_joint
 
 
+# JIT-compile with static arguments for performance
+# This allows JAX to specialize the function for different tile sizes and modes
+estimate_log_joint_mark_intensity = jax.jit(
+    estimate_log_joint_mark_intensity,
+    static_argnames=("use_gemm", "pos_tile_size", "enc_tile_size", "use_streaming"),
+)
+
+
 def block_estimate_log_joint_mark_intensity(
     decoding_spike_waveform_features: jnp.ndarray,
     encoding_spike_waveform_features: jnp.ndarray,
@@ -818,10 +838,14 @@ def block_estimate_log_joint_mark_intensity(
     if n_decoding_spikes == 0:
         return jnp.full((0, n_position_bins), LOG_EPS)
 
-    # Use dynamic_update_slice to build output
-    # Note: JAX will JIT-compile this in the calling context
-    def _update_block(out_array, block_result, start_idx):
-        return jax.lax.dynamic_update_slice(out_array, block_result, (start_idx, 0))
+    # Create JIT-compiled update function with buffer donation
+    # donate_argnums=(0,) allows JAX to reuse the output buffer in-place
+    _update_block = jax.jit(
+        lambda out_array, block_result, start_idx: jax.lax.dynamic_update_slice(
+            out_array, block_result, (start_idx, 0)
+        ),
+        donate_argnums=(0,),
+    )
 
     out = jnp.zeros((n_decoding_spikes, n_position_bins))
     for start_ind in range(0, n_decoding_spikes, block_size):
