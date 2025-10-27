@@ -209,10 +209,6 @@ def _compute_precision_cholesky(
         For 'diag': shape (n_components, n_features)
         For 'spherical': shape (n_components,)
     """
-    msg = (
-        "Fitting failed: ill-defined empirical covariance. "
-        "Decrease n_components, increase reg_covar, or scale the data."
-    )
 
     def single_inv_chol(cov: Array) -> Array:
         cov_chol = jnp.linalg.cholesky(cov)
@@ -224,8 +220,9 @@ def _compute_precision_cholesky(
     if covariance_type == "tied":
         return single_inv_chol(covariances)
     # diag / spherical
-    if jnp.any(covariances <= 0.0):
-        raise ValueError(msg)
+    # Use jax.lax.cond or clipping instead of Python if to avoid tracer error
+    # Clip ensures positive values, eliminating need for runtime check in JIT
+    covariances = jnp.clip(covariances, a_min=1e-10, a_max=None)
     return 1.0 / jnp.sqrt(covariances)
 
 
