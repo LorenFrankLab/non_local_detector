@@ -426,15 +426,6 @@ def fit_clusterless_gmm_encoding_model(
         "joint_models": joint_models,
         "mean_rates": jnp.asarray(mean_rates),
         "summed_ground_process_intensity": summed_ground_process_intensity,
-        # NOTE: Don't store position_time - it's passed as a separate argument to predict()
-        # Storing it causes "multiple values for argument 'position_time'" error
-        "gmm_components_occupancy": gmm_components_occupancy,
-        "gmm_components_gpi": gmm_components_gpi,
-        "gmm_components_joint": gmm_components_joint,
-        "gmm_covariance_type_occupancy": gmm_covariance_type_occupancy,
-        "gmm_covariance_type_gpi": gmm_covariance_type_gpi,
-        "gmm_covariance_type_joint": gmm_covariance_type_joint,
-        "gmm_random_state": gmm_random_state,
         "disable_progress_bar": disable_progress_bar,
     }
 
@@ -450,7 +441,14 @@ def predict_clusterless_gmm_log_likelihood(
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
-    encoding_model: dict,
+    environment: Environment,
+    occupancy_model: GaussianMixtureModel,
+    interior_place_bin_centers: jnp.ndarray,
+    log_occupancy_bins: jnp.ndarray,
+    gpi_models: list[GaussianMixtureModel],
+    joint_models: list[GaussianMixtureModel],
+    mean_rates: jnp.ndarray,
+    summed_ground_process_intensity: jnp.ndarray,
     is_local: bool = False,
     spike_block_size: int = 1000,
     bin_tile_size: int | None = None,
@@ -504,22 +502,20 @@ def predict_clusterless_gmm_log_likelihood(
             position=position,
             spike_times=spike_times,
             spike_waveform_features=spike_waveform_features,
-            encoding_model=encoding_model,
+            environment=environment,
+            occupancy_model=occupancy_model,
+            gpi_models=gpi_models,
+            joint_models=joint_models,
+            mean_rates=mean_rates,
             disable_progress_bar=disable_progress_bar,
         )
 
-    bin_centers = encoding_model["interior_place_bin_centers"]
-    log_occ_bins = encoding_model["log_occupancy_bins"]  # log density
-    mean_rates = encoding_model["mean_rates"]
-    joint_models = encoding_model["joint_models"]
-    summed_ground = encoding_model["summed_ground_process_intensity"]
-
     n_time = time.shape[0]
-    n_bins = bin_centers.shape[0]
+    n_bins = interior_place_bin_centers.shape[0]
 
     # Start with the expected-counts (ground process) term, broadcast over time
     log_likelihood = (
-        (-summed_ground).reshape(1, -1).repeat(n_time, axis=0)
+        (-summed_ground_process_intensity).reshape(1, -1).repeat(n_time, axis=0)
     )  # (n_time, n_bins)
 
     # Per-electrode contributions in log-space
@@ -617,7 +613,7 @@ def predict_clusterless_gmm_log_likelihood(
 
             if bin_tile_size is None or bin_tile_size >= n_bins:
                 # No bin tiling: process all bins at once (default)
-                tiled_bins = jnp.tile(bin_centers, (block_size, 1))
+                tiled_bins = jnp.tile(interior_place_bin_centers, (block_size, 1))
                 repeated_feats = jnp.repeat(block_feats, n_bins, axis=0)
                 eval_points = jnp.concatenate([tiled_bins, repeated_feats], axis=1)
 
@@ -631,7 +627,7 @@ def predict_clusterless_gmm_log_likelihood(
                     joint_logp_block,
                     block_seg_ids,
                     log_mean_rate,
-                    log_occ_bins,
+                    log_occupancy_bins,
                     n_time,
                 )
             else:
@@ -643,7 +639,7 @@ def predict_clusterless_gmm_log_likelihood(
 
                     # Build eval points for this tile
                     tiled_bins_tile = jnp.tile(
-                        bin_centers[bin_start:bin_end], (block_size, 1)
+                        interior_place_bin_centers[bin_start:bin_end], (block_size, 1)
                     )
                     repeated_feats_tile = jnp.repeat(block_feats, n_tile, axis=0)
                     eval_points_tile = jnp.concatenate(
@@ -661,7 +657,7 @@ def predict_clusterless_gmm_log_likelihood(
                         joint_logp_tile,
                         block_seg_ids,
                         log_mean_rate,
-                        log_occ_bins[bin_start:bin_end],
+                        log_occupancy_bins[bin_start:bin_end],
                         n_time,
                     )
 
@@ -674,7 +670,11 @@ def compute_local_log_likelihood(
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
-    encoding_model: dict,
+    environment: Environment,
+    occupancy_model: GaussianMixtureModel,
+    gpi_models: list[GaussianMixtureModel],
+    joint_models: list[GaussianMixtureModel],
+    mean_rates: jnp.ndarray,
     disable_progress_bar: bool = False,
 ) -> jnp.ndarray:
     """Local log-likelihood at the animal's interpolated position.
@@ -709,19 +709,13 @@ def compute_local_log_likelihood(
     position_time = np.asarray(position_time)
     position = _as_jnp(position if position.ndim > 1 else position[:, None])
 
-    env = encoding_model["environment"]
-    occupancy_model = encoding_model["occupancy_model"]
-    gpi_models = encoding_model["gpi_models"]
-    joint_models = encoding_model["joint_models"]
-    mean_rates = encoding_model["mean_rates"]
-
     n_time = time.shape[0] - 1
 
     # Interpolate position at bin times (use bin centers)
     # We'll take the midpoints as "time of interest" for local evaluation
     t_centers = 0.5 * (time[:-1] + time[1:])
     interp_pos = get_position_at_time(
-        position_time, np.asarray(position), t_centers, env
+        position_time, np.asarray(position), t_centers, environment
     )  # (n_time, pos_dims)
 
     # Occupancy density and its log at the animal's position
@@ -753,7 +747,7 @@ def compute_local_log_likelihood(
         # Spike contributions at their true positions
         if elect_times.shape[0] > 0:
             pos_at_spike_time = get_position_at_time(
-                position_time, np.asarray(position), elect_times, env
+                position_time, np.asarray(position), elect_times, environment
             )  # (n_spikes, pos_dims)
             eval_points = jnp.concatenate(
                 [pos_at_spike_time, elect_feats], axis=1
