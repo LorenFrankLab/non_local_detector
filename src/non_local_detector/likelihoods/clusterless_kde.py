@@ -12,23 +12,8 @@ from non_local_detector.likelihoods.common import (
     block_kde,
     gaussian_pdf,
     get_position_at_time,
+    get_spike_time_bin_ind,
 )
-
-
-def get_spike_time_bin_ind(spike_times: np.ndarray, time: np.ndarray) -> np.ndarray:
-    """Get the index of the time bin for each spike time.
-
-    Parameters
-    ----------
-    spike_times : np.ndarray, shape (n_spikes,)
-    time : np.ndarray, shape (n_time_bins,)
-        Bin edges.
-
-    Returns
-    -------
-    ind : np.ndarray, shape (n_spikes,)
-    """
-    return np.digitize(spike_times, time[1:-1])
 
 
 def kde_distance(

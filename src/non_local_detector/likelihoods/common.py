@@ -50,6 +50,22 @@ def get_position_at_time(
     return position_at_spike_times
 
 
+def get_spike_time_bin_ind(spike_times: np.ndarray, time: np.ndarray) -> np.ndarray:
+    """Get the index of the time bin for each spike time.
+
+    Parameters
+    ----------
+    spike_times : np.ndarray, shape (n_spikes,)
+    time : np.ndarray, shape (n_time_bins,)
+        Bin edges.
+
+    Returns
+    -------
+    ind : np.ndarray, shape (n_spikes,)
+    """
+    return np.digitize(spike_times, time[1:-1])
+
+
 @jax.jit
 def log_gaussian_pdf(
     x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray

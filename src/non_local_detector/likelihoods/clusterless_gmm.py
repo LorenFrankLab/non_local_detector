@@ -14,7 +14,12 @@ from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
-from non_local_detector.likelihoods.common import EPS, get_position_at_time, safe_divide
+from non_local_detector.likelihoods.common import (
+    EPS,
+    get_position_at_time,
+    get_spike_time_bin_ind,
+    safe_divide,
+)
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 
 # ---------------------------------------------------------------------
@@ -36,30 +41,6 @@ def _as_jnp(x) -> jnp.ndarray:
         JAX array version of input.
     """
     return x if isinstance(x, jnp.ndarray) else jnp.asarray(x)
-
-
-def get_spike_time_bin_ind(
-    spike_times: jnp.ndarray, time_bin_edges: jnp.ndarray
-) -> jnp.ndarray:
-    """Map spike times to decoding time-bin indices on device.
-
-    Parameters
-    ----------
-    spike_times : jnp.ndarray, shape (n_spikes,)
-        Array of spike times to map to bins.
-    time_bin_edges : jnp.ndarray, shape (n_bins + 1,)
-        Edges of time bins defining intervals [t0, t1), ..., [t_{n-1}, tn].
-
-    Returns
-    -------
-    bin_indices : jnp.ndarray, shape (n_spikes,)
-        Index of time bin for each spike (0 to n_bins-1).
-    """
-    # Right-closed bins [t_i, t_{i+1}), except the last edge which is included
-    # Use JAX ops to keep everything on device
-    inds = jnp.searchsorted(time_bin_edges, spike_times, side="right") - 1
-    last = jnp.isclose(spike_times, time_bin_edges[-1])
-    return jnp.where(last, time_bin_edges.shape[0] - 2, inds).astype(jnp.int32)
 
 
 def _gmm_logp(gmm: GaussianMixtureModel, X: jnp.ndarray) -> jnp.ndarray:

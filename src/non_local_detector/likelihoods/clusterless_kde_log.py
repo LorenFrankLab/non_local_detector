@@ -12,25 +12,10 @@ from non_local_detector.likelihoods.common import (
     block_kde,
     gaussian_pdf,
     get_position_at_time,
+    get_spike_time_bin_ind,
     log_gaussian_pdf,
     safe_log,
 )
-
-
-def get_spike_time_bin_ind(spike_times: np.ndarray, time: np.ndarray) -> np.ndarray:
-    """Get the index of the time bin for each spike time.
-
-    Parameters
-    ----------
-    spike_times : np.ndarray, shape (n_spikes,)
-    time : np.ndarray, shape (n_time_bins,)
-        Bin edges.
-
-    Returns
-    -------
-    ind : np.ndarray, shape (n_spikes,)
-    """
-    return np.digitize(spike_times, time[1:-1])
 
 
 @jax.jit
@@ -123,6 +108,7 @@ def log_kde_distance(
     return jnp.sum(per_dim_log_distances, axis=0)
 
 
+@jax.jit
 def log_kde_distance_streaming(
     eval_points: jnp.ndarray,
     samples: jnp.ndarray,
@@ -152,6 +138,10 @@ def log_kde_distance_streaming(
 
     Notes
     -----
+    This function is JIT-compiled and will be specialized for each unique combination
+    of input shapes. The shape dimensions (n_dims, n_samp, n_eval) are traced during
+    compilation, so different shapes will result in separate compiled versions.
+
     Memory usage:
     - log_kde_distance (vmap): O(D×n_samp×n_eval) peak
     - log_kde_distance_streaming (fori_loop): O(n_samp×n_eval) peak
@@ -489,6 +479,7 @@ def _estimate_with_enc_chunking(
                 )(log_pos_tile, logK_mark_chunk.T)
 
                 # Update output with this tile
+                # fori_loop handles in-place updates efficiently when possible
                 return jax.lax.dynamic_update_slice(
                     log_marginal_chunk, log_marginal_tile, (0, pos_start)
                 )
@@ -838,15 +829,6 @@ def block_estimate_log_joint_mark_intensity(
     if n_decoding_spikes == 0:
         return jnp.full((0, n_position_bins), LOG_EPS)
 
-    # Create JIT-compiled update function with buffer donation
-    # donate_argnums=(0,) allows JAX to reuse the output buffer in-place
-    _update_block = jax.jit(
-        lambda out_array, block_result, start_idx: jax.lax.dynamic_update_slice(
-            out_array, block_result, (start_idx, 0)
-        ),
-        donate_argnums=(0,),
-    )
-
     out = jnp.zeros((n_decoding_spikes, n_position_bins))
     for start_ind in range(0, n_decoding_spikes, block_size):
         block_inds = slice(start_ind, start_ind + block_size)
@@ -865,7 +847,7 @@ def block_estimate_log_joint_mark_intensity(
             position_eval_points=position_eval_points,
             position_std=position_std,
         )
-        out = _update_block(out, block_result, start_ind)
+        out = jax.lax.dynamic_update_slice(out, block_result, (start_ind, 0))
 
     return jnp.clip(out, a_min=LOG_EPS, a_max=None)
 
@@ -1171,12 +1153,12 @@ def predict_clusterless_kde_log_likelihood(
                     enc_tile_size=enc_tile_size,
                     pos_tile_size=pos_tile_size,
                     use_streaming=use_streaming,
-                    encoding_positions=electrode_encoding_positions
-                    if use_streaming
-                    else None,
-                    position_eval_points=interior_place_bin_centers
-                    if use_streaming
-                    else None,
+                    encoding_positions=(
+                        electrode_encoding_positions if use_streaming else None
+                    ),
+                    position_eval_points=(
+                        interior_place_bin_centers if use_streaming else None
+                    ),
                     position_std=position_std if use_streaming else None,
                 ),
                 get_spike_time_bin_ind(electrode_spike_times, time),
