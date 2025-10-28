@@ -102,7 +102,7 @@ def test_gmm_blocking_parity(gmm_simulation_data):
         position,
         spike_times,
         spike_features,
-        encoding_model,
+        **encoding_model,
         is_local=False,
         spike_block_size=999999,  # Effectively no blocking
     )
@@ -114,7 +114,7 @@ def test_gmm_blocking_parity(gmm_simulation_data):
         position,
         spike_times,
         spike_features,
-        encoding_model,
+        **encoding_model,
         is_local=False,
         spike_block_size=10,  # Small blocks to test the mechanism
     )
