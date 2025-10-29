@@ -54,7 +54,7 @@ def shared_simulation_data():
     encoding_spike_times = []
     encoding_spike_features = []
 
-    for elec_idx in range(n_electrodes):
+    for _elec_idx in range(n_electrodes):
         # Generate random spike times within encoding period
         n_spikes = np.random.randint(30, 50)
         times = np.sort(np.random.uniform(time[0], time[-1], n_spikes))

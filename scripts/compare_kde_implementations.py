@@ -56,7 +56,7 @@ def main():
     n_runs = 10
     dimensions = [2, 4, 6, 8, 10]
 
-    print(f"Configuration:")
+    print("Configuration:")
     print(f"  Evaluation points: {n_eval}")
     print(f"  Training samples: {n_samples}")
     print(f"  Runs per test: {n_runs}")

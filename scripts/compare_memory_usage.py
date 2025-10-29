@@ -128,7 +128,7 @@ def analyze_array_allocations(n_eval, n_samples, n_dims):
     print(f"  Per-dimension output: {n_samples} × {n_eval} × 8 bytes = {output_size/1024:.2f} KB")
     vmap_intermediates = n_dims * n_samples * n_eval * 8  # All dimensions at once
     print(f"  All intermediate arrays: {n_dims} × {output_size/1024:.2f} KB = {vmap_intermediates/1024:.2f} KB")
-    print(f"  XLA fusion may reduce this through operation fusion")
+    print("  XLA fusion may reduce this through operation fusion")
     optimized_peak = vmap_intermediates + output_size
     print(f"  **Estimated peak (worst case): {optimized_peak/1024:.2f} KB**")
     print(f"  **Estimated peak (with fusion): {(vmap_intermediates*0.5 + output_size)/1024:.2f} KB**")
@@ -141,7 +141,7 @@ def analyze_array_allocations(n_eval, n_samples, n_dims):
 
     if ratio > 1.5:
         print(f"⚠️  Optimized version may use {ratio:.1f}x more memory in worst case")
-        print(f"    But XLA fusion likely reduces this significantly")
+        print("    But XLA fusion likely reduces this significantly")
     elif ratio > 0.7:
         print(f"✓  Similar memory footprint ({ratio:.2f}x)")
     else:
@@ -222,7 +222,7 @@ def main():
                 elif mem_ratio < 0.8:
                     print(f"✓  Optimized uses {1/mem_ratio:.1f}x less memory")
                 else:
-                    print(f"✓  Similar memory usage")
+                    print("✓  Similar memory usage")
 
             # Estimate device memory
             print("\nEstimated JAX Device Memory:")
@@ -293,7 +293,7 @@ def main():
             print("   for all dimensions simultaneously (parallel execution),")
             print("   while the original processes one dimension at a time.")
             print()
-            print("   **Trade-off**: Speed (10x faster) vs Memory (~{:.1f}x more)".format(avg_ratio))
+            print(f"   **Trade-off**: Speed (10x faster) vs Memory (~{avg_ratio:.1f}x more)")
         elif avg_ratio > 1.2:
             print(f"⚠️  Optimized version uses slightly more memory ({avg_ratio:.2f}x)")
         else:
@@ -310,7 +310,7 @@ def main():
         print("**Memory-Speed Trade-off**")
         print()
         print("The optimized version (clusterless_kde_log.py):")
-        print(f"  ✅ Speed: 10.8x faster")
+        print("  ✅ Speed: 10.8x faster")
         print(f"  ⚠️  Memory: ~{avg_ratio:.1f}x more usage")
         print()
         print("**Use optimized version when:**")

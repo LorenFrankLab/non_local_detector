@@ -15,7 +15,6 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-from numpy.testing import assert_array_less
 from scipy.stats import pearsonr, spearmanr
 
 from non_local_detector.environment import Environment

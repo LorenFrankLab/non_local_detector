@@ -9,7 +9,6 @@ from non_local_detector.likelihoods.common import (
     EPS,
     LOG_EPS,
     KDEModel,
-    block_kde,
     block_log_kde,
     gaussian_pdf,
     get_position_at_time,

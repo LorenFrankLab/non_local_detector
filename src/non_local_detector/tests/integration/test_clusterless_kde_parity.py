@@ -120,7 +120,7 @@ def test_estimate_intensity_moderate_features():
     np.random.seed(42)
     dec_features = jnp.array(np.random.randn(n_dec_spikes, n_features) * 10 + 50)
     enc_features = jnp.array(np.random.randn(n_enc_spikes, n_features) * 10 + 50)
-    enc_weights = jnp.ones(n_enc_spikes)
+    jnp.ones(n_enc_spikes)
     waveform_stds = jnp.array([5.0] * n_features)
     occupancy = jnp.ones(n_pos_bins) * 0.1
     mean_rate = 5.0
@@ -185,7 +185,7 @@ def test_estimate_intensity_extreme_features():
     np.random.seed(42)
     dec_features = jnp.array(np.random.randn(n_dec_spikes, n_features) * 50 + 100)
     enc_features = jnp.array(np.random.randn(n_enc_spikes, n_features) * 50 + 200)
-    enc_weights = jnp.ones(n_enc_spikes)
+    jnp.ones(n_enc_spikes)
     waveform_stds = jnp.array([10.0] * n_features)
     occupancy = jnp.ones(n_pos_bins) * 0.1
     mean_rate = 2.0

@@ -199,7 +199,6 @@ def test_mathematical_formula_consistency(convergence_test_data):
 
     These should be mathematically identical!
     """
-    data = convergence_test_data
 
     # The formulas are:
     # KDE: log(λ * p(x,m) / π(x))  where p is marginal_density, π is occupancy
@@ -219,7 +218,7 @@ def test_mathematical_formula_consistency(convergence_test_data):
     # GMM formula
     gmm_formula = np.log(mean_rate) + np.log(marginal_density) - np.log(occupancy)
 
-    print(f"\n=== Formula Verification ===")
+    print("\n=== Formula Verification ===")
     print(f"KDE: log({mean_rate} * {marginal_density} / {occupancy}) = {kde_formula:.6f}")
     print(f"GMM: log({mean_rate}) + log({marginal_density}) - log({occupancy}) = {gmm_formula:.6f}")
     print(f"Difference: {abs(kde_formula - gmm_formula):.10f}")

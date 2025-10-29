@@ -2,15 +2,16 @@
 
 import sys
 import time
-import numpy as np
+
 import jax.numpy as jnp
+import numpy as np
 
 sys.path.insert(0, "src")
 
 from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity,
-    estimate_log_joint_mark_intensity_vectorized,
     estimate_log_joint_mark_intensity_logspace,
+    estimate_log_joint_mark_intensity_vectorized,
 )
 
 
@@ -167,13 +168,13 @@ def main():
     print(f"  Average speedup: {avg_speedup:.2f}x")
 
     if avg_speedup >= 2.0:
-        print(f"  ✓ Excellent! Achieved target of 2-4x speedup")
+        print("  ✓ Excellent! Achieved target of 2-4x speedup")
     elif avg_speedup >= 1.5:
-        print(f"  ✓ Good! Significant performance improvement")
+        print("  ✓ Good! Significant performance improvement")
     elif avg_speedup >= 1.2:
-        print(f"  ~ Moderate improvement")
+        print("  ~ Moderate improvement")
     else:
-        print(f"  ✗ Minimal improvement")
+        print("  ✗ Minimal improvement")
 
     print("\nLog-space + Vectorized + JIT Optimization:")
     log_speedups = [r[2]["logspace"][2] for r in all_results]
@@ -184,13 +185,13 @@ def main():
     print(f"  Average speedup: {avg_speedup:.2f}x")
 
     if avg_speedup >= 2.0:
-        print(f"  ✓ Excellent! Achieved target of 2-4x speedup")
+        print("  ✓ Excellent! Achieved target of 2-4x speedup")
     elif avg_speedup >= 1.5:
-        print(f"  ✓ Good! Significant performance improvement")
+        print("  ✓ Good! Significant performance improvement")
     elif avg_speedup >= 1.2:
-        print(f"  ~ Moderate improvement")
+        print("  ~ Moderate improvement")
     else:
-        print(f"  ✗ Minimal improvement")
+        print("  ✗ Minimal improvement")
 
     # Comparison: Vectorized vs Log-space
     print("\nLog-space vs Vectorized:")
@@ -212,22 +213,22 @@ def main():
     print("\nBest implementation:")
     if log_avg > vec_avg * 1.1:
         print(f"  → Log-space + Vectorized + JIT ({log_avg:.2f}x average speedup)")
-        print(f"    Use: estimate_log_joint_mark_intensity_logspace()")
+        print("    Use: estimate_log_joint_mark_intensity_logspace()")
     elif vec_avg > 1.5:
         print(f"  → Vectorized + JIT ({vec_avg:.2f}x average speedup)")
-        print(f"    Use: estimate_log_joint_mark_intensity_vectorized()")
+        print("    Use: estimate_log_joint_mark_intensity_vectorized()")
     else:
-        print(f"  → Original implementation (optimizations not beneficial)")
-        print(f"    Use: estimate_log_joint_mark_intensity()")
+        print("  → Original implementation (optimizations not beneficial)")
+        print("    Use: estimate_log_joint_mark_intensity()")
 
     print("\nFor production use:")
     if max(vec_avg, log_avg) >= 2.0:
-        print(f"  ✓ Optimization successful - recommend deploying optimized version")
-        print(f"  ✓ Numerical equivalence verified (max diff < 1e-6)")
+        print("  ✓ Optimization successful - recommend deploying optimized version")
+        print("  ✓ Numerical equivalence verified (max diff < 1e-6)")
         print(f"  ✓ Average speedup: {max(vec_avg, log_avg):.2f}x")
     else:
-        print(f"  ~ Optimization provides moderate benefit")
-        print(f"  ~ Consider for performance-critical applications only")
+        print("  ~ Optimization provides moderate benefit")
+        print("  ~ Consider for performance-critical applications only")
 
     print("\n" + "="*70)
 

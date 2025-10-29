@@ -6,20 +6,22 @@ for higher-dimensional waveform features (4D, 8D, 10D) compared to 2D.
 
 import sys
 import time
+
 import numpy as np
-import jax.numpy as jnp
 
 sys.path.insert(0, "src")
 
+from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
 from non_local_detector.likelihoods.clusterless_kde_log import (
     fit_clusterless_kde_encoding_model as fit_log,
+)
+from non_local_detector.likelihoods.clusterless_kde_log import (
     predict_clusterless_kde_log_likelihood as predict_log,
 )
-from non_local_detector.environment import Environment
 
 
 def create_test_data(n_features, n_encoding=200, n_decoding=100, n_positions=500):
@@ -189,7 +191,7 @@ def profile_dimension(n_features):
     speedup_gemm = mean_ref / mean_gemm
     speedup_no_gemm = mean_ref / mean_no_gemm
 
-    print(f"\nSpeedup vs reference:")
+    print("\nSpeedup vs reference:")
     print(f"  GEMM (vmap):     {speedup_gemm:.2f}x")
     print(f"  No GEMM (log):   {speedup_no_gemm:.2f}x")
 

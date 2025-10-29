@@ -8,7 +8,6 @@ import time
 
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 from non_local_detector.likelihoods.clusterless_kde_log import (
     kde_distance,

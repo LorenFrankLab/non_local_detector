@@ -6,8 +6,9 @@ the impact of feature dimensionality on GEMM vs linear performance.
 
 import sys
 import time
-import numpy as np
+
 import jax.numpy as jnp
+import numpy as np
 
 sys.path.insert(0, "src")
 
@@ -103,7 +104,7 @@ def profile_dimension(n_features, n_enc=200, n_dec=100, n_pos=500):
     speedup_no_gemm = mean_ref / mean_no_gemm
     gemm_vs_no_gemm = mean_no_gemm / mean_gemm
 
-    print(f"\nSpeedup vs reference:")
+    print("\nSpeedup vs reference:")
     print(f"  GEMM (vmap):     {speedup_gemm:.2f}x")
     print(f"  No GEMM:         {speedup_no_gemm:.2f}x")
     print(f"\nGEMM vs No-GEMM: {gemm_vs_no_gemm:.2f}x")

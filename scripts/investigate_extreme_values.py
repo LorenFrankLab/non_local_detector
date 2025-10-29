@@ -69,7 +69,7 @@ def analyze_extreme_features():
 
     feature_distances = np.array(feature_distances)
 
-    print(f"Feature space distances (standardized by std):")
+    print("Feature space distances (standardized by std):")
     print(f"  Min: {feature_distances.min():.2f} std")
     print(f"  Max: {feature_distances.max():.2f} std")
     print(f"  Mean: {feature_distances.mean():.2f} std")
@@ -91,7 +91,7 @@ def analyze_extreme_features():
 
     # Compute position distances
     position_distance = kde_distance(interior_bins, enc_positions, position_std)
-    log_position_distance = log_kde_distance(interior_bins, enc_positions, position_std)
+    log_kde_distance(interior_bins, enc_positions, position_std)
 
     print("-" * 80)
     print("ORIGINAL IMPLEMENTATION (clusterless_kde.py)")
@@ -118,14 +118,14 @@ def analyze_extreme_features():
     n_inf = np.sum(np.isinf(ll_original))
     n_nan = np.sum(np.isnan(ll_original))
 
-    print(f"Value distribution:")
+    print("Value distribution:")
     print(f"  Finite values: {n_finite}/{ll_original.size} ({100*n_finite/ll_original.size:.1f}%)")
     print(f"  -Inf values: {n_inf}/{ll_original.size} ({100*n_inf/ll_original.size:.1f}%)")
     print(f"  NaN values: {n_nan}/{ll_original.size} ({100*n_nan/ll_original.size:.1f}%)")
     print()
 
     if n_finite > 0:
-        print(f"Finite value statistics:")
+        print("Finite value statistics:")
         print(f"  Min: {ll_original[finite_mask].min():.4f}")
         print(f"  Max: {ll_original[finite_mask].max():.4f}")
         print(f"  Mean: {ll_original[finite_mask].mean():.4f}")
@@ -167,7 +167,7 @@ def analyze_extreme_features():
     n_inf_log = np.sum(np.isinf(ll_log_no_gemm))
     n_nan_log = np.sum(np.isnan(ll_log_no_gemm))
 
-    print(f"Value distribution:")
+    print("Value distribution:")
     print(f"  Finite values: {n_finite_log}/{ll_log_no_gemm.size} ({100*n_finite_log/ll_log_no_gemm.size:.1f}%)")
     print(f"  -Inf values: {n_inf_log}/{ll_log_no_gemm.size} ({100*n_inf_log/ll_log_no_gemm.size:.1f}%)")
     print(f"  NaN values: {n_nan_log}/{ll_log_no_gemm.size} ({100*n_nan_log/ll_log_no_gemm.size:.1f}%)")
@@ -211,14 +211,14 @@ def analyze_extreme_features():
     n_inf_gemm = np.sum(np.isinf(ll_log_gemm))
     n_nan_gemm = np.sum(np.isnan(ll_log_gemm))
 
-    print(f"Value distribution:")
+    print("Value distribution:")
     print(f"  Finite values: {n_finite_gemm}/{ll_log_gemm.size} ({100*n_finite_gemm/ll_log_gemm.size:.1f}%)")
     print(f"  -Inf values: {n_inf_gemm}/{ll_log_gemm.size} ({100*n_inf_gemm/ll_log_gemm.size:.1f}%)")
     print(f"  NaN values: {n_nan_gemm}/{ll_log_gemm.size} ({100*n_nan_gemm/ll_log_gemm.size:.1f}%)")
     print()
 
     if n_finite_gemm > 0:
-        print(f"Finite value statistics:")
+        print("Finite value statistics:")
         print(f"  Min: {ll_log_gemm[finite_mask_gemm].min():.4f}")
         print(f"  Max: {ll_log_gemm[finite_mask_gemm].max():.4f}")
         print(f"  Mean: {ll_log_gemm[finite_mask_gemm].mean():.4f}")
@@ -254,7 +254,7 @@ def analyze_extreme_features():
 
     if n_finite_gemm > n_finite:
         improvement = n_finite_gemm - n_finite
-        print(f"✅ GEMM optimization improves numerical stability:")
+        print("✅ GEMM optimization improves numerical stability:")
         print(f"   {improvement} more finite values ({100*improvement/ll_original.size:.1f}% of total)")
         print()
         print("   The GEMM approach computes in log-space throughout,")
@@ -289,7 +289,7 @@ def analyze_extreme_features():
     if n_finite_gemm > n_finite * 1.1:  # At least 10% improvement
         print("**Use GEMM optimization for extreme features**")
         print()
-        print(f"The GEMM approach (use_gemm=True) significantly improves")
+        print("The GEMM approach (use_gemm=True) significantly improves")
         print(f"numerical stability, preserving {100*n_finite_gemm/ll_log_gemm.size:.1f}% finite values")
         print(f"vs {100*n_finite/ll_original.size:.1f}% for the original.")
         print()
@@ -300,7 +300,7 @@ def analyze_extreme_features():
     else:
         print("**GEMM optimization does not significantly help with extreme features**")
         print()
-        print(f"Both approaches produce similar amounts of underflow")
+        print("Both approaches produce similar amounts of underflow")
         print(f"({100*n_finite/ll_original.size:.1f}% vs {100*n_finite_gemm/ll_log_gemm.size:.1f}% finite).")
         print()
         print("With such extreme feature distances, underflow is unavoidable.")

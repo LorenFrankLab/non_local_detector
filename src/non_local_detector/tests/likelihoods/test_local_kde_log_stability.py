@@ -5,7 +5,6 @@ prevents underflow issues that can occur when multiplying many small Gaussian
 values in linear space before taking the log.
 """
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -15,7 +14,12 @@ from non_local_detector.likelihoods.clusterless_kde_log import (
     compute_local_log_likelihood,
     fit_clusterless_kde_encoding_model,
 )
-from non_local_detector.likelihoods.common import block_kde, block_log_kde, safe_log, EPS
+from non_local_detector.likelihoods.common import (
+    EPS,
+    block_kde,
+    block_log_kde,
+    safe_log,
+)
 
 
 @pytest.fixture
@@ -42,7 +46,7 @@ def extreme_feature_data():
     spike_times = []
     spike_waveform_features = []
 
-    for i in range(n_electrodes):
+    for _i in range(n_electrodes):
         # Encoding spikes (training data) - moderate features
         n_enc_spikes = 40
         enc_spike_times = np.sort(

@@ -1,13 +1,12 @@
 """Tests for optimized clusterless KDE implementation."""
 
-import numpy as np
 import jax.numpy as jnp
-import pytest
+import numpy as np
 
 from non_local_detector.likelihoods.clusterless_kde import (
+    estimate_log_joint_mark_intensity,
     kde_distance,
     kde_distance_vectorized,
-    estimate_log_joint_mark_intensity,
 )
 
 

@@ -1,18 +1,19 @@
 """Test numerical equivalence of optimized KDE implementations."""
 
 import sys
-import numpy as np
+
 import jax.numpy as jnp
+import numpy as np
 
 sys.path.insert(0, "src")
 
 from non_local_detector.likelihoods.clusterless_kde import (
+    estimate_log_joint_mark_intensity,
+    estimate_log_joint_mark_intensity_logspace,
+    estimate_log_joint_mark_intensity_vectorized,
     kde_distance,
     kde_distance_vectorized,
     log_kde_distance,
-    estimate_log_joint_mark_intensity,
-    estimate_log_joint_mark_intensity_vectorized,
-    estimate_log_joint_mark_intensity_logspace,
 )
 
 
@@ -131,12 +132,12 @@ def test_estimate_functions_equivalence():
         # Check with more appropriate tolerance for numerical differences
         is_close = jnp.allclose(result_original, result_vectorized, rtol=1e-5, atol=1e-6)
         if not is_close:
-            print(f"    WARNING: Differences exceed tolerance")
+            print("    WARNING: Differences exceed tolerance")
             print(f"    Max absolute diff: {max_diff_vec}")
             print(f"    Max relative diff: {rel_diff_vec}")
             # Check if it's just due to float precision
             if max_diff_vec < 1e-5 and rel_diff_vec < 1e-4:
-                print(f"    Differences are within acceptable float32 precision, continuing...")
+                print("    Differences are within acceptable float32 precision, continuing...")
             else:
                 raise AssertionError(f"Vectorized version not equivalent for {n_features}D")
 
@@ -153,12 +154,12 @@ def test_estimate_functions_equivalence():
         # Check with more appropriate tolerance
         is_close = jnp.allclose(result_original, result_logspace, rtol=1e-5, atol=1e-6)
         if not is_close:
-            print(f"    WARNING: Differences exceed tolerance")
+            print("    WARNING: Differences exceed tolerance")
             print(f"    Max absolute diff: {max_diff_log}")
             print(f"    Max relative diff: {rel_diff_log}")
             # Check if it's just due to float precision
             if max_diff_log < 1e-5 and rel_diff_log < 1e-4:
-                print(f"    Differences are within acceptable float32 precision, continuing...")
+                print("    Differences are within acceptable float32 precision, continuing...")
             else:
                 raise AssertionError(f"Log-space version not equivalent for {n_features}D")
 
