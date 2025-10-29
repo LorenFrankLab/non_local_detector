@@ -62,6 +62,8 @@ def _estimate_gaussian_covariances_full(
     _, n_features = means.shape
     diff = X[jnp.newaxis, :, :] - means[:, jnp.newaxis, :]  # (K, N, D)
     covariances = jax.vmap(lambda r, d, n: ((d.T * r) @ d) / n)(resp.T, diff, nk)
+    # Symmetrize covariances for numerical stability (ensure exact symmetry)
+    covariances = (covariances + jnp.swapaxes(covariances, -2, -1)) * 0.5
     covariances += jnp.eye(n_features, dtype=X.dtype) * reg_covar
     return covariances
 
@@ -106,6 +108,8 @@ def _estimate_gaussian_covariances_tied(
     avg_means2 = (nk * means.T) @ means  # (D, D)
 
     covariance = (XTX_w - avg_means2) / jnp.maximum(sum_w, 1.0)
+    # Symmetrize covariance for numerical stability (ensure exact symmetry)
+    covariance = (covariance + covariance.T) * 0.5
     covariance += jnp.eye(n_features, dtype=X.dtype) * reg_covar
     return covariance
 
