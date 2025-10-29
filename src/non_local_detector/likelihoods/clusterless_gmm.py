@@ -680,7 +680,6 @@ def compute_local_log_likelihood(
     log_likelihood : jnp.ndarray, shape (n_time, 1)
         Log likelihood at the animal's position for each time bin.
     """
-    time = _as_jnp(time)
     # NOTE: Keep position_time as numpy to avoid float64→float32 precision loss
     position_time = np.asarray(position_time)
     position = _as_jnp(position if position.ndim > 1 else position[:, None])
@@ -688,10 +687,9 @@ def compute_local_log_likelihood(
     n_time = time.shape[0] - 1
 
     # Interpolate position at bin times (use bin centers)
-    # We'll take the midpoints as "time of interest" for local evaluation
-    t_centers = 0.5 * (time[:-1] + time[1:])
+
     interp_pos = get_position_at_time(
-        position_time, np.asarray(position), t_centers, environment
+        position_time, np.asarray(position), time, environment
     )  # (n_time, pos_dims)
 
     # Occupancy density and its log at the animal's position
@@ -712,7 +710,6 @@ def compute_local_log_likelihood(
         unit="electrode",
         disable=disable_progress_bar,
     ):
-        elect_times = _as_jnp(elect_times)
         elect_feats = _as_jnp(elect_feats)
 
         # Clip to decoding window
