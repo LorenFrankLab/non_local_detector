@@ -16,9 +16,9 @@ from track_linearization import get_linearized_position  # type: ignore[import-u
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import (
     EPS,
+    LOG_EPS,
     get_position_at_time,
     get_spike_time_bin_ind,
-    safe_divide,
 )
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 
@@ -297,21 +297,11 @@ def fit_clusterless_gmm_encoding_model(
             edge_spacing=environment.edge_spacing,
         ).linear_position.to_numpy()[:, None]
         pos_for_occ = _as_jnp(position1D)
-
-        # CRITICAL: Linearize bin centers too (must match occupancy space)
-        raw_bin_centers = environment.place_bin_centers_[is_track_interior]
-        lin_bins = get_linearized_position(
-            np.asarray(raw_bin_centers),
-            environment.track_graph,
-            edge_order=environment.edge_order,
-            edge_spacing=environment.edge_spacing,
-        ).linear_position.to_numpy()[:, None]
-        interior_place_bin_centers = _as_jnp(lin_bins)
     else:
         pos_for_occ = position
-        interior_place_bin_centers = _as_jnp(
-            environment.place_bin_centers_[is_track_interior]
-        )
+
+    is_track_interior = environment.is_track_interior_.ravel()
+    interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
     # Fit occupancy GMM and precompute per-bin terms
     occupancy_model = _fit_gmm_density(
@@ -321,17 +311,12 @@ def fit_clusterless_gmm_encoding_model(
         random_state=gmm_random_state,
         covariance_type=gmm_covariance_type_occupancy,
     )
-    occupancy_bins = _gmm_density(
-        occupancy_model, interior_place_bin_centers
-    )  # (n_bins,)
-    log_occupancy_bins = _gmm_logp(
-        occupancy_model, interior_place_bin_centers
-    )  # (n_bins,)
+    log_occupancy = _gmm_logp(occupancy_model, interior_place_bin_centers)
 
     gpi_models: list[GaussianMixtureModel] = []
     joint_models: list[GaussianMixtureModel] = []
     mean_rates: list[float] = []
-    summed_ground_process_intensity = jnp.zeros_like(occupancy_bins)
+    log_summed_ground_process_intensity = jnp.full_like(log_occupancy, -jnp.inf)
 
     # Fit per-electrode models
     for elect_feats, elect_times in tqdm(
@@ -392,17 +377,28 @@ def fit_clusterless_gmm_encoding_model(
         joint_models.append(joint_gmm)
 
         # Expected-counts term at bins: mean_rate * (gpi / occupancy)
-        gpi_bins = _gmm_density(gpi_gmm, interior_place_bin_centers)  # (n_bins,)
-        summed_ground_process_intensity = summed_ground_process_intensity + jnp.clip(
-            mean_rate * safe_divide(gpi_bins, occupancy_bins), a_min=EPS
+        log_gp_num = _gmm_logp(gpi_gmm, interior_place_bin_centers)  # (n_bins,)
+        log_gpi = jnp.log(mean_rate) + log_gp_num - log_occupancy
+
+        log_summed_ground_process_intensity = jnp.logaddexp(
+            log_summed_ground_process_intensity, log_gpi
         )
+
+    max_log = jnp.log(jnp.finfo(log_summed_ground_process_intensity.dtype).max)
+    summed_ground_process_intensity = jnp.clip(
+        jnp.exp(
+            jnp.clip(
+                log_summed_ground_process_intensity, min=LOG_EPS, max=jnp.exp(max_log)
+            )
+        ),
+        min=EPS,
+    )
 
     return {
         "environment": environment,
         "occupancy_model": occupancy_model,
         "interior_place_bin_centers": interior_place_bin_centers,
-        "occupancy_bins": occupancy_bins,
-        "log_occupancy_bins": log_occupancy_bins,
+        "log_occupancy": log_occupancy,
         "gpi_models": gpi_models,
         "joint_models": joint_models,
         "mean_rates": jnp.asarray(mean_rates),
@@ -425,7 +421,7 @@ def predict_clusterless_gmm_log_likelihood(
     environment: Environment,
     occupancy_model: GaussianMixtureModel,
     interior_place_bin_centers: jnp.ndarray,
-    log_occupancy_bins: jnp.ndarray,
+    log_occupancy: jnp.ndarray,
     gpi_models: list[GaussianMixtureModel],
     joint_models: list[GaussianMixtureModel],
     mean_rates: jnp.ndarray,
@@ -471,7 +467,6 @@ def predict_clusterless_gmm_log_likelihood(
         If non-local: jnp.ndarray, shape (n_time, n_bins)
         If local    : jnp.ndarray, shape (n_time, 1)
     """
-    time = _as_jnp(time)
     # NOTE: Keep position_time as numpy to avoid float64→float32 precision loss
     position_time = np.asarray(position_time)
     position = _as_jnp(position if position.ndim > 1 else position[:, None])
@@ -608,7 +603,7 @@ def predict_clusterless_gmm_log_likelihood(
                     joint_logp_block,
                     block_seg_ids,
                     log_mean_rate,
-                    log_occupancy_bins,
+                    log_occupancy,
                     n_time,
                 )
             else:
@@ -638,7 +633,7 @@ def predict_clusterless_gmm_log_likelihood(
                         joint_logp_tile,
                         block_seg_ids,
                         log_mean_rate,
-                        log_occupancy_bins[bin_start:bin_end],
+                        log_occupancy[bin_start:bin_end],
                         n_time,
                     )
 
