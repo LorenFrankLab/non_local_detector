@@ -684,7 +684,7 @@ def compute_local_log_likelihood(
     position_time = np.asarray(position_time)
     position = _as_jnp(position if position.ndim > 1 else position[:, None])
 
-    n_time = time.shape[0] - 1
+    n_time = time.shape[0]
 
     # Interpolate position at bin times (use bin centers)
 
