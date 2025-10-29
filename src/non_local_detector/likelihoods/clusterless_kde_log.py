@@ -10,6 +10,7 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     KDEModel,
     block_kde,
+    block_log_kde,
     gaussian_pdf,
     get_position_at_time,
     get_spike_time_bin_ind,
@@ -1300,7 +1301,8 @@ def compute_local_log_likelihood(
         position_at_spike_time = all_spike_positions[electrode_idx]
         occupancy_at_spike_time = all_occupancies[start_idx:end_idx]
 
-        marginal_density = block_kde(
+        # Compute marginal density in log-space for numerical stability
+        log_marginal_density = block_log_kde(
             eval_points=jnp.concatenate(
                 (
                     position_at_spike_time,
@@ -1319,18 +1321,16 @@ def compute_local_log_likelihood(
             block_size=block_size,
         )
 
-        # Use safe_log to avoid -inf from zero marginal_density or occupancy
-        # The where still protects against division by zero occupancy
+        # Compute spike contribution in log-space:
+        # log(rate * density / occupancy) = log(rate) + log(density) - log(occupancy)
+        log_mean_rate = jnp.log(electrode_mean_rate)
+        log_occupancy = safe_log(occupancy_at_spike_time, eps=EPS)
+
+        # Spike contribution: sum over spikes in each time bin
+        spike_contribution = log_mean_rate + log_marginal_density - log_occupancy
+
         log_likelihood += jax.ops.segment_sum(
-            safe_log(
-                electrode_mean_rate
-                * jnp.where(
-                    occupancy_at_spike_time > 0.0,
-                    marginal_density / occupancy_at_spike_time,
-                    EPS,  # Use EPS instead of 0 to avoid log(0)
-                ),
-                eps=EPS,
-            ),
+            spike_contribution,
             get_spike_time_bin_ind(electrode_spike_times, time),
             indices_are_sorted=True,
             num_segments=n_time,
