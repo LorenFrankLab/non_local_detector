@@ -355,6 +355,7 @@ def fit_clusterless_gmm_encoding_model(
         # GPI GMM (position only)
         gpi_gmm = _fit_gmm_density(
             X=enc_pos,
+            weights=None,
             n_components=gmm_components_gpi,
             random_state=gmm_random_state,
             covariance_type=gmm_covariance_type_gpi,
@@ -365,6 +366,7 @@ def fit_clusterless_gmm_encoding_model(
         joint_samples = jnp.concatenate([enc_pos, elect_feats], axis=1)
         joint_gmm = _fit_gmm_density(
             X=joint_samples,
+            weights=None,
             n_components=gmm_components_joint,
             random_state=gmm_random_state,
             covariance_type=gmm_covariance_type_joint,
