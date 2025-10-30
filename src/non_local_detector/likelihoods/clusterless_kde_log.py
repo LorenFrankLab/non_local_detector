@@ -950,7 +950,7 @@ def fit_clusterless_kde_encoding_model(
         spike_times,
         strict=True,
     ):
-        is_in_bounds = jnp.logical_and(
+        is_in_bounds = np.logical_and(
             electrode_spike_times >= position_time[0],
             electrode_spike_times <= position_time[-1],
         )
