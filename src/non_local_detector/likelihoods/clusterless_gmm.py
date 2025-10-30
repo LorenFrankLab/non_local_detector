@@ -342,7 +342,7 @@ def fit_clusterless_gmm_encoding_model(
         if elect_times.shape[0] == 0:
             continue
 
-        # Interpolate position weights at spike times
+        # Mean firing rate
         mean_rate = float(len(elect_times) / n_time_bins)
         mean_rate = jnp.clip(mean_rate, a_min=EPS)  # avoid 0 rate
         mean_rates.append(mean_rate)
@@ -374,9 +374,7 @@ def fit_clusterless_gmm_encoding_model(
         joint_models.append(joint_gmm)
 
         # Expected-counts term at bins: mean_rate * (gpi / occupancy)
-        gpi_density = jnp.exp(
-            _gmm_logp(gpi_gmm, interior_place_bin_centers)
-        )  # (n_bins,)
+        gpi_density = _gmm_density(gpi_gmm, interior_place_bin_centers)
         summed_ground_process_intensity += jnp.clip(
             mean_rates[-1]
             * safe_divide(gpi_density, occupancy, condition=occupancy > EPS),
