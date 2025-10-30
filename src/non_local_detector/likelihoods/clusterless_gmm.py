@@ -273,6 +273,9 @@ def fit_clusterless_gmm_encoding_model(
     # Keep as numpy for interpolation (scipy.interpolate.interpn requires numpy anyway).
     position_time = np.asarray(position_time)
 
+    # Ignore weights for now
+    weights = None
+
     # Interior bins (cached)
     if environment.is_track_interior_ is not None:
         is_track_interior = environment.is_track_interior_.ravel()
@@ -282,12 +285,6 @@ def fit_clusterless_gmm_encoding_model(
                 "place_bin_centers_ is required when is_track_interior_ is None"
             )
         is_track_interior = jnp.ones(len(environment.place_bin_centers_), dtype=bool)
-
-    # Occupancy weights over trajectory
-    if weights is None:
-        weights = jnp.ones((position.shape[0],), dtype=position.dtype)
-    else:
-        weights = _as_jnp(weights)
 
     # If environment has a graph and positions are 2D+, linearize to 1D for occupancy/GPI
     if environment.track_graph is not None and position.shape[1] > 1:
@@ -324,7 +321,7 @@ def fit_clusterless_gmm_encoding_model(
 
     # Fit per-electrode models
     for elect_feats, elect_times in tqdm(
-        zip(spike_waveform_features, spike_times, strict=False),
+        zip(spike_waveform_features, spike_times, strict=True),
         desc="Encoding models (GMM)",
         unit="electrode",
         disable=disable_progress_bar,
@@ -335,12 +332,7 @@ def fit_clusterless_gmm_encoding_model(
             elect_times >= position_time[0], elect_times <= position_time[-1]
         )
         elect_times = elect_times[in_bounds]
-        elect_feats = elect_feats[in_bounds]
-        elect_feats = _as_jnp(elect_feats)
-
-        # Skip electrodes with no spikes in encoding window
-        if elect_times.shape[0] == 0:
-            continue
+        elect_feats = _as_jnp(elect_feats[in_bounds])
 
         # Mean firing rate
         mean_rate = float(len(elect_times) / n_time_bins)
@@ -376,8 +368,7 @@ def fit_clusterless_gmm_encoding_model(
         # Expected-counts term at bins: mean_rate * (gpi / occupancy)
         gpi_density = _gmm_density(gpi_gmm, interior_place_bin_centers)
         summed_ground_process_intensity += jnp.clip(
-            mean_rates[-1]
-            * safe_divide(gpi_density, occupancy, condition=occupancy > EPS),
+            mean_rate * jnp.where(occupancy > 0.0, gpi_density / occupancy, EPS),
             a_min=EPS,
             a_max=None,
         )
