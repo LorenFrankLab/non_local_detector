@@ -374,13 +374,15 @@ def fit_clusterless_gmm_encoding_model(
         joint_models.append(joint_gmm)
 
         # Expected-counts term at bins: mean_rate * (gpi / occupancy)
-        gp_num = _gmm_logp(gpi_gmm, interior_place_bin_centers)  # (n_bins,)
-        summed_ground_process_intensity += mean_rate * safe_divide(gp_num, occupancy)
-
-    summed_ground_process_intensity = jnp.clip(
-        summed_ground_process_intensity,
-        min=EPS,
-    )
+        gpi_density = jnp.exp(
+            _gmm_logp(gpi_gmm, interior_place_bin_centers)
+        )  # (n_bins,)
+        summed_ground_process_intensity += jnp.clip(
+            mean_rates[-1]
+            * safe_divide(gpi_density, occupancy, condition=occupancy > EPS),
+            a_min=EPS,
+            a_max=None,
+        )
 
     return {
         "environment": environment,
