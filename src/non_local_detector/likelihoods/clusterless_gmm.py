@@ -503,13 +503,12 @@ def predict_clusterless_gmm_log_likelihood(
         unit="electrode",
         disable=disable_progress_bar,
     ):
-        elect_times = _as_jnp(elect_times)
-        elect_feats = _as_jnp(elect_feats)
 
         # Clip to decoding window
-        in_bounds = jnp.logical_and(elect_times >= time[0], elect_times <= time[-1])
+        in_bounds = np.logical_and(elect_times >= time[0], elect_times <= time[-1])
         elect_times = elect_times[in_bounds]
         elect_feats = elect_feats[in_bounds]
+        elect_feats = _as_jnp(elect_feats)
 
         if elect_times.shape[0] == 0:
             continue
