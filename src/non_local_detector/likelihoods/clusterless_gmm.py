@@ -19,6 +19,7 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     get_position_at_time,
     get_spike_time_bin_ind,
+    safe_divide,
 )
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 
@@ -316,7 +317,10 @@ def fit_clusterless_gmm_encoding_model(
     gpi_models: list[GaussianMixtureModel] = []
     joint_models: list[GaussianMixtureModel] = []
     mean_rates: list[float] = []
-    log_summed_ground_process_intensity = jnp.full_like(log_occupancy, -jnp.inf)
+
+    occupancy = jnp.exp(log_occupancy)
+    summed_ground_process_intensity = jnp.zeros_like(occupancy)
+    n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
 
     # Fit per-electrode models
     for elect_feats, elect_times in tqdm(
@@ -325,40 +329,32 @@ def fit_clusterless_gmm_encoding_model(
         unit="electrode",
         disable=disable_progress_bar,
     ):
-        elect_times = _as_jnp(elect_times)
-        elect_feats = _as_jnp(elect_feats)
 
         # Clip to encoding window
-        in_bounds = jnp.logical_and(
+        in_bounds = np.logical_and(
             elect_times >= position_time[0], elect_times <= position_time[-1]
         )
         elect_times = elect_times[in_bounds]
         elect_feats = elect_feats[in_bounds]
+        elect_feats = _as_jnp(elect_feats)
 
         # Skip electrodes with no spikes in encoding window
         if elect_times.shape[0] == 0:
             continue
 
         # Interpolate position weights at spike times
-        elect_weights = jnp.interp(elect_times, position_time, weights)
-
-        # Mean rate contribution: spikes per time bin (matching KDE)
-        # BUG FIX: Was using n_position_samples, should use n_time_bins
-        # to match units required by Poisson likelihood formula
-        n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
         mean_rate = float(len(elect_times) / n_time_bins)
         mean_rate = jnp.clip(mean_rate, a_min=EPS)  # avoid 0 rate
         mean_rates.append(mean_rate)
 
         # Positions at spike times
         enc_pos = get_position_at_time(
-            position_time, np.asarray(position), elect_times, environment
+            position_time, position, elect_times, environment
         )
 
         # GPI GMM (position only)
         gpi_gmm = _fit_gmm_density(
             X=enc_pos,
-            weights=elect_weights,
             n_components=gmm_components_gpi,
             random_state=gmm_random_state,
             covariance_type=gmm_covariance_type_gpi,
@@ -369,7 +365,6 @@ def fit_clusterless_gmm_encoding_model(
         joint_samples = jnp.concatenate([enc_pos, elect_feats], axis=1)
         joint_gmm = _fit_gmm_density(
             X=joint_samples,
-            weights=elect_weights,
             n_components=gmm_components_joint,
             random_state=gmm_random_state,
             covariance_type=gmm_covariance_type_joint,
@@ -377,20 +372,11 @@ def fit_clusterless_gmm_encoding_model(
         joint_models.append(joint_gmm)
 
         # Expected-counts term at bins: mean_rate * (gpi / occupancy)
-        log_gp_num = _gmm_logp(gpi_gmm, interior_place_bin_centers)  # (n_bins,)
-        log_gpi = jnp.log(mean_rate) + log_gp_num - log_occupancy
+        gp_num = _gmm_logp(gpi_gmm, interior_place_bin_centers)  # (n_bins,)
+        summed_ground_process_intensity += mean_rate * safe_divide(gp_num, occupancy)
 
-        log_summed_ground_process_intensity = jnp.logaddexp(
-            log_summed_ground_process_intensity, log_gpi
-        )
-
-    max_log = jnp.log(jnp.finfo(log_summed_ground_process_intensity.dtype).max)
     summed_ground_process_intensity = jnp.clip(
-        jnp.exp(
-            jnp.clip(
-                log_summed_ground_process_intensity, min=LOG_EPS, max=jnp.exp(max_log)
-            )
-        ),
+        summed_ground_process_intensity,
         min=EPS,
     )
 
