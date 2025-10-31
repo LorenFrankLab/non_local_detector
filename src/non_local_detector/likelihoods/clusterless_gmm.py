@@ -469,9 +469,10 @@ def predict_clusterless_gmm_log_likelihood(
     n_bins = interior_place_bin_centers.shape[0]
 
     # Start with the expected-counts (ground process) term, broadcast over time
-    log_likelihood = (
-        (-summed_ground_process_intensity).reshape(1, -1).repeat(n_time, axis=0)
-    )  # (n_time, n_bins)
+    # log_likelihood = (
+    #     (-summed_ground_process_intensity).reshape(1, -1).repeat(n_time, axis=0)
+    # )  # (n_time, n_bins)
+    log_likelihood = -1.0 * summed_ground_process_intensity * jnp.ones((n_time, 1))
 
     # Per-electrode contributions in log-space
     for elect_feats, elect_times, joint_gmm, mean_rate in tqdm(
@@ -486,11 +487,7 @@ def predict_clusterless_gmm_log_likelihood(
         # Clip to decoding window
         in_bounds = np.logical_and(elect_times >= time[0], elect_times <= time[-1])
         elect_times = elect_times[in_bounds]
-        elect_feats = elect_feats[in_bounds]
-        elect_feats = _as_jnp(elect_feats)
-
-        if elect_times.shape[0] == 0:
-            continue
+        elect_feats = _as_jnp(elect_feats[in_bounds])
 
         # Bin spikes
         seg_ids = get_spike_time_bin_ind(elect_times, time)  # (n_spikes,)
