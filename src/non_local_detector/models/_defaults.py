@@ -123,8 +123,8 @@ class _ModelDefaults:
     @staticmethod
     def non_local_defaults():
         """Defaults for non-local detector (4-state, sorted and clusterless)."""
-        no_spike_trans_prob = 1e-5
-        local_prob = 0.999
+        no_spike_trans_prob = 5e-3
+        local_prob = 0.99
         cont_non_local_prob = 0.98
         non_local_frag_prob = 0.98
         no_spike_prob = 0.98
