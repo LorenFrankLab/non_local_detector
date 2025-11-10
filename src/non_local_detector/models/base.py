@@ -61,6 +61,69 @@ _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS = {
     "block_size": 10_000,
 }
 
+# Valid options for return_outputs parameter
+VALID_OUTPUTS: set[str] = {"filter", "predictive", "log_likelihood", "all"}
+
+# Mapping of single string options to sets of outputs
+OUTPUT_INCLUDES: dict[str, set[str]] = {
+    "filter": {"filter"},
+    "predictive": {"predictive"},
+    "log_likelihood": {"log_likelihood"},
+    "all": {"filter", "predictive", "log_likelihood"},
+}
+
+
+def _normalize_return_outputs(
+    return_outputs: str | list[str] | set[str] | None,
+) -> set[str]:
+    """Convert return_outputs to canonical set of output names.
+
+    Parameters
+    ----------
+    return_outputs : str, list of str, set of str, or None
+        Controls which optional outputs are included.
+
+    Returns
+    -------
+    set of str
+        Normalized set containing any of: 'filter', 'predictive', 'log_likelihood'
+
+    Raises
+    ------
+    ValueError
+        If return_outputs contains invalid option names.
+    TypeError
+        If return_outputs is not str, list, set, or None.
+    """
+    if return_outputs is None:
+        return set()
+
+    if isinstance(return_outputs, str):
+        if return_outputs not in VALID_OUTPUTS:
+            raise ValueError(
+                f"Invalid return_outputs='{return_outputs}'. "
+                f"Must be one of: {sorted(VALID_OUTPUTS)}"
+            )
+        return OUTPUT_INCLUDES.get(return_outputs, {return_outputs})
+
+    if isinstance(return_outputs, (list, set)):
+        outputs_set = set(return_outputs)
+        invalid = outputs_set - VALID_OUTPUTS
+        if invalid:
+            raise ValueError(
+                f"Invalid outputs: {sorted(invalid)}. "
+                f"Valid options are: {sorted(VALID_OUTPUTS)}"
+            )
+        # Expand 'all' if present
+        if "all" in outputs_set:
+            return OUTPUT_INCLUDES["all"]
+        return outputs_set
+
+    raise TypeError(
+        f"return_outputs must be str, list of str, set of str, or None. "
+        f"Got {type(return_outputs).__name__}"
+    )
+
 
 class _DetectorBase(BaseEstimator):
     """Base class for detector objects."""
@@ -1485,6 +1548,7 @@ class _DetectorBase(BaseEstimator):
         log_likelihood: np.ndarray | None = None,
         causal_posterior: np.ndarray | None = None,
         causal_state_probabilities: np.ndarray | None = None,
+        predictive_state_probabilities: np.ndarray | None = None,
     ) -> xr.Dataset:
         """
         Convert the results to an xarray Dataset.
@@ -1505,6 +1569,8 @@ class _DetectorBase(BaseEstimator):
             Causal (filtered) posterior probabilities, by default None.
         causal_state_probabilities : np.ndarray, optional, shape (n_time, n_states)
             Causal state probabilities, by default None.
+        predictive_state_probabilities : np.ndarray, optional, shape (n_time, n_states)
+            One-step-ahead predicted state probabilities, by default None.
 
         Returns
         -------
@@ -1624,6 +1690,12 @@ class _DetectorBase(BaseEstimator):
             data_vars["causal_state_probabilities"] = (
                 ("time", "states"),
                 causal_state_probabilities,
+            )
+
+        if predictive_state_probabilities is not None:
+            data_vars["predictive_state_probabilities"] = (
+                ("time", "states"),
+                predictive_state_probabilities,
             )
 
         # Create Dataset with MultiIndex coordinates
@@ -2109,8 +2181,9 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
-        save_log_likelihood_to_results: bool = False,
-        save_causal_posterior_to_results: bool = False,
+        return_outputs: str | list[str] | set[str] | None = None,
+        save_log_likelihood_to_results: bool | None = None,
+        save_causal_posterior_to_results: bool | None = None,
     ) -> xr.Dataset:
         """
         Predict the posterior probabilities for the given data.
@@ -2135,15 +2208,82 @@ class ClusterlessDetector(_DetectorBase):
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
+        return_outputs : str, list of str, set of str, or None, optional
+            Controls which optional outputs are returned.
+
+            Options:
+            - None: smoother only (default, minimal memory)
+            - 'filter': filtered (causal) posterior and state probabilities
+            - 'predictive': one-step-ahead predictive state distributions
+            - 'log_likelihood': per-timepoint log likelihoods
+            - 'all': all outputs above
+            - List/set: e.g., ['filter', 'predictive'] for multiple outputs
+
+            The smoother (acausal_posterior, acausal_state_probabilities) and
+            marginal_log_likelihood are ALWAYS included.
+
+            When to use each output:
+            - 'filter': Online/causal decoding, debugging forward pass
+            - 'predictive': Model evaluation, predictive checks
+            - 'log_likelihood': Diagnostics, per-timepoint metrics, model comparison
+
+            Memory warning: 'log_likelihood' and 'filter' can be very large
+            (~400 GB for 1M timepoints × 100k spatial bins). Only request
+            what you need for your analysis.
         save_log_likelihood_to_results : bool, optional
-            Whether to save the log likelihood to the results, by default False.
+            DEPRECATED. Use return_outputs='log_likelihood' instead.
+            Whether to save the log likelihood to the results, by default None.
         save_causal_posterior_to_results : bool, optional
-            Whether to save the causal (filtered) posterior to the results, by default False.
+            DEPRECATED. Use return_outputs='filter' instead.
+            Whether to save the causal (filtered) posterior to the results, by default None.
 
         Returns
         -------
         xr.Dataset
-            Predicted posterior probabilities.
+            Dataset containing decoded posterior distributions.
+
+            Always included:
+            - acausal_posterior : (n_time, n_state_bins)
+                Smoothed posterior over state bins
+            - acausal_state_probabilities : (n_time, n_states)
+                Smoothed discrete state probabilities
+            - marginal_log_likelihoods : float (in attrs)
+                Total log evidence for the model
+
+            Conditionally included based on return_outputs:
+            - causal_posterior : (n_time, n_state_bins) - if 'filter'
+                Filtered (forward-only) posterior over state bins
+            - causal_state_probabilities : (n_time, n_states) - if 'filter'
+                Filtered discrete state probabilities
+            - predictive_state_probabilities : (n_time, n_states) - if 'predictive'
+                One-step-ahead predictive distributions
+            - log_likelihood : (n_time, n_state_bins) - if 'log_likelihood'
+                Per-timepoint observation log likelihoods
+
+        Examples
+        --------
+        Get only smoother (default, minimal memory):
+
+        >>> results = model.predict(spike_times, time)
+        >>> results.acausal_posterior.shape
+        (10000, 50000)
+
+        Include filtered posterior for online decoding:
+
+        >>> results = model.predict(spike_times, time, return_outputs='filter')
+        >>> results.causal_posterior.shape
+        (10000, 50000)
+
+        Get multiple outputs for analysis:
+
+        >>> results = model.predict(
+        ...     spike_times, time,
+        ...     return_outputs=['filter', 'predictive']
+        ... )
+
+        Get everything for debugging:
+
+        >>> results = model.predict(spike_times, time, return_outputs='all')
         """
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
@@ -2157,6 +2297,41 @@ class ClusterlessDetector(_DetectorBase):
             raise ValueError(
                 f"Length of is_missing must match length of time. Time is n_samples: {len(time)}"
             )
+
+        # Handle deprecated boolean flags
+        import warnings
+
+        if (
+            save_log_likelihood_to_results is not None
+            or save_causal_posterior_to_results is not None
+        ):
+            warnings.warn(
+                "save_log_likelihood_to_results and save_causal_posterior_to_results "
+                "are deprecated. Use return_outputs parameter instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+            # Convert old flags to new format
+            outputs_from_flags = set()
+            if save_log_likelihood_to_results:
+                outputs_from_flags.add("log_likelihood")
+            if save_causal_posterior_to_results:
+                outputs_from_flags.add("filter")
+
+            if return_outputs is not None:
+                raise ValueError(
+                    "Cannot specify both return_outputs and deprecated "
+                    "save_*_to_results flags. Use return_outputs only."
+                )
+            return_outputs = outputs_from_flags if outputs_from_flags else None
+
+        # Normalize return_outputs to canonical set
+        requested_outputs = _normalize_return_outputs(return_outputs)
+
+        # Automatically enable caching if log_likelihood is requested
+        if "log_likelihood" in requested_outputs and not cache_likelihood:
+            cache_likelihood = True
 
         if discrete_transition_covariate_data is not None:
             if self.discrete_transition_coefficients_ is None:
@@ -2173,7 +2348,7 @@ class ClusterlessDetector(_DetectorBase):
             acausal_state_probabilities,
             marginal_log_likelihood,
             causal_state_probabilities,
-            _,
+            predictive_state_probabilities,
             log_likelihood,
             causal_posterior,
         ) = self._predict(
@@ -2194,12 +2369,19 @@ class ClusterlessDetector(_DetectorBase):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihood,
-            log_likelihood if save_log_likelihood_to_results else None,
+            log_likelihood=(
+                log_likelihood if "log_likelihood" in requested_outputs else None
+            ),
             causal_posterior=(
-                causal_posterior if save_causal_posterior_to_results else None
+                causal_posterior if "filter" in requested_outputs else None
             ),
             causal_state_probabilities=(
-                causal_state_probabilities if save_causal_posterior_to_results else None
+                causal_state_probabilities if "filter" in requested_outputs else None
+            ),
+            predictive_state_probabilities=(
+                predictive_state_probabilities
+                if "predictive" in requested_outputs
+                else None
             ),
         )
 
@@ -2742,7 +2924,9 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         cache_likelihood: bool = False,
         n_chunks: int = 1,
-        save_log_likelihood_to_results: bool = False,
+        return_outputs: str | list[str] | set[str] | None = None,
+        save_log_likelihood_to_results: bool | None = None,
+        save_causal_posterior_to_results: bool | None = None,
     ) -> xr.Dataset:
         """
         Predict the posterior probabilities for the given data.
@@ -2765,8 +2949,13 @@ class SortedSpikesDetector(_DetectorBase):
             Whether to cache the log likelihoods, by default False.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
+        return_outputs : str, list of str, set of str, or None, optional
+            Controls which optional outputs are returned. See ClusterlessDetector.predict
+            for full documentation. By default None.
         save_log_likelihood_to_results : bool, optional
-            Whether to save the log likelihood to the results, by default False.
+            DEPRECATED. Use return_outputs='log_likelihood' instead. By default None.
+        save_causal_posterior_to_results : bool, optional
+            DEPRECATED. Use return_outputs='filter' instead. By default None.
 
         Returns
         -------
@@ -2786,6 +2975,41 @@ class SortedSpikesDetector(_DetectorBase):
                 f"Length of is_missing must match length of time. Time is n_samples: {len(time)}"
             )
 
+        # Handle deprecated boolean flags
+        import warnings
+
+        if (
+            save_log_likelihood_to_results is not None
+            or save_causal_posterior_to_results is not None
+        ):
+            warnings.warn(
+                "save_log_likelihood_to_results and save_causal_posterior_to_results "
+                "are deprecated. Use return_outputs parameter instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+            # Convert old flags to new format
+            outputs_from_flags = set()
+            if save_log_likelihood_to_results:
+                outputs_from_flags.add("log_likelihood")
+            if save_causal_posterior_to_results:
+                outputs_from_flags.add("filter")
+
+            if return_outputs is not None:
+                raise ValueError(
+                    "Cannot specify both return_outputs and deprecated "
+                    "save_*_to_results flags. Use return_outputs only."
+                )
+            return_outputs = outputs_from_flags if outputs_from_flags else None
+
+        # Normalize return_outputs to canonical set
+        requested_outputs = _normalize_return_outputs(return_outputs)
+
+        # Automatically enable caching if log_likelihood is requested
+        if "log_likelihood" in requested_outputs and not cache_likelihood:
+            cache_likelihood = True
+
         if discrete_transition_covariate_data is not None:
             if self.discrete_transition_coefficients_ is None:
                 raise ValueError(
@@ -2801,10 +3025,10 @@ class SortedSpikesDetector(_DetectorBase):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihood,
-            _,
-            _,
+            causal_state_probabilities,
+            predictive_state_probabilities,
             log_likelihood,
-            _,
+            causal_posterior,
         ) = self._predict(
             time=time,
             log_likelihood_args=(
@@ -2822,7 +3046,20 @@ class SortedSpikesDetector(_DetectorBase):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihood,
-            log_likelihood=log_likelihood if save_log_likelihood_to_results else None,
+            log_likelihood=(
+                log_likelihood if "log_likelihood" in requested_outputs else None
+            ),
+            causal_posterior=(
+                causal_posterior if "filter" in requested_outputs else None
+            ),
+            causal_state_probabilities=(
+                causal_state_probabilities if "filter" in requested_outputs else None
+            ),
+            predictive_state_probabilities=(
+                predictive_state_probabilities
+                if "predictive" in requested_outputs
+                else None
+            ),
         )
 
     def estimate_parameters(
