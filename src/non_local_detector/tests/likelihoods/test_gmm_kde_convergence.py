@@ -170,7 +170,9 @@ def test_gmm_convergence_to_kde(convergence_test_data):
         peak_gmm = np.argmax(ll_gmm, axis=1)
         peak_agreement = np.mean(peak_kde == peak_gmm)
 
-        print(f"{n_comp:4d}       | {corr:11.4f} | {mse:16.6f} | {peak_agreement:14.1%}")
+        print(
+            f"{n_comp:4d}       | {corr:11.4f} | {mse:16.6f} | {peak_agreement:14.1%}"
+        )
 
     # Verify convergence trend
     print("\n=== Convergence Analysis ===")
@@ -178,12 +180,14 @@ def test_gmm_convergence_to_kde(convergence_test_data):
     print(f"MSE improvement: {mse_values[0]:.6f} → {mse_values[-1]:.6f}")
 
     # Key assertion: correlation should increase with more components
-    assert correlations[-1] > correlations[0], \
+    assert correlations[-1] > correlations[0], (
         f"Correlation should increase: {correlations[0]:.3f} → {correlations[-1]:.3f}"
+    )
 
     # MSE should decrease
-    assert mse_values[-1] < mse_values[0], \
+    assert mse_values[-1] < mse_values[0], (
         f"MSE should decrease: {mse_values[0]:.4f} → {mse_values[-1]:.4f}"
+    )
 
 
 def test_mathematical_formula_consistency(convergence_test_data):
@@ -219,12 +223,17 @@ def test_mathematical_formula_consistency(convergence_test_data):
     gmm_formula = np.log(mean_rate) + np.log(marginal_density) - np.log(occupancy)
 
     print("\n=== Formula Verification ===")
-    print(f"KDE: log({mean_rate} * {marginal_density} / {occupancy}) = {kde_formula:.6f}")
-    print(f"GMM: log({mean_rate}) + log({marginal_density}) - log({occupancy}) = {gmm_formula:.6f}")
+    print(
+        f"KDE: log({mean_rate} * {marginal_density} / {occupancy}) = {kde_formula:.6f}"
+    )
+    print(
+        f"GMM: log({mean_rate}) + log({marginal_density}) - log({occupancy}) = {gmm_formula:.6f}"
+    )
     print(f"Difference: {abs(kde_formula - gmm_formula):.10f}")
 
-    assert np.isclose(kde_formula, gmm_formula, rtol=1e-10), \
+    assert np.isclose(kde_formula, gmm_formula, rtol=1e-10), (
         "KDE and GMM formulas should be mathematically identical"
+    )
 
 
 def test_ground_process_intensity_calculation(convergence_test_data):
@@ -298,18 +307,25 @@ def test_segment_sum_correctness(convergence_test_data):
     segment_ids = jnp.array([0, 0, 1, 1, 2])
 
     # KDE way
-    result_kde = jax.ops.segment_sum(values, segment_ids, num_segments=3, indices_are_sorted=True)
+    result_kde = jax.ops.segment_sum(
+        values, segment_ids, num_segments=3, indices_are_sorted=True
+    )
 
     # GMM way (from jax.ops import segment_sum)
     from jax.ops import segment_sum
-    result_gmm = segment_sum(values, segment_ids, num_segments=3, indices_are_sorted=True)
+
+    result_gmm = segment_sum(
+        values, segment_ids, num_segments=3, indices_are_sorted=True
+    )
 
     print("\n=== segment_sum Verification ===")
     print(f"Input: values={values}, segment_ids={segment_ids}")
     print(f"KDE result: {result_kde}")
     print(f"GMM result: {result_gmm}")
 
-    assert jnp.allclose(result_kde, result_gmm), "segment_sum implementations should match"
+    assert jnp.allclose(result_kde, result_gmm), (
+        "segment_sum implementations should match"
+    )
 
 
 def test_log_space_operations(convergence_test_data):

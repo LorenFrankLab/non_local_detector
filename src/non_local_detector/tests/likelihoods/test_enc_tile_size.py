@@ -148,9 +148,9 @@ def test_enc_tile_size_with_pos_tile_size(enc_tile_size, pos_tile_size):
 
     # Should match
     max_diff = np.max(np.abs(result_baseline - result_both_tiling))
-    assert np.allclose(
-        result_baseline, result_both_tiling, rtol=1e-5, atol=1e-7
-    ), f"enc_tile_size={enc_tile_size}, pos_tile_size={pos_tile_size}: Max diff = {max_diff}"
+    assert np.allclose(result_baseline, result_both_tiling, rtol=1e-5, atol=1e-7), (
+        f"enc_tile_size={enc_tile_size}, pos_tile_size={pos_tile_size}: Max diff = {max_diff}"
+    )
 
 
 @pytest.mark.unit

@@ -62,14 +62,21 @@ _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS = {
 }
 
 # Valid options for return_outputs parameter
-VALID_OUTPUTS: set[str] = {"filter", "predictive", "log_likelihood", "all"}
+VALID_OUTPUTS: set[str] = {
+    "filter",
+    "predictive",
+    "predictive_posterior",
+    "log_likelihood",
+    "all",
+}
 
 # Mapping of single string options to sets of outputs
 OUTPUT_INCLUDES: dict[str, set[str]] = {
     "filter": {"filter"},
-    "predictive": {"predictive"},
+    "predictive": {"predictive", "predictive_posterior"},
+    "predictive_posterior": {"predictive_posterior"},
     "log_likelihood": {"log_likelihood"},
-    "all": {"filter", "predictive", "log_likelihood"},
+    "all": {"filter", "predictive", "predictive_posterior", "log_likelihood"},
 }
 
 
@@ -86,7 +93,8 @@ def _normalize_return_outputs(
     Returns
     -------
     set of str
-        Normalized set containing any of: 'filter', 'predictive', 'log_likelihood'
+        Normalized set containing any of: 'filter', 'predictive',
+        'predictive_posterior', 'log_likelihood'
 
     Raises
     ------
@@ -2233,22 +2241,24 @@ class ClusterlessDetector(_DetectorBase):
             Options:
             - None: smoother only (default, minimal memory)
             - 'filter': filtered (causal) posterior and state probabilities
-            - 'predictive': one-step-ahead predictive state distributions
+            - 'predictive': both aggregated and full predictive distributions
+            - 'predictive_posterior': only full predictive posterior (state bins)
             - 'log_likelihood': per-timepoint log likelihoods
             - 'all': all outputs above
-            - List/set: e.g., ['filter', 'predictive'] for multiple outputs
+            - List/set: e.g., ['filter', 'log_likelihood'] for multiple outputs
 
             The smoother (acausal_posterior, acausal_state_probabilities) and
             marginal_log_likelihood are ALWAYS included.
 
             When to use each output:
             - 'filter': Online/causal decoding, debugging forward pass
-            - 'predictive': Model evaluation, predictive checks
+            - 'predictive': Model evaluation, predictive checks (includes both formats)
+            - 'predictive_posterior': When you only need full distribution, not aggregated
             - 'log_likelihood': Diagnostics, per-timepoint metrics, model comparison
 
-            Memory warning: 'log_likelihood' and 'filter' can be very large
-            (~400 GB for 1M timepoints × 100k spatial bins). Only request
-            what you need for your analysis.
+            Memory warning: 'log_likelihood', 'filter', 'predictive', and
+            'predictive_posterior' can be very large (~400 GB for 1M timepoints × 100k
+            spatial bins). Use None for minimal memory (smoother only).
         save_log_likelihood_to_results : bool, optional
             DEPRECATED. Use return_outputs='log_likelihood' instead.
             Whether to save the log likelihood to the results, by default None.
@@ -2276,8 +2286,9 @@ class ClusterlessDetector(_DetectorBase):
                 Filtered discrete state probabilities
             - predictive_state_probabilities : (n_time, n_states) - if 'predictive'
                 One-step-ahead predictive distributions over discrete states
-            - predictive_posterior : (n_time, n_state_bins) - if 'predictive'
+            - predictive_posterior : (n_time, n_state_bins) - if 'predictive_posterior'
                 One-step-ahead predictive distributions over state bins
+                (Warning: can be very large, ~same size as causal_posterior)
             - log_likelihood : (n_time, n_state_bins) - if 'log_likelihood'
                 Per-timepoint observation log likelihoods
 
@@ -2406,7 +2417,9 @@ class ClusterlessDetector(_DetectorBase):
                 else None
             ),
             predictive_posterior=(
-                predictive_posterior if "predictive" in requested_outputs else None
+                predictive_posterior
+                if "predictive_posterior" in requested_outputs
+                else None
             ),
         )
 
@@ -3087,7 +3100,9 @@ class SortedSpikesDetector(_DetectorBase):
                 else None
             ),
             predictive_posterior=(
-                predictive_posterior if "predictive" in requested_outputs else None
+                predictive_posterior
+                if "predictive_posterior" in requested_outputs
+                else None
             ),
         )
 

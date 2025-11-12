@@ -98,7 +98,7 @@ class TestReturnOutputsParameter:
         assert results.causal_state_probabilities.shape == (n_time, n_states)
 
     def test_return_predictive_string(self, simple_fitted_detector):
-        """Test return_outputs='predictive' returns predictive distribution."""
+        """Test return_outputs='predictive' returns both predictive distributions."""
         detector, spike_times, time, position = simple_fitted_detector
 
         results = detector.predict(
@@ -112,7 +112,7 @@ class TestReturnOutputsParameter:
         # Should have smoother (always)
         assert "acausal_posterior" in results
 
-        # Should have predictive (both aggregated and full)
+        # Should have both predictive outputs
         assert "predictive_state_probabilities" in results
         assert "predictive_posterior" in results
 
@@ -120,18 +120,48 @@ class TestReturnOutputsParameter:
         assert "causal_posterior" not in results
         assert "log_likelihood" not in results
 
-        # Verify shape of aggregated version (discrete states)
+        # Verify shapes
         n_time = len(time)
         n_states = results.acausal_state_probabilities.shape[1]
-        assert results.predictive_state_probabilities.shape == (n_time, n_states)
-
-        # Verify shape of full version (state bins)
         n_state_bins = results.acausal_posterior.shape[1]
+
+        assert results.predictive_state_probabilities.shape == (n_time, n_states)
         assert results.predictive_posterior.shape == (n_time, n_state_bins)
 
-        # Verify probabilities sum to 1 (aggregated version)
+        # Verify probabilities sum to 1 (both versions)
         predictive_sums = results.predictive_state_probabilities.sum(dim="states")
         assert np.allclose(predictive_sums.values, 1.0, atol=1e-10)
+
+        predictive_posterior_sums = results.predictive_posterior.sum(dim="state_bins")
+        assert np.allclose(predictive_posterior_sums.values, 1.0, atol=1e-10)
+
+    def test_return_predictive_posterior_string(self, simple_fitted_detector):
+        """Test return_outputs='predictive_posterior' returns full predictive posterior."""
+        detector, spike_times, time, position = simple_fitted_detector
+
+        results = detector.predict(
+            spike_times=spike_times,
+            time=time,
+            position=position,
+            position_time=time,
+            return_outputs="predictive_posterior",
+        )
+
+        # Should have smoother (always)
+        assert "acausal_posterior" in results
+
+        # Should have predictive_posterior but NOT predictive_state_probabilities
+        assert "predictive_posterior" in results
+        assert "predictive_state_probabilities" not in results
+
+        # Should NOT have filter or log_likelihood
+        assert "causal_posterior" not in results
+        assert "log_likelihood" not in results
+
+        # Verify shape of full version (state bins)
+        n_time = len(time)
+        n_state_bins = results.acausal_posterior.shape[1]
+        assert results.predictive_posterior.shape == (n_time, n_state_bins)
 
         # Verify probabilities sum to 1 (full version)
         predictive_posterior_sums = results.predictive_posterior.sum(dim="state_bins")
@@ -195,20 +225,20 @@ class TestReturnOutputsParameter:
             time=time,
             position=position,
             position_time=time,
-            return_outputs=["filter", "predictive"],
+            return_outputs=["filter", "log_likelihood"],
         )
 
         # Should have smoother (always)
         assert "acausal_posterior" in results
 
-        # Should have filter and predictive
+        # Should have filter and log_likelihood
         assert "causal_posterior" in results
         assert "causal_state_probabilities" in results
-        assert "predictive_state_probabilities" in results
-        assert "predictive_posterior" in results
+        assert "log_likelihood" in results
 
-        # Should NOT have log_likelihood
-        assert "log_likelihood" not in results
+        # Should NOT have predictive outputs
+        assert "predictive_state_probabilities" not in results
+        assert "predictive_posterior" not in results
 
     def test_return_multiple_outputs_set(self, simple_fitted_detector):
         """Test return_outputs with set of strings."""

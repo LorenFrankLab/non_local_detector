@@ -107,7 +107,9 @@ class TestAllNonNegative:
         arr = np.array([0.0, 1.0, 2.0])
         val.ensure_all_non_negative(arr, "arr")  # Should not raise
 
-    def test_ensure_all_non_negative_raises_validation_error_when_array_contains_negative(self):
+    def test_ensure_all_non_negative_raises_validation_error_when_array_contains_negative(
+        self,
+    ):
         """Test that negative values raise ValidationError with value shown."""
         arr = np.array([1.0, -0.5, 2.0])
         with pytest.raises(ValidationError) as exc_info:

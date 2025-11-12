@@ -16,10 +16,8 @@ from track_linearization import get_linearized_position  # type: ignore[import-u
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import (
     EPS,
-    LOG_EPS,
     get_position_at_time,
     get_spike_time_bin_ind,
-    safe_divide,
 )
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 
@@ -326,7 +324,6 @@ def fit_clusterless_gmm_encoding_model(
         unit="electrode",
         disable=disable_progress_bar,
     ):
-
         # Clip to encoding window
         in_bounds = np.logical_and(
             elect_times >= position_time[0], elect_times <= position_time[-1]
@@ -483,7 +480,6 @@ def predict_clusterless_gmm_log_likelihood(
         unit="electrode",
         disable=disable_progress_bar,
     ):
-
         # Clip to decoding window
         in_bounds = np.logical_and(elect_times >= time[0], elect_times <= time[-1])
         elect_times = elect_times[in_bounds]

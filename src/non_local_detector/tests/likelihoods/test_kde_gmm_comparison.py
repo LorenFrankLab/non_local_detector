@@ -66,9 +66,7 @@ def shared_simulation_data():
 
     # Decoding period spikes (subset of encoding spikes for simplicity)
     decoding_spike_times = [times[:20] for times in encoding_spike_times]
-    decoding_spike_features = [
-        feats[:20] for feats in encoding_spike_features
-    ]
+    decoding_spike_features = [feats[:20] for feats in encoding_spike_features]
 
     # Create and fit environment
     environment = Environment(position_range=[(0, 10), (-3, 3)])
@@ -159,9 +157,7 @@ def test_kde_end_to_end_pipeline(shared_simulation_data):
         encoding_positions=kde_encoding["encoding_positions"],
         environment=data["environment"],
         mean_rates=jnp.asarray(kde_encoding["mean_rates"]),
-        summed_ground_process_intensity=kde_encoding[
-            "summed_ground_process_intensity"
-        ],
+        summed_ground_process_intensity=kde_encoding["summed_ground_process_intensity"],
         position_std=jnp.asarray(kde_encoding["position_std"]),
         waveform_std=jnp.asarray(kde_encoding["waveform_std"]),
         is_local=False,
@@ -191,9 +187,7 @@ def test_kde_end_to_end_pipeline(shared_simulation_data):
         encoding_positions=kde_encoding["encoding_positions"],
         environment=data["environment"],
         mean_rates=jnp.asarray(kde_encoding["mean_rates"]),
-        summed_ground_process_intensity=kde_encoding[
-            "summed_ground_process_intensity"
-        ],
+        summed_ground_process_intensity=kde_encoding["summed_ground_process_intensity"],
         position_std=jnp.asarray(kde_encoding["position_std"]),
         waveform_std=jnp.asarray(kde_encoding["waveform_std"]),
         is_local=True,
@@ -404,9 +398,7 @@ def test_api_consistency_predict_functions(shared_simulation_data):
         encoding_positions=kde_encoding["encoding_positions"],
         environment=data["environment"],
         mean_rates=kde_encoding["mean_rates"],
-        summed_ground_process_intensity=kde_encoding[
-            "summed_ground_process_intensity"
-        ],
+        summed_ground_process_intensity=kde_encoding["summed_ground_process_intensity"],
         position_std=kde_encoding["position_std"],
         waveform_std=kde_encoding["waveform_std"],
         is_local=False,
@@ -454,7 +446,10 @@ def test_kde_gmm_output_shape_consistency(shared_simulation_data):
 
     kde_enc = fit_clusterless_kde_encoding_model(**common_params, position_std=1.0)
     gmm_enc = fit_clusterless_gmm_encoding_model(
-        **common_params, gmm_components_occupancy=4, gmm_components_gpi=4, gmm_components_joint=8
+        **common_params,
+        gmm_components_occupancy=4,
+        gmm_components_gpi=4,
+        gmm_components_joint=8,
     )
 
     # Predict with both
@@ -522,7 +517,10 @@ def test_both_support_local_and_nonlocal_modes(shared_simulation_data):
     # Fit models
     kde_enc = fit_clusterless_kde_encoding_model(**common_params, position_std=1.0)
     gmm_enc = fit_clusterless_gmm_encoding_model(
-        **common_params, gmm_components_occupancy=4, gmm_components_gpi=4, gmm_components_joint=8
+        **common_params,
+        gmm_components_occupancy=4,
+        gmm_components_gpi=4,
+        gmm_components_joint=8,
     )
 
     time = jnp.asarray(data["time"])

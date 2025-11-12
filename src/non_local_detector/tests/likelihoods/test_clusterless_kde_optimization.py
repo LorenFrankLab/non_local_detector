@@ -37,8 +37,9 @@ class TestKdeDistanceVectorized:
             result_original = kde_distance(eval_points, samples, std)
             result_vectorized = kde_distance_vectorized(eval_points, samples, std)
 
-            assert jnp.allclose(result_original, result_vectorized, rtol=1e-5, atol=1e-8), \
-                f"Failed for {n_features}D"
+            assert jnp.allclose(
+                result_original, result_vectorized, rtol=1e-5, atol=1e-8
+            ), f"Failed for {n_features}D"
 
     def test_numerical_stability(self):
         """Test numerical stability with small std values."""
@@ -198,8 +199,12 @@ class TestPerformanceRegression:
 
         # Warmup call
         result_warmup = estimate_log_joint_mark_intensity(
-            dec_features, enc_features, waveform_stds,
-            occupancy, mean_rate, position_distance
+            dec_features,
+            enc_features,
+            waveform_stds,
+            occupancy,
+            mean_rate,
+            position_distance,
         )
         result_warmup.block_until_ready()
 
@@ -208,24 +213,37 @@ class TestPerformanceRegression:
         for _ in range(10):
             start = time.perf_counter()
             result = estimate_log_joint_mark_intensity(
-                dec_features, enc_features, waveform_stds,
-                occupancy, mean_rate, position_distance
+                dec_features,
+                enc_features,
+                waveform_stds,
+                occupancy,
+                mean_rate,
+                position_distance,
             )
             result.block_until_ready()
             times.append(time.perf_counter() - start)
 
         # All calls should be fast (< 10ms) after compilation
         avg_time = np.mean(times)
-        assert avg_time < 0.01, \
+        assert avg_time < 0.01, (
             f"Average call time ({avg_time:.4f}s) too slow, JIT may not be working"
+        )
 
         # Results should be consistent
         result1 = estimate_log_joint_mark_intensity(
-            dec_features, enc_features, waveform_stds,
-            occupancy, mean_rate, position_distance
+            dec_features,
+            enc_features,
+            waveform_stds,
+            occupancy,
+            mean_rate,
+            position_distance,
         )
         result2 = estimate_log_joint_mark_intensity(
-            dec_features, enc_features, waveform_stds,
-            occupancy, mean_rate, position_distance
+            dec_features,
+            enc_features,
+            waveform_stds,
+            occupancy,
+            mean_rate,
+            position_distance,
         )
         assert jnp.allclose(result1, result2)

@@ -70,9 +70,7 @@ def comparison_data():
         encoding_spike_features.append(features)
 
     # Decoding spikes
-    decoding_spike_times = [
-        times[: len(times) // 3] for times in encoding_spike_times
-    ]
+    decoding_spike_times = [times[: len(times) // 3] for times in encoding_spike_times]
     decoding_spike_features = [
         feats[: len(feats) // 3] for feats in encoding_spike_features
     ]
@@ -197,9 +195,7 @@ def predict_both_models(data, kde_encoding, gmm_encoding, is_local=False):
         encoding_positions=kde_encoding["encoding_positions"],
         environment=data["environment"],
         mean_rates=kde_encoding["mean_rates"],
-        summed_ground_process_intensity=kde_encoding[
-            "summed_ground_process_intensity"
-        ],
+        summed_ground_process_intensity=kde_encoding["summed_ground_process_intensity"],
         position_std=kde_encoding["position_std"],
         waveform_std=kde_encoding["waveform_std"],
         is_local=is_local,
@@ -239,10 +235,14 @@ def test_likelihood_magnitude_comparison(comparison_data):
 
     # Basic statistics
     print("\n=== Log-Likelihood Magnitude Comparison ===")
-    print(f"KDE: mean={ll_kde_np.mean():.2f}, std={ll_kde_np.std():.2f}, "
-          f"min={ll_kde_np.min():.2f}, max={ll_kde_np.max():.2f}")
-    print(f"GMM: mean={ll_gmm_np.mean():.2f}, std={ll_gmm_np.std():.2f}, "
-          f"min={ll_gmm_np.min():.2f}, max={ll_gmm_np.max():.2f}")
+    print(
+        f"KDE: mean={ll_kde_np.mean():.2f}, std={ll_kde_np.std():.2f}, "
+        f"min={ll_kde_np.min():.2f}, max={ll_kde_np.max():.2f}"
+    )
+    print(
+        f"GMM: mean={ll_gmm_np.mean():.2f}, std={ll_gmm_np.std():.2f}, "
+        f"min={ll_gmm_np.min():.2f}, max={ll_gmm_np.max():.2f}"
+    )
     print(f"Mean difference: {(ll_kde_np.mean() - ll_gmm_np.mean()):.2f}")
     print(f"Std ratio (KDE/GMM): {(ll_kde_np.std() / ll_gmm_np.std()):.2f}")
 
@@ -255,8 +255,10 @@ def test_likelihood_magnitude_comparison(comparison_data):
 
     # GMM can have positive values due to different normalization
     # (it's computing log p(spikes, marks | position) which can be > 0)
-    print(f"GMM positive values: {(ll_gmm_np > 0).sum()} / {ll_gmm_np.size} "
-          f"({100 * (ll_gmm_np > 0).mean():.1f}%)")
+    print(
+        f"GMM positive values: {(ll_gmm_np > 0).sum()} / {ll_gmm_np.size} "
+        f"({100 * (ll_gmm_np > 0).mean():.1f}%)"
+    )
 
 
 def test_spatial_pattern_correlation(comparison_data):
@@ -292,17 +294,25 @@ def test_spatial_pattern_correlation(comparison_data):
     # Overall statistics
     pearson_corrs = np.array(pearson_corrs)
     spearman_corrs = np.array(spearman_corrs)
-    print(f"\nMean Pearson correlation: {pearson_corrs.mean():.3f} ± {pearson_corrs.std():.3f}")
-    print(f"Mean Spearman correlation: {spearman_corrs.mean():.3f} ± {spearman_corrs.std():.3f}")
+    print(
+        f"\nMean Pearson correlation: {pearson_corrs.mean():.3f} ± {pearson_corrs.std():.3f}"
+    )
+    print(
+        f"Mean Spearman correlation: {spearman_corrs.mean():.3f} ± {spearman_corrs.std():.3f}"
+    )
 
     # Relaxed assertion: correlation should be positive on average but not necessarily strong
     # KDE and GMM are fundamentally different algorithms, so moderate correlation is expected
-    assert pearson_corrs.mean() > 0.0, "Spatial patterns should have positive correlation on average"
+    assert pearson_corrs.mean() > 0.0, (
+        "Spatial patterns should have positive correlation on average"
+    )
 
     # Check that at least some time bins have good correlation
     strong_corr_count = (np.abs(pearson_corrs) > 0.5).sum()
     print(f"Time bins with |r| > 0.5: {strong_corr_count}/{len(pearson_corrs)}")
-    assert strong_corr_count > 0, "At least some time bins should show strong correlation"
+    assert strong_corr_count > 0, (
+        "At least some time bins should show strong correlation"
+    )
 
 
 def test_peak_location_agreement(comparison_data):
@@ -404,10 +414,14 @@ def test_normalized_likelihood_comparison(comparison_data):
 
     # Jensen-Shannon divergence (symmetric)
     js_divergence = 0.5 * (kl_kde_gmm + kl_gmm_kde)
-    print(f"JS divergence: mean={js_divergence.mean():.3f}, std={js_divergence.std():.3f}")
+    print(
+        f"JS divergence: mean={js_divergence.mean():.3f}, std={js_divergence.std():.3f}"
+    )
 
     # Hellinger distance
-    hellinger = np.sqrt(0.5 * np.sum((np.sqrt(prob_kde) - np.sqrt(prob_gmm)) ** 2, axis=1))
+    hellinger = np.sqrt(
+        0.5 * np.sum((np.sqrt(prob_kde) - np.sqrt(prob_gmm)) ** 2, axis=1)
+    )
     print(f"Hellinger distance: mean={hellinger.mean():.3f}, std={hellinger.std():.3f}")
 
     # All divergences should be finite
@@ -437,7 +451,9 @@ def test_local_likelihood_comparison(comparison_data):
 
     # Check if shapes match (KDE uses time edges, GMM uses time bin centers)
     if ll_kde_np.shape != ll_gmm_np.shape:
-        print(f"Warning: Shape mismatch - KDE has {len(ll_kde_np)} values, GMM has {len(ll_gmm_np)}")
+        print(
+            f"Warning: Shape mismatch - KDE has {len(ll_kde_np)} values, GMM has {len(ll_gmm_np)}"
+        )
         # Trim to same length for comparison
         min_len = min(len(ll_kde_np), len(ll_gmm_np))
         ll_kde_np = ll_kde_np[:min_len]
@@ -454,8 +470,9 @@ def test_local_likelihood_comparison(comparison_data):
     assert np.all(np.isfinite(ll_gmm_np))
 
     # Check for any correlation (can be negative or positive)
-    assert np.abs(r_pearson) > 0.1 or np.abs(r_spearman) > 0.1, \
+    assert np.abs(r_pearson) > 0.1 or np.abs(r_spearman) > 0.1, (
         "Local likelihoods should have some correlation"
+    )
 
 
 def test_parameter_sensitivity_kde(comparison_data):
@@ -491,7 +508,9 @@ def test_parameter_sensitivity_kde(comparison_data):
         print(f"Bandwidth={bw:.1f}: mean correlation={mean_corr:.3f}")
 
     # Correlation should vary with bandwidth
-    assert max(correlations) - min(correlations) > 0.1, "Bandwidth should affect correlation"
+    assert max(correlations) - min(correlations) > 0.1, (
+        "Bandwidth should affect correlation"
+    )
 
 
 @pytest.mark.skip(reason="Visualization test - run manually to generate plots")
