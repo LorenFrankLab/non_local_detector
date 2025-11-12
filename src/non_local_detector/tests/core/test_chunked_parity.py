@@ -70,6 +70,7 @@ class TestChunkedFilterSmootherParity:
             predictive_state_probabilities,  # one-step-ahead predictions
             _,
             causal_posterior,
+            _,  # predictive_posterior (not used in this test)
         ) = chunked_filter_smoother(
             time=time,
             state_ind=state_ind,
@@ -114,6 +115,7 @@ class TestChunkedFilterSmootherParity:
             _,  # predictive_state_probabilities
             _,
             _,
+            _,  # predictive_posterior (not used in this test)
         ) = chunked_filter_smoother(
             time=time,
             state_ind=state_ind,
@@ -155,6 +157,7 @@ class TestChunkedFilterSmootherParity:
             _,  # predictive_state_probabilities
             _,
             _,
+            _,  # predictive_posterior (not used in this test)
         ) = chunked_filter_smoother(
             time=time,
             state_ind=state_ind,
@@ -175,6 +178,7 @@ class TestChunkedFilterSmootherParity:
             _,  # predictive_state_probabilities
             _,
             _,
+            _,  # predictive_posterior (not used in this test)
         ) = chunked_filter_smoother(
             time=time,
             state_ind=state_ind,
@@ -211,7 +215,7 @@ class TestChunkedFilterSmootherParity:
         total_log_like_std = log_marginals.sum()
 
         # Act - Chunked version
-        (_, _, log_like_chunked, _, _, _, _) = chunked_filter_smoother(
+        (_, _, log_like_chunked, _, _, _, _, _) = chunked_filter_smoother(
             time=time,
             state_ind=state_ind,
             initial_distribution=np.array(init),
@@ -251,6 +255,7 @@ class TestChunkedFilterSmootherParity:
             _,  # predictive_state_probabilities
             _,
             _,
+            _,  # predictive_posterior (not used in this test)
         ) = chunked_filter_smoother(
             time=time,
             state_ind=state_ind,
@@ -286,6 +291,7 @@ class TestChunkedFilterSmootherParity:
             _,  # predictive_state_probabilities
             _,
             _,
+            _,  # predictive_posterior (not used in this test)
         ) = chunked_filter_smoother(
             time=time,
             state_ind=state_ind,
@@ -330,6 +336,7 @@ class TestChunkedFilterSmootherParity:
             _,  # predictive_state_probabilities
             _,
             _,
+            _,  # predictive_posterior (not used in this test)
         ) = chunked_filter_smoother(
             time=time,
             state_ind=state_ind,
@@ -369,6 +376,7 @@ class TestChunkedFilterSmootherParity:
             _,
             _,
             _,
+            _,  # predictive_posterior (not used in this test)
         ) = chunked_filter_smoother(
             time=time,
             state_ind=state_ind,
@@ -390,6 +398,7 @@ class TestChunkedFilterSmootherParity:
             _,
             _,
             _,
+            _,  # predictive_posterior (not used in this test)
         ) = chunked_filter_smoother(
             time=time,
             state_ind=state_ind,
@@ -459,6 +468,7 @@ class TestChunkedEdgeCases:
             _,  # predictive_state_probabilities
             _,
             _,
+            _,  # predictive_posterior (not used in this test)
         ) = chunked_filter_smoother(
             time=time,
             state_ind=state_ind,

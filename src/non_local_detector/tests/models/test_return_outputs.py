@@ -112,21 +112,30 @@ class TestReturnOutputsParameter:
         # Should have smoother (always)
         assert "acausal_posterior" in results
 
-        # Should have predictive
+        # Should have predictive (both aggregated and full)
         assert "predictive_state_probabilities" in results
+        assert "predictive_posterior" in results
 
         # Should NOT have filter or log_likelihood
         assert "causal_posterior" not in results
         assert "log_likelihood" not in results
 
-        # Verify shape (aggregated to discrete states)
+        # Verify shape of aggregated version (discrete states)
         n_time = len(time)
         n_states = results.acausal_state_probabilities.shape[1]
         assert results.predictive_state_probabilities.shape == (n_time, n_states)
 
-        # Verify probabilities sum to 1
+        # Verify shape of full version (state bins)
+        n_state_bins = results.acausal_posterior.shape[1]
+        assert results.predictive_posterior.shape == (n_time, n_state_bins)
+
+        # Verify probabilities sum to 1 (aggregated version)
         predictive_sums = results.predictive_state_probabilities.sum(dim="states")
         assert np.allclose(predictive_sums.values, 1.0, atol=1e-10)
+
+        # Verify probabilities sum to 1 (full version)
+        predictive_posterior_sums = results.predictive_posterior.sum(dim="state_bins")
+        assert np.allclose(predictive_posterior_sums.values, 1.0, atol=1e-10)
 
     def test_return_log_likelihood_string(self, simple_fitted_detector):
         """Test return_outputs='log_likelihood' returns log likelihoods."""
@@ -173,6 +182,7 @@ class TestReturnOutputsParameter:
         assert "causal_posterior" in results
         assert "causal_state_probabilities" in results
         assert "predictive_state_probabilities" in results
+        assert "predictive_posterior" in results
         assert "log_likelihood" in results
         assert "marginal_log_likelihoods" in results.attrs
 
@@ -195,6 +205,7 @@ class TestReturnOutputsParameter:
         assert "causal_posterior" in results
         assert "causal_state_probabilities" in results
         assert "predictive_state_probabilities" in results
+        assert "predictive_posterior" in results
 
         # Should NOT have log_likelihood
         assert "log_likelihood" not in results

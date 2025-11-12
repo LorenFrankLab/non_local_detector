@@ -106,7 +106,7 @@ def _normalize_return_outputs(
             )
         return OUTPUT_INCLUDES.get(return_outputs, {return_outputs})
 
-    if isinstance(return_outputs, (list, set)):
+    if isinstance(return_outputs, list | set):
         outputs_set = set(return_outputs)
         invalid = outputs_set - VALID_OUTPUTS
         if invalid:
@@ -1063,7 +1063,14 @@ class _DetectorBase(BaseEstimator):
         cache_likelihood: bool = True,
         n_chunks: int = 1,
     ) -> tuple[
-        np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+        np.ndarray,
+        np.ndarray,
+        float,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
     ]:
         """
         Compute the posterior probabilities.
@@ -1092,6 +1099,7 @@ class _DetectorBase(BaseEstimator):
         predictive_state_probabilities : np.ndarray, shape (n_time, n_states)
         log_likelihoods : np.ndarray, shape (n_time, n_state_bins)
         causal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
         """
 
         logger.info("Computing posterior...")
@@ -1549,6 +1557,7 @@ class _DetectorBase(BaseEstimator):
         causal_posterior: np.ndarray | None = None,
         causal_state_probabilities: np.ndarray | None = None,
         predictive_state_probabilities: np.ndarray | None = None,
+        predictive_posterior: np.ndarray | None = None,
     ) -> xr.Dataset:
         """
         Convert the results to an xarray Dataset.
@@ -1571,6 +1580,8 @@ class _DetectorBase(BaseEstimator):
             Causal state probabilities, by default None.
         predictive_state_probabilities : np.ndarray, optional, shape (n_time, n_states)
             One-step-ahead predicted state probabilities, by default None.
+        predictive_posterior : np.ndarray, optional, shape (n_time, n_state_bins)
+            One-step-ahead predicted posterior probabilities over state bins, by default None.
 
         Returns
         -------
@@ -1696,6 +1707,14 @@ class _DetectorBase(BaseEstimator):
             data_vars["predictive_state_probabilities"] = (
                 ("time", "states"),
                 predictive_state_probabilities,
+            )
+
+        if predictive_posterior is not None:
+            data_vars["predictive_posterior"] = (
+                ("time", "state_bins"),
+                self._create_masked_posterior(
+                    predictive_posterior, is_track_interior, n_total_bins
+                ),
             )
 
         # Create Dataset with MultiIndex coordinates
@@ -2256,7 +2275,9 @@ class ClusterlessDetector(_DetectorBase):
             - causal_state_probabilities : (n_time, n_states) - if 'filter'
                 Filtered discrete state probabilities
             - predictive_state_probabilities : (n_time, n_states) - if 'predictive'
-                One-step-ahead predictive distributions
+                One-step-ahead predictive distributions over discrete states
+            - predictive_posterior : (n_time, n_state_bins) - if 'predictive'
+                One-step-ahead predictive distributions over state bins
             - log_likelihood : (n_time, n_state_bins) - if 'log_likelihood'
                 Per-timepoint observation log likelihoods
 
@@ -2351,6 +2372,7 @@ class ClusterlessDetector(_DetectorBase):
             predictive_state_probabilities,
             log_likelihood,
             causal_posterior,
+            predictive_posterior,
         ) = self._predict(
             time=time,
             log_likelihood_args=(
@@ -2382,6 +2404,9 @@ class ClusterlessDetector(_DetectorBase):
                 predictive_state_probabilities
                 if "predictive" in requested_outputs
                 else None
+            ),
+            predictive_posterior=(
+                predictive_posterior if "predictive" in requested_outputs else None
             ),
         )
 
@@ -3029,6 +3054,7 @@ class SortedSpikesDetector(_DetectorBase):
             predictive_state_probabilities,
             log_likelihood,
             causal_posterior,
+            predictive_posterior,
         ) = self._predict(
             time=time,
             log_likelihood_args=(
@@ -3059,6 +3085,9 @@ class SortedSpikesDetector(_DetectorBase):
                 predictive_state_probabilities
                 if "predictive" in requested_outputs
                 else None
+            ),
+            predictive_posterior=(
+                predictive_posterior if "predictive" in requested_outputs else None
             ),
         )
 

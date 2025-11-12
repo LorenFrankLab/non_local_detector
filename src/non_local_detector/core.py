@@ -263,7 +263,14 @@ def chunked_filter_smoother(
     cache_log_likelihoods: bool = True,
     dtype: jnp.dtype = jnp.float32,
 ) -> tuple[
-    np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+    np.ndarray,
+    np.ndarray,
+    float,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
 ]:
     """Filter and smooth the state probabilities in chunks.
 
@@ -302,8 +309,11 @@ def chunked_filter_smoother(
         Log likelihoods for each state at each time point
     causal_posterior : np.ndarray, shape (n_time, n_state_bins)
         Filtered state probabilities
+    predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
+        One-step-ahead predicted state probabilities over state bins
     """
     causal_posterior = []
+    predictive_posterior = []
     predictive_state_probabilities = []
     causal_state_probabilities = []
     acausal_posterior = []
@@ -394,6 +404,7 @@ def chunked_filter_smoother(
         causal_state_probabilities.append(
             causal_posterior_chunk @ state_aggregation_matrix
         )
+        predictive_posterior.append(predicted_probs_chunk)
         predictive_state_probabilities.append(
             predicted_probs_chunk @ state_aggregation_matrix
         )
@@ -403,6 +414,7 @@ def chunked_filter_smoother(
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
     causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
+    predictive_posterior_jax = jnp.concatenate(predictive_posterior)
     predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
 
     # Backward pass: accumulate JAX arrays
@@ -439,6 +451,7 @@ def chunked_filter_smoother(
         np.asarray(predictive_state_probabilities_jax),
         log_likelihoods,  # Keep as original (may be None or NumPy)
         np.asarray(causal_posterior_jax),
+        np.asarray(predictive_posterior_jax),
     )
 
 
@@ -751,7 +764,14 @@ def chunked_filter_smoother_covariate_dependent(
     cache_log_likelihoods: bool = True,
     dtype: jnp.dtype = jnp.float32,
 ) -> tuple[
-    np.ndarray, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+    np.ndarray,
+    np.ndarray,
+    float,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
 ]:
     """Filter and smooth the state probabilities in chunks with covariate dependent transitions.
 
@@ -790,8 +810,11 @@ def chunked_filter_smoother_covariate_dependent(
         Log likelihoods for each state at each time point
     causal_posterior : np.ndarray, shape (n_time, n_state_bins)
         Filtered state probabilities
+    predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
+        One-step-ahead predicted state probabilities over state bins
     """
     causal_posterior = []
+    predictive_posterior = []
     predictive_state_probabilities = []
     causal_state_probabilities = []
     acausal_posterior = []
@@ -893,6 +916,7 @@ def chunked_filter_smoother_covariate_dependent(
         causal_state_probabilities.append(
             causal_posterior_chunk @ state_aggregation_matrix
         )
+        predictive_posterior.append(predicted_probs_chunk)
         predictive_state_probabilities.append(
             predicted_probs_chunk @ state_aggregation_matrix
         )
@@ -902,6 +926,7 @@ def chunked_filter_smoother_covariate_dependent(
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
     causal_state_probabilities_jax = jnp.concatenate(causal_state_probabilities)
+    predictive_posterior_jax = jnp.concatenate(predictive_posterior)
     predictive_state_probabilities_jax = jnp.concatenate(predictive_state_probabilities)
 
     # Backward pass: accumulate JAX arrays
@@ -946,6 +971,7 @@ def chunked_filter_smoother_covariate_dependent(
         np.asarray(predictive_state_probabilities_jax),
         log_likelihoods,  # Keep as original (may be None or NumPy)
         np.asarray(causal_posterior_jax),
+        np.asarray(predictive_posterior_jax),
     )
 
 
