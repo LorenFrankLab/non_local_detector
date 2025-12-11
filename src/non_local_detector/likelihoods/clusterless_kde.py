@@ -189,8 +189,7 @@ def fit_clusterless_kde_encoding_model(
             position_std = jnp.array([position_std])
         else:
             position_std = jnp.array([position_std] * position.shape[1])
-    if isinstance(waveform_std, int | float):
-        waveform_std = jnp.array([waveform_std] * spike_waveform_features[0].shape[1])
+    # Keep waveform_std as-is (scalar or array) - will be expanded per-electrode at predict time
 
     is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
@@ -397,11 +396,19 @@ def predict_clusterless_kde_log_likelihood(
                 electrode_encoding_positions,
                 std=position_std,
             )
+            # Expand waveform_std to match this electrode's feature count if scalar
+            n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
+            if isinstance(waveform_std, (int, float)) or (
+                hasattr(waveform_std, "ndim") and waveform_std.ndim == 0
+            ):
+                electrode_waveform_std = jnp.full(n_waveform_features, waveform_std)
+            else:
+                electrode_waveform_std = waveform_std
             log_likelihood += jax.ops.segment_sum(
                 block_estimate_log_joint_mark_intensity(
                     electrode_decoding_spike_waveform_features,
                     electrode_encoding_spike_waveform_features,
-                    waveform_std,
+                    electrode_waveform_std,
                     occupancy,
                     electrode_mean_rate,
                     position_distance,
@@ -514,6 +521,15 @@ def compute_local_log_likelihood(
             position_time, position, electrode_spike_times, environment
         )
 
+        # Expand waveform_std to match this electrode's feature count if scalar
+        n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
+        if isinstance(waveform_std, (int, float)) or (
+            hasattr(waveform_std, "ndim") and waveform_std.ndim == 0
+        ):
+            electrode_waveform_std = jnp.full(n_waveform_features, waveform_std)
+        else:
+            electrode_waveform_std = waveform_std
+
         marginal_density = block_kde(
             eval_points=jnp.concatenate(
                 (
@@ -529,7 +545,7 @@ def compute_local_log_likelihood(
                 ),
                 axis=1,
             ),
-            std=jnp.concatenate((position_std, waveform_std)),
+            std=jnp.concatenate((position_std, electrode_waveform_std)),
             block_size=block_size,
         )
         occupancy_at_spike_time = occupancy_model.predict(position_at_spike_time)
