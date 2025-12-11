@@ -1238,7 +1238,8 @@ class _DetectorBase(BaseEstimator):
                 causal_state_probabilities,
                 predictive_state_probabilities,
                 log_likelihood,
-                _,
+                _,  # causal_posterior
+                _,  # predictive_posterior
             ) = self._predict(
                 time=time,
                 log_likelihood_args=log_likelihood_args,
