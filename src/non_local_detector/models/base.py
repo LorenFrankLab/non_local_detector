@@ -1109,6 +1109,10 @@ class _DetectorBase(BaseEstimator):
         causal_posterior : np.ndarray, shape (n_time, n_state_bins)
         predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
         """
+        # Disable caching when using multiple chunks (memory optimization)
+        if n_chunks > 1 and cache_likelihood:
+            logger.info("Disabling likelihood caching for chunked processing")
+            cache_likelihood = False
 
         logger.info("Computing posterior...")
         is_track_interior = self.is_track_interior_state_bins_
