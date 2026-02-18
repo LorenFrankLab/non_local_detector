@@ -1173,7 +1173,8 @@ class _DetectorBase(BaseEstimator):
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
-        save_log_likelihood_to_results: bool = False,
+        return_outputs: str | list[str] | set[str] | None = None,
+        save_log_likelihood_to_results: bool | None = None,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -1202,8 +1203,20 @@ class _DetectorBase(BaseEstimator):
             Whether to store the log likelihoods in self.log_likelihoods_, by default False.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
+        return_outputs : str, list of str, set of str, or None, optional
+            Controls which optional outputs are returned.
+
+            Options:
+            - 'filter' : causal (filtered) posterior and state probabilities
+            - 'predictive' : predictive state probabilities and posterior
+            - 'predictive_posterior' : predictive posterior only
+            - 'log_likelihood' : log likelihoods
+            - 'all' : all of the above
+
+            By default None (only smoother posterior and state probabilities).
         save_log_likelihood_to_results : bool, optional
-            Whether to save the log likelihood to the results, by default False.
+            DEPRECATED. Use return_outputs='log_likelihood' instead.
+            Whether to save the log likelihood to the results, by default None.
 
         Returns
         -------
@@ -1232,6 +1245,32 @@ class _DetectorBase(BaseEstimator):
         if log_likelihood_args is None:
             log_likelihood_args = ()
 
+        # Handle deprecated boolean flag
+        import warnings
+
+        if save_log_likelihood_to_results is not None:
+            warnings.warn(
+                "save_log_likelihood_to_results is deprecated. "
+                "Use return_outputs='log_likelihood' instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if save_log_likelihood_to_results:
+                if return_outputs is not None:
+                    raise ValueError(
+                        "Cannot specify both return_outputs and deprecated "
+                        "save_log_likelihood_to_results flag. "
+                        "Use return_outputs only."
+                    )
+                return_outputs = "log_likelihood"
+
+        # Normalize return_outputs to canonical set
+        requested_outputs = _normalize_return_outputs(return_outputs)
+
+        # Automatically enable caching if log_likelihood is requested
+        if "log_likelihood" in requested_outputs and not cache_likelihood:
+            cache_likelihood = True
+
         while not converged and (n_iter < max_iter):
             # Expectation step
             logger.info("Expectation step...")
@@ -1242,8 +1281,8 @@ class _DetectorBase(BaseEstimator):
                 causal_state_probabilities,
                 predictive_state_probabilities,
                 log_likelihood,
-                _,  # causal_posterior
-                _,  # predictive_posterior
+                causal_posterior,
+                predictive_posterior,
             ) = self._predict(
                 time=time,
                 log_likelihood_args=log_likelihood_args,
@@ -1347,7 +1386,25 @@ class _DetectorBase(BaseEstimator):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihoods,
-            log_likelihood=log_likelihood if save_log_likelihood_to_results else None,
+            log_likelihood=(
+                log_likelihood if "log_likelihood" in requested_outputs else None
+            ),
+            causal_posterior=(
+                causal_posterior if "filter" in requested_outputs else None
+            ),
+            causal_state_probabilities=(
+                causal_state_probabilities if "filter" in requested_outputs else None
+            ),
+            predictive_state_probabilities=(
+                predictive_state_probabilities
+                if "predictive" in requested_outputs
+                else None
+            ),
+            predictive_posterior=(
+                predictive_posterior
+                if "predictive_posterior" in requested_outputs
+                else None
+            ),
         )
 
     def most_likely_sequence(
@@ -2448,7 +2505,8 @@ class ClusterlessDetector(_DetectorBase):
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
-        save_log_likelihood_to_results: bool = False,
+        return_outputs: str | list[str] | set[str] | None = None,
+        save_log_likelihood_to_results: bool | None = None,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -2491,8 +2549,11 @@ class ClusterlessDetector(_DetectorBase):
             Whether to store the log likelihoods in self.log_likelihoods_, by default False.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
+        return_outputs : str, list of str, set of str, or None, optional
+            Controls which optional outputs are returned. See predict() for full
+            documentation of options. By default None.
         save_log_likelihood_to_results : bool, optional
-            Whether to save the log likelihood to the results, by default False.
+            DEPRECATED. Use return_outputs='log_likelihood' instead. By default None.
 
         Returns
         -------
@@ -2536,6 +2597,7 @@ class ClusterlessDetector(_DetectorBase):
             cache_likelihood=cache_likelihood,
             store_log_likelihood=store_log_likelihood,
             n_chunks=n_chunks,
+            return_outputs=return_outputs,
             save_log_likelihood_to_results=save_log_likelihood_to_results,
         )
 
@@ -3130,7 +3192,8 @@ class SortedSpikesDetector(_DetectorBase):
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int = 1,
-        save_log_likelihood_to_results: bool = False,
+        return_outputs: str | list[str] | set[str] | None = None,
+        save_log_likelihood_to_results: bool | None = None,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities
@@ -3175,8 +3238,11 @@ class SortedSpikesDetector(_DetectorBase):
             Whether to store the log likelihoods in self.log_likelihoods_, by default False.
         n_chunks : int, optional
             Number of chunks for processing, by default 1
+        return_outputs : str, list of str, set of str, or None, optional
+            Controls which optional outputs are returned. See predict() for full
+            documentation of options. By default None.
         save_log_likelihood_to_results : bool, optional
-            Whether to save the log likelihood to the results, by default False.
+            DEPRECATED. Use return_outputs='log_likelihood' instead. By default None.
 
         Returns
         -------
@@ -3218,6 +3284,7 @@ class SortedSpikesDetector(_DetectorBase):
             cache_likelihood=cache_likelihood,
             store_log_likelihood=store_log_likelihood,
             n_chunks=n_chunks,
+            return_outputs=return_outputs,
             save_log_likelihood_to_results=save_log_likelihood_to_results,
         )
 
