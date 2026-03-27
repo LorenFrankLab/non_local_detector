@@ -210,9 +210,8 @@ def predict_both_models(data, kde_encoding, gmm_encoding, is_local=False):
         position=position,
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        encoding_model=gmm_encoding,
+        **gmm_encoding,
         is_local=is_local,
-        disable_progress_bar=True,
     )
 
     return ll_kde, ll_gmm

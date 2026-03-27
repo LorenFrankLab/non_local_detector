@@ -161,7 +161,7 @@ def test_gmm_bin_tiling_parity(gmm_simulation_data):
         position,
         spike_times,
         spike_features,
-        encoding_model,
+        **encoding_model,
         is_local=False,
         bin_tile_size=None,  # No tiling
     )
@@ -173,7 +173,7 @@ def test_gmm_bin_tiling_parity(gmm_simulation_data):
         position,
         spike_times,
         spike_features,
-        encoding_model,
+        **encoding_model,
         is_local=False,
         bin_tile_size=50,  # Tile with small chunks
     )
@@ -220,7 +220,7 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
         position,
         spike_times,
         spike_features,
-        encoding_model,
+        **encoding_model,
         is_local=False,
         spike_block_size=999999,  # No blocking
         bin_tile_size=None,  # No tiling
@@ -233,7 +233,7 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
         position,
         spike_times,
         spike_features,
-        encoding_model,
+        **encoding_model,
         is_local=False,
         spike_block_size=10,  # Small spike blocks
         bin_tile_size=50,  # Small bin tiles
@@ -341,7 +341,7 @@ def test_gmm_edge_cases(gmm_simulation_data):
         position,
         spike_times,
         spike_features,
-        encoding_model,
+        **encoding_model,
         is_local=False,
         spike_block_size=1000,  # Much larger than 1 spike
     )
@@ -353,7 +353,7 @@ def test_gmm_edge_cases(gmm_simulation_data):
         position,
         spike_times,
         spike_features,
-        encoding_model,
+        **encoding_model,
         is_local=False,
         bin_tile_size=10000,  # Much larger than bin count
     )
@@ -365,7 +365,7 @@ def test_gmm_edge_cases(gmm_simulation_data):
         position,
         spike_times,
         spike_features,
-        encoding_model,
+        **encoding_model,
         is_local=False,
         spike_block_size=1000,
         bin_tile_size=10000,
@@ -429,8 +429,8 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
 
     # Results should be identical (JAX vs numpy inputs)
     assert_allclose(
-        encoding_model["occupancy_bins"],
-        encoding_model_numpy["occupancy_bins"],
+        encoding_model["log_occupancy"],
+        encoding_model_numpy["log_occupancy"],
         rtol=1e-5,
         err_msg="JAX array inputs produced different results than numpy arrays",
     )
@@ -449,9 +449,8 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
         position,
         spike_times,
         spike_features,
-        encoding_model,
+        **encoding_model,
         is_local=False,
-        disable_progress_bar=True,
     )
 
     # Test local likelihood as well (uses different code path)
@@ -461,9 +460,8 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
         position,
         spike_times,
         spike_features,
-        encoding_model,
+        **encoding_model,
         is_local=True,
-        disable_progress_bar=True,
     )
 
     # Verify results are valid (no NaN/Inf)

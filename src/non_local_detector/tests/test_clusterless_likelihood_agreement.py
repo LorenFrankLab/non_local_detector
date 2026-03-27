@@ -112,7 +112,6 @@ def clusterless_likelihood_comparison() -> dict:
             "encoding_spike_waveform_features"
         ],
         encoding_positions=kde_encoding["encoding_positions"],
-        encoding_spike_weights=kde_encoding["encoding_spike_weights"],
         environment=sim.environment,
         mean_rates=kde_encoding["mean_rates"],
         summed_ground_process_intensity=kde_encoding["summed_ground_process_intensity"],
@@ -130,9 +129,8 @@ def clusterless_likelihood_comparison() -> dict:
         position=sim.position[n_encode:],
         spike_times=test_spike_times,
         spike_waveform_features=test_spike_waveform_features,
-        encoding_model=gmm_encoding,
+        **gmm_encoding,
         is_local=False,
-        disable_progress_bar=True,
     )
 
     place_bin_centers = sim.environment.place_bin_centers_

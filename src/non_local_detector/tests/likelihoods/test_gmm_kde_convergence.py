@@ -142,9 +142,8 @@ def test_gmm_convergence_to_kde(convergence_test_data):
             position=position,
             spike_times=spike_times,
             spike_waveform_features=spike_features,
-            encoding_model=gmm_enc,
+            **gmm_enc,
             is_local=False,
-            disable_progress_bar=True,
         )
 
         # Normalize both to [0, 1] per time bin for fair comparison
@@ -364,9 +363,8 @@ def test_log_space_operations(convergence_test_data):
         position=position,
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        encoding_model=gmm_enc,
+        **gmm_enc,
         is_local=False,
-        disable_progress_bar=True,
     )
 
     print("\n=== Log-Space Operations Check ===")
@@ -461,9 +459,8 @@ def test_visualize_convergence(convergence_test_data):
             position=position,
             spike_times=spike_times,
             spike_waveform_features=spike_features,
-            encoding_model=gmm_enc,
+            **gmm_enc,
             is_local=False,
-            disable_progress_bar=True,
         )
 
         axes[idx + 1].imshow(np.asarray(ll_gmm).T, aspect="auto", cmap="viridis")

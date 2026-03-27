@@ -88,6 +88,7 @@ def test_filter_smoother_with_sorted_kde_nonlocal(n_chunks, simple_1d_environmen
         predictive_state_probs_chunked,
         ll_cache,
         causal_post_chunked,
+        _predictive_post_chunked,
     ) = chunked_filter_smoother(
         time=t_edges,
         state_ind=state_ind,
@@ -147,7 +148,6 @@ def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(
         gpi_models=enc["gpi_models"],
         encoding_spike_waveform_features=enc["encoding_spike_waveform_features"],
         encoding_positions=enc["encoding_positions"],
-        encoding_spike_weights=enc["encoding_spike_weights"],
         environment=env,
         mean_rates=jnp.asarray(enc["mean_rates"]),
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
@@ -179,6 +179,7 @@ def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(
         _,
         _,
         causal_post_chunked,
+        _,
     ) = chunked_filter_smoother(
         time=t_edges,
         state_ind=state_ind,

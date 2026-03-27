@@ -134,7 +134,6 @@ def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
         gpi_models=encoding["gpi_models"],
         encoding_spike_waveform_features=encoding["encoding_spike_waveform_features"],
         encoding_positions=encoding["encoding_positions"],
-        encoding_spike_weights=encoding["encoding_spike_weights"],
         environment=env,
         mean_rates=np.asarray(encoding["mean_rates"]),
         summed_ground_process_intensity=encoding["summed_ground_process_intensity"],

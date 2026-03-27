@@ -167,7 +167,6 @@ def kde_decoding_setup() -> dict[str, Any]:
             "encoding_spike_waveform_features"
         ],
         encoding_positions=encoding_model["encoding_positions"],
-        encoding_spike_weights=encoding_model["encoding_spike_weights"],
         environment=sim.environment,
         mean_rates=encoding_model["mean_rates"],
         summed_ground_process_intensity=encoding_model[

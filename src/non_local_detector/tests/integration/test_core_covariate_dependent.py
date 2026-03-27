@@ -69,6 +69,7 @@ def test_covariate_dependent_chunked_equals_nonchunked(n_chunks):
         _,
         _,
         causal_post_chunked,
+        _,
     ) = chunked_filter_smoother_covariate_dependent(
         time=np.arange(n_time),
         state_ind=state_ind,

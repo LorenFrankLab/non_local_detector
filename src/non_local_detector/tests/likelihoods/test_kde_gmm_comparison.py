@@ -250,13 +250,11 @@ def test_gmm_end_to_end_pipeline(shared_simulation_data):
         "environment",
         "occupancy_model",
         "interior_place_bin_centers",
-        "occupancy_bins",
-        "log_occupancy_bins",
+        "log_occupancy",
         "gpi_models",
         "joint_models",
         "mean_rates",
         "summed_ground_process_intensity",
-        "position_time",
     }
     assert required_keys.issubset(gmm_encoding.keys())
 
@@ -267,11 +265,10 @@ def test_gmm_end_to_end_pipeline(shared_simulation_data):
         position=position,
         spike_times=decoding_spike_times,
         spike_waveform_features=decoding_spike_features,
-        encoding_model=gmm_encoding,
+        **gmm_encoding,
         is_local=False,
         spike_block_size=1000,
         bin_tile_size=None,
-        disable_progress_bar=True,
     )
 
     # Verify non-local output
@@ -287,13 +284,12 @@ def test_gmm_end_to_end_pipeline(shared_simulation_data):
         position=position,
         spike_times=decoding_spike_times,
         spike_waveform_features=decoding_spike_features,
-        encoding_model=gmm_encoding,
+        **gmm_encoding,
         is_local=True,
-        disable_progress_bar=True,
     )
 
     # Verify local output
-    assert ll_local.shape == (len(time) - 1, 1)  # GMM uses time bin centers
+    assert ll_local.shape == (len(time), 1)
     assert jnp.all(jnp.isfinite(ll_local))
 
 
@@ -412,9 +408,8 @@ def test_api_consistency_predict_functions(shared_simulation_data):
         position=position,
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        encoding_model=gmm_encoding,
+        **gmm_encoding,
         is_local=False,
-        disable_progress_bar=True,
     )
 
     # Both should produce valid likelihood arrays
@@ -483,9 +478,8 @@ def test_kde_gmm_output_shape_consistency(shared_simulation_data):
         position=common_params["position"],
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        encoding_model=gmm_enc,
+        **gmm_enc,
         is_local=False,
-        disable_progress_bar=True,
     )
 
     # Shape consistency checks
@@ -575,9 +569,8 @@ def test_both_support_local_and_nonlocal_modes(shared_simulation_data):
         position=common_params["position"],
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        encoding_model=gmm_enc,
+        **gmm_enc,
         is_local=False,
-        disable_progress_bar=True,
     )
 
     gmm_local = predict_clusterless_gmm_log_likelihood(
@@ -586,9 +579,8 @@ def test_both_support_local_and_nonlocal_modes(shared_simulation_data):
         position=common_params["position"],
         spike_times=spike_times,
         spike_waveform_features=spike_features,
-        encoding_model=gmm_enc,
+        **gmm_enc,
         is_local=True,
-        disable_progress_bar=True,
     )
 
     # Verify shapes
