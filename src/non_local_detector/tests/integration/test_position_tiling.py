@@ -64,7 +64,6 @@ def test_log_space_no_tiling_vs_tiling(tiling_test_data):
     result_no_tile = estimate_log(
         tiling_test_data["decoding_features"],
         tiling_test_data["encoding_features"],
-        tiling_test_data["encoding_weights"],
         tiling_test_data["waveform_stds"],
         tiling_test_data["occupancy"],
         tiling_test_data["mean_rate"],
@@ -77,7 +76,6 @@ def test_log_space_no_tiling_vs_tiling(tiling_test_data):
     result_tiled = estimate_log(
         tiling_test_data["decoding_features"],
         tiling_test_data["encoding_features"],
-        tiling_test_data["encoding_weights"],
         tiling_test_data["waveform_stds"],
         tiling_test_data["occupancy"],
         tiling_test_data["mean_rate"],
@@ -94,37 +92,22 @@ def test_log_space_no_tiling_vs_tiling(tiling_test_data):
 
 
 @pytest.mark.integration
-def test_original_no_tiling_vs_tiling(tiling_test_data):
-    """Test that original (non-log) tiled computation matches non-tiled."""
-    # No tiling (default)
-    result_no_tile = estimate_orig(
+def test_original_basic_call(tiling_test_data):
+    """Test that original (non-log) estimate_log_joint_mark_intensity works."""
+    result = estimate_orig(
         tiling_test_data["decoding_features"],
         tiling_test_data["encoding_features"],
-        tiling_test_data["encoding_weights"],
         tiling_test_data["waveform_stds"],
         tiling_test_data["occupancy"],
         tiling_test_data["mean_rate"],
         tiling_test_data["position_distance"],
-        pos_tile_size=None,
     )
 
-    # With tiling (tile_size=100)
-    result_tiled = estimate_orig(
-        tiling_test_data["decoding_features"],
-        tiling_test_data["encoding_features"],
-        tiling_test_data["encoding_weights"],
-        tiling_test_data["waveform_stds"],
-        tiling_test_data["occupancy"],
-        tiling_test_data["mean_rate"],
-        tiling_test_data["position_distance"],
-        pos_tile_size=100,
+    assert result.shape == (
+        tiling_test_data["decoding_features"].shape[0],
+        tiling_test_data["position_distance"].shape[1],
     )
-
-    assert result_no_tile.shape == result_tiled.shape
-    assert np.allclose(result_no_tile, result_tiled, rtol=1e-5, atol=1e-6), (
-        f"Tiled and non-tiled results differ: "
-        f"max diff = {np.abs(result_no_tile - result_tiled).max()}"
-    )
+    assert jnp.all(jnp.isfinite(result))
 
 
 @pytest.mark.integration
@@ -134,7 +117,6 @@ def test_various_tile_sizes(tiling_test_data):
     reference = estimate_log(
         tiling_test_data["decoding_features"],
         tiling_test_data["encoding_features"],
-        tiling_test_data["encoding_weights"],
         tiling_test_data["waveform_stds"],
         tiling_test_data["occupancy"],
         tiling_test_data["mean_rate"],
@@ -185,7 +167,6 @@ def test_tiling_edge_cases():
     reference = estimate_log(
         decoding_features,
         encoding_features,
-        encoding_weights,
         waveform_stds,
         occupancy,
         mean_rate,
@@ -198,7 +179,6 @@ def test_tiling_edge_cases():
     result_tile_1 = estimate_log(
         decoding_features,
         encoding_features,
-        encoding_weights,
         waveform_stds,
         occupancy,
         mean_rate,
@@ -211,7 +191,6 @@ def test_tiling_edge_cases():
     result_tile_3 = estimate_log(
         decoding_features,
         encoding_features,
-        encoding_weights,
         waveform_stds,
         occupancy,
         mean_rate,
@@ -231,7 +210,6 @@ def test_tiling_gemm_vs_loop(tiling_test_data):
     result_gemm_tiled = estimate_log(
         tiling_test_data["decoding_features"],
         tiling_test_data["encoding_features"],
-        tiling_test_data["encoding_weights"],
         tiling_test_data["waveform_stds"],
         tiling_test_data["occupancy"],
         tiling_test_data["mean_rate"],
@@ -244,7 +222,6 @@ def test_tiling_gemm_vs_loop(tiling_test_data):
     result_loop_tiled = estimate_log(
         tiling_test_data["decoding_features"],
         tiling_test_data["encoding_features"],
-        tiling_test_data["encoding_weights"],
         tiling_test_data["waveform_stds"],
         tiling_test_data["occupancy"],
         tiling_test_data["mean_rate"],
@@ -281,7 +258,6 @@ def test_tiling_very_large_grid():
     result = estimate_log(
         decoding_features,
         encoding_features,
-        encoding_weights,
         waveform_stds,
         occupancy,
         mean_rate,

@@ -84,7 +84,6 @@ def test_estimate_intensity_gemm_vs_loop(synthetic_waveform_data):
     log_joint_gemm = estimate_log_joint_mark_intensity(
         synthetic_waveform_data["decoding_features"],
         synthetic_waveform_data["encoding_features"],
-        synthetic_waveform_data["encoding_weights"],
         synthetic_waveform_data["waveform_stds"],
         synthetic_waveform_data["occupancy"],
         synthetic_waveform_data["mean_rate"],
@@ -96,7 +95,6 @@ def test_estimate_intensity_gemm_vs_loop(synthetic_waveform_data):
     log_joint_loop = estimate_log_joint_mark_intensity(
         synthetic_waveform_data["decoding_features"],
         synthetic_waveform_data["encoding_features"],
-        synthetic_waveform_data["encoding_weights"],
         synthetic_waveform_data["waveform_stds"],
         synthetic_waveform_data["occupancy"],
         synthetic_waveform_data["mean_rate"],

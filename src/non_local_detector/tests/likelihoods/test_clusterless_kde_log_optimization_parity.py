@@ -52,7 +52,7 @@ def test_pos_tiling_matches_no_tiling(simple_1d_environment, pos_tile_size):
     result_no_tile = block_estimate_log_joint_mark_intensity(
         dec_feats,
         electrode_encoding_features,
-        encoding["waveform_std"],
+        np.atleast_1d(np.asarray(encoding["waveform_std"])),
         encoding["occupancy"],
         encoding["mean_rates"][0],
         position_distance,
@@ -65,7 +65,7 @@ def test_pos_tiling_matches_no_tiling(simple_1d_environment, pos_tile_size):
     result_tiled = block_estimate_log_joint_mark_intensity(
         dec_feats,
         electrode_encoding_features,
-        encoding["waveform_std"],
+        np.atleast_1d(np.asarray(encoding["waveform_std"])),
         encoding["occupancy"],
         encoding["mean_rates"][0],
         position_distance,
