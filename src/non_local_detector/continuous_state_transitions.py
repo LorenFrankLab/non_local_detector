@@ -217,10 +217,15 @@ class RandomWalk:
                 )
 
             if self.direction is not None:
-                direction_func = {
+                direction_funcs = {
                     "inward": np.greater_equal,
                     "outward": np.less_equal,
-                }.get(self.direction.lower(), None)
+                }
+                direction_func = direction_funcs.get(self.direction.lower())
+                if direction_func is None:
+                    raise ValueError(
+                        f"direction must be 'inward' or 'outward', got '{self.direction}'"
+                    )
 
                 centrality = nx.closeness_centrality(
                     self.environment.track_graphDD, distance="distance"
@@ -283,7 +288,7 @@ class Uniform:
     """
 
     environment_name: str = ""
-    environment2_name: str = None
+    environment2_name: str | None = None
 
     def make_state_transition(
         self, environments: tuple[Environment, ...]
