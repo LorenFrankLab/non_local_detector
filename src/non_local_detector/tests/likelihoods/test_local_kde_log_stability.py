@@ -166,9 +166,10 @@ def test_local_likelihood_log_space_prevents_underflow(
     )
 
     # 4. Verify shape
-    assert ll_local.shape == (len(time), 1), (
-        f"Expected shape ({len(time)}, 1), got {ll_local.shape}"
-    )
+    assert ll_local.shape == (
+        len(time),
+        1,
+    ), f"Expected shape ({len(time)}, 1), got {ll_local.shape}"
 
 
 def test_local_likelihood_log_space_moderate_features(

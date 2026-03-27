@@ -241,9 +241,9 @@ class TestHMMInvariants:
         """
         # Check each row sums to 1.0
         row_sums = trans.sum(axis=1)
-        assert jnp.allclose(row_sums, 1.0, atol=1e-10), (
-            f"Transition matrix rows must sum to 1.0, got: {row_sums}"
-        )
+        assert jnp.allclose(
+            row_sums, 1.0, atol=1e-10
+        ), f"Transition matrix rows must sum to 1.0, got: {row_sums}"
 
         # Check all values are in [0, 1]
         assert jnp.all(trans >= 0.0), "Transition probabilities must be non-negative"
@@ -273,14 +273,14 @@ class TestHMMInvariants:
         for t in range(n_timesteps):
             # Each row sums to 1.0
             row_sums = trans_matrices[t].sum(axis=1)
-            assert np.allclose(row_sums, 1.0, atol=1e-10), (
-                f"Transition matrix at time {t} rows must sum to 1.0, got: {row_sums}"
-            )
+            assert np.allclose(
+                row_sums, 1.0, atol=1e-10
+            ), f"Transition matrix at time {t} rows must sum to 1.0, got: {row_sums}"
 
             # All values in [0, 1]
-            assert np.all(trans_matrices[t] >= 0.0), (
-                f"Transition probabilities at time {t} must be non-negative"
-            )
-            assert np.all(trans_matrices[t] <= 1.0), (
-                f"Transition probabilities at time {t} must be <= 1.0"
-            )
+            assert np.all(
+                trans_matrices[t] >= 0.0
+            ), f"Transition probabilities at time {t} must be non-negative"
+            assert np.all(
+                trans_matrices[t] <= 1.0
+            ), f"Transition probabilities at time {t} must be <= 1.0"

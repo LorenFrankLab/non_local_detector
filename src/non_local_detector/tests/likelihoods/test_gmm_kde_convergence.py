@@ -180,14 +180,14 @@ def test_gmm_convergence_to_kde(convergence_test_data):
     print(f"MSE improvement: {mse_values[0]:.6f} → {mse_values[-1]:.6f}")
 
     # Key assertion: correlation should increase with more components
-    assert correlations[-1] > correlations[0], (
-        f"Correlation should increase: {correlations[0]:.3f} → {correlations[-1]:.3f}"
-    )
+    assert (
+        correlations[-1] > correlations[0]
+    ), f"Correlation should increase: {correlations[0]:.3f} → {correlations[-1]:.3f}"
 
     # MSE should decrease
-    assert mse_values[-1] < mse_values[0], (
-        f"MSE should decrease: {mse_values[0]:.4f} → {mse_values[-1]:.4f}"
-    )
+    assert (
+        mse_values[-1] < mse_values[0]
+    ), f"MSE should decrease: {mse_values[0]:.4f} → {mse_values[-1]:.4f}"
 
 
 def test_mathematical_formula_consistency(convergence_test_data):
@@ -231,9 +231,9 @@ def test_mathematical_formula_consistency(convergence_test_data):
     )
     print(f"Difference: {abs(kde_formula - gmm_formula):.10f}")
 
-    assert np.isclose(kde_formula, gmm_formula, rtol=1e-10), (
-        "KDE and GMM formulas should be mathematically identical"
-    )
+    assert np.isclose(
+        kde_formula, gmm_formula, rtol=1e-10
+    ), "KDE and GMM formulas should be mathematically identical"
 
 
 def test_ground_process_intensity_calculation(convergence_test_data):
@@ -323,9 +323,9 @@ def test_segment_sum_correctness(convergence_test_data):
     print(f"KDE result: {result_kde}")
     print(f"GMM result: {result_gmm}")
 
-    assert jnp.allclose(result_kde, result_gmm), (
-        "segment_sum implementations should match"
-    )
+    assert jnp.allclose(
+        result_kde, result_gmm
+    ), "segment_sum implementations should match"
 
 
 def test_log_space_operations(convergence_test_data):

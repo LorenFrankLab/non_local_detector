@@ -154,9 +154,9 @@ def make_simulated_run_data(
 
         # Ensure strictly increasing times (should already be sorted)
         if electrode_spike_times.size > 0:
-            assert np.all(np.diff(electrode_spike_times) > 0), (
-                "Spike times must be strictly increasing"
-            )
+            assert np.all(
+                np.diff(electrode_spike_times) > 0
+            ), "Spike times must be strictly increasing"
 
         spike_times.append(electrode_spike_times)
         spike_waveform_features.append(electrode_features)

@@ -303,16 +303,16 @@ def test_spatial_pattern_correlation(comparison_data):
 
     # Relaxed assertion: correlation should be positive on average but not necessarily strong
     # KDE and GMM are fundamentally different algorithms, so moderate correlation is expected
-    assert pearson_corrs.mean() > 0.0, (
-        "Spatial patterns should have positive correlation on average"
-    )
+    assert (
+        pearson_corrs.mean() > 0.0
+    ), "Spatial patterns should have positive correlation on average"
 
     # Check that at least some time bins have good correlation
     strong_corr_count = (np.abs(pearson_corrs) > 0.5).sum()
     print(f"Time bins with |r| > 0.5: {strong_corr_count}/{len(pearson_corrs)}")
-    assert strong_corr_count > 0, (
-        "At least some time bins should show strong correlation"
-    )
+    assert (
+        strong_corr_count > 0
+    ), "At least some time bins should show strong correlation"
 
 
 def test_peak_location_agreement(comparison_data):
@@ -470,9 +470,9 @@ def test_local_likelihood_comparison(comparison_data):
     assert np.all(np.isfinite(ll_gmm_np))
 
     # Check for any correlation (can be negative or positive)
-    assert np.abs(r_pearson) > 0.1 or np.abs(r_spearman) > 0.1, (
-        "Local likelihoods should have some correlation"
-    )
+    assert (
+        np.abs(r_pearson) > 0.1 or np.abs(r_spearman) > 0.1
+    ), "Local likelihoods should have some correlation"
 
 
 def test_parameter_sensitivity_kde(comparison_data):
@@ -508,9 +508,9 @@ def test_parameter_sensitivity_kde(comparison_data):
         print(f"Bandwidth={bw:.1f}: mean correlation={mean_corr:.3f}")
 
     # Correlation should vary with bandwidth
-    assert max(correlations) - min(correlations) > 0.1, (
-        "Bandwidth should affect correlation"
-    )
+    assert (
+        max(correlations) - min(correlations) > 0.1
+    ), "Bandwidth should affect correlation"
 
 
 @pytest.mark.skip(reason="Visualization test - run manually to generate plots")

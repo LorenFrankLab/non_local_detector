@@ -1156,9 +1156,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 cache_log_likelihoods=cache_likelihood,
             )
 
-    @abc.abstractmethod
     def fit_predict(self) -> xr.Dataset:
         """Fit the model and predict the posterior probabilities. To be implemented by inheriting class."""
+        raise NotImplementedError
 
     @abc.abstractmethod
     def fit_encoding_model(self):

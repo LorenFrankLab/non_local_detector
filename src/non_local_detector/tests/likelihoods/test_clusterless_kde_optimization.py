@@ -225,9 +225,9 @@ class TestPerformanceRegression:
 
         # All calls should be fast (< 10ms) after compilation
         avg_time = np.mean(times)
-        assert avg_time < 0.01, (
-            f"Average call time ({avg_time:.4f}s) too slow, JIT may not be working"
-        )
+        assert (
+            avg_time < 0.01
+        ), f"Average call time ({avg_time:.4f}s) too slow, JIT may not be working"
 
         # Results should be consistent
         result1 = estimate_log_joint_mark_intensity(
