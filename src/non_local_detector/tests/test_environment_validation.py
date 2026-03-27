@@ -416,12 +416,16 @@ def serialize_environment_summary(env: Environment) -> dict:
             "std": float(np.std(env.place_bin_centers_)),
             "min": float(np.min(env.place_bin_centers_)),
             "max": float(np.max(env.place_bin_centers_)),
-            "first_5": env.place_bin_centers_[:5].tolist()
-            if env.place_bin_centers_.shape[0] >= 5
-            else env.place_bin_centers_.tolist(),
-            "last_5": env.place_bin_centers_[-5:].tolist()
-            if env.place_bin_centers_.shape[0] >= 5
-            else env.place_bin_centers_.tolist(),
+            "first_5": (
+                env.place_bin_centers_[:5].tolist()
+                if env.place_bin_centers_.shape[0] >= 5
+                else env.place_bin_centers_.tolist()
+            ),
+            "last_5": (
+                env.place_bin_centers_[-5:].tolist()
+                if env.place_bin_centers_.shape[0] >= 5
+                else env.place_bin_centers_.tolist()
+            ),
         }
 
     if env.place_bin_edges_ is not None:
@@ -431,9 +435,11 @@ def serialize_environment_summary(env: Environment) -> dict:
             "mean": float(np.mean(env.place_bin_edges_)),
             "min": float(np.min(env.place_bin_edges_)),
             "max": float(np.max(env.place_bin_edges_)),
-            "first_5": env.place_bin_edges_[:5].tolist()
-            if env.place_bin_edges_.shape[0] >= 5
-            else env.place_bin_edges_.tolist(),
+            "first_5": (
+                env.place_bin_edges_[:5].tolist()
+                if env.place_bin_edges_.shape[0] >= 5
+                else env.place_bin_edges_.tolist()
+            ),
         }
 
     if env.is_track_interior_ is not None:

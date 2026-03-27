@@ -161,32 +161,42 @@ def serialize_transition_matrix_summary(trans_mat: np.ndarray) -> dict:
     return {
         "shape": trans_mat.shape,
         "dtype": str(trans_mat.dtype),
-        "diagonal_mean": float(np.mean(np.diag(trans_mat)))
-        if trans_mat.ndim == 2 and trans_mat.shape[0] == trans_mat.shape[1]
-        else None,
-        "diagonal_std": float(np.std(np.diag(trans_mat)))
-        if trans_mat.ndim == 2 and trans_mat.shape[0] == trans_mat.shape[1]
-        else None,
-        "row_sums": np.sum(trans_mat, axis=-1).tolist()
-        if trans_mat.size <= 500
-        else {
-            "mean": float(np.mean(np.sum(trans_mat, axis=-1))),
-            "min": float(np.min(np.sum(trans_mat, axis=-1))),
-            "max": float(np.max(np.sum(trans_mat, axis=-1))),
-        },
+        "diagonal_mean": (
+            float(np.mean(np.diag(trans_mat)))
+            if trans_mat.ndim == 2 and trans_mat.shape[0] == trans_mat.shape[1]
+            else None
+        ),
+        "diagonal_std": (
+            float(np.std(np.diag(trans_mat)))
+            if trans_mat.ndim == 2 and trans_mat.shape[0] == trans_mat.shape[1]
+            else None
+        ),
+        "row_sums": (
+            np.sum(trans_mat, axis=-1).tolist()
+            if trans_mat.size <= 500
+            else {
+                "mean": float(np.mean(np.sum(trans_mat, axis=-1))),
+                "min": float(np.min(np.sum(trans_mat, axis=-1))),
+                "max": float(np.max(np.sum(trans_mat, axis=-1))),
+            }
+        ),
         "mean": float(np.mean(trans_mat)),
         "std": float(np.std(trans_mat)),
         "min": float(np.min(trans_mat)),
         "max": float(np.max(trans_mat)),
-        "values": trans_mat.tolist()
-        if trans_mat.size <= 100
-        else {
-            "first_row": trans_mat[0].tolist() if trans_mat.shape[0] > 0 else [],
-            "last_row": trans_mat[-1].tolist() if trans_mat.shape[0] > 0 else [],
-            "diagonal_sample": np.diag(trans_mat)[:10].tolist()
-            if trans_mat.ndim == 2 and trans_mat.shape[0] == trans_mat.shape[1]
-            else None,
-        },
+        "values": (
+            trans_mat.tolist()
+            if trans_mat.size <= 100
+            else {
+                "first_row": trans_mat[0].tolist() if trans_mat.shape[0] > 0 else [],
+                "last_row": trans_mat[-1].tolist() if trans_mat.shape[0] > 0 else [],
+                "diagonal_sample": (
+                    np.diag(trans_mat)[:10].tolist()
+                    if trans_mat.ndim == 2 and trans_mat.shape[0] == trans_mat.shape[1]
+                    else None
+                ),
+            }
+        ),
     }
 
 
