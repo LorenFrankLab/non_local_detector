@@ -154,6 +154,9 @@ def fit_poisson_regression(
     """
 
     n_time = design_matrix.shape[0]
+    spikes = jnp.asarray(spikes, dtype=jnp.float32)
+    design_matrix = jnp.asarray(design_matrix, dtype=jnp.float32)
+    weights = jnp.asarray(weights, dtype=jnp.float32)
 
     @jax.jit
     def neglogp(
