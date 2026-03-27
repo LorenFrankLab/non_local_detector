@@ -130,7 +130,6 @@ def test_various_tile_sizes(tiling_test_data):
         result_tiled = estimate_log(
             tiling_test_data["decoding_features"],
             tiling_test_data["encoding_features"],
-            tiling_test_data["encoding_weights"],
             tiling_test_data["waveform_stds"],
             tiling_test_data["occupancy"],
             tiling_test_data["mean_rate"],
