@@ -1,5 +1,7 @@
+import abc
 import copy
 import pickle
+import warnings
 from logging import getLogger
 
 import jax.numpy as jnp
@@ -49,7 +51,6 @@ from non_local_detector.types import (
 
 logger = getLogger(__name__)
 sklearn.set_config(print_changed_only=False)
-np.seterr(divide="ignore", invalid="ignore")
 
 _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS = {
     "waveform_std": 24.0,
@@ -133,7 +134,7 @@ def _normalize_return_outputs(
     )
 
 
-class _DetectorBase(BaseEstimator):
+class _DetectorBase(BaseEstimator, abc.ABC):
     """Base class for detector objects."""
 
     # Type annotations for attributes assigned during fit
@@ -409,6 +410,7 @@ class _DetectorBase(BaseEstimator):
         DataError
             If transition matrix contains NaN or Inf
         """
+        # Deferred to avoid circular import: base.py -> discrete_state_transitions.py -> base.py
         from non_local_detector.discrete_state_transitions import (
             DiscreteStationaryCustom,
         )
@@ -713,8 +715,10 @@ class _DetectorBase(BaseEstimator):
                             )
 
                     is_training = np.asarray(is_training).squeeze()
-                    # Validation above ensures position is not None when needed
-                    assert position is not None
+                    if position is None:
+                        raise ValueError(
+                            "position must not be None for EmpiricalMovement transitions"
+                        )
                     self.continuous_state_transitions_[inds] = (
                         transition.make_state_transition(
                             self.environments,
@@ -1058,9 +1062,9 @@ class _DetectorBase(BaseEstimator):
 
         return self
 
+    @abc.abstractmethod
     def compute_log_likelihood(self):
         """Compute the log likelihood. To be implemented by inheriting class."""
-        raise NotImplementedError
 
     def _predict(
         self,
@@ -1152,13 +1156,13 @@ class _DetectorBase(BaseEstimator):
                 cache_log_likelihoods=cache_likelihood,
             )
 
+    @abc.abstractmethod
     def fit_predict(self) -> xr.Dataset:
         """Fit the model and predict the posterior probabilities. To be implemented by inheriting class."""
-        raise NotImplementedError
 
+    @abc.abstractmethod
     def fit_encoding_model(self):
         """Fit the encoding model. To be implemented by inheriting class."""
-        raise NotImplementedError
 
     def estimate_parameters(
         self,
@@ -1246,8 +1250,6 @@ class _DetectorBase(BaseEstimator):
             log_likelihood_args = ()
 
         # Handle deprecated boolean flag
-        import warnings
-
         if save_log_likelihood_to_results is not None:
             warnings.warn(
                 "save_log_likelihood_to_results is deprecated. "
@@ -1497,6 +1499,11 @@ class _DetectorBase(BaseEstimator):
     def load_model(filename: str = "model.pkl") -> "_DetectorBase":
         """
         Load the detector from a file.
+
+        .. warning::
+
+            Only load models from trusted sources. Pickle files can execute
+            arbitrary code during deserialization.
 
         Parameters
         ----------
@@ -2393,8 +2400,6 @@ class ClusterlessDetector(_DetectorBase):
             )
 
         # Handle deprecated boolean flags
-        import warnings
-
         if (
             save_log_likelihood_to_results is not None
             or save_causal_posterior_to_results is not None
@@ -3081,8 +3086,6 @@ class SortedSpikesDetector(_DetectorBase):
             )
 
         # Handle deprecated boolean flags
-        import warnings
-
         if (
             save_log_likelihood_to_results is not None
             or save_causal_posterior_to_results is not None
