@@ -78,10 +78,6 @@ def serialize_state_probabilities(state_probs):
 
 @pytest.mark.snapshot
 @pytest.mark.slow
-@pytest.mark.skip(
-    reason="Skipped due to known issues in clusterless_kde likelihood code. "
-    "Will be re-enabled once clusterless_kde is fixed."
-)
 @pytest.mark.parametrize(
     "algorithm,algorithm_params",
     [

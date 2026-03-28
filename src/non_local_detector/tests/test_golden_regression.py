@@ -356,12 +356,6 @@ def test_sorted_spikes_decoder_golden_regression(golden_path: Path) -> None:
 
 
 @pytest.mark.slow
-@pytest.mark.skip(
-    reason="Skipped due to known issues in clusterless_kde likelihood code. "
-    "The test fails with 'ValueError: range() arg 3 must not be zero' due to "
-    "data sparsity causing block_size to be computed as zero. This is a bug in "
-    "clusterless_kde.py, not in the test. Will be re-enabled once fixed."
-)
 def test_nonlocal_detector_golden_regression(golden_path: Path) -> None:
     """Test that NonLocalClusterlessDetector produces identical outputs.
 
