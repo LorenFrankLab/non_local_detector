@@ -174,7 +174,9 @@ def fit_poisson_regression(
 
     dlike = jax.grad(neglogp)
 
-    initial_condition = jnp.asarray([jnp.log(jnp.average(spikes, weights=weights))])
+    avg_rate = jnp.average(spikes, weights=weights)
+    # Guard against zero spikes: use EPS to avoid log(0) = -inf
+    initial_condition = jnp.asarray([jnp.log(jnp.maximum(avg_rate, EPS))])
     initial_condition = jnp.concatenate(
         [initial_condition, jnp.zeros(design_matrix.shape[1] - 1)]
     )

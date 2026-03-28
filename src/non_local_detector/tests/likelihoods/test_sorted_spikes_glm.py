@@ -4,9 +4,7 @@ Tests the Poisson GLM implementation for sorted spike data, including spline
 basis generation, model fitting, and likelihood prediction.
 """
 
-import sys
-
-import jax.numpy as jnp
+import jax.numpy as jnp  # noqa: I001
 import numpy as np
 import pytest
 
@@ -19,16 +17,6 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
     predict_sorted_spikes_glm_log_likelihood,
 )
 
-# Skip all GLM tests if using Python 3.13+ with NumPy 2.0+
-# This is due to a known patsy compatibility issue with NumPy 2.0
-# See: https://github.com/pydata/patsy/issues/200
-SKIP_GLM_TESTS = sys.version_info >= (3, 13) and tuple(
-    int(x) for x in np.__version__.split(".")[:2]
-) >= (2, 0)
-pytestmark = pytest.mark.skipif(
-    SKIP_GLM_TESTS,
-    reason="patsy has compatibility issues with NumPy 2.0+ on Python 3.13+",
-)
 
 
 @pytest.fixture
@@ -48,7 +36,7 @@ def simple_1d_environment():
 def simple_spike_data():
     """Generate simple synthetic spike data for testing."""
     n_time = 100
-    sampling_frequency = 500.0
+    sampling_frequency = float(n_time)  # Match position sampling rate
 
     # Create position trajectory
     position_time = np.linspace(0, 1, n_time)
@@ -85,7 +73,7 @@ class TestSplineDesignMatrix:
         # Arrange
         n_time = 50
         position = np.linspace(0, 100, n_time)[:, None]
-        place_bin_edges = np.array([[0, 100]])
+        place_bin_edges = np.linspace(0, 100, 21)[:, None]  # 20 bins, shape (21, 1)
         knot_spacing = 10.0
 
         # Act
@@ -101,7 +89,7 @@ class TestSplineDesignMatrix:
         """First column should be all ones (intercept)."""
         # Arrange
         position = np.linspace(0, 100, 50)[:, None]
-        place_bin_edges = np.array([[0, 100]])
+        place_bin_edges = np.linspace(0, 100, 21)[:, None]  # 20 bins, shape (21, 1)
 
         # Act
         design_matrix = make_spline_design_matrix(position, place_bin_edges)
@@ -116,7 +104,10 @@ class TestSplineDesignMatrix:
         position = np.column_stack(
             [np.linspace(0, 100, n_time), np.linspace(0, 50, n_time)]
         )
-        place_bin_edges = np.array([[0, 100], [0, 50]])
+        place_bin_edges = np.column_stack([
+            np.linspace(0, 100, 11),  # 10 bins in x
+            np.linspace(0, 50, 11),   # 10 bins in y
+        ])  # shape (11, 2)
         knot_spacing = 20.0
 
         # Act
@@ -135,7 +126,7 @@ class TestSplineDesignMatrix:
         n_predict = 30
         position_fit = np.linspace(0, 100, n_fit)[:, None]
         position_predict = np.linspace(10, 90, n_predict)[:, None]
-        place_bin_edges = np.array([[0, 100]])
+        place_bin_edges = np.linspace(0, 100, 21)[:, None]  # 20 bins, shape (21, 1)
 
         design_matrix = make_spline_design_matrix(position_fit, place_bin_edges)
         design_info = design_matrix.design_info
@@ -153,7 +144,7 @@ class TestSplineDesignMatrix:
         """Should handle NaN positions gracefully."""
         # Arrange
         position_fit = np.linspace(0, 100, 50)[:, None]
-        place_bin_edges = np.array([[0, 100]])
+        place_bin_edges = np.linspace(0, 100, 21)[:, None]  # 20 bins, shape (21, 1)
 
         design_matrix = make_spline_design_matrix(position_fit, place_bin_edges)
         design_info = design_matrix.design_info
@@ -289,8 +280,8 @@ class TestFitGLMEncodingModel:
         expected_keys = {
             "coefficients",
             "place_fields",
-            "design_info",
-            "place_bin_centers",
+            "emission_design_info",
+            "no_spike_part_log_likelihood",
             "is_track_interior",
         }
         assert expected_keys.issubset(encoding.keys())
@@ -403,19 +394,19 @@ class TestPredictGLMLogLikelihood:
             position_time=jnp.asarray(data["position_time"]),
             position=jnp.asarray(data["position"]),
             spike_times=data["spike_times"],
-            place_bin_centers=encoding["place_bin_centers"],
+            environment=env,
             coefficients=encoding["coefficients"],
-            design_info=encoding["design_info"],
+            emission_design_info=encoding["emission_design_info"],
+            place_fields=encoding["place_fields"],
+            no_spike_part_log_likelihood=encoding["no_spike_part_log_likelihood"],
             is_track_interior=encoding["is_track_interior"],
-            sampling_frequency=data["sampling_frequency"],
             is_local=False,
             disable_progress_bar=True,
         )
 
         # Assert
-        n_time_bins = len(time) - 1
         n_place_bins = np.sum(env.is_track_interior_)
-        assert log_likelihood.shape == (n_time_bins, n_place_bins)
+        assert log_likelihood.shape == (len(time), n_place_bins)
         assert jnp.all(jnp.isfinite(log_likelihood))
 
     def test_predict_glm_log_likelihood_local_returns_correct_shape(
@@ -447,18 +438,18 @@ class TestPredictGLMLogLikelihood:
             position_time=jnp.asarray(data["position_time"]),
             position=jnp.asarray(data["position"]),
             spike_times=data["spike_times"],
-            place_bin_centers=encoding["place_bin_centers"],
+            environment=env,
             coefficients=encoding["coefficients"],
-            design_info=encoding["design_info"],
+            emission_design_info=encoding["emission_design_info"],
+            place_fields=encoding["place_fields"],
+            no_spike_part_log_likelihood=encoding["no_spike_part_log_likelihood"],
             is_track_interior=encoding["is_track_interior"],
-            sampling_frequency=data["sampling_frequency"],
             is_local=True,
             disable_progress_bar=True,
         )
 
         # Assert
-        n_time_bins = len(time) - 1
-        assert log_likelihood.shape == (n_time_bins,)  # One value per time bin
+        assert log_likelihood.shape == (len(time), 1)  # One position per time point
         assert jnp.all(jnp.isfinite(log_likelihood))
 
     def test_predict_glm_log_likelihood_with_no_spikes(
@@ -491,11 +482,12 @@ class TestPredictGLMLogLikelihood:
             position_time=jnp.asarray(data["position_time"]),
             position=jnp.asarray(data["position"]),
             spike_times=data["spike_times"],
-            place_bin_centers=encoding["place_bin_centers"],
+            environment=env,
             coefficients=encoding["coefficients"],
-            design_info=encoding["design_info"],
+            emission_design_info=encoding["emission_design_info"],
+            place_fields=encoding["place_fields"],
+            no_spike_part_log_likelihood=encoding["no_spike_part_log_likelihood"],
             is_track_interior=encoding["is_track_interior"],
-            sampling_frequency=data["sampling_frequency"],
             is_local=False,
             disable_progress_bar=True,
         )
