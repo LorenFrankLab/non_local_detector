@@ -34,8 +34,11 @@ def extract_api_surface(module) -> dict[str, Any]:
     """
     api = {"classes": {}, "functions": {}, "constants": {}}
 
+    # Subpackages that may appear in dir() due to import side effects
+    _IGNORE_NAMES = {"tests", "simulate", "visualization", "notebooks"}
+
     for name in dir(module):
-        if name.startswith("_"):
+        if name.startswith("_") or name in _IGNORE_NAMES:
             continue
 
         obj = getattr(module, name)
@@ -249,6 +252,13 @@ def test_public_api_compatibility():
     3. Delete api_snapshots/public_api.json
     4. Re-run this test to create new baseline
     """
+    # Force-import all public submodules so signatures are stable
+    # regardless of test execution order
+    import non_local_detector.models  # noqa: F811
+    import non_local_detector.likelihoods  # noqa: F811
+    import non_local_detector.continuous_state_transitions  # noqa: F811
+    import non_local_detector.discrete_state_transitions  # noqa: F811
+
     current_api = extract_api_surface(nld)
 
     if not API_SNAPSHOT_FILE.exists():
