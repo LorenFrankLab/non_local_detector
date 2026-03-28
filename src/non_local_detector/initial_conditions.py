@@ -68,7 +68,11 @@ class UniformInitialConditions:
             else:
                 initial_conditions = np.ones((1,), dtype=np.float32)
 
-        initial_conditions /= initial_conditions.sum()
+        total = initial_conditions.sum()
+        if total > 0:
+            initial_conditions /= total
+        else:
+            initial_conditions = np.full_like(initial_conditions, 1.0 / len(initial_conditions))
 
         return initial_conditions
 
