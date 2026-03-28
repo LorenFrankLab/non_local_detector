@@ -3,9 +3,6 @@ import jax.numpy as jnp
 import numpy as np
 from jax.typing import ArrayLike
 
-# Note: This only affects NumPy operations, not JAX operations
-# Most computation is in JAX, so this has minimal effect
-np.seterr(divide="ignore", invalid="ignore")
 
 
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
