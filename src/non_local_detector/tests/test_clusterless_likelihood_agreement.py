@@ -23,7 +23,6 @@ from non_local_detector.simulate.clusterless_simulation import make_simulated_ru
 POSITION_STD = 6.0
 WAVEFORM_STD = 24.0
 BLOCK_SIZE = 100
-TOP_POSITION_AGREEMENT_THRESHOLD = 0.05  # 5% - models use different approaches
 LIKELIHOOD_CORRELATION_THRESHOLD = 0.50
 SIMULATION_SEED = 100
 
@@ -144,62 +143,6 @@ def clusterless_likelihood_comparison() -> dict:
         "gmm_log_likelihood": gmm_log_likelihood,
         "place_bin_centers": place_bin_centers,
     }
-
-
-def get_decoded_position_bins(
-    log_likelihood: npt.NDArray[np.floating],
-    place_bin_centers: npt.NDArray[np.floating],
-) -> npt.NDArray[np.floating]:
-    """Get the most likely position bin for each time point.
-
-    Parameters
-    ----------
-    log_likelihood : npt.NDArray[np.floating]
-        Log-likelihood array of shape (n_time_bins, n_position_bins)
-    place_bin_centers : npt.NDArray[np.floating]
-        Position bin centers of shape (n_position_bins, n_pos_dims)
-
-    Returns
-    -------
-    decoded_positions : npt.NDArray[np.floating]
-        Most likely position for each time bin, shape (n_time_bins, n_pos_dims)
-    """
-    max_likelihood_bins = np.argmax(log_likelihood, axis=1)
-    return place_bin_centers[max_likelihood_bins]
-
-
-@pytest.mark.slow
-@pytest.mark.skip(
-    reason="KDE and GMM use fundamentally different density estimation approaches "
-    "(Gaussian kernels vs mixture models), resulting in very low exact position "
-    "agreement (~0.8%). However, they show strong correlation (>0.5) in likelihood "
-    "values and ranking, which is tested in other tests."
-)
-def test_kde_gmm_top_position_agreement(
-    clusterless_likelihood_comparison: dict,
-) -> None:
-    """Test that KDE and GMM agree on most likely position most of the time.
-
-    Both models should produce qualitatively similar decodings on the same data,
-    agreeing on the most likely position for at least 70% of time bins.
-
-    NOTE: This test is skipped because empirical testing shows KDE and GMM have
-    very low exact position agreement due to their different modeling approaches.
-    """
-    kde_ll = clusterless_likelihood_comparison["kde_log_likelihood"]
-    gmm_ll = clusterless_likelihood_comparison["gmm_log_likelihood"]
-    place_bin_centers = clusterless_likelihood_comparison["place_bin_centers"]
-
-    # Get most likely positions from each model
-    kde_positions = get_decoded_position_bins(kde_ll, place_bin_centers)
-    gmm_positions = get_decoded_position_bins(gmm_ll, place_bin_centers)
-
-    # Compute agreement (fraction of times they agree on position bin)
-    agreement = np.mean(np.all(kde_positions == gmm_positions, axis=1))
-
-    assert (
-        agreement >= TOP_POSITION_AGREEMENT_THRESHOLD
-    ), f"KDE/GMM top position agreement {agreement:.2%} below threshold {TOP_POSITION_AGREEMENT_THRESHOLD:.2%}"
 
 
 @pytest.mark.slow
