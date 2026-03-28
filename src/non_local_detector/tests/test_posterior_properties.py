@@ -89,6 +89,7 @@ def decoder_with_results() -> dict[str, Any]:
         position=sim.position[n_encode:],
         spike_times=test_spike_times,
         spike_waveform_features=test_spike_waveform_features,
+        return_outputs="all",
     )
 
     return {
@@ -136,12 +137,10 @@ def test_acausal_smoother_than_causal(decoder_with_results: dict[str, Any]) -> N
 
     # Get both posteriors
     acausal_posterior = results.acausal_posterior.values
-    # Causal posterior is the forward pass probability
-    # We need to normalize causal_state_probabilities if available
-    if "causal_state_probabilities" in results:
-        causal_probs = results.causal_state_probabilities.values
+    if "causal_posterior" in results:
+        causal_posterior = results.causal_posterior.values
     else:
-        pytest.skip("Causal probabilities not available in results")
+        pytest.skip("Causal posterior not available in results")
         return
 
     # Compute entropy for each time point (adding small epsilon to avoid log(0))
@@ -149,7 +148,7 @@ def test_acausal_smoother_than_causal(decoder_with_results: dict[str, Any]) -> N
     acausal_entropy = -np.sum(
         acausal_posterior * np.log(acausal_posterior + eps), axis=1
     )
-    causal_entropy = -np.sum(causal_probs * np.log(causal_probs + eps), axis=1)
+    causal_entropy = -np.sum(causal_posterior * np.log(causal_posterior + eps), axis=1)
 
     # Mean entropy should be lower for acausal (more information used)
     mean_acausal_entropy = np.mean(acausal_entropy)
