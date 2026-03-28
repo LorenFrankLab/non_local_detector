@@ -61,7 +61,9 @@ def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
     >>> np.allclose(np.exp(centered_softmax_inverse(y)), np.asarray([2,3,4]))
     True
     """
-    return np.log(y[..., :-1]) - np.log(y[..., [-1]])
+    EPS = np.finfo(y.dtype).tiny
+    y_safe = np.clip(y, EPS, None)
+    return np.log(y_safe[..., :-1]) - np.log(y_safe[..., [-1]])
 
 
 def estimate_joint_distribution(
