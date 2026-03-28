@@ -4,7 +4,7 @@ Tests the Poisson GLM implementation for sorted spike data, including spline
 basis generation, model fitting, and likelihood prediction.
 """
 
-import jax.numpy as jnp  # noqa: I001
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -16,7 +16,6 @@ from non_local_detector.likelihoods.sorted_spikes_glm import (
     make_spline_predict_matrix,
     predict_sorted_spikes_glm_log_likelihood,
 )
-
 
 
 @pytest.fixture
@@ -104,10 +103,12 @@ class TestSplineDesignMatrix:
         position = np.column_stack(
             [np.linspace(0, 100, n_time), np.linspace(0, 50, n_time)]
         )
-        place_bin_edges = np.column_stack([
-            np.linspace(0, 100, 11),  # 10 bins in x
-            np.linspace(0, 50, 11),   # 10 bins in y
-        ])  # shape (11, 2)
+        place_bin_edges = np.column_stack(
+            [
+                np.linspace(0, 100, 11),  # 10 bins in x
+                np.linspace(0, 50, 11),  # 10 bins in y
+            ]
+        )  # shape (11, 2)
         knot_spacing = 20.0
 
         # Act

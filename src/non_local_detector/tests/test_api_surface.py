@@ -254,10 +254,10 @@ def test_public_api_compatibility():
     """
     # Force-import all public submodules so signatures are stable
     # regardless of test execution order
-    import non_local_detector.models  # noqa: F811
-    import non_local_detector.likelihoods  # noqa: F811
-    import non_local_detector.continuous_state_transitions  # noqa: F811
-    import non_local_detector.discrete_state_transitions  # noqa: F811
+    import non_local_detector.continuous_state_transitions  # noqa: F401, F811
+    import non_local_detector.discrete_state_transitions  # noqa: F401, F811
+    import non_local_detector.likelihoods  # noqa: F401, F811
+    import non_local_detector.models  # noqa: F401, F811
 
     current_api = extract_api_surface(nld)
 

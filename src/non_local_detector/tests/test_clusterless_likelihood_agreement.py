@@ -6,7 +6,6 @@ regressions where one model drastically diverges from expected behavior.
 """
 
 import numpy as np
-import numpy.typing as npt
 import pytest
 
 from non_local_detector.likelihoods.clusterless_gmm import (

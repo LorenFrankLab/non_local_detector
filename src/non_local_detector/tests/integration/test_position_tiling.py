@@ -31,7 +31,6 @@ def tiling_test_data():
     waveform_stds = jnp.array(
         np.abs(np.random.randn(n_features).astype(np.float32)) + 0.5
     )
-    encoding_weights = jnp.ones(n_encoding, dtype=jnp.float32)
     occupancy = jnp.ones(n_position, dtype=jnp.float32)
     mean_rate = 5.0
 
@@ -49,7 +48,6 @@ def tiling_test_data():
         "encoding_features": encoding_features,
         "decoding_features": decoding_features,
         "waveform_stds": waveform_stds,
-        "encoding_weights": encoding_weights,
         "occupancy": occupancy,
         "mean_rate": mean_rate,
         "position_distance": position_distance,
@@ -157,7 +155,6 @@ def test_tiling_edge_cases():
     encoding_features = jnp.array(np.random.randn(n_enc, n_features).astype(np.float32))
     decoding_features = jnp.array(np.random.randn(n_dec, n_features).astype(np.float32))
     waveform_stds = jnp.array([1.0, 1.0])
-    encoding_weights = jnp.ones(n_enc, dtype=jnp.float32)
     occupancy = jnp.ones(n_pos, dtype=jnp.float32)
     log_position_distance = jnp.array(np.random.randn(n_enc, n_pos).astype(np.float32))
     mean_rate = 5.0
@@ -248,7 +245,6 @@ def test_tiling_very_large_grid():
     waveform_stds = jnp.array(
         np.abs(np.random.randn(n_features).astype(np.float32)) + 0.5
     )
-    encoding_weights = jnp.ones(n_enc, dtype=jnp.float32)
     occupancy = jnp.ones(n_pos, dtype=jnp.float32)
     log_position_distance = jnp.array(np.random.randn(n_enc, n_pos).astype(np.float32))
     mean_rate = 5.0

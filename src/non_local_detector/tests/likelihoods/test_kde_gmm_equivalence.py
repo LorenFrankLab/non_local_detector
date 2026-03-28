@@ -11,15 +11,17 @@ import numpy as np
 import pytest
 
 from non_local_detector.environment import Environment
-from non_local_detector.likelihoods.clusterless_kde import (
-    fit_clusterless_kde_encoding_model,
-    predict_clusterless_kde_log_likelihood,
-)
 from non_local_detector.likelihoods.clusterless_gmm import (
+    _gmm_density,
     _gmm_logp,
     predict_clusterless_gmm_log_likelihood,
 )
-from non_local_detector.likelihoods.common import get_position_at_time
+from non_local_detector.likelihoods.clusterless_kde import (
+    fit_clusterless_kde_encoding_model,
+    kde_distance,
+    predict_clusterless_kde_log_likelihood,
+)
+from non_local_detector.likelihoods.common import EPS
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _compute_precision_cholesky,
@@ -50,10 +52,8 @@ def _make_kde_matched_gmm(
     bandwidths = jnp.asarray(bandwidths)
 
     weights = jnp.ones(n_components) / n_components
-    # Full covariance: (K, D, D) diagonal matrices
-    covariances = jnp.zeros((n_components, n_features, n_features))
-    for i in range(n_components):
-        covariances = covariances.at[i].set(jnp.diag(bandwidths**2))
+    # Full covariance: (K, D, D) — same diagonal matrix for each component
+    covariances = jnp.tile(jnp.diag(bandwidths**2)[None], (n_components, 1, 1))
 
     precisions_chol = _compute_precision_cholesky(covariances, "full")
 
@@ -134,15 +134,18 @@ def test_kde_gmm_density_equivalence(equivalence_data):
     enc_features = kde_enc["encoding_spike_waveform_features"][0]  # (n_spikes, 2)
 
     # Construct joint samples: [position, waveform_features]
-    joint_means = jnp.concatenate([enc_positions, enc_features], axis=1)  # (n_spikes, 3)
-    n_pos_dims = enc_positions.shape[1]
+    joint_means = jnp.concatenate(
+        [enc_positions, enc_features], axis=1
+    )  # (n_spikes, 3)
     n_mark_dims = enc_features.shape[1]
 
     # Bandwidth vector: [position_std, waveform_std, waveform_std]
-    bandwidths = jnp.concatenate([
-        jnp.asarray(kde_enc["position_std"]),
-        jnp.full(n_mark_dims, waveform_std),
-    ])
+    bandwidths = jnp.concatenate(
+        [
+            jnp.asarray(kde_enc["position_std"]),
+            jnp.full(n_mark_dims, waveform_std),
+        ]
+    )
 
     # Build bandwidth-matched joint GMM (one component per spike)
     joint_gmm = _make_kde_matched_gmm(np.asarray(joint_means), np.asarray(bandwidths))
@@ -180,8 +183,6 @@ def test_kde_gmm_density_equivalence(equivalence_data):
         # KDE: marginal_density = (1/N) * Σ_i K_mark(m, m_i) * K_pos(x, x_i)
         # This is what estimate_log_joint_mark_intensity computes before the
         # mean_rate/occupancy division
-        from non_local_detector.likelihoods.clusterless_kde import kde_distance
-
         pos_distance = kde_distance(
             interior_bins, enc_positions, kde_enc["position_std"]
         )  # (n_spikes, n_bins)
@@ -259,10 +260,12 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data):
     n_mark_dims = enc_features.shape[1]
 
     joint_means = jnp.concatenate([enc_positions, enc_features], axis=1)
-    bandwidths = jnp.concatenate([
-        jnp.asarray(kde_enc["position_std"]),
-        jnp.full(n_mark_dims, waveform_std),
-    ])
+    bandwidths = jnp.concatenate(
+        [
+            jnp.asarray(kde_enc["position_std"]),
+            jnp.full(n_mark_dims, waveform_std),
+        ]
+    )
 
     joint_gmm = _make_kde_matched_gmm(np.asarray(joint_means), np.asarray(bandwidths))
     # Occupancy GMM: one component per position sample (matches KDE occupancy)
@@ -280,11 +283,8 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data):
     occupancy = jnp.exp(log_occupancy)
 
     # Compute GPI: mean_rate * gpi_density / occupancy
-    from non_local_detector.likelihoods.clusterless_gmm import _gmm_density
-
     gpi_density = _gmm_density(gpi_gmm, interior_bins)
     mean_rate = kde_enc["mean_rates"][0]
-    from non_local_detector.likelihoods.common import EPS
 
     summed_gpi = jnp.clip(
         mean_rate * jnp.where(occupancy > 0.0, gpi_density / occupancy, EPS),

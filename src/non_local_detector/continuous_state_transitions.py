@@ -173,6 +173,13 @@ class RandomWalk:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized transition probability matrix.
         """
+        if self.direction is not None and self.direction.lower() not in (
+            "inward",
+            "outward",
+        ):
+            raise ValueError(
+                f"direction must be 'inward' or 'outward', got '{self.direction}'"
+            )
         self.environment = environments[environments.index(self.environment_name)]
         if self.environment.track_graph is None:
             transition_matrix = self._handle_no_track_graph()

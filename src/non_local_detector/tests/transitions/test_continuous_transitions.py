@@ -79,6 +79,18 @@ def test_random_walk_with_directional_constraints(make_env_1d):
     )
 
 
+def test_random_walk_invalid_direction_raises(make_env_1d):
+    """Invalid direction string should raise ValueError."""
+    env = make_env_1d(n_bins=11)
+    rw = RandomWalk(
+        environment_name=env.environment_name,
+        movement_var=3.0,
+        direction="sideways",
+    )
+    with pytest.raises(ValueError, match="direction must be 'inward' or 'outward'"):
+        rw.make_state_transition((env,))
+
+
 def test_identity_transition_is_identity_masked(make_env_1d):
     env = make_env_1d(n_bins=10)
     envs = (env,)
