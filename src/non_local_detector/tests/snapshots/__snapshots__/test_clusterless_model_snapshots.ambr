@@ -111,3 +111,63 @@
     ]),
   })
 # ---
+# name: test_nonlocal_clusterless_detector_snapshot[clusterless_kde-algorithm_params0][posterior_summary]
+  dict({
+    'dtype': 'float32',
+    'first_5': list([
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+    ]),
+    'last_5': list([
+      0.00042768349521793425,
+      0.0004336920683272183,
+      0.00043866655323654413,
+      0.00044252403313294053,
+      0.0004453687579371035,
+    ]),
+    'max': 1.0,
+    'mean': 0.0058823530562222,
+    'min': 0.0,
+    'shape': tuple(
+      500,
+      170,
+    ),
+    'std': 0.0755784809589386,
+    'sum': 500.0,
+  })
+# ---
+# name: test_nonlocal_clusterless_detector_snapshot[clusterless_kde-algorithm_params0][state_probabilities]
+  dict({
+    'max_per_state': dict({
+      'Local': 1.0,
+      'No-Spike': 0.1280643194913864,
+      'Non-Local Continuous': 0.036681897938251495,
+      'Non-Local Fragmented': 0.032924018800258636,
+    }),
+    'mean_per_state': dict({
+      'Local': 0.9878535866737366,
+      'No-Spike': 0.007629738189280033,
+      'Non-Local Continuous': 0.0031034364365041256,
+      'Non-Local Fragmented': 0.0014132480137050152,
+    }),
+    'min_per_state': dict({
+      'Local': 0.8023298382759094,
+      'No-Spike': 0.0,
+      'Non-Local Continuous': 0.0,
+      'Non-Local Fragmented': 0.0,
+    }),
+    'shape': tuple(
+      500,
+      4,
+    ),
+    'states': list([
+      np.str_('Local'),
+      np.str_('No-Spike'),
+      np.str_('Non-Local Continuous'),
+      np.str_('Non-Local Fragmented'),
+    ]),
+  })
+# ---
