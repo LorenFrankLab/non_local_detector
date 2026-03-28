@@ -12,7 +12,6 @@ from non_local_detector.likelihoods.clusterless_kde import (
     kde_distance,
     predict_clusterless_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.common import get_position_at_time, safe_divide
 
 
 def rng(seed=0):
@@ -151,64 +150,6 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
     assert jnp.all(jnp.isfinite(ll_local))
 
 
-@pytest.mark.skip(reason="Weights support removed - will be re-added in future")
-def test_clusterless_local_zero_spikes_equals_negative_gpi_sum(simple_1d_environment):
-    env = simple_1d_environment
-    t_pos = jnp.linspace(0.0, 10.0, 101)
-    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
-    weights = jnp.ones_like(t_pos)
-
-    enc_spike_times = jnp.array([2.0, 5.0, 7.5])
-    enc_feats = jnp.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.5]], dtype=float)
-
-    encoding = fit_clusterless_kde_encoding_model(
-        position_time=t_pos,
-        position=pos,
-        spike_times=[enc_spike_times],
-        spike_waveform_features=[enc_feats],
-        environment=env,
-        weights=weights,
-        sampling_frequency=10,
-        position_std=np.sqrt(1.0),
-        waveform_std=1.0,
-        block_size=8,
-        disable_progress_bar=True,
-    )
-
-    t_edges = jnp.linspace(0.0, 10.0, 6)
-    empty_spikes = [jnp.array([])]
-    empty_feats = [jnp.zeros((0, 2))]
-    ll_local = predict_clusterless_kde_log_likelihood(
-        time=t_edges,
-        position_time=t_pos,
-        position=pos,
-        spike_times=empty_spikes,
-        spike_waveform_features=empty_feats,
-        occupancy=encoding["occupancy"],
-        occupancy_model=encoding["occupancy_model"],
-        gpi_models=encoding["gpi_models"],
-        encoding_spike_waveform_features=encoding["encoding_spike_waveform_features"],
-        encoding_positions=encoding["encoding_positions"],
-        encoding_spike_weights=encoding["encoding_spike_weights"],
-        environment=env,
-        mean_rates=jnp.asarray(encoding["mean_rates"]),
-        summed_ground_process_intensity=encoding["summed_ground_process_intensity"],
-        position_std=jnp.asarray(encoding["position_std"]),
-        waveform_std=jnp.asarray(encoding["waveform_std"]),
-        is_local=True,
-        block_size=8,
-        disable_progress_bar=True,
-    )
-
-    interpolated_position = get_position_at_time(t_pos, pos, t_edges, env)
-    occupancy_at_time = encoding["occupancy_model"].predict(interpolated_position)
-    expected = -encoding["mean_rates"][0] * safe_divide(
-        encoding["gpi_models"][0].predict(interpolated_position), occupancy_at_time
-    )
-    expected = jnp.expand_dims(expected, axis=1)
-    assert jnp.allclose(ll_local, expected, rtol=1e-5, atol=1e-6)
-
-
 def test_get_spike_time_bin_ind_unsorted_and_interior_edges():
     edges = np.array([0.0, 1.0, 2.0, 3.0])
     spikes = np.array(
@@ -231,45 +172,6 @@ def test_fit_clusterless_kde_raises_without_place_grid():
             spike_waveform_features=[jnp.array([[0.0, 1.0]])],
             environment=env,
         )
-
-
-@pytest.mark.skip(reason="Weights support removed - will be re-added in future")
-def test_encoding_spike_weights_and_mean_rates_match_interpolation(
-    simple_1d_environment,
-):
-    env = simple_1d_environment
-    t_pos = jnp.linspace(0.0, 10.0, 101)
-    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
-    # weights ramp from 0 to 1
-    weights = (t_pos - t_pos.min()) / (t_pos.max() - t_pos.min())
-
-    enc_spike_times = jnp.array([1.0, 3.0, 9.0])
-    enc_feats = jnp.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.5]], dtype=float)
-
-    encoding = fit_clusterless_kde_encoding_model(
-        position_time=t_pos,
-        position=pos,
-        spike_times=[enc_spike_times],
-        spike_waveform_features=[enc_feats],
-        environment=env,
-        weights=weights,
-        sampling_frequency=10,
-        position_std=np.sqrt(1.0),
-        waveform_std=1.0,
-        block_size=8,
-        disable_progress_bar=True,
-    )
-
-    # Interpolated weights at spike times should match returned encoding weights
-    expected_w = np.interp(enc_spike_times, t_pos, weights)
-    got_w = np.asarray(encoding["encoding_spike_weights"][0])
-    assert np.allclose(got_w, expected_w, rtol=1e-7, atol=1e-9)
-
-    # Mean rate = sum(weights_at_spikes) / sum(all weights)
-    expected_mean = expected_w.sum() / float(weights.sum())
-    assert np.allclose(
-        float(encoding["mean_rates"][0]), expected_mean, rtol=1e-7, atol=1e-9
-    )
 
 
 # ============================================================================
