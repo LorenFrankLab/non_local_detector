@@ -4,7 +4,6 @@ import numpy as np
 from jax.typing import ArrayLike
 
 
-
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
 def _normalize(
     u: ArrayLike, axis: int = 0, eps: float = 1e-15
@@ -226,7 +225,7 @@ def smoother(
         smoothed_probs = filtered_probs_t * (
             transition_matrix @ _divide_safe(smoothed_probs_next, predicted_probs)
         ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
-        smoothed_probs /= smoothed_probs.sum(keepdims=True)
+        smoothed_probs, _ = _normalize(smoothed_probs, axis=-1)
 
         return smoothed_probs, smoothed_probs
 
@@ -723,7 +722,7 @@ def smoother_covariate_dependent(
         smoothed_probs = filtered_probs_t * (
             transition_matrix @ _divide_safe(smoothed_probs_next, predicted_probs)
         ) * (t < n_time - 1) + filtered_probs_t * (t == n_time - 1)
-        smoothed_probs /= smoothed_probs.sum(keepdims=True)
+        smoothed_probs, _ = _normalize(smoothed_probs, axis=-1)
 
         return smoothed_probs, smoothed_probs
 
