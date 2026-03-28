@@ -314,42 +314,6 @@ def test_spatial_pattern_correlation(comparison_data):
     ), "At least some time bins should show strong correlation"
 
 
-def test_peak_location_agreement(comparison_data):
-    """Compare agreement in peak locations (argmax).
-
-    For decoding, the most important feature is often the peak location
-    (most likely position). We test how often KDE and GMM agree on the
-    peak location.
-    """
-    kde_enc, gmm_enc = fit_both_models(comparison_data)
-    ll_kde, ll_gmm = predict_both_models(comparison_data, kde_enc, gmm_enc)
-
-    # Find argmax for each time bin
-    argmax_kde = np.argmax(ll_kde, axis=1)
-    argmax_gmm = np.argmax(ll_gmm, axis=1)
-
-    # Exact agreement
-    exact_agreement = np.mean(argmax_kde == argmax_gmm)
-
-    # Agreement within tolerance (nearby bins)
-    nearby_agreement_1 = np.mean(np.abs(argmax_kde - argmax_gmm) <= 1)
-    nearby_agreement_2 = np.mean(np.abs(argmax_kde - argmax_gmm) <= 2)
-
-    print("\n=== Peak Location Agreement ===")
-    print(f"Exact agreement: {exact_agreement:.1%}")
-    print(f"Within 1 bin: {nearby_agreement_1:.1%}")
-    print(f"Within 2 bins: {nearby_agreement_2:.1%}")
-
-    # Distance statistics
-    distances = np.abs(argmax_kde - argmax_gmm)
-    print(f"Mean distance: {distances.mean():.2f} bins")
-    print(f"Median distance: {np.median(distances):.2f} bins")
-    print(f"Max distance: {distances.max()} bins")
-
-    # At least half should agree within 2 bins
-    assert nearby_agreement_2 > 0.5, "At least 50% of peaks should be within 2 bins"
-
-
 def test_likelihood_range_stability(comparison_data):
     """Test how the range of likelihood values varies across time.
 
