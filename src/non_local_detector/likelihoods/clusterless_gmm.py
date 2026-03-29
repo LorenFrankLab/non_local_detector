@@ -16,6 +16,7 @@ from track_linearization import get_linearized_position  # type: ignore[import-u
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import (
     EPS,
+    LOG_EPS,
     get_position_at_time,
     get_spike_time_bin_ind,
 )
@@ -566,7 +567,9 @@ def predict_clusterless_gmm_log_likelihood(
 
                 # GMM evaluation (not JIT-able)
                 joint_logp_flat = _gmm_logp(joint_gmm, eval_points)
-                joint_logp_block = joint_logp_flat.reshape(block_size, n_bins)
+                joint_logp_block = jnp.clip(
+                    joint_logp_flat.reshape(block_size, n_bins), a_min=LOG_EPS
+                )
 
                 # JIT-compiled update with larger boundary (better fusion)
                 log_likelihood = update_block_all_bins(
@@ -594,8 +597,11 @@ def predict_clusterless_gmm_log_likelihood(
                     )
 
                     # GMM evaluation (not JIT-able)
-                    joint_logp_tile = _gmm_logp(joint_gmm, eval_points_tile).reshape(
-                        block_size, n_tile
+                    joint_logp_tile = jnp.clip(
+                        _gmm_logp(joint_gmm, eval_points_tile).reshape(
+                            block_size, n_tile
+                        ),
+                        a_min=LOG_EPS,
                     )
 
                     # Accumulate this tile directly (no intermediate full array)
@@ -696,7 +702,9 @@ def compute_local_log_likelihood(
             eval_points = jnp.concatenate(
                 [pos_at_spike_time, elect_feats], axis=1
             )  # (n_spikes, P+M)
-            joint_logp = _gmm_logp(joint_gmm, eval_points)  # (n_spikes,)
+            joint_logp = jnp.clip(
+                _gmm_logp(joint_gmm, eval_points), a_min=LOG_EPS
+            )  # (n_spikes,)
             # log term: log(mean_rate) + log p(pos_t, mark_t) - log occupancy(pos_t)
             log_occ_at_spike_pos = _gmm_logp(
                 occupancy_model, pos_at_spike_time

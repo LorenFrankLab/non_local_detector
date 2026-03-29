@@ -78,6 +78,36 @@ class TestCenteredSoftmax:
         expected_ratio = np.exp(result)
         assert np.allclose(expected_ratio, [2.0, 3.0, 4.0])
 
+    def test_centered_softmax_inverse_with_zero_entry(self):
+        """Zero entries should produce finite output, not -inf or NaN."""
+        # Arrange - row with a zero probability (e.g., impossible transition)
+        y = np.asarray([0.5, 0.0, 0.3, 0.2])
+
+        # Act
+        result = centered_softmax_inverse(y)
+
+        # Assert - all values should be finite (no -inf from log(0))
+        assert np.all(np.isfinite(result)), f"Got non-finite values: {result}"
+
+    def test_centered_softmax_inverse_with_zero_last_entry(self):
+        """Zero in the last (centering) entry should produce finite output."""
+        # Arrange - the last entry is used as the centering denominator
+        y = np.asarray([0.5, 0.3, 0.2, 0.0])
+
+        # Act
+        result = centered_softmax_inverse(y)
+
+        # Assert - should be finite (clipped to tiny before log)
+        assert np.all(np.isfinite(result)), f"Got non-finite values: {result}"
+
+    def test_centered_softmax_inverse_with_zero_preserves_dtype(self):
+        """Guard should respect input dtype (float32 vs float64)."""
+        for dtype in [np.float32, np.float64]:
+            y = np.asarray([0.5, 0.0, 0.3, 0.2], dtype=dtype)
+            result = centered_softmax_inverse(y)
+            assert np.all(np.isfinite(result))
+            assert result.dtype == dtype
+
     def test_centered_softmax_roundtrip(self):
         """Forward then inverse should be identity."""
         # Arrange

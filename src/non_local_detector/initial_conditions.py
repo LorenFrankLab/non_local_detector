@@ -72,7 +72,9 @@ class UniformInitialConditions:
         if total > 0:
             initial_conditions /= total
         else:
-            initial_conditions = np.full_like(initial_conditions, 1.0 / len(initial_conditions))
+            initial_conditions = np.full_like(
+                initial_conditions, 1.0 / len(initial_conditions)
+            )
 
         return initial_conditions
 
