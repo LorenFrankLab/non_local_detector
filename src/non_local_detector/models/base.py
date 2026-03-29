@@ -238,6 +238,53 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.sampling_frequency = sampling_frequency
         self.no_spike_rate = no_spike_rate
 
+    def _compute_non_local_position_penalty(
+        self, time, position_time, position, environment
+    ):
+        """Compute position-dependent penalty for non-local states.
+
+        Returns a (n_time, n_interior_bins) array of log-likelihood penalties
+        that suppress non-local likelihood near the animal's current position.
+        The penalty is a negative Gaussian centered on the animal's position.
+
+        Parameters
+        ----------
+        time : jnp.ndarray, shape (n_time,)
+            Decoding time bins.
+        position_time : jnp.ndarray, shape (n_time_position,)
+            Position sampling times.
+        position : jnp.ndarray, shape (n_time_position, n_position_dims)
+            Position samples.
+        environment : Environment
+            The spatial environment with place_bin_centers_ and
+            is_track_interior_.
+
+        Returns
+        -------
+        penalty : jnp.ndarray, shape (n_time, n_interior_bins)
+            Negative penalty values (to be added to log-likelihood).
+        """
+        from non_local_detector.likelihoods.common import get_position_at_time
+
+        animal_pos = get_position_at_time(position_time, position, time, environment)
+        is_interior = environment.is_track_interior_.ravel()
+        bin_centers = environment.place_bin_centers_[is_interior]
+
+        # Compute squared distance between animal position and each bin
+        # animal_pos: (n_time, n_dims), bin_centers: (n_bins, n_dims)
+        if animal_pos.ndim == 1:
+            animal_pos = animal_pos[:, jnp.newaxis]
+        if bin_centers.ndim == 1:
+            bin_centers = bin_centers[:, jnp.newaxis]
+
+        dist_sq = jnp.sum(
+            (animal_pos[:, jnp.newaxis, :] - bin_centers[jnp.newaxis, :, :]) ** 2,
+            axis=-1,
+        )
+        return -self.non_local_position_penalty * jnp.exp(
+            -0.5 * dist_sq / (self.non_local_penalty_sigma**2)
+        )
+
     def _validate_initial_conditions(
         self,
         discrete_initial_conditions: np.ndarray,
@@ -2263,6 +2310,22 @@ class ClusterlessDetector(_DetectorBase):
                 # Set new likelihood values
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(result)
 
+        # Apply non-local position penalty if configured
+        non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
+        if non_local_penalty > 0:
+            env = (
+                self.environments[0]
+                if isinstance(self.environments, (list, tuple))
+                else self.environments
+            )
+            penalty = self._compute_non_local_position_penalty(
+                time, position_time, position, env
+            )
+            for state_id, obs in enumerate(self.observation_models):
+                if not obs.is_local and not obs.is_no_spike:
+                    is_state_bin = state_bin_masks[state_id]
+                    log_likelihood = log_likelihood.at[:, is_state_bin].add(penalty)
+
         # Apply missing data mask
         return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
 
@@ -3019,6 +3082,22 @@ class SortedSpikesDetector(_DetectorBase):
             else:
                 # Set new likelihood values
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(result)
+
+        # Apply non-local position penalty if configured
+        non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
+        if non_local_penalty > 0:
+            env = (
+                self.environments[0]
+                if isinstance(self.environments, (list, tuple))
+                else self.environments
+            )
+            penalty = self._compute_non_local_position_penalty(
+                time, position_time, position, env
+            )
+            for state_id, obs in enumerate(self.observation_models):
+                if not obs.is_local and not obs.is_no_spike:
+                    is_state_bin = state_bin_masks[state_id]
+                    log_likelihood = log_likelihood.at[:, is_state_bin].add(penalty)
 
         # Apply missing data mask
         is_missing = jnp.asarray(is_missing)

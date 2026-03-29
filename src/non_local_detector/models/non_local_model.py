@@ -93,6 +93,8 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
+        non_local_position_penalty: float = 0.0,
+        non_local_penalty_sigma: float = 1.0,
     ):
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
@@ -123,6 +125,8 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
             sampling_frequency,
             no_spike_rate,
         )
+        self.non_local_position_penalty = non_local_position_penalty
+        self.non_local_penalty_sigma = non_local_penalty_sigma
 
     @staticmethod
     def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
@@ -219,6 +223,8 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
+        non_local_position_penalty: float = 0.0,
+        non_local_penalty_sigma: float = 1.0,
     ):
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
@@ -249,6 +255,8 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
             sampling_frequency,
             no_spike_rate,
         )
+        self.non_local_position_penalty = non_local_position_penalty
+        self.non_local_penalty_sigma = non_local_penalty_sigma
 
     @staticmethod
     def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
