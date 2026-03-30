@@ -2633,7 +2633,7 @@ class ClusterlessDetector(_DetectorBase):
             "position": position,
             "spike_times": spike_times,
             "spike_waveform_features": spike_waveform_features,
-            "is_training": None,
+            "is_training": is_training,
             "encoding_group_labels": encoding_group_labels,
             "environment_labels": environment_labels,
         }
@@ -3336,7 +3336,7 @@ class SortedSpikesDetector(_DetectorBase):
             "position_time": position_time,
             "position": position,
             "spike_times": spike_times,
-            "is_training": None,
+            "is_training": is_training,
             "encoding_group_labels": encoding_group_labels,
             "environment_labels": environment_labels,
         }
