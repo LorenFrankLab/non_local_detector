@@ -304,16 +304,16 @@ def test_spatial_pattern_correlation(comparison_data):
     # Use Spearman (rank) rather than Pearson because the LOG_EPS floor on GMM
     # log-probabilities clamps extreme values, which can reduce linear correlation
     # while preserving the relative ordering of spatial bins.
-    assert (
-        spearman_corrs.mean() > 0.0
-    ), "Spatial patterns should have positive rank correlation on average"
+    assert spearman_corrs.mean() > 0.0, (
+        "Spatial patterns should have positive rank correlation on average"
+    )
 
     # Check that at least some time bins have moderate correlation
     moderate_corr_count = (np.abs(spearman_corrs) > 0.3).sum()
     print(f"Time bins with |ρ| > 0.3: {moderate_corr_count}/{len(spearman_corrs)}")
-    assert (
-        moderate_corr_count > 0
-    ), "At least some time bins should show moderate rank correlation"
+    assert moderate_corr_count > 0, (
+        "At least some time bins should show moderate rank correlation"
+    )
 
 
 def test_likelihood_range_stability(comparison_data):
@@ -435,9 +435,9 @@ def test_local_likelihood_comparison(comparison_data):
     assert np.all(np.isfinite(ll_gmm_np))
 
     # Check for any correlation (can be negative or positive)
-    assert (
-        np.abs(r_pearson) > 0.1 or np.abs(r_spearman) > 0.1
-    ), "Local likelihoods should have some correlation"
+    assert np.abs(r_pearson) > 0.1 or np.abs(r_spearman) > 0.1, (
+        "Local likelihoods should have some correlation"
+    )
 
 
 def test_parameter_sensitivity_kde(comparison_data):
@@ -473,9 +473,9 @@ def test_parameter_sensitivity_kde(comparison_data):
         print(f"Bandwidth={bw:.1f}: mean correlation={mean_corr:.3f}")
 
     # Correlation should vary with bandwidth
-    assert (
-        max(correlations) - min(correlations) > 0.1
-    ), "Bandwidth should affect correlation"
+    assert max(correlations) - min(correlations) > 0.1, (
+        "Bandwidth should affect correlation"
+    )
 
 
 @pytest.mark.skip(reason="Visualization test - run manually to generate plots")
