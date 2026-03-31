@@ -188,7 +188,10 @@ def fit_sorted_spikes_kde_encoding_model(
         except np.exceptions.AxisError:
             pass
 
-        mean_rates.append(weights_at_spike_times.sum() / weights.sum())
+        weight_sum = weights.sum()
+        mean_rates.append(
+            weights_at_spike_times.sum() / weight_sum if weight_sum > 0 else 0.0
+        )
         neuron_marginal_model = KDEModel(std=position_std, block_size=block_size).fit(
             get_position_at_time(
                 position_time, position, neuron_spike_times, environment
