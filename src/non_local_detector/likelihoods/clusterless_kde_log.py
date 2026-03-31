@@ -28,10 +28,11 @@ _COMPENSATED_LINEAR_MAX_FEATURES = 8
 def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
-    """Vectorized KDE distance using vmap (optimized version).
+    """Vectorized KDE distance computed via log-space for numerical stability.
 
-    Computes the product of per-dimension Gaussian kernels using vectorization
-    instead of Python for-loop, enabling full parallelization.
+    Computes the product of per-dimension Gaussian kernels by summing
+    log-Gaussian values and exponentiating, avoiding underflow that occurs
+    when multiplying many small per-dimension PDFs directly.
 
     Parameters
     ----------
@@ -52,19 +53,7 @@ def kde_distance(
     This function assumes inputs are valid (same dimensionality, positive std).
     No validation is performed here to maintain JIT compatibility.
     """
-
-    def gaussian_per_dim(eval_dim, sample_dim, sigma):
-        return gaussian_pdf(
-            eval_dim[None, :],  # shape (1, n_eval)
-            sample_dim[:, None],  # shape (n_samples, 1)
-            sigma,
-        )
-
-    # vmap over dimensions: produces (n_dims, n_samples, n_eval)
-    per_dim_distances = jax.vmap(gaussian_per_dim)(eval_points.T, samples.T, std)
-
-    # Product over dimensions: (n_samples, n_eval)
-    return jnp.prod(per_dim_distances, axis=0)
+    return jnp.exp(log_kde_distance(eval_points, samples, std))
 
 
 @jax.jit
