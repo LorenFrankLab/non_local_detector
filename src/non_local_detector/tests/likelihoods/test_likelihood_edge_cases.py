@@ -252,10 +252,6 @@ def test_sorted_glm_zero_spikes_all_neurons():
     assert not jnp.any(jnp.isnan(ll))
 
 
-@pytest.mark.xfail(
-    reason="Clusterless KDE produces NaN when all electrodes have zero spikes",
-    strict=True,
-)
 def test_clusterless_kde_zero_spikes_all_electrodes():
     """Clusterless KDE should handle zero spikes without crash."""
     env = _make_env_1d()

@@ -13,6 +13,7 @@ from non_local_detector.likelihoods.common import (
     gaussian_pdf,
     get_position_at_time,
     get_spike_time_bin_ind,
+    safe_log,
 )
 
 
@@ -81,7 +82,7 @@ def estimate_log_joint_mark_intensity(
     marginal_density = (
         spike_waveform_feature_distance.T @ position_distance / n_encoding_spikes
     )  # shape (n_decoding_spikes, n_position_bins)
-    return jnp.log(
+    return safe_log(
         mean_rate * jnp.where(occupancy > 0.0, marginal_density / occupancy, 0.0)
     )
 
@@ -551,7 +552,7 @@ def compute_local_log_likelihood(
         occupancy_at_spike_time = occupancy_model.predict(position_at_spike_time)
 
         log_likelihood += jax.ops.segment_sum(
-            jnp.log(
+            safe_log(
                 electrode_mean_rate
                 * jnp.where(
                     occupancy_at_spike_time > 0.0,

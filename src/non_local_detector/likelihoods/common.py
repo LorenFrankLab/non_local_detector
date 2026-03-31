@@ -143,7 +143,8 @@ def kde(
             jnp.expand_dims(dim_samples, axis=1),
             dim_std,
         )
-    return (weights @ distance) / jnp.sum(weights)
+    weight_sum = jnp.sum(weights)
+    return jnp.where(weight_sum > 0, (weights @ distance) / weight_sum, 0.0)
 
 
 def block_kde(

@@ -319,7 +319,9 @@ def get_firing_rate(
                 weights[is_spike.astype(bool) & not_nan_position], dtype=np.float32
             ),
         )
-        return np.spacing(1) + (mean_rate * marginal_density / occupancy)
+        return np.spacing(1) + (
+            mean_rate * np.where(occupancy > 0.0, marginal_density / occupancy, 0.0)
+        )
     else:
         return np.zeros_like(occupancy)
 
