@@ -236,9 +236,10 @@ def _compute_log_mark_kernel_gemm(
 
     # Combine: log K[i,j] = -0.5 * (y2[i] + x2[j] - 2*cross_term[j,i]) + log_norm_const
     # Note: We need (n_enc, n_dec) output, so transpose the cross term
-    logK_mark = log_norm_const - 0.5 * (
-        y2[:, None] + x2[None, :] - 2.0 * cross_term.T
-    )  # (n_enc, n_dec)
+    # Clamp squared distances to non-negative to avoid catastrophic cancellation
+    # when x ≈ y (the expanded GEMM form can produce small negative values).
+    sq_dist = jnp.maximum(y2[:, None] + x2[None, :] - 2.0 * cross_term.T, 0.0)
+    logK_mark = log_norm_const - 0.5 * sq_dist  # (n_enc, n_dec)
 
     return logK_mark
 
