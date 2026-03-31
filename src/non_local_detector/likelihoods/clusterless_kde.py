@@ -13,6 +13,7 @@ from non_local_detector.likelihoods.common import (
     gaussian_pdf,
     get_position_at_time,
     get_spike_time_bin_ind,
+    log_gaussian_pdf,
     safe_log,
 )
 
@@ -20,7 +21,10 @@ from non_local_detector.likelihoods.common import (
 def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
-    """Distance between evaluation points and samples using Gaussian kernel density
+    """Distance between evaluation points and samples using Gaussian kernel density.
+
+    Computed via log-space (sum of log-Gaussian PDFs) to avoid underflow when
+    multiplying many small per-dimension Gaussian PDFs directly.
 
     Parameters
     ----------
@@ -36,16 +40,16 @@ def kde_distance(
     distance : jnp.ndarray, shape (n_samples, n_eval_points)
 
     """
-    distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
+    log_distance = jnp.zeros((samples.shape[0], eval_points.shape[0]))
     for dim_eval_points, dim_samples, dim_std in zip(
         eval_points.T, samples.T, std, strict=True
     ):
-        distance *= gaussian_pdf(
+        log_distance += log_gaussian_pdf(
             jnp.expand_dims(dim_eval_points, axis=0),
             jnp.expand_dims(dim_samples, axis=1),
             dim_std,
         )
-    return distance
+    return jnp.exp(log_distance)
 
 
 def estimate_log_joint_mark_intensity(
