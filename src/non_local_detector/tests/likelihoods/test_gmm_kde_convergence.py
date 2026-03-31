@@ -108,9 +108,9 @@ def test_mathematical_formula_consistency(convergence_test_data):
     )
     print(f"Difference: {abs(kde_formula - gmm_formula):.10f}")
 
-    assert np.isclose(
-        kde_formula, gmm_formula, rtol=1e-10
-    ), "KDE and GMM formulas should be mathematically identical"
+    assert np.isclose(kde_formula, gmm_formula, rtol=1e-10), (
+        "KDE and GMM formulas should be mathematically identical"
+    )
 
 
 def test_ground_process_intensity_calculation(convergence_test_data):
@@ -200,9 +200,9 @@ def test_segment_sum_correctness(convergence_test_data):
     print(f"KDE result: {result_kde}")
     print(f"GMM result: {result_gmm}")
 
-    assert jnp.allclose(
-        result_kde, result_gmm
-    ), "segment_sum implementations should match"
+    assert jnp.allclose(result_kde, result_gmm), (
+        "segment_sum implementations should match"
+    )
 
 
 def test_log_space_operations(convergence_test_data):

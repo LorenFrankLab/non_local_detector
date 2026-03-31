@@ -26,9 +26,7 @@ def simple_fitted_detector():
         sampling_frequency,
         is_event,
         place_fields,
-    ) = make_simulated_data(
-        n_neurons=10
-    )  # Small for speed
+    ) = make_simulated_data(n_neurons=10)  # Small for speed
 
     detector = NonLocalSortedSpikesDetector(
         sorted_spikes_algorithm="sorted_spikes_kde",

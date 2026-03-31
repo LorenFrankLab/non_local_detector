@@ -266,9 +266,9 @@ def test_sorted_kde_vs_glm_place_field_peak_agreement(
     for i in range(data["n_neurons"]):
         peak_kde = np.argmax(pf_kde[i])
         peak_glm = np.argmax(pf_glm[i])
-        assert (
-            abs(int(peak_kde) - int(peak_glm)) <= 2
-        ), f"Neuron {i}: KDE peak at bin {peak_kde}, GLM peak at bin {peak_glm}"
+        assert abs(int(peak_kde) - int(peak_glm)) <= 2, (
+            f"Neuron {i}: KDE peak at bin {peak_kde}, GLM peak at bin {peak_glm}"
+        )
 
 
 def test_sorted_kde_vs_glm_place_field_correlation(cross_model_env, cross_model_data):
