@@ -594,8 +594,12 @@ def estimate_log_joint_mark_intensity(
             waveform_stds,
         )  # shape (n_encoding_spikes, n_decoding_spikes)
 
-        marginal_density = (
-            spike_waveform_feature_distance.T @ position_distance / n_encoding_spikes
+        # Double-where: substitute safe denominator, then select result
+        safe_n = jnp.where(n_encoding_spikes > 0, n_encoding_spikes, 1)
+        marginal_density = jnp.where(
+            n_encoding_spikes > 0,
+            spike_waveform_feature_distance.T @ position_distance / safe_n,
+            0.0,
         )  # shape (n_decoding_spikes, n_position_bins)
         # Use safe_log to avoid -inf from zero marginal_density or mean_rate
         return safe_log(
@@ -634,7 +638,9 @@ def estimate_log_joint_mark_intensity(
     n_dec = decoding_spike_waveform_features.shape[0]
 
     # Uniform weights: log(1/n) for each encoding spike
-    log_w = -jnp.log(float(n_encoding_spikes))  # n_encoding_spikes always > 0
+    # Use max(n, 1) to avoid log(0); when n=0 the result is unused
+    safe_n = jnp.where(n_encoding_spikes > 0, float(n_encoding_spikes), 1.0)
+    log_w = -jnp.log(safe_n)
 
     # If enc_tile_size specified, chunk over encoding spikes
     if enc_tile_size is not None and enc_tile_size < n_encoding_spikes:
