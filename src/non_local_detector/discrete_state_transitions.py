@@ -92,10 +92,12 @@ def estimate_joint_distribution(
     joint_distribution : np.ndarray, shape (n_time - 1, n_states, n_states)
 
     """
+    pred = predictive_distribution[1:]
+    safe_pred = np.where(np.isclose(pred, 0.0), 1.0, pred)
     relative_distribution = np.where(
-        np.isclose(predictive_distribution[1:], 0.0),
+        np.isclose(pred, 0.0),
         0.0,
-        acausal_posterior[1:] / predictive_distribution[1:],
+        acausal_posterior[1:] / safe_pred,
     )[:, np.newaxis]
 
     if transition_matrix.ndim == 2:

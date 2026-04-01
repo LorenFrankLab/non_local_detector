@@ -19,6 +19,7 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     get_position_at_time,
     get_spike_time_bin_ind,
+    safe_log,
 )
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 
@@ -499,7 +500,7 @@ def predict_clusterless_gmm_log_likelihood(
         n_spikes = elect_feats.shape[0]
 
         # Precompute log(mean_rate) outside loop
-        log_mean_rate = jnp.log(mean_rate)
+        log_mean_rate = safe_log(mean_rate, eps=EPS)
 
         # Larger JIT boundary: include log contribution computation and accumulation
         # This reduces dispatch overhead and helps XLA fuse operations
@@ -715,7 +716,7 @@ def compute_local_log_likelihood(
                 occupancy_model, pos_at_spike_time
             )  # (n_spikes,)
             terms = (
-                jnp.log(mean_rate) + joint_logp - log_occ_at_spike_pos
+                safe_log(mean_rate, eps=EPS) + joint_logp - log_occ_at_spike_pos
             )  # (n_spikes,)
 
             seg_ids = get_spike_time_bin_ind(elect_times, time)  # (n_spikes,)

@@ -45,42 +45,54 @@ def simulated_data():
     }
 
 
+def _round_sig(x, sig=5):
+    """Round float to sig significant digits for cross-version stability."""
+    return float(np.format_float_positional(x, precision=sig, fractional=False))
+
+
 def serialize_xarray_summary(data_array):
     """Serialize xarray DataArray to summary statistics for snapshot comparison.
 
     For large arrays, we snapshot summary statistics rather than full data
-    to keep snapshot files manageable and readable.
+    to keep snapshot files manageable and readable. Values are rounded to
+    5 significant digits to tolerate cross-Python-version JAX FP differences.
     """
     arr = np.asarray(data_array)
+    r = _round_sig
     return {
         "shape": arr.shape,
         "dtype": str(arr.dtype),
-        "mean": float(np.mean(arr)),
-        "std": float(np.std(arr)),
-        "min": float(np.min(arr)),
-        "max": float(np.max(arr)),
-        "sum": float(np.sum(arr)),
+        "mean": r(np.mean(arr)),
+        "std": r(np.std(arr)),
+        "min": r(np.min(arr)),
+        "max": r(np.max(arr)),
+        "sum": r(np.sum(arr)),
         # Sample a few values for additional verification
-        "first_5": arr.ravel()[:5].tolist() if arr.size >= 5 else arr.ravel().tolist(),
-        "last_5": arr.ravel()[-5:].tolist() if arr.size >= 5 else arr.ravel().tolist(),
+        "first_5": [r(v) for v in arr.ravel()[:5]]
+        if arr.size >= 5
+        else [r(v) for v in arr.ravel()],
+        "last_5": [r(v) for v in arr.ravel()[-5:]]
+        if arr.size >= 5
+        else [r(v) for v in arr.ravel()],
     }
 
 
 def serialize_state_probabilities(state_probs):
     """Serialize state probabilities for snapshot comparison."""
+    r = _round_sig
     return {
         "shape": state_probs.shape,
         "states": list(state_probs.states.values),
         "mean_per_state": {
-            str(state): float(np.mean(state_probs.sel(states=state)))
+            str(state): r(np.mean(state_probs.sel(states=state)))
             for state in state_probs.states.values
         },
         "max_per_state": {
-            str(state): float(np.max(state_probs.sel(states=state)))
+            str(state): r(np.max(state_probs.sel(states=state)))
             for state in state_probs.states.values
         },
         "min_per_state": {
-            str(state): float(np.min(state_probs.sel(states=state)))
+            str(state): r(np.min(state_probs.sel(states=state)))
             for state in state_probs.states.values
         },
     }
@@ -229,11 +241,12 @@ def test_sorted_spikes_decoder_snapshot(
     )
 
     # Snapshot state probabilities (should be high for continuous state)
+    r = _round_sig
     state_probs_summary = {
         "shape": results.acausal_state_probabilities.shape,
-        "mean": float(np.mean(results.acausal_state_probabilities)),
-        "min": float(np.min(results.acausal_state_probabilities)),
-        "max": float(np.max(results.acausal_state_probabilities)),
+        "mean": r(np.mean(results.acausal_state_probabilities)),
+        "min": r(np.min(results.acausal_state_probabilities)),
+        "max": r(np.max(results.acausal_state_probabilities)),
     }
     assert state_probs_summary == snapshot(name="state_probabilities")
 
@@ -310,11 +323,12 @@ def test_detector_encoding_model_snapshot(
 
     # Snapshot place fields summary
     place_fields = enc_model["place_fields"]
+    r = _round_sig
     place_fields_summary = {
         "n_neurons": len(place_fields),
         "place_field_shape": place_fields[0].shape if len(place_fields) > 0 else None,
-        "mean_rates": [float(np.mean(pf)) for pf in place_fields[:5]],  # First 5
-        "max_rates": [float(np.max(pf)) for pf in place_fields[:5]],
+        "mean_rates": [r(np.mean(pf)) for pf in place_fields[:5]],  # First 5
+        "max_rates": [r(np.max(pf)) for pf in place_fields[:5]],
         "argmax_positions": [int(np.argmax(pf)) for pf in place_fields[:5]],
     }
     assert place_fields_summary == snapshot(name="place_fields_summary")
@@ -322,9 +336,9 @@ def test_detector_encoding_model_snapshot(
     # Snapshot occupancy
     occupancy_summary = {
         "shape": enc_model["occupancy"].shape,
-        "mean": float(np.mean(enc_model["occupancy"])),
-        "min": float(np.min(enc_model["occupancy"])),
-        "max": float(np.max(enc_model["occupancy"])),
-        "sum": float(np.sum(enc_model["occupancy"])),
+        "mean": r(np.mean(enc_model["occupancy"])),
+        "min": r(np.min(enc_model["occupancy"])),
+        "max": r(np.max(enc_model["occupancy"])),
+        "sum": r(np.sum(enc_model["occupancy"])),
     }
     assert occupancy_summary == snapshot(name="occupancy_summary")

@@ -179,6 +179,11 @@ def test_fit_clusterless_kde_raises_without_place_grid():
 # ============================================================================
 
 
+def _round_sig(x, sig=5):
+    """Round float to sig significant digits for cross-version stability."""
+    return float(np.format_float_positional(x, precision=sig, fractional=False))
+
+
 def serialize_encoding_model_summary(encoding: dict) -> dict:
     """Serialize encoding model to summary statistics for snapshot comparison.
 
@@ -192,21 +197,22 @@ def serialize_encoding_model_summary(encoding: dict) -> dict:
     summary : dict
         Summary statistics suitable for snapshot comparison
     """
+    r = _round_sig
     return {
         "occupancy_stats": {
             "shape": encoding["occupancy"].shape,
-            "mean": float(np.mean(encoding["occupancy"])),
-            "std": float(np.std(encoding["occupancy"])),
-            "min": float(np.min(encoding["occupancy"])),
-            "max": float(np.max(encoding["occupancy"])),
+            "mean": r(np.mean(encoding["occupancy"])),
+            "std": r(np.std(encoding["occupancy"])),
+            "min": r(np.min(encoding["occupancy"])),
+            "max": r(np.max(encoding["occupancy"])),
         },
-        "mean_rates": [float(r) for r in encoding["mean_rates"]],
+        "mean_rates": [r(v) for v in encoding["mean_rates"]],
         "summed_ground_process_intensity_stats": {
             "shape": encoding["summed_ground_process_intensity"].shape,
-            "mean": float(np.mean(encoding["summed_ground_process_intensity"])),
-            "std": float(np.std(encoding["summed_ground_process_intensity"])),
-            "min": float(np.min(encoding["summed_ground_process_intensity"])),
-            "max": float(np.max(encoding["summed_ground_process_intensity"])),
+            "mean": r(np.mean(encoding["summed_ground_process_intensity"])),
+            "std": r(np.std(encoding["summed_ground_process_intensity"])),
+            "min": r(np.min(encoding["summed_ground_process_intensity"])),
+            "max": r(np.max(encoding["summed_ground_process_intensity"])),
         },
         "n_electrodes": len(encoding["encoding_spike_waveform_features"]),
         "n_encoding_spikes_per_electrode": [
@@ -230,16 +236,21 @@ def serialize_log_likelihood_summary(log_likelihood: jnp.ndarray) -> dict:
         Summary statistics suitable for snapshot comparison
     """
     arr = np.asarray(log_likelihood)
+    r = _round_sig
     return {
         "shape": arr.shape,
         "dtype": str(arr.dtype),
-        "mean": float(np.mean(arr)),
-        "std": float(np.std(arr)),
-        "min": float(np.min(arr)),
-        "max": float(np.max(arr)),
-        "sum": float(np.sum(arr)),
-        "first_5": arr.ravel()[:5].tolist() if arr.size >= 5 else arr.ravel().tolist(),
-        "last_5": arr.ravel()[-5:].tolist() if arr.size >= 5 else arr.ravel().tolist(),
+        "mean": r(np.mean(arr)),
+        "std": r(np.std(arr)),
+        "min": r(np.min(arr)),
+        "max": r(np.max(arr)),
+        "sum": r(np.sum(arr)),
+        "first_5": [r(v) for v in arr.ravel()[:5]]
+        if arr.size >= 5
+        else [r(v) for v in arr.ravel()],
+        "last_5": [r(v) for v in arr.ravel()[-5:]]
+        if arr.size >= 5
+        else [r(v) for v in arr.ravel()],
     }
 
 
