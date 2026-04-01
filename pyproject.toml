@@ -50,7 +50,6 @@ test = [
     "ruff",
     "mypy",
     "black",
-    "syrupy",
 ]
 dev = [
     "pytest",
@@ -59,7 +58,6 @@ dev = [
     "ruff",
     "mypy",
     "black",
-    "syrupy",
 ]
 gpu = ["jax[cuda]"]
 viz = ["sortingview"]
@@ -163,5 +161,4 @@ markers = [
     "integration: marks integration tests",
     "unit: marks unit tests",
     "property: marks property-based tests",
-    "snapshot: marks snapshot tests for regression detection",
 ]
