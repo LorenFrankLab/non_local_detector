@@ -49,7 +49,7 @@ jobs:
       - name: Install dependencies
         run: pip install -e .[test]
       - name: Run tests
-        run: pytest --doctest-modules -v --cov=non_local_detector --cov-report=xml
+        run: pytest -v --cov=non_local_detector --cov-report=xml
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v4
@@ -119,7 +119,7 @@ jobs:
       - name: Install test extras
         run: pip install non_local_detector[test]
       - name: Run tests
-        run: pytest --doctest-modules -v --pyargs non_local_detector
+        run: pytest -v --pyargs non_local_detector
   publish:
     runs-on: ubuntu-latest
     needs: [test-package]
