@@ -40,37 +40,52 @@ def clusterless_simulated_data():
     }
 
 
+def _round_sig(x, sig=5):
+    """Round float to sig significant digits for cross-version stability."""
+    return float(np.format_float_positional(x, precision=sig, fractional=False))
+
+
 def serialize_xarray_summary(data_array):
-    """Serialize xarray DataArray to summary statistics."""
+    """Serialize xarray DataArray to summary statistics.
+
+    Values are rounded to 5 significant digits to tolerate cross-Python-version
+    JAX floating-point differences.
+    """
     arr = np.asarray(data_array)
+    r = _round_sig
     return {
         "shape": arr.shape,
         "dtype": str(arr.dtype),
-        "mean": float(np.mean(arr)),
-        "std": float(np.std(arr)),
-        "min": float(np.min(arr)),
-        "max": float(np.max(arr)),
-        "sum": float(np.sum(arr)),
-        "first_5": arr.ravel()[:5].tolist() if arr.size >= 5 else arr.ravel().tolist(),
-        "last_5": arr.ravel()[-5:].tolist() if arr.size >= 5 else arr.ravel().tolist(),
+        "mean": r(np.mean(arr)),
+        "std": r(np.std(arr)),
+        "min": r(np.min(arr)),
+        "max": r(np.max(arr)),
+        "sum": r(np.sum(arr)),
+        "first_5": [r(v) for v in arr.ravel()[:5]]
+        if arr.size >= 5
+        else [r(v) for v in arr.ravel()],
+        "last_5": [r(v) for v in arr.ravel()[-5:]]
+        if arr.size >= 5
+        else [r(v) for v in arr.ravel()],
     }
 
 
 def serialize_state_probabilities(state_probs):
     """Serialize state probabilities for snapshot comparison."""
+    r = _round_sig
     return {
         "shape": state_probs.shape,
         "states": list(state_probs.states.values),
         "mean_per_state": {
-            str(state): float(np.mean(state_probs.sel(states=state)))
+            str(state): r(np.mean(state_probs.sel(states=state)))
             for state in state_probs.states.values
         },
         "max_per_state": {
-            str(state): float(np.max(state_probs.sel(states=state)))
+            str(state): r(np.max(state_probs.sel(states=state)))
             for state in state_probs.states.values
         },
         "min_per_state": {
-            str(state): float(np.min(state_probs.sel(states=state)))
+            str(state): r(np.min(state_probs.sel(states=state)))
             for state in state_probs.states.values
         },
     }

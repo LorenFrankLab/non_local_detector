@@ -238,6 +238,11 @@ def test_fit_sorted_spikes_kde_raises_without_place_grid():
 # ============================================================================
 
 
+def _round_sig(x, sig=5):
+    """Round float to sig significant digits for cross-version stability."""
+    return float(np.format_float_positional(x, precision=sig, fractional=False))
+
+
 def serialize_encoding_model_summary(encoding: dict) -> dict:
     """Serialize encoding model to summary statistics for snapshot comparison.
 
@@ -251,28 +256,29 @@ def serialize_encoding_model_summary(encoding: dict) -> dict:
     summary : dict
         Summary statistics suitable for snapshot comparison
     """
+    r = _round_sig
     return {
         "occupancy_stats": {
             "shape": encoding["occupancy"].shape,
-            "mean": float(np.mean(encoding["occupancy"])),
-            "std": float(np.std(encoding["occupancy"])),
-            "min": float(np.min(encoding["occupancy"])),
-            "max": float(np.max(encoding["occupancy"])),
+            "mean": r(np.mean(encoding["occupancy"])),
+            "std": r(np.std(encoding["occupancy"])),
+            "min": r(np.min(encoding["occupancy"])),
+            "max": r(np.max(encoding["occupancy"])),
         },
-        "mean_rates": [float(r) for r in encoding["mean_rates"]],
+        "mean_rates": [r(v) for v in encoding["mean_rates"]],
         "place_fields_stats": {
             "shape": encoding["place_fields"].shape,
-            "mean": float(np.mean(encoding["place_fields"])),
-            "std": float(np.std(encoding["place_fields"])),
-            "min": float(np.min(encoding["place_fields"])),
-            "max": float(np.max(encoding["place_fields"])),
+            "mean": r(np.mean(encoding["place_fields"])),
+            "std": r(np.std(encoding["place_fields"])),
+            "min": r(np.min(encoding["place_fields"])),
+            "max": r(np.max(encoding["place_fields"])),
         },
         "no_spike_part_log_likelihood_stats": {
             "shape": encoding["no_spike_part_log_likelihood"].shape,
-            "mean": float(np.mean(encoding["no_spike_part_log_likelihood"])),
-            "std": float(np.std(encoding["no_spike_part_log_likelihood"])),
-            "min": float(np.min(encoding["no_spike_part_log_likelihood"])),
-            "max": float(np.max(encoding["no_spike_part_log_likelihood"])),
+            "mean": r(np.mean(encoding["no_spike_part_log_likelihood"])),
+            "std": r(np.std(encoding["no_spike_part_log_likelihood"])),
+            "min": r(np.min(encoding["no_spike_part_log_likelihood"])),
+            "max": r(np.max(encoding["no_spike_part_log_likelihood"])),
         },
         "n_neurons": len(encoding["marginal_models"]),
     }
@@ -292,16 +298,21 @@ def serialize_log_likelihood_summary(log_likelihood: jnp.ndarray) -> dict:
         Summary statistics suitable for snapshot comparison
     """
     arr = np.asarray(log_likelihood)
+    r = _round_sig
     return {
         "shape": arr.shape,
         "dtype": str(arr.dtype),
-        "mean": float(np.mean(arr)),
-        "std": float(np.std(arr)),
-        "min": float(np.min(arr)),
-        "max": float(np.max(arr)),
-        "sum": float(np.sum(arr)),
-        "first_5": arr.ravel()[:5].tolist() if arr.size >= 5 else arr.ravel().tolist(),
-        "last_5": arr.ravel()[-5:].tolist() if arr.size >= 5 else arr.ravel().tolist(),
+        "mean": r(np.mean(arr)),
+        "std": r(np.std(arr)),
+        "min": r(np.min(arr)),
+        "max": r(np.max(arr)),
+        "sum": r(np.sum(arr)),
+        "first_5": [r(v) for v in arr.ravel()[:5]]
+        if arr.size >= 5
+        else [r(v) for v in arr.ravel()],
+        "last_5": [r(v) for v in arr.ravel()[-5:]]
+        if arr.size >= 5
+        else [r(v) for v in arr.ravel()],
     }
 
 
