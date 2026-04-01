@@ -98,7 +98,9 @@ def _safe_log(p: ArrayLike) -> jnp.ndarray:
     log_p : jnp.ndarray
         Log probabilities with -inf for zeros
     """
-    return jnp.where(p > 0, jnp.log(p), -jnp.inf)
+    # Double-where: substitute safe value into operand first
+    safe_p = jnp.where(p > 0, p, 1.0)
+    return jnp.where(p > 0, jnp.log(safe_p), -jnp.inf)
 
 
 def _divide_safe(numerator: ArrayLike, denominator: ArrayLike) -> jnp.ndarray:
@@ -117,8 +119,10 @@ def _divide_safe(numerator: ArrayLike, denominator: ArrayLike) -> jnp.ndarray:
     result : jnp.ndarray
         Element-wise division result with safe handling of zero denominators.
     """
-    # Use jnp.where for conditional division - XLA can optimize this well
-    return jnp.where(denominator != 0.0, numerator / denominator, 0.0)
+    # Double-where: substitute safe denominator first, then select result.
+    # This avoids NaN in both forward pass and gradients.
+    safe_denominator = jnp.where(denominator != 0.0, denominator, 1.0)
+    return jnp.where(denominator != 0.0, numerator / safe_denominator, 0.0)
 
 
 def filter(
