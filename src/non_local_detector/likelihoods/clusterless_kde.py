@@ -567,7 +567,9 @@ def compute_local_log_likelihood(
                 * jnp.where(
                     occupancy_at_spike_time > 0.0,
                     marginal_density
-                    / jnp.where(occupancy_at_spike_time > 0.0, occupancy_at_spike_time, 1.0),
+                    / jnp.where(
+                        occupancy_at_spike_time > 0.0, occupancy_at_spike_time, 1.0
+                    ),
                     0.0,
                 )
             ),

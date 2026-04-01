@@ -209,8 +209,7 @@ def fit_sorted_spikes_kde_encoding_model(
                     mean_rates[-1]
                     * jnp.where(
                         occupancy > 0.0,
-                        marginal_density
-                        / jnp.where(occupancy > 0.0, occupancy, 1.0),
+                        marginal_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
                         EPS,
                     ),
                     min=EPS,
