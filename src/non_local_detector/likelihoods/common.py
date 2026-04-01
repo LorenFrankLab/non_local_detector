@@ -143,8 +143,11 @@ def kde(
             jnp.expand_dims(dim_samples, axis=1),
             dim_std,
         )
+    # Double-where pattern: substitute safe denominator, then select result.
+    # This avoids NaN in both forward pass and gradients.
     weight_sum = jnp.sum(weights)
-    return jnp.where(weight_sum > 0, (weights @ distance) / weight_sum, 0.0)
+    safe_weight_sum = jnp.where(weight_sum > 0, weight_sum, 1.0)
+    return jnp.where(weight_sum > 0, (weights @ distance) / safe_weight_sum, 0.0)
 
 
 def block_kde(

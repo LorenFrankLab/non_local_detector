@@ -79,8 +79,12 @@ def estimate_log_joint_mark_intensity(
     )  # shape (n_encoding_spikes, n_decoding_spikes)
 
     n_encoding_spikes = encoding_spike_waveform_features.shape[0]
-    marginal_density = (
-        spike_waveform_feature_distance.T @ position_distance / n_encoding_spikes
+    # Double-where: substitute safe denominator, then select result
+    safe_n = jnp.where(n_encoding_spikes > 0, n_encoding_spikes, 1)
+    marginal_density = jnp.where(
+        n_encoding_spikes > 0,
+        spike_waveform_feature_distance.T @ position_distance / safe_n,
+        0.0,
     )  # shape (n_decoding_spikes, n_position_bins)
     return safe_log(
         mean_rate * jnp.where(occupancy > 0.0, marginal_density / occupancy, 0.0)
