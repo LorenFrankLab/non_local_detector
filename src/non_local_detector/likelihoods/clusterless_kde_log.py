@@ -215,6 +215,8 @@ def _compute_log_mark_kernel_gemm(
     n_features = waveform_stds.shape[0]
 
     # Precompute inverse standard deviations and normalization constant
+    # Clip to avoid division by zero for degenerate feature dimensions
+    waveform_stds = jnp.clip(waveform_stds, a_min=EPS)
     inv_sigma = 1.0 / waveform_stds  # (n_features,)
 
     # Log normalization constant: -0.5 * (D * log(2π) + 2 * sum(log(sigma)))
@@ -1356,7 +1358,7 @@ def compute_local_log_likelihood(
 
         # Compute spike contribution in log-space:
         # log(rate * density / occupancy) = log(rate) + log(density) - log(occupancy)
-        log_mean_rate = jnp.log(electrode_mean_rate)
+        log_mean_rate = safe_log(electrode_mean_rate, eps=EPS)
         log_occupancy = safe_log(occupancy_at_spike_time, eps=EPS)
 
         # Spike contribution: sum over spikes in each time bin
