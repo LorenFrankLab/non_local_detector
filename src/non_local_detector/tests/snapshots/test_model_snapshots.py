@@ -241,11 +241,12 @@ def test_sorted_spikes_decoder_snapshot(
     )
 
     # Snapshot state probabilities (should be high for continuous state)
+    r = _round_sig
     state_probs_summary = {
         "shape": results.acausal_state_probabilities.shape,
-        "mean": float(np.mean(results.acausal_state_probabilities)),
-        "min": float(np.min(results.acausal_state_probabilities)),
-        "max": float(np.max(results.acausal_state_probabilities)),
+        "mean": r(np.mean(results.acausal_state_probabilities)),
+        "min": r(np.min(results.acausal_state_probabilities)),
+        "max": r(np.max(results.acausal_state_probabilities)),
     }
     assert state_probs_summary == snapshot(name="state_probabilities")
 
@@ -322,11 +323,12 @@ def test_detector_encoding_model_snapshot(
 
     # Snapshot place fields summary
     place_fields = enc_model["place_fields"]
+    r = _round_sig
     place_fields_summary = {
         "n_neurons": len(place_fields),
         "place_field_shape": place_fields[0].shape if len(place_fields) > 0 else None,
-        "mean_rates": [float(np.mean(pf)) for pf in place_fields[:5]],  # First 5
-        "max_rates": [float(np.max(pf)) for pf in place_fields[:5]],
+        "mean_rates": [r(np.mean(pf)) for pf in place_fields[:5]],  # First 5
+        "max_rates": [r(np.max(pf)) for pf in place_fields[:5]],
         "argmax_positions": [int(np.argmax(pf)) for pf in place_fields[:5]],
     }
     assert place_fields_summary == snapshot(name="place_fields_summary")
@@ -334,9 +336,9 @@ def test_detector_encoding_model_snapshot(
     # Snapshot occupancy
     occupancy_summary = {
         "shape": enc_model["occupancy"].shape,
-        "mean": float(np.mean(enc_model["occupancy"])),
-        "min": float(np.min(enc_model["occupancy"])),
-        "max": float(np.max(enc_model["occupancy"])),
-        "sum": float(np.sum(enc_model["occupancy"])),
+        "mean": r(np.mean(enc_model["occupancy"])),
+        "min": r(np.min(enc_model["occupancy"])),
+        "max": r(np.max(enc_model["occupancy"])),
+        "sum": r(np.sum(enc_model["occupancy"])),
     }
     assert occupancy_summary == snapshot(name="occupancy_summary")
