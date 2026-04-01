@@ -365,7 +365,10 @@ def safe_divide(numerator, denominator, eps=EPS, condition=None):
     if condition is None:
         condition = jnp.abs(denominator) < eps
 
-    return jnp.where(condition, eps, numerator / denominator)
+    # Double-where: substitute safe denominator first, then select result.
+    # This avoids NaN in both forward pass and gradients.
+    safe_denominator = jnp.where(condition, 1.0, denominator)
+    return jnp.where(condition, eps, numerator / safe_denominator)
 
 
 def safe_log(x, eps=EPS, condition=None):

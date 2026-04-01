@@ -598,7 +598,12 @@ def estimate_log_joint_mark_intensity(
         )  # shape (n_decoding_spikes, n_position_bins)
         # Use safe_log to avoid -inf from zero marginal_density or mean_rate
         return safe_log(
-            mean_rate * jnp.where(occupancy > 0.0, marginal_density / occupancy, EPS),
+            mean_rate
+            * jnp.where(
+                occupancy > 0.0,
+                marginal_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
+                EPS,
+            ),
             eps=EPS,
         )
 
@@ -971,7 +976,12 @@ def fit_clusterless_kde_encoding_model(
 
         gpi_density = gpi_model.predict(interior_place_bin_centers)
         summed_ground_process_intensity += jnp.clip(
-            mean_rates[-1] * jnp.where(occupancy > 0.0, gpi_density / occupancy, EPS),
+            mean_rates[-1]
+            * jnp.where(
+                occupancy > 0.0,
+                gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
+                EPS,
+            ),
             a_min=EPS,
             a_max=None,
         )
@@ -1354,7 +1364,8 @@ def compute_local_log_likelihood(
 
         log_likelihood -= electrode_mean_rate * jnp.where(
             occupancy > 0.0,
-            electrode_gpi_model.predict(interpolated_position) / occupancy,
+            electrode_gpi_model.predict(interpolated_position)
+            / jnp.where(occupancy > 0.0, occupancy, 1.0),
             0.0,
         )
     return log_likelihood[:, jnp.newaxis]
