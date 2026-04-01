@@ -32,8 +32,10 @@ SORTED_SPIKES_SEED = 54321
 NONLOCAL_SEED = 99999
 
 # Tolerances for comparison
-RTOL = 1e-10
-ATOL = 1e-10
+# Tolerances accommodate cross-Python-version JAX floating-point differences
+# (e.g., double-where pattern produces ~1e-8 differences across 3.10/3.11/3.12)
+RTOL = 1e-6
+ATOL = 1e-6
 
 
 @pytest.fixture
