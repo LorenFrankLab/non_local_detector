@@ -7,12 +7,28 @@ with a detailed report of what changed.
 
 import inspect
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 import non_local_detector as nld
+
+
+def _normalize_signature(sig: str) -> str:
+    """Normalize type representations in signatures for cross-version stability.
+
+    Different Python versions render types differently, e.g.:
+    - pandas.core.frame.DataFrame vs pandas.DataFrame
+    - jax.Array vs jax.jaxlib._jax.Array
+    """
+    # Normalize pandas internal paths
+    sig = re.sub(r"pandas\.core\.frame\.DataFrame", "pandas.DataFrame", sig)
+    sig = re.sub(r"pandas\.core\.series\.Series", "pandas.Series", sig)
+    # Normalize jax internal paths
+    sig = re.sub(r"jax\.jaxlib\._jax\.Array", "jax.Array", sig)
+    return sig
 
 # Path to API snapshots
 API_SNAPSHOT_DIR = Path(__file__).parent / "api_snapshots"
@@ -52,7 +68,7 @@ def extract_api_surface(module) -> dict[str, Any]:
                 method_obj = getattr(obj, method_name)
                 if callable(method_obj):
                     try:
-                        sig = str(inspect.signature(method_obj))
+                        sig = _normalize_signature(str(inspect.signature(method_obj)))
                         methods[method_name] = sig
                     except (ValueError, TypeError):
                         # Some built-in methods don't have signatures
@@ -66,7 +82,7 @@ def extract_api_surface(module) -> dict[str, Any]:
         elif inspect.isfunction(obj):
             try:
                 api["functions"][name] = {
-                    "signature": str(inspect.signature(obj)),
+                    "signature": _normalize_signature(str(inspect.signature(obj))),
                     "module": obj.__module__,
                 }
             except (ValueError, TypeError):

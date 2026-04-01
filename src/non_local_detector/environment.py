@@ -990,6 +990,7 @@ def _calculate_linear_position(
 
     """
     is_nan = np.isnan(track_segment_id)
+    track_segment_id = track_segment_id.copy()
     track_segment_id[is_nan] = 0  # need to check
     track_segment_id = track_segment_id.astype(int)
 
