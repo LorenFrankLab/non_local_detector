@@ -30,6 +30,7 @@ def _normalize_signature(sig: str) -> str:
     sig = re.sub(r"jax\.jaxlib\._jax\.Array", "jax.Array", sig)
     return sig
 
+
 # Path to API snapshots
 API_SNAPSHOT_DIR = Path(__file__).parent / "api_snapshots"
 API_SNAPSHOT_FILE = API_SNAPSHOT_DIR / "public_api.json"
