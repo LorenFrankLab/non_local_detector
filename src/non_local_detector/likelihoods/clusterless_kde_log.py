@@ -10,7 +10,6 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     KDEModel,
     block_log_kde,
-    gaussian_pdf,
     get_position_at_time,
     get_spike_time_bin_ind,
     log_gaussian_pdf,
