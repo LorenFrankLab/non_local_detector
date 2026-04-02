@@ -19,11 +19,12 @@ Before starting any task, check if a skill applies and use it:
 
 ### Environment Rules (ENFORCED BY HOOKS)
 
-- **Conda environment `non_local_detector` must be activated before Python commands**
-- Hooks will warn if wrong environment detected
-- Use full conda paths or activate environment first:
+- **Use `uv run` to execute all Python commands** (preferred)
+- Alternatively, the conda environment `non_local_detector` can be used
+- `uv run` automatically uses the project's `.venv` and `uv.lock` for reproducibility
   ```bash
-  conda activate non_local_detector
+  uv run pytest
+  uv run python script.py
   ```
 
 ### Guided Autonomy Boundaries
@@ -90,37 +91,35 @@ Only after user approval can snapshots be updated.
 
 ### Environment Setup
 
-The project uses a conda environment called `non_local_detector`. When running development commands, use the full path to the environment's executables:
+The project uses **uv** as the primary package manager. All commands should be run via `uv run`:
 
-- **Python**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/python`
-- **Pytest**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest`
-- **Ruff**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/ruff`
-
-Alternatively, activate the environment first:
 ```bash
-conda activate non_local_detector
+uv run python         # Run Python
+uv run pytest         # Run tests
+uv run ruff check     # Run linter
 ```
+
+Dependencies are locked in `uv.lock` for reproducibility. Conda environments (`environment.yml`) are maintained as an alternative for GPU setups.
 
 ### Installation
 
-- **Development setup**: `mamba create env -f environment.yml` (CPU) or `mamba create env -f environment_gpu.yml` (GPU)
+- **Development setup (recommended)**: `uv sync --extra dev`
+- **Conda alternative**: `mamba create env -f environment.yml` (CPU) or `mamba create env -f environment_gpu.yml` (GPU)
 - **From pip**: `pip install non_local_detector` (CPU) or `pip install non_local_detector[gpu]` (GPU with CUDA)
 
 ### Testing
 
-- **Run tests**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest` (uses pytest framework defined in pyproject.toml)
-- **Run single test**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest src/non_local_detector/tests/test_version_import.py`
-- **Test with coverage**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest --cov`
-- **Run snapshot tests**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -m snapshot` (regression tests using syrupy)
-- **Run golden regression tests**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest src/non_local_detector/tests/test_golden_regression.py -v`
-- **Update snapshots**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest --snapshot-update` (after intentional behavior changes)
+- **Run tests**: `uv run pytest`
+- **Run single test**: `uv run pytest src/non_local_detector/tests/test_version_import.py`
+- **Test with coverage**: `uv run pytest --cov`
+- **Run golden regression tests**: `uv run pytest src/non_local_detector/tests/test_golden_regression.py -v`
 
 ### Code Quality
 
-- **Lint and fix**: `ruff check --fix src/`
-- **Format code**: `ruff format src/`
-- **Type checking**: `mypy src/non_local_detector/`
-- **Check all quality tools**: `ruff check src/ && ruff format --check src/ && mypy src/non_local_detector/`
+- **Lint and fix**: `uv run ruff check --fix src/`
+- **Format code**: `uv run ruff format src/`
+- **Type checking**: `uv run mypy src/non_local_detector/`
+- **Check all quality tools**: `uv run ruff check src/ && uv run ruff format --check src/ && uv run mypy src/non_local_detector/`
 
 #### Quality Gates
 
@@ -133,7 +132,7 @@ The CI pipeline enforces code quality standards on all pull requests:
 
 **For Contributors**: Run the full quality check locally before pushing:
 ```bash
-ruff check src/ && ruff format --check src/ && pytest
+uv run ruff check src/ && uv run ruff format --check src/ && uv run pytest
 ```
 
 ### Building
@@ -192,13 +191,13 @@ After mathematical changes, run:
 
 ```bash
 # Property-based tests (verify invariants with many random inputs)
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -m property -v
+uv run pytest -m property -v
 
 # Golden regression (validate against real scientific data)
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest src/non_local_detector/tests/test_golden_regression.py -v
+uv run pytest src/non_local_detector/tests/test_golden_regression.py -v
 
 # Snapshot tests (detect any output changes)
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -m snapshot -v
+uv run pytest -m snapshot -v
 ```
 
 ## Workflow Selection Guide
