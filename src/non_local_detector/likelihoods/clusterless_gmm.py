@@ -150,9 +150,6 @@ class EncodingModel:
     """
     Container for everything the decoder needs (precomputed & cached).
 
-    DEPRECATED: This dataclass is not currently used. Use dictionary format instead.
-    Kept for future migration.
-
     Attributes
     ----------
     environment : Environment
