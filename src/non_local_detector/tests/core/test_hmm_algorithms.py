@@ -359,8 +359,9 @@ class TestSmoother:
         # Assert
         # At early times, smoother should be more biased toward state 0 than filter
         # (because of future strong evidence)
-        assert smoothed[0, 0] > filtered[0, 0] or jnp.allclose(
-            smoothed[0, 0], filtered[0, 0], atol=1e-5
+        assert smoothed[0, 0] > filtered[0, 0] + 1e-6, (
+            f"Smoother should incorporate future evidence: "
+            f"smoothed={float(smoothed[0, 0]):.6f}, filtered={float(filtered[0, 0]):.6f}"
         )
 
 

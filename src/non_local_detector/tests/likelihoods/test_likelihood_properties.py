@@ -459,9 +459,7 @@ class TestLocalNonlocalFiniteness:
         assert jnp.all(jnp.isfinite(ll_local)), (
             f"Local KDE LL contains NaN/Inf: {ll_local}"
         )
-        assert jnp.all(jnp.isfinite(ll_nonlocal)), (
-            "Non-local KDE LL contains NaN/Inf"
-        )
+        assert jnp.all(jnp.isfinite(ll_nonlocal)), "Non-local KDE LL contains NaN/Inf"
 
     @given(
         n_neurons=st.integers(min_value=1, max_value=3),
@@ -482,6 +480,4 @@ class TestLocalNonlocalFiniteness:
         assert jnp.all(jnp.isfinite(ll_local)), (
             f"Local GLM LL contains NaN/Inf: {ll_local}"
         )
-        assert jnp.all(jnp.isfinite(ll_nonlocal)), (
-            "Non-local GLM LL contains NaN/Inf"
-        )
+        assert jnp.all(jnp.isfinite(ll_nonlocal)), "Non-local GLM LL contains NaN/Inf"

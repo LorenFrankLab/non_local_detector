@@ -227,6 +227,7 @@ class TestProbabilityProperties:
 
         assert jnp.allclose(normalized_original, normalized_scaled, rtol=1e-6)
 
+    @pytest.mark.slow
     @settings(deadline=5000, max_examples=10)  # Decoder tests are slower
     @given(st.integers(min_value=42, max_value=9999))
     def test_posterior_probabilities_sum_to_one(self, seed):
@@ -292,6 +293,7 @@ class TestProbabilityProperties:
         posterior_sums = results.acausal_posterior.sum(dim="state_bins")
         assert np.allclose(posterior_sums.values, 1.0, atol=1e-10)
 
+    @pytest.mark.slow
     @settings(deadline=5000, max_examples=10)
     @given(st.integers(min_value=42, max_value=9999))
     def test_posteriors_nonnegative_and_bounded(self, seed):
@@ -354,6 +356,7 @@ class TestProbabilityProperties:
         assert np.all(results.acausal_posterior.values >= 0.0)
         assert np.all(results.acausal_posterior.values <= 1.0)
 
+    @pytest.mark.slow
     @settings(deadline=5000, max_examples=10)
     @given(st.integers(min_value=42, max_value=9999))
     def test_log_probabilities_finite(self, seed):

@@ -31,9 +31,12 @@ RANDOM_WALK_SEED = 33333
 SORTED_SPIKES_SEED = 54321
 NONLOCAL_SEED = 99999
 
-# Tolerances for comparison
-# Tolerances accommodate cross-Python-version JAX floating-point differences
-# (e.g., double-where pattern produces ~1e-8 differences across 3.10/3.11/3.12)
+# Tolerances for comparison.
+# These are intentionally looser than CLAUDE.md's 1e-10 standard for
+# same-environment refactoring comparisons. Golden data must survive
+# cross-Python-version CI (3.10/3.11/3.12/3.13) where JAX's XLA compilation
+# and double-where patterns produce ~1e-8 differences for identical algorithms.
+# 1e-6 catches meaningful regressions while allowing cross-version noise.
 RTOL = 1e-6
 ATOL = 1e-6
 

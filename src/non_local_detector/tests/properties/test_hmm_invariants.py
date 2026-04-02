@@ -228,9 +228,14 @@ class TestHMMInvariants:
         # (unless transition probabilities are extremely contradictory)
         expected_states = jnp.array([t % n_states for t in range(n_timesteps)])
 
-        # Check that most states match (allow for transition matrix influence)
+        # With 100 nats of evidence (~10^43 likelihood ratio), Viterbi should
+        # follow the observations at nearly every timestep regardless of
+        # transition matrix structure.
         match_ratio = jnp.mean(states == expected_states)
-        assert match_ratio >= 0.6  # At least 60% should match
+        assert match_ratio >= 0.95, (
+            f"With -100 log-likelihood penalty, Viterbi should follow "
+            f"deterministic evidence. Got match_ratio={float(match_ratio):.2f}"
+        )
 
     @given(stochastic_matrix(min_size=2, max_size=10))
     def test_transition_matrix_rows_sum_to_one(self, trans):
