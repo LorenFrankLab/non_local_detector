@@ -151,4 +151,5 @@ markers = [
     "integration: marks integration tests",
     "unit: marks unit tests",
     "property: marks property-based tests",
+    "snapshot: marks snapshot regression tests (update with --snapshot-update)",
 ]

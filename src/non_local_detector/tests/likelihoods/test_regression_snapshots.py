@@ -43,6 +43,7 @@ def interior_index_for_position(env: Environment, x: float) -> int:
     return int(np.where(interior_inds == full_idx)[0][0])
 
 
+@pytest.mark.snapshot
 def test_sorted_kde_nonlocal_argmax_snapshot(make_env_1d):
     # Environment and simple encoding centered near x=3.0
     env = make_env_1d(n_bins=11, name="env_sorted_snap")
@@ -98,6 +99,7 @@ def test_sorted_kde_nonlocal_argmax_snapshot(make_env_1d):
     assert np.sum(argmax_bins == pf_argmax) >= len(argmax_bins) - 1
 
 
+@pytest.mark.snapshot
 def test_sorted_kde_nonlocal_topk_ranking_snapshot(make_env_1d):
     # Same setup as above but verify local ranking structure around the mode
     env = make_env_1d(n_bins=11, name="env_sorted_snap_topk")
@@ -144,6 +146,7 @@ def test_sorted_kde_nonlocal_topk_ranking_snapshot(make_env_1d):
         assert topk == pf_top3
 
 
+@pytest.mark.snapshot
 def test_clusterless_kde_nonlocal_argmax_snapshot(make_env_1d):
     # Environment and encoding centered near x=7.0
     env = make_env_1d(n_bins=21, name="env_clusterless_snap")
@@ -207,6 +210,7 @@ def test_clusterless_kde_nonlocal_argmax_snapshot(make_env_1d):
     assert argmax_bin in ok_set
 
 
+@pytest.mark.snapshot
 def test_clusterless_kde_nonlocal_profile_monotone_decay_snapshot(make_env_1d):
     # Verify likelihood decays with distance from mode around the center
     env = make_env_1d(n_bins=31, name="env_clusterless_snap_profile")
