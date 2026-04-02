@@ -1433,7 +1433,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
         state_ind = self.state_ind_[is_track_interior]
         if self.discrete_state_transitions_.ndim == 2:
-            sequence_ind = most_likely_sequence(
+            sequence_ind, _ = most_likely_sequence(
                 time=time,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 transition_matrix=(
@@ -1447,7 +1447,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 n_chunks=n_chunks,
             )
         else:
-            sequence_ind = most_likely_sequence_covariate_dependent(
+            sequence_ind, _ = most_likely_sequence_covariate_dependent(
                 time=time,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
