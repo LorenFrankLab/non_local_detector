@@ -1359,6 +1359,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     local_state_weights = np.clip(
                         local_state_weights, min=1e-15, max=1.0
                     )
+                    # Align weights from decoding time grid to position_time
+                    position_time = self._encoding_model_data.get("position_time")
+                    if position_time is not None and len(local_state_weights) != len(
+                        position_time
+                    ):
+                        local_state_weights = np.interp(
+                            position_time, time, local_state_weights
+                        )
                     # Re-fit the encoding model using the posterior weights
                     self.fit_encoding_model(
                         **self._encoding_model_data,
@@ -2114,6 +2122,8 @@ class ClusterlessDetector(_DetectorBase):
         is_training = is_training[~is_nan]
         encoding_group_labels = encoding_group_labels[~is_nan]
         environment_labels = environment_labels[~is_nan]
+        if weights is not None:
+            weights = weights[~is_nan]
 
         kwargs = self.clusterless_algorithm_params
         if kwargs is None:
@@ -2235,14 +2245,21 @@ class ClusterlessDetector(_DetectorBase):
         log_likelihood : jnp.ndarray, shape (n_time, n_state_bins)
         """
         logger.info("Computing log likelihood...")
-        if position is None and np.any(
+        non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
+        needs_position = np.any(
             [obs.is_local for obs in self.observation_models]
-        ):
+        ) or non_local_penalty > 0
+        if position is None and needs_position:
+            reason = []
+            if np.any([obs.is_local for obs in self.observation_models]):
+                reason.append("local observation models")
+            if non_local_penalty > 0:
+                reason.append("non_local_position_penalty > 0")
             raise ValidationError(
-                "Missing required parameter: position for local observations",
+                f"Missing required parameter: position (needed for {', '.join(reason)})",
                 expected="position array with shape (n_time, n_dims)",
                 got="None",
-                hint="Local observation models require position data to compute likelihoods",
+                hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
                 example="    results = detector.predict(spikes=spikes_test, time=time_test, position=position_test)",
             )
 
@@ -2311,20 +2328,23 @@ class ClusterlessDetector(_DetectorBase):
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(result)
 
         # Apply non-local position penalty if configured
-        non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
         if non_local_penalty > 0:
-            env = (
-                self.environments[0]
-                if isinstance(self.environments, (list, tuple))
-                else self.environments
-            )
-            penalty = self._compute_non_local_position_penalty(
-                time, position_time, position, env
-            )
+            # Cache penalties per environment to avoid recomputation
+            env_penalties = {}
             for state_id, obs in enumerate(self.observation_models):
                 if not obs.is_local and not obs.is_no_spike:
+                    env_name = obs.environment_name
+                    if env_name not in env_penalties:
+                        env = self._get_environment_by_name(env_name)
+                        env_penalties[env_name] = (
+                            self._compute_non_local_position_penalty(
+                                time, position_time, position, env
+                            )
+                        )
                     is_state_bin = state_bin_masks[state_id]
-                    log_likelihood = log_likelihood.at[:, is_state_bin].add(penalty)
+                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
+                        env_penalties[env_name]
+                    )
 
         # Apply missing data mask
         return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
@@ -2898,6 +2918,8 @@ class SortedSpikesDetector(_DetectorBase):
         is_training = is_training[~is_nan]
         encoding_group_labels = encoding_group_labels[~is_nan]
         environment_labels = environment_labels[~is_nan]
+        if weights is not None:
+            weights = weights[~is_nan]
 
         kwargs = self.sorted_spikes_algorithm_params
         if kwargs is None:
@@ -2915,6 +2937,12 @@ class SortedSpikesDetector(_DetectorBase):
                 self.sorted_spikes_algorithm
             ]
             is_group = is_training & is_encoding & is_environment
+            if weights is not None:
+                # Zero out weights for non-group data so position array
+                # stays aligned with weights (required by KDE)
+                group_weights = np.where(is_group, weights, 0.0)
+            else:
+                group_weights = None
             self.encoding_model_[likelihood_name] = encoding_algorithm(
                 position_time=position_time,
                 position=position,
@@ -2923,7 +2951,7 @@ class SortedSpikesDetector(_DetectorBase):
                 ),
                 environment=environment,
                 sampling_frequency=self.sampling_frequency,
-                weights=weights[is_group] if weights is not None else None,
+                weights=group_weights,
                 **kwargs,
             )
 
@@ -3010,14 +3038,21 @@ class SortedSpikesDetector(_DetectorBase):
         logger.info("Computing log likelihood...")
         n_time = len(time)
 
-        if position is None and np.any(
+        non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
+        needs_position = np.any(
             [obs.is_local for obs in self.observation_models]
-        ):
+        ) or non_local_penalty > 0
+        if position is None and needs_position:
+            reason = []
+            if np.any([obs.is_local for obs in self.observation_models]):
+                reason.append("local observation models")
+            if non_local_penalty > 0:
+                reason.append("non_local_position_penalty > 0")
             raise ValidationError(
-                "Missing required parameter: position for local observations",
+                f"Missing required parameter: position (needed for {', '.join(reason)})",
                 expected="position array with shape (n_time, n_dims)",
                 got="None",
-                hint="Local observation models require position data to compute likelihoods",
+                hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
                 example="    results = detector.predict(spikes=spikes_test, time=time_test, position=position_test)",
             )
 
@@ -3084,20 +3119,23 @@ class SortedSpikesDetector(_DetectorBase):
                 log_likelihood = log_likelihood.at[:, is_state_bin].set(result)
 
         # Apply non-local position penalty if configured
-        non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
         if non_local_penalty > 0:
-            env = (
-                self.environments[0]
-                if isinstance(self.environments, (list, tuple))
-                else self.environments
-            )
-            penalty = self._compute_non_local_position_penalty(
-                time, position_time, position, env
-            )
+            # Cache penalties per environment to avoid recomputation
+            env_penalties = {}
             for state_id, obs in enumerate(self.observation_models):
                 if not obs.is_local and not obs.is_no_spike:
+                    env_name = obs.environment_name
+                    if env_name not in env_penalties:
+                        env = self._get_environment_by_name(env_name)
+                        env_penalties[env_name] = (
+                            self._compute_non_local_position_penalty(
+                                time, position_time, position, env
+                            )
+                        )
                     is_state_bin = state_bin_masks[state_id]
-                    log_likelihood = log_likelihood.at[:, is_state_bin].add(penalty)
+                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
+                        env_penalties[env_name]
+                    )
 
         # Apply missing data mask
         is_missing = jnp.asarray(is_missing)

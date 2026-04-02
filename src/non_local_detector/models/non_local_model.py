@@ -1,6 +1,7 @@
 import numpy as np
 import xarray as xr
 
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.models._defaults import (
     _initialize_params,
     _ModelDefaults,
@@ -20,6 +21,28 @@ from non_local_detector.types import (
     StateNames,
     Stickiness,
 )
+
+
+def _validate_penalty_params(
+    non_local_position_penalty: float, non_local_penalty_sigma: float
+) -> None:
+    """Validate non-local position penalty parameters."""
+    if non_local_position_penalty < 0:
+        raise ValidationError(
+            "non_local_position_penalty must be >= 0",
+            expected="non_local_position_penalty >= 0",
+            got=f"{non_local_position_penalty}",
+            hint="A negative penalty would reward non-local states near the animal's "
+            "position instead of suppressing them. Use 0.0 to disable the penalty.",
+        )
+    if non_local_penalty_sigma <= 0:
+        raise ValidationError(
+            "non_local_penalty_sigma must be > 0",
+            expected="non_local_penalty_sigma > 0",
+            got=f"{non_local_penalty_sigma}",
+            hint="Sigma controls the width of the Gaussian penalty and is used as a "
+            "divisor. A value <= 0 would cause divide-by-zero or invalid behavior.",
+        )
 
 
 class NonLocalSortedSpikesDetector(SortedSpikesDetector):
@@ -125,6 +148,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
             sampling_frequency,
             no_spike_rate,
         )
+        _validate_penalty_params(non_local_position_penalty, non_local_penalty_sigma)
         self.non_local_position_penalty = non_local_position_penalty
         self.non_local_penalty_sigma = non_local_penalty_sigma
 
@@ -255,6 +279,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
             sampling_frequency,
             no_spike_rate,
         )
+        _validate_penalty_params(non_local_position_penalty, non_local_penalty_sigma)
         self.non_local_position_penalty = non_local_position_penalty
         self.non_local_penalty_sigma = non_local_penalty_sigma
 
