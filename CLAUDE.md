@@ -33,7 +33,7 @@ Before starting any task, check if a skill applies and use it:
 - Run tests to check current behavior
 - Make code changes
 - Run tests to verify changes
-- Run quality checks (ruff, black, mypy)
+- Run quality checks (ruff, mypy)
 - Run numerical validation
 
 **YOU MUST ASK PERMISSION before:**
@@ -94,8 +94,7 @@ The project uses a conda environment called `non_local_detector`. When running d
 
 - **Python**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/python`
 - **Pytest**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest`
-- **Ruff**: Use ruff from another conda environment (e.g., `/Users/edeno/miniconda3/envs/spectral_connectivity/bin/ruff`)
-- **Black**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/black`
+- **Ruff**: `/Users/edeno/miniconda3/envs/non_local_detector/bin/ruff`
 
 Alternatively, activate the environment first:
 ```bash
@@ -119,22 +118,22 @@ conda activate non_local_detector
 ### Code Quality
 
 - **Lint and fix**: `ruff check --fix src/`
-- **Format code**: `ruff format src/` or `black src/`
+- **Format code**: `ruff format src/`
 - **Type checking**: `mypy src/non_local_detector/`
-- **Check all quality tools**: `ruff check src/ && ruff format --check src/ && black --check src/ && mypy src/non_local_detector/`
+- **Check all quality tools**: `ruff check src/ && ruff format --check src/ && mypy src/non_local_detector/`
 
 #### Quality Gates
 
 The CI pipeline enforces code quality standards on all pull requests:
 
 1. **Ruff Linting**: All code must pass `ruff check src/` with zero issues
-2. **Code Formatting**: Must pass both `ruff format --check src/` and `black --check src/`
+2. **Code Formatting**: Must pass `ruff format --check src/`
 3. **Type Checking**: `mypy` runs but currently allows errors (gradual adoption)
 4. **Tests**: All existing tests must pass
 
 **For Contributors**: Run the full quality check locally before pushing:
 ```bash
-ruff check src/ && ruff format --check src/ && black --check src/ && pytest
+ruff check src/ && ruff format --check src/ && pytest
 ```
 
 ### Building

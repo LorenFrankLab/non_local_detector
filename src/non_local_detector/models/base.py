@@ -2246,9 +2246,10 @@ class ClusterlessDetector(_DetectorBase):
         """
         logger.info("Computing log likelihood...")
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
-        needs_position = np.any(
-            [obs.is_local for obs in self.observation_models]
-        ) or non_local_penalty > 0
+        needs_position = (
+            np.any([obs.is_local for obs in self.observation_models])
+            or non_local_penalty > 0
+        )
         if position is None and needs_position:
             reason = []
             if np.any([obs.is_local for obs in self.observation_models]):
@@ -3039,9 +3040,10 @@ class SortedSpikesDetector(_DetectorBase):
         n_time = len(time)
 
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
-        needs_position = np.any(
-            [obs.is_local for obs in self.observation_models]
-        ) or non_local_penalty > 0
+        needs_position = (
+            np.any([obs.is_local for obs in self.observation_models])
+            or non_local_penalty > 0
+        )
         if position is None and needs_position:
             reason = []
             if np.any([obs.is_local for obs in self.observation_models]):

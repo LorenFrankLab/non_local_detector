@@ -21,6 +21,6 @@ dependencies:
 - matplotlib
 - seaborn
 - ipython
-- black
+- ruff
 - pytest
 - pytest-cov

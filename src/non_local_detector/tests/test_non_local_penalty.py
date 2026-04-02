@@ -31,17 +31,23 @@ class TestValidatePenaltyParams:
 
     def test_negative_penalty_raises(self):
         """Negative penalty should raise ValidationError."""
-        with pytest.raises(ValidationError, match="non_local_position_penalty must be >= 0"):
+        with pytest.raises(
+            ValidationError, match="non_local_position_penalty must be >= 0"
+        ):
             _validate_penalty_params(-1.0, 1.0)
 
     def test_zero_sigma_raises(self):
         """Zero sigma should raise ValidationError (divide-by-zero)."""
-        with pytest.raises(ValidationError, match="non_local_penalty_sigma must be > 0"):
+        with pytest.raises(
+            ValidationError, match="non_local_penalty_sigma must be > 0"
+        ):
             _validate_penalty_params(1.0, 0.0)
 
     def test_negative_sigma_raises(self):
         """Negative sigma should raise ValidationError."""
-        with pytest.raises(ValidationError, match="non_local_penalty_sigma must be > 0"):
+        with pytest.raises(
+            ValidationError, match="non_local_penalty_sigma must be > 0"
+        ):
             _validate_penalty_params(1.0, -1.0)
 
     def test_very_small_positive_sigma_passes(self):
