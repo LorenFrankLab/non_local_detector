@@ -4,7 +4,7 @@
 [![PyPI version](https://badge.fury.io/py/non-local-detector.svg)](https://badge.fury.io/py/non-local-detector)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 A Python package for decoding non-local neural activity from electrophysiological data using Bayesian inference with Hidden Markov Models (HMMs). This package specializes in detecting spatial replay events and decoding position from neural spike data.
 
