@@ -21,15 +21,15 @@ class TestKdeDistanceVectorized:
 
     def test_numerical_equivalence_2d(self):
         """Optimized version matches manual loop computation for 2D features."""
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
 
         # Test data
         n_eval = 50
         n_samples = 100
         n_dims = 2
 
-        eval_points = jnp.array(np.random.randn(n_eval, n_dims))
-        samples = jnp.array(np.random.randn(n_samples, n_dims))
+        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
+        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
         std = jnp.array([1.0, 1.5])
 
         # Reference: manual loop computation
@@ -51,12 +51,12 @@ class TestKdeDistanceVectorized:
 
     def test_numerical_equivalence_high_dim(self):
         """Vectorized version works for high-dimensional features (4D, 8D, 10D)."""
-        np.random.seed(123)
+        rng = np.random.default_rng(123)
 
         for n_dims in [4, 8, 10]:
-            eval_points = jnp.array(np.random.randn(30, n_dims))
-            samples = jnp.array(np.random.randn(50, n_dims))
-            std = jnp.array(np.random.uniform(0.5, 2.0, n_dims))
+            eval_points = jnp.array(rng.standard_normal((30, n_dims)))
+            samples = jnp.array(rng.standard_normal((50, n_dims)))
+            std = jnp.array(rng.uniform(0.5, 2.0, n_dims))
 
             # Reference
             distance_ref = jnp.ones((samples.shape[0], eval_points.shape[0]))
@@ -89,10 +89,11 @@ class TestKdeDistanceVectorized:
 
     def test_output_shape(self):
         """Optimized version produces correct output shape."""
+        rng = np.random.default_rng(0)
         n_eval, n_samples, n_dims = 25, 40, 3
 
-        eval_points = jnp.array(np.random.randn(n_eval, n_dims))
-        samples = jnp.array(np.random.randn(n_samples, n_dims))
+        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
+        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
         std = jnp.ones(n_dims)
 
         result = kde_distance(eval_points, samples, std)
@@ -115,14 +116,14 @@ class TestLogKdeDistanceVectorized:
 
     def test_numerical_equivalence_2d(self):
         """Optimized log version matches manual loop computation for 2D features."""
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
 
         n_eval = 50
         n_samples = 100
         n_dims = 2
 
-        eval_points = jnp.array(np.random.randn(n_eval, n_dims))
-        samples = jnp.array(np.random.randn(n_samples, n_dims))
+        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
+        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
         std = jnp.array([1.0, 1.5])
 
         # Reference: manual loop computation
@@ -144,12 +145,12 @@ class TestLogKdeDistanceVectorized:
 
     def test_numerical_equivalence_high_dim(self):
         """Optimized log version works for high-dimensional features."""
-        np.random.seed(456)
+        rng = np.random.default_rng(456)
 
         for n_dims in [4, 8, 10]:
-            eval_points = jnp.array(np.random.randn(30, n_dims))
-            samples = jnp.array(np.random.randn(50, n_dims))
-            std = jnp.array(np.random.uniform(0.5, 2.0, n_dims))
+            eval_points = jnp.array(rng.standard_normal((30, n_dims)))
+            samples = jnp.array(rng.standard_normal((50, n_dims)))
+            std = jnp.array(rng.uniform(0.5, 2.0, n_dims))
 
             # Reference
             log_dist_ref = jnp.zeros((samples.shape[0], eval_points.shape[0]))
@@ -170,10 +171,10 @@ class TestLogKdeDistanceVectorized:
 
     def test_log_linear_consistency(self):
         """Log-space and linear-space versions are consistent (log of linear = log version)."""
-        np.random.seed(789)
+        rng = np.random.default_rng(789)
 
-        eval_points = jnp.array(np.random.randn(20, 3))
-        samples = jnp.array(np.random.randn(40, 3))
+        eval_points = jnp.array(rng.standard_normal((20, 3)))
+        samples = jnp.array(rng.standard_normal((40, 3)))
         std = jnp.array([1.0, 1.5, 0.8])
 
         # Linear-space
@@ -189,10 +190,11 @@ class TestLogKdeDistanceVectorized:
 
     def test_output_shape(self):
         """Log optimized version produces correct output shape."""
+        rng = np.random.default_rng(0)
         n_eval, n_samples, n_dims = 25, 40, 3
 
-        eval_points = jnp.array(np.random.randn(n_eval, n_dims))
-        samples = jnp.array(np.random.randn(n_samples, n_dims))
+        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
+        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
         std = jnp.ones(n_dims)
 
         result = log_kde_distance(eval_points, samples, std)
@@ -215,10 +217,10 @@ class TestJitCompiledFunctions:
 
     def test_kde_distance_consistency(self):
         """kde_distance() produces consistent results across multiple calls."""
-        np.random.seed(101)
+        rng = np.random.default_rng(101)
 
-        eval_points = jnp.array(np.random.randn(20, 2))
-        samples = jnp.array(np.random.randn(40, 2))
+        eval_points = jnp.array(rng.standard_normal((20, 2)))
+        samples = jnp.array(rng.standard_normal((40, 2)))
         std = jnp.array([1.0, 1.5])
 
         # Multiple calls should give identical results (JIT caching)
@@ -230,10 +232,10 @@ class TestJitCompiledFunctions:
 
     def test_log_kde_distance_consistency(self):
         """log_kde_distance() produces consistent results across multiple calls."""
-        np.random.seed(202)
+        rng = np.random.default_rng(202)
 
-        eval_points = jnp.array(np.random.randn(20, 2))
-        samples = jnp.array(np.random.randn(40, 2))
+        eval_points = jnp.array(rng.standard_normal((20, 2)))
+        samples = jnp.array(rng.standard_normal((40, 2)))
         std = jnp.array([1.0, 1.5])
 
         # Multiple calls should give identical results
@@ -245,11 +247,11 @@ class TestJitCompiledFunctions:
 
     def test_different_dimensions(self):
         """Optimized functions work for various feature dimensions."""
-        np.random.seed(303)
+        rng = np.random.default_rng(303)
 
         for n_dims in [2, 4, 6, 8]:
-            eval_points = jnp.array(np.random.randn(15, n_dims))
-            samples = jnp.array(np.random.randn(30, n_dims))
+            eval_points = jnp.array(rng.standard_normal((15, n_dims)))
+            samples = jnp.array(rng.standard_normal((30, n_dims)))
             std = jnp.ones(n_dims)
 
             # Both should work without errors
@@ -271,15 +273,15 @@ class TestPerformanceRegression:
 
     def test_jit_compilation_caching(self):
         """JIT-compiled functions cache compilation and are fast on repeated calls."""
-        np.random.seed(404)
+        rng = np.random.default_rng(404)
 
         # Use larger arrays to get more reliable timing
         n_eval = 100
         n_samples = 200
         n_dims = 4
 
-        eval_points = jnp.array(np.random.randn(n_eval, n_dims))
-        samples = jnp.array(np.random.randn(n_samples, n_dims))
+        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
+        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
         std = jnp.ones(n_dims)
 
         # Warmup call (includes JIT compilation overhead)
@@ -300,14 +302,14 @@ class TestPerformanceRegression:
 
     def test_log_jit_compilation_caching(self):
         """JIT-compiled log functions cache compilation correctly."""
-        np.random.seed(505)
+        rng = np.random.default_rng(505)
 
         n_eval = 100
         n_samples = 200
         n_dims = 4
 
-        eval_points = jnp.array(np.random.randn(n_eval, n_dims))
-        samples = jnp.array(np.random.randn(n_samples, n_dims))
+        eval_points = jnp.array(rng.standard_normal((n_eval, n_dims)))
+        samples = jnp.array(rng.standard_normal((n_samples, n_dims)))
         std = jnp.ones(n_dims)
 
         # Warmup

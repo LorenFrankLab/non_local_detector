@@ -41,7 +41,7 @@ def synthetic_clusterless_data():
 
     Returns realistic waveform features and positions.
     """
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
 
     # Time and position
     n_time_pos = 1000
@@ -55,14 +55,14 @@ def synthetic_clusterless_data():
 
     for _ in range(n_electrodes):
         # Random spike times
-        n_spikes = np.random.randint(50, 100)
+        n_spikes = rng.integers(50, 100)
         electrode_spike_times = np.sort(
-            np.random.uniform(position_time[0], position_time[-1], n_spikes)
+            rng.uniform(position_time[0], position_time[-1], n_spikes)
         )
         spike_times.append(electrode_spike_times)
 
         # Random waveform features (4 dimensions, realistic scale)
-        electrode_features = np.random.randn(n_spikes, 4) * 20.0 + 50.0
+        electrode_features = rng.standard_normal((n_spikes, 4)) * 20.0 + 50.0
         spike_waveform_features.append(electrode_features)
 
     return {
@@ -117,16 +117,16 @@ def test_estimate_intensity_moderate_features():
     n_features = 4
 
     # Moderate feature values (not extreme)
-    np.random.seed(42)
-    dec_features = jnp.array(np.random.randn(n_dec_spikes, n_features) * 10 + 50)
-    enc_features = jnp.array(np.random.randn(n_enc_spikes, n_features) * 10 + 50)
+    rng = np.random.default_rng(42)
+    dec_features = jnp.array(rng.standard_normal((n_dec_spikes, n_features)) * 10 + 50)
+    enc_features = jnp.array(rng.standard_normal((n_enc_spikes, n_features)) * 10 + 50)
     jnp.ones(n_enc_spikes)
     waveform_stds = jnp.array([5.0] * n_features)
     occupancy = jnp.ones(n_pos_bins) * 0.1
     mean_rate = 5.0
 
     # Compute position distance (same for both)
-    enc_positions = jnp.array(np.random.uniform(0, 100, (n_enc_spikes, 1)))
+    enc_positions = jnp.array(rng.uniform(0, 100, (n_enc_spikes, 1)))
     interior_bins = jnp.array(np.linspace(0, 100, n_pos_bins))[:, None]
     position_std = jnp.array([5.0])
 
@@ -182,16 +182,16 @@ def test_estimate_intensity_extreme_features():
     n_features = 4
 
     # Extreme feature values (large distances)
-    np.random.seed(42)
-    dec_features = jnp.array(np.random.randn(n_dec_spikes, n_features) * 50 + 100)
-    enc_features = jnp.array(np.random.randn(n_enc_spikes, n_features) * 50 + 200)
+    rng = np.random.default_rng(42)
+    dec_features = jnp.array(rng.standard_normal((n_dec_spikes, n_features)) * 50 + 100)
+    enc_features = jnp.array(rng.standard_normal((n_enc_spikes, n_features)) * 50 + 200)
     jnp.ones(n_enc_spikes)
     waveform_stds = jnp.array([10.0] * n_features)
     occupancy = jnp.ones(n_pos_bins) * 0.1
     mean_rate = 2.0
 
     # Position distance
-    enc_positions = jnp.array(np.random.uniform(0, 100, (n_enc_spikes, 1)))
+    enc_positions = jnp.array(rng.uniform(0, 100, (n_enc_spikes, 1)))
     interior_bins = jnp.array(np.linspace(0, 100, n_pos_bins))[:, None]
     position_std = jnp.array([5.0])
 
@@ -469,15 +469,15 @@ def test_memory_efficiency_scan_vs_vmap():
     n_pos_bins = 200
     n_features = 4
 
-    np.random.seed(42)
-    dec_features = jnp.array(np.random.randn(n_dec_spikes, n_features) * 10 + 50)
-    enc_features = jnp.array(np.random.randn(n_enc_spikes, n_features) * 10 + 50)
+    rng = np.random.default_rng(42)
+    dec_features = jnp.array(rng.standard_normal((n_dec_spikes, n_features)) * 10 + 50)
+    enc_features = jnp.array(rng.standard_normal((n_enc_spikes, n_features)) * 10 + 50)
     waveform_stds = jnp.array([5.0] * n_features)
     occupancy = jnp.ones(n_pos_bins) * 0.1
     mean_rate = 5.0
 
     # Position distance
-    enc_positions = jnp.array(np.random.uniform(0, 100, (n_enc_spikes, 1)))
+    enc_positions = jnp.array(rng.uniform(0, 100, (n_enc_spikes, 1)))
     interior_bins = jnp.array(np.linspace(0, 100, n_pos_bins))[:, None]
     position_std = jnp.array([5.0])
     log_position_distance = log_kde_distance(interior_bins, enc_positions, position_std)

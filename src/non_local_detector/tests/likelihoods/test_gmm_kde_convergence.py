@@ -34,7 +34,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
 @pytest.fixture
 def convergence_test_data():
     """Create controlled test data for convergence analysis."""
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
 
     # Simple 1D position for clarity
     n_time = 50
@@ -46,10 +46,10 @@ def convergence_test_data():
 
     # Single electrode for simplicity
     n_spikes = 100
-    spike_times = [np.sort(np.random.uniform(time[0], time[-1], n_spikes))]
+    spike_times = [np.sort(rng.uniform(time[0], time[-1], n_spikes))]
 
     # 2D waveform features
-    spike_features = [np.random.randn(n_spikes, 2).astype(np.float32)]
+    spike_features = [rng.standard_normal((n_spikes, 2)).astype(np.float32)]
 
     # Environment
     environment = Environment(position_range=[(0, 10)])

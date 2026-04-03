@@ -32,7 +32,7 @@ class TestChunkedFilterSmootherParity:
 
     def create_simple_test_data(self, n_time=50, n_states=10):
         """Helper to create simple test data."""
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
 
         init = jnp.ones(n_states) / n_states
         trans = (
@@ -41,7 +41,7 @@ class TestChunkedFilterSmootherParity:
         trans = trans / trans.sum(axis=1, keepdims=True)
 
         # Simple log likelihood function
-        log_likes = jnp.array(np.random.randn(n_time, n_states))
+        log_likes = jnp.array(rng.standard_normal((n_time, n_states)))
 
         return init, trans, log_likes
 

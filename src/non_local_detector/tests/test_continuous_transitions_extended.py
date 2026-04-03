@@ -104,8 +104,8 @@ class TestEstimateMovementVar:
     def test_estimate_movement_var_1d_position(self):
         """Should estimate variance for 1D position."""
         # Arrange - linear motion with some noise
-        np.random.seed(42)
-        position = np.linspace(0, 10, 100) + np.random.randn(100) * 0.1
+        rng = np.random.default_rng(42)
+        position = np.linspace(0, 10, 100) + rng.standard_normal(100) * 0.1
 
         # Act
         var = estimate_movement_var(position)
@@ -117,10 +117,10 @@ class TestEstimateMovementVar:
     def test_estimate_movement_var_2d_position(self):
         """Should estimate covariance for 2D position."""
         # Arrange
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         t = np.linspace(0, 10, 100)
         position = np.column_stack(
-            [t + np.random.randn(100) * 0.1, t + np.random.randn(100) * 0.1]
+            [t + rng.standard_normal(100) * 0.1, t + rng.standard_normal(100) * 0.1]
         )
 
         # Act
@@ -172,9 +172,9 @@ class TestEstimateMovementVar:
     def test_estimate_movement_var_recovers_known_variance(self):
         """Should recover the true variance of a random walk."""
         # Arrange: generate random walk with known step variance
-        np.random.seed(123)
+        rng = np.random.default_rng(123)
         true_var = 2.5
-        steps = np.random.randn(10000) * np.sqrt(true_var)
+        steps = rng.standard_normal(10000) * np.sqrt(true_var)
         position = np.cumsum(steps)
 
         # Act

@@ -56,8 +56,8 @@ class TestFilter:
         # Arrange
         init = jnp.array([0.5, 0.5])
         trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
-        np.random.seed(42)
-        log_likes = jnp.array(np.random.randn(10, 2))
+        rng = np.random.default_rng(42)
+        log_likes = jnp.array(rng.standard_normal((10, 2)))
 
         # Act
         (_, (filtered_probs, _)) = filter(init, trans, log_likes)
@@ -198,8 +198,8 @@ class TestFilter:
         # Arrange
         init = jnp.array([0.5, 0.5])
         trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
-        np.random.seed(123)
-        log_likes = jnp.array(np.random.randn(10, 2))
+        rng = np.random.default_rng(123)
+        log_likes = jnp.array(rng.standard_normal((10, 2)))
 
         # Act
         (log_marginals, _), _ = filter(init, trans, log_likes)
@@ -240,8 +240,8 @@ class TestSmoother:
         # Arrange
         init = jnp.array([0.5, 0.5])
         trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
-        np.random.seed(42)
-        log_likes = jnp.array(np.random.randn(10, 2))
+        rng = np.random.default_rng(42)
+        log_likes = jnp.array(rng.standard_normal((10, 2)))
         (_, (filtered, _)) = filter(init, trans, log_likes)
 
         # Act
@@ -256,8 +256,8 @@ class TestSmoother:
         # Arrange
         init = jnp.array([0.5, 0.5])
         trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
-        np.random.seed(42)
-        log_likes = jnp.array(np.random.randn(10, 2))
+        rng = np.random.default_rng(42)
+        log_likes = jnp.array(rng.standard_normal((10, 2)))
         (_, (filtered, _)) = filter(init, trans, log_likes)
 
         # Act
@@ -409,8 +409,8 @@ class TestViterbi:
         init = jnp.array([1.0, 0.0])  # Start in state 0
         trans = jnp.array([[0.99, 0.01], [0.01, 0.99]])  # Very sticky
         # Weak noisy evidence
-        np.random.seed(42)
-        log_likes = jnp.array(np.random.randn(10, 2) * 0.1)
+        rng = np.random.default_rng(42)
+        log_likes = jnp.array(rng.standard_normal((10, 2)) * 0.1)
 
         # Act
         states = viterbi(init, trans, log_likes)
@@ -458,8 +458,8 @@ class TestViterbi:
         # Arrange
         init = jnp.array([0.5, 0.5, 0.0])
         trans = jnp.array([[0.7, 0.2, 0.1], [0.1, 0.7, 0.2], [0.2, 0.1, 0.7]])
-        np.random.seed(42)
-        log_likes = jnp.array(np.random.randn(20, 3))
+        rng = np.random.default_rng(42)
+        log_likes = jnp.array(rng.standard_normal((20, 3)))
 
         # Act
         states = viterbi(init, trans, log_likes)

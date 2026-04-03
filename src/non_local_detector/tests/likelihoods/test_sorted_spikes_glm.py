@@ -45,6 +45,7 @@ def simple_spike_data():
     # Neuron 0: spikes around position 25
     # Neuron 1: spikes around position 50
     # Neuron 2: spikes around position 75
+    rng = np.random.default_rng(0)
     spike_times = []
     for center_pos in [25, 50, 75]:
         # Find times when animal is near center position
@@ -52,7 +53,7 @@ def simple_spike_data():
         spike_time_indices = np.where(near_center)[0]
         # Sample some of those times
         n_spikes = min(10, len(spike_time_indices))
-        selected = np.random.choice(spike_time_indices, n_spikes, replace=False)
+        selected = rng.choice(spike_time_indices, n_spikes, replace=False)
         spike_times.append(position_time[sorted(selected)])
 
     return {
@@ -175,11 +176,12 @@ class TestPoissonRegression:
     def test_fit_poisson_regression_returns_coefficients(self):
         """Should return coefficient array of correct size."""
         # Arrange
+        rng = np.random.default_rng(0)
         n_time = 100
         n_basis = 10
-        design_matrix = np.random.randn(n_time, n_basis)
+        design_matrix = rng.standard_normal((n_time, n_basis))
         design_matrix[:, 0] = 1.0  # Intercept
-        spikes = np.random.poisson(5, size=n_time)
+        spikes = rng.poisson(5, size=n_time)
         weights = np.ones(n_time)
 
         # Act
@@ -194,9 +196,10 @@ class TestPoissonRegression:
     def test_fit_poisson_regression_with_zero_spikes(self):
         """Should handle neuron with no spikes."""
         # Arrange
+        rng = np.random.default_rng(0)
         n_time = 50
         n_basis = 5
-        design_matrix = np.random.randn(n_time, n_basis)
+        design_matrix = rng.standard_normal((n_time, n_basis))
         design_matrix[:, 0] = 1.0
         spikes = np.zeros(n_time)  # No spikes
         weights = np.ones(n_time)
@@ -213,9 +216,10 @@ class TestPoissonRegression:
     def test_fit_poisson_regression_with_uniform_spikes(self):
         """Should handle uniform spike distribution."""
         # Arrange
+        rng = np.random.default_rng(0)
         n_time = 100
         n_basis = 8
-        design_matrix = np.random.randn(n_time, n_basis)
+        design_matrix = rng.standard_normal((n_time, n_basis))
         design_matrix[:, 0] = 1.0
         spikes = np.ones(n_time) * 5  # Constant spike count
         weights = np.ones(n_time)
@@ -232,11 +236,12 @@ class TestPoissonRegression:
     def test_fit_poisson_regression_respects_weights(self):
         """Weighting should affect fit."""
         # Arrange
+        rng = np.random.default_rng(0)
         n_time = 50
         n_basis = 5
-        design_matrix = np.random.randn(n_time, n_basis)
+        design_matrix = rng.standard_normal((n_time, n_basis))
         design_matrix[:, 0] = 1.0
-        spikes = np.random.poisson(3, size=n_time)
+        spikes = rng.poisson(3, size=n_time)
 
         # Fit with uniform weights
         weights_uniform = np.ones(n_time)

@@ -46,8 +46,8 @@ class TestGetHighestPosteriorThreshold:
 
     def test_coverage_monotonicity(self):
         """Lower coverage should yield higher or equal threshold."""
-        np.random.seed(7)
-        probs = np.random.dirichlet(np.ones(20), size=1)
+        rng = np.random.default_rng(7)
+        probs = rng.dirichlet(np.ones(20), size=1)
         posterior = xr.DataArray(probs, dims=["time", "position"])
 
         thresh_50 = get_highest_posterior_threshold(posterior, coverage=0.50)
@@ -57,7 +57,8 @@ class TestGetHighestPosteriorThreshold:
 
     def test_output_shape(self):
         """Output should be (n_time,)."""
-        probs = np.random.dirichlet(np.ones(10), size=5)
+        rng = np.random.default_rng(0)
+        probs = rng.dirichlet(np.ones(10), size=5)
         posterior = xr.DataArray(probs, dims=["time", "position"])
 
         threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
@@ -107,8 +108,8 @@ class TestGetHPDSpatialCoverage:
 
     def test_non_negative(self):
         """Spatial coverage must always be non-negative."""
-        np.random.seed(42)
-        probs = np.random.dirichlet(np.ones(20), size=3)
+        rng = np.random.default_rng(42)
+        probs = rng.dirichlet(np.ones(20), size=3)
         positions = np.linspace(0, 100, 20)
         posterior = xr.DataArray(
             probs, dims=["time", "position"], coords={"position": positions}
@@ -139,9 +140,9 @@ class TestPosteriorConsistencyKLDivergence:
 
     def test_non_negative(self):
         """KL divergence is always >= 0."""
-        np.random.seed(42)
-        p = np.random.dirichlet(np.ones(10), size=5)
-        q = np.random.dirichlet(np.ones(10), size=5)
+        rng = np.random.default_rng(42)
+        p = rng.dirichlet(np.ones(10), size=5)
+        q = rng.dirichlet(np.ones(10), size=5)
 
         kl = posterior_consistency_kl_divergence(p, q)
 
@@ -160,9 +161,9 @@ class TestPosteriorConsistencyKLDivergence:
 
     def test_output_shape(self):
         """Output should be (n_time,)."""
-        np.random.seed(7)
-        p = np.random.dirichlet(np.ones(10), size=3)
-        q = np.random.dirichlet(np.ones(10), size=3)
+        rng = np.random.default_rng(7)
+        p = rng.dirichlet(np.ones(10), size=3)
+        q = rng.dirichlet(np.ones(10), size=3)
 
         kl = posterior_consistency_kl_divergence(p, q)
 
@@ -180,8 +181,8 @@ class TestPosteriorConsistencyHPDOverlap:
 
     def test_identical_distributions_full_overlap(self):
         """Identical distributions should have overlap = 1.0."""
-        np.random.seed(42)
-        p = np.random.dirichlet(np.ones(20), size=3)
+        rng = np.random.default_rng(42)
+        p = rng.dirichlet(np.ones(20), size=3)
 
         overlap = posterior_consistency_hpd_overlap(p, p, coverage=0.95)
 
@@ -201,9 +202,9 @@ class TestPosteriorConsistencyHPDOverlap:
 
     def test_overlap_in_unit_range(self):
         """Overlap should be in [0, 1]."""
-        np.random.seed(42)
-        p = np.random.dirichlet(np.ones(20), size=5)
-        q = np.random.dirichlet(np.ones(20), size=5)
+        rng = np.random.default_rng(42)
+        p = rng.dirichlet(np.ones(20), size=5)
+        q = rng.dirichlet(np.ones(20), size=5)
 
         overlap = posterior_consistency_hpd_overlap(p, q, coverage=0.95)
 
@@ -212,8 +213,9 @@ class TestPosteriorConsistencyHPDOverlap:
 
     def test_output_shape(self):
         """Output should be (n_time,)."""
-        p = np.random.dirichlet(np.ones(10), size=4)
-        q = np.random.dirichlet(np.ones(10), size=4)
+        rng = np.random.default_rng(0)
+        p = rng.dirichlet(np.ones(10), size=4)
+        q = rng.dirichlet(np.ones(10), size=4)
 
         overlap = posterior_consistency_hpd_overlap(p, q, coverage=0.95)
 

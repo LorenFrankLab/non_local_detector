@@ -34,7 +34,7 @@ def extreme_feature_data():
     These conditions make the product of per-dimension Gaussians extremely small,
     causing underflow in linear space but handled correctly in log-space.
     """
-    np.random.seed(123)
+    rng = np.random.default_rng(123)
 
     # Time and position
     n_time_pos = 500
@@ -50,17 +50,19 @@ def extreme_feature_data():
         # Encoding spikes (training data) - moderate features
         n_enc_spikes = 40
         enc_spike_times = np.sort(
-            np.random.uniform(position_time[0], position_time[-1], n_enc_spikes)
+            rng.uniform(position_time[0], position_time[-1], n_enc_spikes)
         )
         # Features centered around 0
-        enc_features = np.random.randn(n_enc_spikes, 8) * 5.0
+        enc_features = rng.standard_normal((n_enc_spikes, 8)) * 5.0
 
         # Decoding spikes (test data) - EXTREME features far from encoding
         n_dec_spikes = 20
-        dec_spike_times = np.sort(np.random.uniform(2.0, 3.0, n_dec_spikes))
+        dec_spike_times = np.sort(rng.uniform(2.0, 3.0, n_dec_spikes))
         # Features shifted far away from encoding data
         # This creates very small Gaussian values that underflow in linear space
-        dec_features = np.random.randn(n_dec_spikes, 8) * 5.0 + 50.0  # Shifted by 50!
+        dec_features = (
+            rng.standard_normal((n_dec_spikes, 8)) * 5.0 + 50.0
+        )  # Shifted by 50!
 
         # Combine encoding and decoding for storage
         all_times = np.concatenate([enc_spike_times, dec_spike_times])
@@ -184,8 +186,9 @@ def test_local_likelihood_log_space_moderate_features(
     env = simple_1d_environment
 
     # Modify data to have moderate features (not extreme)
+    rng = np.random.default_rng(0)
     moderate_spike_features = [
-        np.random.randn(len(times), 8) * 5.0  # No shift, moderate scale
+        rng.standard_normal((len(times), 8)) * 5.0  # No shift, moderate scale
         for times in data["spike_times"]
     ]
 
@@ -240,7 +243,7 @@ def test_block_log_kde_vs_log_block_kde():
     With extreme feature distances, (1) suffers from underflow and produces
     inaccurate results (clamped to LOG_EPS), while (2) computes accurately.
     """
-    np.random.seed(456)
+    rng = np.random.default_rng(456)
 
     # Create test data with VERY extreme feature distances
     n_eval = 10
@@ -248,10 +251,10 @@ def test_block_log_kde_vs_log_block_kde():
     n_dims = 10  # High dimensional
 
     # Evaluation points FAR from samples
-    eval_points = np.random.randn(n_eval, n_dims) * 5.0 + 100.0  # Shifted by 100!
+    eval_points = rng.standard_normal((n_eval, n_dims)) * 5.0 + 100.0  # Shifted by 100!
 
     # Samples centered at origin
-    samples = np.random.randn(n_samples, n_dims) * 5.0  # Near zero
+    samples = rng.standard_normal((n_samples, n_dims)) * 5.0  # Near zero
 
     # Small standard deviations → very narrow Gaussians → underflow in linear space
     std = np.ones(n_dims) * 1.0

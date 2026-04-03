@@ -18,7 +18,7 @@ from non_local_detector.likelihoods.clusterless_kde_log import (
 @pytest.fixture
 def sample_data():
     """Create sample data for testing public API."""
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
 
     # Time and position data (use numpy for Environment)
     n_time = 100
@@ -37,12 +37,12 @@ def sample_data():
 
     for _ in range(n_electrodes):
         # Random spike times during the recording
-        n_spikes = np.random.randint(80, 120)
-        times = np.sort(np.random.uniform(0, 10, n_spikes))
+        n_spikes = rng.integers(80, 120)
+        times = np.sort(rng.uniform(0, 10, n_spikes))
         spike_times.append(times)
 
         # Random waveform features (4D)
-        features = np.random.randn(n_spikes, 4) * 10
+        features = rng.standard_normal((n_spikes, 4)) * 10
         spike_waveform_features.append(features)
 
     # Environment (requires numpy arrays)

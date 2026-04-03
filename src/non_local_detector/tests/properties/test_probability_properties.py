@@ -113,10 +113,11 @@ class TestProbabilityProperties:
     def test_transition_preserves_probability_property(self, n_states):
         """Property: transition always produces valid distribution."""
         # Generate matching sized distributions and matrices
-        dist = np.random.rand(n_states)
+        rng = np.random.default_rng(0)
+        dist = rng.random(n_states)
         dist = dist / dist.sum()
 
-        trans_matrix = np.random.rand(n_states, n_states)
+        trans_matrix = rng.random((n_states, n_states))
         trans_matrix = trans_matrix / trans_matrix.sum(axis=1, keepdims=True)
 
         next_dist = jnp.dot(jnp.asarray(dist), jnp.asarray(trans_matrix))

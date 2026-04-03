@@ -15,7 +15,7 @@ from non_local_detector.likelihoods.clusterless_kde_log import (
 @pytest.fixture
 def tiling_test_data():
     """Generate test data with large position dimension."""
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
 
     n_encoding = 100
     n_decoding = 50
@@ -23,25 +23,25 @@ def tiling_test_data():
     n_position = 500  # Large position grid
 
     encoding_features = jnp.array(
-        np.random.randn(n_encoding, n_features).astype(np.float32)
+        rng.standard_normal((n_encoding, n_features)).astype(np.float32)
     )
     decoding_features = jnp.array(
-        np.random.randn(n_decoding, n_features).astype(np.float32)
+        rng.standard_normal((n_decoding, n_features)).astype(np.float32)
     )
     waveform_stds = jnp.array(
-        np.abs(np.random.randn(n_features).astype(np.float32)) + 0.5
+        np.abs(rng.standard_normal(n_features).astype(np.float32)) + 0.5
     )
     occupancy = jnp.ones(n_position, dtype=jnp.float32)
     mean_rate = 5.0
 
     # Position distance (for original)
     position_distance = jnp.array(
-        np.random.rand(n_encoding, n_position).astype(np.float32)
+        rng.random((n_encoding, n_position)).astype(np.float32)
     )
 
     # Log position distance (for log-space)
     log_position_distance = jnp.array(
-        np.random.randn(n_encoding, n_position).astype(np.float32)
+        rng.standard_normal((n_encoding, n_position)).astype(np.float32)
     )
 
     return {
@@ -145,18 +145,24 @@ def test_various_tile_sizes(tiling_test_data):
 @pytest.mark.integration
 def test_tiling_edge_cases():
     """Test tiling with edge cases."""
-    np.random.seed(123)
+    rng = np.random.default_rng(123)
 
     n_enc = 10
     n_dec = 5
     n_features = 2
     n_pos = 11  # Prime number for uneven tiling
 
-    encoding_features = jnp.array(np.random.randn(n_enc, n_features).astype(np.float32))
-    decoding_features = jnp.array(np.random.randn(n_dec, n_features).astype(np.float32))
+    encoding_features = jnp.array(
+        rng.standard_normal((n_enc, n_features)).astype(np.float32)
+    )
+    decoding_features = jnp.array(
+        rng.standard_normal((n_dec, n_features)).astype(np.float32)
+    )
     waveform_stds = jnp.array([1.0, 1.0])
     occupancy = jnp.ones(n_pos, dtype=jnp.float32)
-    log_position_distance = jnp.array(np.random.randn(n_enc, n_pos).astype(np.float32))
+    log_position_distance = jnp.array(
+        rng.standard_normal((n_enc, n_pos)).astype(np.float32)
+    )
     mean_rate = 5.0
 
     # No tiling
@@ -233,20 +239,26 @@ def test_tiling_gemm_vs_loop(tiling_test_data):
 @pytest.mark.integration
 def test_tiling_very_large_grid():
     """Test that tiling enables computation on very large position grids."""
-    np.random.seed(456)
+    rng = np.random.default_rng(456)
 
     n_enc = 100
     n_dec = 50
     n_features = 4
     n_pos = 5000  # Very large position grid
 
-    encoding_features = jnp.array(np.random.randn(n_enc, n_features).astype(np.float32))
-    decoding_features = jnp.array(np.random.randn(n_dec, n_features).astype(np.float32))
+    encoding_features = jnp.array(
+        rng.standard_normal((n_enc, n_features)).astype(np.float32)
+    )
+    decoding_features = jnp.array(
+        rng.standard_normal((n_dec, n_features)).astype(np.float32)
+    )
     waveform_stds = jnp.array(
-        np.abs(np.random.randn(n_features).astype(np.float32)) + 0.5
+        np.abs(rng.standard_normal(n_features).astype(np.float32)) + 0.5
     )
     occupancy = jnp.ones(n_pos, dtype=jnp.float32)
-    log_position_distance = jnp.array(np.random.randn(n_enc, n_pos).astype(np.float32))
+    log_position_distance = jnp.array(
+        rng.standard_normal((n_enc, n_pos)).astype(np.float32)
+    )
     mean_rate = 5.0
 
     # With tiling (should complete without OOM)

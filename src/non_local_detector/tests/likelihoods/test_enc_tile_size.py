@@ -29,15 +29,15 @@ def test_enc_tile_size_equivalence(enc_tile_size):
     n_pos_bins = 30
     n_features = 4
 
-    np.random.seed(42)
-    dec_features = jnp.array(np.random.randn(n_dec_spikes, n_features) * 10 + 50)
-    enc_features = jnp.array(np.random.randn(n_enc_spikes, n_features) * 10 + 50)
+    rng = np.random.default_rng(42)
+    dec_features = jnp.array(rng.standard_normal((n_dec_spikes, n_features)) * 10 + 50)
+    enc_features = jnp.array(rng.standard_normal((n_enc_spikes, n_features)) * 10 + 50)
     waveform_stds = jnp.array([5.0] * n_features)
     occupancy = jnp.ones(n_pos_bins) * 0.1
     mean_rate = 5.0
 
     # Compute position distance
-    enc_positions = jnp.array(np.random.uniform(0, 100, (n_enc_spikes, 1)))
+    enc_positions = jnp.array(rng.uniform(0, 100, (n_enc_spikes, 1)))
     interior_bins = jnp.array(np.linspace(0, 100, n_pos_bins))[:, None]
     position_std = jnp.array([5.0])
     log_position_distance = log_kde_distance(interior_bins, enc_positions, position_std)
@@ -107,15 +107,15 @@ def test_enc_tile_size_with_pos_tile_size(enc_tile_size, pos_tile_size):
     n_pos_bins = 40
     n_features = 4
 
-    np.random.seed(123)
-    dec_features = jnp.array(np.random.randn(n_dec_spikes, n_features) * 10 + 50)
-    enc_features = jnp.array(np.random.randn(n_enc_spikes, n_features) * 10 + 50)
+    rng = np.random.default_rng(123)
+    dec_features = jnp.array(rng.standard_normal((n_dec_spikes, n_features)) * 10 + 50)
+    enc_features = jnp.array(rng.standard_normal((n_enc_spikes, n_features)) * 10 + 50)
     waveform_stds = jnp.array([5.0] * n_features)
     occupancy = jnp.ones(n_pos_bins) * 0.1
     mean_rate = 5.0
 
     # Position distance
-    enc_positions = jnp.array(np.random.uniform(0, 100, (n_enc_spikes, 1)))
+    enc_positions = jnp.array(rng.uniform(0, 100, (n_enc_spikes, 1)))
     interior_bins = jnp.array(np.linspace(0, 100, n_pos_bins))[:, None]
     position_std = jnp.array([5.0])
     log_position_distance = log_kde_distance(interior_bins, enc_positions, position_std)
@@ -161,14 +161,14 @@ def test_enc_tile_size_edge_cases():
     n_pos_bins = 8
     n_features = 2
 
-    np.random.seed(456)
-    dec_features = jnp.array(np.random.randn(n_dec_spikes, n_features) * 5)
-    enc_features = jnp.array(np.random.randn(n_enc_spikes, n_features) * 5)
+    rng = np.random.default_rng(456)
+    dec_features = jnp.array(rng.standard_normal((n_dec_spikes, n_features)) * 5)
+    enc_features = jnp.array(rng.standard_normal((n_enc_spikes, n_features)) * 5)
     waveform_stds = jnp.array([2.0] * n_features)
     occupancy = jnp.ones(n_pos_bins) * 0.05
     mean_rate = 2.0
 
-    enc_positions = jnp.array(np.random.uniform(0, 50, (n_enc_spikes, 1)))
+    enc_positions = jnp.array(rng.uniform(0, 50, (n_enc_spikes, 1)))
     interior_bins = jnp.array(np.linspace(0, 50, n_pos_bins))[:, None]
     position_std = jnp.array([3.0])
     log_position_distance = log_kde_distance(interior_bins, enc_positions, position_std)

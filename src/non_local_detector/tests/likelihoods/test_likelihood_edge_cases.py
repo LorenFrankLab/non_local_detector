@@ -510,10 +510,10 @@ def test_clusterless_kde_partial_occupancy():
 def test_sorted_glm_high_l2_penalty():
     """Very strong L2 penalty should produce near-uniform fields, no NaN."""
     env = _make_env_1d(position_range=(0.0, 100.0), bin_size=5.0, n_pos=101)
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
     t = np.linspace(0.0, 1.0, 100)
     pos = np.linspace(0.0, 100.0, 100)[:, None]
-    spike_times = [jnp.asarray(t[np.random.choice(100, 10, replace=False)])]
+    spike_times = [jnp.asarray(t[rng.choice(100, 10, replace=False)])]
 
     enc = fit_sorted_spikes_glm_encoding_model(
         position_time=jnp.asarray(t),
@@ -539,10 +539,10 @@ def test_sorted_glm_high_l2_penalty():
 def test_sorted_glm_low_l2_penalty():
     """Very weak L2 penalty should still converge without NaN."""
     env = _make_env_1d(position_range=(0.0, 100.0), bin_size=5.0, n_pos=101)
-    np.random.seed(43)
+    rng = np.random.default_rng(43)
     t = np.linspace(0.0, 1.0, 100)
     pos = np.linspace(0.0, 100.0, 100)[:, None]
-    spike_times = [jnp.asarray(t[np.random.choice(100, 10, replace=False)])]
+    spike_times = [jnp.asarray(t[rng.choice(100, 10, replace=False)])]
 
     enc = fit_sorted_spikes_glm_encoding_model(
         position_time=jnp.asarray(t),

@@ -191,19 +191,20 @@ class TestEstimateJointDistribution:
     def test_estimate_joint_distribution_shape(self):
         """Joint distribution should have correct shape."""
         # Arrange
+        rng = np.random.default_rng(0)
         n_time = 10
         n_states = 3
-        causal_posterior = np.random.rand(n_time, n_states)
+        causal_posterior = rng.random((n_time, n_states))
         causal_posterior = causal_posterior / causal_posterior.sum(
             axis=1, keepdims=True
         )
 
-        predictive = np.random.rand(n_time, n_states)
+        predictive = rng.random((n_time, n_states))
         predictive = predictive / predictive.sum(axis=1, keepdims=True)
 
         trans = np.eye(n_states) * 0.8 + 0.2 / n_states
 
-        acausal_posterior = np.random.rand(n_time, n_states)
+        acausal_posterior = rng.random((n_time, n_states))
         acausal_posterior = acausal_posterior / acausal_posterior.sum(
             axis=1, keepdims=True
         )

@@ -78,9 +78,9 @@ class TestMaximumAPosterioriEstimate:
 
     def test_output_shape_1d(self):
         """1D posterior should return (n_time, 1)."""
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         positions = np.linspace(0, 10, 20)
-        probs = np.random.dirichlet(np.ones(20), size=3)
+        probs = rng.dirichlet(np.ones(20), size=3)
         posterior = xr.DataArray(
             probs, dims=["time", "position"], coords={"position": positions}
         )
@@ -156,7 +156,6 @@ class TestSamplePosterior:
         posterior = xr.DataArray(probs, dims=["time", "position"])
         expected_mean = np.sum(probs[0] * bin_centers)
 
-        np.random.seed(0)
         samples = sample_posterior(posterior, bin_edges, n_samples=10000)
         sample_mean = np.mean(samples)
 

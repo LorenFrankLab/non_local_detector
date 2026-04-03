@@ -35,7 +35,7 @@ def comparison_data():
     Uses a larger dataset than the basic comparison tests to get
     more stable statistics.
     """
-    np.random.seed(123)
+    rng = np.random.default_rng(123)
 
     # Time parameters - longer duration for better statistics
     dt = 0.02  # 20 ms bins
@@ -60,12 +60,12 @@ def comparison_data():
 
     for elec_idx in range(n_electrodes):
         # Generate spatially modulated firing
-        n_spikes = np.random.randint(80, 120)
-        times = np.sort(np.random.uniform(time[0], time[-1], n_spikes))
+        n_spikes = rng.integers(80, 120)
+        times = np.sort(rng.uniform(time[0], time[-1], n_spikes))
         encoding_spike_times.append(times)
 
         # Features with electrode-specific bias
-        features = np.random.randn(n_spikes, n_features).astype(np.float32)
+        features = rng.standard_normal((n_spikes, n_features)).astype(np.float32)
         features += elec_idx * 0.5  # electrode-specific offset
         encoding_spike_features.append(features)
 

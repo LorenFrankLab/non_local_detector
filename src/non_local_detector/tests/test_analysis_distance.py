@@ -34,7 +34,8 @@ class TestGetVelocity:
 
     def test_output_shape(self):
         """Output shape should match input."""
-        position = np.random.randn(50, 2)
+        rng = np.random.default_rng(0)
+        position = rng.standard_normal((50, 2))
         time = np.linspace(0, 1, 50)
 
         velocity = get_velocity(position, time=time, sigma=0.001)
@@ -56,7 +57,8 @@ class TestGetSpeed:
 
     def test_non_negative(self):
         """Speed should always be non-negative."""
-        velocity = np.random.randn(20, 2)
+        rng = np.random.default_rng(0)
+        velocity = rng.standard_normal((20, 2))
 
         speed = get_speed(velocity)
 

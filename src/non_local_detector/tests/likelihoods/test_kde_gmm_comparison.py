@@ -32,7 +32,7 @@ def shared_simulation_data():
     This fixture generates synthetic data that can be used to test both
     likelihood implementations with identical inputs.
     """
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
 
     # Time parameters
     dt = 0.02  # 20 ms bins
@@ -56,12 +56,12 @@ def shared_simulation_data():
 
     for _elec_idx in range(n_electrodes):
         # Generate random spike times within encoding period
-        n_spikes = np.random.randint(30, 50)
-        times = np.sort(np.random.uniform(time[0], time[-1], n_spikes))
+        n_spikes = rng.integers(30, 50)
+        times = np.sort(rng.uniform(time[0], time[-1], n_spikes))
         encoding_spike_times.append(times)
 
         # Generate random waveform features
-        features = np.random.randn(n_spikes, n_features).astype(np.float32)
+        features = rng.standard_normal((n_spikes, n_features)).astype(np.float32)
         encoding_spike_features.append(features)
 
     # Decoding period spikes (subset of encoding spikes for simplicity)

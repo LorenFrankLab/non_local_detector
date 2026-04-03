@@ -22,7 +22,7 @@ from non_local_detector.likelihoods.clusterless_gmm import (
 @pytest.fixture
 def gmm_simulation_data():
     """Create synthetic data for GMM likelihood testing."""
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
 
     # Time parameters
     dt = 0.02  # 20 ms bins
@@ -46,12 +46,12 @@ def gmm_simulation_data():
 
     for _ in range(n_electrodes):
         # Generate random spike times
-        n_spikes = np.random.randint(20, 50)
-        times = np.sort(np.random.uniform(0, time[-1], n_spikes))
+        n_spikes = rng.integers(20, 50)
+        times = np.sort(rng.uniform(0, time[-1], n_spikes))
         spike_times.append(times)
 
         # Generate random waveform features
-        features = np.random.randn(n_spikes, n_features).astype(np.float32)
+        features = rng.standard_normal((n_spikes, n_features)).astype(np.float32)
         spike_features.append(features)
 
     # Create and fit environment

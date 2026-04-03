@@ -14,7 +14,7 @@ from non_local_detector.likelihoods.clusterless_kde_log import (
 @pytest.fixture
 def synthetic_waveform_data():
     """Generate synthetic waveform features for testing."""
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
 
     n_encoding = 100
     n_decoding = 50
@@ -22,14 +22,16 @@ def synthetic_waveform_data():
     n_position = 30
 
     # Generate random waveform features
-    encoding_features = np.random.randn(n_encoding, n_features).astype(np.float32)
-    decoding_features = np.random.randn(n_decoding, n_features).astype(np.float32)
-    waveform_stds = np.abs(np.random.randn(n_features).astype(np.float32)) + 0.5
+    encoding_features = rng.standard_normal((n_encoding, n_features)).astype(np.float32)
+    decoding_features = rng.standard_normal((n_decoding, n_features)).astype(np.float32)
+    waveform_stds = np.abs(rng.standard_normal(n_features).astype(np.float32)) + 0.5
 
     # Other parameters
     encoding_weights = np.ones(n_encoding, dtype=np.float32)
     occupancy = np.ones(n_position, dtype=np.float32)
-    log_position_distance = np.random.randn(n_encoding, n_position).astype(np.float32)
+    log_position_distance = rng.standard_normal((n_encoding, n_position)).astype(
+        np.float32
+    )
     mean_rate = 5.0
 
     return {
@@ -114,20 +116,20 @@ def test_estimate_intensity_gemm_vs_loop(synthetic_waveform_data):
 @pytest.mark.integration
 def test_gemm_various_feature_dimensions():
     """Test GEMM parity with different numbers of features."""
-    np.random.seed(123)
+    rng = np.random.default_rng(123)
 
     n_enc = 50
     n_dec = 20
 
     for n_features in [1, 2, 4, 8, 16]:
         encoding_features = jnp.array(
-            np.random.randn(n_enc, n_features).astype(np.float32)
+            rng.standard_normal((n_enc, n_features)).astype(np.float32)
         )
         decoding_features = jnp.array(
-            np.random.randn(n_dec, n_features).astype(np.float32)
+            rng.standard_normal((n_dec, n_features)).astype(np.float32)
         )
         waveform_stds = jnp.array(
-            np.abs(np.random.randn(n_features).astype(np.float32)) + 0.5
+            np.abs(rng.standard_normal(n_features).astype(np.float32)) + 0.5
         )
 
         # GEMM
@@ -220,10 +222,10 @@ def test_gemm_gradient_compatibility():
     """Verify that GEMM implementation is compatible with JAX autodiff."""
     import jax
 
-    np.random.seed(999)
+    rng = np.random.default_rng(999)
 
-    encoding_features = jnp.array(np.random.randn(10, 4).astype(np.float32))
-    decoding_features = jnp.array(np.random.randn(5, 4).astype(np.float32))
+    encoding_features = jnp.array(rng.standard_normal((10, 4)).astype(np.float32))
+    decoding_features = jnp.array(rng.standard_normal((5, 4)).astype(np.float32))
     waveform_stds = jnp.array([1.0, 1.0, 1.0, 1.0])
 
     # Define function to differentiate

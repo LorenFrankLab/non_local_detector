@@ -38,14 +38,15 @@ class TestHMMInvariants:
     def test_filter_preserves_probability_normalization(self, n_states, n_timesteps):
         """Property: filter output should always be normalized probability distributions."""
         # Generate matching-sized distributions
-        init = np.random.rand(n_states)
+        rng = np.random.default_rng(0)
+        init = rng.random(n_states)
         init = init / init.sum()
 
-        trans = np.random.rand(n_states, n_states)
+        trans = rng.random((n_states, n_states))
         trans = trans / trans.sum(axis=1, keepdims=True)
 
         # Generate random observations
-        log_likes = np.random.randn(n_timesteps, n_states)
+        log_likes = rng.standard_normal((n_timesteps, n_states))
 
         # Run filter
         (_, (filtered, _)) = filter(
@@ -65,13 +66,14 @@ class TestHMMInvariants:
     def test_smoother_at_final_timestep_equals_filter(self, n_states, n_timesteps):
         """Property: at final timestep T, smoother and filter should be identical."""
         # Generate matching-sized init and trans
-        init = np.random.rand(n_states)
+        rng = np.random.default_rng(0)
+        init = rng.random(n_states)
         init = init / init.sum()
 
-        trans = np.random.rand(n_states, n_states)
+        trans = rng.random((n_states, n_states))
         trans = trans / trans.sum(axis=1, keepdims=True)
 
-        log_likes = np.random.randn(n_timesteps, n_states)
+        log_likes = rng.standard_normal((n_timesteps, n_states))
 
         (_, (filtered, _)) = filter(
             jnp.asarray(init), jnp.asarray(trans), jnp.asarray(log_likes)
@@ -87,13 +89,14 @@ class TestHMMInvariants:
     )
     def test_viterbi_returns_valid_state_sequence(self, n_states, n_timesteps):
         """Property: viterbi should return a valid sequence of state indices."""
-        init = np.random.rand(n_states)
+        rng = np.random.default_rng(0)
+        init = rng.random(n_states)
         init = init / init.sum()
 
-        trans = np.random.rand(n_states, n_states)
+        trans = rng.random((n_states, n_states))
         trans = trans / trans.sum(axis=1, keepdims=True)
 
-        log_likes = np.random.randn(n_timesteps, n_states)
+        log_likes = rng.standard_normal((n_timesteps, n_states))
 
         states = viterbi(jnp.asarray(init), jnp.asarray(trans), jnp.asarray(log_likes))
 
@@ -106,10 +109,11 @@ class TestHMMInvariants:
     @given(st.integers(min_value=2, max_value=5))
     def test_uniform_likelihood_preserves_transition_dynamics(self, n_states):
         """Property: with uniform likelihood, filter should follow pure transition dynamics."""
-        init = np.random.rand(n_states)
+        rng = np.random.default_rng(0)
+        init = rng.random(n_states)
         init = init / init.sum()
 
-        trans = np.random.rand(n_states, n_states)
+        trans = rng.random((n_states, n_states))
         trans = trans / trans.sum(axis=1, keepdims=True)
 
         # Uniform likelihood (all zeros in log space)
@@ -162,13 +166,14 @@ class TestHMMInvariants:
     )
     def test_filter_marginal_likelihood_is_real_valued(self, n_states, n_timesteps):
         """Property: marginal log likelihood should be real-valued (not NaN or inf)."""
-        init = np.random.rand(n_states)
+        rng = np.random.default_rng(0)
+        init = rng.random(n_states)
         init = init / init.sum()
 
-        trans = np.random.rand(n_states, n_states)
+        trans = rng.random((n_states, n_states))
         trans = trans / trans.sum(axis=1, keepdims=True)
 
-        log_likes = np.random.randn(n_timesteps, n_states)
+        log_likes = rng.standard_normal((n_timesteps, n_states))
 
         ((log_marginals, _), _) = filter(
             jnp.asarray(init), jnp.asarray(trans), jnp.asarray(log_likes)
@@ -183,13 +188,14 @@ class TestHMMInvariants:
     @given(st.integers(min_value=2, max_value=5))
     def test_smoother_preserves_probability_normalization(self, n_states):
         """Property: smoother output should always be normalized probability distributions."""
-        init = np.random.rand(n_states)
+        rng = np.random.default_rng(0)
+        init = rng.random(n_states)
         init = init / init.sum()
 
-        trans = np.random.rand(n_states, n_states)
+        trans = rng.random((n_states, n_states))
         trans = trans / trans.sum(axis=1, keepdims=True)
 
-        log_likes = np.random.randn(5, n_states)
+        log_likes = rng.standard_normal((5, n_states))
 
         (_, (filtered, _)) = filter(
             jnp.asarray(init), jnp.asarray(trans), jnp.asarray(log_likes)
@@ -266,7 +272,8 @@ class TestHMMInvariants:
         Each T[t] must be a valid stochastic matrix.
         """
         # Generate random time-varying transition matrices
-        trans_matrices = np.random.rand(n_timesteps, n_states, n_states)
+        rng = np.random.default_rng(0)
+        trans_matrices = rng.random((n_timesteps, n_states, n_states))
 
         # Normalize each time step to be stochastic
         for t in range(n_timesteps):
