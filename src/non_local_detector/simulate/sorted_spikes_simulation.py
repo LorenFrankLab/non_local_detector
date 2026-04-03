@@ -6,7 +6,10 @@ SAMPLING_FREQUENCY = 1500
 
 
 def simulate_poisson_spikes(
-    rate: np.ndarray, sampling_frequency: float, seed: int | None = None
+    rate: np.ndarray,
+    sampling_frequency: float,
+    seed: int | None = None,
+    rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     """Given a rate, returns a time series of spikes.
     Parameters
@@ -14,14 +17,16 @@ def simulate_poisson_spikes(
     rate : np.ndarray, shape (n_time,)
     sampling_frequency : float
     seed : int | None, optional
-        Random seed for reproducibility. If None, uses current random state.
+        Random seed for reproducibility. Ignored if rng is provided.
+    rng : np.random.Generator or None, optional
+        Random number generator. If None, creates one from seed.
     Returns
     -------
     spikes : np.ndarray, shape (n_time,)
     """
-    if seed is not None:
-        np.random.seed(seed)
-    return np.random.poisson(rate / sampling_frequency)
+    if rng is None:
+        rng = np.random.default_rng(seed)
+    return rng.poisson(rate / sampling_frequency)
 
 
 def simulate_time(n_samples: int, sampling_frequency: float) -> np.ndarray:
@@ -152,6 +157,7 @@ def simulate_neuron_with_place_field(
     variance: float = 12.5,
     sampling_frequency: float = 500.0,
     is_condition: np.ndarray | None = None,
+    rng: np.random.Generator | None = None,
 ):
     """Simulates the spiking of a neuron with a place field at `means`.
 
@@ -163,6 +169,7 @@ def simulate_neuron_with_place_field(
     variance : float, optional
     sampling_frequency : float, optional
     is_condition : None or ndarray, (n_time,)
+    rng : np.random.Generator or None, optional
 
     Returns
     -------
@@ -172,7 +179,7 @@ def simulate_neuron_with_place_field(
     firing_rate = simulate_place_field_firing_rate(
         means, position, max_rate, variance, is_condition
     )
-    return simulate_poisson_spikes(firing_rate, sampling_frequency)
+    return simulate_poisson_spikes(firing_rate, sampling_frequency, rng=rng)
 
 
 def get_trajectory_direction(position: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -339,8 +346,7 @@ def simulate_two_state_inhomogenous_poisson(
     Parameters
     ----------
     seed : int | None, optional
-        Random seed for reproducibility. If None, uses current random state.
-        Default is 0.
+        Random seed for reproducibility. Default is 0.
 
     Returns
     -------
@@ -349,8 +355,7 @@ def simulate_two_state_inhomogenous_poisson(
     spikes : np.ndarray, shape (n_time,)
 
     """
-    if seed is not None:
-        np.random.seed(seed)
+    rng = np.random.default_rng(seed)
 
     track_height = 170
     sampling_frequency = 500
@@ -367,6 +372,7 @@ def simulate_two_state_inhomogenous_poisson(
         variance=36,
         sampling_frequency=sampling_frequency,
         is_condition=is_inbound,
+        rng=rng,
     ) + simulate_neuron_with_place_field(
         [150],
         position,
@@ -374,6 +380,7 @@ def simulate_two_state_inhomogenous_poisson(
         variance=36,
         sampling_frequency=sampling_frequency,
         is_condition=~is_inbound,
+        rng=rng,
     )
 
     return time, position, spikes
@@ -457,6 +464,7 @@ def make_fragmented_replay(
     sampling_frequency: float,
     cont_replay_speed: float,
     seed: int | None = None,
+    rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     """Make a simulated fragmented replay.
 
@@ -466,17 +474,19 @@ def make_fragmented_replay(
     sampling_frequency : float
     cont_replay_speed : float
     seed : int | None, optional
-        Random seed for reproducibility. If None, uses current random state.
+        Random seed for reproducibility. Ignored if rng is provided.
+    rng : np.random.Generator or None, optional
+        Random number generator. If None, creates one from seed.
 
     Returns
     -------
     spikes : np.ndarray, shape (n_time, n_neurons)
     """
-    if seed is not None:
-        np.random.seed(seed)
+    if rng is None:
+        rng = np.random.default_rng(seed)
 
     n_neurons = len(place_field_means)
-    neuron_id = np.random.choice(n_neurons, n_neurons // 2, replace=False)
+    neuron_id = rng.choice(n_neurons, n_neurons // 2, replace=False)
     frag_replay_speed = cont_replay_speed * 20
 
     spike_time_ind = np.cumsum(
@@ -525,8 +535,7 @@ def make_simulated_data(
     sampling_frequency : int
     is_event : np.ndarray, shape (n_time,)
     """
-    if seed is not None:
-        np.random.seed(seed)
+    rng = np.random.default_rng(seed)
 
     n_samples = sampling_frequency * 65  # 65 seconds
 
@@ -537,7 +546,7 @@ def make_simulated_data(
         simulate_linear_distance_with_pauses(
             time, track_height, sampling_frequency=sampling_frequency, pause=3
         )
-        + np.random.randn(*time.shape) * 1e-4
+        + rng.standard_normal(time.shape) * 1e-4
     )
 
     # Simulate speed
@@ -555,7 +564,7 @@ def make_simulated_data(
         ]
     )
 
-    spikes = simulate_poisson_spikes(place_fields, sampling_frequency).T
+    spikes = simulate_poisson_spikes(place_fields, sampling_frequency, rng=rng).T
 
     # Create events
     # 5 events: non-local continuous outbound, non-local fragmented, non-local continuous inbound, no-spike, local
@@ -589,7 +598,7 @@ def make_simulated_data(
 
     # Event 2 - Fragmented
     event2_spikes = make_fragmented_replay(
-        place_field_means, sampling_frequency, replay_speed
+        place_field_means, sampling_frequency, replay_speed, rng=rng
     )
     event_ends[1] = event_ends[1] + event2_spikes.shape[0] / sampling_frequency
     spikes[(time >= event_starts[1]) & (time < event_ends[1])] = 0

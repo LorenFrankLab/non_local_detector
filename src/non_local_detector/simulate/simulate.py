@@ -90,7 +90,10 @@ def simulate_position_with_pauses(
 
 
 def simulate_poisson_spikes(
-    rate: np.ndarray, sampling_frequency: int, seed: int | None = None
+    rate: np.ndarray,
+    sampling_frequency: int,
+    seed: int | None = None,
+    rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     """Given a rate, returns a time series of spikes.
 
@@ -99,16 +102,18 @@ def simulate_poisson_spikes(
     rate : np.ndarray, shape (n_time,)
     sampling_frequency : int
     seed : int | None, optional
-        Random seed for reproducibility. If None, uses current random state.
+        Random seed for reproducibility. Ignored if rng is provided.
+    rng : np.random.Generator or None, optional
+        Random number generator. If None, creates one from seed.
 
     Returns
     -------
     spikes : np.ndarray, shape (n_time,)
 
     """
-    if seed is not None:
-        np.random.seed(seed)
-    return 1.0 * (np.random.poisson(rate / sampling_frequency) > 0)
+    if rng is None:
+        rng = np.random.default_rng(seed)
+    return 1.0 * (rng.poisson(rate / sampling_frequency) > 0)
 
 
 def simulate_place_field_firing_rate(
@@ -151,6 +156,7 @@ def simulate_neuron_with_place_field(
     variance: float = 12.5,
     sampling_frequency: int = 500,
     is_condition: np.ndarray | None = None,
+    rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     """Simulates the spiking of a neuron with a place field at `means`.
 
@@ -162,6 +168,7 @@ def simulate_neuron_with_place_field(
     variance : float, optional
     sampling_frequency : float, optional
     is_condition : None or np.ndarray, (n_time,)
+    rng : np.random.Generator or None, optional
 
     Returns
     -------
@@ -171,7 +178,7 @@ def simulate_neuron_with_place_field(
     firing_rate = simulate_place_field_firing_rate(
         means, position, max_rate, variance, is_condition
     )
-    return simulate_poisson_spikes(firing_rate, sampling_frequency)
+    return simulate_poisson_spikes(firing_rate, sampling_frequency, rng=rng)
 
 
 def simulate_multiunit_with_place_fields(
@@ -185,6 +192,7 @@ def simulate_multiunit_with_place_fields(
     sampling_frequency: int = 1000,
     is_condition: np.ndarray | None = None,
     seed: int | None = None,
+    rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     """Simulates a multiunit with neurons at `place_means`
 
@@ -199,15 +207,17 @@ def simulate_multiunit_with_place_fields(
     sampling_frequency : int
     is_condition : np.ndarray or None
     seed : int | None, optional
-        Random seed for reproducibility. If None, uses current random state.
+        Random seed for reproducibility. Ignored if rng is provided.
+    rng : np.random.Generator or None, optional
+        Random number generator. If None, creates one from seed.
 
     Returns
     -------
     multiunit : np.ndarray, shape (n_time, n_mark_dims)
 
     """
-    if seed is not None:
-        np.random.seed(seed)
+    if rng is None:
+        rng = np.random.default_rng(seed)
     n_neurons = place_means.shape[0]
     mark_centers = np.arange(0, n_neurons * mark_spacing, mark_spacing)
     n_time = position.shape[0]
@@ -221,13 +231,14 @@ def simulate_multiunit_with_place_fields(
                 variance=place_variance,
                 sampling_frequency=sampling_frequency,
                 is_condition=is_condition,
+                rng=rng,
             )
             > 0
         )
         n_spikes = int(is_spike.sum())
         marks[is_spike] = multivariate_normal(
             mean=[mark_center] * n_mark_dims, cov=mark_variance
-        ).rvs(size=n_spikes)
+        ).rvs(size=n_spikes, random_state=rng)
     return marks
 
 

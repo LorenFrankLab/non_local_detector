@@ -95,9 +95,7 @@ def make_simulated_run_data(
     - No NaN values in spike waveform features
 
     """
-    # Set random seed for reproducibility
-    if seed is not None:
-        np.random.seed(seed)
+    rng = np.random.default_rng(seed)
 
     # Generate position trajectory
     n_samples = int(n_runs * sampling_frequency * 2 * track_height / running_speed)
@@ -117,6 +115,7 @@ def make_simulated_run_data(
                     n_mark_dims=4,
                     place_variance=place_field_variance,
                     sampling_frequency=sampling_frequency,
+                    rng=rng,
                 )
             )
     else:
@@ -133,6 +132,7 @@ def make_simulated_run_data(
                         sampling_frequency=sampling_frequency,
                         place_variance=place_field_variance,
                         is_condition=is_condition,
+                        rng=rng,
                     )
                 )
 

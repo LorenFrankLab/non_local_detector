@@ -509,7 +509,7 @@ def viterbi(
     )
     _, states = jax.lax.scan(_forward_pass, first_state, best_next_states)
 
-    return jnp.concatenate([jnp.array([first_state]), states])
+    return jnp.concatenate([first_state[None], states])
 
 
 # Apply JIT without donation - tests reuse inputs
@@ -1046,7 +1046,7 @@ def viterbi_covariate_dependent(
     )
     _, states = jax.lax.scan(_forward_pass, first_state, best_next_states)
 
-    return jnp.concatenate([jnp.array([first_state]), states])
+    return jnp.concatenate([first_state[None], states])
 
 
 # Apply JIT without donation - tests reuse inputs

@@ -106,7 +106,7 @@ def estimate_initial_conditions(acausal_posterior: np.ndarray) -> np.ndarray:
     Examples
     --------
     >>> import numpy as np
-    >>> posterior = np.random.rand(100, 50)  # 100 time points, 50 position bins
+    >>> posterior = np.random.default_rng(0).random((100, 50))  # 100 time points, 50 position bins
     >>> initial_conds = estimate_initial_conditions(posterior)
     >>> initial_conds.shape
     (50,)
