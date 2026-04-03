@@ -286,7 +286,7 @@ def _estimate_gaussian_parameters(
         Diagonal regularization added to covariance(s).
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
         Covariance parameterization.
-    sample_weight : Optional[Array], shape (n_samples,), default=None
+    sample_weight : Array | None, shape (n_samples,), default=None
         Nonnegative per-sample weights. If provided, effective responsibilities
         become r'[i,k] = sample_weight[i] * resp_unweighted[i,k].
 
@@ -488,7 +488,7 @@ def _m_step_func(
     reg_covar : float
         Covariance regularization.
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
-    sample_weight : Optional[Array], shape (n_samples,), default=None
+    sample_weight : Array | None, shape (n_samples,), default=None
 
     Returns
     -------
@@ -528,7 +528,7 @@ def _em_fit_while_loop(
         Maximum EM iterations.
     reg_covar : float
     covariance_type : {'full', 'tied', 'diag', 'spherical'}
-    sample_weight : Optional[Array], shape (n_samples,), default=None
+    sample_weight : Array | None, shape (n_samples,), default=None
 
     Returns
     -------
@@ -600,13 +600,13 @@ class GaussianMixtureModel:
         KMeans center init scheme (used if init_params='kmeans').
     kmeans_n_init : int, default=1
         KMeans restarts (used if init_params='kmeans').
-    random_state : Optional[int], default=None
+    random_state : int | None, default=None
         Random seed used in KMeans/k-means++ and random responsibilities.
-    weights_init : Optional[Array], shape (n_components,), default=None
+    weights_init : Array | None, shape (n_components,), default=None
         User-provided initial mixture weights.
-    means_init : Optional[Array], shape (n_components, n_features), default=None
+    means_init : Array | None, shape (n_components, n_features), default=None
         User-provided initial means.
-    covariances_init : Optional[Array], shape depends on covariance_type, default=None
+    covariances_init : Array | None, shape depends on covariance_type, default=None
         User-provided initial covariances.
 
     Attributes
@@ -729,7 +729,7 @@ class GaussianMixtureModel:
             Training data.
         key : jax.Array
             PRNG key; if `random_state` is provided, it overrides JAX randomness in inits.
-        sample_weight : Optional[Array], shape (n_samples,), default=None
+        sample_weight : Array | None, shape (n_samples,), default=None
             Nonnegative per-sample weights.
 
         Returns
@@ -889,7 +889,7 @@ class GaussianMixtureModel:
         ----------
         X : Array, shape (n_samples, n_features)
         key : jax.Array
-        sample_weight : Optional[Array], shape (n_samples,), default=None
+        sample_weight : Array | None, shape (n_samples,), default=None
 
         Returns
         -------
@@ -962,7 +962,7 @@ class GaussianMixtureModel:
         ----------
         X : Array, shape (n_samples, n_features)
         params : tuple(weights, means, covariances)
-        sample_weight : Optional[Array], shape (n_samples,), default=None
+        sample_weight : Array | None, shape (n_samples,), default=None
 
         Returns
         -------

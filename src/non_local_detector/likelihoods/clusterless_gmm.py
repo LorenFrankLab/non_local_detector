@@ -221,7 +221,7 @@ def fit_clusterless_gmm_encoding_model(
     spike_waveform_features : list[jnp.ndarray]
         Encoding spike waveform features per electrode.
     environment : Environment
-    weights : Optional[jnp.ndarray], shape (n_time_position,), default=None
+    weights : jnp.ndarray | None, shape (n_time_position,), default=None
         Per-position sample weights for occupancy.
     gmm_components_occupancy : int, default=32
         Number of mixture components for occupancy GMM.
@@ -236,7 +236,7 @@ def fit_clusterless_gmm_encoding_model(
     gmm_covariance_type_joint : str, default="full"
         Covariance type for joint GMM. Options: "full", "tied", "diag", "spherical".
         Note: "diag" may offer speedups but currently has JIT compatibility issues.
-    gmm_random_state : Optional[int], default=0
+    gmm_random_state : int | None, default=0
         Random state for reproducibility.
     disable_progress_bar : bool, default=False
         If True, disable progress bar.

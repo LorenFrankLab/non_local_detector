@@ -286,7 +286,7 @@ def chunked_filter_smoother(
     is_missing : np.ndarray, shape (n_time,), optional
     n_chunks : int, optional
         Number of chunks to split the data into, by default 1
-    log_likelihoods : Optional[np.ndarray], optional
+    log_likelihoods : np.ndarray | None, optional
     cache_log_likelihoods : bool, optional
         If True, log likelihoods are cached, by default True
     dtype : jnp.dtype, optional

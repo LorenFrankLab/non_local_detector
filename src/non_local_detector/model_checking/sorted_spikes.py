@@ -63,7 +63,7 @@ class TimeRescaling:
         ----------
         conditional_intensity : np.ndarray, shape (n_time,)
         is_spike : np.ndarray, shape (n_time,)
-        trial_id : Optional[np.ndarray], shape (n_time,), optional
+        trial_id : np.ndarray | None, shape (n_time,), optional
         adjust_for_short_trials : bool, optional
         """
         self.conditional_intensity = np.asarray(conditional_intensity).squeeze()
@@ -91,7 +91,7 @@ class TimeRescaling:
         trial_IDs = np.unique(self.trial_id)
         uniform_rescaled_ISIs_by_trial = []
         for trial in trial_IDs:
-            is_trial = np.in1d(self.trial_id, trial)
+            is_trial = np.isin(self.trial_id, trial)
             uniform_rescaled_ISIs_by_trial.append(
                 uniform_rescaled_ISIs(
                     self.conditional_intensity[is_trial],
@@ -410,8 +410,8 @@ def plot_ks(
     Parameters
     ----------
     uniform_rescaled_ISIs : np.ndarray, shape (n_spikes,)
-    ax : Optional[plt.Axes], optional
-    scatter_kwargs : Optional[dict], optional
+    ax : plt.Axes | None, optional
+    scatter_kwargs : dict | None, optional
     ci_color : str, optional
 
     Returns

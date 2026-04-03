@@ -1,8 +1,12 @@
+import logging
+
 import networkx as nx  # type: ignore[import-untyped]
 import numpy as np
 from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
+
+logger = logging.getLogger(__name__)
 
 
 def make_2D_track_graph_from_environment(
@@ -283,7 +287,9 @@ def get_2D_distance(
                         weight="distance",
                     )
                 except nx.NetworkXNoPath:
-                    print(f"No path between {node_ids1[i]} and {node_ids2[i]}")
+                    logger.warning(
+                        "No path between %s and %s", node_ids1[i], node_ids2[i]
+                    )
 
     return distance
 

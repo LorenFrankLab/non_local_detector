@@ -817,7 +817,7 @@ def get_grid(
     bin_size : float, optional
         The desired approximate size of the bins in each dimension. The actual
         size may vary slightly to evenly cover the range. By default 2.5.
-    position_range : Optional[List[Tuple[float, float]]], optional
+    position_range : list[tuple[float, float]] | None, optional
         A list of tuples, one for each position dimension, specifying the
         (min, max) boundary for the grid. If None, the min/max of the
         `position` data is used. By default None.

@@ -114,10 +114,10 @@ def plot_non_local_model(
     position : np.ndarray
     spike_times : list[np.ndarray]
     speed : np.ndarray
-    detector : Union[NonLocalClusterlessDetector, NonLocalSortedSpikesDetector]
+    detector : NonLocalClusterlessDetector | NonLocalSortedSpikesDetector
     results : xr.Dataset
     figsize : Tuple[int, int], optional
-    time_slice : Optional[slice], optional
+    time_slice : slice | None, optional
     posterior_max : float, optional
     """
     if time_slice is None:

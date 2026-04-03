@@ -26,7 +26,7 @@ def get_position_at_time(
     time : jnp.ndarray, shape (n_time,)
     position : jnp.ndarray, shape (n_time_position, n_dims_position)
     spike_times : jnp.ndarray, shape (n_spikes,)
-    env : Optional[Environment], optional
+    env : Environment | None, optional
         The spatial environment, by default None
 
     Returns

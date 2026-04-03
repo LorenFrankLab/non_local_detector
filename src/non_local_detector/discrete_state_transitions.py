@@ -396,7 +396,7 @@ def dirichlet_neg_log_likelihood(
         Covariate design matrix.
     response : jnp.ndarray, shape (n_samples, n_states)
         Expected counts or probabilities for each state transition.
-    alpha : Union[float, jnp.ndarray], shape (n_states,), optional
+    alpha : float | jnp.ndarray, shape (n_states,), optional
         Dirichlet prior parameters for this row of the transition matrix.
         If float, assumed uniform. Defaults to 1.0 (Laplace smoothing).
     l2_penalty : float, optional
@@ -483,9 +483,9 @@ def set_initial_discrete_transition(
     -------
     discrete_transition : np.ndarray, shape (n_states, n_states) or (n_time, n_states, n_states)
         The initial transition matrix.
-    discrete_transition_coefficients : Optional[np.ndarray], shape (n_coefficients, n_states, n_states - 1)
+    discrete_transition_coefficients : np.ndarray | None, shape (n_coefficients, n_states, n_states - 1)
         Initial coefficients (only if non-stationary).
-    discrete_transition_design_matrix : Optional[patsy.DesignMatrix]
+    discrete_transition_design_matrix : patsy.DesignMatrix | None
         Design matrix (only if non-stationary).
 
     Raises
@@ -562,9 +562,9 @@ def _estimate_discrete_transition(
         P(z_{t+1} | x_{1:T})
     discrete_transition : np.ndarray, shape (n_time, n_states, n_states) or (n_states, n_states)
         Current transition matrix estimate.
-    discrete_transition_coefficients : Optional[np.ndarray], shape (n_coefficients, n_states, n_states - 1)
+    discrete_transition_coefficients : np.ndarray | None, shape (n_coefficients, n_states, n_states - 1)
         Current coefficient estimate (if non-stationary).
-    discrete_transition_design_matrix : Optional[patsy.DesignMatrix]
+    discrete_transition_design_matrix : patsy.DesignMatrix | None
         Design matrix (if non-stationary).
     transition_concentration : float
         Dirichlet prior concentration.
@@ -577,7 +577,7 @@ def _estimate_discrete_transition(
     -------
     estimated_discrete_transition : np.ndarray
         Updated transition matrix.
-    estimated_discrete_transition_coefficients : Optional[np.ndarray]
+    estimated_discrete_transition_coefficients : np.ndarray | None
         Updated coefficients (if non-stationary).
     """
 
