@@ -169,6 +169,23 @@ class TestEstimateMovementVar:
         assert isinstance(var, float | np.ndarray)
         assert var > 0
 
+    def test_estimate_movement_var_recovers_known_variance(self):
+        """Should recover the true variance of a random walk."""
+        # Arrange: generate random walk with known step variance
+        np.random.seed(123)
+        true_var = 2.5
+        steps = np.random.randn(10000) * np.sqrt(true_var)
+        position = np.cumsum(steps)
+
+        # Act
+        estimated_var = estimate_movement_var(position)
+
+        # Assert: should recover true variance within 10%
+        assert abs(estimated_var - true_var) / true_var < 0.1, (
+            f"Estimated variance {estimated_var:.4f} differs from true "
+            f"variance {true_var:.4f} by more than 10%"
+        )
+
 
 # Tests for RandomWalk class error handling
 class TestRandomWalkErrorHandling:
