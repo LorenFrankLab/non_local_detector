@@ -3,6 +3,11 @@
 This is a fundamental guarantee of the EM algorithm: the marginal
 log-likelihood must never decrease across iterations. Violation
 indicates a bug in the E-step or M-step.
+
+Note: the current test uses estimate_encoding_model=False, testing
+only discrete transition re-estimation. Full EM with encoding model
+refitting is tested via the penalty effect integration test which
+runs estimate_parameters with default settings (encoding enabled).
 """
 
 import numpy as np

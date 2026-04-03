@@ -43,6 +43,22 @@ class TestMaximumAPosterioriEstimate:
 
         assert result[0, 0] == positions[15]
 
+    def test_close_values_selects_correct_bin(self):
+        """With close probabilities, MAP should pick the slightly higher one.
+
+        The implementation uses np.log(posterior).argmax, so this verifies
+        the log transform doesn't corrupt the ordering of similar values.
+        """
+        positions = np.arange(0.0, 5.0, 1.0)
+        probs = np.array([[0.10, 0.30, 0.31, 0.20, 0.09]])
+        posterior = xr.DataArray(
+            probs, dims=["time", "position"], coords={"position": positions}
+        )
+
+        result = maximum_a_posteriori_estimate(posterior)
+
+        assert result[0, 0] == positions[2]  # bin with 0.31, not 0.30
+
     def test_multiple_timesteps(self):
         """Each timestep should get its own MAP estimate."""
         positions = np.arange(0.0, 5.0, 1.0)
@@ -143,4 +159,4 @@ class TestSamplePosterior:
         samples = sample_posterior(posterior, bin_edges, n_samples=10000)
         sample_mean = np.mean(samples)
 
-        assert abs(sample_mean - expected_mean) < 0.2  # within ~0.2 of a bin width
+        assert abs(sample_mean - expected_mean) < 0.05  # ~1.5 SEM for n=10000

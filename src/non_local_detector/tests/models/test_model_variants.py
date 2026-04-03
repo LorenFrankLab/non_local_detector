@@ -38,7 +38,7 @@ class TestMultiEnvironmentDefaults:
         """Each observation model should reference an environment."""
         model = MultiEnvironmentSortedSpikesClassifier()
         env_names = {obs.environment_name for obs in model.observation_models}
-        assert len(env_names) == 2  # two distinct environments
+        assert env_names == {"env1", "env2"}
 
     def test_clusterless_default_construction(self):
         """Clusterless variant should construct with correct defaults."""

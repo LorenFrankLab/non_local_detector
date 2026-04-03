@@ -5,6 +5,8 @@ import pytest
 
 from non_local_detector.analysis.distance2D import (
     get_2D_distance,
+    get_ahead_behind_distance2D,
+    get_bin_ind,
     get_speed,
     get_velocity,
     head_direction_simliarity,
@@ -25,9 +27,10 @@ class TestGetVelocity:
         velocity = get_velocity(position, time=time, sigma=0.001)
 
         # Interior points should be close to true velocity
+        # (boundary effects excluded by slicing)
         mid = slice(20, 180)
-        np.testing.assert_allclose(velocity[mid, 0], 10.0, atol=1.0)
-        np.testing.assert_allclose(velocity[mid, 1], 5.0, atol=1.0)
+        np.testing.assert_allclose(velocity[mid, 0], 10.0, atol=0.1)
+        np.testing.assert_allclose(velocity[mid, 1], 5.0, atol=0.1)
 
     def test_output_shape(self):
         """Output shape should match input."""
@@ -137,3 +140,64 @@ class TestHeadDirectionSimilarity:
         sim = head_direction_simliarity(head_pos, head_dir, map_est)
 
         assert sim[0] == pytest.approx(0.0, abs=0.01)
+
+
+@pytest.mark.unit
+class TestGetAheadBehindDistance2D:
+    """Test signed distance (ahead positive, behind negative)."""
+
+    def test_ahead_is_positive(self):
+        """MAP in front of head direction should give positive distance."""
+        head_pos = np.array([[0.0, 0.0]])
+        head_dir = np.array([0.0])  # pointing right
+        map_pos = np.array([[5.0, 0.0]])  # ahead
+
+        dist = get_ahead_behind_distance2D(head_pos, head_dir, map_pos)
+
+        assert dist[0] > 0
+        assert dist[0] == pytest.approx(5.0, abs=0.01)
+
+    def test_behind_is_negative(self):
+        """MAP behind head direction should give negative distance."""
+        head_pos = np.array([[0.0, 0.0]])
+        head_dir = np.array([0.0])  # pointing right
+        map_pos = np.array([[-5.0, 0.0]])  # behind
+
+        dist = get_ahead_behind_distance2D(head_pos, head_dir, map_pos)
+
+        assert dist[0] < 0
+        assert dist[0] == pytest.approx(-5.0, abs=0.01)
+
+    def test_same_position_zero(self):
+        """Same position should give zero distance."""
+        pos = np.array([[3.0, 4.0]])
+        head_dir = np.array([0.0])
+
+        dist = get_ahead_behind_distance2D(pos, head_dir, pos)
+
+        assert dist[0] == pytest.approx(0.0, abs=1e-10)
+
+
+@pytest.mark.unit
+class TestGetBinInd:
+    """Test bin index computation."""
+
+    def test_center_of_bin(self):
+        """Points at bin centers should map to sequential indices."""
+        edges = [np.array([0.0, 1.0, 2.0, 3.0])]  # 3 bins
+        sample = np.array([[0.5], [1.5], [2.5]])
+
+        indices = get_bin_ind(sample, edges)
+
+        # get_bin_ind uses np.digitize-style 1-based indexing
+        np.testing.assert_array_equal(indices, [1, 2, 3])
+
+    def test_right_edge(self):
+        """Point on rightmost edge should map to last bin, not overflow."""
+        edges = [np.array([0.0, 1.0, 2.0])]  # 2 bins
+        sample = np.array([[2.0]])  # exactly on right edge
+
+        indices = get_bin_ind(sample, edges)
+
+        # Right edge is clamped to last bin (index n_bins, i.e., 2)
+        assert indices[0] == 2

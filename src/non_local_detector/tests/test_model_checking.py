@@ -46,6 +46,7 @@ class TestGetHighestPosteriorThreshold:
 
     def test_coverage_monotonicity(self):
         """Lower coverage should yield higher or equal threshold."""
+        np.random.seed(7)
         probs = np.random.dirichlet(np.ones(20), size=1)
         posterior = xr.DataArray(probs, dims=["time", "position"])
 
@@ -76,6 +77,7 @@ class TestGetHPDSpatialCoverage:
     def test_delta_function_one_bin(self):
         """Delta function: coverage should equal one bin width."""
         positions = np.arange(0.0, 11.0, 1.0)  # 11 positions, bin width = 1.0
+        bin_width = np.diff(positions)[0]
         probs = np.zeros((1, len(positions)))
         probs[0, 5] = 1.0
         posterior = xr.DataArray(
@@ -86,10 +88,26 @@ class TestGetHPDSpatialCoverage:
         coverage = get_HPD_spatial_coverage(posterior, threshold)
 
         assert coverage.shape == (1,)
-        assert coverage[0] == pytest.approx(1.0)  # one bin width
+        assert coverage[0] == pytest.approx(bin_width)
+
+    def test_delta_function_wider_bins(self):
+        """Delta function with wider bins: coverage should scale with bin width."""
+        positions = np.arange(0.0, 22.0, 2.0)  # bin width = 2.0
+        bin_width = np.diff(positions)[0]
+        probs = np.zeros((1, len(positions)))
+        probs[0, 3] = 1.0
+        posterior = xr.DataArray(
+            probs, dims=["time", "position"], coords={"position": positions}
+        )
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
+
+        coverage = get_HPD_spatial_coverage(posterior, threshold)
+
+        assert coverage[0] == pytest.approx(bin_width)
 
     def test_non_negative(self):
         """Spatial coverage must always be non-negative."""
+        np.random.seed(42)
         probs = np.random.dirichlet(np.ones(20), size=3)
         positions = np.linspace(0, 100, 20)
         posterior = xr.DataArray(
@@ -142,6 +160,7 @@ class TestPosteriorConsistencyKLDivergence:
 
     def test_output_shape(self):
         """Output should be (n_time,)."""
+        np.random.seed(7)
         p = np.random.dirichlet(np.ones(10), size=3)
         q = np.random.dirichlet(np.ones(10), size=3)
 
@@ -161,6 +180,7 @@ class TestPosteriorConsistencyHPDOverlap:
 
     def test_identical_distributions_full_overlap(self):
         """Identical distributions should have overlap = 1.0."""
+        np.random.seed(42)
         p = np.random.dirichlet(np.ones(20), size=3)
 
         overlap = posterior_consistency_hpd_overlap(p, p, coverage=0.95)
