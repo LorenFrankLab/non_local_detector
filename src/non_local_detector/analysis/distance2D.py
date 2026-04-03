@@ -155,6 +155,10 @@ def get_map_estimate_direction_from_track_graph(
     map_estimate : np.ndarray, shape (n_time, 2)
     track_graph : nx.Graph
     edges : list
+        Bin edges for each spatial dimension.
+    precomputed_distance : bool, optional
+        If True, use precomputed distance matrix for graph lookups,
+        by default False.
 
     Returns
     -------

@@ -356,6 +356,8 @@ def get_trajectory_data(
     actual_projected_position : numpy.ndarray, shape (n_time, 2)
     track_segment_id : numpy.ndarray, shape (n_time,)
     actual_orientation : numpy.ndarray, shape (n_time,)
+    environment_name : str, optional
+        Name of the environment, by default "".
 
     Returns
     -------

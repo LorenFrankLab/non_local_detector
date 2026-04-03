@@ -116,7 +116,7 @@ def plot_non_local_model(
     speed : np.ndarray
     detector : NonLocalClusterlessDetector | NonLocalSortedSpikesDetector
     results : xr.Dataset
-    figsize : Tuple[int, int], optional
+    figsize : tuple[int, int], optional
     time_slice : slice | None, optional
     posterior_max : float, optional
     """

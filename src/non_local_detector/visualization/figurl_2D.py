@@ -97,8 +97,8 @@ try:
 
         Parameters
         ----------
-        t : Tuple[float, float, float]
-        location_lookup : Dict[Tuple[float, float], int]
+        t : tuple[float, float, float]
+        location_lookup : dict[tuple[float, float], int]
         x_count : int
         x_min : float
         x_width : float
@@ -128,7 +128,7 @@ try:
 
         Parameters
         ----------
-        location_lookup : Dict[Tuple[float, float], int]
+        location_lookup : dict[tuple[float, float], int]
         x_count : int
         x_min : float
         x_width : float
@@ -137,7 +137,7 @@ try:
 
         Returns
         -------
-        linearization_fn : Callable[[Tuple[float, float]], int]
+        linearization_fn : Callable[[tuple[float, float]], int]
         """
         args = {
             "location_lookup": location_lookup,
@@ -177,7 +177,7 @@ try:
         Parameters
         ----------
         i_trim : xr.Dataset
-        linearization_fn : Callable[[Tuple[float, float]], int]
+        linearization_fn : Callable[[tuple[float, float]], int]
 
         Returns
         -------
@@ -215,7 +215,7 @@ try:
         Parameters
         ----------
         base_slice : xr.DataArray
-        location_fn : Callable[[Tuple[float, float]], int]
+        location_fn : Callable[[tuple[float, float]], int]
 
         Returns
         -------
@@ -238,7 +238,7 @@ try:
 
         Returns
         -------
-        vis_data : Dict[str, np.ndarray]
+        vis_data : dict[str, np.ndarray]
         """
         frame_step_size = 100_000
         location_lookup = {}

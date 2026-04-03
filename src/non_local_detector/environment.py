@@ -100,7 +100,7 @@ class Environment:
     is_track_interior : np.ndarray or None, optional
         Boolean array defining valid track areas. If None and `infer_track_interior`
         is True, it will be inferred from position data.
-    position_range : Sequence[Tuple[float, float]], optional
+    position_range : Sequence[tuple[float, float]], optional
         Outer bin edges for each dimension [(min_dim1, max_dim1), ...].
         If None, range is determined from position data.
     infer_track_interior : bool, optional
@@ -130,7 +130,7 @@ class Environment:
         Boolean array indicating boundary bins (only for N-D environments).
     track_graphDD : networkx.Graph or None
         Graph representation where nodes are bin centers (only for N-D environments).
-    distance_between_nodes_ : Dict[int, Dict[int, float]] or np.ndarray
+    distance_between_nodes_ : dict[int, dict[int, float]] or np.ndarray
         Shortest path distances between nodes on the track graph (1D or N-D).
     track_graph_with_bin_centers_edges_ : nx.Graph or None
         Track graph with bin centers and edges added as nodes (only for 1D).

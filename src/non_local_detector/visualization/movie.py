@@ -24,7 +24,39 @@ def make_single_environment_movie(
     direction_name="head_orientation",
     vmax=0.07,
 ):
-    """Generate a movie of the decoding results for a single environment."""
+    """Generate a movie of the decoding results for a single environment.
+
+    Parameters
+    ----------
+    time_slice : slice
+        Time slice to render in the movie.
+    classifier : _DetectorBase
+        Fitted detector/classifier with environment information.
+    results : xr.Dataset
+        Decoding results from predict() or estimate_parameters().
+    position_info : pd.DataFrame
+        Position data indexed by time, with columns for position and direction.
+    spike_times : list[np.ndarray]
+        Spike times per neuron/electrode.
+    movie_name : str, optional
+        Output file path for the movie, by default "video_name.mp4".
+    sampling_frequency : float, optional
+        Sampling frequency in Hz, by default 500.
+    video_slowdown : float, optional
+        Factor to slow down the video relative to real time, by default 8.
+    position_name : list[str] | None, optional
+        Column names for x and y position in position_info.
+        If None, uses ["head_position_x", "head_position_y"].
+    direction_name : str, optional
+        Column name for head direction in position_info, by default "head_orientation".
+    vmax : float, optional
+        Maximum value for posterior colormap, by default 0.07.
+
+    Returns
+    -------
+    str
+        Path to the output movie file.
+    """
 
     position_name = (
         ["head_position_x", "head_position_y"]

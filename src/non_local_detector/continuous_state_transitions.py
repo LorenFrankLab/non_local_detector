@@ -165,7 +165,7 @@ class RandomWalk:
 
         Parameters
         ----------
-        environments : Tuple[Environment, ...]
+        environments : tuple[Environment, ...]
             Tuple of available environments in the model.
 
         Returns
@@ -304,7 +304,7 @@ class Uniform:
 
         Parameters
         ----------
-        environments : Tuple[Environment, ...]
+        environments : tuple[Environment, ...]
             Tuple of available environments in the model.
 
         Returns
@@ -365,7 +365,7 @@ class Identity:
 
         Parameters
         ----------
-        environments : Tuple[Environment, ...]
+        environments : tuple[Environment, ...]
             Tuple of available environments in the model.
 
         Returns
@@ -426,7 +426,7 @@ class EmpiricalMovement:
 
         Parameters
         ----------
-        environments : Tuple[Environment, ...]
+        environments : tuple[Environment, ...]
             Tuple of available environments in the model.
         position : np.ndarray, shape (n_time, n_dims)
             Position of the animal.
@@ -521,7 +521,7 @@ class RandomWalkDirection1:
 
         Parameters
         ----------
-        environments : Tuple[Environment, ...]
+        environments : tuple[Environment, ...]
             Tuple of available environments in the model.
 
         Returns
@@ -561,7 +561,7 @@ class RandomWalkDirection2:
 
         Parameters
         ----------
-        environments : Tuple[Environment, ...]
+        environments : tuple[Environment, ...]
             Tuple of available environments in the model.
 
         Returns
