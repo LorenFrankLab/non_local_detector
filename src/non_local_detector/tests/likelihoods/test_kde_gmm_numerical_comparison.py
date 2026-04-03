@@ -52,8 +52,8 @@ def comparison_data():
         ]
     )
 
-    # Spike parameters - more electrodes and spikes
-    n_electrodes = 5
+    # Spike parameters - enough electrodes for stable statistics
+    n_electrodes = 15
     n_features = 4
     encoding_spike_times = []
     encoding_spike_features = []
@@ -276,7 +276,7 @@ def test_spatial_pattern_correlation(comparison_data):
     spearman_corrs = []
 
     print("\n=== Spatial Pattern Correlation (Per Time Bin) ===")
-    for t in range(min(5, n_time)):  # Show first 5 time bins
+    for t in range(min(20, n_time)):  # Evaluate more bins for stable statistics
         kde_t = np.asarray(ll_kde[t, :])
         gmm_t = np.asarray(ll_gmm[t, :])
 
