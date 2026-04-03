@@ -78,6 +78,7 @@ class TestMaximumAPosterioriEstimate:
 
     def test_output_shape_1d(self):
         """1D posterior should return (n_time, 1)."""
+        np.random.seed(42)
         positions = np.linspace(0, 10, 20)
         probs = np.random.dirichlet(np.ones(20), size=3)
         posterior = xr.DataArray(
