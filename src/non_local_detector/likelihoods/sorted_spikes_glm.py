@@ -153,7 +153,6 @@ def fit_poisson_regression(
     coefficients : jnp.ndarray, shape (n_coefficients,)
     """
 
-    n_time = design_matrix.shape[0]
     spikes = jnp.asarray(spikes, dtype=jnp.float32)
     design_matrix = jnp.asarray(design_matrix, dtype=jnp.float32)
     weights = jnp.asarray(weights, dtype=jnp.float32)
@@ -168,7 +167,11 @@ def fit_poisson_regression(
             jax.scipy.special.xlogy(spikes, conditional_intensity)
             - conditional_intensity
         )
-        mean_neg_log_likelihood = -jnp.sum(log_likelihood_term) / n_time
+        # Normalize by sum of weights (not n_time) so the data term
+        # scales correctly when local state mass is small, keeping
+        # the regularizer balanced relative to the effective data.
+        weight_sum = jnp.maximum(jnp.sum(weights), EPS)
+        mean_neg_log_likelihood = -jnp.sum(log_likelihood_term) / weight_sum
         l2_penalty_term = l2_penalty * jnp.sum(coefficients[1:] ** 2)
         return mean_neg_log_likelihood + l2_penalty_term
 
@@ -255,9 +258,9 @@ def fit_sorted_spikes_glm_encoding_model(
 
     """
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
-    time_range = (position_time[0], position_time[-1])
-    n_time_bins = int(np.ceil((time_range[-1] - time_range[0]) * sampling_frequency))
-    time = time_range[0] + np.arange(n_time_bins) / sampling_frequency
+    # Use position_time directly so spike counts, design matrix, and
+    # weights all share the same time grid.
+    time = np.asarray(position_time)
 
     if environment.is_track_interior_ is not None:
         is_track_interior = environment.is_track_interior_.ravel()
@@ -318,6 +321,7 @@ def fit_sorted_spikes_glm_encoding_model(
     no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
 
     return {
+        "environment": environment,
         "coefficients": jnp.stack(coefficients, axis=0),
         "emission_design_info": emission_design_info,
         "place_fields": place_fields,

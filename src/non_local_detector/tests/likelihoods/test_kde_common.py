@@ -178,6 +178,45 @@ def test_empty_eval_points_returns_empty():
     assert out.shape == (0,)
 
 
+def test_empty_eval_points_kde_model_default_block_size():
+    """KDEModel with block_size=None derives block_size from eval_points length.
+
+    When eval_points is empty, block_size becomes 0, causing
+    range(0, 0, 0) -> ValueError in block_kde/block_log_kde.
+    """
+    r = rng(20)
+    samples = r.normal(size=(50, 2))
+    eval_points = np.zeros((0, 2))
+    model = KDEModel(std=jnp.array([1.0, 1.0]), block_size=None).fit(
+        jnp.asarray(samples)
+    )
+
+    out = model.predict(jnp.asarray(eval_points))
+    assert out.shape == (0,)
+
+    out_log = model.predict_log(jnp.asarray(eval_points))
+    assert out_log.shape == (0,)
+
+
+def test_empty_eval_points_block_kde_zero_block_size():
+    """block_kde and block_log_kde should handle block_size=0 without error."""
+    r = rng(21)
+    samples = r.normal(size=(50, 2))
+    eval_points = np.zeros((0, 2))
+    std = jnp.array([1.0, 1.0])
+    w = jnp.ones((samples.shape[0],))
+
+    out = block_kde(
+        jnp.asarray(eval_points), jnp.asarray(samples), std, block_size=0, weights=w
+    )
+    assert out.shape == (0,)
+
+    out_log = block_log_kde(
+        jnp.asarray(eval_points), jnp.asarray(samples), std, block_size=0, weights=w
+    )
+    assert out_log.shape == (0,)
+
+
 def test_dtype_parity_float32_float64():
     r = rng(13)
     samples64 = r.normal(size=(120, 2)).astype(np.float64)

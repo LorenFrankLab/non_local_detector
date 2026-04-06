@@ -235,10 +235,6 @@ def test_sorted_kde_zero_spikes_all_neurons():
     assert not jnp.any(jnp.isnan(ll))
 
 
-@pytest.mark.xfail(
-    reason="GLM jnp.average fails when spike count shape mismatches weights",
-    strict=True,
-)
 def test_sorted_glm_zero_spikes_all_neurons():
     """GLM should handle all-zero spike neurons without NaN."""
     env = _make_env_1d(position_range=(0.0, 100.0), bin_size=5.0, n_pos=101)
@@ -305,10 +301,6 @@ def test_sorted_kde_single_spike_per_neuron():
     assert not jnp.any(jnp.isnan(ll))
 
 
-@pytest.mark.xfail(
-    reason="GLM jnp.average fails when spike count shape mismatches weights",
-    strict=True,
-)
 def test_sorted_glm_single_spike_per_neuron():
     """GLM with single spike per neuron should produce finite output."""
     env = _make_env_1d(position_range=(0.0, 100.0), bin_size=5.0, n_pos=101)

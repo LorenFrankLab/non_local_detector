@@ -177,6 +177,9 @@ def block_kde(
     n_eval_points = eval_points.shape[0]
     density = jnp.zeros((n_eval_points,))
 
+    if n_eval_points == 0:
+        return density
+
     if weights is None:
         weights = jnp.ones((samples.shape[0],))
 
@@ -238,6 +241,9 @@ def block_log_kde(
     """
     n_eval = eval_points.shape[0]
     out = jnp.full((n_eval,), LOG_EPS)
+
+    if n_eval == 0:
+        return out
 
     if weights is None:
         weights = jnp.ones((samples.shape[0],))

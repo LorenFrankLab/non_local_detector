@@ -1,5 +1,6 @@
 import abc
 import copy
+import inspect
 import pickle
 import warnings
 from logging import getLogger
@@ -79,6 +80,29 @@ OUTPUT_INCLUDES: dict[str, set[str]] = {
     "log_likelihood": {"log_likelihood"},
     "all": {"filter", "predictive", "predictive_posterior", "log_likelihood"},
 }
+
+
+def _snapshot_encoding_model(encoding_model: dict | None) -> dict | None:
+    """Create a restorable snapshot of the encoding model.
+
+    Deep-copies numpy/jax arrays but keeps non-picklable objects (e.g.
+    patsy DesignInfo, KDEModel) by reference so that ``copy.deepcopy``
+    failures are avoided.
+    """
+    if encoding_model is None:
+        return None
+    snapshot = {}
+    for key, entry in encoding_model.items():
+        entry_copy = {}
+        for k, v in entry.items():
+            if isinstance(v, (np.ndarray, jnp.ndarray)):
+                entry_copy[k] = (
+                    np.array(v) if isinstance(v, np.ndarray) else jnp.array(v)
+                )
+            else:
+                entry_copy[k] = v
+        snapshot[key] = entry_copy
+    return snapshot
 
 
 def _normalize_return_outputs(
@@ -1211,6 +1235,31 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     def fit_encoding_model(self):
         """Fit the encoding model. To be implemented by inheriting class."""
 
+    @staticmethod
+    def _apply_encoding_damping(
+        new_model: dict,
+        old_model: dict,
+        damping: float,
+    ) -> None:
+        """Blend new encoding model place fields with old ones in-place.
+
+        For each key present in both models, computes:
+            place_fields = (1 - damping) * new + damping * old
+        and recomputes no_spike_part_log_likelihood accordingly.
+        """
+        for key in new_model:
+            if key not in old_model:
+                continue
+            new_entry = new_model[key]
+            old_entry = old_model[key]
+            if "place_fields" not in new_entry or "place_fields" not in old_entry:
+                continue
+            blended = (1 - damping) * new_entry["place_fields"] + damping * old_entry[
+                "place_fields"
+            ]
+            new_entry["place_fields"] = blended
+            new_entry["no_spike_part_log_likelihood"] = jnp.sum(blended, axis=0)
+
     def estimate_parameters(
         self,
         time: np.ndarray | None = None,
@@ -1226,6 +1275,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         n_chunks: int = 1,
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
+        min_encoding_local_mass: float = 1.0,
+        min_encoding_local_ess: float = 1.0,
+        encoding_update_damping: float = 0.0,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -1268,6 +1320,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         save_log_likelihood_to_results : bool, optional
             DEPRECATED. Use return_outputs='log_likelihood' instead.
             Whether to save the log likelihood to the results, by default None.
+        min_encoding_local_mass : float, optional
+            Minimum sum of local state weights required to update the encoding
+            model. If the total mass is below this threshold, the encoding
+            M-step is skipped for that iteration. By default 1.0.
+        min_encoding_local_ess : float, optional
+            Minimum effective sample size (ESS) of local state weights required
+            to update the encoding model. ESS = sum(w)^2 / sum(w^2). If ESS
+            is below this threshold, the encoding M-step is skipped. By default 1.0.
+        encoding_update_damping : float, optional
+            Damping factor in [0, 1) for encoding model updates. When > 0, the
+            new place fields are blended with the old ones:
+            new = (1 - damping) * refit + damping * old. Set higher (e.g. 0.5)
+            when local ESS is expected to be low. By default 0.0 (no damping).
 
         Returns
         -------
@@ -1320,6 +1385,20 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         if "log_likelihood" in requested_outputs and not cache_likelihood:
             cache_likelihood = True
 
+        # Validate encoding update parameters
+        if not 0.0 <= encoding_update_damping < 1.0:
+            raise ValueError(
+                f"encoding_update_damping must be in [0, 1), got {encoding_update_damping}"
+            )
+        if min_encoding_local_mass < 0:
+            raise ValueError(
+                f"min_encoding_local_mass must be >= 0, got {min_encoding_local_mass}"
+            )
+        if min_encoding_local_ess < 0:
+            raise ValueError(
+                f"min_encoding_local_ess must be >= 0, got {min_encoding_local_ess}"
+            )
+
         while not converged and (n_iter < max_iter):
             # Expectation step
             logger.info("Expectation step...")
@@ -1347,18 +1426,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 try:
                     local_state_index = self.state_names.index("Local")
                 except ValueError:
-                    # Handle case where 'Local' state might not exist or has different name
-                    local_state_index = None  # Or raise error
+                    local_state_index = None
 
                 if local_state_index is not None:
                     logger.info("Estimating encoding model...")
                     local_state_weights = acausal_state_probabilities[
                         :, local_state_index
                     ]
-                    # Ensure local_state_weights are not zero
-                    local_state_weights = np.clip(
-                        local_state_weights, min=1e-15, max=1.0
-                    )
                     # Align weights from decoding time grid to position_time
                     position_time = self._encoding_model_data.get("position_time")
                     if position_time is not None and len(local_state_weights) != len(
@@ -1367,16 +1441,51 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                         local_state_weights = np.interp(
                             position_time, time, local_state_weights
                         )
-                    # Re-fit the encoding model using the posterior weights
-                    self.fit_encoding_model(
-                        **self._encoding_model_data,
-                        weights=local_state_weights,
-                    )
-                    if cache_likelihood:
-                        try:
-                            del self.log_likelihood_
-                        except AttributeError:
-                            pass
+
+                    # ESS / mass guard: skip encoding update when local
+                    # state has effectively disappeared
+                    mass = float(np.sum(local_state_weights))
+                    sum_sq = float(np.sum(local_state_weights**2))
+                    ess = (mass**2 / sum_sq) if sum_sq > 0 else 0.0
+
+                    if mass < min_encoding_local_mass or ess < min_encoding_local_ess:
+                        logger.info(
+                            "Skipping encoding update: local mass=%.4g, "
+                            "ESS=%.4g (thresholds: mass>=%.4g, ESS>=%.4g)",
+                            mass,
+                            ess,
+                            min_encoding_local_mass,
+                            min_encoding_local_ess,
+                        )
+                    else:
+                        # Snapshot for damping (only when needed)
+                        prev_encoding_model = (
+                            _snapshot_encoding_model(
+                                getattr(self, "encoding_model_", None)
+                            )
+                            if encoding_update_damping > 0
+                            else None
+                        )
+
+                        # Re-fit the encoding model using the posterior weights
+                        self.fit_encoding_model(
+                            **self._encoding_model_data,
+                            weights=local_state_weights,
+                        )
+
+                        # Apply damping: blend new place fields with old
+                        if prev_encoding_model is not None:
+                            self._apply_encoding_damping(
+                                self.encoding_model_,
+                                prev_encoding_model,
+                                encoding_update_damping,
+                            )
+
+                        if cache_likelihood:
+                            try:
+                                del self.log_likelihood_
+                            except AttributeError:
+                                pass
 
             if estimate_discrete_transition:
                 (
@@ -2596,6 +2705,9 @@ class ClusterlessDetector(_DetectorBase):
         n_chunks: int = 1,
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
+        min_encoding_local_mass: float = 1.0,
+        min_encoding_local_ess: float = 1.0,
+        encoding_update_damping: float = 0.0,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -2643,6 +2755,12 @@ class ClusterlessDetector(_DetectorBase):
             documentation of options. By default None.
         save_log_likelihood_to_results : bool, optional
             DEPRECATED. Use return_outputs='log_likelihood' instead. By default None.
+        min_encoding_local_mass : float, optional
+            Minimum sum of local state weights to update encoding model. By default 1.0.
+        min_encoding_local_ess : float, optional
+            Minimum effective sample size of local weights to update encoding. By default 1.0.
+        encoding_update_damping : float, optional
+            Damping factor in [0, 1) for encoding updates. By default 0.0.
 
         Returns
         -------
@@ -2688,6 +2806,9 @@ class ClusterlessDetector(_DetectorBase):
             n_chunks=n_chunks,
             return_outputs=return_outputs,
             save_log_likelihood_to_results=save_log_likelihood_to_results,
+            min_encoding_local_mass=min_encoding_local_mass,
+            min_encoding_local_ess=min_encoding_local_ess,
+            encoding_update_damping=encoding_update_damping,
         )
 
     def most_likely_sequence(
@@ -2944,6 +3065,25 @@ class SortedSpikesDetector(_DetectorBase):
                 group_weights = np.where(is_group, weights, 0.0)
             else:
                 group_weights = None
+
+            # GLM requires environment geometry that KDE derives internally
+            glm_kwargs = {}
+            if self.sorted_spikes_algorithm == "sorted_spikes_glm":
+                glm_kwargs = {
+                    "place_bin_edges": environment.place_bin_edges_,
+                    "edges": environment.edges_,
+                    "is_track_interior": environment.is_track_interior_,
+                    "is_track_boundary": environment.is_track_boundary_,
+                }
+
+            # Filter algorithm_params to only those accepted by the
+            # encoding function (KDE and GLM have different signatures).
+            # Exclude glm_kwargs keys so user params can't override
+            # environment geometry.
+            sig = inspect.signature(encoding_algorithm)
+            valid_params = set(sig.parameters.keys()) - set(glm_kwargs.keys())
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+
             self.encoding_model_[likelihood_name] = encoding_algorithm(
                 position_time=position_time,
                 position=position,
@@ -2953,7 +3093,8 @@ class SortedSpikesDetector(_DetectorBase):
                 environment=environment,
                 sampling_frequency=self.sampling_frequency,
                 weights=group_weights,
-                **kwargs,
+                **glm_kwargs,
+                **filtered_kwargs,
             )
 
     def fit(
@@ -3316,6 +3457,9 @@ class SortedSpikesDetector(_DetectorBase):
         n_chunks: int = 1,
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
+        min_encoding_local_mass: float = 1.0,
+        min_encoding_local_ess: float = 1.0,
+        encoding_update_damping: float = 0.0,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities
@@ -3365,6 +3509,12 @@ class SortedSpikesDetector(_DetectorBase):
             documentation of options. By default None.
         save_log_likelihood_to_results : bool, optional
             DEPRECATED. Use return_outputs='log_likelihood' instead. By default None.
+        min_encoding_local_mass : float, optional
+            Minimum sum of local state weights to update encoding model. By default 1.0.
+        min_encoding_local_ess : float, optional
+            Minimum effective sample size of local weights to update encoding. By default 1.0.
+        encoding_update_damping : float, optional
+            Damping factor in [0, 1) for encoding updates. By default 0.0.
 
         Returns
         -------
@@ -3408,6 +3558,9 @@ class SortedSpikesDetector(_DetectorBase):
             n_chunks=n_chunks,
             return_outputs=return_outputs,
             save_log_likelihood_to_results=save_log_likelihood_to_results,
+            min_encoding_local_mass=min_encoding_local_mass,
+            min_encoding_local_ess=min_encoding_local_ess,
+            encoding_update_damping=encoding_update_damping,
         )
 
     def most_likely_sequence(
