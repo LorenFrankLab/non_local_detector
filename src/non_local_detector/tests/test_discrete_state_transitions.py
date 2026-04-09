@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.discrete_state_transitions import (
+    DiscreteNonStationaryDiagonal,
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
     centered_softmax_forward,
@@ -18,6 +19,7 @@ from non_local_detector.discrete_state_transitions import (
     jax_centered_log_softmax_forward,
     make_transition_from_diag,
     multinomial_neg_log_likelihood,
+    predict_discrete_state_transitions,
 )
 from non_local_detector.tests.conftest import assert_stochastic_matrix
 
@@ -427,3 +429,70 @@ class TestDiscreteStationaryCustom:
         assert_stochastic_matrix(trans_mat)
         assert coeffs is None
         assert design is None
+
+
+@pytest.mark.unit
+class TestPredictDiscreteStateTransitions:
+    """Test the predict-time covariate transition path."""
+
+    @pytest.fixture
+    def fitted_nonstationary_model(self):
+        """Create a fitted non-stationary transition model with design info."""
+        diag = np.array([0.8, 0.85, 0.9])
+        model = DiscreteNonStationaryDiagonal(
+            diagonal_values=diag,
+            formula="1 + speed",
+        )
+        covariate_data = {"speed": np.linspace(0, 10, 20)}
+        transition, coefficients, design_matrix = model.make_state_transition(
+            covariate_data
+        )
+        return transition, coefficients, design_matrix
+
+    def test_predict_returns_correct_shape(self, fitted_nonstationary_model):
+        """predict_discrete_state_transitions should return (n_time, n_states, n_states)."""
+        _, coefficients, design_matrix = fitted_nonstationary_model
+        n_states = coefficients.shape[1]
+
+        new_covariate_data = {"speed": np.linspace(0, 10, 15)}
+        result = predict_discrete_state_transitions(
+            design_matrix, coefficients, new_covariate_data
+        )
+
+        assert result.shape == (15, n_states, n_states)
+
+    def test_predict_rows_sum_to_one(self, fitted_nonstationary_model):
+        """Each row of predicted transition matrices should sum to 1."""
+        _, coefficients, design_matrix = fitted_nonstationary_model
+
+        new_covariate_data = {"speed": np.linspace(0, 10, 15)}
+        result = predict_discrete_state_transitions(
+            design_matrix, coefficients, new_covariate_data
+        )
+
+        row_sums = np.array(result.sum(axis=-1))
+        assert np.allclose(row_sums, 1.0, atol=1e-6), (
+            f"Row sums deviate from 1.0: max deviation {np.max(np.abs(row_sums - 1.0))}"
+        )
+
+    def test_predict_values_non_negative(self, fitted_nonstationary_model):
+        """All predicted transition probabilities should be non-negative."""
+        _, coefficients, design_matrix = fitted_nonstationary_model
+
+        new_covariate_data = {"speed": np.linspace(0, 10, 15)}
+        result = predict_discrete_state_transitions(
+            design_matrix, coefficients, new_covariate_data
+        )
+
+        assert np.all(np.array(result) >= 0), "Negative transition probabilities found"
+
+    def test_predict_does_not_crash_with_jax(self, fitted_nonstationary_model):
+        """Regression test: previously crashed with TypeError due to JAX in-place assignment."""
+        _, coefficients, design_matrix = fitted_nonstationary_model
+
+        new_covariate_data = {"speed": np.array([1.0, 5.0, 10.0])}
+        # This should not raise TypeError
+        result = predict_discrete_state_transitions(
+            design_matrix, coefficients, new_covariate_data
+        )
+        assert np.all(np.isfinite(np.array(result)))

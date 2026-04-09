@@ -108,6 +108,7 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
+        discrete_transition_prior_weight: float = 0.0,
     ):
         params = _initialize_params(
             _ModelDefaults.nospike_cont_frag_defaults(),
@@ -137,6 +138,7 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
             params["state_names"],
             sampling_frequency,
             no_spike_rate,
+            discrete_transition_prior_weight=discrete_transition_prior_weight,
         )
 
 
@@ -227,6 +229,7 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
+        discrete_transition_prior_weight: float = 0.0,
     ):
         params = _initialize_params(
             _ModelDefaults.nospike_cont_frag_defaults(),
@@ -256,4 +259,5 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
             params["state_names"],
             sampling_frequency,
             no_spike_rate,
+            discrete_transition_prior_weight=discrete_transition_prior_weight,
         )

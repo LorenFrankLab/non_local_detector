@@ -105,6 +105,31 @@ def _snapshot_encoding_model(encoding_model: dict | None) -> dict | None:
     return snapshot
 
 
+def _validate_covariate_time_length(
+    predicted_transitions: np.ndarray, time: np.ndarray
+) -> None:
+    """Validate that covariate-derived transitions match decode time length.
+
+    Parameters
+    ----------
+    predicted_transitions : np.ndarray, shape (n_covariate_time, n_states, n_states)
+    time : np.ndarray, shape (n_decode_time,)
+
+    Raises
+    ------
+    ValueError
+        If the number of covariate time steps does not match decode time.
+    """
+    n_covariate_time = predicted_transitions.shape[0]
+    n_decode_time = len(time)
+    if n_covariate_time != n_decode_time:
+        raise ValueError(
+            f"Covariate data has {n_covariate_time} time steps but "
+            f"decode time has {n_decode_time} time steps. "
+            f"These must match."
+        )
+
+
 def _normalize_return_outputs(
     return_outputs: str | list[str] | set[str] | None,
 ) -> set[str]:
@@ -181,6 +206,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
+        discrete_transition_prior_weight: float = 0.0,
     ) -> None:
         """
         Initialize the _DetectorBase class.
@@ -213,6 +239,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Sampling frequency, by default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
+        discrete_transition_prior_weight : float, optional
+            Dimensionless weight for data-adaptive prior scaling. When > 0,
+            the Dirichlet prior pseudo-counts are scaled by expected transition
+            counts, making regularization strength approximately invariant to
+            temporal resolution. When 0.0 (default), the fixed-count prior
+            from concentration and stickiness is used directly.
         """
         # Validate all parameters early (Tier 1 & 2)
         self._validate_initial_conditions(
@@ -241,6 +273,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.discrete_transition_stickiness = discrete_transition_stickiness
         self.discrete_transition_regularization = discrete_transition_regularization
         self.discrete_transition_type = discrete_transition_type
+        self.discrete_transition_prior_weight = discrete_transition_prior_weight
 
         # Continuous state transition parameters
         self.continuous_transition_types = continuous_transition_types
@@ -1145,6 +1178,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         log_likelihoods: np.ndarray | None = None,
         cache_likelihood: bool = True,
         n_chunks: int = 1,
+        discrete_state_transitions: np.ndarray | None = None,
     ) -> tuple[
         np.ndarray,
         np.ndarray,
@@ -1172,6 +1206,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Whether to cache the log likelihoods, by default True
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
+        discrete_state_transitions : np.ndarray, shape (n_time, n_states, n_states) or None, optional
+            Covariate-driven transition matrices to use instead of
+            self.discrete_state_transitions_. When None, falls back to the
+            fitted attribute. By default None.
 
         Returns
         -------
@@ -1194,14 +1232,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
         state_ind = self.state_ind_[is_track_interior]
 
-        if self.discrete_state_transitions_.ndim == 2:
+        # Use provided transitions or fall back to fitted attribute
+        discrete_transitions = (
+            discrete_state_transitions
+            if discrete_state_transitions is not None
+            else self.discrete_state_transitions_
+        )
+
+        if discrete_transitions.ndim == 2:
             return chunked_filter_smoother(
                 time=time,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
                 transition_matrix=(
                     self.continuous_state_transitions_[cross_is_track_interior]
-                    * self.discrete_state_transitions_[np.ix_(state_ind, state_ind)]
+                    * discrete_transitions[np.ix_(state_ind, state_ind)]
                 ),
                 log_likelihood_func=self.compute_log_likelihood,
                 log_likelihood_args=log_likelihood_args,
@@ -1215,7 +1260,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 time=time,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
-                discrete_transition_matrix=self.discrete_state_transitions_,
+                discrete_transition_matrix=discrete_transitions,
                 continuous_transition_matrix=self.continuous_state_transitions_[
                     cross_is_track_interior
                 ],
@@ -1501,6 +1546,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     self.discrete_transition_concentration,
                     self.discrete_transition_stickiness,
                     self.discrete_transition_regularization,
+                    self.discrete_transition_prior_weight,
                 )
 
             if estimate_initial_conditions:
@@ -2051,6 +2097,7 @@ class ClusterlessDetector(_DetectorBase):
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
+        discrete_transition_prior_weight: float = 0.0,
     ) -> None:
         """
         Initialize the ClusterlessDetector class.
@@ -2087,6 +2134,8 @@ class ClusterlessDetector(_DetectorBase):
             Sampling frequency, by default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
+        discrete_transition_prior_weight : float, optional
+            Data-adaptive prior weight, by default 0.0.
         """
         super().__init__(
             discrete_initial_conditions,
@@ -2102,6 +2151,7 @@ class ClusterlessDetector(_DetectorBase):
             state_names,
             sampling_frequency,
             no_spike_rate,
+            discrete_transition_prior_weight=discrete_transition_prior_weight,
         )
         self.clusterless_algorithm = clusterless_algorithm
         self.clusterless_algorithm_params = clusterless_algorithm_params
@@ -2625,16 +2675,18 @@ class ClusterlessDetector(_DetectorBase):
         if "log_likelihood" in requested_outputs and not cache_likelihood:
             cache_likelihood = True
 
+        predicted_transitions = None
         if discrete_transition_covariate_data is not None:
             if self.discrete_transition_coefficients_ is None:
                 raise ValueError(
                     "discrete_transition_coefficients_ is None but covariate data provided"
                 )
-            self.discrete_state_transitions_ = predict_discrete_state_transitions(
+            predicted_transitions = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,
                 discrete_transition_covariate_data,
             )
+            _validate_covariate_time_length(predicted_transitions, time)
         (
             acausal_posterior,
             acausal_state_probabilities,
@@ -2655,6 +2707,7 @@ class ClusterlessDetector(_DetectorBase):
             is_missing=is_missing,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
+            discrete_state_transitions=predicted_transitions,
         )
 
         return self._convert_results_to_xarray(
@@ -2879,6 +2932,7 @@ class SortedSpikesDetector(_DetectorBase):
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
+        discrete_transition_prior_weight: float = 0.0,
     ) -> None:
         """
         Initialize the SortedSpikesDetector class.
@@ -2915,6 +2969,8 @@ class SortedSpikesDetector(_DetectorBase):
             Sampling frequency, by default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
+        discrete_transition_prior_weight : float, optional
+            Data-adaptive prior weight, by default 0.0.
         """
         super().__init__(
             discrete_initial_conditions,
@@ -2930,6 +2986,7 @@ class SortedSpikesDetector(_DetectorBase):
             state_names,
             sampling_frequency,
             no_spike_rate,
+            discrete_transition_prior_weight=discrete_transition_prior_weight,
         )
         self.sorted_spikes_algorithm = sorted_spikes_algorithm
         self.sorted_spikes_algorithm_params = sorted_spikes_algorithm_params
@@ -3378,16 +3435,18 @@ class SortedSpikesDetector(_DetectorBase):
         if "log_likelihood" in requested_outputs and not cache_likelihood:
             cache_likelihood = True
 
+        predicted_transitions = None
         if discrete_transition_covariate_data is not None:
             if self.discrete_transition_coefficients_ is None:
                 raise ValueError(
                     "discrete_transition_coefficients_ is None but covariate data provided"
                 )
-            self.discrete_state_transitions_ = predict_discrete_state_transitions(
+            predicted_transitions = predict_discrete_state_transitions(
                 self.discrete_transition_design_matrix_,
                 self.discrete_transition_coefficients_,
                 discrete_transition_covariate_data,
             )
+            _validate_covariate_time_length(predicted_transitions, time)
 
         (
             acausal_posterior,
@@ -3408,6 +3467,7 @@ class SortedSpikesDetector(_DetectorBase):
             is_missing=is_missing,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
+            discrete_state_transitions=predicted_transitions,
         )
 
         return self._convert_results_to_xarray(

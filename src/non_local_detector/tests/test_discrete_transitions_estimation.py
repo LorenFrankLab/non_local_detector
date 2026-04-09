@@ -244,6 +244,151 @@ class TestEstimateStationaryStateTransition:
 
 
 @pytest.mark.unit
+class TestPriorWeightScaling:
+    """Test data-adaptive prior weight for stationary transition estimation."""
+
+    def test_prior_weight_zero_uses_legacy_prior(self, posterior_data):
+        """prior_weight=0 should use the legacy fixed-count prior (unchanged behavior)."""
+        post = posterior_data
+
+        legacy_result = estimate_stationary_state_transition(
+            causal_posterior=post["causal_posterior"],
+            predictive_distribution=post["predictive_distribution"],
+            acausal_posterior=post["acausal_posterior"],
+            transition_matrix=post["transition_matrix"],
+            concentration=1.0,
+            stickiness=2.0,
+        )
+
+        pw_result = estimate_stationary_state_transition(
+            causal_posterior=post["causal_posterior"],
+            predictive_distribution=post["predictive_distribution"],
+            acausal_posterior=post["acausal_posterior"],
+            transition_matrix=post["transition_matrix"],
+            concentration=1.0,
+            stickiness=2.0,
+            prior_weight=0.0,
+        )
+
+        # prior_weight=0 should produce identical results to legacy behavior
+        np.testing.assert_allclose(pw_result, legacy_result, atol=1e-12)
+
+    def test_prior_weight_increases_diagonal(self, posterior_data):
+        """prior_weight > 0 with stickiness should increase diagonal relative to MLE."""
+        post = posterior_data
+
+        mle_result = estimate_stationary_state_transition(
+            causal_posterior=post["causal_posterior"],
+            predictive_distribution=post["predictive_distribution"],
+            acausal_posterior=post["acausal_posterior"],
+            transition_matrix=post["transition_matrix"],
+            concentration=1.0,
+            stickiness=0.0,
+        )
+
+        pw_result = estimate_stationary_state_transition(
+            causal_posterior=post["causal_posterior"],
+            predictive_distribution=post["predictive_distribution"],
+            acausal_posterior=post["acausal_posterior"],
+            transition_matrix=post["transition_matrix"],
+            concentration=1.0,
+            stickiness=2.0,
+            prior_weight=0.1,
+        )
+
+        assert_stochastic_matrix(pw_result)
+        # Diagonal should be larger with prior_weight + stickiness
+        assert np.mean(np.diag(pw_result)) > np.mean(np.diag(mle_result))
+
+    def test_prior_weight_approximately_invariant_to_T(self, posterior_data):
+        """Prior effect should be similar regardless of number of time bins.
+
+        With prior_weight, doubling T (by repeating data) should produce
+        approximately the same transition matrix, unlike the fixed-count prior
+        which gets diluted.
+        """
+        post = posterior_data
+
+        # Estimate with original T
+        result_T = estimate_stationary_state_transition(
+            causal_posterior=post["causal_posterior"],
+            predictive_distribution=post["predictive_distribution"],
+            acausal_posterior=post["acausal_posterior"],
+            transition_matrix=post["transition_matrix"],
+            concentration=1.0,
+            stickiness=2.0,
+            prior_weight=0.1,
+        )
+
+        # Estimate with 2T (repeat data)
+        result_2T = estimate_stationary_state_transition(
+            causal_posterior=np.tile(post["causal_posterior"], (2, 1)),
+            predictive_distribution=np.tile(post["predictive_distribution"], (2, 1)),
+            acausal_posterior=np.tile(post["acausal_posterior"], (2, 1)),
+            transition_matrix=post["transition_matrix"],
+            concentration=1.0,
+            stickiness=2.0,
+            prior_weight=0.1,
+        )
+
+        assert_stochastic_matrix(result_T)
+        assert_stochastic_matrix(result_2T)
+        # Should be close — prior scales with data, so relative effect is constant
+        np.testing.assert_allclose(result_T, result_2T, atol=0.05)
+
+    def test_prior_weight_produces_valid_stochastic_matrix(self, posterior_data):
+        """Result should always be a valid stochastic matrix."""
+        post = posterior_data
+
+        result = estimate_stationary_state_transition(
+            causal_posterior=post["causal_posterior"],
+            predictive_distribution=post["predictive_distribution"],
+            acausal_posterior=post["acausal_posterior"],
+            transition_matrix=post["transition_matrix"],
+            concentration=1.5,
+            stickiness=3.0,
+            prior_weight=0.5,
+        )
+
+        assert_stochastic_matrix(result)
+        assert np.all(np.isfinite(result))
+
+    def test_prior_weight_handles_unvisited_state(self):
+        """A state with zero posterior mass should not produce NaN."""
+        n_time, n_states = 20, 3
+
+        # State 2 is never visited — all mass on states 0 and 1
+        causal_posterior = np.zeros((n_time, n_states))
+        causal_posterior[:, 0] = 0.6
+        causal_posterior[:, 1] = 0.4
+        acausal_posterior = causal_posterior.copy()
+
+        transition_matrix = np.eye(n_states) * 0.8 + 0.2 / n_states
+        predictive_distribution = np.zeros((n_time, n_states))
+        for t in range(n_time):
+            predictive_distribution[t] = causal_posterior[t] @ transition_matrix
+
+        result = estimate_stationary_state_transition(
+            causal_posterior=causal_posterior,
+            predictive_distribution=predictive_distribution,
+            acausal_posterior=acausal_posterior,
+            transition_matrix=transition_matrix,
+            concentration=1.0,
+            stickiness=2.0,
+            prior_weight=0.1,
+        )
+
+        assert np.all(np.isfinite(result)), f"NaN/Inf in result: {result}"
+        assert_stochastic_matrix(result)
+
+        # Unvisited state (index 2) should reflect the sticky prior direction,
+        # not uniform — diagonal should be larger than off-diagonal
+        assert result[2, 2] > result[2, 0], (
+            "Unvisited state should reflect sticky prior, not uniform"
+        )
+
+
+@pytest.mark.unit
 class TestEstimateDiscreteTransition:
     """Test _estimate_discrete_transition wrapper function."""
 

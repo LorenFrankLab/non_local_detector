@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 
 import jax
@@ -12,6 +13,8 @@ from patsy import (  # type: ignore[import-untyped]
 )
 from scipy.optimize import minimize  # type: ignore[import-untyped]
 from scipy.special import softmax  # type: ignore[import-untyped]
+
+logger = logging.getLogger(__name__)
 
 
 def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
@@ -313,6 +316,13 @@ def estimate_non_stationary_state_transition(
             options={"disp": disp, "maxiter": maxiter},
         )
 
+        if not result.success:
+            logger.warning(
+                "Transition optimization did not converge for state %d: %s",
+                from_state,
+                result.message,
+            )
+
         estimated_transition_coefficients[:, from_state, :] = result.x.reshape(
             (n_coefficients, n_states - 1)
         )
@@ -339,6 +349,7 @@ def estimate_stationary_state_transition(
     acausal_posterior: np.ndarray,
     stickiness: float = 0.0,
     concentration: float = 1.0,
+    prior_weight: float = 0.0,
 ) -> np.ndarray:
     """Estimate the stationary state transition model.
 
@@ -350,11 +361,23 @@ def estimate_stationary_state_transition(
     acausal_posterior : np.ndarray, shape (n_time, n_states)
     stickiness : float, optional
     concentration : float, optional
+    prior_weight : float, optional
+        Dimensionless weight for data-adaptive prior scaling. When > 0,
+        the effective prior pseudo-counts are scaled by the expected
+        transition count per state, making the prior influence approximately
+        invariant to the number of time bins. When 0.0 (default), the
+        fixed-count prior from ``concentration`` and ``stickiness`` is used
+        directly (legacy behavior).
 
     Returns
     -------
     new_transition_matrix : np.ndarray, shape (n_states, n_states)
     """
+    if prior_weight < 0:
+        raise ValueError(
+            f"prior_weight must be non-negative, got {prior_weight}"
+        )
+
     # p(x_t, x_{t+1} | O_{1:T})
     joint_distribution = estimate_joint_distribution(
         causal_posterior,
@@ -363,17 +386,43 @@ def estimate_stationary_state_transition(
         acausal_posterior,
     )
 
-    # Dirichlet prior for transition probabilities
     n_states = acausal_posterior.shape[1]
+    joint_sum = joint_distribution.sum(axis=0)  # (n_states, n_states)
+
     alpha = get_transition_prior(concentration, stickiness, n_states)
 
-    new_transition_matrix = joint_distribution.sum(axis=0) + alpha - 1.0
-    new_transition_matrix /= new_transition_matrix.sum(axis=-1, keepdims=True)
+    if prior_weight > 0.0:
+        # Data-adaptive prior: scale pseudo-counts by expected transitions
+        # so regularization strength is invariant to temporal resolution.
+        alpha_shape = alpha - 1.0  # (n_states, n_states)
 
-    # if any is zero, set to small number
-    # new_transition_matrix = np.clip(
-    #     new_transition_matrix, min=1e-16, max=1.0 - 1e-16
-    # )
+        # Normalize to get prior direction per row
+        row_sums = alpha_shape.sum(axis=-1, keepdims=True)
+        safe_row_sums = np.where(row_sums == 0, 1.0, row_sums)
+        tilde_alpha = np.where(row_sums == 0, 0.0, alpha_shape / safe_row_sums)
+
+        # N_i = expected transitions from state i
+        N_i = joint_sum.sum(axis=-1, keepdims=True)  # (n_states, 1)
+
+        # alpha_eff - 1 = prior_weight * N_i * tilde_alpha
+        effective_prior = prior_weight * N_i * tilde_alpha
+        new_transition_matrix = joint_sum + effective_prior
+    else:
+        # Legacy fixed-count prior
+        new_transition_matrix = joint_sum + alpha - 1.0
+
+    # Normalize rows to get transition probabilities.
+    # Guard against all-zero rows (e.g., unvisited states) to avoid NaN.
+    # Fall back to normalized Dirichlet prior direction for unvisited states,
+    # preserving stickiness semantics. If prior is also uniform, this gives 1/n.
+    prior_fallback = alpha / alpha.sum(axis=-1, keepdims=True)
+    row_totals = new_transition_matrix.sum(axis=-1, keepdims=True)
+    safe_row_totals = np.where(row_totals == 0, 1.0, row_totals)
+    new_transition_matrix = np.where(
+        row_totals == 0,
+        prior_fallback,
+        new_transition_matrix / safe_row_totals,
+    )
 
     return new_transition_matrix
 
@@ -398,7 +447,11 @@ def dirichlet_neg_log_likelihood(
         Expected counts or probabilities for each state transition.
     alpha : float | jnp.ndarray, shape (n_states,), optional
         Dirichlet prior parameters for this row of the transition matrix.
-        If float, assumed uniform. Defaults to 1.0 (Laplace smoothing).
+        If float, assumed uniform. Defaults to 1.0 (no prior effect).
+        Acts as a fixed pseudo-count total ``(alpha - 1)``, independent
+        of the number of time steps. This matches the stationary estimator
+        convention where ``alpha - 1`` is added to the summed joint
+        distribution.
     l2_penalty : float, optional
         L2 regularization penalty on coefficients (excluding intercept).
         Defaults to 1e-5.
@@ -416,9 +469,11 @@ def dirichlet_neg_log_likelihood(
     # shape (n_samples, n_states)
     log_probs = jax_centered_log_softmax_forward(design_matrix @ coefficients)
 
-    # Dirichlet prior
+    # Dirichlet prior as fixed pseudo-count per time step, independent of
+    # temporal resolution.  This matches the stationary estimator where
+    # (alpha - 1) is added once to the summed joint distribution.
     n_samples = response.shape[0]
-    prior = (alpha - 1.0) / n_samples
+    prior = alpha - 1.0
 
     neg_log_likelihood = -1.0 * jnp.sum((response + prior) * log_probs) / n_samples
     l2_penalty_term = l2_penalty * jnp.sum(coefficients[1:] ** 2)
@@ -549,6 +604,7 @@ def _estimate_discrete_transition(
     transition_concentration: float,
     transition_stickiness: float | np.ndarray,
     transition_regularization: float,
+    transition_prior_weight: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate the discrete transition matrix (stationary or non-stationary).
 
@@ -572,6 +628,10 @@ def _estimate_discrete_transition(
         Dirichlet prior stickiness.
     transition_regularization : float
         L2 penalty for non-stationary coefficients.
+    transition_prior_weight : float, optional
+        Data-adaptive prior weight for stationary transitions. When > 0,
+        pseudo-counts scale with expected transition counts. Only applies
+        to the stationary path. By default 0.0.
 
     Returns
     -------
@@ -617,6 +677,7 @@ def _estimate_discrete_transition(
             acausal_state_probabilities,
             concentration=transition_concentration,
             stickiness=stickiness_value,
+            prior_weight=transition_prior_weight,
         )
 
     return (
@@ -712,7 +773,7 @@ class DiscreteNonStationaryDiagonal:
 
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, DesignMatrix]:
         """Constructs the initial non-stationary discrete transition structures.
 
         Parameters
@@ -735,6 +796,10 @@ class DiscreteNonStationaryDiagonal:
         discrete_transition = make_transition_from_diag(self.diagonal_values)
 
         discrete_transition_design_matrix = dmatrix(self.formula, covariate_data)
+        if discrete_transition_design_matrix.shape[0] == 0:
+            raise ValueError(
+                "No covariate data provided for transition matrix or NaNs are present in the covariate data."
+            )
 
         n_time, n_coefficients = discrete_transition_design_matrix.shape
 
@@ -777,7 +842,7 @@ class DiscreteNonStationaryCustom:
 
     def make_state_transition(
         self, covariate_data: pd.DataFrame | dict | None
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, DesignMatrix]:
         """Constructs the initial non-stationary discrete transition structures.
 
         Parameters
@@ -851,14 +916,16 @@ def predict_discrete_state_transitions(
         discrete_transition_covariate_data,
     )[0]
 
-    n_time = design_matrix.shape[0]
     n_states = discrete_transition_coefficients.shape[1]
 
-    discrete_state_transitions = jnp.zeros((n_time, n_states, n_states))
+    rows = []
     for from_state in range(n_states):
-        discrete_state_transitions[:, from_state, :] = jnp.exp(
-            jax_centered_log_softmax_forward(
-                design_matrix @ discrete_transition_coefficients[:, from_state, :]
+        rows.append(
+            jnp.exp(
+                jax_centered_log_softmax_forward(
+                    design_matrix @ discrete_transition_coefficients[:, from_state, :]
+                )
             )
         )
-    return discrete_state_transitions
+    # rows[i] has shape (n_time, n_states), stack along axis=1 to get (n_time, n_states, n_states)
+    return jnp.stack(rows, axis=1)

@@ -118,6 +118,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         no_spike_rate: float = 1e-10,
         non_local_position_penalty: float = 0.0,
         non_local_penalty_sigma: float = 1.0,
+        discrete_transition_prior_weight: float = 0.0,
     ):
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
@@ -147,6 +148,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
             params["state_names"],
             sampling_frequency,
             no_spike_rate,
+            discrete_transition_prior_weight=discrete_transition_prior_weight,
         )
         _validate_penalty_params(non_local_position_penalty, non_local_penalty_sigma)
         self.non_local_position_penalty = non_local_position_penalty
@@ -249,6 +251,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         no_spike_rate: float = 1e-10,
         non_local_position_penalty: float = 0.0,
         non_local_penalty_sigma: float = 1.0,
+        discrete_transition_prior_weight: float = 0.0,
     ):
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
@@ -278,6 +281,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
             params["state_names"],
             sampling_frequency,
             no_spike_rate,
+            discrete_transition_prior_weight=discrete_transition_prior_weight,
         )
         _validate_penalty_params(non_local_position_penalty, non_local_penalty_sigma)
         self.non_local_position_penalty = non_local_position_penalty
