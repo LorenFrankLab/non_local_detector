@@ -114,3 +114,61 @@ def test_estimate_initial_conditions_preserves_distribution():
     # Assert
     assert_probability_distribution(init)
     assert np.array_equal(init, post[0])
+
+
+@pytest.mark.unit
+class TestContinuousICReparameterization:
+    """Test the safe-denominator pattern used in EM initial condition updates."""
+
+    def test_zero_discrete_ic_produces_zero_not_nan(self):
+        """When discrete IC is zero, continuous IC should be zero, not NaN."""
+        initial_conditions = np.array([0.3, 0.2, 0.1, 0.4])
+        expanded_discrete_ic = np.array([0.5, 0.0, 0.3, 0.0])
+
+        # This is the exact pattern from base.py estimate_parameters
+        is_zero = np.isclose(expanded_discrete_ic, 0.0)
+        safe_discrete_ic = np.where(is_zero, 1.0, expanded_discrete_ic)
+        result = np.where(
+            is_zero,
+            0.0,
+            initial_conditions / safe_discrete_ic,
+        )
+
+        assert np.all(np.isfinite(result)), f"Got non-finite values: {result}"
+        assert result[1] == 0.0
+        assert result[3] == 0.0
+
+    def test_nonzero_discrete_ic_divides_correctly(self):
+        """When discrete IC is nonzero, continuous IC = initial / discrete."""
+        initial_conditions = np.array([0.3, 0.2, 0.1, 0.4])
+        expanded_discrete_ic = np.array([0.5, 0.25, 0.3, 0.4])
+
+        is_zero = np.isclose(expanded_discrete_ic, 0.0)
+        safe_discrete_ic = np.where(is_zero, 1.0, expanded_discrete_ic)
+        result = np.where(
+            is_zero,
+            0.0,
+            initial_conditions / safe_discrete_ic,
+        )
+
+        expected = initial_conditions / expanded_discrete_ic
+        np.testing.assert_allclose(result, expected)
+
+    def test_no_runtime_warning_with_zeros(self):
+        """The safe-denominator pattern should not produce RuntimeWarning."""
+        import warnings
+
+        initial_conditions = np.array([0.5, 0.0, 0.5])
+        expanded_discrete_ic = np.array([0.5, 0.0, 0.5])
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            is_zero = np.isclose(expanded_discrete_ic, 0.0)
+            safe_discrete_ic = np.where(is_zero, 1.0, expanded_discrete_ic)
+            result = np.where(
+                is_zero,
+                0.0,
+                initial_conditions / safe_discrete_ic,
+            )
+
+        assert np.all(np.isfinite(result))

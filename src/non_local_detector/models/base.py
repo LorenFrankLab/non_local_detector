@@ -1556,10 +1556,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 self.discrete_initial_conditions = acausal_state_probabilities[0]
 
                 expanded_discrete_ic = acausal_state_probabilities[0][self.state_ind_]
+                is_zero = np.isclose(expanded_discrete_ic, 0.0)
+                safe_discrete_ic = np.where(is_zero, 1.0, expanded_discrete_ic)
                 self.continuous_initial_conditions_ = np.where(
-                    np.isclose(expanded_discrete_ic, 0.0),
+                    is_zero,
                     0.0,
-                    self.initial_conditions_ / expanded_discrete_ic,
+                    self.initial_conditions_ / safe_discrete_ic,
                 )
 
             # Stats

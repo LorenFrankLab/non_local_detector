@@ -318,14 +318,19 @@ def estimate_non_stationary_state_transition(
 
         if not result.success:
             logger.warning(
-                "Transition optimization did not converge for state %d: %s",
+                "Transition optimization did not converge for state %d: %s. "
+                "Keeping previous coefficients.",
                 from_state,
                 result.message,
             )
-
-        estimated_transition_coefficients[:, from_state, :] = result.x.reshape(
-            (n_coefficients, n_states - 1)
-        )
+            # Keep previous coefficients for this row
+            estimated_transition_coefficients[:, from_state, :] = (
+                transition_coefficients[:, from_state, :]
+            )
+        else:
+            estimated_transition_coefficients[:, from_state, :] = result.x.reshape(
+                (n_coefficients, n_states - 1)
+            )
 
         linear_predictor = (
             design_matrix @ estimated_transition_coefficients[:, from_state, :]
@@ -374,9 +379,7 @@ def estimate_stationary_state_transition(
     new_transition_matrix : np.ndarray, shape (n_states, n_states)
     """
     if prior_weight < 0:
-        raise ValueError(
-            f"prior_weight must be non-negative, got {prior_weight}"
-        )
+        raise ValueError(f"prior_weight must be non-negative, got {prior_weight}")
 
     # p(x_t, x_{t+1} | O_{1:T})
     joint_distribution = estimate_joint_distribution(

@@ -149,6 +149,48 @@ class TestEstimateNonStationaryStateTransition:
             "Diagonal stickiness should favor self-transitions"
         )
 
+    def test_keeps_previous_coefficients_on_optimizer_failure(
+        self, posterior_data, design_matrix_data
+    ):
+        """When optimizer fails, previous coefficients should be retained."""
+        from unittest.mock import patch
+
+        post = posterior_data
+        dm = design_matrix_data
+        n_coeffs = dm["n_coefficients"]
+        n_states = post["n_states"]
+
+        # Use known initial coefficients
+        rng = np.random.default_rng(99)
+        initial_coeffs = rng.standard_normal((n_coeffs, n_states, n_states - 1)) * 0.1
+
+        # Mock minimize to always return failure
+        class FakeResult:
+            success = False
+            message = "mock failure"
+            x = np.full(n_coeffs * (n_states - 1), 999.0)  # garbage values
+
+        with patch(
+            "non_local_detector.discrete_state_transitions.minimize",
+            return_value=FakeResult(),
+        ):
+            coeffs, trans_matrix = estimate_non_stationary_state_transition(
+                causal_posterior=post["causal_posterior"],
+                predictive_distribution=post["predictive_distribution"],
+                acausal_posterior=post["acausal_posterior"],
+                transition_matrix=post["transition_matrix"],
+                design_matrix=dm["design_matrix"][: post["n_time"]],
+                transition_coefficients=initial_coeffs,
+                maxiter=10,
+            )
+
+        # Coefficients should be unchanged from input (not garbage)
+        np.testing.assert_array_equal(coeffs, initial_coeffs)
+
+        # Transition matrix should still be valid stochastic matrices
+        for t in range(trans_matrix.shape[0]):
+            assert_stochastic_matrix(trans_matrix[t])
+
 
 @pytest.mark.unit
 class TestEstimateStationaryStateTransition:
