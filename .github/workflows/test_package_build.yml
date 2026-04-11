@@ -116,7 +116,13 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.12"
-          cache: pip
+          # No `cache: pip` here: this job deliberately has no source
+          # checkout (it installs the package from a built artifact to
+          # verify it works standalone). Enabling the pip cache makes
+          # setup-python look for requirements.txt / pyproject.toml in
+          # the empty workspace and fail immediately with "No file
+          # matched". The time cost of skipping the cache on a job that
+          # does a handful of pip installs is negligible.
       - name: Install wheel
         if: matrix.package == 'wheel'
         run: pip install dist/*.whl
