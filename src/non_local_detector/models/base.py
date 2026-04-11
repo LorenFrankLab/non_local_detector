@@ -105,6 +105,66 @@ def _snapshot_encoding_model(encoding_model: dict | None) -> dict | None:
     return snapshot
 
 
+def _normalize_frozen_discrete_transition_rows(
+    frozen_rows: np.ndarray | list[int] | tuple[int, ...] | None,
+    n_states: int,
+) -> np.ndarray | None:
+    """Normalize ``frozen_discrete_transition_rows`` to a boolean row mask.
+
+    Accepts a sequence of integer row indices, a boolean mask of shape
+    ``(n_states,)``, or ``None``/empty (no frozen rows). Returns a
+    boolean mask of shape ``(n_states,)`` where ``True`` marks rows to
+    freeze, or ``None`` if no rows are frozen.
+
+    Parameters
+    ----------
+    frozen_rows : np.ndarray, list of int, tuple of int, or None
+        Row indices to freeze, a boolean mask, or None/empty.
+    n_states : int
+        Total number of discrete states.
+
+    Returns
+    -------
+    np.ndarray of bool, shape (n_states,), or None
+
+    Raises
+    ------
+    ValueError
+        If the input has the wrong shape, wrong dtype, or out-of-range
+        indices.
+    """
+    if frozen_rows is None:
+        return None
+    arr = np.asarray(frozen_rows)
+    if arr.size == 0:
+        return None
+    if arr.dtype == bool:
+        if arr.shape != (n_states,):
+            raise ValueError(
+                f"frozen_discrete_transition_rows boolean mask must have "
+                f"shape ({n_states},), got {arr.shape}"
+            )
+        return arr.copy()
+    if not np.issubdtype(arr.dtype, np.integer):
+        raise ValueError(
+            f"frozen_discrete_transition_rows must be integer indices or "
+            f"a boolean mask, got dtype {arr.dtype}"
+        )
+    if arr.ndim != 1:
+        raise ValueError(
+            f"frozen_discrete_transition_rows index array must be 1D, "
+            f"got shape {arr.shape}"
+        )
+    if np.any(arr < 0) or np.any(arr >= n_states):
+        raise ValueError(
+            f"frozen_discrete_transition_rows indices must be in "
+            f"[0, {n_states}), got {arr.tolist()}"
+        )
+    mask = np.zeros(n_states, dtype=bool)
+    mask[arr] = True
+    return mask
+
+
 def _validate_covariate_time_length(
     predicted_transitions: np.ndarray, time: np.ndarray
 ) -> None:
@@ -207,6 +267,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
+        frozen_discrete_transition_rows: (
+            np.ndarray | list[int] | tuple[int, ...] | None
+        ) = None,
     ) -> None:
         """
         Initialize the _DetectorBase class.
@@ -239,12 +302,25 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Sampling frequency, by default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
-        discrete_transition_prior_weight : float, optional
+        discrete_transition_prior_weight : float or np.ndarray, optional
             Dimensionless weight for data-adaptive prior scaling. When > 0,
             the Dirichlet prior pseudo-counts are scaled by expected transition
             counts, making regularization strength approximately invariant to
-            temporal resolution. When 0.0 (default), the fixed-count prior
-            from concentration and stickiness is used directly.
+            temporal resolution. Can be a scalar (same weight for all rows) or
+            an array of shape ``(n_states,)`` for per-row control. When 0.0
+            (default), the fixed-count prior from concentration and stickiness
+            is used directly.
+        frozen_discrete_transition_rows : np.ndarray, list, tuple, or None, optional
+            Rows of the discrete transition matrix to freeze during EM
+            re-estimation. Accepts integer row indices, a boolean mask of
+            shape ``(n_states,)``, or ``None``/empty (no frozen rows,
+            default). Frozen rows are snapshotted from the initial
+            transition matrix and restored after every M-step, so they
+            retain the values specified by ``discrete_transition_type``
+            regardless of what the data suggests. Use this to pin
+            structural states (e.g., a No-Spike self-transition) that
+            should not be learned from data. Only applies to stationary
+            (2D) transition matrices.
         """
         # Validate all parameters early (Tier 1 & 2)
         self._validate_initial_conditions(
@@ -274,6 +350,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.discrete_transition_regularization = discrete_transition_regularization
         self.discrete_transition_type = discrete_transition_type
         self.discrete_transition_prior_weight = discrete_transition_prior_weight
+        # Normalize and validate frozen rows against n_states up front
+        self.frozen_discrete_transition_rows = frozen_discrete_transition_rows
+        self._frozen_discrete_transition_rows_mask_ = (
+            _normalize_frozen_discrete_transition_rows(
+                frozen_discrete_transition_rows,
+                n_states=len(discrete_initial_conditions),
+            )
+        )
 
         # Continuous state transition parameters
         self.continuous_transition_types = continuous_transition_types
@@ -892,6 +976,30 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             self.discrete_transition_coefficients_,
             self.discrete_transition_design_matrix_,
         ) = self.discrete_transition_type.make_state_transition(covariate_data)
+
+        # Snapshot frozen rows from the initial matrix so the EM M-step
+        # can restore them after every update. Only meaningful for
+        # stationary (2D) transition matrices — if the user requests
+        # frozen rows with a non-stationary transition type, warn.
+        if self._frozen_discrete_transition_rows_mask_ is not None:
+            if self.discrete_state_transitions_.ndim == 2:
+                self._frozen_discrete_transition_rows_baseline_ = (
+                    self.discrete_state_transitions_[
+                        self._frozen_discrete_transition_rows_mask_
+                    ].copy()
+                )
+            else:
+                warnings.warn(
+                    "frozen_discrete_transition_rows is set but the "
+                    "discrete transition matrix is non-stationary "
+                    f"(ndim={self.discrete_state_transitions_.ndim}). "
+                    "Row freezing is only applied to stationary matrices "
+                    "and will be ignored here.",
+                    stacklevel=2,
+                )
+                self._frozen_discrete_transition_rows_baseline_ = None
+        else:
+            self._frozen_discrete_transition_rows_baseline_ = None
 
     def plot_discrete_state_transition(
         self,
@@ -1548,6 +1656,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     self.discrete_transition_regularization,
                     self.discrete_transition_prior_weight,
                 )
+                # Restore frozen rows: overwrite the M-step result with
+                # the initial snapshot for rows the user wants pinned.
+                # This is a constrained M-step; EM converges to the
+                # constrained fixed point rather than the unconstrained
+                # maximizer, which is the desired behavior here.
+                if (
+                    self._frozen_discrete_transition_rows_baseline_ is not None
+                    and self.discrete_state_transitions_.ndim == 2
+                ):
+                    self.discrete_state_transitions_[
+                        self._frozen_discrete_transition_rows_mask_
+                    ] = self._frozen_discrete_transition_rows_baseline_
 
             if estimate_initial_conditions:
                 self.initial_conditions_[self.is_track_interior_state_bins_] = (
@@ -2100,6 +2220,9 @@ class ClusterlessDetector(_DetectorBase):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
+        frozen_discrete_transition_rows: (
+            np.ndarray | list[int] | tuple[int, ...] | None
+        ) = None,
     ) -> None:
         """
         Initialize the ClusterlessDetector class.
@@ -2136,8 +2259,13 @@ class ClusterlessDetector(_DetectorBase):
             Sampling frequency, by default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
-        discrete_transition_prior_weight : float, optional
-            Data-adaptive prior weight, by default 0.0.
+        discrete_transition_prior_weight : float or np.ndarray, optional
+            Data-adaptive prior weight, by default 0.0. See
+            ``_DetectorBase`` for details.
+        frozen_discrete_transition_rows : array-like or None, optional
+            Rows of the discrete transition matrix to freeze during EM
+            re-estimation, by default None. See ``_DetectorBase`` for
+            details.
         """
         super().__init__(
             discrete_initial_conditions,
@@ -2154,6 +2282,7 @@ class ClusterlessDetector(_DetectorBase):
             sampling_frequency,
             no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
+            frozen_discrete_transition_rows=frozen_discrete_transition_rows,
         )
         self.clusterless_algorithm = clusterless_algorithm
         self.clusterless_algorithm_params = clusterless_algorithm_params
@@ -2935,6 +3064,9 @@ class SortedSpikesDetector(_DetectorBase):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
+        frozen_discrete_transition_rows: (
+            np.ndarray | list[int] | tuple[int, ...] | None
+        ) = None,
     ) -> None:
         """
         Initialize the SortedSpikesDetector class.
@@ -2971,8 +3103,13 @@ class SortedSpikesDetector(_DetectorBase):
             Sampling frequency, by default 500.0.
         no_spike_rate : float, optional
             No spike rate, by default 1e-10.
-        discrete_transition_prior_weight : float, optional
-            Data-adaptive prior weight, by default 0.0.
+        discrete_transition_prior_weight : float or np.ndarray, optional
+            Data-adaptive prior weight, by default 0.0. See
+            ``_DetectorBase`` for details.
+        frozen_discrete_transition_rows : array-like or None, optional
+            Rows of the discrete transition matrix to freeze during EM
+            re-estimation, by default None. See ``_DetectorBase`` for
+            details.
         """
         super().__init__(
             discrete_initial_conditions,
@@ -2989,6 +3126,7 @@ class SortedSpikesDetector(_DetectorBase):
             sampling_frequency,
             no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
+            frozen_discrete_transition_rows=frozen_discrete_transition_rows,
         )
         self.sorted_spikes_algorithm = sorted_spikes_algorithm
         self.sorted_spikes_algorithm_params = sorted_spikes_algorithm_params

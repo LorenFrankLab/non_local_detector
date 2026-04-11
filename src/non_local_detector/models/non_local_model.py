@@ -90,6 +90,11 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         Sampling frequency in Hz, by default 500.0.
     no_spike_rate : float, optional
         Rate for no-spike observations, by default 1e-10.
+    frozen_discrete_transition_rows : array-like or None, optional
+        Discrete transition rows to freeze during EM re-estimation. By
+        default ``(1,)``, which freezes the No-Spike row so its
+        self-transition cannot collapse to fit stray spike gaps. Pass
+        ``None`` to disable row freezing.
 
     Examples
     --------
@@ -119,6 +124,9 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         non_local_position_penalty: float = 0.0,
         non_local_penalty_sigma: float = 1.0,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
+        frozen_discrete_transition_rows: (
+            np.ndarray | list[int] | tuple[int, ...] | None
+        ) = (1,),
     ):
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
@@ -149,6 +157,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
             sampling_frequency,
             no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
+            frozen_discrete_transition_rows=frozen_discrete_transition_rows,
         )
         _validate_penalty_params(non_local_position_penalty, non_local_penalty_sigma)
         self.non_local_position_penalty = non_local_position_penalty
@@ -223,6 +232,11 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         Sampling frequency in Hz, by default 500.0.
     no_spike_rate : float, optional
         Rate for no-spike observations, by default 1e-10.
+    frozen_discrete_transition_rows : array-like or None, optional
+        Discrete transition rows to freeze during EM re-estimation. By
+        default ``(1,)``, which freezes the No-Spike row so its
+        self-transition cannot collapse to fit stray spike gaps. Pass
+        ``None`` to disable row freezing.
 
     Examples
     --------
@@ -252,6 +266,9 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         non_local_position_penalty: float = 0.0,
         non_local_penalty_sigma: float = 1.0,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
+        frozen_discrete_transition_rows: (
+            np.ndarray | list[int] | tuple[int, ...] | None
+        ) = (1,),
     ):
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
@@ -282,6 +299,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
             sampling_frequency,
             no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
+            frozen_discrete_transition_rows=frozen_discrete_transition_rows,
         )
         _validate_penalty_params(non_local_position_penalty, non_local_penalty_sigma)
         self.non_local_position_penalty = non_local_position_penalty
