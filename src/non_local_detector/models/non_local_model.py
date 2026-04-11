@@ -118,7 +118,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         no_spike_rate: float = 1e-10,
         non_local_position_penalty: float = 0.0,
         non_local_penalty_sigma: float = 1.0,
-        discrete_transition_prior_weight: float = 0.0,
+        discrete_transition_prior_weight: float | np.ndarray = 0.0,
     ):
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
@@ -251,7 +251,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         no_spike_rate: float = 1e-10,
         non_local_position_penalty: float = 0.0,
         non_local_penalty_sigma: float = 1.0,
-        discrete_transition_prior_weight: float = 0.0,
+        discrete_transition_prior_weight: float | np.ndarray = 0.0,
     ):
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),

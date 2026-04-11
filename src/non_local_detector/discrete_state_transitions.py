@@ -354,7 +354,7 @@ def estimate_stationary_state_transition(
     acausal_posterior: np.ndarray,
     stickiness: float = 0.0,
     concentration: float = 1.0,
-    prior_weight: float = 0.0,
+    prior_weight: float | np.ndarray = 0.0,
 ) -> np.ndarray:
     """Estimate the stationary state transition model.
 
@@ -366,20 +366,38 @@ def estimate_stationary_state_transition(
     acausal_posterior : np.ndarray, shape (n_time, n_states)
     stickiness : float, optional
     concentration : float, optional
-    prior_weight : float, optional
+    prior_weight : float or np.ndarray, shape (n_states,), optional
         Dimensionless weight for data-adaptive prior scaling. When > 0,
-        the effective prior pseudo-counts are scaled by the expected
-        transition count per state, making the prior influence approximately
-        invariant to the number of time bins. When 0.0 (default), the
-        fixed-count prior from ``concentration`` and ``stickiness`` is used
-        directly (legacy behavior).
+        the effective prior pseudo-counts for that row are scaled by the
+        expected transition count N_i, making the prior influence
+        approximately invariant to the number of time bins.
+
+        Can be a scalar (same weight for all rows) or an array with one
+        value per state. Rows with ``prior_weight[i] == 0`` use the legacy
+        fixed-count prior from ``concentration`` and ``stickiness``
+        directly. This allows mixing frozen rows (e.g., structural states
+        with very high stickiness) with data-adaptive rows in the same
+        call. When 0.0 (default), all rows use legacy behavior.
 
     Returns
     -------
     new_transition_matrix : np.ndarray, shape (n_states, n_states)
     """
-    if prior_weight < 0:
-        raise ValueError(f"prior_weight must be non-negative, got {prior_weight}")
+    n_states = acausal_posterior.shape[1]
+
+    # Normalize prior_weight to shape (n_states,)
+    prior_weight_arr = np.atleast_1d(np.asarray(prior_weight, dtype=float))
+    if prior_weight_arr.size == 1:
+        prior_weight_arr = np.full(n_states, prior_weight_arr.item())
+    if prior_weight_arr.shape != (n_states,):
+        raise ValueError(
+            f"prior_weight must be a scalar or array of shape ({n_states},), "
+            f"got shape {prior_weight_arr.shape}"
+        )
+    if np.any(prior_weight_arr < 0):
+        raise ValueError(
+            f"prior_weight must be non-negative, got {prior_weight_arr}"
+        )
 
     # p(x_t, x_{t+1} | O_{1:T})
     joint_distribution = estimate_joint_distribution(
@@ -389,12 +407,14 @@ def estimate_stationary_state_transition(
         acausal_posterior,
     )
 
-    n_states = acausal_posterior.shape[1]
     joint_sum = joint_distribution.sum(axis=0)  # (n_states, n_states)
 
     alpha = get_transition_prior(concentration, stickiness, n_states)
 
-    if prior_weight > 0.0:
+    # Legacy prior for rows with prior_weight[i] == 0
+    legacy_prior = alpha - 1.0  # (n_states, n_states)
+
+    if np.any(prior_weight_arr > 0):
         # Data-adaptive prior: scale pseudo-counts by expected transitions
         # so regularization strength is invariant to temporal resolution.
         alpha_shape = alpha - 1.0  # (n_states, n_states)
@@ -407,12 +427,21 @@ def estimate_stationary_state_transition(
         # N_i = expected transitions from state i
         N_i = joint_sum.sum(axis=-1, keepdims=True)  # (n_states, 1)
 
-        # alpha_eff - 1 = prior_weight * N_i * tilde_alpha
-        effective_prior = prior_weight * N_i * tilde_alpha
-        new_transition_matrix = joint_sum + effective_prior
+        # Per-row adaptive prior: prior_weight[i] * N_i * tilde_alpha[i]
+        adaptive_prior = prior_weight_arr[:, np.newaxis] * N_i * tilde_alpha
+
+        # Use adaptive prior for rows where prior_weight > 0, legacy otherwise
+        use_adaptive = prior_weight_arr > 0  # (n_states,)
+        effective_prior = np.where(
+            use_adaptive[:, np.newaxis],
+            adaptive_prior,
+            legacy_prior,
+        )
     else:
-        # Legacy fixed-count prior
-        new_transition_matrix = joint_sum + alpha - 1.0
+        # All rows use legacy fixed-count prior
+        effective_prior = legacy_prior
+
+    new_transition_matrix = joint_sum + effective_prior
 
     # Normalize rows to get transition probabilities.
     # Guard against all-zero rows (e.g., unvisited states) to avoid NaN.
@@ -607,7 +636,7 @@ def _estimate_discrete_transition(
     transition_concentration: float,
     transition_stickiness: float | np.ndarray,
     transition_regularization: float,
-    transition_prior_weight: float = 0.0,
+    transition_prior_weight: float | np.ndarray = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate the discrete transition matrix (stationary or non-stationary).
 

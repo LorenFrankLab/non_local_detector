@@ -429,6 +429,115 @@ class TestPriorWeightScaling:
             "Unvisited state should reflect sticky prior, not uniform"
         )
 
+    def test_per_state_prior_weight_scalar_equivalence(self, posterior_data):
+        """Passing scalar prior_weight should match passing uniform array."""
+        post = posterior_data
+        n_states = post["n_states"]
+
+        scalar_result = estimate_stationary_state_transition(
+            causal_posterior=post["causal_posterior"],
+            predictive_distribution=post["predictive_distribution"],
+            acausal_posterior=post["acausal_posterior"],
+            transition_matrix=post["transition_matrix"],
+            concentration=1.0,
+            stickiness=2.0,
+            prior_weight=0.1,
+        )
+        array_result = estimate_stationary_state_transition(
+            causal_posterior=post["causal_posterior"],
+            predictive_distribution=post["predictive_distribution"],
+            acausal_posterior=post["acausal_posterior"],
+            transition_matrix=post["transition_matrix"],
+            concentration=1.0,
+            stickiness=2.0,
+            prior_weight=np.full(n_states, 0.1),
+        )
+
+        np.testing.assert_allclose(scalar_result, array_result, atol=1e-12)
+
+    def test_per_state_prior_weight_mixed_modes(self, posterior_data):
+        """Rows with prior_weight=0 use legacy; rows with >0 use data-adaptive."""
+        post = posterior_data
+        n_states = post["n_states"]
+
+        # State 0 uses legacy path (strong fixed prior), others use adaptive
+        prior_weight = np.array([0.0] + [0.1] * (n_states - 1))
+        sticky = np.array([1e6] + [2.0] * (n_states - 1))
+
+        result = estimate_stationary_state_transition(
+            causal_posterior=post["causal_posterior"],
+            predictive_distribution=post["predictive_distribution"],
+            acausal_posterior=post["acausal_posterior"],
+            transition_matrix=post["transition_matrix"],
+            concentration=1.0,
+            stickiness=sticky,
+            prior_weight=prior_weight,
+        )
+
+        assert_stochastic_matrix(result)
+        # State 0 (frozen) should have near-1 diagonal due to huge stickiness
+        assert result[0, 0] > 0.99
+
+    def test_per_state_prior_weight_row_0_frozen_matches_legacy(self, posterior_data):
+        """For frozen row (prior_weight=0), result should match pure legacy call."""
+        post = posterior_data
+        n_states = post["n_states"]
+
+        sticky = np.array([1e6] + [2.0] * (n_states - 1))
+
+        legacy = estimate_stationary_state_transition(
+            causal_posterior=post["causal_posterior"],
+            predictive_distribution=post["predictive_distribution"],
+            acausal_posterior=post["acausal_posterior"],
+            transition_matrix=post["transition_matrix"],
+            concentration=1.0,
+            stickiness=sticky,
+            prior_weight=0.0,
+        )
+        mixed = estimate_stationary_state_transition(
+            causal_posterior=post["causal_posterior"],
+            predictive_distribution=post["predictive_distribution"],
+            acausal_posterior=post["acausal_posterior"],
+            transition_matrix=post["transition_matrix"],
+            concentration=1.0,
+            stickiness=sticky,
+            prior_weight=np.array([0.0] + [0.1] * (n_states - 1)),
+        )
+
+        # Row 0 (legacy) should match in both calls
+        np.testing.assert_allclose(mixed[0], legacy[0], atol=1e-12)
+
+    def test_per_state_prior_weight_negative_raises(self, posterior_data):
+        """Negative per-state prior_weight should raise ValueError."""
+        post = posterior_data
+        n_states = post["n_states"]
+
+        with pytest.raises(ValueError, match="non-negative"):
+            estimate_stationary_state_transition(
+                causal_posterior=post["causal_posterior"],
+                predictive_distribution=post["predictive_distribution"],
+                acausal_posterior=post["acausal_posterior"],
+                transition_matrix=post["transition_matrix"],
+                concentration=1.0,
+                stickiness=2.0,
+                prior_weight=np.array([0.1, -0.1] + [0.1] * (n_states - 2)),
+            )
+
+    def test_per_state_prior_weight_wrong_shape_raises(self, posterior_data):
+        """prior_weight array with wrong length should raise ValueError."""
+        post = posterior_data
+
+        with pytest.raises(ValueError, match="prior_weight"):
+            estimate_stationary_state_transition(
+                causal_posterior=post["causal_posterior"],
+                predictive_distribution=post["predictive_distribution"],
+                acausal_posterior=post["acausal_posterior"],
+                transition_matrix=post["transition_matrix"],
+                concentration=1.0,
+                stickiness=2.0,
+                prior_weight=np.array([0.1, 0.1]),  # wrong length
+            )
+
 
 @pytest.mark.unit
 class TestEstimateDiscreteTransition:

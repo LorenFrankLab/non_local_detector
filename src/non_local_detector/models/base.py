@@ -206,7 +206,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
-        discrete_transition_prior_weight: float = 0.0,
+        discrete_transition_prior_weight: float | np.ndarray = 0.0,
     ) -> None:
         """
         Initialize the _DetectorBase class.
@@ -2099,7 +2099,7 @@ class ClusterlessDetector(_DetectorBase):
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
-        discrete_transition_prior_weight: float = 0.0,
+        discrete_transition_prior_weight: float | np.ndarray = 0.0,
     ) -> None:
         """
         Initialize the ClusterlessDetector class.
@@ -2934,7 +2934,7 @@ class SortedSpikesDetector(_DetectorBase):
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
-        discrete_transition_prior_weight: float = 0.0,
+        discrete_transition_prior_weight: float | np.ndarray = 0.0,
     ) -> None:
         """
         Initialize the SortedSpikesDetector class.
