@@ -586,23 +586,46 @@ def make_simulated_data(
     n_samples_between_spikes = int(np.median(np.diff(spike_times_ind)))
     n_neurons = spikes.shape[1]
 
+    # Helper: place an event's spikes into the `spikes` array using
+    # integer indexing so the slice length is guaranteed to match the
+    # source array shape. A previous version derived the slice from a
+    # boolean mask ``(time >= start) & (time < end)`` with floating-point
+    # endpoints, which produced off-by-one errors on some seeds because
+    # ``end = start + n_samples / sampling_frequency`` does not always
+    # land on the same ULP side of a time-grid bin. Integer indexing is
+    # invariant under that floating-point noise. ``event_ends[i]`` is
+    # still written as ``event_starts[i] + n_samples / sampling_frequency``
+    # so the ``event_times`` output and the ``is_event`` mask below keep
+    # their existing semantics.
+    def _place_event(event_idx: int, event_spikes: np.ndarray) -> None:
+        n_event_samples = event_spikes.shape[0]
+        start_idx = int(np.searchsorted(time, event_starts[event_idx], side="left"))
+        end_idx = start_idx + n_event_samples
+        if end_idx > len(time):
+            raise ValueError(
+                f"Event {event_idx} would run past the end of the simulated "
+                f"time axis (start_idx={start_idx}, end_idx={end_idx}, "
+                f"n_time={len(time)})"
+            )
+        spikes[start_idx:end_idx] = 0
+        spikes[start_idx:end_idx] = event_spikes
+        event_ends[event_idx] = (
+            event_starts[event_idx] + n_event_samples / sampling_frequency
+        )
+
     # Event 1 - Continuous outbound
     event1_spikes = make_continuous_replay(
         n_neurons=n_neurons,
         n_samples_between_spikes=n_samples_between_spikes,
         is_outbound=True,
     )
-    event_ends[0] = event_ends[0] + event1_spikes.shape[0] / sampling_frequency
-    spikes[(time >= event_starts[0]) & (time < event_ends[0])] = 0
-    spikes[(time >= event_starts[0]) & (time < event_ends[0])] = event1_spikes
+    _place_event(0, event1_spikes)
 
     # Event 2 - Fragmented
     event2_spikes = make_fragmented_replay(
         place_field_means, sampling_frequency, replay_speed, rng=rng
     )
-    event_ends[1] = event_ends[1] + event2_spikes.shape[0] / sampling_frequency
-    spikes[(time >= event_starts[1]) & (time < event_ends[1])] = 0
-    spikes[(time >= event_starts[1]) & (time < event_ends[1])] = event2_spikes
+    _place_event(1, event2_spikes)
 
     # Event 3 - Continuous inbound
     event3_spikes = make_continuous_replay(
@@ -610,8 +633,7 @@ def make_simulated_data(
         n_samples_between_spikes=n_samples_between_spikes,
         is_outbound=False,
     )
-    event_ends[2] = event_ends[2] + event3_spikes.shape[0] / sampling_frequency
-    spikes[(time >= event_starts[2]) & (time < event_ends[2])] = event3_spikes
+    _place_event(2, event3_spikes)
 
     # Event 4 - No spike
     event_ends[3] = event_ends[3] + 0.5
