@@ -395,9 +395,7 @@ def estimate_stationary_state_transition(
             f"got shape {prior_weight_arr.shape}"
         )
     if np.any(prior_weight_arr < 0):
-        raise ValueError(
-            f"prior_weight must be non-negative, got {prior_weight_arr}"
-        )
+        raise ValueError(f"prior_weight must be non-negative, got {prior_weight_arr}")
 
     # p(x_t, x_{t+1} | O_{1:T})
     joint_distribution = estimate_joint_distribution(

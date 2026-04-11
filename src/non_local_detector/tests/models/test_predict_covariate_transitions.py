@@ -114,9 +114,7 @@ class TestCovariateTimeLengthValidation:
         with pytest.raises(ValueError, match="time steps"):
             _validate_covariate_time_length(predicted, decode_time)
 
-    def test_matching_covariate_length_passes(
-        self, nonstationary_transition_artifacts
-    ):
+    def test_matching_covariate_length_passes(self, nonstationary_transition_artifacts):
         """When covariate and decode time match, no error is raised."""
         from non_local_detector.models.base import _validate_covariate_time_length
 
