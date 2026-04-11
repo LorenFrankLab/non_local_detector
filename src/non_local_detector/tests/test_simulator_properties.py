@@ -7,7 +7,7 @@ unexpected parameter combinations.
 
 import numpy as np
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -104,23 +104,18 @@ def test_encoding_model_fits_with_random_parameters(
         seed=42,
     )
 
-    # Should not raise errors
-    try:
-        encoding_model = fit_clusterless_kde_encoding_model(
-            position_time=sim.position_time,
-            position=sim.position,
-            spike_times=sim.spike_times,
-            spike_waveform_features=sim.spike_waveform_features,
-            environment=sim.environment,
-            position_std=position_std,
-            waveform_std=waveform_std,
-            block_size=100,
-            disable_progress_bar=True,
-        )
-    except Exception as e:
-        pytest.fail(
-            f"Encoding model fit failed with position_std={position_std}, waveform_std={waveform_std}: {e}"
-        )
+    # Pytest will surface any exception with its original traceback.
+    encoding_model = fit_clusterless_kde_encoding_model(
+        position_time=sim.position_time,
+        position=sim.position,
+        spike_times=sim.spike_times,
+        spike_waveform_features=sim.spike_waveform_features,
+        environment=sim.environment,
+        position_std=position_std,
+        waveform_std=waveform_std,
+        block_size=100,
+        disable_progress_bar=True,
+    )
 
     # Should produce valid outputs
     assert "occupancy" in encoding_model, "Missing occupancy in encoding model"
@@ -137,20 +132,17 @@ def test_encoding_model_fits_with_random_parameters(
         assert np.isfinite(rate), "Mean rate contains non-finite values"
 
 
-@settings(max_examples=10, deadline=None)
-@given(
-    n_tetrodes=st.integers(min_value=2, max_value=6),
-    seed=seed_strategy,
-)
-def test_decoder_output_shapes_consistent(
-    n_tetrodes: int,
-    seed: int,
-) -> None:
+@pytest.mark.parametrize("n_tetrodes", [2, 6])
+def test_decoder_output_shapes_consistent(n_tetrodes: int) -> None:
     """Test that decoder outputs have consistent shapes.
 
     This verifies that decoder output dimensions are correct regardless
-    of the number of electrodes.
+    of the number of electrodes. Shapes are deterministic w.r.t. input
+    shapes, so two hand-picked cases are sufficient — the previous
+    Hypothesis-driven version ran 10 full fit/predict cycles (~70s)
+    to assert a non-property invariant.
     """
+    seed = 42
     # Generate simulation
     n_neurons = n_tetrodes * 4
     place_field_means = np.linspace(0, 160, n_neurons, endpoint=False)
@@ -226,28 +218,20 @@ def test_decoder_output_shapes_consistent(
     # This test focuses on shape consistency across random parameters
 
 
-@settings(max_examples=15, deadline=None)
-@given(
-    seed1=seed_strategy,
-    seed2=seed_strategy,
-)
-def test_different_seeds_produce_different_outputs(
-    seed1: int,
-    seed2: int,
-) -> None:
+def test_different_seeds_produce_different_outputs() -> None:
     """Test that different seeds produce different spike patterns.
 
     This verifies that seeding actually affects the random generation.
+    A single pair of seeds is sufficient to check this — the previous
+    Hypothesis-driven version ran 15 simulation pairs to verify a
+    non-statistical invariant.
     """
-    # Ensure seeds are different using Hypothesis assume()
-    assume(seed1 != seed2)
-
     sim1 = make_simulated_run_data(
         n_tetrodes=3,
         place_field_means=np.arange(0, 120, 10),
         sampling_frequency=500,
         n_runs=2,
-        seed=seed1,
+        seed=1,
     )
 
     sim2 = make_simulated_run_data(
@@ -255,7 +239,7 @@ def test_different_seeds_produce_different_outputs(
         place_field_means=np.arange(0, 120, 10),
         sampling_frequency=500,
         n_runs=2,
-        seed=seed2,
+        seed=2,
     )
 
     # At least one electrode should have different spike counts
@@ -267,23 +251,19 @@ def test_different_seeds_produce_different_outputs(
     )
 
 
-@settings(max_examples=10, deadline=None)
-@given(
-    seed=seed_strategy,
-)
-def test_same_seed_produces_identical_outputs(
-    seed: int,
-) -> None:
+def test_same_seed_produces_identical_outputs() -> None:
     """Test that same seed produces identical outputs.
 
-    This verifies deterministic behavior for reproducibility.
+    This verifies deterministic behavior for reproducibility. One seed
+    is sufficient — the previous Hypothesis-driven version ran 10
+    redundant determinism checks.
     """
     params = {
         "n_tetrodes": 3,
         "place_field_means": np.arange(0, 120, 10),
         "sampling_frequency": 500,
         "n_runs": 2,
-        "seed": seed,
+        "seed": 42,
     }
 
     sim1 = make_simulated_run_data(**params)

@@ -27,13 +27,25 @@ from non_local_detector.likelihoods.clusterless_kde import (
     predict_clusterless_kde_log_likelihood,
 )
 
+# All tests in this module fit both KDE and GMM encoding models and call
+# their predict functions. They are integration-scale by nature; marking
+# them excludes them from fast feedback loops (``pytest -m "not integration"``).
+pytestmark = pytest.mark.integration
 
-@pytest.fixture
+# Baseline KDE bandwidth shared by the module-level ``fitted_models`` fixture
+# and by the ``test_parameter_sensitivity_kde`` bandwidth sweep. Kept as a
+# module constant so the coupling between fixture default and the sweep's
+# cache-reuse shortcut is explicit — changing one without the other would
+# silently produce an off-baseline data point.
+BASELINE_KDE_POSITION_STD = 2.0
+
+
+@pytest.fixture(scope="module")
 def comparison_data():
     """Create realistic test data for numerical comparison.
 
     Uses a larger dataset than the basic comparison tests to get
-    more stable statistics.
+    more stable statistics. Module-scoped because the data is read-only.
     """
     rng = np.random.default_rng(123)
 
@@ -217,7 +229,35 @@ def predict_both_models(data, kde_encoding, gmm_encoding, is_local=False):
     return ll_kde, ll_gmm
 
 
-def test_likelihood_magnitude_comparison(comparison_data):
+@pytest.fixture(scope="module")
+def fitted_models(comparison_data):
+    """Fit both KDE and GMM models once per module.
+
+    The previous version refit both models inside every test in this file
+    (6+ tests), which made model fitting dominate the file's runtime.
+
+    The KDE bandwidth is pinned to ``BASELINE_KDE_POSITION_STD`` so
+    ``test_parameter_sensitivity_kde`` can reuse this fit for the matching
+    point in its bandwidth sweep.
+    """
+    return fit_both_models(comparison_data, kde_position_std=BASELINE_KDE_POSITION_STD)
+
+
+@pytest.fixture(scope="module")
+def likelihoods_nonlocal(comparison_data, fitted_models):
+    """Non-local log-likelihoods for both models, computed once."""
+    kde_enc, gmm_enc = fitted_models
+    return predict_both_models(comparison_data, kde_enc, gmm_enc)
+
+
+@pytest.fixture(scope="module")
+def likelihoods_local(comparison_data, fitted_models):
+    """Local log-likelihoods for both models, computed once."""
+    kde_enc, gmm_enc = fitted_models
+    return predict_both_models(comparison_data, kde_enc, gmm_enc, is_local=True)
+
+
+def test_likelihood_magnitude_comparison(likelihoods_nonlocal):
     """Compare the absolute magnitude of log-likelihood values.
 
     KDE and GMM will have different magnitudes due to:
@@ -225,8 +265,7 @@ def test_likelihood_magnitude_comparison(comparison_data):
     2. Different density estimation methods
     3. Different model complexities
     """
-    kde_enc, gmm_enc = fit_both_models(comparison_data)
-    ll_kde, ll_gmm = predict_both_models(comparison_data, kde_enc, gmm_enc)
+    ll_kde, ll_gmm = likelihoods_nonlocal
 
     # Convert to numpy for easier analysis
     ll_kde_np = np.asarray(ll_kde)
@@ -260,15 +299,14 @@ def test_likelihood_magnitude_comparison(comparison_data):
     )
 
 
-def test_spatial_pattern_correlation(comparison_data):
+def test_spatial_pattern_correlation(likelihoods_nonlocal):
     """Compare spatial patterns using correlation metrics.
 
     Even if absolute values differ, we expect some correlation in spatial patterns:
     - High likelihood regions should be similar
     - Low likelihood regions should be similar
     """
-    kde_enc, gmm_enc = fit_both_models(comparison_data)
-    ll_kde, ll_gmm = predict_both_models(comparison_data, kde_enc, gmm_enc)
+    ll_kde, ll_gmm = likelihoods_nonlocal
 
     # Analyze each time bin separately
     n_time = ll_kde.shape[0]
@@ -316,15 +354,14 @@ def test_spatial_pattern_correlation(comparison_data):
     )
 
 
-def test_likelihood_range_stability(comparison_data):
+def test_likelihood_range_stability(likelihoods_nonlocal):
     """Test how the range of likelihood values varies across time.
 
     For decoding, we care about the spread of likelihood values:
     - Large spread = confident prediction
     - Small spread = uncertain prediction
     """
-    kde_enc, gmm_enc = fit_both_models(comparison_data)
-    ll_kde, ll_gmm = predict_both_models(comparison_data, kde_enc, gmm_enc)
+    ll_kde, ll_gmm = likelihoods_nonlocal
 
     # Compute range (max - min) for each time bin
     range_kde = np.max(ll_kde, axis=1) - np.min(ll_kde, axis=1)
@@ -343,14 +380,13 @@ def test_likelihood_range_stability(comparison_data):
     assert np.all(range_gmm > 0)
 
 
-def test_normalized_likelihood_comparison(comparison_data):
+def test_normalized_likelihood_comparison(likelihoods_nonlocal):
     """Compare normalized likelihood distributions.
 
     Normalize each time bin to sum to 1 (convert to probability distributions)
     and compare these normalized distributions.
     """
-    kde_enc, gmm_enc = fit_both_models(comparison_data)
-    ll_kde, ll_gmm = predict_both_models(comparison_data, kde_enc, gmm_enc)
+    ll_kde, ll_gmm = likelihoods_nonlocal
 
     # Convert log-likelihood to probability (exp and normalize)
     def normalize_log_likelihood(ll):
@@ -395,16 +431,13 @@ def test_normalized_likelihood_comparison(comparison_data):
     assert np.all(np.isfinite(js_divergence))
 
 
-def test_local_likelihood_comparison(comparison_data):
+def test_local_likelihood_comparison(likelihoods_local):
     """Compare local likelihood predictions.
 
     Local likelihood is a single value per time bin (at animal's position),
     so we can compare these more directly.
     """
-    kde_enc, gmm_enc = fit_both_models(comparison_data)
-    ll_kde, ll_gmm = predict_both_models(
-        comparison_data, kde_enc, gmm_enc, is_local=True
-    )
+    ll_kde, ll_gmm = likelihoods_local
 
     ll_kde_np = np.asarray(ll_kde).ravel()
     ll_gmm_np = np.asarray(ll_gmm).ravel()
@@ -440,27 +473,30 @@ def test_local_likelihood_comparison(comparison_data):
     )
 
 
-def test_parameter_sensitivity_kde(comparison_data):
+def test_parameter_sensitivity_kde(
+    comparison_data, fitted_models, likelihoods_nonlocal
+):
     """Test how KDE bandwidth parameters affect results.
 
     This helps understand when KDE and GMM might differ more or less.
+    Reuses the shared GMM fit and the ``BASELINE_KDE_POSITION_STD``
+    baseline from the module fixtures; only the off-baseline KDE
+    bandwidths are refit.
     """
-    # Fit with different KDE bandwidths
-    bandwidths = [0.5, 1.0, 2.0, 4.0]
+    # Sweep includes the baseline so its datapoint can reuse the module fit.
+    bandwidths = [0.5, 1.0, BASELINE_KDE_POSITION_STD, 4.0]
     correlations = []
 
-    # Fit GMM once (reference)
-    _, gmm_enc = fit_both_models(comparison_data, kde_position_std=2.0)
-    ll_gmm, _ = predict_both_models(
-        comparison_data,
-        fit_both_models(comparison_data, kde_position_std=2.0)[0],
-        gmm_enc,
-    )
+    _, gmm_enc = fitted_models
+    ll_kde_baseline, ll_gmm = likelihoods_nonlocal
 
     print("\n=== KDE Bandwidth Sensitivity ===")
     for bw in bandwidths:
-        kde_enc, _ = fit_both_models(comparison_data, kde_position_std=bw)
-        ll_kde, _ = predict_both_models(comparison_data, kde_enc, gmm_enc)
+        if bw == BASELINE_KDE_POSITION_STD:
+            ll_kde = ll_kde_baseline  # reuse the module-level fit
+        else:
+            kde_enc, _ = fit_both_models(comparison_data, kde_position_std=bw)
+            ll_kde, _ = predict_both_models(comparison_data, kde_enc, gmm_enc)
 
         # Compute correlation
         r_mean = []

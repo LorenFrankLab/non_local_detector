@@ -13,9 +13,14 @@ from non_local_detector import NonLocalSortedSpikesDetector
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def simple_fitted_detector():
-    """Create a simple fitted detector for testing using simulated data."""
+    """Create a simple fitted detector for testing using simulated data.
+
+    Module-scoped: tests only call ``detector.predict(...)`` with different
+    ``return_outputs`` flags and do not mutate the detector, so the expensive
+    fit can be shared across the whole module.
+    """
     # Generate simulated data
     (
         speed,
@@ -39,9 +44,15 @@ def simple_fitted_detector():
     return detector, spike_times, time, position
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestReturnOutputsParameter:
-    """Test the return_outputs parameter with various inputs."""
+    """Test the return_outputs parameter with various inputs.
+
+    These tests run a full HMM predict against a fitted detector. The fit is
+    shared via a module-scoped fixture, but each ``return_outputs`` variant
+    triggers its own JAX trace, so the tests are inherently integration-scale
+    (~10s each).
+    """
 
     def test_default_returns_smoother_only(self, simple_fitted_detector):
         """Test that default (None) returns only smoother and marginal likelihood."""
@@ -216,8 +227,15 @@ class TestReturnOutputsParameter:
         assert "log_likelihood" in results
         assert "marginal_log_likelihoods" in results.attrs
 
-    def test_return_multiple_outputs_list(self, simple_fitted_detector):
-        """Test return_outputs with list of strings."""
+    @pytest.mark.parametrize(
+        "outputs",
+        [
+            pytest.param(["filter", "log_likelihood"], id="list"),
+            pytest.param({"filter", "log_likelihood"}, id="set"),
+        ],
+    )
+    def test_return_multiple_outputs_iterable(self, simple_fitted_detector, outputs):
+        """Test return_outputs accepts any iterable of strings (list, set, ...)."""
         detector, spike_times, time, position = simple_fitted_detector
 
         results = detector.predict(
@@ -225,7 +243,7 @@ class TestReturnOutputsParameter:
             time=time,
             position=position,
             position_time=time,
-            return_outputs=["filter", "log_likelihood"],
+            return_outputs=outputs,
         )
 
         # Should have smoother (always)
@@ -239,28 +257,6 @@ class TestReturnOutputsParameter:
         # Should NOT have predictive outputs
         assert "predictive_state_probabilities" not in results
         assert "predictive_posterior" not in results
-
-    def test_return_multiple_outputs_set(self, simple_fitted_detector):
-        """Test return_outputs with set of strings."""
-        detector, spike_times, time, position = simple_fitted_detector
-
-        results = detector.predict(
-            spike_times=spike_times,
-            time=time,
-            position=position,
-            position_time=time,
-            return_outputs={"filter", "log_likelihood"},
-        )
-
-        # Should have smoother (always)
-        assert "acausal_posterior" in results
-
-        # Should have filter and log_likelihood
-        assert "causal_posterior" in results
-        assert "log_likelihood" in results
-
-        # Should NOT have predictive
-        assert "predictive_state_probabilities" not in results
 
     def test_invalid_string_raises_error(self, simple_fitted_detector):
         """Test that invalid return_outputs string raises ValueError."""
@@ -302,9 +298,13 @@ class TestReturnOutputsParameter:
             )
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestBackwardCompatibility:
-    """Test backward compatibility with old boolean flags."""
+    """Test backward compatibility with old boolean flags.
+
+    These run a full HMM predict to verify that deprecated flags still
+    affect the results dict, so they're integration-scale.
+    """
 
     def test_save_log_likelihood_to_results_still_works(self, simple_fitted_detector):
         """Test that old save_log_likelihood_to_results flag still works with warning."""
