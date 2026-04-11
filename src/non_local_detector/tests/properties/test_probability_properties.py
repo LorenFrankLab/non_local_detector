@@ -228,23 +228,47 @@ class TestProbabilityProperties:
 
         assert jnp.allclose(normalized_original, normalized_scaled, rtol=1e-6)
 
+    # The three decoder invariant checks below used to be three separate
+    # Hypothesis tests, each running a full decoder fit+predict for every
+    # example. With ``max_examples=10`` that was 30 fit+predict cycles
+    # across the three tests, and each first example paid full JAX JIT
+    # compile time (~3s on a laptop, ~5-9s on CI), which raced the
+    # ``deadline=5000`` ceiling and caused FlakyFailure on slower runners.
+    #
+    # Hypothesis's shrinking machinery adds no value here: the strategy
+    # was just ``integers(42, 9999)``, which is "parameterized testing
+    # dressed up as property-based". Collapse the three tests into one
+    # parameterized pytest test that fits the decoder **once per seed**
+    # and checks all three invariants on that single fit. Each of the N
+    # seeds exercises a different simulated trajectory but reuses the
+    # warm JAX caches, so the whole collapsed suite runs in roughly the
+    # time of a single old example. N=5 is plenty of diversity for
+    # invariant checking.
     @pytest.mark.slow
-    @settings(deadline=5000, max_examples=10)  # Decoder tests are slower
-    @given(st.integers(min_value=42, max_value=9999))
-    def test_posterior_probabilities_sum_to_one(self, seed):
-        """Property: decoder posteriors sum to 1 across position dimension."""
-        # Generate simulation
-        # NOTE: n_runs must be >= 3 to create proper 2D position data
-        # NOTE: Need substantial data for RandomWalk to build proper position bins
+    @pytest.mark.parametrize("seed", [42, 137, 1234, 5678, 9999])
+    def test_decoder_posterior_invariants(self, seed: int) -> None:
+        """Decoder posteriors satisfy probability invariants for any seed.
+
+        Checks on a single ClusterlessDecoder fit+predict:
+          - posterior sums to 1.0 across the state_bins axis,
+          - all values in [0, 1],
+          - log(posterior) is finite or -inf (never NaN).
+
+        Re-fitting per seed exercises the simulator + decoder over a
+        spread of trajectories; all three invariants are checked on
+        each fit so a single decoder run yields three assertions.
+        """
+        # NOTE: n_runs must be >= 3 to create proper 2D position data.
+        # NOTE: Need substantial data for RandomWalk to build proper
+        #       position bins.
         sim = make_simulated_run_data(
             n_tetrodes=2,
             place_field_means=np.arange(0, 80, 20),  # 4 neurons
             sampling_frequency=500,
-            n_runs=3,  # Multiple runs to ensure 2D position array
+            n_runs=3,
             seed=seed,
         )
 
-        # Use 70/30 train/test split on all data
         n_encode = int(0.7 * len(sim.position_time))
         is_training = np.ones(len(sim.position_time), dtype=bool)
         is_training[n_encode:] = False
@@ -258,7 +282,6 @@ class TestProbabilityProperties:
             },
             continuous_transition_types=[[RandomWalk(movement_var=25.0)]],
         )
-
         decoder.fit(
             sim.position_time,
             sim.position,
@@ -267,161 +290,36 @@ class TestProbabilityProperties:
             is_training=is_training,
         )
 
-        # Predict on small test set (10 time bins only for speed)
         test_start_idx = n_encode
         test_end_idx = min(n_encode + 10, len(sim.position_time))
+        test_start_t = sim.position_time[test_start_idx]
+        test_end_t = sim.position_time[test_end_idx]
         results = decoder.predict(
             spike_times=[
-                st[
-                    (st >= sim.position_time[test_start_idx])
-                    & (st < sim.position_time[test_end_idx])
-                ]
-                for st in sim.spike_times
+                st[(st >= test_start_t) & (st < test_end_t)] for st in sim.spike_times
             ],
             spike_waveform_features=[
-                swf[
-                    (sim.spike_times[i] >= sim.position_time[test_start_idx])
-                    & (sim.spike_times[i] < sim.position_time[test_end_idx])
-                ]
-                for i, swf in enumerate(sim.spike_waveform_features)
+                wf[(st >= test_start_t) & (st < test_end_t)]
+                for st, wf in zip(
+                    sim.spike_times, sim.spike_waveform_features, strict=False
+                )
             ],
             time=sim.position_time[test_start_idx:test_end_idx],
             position=sim.position[test_start_idx:test_end_idx],
             position_time=sim.position_time[test_start_idx:test_end_idx],
         )
 
-        # Check posterior sums to 1 across spatial dimension (state_bins)
+        posterior = results.acausal_posterior.values
+
+        # Invariant 1: posteriors sum to 1 across state_bins.
         posterior_sums = results.acausal_posterior.sum(dim="state_bins")
         assert np.allclose(posterior_sums.values, 1.0, atol=1e-10)
 
-    @pytest.mark.slow
-    @settings(deadline=5000, max_examples=10)
-    @given(st.integers(min_value=42, max_value=9999))
-    def test_posteriors_nonnegative_and_bounded(self, seed):
-        """Property: decoder posteriors are in [0, 1]."""
-        # NOTE: n_runs must be >= 3 to create proper 2D position data
-        # NOTE: Need substantial data for RandomWalk to build proper position bins
-        sim = make_simulated_run_data(
-            n_tetrodes=2,
-            place_field_means=np.arange(0, 80, 20),
-            sampling_frequency=500,
-            n_runs=3,
-            seed=seed,
-        )
+        # Invariant 2: posteriors are in [0, 1].
+        assert np.all(posterior >= 0.0)
+        assert np.all(posterior <= 1.0)
 
-        n_encode = int(0.7 * len(sim.position_time))
-        is_training = np.ones(len(sim.position_time), dtype=bool)
-        is_training[n_encode:] = False
-
-        decoder = ClusterlessDecoder(
-            clusterless_algorithm="clusterless_kde",
-            clusterless_algorithm_params={
-                "position_std": 6.0,
-                "waveform_std": 24.0,
-                "block_size": 50,
-            },
-            continuous_transition_types=[[RandomWalk(movement_var=25.0)]],
-        )
-
-        decoder.fit(
-            sim.position_time,
-            sim.position,
-            sim.spike_times,
-            sim.spike_waveform_features,
-            is_training=is_training,
-        )
-
-        test_start_idx = n_encode
-        test_end_idx = min(n_encode + 10, len(sim.position_time))
-        results = decoder.predict(
-            spike_times=[
-                st[
-                    (st >= sim.position_time[test_start_idx])
-                    & (st < sim.position_time[test_end_idx])
-                ]
-                for st in sim.spike_times
-            ],
-            spike_waveform_features=[
-                swf[
-                    (sim.spike_times[i] >= sim.position_time[test_start_idx])
-                    & (sim.spike_times[i] < sim.position_time[test_end_idx])
-                ]
-                for i, swf in enumerate(sim.spike_waveform_features)
-            ],
-            time=sim.position_time[test_start_idx:test_end_idx],
-            position=sim.position[test_start_idx:test_end_idx],
-            position_time=sim.position_time[test_start_idx:test_end_idx],
-        )
-
-        # Check all values in [0, 1]
-        assert np.all(results.acausal_posterior.values >= 0.0)
-        assert np.all(results.acausal_posterior.values <= 1.0)
-
-    @pytest.mark.slow
-    @settings(deadline=5000, max_examples=10)
-    @given(st.integers(min_value=42, max_value=9999))
-    def test_log_probabilities_finite(self, seed):
-        """Property: log probabilities should be finite (or -inf for zero prob)."""
-        # NOTE: n_runs must be >= 3 to create proper 2D position data
-        # NOTE: Need substantial data for RandomWalk to build proper position bins
-        sim = make_simulated_run_data(
-            n_tetrodes=2,
-            place_field_means=np.arange(0, 80, 20),
-            sampling_frequency=500,
-            n_runs=3,
-            seed=seed,
-        )
-
-        n_encode = int(0.7 * len(sim.position_time))
-        is_training = np.ones(len(sim.position_time), dtype=bool)
-        is_training[n_encode:] = False
-
-        decoder = ClusterlessDecoder(
-            clusterless_algorithm="clusterless_kde",
-            clusterless_algorithm_params={
-                "position_std": 6.0,
-                "waveform_std": 24.0,
-                "block_size": 50,
-            },
-            continuous_transition_types=[[RandomWalk(movement_var=25.0)]],
-        )
-
-        decoder.fit(
-            sim.position_time,
-            sim.position,
-            sim.spike_times,
-            sim.spike_waveform_features,
-            is_training=is_training,
-        )
-
-        test_start_idx = n_encode
-        test_end_idx = min(n_encode + 10, len(sim.position_time))
-        results = decoder.predict(
-            spike_times=[
-                st[
-                    (st >= sim.position_time[test_start_idx])
-                    & (st < sim.position_time[test_end_idx])
-                ]
-                for st in sim.spike_times
-            ],
-            spike_waveform_features=[
-                swf[
-                    (sim.spike_times[i] >= sim.position_time[test_start_idx])
-                    & (sim.spike_times[i] < sim.position_time[test_end_idx])
-                ]
-                for i, swf in enumerate(sim.spike_waveform_features)
-            ],
-            time=sim.position_time[test_start_idx:test_end_idx],
-            position=sim.position[test_start_idx:test_end_idx],
-            position_time=sim.position_time[test_start_idx:test_end_idx],
-        )
-
-        # Take log of posteriors
-        log_posterior = np.log(
-            results.acausal_posterior.values + 1e-300
-        )  # Avoid log(0)
-
-        # Should not have NaN
+        # Invariant 3: log(posterior) is finite or -inf (never NaN).
+        log_posterior = np.log(posterior + 1e-300)  # avoid log(0)
         assert not np.any(np.isnan(log_posterior))
-        # Should be finite or -inf
         assert np.all(np.isfinite(log_posterior) | np.isneginf(log_posterior))
