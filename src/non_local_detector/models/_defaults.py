@@ -123,10 +123,19 @@ class _ModelDefaults:
     @staticmethod
     def non_local_defaults():
         """Defaults for non-local detector (4-state, sorted and clusterless)."""
-        no_spike_trans_prob = 5e-3
+        # Expected dwell times at 500 Hz:
+        #   Local:          200 ms  (p_self = 0.990)
+        #   No-Spike:       100 ms  (p_self = 0.980)
+        #   NL-Continuous:   50 ms  (p_self = 0.960)
+        #   NL-Fragmented:   50 ms  (p_self = 0.960)
+        #
+        # Off-diagonal: remaining exit probability distributed
+        # with small bias toward No-Spike transitions (0.003)
+        # and equal split among other states.
+        no_spike_trans_prob = 3e-3
         local_prob = 0.99
-        cont_non_local_prob = 0.98
-        non_local_frag_prob = 0.98
+        cont_non_local_prob = 0.96
+        non_local_frag_prob = 0.96
         no_spike_prob = 0.98
 
         return {
@@ -164,8 +173,10 @@ class _ModelDefaults:
                     ]
                 )
             ),
+            # Stickiness prior equivalent to ~3 minutes of data at 500 Hz
+            # for Local/No-Spike; weak prior for Non-Local states.
             "discrete_transition_stickiness": lambda: np.array(
-                [1e6, 1e6, 300.0, 300.0]
+                [100_000.0, 100_000.0, 300.0, 300.0]
             ),
             "observation_models": lambda: [
                 ObservationModel(is_local=True),
