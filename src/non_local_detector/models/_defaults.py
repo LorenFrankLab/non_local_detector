@@ -130,9 +130,10 @@ class _ModelDefaults:
         #   NL-Fragmented:   50 ms  (p_self = 0.960)
         #
         # Off-diagonal: remaining exit probability distributed
-        # with small bias toward No-Spike transitions (0.003)
-        # and equal split among other states.
-        no_spike_trans_prob = 3e-3
+        # with bias toward No-Spike transitions (0.005) to break
+        # non-local events across silent gaps (~75ms+).
+        # Equal split among other states.
+        no_spike_trans_prob = 5e-3
         local_prob = 0.99
         cont_non_local_prob = 0.96
         non_local_frag_prob = 0.96
