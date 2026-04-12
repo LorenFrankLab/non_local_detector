@@ -171,26 +171,13 @@ class TestProbabilityProperties:
         for i in range(len(result) - 1):
             assert result[i] <= result[i + 1] or jnp.allclose(result[i], result[i + 1])
 
-    @given(
-        npst.arrays(
-            dtype=np.float64,
-            shape=(10,),
-            elements=st.floats(
-                min_value=0.01, max_value=1e6, allow_nan=False, allow_infinity=False
-            ),
-        ),
-        npst.arrays(
-            dtype=np.float64,
-            shape=(10,),
-            elements=st.floats(
-                min_value=0.01, max_value=1e6, allow_nan=False, allow_infinity=False
-            ),
-        ),
-    )
-    def test_divide_safe_never_produces_nan_or_inf(self, a, b):
-        """Property: divide_safe should never produce NaN or inf."""
-        result = _divide_safe(jnp.asarray(a), jnp.asarray(b))
-
+    def test_divide_safe_zero_denominator_returns_zero(self):
+        """_divide_safe must return 0.0 where denominator is 0."""
+        a = jnp.array([1.0, 2.0, 3.0, 0.0])
+        b = jnp.array([0.0, 1.0, 0.0, 0.0])
+        result = _divide_safe(a, b)
+        expected = jnp.array([0.0, 2.0, 0.0, 0.0])
+        assert jnp.allclose(result, expected)
         assert jnp.all(jnp.isfinite(result))
 
     @given(
@@ -319,7 +306,8 @@ class TestProbabilityProperties:
         assert np.all(posterior >= 0.0)
         assert np.all(posterior <= 1.0)
 
-        # Invariant 3: log(posterior) is finite or -inf (never NaN).
+        # Invariant 3: log(posterior) must not contain NaN.
+        # (The +1e-300 avoids log(0); result is always finite or -inf
+        # given posterior ∈ [0, 1], so only the NaN check is meaningful.)
         log_posterior = np.log(posterior + 1e-300)  # avoid log(0)
         assert not np.any(np.isnan(log_posterior))
-        assert np.all(np.isfinite(log_posterior) | np.isneginf(log_posterior))

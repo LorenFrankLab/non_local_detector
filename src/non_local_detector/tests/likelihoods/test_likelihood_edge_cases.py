@@ -444,7 +444,8 @@ def test_sorted_kde_partial_occupancy():
     )
 
     assert not jnp.any(jnp.isnan(ll))
-    assert jnp.all(jnp.isfinite(ll) | (ll == -jnp.inf))
+    # Log-likelihoods must be finite or -inf, never +inf
+    assert not jnp.any(ll == jnp.inf)
 
 
 def test_clusterless_kde_partial_occupancy():

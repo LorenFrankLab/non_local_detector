@@ -266,8 +266,9 @@ class TestSafeLog:
         elif expected_result == "zero":
             assert jnp.allclose(result[0], 0.0)
         elif expected_result == "finite_positive":
-            # May overflow to inf in float32
-            assert jnp.isfinite(result[0]) or jnp.isinf(result[0])
+            # Must not be NaN; may overflow to +inf in float32
+            assert not jnp.isnan(result[0])
+            assert result[0] > 0
 
     def test_safe_log_monotonicity(self):
         """Safe log should preserve monotonicity (larger input → larger output)."""

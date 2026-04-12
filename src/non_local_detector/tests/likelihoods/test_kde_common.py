@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from non_local_detector.likelihoods.common import (
     KDEModel,
@@ -101,16 +102,25 @@ def test_kde_model_shapes_and_predict_log():
 
 
 def test_safe_divide_and_safe_log_stability_and_broadcast():
+    from non_local_detector.likelihoods.common import EPS
+
     a = jnp.array([1.0, 0.0, 2.0])
     b = jnp.array([0.0, 0.0, 4.0])
     out = safe_divide(a, b)
     assert out.shape == a.shape
     assert jnp.all(jnp.isfinite(out))
+    # Zero-denominator elements should return eps, not NaN/inf
+    assert out[0] == pytest.approx(EPS, rel=1e-5)
+    assert out[1] == pytest.approx(EPS, rel=1e-5)
+    assert out[2] == pytest.approx(0.5, rel=1e-5)
 
     x = jnp.array([0.0, 1e-20, 1.0])
     log_x = safe_log(x)
     assert log_x.shape == x.shape
     assert jnp.all(jnp.isfinite(log_x))
+    # Zero/tiny inputs should return log(eps), not -inf
+    assert log_x[0] == pytest.approx(float(jnp.log(jnp.array(EPS))), rel=1e-5)
+    assert log_x[2] == pytest.approx(0.0, abs=1e-10)
 
 
 def test_get_spikecount_per_time_bin_edges_and_outliers():

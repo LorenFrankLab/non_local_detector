@@ -466,4 +466,4 @@ class TestViterbi:
 
         # Assert
         assert jnp.all((states >= 0) & (states < 3))
-        assert len(jnp.unique(states)) > 0  # Not all same state
+        assert len(jnp.unique(states)) > 1  # Path should visit multiple states

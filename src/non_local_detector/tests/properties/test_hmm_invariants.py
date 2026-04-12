@@ -11,7 +11,7 @@ from pathlib import Path
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import assume, given
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from non_local_detector.core import filter, smoother, viterbi
@@ -31,10 +31,8 @@ def entropy(p):
 class TestHMMInvariants:
     """Test mathematical invariants of HMM algorithms."""
 
-    @given(
-        st.integers(min_value=2, max_value=5),
-        st.integers(min_value=1, max_value=20),
-    )
+    @pytest.mark.parametrize("n_states", [2, 5])
+    @pytest.mark.parametrize("n_timesteps", [1, 10, 20])
     def test_filter_preserves_probability_normalization(self, n_states, n_timesteps):
         """Property: filter output should always be normalized probability distributions."""
         # Generate matching-sized distributions
@@ -59,10 +57,8 @@ class TestHMMInvariants:
             assert jnp.all(filtered[t] >= 0)
             assert jnp.all(filtered[t] <= 1)
 
-    @given(
-        st.integers(min_value=2, max_value=5),
-        st.integers(min_value=1, max_value=15),
-    )
+    @pytest.mark.parametrize("n_states", [2, 5])
+    @pytest.mark.parametrize("n_timesteps", [1, 10, 15])
     def test_smoother_at_final_timestep_equals_filter(self, n_states, n_timesteps):
         """Property: at final timestep T, smoother and filter should be identical."""
         # Generate matching-sized init and trans
@@ -83,10 +79,8 @@ class TestHMMInvariants:
         # At final time, no future information, so filter == smoother
         assert jnp.allclose(smoothed[-1], filtered[-1], rtol=1e-5)
 
-    @given(
-        st.integers(min_value=2, max_value=5),
-        st.integers(min_value=1, max_value=15),
-    )
+    @pytest.mark.parametrize("n_states", [2, 5])
+    @pytest.mark.parametrize("n_timesteps", [1, 10, 15])
     def test_viterbi_returns_valid_state_sequence(self, n_states, n_timesteps):
         """Property: viterbi should return a valid sequence of state indices."""
         rng = np.random.default_rng(0)
@@ -106,7 +100,7 @@ class TestHMMInvariants:
         # Check all states are valid indices
         assert jnp.all((states >= 0) & (states < n_states))
 
-    @given(st.integers(min_value=2, max_value=5))
+    @pytest.mark.parametrize("n_states", [2, 3, 5])
     def test_uniform_likelihood_preserves_transition_dynamics(self, n_states):
         """Property: with uniform likelihood, filter should follow pure transition dynamics."""
         rng = np.random.default_rng(0)
@@ -134,6 +128,7 @@ class TestHMMInvariants:
             predicted = predicted / predicted.sum()
             assert jnp.allclose(filtered[t], predicted, rtol=1e-4)
 
+    @settings(deadline=None)  # JAX JIT compilation can exceed any fixed deadline
     @given(
         stochastic_matrix(min_size=2, max_size=5),
         st.integers(min_value=2, max_value=10),  # Need at least 2 timesteps
@@ -160,10 +155,8 @@ class TestHMMInvariants:
         # Second timestep should match first row of transition matrix
         assert jnp.allclose(filtered[1], trans[0, :], rtol=1e-3)
 
-    @given(
-        st.integers(min_value=2, max_value=5),
-        st.integers(min_value=2, max_value=10),
-    )
+    @pytest.mark.parametrize("n_states", [2, 5])
+    @pytest.mark.parametrize("n_timesteps", [2, 10])
     def test_filter_marginal_likelihood_is_real_valued(self, n_states, n_timesteps):
         """Property: marginal log likelihood should be real-valued (not NaN or inf)."""
         rng = np.random.default_rng(0)
@@ -185,7 +178,7 @@ class TestHMMInvariants:
         total_log_likelihood = log_marginals.sum()
         assert jnp.isfinite(total_log_likelihood)
 
-    @given(st.integers(min_value=2, max_value=5))
+    @pytest.mark.parametrize("n_states", [2, 3, 5])
     def test_smoother_preserves_probability_normalization(self, n_states):
         """Property: smoother output should always be normalized probability distributions."""
         rng = np.random.default_rng(0)
@@ -208,6 +201,7 @@ class TestHMMInvariants:
             assert jnp.all(smoothed[t] >= 0)
             assert jnp.all(smoothed[t] <= 1)
 
+    @settings(deadline=None)  # JAX JIT compilation can exceed any fixed deadline
     @given(
         probability_distribution(min_size=3, max_size=5),
         stochastic_matrix(min_size=3, max_size=5),
@@ -243,56 +237,7 @@ class TestHMMInvariants:
             f"deterministic evidence. Got match_ratio={float(match_ratio):.2f}"
         )
 
-    @given(stochastic_matrix(min_size=2, max_size=10))
-    def test_transition_matrix_rows_sum_to_one(self, trans):
-        """Property: all rows of a transition matrix must sum to 1.0.
-
-        This is a fundamental requirement for stochastic matrices - each row
-        represents a probability distribution over next states.
-        """
-        # Check each row sums to 1.0
-        row_sums = trans.sum(axis=1)
-        assert jnp.allclose(row_sums, 1.0, atol=1e-10), (
-            f"Transition matrix rows must sum to 1.0, got: {row_sums}"
-        )
-
-        # Check all values are in [0, 1]
-        assert jnp.all(trans >= 0.0), "Transition probabilities must be non-negative"
-        assert jnp.all(trans <= 1.0), "Transition probabilities must be <= 1.0"
-
-    @given(
-        st.integers(min_value=2, max_value=5),  # n_states
-        st.integers(min_value=2, max_value=10),  # n_timesteps
-    )
-    def test_nonstationary_transition_matrices_stochastic(self, n_states, n_timesteps):
-        """Property: time-varying transition matrices must be stochastic at each time.
-
-        For nonstationary HMMs, transition matrices can vary over time:
-        T[t] is the transition matrix from time t to t+1.
-        Each T[t] must be a valid stochastic matrix.
-        """
-        # Generate random time-varying transition matrices
-        rng = np.random.default_rng(0)
-        trans_matrices = rng.random((n_timesteps, n_states, n_states))
-
-        # Normalize each time step to be stochastic
-        for t in range(n_timesteps):
-            trans_matrices[t] = trans_matrices[t] / trans_matrices[t].sum(
-                axis=1, keepdims=True
-            )
-
-        # Check each timestep is stochastic
-        for t in range(n_timesteps):
-            # Each row sums to 1.0
-            row_sums = trans_matrices[t].sum(axis=1)
-            assert np.allclose(row_sums, 1.0, atol=1e-10), (
-                f"Transition matrix at time {t} rows must sum to 1.0, got: {row_sums}"
-            )
-
-            # All values in [0, 1]
-            assert np.all(trans_matrices[t] >= 0.0), (
-                f"Transition probabilities at time {t} must be non-negative"
-            )
-            assert np.all(trans_matrices[t] <= 1.0), (
-                f"Transition probabilities at time {t} must be <= 1.0"
-            )
+    # NOTE: test_transition_matrix_rows_sum_to_one and
+    # test_nonstationary_transition_matrices_stochastic were removed.
+    # They generated a random matrix, row-normalized it, then asserted
+    # rows sum to 1 — testing that x/x.sum() ≈ 1, not any production code.
