@@ -9,7 +9,7 @@ import hypothesis.extra.numpy as npst
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from non_local_detector.continuous_state_transitions import RandomWalk
@@ -94,7 +94,7 @@ class TestProbabilityProperties:
                 normalized_ratio = normalized[j] / (normalized[i] + 1e-10)
                 assert jnp.allclose(original_ratio, normalized_ratio, rtol=1e-4)
 
-    @settings(deadline=500)  # Increased deadline for JAX JIT compilation
+    @settings(deadline=None)  # JAX JIT compilation can exceed any fixed deadline on CI
     @given(probability_distribution(), st.integers(min_value=0, max_value=1000000))
     def test_condition_on_preserves_probability_property(self, prior, seed):
         """Property: conditioning always produces valid distribution."""
@@ -126,29 +126,29 @@ class TestProbabilityProperties:
         assert jnp.all(next_dist >= 0)
         assert jnp.all(next_dist <= 1)
 
-    @settings(deadline=500)  # Increased deadline for JAX JIT compilation
-    @given(
-        st.lists(
-            # Limit range to avoid overflow in log for float32
-            st.floats(
-                min_value=1e-30, max_value=1e30, allow_nan=False, allow_infinity=False
-            ),
-            min_size=1,
-            max_size=50,
-        )
-    )
-    def test_safe_log_always_finite_or_neg_inf_for_positive_values(self, values):
-        """Property: safe_log should produce finite values or -inf (not NaN) for positive values."""
-        x = jnp.array(values)
-        assume(jnp.all(x >= 0))
-
+    def test_safe_log_zeros_produce_neg_inf(self):
+        """_safe_log(0) must return -inf, not NaN."""
+        x = jnp.array([0.0, 0.0, 1.0, 0.0])
         result = _safe_log(x)
+        assert jnp.all(result[jnp.array([0, 1, 3])] == -jnp.inf)
+        assert jnp.isfinite(result[2])
 
-        # Should not produce NaN
+    def test_safe_log_positive_values_match_log(self):
+        """_safe_log on positive values must equal jnp.log."""
+        x = jnp.array([1e-30, 1e-10, 1.0, 1e10, 1e30])
+        result = _safe_log(x)
+        expected = jnp.log(x)
+        assert jnp.allclose(result, expected)
+
+    def test_safe_log_mixed_zeros_and_positives(self):
+        """_safe_log handles a mix of zeros and positives without NaN."""
+        x = jnp.array([0.0, 0.5, 0.0, 1.0])
+        result = _safe_log(x)
         assert not jnp.any(jnp.isnan(result))
-        # Should be finite or -inf (for zeros)
-        # Note: Very large values may overflow to +inf in log, which is expected
-        assert jnp.all(jnp.isfinite(result) | jnp.isinf(result))
+        assert result[0] == -jnp.inf
+        assert result[2] == -jnp.inf
+        assert jnp.allclose(result[1], jnp.log(jnp.array(0.5)))
+        assert result[3] == 0.0
 
     @given(
         st.lists(
