@@ -186,8 +186,12 @@ def make_dense_probe_run_data(
     )
     selected_positions = channel_positions[selected_channels]
 
-    # Restrict templates to selected channels
+    # Restrict templates to selected channels and zero out channels that are
+    # too far from the neuron (< 10% of peak) to produce realistic sparse
+    # footprints.
     templates = amplitude_templates[:, selected_channels]  # (n_neurons, n_feat)
+    row_max = templates.max(axis=1, keepdims=True)
+    templates = np.where(templates >= 0.1 * row_max, templates, 0.0)
     n_features = templates.shape[1]
 
     # -- Generate spikes per neuron -------------------------------------------
@@ -209,8 +213,14 @@ def make_dense_probe_run_data(
             continue
 
         times = position_time[spike_mask]
-        marks = templates[neuron_idx][np.newaxis, :] * max_amplitude + rng_marks.normal(
-            0, amplitude_noise_std * max_amplitude, (n_spikes, n_features)
+        template_scaled = templates[neuron_idx][np.newaxis, :] * max_amplitude
+        # Noise proportional to each channel's amplitude: channels with no
+        # signal get no noise (physically: noise = trial-to-trial waveform
+        # variability, not background electrode noise).
+        noise_std_per_ch = amplitude_noise_std * np.abs(template_scaled)
+        marks = (
+            template_scaled
+            + rng_marks.normal(0, 1, (n_spikes, n_features)) * noise_std_per_ch
         )
         all_spike_times.append(times)
         all_spike_marks.append(marks)
@@ -404,25 +414,43 @@ def make_probe_run_data(
     n_shanks = probe_config.n_shanks
     n_ch_per_shank = probe_config.n_channels_per_shank
 
-    # All channel positions concatenated for neuron placement
+    # Place neurons near individual shanks (distributed round-robin) so that
+    # each neuron has a clear "home" shank with strong signal and negligible
+    # amplitude on distant shanks.
     all_channel_positions = np.vstack(shank_channel_positions)
-    neuron_locations = make_neuron_locations(
-        n_neurons,
-        all_channel_positions,
-        probe_config.neuron_depth_range,
-        probe_config.lateral_extent,
-        rng=rng_spikes,
-    )
-
-    # Per-shank amplitude templates
-    shank_templates = []
-    for shank_pos in shank_channel_positions:
-        templates = compute_amplitude_falloff(
-            neuron_locations,
-            shank_pos,
-            decay_constant=probe_config.decay_constant,
+    neuron_parts = []
+    for neuron_idx in range(n_neurons):
+        shank_idx = neuron_idx % n_shanks
+        neuron_parts.append(
+            make_neuron_locations(
+                1,
+                shank_channel_positions[shank_idx],
+                probe_config.neuron_depth_range,
+                probe_config.lateral_extent,
+                rng=rng_spikes,
+            )
         )
-        shank_templates.append(templates)
+    neuron_locations = np.vstack(neuron_parts)
+
+    # Compute amplitude templates using ALL channels so that the row-max
+    # normalisation reflects each neuron's closest channel across the whole
+    # probe.  Then slice by shank — neurons far from a shank will have low
+    # amplitudes on that shank's channels.
+    all_templates = compute_amplitude_falloff(
+        neuron_locations,
+        all_channel_positions,
+        decay_constant=probe_config.decay_constant,
+    )
+    # Zero out channels below 10% of each neuron's global peak to produce
+    # realistic sparse footprints.
+    global_row_max = all_templates.max(axis=1, keepdims=True)
+    all_templates = np.where(all_templates >= 0.1 * global_row_max, all_templates, 0.0)
+
+    shank_templates = []
+    offset = 0
+    for _ in range(n_shanks):
+        shank_templates.append(all_templates[:, offset : offset + n_ch_per_shank])
+        offset += n_ch_per_shank
 
     # -- Generate spikes per neuron (shared across shanks) ---------------------
     neuron_spike_masks: list[np.ndarray] = []
@@ -459,12 +487,11 @@ def make_probe_run_data(
                 continue
 
             times = position_time[spike_mask]
-            marks = templates[neuron_idx][
-                np.newaxis, :
-            ] * max_amplitude + rng_marks.normal(
-                0,
-                amplitude_noise_std * max_amplitude,
-                (n_spikes, n_ch_per_shank),
+            template_scaled = templates[neuron_idx][np.newaxis, :] * max_amplitude
+            noise_std_per_ch = amplitude_noise_std * np.abs(template_scaled)
+            marks = (
+                template_scaled
+                + rng_marks.normal(0, 1, (n_spikes, n_ch_per_shank)) * noise_std_per_ch
             )
             shank_times_parts.append(times)
             shank_marks_parts.append(marks)

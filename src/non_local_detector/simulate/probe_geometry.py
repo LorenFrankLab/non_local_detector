@@ -323,9 +323,9 @@ def polymer_probe_config() -> ProbeConfig:
         vertical_spacing=35.0,
         n_columns=1,
         column_spacing=0.0,
-        decay_constant=20.0,
-        neuron_depth_range=(10.0, 60.0),
-        lateral_extent=30.0,
+        decay_constant=10.0,
+        neuron_depth_range=(10.0, 20.0),
+        lateral_extent=10.0,
         expected_channels_per_spike=(2, 4),
         shank_spacing=250.0,
     )
