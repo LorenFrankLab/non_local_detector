@@ -62,9 +62,11 @@ def _get_neighbor_indices(
 
     Returns
     -------
-    neighbor_indices : np.ndarray, shape (n_spikes, 2 * n_neighbors + 1), dtype int
+    neighbor_indices : np.ndarray, shape (n_spikes, min(2*n_neighbors+1, n_channels))
         Channel indices ordered by spatial distance from peak.
         ``neighbor_indices[:, 0]`` is always the peak channel.
+        If ``n_channels < 2 * n_neighbors + 1``, all channels are used
+        and the output width is ``n_channels``.
 
     """
     n_total = 2 * n_neighbors + 1
@@ -75,14 +77,9 @@ def _get_neighbor_indices(
     diffs = channel_positions[:, np.newaxis, :] - channel_positions[np.newaxis, :, :]
     dist_matrix = np.sqrt((diffs**2).sum(axis=2))
 
-    # For each peak channel, find the n_total closest channels (including self)
-    # sorted by distance
-    neighbor_indices = np.empty((len(peak_channels), n_total), dtype=int)
-    for i, peak in enumerate(peak_channels):
-        closest = np.argsort(dist_matrix[peak])[:n_total]
-        neighbor_indices[i] = closest
-
-    return neighbor_indices
+    # Vectorised: sort each peak channel's row and take the n_total closest
+    sorted_by_dist = np.argsort(dist_matrix[peak_channels], axis=1)
+    return sorted_by_dist[:, :n_total]
 
 
 def extract_local_amplitudes(
@@ -109,8 +106,9 @@ def extract_local_amplitudes(
 
     Returns
     -------
-    local_amps : np.ndarray, shape (n_spikes, 2 * n_neighbors + 1)
-        Aligned local amplitude features.
+    local_amps : np.ndarray, shape (n_spikes, min(2*n_neighbors+1, n_channels))
+        Aligned local amplitude features.  If ``n_channels < 2 * n_neighbors + 1``,
+        all channels are used.
 
     """
     n_spikes, n_channels = marks.shape

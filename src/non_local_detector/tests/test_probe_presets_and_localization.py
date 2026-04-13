@@ -219,6 +219,17 @@ class TestExtractLocalAmplitudes:
         assert result.shape == (2, 3)
         assert np.all(np.isfinite(result))
 
+    def test_more_neighbors_than_channels(self):
+        """n_neighbors exceeding available channels should use all channels."""
+        n_channels = 3
+        channel_positions = np.column_stack(
+            [np.zeros(n_channels), np.arange(n_channels) * 35.0]
+        )
+        marks = np.array([[10.0, 5.0, 1.0], [1.0, 5.0, 10.0]])
+        result = extract_local_amplitudes(marks, channel_positions, n_neighbors=5)
+        assert result.shape == (2, 3)  # clamped to n_channels
+        assert np.all(np.isfinite(result))
+
 
 class TestEstimateSpikePosition:
     def test_position_near_peak_channel(self):

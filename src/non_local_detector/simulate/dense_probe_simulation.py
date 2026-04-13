@@ -123,8 +123,10 @@ def make_dense_probe_run_data(
     max_amplitude : float, optional
         Scaling factor applied to the normalised amplitude templates.
     amplitude_noise_std : float, optional
-        Standard deviation of additive Gaussian noise on each amplitude value,
-        expressed as a fraction of *max_amplitude*.
+        Relative noise level.  Noise standard deviation on each channel is
+        ``amplitude_noise_std * channel_amplitude * max_amplitude``, i.e.,
+        proportional to the channel's signal strength.  Channels with no
+        signal receive no noise.
     n_active_channels : int or None, optional
         Number of channels to keep as mark features.  *None* keeps all.
     channel_selection_method : {"top_k", "uniform", "all"}, optional
@@ -373,8 +375,10 @@ def make_probe_run_data(
     max_amplitude : float, optional
         Scaling factor applied to the normalised amplitude templates.
     amplitude_noise_std : float, optional
-        Standard deviation of additive Gaussian noise on each amplitude value,
-        expressed as a fraction of *max_amplitude*.
+        Relative noise level.  Noise standard deviation on each channel is
+        ``amplitude_noise_std * channel_amplitude * max_amplitude``, i.e.,
+        proportional to the channel's signal strength.  Channels with no
+        signal receive no noise.
     background_rate : float, optional
         Rate (Hz) of position-independent background spikes per shank.
         Set to 0 (default) to disable.
@@ -480,8 +484,8 @@ def make_probe_run_data(
             if n_spikes == 0:
                 continue
 
-            # Only include spike on this shank if the neuron has detectable
-            # amplitude (peak amplitude > 10% of max_amplitude after scaling)
+            # Skip neuron on this shank if its strongest template weight is
+            # below 10% — neuron is too far from this shank to be recorded.
             peak_amp = templates[neuron_idx].max()
             if peak_amp < 0.1:
                 continue
