@@ -76,6 +76,8 @@ def make_dense_probe_run_data(
     channel_selection_method: Literal["top_k", "uniform", "all"] = "top_k",
     # -- Background spikes (optional) --
     background_rate: float = BACKGROUND_RATE,
+    # -- Electrode noise floor --
+    noise_floor: float = 0.0,
     # -- Feature transform (optional) --
     feature_transform: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
     # -- Reproducibility --
@@ -135,6 +137,12 @@ def make_dense_probe_run_data(
         Rate (Hz) of position-independent background spikes.  These spikes
         have random amplitude profiles and carry no position information.
         Set to 0 (default) to disable.
+    noise_floor : float, optional
+        Standard deviation of additive Gaussian noise applied to ALL channels
+        on every spike, independent of signal.  Simulates electrode thermal
+        noise and distant neuron background activity.  Expressed as a fraction
+        of *max_amplitude* (e.g., 0.1 means noise std = 10% of max_amplitude).
+        Default is 0.0 (no floor noise).
     feature_transform : callable or None, optional
         Optional function ``(marks, channel_positions) -> transformed_marks``
         applied to the raw amplitude marks before output.  ``channel_positions``
@@ -216,14 +224,17 @@ def make_dense_probe_run_data(
 
         times = position_time[spike_mask]
         template_scaled = templates[neuron_idx][np.newaxis, :] * max_amplitude
-        # Noise proportional to each channel's amplitude: channels with no
-        # signal get no noise (physically: noise = trial-to-trial waveform
-        # variability, not background electrode noise).
+        # Waveform variability noise (proportional to signal)
         noise_std_per_ch = amplitude_noise_std * np.abs(template_scaled)
         marks = (
             template_scaled
             + rng_marks.normal(0, 1, (n_spikes, n_features)) * noise_std_per_ch
         )
+        # Electrode noise floor (constant across all channels)
+        if noise_floor > 0:
+            marks += rng_marks.normal(
+                0, noise_floor * max_amplitude, (n_spikes, n_features)
+            )
         all_spike_times.append(times)
         all_spike_marks.append(marks)
 
@@ -338,6 +349,7 @@ def make_probe_run_data(
     max_amplitude: float = MAX_AMPLITUDE,
     amplitude_noise_std: float = AMPLITUDE_NOISE_STD,
     background_rate: float = BACKGROUND_RATE,
+    noise_floor: float = 0.0,
     feature_transform: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
     seed: int | None = 0,
 ) -> ClusterlessSimOutput:
@@ -382,6 +394,10 @@ def make_probe_run_data(
     background_rate : float, optional
         Rate (Hz) of position-independent background spikes per shank.
         Set to 0 (default) to disable.
+    noise_floor : float, optional
+        Standard deviation of additive Gaussian noise applied to ALL channels
+        on every spike, independent of signal.  Expressed as a fraction of
+        *max_amplitude*.  Default is 0.0 (no floor noise).
     feature_transform : callable or None, optional
         Optional function ``(marks, channel_positions) -> transformed_marks``
         applied per-shank to the raw amplitude marks before output.
@@ -497,6 +513,10 @@ def make_probe_run_data(
                 template_scaled
                 + rng_marks.normal(0, 1, (n_spikes, n_ch_per_shank)) * noise_std_per_ch
             )
+            if noise_floor > 0:
+                marks += rng_marks.normal(
+                    0, noise_floor * max_amplitude, (n_spikes, n_ch_per_shank)
+                )
             shank_times_parts.append(times)
             shank_marks_parts.append(marks)
 
