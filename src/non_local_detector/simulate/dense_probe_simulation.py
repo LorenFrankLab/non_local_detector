@@ -73,6 +73,7 @@ def make_dense_probe_run_data(
     amplitude_noise_std: float = AMPLITUDE_NOISE_STD,
     gain_std: float = 0.0,
     neuron_amplitude_range: tuple[float, float] | None = None,
+    correlated_noise: bool = False,
     # -- Channel selection (controls mark dimensionality) --
     n_active_channels: int | None = None,
     channel_selection_method: Literal["top_k", "uniform", "all"] = "top_k",
@@ -142,6 +143,10 @@ def make_dense_probe_run_data(
         peak amplitude is drawn uniformly from this range instead of using
         a fixed *max_amplitude*.  If *None* (default), all neurons use
         *max_amplitude*.
+    correlated_noise : bool, optional
+        If True, each neuron gets a random noise covariance across its active
+        channels, producing clusters with different shapes and orientations in
+        mark space.  If False (default), noise is independent per channel.
     n_active_channels : int or None, optional
         Number of channels to keep as mark features.  *None* keeps all.
     channel_selection_method : {"top_k", "uniform", "all"}, optional
@@ -250,12 +255,35 @@ def make_dense_probe_run_data(
         if gain_std > 0:
             gain = 1.0 + rng_marks.normal(0, gain_std, (n_spikes, 1))
             template_scaled = template_scaled * gain
-        # Waveform variability noise (independent per channel)
-        noise_std_per_ch = amplitude_noise_std * np.abs(template_scaled)
-        marks = (
-            template_scaled
-            + rng_marks.normal(0, 1, (n_spikes, n_features)) * noise_std_per_ch
-        )
+        # Waveform variability noise
+        if correlated_noise:
+            # Per-neuron random covariance on active channels.
+            active = templates[neuron_idx] > 0
+            n_active = int(active.sum())
+            if n_active > 0:
+                # Random rotation matrix via QR of random Gaussian matrix
+                raw = rng_marks.normal(0, 1, (n_active, n_active))
+                q, _ = np.linalg.qr(raw)
+                # Random eigenvalues (log-uniform for spread)
+                eigvals = np.exp(rng_marks.uniform(-1, 1, n_active))
+                eigvals /= eigvals.mean()  # normalise to preserve overall scale
+                cov_sqrt = q @ np.diag(np.sqrt(eigvals))
+                # Scale by per-channel amplitude noise std
+                active_std = amplitude_noise_std * np.abs(template_scaled[0, active])
+                noise_active = (
+                    rng_marks.normal(0, 1, (n_spikes, n_active))
+                    @ cov_sqrt.T
+                    * active_std[np.newaxis, :]
+                )
+                noise = np.zeros((n_spikes, n_features))
+                noise[:, active] = noise_active
+            else:
+                noise = np.zeros((n_spikes, n_features))
+        else:
+            # Independent per-channel noise
+            noise_std_per_ch = amplitude_noise_std * np.abs(template_scaled)
+            noise = rng_marks.normal(0, 1, (n_spikes, n_features)) * noise_std_per_ch
+        marks = template_scaled + noise
         # Electrode noise floor (constant across all channels)
         if noise_floor > 0:
             marks += rng_marks.normal(
@@ -270,7 +298,21 @@ def make_dense_probe_run_data(
         n_bg = rng_bg.poisson(expected_bg)
         if n_bg > 0:
             bg_times = rng_bg.uniform(position_time[0], position_time[-1], n_bg)
-            bg_marks = rng_bg.uniform(0, max_amplitude, (n_bg, n_features))
+            # Background spikes model distant unresolvable neurons: low amplitude,
+            # spatially localised on a few channels (like real spikes but small).
+            bg_peak_ch = rng_bg.integers(0, n_features, n_bg)
+            bg_amps = rng_bg.exponential(0.2 * max_amplitude, n_bg)
+            bg_marks = np.zeros((n_bg, n_features))
+            for b in range(n_bg):
+                bg_template = np.exp(
+                    -0.5 * ((np.arange(n_features) - bg_peak_ch[b]) / 1.5) ** 2
+                )
+                bg_marks[b] = bg_template * bg_amps[b]
+            # Add noise floor to background spikes too
+            if noise_floor > 0:
+                bg_marks += rng_bg.normal(
+                    0, noise_floor * max_amplitude, (n_bg, n_features)
+                )
             all_spike_times.append(bg_times)
             all_spike_marks.append(bg_marks)
 
@@ -376,6 +418,7 @@ def make_probe_run_data(
     amplitude_noise_std: float = AMPLITUDE_NOISE_STD,
     gain_std: float = 0.0,
     neuron_amplitude_range: tuple[float, float] | None = None,
+    correlated_noise: bool = False,
     background_rate: float = BACKGROUND_RATE,
     noise_floor: float = 0.0,
     feature_transform: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
@@ -425,6 +468,9 @@ def make_probe_run_data(
     neuron_amplitude_range : tuple of float or None, optional
         Per-neuron peak amplitude range.  See :func:`make_dense_probe_run_data`
         for details.  Default is *None* (all neurons use *max_amplitude*).
+    correlated_noise : bool, optional
+        Per-neuron random noise covariance.  See :func:`make_dense_probe_run_data`
+        for details.  Default is False.
     background_rate : float, optional
         Rate (Hz) of position-independent background spikes per shank.
         Set to 0 (default) to disable.
@@ -554,11 +600,34 @@ def make_probe_run_data(
             if gain_std > 0:
                 gain = 1.0 + rng_marks.normal(0, gain_std, (n_spikes, 1))
                 template_scaled = template_scaled * gain
-            noise_std_per_ch = amplitude_noise_std * np.abs(template_scaled)
-            marks = (
-                template_scaled
-                + rng_marks.normal(0, 1, (n_spikes, n_ch_per_shank)) * noise_std_per_ch
-            )
+            if correlated_noise:
+                active = templates[neuron_idx] > 0
+                n_active = int(active.sum())
+                if n_active > 0:
+                    raw = rng_marks.normal(0, 1, (n_active, n_active))
+                    q, _ = np.linalg.qr(raw)
+                    eigvals = np.exp(rng_marks.uniform(-1, 1, n_active))
+                    eigvals /= eigvals.mean()
+                    cov_sqrt = q @ np.diag(np.sqrt(eigvals))
+                    active_std = amplitude_noise_std * np.abs(
+                        template_scaled[0, active]
+                    )
+                    noise_active = (
+                        rng_marks.normal(0, 1, (n_spikes, n_active))
+                        @ cov_sqrt.T
+                        * active_std[np.newaxis, :]
+                    )
+                    noise = np.zeros((n_spikes, n_ch_per_shank))
+                    noise[:, active] = noise_active
+                else:
+                    noise = np.zeros((n_spikes, n_ch_per_shank))
+            else:
+                noise_std_per_ch = amplitude_noise_std * np.abs(template_scaled)
+                noise = (
+                    rng_marks.normal(0, 1, (n_spikes, n_ch_per_shank))
+                    * noise_std_per_ch
+                )
+            marks = template_scaled + noise
             if noise_floor > 0:
                 marks += rng_marks.normal(
                     0, noise_floor * max_amplitude, (n_spikes, n_ch_per_shank)
@@ -572,7 +641,18 @@ def make_probe_run_data(
             n_bg = rng_bg.poisson(expected_bg)
             if n_bg > 0:
                 bg_times = rng_bg.uniform(position_time[0], position_time[-1], n_bg)
-                bg_marks = rng_bg.uniform(0, max_amplitude, (n_bg, n_ch_per_shank))
+                bg_peak_ch = rng_bg.integers(0, n_ch_per_shank, n_bg)
+                bg_amps = rng_bg.exponential(0.2 * max_amplitude, n_bg)
+                bg_marks = np.zeros((n_bg, n_ch_per_shank))
+                for b in range(n_bg):
+                    bg_template = np.exp(
+                        -0.5 * ((np.arange(n_ch_per_shank) - bg_peak_ch[b]) / 1.5) ** 2
+                    )
+                    bg_marks[b] = bg_template * bg_amps[b]
+                if noise_floor > 0:
+                    bg_marks += rng_bg.normal(
+                        0, noise_floor * max_amplitude, (n_bg, n_ch_per_shank)
+                    )
                 shank_times_parts.append(bg_times)
                 shank_marks_parts.append(bg_marks)
 
