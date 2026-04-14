@@ -71,6 +71,8 @@ def make_dense_probe_run_data(
     decay_constant: float = 30.0,
     max_amplitude: float = MAX_AMPLITUDE,
     amplitude_noise_std: float = AMPLITUDE_NOISE_STD,
+    gain_std: float = 0.0,
+    neuron_amplitude_range: tuple[float, float] | None = None,
     # -- Channel selection (controls mark dimensionality) --
     n_active_channels: int | None = None,
     channel_selection_method: Literal["top_k", "uniform", "all"] = "top_k",
@@ -129,6 +131,17 @@ def make_dense_probe_run_data(
         ``amplitude_noise_std * channel_amplitude * max_amplitude``, i.e.,
         proportional to the channel's signal strength.  Channels with no
         signal receive no noise.
+    gain_std : float, optional
+        Standard deviation of a per-spike multiplicative gain factor.  Each
+        spike's amplitude on ALL channels is scaled by ``1 + N(0, gain_std)``,
+        producing correlated amplitude variability across channels.  Models
+        burst-related amplitude decrement in hippocampal neurons.  Default
+        is 0.0 (no gain variability).
+    neuron_amplitude_range : tuple of float or None, optional
+        ``(min, max)`` range for per-neuron peak amplitude.  Each neuron's
+        peak amplitude is drawn uniformly from this range instead of using
+        a fixed *max_amplitude*.  If *None* (default), all neurons use
+        *max_amplitude*.
     n_active_channels : int or None, optional
         Number of channels to keep as mark features.  *None* keeps all.
     channel_selection_method : {"top_k", "uniform", "all"}, optional
@@ -204,6 +217,14 @@ def make_dense_probe_run_data(
     templates = np.where(templates >= 0.1 * row_max, templates, 0.0)
     n_features = templates.shape[1]
 
+    # -- Per-neuron peak amplitudes -------------------------------------------
+    if neuron_amplitude_range is not None:
+        neuron_amplitudes = rng_spikes.uniform(
+            neuron_amplitude_range[0], neuron_amplitude_range[1], n_neurons
+        )
+    else:
+        neuron_amplitudes = np.full(n_neurons, max_amplitude)
+
     # -- Generate spikes per neuron -------------------------------------------
     all_spike_times: list[np.ndarray] = []
     all_spike_marks: list[np.ndarray] = []
@@ -223,8 +244,13 @@ def make_dense_probe_run_data(
             continue
 
         times = position_time[spike_mask]
-        template_scaled = templates[neuron_idx][np.newaxis, :] * max_amplitude
-        # Waveform variability noise (proportional to signal)
+        amp = neuron_amplitudes[neuron_idx]
+        template_scaled = templates[neuron_idx][np.newaxis, :] * amp
+        # Per-spike gain variability (correlated across channels, models bursting)
+        if gain_std > 0:
+            gain = 1.0 + rng_marks.normal(0, gain_std, (n_spikes, 1))
+            template_scaled = template_scaled * gain
+        # Waveform variability noise (independent per channel)
         noise_std_per_ch = amplitude_noise_std * np.abs(template_scaled)
         marks = (
             template_scaled
@@ -348,6 +374,8 @@ def make_probe_run_data(
     max_firing_rate: float = MAX_FIRING_RATE,
     max_amplitude: float = MAX_AMPLITUDE,
     amplitude_noise_std: float = AMPLITUDE_NOISE_STD,
+    gain_std: float = 0.0,
+    neuron_amplitude_range: tuple[float, float] | None = None,
     background_rate: float = BACKGROUND_RATE,
     noise_floor: float = 0.0,
     feature_transform: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
@@ -391,6 +419,12 @@ def make_probe_run_data(
         ``amplitude_noise_std * channel_amplitude * max_amplitude``, i.e.,
         proportional to the channel's signal strength.  Channels with no
         signal receive no noise.
+    gain_std : float, optional
+        Per-spike multiplicative gain variability.  See
+        :func:`make_dense_probe_run_data` for details.  Default is 0.0.
+    neuron_amplitude_range : tuple of float or None, optional
+        Per-neuron peak amplitude range.  See :func:`make_dense_probe_run_data`
+        for details.  Default is *None* (all neurons use *max_amplitude*).
     background_rate : float, optional
         Rate (Hz) of position-independent background spikes per shank.
         Set to 0 (default) to disable.
@@ -472,6 +506,14 @@ def make_probe_run_data(
         shank_templates.append(all_templates[:, offset : offset + n_ch_per_shank])
         offset += n_ch_per_shank
 
+    # -- Per-neuron peak amplitudes -------------------------------------------
+    if neuron_amplitude_range is not None:
+        neuron_amplitudes = rng_spikes.uniform(
+            neuron_amplitude_range[0], neuron_amplitude_range[1], n_neurons
+        )
+    else:
+        neuron_amplitudes = np.full(n_neurons, max_amplitude)
+
     # -- Generate spikes per neuron (shared across shanks) ---------------------
     neuron_spike_masks: list[np.ndarray] = []
     for neuron_idx in range(n_neurons):
@@ -507,7 +549,11 @@ def make_probe_run_data(
                 continue
 
             times = position_time[spike_mask]
-            template_scaled = templates[neuron_idx][np.newaxis, :] * max_amplitude
+            amp = neuron_amplitudes[neuron_idx]
+            template_scaled = templates[neuron_idx][np.newaxis, :] * amp
+            if gain_std > 0:
+                gain = 1.0 + rng_marks.normal(0, gain_std, (n_spikes, 1))
+                template_scaled = template_scaled * gain
             noise_std_per_ch = amplitude_noise_std * np.abs(template_scaled)
             marks = (
                 template_scaled
