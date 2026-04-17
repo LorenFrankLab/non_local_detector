@@ -288,7 +288,7 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data):
 
     summed_gpi = jnp.clip(
         mean_rate * jnp.where(occupancy > 0.0, gpi_density / occupancy, EPS),
-        a_min=EPS,
+        min=EPS,
     )
 
     gmm_encoding = {

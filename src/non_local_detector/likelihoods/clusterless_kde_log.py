@@ -1299,8 +1299,8 @@ def fit_clusterless_kde_encoding_model(
                 gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
                 EPS,
             ),
-            a_min=EPS,
-            a_max=None,
+            min=EPS,
+            max=None,
         )
 
     return {

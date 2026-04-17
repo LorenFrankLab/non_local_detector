@@ -373,8 +373,8 @@ def fit_clusterless_gmm_encoding_model(
                 gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
                 EPS,
             ),
-            a_min=EPS,
-            a_max=None,
+            min=EPS,
+            max=None,
         )
 
     return {
@@ -574,7 +574,7 @@ def predict_clusterless_gmm_log_likelihood(
                 # GMM evaluation (not JIT-able)
                 joint_logp_flat = _gmm_logp(joint_gmm, eval_points)
                 joint_logp_block = jnp.clip(
-                    joint_logp_flat.reshape(block_size, n_bins), a_min=LOG_EPS
+                    joint_logp_flat.reshape(block_size, n_bins), min=LOG_EPS
                 )
 
                 # JIT-compiled update with larger boundary (better fusion)
@@ -607,7 +607,7 @@ def predict_clusterless_gmm_log_likelihood(
                         _gmm_logp(joint_gmm, eval_points_tile).reshape(
                             block_size, n_tile
                         ),
-                        a_min=LOG_EPS,
+                        min=LOG_EPS,
                     )
 
                     # Accumulate this tile directly (no intermediate full array)
@@ -709,7 +709,7 @@ def compute_local_log_likelihood(
                 [pos_at_spike_time, elect_feats], axis=1
             )  # (n_spikes, P+M)
             joint_logp = jnp.clip(
-                _gmm_logp(joint_gmm, eval_points), a_min=LOG_EPS
+                _gmm_logp(joint_gmm, eval_points), min=LOG_EPS
             )  # (n_spikes,)
             # log term: log(mean_rate) + log p(pos_t, mark_t) - log occupancy(pos_t)
             log_occ_at_spike_pos = _gmm_logp(
