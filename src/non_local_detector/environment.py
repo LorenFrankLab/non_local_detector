@@ -397,7 +397,16 @@ class Environment:
         # Validate position if provided
         if position is not None:
             val.ensure_ndarray(position, "position")
-            val.ensure_all_finite(position, "position")
+            # NaNs are tolerated here because get_grid and get_track_interior
+            # both drop NaN rows internally; callers routinely pass position
+            # arrays with missing samples. Infs are still rejected.
+            if np.any(np.isinf(position)):
+                raise ValidationError(
+                    "position contains Inf values",
+                    expected="finite or NaN values only",
+                    got=f"{int(np.sum(np.isinf(position)))} Inf entries",
+                    hint="Clean or drop Inf entries before calling fit_place_grid",
+                )
 
             if position.ndim not in [1, 2]:
                 raise ValidationError(
@@ -497,6 +506,7 @@ class Environment:
             )
             self.is_track_boundary_ = None
 
+        self._is_fitted = True
         return self
 
     def plot_grid(self, ax: matplotlib.axes.Axes | None = None) -> matplotlib.axes.Axes:
@@ -683,10 +693,25 @@ class Environment:
         bin_ind1 = self.get_bin_ind(position1)
         bin_ind2 = self.get_bin_ind(position2)
 
-        if self.track_graph is not None:  # 1D case uses dict
-            raise NotImplementedError(
-                "Distance calculation for 1D track graph is not implemented."
-            )
+        if self.track_graph is not None:  # 1D case uses dict-of-dicts
+            if self.place_bin_centers_nodes_df_ is None:
+                raise ValueError(
+                    "place_bin_centers_nodes_df_ is required for 1D manifold "
+                    "distance lookup."
+                )
+            bin_to_node = np.asarray(self.place_bin_centers_nodes_df_.node_id)
+            node_ids1 = bin_to_node[bin_ind1]
+            node_ids2 = bin_to_node[bin_ind2]
+            distances = np.full(node_ids1.shape, np.inf, dtype=float)
+            for i, (n1, n2) in enumerate(zip(node_ids1, node_ids2, strict=True)):
+                # node_id == -1 marks bins that are off-track (gap bins).
+                if n1 == -1 or n2 == -1:
+                    continue
+                try:
+                    distances[i] = self.distance_between_nodes_[n1][n2]
+                except KeyError:
+                    # No path between the nodes on the track graph.
+                    continue
         else:
             distances = self.distance_between_nodes_[bin_ind1, bin_ind2]
 
@@ -909,9 +934,15 @@ def get_track_interior(
 
         if dilate:
             is_track_interior = ndimage.binary_dilation(is_track_interior)
-        # adjust for boundary edges in 2D
-        is_track_interior[-1] = False
-        is_track_interior[:, -1] = False
+        # Zero the trailing "padding" bin along every spatial axis. get_grid
+        # inserts an extra bin on each end so that binary_closing/dilation has
+        # room to operate without bleeding past the actual data range; this
+        # loop cleans those padding bins back out and generalizes to N-D
+        # (previous code only handled the first two axes).
+        for axis in range(n_position_dims):
+            idx: list[slice | int] = [slice(None)] * n_position_dims
+            idx[axis] = -1
+            is_track_interior[tuple(idx)] = False
     return is_track_interior.astype(bool)
 
 
@@ -1071,6 +1102,11 @@ def make_track_graph_with_bin_centers_edges(
     n_nodes = len(track_graph.nodes)
 
     for edge_ind, (node1, node2) in enumerate(track_graph.edges):
+        # Preserve the user-assigned edge_id if present, otherwise fall back to
+        # the enumeration index. Using the attribute keeps bin-center node
+        # edge_ids consistent with _calculate_linear_position, which looks up
+        # edge_id via track_graph.edges[e]["edge_id"].
+        edge_id = track_graph.edges[(node1, node2)].get("edge_id", edge_ind)
         node1_x_pos, node1_y_pos = track_graph.nodes[node1]["pos"]
         node2_x_pos, node2_y_pos = track_graph.nodes[node2]["pos"]
 
@@ -1103,13 +1139,13 @@ def make_track_graph_with_bin_centers_edges(
         track_graph_with_bin_centers_edges.remove_edge(node1, node2)
         for ind, (node_id, pos) in enumerate(zip(new_node_ids, xy, strict=False)):
             track_graph_with_bin_centers_edges.nodes[node_id]["pos"] = pos
-            track_graph_with_bin_centers_edges.nodes[node_id]["edge_id"] = edge_ind
+            track_graph_with_bin_centers_edges.nodes[node_id]["edge_id"] = edge_id
             if ind % 2:
                 track_graph_with_bin_centers_edges.nodes[node_id]["is_bin_edge"] = False
             else:
                 track_graph_with_bin_centers_edges.nodes[node_id]["is_bin_edge"] = True
-        track_graph_with_bin_centers_edges.nodes[node1]["edge_id"] = edge_ind
-        track_graph_with_bin_centers_edges.nodes[node2]["edge_id"] = edge_ind
+        track_graph_with_bin_centers_edges.nodes[node1]["edge_id"] = edge_id
+        track_graph_with_bin_centers_edges.nodes[node2]["edge_id"] = edge_id
         track_graph_with_bin_centers_edges.nodes[node1]["is_bin_edge"] = True
         track_graph_with_bin_centers_edges.nodes[node2]["is_bin_edge"] = True
         n_nodes = len(track_graph_with_bin_centers_edges.nodes)
