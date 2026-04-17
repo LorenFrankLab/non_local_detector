@@ -228,7 +228,10 @@ def get_transition_prior(
     else:
         # Assume stickiness provided per state
         stickiness_arr = np.diag(stickiness)
-    return np.maximum(concentration * np.ones((n_states,)) + stickiness_arr, 1.0)
+    # Dirichlet requires strictly positive concentration parameters. Clamp to a
+    # small positive epsilon rather than 1.0 so callers can express
+    # sparse-favoring priors (concentration < 1).
+    return np.maximum(concentration * np.ones((n_states,)) + stickiness_arr, 1e-10)
 
 
 def estimate_non_stationary_state_transition(
