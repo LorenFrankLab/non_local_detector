@@ -226,7 +226,7 @@ def _compute_precision_cholesky(
     # diag / spherical
     # Use jax.lax.cond or clipping instead of Python if to avoid tracer error
     # Clip ensures positive values, eliminating need for runtime check in JIT
-    covariances = jnp.clip(covariances, a_min=1e-10, a_max=None)
+    covariances = jnp.clip(covariances, min=1e-10, max=None)
     return 1.0 / jnp.sqrt(covariances)
 
 

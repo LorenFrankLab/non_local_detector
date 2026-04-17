@@ -222,7 +222,7 @@ def _compute_log_mark_kernel_gemm(
 
     # Precompute inverse standard deviations and normalization constant
     # Clip to avoid division by zero for degenerate feature dimensions
-    waveform_stds = jnp.clip(waveform_stds, a_min=EPS)
+    waveform_stds = jnp.clip(waveform_stds, min=EPS)
     inv_sigma = 1.0 / waveform_stds  # (n_features,)
 
     # Log normalization constant: -0.5 * (D * log(2π) + 2 * sum(log(sigma)))
@@ -1168,7 +1168,7 @@ def block_estimate_log_joint_mark_intensity(
         )
         out = jax.lax.dynamic_update_slice(out, block_result, (start_ind, 0))
 
-    return jnp.clip(out, a_min=LOG_EPS, a_max=None)
+    return jnp.clip(out, min=LOG_EPS, max=None)
 
 
 def fit_clusterless_kde_encoding_model(

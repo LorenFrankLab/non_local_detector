@@ -66,7 +66,7 @@ def test_log_kde_consistent_with_kde_log():
     log_vals = log_kde(jnp.asarray(eval_points), jnp.asarray(samples), std, weights)
     lin_vals = kde(jnp.asarray(eval_points), jnp.asarray(samples), std, weights)
     # Use moderate tolerance; avoid -inf by clipping
-    lin_vals = jnp.clip(lin_vals, a_min=1e-12)
+    lin_vals = jnp.clip(lin_vals, min=1e-12)
     assert jnp.allclose(log_vals, jnp.log(lin_vals), rtol=1e-5, atol=1e-6)
 
 

@@ -335,7 +335,7 @@ def fit_clusterless_gmm_encoding_model(
 
         # Mean firing rate
         mean_rate = float(len(elect_times) / n_time_bins)
-        mean_rate = jnp.clip(mean_rate, a_min=EPS)  # avoid 0 rate
+        mean_rate = jnp.clip(mean_rate, min=EPS)  # avoid 0 rate
         mean_rates.append(mean_rate)
 
         # Positions at spike times
