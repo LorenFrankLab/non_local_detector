@@ -127,7 +127,7 @@ def _euclidean_random_walk(
             )
             for center in place_bin_centers
         ],
-        axis=1,
+        axis=0,
     )
 
 
