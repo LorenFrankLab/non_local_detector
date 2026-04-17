@@ -1255,6 +1255,23 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         val.ensure_ndarray(position, "position")
         val.ensure_all_finite(position, "position")
 
+        if position.ndim == 1 or (position.ndim == 2 and position.shape[1] == 1):
+            has_track_graph = any(
+                env.track_graph is not None for env in self.environments
+            )
+            if not has_track_graph:
+                warnings.warn(
+                    "Position data appears to be 1D but no track_graph was "
+                    "provided. This will be treated as a 1D open field. If "
+                    "you are working with a linear track, you likely want to "
+                    "pass 2D position (x, y) along with a track_graph, "
+                    "edge_order, and edge_spacing in your Environment so "
+                    "that the track topology is properly linearized. See the "
+                    "Environment docstring for details.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+
         position = position[:, np.newaxis] if position.ndim == 1 else position
         self.initialize_environments(
             position=position, environment_labels=environment_labels
