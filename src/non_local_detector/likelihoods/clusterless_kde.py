@@ -226,7 +226,10 @@ def fit_clusterless_kde_encoding_model(
     gpi_models = []
     summed_ground_process_intensity = jnp.zeros_like(occupancy)
 
-    n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
+    # Count actual training samples (not the wall-clock span) so that gaps
+    # introduced by is_training / encoding-group masks are not charged as
+    # occupancy time.
+    n_time_bins = max(len(position_time), 1)
     bounded_spike_waveform_features = []
 
     for electrode_spike_waveform_features, electrode_spike_times in zip(

@@ -314,7 +314,10 @@ def fit_clusterless_gmm_encoding_model(
 
     occupancy = jnp.exp(log_occupancy)
     summed_ground_process_intensity = jnp.zeros_like(occupancy)
-    n_time_bins = int((position_time[-1] - position_time[0]) * sampling_frequency)
+    # Count actual training samples (not the wall-clock span) so that gaps
+    # introduced by is_training / encoding-group masks are not charged as
+    # occupancy time.
+    n_time_bins = max(len(position_time), 1)
 
     # Fit per-electrode models
     for elect_feats, elect_times in tqdm(
