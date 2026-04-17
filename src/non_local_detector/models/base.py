@@ -2342,10 +2342,23 @@ class ClusterlessDetector(_DetectorBase):
                 group_electrode_waveform_features.append(
                     electrode_spike_waveform_features[is_valid_spike_time]
                 )
-            group_spike_times.append(np.concatenate(group_electrode_spike_times))
-            group_spike_waveform_features.append(
-                np.concatenate(group_electrode_waveform_features, axis=0)
-            )
+            if group_electrode_spike_times:
+                group_spike_times.append(np.concatenate(group_electrode_spike_times))
+                group_spike_waveform_features.append(
+                    np.concatenate(group_electrode_waveform_features, axis=0)
+                )
+            else:
+                # No training coverage for this obs group; return empty arrays
+                # with the right dtype/feature-dim so downstream encoding can
+                # fit an (empty) model without crashing on np.concatenate([]).
+                group_spike_times.append(
+                    np.asarray(
+                        electrode_spike_times[:0], dtype=electrode_spike_times.dtype
+                    )
+                )
+                group_spike_waveform_features.append(
+                    electrode_spike_waveform_features[:0]
+                )
 
         return group_spike_times, group_spike_waveform_features
 
@@ -2960,6 +2973,16 @@ class ClusterlessDetector(_DetectorBase):
             "encoding_group_labels": encoding_group_labels,
             "environment_labels": environment_labels,
         }
+        # Mirror predict(): treat NaN positions as missing observations during
+        # the E-step so EM and predict use the same local-likelihood handling.
+        if position is not None:
+            position_2d = position[:, np.newaxis] if position.ndim == 1 else position
+            nan_position = np.any(np.isnan(position_2d), axis=1)
+            if np.any(nan_position):
+                if is_missing is None:
+                    is_missing = nan_position
+                else:
+                    is_missing = np.logical_or(is_missing, nan_position)
         self.fit(
             position_time,
             position,
@@ -3175,7 +3198,15 @@ class SortedSpikesDetector(_DetectorBase):
                         )
                     ]
                 )
-            group_spike_times.append(np.concatenate(group_neuron_spike_times))
+            if group_neuron_spike_times:
+                group_spike_times.append(np.concatenate(group_neuron_spike_times))
+            else:
+                # No training coverage for this obs group; return empty spike
+                # array so downstream encoding can still fit a (uninformative)
+                # model without crashing on np.concatenate([]).
+                group_spike_times.append(
+                    np.asarray(neuron_spike_times[:0], dtype=neuron_spike_times.dtype)
+                )
 
         return group_spike_times
 
@@ -3730,6 +3761,14 @@ class SortedSpikesDetector(_DetectorBase):
             "encoding_group_labels": encoding_group_labels,
             "environment_labels": environment_labels,
         }
+        # Mirror predict(): treat NaN positions as missing observations during
+        # the E-step so EM and predict use the same local-likelihood handling.
+        nan_position = np.any(np.isnan(position), axis=1)
+        if np.any(nan_position):
+            if is_missing is None:
+                is_missing = nan_position
+            else:
+                is_missing = np.logical_or(is_missing, nan_position)
         self.fit(
             position_time,
             position,
