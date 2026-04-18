@@ -315,16 +315,20 @@ class TestFitPlaceGridValidation:
         assert "position" in str(exc_info.value)
         assert "numpy" in str(exc_info.value).lower()
 
-    def test_position_must_be_finite(self):
-        """Test that position must contain finite values."""
-        from non_local_detector.exceptions import DataError
-
+    def test_position_nan_is_tolerated(self):
+        """Test that NaN positions are tolerated (dropped internally)."""
         env = Environment()
         position = np.array([[0, 0], [np.nan, 1], [2, 2]])
-        with pytest.raises(DataError) as exc_info:
+        # NaN rows are dropped by get_grid/get_track_interior internally
+        env.fit_place_grid(position=position)
+
+    def test_position_inf_is_rejected(self):
+        """Test that Inf positions are rejected."""
+        env = Environment()
+        position = np.array([[0, 0], [np.inf, 1], [2, 2]])
+        with pytest.raises(ValidationError) as exc_info:
             env.fit_place_grid(position=position)
-        assert "position" in str(exc_info.value)
-        assert "nan" in str(exc_info.value).lower()
+        assert "Inf" in str(exc_info.value)
 
     def test_position_must_be_1d_or_2d(self):
         """Test that position must be 1D or 2D."""
