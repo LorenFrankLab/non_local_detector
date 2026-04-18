@@ -24,6 +24,149 @@ from non_local_detector.likelihoods.common import (
 _COMPENSATED_LINEAR_MAX_FEATURES = 8
 
 
+# Fraction of the GPU's reported ``bytes_limit`` that
+# :func:`auto_select_tile_sizes` treats as the usable budget for
+# mark-kernel and position-kernel intermediates.  The remainder is
+# reserved for XLA workspaces, other JIT regions, scan-carry buffers,
+# and per-iteration activations.  25% is conservative; if users push
+# single dense workloads they can pass an explicit
+# ``memory_budget_bytes`` to raise the target.
+_AUTO_TILE_MEMORY_BUDGET_FRACTION = 0.25
+
+# Default memory budget when neither the device reports a memory limit
+# nor the caller supplies one — 2 GB is a safe lower bound that fits
+# a consumer GPU (8 GB with 25% usable) and a CPU run.
+_AUTO_TILE_DEFAULT_BUDGET_BYTES = int(2e9)
+
+# Minimum usable encoding-tile size.  Tiles smaller than 256 defeat the
+# GEMM vectorization and aren't worth the overhead, so the heuristic
+# clamps upward rather than splitting further.
+_AUTO_TILE_MIN_ENC_TILE = 256
+
+# Safety factor applied to the (n_enc × block_size) and (n_enc × n_pos)
+# budget calculations — accounts for the ~3 intermediate copies of each
+# tensor that live simultaneously during the compensated-linear matmul
+# (``logK_mark``, ``K_wf_stable``, ``W = K_wf_stable * sqrt_scale``).
+_AUTO_TILE_INTERMEDIATE_COPIES = 3
+
+
+def auto_select_tile_sizes(
+    n_enc: int,
+    n_dec: int,
+    n_pos: int,
+    n_wf: int = 4,  # noqa: ARG001 — reserved for future heuristics
+    memory_budget_bytes: int | None = None,
+) -> dict[str, int | None]:
+    """Heuristic tile sizes for ``predict_clusterless_kde_log_likelihood``.
+
+    Picks ``block_size`` (decoding-spike block inside the ``fori_loop``
+    body — see :func:`block_estimate_log_joint_mark_intensity`) and
+    ``enc_tile_size`` (encoding-spike tile inside
+    :func:`_estimate_with_enc_chunking`) so that the mark-kernel and
+    position-kernel intermediates fit inside a target memory budget.
+
+    The default budget is ``0.25 *`` the GPU's reported ``bytes_limit``
+    (or 2 GB if the device doesn't expose memory stats — e.g. CPU).
+    Users can override with ``memory_budget_bytes``.
+
+    Parameters
+    ----------
+    n_enc : int
+        Number of encoding spikes for a single electrode.
+    n_dec : int
+        Number of decoding spikes for a single electrode.  Caps
+        ``block_size`` from above — larger blocks than ``n_dec`` are
+        wasted shape padding.
+    n_pos : int
+        Number of position bins.
+    n_wf : int, default 4
+        Number of waveform features.  Currently unused; reserved for
+        future heuristics that choose between the compensated-linear
+        and logsumexp paths based on ``n_wf``.
+    memory_budget_bytes : int | None, default None
+        Target usable memory budget.  When ``None``, queries
+        ``jax.devices()[0].memory_stats()["bytes_limit"]`` and applies
+        :data:`_AUTO_TILE_MEMORY_BUDGET_FRACTION`; falls back to 2 GB
+        if the query fails (CPU, older JAX versions).
+
+    Returns
+    -------
+    dict with keys
+
+    * ``block_size`` — int, size of each decoding-spike block in the
+      ``fori_loop``.  Always ``>= 1`` and ``<= n_dec``.
+    * ``enc_tile_size`` — int or None.  ``None`` signals "no encoding
+      tiling needed" (the full mark kernel fits).  When not ``None``,
+      always ``>= 256`` (tiles smaller than that defeat GEMM
+      vectorization).
+
+    Notes
+    -----
+    This helper is a starting point, not a precise cost model.  Runtime
+    tuning against a representative workload is still the gold standard.
+    Three simplifications in the current heuristic:
+
+    1. ``n_wf`` is ignored — the factor-of-3 intermediate-copies
+       estimate already covers the dominant GEMM intermediates, which
+       are ``O(n_enc × block_size)`` regardless of ``n_wf`` once the
+       encoding-side precompute is hoisted (Task 2).
+    2. The scan's outer ``(n_time, n_pos)`` accumulator isn't budgeted
+       here because it's the same for any tile choice.
+    3. Static argnames on the JIT wrapper mean each distinct
+       ``block_size`` / ``enc_tile_size`` triggers a recompile — prefer
+       stable values across repeated ``predict`` calls on the same
+       recording.
+    """
+    if memory_budget_bytes is None:
+        memory_budget_bytes = _default_memory_budget_bytes()
+
+    n_enc = max(int(n_enc), 1)
+    n_dec = max(int(n_dec), 1)
+    n_pos = max(int(n_pos), 1)
+    f32 = 4
+
+    # block_size bound: fit (n_enc × block_size × f32) × intermediate_copies
+    # into the budget.
+    max_block = max(
+        memory_budget_bytes // (_AUTO_TILE_INTERMEDIATE_COPIES * n_enc * f32),
+        1,
+    )
+    block_size = int(min(max_block, n_dec))
+
+    # enc_tile_size: only needed when the (n_enc × n_pos) position kernel
+    # would overflow the budget allowing for the ~3 simultaneous live
+    # tensors (``logK_pos_chunk``, ``K_pos_stable``, ``P``).  Using the
+    # same intermediate-copies factor as the block_size formula keeps the
+    # trigger consistent and prevents a boundary case where ``n_enc *
+    # n_pos * 4`` just barely fits but the 3-tensor working set doesn't.
+    if n_enc * n_pos * f32 * _AUTO_TILE_INTERMEDIATE_COPIES > memory_budget_bytes:
+        enc_tile_size: int | None = int(
+            max(
+                memory_budget_bytes // (_AUTO_TILE_INTERMEDIATE_COPIES * n_pos * f32),
+                _AUTO_TILE_MIN_ENC_TILE,
+            )
+        )
+    else:
+        enc_tile_size = None
+
+    return {"block_size": block_size, "enc_tile_size": enc_tile_size}
+
+
+def _default_memory_budget_bytes() -> int:
+    """Query JAX device memory and apply the auto-tile usable fraction."""
+    try:
+        device = jax.devices()[0]
+        stats = device.memory_stats() or {}
+        bytes_limit = int(stats.get("bytes_limit", 0))
+        if bytes_limit > 0:
+            return int(bytes_limit * _AUTO_TILE_MEMORY_BUDGET_FRACTION)
+    except (AttributeError, KeyError, RuntimeError, NotImplementedError):
+        # TPU / Metal / older CPU backends may raise NotImplementedError
+        # from memory_stats(); treat as "no budget reported" and fall back.
+        pass
+    return _AUTO_TILE_DEFAULT_BUDGET_BYTES
+
+
 @jax.jit
 def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
