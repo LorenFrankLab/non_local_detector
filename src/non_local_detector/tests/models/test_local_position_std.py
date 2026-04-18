@@ -406,3 +406,53 @@ class TestComputeLocalPositionKernel:
         np.testing.assert_allclose(log_kernel_np[0], log_kernel_np[0, 0], atol=1e-6)
         # exp should sum to 1 (float32 precision from JAX)
         np.testing.assert_allclose(np.exp(log_kernel_np[0]).sum(), 1.0, atol=1e-6)
+
+    def test_kernel_with_track_graph(self):
+        """Kernel uses track graph distances when track graph is available."""
+        import jax.numpy as jnp
+        import networkx as nx
+
+        from non_local_detector.environment import Environment
+
+        # Create a simple 1D linear track with track graph
+        track_graph = nx.Graph()
+        track_graph.add_node(0, pos=(0.0, 0.0))
+        track_graph.add_node(1, pos=(100.0, 0.0))
+        track_graph.add_edge(0, 1, distance=100.0, edge_id=0)
+
+        env = Environment(
+            environment_name="",
+            place_bin_size=5.0,
+            track_graph=track_graph,
+            edge_order=[(0, 1)],
+            edge_spacing=0.0,
+        )
+        position_1d = np.linspace(0, 100, 50)
+        env = env.fit_place_grid(position_1d, infer_track_interior=True)
+
+        detector = NonLocalSortedSpikesDetector(local_position_std=10.0)
+        detector.environments = (env,)
+        detector.initialize_state_index()
+
+        # Animal at position 50
+        time = np.array([0.5])
+        position_time = np.array([0.0, 1.0])
+        animal_position = np.array([[50.0], [50.0]])
+
+        log_kernel = detector._compute_local_position_kernel(
+            jnp.array(time),
+            jnp.array(position_time),
+            jnp.array(animal_position),
+            env,
+        )
+
+        log_kernel_np = np.asarray(log_kernel)
+        # Should be finite (no NaN from track graph path)
+        assert np.all(np.isfinite(log_kernel_np))
+        # Should sum to 1 in probability space
+        np.testing.assert_allclose(np.exp(log_kernel_np[0]).sum(), 1.0, atol=1e-6)
+        # Peak should be near position 50
+        is_interior = env.is_track_interior_.ravel()
+        bin_centers = env.place_bin_centers_[is_interior].ravel()
+        peak_idx = int(np.argmax(log_kernel_np[0]))
+        assert abs(bin_centers[peak_idx] - 50.0) < 10.0

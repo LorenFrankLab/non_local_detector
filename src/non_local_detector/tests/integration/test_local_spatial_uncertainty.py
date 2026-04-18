@@ -234,9 +234,9 @@ def test_clusterless_multibin_local_fit_predict(clusterless_simulated_data):
     )
 
 
-@pytest.mark.snapshot
-def test_multibin_local_posterior_snapshot(simulated_data):
-    """Snapshot: multi-bin local model output for regression detection."""
+@pytest.mark.integration
+def test_multibin_local_posterior_invariants(simulated_data):
+    """Multi-bin local model output invariants for regression detection."""
     time = simulated_data["time"]
     position = simulated_data["position"]
     spike_times = simulated_data["spike_times"]

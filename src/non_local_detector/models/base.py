@@ -456,8 +456,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     ) -> jnp.ndarray:
         """Compute squared distances from animal position to interior bins.
 
-        Uses track graph distances when available (1D track graph or N-D
-        with precomputed distance matrix), otherwise Euclidean.
+        Uses track graph distances when available (1D track graph via
+        dict-of-dicts, or N-D via precomputed distance matrix), otherwise
+        Euclidean. Off-track animal positions (node_id == -1) produce NaN
+        rows so the caller can apply a uniform-kernel fallback.
 
         Parameters
         ----------
@@ -471,40 +473,46 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Returns
         -------
         sq_dist : jnp.ndarray, shape (n_time, n_interior_bins)
-            Squared distances.
+            Squared distances. Rows where the animal is off-track contain NaN.
         """
-        if environment.distance_between_nodes_ is not None:
-            # Use precomputed track graph distances
+        if environment.track_graph is not None:
+            # 1D track graph: dict-of-dicts via place_bin_centers_nodes_df_
+            if environment.place_bin_centers_nodes_df_ is None:
+                raise ValueError(
+                    "place_bin_centers_nodes_df_ is required for 1D track "
+                    "graph distance lookup."
+                )
             animal_bin_inds = environment.get_bin_ind(np.asarray(animal_pos))
             n_time = len(animal_bin_inds)
             n_bins = len(interior_bin_indices)
 
-            if isinstance(environment.distance_between_nodes_, dict):
-                # 1D track graph: dict-of-dicts via place_bin_centers_nodes_df_
-                bin_to_node = np.asarray(
-                    environment.place_bin_centers_nodes_df_.node_id
-                )
-                interior_node_ids = bin_to_node[interior_bin_indices]
-                animal_node_ids = bin_to_node[animal_bin_inds]
+            bin_to_node = np.asarray(environment.place_bin_centers_nodes_df_.node_id)
+            interior_node_ids = bin_to_node[interior_bin_indices]
+            animal_node_ids = bin_to_node[animal_bin_inds]
 
-                dist = np.full((n_time, n_bins), np.inf)
-                for t in range(n_time):
-                    a_node = animal_node_ids[t]
-                    if a_node == -1:
+            # NaN for off-track animal positions (node_id == -1)
+            dist = np.full((n_time, n_bins), np.nan)
+            for t in range(n_time):
+                a_node = animal_node_ids[t]
+                if a_node == -1:
+                    continue  # row stays NaN → caller applies uniform
+                a_distances = environment.distance_between_nodes_.get(a_node, {})
+                for b, b_node in enumerate(interior_node_ids):
+                    if b_node == -1:
                         continue
-                    a_distances = environment.distance_between_nodes_.get(a_node, {})
-                    for b, b_node in enumerate(interior_node_ids):
-                        if b_node == -1:
-                            continue
-                        d = a_distances.get(b_node, np.inf)
-                        dist[t, b] = d
-                return jnp.array(dist**2)
-            else:
-                # N-D: distance_between_nodes_ is (n_nodes, n_nodes) array
-                dist_matrix = environment.distance_between_nodes_
-                return jnp.array(
-                    dist_matrix[np.ix_(animal_bin_inds, interior_bin_indices)] ** 2
-                )
+                    d = a_distances.get(b_node, np.inf)
+                    dist[t, b] = d
+            return jnp.array(dist**2)
+
+        if environment.distance_between_nodes_ is not None and not isinstance(
+            environment.distance_between_nodes_, dict
+        ):
+            # N-D: distance_between_nodes_ is (n_nodes, n_nodes) array
+            animal_bin_inds = environment.get_bin_ind(np.asarray(animal_pos))
+            dist_matrix = environment.distance_between_nodes_
+            return jnp.array(
+                dist_matrix[np.ix_(animal_bin_inds, interior_bin_indices)] ** 2
+            )
 
         # Fallback: Euclidean distances
         animal_pos_arr = jnp.asarray(animal_pos)
@@ -566,16 +574,26 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             animal_pos, environment, interior_bin_indices
         )
 
+        # Detect off-track positions (NaN rows from track graph path)
+        off_track_mask = jnp.any(jnp.isnan(sq_dist), axis=-1)
+        uniform_mask = nan_mask | off_track_mask
+
+        # Replace NaN distances with 0 before computing kernel to avoid
+        # NaN propagation through logsumexp
+        sq_dist = jnp.nan_to_num(sq_dist, nan=0.0)
+
         log_kernel = -0.5 * sq_dist / (self.local_position_std**2)
         # Normalize per time step so kernel is a proper log-probability
         log_kernel = log_kernel - jax.scipy.special.logsumexp(
             log_kernel, axis=1, keepdims=True
         )
 
-        # NaN positions get a uniform (flat) kernel
+        # NaN/off-track positions get a uniform (flat) kernel
         n_bins = int(is_interior.sum())
         uniform_log_kernel = -jnp.log(jnp.array(n_bins, dtype=jnp.float32))
-        log_kernel = jnp.where(nan_mask[:, jnp.newaxis], uniform_log_kernel, log_kernel)
+        log_kernel = jnp.where(
+            uniform_mask[:, jnp.newaxis], uniform_log_kernel, log_kernel
+        )
 
         return log_kernel
 
