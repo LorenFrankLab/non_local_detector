@@ -711,7 +711,9 @@ def _compensated_linear_marginal_chunked(
                 (enc_tile_size, encoding_positions.shape[1]),
             )
             logK_pos_chunk = log_kde_distance_streaming(
-                position_eval_points, enc_pos_chunk, position_std,
+                position_eval_points,
+                enc_pos_chunk,
+                position_std,
             )
         else:
             logK_pos_chunk = jax.lax.dynamic_slice(
@@ -722,7 +724,9 @@ def _compensated_linear_marginal_chunked(
 
         # Compute mark kernel for this chunk: (enc_tile, n_dec)
         logK_mark_chunk = _compute_log_mark_kernel_gemm(
-            decoding_spike_waveform_features, enc_chunk, waveform_stds,
+            decoding_spike_waveform_features,
+            enc_chunk,
+            waveform_stds,
         )
 
         # Mask padded entries
@@ -767,7 +771,9 @@ def _compensated_linear_marginal_chunked(
     init_max = jnp.array(-jnp.inf)
 
     (final_sum, final_max), _ = jax.lax.scan(
-        process_chunk, (init_sum, init_max), jnp.arange(n_chunks),
+        process_chunk,
+        (init_sum, init_max),
+        jnp.arange(n_chunks),
     )
 
     # Back to log space (double-where for -inf contract)
