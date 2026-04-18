@@ -17,6 +17,11 @@ Covers:
   + decoding-only finalization (``_compute_log_mark_kernel_from_precomputed``)
   is a pure algebraic decomposition, so it matches the original
   ``_compute_log_mark_kernel_gemm`` to floating-point exactness.
+* ``TestFusedSegmentSum`` (Task 4): the fused
+  ``block_estimate_with_segment_sum_log_joint_mark_intensity`` produces
+  the same time-binned log likelihood as the separate
+  ``block_estimate_log_joint_mark_intensity -> jax.ops.segment_sum``
+  pipeline, up to FP32 accumulation-reorder noise.
 """
 
 import functools
@@ -192,8 +197,20 @@ class TestJitBlockEstimateAccuracy:
         exceed the max. This test verifies that property: compare
         block_size=100 (2 full blocks, no padding) against block_size=75
         (2 full blocks + 50-spike partial → 25 padded spikes) for the
-        first 200 real spikes. They should agree to float32 precision,
-        not just to the ≲ 1e-5 compensated-linear chunking tolerance.
+        first 200 real spikes. They should agree within the noise floor
+        of the compensated-linear chunking path.
+
+        Threshold rationale: the original zero-pad bug produced
+        contamination of ~4.5e+00 in mark-intensity values (logK_mark for
+        a zero-feature "spike" sits near the center of the encoding
+        cloud, dominating ``max_wf``). Post-fix, the only remaining diff
+        between block sizes is FP32 accumulation reordering from the
+        compensated-linear matmul. On CPU this is ≲ 1e-5; on GPU
+        (cuBLAS, TF32-by-default on Ampere+) it can reach ~2e-3. We gate
+        the tolerance by platform: 1e-4 on CPU, 5e-3 on GPU. Both are
+        ≥ 3 orders of magnitude smaller than the pre-fix contamination,
+        so a regression back to zero-fill would fire loudly; the tighter
+        CPU threshold catches subtler regressions during local dev.
         """
         from non_local_detector.likelihoods.clusterless_kde_log import (
             block_estimate_log_joint_mark_intensity,
@@ -217,9 +234,12 @@ class TestJitBlockEstimateAccuracy:
         # but if padding contaminated real rows, the diff would be much
         # larger than the no-padding chunking baseline.
         max_diff = float(jnp.max(jnp.abs(with_padding - no_padding)))
-        assert max_diff < 1e-4, (
+        on_gpu = any(d.platform == "gpu" for d in jax.devices())
+        atol = 5e-3 if on_gpu else 1e-4
+        assert max_diff < atol, (
             f"Padding appears to contaminate real decoding-spike outputs: "
-            f"max diff between paddings={max_diff:.2e}"
+            f"max diff between paddings={max_diff:.2e} exceeds {atol:.0e} "
+            f"(platform={'gpu' if on_gpu else 'cpu'})"
         )
 
     def test_empty_decoding_spikes(self):
@@ -479,4 +499,271 @@ class TestGemmPrecompute:
             f"Expected ≥1 dot_general inside the scan body (per-block GEMM); "
             f"got 0. Body top-level primitives: {body_prims}. "
             f"All body primitives (incl. nested jit): {all_body_prims}"
+        )
+
+
+class TestFusedSegmentSum:
+    """Fused ``block_estimate_with_segment_sum_log_joint_mark_intensity`` matches
+    the separate ``block_estimate -> jax.ops.segment_sum`` pipeline.
+
+    The fused path accumulates each block's mark-intensity contribution
+    into a ``(n_time, n_pos)`` output inside the ``fori_loop``, so the
+    full ``(n_decoding_spikes, n_pos)`` matrix never materializes. The
+    only expected numerical difference from the separate path is
+    FP32 accumulation reordering: separate does
+    ``segment_sum`` in one pass over ``n_dec`` rows while fused does a
+    segment_sum per block and sums the results. Equivalent in real
+    arithmetic, not in FP32.
+    """
+
+    def _build_seg_ids(self, rng, n_dec: int, n_time: int) -> jnp.ndarray:
+        """Generate sorted segment ids uniformly distributed over [0, n_time)."""
+        times = np.sort(rng.uniform(0.0, 1.0, n_dec))
+        edges = np.linspace(0.0, 1.0, n_time + 1)
+        # np.digitize with default args matches jnp.searchsorted(side='right').
+        return jnp.asarray(np.digitize(times, edges[1:-1]), dtype=jnp.int32)
+
+    def test_fused_matches_separate(self):
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            block_estimate_log_joint_mark_intensity,
+            block_estimate_with_segment_sum_log_joint_mark_intensity,
+        )
+
+        rng = np.random.default_rng(42)
+        n_dec, n_time = 500, 200
+        dec_wf, enc_wf, wf_std, occ, log_pos = _make_electrode_data(
+            rng, n_enc=1000, n_dec=n_dec, n_pos=100
+        )
+        seg_ids = self._build_seg_ids(rng, n_dec=n_dec, n_time=n_time)
+
+        # Separate: block_estimate → segment_sum
+        mark_intensity = block_estimate_log_joint_mark_intensity(
+            dec_wf, enc_wf, wf_std, occ, 5.0, log_pos, block_size=100
+        )
+        reference = jax.ops.segment_sum(
+            mark_intensity,
+            seg_ids,
+            num_segments=n_time,
+            indices_are_sorted=True,
+        )
+        # Fused
+        result = block_estimate_with_segment_sum_log_joint_mark_intensity(
+            dec_wf,
+            enc_wf,
+            wf_std,
+            occ,
+            5.0,
+            log_pos,
+            seg_ids,
+            n_time,
+            block_size=100,
+        )
+        assert result.shape == (n_time, 100)
+        max_diff = float(jnp.max(jnp.abs(result - reference)))
+        # FP32 accumulation-reorder noise dominates. Typical values of
+        # the summed log-likelihood are O(100), so 5e-3 is ~5e-5 relative.
+        assert max_diff < 5e-3, (
+            f"fused vs separate max diff={max_diff:.3e} exceeds 5e-3 "
+            f"(expected FP32 accumulation-reorder noise only)"
+        )
+
+    @pytest.mark.parametrize("block_size", [50, 100, 128, 250, 500])
+    def test_fused_matches_separate_across_block_sizes(self, block_size):
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            block_estimate_log_joint_mark_intensity,
+            block_estimate_with_segment_sum_log_joint_mark_intensity,
+        )
+
+        rng = np.random.default_rng(block_size)
+        n_dec, n_time = 500, 150
+        dec_wf, enc_wf, wf_std, occ, log_pos = _make_electrode_data(
+            rng, n_enc=800, n_dec=n_dec, n_pos=80
+        )
+        seg_ids = self._build_seg_ids(rng, n_dec=n_dec, n_time=n_time)
+
+        reference = jax.ops.segment_sum(
+            block_estimate_log_joint_mark_intensity(
+                dec_wf, enc_wf, wf_std, occ, 5.0, log_pos, block_size=block_size
+            ),
+            seg_ids,
+            num_segments=n_time,
+            indices_are_sorted=True,
+        )
+        result = block_estimate_with_segment_sum_log_joint_mark_intensity(
+            dec_wf,
+            enc_wf,
+            wf_std,
+            occ,
+            5.0,
+            log_pos,
+            seg_ids,
+            n_time,
+            block_size=block_size,
+        )
+        max_diff = float(jnp.max(jnp.abs(result - reference)))
+        assert max_diff < 5e-3, (
+            f"block_size={block_size}: fused vs separate max diff={max_diff:.3e}"
+        )
+
+    def test_empty_decoding_spikes(self):
+        """Zero decoding spikes yields a zero ``(n_time, n_pos)`` accumulator."""
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            block_estimate_with_segment_sum_log_joint_mark_intensity,
+        )
+
+        rng = np.random.default_rng(42)
+        _, enc_wf, wf_std, occ, log_pos = _make_electrode_data(
+            rng, n_enc=100, n_dec=10, n_pos=50
+        )
+        n_time = 30
+        result = block_estimate_with_segment_sum_log_joint_mark_intensity(
+            jnp.zeros((0, 4)),
+            enc_wf,
+            wf_std,
+            occ,
+            5.0,
+            log_pos,
+            jnp.zeros((0,), dtype=jnp.int32),
+            n_time,
+            block_size=25,
+        )
+        assert result.shape == (n_time, 50)
+        assert jnp.all(result == 0.0)
+
+    def test_padded_seg_ids_contribute_nothing(self):
+        """Padded decoding spikes (seg_id = n_time) must not reach the accumulator.
+
+        Construct two workloads that differ only in a partial-last-block
+        padding. The real-spike outputs must agree within FP32 noise.
+        """
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            block_estimate_with_segment_sum_log_joint_mark_intensity,
+        )
+
+        rng = np.random.default_rng(7)
+        n_dec, n_time = 200, 100
+        dec_wf, enc_wf, wf_std, occ, log_pos = _make_electrode_data(
+            rng, n_enc=500, n_dec=n_dec, n_pos=60
+        )
+        seg_ids = np.sort(rng.integers(low=0, high=n_time, size=n_dec).astype(np.int32))
+        seg_ids_j = jnp.asarray(seg_ids)
+
+        # block_size=100 divides n_dec exactly (no padding).
+        no_pad = block_estimate_with_segment_sum_log_joint_mark_intensity(
+            dec_wf,
+            enc_wf,
+            wf_std,
+            occ,
+            5.0,
+            log_pos,
+            seg_ids_j,
+            n_time,
+            block_size=100,
+        )
+        # block_size=75 → blocks [75, 75, 50]; last block pads 25 slots.
+        with_pad = block_estimate_with_segment_sum_log_joint_mark_intensity(
+            dec_wf,
+            enc_wf,
+            wf_std,
+            occ,
+            5.0,
+            log_pos,
+            seg_ids_j,
+            n_time,
+            block_size=75,
+        )
+        max_diff = float(jnp.max(jnp.abs(with_pad - no_pad)))
+        assert max_diff < 5e-3, (
+            f"Padded slots appear to leak into the accumulator: max diff={max_diff:.3e}"
+        )
+
+
+class TestFusedSegmentSumJaxpr:
+    """The fused fori_loop compiles to JAX primitives with ``segment_sum``
+    (``scatter_add``) inside the loop body — not unrolled, not hoisted out.
+
+    IMPORTANT: Trace the private ``_block_estimate_with_segment_sum_impl``,
+    NOT the JIT-wrapped ``_block_estimate_with_segment_sum_jit`` — tracing
+    the JIT-wrapped version shows ``jit`` at the top level, hiding the
+    inner loop structure.
+    """
+
+    def test_loop_body_contains_scatter(self):
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            _block_estimate_with_segment_sum_impl,
+        )
+
+        n_enc, n_dec, n_pos, n_wf = 100, 200, 50, 4
+        n_time = 40
+        dec_wf = jnp.zeros((n_dec, n_wf))
+        enc_wf = jnp.zeros((n_enc, n_wf))
+        wf_std = jnp.full(n_wf, 24.0)
+        occ = jnp.ones(n_pos) * 0.01
+        log_pos = jnp.zeros((n_enc, n_pos))
+        seg_ids = jnp.arange(n_dec, dtype=jnp.int32) % n_time
+
+        fn = functools.partial(
+            _block_estimate_with_segment_sum_impl,
+            n_time=n_time,
+            block_size=50,
+            use_gemm=True,
+            pos_tile_size=None,
+            enc_tile_size=None,
+            use_streaming=False,
+        )
+        jaxpr = jax.make_jaxpr(fn)(dec_wf, enc_wf, wf_std, occ, 5.0, log_pos, seg_ids)
+
+        primitives = [eqn.primitive.name for eqn in jaxpr.jaxpr.eqns]
+
+        # Exactly one top-level loop primitive — fori_loop lowers to
+        # scan (or while on some versions).
+        n_loop_ops = sum(primitives.count(p) for p in ("scan", "while", "fori_loop"))
+        assert n_loop_ops == 1, (
+            f"Expected exactly 1 top-level loop primitive; got {n_loop_ops}. "
+            f"Full: {primitives}"
+        )
+        # Zero top-level dot_general — per-block GEMM lives inside the
+        # loop body, not at the top level.
+        n_dot_general = primitives.count("dot_general")
+        assert n_dot_general == 0, (
+            f"Expected 0 top-level dot_general (per-block GEMM belongs "
+            f"inside scan body); got {n_dot_general}. Full: {primitives}"
+        )
+
+        # Walk the scan body to confirm segment_sum's scatter_add lives
+        # INSIDE the loop (otherwise the fusion claim is false — it would
+        # mean segment_sum was hoisted out or the fori_loop got unrolled).
+        scan_eqns = [eqn for eqn in jaxpr.jaxpr.eqns if eqn.primitive.name == "scan"]
+        assert len(scan_eqns) == 1, (
+            f"Expected exactly 1 top-level scan; got {len(scan_eqns)}"
+        )
+        scan_body_jaxpr = scan_eqns[0].params["jaxpr"].jaxpr
+
+        def _collect_all_primitives(eqns):
+            names = []
+            for eqn in eqns:
+                names.append(eqn.primitive.name)
+                for p in eqn.params.values():
+                    inner = getattr(p, "jaxpr", None)
+                    if inner is not None:
+                        names.extend(
+                            _collect_all_primitives(getattr(inner, "eqns", []))
+                        )
+            return names
+
+        body_prims = _collect_all_primitives(scan_body_jaxpr.eqns)
+        n_dot_general_body = body_prims.count("dot_general")
+        # scatter_add is the primitive segment_sum lowers to.
+        scatter_primitives = sum(
+            body_prims.count(p) for p in ("scatter_add", "scatter", "scatter-add")
+        )
+
+        assert n_dot_general_body >= 1, (
+            f"Expected ≥1 dot_general inside the scan body (per-block "
+            f"GEMM); got 0. Body primitives: {body_prims}"
+        )
+        assert scatter_primitives >= 1, (
+            f"Expected ≥1 scatter/scatter_add inside the scan body "
+            f"(segment_sum fused into block loop); got 0. "
+            f"Body primitives: {body_prims}"
         )

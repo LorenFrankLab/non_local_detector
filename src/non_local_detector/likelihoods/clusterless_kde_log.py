@@ -1375,6 +1375,246 @@ def block_estimate_log_joint_mark_intensity(
     )
 
 
+def _block_estimate_with_segment_sum_impl(
+    decoding_spike_waveform_features: jnp.ndarray,
+    encoding_spike_waveform_features: jnp.ndarray,
+    waveform_stds: jnp.ndarray,
+    occupancy: jnp.ndarray,
+    mean_rate: float,
+    log_position_distance: jnp.ndarray | None,
+    spike_time_bin_ind: jnp.ndarray,
+    n_time: int,
+    block_size: int = 100,
+    use_gemm: bool = True,
+    pos_tile_size: int | None = None,
+    enc_tile_size: int | None = None,
+    use_streaming: bool = False,
+    encoding_positions: jnp.ndarray | None = None,
+    position_eval_points: jnp.ndarray | None = None,
+    position_std: jnp.ndarray | None = None,
+) -> jnp.ndarray:
+    """Block_estimate fused with segment_sum; accumulates ``(n_time, n_pos)`` directly.
+
+    Equivalent to::
+
+        mark_intensity = block_estimate_log_joint_mark_intensity(...)  # (n_dec, n_pos)
+        out = jax.ops.segment_sum(
+            mark_intensity, spike_time_bin_ind,
+            num_segments=n_time, indices_are_sorted=True,
+        )
+
+    but the ``segment_sum`` is performed per-block inside the ``fori_loop``
+    so the full ``(n_dec, n_pos)`` mark-intensity matrix never needs to
+    be materialized.  Per-block intermediate drops to
+    ``(block_size, n_position_bins)``.
+
+    Memory tradeoff (pre-Task-3, while the electrode loop is still Python):
+    the fori_loop carry here is ``(n_time, n_position_bins)``, while Task 1's
+    ``_block_estimate_log_joint_mark_intensity_impl`` carries
+    ``(n_padded_dec, n_position_bins)``.  At production scale
+    (n_time ≈ 210k, n_padded_dec ≈ 20k), the Task 4 carry is ~10× larger.
+    The net peak-memory win versus the separate pipeline is therefore only
+    ``sizeof((n_dec, n_pos))`` — modest in absolute terms (≈ 14 MB per
+    electrode at 20k dec × 175 pos), dominated by the ``(n_time, n_pos)``
+    accumulator which both paths need.  The main motivation is kernel-
+    launch fusion: the segment_sum runs in the same compiled region as
+    the per-block mark-intensity compute, eliminating a boundary.
+
+    The memory win becomes material once Task 3 wraps an outer scan
+    around the electrode loop: without Task 4, that scan must keep both
+    the ``(n_dec, n_pos)`` block output AND the ``(n_time, n_pos)`` outer
+    accumulator alive simultaneously; with Task 4, only the latter.
+
+    Padded decoding-spike slots (beyond ``n_decoding_spikes``) are
+    assigned segment id ``n_time`` — a dummy bin that ``segment_sum``
+    ignores when ``num_segments=n_time``, so padded spikes contribute
+    nothing to the accumulator.
+
+    Assumes ``decoding_spike_waveform_features.shape[0] > 0``.  The
+    empty-array case is handled by the public wrapper.
+    """
+    n_decoding_spikes = decoding_spike_waveform_features.shape[0]
+    n_features = decoding_spike_waveform_features.shape[1]
+    n_position_bins = occupancy.shape[0]
+
+    # Pad decoding features (edge-replication — see
+    # _block_estimate_log_joint_mark_intensity_impl for rationale) so the
+    # fori_loop body can use static-size dynamic_slice.  Pad spike_time_bin_ind
+    # with the sentinel segment id ``n_time`` so padded spikes contribute
+    # nothing to the segment_sum accumulator (``num_segments=n_time`` ignores
+    # indices >= num_segments).
+    n_blocks = (n_decoding_spikes + block_size - 1) // block_size
+    n_padded = n_blocks * block_size
+    pad_amount = n_padded - n_decoding_spikes
+    if pad_amount > 0:
+        decoding_spike_waveform_features = jnp.pad(
+            decoding_spike_waveform_features,
+            ((0, pad_amount), (0, 0)),
+            mode="edge",
+        )
+        spike_time_bin_ind = jnp.pad(
+            spike_time_bin_ind,
+            (0, pad_amount),
+            mode="constant",
+            constant_values=n_time,
+        )
+
+    # Hoist the encoding-side GEMM quantities outside the fori_loop whenever
+    # the downstream path is the non-chunked use_gemm GEMM (see
+    # _block_estimate_log_joint_mark_intensity_impl for the full rationale).
+    n_encoding_spikes = encoding_spike_waveform_features.shape[0]
+    use_precomputed_gemm = (
+        use_gemm
+        and not use_streaming
+        and (enc_tile_size is None or enc_tile_size >= n_encoding_spikes)
+    )
+    if use_precomputed_gemm:
+        precomp = _precompute_encoding_gemm_quantities(
+            encoding_spike_waveform_features, waveform_stds
+        )
+    else:
+        precomp = None
+
+    def process_block(i: int, out: jnp.ndarray) -> jnp.ndarray:
+        start = i * block_size
+        block_features = jax.lax.dynamic_slice(
+            decoding_spike_waveform_features,
+            (start, 0),
+            (block_size, n_features),
+        )
+        block_seg_ids = jax.lax.dynamic_slice(
+            spike_time_bin_ind, (start,), (block_size,)
+        )
+        block_mark = _estimate_log_joint_mark_intensity_impl(
+            block_features,
+            encoding_spike_waveform_features,
+            waveform_stds,
+            occupancy,
+            mean_rate,
+            log_position_distance,
+            use_gemm=use_gemm,
+            pos_tile_size=pos_tile_size,
+            enc_tile_size=enc_tile_size,
+            use_streaming=use_streaming,
+            encoding_positions=encoding_positions,
+            position_eval_points=position_eval_points,
+            position_std=position_std,
+            precomputed_enc_gemm=precomp,
+        )
+        # Match block_estimate_log_joint_mark_intensity's LOG_EPS floor so
+        # the summed likelihood matches the separate
+        # (block_estimate -> segment_sum) pipeline byte-for-byte.
+        block_mark = jnp.clip(block_mark, min=LOG_EPS, max=None)
+        # ``indices_are_sorted=True`` is valid here because:
+        #   (1) a contiguous slice of a globally sorted array is sorted
+        #       (caller guarantees ``spike_time_bin_ind`` is sorted, as
+        #       produced by ``get_spike_time_bin_ind`` on sorted spikes),
+        #   (2) the appended sentinel ``n_time`` satisfies
+        #       ``n_time >= max(real_bin_ids)`` because real ids are in
+        #       ``[0, n_time)``, so sentinels always trail the real ids.
+        block_contribution = jax.ops.segment_sum(
+            block_mark,
+            block_seg_ids,
+            num_segments=n_time,
+            indices_are_sorted=True,
+        )
+        return out + block_contribution
+
+    out = jnp.zeros((n_time, n_position_bins))
+    return jax.lax.fori_loop(0, n_blocks, process_block, out)
+
+
+_block_estimate_with_segment_sum_jit = jax.jit(
+    _block_estimate_with_segment_sum_impl,
+    static_argnames=(
+        "n_time",
+        "block_size",
+        "use_gemm",
+        "pos_tile_size",
+        "enc_tile_size",
+        "use_streaming",
+    ),
+)
+
+
+def block_estimate_with_segment_sum_log_joint_mark_intensity(
+    decoding_spike_waveform_features: jnp.ndarray,
+    encoding_spike_waveform_features: jnp.ndarray,
+    waveform_stds: jnp.ndarray,
+    occupancy: jnp.ndarray,
+    mean_rate: float,
+    log_position_distance: jnp.ndarray | None,
+    spike_time_bin_ind: jnp.ndarray,
+    n_time: int,
+    block_size: int = 100,
+    use_gemm: bool = True,
+    pos_tile_size: int | None = None,
+    enc_tile_size: int | None = None,
+    use_streaming: bool = False,
+    encoding_positions: jnp.ndarray | None = None,
+    position_eval_points: jnp.ndarray | None = None,
+    position_std: jnp.ndarray | None = None,
+) -> jnp.ndarray:
+    """Fused block_estimate + segment_sum.  Returns a ``(n_time, n_pos)`` array.
+
+    Identical output to::
+
+        mark_intensity = block_estimate_log_joint_mark_intensity(...)
+        out = jax.ops.segment_sum(
+            mark_intensity, spike_time_bin_ind,
+            num_segments=n_time, indices_are_sorted=True,
+        )
+
+    but avoids materializing the full ``(n_decoding_spikes, n_position_bins)``
+    mark-intensity matrix.  Intended for the non-local likelihood path in
+    :func:`predict_clusterless_kde_log_likelihood`.
+
+    Parameters
+    ----------
+    spike_time_bin_ind : jnp.ndarray of int, shape (n_decoding_spikes,)
+        Time-bin index for each decoding spike, sorted ascending
+        (e.g. produced by :func:`get_spike_time_bin_ind` on sorted spike
+        times).  All values must lie in ``[0, n_time)``.  Spikes outside
+        the decoding time window should be filtered out before calling
+        this function — values ``>= n_time`` would be silently ignored,
+        which is the same sentinel mechanism used internally for padded
+        slots.
+    n_time : int
+        Number of decoding time bins (``len(time_edges) - 1``).  **Static
+        argument**: each distinct ``n_time`` triggers a JIT
+        recompilation, so callers processing multiple recordings of the
+        same shape get cache hits but per-recording shape changes
+        amortise a one-time recompile.
+
+    All other parameters have the same meaning as in
+    :func:`block_estimate_log_joint_mark_intensity`.
+    """
+    n_decoding_spikes = decoding_spike_waveform_features.shape[0]
+    n_position_bins = occupancy.shape[0]
+
+    if n_decoding_spikes == 0:
+        return jnp.zeros((n_time, n_position_bins))
+
+    return _block_estimate_with_segment_sum_jit(
+        decoding_spike_waveform_features,
+        encoding_spike_waveform_features,
+        waveform_stds,
+        occupancy,
+        mean_rate,
+        log_position_distance,
+        spike_time_bin_ind,
+        n_time,
+        block_size=block_size,
+        use_gemm=use_gemm,
+        pos_tile_size=pos_tile_size,
+        enc_tile_size=enc_tile_size,
+        use_streaming=use_streaming,
+        encoding_positions=encoding_positions,
+        position_eval_points=position_eval_points,
+        position_std=position_std,
+    )
+
+
 def fit_clusterless_kde_encoding_model(
     position_time: jnp.ndarray,
     position: jnp.ndarray,
@@ -1680,29 +1920,31 @@ def predict_clusterless_kde_log_likelihood(
             else:
                 electrode_waveform_std = waveform_std
 
-            log_likelihood += jax.ops.segment_sum(
-                block_estimate_log_joint_mark_intensity(
-                    electrode_decoding_spike_waveform_features,
-                    electrode_encoding_spike_waveform_features,
-                    electrode_waveform_std,
-                    occupancy,
-                    electrode_mean_rate,
-                    log_position_distance,
-                    block_size=block_size,
-                    enc_tile_size=enc_tile_size,
-                    pos_tile_size=pos_tile_size,
-                    use_streaming=use_streaming,
-                    encoding_positions=(
-                        electrode_encoding_positions if use_streaming else None
-                    ),
-                    position_eval_points=(
-                        interior_place_bin_centers if use_streaming else None
-                    ),
-                    position_std=position_std if use_streaming else None,
-                ),
+            # NOTE: n_time is a static argument to the fused function — each
+            # distinct value triggers a JIT recompilation.  In the common case
+            # of repeated predict calls on the same recording, the cache hits;
+            # segmenting a recording into variable-length chunks (or calling
+            # across datasets) pays one compile per unique n_time.
+            log_likelihood += block_estimate_with_segment_sum_log_joint_mark_intensity(
+                electrode_decoding_spike_waveform_features,
+                electrode_encoding_spike_waveform_features,
+                electrode_waveform_std,
+                occupancy,
+                electrode_mean_rate,
+                log_position_distance,
                 get_spike_time_bin_ind(electrode_spike_times, time),
-                indices_are_sorted=True,
-                num_segments=n_time,
+                n_time,
+                block_size=block_size,
+                enc_tile_size=enc_tile_size,
+                pos_tile_size=pos_tile_size,
+                use_streaming=use_streaming,
+                encoding_positions=(
+                    electrode_encoding_positions if use_streaming else None
+                ),
+                position_eval_points=(
+                    interior_place_bin_centers if use_streaming else None
+                ),
+                position_std=position_std if use_streaming else None,
             )
 
     return log_likelihood
