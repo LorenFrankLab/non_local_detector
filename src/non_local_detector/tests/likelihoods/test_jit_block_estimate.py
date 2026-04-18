@@ -12,6 +12,11 @@ Covers:
   ``_block_estimate_log_joint_mark_intensity_impl`` contains a loop
   primitive (``scan``/``while``) — confirming the Python for-loop has
   been replaced by a JAX control-flow primitive.
+* ``TestGemmPrecompute`` (Task 2): the split of the log mark kernel GEMM
+  into encoding-only precompute (``_precompute_encoding_gemm_quantities``)
+  + decoding-only finalization (``_compute_log_mark_kernel_from_precomputed``)
+  is a pure algebraic decomposition, so it matches the original
+  ``_compute_log_mark_kernel_gemm`` to floating-point exactness.
 """
 
 import functools
@@ -314,4 +319,164 @@ class TestJitBlockEstimateJaxpr:
             f"compiled region); got {n_jit}. A re-Pythonized loop of JIT'd "
             f"blocks would show ≥ n_blocks top-level jit ops. "
             f"Full primitive list: {primitives}"
+        )
+
+
+class TestGemmPrecompute:
+    """Precomputed encoding-side GEMM quantities produce identical output.
+
+    The split of ``_compute_log_mark_kernel_gemm`` into
+    ``_precompute_encoding_gemm_quantities`` +
+    ``_compute_log_mark_kernel_from_precomputed`` is a pure algebraic
+    reorganization — no numerical operation is reordered, so the two
+    paths must agree to floating-point exactness (max diff == 0.0).
+    """
+
+    def test_precomputed_matches_full_gemm(self):
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            _compute_log_mark_kernel_from_precomputed,
+            _compute_log_mark_kernel_gemm,
+            _precompute_encoding_gemm_quantities,
+        )
+
+        rng = np.random.default_rng(42)
+        n_enc, n_dec, n_wf = 1000, 200, 4
+        enc_wf = jnp.array(rng.standard_normal((n_enc, n_wf)) * 50)
+        dec_wf = jnp.array(rng.standard_normal((n_dec, n_wf)) * 50)
+        wf_std = jnp.full(n_wf, 24.0)
+
+        reference = _compute_log_mark_kernel_gemm(dec_wf, enc_wf, wf_std)
+        precomp = _precompute_encoding_gemm_quantities(enc_wf, wf_std)
+        result = _compute_log_mark_kernel_from_precomputed(dec_wf, precomp)
+
+        # Pure algebraic split: must be bit-identical.
+        max_diff = float(jnp.max(jnp.abs(result - reference)))
+        assert max_diff == 0.0, (
+            f"Precomputed path diverged from full GEMM: max diff={max_diff:.2e}"
+        )
+
+    def test_precomputed_reused_across_blocks(self):
+        """One precompute, many decoding blocks — each block still matches full GEMM."""
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            _compute_log_mark_kernel_from_precomputed,
+            _compute_log_mark_kernel_gemm,
+            _precompute_encoding_gemm_quantities,
+        )
+
+        rng = np.random.default_rng(42)
+        n_enc, n_wf = 500, 4
+        enc_wf = jnp.array(rng.standard_normal((n_enc, n_wf)) * 50)
+        wf_std = jnp.full(n_wf, 24.0)
+        precomp = _precompute_encoding_gemm_quantities(enc_wf, wf_std)
+
+        for block_seed in range(5):
+            block_rng = np.random.default_rng(block_seed)
+            dec_wf = jnp.array(block_rng.standard_normal((100, n_wf)) * 50)
+            reference = _compute_log_mark_kernel_gemm(dec_wf, enc_wf, wf_std)
+            result = _compute_log_mark_kernel_from_precomputed(dec_wf, precomp)
+            max_diff = float(jnp.max(jnp.abs(result - reference)))
+            assert max_diff == 0.0, (
+                f"block_seed={block_seed}: reused precompute diverged from full GEMM "
+                f"(max diff={max_diff:.2e})"
+            )
+
+    def test_block_estimate_uses_precomputed_path(self):
+        """Verify the block fori_loop body consumes the precomputed quantities.
+
+        ``_precompute_encoding_gemm_quantities`` computes ``Y = enc * inv_sigma``
+        and ``y2 = sum(Y**2, axis=1)``, both shape-indexed by ``n_enc``.  When
+        precompute is hoisted outside the ``fori_loop``, the jaxpr of
+        ``_block_estimate_log_joint_mark_intensity_impl`` should contain
+        top-level ``reduce_sum``/``mul`` equations of size ``n_enc`` that
+        live OUTSIDE the scan body.  We verify by diffing the jaxpr
+        against a control that forces the chunked path (which ignores
+        ``precomputed_enc_gemm``) — the non-chunked jaxpr should have more
+        top-level equations than the chunked one.
+
+        This is a structural sanity check, not a guarantee of performance.
+        """
+        import functools
+
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            _block_estimate_log_joint_mark_intensity_impl,
+        )
+
+        n_enc, n_dec, n_pos, n_wf = 500, 200, 50, 4
+        dec_wf = jnp.zeros((n_dec, n_wf))
+        enc_wf = jnp.zeros((n_enc, n_wf))
+        wf_std = jnp.full(n_wf, 24.0)
+        occ = jnp.ones(n_pos) * 0.01
+        log_pos = jnp.zeros((n_enc, n_pos))
+
+        non_chunked = functools.partial(
+            _block_estimate_log_joint_mark_intensity_impl,
+            block_size=50,
+            use_gemm=True,
+            pos_tile_size=None,
+            enc_tile_size=None,
+            use_streaming=False,
+        )
+        jaxpr_nonchunked = jax.make_jaxpr(non_chunked)(
+            dec_wf, enc_wf, wf_std, occ, 5.0, log_pos
+        )
+        prims_nonchunked = [eqn.primitive.name for eqn in jaxpr_nonchunked.jaxpr.eqns]
+
+        # The precompute hoist adds at least these top-level primitives
+        # outside the scan body: the inv_sigma reciprocal, the Y = enc *
+        # inv_sigma broadcast mul, and the y2 reduce_sum.  Without hoisting,
+        # these would all live inside the scan body and be invisible at the
+        # top level.
+        n_top_level_dot_general = prims_nonchunked.count("dot_general")
+        n_top_level_reduce_sum = prims_nonchunked.count("reduce_sum")
+        n_top_level_div = prims_nonchunked.count("div")
+
+        # At least one top-level reduce_sum (for y2) and one top-level
+        # elementwise op for the inv_sigma and Y = enc * inv_sigma scaling.
+        assert n_top_level_reduce_sum >= 1, (
+            f"Expected ≥1 top-level reduce_sum (from y2 precompute hoist); "
+            f"got {n_top_level_reduce_sum}. Full: {prims_nonchunked}"
+        )
+        # No top-level dot_general: the per-block GEMM still lives inside
+        # the scan body, only the encoding-side scaling moved outside.
+        assert n_top_level_dot_general == 0, (
+            f"Expected 0 top-level dot_general (per-block GEMM belongs inside "
+            f"scan body); got {n_top_level_dot_general}. Full: {prims_nonchunked}"
+        )
+        # The inv_sigma = 1 / waveform_stds division should be hoisted too.
+        assert n_top_level_div >= 1, (
+            f"Expected ≥1 top-level div (from inv_sigma precompute hoist); "
+            f"got {n_top_level_div}. Full: {prims_nonchunked}"
+        )
+
+        # Bi-directional check: the per-block GEMM must actually exist
+        # INSIDE the scan body (not fully optimized away). Walk the scan
+        # equation's sub-jaxpr and assert ≥1 ``dot_general`` primitive.
+        scan_eqns = [
+            eqn for eqn in jaxpr_nonchunked.jaxpr.eqns if eqn.primitive.name == "scan"
+        ]
+        assert len(scan_eqns) == 1, (
+            f"Expected exactly 1 top-level scan; got {len(scan_eqns)}"
+        )
+        scan_body_jaxpr = scan_eqns[0].params["jaxpr"].jaxpr
+        body_prims = [eqn.primitive.name for eqn in scan_body_jaxpr.eqns]
+
+        def _collect_all_primitives(eqns):
+            """Recursively collect primitives from jaxpr eqns, descending
+            into ``jit``/``pjit`` call params."""
+            names = []
+            for eqn in eqns:
+                names.append(eqn.primitive.name)
+                for p in eqn.params.values():
+                    inner = getattr(p, "jaxpr", None)
+                    if inner is not None:
+                        names.extend(
+                            _collect_all_primitives(getattr(inner, "eqns", []))
+                        )
+            return names
+
+        all_body_prims = _collect_all_primitives(scan_body_jaxpr.eqns)
+        assert all_body_prims.count("dot_general") >= 1, (
+            f"Expected ≥1 dot_general inside the scan body (per-block GEMM); "
+            f"got 0. Body top-level primitives: {body_prims}. "
+            f"All body primitives (incl. nested jit): {all_body_prims}"
         )

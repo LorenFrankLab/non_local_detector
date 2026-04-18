@@ -192,6 +192,89 @@ def _log_kde_distance_streaming_impl(
 log_kde_distance_streaming = jax.jit(_log_kde_distance_streaming_impl)
 
 
+def _precompute_encoding_gemm_quantities(
+    encoding_features: jnp.ndarray,
+    waveform_stds: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Precompute the encoding-side GEMM quantities used by the log mark kernel.
+
+    These quantities depend only on the per-electrode encoding spikes and
+    waveform bandwidths — they are constant across decoding-spike blocks
+    and can be hoisted outside any loop that iterates over decoding-spike
+    blocks (e.g. the block ``fori_loop`` in
+    ``_block_estimate_log_joint_mark_intensity_impl``).
+
+    Pairs with :func:`_compute_log_mark_kernel_from_precomputed`.
+
+    Parameters
+    ----------
+    encoding_features : jnp.ndarray, shape (n_encoding_spikes, n_features)
+    waveform_stds : jnp.ndarray, shape (n_features,)
+
+    Returns
+    -------
+    inv_sigma : jnp.ndarray, shape (n_features,)
+        ``1 / clip(waveform_stds, EPS)``.
+    log_norm_const : jnp.ndarray, shape ()
+        0-d JAX scalar equal to ``-0.5 * (D * log(2π) + 2 * sum(log(sigma)))``.
+        Kept as a traced scalar (not a Python float) so the tuple is a
+        homogeneous JAX pytree — safe to carry through a ``scan`` without
+        recompilation on different ``waveform_stds`` values.
+    Y : jnp.ndarray, shape (n_encoding_spikes, n_features)
+        Encoding features scaled by ``inv_sigma``.
+    y2 : jnp.ndarray, shape (n_encoding_spikes,)
+        Row-wise squared norms ``sum(Y**2, axis=1)``.
+
+    Notes
+    -----
+    The return is a flat tuple rather than a dict for cheaper JAX pytree
+    handling inside ``scan``/``fori_loop`` carries.
+    """
+    n_features = waveform_stds.shape[0]
+    # Clip to avoid division by zero for degenerate feature dimensions.
+    waveform_stds = jnp.clip(waveform_stds, min=EPS)
+    inv_sigma = 1.0 / waveform_stds
+    # Factor of 2 because we have sum(log(sigma)), not log(sigma**2).
+    log_norm_const = -0.5 * (
+        n_features * jnp.log(2.0 * jnp.pi) + 2.0 * jnp.sum(jnp.log(waveform_stds))
+    )
+    Y = encoding_features * inv_sigma[None, :]
+    y2 = jnp.sum(Y**2, axis=1)
+    return inv_sigma, log_norm_const, Y, y2
+
+
+def _compute_log_mark_kernel_from_precomputed(
+    decoding_features: jnp.ndarray,
+    precomp: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray],
+) -> jnp.ndarray:
+    """Compute the log mark kernel from decoding features + precomputed encoding quantities.
+
+    Pairs with :func:`_precompute_encoding_gemm_quantities`.  When called
+    inside a loop that iterates over decoding-spike blocks, the caller
+    computes ``precomp`` once outside the loop so the encoding-side
+    scaling and row-wise sum-of-squares are never repeated.
+
+    Parameters
+    ----------
+    decoding_features : jnp.ndarray, shape (n_decoding_spikes, n_features)
+    precomp : tuple
+        Output of :func:`_precompute_encoding_gemm_quantities`.
+
+    Returns
+    -------
+    logK_mark : jnp.ndarray, shape (n_encoding_spikes, n_decoding_spikes)
+    """
+    inv_sigma, log_norm_const, Y, y2 = precomp
+    X = decoding_features * inv_sigma[None, :]
+    x2 = jnp.sum(X**2, axis=1)
+    # GEMM: (n_dec, n_features) @ (n_features, n_enc) -> (n_dec, n_enc).
+    cross_term = X @ Y.T
+    # Clamp sq_dist to non-negative to absorb catastrophic cancellation in
+    # the expanded GEMM form when x ≈ y.
+    sq_dist = jnp.maximum(y2[:, None] + x2[None, :] - 2.0 * cross_term.T, 0.0)
+    return log_norm_const - 0.5 * sq_dist
+
+
 def _compute_log_mark_kernel_gemm(
     decoding_features: jnp.ndarray,
     encoding_features: jnp.ndarray,
@@ -221,39 +304,17 @@ def _compute_log_mark_kernel_gemm(
     -------
     logK_mark : jnp.ndarray, shape (n_encoding_spikes, n_decoding_spikes)
         Log kernel matrix K[i, j] = log(Gaussian kernel between encoding spike i and decoding spike j).
+
+    Notes
+    -----
+    Thin wrapper around :func:`_precompute_encoding_gemm_quantities` +
+    :func:`_compute_log_mark_kernel_from_precomputed`.  Prefer calling
+    those two directly when you need to reuse the encoding-side
+    quantities across multiple decoding-spike batches (e.g. the
+    ``fori_loop`` body in ``_block_estimate_log_joint_mark_intensity_impl``).
     """
-    n_features = waveform_stds.shape[0]
-
-    # Precompute inverse standard deviations and normalization constant
-    # Clip to avoid division by zero for degenerate feature dimensions
-    waveform_stds = jnp.clip(waveform_stds, min=EPS)
-    inv_sigma = 1.0 / waveform_stds  # (n_features,)
-
-    # Log normalization constant: -0.5 * (D * log(2π) + 2 * sum(log(sigma)))
-    # Factor of 2 because we have sum of log(sigma), not log(sigma^2)
-    log_norm_const = -0.5 * (
-        n_features * jnp.log(2.0 * jnp.pi) + 2.0 * jnp.sum(jnp.log(waveform_stds))
-    )
-
-    # Scale features by inverse standard deviations
-    Y = encoding_features * inv_sigma[None, :]  # (n_enc, n_features)
-    X = decoding_features * inv_sigma[None, :]  # (n_dec, n_features)
-
-    # Compute squared norms
-    y2 = jnp.sum(Y**2, axis=1)  # (n_enc,)
-    x2 = jnp.sum(X**2, axis=1)  # (n_dec,)
-
-    # GEMM: compute cross terms X @ Y^T = (n_dec, n_features) @ (n_features, n_enc)
-    cross_term = X @ Y.T  # (n_dec, n_enc)
-
-    # Combine: log K[i,j] = -0.5 * (y2[i] + x2[j] - 2*cross_term[j,i]) + log_norm_const
-    # Note: We need (n_enc, n_dec) output, so transpose the cross term
-    # Clamp squared distances to non-negative to avoid catastrophic cancellation
-    # when x ≈ y (the expanded GEMM form can produce small negative values).
-    sq_dist = jnp.maximum(y2[:, None] + x2[None, :] - 2.0 * cross_term.T, 0.0)
-    logK_mark = log_norm_const - 0.5 * sq_dist  # (n_enc, n_dec)
-
-    return logK_mark
+    precomp = _precompute_encoding_gemm_quantities(encoding_features, waveform_stds)
+    return _compute_log_mark_kernel_from_precomputed(decoding_features, precomp)
 
 
 def _estimate_with_enc_chunking(
@@ -813,6 +874,8 @@ def _estimate_log_joint_mark_intensity_impl(
     encoding_positions: jnp.ndarray | None = None,
     position_eval_points: jnp.ndarray | None = None,
     position_std: jnp.ndarray | None = None,
+    precomputed_enc_gemm: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]
+    | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -968,12 +1031,21 @@ def _estimate_log_joint_mark_intensity_impl(
         )
 
     # No encoding chunking: compute full logK_mark matrix
-    # Build log-kernel matrix for marks: (n_enc, n_dec)
-    logK_mark = _compute_log_mark_kernel_gemm(
-        decoding_spike_waveform_features,
-        encoding_spike_waveform_features,
-        waveform_stds,
-    )
+    # Build log-kernel matrix for marks: (n_enc, n_dec).
+    # When precomputed_enc_gemm is provided (e.g. by the block fori_loop,
+    # which hoists the encoding-side scaling/sum-of-squares outside the
+    # loop body), reuse those quantities instead of recomputing them per
+    # decoding-spike block.
+    if precomputed_enc_gemm is not None:
+        logK_mark = _compute_log_mark_kernel_from_precomputed(
+            decoding_spike_waveform_features, precomputed_enc_gemm
+        )
+    else:
+        logK_mark = _compute_log_mark_kernel_gemm(
+            decoding_spike_waveform_features,
+            encoding_spike_waveform_features,
+            waveform_stds,
+        )
 
     # Fast path: compensated-linear matmul for low-dimensional features.
     # Uses a single BLAS matmul instead of logsumexp, giving 15-50x speedup.
@@ -1154,6 +1226,31 @@ def _block_estimate_log_joint_mark_intensity_impl(
             mode="edge",
         )
 
+    # Hoist the encoding-side GEMM quantities outside the fori_loop whenever
+    # the downstream path is the non-chunked use_gemm GEMM (the only branch
+    # where ``_estimate_log_joint_mark_intensity_impl`` reads
+    # ``precomputed_enc_gemm``).  The three ``use_*``/``enc_tile_size``
+    # conditions are all static at trace time, so this branch is resolved
+    # at compilation — JAX traces only the taken arm.
+    #
+    # Note on ``enc_tile_size >= n_encoding_spikes``: the chunked sub-paths
+    # inside ``_estimate_log_joint_mark_intensity_impl`` only trigger when
+    # ``enc_tile_size < n_encoding_spikes`` (see its guard), so a tile size
+    # equal to or larger than the full encoding set routes through the
+    # non-chunked GEMM branch and DOES benefit from the precompute.
+    n_encoding_spikes = encoding_spike_waveform_features.shape[0]
+    use_precomputed_gemm = (
+        use_gemm
+        and not use_streaming
+        and (enc_tile_size is None or enc_tile_size >= n_encoding_spikes)
+    )
+    if use_precomputed_gemm:
+        precomp = _precompute_encoding_gemm_quantities(
+            encoding_spike_waveform_features, waveform_stds
+        )
+    else:
+        precomp = None
+
     def process_block(i: int, out: jnp.ndarray) -> jnp.ndarray:
         start = i * block_size
         block_features = jax.lax.dynamic_slice(
@@ -1175,6 +1272,7 @@ def _block_estimate_log_joint_mark_intensity_impl(
             encoding_positions=encoding_positions,
             position_eval_points=position_eval_points,
             position_std=position_std,
+            precomputed_enc_gemm=precomp,
         )
         return jax.lax.dynamic_update_slice(out, block_result, (start, 0))
 
