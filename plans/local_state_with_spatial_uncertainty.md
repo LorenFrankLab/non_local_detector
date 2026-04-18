@@ -4,7 +4,7 @@
 
 The current Local state uses a **single position bin** — a delta function at the animal's
 observed position. The likelihood is a scalar per time step, and the `Discrete()` continuous
-transition is a 1×1 identity matrix. This means the Local state carries no spatial uncertainty.
+transition is a 1x1 identity matrix. This means the Local state carries no spatial uncertainty.
 
 In reality, CA1 place cells coding for the animal's current position have inherent uncertainty
 from the population code, position measurement noise, and the animal's spatial extent. The
@@ -23,54 +23,89 @@ step. This kernel anchors the Local state to the animal while allowing spatial u
 The local log-likelihood at time *t* becomes:
 
 ```
-log P(spikes_t | all bins) + log P(bin | animal_pos_t, σ)
+log P(spikes_t | all bins) + log P(bin | animal_pos_t, sigma)
 ```
 
 where the first term is the standard full-spatial likelihood (same encoding model as non-local)
 and the second term is the position kernel.
 
+### Architectural Rationale: Kernel in Likelihood vs Transition
+
+The position kernel lives in the **likelihood**, not in the transition matrix. This is a
+deliberate choice:
+
+- Time-varying transition matrices would break `jax.lax.scan` and the static transition
+  assumption used throughout `core.py`.
+- The existing `compute_log_likelihood` already has a post-assembly injection pattern
+  (see `_compute_non_local_position_penalty`, base.py lines 2651-2668) that we can mirror.
+- The kernel is conceptually part of the observation model ("how likely is this neural
+  activity given the animal is near position X?"), not the dynamics.
+
 ### Key Design Decisions
 
-1. **Likelihood anchoring, not transition anchoring.** The position kernel lives in the
-   likelihood, not in the transition matrix. This avoids time-varying transitions and keeps
-   the existing static transition machinery.
+1. **Likelihood anchoring, not transition anchoring.** See architectural rationale above.
 
-2. **Nearly memoryless Local → Local content transition.** Use `Uniform()` for the
-   Local → Local continuous transition. The position kernel does all the spatial anchoring.
+2. **Nearly memoryless Local -> Local content transition.** Use `Uniform()` for the
+   Local -> Local continuous transition. The position kernel does all the spatial anchoring.
    This is correct because "local" means "tied to the animal now," not "tied to the previous
-   latent estimate." A random walk would let the local state drift away from the animal.
+   latent estimate." A random walk would let the local state drift away from the animal
+   during prolonged local periods — exactly the wrong failure mode. The important distinction:
+   `P(event_t = Local | event_{t-1} = Local)` should be high (sticky at event level), but
+   `P(content_t | content_{t-1}, event_t = Local)` does not need spatial memory.
 
-3. **Sticky at the event level, memoryless at the content level.** The discrete transition
-   `P(event_t = Local | event_{t-1} = Local)` remains high (unchanged). But
-   `P(content_t | content_{t-1}, event_t = Local)` is nearly memoryless — the current
-   animal position determines the content, not the previous decoded bin.
-
-4. **Model-level parameter.** `local_position_std` is a single parameter on the detector
+3. **Model-level parameter.** `local_position_std` is a single parameter on the detector
    class, not per-ObservationModel. There's no use case for multiple local states with
    different kernel widths.
 
-5. **Track graph distances.** The position kernel should use track graph distances (not
-   Euclidean) when a track graph is available, to handle junctions correctly.
+4. **Track graph distances.** The position kernel uses track graph distances (not Euclidean)
+   when a track graph is available, to handle junctions correctly. Uses precomputed
+   `distance_between_nodes_` matrix indexed by bin, avoiding per-time-step loops.
 
-6. **Backward compatibility.** `local_position_std=None` (default) preserves legacy 1-bin
+5. **Backward compatibility.** `local_position_std=None` (default) preserves legacy 1-bin
    behavior exactly. The new behavior is opt-in.
+
+### Encoding Model Sharing (Important Detail)
+
+The encoding model (place fields) is fit once per unique `(environment_name, encoding_group)`
+via `fit_encoding_model` (base.py line 2454). `ObservationModel.__eq__` ignores `is_local`
+(line 74 of observation_models.py), so the Local and Non-Local states sharing the same
+environment are deduplicated by `np.unique()`. The encoding model is **always the full spatial
+model** — `is_local` only affects the predict function, not the fit function.
+
+This means multi-bin local can safely call the predict function with `is_local=False` and
+get full spatial likelihoods using the already-fitted encoding model. No changes to
+`fit_encoding_model` are needed.
 
 ---
 
 ## Implementation
 
-### Phase 1: ObservationModel and State Index
+### Phase 1: Parameter and State Index
 
-#### 1a. Add `local_position_std` to detector classes
+#### 1a. Add `local_position_std` to detector classes and base
+
+**File:** `src/non_local_detector/models/base.py`
+
+Add `local_position_std: float | None = None` as a parameter to the base `_SortedSpikesBaseDetector`
+and `_ClusterlessBaseDetector` constructors (or whichever common base makes sense). Store as
+`self.local_position_std`. This eliminates the need for defensive `getattr()` calls throughout
+the codebase — the attribute is always present with a `None` default.
 
 **File:** `src/non_local_detector/models/non_local_model.py`
 
 Add `local_position_std: float | None = None` as a constructor parameter to
-`NonLocalClusterlessDetector` and `NonLocalSortedSpikesDetector`. Store it as `self.local_position_std`.
+`NonLocalClusterlessDetector` and `NonLocalSortedSpikesDetector`, passing through to super.
 
-This is a model-level parameter, not on `ObservationModel`. The observation model's `is_local`
-flag still controls which state is the local state; `local_position_std` controls how it's
-represented spatially.
+**Validation:** Add input validation matching the style of `_validate_penalty_params`:
+```python
+if local_position_std is not None and local_position_std <= 0:
+    raise ValidationError(
+        "local_position_std must be positive",
+        expected="float > 0 or None",
+        got=str(local_position_std),
+        hint="Set to None for legacy single-bin local behavior",
+    )
+```
 
 #### 1b. Modify `initialize_state_index()` to allocate full bins for multi-bin local
 
@@ -80,52 +115,57 @@ Current:
 ```python
 if obs.is_local or obs.is_no_spike:
     bin_sizes.append(1)
+    state_ind.append(np.full(1, ind, dtype=int))
+    is_track_interior.append(np.ones(1, dtype=bool))
 ```
 
-Change to check whether multi-bin local is active:
+Change to:
 ```python
 if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
     bin_sizes.append(1)
+    state_ind.append(np.full(1, ind, dtype=int))
+    is_track_interior.append(np.ones(1, dtype=bool))
 ```
 
 When `local_position_std` is set, the local state falls through to the `else` branch and gets
 all `environment.place_bin_centers_.shape[0]` bins, same as non-local states.
 
-The `local_position_std` attribute needs to exist on the base class (or be checked via
-`getattr`). Use `getattr(self, 'local_position_std', None)` for safety, since not all
-subclasses (decoders, classifiers) will have this parameter.
+Note: The `else` branch requires `obs.environment_name` to find the correct environment.
+The default `ObservationModel(is_local=True)` has `environment_name=""`, which matches the
+default environment. This already works for the non-local defaults. Verify this with a test.
 
 #### 1c. Modify initial conditions for multi-bin local
 
-**File:** `src/non_local_detector/initial_conditions.py` (line 58)
+**File:** `src/non_local_detector/models/base.py` — `initialize_initial_conditions()` (line 816)
 
-Current:
+At the call site where `make_initial_conditions(obs, environments)` is called, when
+`self.local_position_std is not None` and `obs.is_local`, pass a modified copy of the
+observation model using `dataclasses.replace(obs, is_local=False)`. This causes
+`UniformInitialConditions.make_initial_conditions` to take the spatial (non-local) code path
+and return uniform initial conditions over all position bins.
+
 ```python
-if observation_model.is_local or observation_model.is_no_spike:
-    initial_conditions = np.ones((1,), dtype=np.float32)
+from dataclasses import replace
+
+# In initialize_initial_conditions():
+for obs, ic_type in zip(self.observation_models, self.continuous_initial_conditions_types):
+    effective_obs = obs
+    if obs.is_local and self.local_position_std is not None:
+        effective_obs = replace(obs, is_local=False)
+    ic = ic_type.make_initial_conditions(effective_obs, self.environments)
+    ...
 ```
 
-Problem: `UniformInitialConditions.make_initial_conditions()` doesn't have access to
-`local_position_std` since it only receives the `ObservationModel`.
-
-Solution: Add an `is_multi_bin_local` flag to the call site. In `initialize_initial_conditions()`
-(base.py line 816), when `local_position_std is not None` and `obs.is_local`, temporarily
-override the observation model's behavior by creating a non-local-like observation model for
-initial conditions, OR pass the flag through.
-
-Simplest approach: modify `make_initial_conditions` to accept an optional `force_spatial=False`
-parameter. When `True`, skip the `is_local` check and return uniform over all position bins.
-The call site in `base.py` passes `force_spatial=True` when `local_position_std is not None`
-and `obs.is_local`.
+No changes to `initial_conditions.py` needed. The `UniformInitialConditions` API stays clean.
 
 ### Phase 2: Continuous Transitions
 
-#### 2a. Handle multi-bin → 1-bin transitions in assembly code
+#### 2a. Handle multi-bin -> 1-bin transitions in assembly code
 
-**File:** `src/non_local_detector/models/base.py` (line ~920)
+**File:** `src/non_local_detector/models/base.py` (line ~920, in the `else` branch at line 919)
 
-The existing code handles 1-bin → n-bin transitions (Discrete to spatial: uniform).
-Add the symmetric case for n-bin → 1-bin transitions (spatial to Discrete):
+The existing code at line 923 handles 1-bin -> n-bin transitions (`n_row_bins == 1, n_col_bins > 1`).
+Add the symmetric case for n-bin -> 1-bin transitions BEFORE the final `else` at line 948:
 
 ```python
 elif n_row_bins > 1 and n_col_bins == 1:
@@ -134,59 +174,63 @@ elif n_row_bins > 1 and n_col_bins == 1:
     self.continuous_state_transitions_[inds] = np.ones((n_row_bins, 1))
 ```
 
-This handles Local (multi-bin) → No-Spike (1-bin) transitions.
+This handles Local (multi-bin) -> No-Spike (1-bin) transitions correctly.
 
-#### 2b. Update default continuous transitions for multi-bin local
+#### 2b. Auto-upgrade `Discrete()` for multi-bin local states
 
-**File:** `src/non_local_detector/models/_defaults.py`
+**File:** `src/non_local_detector/models/base.py` (in `initialize_continuous_state_transitions`)
 
-The defaults don't need to change — they still use `Discrete()` for Local transitions.
-When multi-bin local is active, the assembly code in `initialize_continuous_state_transitions`
-needs to auto-upgrade transitions involving the local state:
+**Critical: this must happen BEFORE `make_state_transition` is called.** If `Discrete()` is
+left in place when `inds` spans `(n_bins, n_bins)`, `make_state_transition()` returns a
+`(1, 1)` matrix that NumPy silently broadcasts into the `(n_bins, n_bins)` slice, filling
+the entire block with 1.0. This is a data-corruption bug.
 
-- **Local → Local:** If `local_position_std is not None` and both states are multi-bin and
-  transition is `Discrete()`, replace with `Uniform()`. This makes local content nearly
-  memoryless — the position kernel handles spatial anchoring.
-
-- **Local → Non-Local:** `Uniform()` (already the default, and now sizes match n→n).
-
-- **Non-Local → Local:** `Discrete()` transitions from 1-bin to n-bin are already handled as
-  uniform by the assembly code. With multi-bin local, this becomes n→n and `Uniform()` is
-  already the default.
-
-Implementation: In `initialize_continuous_state_transitions()`, add logic after the transition
-type is determined:
+Add the auto-upgrade as an early check in the `else` branch (line 919), BEFORE the
+size checks at line 920:
 
 ```python
-# Auto-upgrade Discrete() for multi-bin local states
-local_position_std = getattr(self, 'local_position_std', None)
-if (isinstance(transition, Discrete) and local_position_std is not None
-    and n_row_bins > 1 and n_col_bins > 1):
-    # Multi-bin local: use Uniform instead of Discrete for content transitions
-    transition = Uniform()
+else:
+    # Auto-upgrade Discrete() for multi-bin local states.
+    # Must happen BEFORE make_state_transition() to avoid (1,1) -> (n,n) broadcast.
+    if (isinstance(transition, Discrete) and self.local_position_std is not None):
+        from_obs = self.observation_models[from_state]
+        to_obs = self.observation_models[to_state]
+        if from_obs.is_local or to_obs.is_local:
+            # Determine correct environment name from the local state's obs model
+            local_obs = from_obs if from_obs.is_local else to_obs
+            transition = Uniform(environment_name=local_obs.environment_name)
+
+    n_row_bins = np.max(inds[0].shape)
+    n_col_bins = np.max(inds[1].shape)
+    ...
 ```
+
+The `Uniform` must be constructed with the correct `environment_name` from the local state's
+`ObservationModel`, not a bare `Uniform()` which defaults to `environment_name=""`.
 
 ### Phase 3: Position Uncertainty Kernel
 
-#### 3a. Add `compute_local_position_kernel()` utility
+#### 3a. Add `_compute_local_position_kernel()` as a base class method
 
-**File:** `src/non_local_detector/likelihoods/common.py`
+**File:** `src/non_local_detector/models/base.py`
 
-New function that computes the log of a normalized Gaussian kernel centered on the animal's
-observed position, using track graph distances when available:
+Add as a method on the base class, mirroring `_compute_non_local_position_penalty` (lines
+382-427). This keeps it discoverable alongside the penalty and gives direct access to
+`self.local_position_std`.
 
 ```python
-def compute_local_position_kernel(
+def _compute_local_position_kernel(
+    self,
     time: jnp.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     environment: Environment,
-    local_position_std: float,
 ) -> jnp.ndarray:
     """Compute log position uncertainty kernel for local state.
 
     Returns a normalized (in log-space) Gaussian kernel centered on the
-    animal's interpolated position at each time step.
+    animal's interpolated position at each time step. Uses track graph
+    distances when a track graph is available.
 
     Parameters
     ----------
@@ -198,36 +242,61 @@ def compute_local_position_kernel(
         Position samples.
     environment : Environment
         The spatial environment.
-    local_position_std : float
-        Standard deviation of the position uncertainty kernel.
 
     Returns
     -------
     log_kernel : jnp.ndarray, shape (n_time, n_interior_bins)
         Log of the normalized position uncertainty kernel.
+        n_interior_bins = environment.is_track_interior_.sum(), matching
+        the interior-only convention used by state_bin_masks in
+        compute_log_likelihood.
     """
+    from non_local_detector.likelihoods.common import get_position_at_time
+
     animal_pos = get_position_at_time(position_time, position, time, environment)
     is_interior = environment.is_track_interior_.ravel()
     bin_centers = environment.place_bin_centers_[is_interior]
 
-    # Compute distances — use track graph distances if available
-    if environment.track_graph is not None:
-        # Use graph distances for each (animal_pos, bin_center) pair
-        # Need to compute pairwise distances for each time step
-        # animal_pos: (n_time, n_dims), bin_centers: (n_interior_bins, n_dims)
-        # This requires calling environment methods that use the graph
-        # Implementation: vectorize over time steps
-        n_time = time.shape[0]
-        n_bins = bin_centers.shape[0]
-        sq_dist = np.zeros((n_time, n_bins))
+    # Compute squared distances using precomputed distance matrix
+    if (environment.track_graph is not None
+            and environment.distance_between_nodes_ is not None):
+        # Track graph case: use bin-index lookup into precomputed distance matrix
+        animal_bin_inds = environment.get_bin_ind(np.asarray(animal_pos))
+        # distance_between_nodes_ is dict-of-dicts for 1D track graph
+        # Convert animal bin indices to node IDs
+        bin_to_node = np.asarray(environment.place_bin_centers_nodes_df_.node_id)
+        interior_bin_indices = np.where(is_interior)[0]
+        interior_node_ids = bin_to_node[interior_bin_indices]
+        animal_node_ids = bin_to_node[animal_bin_inds]
+
+        n_time = len(time)
+        n_bins = int(is_interior.sum())
+        sq_dist = np.full((n_time, n_bins), np.inf)
         for t in range(n_time):
-            pos_t = animal_pos[t:t+1]  # (1, n_dims)
-            pos_repeated = np.broadcast_to(pos_t, (n_bins, pos_t.shape[-1]))
-            distances = environment.pairwise_distance(pos_repeated, bin_centers)
-            sq_dist[t] = distances ** 2
+            a_node = animal_node_ids[t]
+            if a_node == -1:
+                continue
+            for b, b_node in enumerate(interior_node_ids):
+                if b_node == -1:
+                    continue
+                try:
+                    d = environment.distance_between_nodes_[a_node][b_node]
+                    sq_dist[t, b] = d ** 2
+                except KeyError:
+                    pass
         sq_dist = jnp.array(sq_dist)
+    elif (environment.distance_between_nodes_ is not None
+            and not isinstance(environment.distance_between_nodes_, dict)):
+        # 2D grid case: distance_between_nodes_ is an (n_bins, n_bins) array
+        animal_bin_inds = environment.get_bin_ind(np.asarray(animal_pos))
+        interior_bin_indices = np.where(is_interior)[0]
+        # Index: distance_between_nodes_[animal_bin, interior_bins]
+        dist_matrix = environment.distance_between_nodes_
+        sq_dist = jnp.array(
+            dist_matrix[np.ix_(animal_bin_inds, interior_bin_indices)] ** 2
+        )
     else:
-        # Euclidean distances
+        # Fallback: Euclidean distances
         if animal_pos.ndim == 1:
             animal_pos = animal_pos[:, jnp.newaxis]
         if bin_centers.ndim == 1:
@@ -237,72 +306,99 @@ def compute_local_position_kernel(
             axis=-1,
         )
 
-    log_kernel = -0.5 * sq_dist / (local_position_std ** 2)
+    log_kernel = -0.5 * sq_dist / (self.local_position_std ** 2)
     # Normalize per time step so kernel is a proper log-probability
-    log_kernel -= logsumexp(log_kernel, axis=1, keepdims=True)
+    log_kernel -= jax.scipy.special.logsumexp(log_kernel, axis=1, keepdims=True)
 
     return log_kernel
 ```
 
-Note: The track graph distance path loops over time steps, which may be slow for long
-recordings. This can be optimized later (vectorize via bin index lookup, or precompute
-distance matrix and index into it). For v1, correctness over speed.
+**Performance note on track graph path:** The per-time-step loop through the dict-of-dicts
+is O(n_time * n_interior_bins). For a typical session (n_time ~ 100k at 500 Hz, n_bins ~ 50),
+this is ~5M dict lookups. If profiling shows this is too slow, convert the dict-of-dicts to
+a dense matrix once during `fit()` and use array indexing. For v1, correctness over speed.
 
-#### 3b. Alternative: precompute distance matrix for track graph case
+**Shape convention:** The returned kernel has shape `(n_time, n_interior_bins)` which matches
+`state_bin_masks[state_id]` used in `compute_log_likelihood`. This is the same convention
+used by `_compute_non_local_position_penalty`.
 
-Instead of looping over time steps, precompute a distance matrix between all bin centers
-and all bin centers (already available as `environment.distance_between_nodes_`), then for
-each time step find the nearest bin to the animal position and look up distances from that
-bin to all other bins. This would be much faster.
+### Phase 4: Likelihood Assembly
 
-```python
-# Faster track graph approach:
-animal_bin_inds = environment.get_bin_ind(animal_pos)  # (n_time,)
-# distance_between_nodes_ is (n_bins, n_bins) or dict
-# Index: distances[animal_bin_ind, :] gives distances to all bins
-```
-
-This avoids the per-time-step loop entirely. Use this approach for v1.
-
-### Phase 4: Likelihood Backends
-
-#### 4a. Modify `compute_log_likelihood` in base classes
+#### 4a. Modify `compute_log_likelihood` in both base classes
 
 **Files:**
 - `src/non_local_detector/models/base.py` lines 2536-2671 (clusterless)
 - `src/non_local_detector/models/base.py` lines 3409-3540 (sorted spikes)
 
-For multi-bin local states, the likelihood should be computed as non-local (full spatial)
-and then the position kernel added. The key changes:
+Both methods need identical changes. Four modifications in each:
 
-1. **Likelihood computation:** When `local_position_std is not None` and `obs.is_local`,
-   call the likelihood function with `is_local=False` to get the full spatial likelihood,
-   then add the position kernel.
+**Change 1: Update `needs_position` guard** (lines 2569-2572 and 3441-3444)
 
-2. **Caching key:** The `likelihood_name` tuple must distinguish multi-bin local from
-   non-local. Two states sharing the same environment/encoding_group but one being
-   multi-bin local and the other non-local compute the **same base likelihood** (both use
-   `is_local=False`). The difference is only the position kernel added afterward.
+Current:
+```python
+needs_position = (
+    np.any([obs.is_local for obs in self.observation_models])
+    or non_local_penalty > 0
+)
+```
 
-   This means we can **share** the base likelihood computation between multi-bin local
-   and non-local states. Compute it once with `is_local=False`, cache it, and add the
-   position kernel only for the local state.
+Add multi-bin local kernel case:
+```python
+needs_position = (
+    np.any([obs.is_local for obs in self.observation_models])
+    or non_local_penalty > 0
+    or self.local_position_std is not None
+)
+```
 
-3. **Assembly:** After computing likelihoods, add the position kernel to the multi-bin
-   local state's bins:
+(Note: when `local_position_std is not None`, `obs.is_local` is likely True anyway, but
+being explicit prevents bugs if the conditions are ever refactored independently.)
+
+**Change 2: Compute effective `is_local` for caching and likelihood call** (lines 2606-2627 and 3477-3497)
 
 ```python
-# After assembling log_likelihood array
-local_position_std = getattr(self, 'local_position_std', None)
-if local_position_std is not None:
+for state_id, obs in enumerate(self.observation_models):
+    # Multi-bin local computes full spatial likelihood (is_local=False)
+    # then adds position kernel afterward
+    effective_is_local = obs.is_local and self.local_position_std is None
+
+    likelihood_name = (
+        obs.environment_name,
+        obs.encoding_group,
+        effective_is_local,
+        obs.is_no_spike,
+    )
+
+    if obs.is_no_spike:
+        likelihood_results[state_id] = predict_no_spike_log_likelihood(...)
+    elif likelihood_name not in computed_likelihoods:
+        likelihood_results[state_id] = likelihood_func(
+            ...,
+            is_local=effective_is_local,
+        )
+        computed_likelihoods[likelihood_name] = state_id
+    else:
+        likelihood_results[state_id] = computed_likelihoods[likelihood_name]
+```
+
+This means multi-bin local and non-local states sharing `(env_name, encoding_group)` will
+have the same `likelihood_name` tuple (both with `effective_is_local=False`). The base
+spatial likelihood is computed once and shared. The position kernel is added only to the
+local state's bins in the next step.
+
+**Change 3: Add position kernel post-assembly** (after existing penalty application)
+
+```python
+# Apply local position kernel if configured
+if self.local_position_std is not None:
     env_kernels = {}
     for state_id, obs in enumerate(self.observation_models):
         if obs.is_local:
             env_name = obs.environment_name
             if env_name not in env_kernels:
                 env = self._get_environment_by_name(env_name)
-                env_kernels[env_name] = compute_local_position_kernel(
-                    time, position_time, position, env, local_position_std
+                env_kernels[env_name] = self._compute_local_position_kernel(
+                    time, position_time, position, env
                 )
             is_state_bin = state_bin_masks[state_id]
             log_likelihood = log_likelihood.at[:, is_state_bin].add(
@@ -310,29 +406,15 @@ if local_position_std is not None:
             )
 ```
 
-This mirrors the pattern used by `non_local_position_penalty` (lines 2651-2668).
+This mirrors the `non_local_position_penalty` pattern (lines 2651-2668).
 
-4. **Likelihood name for caching:** When `local_position_std is not None`, the local state
-   should use `is_local=False` in its `likelihood_name` so it shares the base likelihood
-   with non-local states:
+**Change 4: No changes needed to the assembly loop** (lines 2637-2649 and 3507-3519)
 
-```python
-likelihood_name = (
-    obs.environment_name,
-    obs.encoding_group,
-    obs.is_local and getattr(self, 'local_position_std', None) is None,  # True only for legacy local
-    obs.is_no_spike,
-)
-```
-
-And pass `is_local=False` when multi-bin local:
-```python
-effective_is_local = obs.is_local and getattr(self, 'local_position_std', None) is None
-likelihood_results[state_id] = likelihood_func(
-    ...,
-    is_local=effective_is_local,
-)
-```
+The assembly loop uses `state_bin_masks[state_id]` which already accounts for the correct
+number of bins per state (set up by `initialize_state_index` in Phase 1b). When multi-bin
+local is active, `state_bin_masks` for the local state will have `n_interior_bins` True
+entries instead of 1, and the likelihood result will have matching shape since it was
+computed with `is_local=False`.
 
 #### 4b. No changes to individual likelihood backends
 
@@ -343,11 +425,14 @@ need any modifications. The kernel is added at the assembly level in `compute_lo
 
 ### Phase 5: Results Assembly
 
-#### 5a. Fix position coordinate assignment for multi-bin local
+There is one `_convert_results_to_xarray` (line 1976) and one `_convert_seq_to_df` (line 2155)
+on the shared base class. Both need the same condition change.
 
-**File:** `src/non_local_detector/models/base.py` (lines 2036-2049)
+#### 5a. Fix position coordinate assignment in `_convert_results_to_xarray`
 
-Current code assigns NaN positions for local states:
+**File:** `src/non_local_detector/models/base.py` (line 2037)
+
+Current:
 ```python
 if obs.is_local or obs.is_no_spike:
     position.append(np.full((1, n_position_dims), np.nan))
@@ -355,20 +440,20 @@ if obs.is_local or obs.is_no_spike:
 
 Change to:
 ```python
-if obs.is_no_spike or (obs.is_local and getattr(self, 'local_position_std', None) is None):
+if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
     position.append(np.full((1, n_position_dims), np.nan))
 ```
 
 When multi-bin local is active, the local state falls through and gets real position
 coordinates from `environment.place_bin_centers_`, same as non-local states.
 
-#### 5b. Fix Viterbi/MAP sequence conversion
+#### 5b. Fix Viterbi/MAP sequence conversion in `_convert_seq_to_df`
 
-**File:** `src/non_local_detector/models/base.py` (lines 2174-2178)
+**File:** `src/non_local_detector/models/base.py` (line 2175)
 
-Same pattern — change the condition so multi-bin local gets real positions:
+Same pattern:
 ```python
-if obs.is_no_spike or (obs.is_local and getattr(self, 'local_position_std', None) is None):
+if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
     position.append(np.full((1, n_position_dims), np.nan))
 ```
 
@@ -381,6 +466,7 @@ if obs.is_no_spike or (obs.is_local and getattr(self, 'local_position_std', None
 - Kernel narrows as `local_position_std` decreases
 - Track graph distances are used when track graph is available
 - Handles edge cases: animal at track boundary, NaN positions
+- Shape assertion: output shape is `(n_time, n_interior_bins)`
 
 #### 6b. Integration tests
 
@@ -389,12 +475,35 @@ if obs.is_no_spike or (obs.is_local and getattr(self, 'local_position_std', None
 - Legacy behavior (`local_position_std=None`) produces identical results to current code
 - Multi-bin local + non-local states produce valid combined posteriors
 - Transition matrices are properly constructed (stochastic, correct shape)
+- Validation rejects `local_position_std <= 0`
 
 #### 6c. Backward compatibility tests
 
 - All existing tests pass unchanged when `local_position_std=None`
 - Snapshot tests produce identical results (no regression)
 - Golden regression tests pass
+- Add a `local_position_std=None` snapshot alongside the new `local_position_std=X` snapshot
+  for ongoing regression protection
+
+#### 6d. EM re-estimation validation
+
+The multi-bin local posterior is now spatial — it contributes posterior mass across all bins
+weighted by the position kernel. The EM M-step for encoding models uses this posterior to
+reweight spike assignments. Verify:
+
+- EM-estimated place fields after multi-bin local are not distorted relative to ground truth
+- The local state's smeared posterior does not cause the encoding model to "blur" place fields
+- If distortion is observed, consider masking the local state's contribution to EM updates
+  or using only the kernel-peak bin
+
+This is a scientifically significant concern and must be tested, not deferred.
+
+#### 6e. Interaction tests
+
+- Test that `non_local_position_penalty > 0` and `local_position_std` enabled simultaneously
+  produces valid results without double-counting
+- Document the intended usage: the penalty suppresses non-local near the animal; the kernel
+  anchors local near the animal. They are complementary but users should understand both.
 
 ---
 
@@ -402,16 +511,19 @@ if obs.is_no_spike or (obs.is_local and getattr(self, 'local_position_std', None
 
 | File | Change | Phase |
 |------|--------|-------|
-| `models/non_local_model.py` | Add `local_position_std` constructor param | 1a |
+| `models/base.py` constructor | Add `local_position_std` param with validation | 1a |
+| `models/non_local_model.py` | Add `local_position_std` param, pass to super | 1a |
 | `models/base.py` `initialize_state_index` | Multi-bin local gets full position bins | 1b |
-| `initial_conditions.py` | `force_spatial` param for multi-bin local | 1c |
-| `models/base.py` `initialize_continuous_state_transitions` | n→1 case; auto-upgrade Discrete for multi-bin | 2a, 2b |
-| `likelihoods/common.py` | New `compute_local_position_kernel()` | 3a |
-| `models/base.py` `compute_log_likelihood` (×2) | Effective is_local, add kernel post-assembly | 4a |
-| `models/base.py` results assembly (×2) | Multi-bin local gets real positions | 5a, 5b |
+| `models/base.py` `initialize_initial_conditions` | Use `dataclasses.replace` for multi-bin local obs | 1c |
+| `models/base.py` `initialize_continuous_state_transitions` | n->1 case; auto-upgrade `Discrete` BEFORE `make_state_transition` | 2a, 2b |
+| `models/base.py` `_compute_local_position_kernel` | New method mirroring penalty pattern | 3a |
+| `models/base.py` `compute_log_likelihood` (x2) | `needs_position` guard; effective `is_local`; kernel post-assembly | 4a |
+| `models/base.py` `_convert_results_to_xarray` | Multi-bin local gets real positions | 5a |
+| `models/base.py` `_convert_seq_to_df` | Multi-bin local gets real positions | 5b |
 
 **Files NOT changed:**
 - `observation_models.py` — `is_local` semantics unchanged
+- `initial_conditions.py` — no API changes (handled via `dataclasses.replace` at call site)
 - `models/_defaults.py` — defaults unchanged (backward compatible)
 - All likelihood backends — no changes (kernel added at assembly level)
 - `continuous_state_transitions.py` — no new classes needed
@@ -420,13 +532,10 @@ if obs.is_no_spike or (obs.is_local and getattr(self, 'local_position_std', None
 
 1. **Non-local position penalty interaction:** With multi-bin local, the local state may absorb
    some of what the penalty was doing. Test empirically whether the penalty is still needed.
+   (Phase 6e adds a test for correctness when both are enabled.)
 
-2. **Performance of track graph kernel:** The precomputed distance matrix approach should be
-   fast, but profile on real data to confirm.
+2. **Performance of track graph kernel:** The dict-of-dicts loop is O(n_time * n_interior_bins).
+   If too slow, convert to a dense matrix during `fit()`. Profile on real data.
 
 3. **Optimal `local_position_std`:** What value makes scientific sense? Likely depends on
    position tracking precision and place field width. Could be estimated from data.
-
-4. **EM parameter re-estimation:** The multi-bin local posterior is now spatial. Verify that
-   the existing EM code correctly re-estimates encoding models when the local state contributes
-   spatial posterior mass.
