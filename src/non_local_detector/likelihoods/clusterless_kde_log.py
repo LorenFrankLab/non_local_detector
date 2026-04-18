@@ -876,6 +876,7 @@ def _estimate_log_joint_mark_intensity_impl(
     position_std: jnp.ndarray | None = None,
     precomputed_enc_gemm: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]
     | None = None,
+    n_real_encoding_spikes: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -940,10 +941,20 @@ def _estimate_log_joint_mark_intensity_impl(
             waveform_stds,
         )  # shape (n_encoding_spikes, n_decoding_spikes)
 
-        # Double-where: substitute safe denominator, then select result
-        safe_n = jnp.where(n_encoding_spikes > 0, n_encoding_spikes, 1)
+        # When ``n_real_encoding_spikes`` is provided (electrode-scan batch
+        # padding), use it for the 1/n normalization instead of the padded
+        # shape.  Keep the ``n_encoding_spikes > 0`` guard on the PADDED
+        # shape — inside the scan, max_n_enc >= 1 always, so the guard
+        # passes and the real-count normalization applies.
+        if n_real_encoding_spikes is not None:
+            safe_n = jnp.maximum(n_real_encoding_spikes.astype(jnp.float32), 1.0)
+            has_real_enc = n_real_encoding_spikes > 0
+        else:
+            # Double-where: substitute safe denominator, then select result
+            safe_n = jnp.where(n_encoding_spikes > 0, n_encoding_spikes, 1)
+            has_real_enc = n_encoding_spikes > 0
         marginal_density = jnp.where(
-            n_encoding_spikes > 0,
+            has_real_enc,
             spike_waveform_feature_distance.T @ position_distance / safe_n,
             0.0,
         )  # shape (n_decoding_spikes, n_position_bins)
@@ -988,9 +999,17 @@ def _estimate_log_joint_mark_intensity_impl(
         n_pos = log_position_distance.shape[1]
     n_dec = decoding_spike_waveform_features.shape[0]
 
-    # Uniform weights: log(1/n) for each encoding spike
-    # Use max(n, 1) to avoid log(0); when n=0 the result is unused
-    safe_n = jnp.where(n_encoding_spikes > 0, float(n_encoding_spikes), 1.0)
+    # Uniform weights: log(1/n) for each encoding spike.  When
+    # ``n_real_encoding_spikes`` is provided (electrode-scan batch padding),
+    # use the real count instead of the padded shape — padded encoding
+    # slots are masked to ``-inf`` in ``log_position_distance`` upstream
+    # so they contribute nothing to the matmul, but the normalization
+    # ``1/n`` must still reflect the real count.
+    if n_real_encoding_spikes is not None:
+        safe_n = jnp.maximum(n_real_encoding_spikes.astype(jnp.float32), 1.0)
+    else:
+        # Use max(n, 1) to avoid log(0); when n=0 the result is unused.
+        safe_n = jnp.where(n_encoding_spikes > 0, float(n_encoding_spikes), 1.0)
     log_w = -jnp.log(safe_n)
 
     # If enc_tile_size specified, chunk over encoding spikes
@@ -1392,6 +1411,7 @@ def _block_estimate_with_segment_sum_impl(
     encoding_positions: jnp.ndarray | None = None,
     position_eval_points: jnp.ndarray | None = None,
     position_std: jnp.ndarray | None = None,
+    n_real_encoding_spikes: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Block_estimate fused with segment_sum; accumulates ``(n_time, n_pos)`` directly.
 
@@ -1500,6 +1520,7 @@ def _block_estimate_with_segment_sum_impl(
             position_eval_points=position_eval_points,
             position_std=position_std,
             precomputed_enc_gemm=precomp,
+            n_real_encoding_spikes=n_real_encoding_spikes,
         )
         # Match block_estimate_log_joint_mark_intensity's LOG_EPS floor so
         # the summed likelihood matches the separate
@@ -1613,6 +1634,368 @@ def block_estimate_with_segment_sum_log_joint_mark_intensity(
         position_eval_points=position_eval_points,
         position_std=position_std,
     )
+
+
+# Encoding-position padding sentinel for the electrode-scan batch.  Must be
+# far outside any plausible spatial environment so that
+# ``log_kde_distance(eval_points, padded_pos, std)`` produces values so
+# negative that ``exp(...)`` underflows to 0 — effectively zeroing the
+# padded encoding spike's contribution to the matmul.  1e10 gives
+# ``log_pos ≈ -5e17`` with std=3.5, far below exp's float32 underflow.
+_ELECTRODE_SCAN_POS_PAD_VALUE = 1.0e10
+
+
+def _group_electrodes_by_n_wf(
+    encoding_spike_waveform_features: list[jnp.ndarray],
+) -> dict[int, list[int]]:
+    """Return a mapping from n_wf to the list of electrode indices with that count.
+
+    In the common case (all tetrodes have 4 features) this returns a
+    single group; in the rare case where a bad tetrode wire reduces
+    ``n_wf`` for some electrodes, we run one JIT-compiled scan per group.
+    """
+    groups: dict[int, list[int]] = {}
+    for i, enc_wf in enumerate(encoding_spike_waveform_features):
+        if enc_wf.ndim != 2:
+            raise ValueError(
+                f"electrode {i}: encoding_spike_waveform_features must be 2-D; "
+                f"got shape {enc_wf.shape}"
+            )
+        n_wf = int(enc_wf.shape[1])
+        groups.setdefault(n_wf, []).append(i)
+    return groups
+
+
+def _bucket_by_size(
+    electrode_indices: list[int],
+    encoding_spike_waveform_features: list[jnp.ndarray],
+    decoding_spike_times: list[jnp.ndarray],
+    time: jnp.ndarray,
+    max_buckets: int = 4,
+) -> list[list[int]]:
+    """Partition same-``n_wf`` electrodes into size-buckets.
+
+    Padding all electrodes in a group to the group's max encoding-spike
+    count inflates per-electrode compute proportionally to
+    ``max_n_enc / mean_n_enc``.  Bucketing electrodes of similar size
+    together bounds the inflation per bucket at the cost of one extra
+    JIT compilation per bucket.
+
+    Bucketing uses quantiles of ``max(n_enc, n_dec_in_bounds)`` per
+    electrode.  Returns a list of electrode-index lists, each suitable
+    to hand to :func:`_prepare_electrode_scan_group`.  Order is
+    preserved within each bucket.
+
+    Notes
+    -----
+    The effective bucket count is ``min(max_buckets, len(electrode_indices))``
+    — single-element groups and groups smaller than ``max_buckets`` get
+    fewer splits automatically, avoiding empty buckets.  Empty buckets
+    that arise from quantile ties are also dropped from the returned
+    list.
+    """
+    if len(electrode_indices) <= 1:
+        return [electrode_indices]
+
+    time_np = np.asarray(time)
+    t0, t1 = float(time_np[0]), float(time_np[-1])
+    sizes: list[int] = []
+    for i in electrode_indices:
+        n_enc = int(encoding_spike_waveform_features[i].shape[0])
+        dec_t = np.asarray(decoding_spike_times[i])
+        n_dec = int(np.sum((dec_t >= t0) & (dec_t <= t1)))
+        sizes.append(max(n_enc, n_dec))
+
+    n_buckets = min(max_buckets, len(electrode_indices))
+    # Use quantile edges so each bucket has ~equal cardinality.
+    qs = np.quantile(
+        np.asarray(sizes, dtype=float),
+        np.linspace(0.0, 1.0, n_buckets + 1)[1:-1],
+    )
+    buckets: list[list[int]] = [[] for _ in range(n_buckets)]
+    for idx, size in zip(electrode_indices, sizes, strict=True):
+        b = int(np.searchsorted(qs, size, side="right"))
+        buckets[b].append(idx)
+    # Drop empty buckets (can happen if all electrodes tie on a quantile).
+    return [b for b in buckets if b]
+
+
+def _prepare_electrode_scan_group(
+    electrode_indices: list[int],
+    encoding_spike_waveform_features: list[jnp.ndarray],
+    encoding_positions: list[jnp.ndarray],
+    decoding_spike_waveform_features: list[jnp.ndarray],
+    decoding_spike_times: list[jnp.ndarray],
+    mean_rates: jnp.ndarray,
+    time: jnp.ndarray,
+    waveform_std: jnp.ndarray | float,
+) -> dict:
+    """Pad and stack a group of same-``n_wf`` electrodes into batched arrays.
+
+    Prepares the per-group input to ``_predict_nonlocal_electrode_scan_jit``.
+    All electrodes in ``electrode_indices`` must share the same
+    ``n_wf``.  Within the group, encoding and decoding arrays are padded
+    to the max count across electrodes; encoding features use
+    ``mode='edge'`` (copy last real row), encoding positions use the
+    ``_ELECTRODE_SCAN_POS_PAD_VALUE`` sentinel (so padded rows'
+    ``log_kde_distance`` underflows to 0 downstream), decoding features
+    use ``mode='edge'``, and decoding segment ids use the ``n_time``
+    sentinel (ignored by ``segment_sum``).  Decoding spikes outside the
+    decoding time window ``[time[0], time[-1]]`` are filtered out before
+    padding.  An electrode with zero real decoding spikes has
+    all-sentinel seg ids and contributes nothing to the accumulator
+    regardless of feature values.
+
+    Parameters
+    ----------
+    electrode_indices : list[int]
+        Indices (into the outer per-electrode lists) of the electrodes
+        in this group.
+    encoding_spike_waveform_features : list[jnp.ndarray]
+        One per-electrode array, shape ``(n_enc_e, n_wf)``.
+    encoding_positions : list[jnp.ndarray]
+        One per-electrode array, shape ``(n_enc_e, n_pos_dim)``.
+    decoding_spike_waveform_features : list[jnp.ndarray]
+        One per-electrode array, shape ``(n_dec_e, n_wf)``.
+    decoding_spike_times : list[jnp.ndarray]
+        One per-electrode array, shape ``(n_dec_e,)``.  Expected sorted
+        ascending.
+    mean_rates : jnp.ndarray, shape (n_electrodes_total,)
+    time : jnp.ndarray, shape (n_time_edges,)
+        Decoding-bin edges.  ``n_time = int(time.shape[0])`` is the
+        ``num_segments`` value used for segment_sum.
+    waveform_std : jnp.ndarray | float
+        Scalar or per-feature waveform bandwidth.
+
+    Returns
+    -------
+    dict with keys
+
+    * ``enc_wf_batch`` — jnp.ndarray, shape ``(n_electrodes, max_n_enc, n_wf)``
+      encoding waveform features, edge-padded.
+    * ``enc_pos_batch`` — jnp.ndarray, shape ``(n_electrodes, max_n_enc, n_pos_dim)``
+      encoding positions, padded with ``_ELECTRODE_SCAN_POS_PAD_VALUE``.
+    * ``dec_wf_batch`` — jnp.ndarray, shape ``(n_electrodes, max_n_dec, n_wf)``
+      decoding waveform features, edge-padded.
+    * ``dec_seg_ids_batch`` — jnp.ndarray of int32, shape
+      ``(n_electrodes, max_n_dec)``; values in ``[0, n_time)`` for real
+      spikes, ``n_time`` (sentinel) for padded slots.
+    * ``mean_rates_batch`` — jnp.ndarray, shape ``(n_electrodes,)``
+    * ``n_real_enc_batch`` — jnp.ndarray of int32, shape
+      ``(n_electrodes,)``; true encoding-spike count per electrode
+      (used to compute ``log_w = -log(n_real)``).
+    * ``waveform_stds`` — jnp.ndarray, shape ``(n_wf,)``
+    * ``n_time`` — int, static (`len(time)` convention)
+    * ``n_wf`` — int
+    * ``max_n_enc``, ``max_n_dec`` — int, padding targets
+    * ``n_electrodes`` — int, ``len(electrode_indices)``
+    """
+    # n_time matches the len(time) convention used elsewhere in this
+    # module (``len(time_edges)``, one larger than the number of bins).
+    # The accumulator returned by the scan has shape (n_time, n_pos) and
+    # is summed with the ``-ground_process_intensity * ones((n_time, 1))``
+    # baseline in predict_clusterless_kde_log_likelihood.  Valid segment
+    # ids after ``np.digitize(...)`` are in ``[0, n_time)``; the sentinel
+    # ``n_time`` is out of range for ``segment_sum(num_segments=n_time)``
+    # and therefore ignored.
+    n_time = int(time.shape[0])
+
+    # Per-electrode raw arrays after in-bounds filtering.
+    per_enc_wf: list[np.ndarray] = []
+    per_enc_pos: list[np.ndarray] = []
+    per_dec_wf: list[np.ndarray] = []
+    per_dec_seg_ids: list[np.ndarray] = []
+    per_n_real_enc: list[int] = []
+    per_n_real_dec: list[int] = []
+
+    for i in electrode_indices:
+        enc_wf_i = np.asarray(encoding_spike_waveform_features[i])
+        enc_pos_i = np.asarray(encoding_positions[i])
+        dec_wf_i = np.asarray(decoding_spike_waveform_features[i])
+        dec_times_i = np.asarray(decoding_spike_times[i])
+
+        time_np = np.asarray(time)
+        in_bounds = (dec_times_i >= time_np[0]) & (dec_times_i <= time_np[-1])
+        dec_times_i = dec_times_i[in_bounds]
+        dec_wf_i = dec_wf_i[in_bounds]
+        seg_ids_i = np.digitize(dec_times_i, time_np[1:-1]).astype(np.int32)
+
+        per_enc_wf.append(enc_wf_i)
+        per_enc_pos.append(enc_pos_i)
+        per_dec_wf.append(dec_wf_i)
+        per_dec_seg_ids.append(seg_ids_i)
+        per_n_real_enc.append(int(enc_wf_i.shape[0]))
+        per_n_real_dec.append(int(dec_wf_i.shape[0]))
+
+    n_wf = int(per_enc_wf[0].shape[1])
+    n_pos_dim = int(per_enc_pos[0].shape[1])
+    max_n_enc = max(per_n_real_enc)
+    max_n_dec = max(per_n_real_dec + [1])  # ≥1 so dynamic_slice shapes are valid
+
+    n_electrodes = len(electrode_indices)
+
+    # Stacked, padded arrays.
+    enc_wf_batch = np.zeros((n_electrodes, max_n_enc, n_wf), dtype=np.float32)
+    enc_pos_batch = np.zeros((n_electrodes, max_n_enc, n_pos_dim), dtype=np.float32)
+    dec_wf_batch = np.zeros((n_electrodes, max_n_dec, n_wf), dtype=np.float32)
+    dec_seg_ids_batch = np.full((n_electrodes, max_n_dec), n_time, dtype=np.int32)
+
+    for k, (enc_wf_i, enc_pos_i, dec_wf_i, seg_ids_i) in enumerate(
+        zip(
+            per_enc_wf,
+            per_enc_pos,
+            per_dec_wf,
+            per_dec_seg_ids,
+            strict=True,
+        )
+    ):
+        n_enc_i = enc_wf_i.shape[0]
+        n_dec_i = dec_wf_i.shape[0]
+
+        # Edge-pad encoding features (rationale in
+        # _block_estimate_log_joint_mark_intensity_impl); far-pad encoding
+        # positions so padded encoding rows give hugely-negative log_pos
+        # that underflow downstream exp(), zeroing their matmul contribution.
+        if n_enc_i > 0:
+            enc_wf_batch[k, :n_enc_i] = enc_wf_i
+            if n_enc_i < max_n_enc:
+                enc_wf_batch[k, n_enc_i:] = enc_wf_i[-1]
+            enc_pos_batch[k, :n_enc_i] = enc_pos_i
+            if n_enc_i < max_n_enc:
+                enc_pos_batch[k, n_enc_i:] = _ELECTRODE_SCAN_POS_PAD_VALUE
+        else:
+            enc_wf_batch[k, :] = 0.0  # electrode with 0 real enc spikes
+            enc_pos_batch[k, :] = _ELECTRODE_SCAN_POS_PAD_VALUE
+
+        # Edge-pad decoding features; seg_ids already sentinel-padded to n_time.
+        if n_dec_i > 0:
+            dec_wf_batch[k, :n_dec_i] = dec_wf_i
+            if n_dec_i < max_n_dec:
+                dec_wf_batch[k, n_dec_i:] = dec_wf_i[-1]
+            dec_seg_ids_batch[k, :n_dec_i] = seg_ids_i
+        else:
+            # Electrode with 0 real decoding spikes: leave dec_wf as zeros
+            # (seg_ids are all sentinel, so segment_sum ignores this row
+            # regardless of feature values).  We CANNOT edge-pad because
+            # there is no last-real to copy; the sentinel seg_ids are the
+            # safety net.
+            pass
+
+    # Expand waveform_std to per-feature for this group.
+    if isinstance(waveform_std, (int, float)) or (
+        hasattr(waveform_std, "ndim") and np.asarray(waveform_std).ndim == 0
+    ):
+        wf_stds = np.full(n_wf, float(np.asarray(waveform_std)), dtype=np.float32)
+    else:
+        wf_stds = np.asarray(waveform_std, dtype=np.float32)
+
+    mean_rates_np = np.asarray(mean_rates, dtype=np.float32)
+    mean_rates_batch = np.array(
+        [mean_rates_np[i] for i in electrode_indices], dtype=np.float32
+    )
+    n_real_enc_batch = np.asarray(per_n_real_enc, dtype=np.int32)
+
+    return {
+        "enc_wf_batch": jnp.asarray(enc_wf_batch),
+        "enc_pos_batch": jnp.asarray(enc_pos_batch),
+        "dec_wf_batch": jnp.asarray(dec_wf_batch),
+        "dec_seg_ids_batch": jnp.asarray(dec_seg_ids_batch),
+        "mean_rates_batch": jnp.asarray(mean_rates_batch),
+        "n_real_enc_batch": jnp.asarray(n_real_enc_batch),
+        "waveform_stds": jnp.asarray(wf_stds),
+        "n_time": n_time,
+        "n_wf": n_wf,
+        "max_n_enc": max_n_enc,
+        "max_n_dec": max_n_dec,
+        "n_electrodes": n_electrodes,
+    }
+
+
+def _predict_nonlocal_electrode_scan_impl(
+    enc_wf_batch: jnp.ndarray,
+    enc_pos_batch: jnp.ndarray,
+    dec_wf_batch: jnp.ndarray,
+    dec_seg_ids_batch: jnp.ndarray,
+    mean_rates_batch: jnp.ndarray,
+    n_real_enc_batch: jnp.ndarray,
+    waveform_stds: jnp.ndarray,
+    interior_place_bin_centers: jnp.ndarray,
+    position_std: jnp.ndarray,
+    occupancy: jnp.ndarray,
+    n_time: int,
+    block_size: int,
+    use_gemm: bool = True,
+    pos_tile_size: int | None = None,
+    enc_tile_size: int | None = None,
+) -> jnp.ndarray:
+    """Scan over electrodes: one iteration computes one electrode's ``(n_time, n_pos)`` contribution.
+
+    Accumulator shape is ``(n_time, n_position_bins)``; the initial value
+    is zeros (the ``-ground_process_intensity`` baseline is added by the
+    caller).  Returns the accumulated non-local log-likelihood after
+    processing all electrodes in the group.
+    """
+    n_position_bins = occupancy.shape[0]
+
+    def electrode_body(carry: jnp.ndarray, electrode):
+        (enc_wf_e, enc_pos_e, dec_wf_e, seg_ids_e, mean_rate_e, n_real_enc_e) = (
+            electrode
+        )
+        # Per-electrode log-position kernel — computed inside scan to keep
+        # peak memory at single-electrode scale (~max_n_enc × n_pos × 4 B)
+        # rather than the (n_electrodes, max_n_enc, n_pos) that batching
+        # would require.  Padded encoding rows in ``enc_pos_e`` have been
+        # replaced upstream in ``_prepare_electrode_scan_group`` with the
+        # ``_ELECTRODE_SCAN_POS_PAD_VALUE`` sentinel, so their output rows
+        # are hugely-negative log-densities that underflow exp() to 0 in
+        # the downstream mark-intensity matmul — no explicit mask needed.
+        log_pos_e = _log_kde_distance_impl(
+            interior_place_bin_centers, enc_pos_e, position_std
+        )
+        contribution = _block_estimate_with_segment_sum_impl(
+            dec_wf_e,
+            enc_wf_e,
+            waveform_stds,
+            occupancy,
+            mean_rate_e,
+            log_pos_e,
+            seg_ids_e,
+            n_time,
+            block_size=block_size,
+            use_gemm=use_gemm,
+            pos_tile_size=pos_tile_size,
+            enc_tile_size=enc_tile_size,
+            use_streaming=False,
+            n_real_encoding_spikes=n_real_enc_e,
+        )
+        return carry + contribution, None
+
+    init = jnp.zeros((n_time, n_position_bins))
+    result, _ = jax.lax.scan(
+        electrode_body,
+        init,
+        (
+            enc_wf_batch,
+            enc_pos_batch,
+            dec_wf_batch,
+            dec_seg_ids_batch,
+            mean_rates_batch,
+            n_real_enc_batch,
+        ),
+    )
+    return result
+
+
+_predict_nonlocal_electrode_scan_jit = jax.jit(
+    _predict_nonlocal_electrode_scan_impl,
+    static_argnames=(
+        "n_time",
+        "block_size",
+        "use_gemm",
+        "pos_tile_size",
+        "enc_tile_size",
+    ),
+)
 
 
 def fit_clusterless_kde_encoding_model(
@@ -1873,79 +2256,139 @@ def predict_clusterless_kde_log_likelihood(
 
         log_likelihood = -1.0 * summed_ground_process_intensity * jnp.ones((n_time, 1))
 
-        for (
-            electrode_encoding_spike_waveform_features,
-            electrode_encoding_positions,
-            electrode_mean_rate,
-            electrode_decoding_spike_waveform_features,
-            electrode_spike_times,
-        ) in zip(
-            tqdm(
-                encoding_spike_waveform_features,
-                unit="electrode",
-                desc="Non-Local Likelihood",
-                disable=disable_progress_bar,
-            ),
-            encoding_positions,
-            mean_rates,
-            spike_waveform_features,
-            spike_times,
-            strict=True,
-        ):
-            is_in_bounds = jnp.logical_and(
-                electrode_spike_times >= time[0],
-                electrode_spike_times <= time[-1],
-            )
-            electrode_spike_times = electrode_spike_times[is_in_bounds]
-            electrode_decoding_spike_waveform_features = (
-                electrode_decoding_spike_waveform_features[is_in_bounds]
-            )
-            # Compute position kernel in log-space to prevent underflow
-            # (Skip if using streaming mode - computed on-the-fly)
-            if use_streaming:
-                log_position_distance = None
-            else:
-                log_position_distance = log_kde_distance(
-                    interior_place_bin_centers,
-                    electrode_encoding_positions,
-                    std=position_std,
-                )
-
-            # Expand waveform_std to match this electrode's feature count if scalar
-            n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
-            if isinstance(waveform_std, (int, float)) or (
-                hasattr(waveform_std, "ndim") and waveform_std.ndim == 0
+        # Scan-based path: group electrodes by waveform-feature count and run
+        # a JIT-compiled ``jax.lax.scan`` per group, eliminating the Python
+        # dispatch round-trip between electrodes.  Streaming and encoding-
+        # chunking paths use on-the-fly position kernel / chunked logsumexp
+        # code that isn't plumbed through the scan body yet — those modes
+        # fall back to the per-electrode Python loop (same as Task 4).
+        use_scan_path = not use_streaming and enc_tile_size is None
+        if use_scan_path:
+            # Group electrodes by (n_wf, size-bucket).  Same n_wf is required
+            # for the mark kernel's per-feature sigma broadcast; size-bucketing
+            # within a feature group bounds the worst-case padding overhead
+            # (pad-to-max within a bucket, not across all electrodes).
+            groups = _group_electrodes_by_n_wf(encoding_spike_waveform_features)
+            scan_batches: list[list[int]] = []
+            for _n_wf, electrode_indices in sorted(
+                groups.items(), key=lambda kv: kv[0]
             ):
-                electrode_waveform_std = jnp.full(n_waveform_features, waveform_std)
-            else:
-                electrode_waveform_std = waveform_std
-
-            # NOTE: n_time is a static argument to the fused function — each
-            # distinct value triggers a JIT recompilation.  In the common case
-            # of repeated predict calls on the same recording, the cache hits;
-            # segmenting a recording into variable-length chunks (or calling
-            # across datasets) pays one compile per unique n_time.
-            log_likelihood += block_estimate_with_segment_sum_log_joint_mark_intensity(
-                electrode_decoding_spike_waveform_features,
+                scan_batches.extend(
+                    _bucket_by_size(
+                        electrode_indices,
+                        encoding_spike_waveform_features,
+                        spike_times,
+                        time,
+                    )
+                )
+            for batch_indices in tqdm(
+                scan_batches,
+                unit="batch",
+                desc="Non-Local Likelihood (scan)",
+                disable=disable_progress_bar,
+            ):
+                batch = _prepare_electrode_scan_group(
+                    batch_indices,
+                    encoding_spike_waveform_features,
+                    encoding_positions,
+                    spike_waveform_features,
+                    spike_times,
+                    mean_rates,
+                    time,
+                    waveform_std,
+                )
+                log_likelihood = log_likelihood + _predict_nonlocal_electrode_scan_jit(
+                    batch["enc_wf_batch"],
+                    batch["enc_pos_batch"],
+                    batch["dec_wf_batch"],
+                    batch["dec_seg_ids_batch"],
+                    batch["mean_rates_batch"],
+                    batch["n_real_enc_batch"],
+                    batch["waveform_stds"],
+                    interior_place_bin_centers,
+                    position_std,
+                    occupancy,
+                    n_time=batch["n_time"],
+                    block_size=block_size,
+                    pos_tile_size=pos_tile_size,
+                    enc_tile_size=None,
+                )
+        else:
+            # Fallback Python loop for streaming / enc-chunking modes.
+            for (
                 electrode_encoding_spike_waveform_features,
-                electrode_waveform_std,
-                occupancy,
+                electrode_encoding_positions,
                 electrode_mean_rate,
-                log_position_distance,
-                get_spike_time_bin_ind(electrode_spike_times, time),
-                n_time,
-                block_size=block_size,
-                enc_tile_size=enc_tile_size,
-                pos_tile_size=pos_tile_size,
-                use_streaming=use_streaming,
-                encoding_positions=(
-                    electrode_encoding_positions if use_streaming else None
+                electrode_decoding_spike_waveform_features,
+                electrode_spike_times,
+            ) in zip(
+                tqdm(
+                    encoding_spike_waveform_features,
+                    unit="electrode",
+                    desc="Non-Local Likelihood",
+                    disable=disable_progress_bar,
                 ),
-                position_eval_points=(
-                    interior_place_bin_centers if use_streaming else None
-                ),
-                position_std=position_std if use_streaming else None,
-            )
+                encoding_positions,
+                mean_rates,
+                spike_waveform_features,
+                spike_times,
+                strict=True,
+            ):
+                is_in_bounds = jnp.logical_and(
+                    electrode_spike_times >= time[0],
+                    electrode_spike_times <= time[-1],
+                )
+                electrode_spike_times = electrode_spike_times[is_in_bounds]
+                electrode_decoding_spike_waveform_features = (
+                    electrode_decoding_spike_waveform_features[is_in_bounds]
+                )
+                # Compute position kernel in log-space to prevent underflow
+                # (Skip if using streaming mode - computed on-the-fly)
+                if use_streaming:
+                    log_position_distance = None
+                else:
+                    log_position_distance = log_kde_distance(
+                        interior_place_bin_centers,
+                        electrode_encoding_positions,
+                        std=position_std,
+                    )
+
+                # Expand waveform_std to match this electrode's feature count if scalar
+                n_waveform_features = electrode_encoding_spike_waveform_features.shape[
+                    1
+                ]
+                if isinstance(waveform_std, (int, float)) or (
+                    hasattr(waveform_std, "ndim") and waveform_std.ndim == 0
+                ):
+                    electrode_waveform_std = jnp.full(n_waveform_features, waveform_std)
+                else:
+                    electrode_waveform_std = waveform_std
+
+                # NOTE: n_time is a static argument to the fused function — each
+                # distinct value triggers a JIT recompilation.
+                log_likelihood += (
+                    block_estimate_with_segment_sum_log_joint_mark_intensity(
+                        electrode_decoding_spike_waveform_features,
+                        electrode_encoding_spike_waveform_features,
+                        electrode_waveform_std,
+                        occupancy,
+                        electrode_mean_rate,
+                        log_position_distance,
+                        get_spike_time_bin_ind(electrode_spike_times, time),
+                        n_time,
+                        block_size=block_size,
+                        enc_tile_size=enc_tile_size,
+                        pos_tile_size=pos_tile_size,
+                        use_streaming=use_streaming,
+                        encoding_positions=(
+                            electrode_encoding_positions if use_streaming else None
+                        ),
+                        position_eval_points=(
+                            interior_place_bin_centers if use_streaming else None
+                        ),
+                        position_std=position_std if use_streaming else None,
+                    )
+                )
 
     return log_likelihood
 
