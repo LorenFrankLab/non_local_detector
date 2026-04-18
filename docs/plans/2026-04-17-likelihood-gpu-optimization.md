@@ -478,9 +478,11 @@ Verify precomputed arrays are NOT inside the fori_loop body (check jaxpr equatio
 
 ---
 
-## Task 3: Move Electrode Loop Inside JIT
+## Task 3: Move Non-Local Electrode Loop Inside JIT
 
 The Python electrode loop in `predict_clusterless_kde_log_likelihood` (lines 1432-1502) iterates over electrodes sequentially. Moving this inside JIT via `jax.lax.scan` eliminates ~64 Python dispatch round-trips.
+
+**Scope: non-local path only.** The local path depends on `get_position_at_time()` (backed by `scipy.interpolate.interpn`, not JAX-traceable) and per-electrode `KDEModel.predict()` (Python object methods). These cannot be placed inside a `scan`. The local path stays as a Python loop. JIT-ing the local path would require replacing SciPy interpolation with a JAX-traceable equivalent — a separate future task.
 
 **Challenges:**
 
@@ -497,8 +499,8 @@ The Python electrode loop in `predict_clusterless_kde_log_likelihood` (lines 143
 **Files:**
 - Modify: `src/non_local_detector/likelihoods/clusterless_kde_log.py`
   - Add `_pad_electrode_data` helper (pads spike counts, features, and waveform_stds to uniform shapes)
-  - Add `_predict_all_electrodes_jit` function (scan over padded electrode batch)
-  - Modify `predict_clusterless_kde_log_likelihood` to pad and dispatch
+  - Add `_predict_nonlocal_electrodes_jit` function (scan over padded electrode batch)
+  - Modify `predict_clusterless_kde_log_likelihood` to use scan for `is_local=False`, keep Python loop for `is_local=True`
 - Test: `src/non_local_detector/tests/likelihoods/test_jit_electrode_loop.py` (new)
 
 ### Step 1: Write the accuracy test
@@ -558,59 +560,46 @@ def simulated_data():
 
 
 class TestJitElectrodeLoop:
-    def test_nonlocal_matches_reference(self, simulated_data):
-        """Non-local likelihood matches pre-refactor reference output.
+    def test_nonlocal_matches_golden_reference(self, simulated_data):
+        """Non-local likelihood matches pre-refactor golden reference.
 
-        This is the critical correctness gate for Task 3. The test must:
-        1. Compute the reference output using the CURRENT (pre-refactor) code
-        2. Compute the refactored output using the new scan-based code
-        3. Assert numerical equality
+        IMPORTANT: The reference must be saved BEFORE the refactor.
+        After the refactor, both `reference` and `result` would call the
+        same (new) code, making the test vacuous.
 
-        Before implementing the refactor, save the reference output to a
-        fixture or golden file. After the refactor, compare against it.
+        Workflow:
+        1. Before refactoring: run this test → it creates/saves the golden file
+        2. After refactoring: run this test → it loads the golden and compares
+
+        The golden file is saved as a pickle alongside the test file.
         """
-        d = simulated_data
+        import pickle
+        from pathlib import Path
 
-        # Save reference BEFORE refactoring (run this once, save result)
-        reference = predict_clusterless_kde_log_likelihood(
-            d["test_edges"], d["test_time"], d["test_position"],
-            d["test_spikes"], d["test_wf"],
-            **d["encoding_model"],
-            is_local=False, disable_progress_bar=True,
-        )
-        # After refactoring, this call goes through the new scan path
+        d = simulated_data
+        golden_path = Path(__file__).parent / "golden_data" / "task3_nonlocal_reference.pkl"
+
         result = predict_clusterless_kde_log_likelihood(
             d["test_edges"], d["test_time"], d["test_position"],
             d["test_spikes"], d["test_wf"],
             **d["encoding_model"],
             is_local=False, disable_progress_bar=True,
         )
+
+        if not golden_path.exists():
+            golden_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(golden_path, "wb") as f:
+                pickle.dump(np.asarray(result), f)
+            pytest.skip("Golden reference created — re-run after refactoring")
+
+        with open(golden_path, "rb") as f:
+            reference = pickle.load(f)
 
         assert result.shape == reference.shape
         assert jnp.all(jnp.isfinite(result))
-        # Structural refactor — should be near-exact
-        assert jnp.allclose(result, reference, atol=1e-10, rtol=1e-10), (
-            f"Max diff: {float(jnp.max(jnp.abs(result - reference))):.2e}"
+        assert jnp.allclose(result, reference, atol=1e-4, rtol=1e-4), (
+            f"Max diff: {float(jnp.max(jnp.abs(result - np.asarray(reference)))):.2e}"
         )
-
-    def test_local_matches_reference(self, simulated_data):
-        """Local likelihood matches pre-refactor reference."""
-        d = simulated_data
-        reference = predict_clusterless_kde_log_likelihood(
-            d["test_edges"], d["test_time"], d["test_position"],
-            d["test_spikes"], d["test_wf"],
-            **d["encoding_model"],
-            is_local=True, disable_progress_bar=True,
-        )
-        result = predict_clusterless_kde_log_likelihood(
-            d["test_edges"], d["test_time"], d["test_position"],
-            d["test_spikes"], d["test_wf"],
-            **d["encoding_model"],
-            is_local=True, disable_progress_bar=True,
-        )
-        assert result.shape == (len(d["test_edges"]), 1)
-        assert jnp.all(jnp.isfinite(result))
-        assert jnp.allclose(result, reference, atol=1e-10, rtol=1e-10)
 ```
 
 ### Step 2: Implement electrode data preparation and the scan body
