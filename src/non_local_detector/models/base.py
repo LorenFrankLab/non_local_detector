@@ -476,33 +476,42 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Squared distances. Rows where the animal is off-track contain NaN.
         """
         if environment.track_graph is not None:
-            # 1D track graph: dict-of-dicts via place_bin_centers_nodes_df_
+            # 1D track graph: convert dict-of-dicts to dense matrix for
+            # vectorized indexing (avoids O(n_time * n_bins) Python loop).
             if environment.place_bin_centers_nodes_df_ is None:
                 raise ValueError(
                     "place_bin_centers_nodes_df_ is required for 1D track "
                     "graph distance lookup."
                 )
-            animal_bin_inds = environment.get_bin_ind(np.asarray(animal_pos))
-            n_time = len(animal_bin_inds)
-            n_bins = len(interior_bin_indices)
 
-            bin_to_node = np.asarray(environment.place_bin_centers_nodes_df_.node_id)
-            interior_node_ids = bin_to_node[interior_bin_indices]
-            animal_node_ids = bin_to_node[animal_bin_inds]
-
-            # NaN for off-track animal positions (node_id == -1)
-            dist = np.full((n_time, n_bins), np.nan)
-            for t in range(n_time):
-                a_node = animal_node_ids[t]
-                if a_node == -1:
-                    continue  # row stays NaN → caller applies uniform
-                a_distances = environment.distance_between_nodes_.get(a_node, {})
-                for b, b_node in enumerate(interior_node_ids):
-                    if b_node == -1:
+            # Lazily build and cache dense (n_bins, n_bins) distance matrix
+            # indexed by bin. Off-track bins (node_id == -1) get NaN.
+            if not hasattr(environment, "_bin_distance_matrix_"):
+                bin_to_node = np.asarray(
+                    environment.place_bin_centers_nodes_df_.node_id
+                )
+                n_total_bins = len(bin_to_node)
+                bin_dist = np.full((n_total_bins, n_total_bins), np.nan)
+                for src_bin, src_node in enumerate(bin_to_node):
+                    if src_node == -1:
                         continue
-                    d = a_distances.get(b_node, np.inf)
-                    dist[t, b] = d
-            return jnp.array(dist**2)
+                    src_distances = environment.distance_between_nodes_.get(
+                        src_node, {}
+                    )
+                    for dst_bin, dst_node in enumerate(bin_to_node):
+                        if dst_node == -1:
+                            continue
+                        bin_dist[src_bin, dst_bin] = src_distances.get(dst_node, np.inf)
+                environment._bin_distance_matrix_ = bin_dist
+
+            # Vectorized lookup: (n_time, n_interior_bins)
+            animal_bin_inds = environment.get_bin_ind(np.asarray(animal_pos))
+            return jnp.array(
+                environment._bin_distance_matrix_[
+                    np.ix_(animal_bin_inds, interior_bin_indices)
+                ]
+                ** 2
+            )
 
         if environment.distance_between_nodes_ is not None and not isinstance(
             environment.distance_between_nodes_, dict
