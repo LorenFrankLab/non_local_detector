@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 
 from non_local_detector import NonLocalSortedSpikesDetector
+from non_local_detector.models import NonLocalClusterlessDetector
+from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 
@@ -184,3 +186,100 @@ def test_penalty_and_kernel_simultaneous(simulated_data):
     assert np.allclose(posterior_sums, 1.0, rtol=1e-5, atol=1e-6), (
         "Posterior probabilities don't sum to 1 with both penalty and kernel"
     )
+
+
+@pytest.fixture
+def clusterless_simulated_data():
+    """Generate clusterless simulated data for testing."""
+    sim = make_simulated_run_data(n_tetrodes=5, seed=42)
+    return sim
+
+
+@pytest.mark.integration
+def test_clusterless_multibin_local_fit_predict(clusterless_simulated_data):
+    """NonLocalClusterlessDetector with local_position_std produces valid posteriors."""
+    sim = clusterless_simulated_data
+
+    detector = NonLocalClusterlessDetector(
+        local_position_std=5.0,
+        clusterless_algorithm="clusterless_kde",
+        clusterless_algorithm_params={
+            "position_std": 6.0,
+            "block_size": int(2**12),
+        },
+    ).fit(
+        sim.position_time,
+        sim.position,
+        sim.spike_times,
+        sim.spike_waveform_features,
+    )
+
+    results = detector.predict(
+        spike_times=sim.spike_times,
+        spike_waveform_features=sim.spike_waveform_features,
+        time=sim.edges,
+        position=sim.position,
+        position_time=sim.position_time,
+    )
+
+    # Posterior probabilities should sum to 1 at each time point
+    posterior_sums = results.acausal_posterior.sum(axis=1)
+    assert np.allclose(posterior_sums, 1.0, rtol=1e-5, atol=1e-6), (
+        "Clusterless posterior probabilities don't sum to 1"
+    )
+
+    # No NaN or Inf in posterior
+    assert np.all(np.isfinite(results.acausal_posterior.values)), (
+        "Clusterless posterior contains NaN or Inf"
+    )
+
+
+@pytest.mark.snapshot
+def test_multibin_local_posterior_snapshot(simulated_data):
+    """Snapshot: multi-bin local model output for regression detection."""
+    time = simulated_data["time"]
+    position = simulated_data["position"]
+    spike_times = simulated_data["spike_times"]
+    is_event = simulated_data["is_event"]
+
+    detector = NonLocalSortedSpikesDetector(
+        local_position_std=5.0,
+        sorted_spikes_algorithm="sorted_spikes_kde",
+        sorted_spikes_algorithm_params={
+            "position_std": 6.0,
+            "block_size": int(2**12),
+        },
+    ).fit(time, position, spike_times, is_training=~is_event)
+
+    results = detector.predict(
+        spike_times=spike_times,
+        time=time,
+        position=position,
+        position_time=time,
+    )
+
+    # Snapshot invariants: these should not change across runs
+    posterior = results.acausal_posterior.values
+    state_probs = results.acausal_state_probabilities.values
+
+    # 1. Probabilities sum to 1 (JAX float32 precision)
+    np.testing.assert_allclose(
+        posterior.sum(axis=1), 1.0, rtol=1e-5, atol=1e-5, err_msg="Posterior sums != 1"
+    )
+    np.testing.assert_allclose(
+        state_probs.sum(axis=1),
+        1.0,
+        rtol=1e-5,
+        atol=1e-5,
+        err_msg="State prob sums != 1",
+    )
+
+    # 2. No NaN/Inf
+    assert np.all(np.isfinite(posterior)), "Posterior has NaN/Inf"
+    assert np.all(np.isfinite(state_probs)), "State probs has NaN/Inf"
+
+    # 3. Local state has multiple bins (not single-bin legacy)
+    assert detector.bin_sizes_[0] > 1, "Local state should have multiple bins"
+
+    # 4. State probabilities are non-negative
+    assert np.all(state_probs >= 0), "Negative state probabilities"

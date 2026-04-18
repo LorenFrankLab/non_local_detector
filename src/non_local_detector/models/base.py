@@ -448,6 +448,76 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             -0.5 * dist_sq / (self.non_local_penalty_sigma**2)
         )
 
+    @staticmethod
+    def _compute_squared_distances_to_bins(
+        animal_pos: np.ndarray,
+        environment: "Environment",
+        interior_bin_indices: np.ndarray,
+    ) -> jnp.ndarray:
+        """Compute squared distances from animal position to interior bins.
+
+        Uses track graph distances when available (1D track graph or N-D
+        with precomputed distance matrix), otherwise Euclidean.
+
+        Parameters
+        ----------
+        animal_pos : np.ndarray, shape (n_time, n_dims) or (n_time,)
+            Animal position at each time step.
+        environment : Environment
+            The spatial environment.
+        interior_bin_indices : np.ndarray, shape (n_interior_bins,)
+            Indices of interior bins in the full place_bin_centers_ array.
+
+        Returns
+        -------
+        sq_dist : jnp.ndarray, shape (n_time, n_interior_bins)
+            Squared distances.
+        """
+        if environment.distance_between_nodes_ is not None:
+            # Use precomputed track graph distances
+            animal_bin_inds = environment.get_bin_ind(np.asarray(animal_pos))
+            n_time = len(animal_bin_inds)
+            n_bins = len(interior_bin_indices)
+
+            if isinstance(environment.distance_between_nodes_, dict):
+                # 1D track graph: dict-of-dicts via place_bin_centers_nodes_df_
+                bin_to_node = np.asarray(
+                    environment.place_bin_centers_nodes_df_.node_id
+                )
+                interior_node_ids = bin_to_node[interior_bin_indices]
+                animal_node_ids = bin_to_node[animal_bin_inds]
+
+                dist = np.full((n_time, n_bins), np.inf)
+                for t in range(n_time):
+                    a_node = animal_node_ids[t]
+                    if a_node == -1:
+                        continue
+                    a_distances = environment.distance_between_nodes_.get(a_node, {})
+                    for b, b_node in enumerate(interior_node_ids):
+                        if b_node == -1:
+                            continue
+                        d = a_distances.get(b_node, np.inf)
+                        dist[t, b] = d
+                return jnp.array(dist**2)
+            else:
+                # N-D: distance_between_nodes_ is (n_nodes, n_nodes) array
+                dist_matrix = environment.distance_between_nodes_
+                return jnp.array(
+                    dist_matrix[np.ix_(animal_bin_inds, interior_bin_indices)] ** 2
+                )
+
+        # Fallback: Euclidean distances
+        animal_pos_arr = jnp.asarray(animal_pos)
+        bin_centers = jnp.asarray(environment.place_bin_centers_[interior_bin_indices])
+        if animal_pos_arr.ndim == 1:
+            animal_pos_arr = animal_pos_arr[:, jnp.newaxis]
+        if bin_centers.ndim == 1:
+            bin_centers = bin_centers[:, jnp.newaxis]
+        return jnp.sum(
+            (animal_pos_arr[:, jnp.newaxis, :] - bin_centers[jnp.newaxis, :, :]) ** 2,
+            axis=-1,
+        )
+
     def _compute_local_position_kernel(
         self,
         time: jnp.ndarray,
@@ -458,8 +528,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         """Compute log position uncertainty kernel for the local state.
 
         Returns a normalized (in log-space) Gaussian kernel centered on the
-        animal's interpolated position at each time step. Uses Euclidean
-        distances between bin centers and the animal's position.
+        animal's interpolated position at each time step. Uses track graph
+        distances when a track graph is available, otherwise Euclidean.
 
         Parameters
         ----------
@@ -484,22 +554,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         animal_pos = get_position_at_time(position_time, position, time, environment)
 
         is_interior = environment.is_track_interior_.ravel()
-        bin_centers = environment.place_bin_centers_[is_interior]
+        interior_bin_indices = np.where(is_interior)[0]
 
         # Detect NaN positions (from gaps in position data)
         if animal_pos.ndim == 1:
             nan_mask = jnp.isnan(animal_pos)
-            animal_pos = animal_pos[:, jnp.newaxis]
         else:
             nan_mask = jnp.any(jnp.isnan(animal_pos), axis=-1)
 
-        if bin_centers.ndim == 1:
-            bin_centers = bin_centers[:, jnp.newaxis]
-
-        # Euclidean squared distances
-        sq_dist = jnp.sum(
-            (animal_pos[:, jnp.newaxis, :] - bin_centers[jnp.newaxis, :, :]) ** 2,
-            axis=-1,
+        sq_dist = self._compute_squared_distances_to_bins(
+            animal_pos, environment, interior_bin_indices
         )
 
         log_kernel = -0.5 * sq_dist / (self.local_position_std**2)

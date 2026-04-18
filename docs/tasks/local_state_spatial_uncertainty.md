@@ -58,7 +58,7 @@ Each milestone ends with a verification gate that must pass before proceeding.
 - [x] Add method to base class in `models/base.py`, mirroring `_compute_non_local_position_penalty`
 - [x] Add explicit NaN/missing-position guard before bin lookup: `get_position_at_time` can return NaN rows, and `environment.get_bin_ind()` has no NaN guard. Detect NaN positions, assign a uniform (flat) kernel for those time steps, and skip bin lookup for them
 - [x] Euclidean distance path: compute squared distances between interpolated animal position and interior bin centers
-- [ ] Track graph distance path: use precomputed `distance_between_nodes_` (handle dict-of-dicts for 1D and array for 2D)
+- [x] Track graph distance path: use precomputed `distance_between_nodes_` (handle dict-of-dicts for 1D and array for 2D)
 - [x] Normalize kernel per time step via `logsumexp`
 - [x] Return shape `(n_time, n_interior_bins)`
 
@@ -126,7 +126,7 @@ Each milestone ends with a verification gate that must pass before proceeding.
 - [x] Golden regression tests pass: `uv run pytest src/non_local_detector/tests/test_golden_regression.py -v` (4 passed)
 
 ### 6.2 New feature integration tests
-- [ ] Fit and predict with `NonLocalClusterlessDetector(local_position_std=5.0)` on synthetic data — valid posteriors
+- [x] Fit and predict with `NonLocalClusterlessDetector(local_position_std=5.0)` on synthetic data — valid posteriors
 - [x] Fit and predict with `NonLocalSortedSpikesDetector(local_position_std=5.0)` on synthetic data — valid posteriors
 - [ ] Local state posterior is concentrated near animal's position (peak within 2 * std)
 - [x] Combined local + non-local posteriors sum to 1.0 across all states and bins
@@ -142,8 +142,8 @@ Each milestone ends with a verification gate that must pass before proceeding.
 - [x] No double-counting artifacts between penalty and kernel
 
 ### 6.5 Add new snapshots
-- [ ] Add snapshot test for `local_position_std=5.0` model output for ongoing regression protection
-- [ ] Request snapshot approval with full analysis per CLAUDE.md process
+- [x] Add snapshot test for `local_position_std=5.0` model output for ongoing regression protection
+- [x] Request snapshot approval with full analysis per CLAUDE.md process
 
 ### Verification gate 6 (final)
 - [x] `uv run pytest` — full suite green (752 passed)
