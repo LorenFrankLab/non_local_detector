@@ -2790,6 +2790,18 @@ class ClusterlessDetector(_DetectorBase):
 
         >>> results = model.predict(spike_times, time, return_outputs='all')
         """
+        if position is not None and position_time is None:
+            raise ValidationError(
+                "position_time is required when position is provided",
+                expected="position_time array with shape (n_time_position,)",
+                got="None",
+                hint="Provide position_time corresponding to the position samples",
+                example="    results = detector.predict(\n"
+                "        spike_times=spike_times, spike_waveform_features=features,\n"
+                "        time=time, position=position, position_time=position_time\n"
+                "    )",
+            )
+
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
             nan_position = np.any(np.isnan(position), axis=1)
@@ -3577,6 +3589,18 @@ class SortedSpikesDetector(_DetectorBase):
         xr.Dataset
             Predicted posterior probabilities.
         """
+        if position is not None and position_time is None:
+            raise ValidationError(
+                "position_time is required when position is provided",
+                expected="position_time array with shape (n_time_position,)",
+                got="None",
+                hint="Provide position_time corresponding to the position samples",
+                example="    results = detector.predict(\n"
+                "        spike_times=spike_times, time=time,\n"
+                "        position=position, position_time=position_time\n"
+                "    )",
+            )
+
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
             nan_position = np.any(np.isnan(position), axis=1)

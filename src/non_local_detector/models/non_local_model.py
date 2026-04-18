@@ -23,6 +23,57 @@ from non_local_detector.types import (
 )
 
 
+def _get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
+    """Extract the conditional posterior probability for non-local states.
+
+    Combines the posterior probabilities from both non-local continuous and
+    non-local fragmented states (indices 2 and 3 in the model's state list),
+    then normalizes across position.
+
+    Parameters
+    ----------
+    results : xr.Dataset
+        Results from a non-local detector's predict method containing
+        acausal_posterior with a ``state`` coordinate.
+
+    Returns
+    -------
+    conditional_posterior : xr.DataArray
+        Normalized posterior probability for non-local activity across
+        positions.  Shape is ``(n_time, n_position_bins)`` for 1-D
+        environments and ``(n_time, n_x_bins, n_y_bins)`` for 2-D.
+
+    Raises
+    ------
+    ValidationError
+        If the results dataset contains fewer than 4 unique states, which
+        indicates it did not come from a non-local detector.
+    """
+    state_names = results.acausal_posterior.coords["state"].values
+    unique_states = list(dict.fromkeys(state_names))
+    if len(unique_states) < 4:
+        raise ValidationError(
+            f"Expected at least 4 unique states in results, got {len(unique_states)}: "
+            f"{unique_states}",
+            expected="Results from a NonLocal detector with 4 states "
+            "(e.g. Local, No-Spike, Non-Local Continuous, Non-Local Fragmented)",
+            got=f"{len(unique_states)} states: {unique_states}",
+            hint="This method should only be called on results from "
+            "NonLocalSortedSpikesDetector or NonLocalClusterlessDetector",
+        )
+    non_local_continuous = unique_states[2]
+    non_local_fragmented = unique_states[3]
+
+    acausal_posterior = results.acausal_posterior.sel(
+        state=non_local_continuous
+    ) + results.acausal_posterior.sel(state=non_local_fragmented)
+
+    # Sum over all position dimensions (works for 1D "position" and
+    # 2D "x_position"/"y_position" alike)
+    position_dims = [d for d in acausal_posterior.dims if d != "time"]
+    return acausal_posterior / acausal_posterior.sum(position_dims)
+
+
 def _validate_penalty_params(
     non_local_position_penalty: float, non_local_penalty_sigma: float
 ) -> None:
@@ -167,23 +218,9 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
     def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
         """Extract the conditional posterior probability for non-local states.
 
-        Combines the posterior probabilities from both non-local continuous and
-        non-local fragmented states, then normalizes across position.
-
-        Parameters
-        ----------
-        results : xr.Dataset
-            Results from the detector's predict method containing acausal_posterior.
-
-        Returns
-        -------
-        conditional_posterior : xr.DataArray, shape (n_time, n_position_bins)
-            Normalized posterior probability for non-local activity across positions.
+        See :func:`_get_conditional_non_local_posterior` for full documentation.
         """
-        acausal_posterior = results.acausal_posterior.sel(state="Non-Local Continuous")
-        acausal_posterior += results.acausal_posterior.sel(state="Non-Local Fragmented")
-
-        return acausal_posterior / acausal_posterior.sum("position")
+        return _get_conditional_non_local_posterior(results)
 
 
 class NonLocalClusterlessDetector(ClusterlessDetector):
@@ -309,21 +346,6 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
     def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
         """Extract the conditional posterior probability for non-local states.
 
-        Combines the posterior probabilities from both non-local continuous and
-        non-local fragmented states, then normalizes across position.
-
-        Parameters
-        ----------
-        results : xr.Dataset
-            Results from the detector's predict method containing acausal_posterior.
-
-        Returns
-        -------
-        conditional_posterior : xr.DataArray, shape (n_time, n_position_bins)
-            Normalized posterior probability for non-local activity across positions.
+        See :func:`_get_conditional_non_local_posterior` for full documentation.
         """
-        acausal_posterior = results.acausal_posterior.sel(state="Non-Local Continuous")
-        acausal_posterior += results.acausal_posterior.sel(state="Non-Local Fragmented")
-
-        result = acausal_posterior / acausal_posterior.sum("position")
-        return xr.DataArray(result)
+        return _get_conditional_non_local_posterior(results)
