@@ -208,6 +208,13 @@ else:
 The `Uniform` must be constructed with the correct `environment_name` from the local state's
 `ObservationModel`, not a bare `Uniform()` which defaults to `environment_name=""`.
 
+**Scope limitation:** This auto-upgrade only applies to same-environment transitions
+(`from_obs.environment_name == to_obs.environment_name`). For cross-environment blocks,
+`Uniform` requires `environment2_name` (see `continuous_state_transitions.py` line 285).
+If `Discrete()` is used for a cross-environment transition involving a multi-bin local state,
+raise an error rather than silently building the wrong block. This scopes the feature to
+single-environment detectors for v1; multi-environment support can be added later if needed.
+
 ### Phase 3: Position Uncertainty Kernel
 
 #### 3a. Add `_compute_local_position_kernel()` as a base class method
@@ -254,6 +261,17 @@ def _compute_local_position_kernel(
     from non_local_detector.likelihoods.common import get_position_at_time
 
     animal_pos = get_position_at_time(position_time, position, time, environment)
+
+    # Guard against NaN positions before any bin lookup.
+    # get_position_at_time() can return NaN rows (e.g., position gaps),
+    # and environment.get_bin_ind() has no NaN guard — it will crash or
+    # return garbage indices. For NaN time steps, assign a uniform (flat)
+    # kernel so the local state is uninformative rather than broken.
+    if animal_pos.ndim == 1:
+        nan_mask = jnp.isnan(animal_pos)
+    else:
+        nan_mask = jnp.any(jnp.isnan(animal_pos), axis=-1)  # (n_time,)
+
     is_interior = environment.is_track_interior_.ravel()
     bin_centers = environment.place_bin_centers_[is_interior]
 
@@ -309,6 +327,11 @@ def _compute_local_position_kernel(
     log_kernel = -0.5 * sq_dist / (self.local_position_std ** 2)
     # Normalize per time step so kernel is a proper log-probability
     log_kernel -= jax.scipy.special.logsumexp(log_kernel, axis=1, keepdims=True)
+
+    # NaN positions get a uniform (flat) kernel — uninformative rather than broken.
+    n_bins = int(is_interior.sum())
+    uniform_log_kernel = -jnp.log(n_bins)
+    log_kernel = jnp.where(nan_mask[:, jnp.newaxis], uniform_log_kernel, log_kernel)
 
     return log_kernel
 ```
@@ -487,16 +510,16 @@ if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
 
 #### 6d. EM re-estimation validation
 
-The multi-bin local posterior is now spatial — it contributes posterior mass across all bins
-weighted by the position kernel. The EM M-step for encoding models uses this posterior to
-reweight spike assignments. Verify:
+**Correction:** The current EM M-step uses only the discrete local-state probability per time
+point (`acausal_state_probabilities[:, local_state_index]`) as weights to `fit_encoding_model`
+(base.py line ~1595), NOT the spatial posterior over bins. The "blur place fields across bins"
+concern was based on a misreading of the M-step. Verify:
 
-- EM-estimated place fields after multi-bin local are not distorted relative to ground truth
-- The local state's smeared posterior does not cause the encoding model to "blur" place fields
-- If distortion is observed, consider masking the local state's contribution to EM updates
-  or using only the kernel-peak bin
-
-This is a scientifically significant concern and must be tested, not deferred.
+- Confirm the M-step still uses discrete state probabilities (not spatial posterior) with
+  multi-bin local — i.e., multi-bin local does not change the EM encoding update path
+- If the M-step mechanism has changed to consume spatial posteriors, test for place field
+  distortion and add masking if needed
+- Document the finding either way
 
 #### 6e. Interaction tests
 

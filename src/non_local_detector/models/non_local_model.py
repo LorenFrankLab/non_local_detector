@@ -178,6 +178,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         frozen_discrete_transition_rows: (
             np.ndarray | list[int] | tuple[int, ...] | None
         ) = (1,),
+        local_position_std: float | None = None,
     ):
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
@@ -209,6 +210,7 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
             no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
+            local_position_std=local_position_std,
         )
         _validate_penalty_params(non_local_position_penalty, non_local_penalty_sigma)
         self.non_local_position_penalty = non_local_position_penalty
@@ -306,6 +308,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         frozen_discrete_transition_rows: (
             np.ndarray | list[int] | tuple[int, ...] | None
         ) = (1,),
+        local_position_std: float | None = None,
     ):
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
@@ -337,6 +340,7 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
             no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
+            local_position_std=local_position_std,
         )
         _validate_penalty_params(non_local_position_penalty, non_local_penalty_sigma)
         self.non_local_position_penalty = non_local_position_penalty
