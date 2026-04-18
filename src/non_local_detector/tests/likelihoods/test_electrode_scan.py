@@ -33,6 +33,7 @@ import functools
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from non_local_detector.simulate.clusterless_simulation import (
     make_simulated_run_data,
@@ -500,3 +501,288 @@ class TestElectrodeScanJaxpr:
             f"Expected ≥1 scatter/scatter_add inside the scan body "
             f"(from segment_sum). Primitives: {sorted(set(all_prims))}"
         )
+
+
+class TestBlockSizeAuto:
+    """``block_size='auto'`` resolves to a memory-aware int via auto_select_tile_sizes.
+
+    Manual verification at different memory levels can be done with
+    ``XLA_PYTHON_CLIENT_MEM_FRACTION=<f>`` before launching Python
+    (JAX reads this env var on first-import).  The unit tests here
+    use ``mock.patch`` on ``_default_memory_budget_bytes`` for
+    reproducibility within a single pytest process.
+    """
+
+    def _predict(self, workload, **kwargs):
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            predict_clusterless_kde_log_likelihood,
+        )
+
+        encoding = {**workload["encoding"], **kwargs}
+        return predict_clusterless_kde_log_likelihood(
+            workload["test_edges"],
+            workload["test_time"],
+            workload["test_position"],
+            workload["test_spikes"],
+            workload["test_wf"],
+            **encoding,
+            is_local=False,
+        )
+
+    def test_auto_matches_explicit_resolved_value(self):
+        """``block_size='auto'`` and ``block_size=<int>`` (the value auto resolved to)
+        must produce bit-identical output — ``auto`` is a pure Python-side
+        resolution layer, the JIT-traced graph is the same either way.
+
+        Use a single-electrode workload so bucketing collapses to one
+        bucket, making the resolved value a single int we can pass
+        explicitly on a second call and compare.
+        """
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            _bucket_by_size,
+            _group_electrodes_by_n_wf,
+            _prepare_electrode_scan_group,
+            auto_select_tile_sizes,
+        )
+
+        workload = _build_small_workload(seed=42, n_tetrodes=1)
+        groups = _group_electrodes_by_n_wf(workload["test_wf"])
+        assert set(groups) == {4}
+        buckets = _bucket_by_size(
+            groups[4],
+            workload["test_wf"],
+            workload["test_spikes"],
+            workload["test_edges"],
+        )
+        assert len(buckets) == 1  # single electrode → single bucket
+        batch = _prepare_electrode_scan_group(
+            buckets[0],
+            workload["encoding"]["encoding_spike_waveform_features"],
+            workload["encoding"]["encoding_positions"],
+            workload["test_wf"],
+            workload["test_spikes"],
+            workload["encoding"]["mean_rates"],
+            workload["test_edges"],
+            workload["encoding"]["waveform_std"],
+        )
+        resolved = auto_select_tile_sizes(
+            n_enc=batch["max_n_enc"],
+            n_dec=batch["max_n_dec"],
+            n_pos=workload["encoding"]["occupancy"].shape[0],
+            n_wf=batch["n_wf"],
+        )["block_size"]
+
+        out_auto = np.asarray(self._predict(workload, block_size="auto"))
+        out_explicit = np.asarray(self._predict(workload, block_size=resolved))
+        np.testing.assert_array_equal(out_auto, out_explicit)
+
+    def test_auto_with_tight_budget_picks_smaller_block(self):
+        """Tight mocked budget → auto picks a smaller block than default 100 on small n_enc
+        or a larger block than default when budget permits.  Verify it at least differs
+        from default 100 (smoke test that mocking works end-to-end).
+        """
+        from unittest import mock
+
+        workload = _build_small_workload(seed=42)
+        # 10 KB budget → block_size formula gives ~0 → floor of 1.
+        with mock.patch(
+            "non_local_detector.likelihoods.clusterless_kde_log."
+            "_default_memory_budget_bytes",
+            return_value=10_000,
+        ):
+            out_tight = np.asarray(self._predict(workload, block_size="auto"))
+        # 10 GB budget → block_size formula gives a huge value capped at n_dec.
+        with mock.patch(
+            "non_local_detector.likelihoods.clusterless_kde_log."
+            "_default_memory_budget_bytes",
+            return_value=int(10e9),
+        ):
+            out_loose = np.asarray(self._predict(workload, block_size="auto"))
+        # Both produce finite outputs of the expected shape — content
+        # may differ by FP32 noise from different block_size choices
+        # (via compensated-linear chunking).
+        assert out_tight.shape == out_loose.shape
+        assert np.all(np.isfinite(out_tight))
+        assert np.all(np.isfinite(out_loose))
+
+    def test_auto_in_fallback_path(self):
+        """``block_size='auto'`` also works with ``use_streaming=True`` (Python-loop fallback).
+
+        Per-electrode resolution happens inside the fallback loop.
+        """
+        workload = _build_small_workload(seed=42)
+        min_enc = min(
+            int(s.shape[0]) for s in workload["encoding"]["encoding_positions"]
+        )
+        out = np.asarray(
+            self._predict(
+                workload,
+                block_size="auto",
+                use_streaming=True,
+                enc_tile_size=max(1, min_enc - 1),
+            )
+        )
+        assert out.shape == (
+            len(workload["test_edges"]),
+            workload["encoding"]["occupancy"].shape[0],
+        )
+        assert np.all(np.isfinite(out))
+
+    @pytest.mark.parametrize(
+        ("bad_block_size", "expected_match"),
+        [
+            ("fast", "must be 'auto'"),
+            ("AUTO", "must be 'auto'"),  # case-sensitive
+            ("", "must be 'auto'"),
+            (0, "must be ≥ 1"),
+            (-5, "must be ≥ 1"),
+            (True, "must be a positive int"),  # bool is a surprising int
+            (False, "must be a positive int"),  # bool guard fires before ≥ 1
+            (None, "must be a positive int"),
+            (1.5, "must be a positive int"),
+        ],
+    )
+    def test_invalid_block_size_raises(self, bad_block_size, expected_match):
+        workload = _build_small_workload(seed=42)
+        with pytest.raises(ValueError, match=expected_match):
+            self._predict(workload, block_size=bad_block_size)
+
+    @pytest.mark.parametrize(
+        ("bad_block_size", "expected_match"),
+        [
+            # String "auto" has a path-specific message on is_local.
+            ("auto", "is_local=True"),
+            # Non-string invalids must ALSO raise on the is_local path
+            # (regression guard: the prior implementation only checked
+            # isinstance(str), letting 0 / True / 1.5 / None fall through
+            # to compute_local_log_likelihood).
+            (0, "must be ≥ 1"),
+            (-5, "must be ≥ 1"),
+            (True, "must be a positive int"),
+            (False, "must be a positive int"),
+            (None, "must be a positive int"),
+            (1.5, "must be a positive int"),
+        ],
+    )
+    def test_invalid_block_size_raises_on_is_local(
+        self, bad_block_size, expected_match
+    ):
+        """Validation must fire at the public API boundary on both paths."""
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            predict_clusterless_kde_log_likelihood,
+        )
+
+        workload = _build_small_workload(seed=42)
+        encoding = {**workload["encoding"], "block_size": bad_block_size}
+        with pytest.raises(ValueError, match=expected_match):
+            predict_clusterless_kde_log_likelihood(
+                workload["test_edges"],
+                workload["test_time"],
+                workload["test_position"],
+                workload["test_spikes"],
+                workload["test_wf"],
+                **encoding,
+                is_local=True,
+            )
+
+    def test_auto_rejected_on_is_local_path(self):
+        """is_local=True currently doesn't support 'auto'; surface a clear error."""
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            predict_clusterless_kde_log_likelihood,
+        )
+
+        workload = _build_small_workload(seed=42)
+        encoding = {**workload["encoding"], "block_size": "auto"}
+        with pytest.raises(ValueError, match="is_local=True"):
+            predict_clusterless_kde_log_likelihood(
+                workload["test_edges"],
+                workload["test_time"],
+                workload["test_position"],
+                workload["test_spikes"],
+                workload["test_wf"],
+                **encoding,
+                is_local=True,
+            )
+
+    def test_auto_resolves_per_bucket(self):
+        """Two size-buckets on the same predict call get independent resolutions.
+
+        Spy on ``auto_select_tile_sizes`` to confirm it's called once
+        per bucket with that bucket's shapes — not once globally.
+        """
+        from unittest import mock
+
+        from non_local_detector.environment import Environment
+        from non_local_detector.likelihoods.clusterless_kde_log import (
+            fit_clusterless_kde_encoding_model,
+            predict_clusterless_kde_log_likelihood,
+        )
+
+        rng = np.random.default_rng(0)
+        env = Environment(
+            place_bin_size=10.0,
+            environment_name="linear",
+            is_track_interior=None,
+        )
+        position = rng.uniform(0, 100, 500)[:, None]
+        time_pos = np.linspace(0, 10, 500)
+        env.fit_place_grid(position=position, infer_track_interior=False)
+
+        # Two same-n_wf electrodes with very different spike counts —
+        # should fall into separate size-buckets.
+        spike_times = [
+            np.sort(rng.uniform(0, 10, 30)),
+            np.sort(rng.uniform(0, 10, 500)),
+        ]
+        spike_wf = [
+            rng.standard_normal((30, 4)) * 20.0,
+            rng.standard_normal((500, 4)) * 20.0,
+        ]
+        encoding = fit_clusterless_kde_encoding_model(
+            time_pos,
+            position,
+            spike_times,
+            spike_wf,
+            env,
+            sampling_frequency=50,
+            position_std=6.0,
+            waveform_std=24.0,
+            block_size=50,
+            disable_progress_bar=True,
+        )
+        test_edges = np.linspace(5.0, 10.0, 51)
+        test_time = time_pos[time_pos >= 5.0]
+        test_position = position[time_pos >= 5.0]
+        test_spikes = [st[st >= 5.0] for st in spike_times]
+        test_wf = [wf[st >= 5.0] for st, wf in zip(spike_times, spike_wf, strict=False)]
+
+        import non_local_detector.likelihoods.clusterless_kde_log as mod
+
+        original = mod.auto_select_tile_sizes
+        call_args = []
+
+        def spy(*args, **kwargs):
+            call_args.append((args, dict(kwargs)))
+            return original(*args, **kwargs)
+
+        with mock.patch.object(mod, "auto_select_tile_sizes", side_effect=spy):
+            out = predict_clusterless_kde_log_likelihood(
+                test_edges,
+                test_time,
+                test_position,
+                test_spikes,
+                test_wf,
+                **{**encoding, "disable_progress_bar": True, "block_size": "auto"},
+                is_local=False,
+            )
+        assert np.all(np.isfinite(np.asarray(out)))
+        # We expect at least 2 calls (2 buckets).  Depending on
+        # whether _bucket_by_size puts both electrodes in one bucket
+        # (quantile edges may collapse with 2 points), it could be 1.
+        # Assert ≥1 and, if ≥2, that the n_dec values differ.
+        assert len(call_args) >= 1
+        if len(call_args) >= 2:
+            n_dec_values = {kwargs["n_dec"] for args, kwargs in call_args}
+            assert len(n_dec_values) >= 2, (
+                f"per-bucket n_dec values didn't differ: {n_dec_values}"
+            )

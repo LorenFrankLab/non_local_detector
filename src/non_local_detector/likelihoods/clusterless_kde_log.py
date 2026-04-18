@@ -1,3 +1,5 @@
+from typing import Literal
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -2335,6 +2337,62 @@ def fit_clusterless_kde_encoding_model(
     }
 
 
+def _validate_block_size_argument(block_size: int | Literal["auto"]) -> None:
+    """Validate ``block_size`` is a positive int or the string ``"auto"``.
+
+    Raises ``ValueError`` on anything else.  ``bool`` is explicitly
+    rejected before the int-positivity check because ``bool`` is an
+    ``int`` subclass in Python — without the guard, ``True`` / ``False``
+    would be silently coerced to 1 / 0.  Does NOT resolve ``"auto"``
+    (no dependency on workload dims); see :func:`_resolve_block_size`
+    for that.
+    """
+    if isinstance(block_size, bool) or not isinstance(block_size, int | str):
+        raise ValueError(
+            f"block_size must be a positive int or the string 'auto'; "
+            f"got {type(block_size).__name__} {block_size!r}."
+        )
+    if isinstance(block_size, int):
+        if block_size < 1:
+            raise ValueError(
+                f"block_size must be ≥ 1 when passed as an int; got {block_size}."
+            )
+        return
+    if block_size != "auto":
+        raise ValueError(
+            f"block_size string must be 'auto' (got {block_size!r}); "
+            f"pass an int for a fixed block size."
+        )
+
+
+def _resolve_block_size(
+    block_size: int | Literal["auto"],
+    *,
+    n_enc: int,
+    n_dec: int,
+    n_pos: int,
+    n_wf: int,
+) -> int:
+    """Resolve ``block_size`` to a concrete int, expanding ``"auto"``.
+
+    Validates first (via :func:`_validate_block_size_argument`), then
+    either returns a fixed int unchanged (the common case — no-op for
+    the default ``block_size=100``) or calls
+    :func:`auto_select_tile_sizes` to resolve ``"auto"`` against the
+    current memory budget.  Queries ``jax.devices()[0].memory_stats()``
+    only on the auto branch.
+    """
+    _validate_block_size_argument(block_size)
+    if isinstance(block_size, int):
+        return block_size
+    # At this point block_size == "auto" (validator rejected everything else).
+    return int(
+        auto_select_tile_sizes(n_enc=n_enc, n_dec=n_dec, n_pos=n_pos, n_wf=n_wf)[
+            "block_size"
+        ]
+    )
+
+
 def predict_clusterless_kde_log_likelihood(
     time: jnp.ndarray,
     position_time: jnp.ndarray,
@@ -2352,7 +2410,7 @@ def predict_clusterless_kde_log_likelihood(
     position_std: jnp.ndarray,
     waveform_std: jnp.ndarray,
     is_local: bool = False,
-    block_size: int = 100,
+    block_size: int | Literal["auto"] = 100,
     disable_progress_bar: bool = False,
     enc_tile_size: int | None = None,
     pos_tile_size: int | None = None,
@@ -2394,8 +2452,25 @@ def predict_clusterless_kde_log_likelihood(
         Gaussian smoothing standard deviation for waveform.
     is_local : bool, optional
         If True, compute the log likelihood at the animal's position, by default False
-    block_size : int, optional
-        Divide computation into blocks, by default 100
+    block_size : int | Literal["auto"], optional
+        Decoding-spike block size for the fori_loop inside each scan
+        iteration (or each fallback-path call).  Defaults to 100 for
+        backward compatibility.
+
+        When ``"auto"``, :func:`auto_select_tile_sizes` is called to
+        pick a memory-aware value from the GPU's reported memory limit
+        — per bucket on the scan path, per electrode on the Python-loop
+        fallback.  On a big-memory GPU this typically resolves to
+        ``n_dec`` (1 block per electrode, max throughput); on a
+        consumer GPU it resolves smaller to fit memory.
+
+        Tradeoff: ``"auto"`` on workloads with wildly-varying n_dec
+        across ``predict`` calls pays one extra JIT compile per
+        distinct resolved block_size (in addition to the shape-
+        dependent bucket compiles).  For stable-shape workloads
+        (one recording, repeated predict calls), ``"auto"`` is cached
+        after the first call.  Prefer a fixed int when compiling many
+        different workloads in the same process.
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
     enc_tile_size : int | None, optional
@@ -2419,6 +2494,21 @@ def predict_clusterless_kde_log_likelihood(
     n_time = len(time)
 
     if is_local:
+        # Validate the argument's type/range even on the local path so
+        # invalid values (e.g., 0, -5, True, 1.5, None) fail loudly at
+        # the public API boundary rather than producing a confusing
+        # downstream error inside compute_local_log_likelihood.
+        _validate_block_size_argument(block_size)
+        if isinstance(block_size, str):
+            # ``auto`` resolution for the local path is out of scope for
+            # this optimization branch (the local likelihood uses
+            # block_size only inside KDEModel.predict batching, not in
+            # the Task 1 fori_loop path this PR added ``auto`` for).
+            # Pass an int or omit the argument for is_local=True.
+            raise ValueError(
+                f"block_size={block_size!r} is not supported for is_local=True; "
+                f"pass an explicit int (default 100) instead."
+            )
         log_likelihood = compute_local_log_likelihood(
             time,
             position_time,
@@ -2483,6 +2573,22 @@ def predict_clusterless_kde_log_likelihood(
                     time,
                     waveform_std,
                 )
+                # Resolve ``block_size`` per-bucket: each bucket's max
+                # encoding / decoding counts parameterize the memory
+                # budget calculation, so buckets can pick different
+                # block sizes.  Same number of JIT specializations as
+                # a fixed block_size (bucket shapes already drive
+                # specialization); just the value inside each compile
+                # differs when ``"auto"`` is passed.  The resolver is
+                # a no-op for fixed ints — it only queries memory
+                # stats on the ``"auto"`` branch.
+                resolved_block_size = _resolve_block_size(
+                    block_size,
+                    n_enc=batch["max_n_enc"],
+                    n_dec=batch["max_n_dec"],
+                    n_pos=occupancy.shape[0],
+                    n_wf=batch["n_wf"],
+                )
                 log_likelihood = log_likelihood + _predict_nonlocal_electrode_scan_jit(
                     batch["enc_wf_batch"],
                     batch["enc_pos_batch"],
@@ -2495,7 +2601,7 @@ def predict_clusterless_kde_log_likelihood(
                     position_std,
                     occupancy,
                     n_time=batch["n_time"],
-                    block_size=block_size,
+                    block_size=resolved_block_size,
                     pos_tile_size=pos_tile_size,
                     enc_tile_size=None,
                 )
@@ -2550,6 +2656,16 @@ def predict_clusterless_kde_log_likelihood(
                 else:
                     electrode_waveform_std = waveform_std
 
+                # Resolve ``block_size`` per-electrode so auto picks
+                # appropriate values based on this electrode's actual
+                # decoding-spike count (post-in-bounds filter).
+                resolved_block_size = _resolve_block_size(
+                    block_size,
+                    n_enc=int(electrode_encoding_spike_waveform_features.shape[0]),
+                    n_dec=int(electrode_decoding_spike_waveform_features.shape[0]),
+                    n_pos=occupancy.shape[0],
+                    n_wf=n_waveform_features,
+                )
                 # NOTE: n_time is a static argument to the fused function — each
                 # distinct value triggers a JIT recompilation.
                 log_likelihood += (
@@ -2562,7 +2678,7 @@ def predict_clusterless_kde_log_likelihood(
                         log_position_distance,
                         get_spike_time_bin_ind(electrode_spike_times, time),
                         n_time,
-                        block_size=block_size,
+                        block_size=resolved_block_size,
                         enc_tile_size=enc_tile_size,
                         pos_tile_size=pos_tile_size,
                         use_streaming=use_streaming,
