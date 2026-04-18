@@ -115,7 +115,11 @@ def auto_select_tile_sizes(
     3. Static argnames on the JIT wrapper mean each distinct
        ``block_size`` / ``enc_tile_size`` triggers a recompile — prefer
        stable values across repeated ``predict`` calls on the same
-       recording.
+       recording.  Call this function once per electrode-shape
+       combination and cache the result; repeated calls with the same
+       arguments are idempotent but each one queries
+       ``jax.devices()[0].memory_stats()`` (a cheap but not free
+       operation).
     """
     if memory_budget_bytes is None:
         memory_budget_bytes = _default_memory_budget_bytes()
@@ -455,6 +459,12 @@ def _compute_log_mark_kernel_gemm(
     those two directly when you need to reuse the encoding-side
     quantities across multiple decoding-spike batches (e.g. the
     ``fori_loop`` body in ``_block_estimate_log_joint_mark_intensity_impl``).
+
+    Currently still used by the encoding-chunked streaming paths
+    (``_estimate_with_enc_chunking`` and ``_compensated_linear_marginal_chunked``),
+    which call this per chunk.  Those paths could be refactored to hoist
+    the chunk-invariant ``inv_sigma`` / ``log_norm_const`` outside the
+    per-chunk loop — small potential gain, deferred from this PR.
     """
     precomp = _precompute_encoding_gemm_quantities(encoding_features, waveform_stds)
     return _compute_log_mark_kernel_from_precomputed(decoding_features, precomp)
@@ -1941,7 +1951,14 @@ def _prepare_electrode_scan_group(
     # ids after ``np.digitize(...)`` are in ``[0, n_time)``; the sentinel
     # ``n_time`` is out of range for ``segment_sum(num_segments=n_time)``
     # and therefore ignored.
+    if not electrode_indices:
+        raise ValueError(
+            "_prepare_electrode_scan_group requires a non-empty electrode "
+            "list; the caller (predict_clusterless_kde_log_likelihood) "
+            "should drop empty buckets before calling."
+        )
     n_time = int(time.shape[0])
+    time_np = np.asarray(time)  # hoisted: shared across electrodes
 
     # Per-electrode raw arrays after in-bounds filtering.
     per_enc_wf: list[np.ndarray] = []
@@ -1957,7 +1974,6 @@ def _prepare_electrode_scan_group(
         dec_wf_i = np.asarray(decoding_spike_waveform_features[i])
         dec_times_i = np.asarray(decoding_spike_times[i])
 
-        time_np = np.asarray(time)
         in_bounds = (dec_times_i >= time_np[0]) & (dec_times_i <= time_np[-1])
         dec_times_i = dec_times_i[in_bounds]
         dec_wf_i = dec_wf_i[in_bounds]
@@ -1972,8 +1988,14 @@ def _prepare_electrode_scan_group(
 
     n_wf = int(per_enc_wf[0].shape[1])
     n_pos_dim = int(per_enc_pos[0].shape[1])
-    max_n_enc = max(per_n_real_enc)
-    max_n_dec = max(per_n_real_dec + [1])  # ≥1 so dynamic_slice shapes are valid
+    # ``max_n_enc`` and ``max_n_dec`` are floored at 1 so padded shapes are
+    # valid for ``dynamic_slice`` even when every electrode in the bucket
+    # has zero real spikes (e.g., a silent-during-encode tetrode batch).
+    # All-zero real counts produce all-sentinel seg_ids, so segment_sum
+    # discards the entire bucket's contribution regardless of feature
+    # values — the shape floor is for JIT tracing, not numerics.
+    max_n_enc = max(per_n_real_enc + [1])
+    max_n_dec = max(per_n_real_dec + [1])
 
     n_electrodes = len(electrode_indices)
 
@@ -2072,6 +2094,27 @@ def _predict_nonlocal_electrode_scan_impl(
     enc_tile_size: int | None = None,
 ) -> jnp.ndarray:
     """Scan over electrodes: one iteration computes one electrode's ``(n_time, n_pos)`` contribution.
+
+    Memory profile (at production scale):
+
+    * The scan carry is ``(n_time, n_position_bins)`` — persists for the
+      full scan duration (all iterations), not freed between electrodes.
+      At 210k time bins × 175 position bins × float32 that's ~147 MB;
+      for a 2-hour session (720k time bins at 100 Hz) it grows linearly
+      to ~504 MB.  Long recordings on consumer GPUs may need to split
+      into time windows before calling ``predict`` — or pass
+      ``enc_tile_size`` / ``use_streaming=True`` to force the
+      Python-loop fallback, which doesn't need the (n_time, n_pos)
+      carry in a scan.
+    * Per-iteration peak: ``log_position_distance`` shape ``(max_n_enc,
+      n_pos)`` ≈ 31 MB at ``max_n_enc=45k, n_pos=175`` + per-block
+      mark-intensity ``(block_size, n_pos)`` ≈ 70 KB.  These are
+      released between iterations.
+
+    Callers processing very long recordings should call
+    :func:`auto_select_tile_sizes` to pick memory-aware ``block_size``
+    / ``enc_tile_size`` values, or split the session into overlapping
+    windows.
 
     Accumulator shape is ``(n_time, n_position_bins)``; the initial value
     is zeros (the ``-ground_process_intensity`` baseline is added by the

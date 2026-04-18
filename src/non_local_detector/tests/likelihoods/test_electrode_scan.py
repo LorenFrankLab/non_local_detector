@@ -154,6 +154,54 @@ class TestElectrodeScanAccuracy:
         assert np.all(np.isfinite(out))
         assert out.std() > 0.0
 
+    def test_scan_matches_streaming_fallback_loose(self):
+        """End-to-end smoke test: scan path vs Python-loop streaming fallback.
+
+        Setting ``use_streaming=True`` + ``enc_tile_size < n_enc`` routes
+        through the Task 4 Python-loop fallback (scan path is gated
+        off).  Both paths compute the same mathematical non-local
+        log-likelihood, but via different numerical routes (the
+        streaming path uses on-the-fly logsumexp rather than the
+        non-chunked compensated-linear matmul).
+
+        The tolerance is deliberately loose — 10% relative, platform-
+        gated slightly tighter on CPU.  This is a **smoke test**: it
+        catches major correctness regressions (sign flips, missing
+        baseline, un-accumulated electrodes, etc.) without being
+        brittle against cuBLAS TF32 matmul reordering or compensated-
+        linear-vs-logsumexp path differences at small workload scale.
+        End-to-end accuracy at production scale is validated out-of-
+        band via the GPU benchmark against the ``main``-branch
+        baseline (see Task 3 commit message).
+        """
+        workload = _build_small_workload(seed=42)
+        scan_out = np.asarray(self._predict(workload))
+        # Force the Python-loop fallback: pick enc_tile_size < min n_enc
+        # and use_streaming=True (the streaming path validates its
+        # inputs and requires both).
+        min_enc = min(
+            int(s.shape[0]) for s in workload["encoding"]["encoding_positions"]
+        )
+        fallback_out = np.asarray(
+            self._predict(
+                workload,
+                use_streaming=True,
+                enc_tile_size=max(1, min_enc - 1),
+            )
+        )
+        assert scan_out.shape == fallback_out.shape
+        max_diff = float(np.max(np.abs(scan_out - fallback_out)))
+        scale = float(np.max(np.abs(scan_out)))
+        rel = max_diff / max(scale, 1e-12)
+        on_gpu = any(d.platform == "gpu" for d in jax.devices())
+        rel_limit = 0.15 if on_gpu else 0.10
+        assert rel < rel_limit, (
+            f"scan vs streaming fallback relative |diff|={rel:.3e} "
+            f"(max abs={max_diff:.3e}, scale={scale:.3e}); exceeds "
+            f"{rel_limit:.0%} smoke-test tolerance on "
+            f"{'gpu' if on_gpu else 'cpu'}"
+        )
+
 
 class TestElectrodeScanBucketing:
     """Size-bucketing partitions a mixed-size group into sub-batches."""
