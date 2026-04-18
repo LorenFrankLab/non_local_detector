@@ -737,6 +737,9 @@ def _auto_select_tile_sizes(
 
 ### Step 2: Test with various scales, commit
 
+## Task 6 : Investigate how to move the local path inside the jit
+- The local path depends on `get_position_at_time()` (backed by `scipy.interpolate.interpn`, not JAX-traceable) and per-electrode `KDEModel.predict()` (Python object methods). These cannot be placed inside a `scan`. The local path stays as a Python loop. JIT-ing the local path would require replacing SciPy interpolation with a JAX-traceable equivalent.
+
 ---
 
 ## Execution Order and Dependencies
