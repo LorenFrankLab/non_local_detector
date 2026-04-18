@@ -67,8 +67,7 @@ def kde_distance(
     return jnp.prod(per_dim_distances, axis=0)
 
 
-@jax.jit
-def log_kde_distance(
+def _log_kde_distance_impl(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:
     """Vectorized log-distance (log kernel product) using vmap.
@@ -114,8 +113,10 @@ def log_kde_distance(
     return jnp.sum(per_dim_log_distances, axis=0)
 
 
-@jax.jit
-def log_kde_distance_streaming(
+log_kde_distance = jax.jit(_log_kde_distance_impl)
+
+
+def _log_kde_distance_streaming_impl(
     eval_points: jnp.ndarray,
     samples: jnp.ndarray,
     std: jnp.ndarray,
@@ -186,6 +187,9 @@ def log_kde_distance_streaming(
 
     # Loop over dimensions, accumulating log-distance contributions
     return jax.lax.fori_loop(0, n_dims, accumulate_dim, log_distance_acc)
+
+
+log_kde_distance_streaming = jax.jit(_log_kde_distance_streaming_impl)
 
 
 def _compute_log_mark_kernel_gemm(
@@ -711,7 +715,9 @@ def _compensated_linear_marginal_chunked(
                 (enc_tile_size, encoding_positions.shape[1]),
             )
             logK_pos_chunk = log_kde_distance_streaming(
-                position_eval_points, enc_pos_chunk, position_std,
+                position_eval_points,
+                enc_pos_chunk,
+                position_std,
             )
         else:
             logK_pos_chunk = jax.lax.dynamic_slice(
@@ -722,7 +728,9 @@ def _compensated_linear_marginal_chunked(
 
         # Compute mark kernel for this chunk: (enc_tile, n_dec)
         logK_mark_chunk = _compute_log_mark_kernel_gemm(
-            decoding_spike_waveform_features, enc_chunk, waveform_stds,
+            decoding_spike_waveform_features,
+            enc_chunk,
+            waveform_stds,
         )
 
         # Mask padded entries
@@ -767,7 +775,9 @@ def _compensated_linear_marginal_chunked(
     init_max = jnp.array(-jnp.inf)
 
     (final_sum, final_max), _ = jax.lax.scan(
-        process_chunk, (init_sum, init_max), jnp.arange(n_chunks),
+        process_chunk,
+        (init_sum, init_max),
+        jnp.arange(n_chunks),
     )
 
     # Back to log space (double-where for -inf contract)
@@ -789,7 +799,7 @@ def _compensated_linear_marginal_chunked(
     )
 
 
-def estimate_log_joint_mark_intensity(
+def _estimate_log_joint_mark_intensity_impl(
     decoding_spike_waveform_features: jnp.ndarray,
     encoding_spike_waveform_features: jnp.ndarray,
     waveform_stds: jnp.ndarray,
@@ -847,7 +857,7 @@ def estimate_log_joint_mark_intensity(
     For manual JIT compilation with custom settings, use:
 
         jitted_fn = jax.jit(
-            estimate_log_joint_mark_intensity,
+            _estimate_log_joint_mark_intensity_impl,
             static_argnames=('use_gemm', 'pos_tile_size', 'enc_tile_size', 'use_streaming')
         )
 
@@ -1086,8 +1096,102 @@ def estimate_log_joint_mark_intensity(
 # JIT-compile with static arguments for performance
 # This allows JAX to specialize the function for different tile sizes and modes
 estimate_log_joint_mark_intensity = jax.jit(
-    estimate_log_joint_mark_intensity,
+    _estimate_log_joint_mark_intensity_impl,
     static_argnames=("use_gemm", "pos_tile_size", "enc_tile_size", "use_streaming"),
+)
+
+
+def _block_estimate_log_joint_mark_intensity_impl(
+    decoding_spike_waveform_features: jnp.ndarray,
+    encoding_spike_waveform_features: jnp.ndarray,
+    waveform_stds: jnp.ndarray,
+    occupancy: jnp.ndarray,
+    mean_rate: float,
+    log_position_distance: jnp.ndarray | None = None,
+    block_size: int = 100,
+    use_gemm: bool = True,
+    pos_tile_size: int | None = None,
+    enc_tile_size: int | None = None,
+    use_streaming: bool = False,
+    encoding_positions: jnp.ndarray | None = None,
+    position_eval_points: jnp.ndarray | None = None,
+    position_std: jnp.ndarray | None = None,
+) -> jnp.ndarray:
+    """JIT-traceable block-loop body for block_estimate_log_joint_mark_intensity.
+
+    Replaces the Python for-loop over decoding spike blocks with a
+    ``jax.lax.fori_loop`` so the entire block iteration compiles to a single
+    JAX program (one kernel dispatch sequence on GPU rather than one per block).
+
+    Assumes ``decoding_spike_waveform_features.shape[0] > 0``. The empty-array
+    edge case is handled by the public ``block_estimate_log_joint_mark_intensity``
+    wrapper before entering JIT.
+    """
+    n_decoding_spikes = decoding_spike_waveform_features.shape[0]
+    n_features = decoding_spike_waveform_features.shape[1]
+    n_position_bins = occupancy.shape[0]
+
+    # Pad decoding features up to a whole multiple of block_size so every
+    # fori_loop iteration can use a static-size dynamic_slice.
+    #
+    # Use edge-replication (not zero-fill) for the padding: this makes the
+    # padded columns of ``logK_mark`` byte-identical to the last real
+    # decoding spike's column. Because ``_compensated_linear_marginal``
+    # reduces over decoding spikes via ``max_wf = jnp.max(logK_mark, axis=1)``,
+    # padded columns that are copies of a real column cannot exceed the max
+    # and therefore cannot shift ``max_wf``/``global_max`` — so real
+    # decoding spikes' outputs are unaffected by the padding. Zero-fill
+    # would create "fake spikes" near the center of the encoding-feature
+    # cloud that often DO win the max, numerically contaminating real
+    # rows in the same block.
+    n_blocks = (n_decoding_spikes + block_size - 1) // block_size
+    n_padded = n_blocks * block_size
+    pad_amount = n_padded - n_decoding_spikes
+    if pad_amount > 0:
+        decoding_spike_waveform_features = jnp.pad(
+            decoding_spike_waveform_features,
+            ((0, pad_amount), (0, 0)),
+            mode="edge",
+        )
+
+    def process_block(i: int, out: jnp.ndarray) -> jnp.ndarray:
+        start = i * block_size
+        block_features = jax.lax.dynamic_slice(
+            decoding_spike_waveform_features,
+            (start, 0),
+            (block_size, n_features),
+        )
+        block_result = _estimate_log_joint_mark_intensity_impl(
+            block_features,
+            encoding_spike_waveform_features,
+            waveform_stds,
+            occupancy,
+            mean_rate,
+            log_position_distance,
+            use_gemm=use_gemm,
+            pos_tile_size=pos_tile_size,
+            enc_tile_size=enc_tile_size,
+            use_streaming=use_streaming,
+            encoding_positions=encoding_positions,
+            position_eval_points=position_eval_points,
+            position_std=position_std,
+        )
+        return jax.lax.dynamic_update_slice(out, block_result, (start, 0))
+
+    out = jnp.zeros((n_padded, n_position_bins))
+    out = jax.lax.fori_loop(0, n_blocks, process_block, out)
+    return jnp.clip(out[:n_decoding_spikes], min=LOG_EPS, max=None)
+
+
+_block_estimate_log_joint_mark_intensity_jit = jax.jit(
+    _block_estimate_log_joint_mark_intensity_impl,
+    static_argnames=(
+        "block_size",
+        "use_gemm",
+        "pos_tile_size",
+        "enc_tile_size",
+        "use_streaming",
+    ),
 )
 
 
@@ -1141,6 +1245,13 @@ def block_estimate_log_joint_mark_intensity(
     -------
     log_joint_mark_intensity : jnp.ndarray, shape (n_decoding_spikes, n_position_bins)
 
+    Notes
+    -----
+    The empty-decoding-spike case is handled here before dispatching to JIT.
+    Non-empty inputs are forwarded to the JIT-compiled
+    ``_block_estimate_log_joint_mark_intensity_impl`` which replaces the
+    Python block-loop with a ``jax.lax.fori_loop`` so the full iteration
+    compiles to a single JAX program.
     """
     n_decoding_spikes = decoding_spike_waveform_features.shape[0]
     n_position_bins = occupancy.shape[0]
@@ -1148,27 +1259,22 @@ def block_estimate_log_joint_mark_intensity(
     if n_decoding_spikes == 0:
         return jnp.full((0, n_position_bins), LOG_EPS)
 
-    out = jnp.zeros((n_decoding_spikes, n_position_bins))
-    for start_ind in range(0, n_decoding_spikes, block_size):
-        block_inds = slice(start_ind, start_ind + block_size)
-        block_result = estimate_log_joint_mark_intensity(
-            decoding_spike_waveform_features[block_inds],
-            encoding_spike_waveform_features,
-            waveform_stds,
-            occupancy,
-            mean_rate,
-            log_position_distance,
-            use_gemm=use_gemm,
-            pos_tile_size=pos_tile_size,
-            enc_tile_size=enc_tile_size,
-            use_streaming=use_streaming,
-            encoding_positions=encoding_positions,
-            position_eval_points=position_eval_points,
-            position_std=position_std,
-        )
-        out = jax.lax.dynamic_update_slice(out, block_result, (start_ind, 0))
-
-    return jnp.clip(out, min=LOG_EPS, max=None)
+    return _block_estimate_log_joint_mark_intensity_jit(
+        decoding_spike_waveform_features,
+        encoding_spike_waveform_features,
+        waveform_stds,
+        occupancy,
+        mean_rate,
+        log_position_distance,
+        block_size=block_size,
+        use_gemm=use_gemm,
+        pos_tile_size=pos_tile_size,
+        enc_tile_size=enc_tile_size,
+        use_streaming=use_streaming,
+        encoding_positions=encoding_positions,
+        position_eval_points=position_eval_points,
+        position_std=position_std,
+    )
 
 
 def fit_clusterless_kde_encoding_model(
