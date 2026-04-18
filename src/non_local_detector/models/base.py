@@ -583,13 +583,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             animal_pos, environment, interior_bin_indices
         )
 
-        # Detect off-track positions (NaN rows from track graph path)
-        off_track_mask = jnp.any(jnp.isnan(sq_dist), axis=-1)
+        # Detect off-track positions (NaN or inf rows from track graph path).
+        # Uses ~isfinite to catch both NaN (off-track bins) and inf
+        # (unreachable nodes on disconnected graph components).
+        off_track_mask = jnp.any(~jnp.isfinite(sq_dist), axis=-1)
         uniform_mask = nan_mask | off_track_mask
 
-        # Replace NaN distances with 0 before computing kernel to avoid
-        # NaN propagation through logsumexp
-        sq_dist = jnp.nan_to_num(sq_dist, nan=0.0)
+        # Replace non-finite distances with 0 before computing kernel to
+        # avoid NaN/inf propagation through logsumexp. The uniform_mask
+        # will replace these rows with the true uniform kernel afterward.
+        sq_dist = jnp.nan_to_num(sq_dist, nan=0.0, posinf=0.0)
 
         log_kernel = -0.5 * sq_dist / (self.local_position_std**2)
         # Normalize per time step so kernel is a proper log-probability

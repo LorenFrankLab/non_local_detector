@@ -426,6 +426,11 @@ class Environment:
                     example="    position = np.array([[0, 0]])  # At least one position",
                 )
 
+        # Invalidate cached dense distance matrix if it exists (used by
+        # _compute_squared_distances_to_bins for 1D track graph kernels).
+        if hasattr(self, "_bin_distance_matrix_"):
+            del self._bin_distance_matrix_
+
         if self.track_graph is None:
             (
                 self.edges_,
