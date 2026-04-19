@@ -178,14 +178,23 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         self-transition cannot collapse to fit stray spike gaps. Pass
         ``None`` to disable row freezing.
     local_position_std : float or None, optional
-        Standard deviation of the position uncertainty kernel for the
-        Local state, in the same units as ``position`` (typically
-        centimeters). Distances use shortest-path along the track graph
-        when a graph is fitted, otherwise Euclidean. When set, the Local
-        state uses all position bins with a normalized Gaussian kernel
-        centered on the animal's observed position, modeling spatial
-        uncertainty in the local representation. When ``None`` (default),
-        the legacy single-bin local behavior is used.
+        Controls the Local state's spatial representation:
+
+        - ``None`` (default): legacy behavior. Local state occupies a
+          single bin; the likelihood is evaluated at the animal's exact
+          interpolated position (continuous).
+        - ``0.0``: delta-kernel multi-bin local. Local state spans all
+          position bins, with the kernel concentrated at the single bin
+          containing the animal. The per-bin likelihood is evaluated at
+          bin centers (discrete); only the animal's bin contributes
+          finite mass, the rest are suppressed.
+        - ``> 0``: multi-bin local with a Gaussian kernel of standard
+          deviation ``local_position_std`` (same units as ``position``,
+          typically centimeters) on the shortest-path track-graph
+          distance. Models spatial uncertainty in the local
+          representation.
+
+        All three modes produce a valid posterior.
 
     Attributes
     ----------
@@ -342,14 +351,23 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         self-transition cannot collapse to fit stray spike gaps. Pass
         ``None`` to disable row freezing.
     local_position_std : float or None, optional
-        Standard deviation of the position uncertainty kernel for the
-        Local state, in the same units as ``position`` (typically
-        centimeters). Distances use shortest-path along the track graph
-        when a graph is fitted, otherwise Euclidean. When set, the Local
-        state uses all position bins with a normalized Gaussian kernel
-        centered on the animal's observed position, modeling spatial
-        uncertainty in the local representation. When ``None`` (default),
-        the legacy single-bin local behavior is used.
+        Controls the Local state's spatial representation:
+
+        - ``None`` (default): legacy behavior. Local state occupies a
+          single bin; the likelihood is evaluated at the animal's exact
+          interpolated position (continuous).
+        - ``0.0``: delta-kernel multi-bin local. Local state spans all
+          position bins, with the kernel concentrated at the single bin
+          containing the animal. The per-bin likelihood is evaluated at
+          bin centers (discrete); only the animal's bin contributes
+          finite mass, the rest are suppressed.
+        - ``> 0``: multi-bin local with a Gaussian kernel of standard
+          deviation ``local_position_std`` (same units as ``position``,
+          typically centimeters) on the shortest-path track-graph
+          distance. Models spatial uncertainty in the local
+          representation.
+
+        All three modes produce a valid posterior.
 
     Attributes
     ----------

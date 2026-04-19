@@ -391,3 +391,86 @@ def test_large_sigma_spreads_local_posterior(simulated_data):
         f"Large-sigma local posterior should be near-uniform across bins "
         f"(mean CV={cv.mean():.3f})"
     )
+
+
+@pytest.mark.integration
+def test_delta_kernel_fit_predict(simulated_data):
+    """local_position_std=0.0 fits + predicts without NaN/Inf."""
+    time = simulated_data["time"]
+    position = simulated_data["position"]
+    spike_times = simulated_data["spike_times"]
+    is_event = simulated_data["is_event"]
+
+    detector = NonLocalSortedSpikesDetector(
+        local_position_std=0.0,
+        sorted_spikes_algorithm="sorted_spikes_kde",
+        sorted_spikes_algorithm_params={
+            "position_std": 6.0,
+            "block_size": int(2**12),
+        },
+    ).fit(time, position, spike_times, is_training=~is_event)
+
+    results = detector.predict(
+        spike_times=spike_times,
+        time=time,
+        position=position,
+        position_time=time,
+    )
+
+    assert np.all(np.isfinite(results.acausal_posterior.values)), (
+        "Delta-kernel posterior contains NaN/Inf"
+    )
+    posterior_sums = results.acausal_posterior.sum(axis=1)
+    np.testing.assert_allclose(posterior_sums, 1.0, rtol=1e-5, atol=1e-5)
+
+    state_prob_sums = results.acausal_state_probabilities.sum(axis=1)
+    np.testing.assert_allclose(state_prob_sums, 1.0, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.integration
+def test_delta_kernel_matches_narrow_gaussian(simulated_data):
+    """Posteriors from σ=0 (delta) and σ=0.01 (very narrow Gaussian) match closely.
+
+    The delta kernel is the σ→0 limit of the Gaussian kernel. A very
+    narrow Gaussian (e.g., σ=0.01 cm, much smaller than a bin) should
+    produce nearly-identical state occupancies.
+    """
+    time = simulated_data["time"]
+    position = simulated_data["position"]
+    spike_times = simulated_data["spike_times"]
+    is_event = simulated_data["is_event"]
+
+    def _fit_predict(sigma):
+        detector = NonLocalSortedSpikesDetector(
+            local_position_std=sigma,
+            sorted_spikes_algorithm="sorted_spikes_kde",
+            sorted_spikes_algorithm_params={
+                "position_std": 6.0,
+                "block_size": int(2**12),
+            },
+        ).fit(time, position, spike_times, is_training=~is_event)
+        results = detector.predict(
+            spike_times=spike_times,
+            time=time,
+            position=position,
+            position_time=time,
+        )
+        return results.acausal_state_probabilities.values
+
+    delta_probs = _fit_predict(0.0)
+    narrow_probs = _fit_predict(0.01)
+
+    # State occupancies should match within 1% rtol, same as the
+    # sharp-sigma-vs-legacy test.
+    delta_mean = delta_probs.mean(axis=0)
+    narrow_mean = narrow_probs.mean(axis=0)
+    np.testing.assert_allclose(
+        delta_mean,
+        narrow_mean,
+        rtol=1e-2,
+        atol=1e-3,
+        err_msg=(
+            f"σ=0 delta kernel should match σ=0.01 Gaussian. "
+            f"delta={delta_mean}, narrow={narrow_mean}"
+        ),
+    )

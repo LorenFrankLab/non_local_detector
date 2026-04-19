@@ -328,11 +328,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             should not be learned from data. Only applies to stationary
             (2D) transition matrices.
         local_position_std : float or None, optional
-            Standard deviation of the position uncertainty kernel for the
-            local state. When set, the local state uses all position bins
-            (like non-local states) with a Gaussian kernel centered on the
-            animal's observed position. When None (default), the legacy
-            single-bin local behavior is used.
+            Controls the Local state's spatial representation:
+
+            - ``None`` (default): legacy behavior. Local state occupies a
+              single bin; the likelihood is evaluated at the animal's
+              exact interpolated position (continuous).
+            - ``0.0``: delta-kernel multi-bin local. Local state spans all
+              position bins, with all mass concentrated at the single bin
+              containing the animal (one-hot). Likelihood is evaluated at
+              bin centers (discrete).
+            - ``> 0``: multi-bin local with a Gaussian kernel of standard
+              deviation ``local_position_std`` (same units as ``position``,
+              typically centimeters) on the shortest-path track-graph
+              distance; models spatial uncertainty.
         """
         # Validate all parameters early (Tier 1 & 2)
         self._validate_initial_conditions(
@@ -392,12 +400,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.no_spike_rate = no_spike_rate
 
         # Local position uncertainty parameter
-        if local_position_std is not None and local_position_std <= 0:
+        if local_position_std is not None and local_position_std < 0:
             raise ValidationError(
-                "local_position_std must be positive",
-                expected="float > 0 or None",
+                "local_position_std must be non-negative",
+                expected="float >= 0 or None",
                 got=str(local_position_std),
-                hint="Set to None for legacy single-bin local behavior.",
+                hint=(
+                    "Use None for legacy single-bin local (likelihood at "
+                    "the animal's exact interpolated position), 0.0 for "
+                    "multi-bin local with a delta kernel at the animal's "
+                    "bin, or > 0 for a Gaussian kernel."
+                ),
             )
         self.local_position_std = local_position_std
 
@@ -518,25 +531,27 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         position: jnp.ndarray,
         environment: "Environment",
     ) -> jnp.ndarray:
-        """Compute log position uncertainty kernel for the local state.
+        """Compute log position kernel for the local state.
 
-        Returns a log-space Gaussian kernel centered on the animal's
-        interpolated position at each time step. Uses track graph
-        distances when a track graph is available, otherwise Euclidean.
+        Dispatches to one of two paths based on ``self.local_position_std``:
 
-        The kernel is normalized so that exp(log_kernel) sums to
-        n_interior_bins per time step (not 1). This compensates for the
-        uniform continuous initial conditions `c_local(b) = 1/n_bins`
-        used by the multi-bin local state: the effective per-bin prior
-        becomes `c_local(b) * exp(log_kernel(b)) = kernel(b) / n_bins *
-        n_bins = kernel(b)`. Without this scaling, the local state's
-        total mass would be n_bins times smaller than legacy single-bin
-        local, causing non-local states to dominate.
+        - ``== 0``: delta kernel. ``log(n_bins)`` at the animal's bin,
+          ``-inf`` elsewhere (one-hot). Off-track / NaN positions fall
+          back to a uniform kernel.
+        - ``> 0``: Gaussian kernel over shortest-path track-graph
+          distance (Euclidean fallback when no graph is fitted), then
+          normalized so ``exp(log_kernel)`` sums to ``n_interior_bins``
+          per time step.
 
-        In the sharp-sigma limit, this matches legacy behavior: the
-        kernel concentrates at the animal's bin with peak ≈ n_bins,
-        giving that bin the same effective prior as legacy's single
-        delta-function bin.
+        Both paths satisfy the invariant ``exp(log_kernel).sum(axis=1)
+        == n_bins``. Combined with the multi-bin local state's
+        ``1/n_bins`` uniform continuous initial conditions, this makes
+        the effective per-bin prior exactly ``exp(log_kernel)`` — so
+        the total Local state mass after the HMM forward step equals
+        ``p_local * P(spikes | animal_bin)`` in the delta limit.
+
+        In the sharp-sigma limit, the Gaussian concentrates at the
+        animal's bin and matches the delta-kernel behavior numerically.
 
         Parameters
         ----------
@@ -562,12 +577,40 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         animal_pos = get_position_at_time(position_time, position, time, environment)
 
         n_bins = int(environment.is_track_interior_.sum())
+        log_n_bins = jnp.log(jnp.array(n_bins, dtype=jnp.float32))
 
         # Detect NaN positions (from gaps in position data)
         if animal_pos.ndim == 1:
             nan_mask = jnp.isnan(animal_pos)
         else:
             nan_mask = jnp.any(jnp.isnan(animal_pos), axis=-1)
+
+        # Delta kernel path: σ=0 means the Local state is concentrated on
+        # the single bin containing the animal. Emits log(n_bins) at that
+        # bin and -inf elsewhere, so after the multi-bin state's 1/n_bins
+        # continuous IC, the total Local mass equals p_local × P(spikes |
+        # animal_bin_center). Off-track / NaN animal positions fall back
+        # to the uniform kernel (same as the Gaussian path).
+        if self.local_position_std == 0:
+            interior_bin_indices = np.where(environment.is_track_interior_.ravel())[0]
+            # Replace NaN animal positions with 0 before get_bin_ind (it
+            # has no NaN guard); the uniform_mask below will mask those
+            # rows regardless of the placeholder bin value used here.
+            safe_animal_pos = np.nan_to_num(np.asarray(animal_pos), nan=0.0)
+            animal_bin_inds = environment.get_bin_ind(safe_animal_pos)
+            is_animal_bin = jnp.asarray(
+                animal_bin_inds[:, np.newaxis] == interior_bin_indices[np.newaxis, :]
+            )
+            # Off-track positions (animal bin not in interior) → no match
+            # in any column → all-False row. Fall back to uniform.
+            off_track_mask = ~is_animal_bin.any(axis=-1)
+            uniform_mask = nan_mask | off_track_mask
+            log_kernel = jnp.where(is_animal_bin, log_n_bins, -jnp.inf)
+            log_kernel = jnp.where(uniform_mask[:, jnp.newaxis], 0.0, log_kernel)
+            return log_kernel
+
+        # Gaussian kernel path (σ > 0). Uses topology-aware distance via
+        # Environment.get_distances_to_interior_bins().
 
         # Ask the environment for distances to interior bins.
         # Off-track positions yield NaN rows; unreachable bins yield inf.
@@ -590,7 +633,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # for the 1/n_bins uniform continuous IC of the multi-bin local state
         # so the effective per-bin prior matches the kernel itself. Without
         # this scaling, non-local states dominate by a factor of n_bins.
-        log_n_bins = jnp.log(jnp.array(n_bins, dtype=jnp.float32))
         log_kernel = (
             log_kernel
             - jax.scipy.special.logsumexp(log_kernel, axis=1, keepdims=True)
