@@ -283,3 +283,107 @@ def test_multibin_local_posterior_invariants(simulated_data):
 
     # 4. State probabilities are non-negative
     assert np.all(state_probs >= 0), "Negative state probabilities"
+
+
+def _fit_predict_state_probs(simulated_data, **detector_kwargs):
+    """Helper: fit a NonLocalSortedSpikesDetector and return state probabilities."""
+    detector = NonLocalSortedSpikesDetector(
+        sorted_spikes_algorithm="sorted_spikes_kde",
+        sorted_spikes_algorithm_params={
+            "position_std": 6.0,
+            "block_size": int(2**12),
+        },
+        **detector_kwargs,
+    ).fit(
+        simulated_data["time"],
+        simulated_data["position"],
+        simulated_data["spike_times"],
+        is_training=~simulated_data["is_event"],
+    )
+    results = detector.predict(
+        spike_times=simulated_data["spike_times"],
+        time=simulated_data["time"],
+        position=simulated_data["position"],
+        position_time=simulated_data["time"],
+    )
+    return results.acausal_state_probabilities.values
+
+
+@pytest.mark.integration
+def test_sharp_sigma_matches_legacy(simulated_data):
+    """In the sharp-sigma limit, multi-bin local should match legacy.
+
+    Validates the mass-balance scaling (kernel * n_bins): when the kernel
+    is concentrated at a single bin, the multi-bin local posterior mass
+    should equal the legacy single-bin local mass up to float32 precision.
+    """
+    legacy_probs = _fit_predict_state_probs(simulated_data)
+    # Very sharp kernel — effectively a delta at the animal's bin
+    sharp_probs = _fit_predict_state_probs(simulated_data, local_position_std=0.01)
+
+    # Mean occupancy per discrete state should match within 1% relative
+    legacy_mean = legacy_probs.mean(axis=0)
+    sharp_mean = sharp_probs.mean(axis=0)
+    np.testing.assert_allclose(
+        sharp_mean,
+        legacy_mean,
+        rtol=1e-2,
+        atol=1e-3,
+        err_msg=(
+            "Sharp-sigma multi-bin local should match legacy state "
+            f"occupancies. Legacy={legacy_mean}, Sharp={sharp_mean}"
+        ),
+    )
+
+
+@pytest.mark.integration
+def test_large_sigma_spreads_local_posterior(simulated_data):
+    """With very large sigma, local state posterior spreads across bins.
+
+    With ``local_position_std`` larger than the track, the kernel is
+    essentially uniform so the local state has no spatial preference.
+    Under these conditions, the local posterior over bins (conditional
+    on being in the Local state) should be approximately uniform across
+    interior bins.
+    """
+    detector = NonLocalSortedSpikesDetector(
+        local_position_std=1000.0,  # much larger than the simulated track
+        sorted_spikes_algorithm="sorted_spikes_kde",
+        sorted_spikes_algorithm_params={
+            "position_std": 6.0,
+            "block_size": int(2**12),
+        },
+    ).fit(
+        simulated_data["time"],
+        simulated_data["position"],
+        simulated_data["spike_times"],
+        is_training=~simulated_data["is_event"],
+    )
+    results = detector.predict(
+        spike_times=simulated_data["spike_times"],
+        time=simulated_data["time"],
+        position=simulated_data["position"],
+        position_time=simulated_data["time"],
+    )
+
+    # Extract the local-state slice of the full posterior.
+    # Local state is state 0; its bins come first in state_ind_.
+    n_local_bins = int(detector.bin_sizes_[0])
+    assert n_local_bins > 1, "Local state should have multiple bins"
+    local_posterior = results.acausal_posterior.values[:, :n_local_bins]
+
+    # When the local state is meaningfully occupied, the conditional
+    # posterior over local bins should be approximately uniform.
+    # Normalize per time step; skip rows where local mass is negligible.
+    local_mass = local_posterior.sum(axis=1, keepdims=True)
+    active = local_mass.ravel() > 1e-3
+    assert active.sum() > 0, "No time steps with meaningful local mass"
+
+    conditional = local_posterior[active] / local_mass[active]
+    # The coefficient of variation across bins should be small when the
+    # kernel is uniform (no spatial preference).
+    cv = conditional.std(axis=1) / (conditional.mean(axis=1) + 1e-12)
+    assert cv.mean() < 0.5, (
+        f"Large-sigma local posterior should be near-uniform across bins "
+        f"(mean CV={cv.mean():.3f})"
+    )

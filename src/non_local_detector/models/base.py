@@ -448,93 +448,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             -0.5 * dist_sq / (self.non_local_penalty_sigma**2)
         )
 
-    @staticmethod
-    def _compute_squared_distances_to_bins(
-        animal_pos: np.ndarray,
-        environment: "Environment",
-        interior_bin_indices: np.ndarray,
-    ) -> jnp.ndarray:
-        """Compute squared distances from animal position to interior bins.
-
-        Uses track graph distances when available (1D track graph via
-        dict-of-dicts, or N-D via precomputed distance matrix), otherwise
-        Euclidean. Off-track animal positions (node_id == -1) produce NaN
-        rows so the caller can apply a uniform-kernel fallback.
-
-        Parameters
-        ----------
-        animal_pos : np.ndarray, shape (n_time, n_dims) or (n_time,)
-            Animal position at each time step.
-        environment : Environment
-            The spatial environment.
-        interior_bin_indices : np.ndarray, shape (n_interior_bins,)
-            Indices of interior bins in the full place_bin_centers_ array.
-
-        Returns
-        -------
-        sq_dist : jnp.ndarray, shape (n_time, n_interior_bins)
-            Squared distances. Rows where the animal is off-track contain NaN.
-        """
-        if environment.track_graph is not None:
-            # 1D track graph: convert dict-of-dicts to dense matrix for
-            # vectorized indexing (avoids O(n_time * n_bins) Python loop).
-            if environment.place_bin_centers_nodes_df_ is None:
-                raise ValueError(
-                    "place_bin_centers_nodes_df_ is required for 1D track "
-                    "graph distance lookup."
-                )
-
-            # Lazily build and cache dense (n_bins, n_bins) distance matrix
-            # indexed by bin. Off-track bins (node_id == -1) get NaN.
-            if not hasattr(environment, "_bin_distance_matrix_"):
-                bin_to_node = np.asarray(
-                    environment.place_bin_centers_nodes_df_.node_id
-                )
-                n_total_bins = len(bin_to_node)
-                bin_dist = np.full((n_total_bins, n_total_bins), np.nan)
-                for src_bin, src_node in enumerate(bin_to_node):
-                    if src_node == -1:
-                        continue
-                    src_distances = environment.distance_between_nodes_.get(
-                        src_node, {}
-                    )
-                    for dst_bin, dst_node in enumerate(bin_to_node):
-                        if dst_node == -1:
-                            continue
-                        bin_dist[src_bin, dst_bin] = src_distances.get(dst_node, np.inf)
-                environment._bin_distance_matrix_ = bin_dist
-
-            # Vectorized lookup: (n_time, n_interior_bins)
-            animal_bin_inds = environment.get_bin_ind(np.asarray(animal_pos))
-            return jnp.array(
-                environment._bin_distance_matrix_[
-                    np.ix_(animal_bin_inds, interior_bin_indices)
-                ]
-                ** 2
-            )
-
-        if environment.distance_between_nodes_ is not None and not isinstance(
-            environment.distance_between_nodes_, dict
-        ):
-            # N-D: distance_between_nodes_ is (n_nodes, n_nodes) array
-            animal_bin_inds = environment.get_bin_ind(np.asarray(animal_pos))
-            dist_matrix = environment.distance_between_nodes_
-            return jnp.array(
-                dist_matrix[np.ix_(animal_bin_inds, interior_bin_indices)] ** 2
-            )
-
-        # Fallback: Euclidean distances
-        animal_pos_arr = jnp.asarray(animal_pos)
-        bin_centers = jnp.asarray(environment.place_bin_centers_[interior_bin_indices])
-        if animal_pos_arr.ndim == 1:
-            animal_pos_arr = animal_pos_arr[:, jnp.newaxis]
-        if bin_centers.ndim == 1:
-            bin_centers = bin_centers[:, jnp.newaxis]
-        return jnp.sum(
-            (animal_pos_arr[:, jnp.newaxis, :] - bin_centers[jnp.newaxis, :, :]) ** 2,
-            axis=-1,
-        )
-
     def _compute_local_position_kernel(
         self,
         time: jnp.ndarray,
@@ -585,9 +498,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         animal_pos = get_position_at_time(position_time, position, time, environment)
 
-        is_interior = environment.is_track_interior_.ravel()
-        interior_bin_indices = np.where(is_interior)[0]
-        n_bins = int(is_interior.sum())
+        n_bins = int(environment.is_track_interior_.sum())
 
         # Detect NaN positions (from gaps in position data)
         if animal_pos.ndim == 1:
@@ -595,9 +506,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         else:
             nan_mask = jnp.any(jnp.isnan(animal_pos), axis=-1)
 
-        sq_dist = self._compute_squared_distances_to_bins(
-            animal_pos, environment, interior_bin_indices
-        )
+        # Ask the environment for distances to interior bins.
+        # Off-track positions yield NaN rows; unreachable bins yield inf.
+        dist = environment.get_distances_to_interior_bins(np.asarray(animal_pos))
+        sq_dist = jnp.asarray(dist) ** 2
 
         # Detect off-track positions (NaN or inf rows from track graph path).
         # Uses ~isfinite to catch both NaN (off-track bins) and inf
@@ -2791,6 +2703,31 @@ class ClusterlessDetector(_DetectorBase):
         """
         Compute the log likelihood for the given data.
 
+        Notes
+        -----
+        When ``local_position_std`` is set, the per-bin value returned
+        for local-state entries is not a pure observation likelihood.
+        It combines the spatial spike likelihood with the position
+        uncertainty kernel::
+
+            log_likelihood[local, b, t] =
+                log P(spikes_t | bin b)                   # spatial likelihood
+              + log_kernel(b | animal_pos_t)              # Gaussian anchor
+              + log(n_interior_bins)                      # mass-balance
+
+        The kernel term is a time-varying state-specific spatial prior.
+        Mathematically, injecting it into the likelihood is equivalent
+        to injecting it into the transition matrix — both multiply into
+        the HMM forward step — but avoids breaking the static-transition
+        assumption used by ``jax.lax.scan``. The ``log(n_interior_bins)``
+        constant compensates for the ``1/n_bins`` uniform continuous IC
+        so the effective per-bin prior is ``exp(log_kernel)`` itself.
+
+        The posterior returned by ``predict()`` is unaffected by this
+        choice; only the raw ``log_likelihood`` values reported (via
+        ``return_outputs='log_likelihood'``) differ from pure
+        ``log P(spikes | state, bin)`` for local-state entries.
+
         Parameters
         ----------
         time : np.ndarray, shape (n_time,)
@@ -3690,6 +3627,31 @@ class SortedSpikesDetector(_DetectorBase):
     ) -> jnp.ndarray:
         """
         Compute the log likelihood for the given data.
+
+        Notes
+        -----
+        When ``local_position_std`` is set, the per-bin value returned
+        for local-state entries is not a pure observation likelihood.
+        It combines the spatial spike likelihood with the position
+        uncertainty kernel::
+
+            log_likelihood[local, b, t] =
+                log P(spikes_t | bin b)                   # spatial likelihood
+              + log_kernel(b | animal_pos_t)              # Gaussian anchor
+              + log(n_interior_bins)                      # mass-balance
+
+        The kernel term is a time-varying state-specific spatial prior.
+        Mathematically, injecting it into the likelihood is equivalent
+        to injecting it into the transition matrix — both multiply into
+        the HMM forward step — but avoids breaking the static-transition
+        assumption used by ``jax.lax.scan``. The ``log(n_interior_bins)``
+        constant compensates for the ``1/n_bins`` uniform continuous IC
+        so the effective per-bin prior is ``exp(log_kernel)`` itself.
+
+        The posterior returned by ``predict()`` is unaffected by this
+        choice; only the raw ``log_likelihood`` values reported (via
+        ``return_outputs='log_likelihood'``) differ from pure
+        ``log P(spikes | state, bin)`` for local-state entries.
 
         Parameters
         ----------

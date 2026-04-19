@@ -141,11 +141,30 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         Sampling frequency in Hz, by default 500.0.
     no_spike_rate : float, optional
         Rate for no-spike observations, by default 1e-10.
+    non_local_position_penalty : float, optional
+        Magnitude of the Gaussian penalty subtracted from the non-local
+        states' log-likelihood near the animal's position. Suppresses
+        non-local replay detection near the current location. By default
+        ``0.0`` (no penalty).
+    non_local_penalty_sigma : float, optional
+        Spatial scale (same units as position) of the non-local penalty
+        Gaussian. By default ``1.0``. Must be positive.
+    discrete_transition_prior_weight : float or np.ndarray, optional
+        Dimensionless weight for data-adaptive Dirichlet prior scaling
+        during EM re-estimation of discrete transitions. By default
+        ``0.0`` (fixed-count prior).
     frozen_discrete_transition_rows : array-like or None, optional
         Discrete transition rows to freeze during EM re-estimation. By
         default ``(1,)``, which freezes the No-Spike row so its
         self-transition cannot collapse to fit stray spike gaps. Pass
         ``None`` to disable row freezing.
+    local_position_std : float or None, optional
+        Standard deviation (same units as position) of the position
+        uncertainty kernel for the Local state. When set, the Local
+        state uses all position bins with a normalized Gaussian kernel
+        centered on the animal's observed position, modeling spatial
+        uncertainty in the local representation. When ``None``
+        (default), the legacy single-bin local behavior is used.
 
     Examples
     --------
@@ -271,11 +290,30 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         Sampling frequency in Hz, by default 500.0.
     no_spike_rate : float, optional
         Rate for no-spike observations, by default 1e-10.
+    non_local_position_penalty : float, optional
+        Magnitude of the Gaussian penalty subtracted from the non-local
+        states' log-likelihood near the animal's position. Suppresses
+        non-local replay detection near the current location. By default
+        ``0.0`` (no penalty).
+    non_local_penalty_sigma : float, optional
+        Spatial scale (same units as position) of the non-local penalty
+        Gaussian. By default ``1.0``. Must be positive.
+    discrete_transition_prior_weight : float or np.ndarray, optional
+        Dimensionless weight for data-adaptive Dirichlet prior scaling
+        during EM re-estimation of discrete transitions. By default
+        ``0.0`` (fixed-count prior).
     frozen_discrete_transition_rows : array-like or None, optional
         Discrete transition rows to freeze during EM re-estimation. By
         default ``(1,)``, which freezes the No-Spike row so its
         self-transition cannot collapse to fit stray spike gaps. Pass
         ``None`` to disable row freezing.
+    local_position_std : float or None, optional
+        Standard deviation (same units as position) of the position
+        uncertainty kernel for the Local state. When set, the Local
+        state uses all position bins with a normalized Gaussian kernel
+        centered on the animal's observed position, modeling spatial
+        uncertainty in the local representation. When ``None``
+        (default), the legacy single-bin local behavior is used.
 
     Examples
     --------
