@@ -426,6 +426,66 @@ def _compute_log_mark_kernel_from_precomputed(
     return log_norm_const - 0.5 * sq_dist
 
 
+def _precompute_decoding_gemm_quantities(
+    decoding_features: jnp.ndarray,
+    waveform_stds: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Precompute the decoding-side GEMM quantities used by the log mark kernel.
+
+    Mirror of :func:`_precompute_encoding_gemm_quantities` for the loops
+    that iterate over *encoding*-spike chunks (see
+    :func:`_estimate_with_enc_chunking` and
+    :func:`_compensated_linear_marginal_chunked`).  In those loops the
+    decoding features are constant across chunks, so the scaled copy and
+    its row-wise sum-of-squares can be hoisted outside the loop body.
+
+    Returns
+    -------
+    inv_sigma : jnp.ndarray, shape (n_features,)
+    log_norm_const : jnp.ndarray, shape ()
+    X : jnp.ndarray, shape (n_decoding_spikes, n_features)
+        Decoding features scaled by ``inv_sigma``.
+    x2 : jnp.ndarray, shape (n_decoding_spikes,)
+        Row-wise squared norms ``sum(X**2, axis=1)``.
+    """
+    n_features = waveform_stds.shape[0]
+    waveform_stds = jnp.clip(waveform_stds, min=EPS)
+    inv_sigma = 1.0 / waveform_stds
+    log_norm_const = -0.5 * (
+        n_features * jnp.log(2.0 * jnp.pi) + 2.0 * jnp.sum(jnp.log(waveform_stds))
+    )
+    X = decoding_features * inv_sigma[None, :]
+    x2 = jnp.sum(X**2, axis=1)
+    return inv_sigma, log_norm_const, X, x2
+
+
+def _log_mark_kernel_chunk_from_decoding_precomputed(
+    encoding_chunk_features: jnp.ndarray,
+    dec_precomp: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray],
+) -> jnp.ndarray:
+    """Log mark kernel for one encoding chunk against all decoding spikes.
+
+    Pairs with :func:`_precompute_decoding_gemm_quantities`.  Intended to
+    be called inside the encoding-chunk ``fori_loop`` body of
+    :func:`_estimate_with_enc_chunking` and
+    :func:`_compensated_linear_marginal_chunked` — the scale factors
+    ``inv_sigma`` / ``log_norm_const`` and the decoding-side scaled
+    features ``X`` / row-norms ``x2`` are loop-invariant and are
+    precomputed once outside.
+
+    Returns
+    -------
+    logK_mark_chunk : jnp.ndarray, shape (enc_tile_size, n_decoding_spikes)
+    """
+    inv_sigma, log_norm_const, X, x2 = dec_precomp
+    Y_chunk = encoding_chunk_features * inv_sigma[None, :]
+    y2_chunk = jnp.sum(Y_chunk**2, axis=1)
+    # GEMM: (n_dec, n_features) @ (n_features, tile) -> (n_dec, tile).
+    cross_term = X @ Y_chunk.T
+    sq_dist = jnp.maximum(y2_chunk[:, None] + x2[None, :] - 2.0 * cross_term.T, 0.0)
+    return log_norm_const - 0.5 * sq_dist
+
+
 def _compute_log_mark_kernel_gemm(
     decoding_features: jnp.ndarray,
     encoding_features: jnp.ndarray,
@@ -579,6 +639,14 @@ def _estimate_with_enc_chunking(
                 constant_values=-jnp.inf,
             )
 
+    # Hoist chunk-invariant decoding-side GEMM quantities (inv_sigma,
+    # log_norm_const, X_scaled, x2) outside the fori_loop so each
+    # encoding chunk reuses them instead of recomputing.  See
+    # :func:`_precompute_decoding_gemm_quantities`.
+    dec_gemm_precomp = _precompute_decoding_gemm_quantities(
+        decoding_spike_waveform_features, waveform_stds
+    )
+
     # Define vmapped function once (outside loop) for efficiency
     def compute_for_one_spike(
         log_pos_chunk: jnp.ndarray, y_col: jnp.ndarray
@@ -661,11 +729,12 @@ def _estimate_with_enc_chunking(
                 (enc_tile_size, n_pos),
             )
 
-        # Compute log mark kernel for this encoding chunk: (enc_tile_size, n_dec)
-        logK_mark_chunk = _compute_log_mark_kernel_gemm(
-            decoding_spike_waveform_features,
-            enc_chunk_features,
-            waveform_stds,
+        # Compute log mark kernel for this encoding chunk: (enc_tile_size, n_dec).
+        # ``dec_gemm_precomp`` (inv_sigma, log_norm_const, X_scaled, x2) is
+        # hoisted outside the fori_loop; this helper does only the per-chunk
+        # enc-side scaling + GEMM + completion of the squared distance.
+        logK_mark_chunk = _log_mark_kernel_chunk_from_decoding_precomputed(
+            enc_chunk_features, dec_gemm_precomp
         )
 
         # No need to mask logK_mark_chunk - padded entries already have -inf in log_pos_chunk
@@ -913,6 +982,12 @@ def _compensated_linear_marginal_chunked(
     # Validity mask for padded entries
     enc_valid = jnp.arange(n_enc_padded) < n_enc  # (n_enc_padded,)
 
+    # Hoist chunk-invariant decoding-side GEMM quantities outside the
+    # chunk scan.  See :func:`_precompute_decoding_gemm_quantities`.
+    dec_gemm_precomp = _precompute_decoding_gemm_quantities(
+        decoding_spike_waveform_features, waveform_stds
+    )
+
     def process_chunk(carry, chunk_idx):
         """Process one encoding chunk with online max rescaling."""
         running_sum, running_max = carry
@@ -944,11 +1019,10 @@ def _compensated_linear_marginal_chunked(
                 (enc_tile_size, n_pos),
             )
 
-        # Compute mark kernel for this chunk: (enc_tile, n_dec)
-        logK_mark_chunk = _compute_log_mark_kernel_gemm(
-            decoding_spike_waveform_features,
-            enc_chunk,
-            waveform_stds,
+        # Compute mark kernel for this chunk: (enc_tile, n_dec).
+        # ``dec_gemm_precomp`` is hoisted outside the scan.
+        logK_mark_chunk = _log_mark_kernel_chunk_from_decoding_precomputed(
+            enc_chunk, dec_gemm_precomp
         )
 
         # Mask padded entries
