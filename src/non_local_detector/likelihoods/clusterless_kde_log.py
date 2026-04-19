@@ -19,6 +19,18 @@ from non_local_detector.likelihoods.common import (
     safe_log,
 )
 
+# Private-impl / public-JIT-alias pattern used throughout this module:
+#
+#     def _foo_impl(...): ...                # un-JITted body, plain Python
+#     foo = jax.jit(_foo_impl, static_argnames=...)   # public name
+#
+# The ``_impl`` suffix marks the un-JITted body, distinct from the
+# public ``jax.jit``-wrapped alias of the same name without the suffix.
+# The wrapped alias is what callers use; the ``_impl`` is what scan /
+# fori_loop bodies and other JIT-traced contexts call directly so JAX
+# can trace through the function body without re-entering a JIT
+# boundary.  Mirrors the convention in ``core.py``.
+
 # Maximum waveform feature dimensions for the compensated-linear fast path.
 # Above this threshold, mark kernel underflow causes accuracy degradation
 # and the logsumexp path is used instead. Empirically validated: ≤8 dims
@@ -106,22 +118,12 @@ def auto_select_tile_sizes(
     -----
     This helper is a starting point, not a precise cost model.  Runtime
     tuning against a representative workload is still the gold standard.
-    Three simplifications in the current heuristic:
-
-    1. ``n_wf`` is ignored — the factor-of-3 intermediate-copies
-       estimate already covers the dominant GEMM intermediates, which
-       are ``O(n_enc × block_size)`` regardless of ``n_wf`` once the
-       encoding-side precompute is hoisted (Task 2).
-    2. The scan's outer ``(n_time, n_pos)`` accumulator isn't budgeted
-       here because it's the same for any tile choice.
-    3. Static argnames on the JIT wrapper mean each distinct
-       ``block_size`` / ``enc_tile_size`` triggers a recompile — prefer
-       stable values across repeated ``predict`` calls on the same
-       recording.  Call this function once per electrode-shape
-       combination and cache the result; repeated calls with the same
-       arguments are idempotent but each one queries
-       ``jax.devices()[0].memory_stats()`` (a cheap but not free
-       operation).
+    The heuristic ignores ``n_wf`` (the factor-of-3 intermediate
+    estimate already dominates) and the ``(n_time, n_pos)``
+    accumulator (constant across tile choices).  Resolved values
+    become static JIT arguments — each distinct value triggers a
+    recompile, so cache the result per electrode-shape combination
+    rather than calling on every ``predict`` invocation.
     """
     if memory_budget_bytes is None:
         memory_budget_bytes = _default_memory_budget_bytes()
@@ -1377,19 +1379,13 @@ def _block_estimate_log_joint_mark_intensity_impl(
     n_features = decoding_spike_waveform_features.shape[1]
     n_position_bins = occupancy.shape[0]
 
-    # Pad decoding features up to a whole multiple of block_size so every
-    # fori_loop iteration can use a static-size dynamic_slice.
-    #
-    # Use edge-replication (not zero-fill) for the padding: this makes the
-    # padded columns of ``logK_mark`` byte-identical to the last real
-    # decoding spike's column. Because ``_compensated_linear_marginal``
-    # reduces over decoding spikes via ``max_wf = jnp.max(logK_mark, axis=1)``,
-    # padded columns that are copies of a real column cannot exceed the max
-    # and therefore cannot shift ``max_wf``/``global_max`` — so real
-    # decoding spikes' outputs are unaffected by the padding. Zero-fill
-    # would create "fake spikes" near the center of the encoding-feature
-    # cloud that often DO win the max, numerically contaminating real
-    # rows in the same block.
+    # Pad to a multiple of block_size so each fori_loop iteration can
+    # use a static-size dynamic_slice.  Edge-replication (not zero-fill)
+    # is required: padded rows are byte-identical copies of the last
+    # real row, so the per-encoding-spike reduction
+    # ``max(logK_mark, axis=1)`` in ``_compensated_linear_marginal`` is
+    # uncontaminated.  Zero-fill would seed "fake spikes" near the
+    # encoding cloud's center that frequently win the max.
     n_blocks = (n_decoding_spikes + block_size - 1) // block_size
     n_padded = n_blocks * block_size
     pad_amount = n_padded - n_decoding_spikes
@@ -1400,18 +1396,13 @@ def _block_estimate_log_joint_mark_intensity_impl(
             mode="edge",
         )
 
-    # Hoist the encoding-side GEMM quantities outside the fori_loop whenever
-    # the downstream path is the non-chunked use_gemm GEMM (the only branch
-    # where ``_estimate_log_joint_mark_intensity_impl`` reads
-    # ``precomputed_enc_gemm``).  The three ``use_*``/``enc_tile_size``
-    # conditions are all static at trace time, so this branch is resolved
-    # at compilation — JAX traces only the taken arm.
-    #
-    # Note on ``enc_tile_size >= n_encoding_spikes``: the chunked sub-paths
-    # inside ``_estimate_log_joint_mark_intensity_impl`` only trigger when
-    # ``enc_tile_size < n_encoding_spikes`` (see its guard), so a tile size
-    # equal to or larger than the full encoding set routes through the
-    # non-chunked GEMM branch and DOES benefit from the precompute.
+    # Hoist the encoding-side GEMM quantities outside the fori_loop when
+    # the downstream non-chunked-GEMM path is taken (the only branch
+    # that reads ``precomputed_enc_gemm``).  All gating conditions are
+    # static at trace time, so JAX traces only the taken arm.  The
+    # ``enc_tile_size >= n_encoding_spikes`` case routes through
+    # non-chunked too — the chunked sub-paths only fire when the tile
+    # is strictly smaller.
     n_encoding_spikes = encoding_spike_waveform_features.shape[0]
     use_precomputed_gemm = (
         use_gemm
@@ -1568,45 +1559,28 @@ def _block_estimate_with_segment_sum_impl(
     position_std: jnp.ndarray | None = None,
     n_real_encoding_spikes: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
-    """Block_estimate fused with segment_sum; accumulates ``(n_time, n_pos)`` directly.
+    """Block-estimate fused with segment_sum; accumulates ``(n_time, n_pos)`` directly.
 
-    Equivalent to::
+    Equivalent to running
+    :func:`block_estimate_log_joint_mark_intensity` then
+    ``jax.ops.segment_sum(..., num_segments=n_time, indices_are_sorted=True)``,
+    but with the segment_sum performed per-block inside the
+    ``fori_loop`` so the full ``(n_dec, n_pos)`` mark-intensity matrix
+    is never materialized.
 
-        mark_intensity = block_estimate_log_joint_mark_intensity(...)  # (n_dec, n_pos)
-        out = jax.ops.segment_sum(
-            mark_intensity, spike_time_bin_ind,
-            num_segments=n_time, indices_are_sorted=True,
-        )
+    Padded decoding-spike slots are assigned segment id ``n_time``;
+    ``segment_sum(num_segments=n_time)`` drops indices ``>= num_segments``,
+    so padded slots contribute nothing.  Assumes
+    ``decoding_spike_waveform_features.shape[0] > 0``; the empty-array
+    case is handled by the public wrapper.
 
-    but the ``segment_sum`` is performed per-block inside the ``fori_loop``
-    so the full ``(n_dec, n_pos)`` mark-intensity matrix never needs to
-    be materialized.  Per-block intermediate drops to
-    ``(block_size, n_position_bins)``.
-
-    Memory tradeoff (pre-Task-3, while the electrode loop is still Python):
-    the fori_loop carry here is ``(n_time, n_position_bins)``, while Task 1's
-    ``_block_estimate_log_joint_mark_intensity_impl`` carries
-    ``(n_padded_dec, n_position_bins)``.  At production scale
-    (n_time ≈ 210k, n_padded_dec ≈ 20k), the Task 4 carry is ~10× larger.
-    The net peak-memory win versus the separate pipeline is therefore only
-    ``sizeof((n_dec, n_pos))`` — modest in absolute terms (≈ 14 MB per
-    electrode at 20k dec × 175 pos), dominated by the ``(n_time, n_pos)``
-    accumulator which both paths need.  The main motivation is kernel-
-    launch fusion: the segment_sum runs in the same compiled region as
-    the per-block mark-intensity compute, eliminating a boundary.
-
-    The memory win becomes material once Task 3 wraps an outer scan
-    around the electrode loop: without Task 4, that scan must keep both
-    the ``(n_dec, n_pos)`` block output AND the ``(n_time, n_pos)`` outer
-    accumulator alive simultaneously; with Task 4, only the latter.
-
-    Padded decoding-spike slots (beyond ``n_decoding_spikes``) are
-    assigned segment id ``n_time`` — a dummy bin that ``segment_sum``
-    ignores when ``num_segments=n_time``, so padded spikes contribute
-    nothing to the accumulator.
-
-    Assumes ``decoding_spike_waveform_features.shape[0] > 0``.  The
-    empty-array case is handled by the public wrapper.
+    Notes
+    -----
+    Within the electrode-scan path the fused-segment_sum design
+    avoids carrying the ``(n_dec, n_pos)`` block output alongside
+    the outer ``(n_time, n_pos)`` accumulator.  See
+    :func:`_predict_nonlocal_electrode_scan_impl` for the
+    accumulator's memory profile.
     """
     n_decoding_spikes = decoding_spike_waveform_features.shape[0]
     n_features = decoding_spike_waveform_features.shape[1]
@@ -1677,17 +1651,11 @@ def _block_estimate_with_segment_sum_impl(
             precomputed_enc_gemm=precomp,
             n_real_encoding_spikes=n_real_encoding_spikes,
         )
-        # Match block_estimate_log_joint_mark_intensity's LOG_EPS floor so
-        # the summed likelihood matches the separate
+        # Apply LOG_EPS floor so this fused output matches the separate
         # (block_estimate -> segment_sum) pipeline byte-for-byte.
         block_mark = jnp.clip(block_mark, min=LOG_EPS, max=None)
-        # ``indices_are_sorted=True`` is valid here because:
-        #   (1) a contiguous slice of a globally sorted array is sorted
-        #       (caller guarantees ``spike_time_bin_ind`` is sorted, as
-        #       produced by ``get_spike_time_bin_ind`` on sorted spikes),
-        #   (2) the appended sentinel ``n_time`` satisfies
-        #       ``n_time >= max(real_bin_ids)`` because real ids are in
-        #       ``[0, n_time)``, so sentinels always trail the real ids.
+        # ``indices_are_sorted=True`` is valid: caller passes sorted
+        # ``spike_time_bin_ind`` and our sentinel ``n_time`` is ≥ all real ids.
         block_contribution = jax.ops.segment_sum(
             block_mark,
             block_seg_ids,
@@ -1731,39 +1699,31 @@ def block_estimate_with_segment_sum_log_joint_mark_intensity(
     position_eval_points: jnp.ndarray | None = None,
     position_std: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
-    """Fused block_estimate + segment_sum.  Returns a ``(n_time, n_pos)`` array.
+    """Fused block_estimate + segment_sum.
 
-    Identical output to::
-
-        mark_intensity = block_estimate_log_joint_mark_intensity(...)
-        out = jax.ops.segment_sum(
-            mark_intensity, spike_time_bin_ind,
-            num_segments=n_time, indices_are_sorted=True,
-        )
-
-    but avoids materializing the full ``(n_decoding_spikes, n_position_bins)``
-    mark-intensity matrix.  Intended for the non-local likelihood path in
-    :func:`predict_clusterless_kde_log_likelihood`.
+    Public wrapper around :func:`_block_estimate_with_segment_sum_impl`
+    that handles the empty-decoding-spikes case before dispatching to
+    JIT.  Output is identical to running
+    :func:`block_estimate_log_joint_mark_intensity` then
+    ``jax.ops.segment_sum(..., num_segments=n_time, indices_are_sorted=True)``,
+    but the full ``(n_decoding_spikes, n_position_bins)`` mark-intensity
+    matrix is never materialized.
 
     Parameters
     ----------
     spike_time_bin_ind : jnp.ndarray of int, shape (n_decoding_spikes,)
-        Time-bin index for each decoding spike, sorted ascending
-        (e.g. produced by :func:`get_spike_time_bin_ind` on sorted spike
-        times).  All values must lie in ``[0, n_time)``.  Spikes outside
-        the decoding time window should be filtered out before calling
-        this function — values ``>= n_time`` would be silently ignored,
-        which is the same sentinel mechanism used internally for padded
-        slots.
+        Time-bin index for each decoding spike, sorted ascending.  All
+        values must lie in ``[0, n_time)``; out-of-range values are
+        silently dropped (same sentinel mechanism used for padded slots).
     n_time : int
-        Number of decoding time bins (``len(time_edges) - 1``).  **Static
-        argument**: each distinct ``n_time`` triggers a JIT
-        recompilation, so callers processing multiple recordings of the
-        same shape get cache hits but per-recording shape changes
-        amortise a one-time recompile.
+        Number of decoding time bins (``len(time_edges)``).  Static
+        JIT argument — each distinct value triggers a recompilation.
 
-    All other parameters have the same meaning as in
-    :func:`block_estimate_log_joint_mark_intensity`.
+    Other parameters match :func:`block_estimate_log_joint_mark_intensity`.
+
+    Returns
+    -------
+    log_likelihood_contribution : jnp.ndarray, shape (n_time, n_position_bins)
     """
     n_decoding_spikes = decoding_spike_waveform_features.shape[0]
     n_position_bins = occupancy.shape[0]
@@ -1791,23 +1751,41 @@ def block_estimate_with_segment_sum_log_joint_mark_intensity(
     )
 
 
-# Encoding-position padding sentinel for the electrode-scan batch.  Must be
-# far outside any plausible spatial environment so that
-# ``log_kde_distance(eval_points, padded_pos, std)`` produces values so
-# negative that ``exp(...)`` underflows to 0 — effectively zeroing the
-# padded encoding spike's contribution to the matmul.  1e10 gives
-# ``log_pos ≈ -5e17`` with std=3.5, far below exp's float32 underflow.
+# Encoding-position padding sentinel.  Padded encoding rows take this
+# value so that ``log_kde_distance`` returns a value far enough below
+# zero that ``exp(...)`` underflows — zeroing those rows' contribution
+# to the matmul without explicit masking.
+#
+# Float32 exp underflows below ~-87, float64 below ~-708.  At
+# ``log_pos ≈ -0.5 * (pad / std)^2``, a sentinel of 1e10 stays in the
+# safe regime for any ``std`` up to ~1e7 in float32 (giving
+# ``log_pos ≈ -5e5``) and any ``std`` up to ~1e3 in float64 (giving
+# ``log_pos ≈ -5e13``) — well beyond plausible spatial-bandwidth
+# values.  Using ``jnp.inf`` instead would propagate ``inf - inf =
+# NaN`` through the GEMM expansion ``y2 + x2 - 2*cross``.
 _ELECTRODE_SCAN_POS_PAD_VALUE = 1.0e10
 
 
 def _group_electrodes_by_n_wf(
     encoding_spike_waveform_features: list[jnp.ndarray],
 ) -> dict[int, list[int]]:
-    """Return a mapping from n_wf to the list of electrode indices with that count.
+    """Return a mapping from ``n_wf`` to the electrode indices with that count.
 
     In the common case (all tetrodes have 4 features) this returns a
-    single group; in the rare case where a bad tetrode wire reduces
-    ``n_wf`` for some electrodes, we run one JIT-compiled scan per group.
+    single group; if a bad tetrode wire reduces ``n_wf`` for some
+    electrodes, we run one JIT-compiled scan per group.
+
+    Notes
+    -----
+    The alternative is to pad ragged ``waveform_features`` to a common
+    ``max_n_wf`` and scan all electrodes once.  Padding shifts each
+    mark-kernel entry by ``-log(σ)`` per padded dim; after segment_sum
+    that becomes a per-time-bin spike-count-weighted shift, constant
+    across position bins, which cancels in the HMM ``_condition_on``
+    normalization but biases the absolute log-likelihood.  Grouping is
+    exact and is therefore the default; the padding alternative
+    (``pad_waveform_features=True``) is sketched in the optimization
+    plan and not implemented here.
     """
     groups: dict[int, list[int]] = {}
     for i, enc_wf in enumerate(encoding_spike_waveform_features):
@@ -2097,31 +2075,22 @@ def _predict_nonlocal_electrode_scan_impl(
 ) -> jnp.ndarray:
     """Scan over electrodes: one iteration computes one electrode's ``(n_time, n_pos)`` contribution.
 
-    Memory profile (at production scale):
+    The accumulator shape is ``(n_time, n_position_bins)``, initialized
+    to zeros; the caller adds the ``-ground_process_intensity``
+    baseline.  Returns the accumulated non-local log-likelihood across
+    all electrodes in the group.
 
-    * The scan carry is ``(n_time, n_position_bins)`` — persists for the
-      full scan duration (all iterations), not freed between electrodes.
-      At 210k time bins × 175 position bins × float32 that's ~147 MB;
-      for a 2-hour session (720k time bins at 100 Hz) it grows linearly
-      to ~504 MB.  Long recordings on consumer GPUs may need to split
-      into time windows before calling ``predict`` — or pass
-      ``enc_tile_size`` / ``use_streaming=True`` to force the
-      Python-loop fallback, which doesn't need the (n_time, n_pos)
-      carry in a scan.
-    * Per-iteration peak: ``log_position_distance`` shape ``(max_n_enc,
-      n_pos)`` ≈ 31 MB at ``max_n_enc=45k, n_pos=175`` + per-block
-      mark-intensity ``(block_size, n_pos)`` ≈ 70 KB.  These are
-      released between iterations.
-
-    Callers processing very long recordings should call
-    :func:`auto_select_tile_sizes` to pick memory-aware ``block_size``
-    / ``enc_tile_size`` values, or split the session into overlapping
-    windows.
-
-    Accumulator shape is ``(n_time, n_position_bins)``; the initial value
-    is zeros (the ``-ground_process_intensity`` baseline is added by the
-    caller).  Returns the accumulated non-local log-likelihood after
-    processing all electrodes in the group.
+    Notes
+    -----
+    The scan carry persists for the full scan duration and scales as
+    ``(n_time, n_position_bins) * 4 bytes`` — ~147 MB at the
+    documented production scale, ~500 MB for 2-hour sessions.  For
+    long recordings on consumer GPUs, either split into time windows
+    or pass ``enc_tile_size`` / ``use_streaming=True`` to use the
+    Python-loop fallback.  Per-iteration intermediates
+    (``log_position_distance``, per-block mark-intensity) are
+    released between iterations.  See :func:`auto_select_tile_sizes`
+    for memory-aware ``block_size`` selection.
     """
     n_position_bins = occupancy.shape[0]
 
@@ -2129,14 +2098,11 @@ def _predict_nonlocal_electrode_scan_impl(
         (enc_wf_e, enc_pos_e, dec_wf_e, seg_ids_e, mean_rate_e, n_real_enc_e) = (
             electrode
         )
-        # Per-electrode log-position kernel — computed inside scan to keep
-        # peak memory at single-electrode scale (~max_n_enc × n_pos × 4 B)
-        # rather than the (n_electrodes, max_n_enc, n_pos) that batching
-        # would require.  Padded encoding rows in ``enc_pos_e`` have been
-        # replaced upstream in ``_prepare_electrode_scan_group`` with the
-        # ``_ELECTRODE_SCAN_POS_PAD_VALUE`` sentinel, so their output rows
-        # are hugely-negative log-densities that underflow exp() to 0 in
-        # the downstream mark-intensity matmul — no explicit mask needed.
+        # Compute the position kernel inside scan (per-electrode scale)
+        # rather than batching, to keep peak memory at single-electrode
+        # size.  Padded encoding rows carry the
+        # ``_ELECTRODE_SCAN_POS_PAD_VALUE`` sentinel so their kernel
+        # rows underflow downstream — no explicit mask needed.
         log_pos_e = _log_kde_distance_impl(
             interior_place_bin_centers, enc_pos_e, position_std
         )
@@ -2454,23 +2420,12 @@ def predict_clusterless_kde_log_likelihood(
         If True, compute the log likelihood at the animal's position, by default False
     block_size : int | Literal["auto"], optional
         Decoding-spike block size for the fori_loop inside each scan
-        iteration (or each fallback-path call).  Defaults to 100 for
-        backward compatibility.
-
-        When ``"auto"``, :func:`auto_select_tile_sizes` is called to
-        pick a memory-aware value from the GPU's reported memory limit
-        — per bucket on the scan path, per electrode on the Python-loop
-        fallback.  On a big-memory GPU this typically resolves to
-        ``n_dec`` (1 block per electrode, max throughput); on a
-        consumer GPU it resolves smaller to fit memory.
-
-        Tradeoff: ``"auto"`` on workloads with wildly-varying n_dec
-        across ``predict`` calls pays one extra JIT compile per
-        distinct resolved block_size (in addition to the shape-
-        dependent bucket compiles).  For stable-shape workloads
-        (one recording, repeated predict calls), ``"auto"`` is cached
-        after the first call.  Prefer a fixed int when compiling many
-        different workloads in the same process.
+        iteration (or fallback-path call).  Default 100.  When
+        ``"auto"``, :func:`auto_select_tile_sizes` picks a
+        memory-aware value per bucket (scan path) or per electrode
+        (fallback path).  Each distinct resolved value is a static
+        JIT argument and triggers a recompile, so prefer a fixed int
+        when running many shape-different workloads in one process.
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
     enc_tile_size : int | None, optional
@@ -2573,15 +2528,8 @@ def predict_clusterless_kde_log_likelihood(
                     time,
                     waveform_std,
                 )
-                # Resolve ``block_size`` per-bucket: each bucket's max
-                # encoding / decoding counts parameterize the memory
-                # budget calculation, so buckets can pick different
-                # block sizes.  Same number of JIT specializations as
-                # a fixed block_size (bucket shapes already drive
-                # specialization); just the value inside each compile
-                # differs when ``"auto"`` is passed.  The resolver is
-                # a no-op for fixed ints — it only queries memory
-                # stats on the ``"auto"`` branch.
+                # No-op for fixed-int ``block_size``; resolves "auto"
+                # per-bucket using each bucket's max shapes.
                 resolved_block_size = _resolve_block_size(
                     block_size,
                     n_enc=batch["max_n_enc"],
@@ -2656,9 +2604,8 @@ def predict_clusterless_kde_log_likelihood(
                 else:
                     electrode_waveform_std = waveform_std
 
-                # Resolve ``block_size`` per-electrode so auto picks
-                # appropriate values based on this electrode's actual
-                # decoding-spike count (post-in-bounds filter).
+                # No-op for fixed-int ``block_size``; resolves "auto"
+                # per-electrode using post-in-bounds-filter counts.
                 resolved_block_size = _resolve_block_size(
                     block_size,
                     n_enc=int(electrode_encoding_spike_waveform_features.shape[0]),
