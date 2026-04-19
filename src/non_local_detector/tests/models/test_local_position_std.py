@@ -293,11 +293,13 @@ class TestComputeLocalPositionKernel:
             env,
         )
 
-        # exp(log_kernel) should sum to 1 per time step
-        # JAX computes in float32 (x64 mode not enabled), so use 1e-6 atol
+        # exp(log_kernel) should sum to n_interior_bins per time step
+        # (scaled to compensate for 1/n_bins uniform continuous IC).
+        # JAX computes in float32, so use rtol=1e-5.
         probs = np.exp(np.asarray(log_kernel))
         row_sums = probs.sum(axis=1)
-        np.testing.assert_allclose(row_sums, 1.0, atol=1e-6)
+        n_interior = int(env.is_track_interior_.sum())
+        np.testing.assert_allclose(row_sums, n_interior, rtol=1e-5)
 
     def test_kernel_peak_at_nearest_bin(self):
         """Kernel peak is at the bin nearest to animal position."""
@@ -402,10 +404,13 @@ class TestComputeLocalPositionKernel:
         # Should not contain NaN
         log_kernel_np = np.asarray(log_kernel)
         assert np.all(np.isfinite(log_kernel_np))
-        # Should be uniform (all equal)
+        # Should be uniform (all equal values, all zero since exp=1 per bin)
         np.testing.assert_allclose(log_kernel_np[0], log_kernel_np[0, 0], atol=1e-6)
-        # exp should sum to 1 (float32 precision from JAX)
-        np.testing.assert_allclose(np.exp(log_kernel_np[0]).sum(), 1.0, atol=1e-6)
+        # exp should sum to n_interior_bins (scaled normalization)
+        n_interior = int(env.is_track_interior_.sum())
+        np.testing.assert_allclose(
+            np.exp(log_kernel_np[0]).sum(), n_interior, rtol=1e-5
+        )
 
     def test_kernel_with_track_graph(self):
         """Kernel uses track graph distances when track graph is available."""
@@ -449,10 +454,13 @@ class TestComputeLocalPositionKernel:
         log_kernel_np = np.asarray(log_kernel)
         # Should be finite (no NaN from track graph path)
         assert np.all(np.isfinite(log_kernel_np))
-        # Should sum to 1 in probability space
-        np.testing.assert_allclose(np.exp(log_kernel_np[0]).sum(), 1.0, atol=1e-6)
-        # Peak should be near position 50
+        # Should sum to n_interior_bins in probability space
         is_interior = env.is_track_interior_.ravel()
+        n_interior = int(is_interior.sum())
+        np.testing.assert_allclose(
+            np.exp(log_kernel_np[0]).sum(), n_interior, rtol=1e-5
+        )
+        # Peak should be near position 50
         bin_centers = env.place_bin_centers_[is_interior].ravel()
         peak_idx = int(np.argmax(log_kernel_np[0]))
         assert abs(bin_centers[peak_idx] - 50.0) < 10.0
@@ -505,7 +513,11 @@ class TestComputeLocalPositionKernel:
         assert np.all(np.isfinite(log_kernel_np)), (
             "Off-track position produced non-finite kernel"
         )
-        # Should be uniform (all equal)
+        # Should be uniform (all equal, all 0.0 since exp=1 per bin)
         np.testing.assert_allclose(log_kernel_np[0], log_kernel_np[0, 0], atol=1e-6)
-        # Should sum to 1
-        np.testing.assert_allclose(np.exp(log_kernel_np[0]).sum(), 1.0, atol=1e-6)
+        # Should sum to n_interior_bins (scaled normalization)
+        is_interior = env.is_track_interior_.ravel()
+        n_interior = int(is_interior.sum())
+        np.testing.assert_allclose(
+            np.exp(log_kernel_np[0]).sum(), n_interior, rtol=1e-5
+        )

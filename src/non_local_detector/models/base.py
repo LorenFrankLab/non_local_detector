@@ -544,9 +544,23 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     ) -> jnp.ndarray:
         """Compute log position uncertainty kernel for the local state.
 
-        Returns a normalized (in log-space) Gaussian kernel centered on the
-        animal's interpolated position at each time step. Uses track graph
+        Returns a log-space Gaussian kernel centered on the animal's
+        interpolated position at each time step. Uses track graph
         distances when a track graph is available, otherwise Euclidean.
+
+        The kernel is normalized so that exp(log_kernel) sums to
+        n_interior_bins per time step (not 1). This compensates for the
+        uniform continuous initial conditions `c_local(b) = 1/n_bins`
+        used by the multi-bin local state: the effective per-bin prior
+        becomes `c_local(b) * exp(log_kernel(b)) = kernel(b) / n_bins *
+        n_bins = kernel(b)`. Without this scaling, the local state's
+        total mass would be n_bins times smaller than legacy single-bin
+        local, causing non-local states to dominate.
+
+        In the sharp-sigma limit, this matches legacy behavior: the
+        kernel concentrates at the animal's bin with peak ≈ n_bins,
+        giving that bin the same effective prior as legacy's single
+        delta-function bin.
 
         Parameters
         ----------
@@ -562,7 +576,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Returns
         -------
         log_kernel : jnp.ndarray, shape (n_time, n_interior_bins)
-            Log of the normalized position uncertainty kernel.
+            Log kernel. exp(log_kernel) sums to n_interior_bins per
+            time step (not 1).
         """
         from non_local_detector.likelihoods.common import get_position_at_time
 
@@ -572,6 +587,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         is_interior = environment.is_track_interior_.ravel()
         interior_bin_indices = np.where(is_interior)[0]
+        n_bins = int(is_interior.sum())
 
         # Detect NaN positions (from gaps in position data)
         if animal_pos.ndim == 1:
@@ -595,17 +611,20 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         sq_dist = jnp.nan_to_num(sq_dist, nan=0.0, posinf=0.0)
 
         log_kernel = -0.5 * sq_dist / (self.local_position_std**2)
-        # Normalize per time step so kernel is a proper log-probability
-        log_kernel = log_kernel - jax.scipy.special.logsumexp(
-            log_kernel, axis=1, keepdims=True
+        # Normalize to sum to n_bins (not 1) per time step. This compensates
+        # for the 1/n_bins uniform continuous IC of the multi-bin local state
+        # so the effective per-bin prior matches the kernel itself. Without
+        # this scaling, non-local states dominate by a factor of n_bins.
+        log_n_bins = jnp.log(jnp.array(n_bins, dtype=jnp.float32))
+        log_kernel = (
+            log_kernel
+            - jax.scipy.special.logsumexp(log_kernel, axis=1, keepdims=True)
+            + log_n_bins
         )
 
-        # NaN/off-track positions get a uniform (flat) kernel
-        n_bins = int(is_interior.sum())
-        uniform_log_kernel = -jnp.log(jnp.array(n_bins, dtype=jnp.float32))
-        log_kernel = jnp.where(
-            uniform_mask[:, jnp.newaxis], uniform_log_kernel, log_kernel
-        )
+        # NaN/off-track positions get a uniform (flat) kernel. Uniform means
+        # each bin has kernel value 1 (so exp sums to n_bins), hence log = 0.
+        log_kernel = jnp.where(uniform_mask[:, jnp.newaxis], 0.0, log_kernel)
 
         return log_kernel
 
