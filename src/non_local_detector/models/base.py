@@ -508,7 +508,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         sq_dist = jnp.nan_to_num(jnp.asarray(dist) ** 2, nan=jnp.inf, posinf=jnp.inf)
 
         return -self.non_local_position_penalty * jnp.exp(
-            -0.5 * sq_dist / (self.non_local_penalty_sigma**2)
+            -0.5 * sq_dist / (self.non_local_penalty_std**2)
         )
 
     def _compute_local_position_kernel(

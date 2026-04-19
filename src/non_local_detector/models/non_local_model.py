@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import xarray as xr
 
@@ -75,9 +77,24 @@ def _get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
 
 
 def _validate_penalty_params(
-    non_local_position_penalty: float, non_local_penalty_sigma: float
+    non_local_position_penalty: float, non_local_penalty_std: float
 ) -> None:
-    """Validate non-local position penalty parameters."""
+    """Validate non-local position penalty parameters.
+
+    Parameters
+    ----------
+    non_local_position_penalty : float
+        Magnitude of the Gaussian penalty. Must be non-negative.
+    non_local_penalty_std : float
+        Standard deviation of the penalty Gaussian in position units.
+        Must be strictly positive.
+
+    Raises
+    ------
+    ValidationError
+        If ``non_local_position_penalty < 0`` or
+        ``non_local_penalty_std <= 0``.
+    """
     if non_local_position_penalty < 0:
         raise ValidationError(
             "non_local_position_penalty must be >= 0",
@@ -86,14 +103,72 @@ def _validate_penalty_params(
             hint="A negative penalty would reward non-local states near the animal's "
             "position instead of suppressing them. Use 0.0 to disable the penalty.",
         )
-    if non_local_penalty_sigma <= 0:
+    if non_local_penalty_std <= 0:
         raise ValidationError(
-            "non_local_penalty_sigma must be > 0",
-            expected="non_local_penalty_sigma > 0",
-            got=f"{non_local_penalty_sigma}",
-            hint="Sigma controls the width of the Gaussian penalty and is used as a "
-            "divisor. A value <= 0 would cause divide-by-zero or invalid behavior.",
+            "non_local_penalty_std must be > 0",
+            expected="non_local_penalty_std > 0",
+            got=f"{non_local_penalty_std}",
+            hint="Standard deviation controls the width of the Gaussian penalty "
+            "and is used as a divisor. A value <= 0 would cause divide-by-zero "
+            "or invalid behavior.",
         )
+
+
+def _resolve_penalty_std(
+    non_local_penalty_std: float | None,
+    non_local_penalty_sigma: float | None,
+) -> float:
+    """Resolve the new ``_std`` parameter and the deprecated ``_sigma`` alias.
+
+    Accepts exactly one of the two (or neither, falling back to the
+    default). If both are passed, raises ``ValidationError``. If only
+    the deprecated ``_sigma`` form is passed, issues a
+    ``DeprecationWarning`` and returns its value.
+
+    Parameters
+    ----------
+    non_local_penalty_std : float or None
+        New parameter name.
+    non_local_penalty_sigma : float or None
+        Deprecated alias. Remove after a full release cycle.
+
+    Returns
+    -------
+    float
+        The resolved standard deviation value, defaulting to ``1.0``
+        if both are ``None``.
+
+    Raises
+    ------
+    ValidationError
+        If both ``non_local_penalty_std`` and
+        ``non_local_penalty_sigma`` are provided.
+    """
+    if non_local_penalty_std is not None and non_local_penalty_sigma is not None:
+        raise ValidationError(
+            "Pass exactly one of `non_local_penalty_std` or "
+            "`non_local_penalty_sigma` (deprecated alias).",
+            expected="one parameter, not both",
+            got=(
+                f"non_local_penalty_std={non_local_penalty_std}, "
+                f"non_local_penalty_sigma={non_local_penalty_sigma}"
+            ),
+            hint="Use only `non_local_penalty_std` — the `_sigma` form "
+            "is a deprecated alias kept for backward compatibility.",
+        )
+    if non_local_penalty_sigma is not None:
+        warnings.warn(
+            "`non_local_penalty_sigma` is deprecated and will be removed "
+            "in a future release. Use `non_local_penalty_std` instead — "
+            "same semantics, renamed for consistency with "
+            "`local_position_std`.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return non_local_penalty_sigma
+    if non_local_penalty_std is not None:
+        return non_local_penalty_std
+    return 1.0
 
 
 class NonLocalSortedSpikesDetector(SortedSpikesDetector):
@@ -146,9 +221,16 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         states' log-likelihood near the animal's position. Suppresses
         non-local replay detection near the current location. By default
         ``0.0`` (no penalty).
+    non_local_penalty_std : float, optional
+        Standard deviation of the Gaussian penalty, in the same units as
+        ``position`` (typically centimeters). Controls the spatial
+        extent of the suppression zone around the animal; distances use
+        shortest-path along the track graph. Must be strictly positive.
+        By default ``1.0``.
     non_local_penalty_sigma : float, optional
-        Spatial scale (same units as position) of the non-local penalty
-        Gaussian. By default ``1.0``. Must be positive.
+        Deprecated alias for ``non_local_penalty_std``. Emits a
+        ``DeprecationWarning`` when used. Will be removed in a future
+        release.
     discrete_transition_prior_weight : float or np.ndarray, optional
         Dimensionless weight for data-adaptive Dirichlet prior scaling
         during EM re-estimation of discrete transitions. By default
@@ -159,12 +241,26 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         self-transition cannot collapse to fit stray spike gaps. Pass
         ``None`` to disable row freezing.
     local_position_std : float or None, optional
-        Standard deviation (same units as position) of the position
-        uncertainty kernel for the Local state. When set, the Local
+        Standard deviation of the position uncertainty kernel for the
+        Local state, in the same units as ``position`` (typically
+        centimeters). Distances use shortest-path along the track graph
+        when a graph is fitted, otherwise Euclidean. When set, the Local
         state uses all position bins with a normalized Gaussian kernel
         centered on the animal's observed position, modeling spatial
-        uncertainty in the local representation. When ``None``
-        (default), the legacy single-bin local behavior is used.
+        uncertainty in the local representation. When ``None`` (default),
+        the legacy single-bin local behavior is used.
+
+    Attributes
+    ----------
+    non_local_position_penalty : float
+        Stored copy of the ``non_local_position_penalty`` constructor
+        argument.
+    non_local_penalty_std : float
+        Stored copy of the resolved standard deviation (from either the
+        ``non_local_penalty_std`` argument or the deprecated
+        ``non_local_penalty_sigma`` alias).
+    local_position_std : float or None
+        Stored copy of the ``local_position_std`` constructor argument.
 
     Examples
     --------
@@ -192,13 +288,17 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         non_local_position_penalty: float = 0.0,
-        non_local_penalty_sigma: float = 1.0,
+        non_local_penalty_std: float | None = None,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
         frozen_discrete_transition_rows: (
             np.ndarray | list[int] | tuple[int, ...] | None
         ) = (1,),
         local_position_std: float | None = None,
+        non_local_penalty_sigma: float | None = None,
     ):
+        non_local_penalty_std = _resolve_penalty_std(
+            non_local_penalty_std, non_local_penalty_sigma
+        )
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
             discrete_initial_conditions=discrete_initial_conditions,
@@ -231,9 +331,9 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
             local_position_std=local_position_std,
         )
-        _validate_penalty_params(non_local_position_penalty, non_local_penalty_sigma)
+        _validate_penalty_params(non_local_position_penalty, non_local_penalty_std)
         self.non_local_position_penalty = non_local_position_penalty
-        self.non_local_penalty_sigma = non_local_penalty_sigma
+        self.non_local_penalty_std = non_local_penalty_std
 
     @staticmethod
     def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
@@ -295,9 +395,16 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         states' log-likelihood near the animal's position. Suppresses
         non-local replay detection near the current location. By default
         ``0.0`` (no penalty).
+    non_local_penalty_std : float, optional
+        Standard deviation of the Gaussian penalty, in the same units as
+        ``position`` (typically centimeters). Controls the spatial
+        extent of the suppression zone around the animal; distances use
+        shortest-path along the track graph. Must be strictly positive.
+        By default ``1.0``.
     non_local_penalty_sigma : float, optional
-        Spatial scale (same units as position) of the non-local penalty
-        Gaussian. By default ``1.0``. Must be positive.
+        Deprecated alias for ``non_local_penalty_std``. Emits a
+        ``DeprecationWarning`` when used. Will be removed in a future
+        release.
     discrete_transition_prior_weight : float or np.ndarray, optional
         Dimensionless weight for data-adaptive Dirichlet prior scaling
         during EM re-estimation of discrete transitions. By default
@@ -308,12 +415,26 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         self-transition cannot collapse to fit stray spike gaps. Pass
         ``None`` to disable row freezing.
     local_position_std : float or None, optional
-        Standard deviation (same units as position) of the position
-        uncertainty kernel for the Local state. When set, the Local
+        Standard deviation of the position uncertainty kernel for the
+        Local state, in the same units as ``position`` (typically
+        centimeters). Distances use shortest-path along the track graph
+        when a graph is fitted, otherwise Euclidean. When set, the Local
         state uses all position bins with a normalized Gaussian kernel
         centered on the animal's observed position, modeling spatial
-        uncertainty in the local representation. When ``None``
-        (default), the legacy single-bin local behavior is used.
+        uncertainty in the local representation. When ``None`` (default),
+        the legacy single-bin local behavior is used.
+
+    Attributes
+    ----------
+    non_local_position_penalty : float
+        Stored copy of the ``non_local_position_penalty`` constructor
+        argument.
+    non_local_penalty_std : float
+        Stored copy of the resolved standard deviation (from either the
+        ``non_local_penalty_std`` argument or the deprecated
+        ``non_local_penalty_sigma`` alias).
+    local_position_std : float or None
+        Stored copy of the ``local_position_std`` constructor argument.
 
     Examples
     --------
@@ -341,13 +462,17 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         non_local_position_penalty: float = 0.0,
-        non_local_penalty_sigma: float = 1.0,
+        non_local_penalty_std: float | None = None,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
         frozen_discrete_transition_rows: (
             np.ndarray | list[int] | tuple[int, ...] | None
         ) = (1,),
         local_position_std: float | None = None,
+        non_local_penalty_sigma: float | None = None,
     ):
+        non_local_penalty_std = _resolve_penalty_std(
+            non_local_penalty_std, non_local_penalty_sigma
+        )
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
             discrete_initial_conditions=discrete_initial_conditions,
@@ -380,9 +505,9 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
             local_position_std=local_position_std,
         )
-        _validate_penalty_params(non_local_position_penalty, non_local_penalty_sigma)
+        _validate_penalty_params(non_local_position_penalty, non_local_penalty_std)
         self.non_local_position_penalty = non_local_position_penalty
-        self.non_local_penalty_sigma = non_local_penalty_sigma
+        self.non_local_penalty_std = non_local_penalty_std
 
     @staticmethod
     def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:

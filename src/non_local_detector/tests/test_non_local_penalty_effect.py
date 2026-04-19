@@ -38,7 +38,7 @@ def test_penalty_changes_posterior():
     detector_on = NonLocalSortedSpikesDetector(
         sorted_spikes_algorithm="sorted_spikes_kde",
         non_local_position_penalty=5.0,
-        non_local_penalty_sigma=5.0,
+        non_local_penalty_std=5.0,
     )
     results_on = detector_on.estimate_parameters(**kwargs)
 

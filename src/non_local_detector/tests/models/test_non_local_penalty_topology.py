@@ -49,7 +49,7 @@ class TestNonLocalPenaltyTopology:
         detector = NonLocalSortedSpikesDetector(
             environments=[env],
             non_local_position_penalty=1.0,
-            non_local_penalty_sigma=5.0,
+            non_local_penalty_std=5.0,
         )
 
         time = np.array([0.5])
@@ -79,7 +79,7 @@ class TestNonLocalPenaltyTopology:
         detector = NonLocalSortedSpikesDetector(
             environments=[env],
             non_local_position_penalty=10.0,
-            non_local_penalty_sigma=5.0,
+            non_local_penalty_std=5.0,
         )
 
         time = np.array([0.5])
@@ -121,7 +121,7 @@ class TestNonLocalPenaltyTopology:
         detector = NonLocalSortedSpikesDetector(
             environments=[env],
             non_local_position_penalty=10.0,
-            non_local_penalty_sigma=5.0,
+            non_local_penalty_std=5.0,
         )
 
         # Find a gap-bin center to use as the "off-track" animal position
@@ -155,7 +155,7 @@ class TestNonLocalPenaltyTopology:
         detector = NonLocalSortedSpikesDetector(
             environments=[env],
             non_local_position_penalty=0.0,
-            non_local_penalty_sigma=5.0,
+            non_local_penalty_std=5.0,
         )
 
         time = np.array([0.5])
@@ -182,7 +182,7 @@ class TestNonLocalPenaltyTopology:
         detector = NonLocalSortedSpikesDetector(
             environments=[env],
             non_local_position_penalty=10.0,
-            non_local_penalty_sigma=8.0,
+            non_local_penalty_std=8.0,
         )
 
         time = np.array([0.5])
