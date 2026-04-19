@@ -456,9 +456,27 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     ):
         """Compute position-dependent penalty for non-local states.
 
-        Returns a (n_time, n_interior_bins) array of log-likelihood penalties
-        that suppress non-local likelihood near the animal's current position.
-        The penalty is a negative Gaussian centered on the animal's position.
+        Returns a ``(n_time, n_interior_bins)`` array of log-likelihood
+        penalties that suppress non-local likelihood near the animal's
+        current position. The penalty is a negative Gaussian centered on
+        the animal's position.
+
+        Uses topology-aware distances via
+        :meth:`Environment.get_distances_to_interior_bins`:
+
+        - 1D track graph: shortest-path distance along the linearized
+          track (handles multi-arm mazes correctly so the penalty at a
+          bin reflects its graph distance, not its linearized coordinate
+          difference).
+        - N-D environment: shortest-path distance on ``track_graphDD``
+          (respects holes and obstacles — the penalty follows the
+          reachable interior, not straight-line Euclidean).
+        - No precomputed distance matrix: Euclidean fallback.
+
+        NaN/inf distances (off-track animal position, unreachable bins)
+        are treated as infinite distance so the penalty at those bins is
+        zero — consistent with the intuition "cannot compute → no
+        penalty applied".
 
         Parameters
         ----------
@@ -475,27 +493,22 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Returns
         -------
         penalty : jnp.ndarray, shape (n_time, n_interior_bins)
-            Negative penalty values (to be added to log-likelihood).
+            Non-positive penalty values (to be added to log-likelihood).
         """
         from non_local_detector.likelihoods.common import get_position_at_time
 
         animal_pos = get_position_at_time(position_time, position, time, environment)
-        is_interior = environment.is_track_interior_.ravel()
-        bin_centers = environment.place_bin_centers_[is_interior]
 
-        # Compute squared distance between animal position and each bin
-        # animal_pos: (n_time, n_dims), bin_centers: (n_bins, n_dims)
-        if animal_pos.ndim == 1:
-            animal_pos = animal_pos[:, jnp.newaxis]
-        if bin_centers.ndim == 1:
-            bin_centers = bin_centers[:, jnp.newaxis]
+        # Topology-aware distance (graph shortest path when available).
+        dist = environment.get_distances_to_interior_bins(np.asarray(animal_pos))
 
-        dist_sq = jnp.sum(
-            (animal_pos[:, jnp.newaxis, :] - bin_centers[jnp.newaxis, :, :]) ** 2,
-            axis=-1,
-        )
+        # NaN (off-track animal) and inf (unreachable bins) → treat as
+        # infinitely far so the penalty evaluates to zero at those cells,
+        # avoiding NaN propagation into the log-likelihood.
+        sq_dist = jnp.nan_to_num(jnp.asarray(dist) ** 2, nan=jnp.inf, posinf=jnp.inf)
+
         return -self.non_local_position_penalty * jnp.exp(
-            -0.5 * dist_sq / (self.non_local_penalty_sigma**2)
+            -0.5 * sq_dist / (self.non_local_penalty_sigma**2)
         )
 
     def _compute_local_position_kernel(
