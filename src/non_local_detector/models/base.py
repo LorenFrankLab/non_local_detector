@@ -2723,10 +2723,15 @@ class ClusterlessDetector(_DetectorBase):
         constant compensates for the ``1/n_bins`` uniform continuous IC
         so the effective per-bin prior is ``exp(log_kernel)`` itself.
 
-        The posterior returned by ``predict()`` is unaffected by this
-        choice; only the raw ``log_likelihood`` values reported (via
-        ``return_outputs='log_likelihood'``) differ from pure
-        ``log P(spikes | state, bin)`` for local-state entries.
+        The kernel is part of the likelihood model, not an ad-hoc
+        post-processing step, so the posterior returned by ``predict()``
+        is a valid probability distribution under the modified
+        generative model. Users comparing ``local_position_std=None`` to
+        a finite value will see different posteriors (the models
+        differ); users reading the raw ``log_likelihood`` (via
+        ``return_outputs='log_likelihood'``) should be aware that
+        local-state entries are *not* pure ``log P(spikes | state, bin)``
+        — they include the kernel and mass-balance terms.
 
         Parameters
         ----------
@@ -3648,10 +3653,15 @@ class SortedSpikesDetector(_DetectorBase):
         constant compensates for the ``1/n_bins`` uniform continuous IC
         so the effective per-bin prior is ``exp(log_kernel)`` itself.
 
-        The posterior returned by ``predict()`` is unaffected by this
-        choice; only the raw ``log_likelihood`` values reported (via
-        ``return_outputs='log_likelihood'``) differ from pure
-        ``log P(spikes | state, bin)`` for local-state entries.
+        The kernel is part of the likelihood model, not an ad-hoc
+        post-processing step, so the posterior returned by ``predict()``
+        is a valid probability distribution under the modified
+        generative model. Users comparing ``local_position_std=None`` to
+        a finite value will see different posteriors (the models
+        differ); users reading the raw ``log_likelihood`` (via
+        ``return_outputs='log_likelihood'``) should be aware that
+        local-state entries are *not* pure ``log P(spikes | state, bin)``
+        — they include the kernel and mass-balance terms.
 
         Parameters
         ----------

@@ -367,9 +367,13 @@ def test_large_sigma_spreads_local_posterior(simulated_data):
     )
 
     # Extract the local-state slice of the full posterior.
-    # Local state is state 0; its bins come first in state_ind_.
+    # Hard-assert the state-layout assumption so that a refactor which
+    # reorders states doesn't silently measure the wrong state.
     n_local_bins = int(detector.bin_sizes_[0])
     assert n_local_bins > 1, "Local state should have multiple bins"
+    assert np.all(detector.state_ind_[:n_local_bins] == 0), (
+        "Local state must be state 0 and its bins must come first"
+    )
     local_posterior = results.acausal_posterior.values[:, :n_local_bins]
 
     # When the local state is meaningfully occupied, the conditional
