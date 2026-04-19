@@ -401,6 +401,56 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             )
         self.local_position_std = local_position_std
 
+    def _validate_position_dimensionality(
+        self, position: np.ndarray, context: str = "fit"
+    ) -> None:
+        """Check that position shape matches the environment type.
+
+        When any environment has a ``track_graph``, positions must be
+        raw 2D ``(x, y)`` coordinates — the detector linearizes
+        internally via ``get_position_at_time``. Passing already-
+        linearized 1D position in this case causes the internal
+        linearization step to silently produce garbage coordinates,
+        which mis-centers the local kernel and non-local penalty.
+
+        This check raises a clear ``ValidationError`` when the shape
+        does not match the environment type, rather than allowing
+        silent numerical corruption downstream.
+
+        Parameters
+        ----------
+        position : np.ndarray
+            Position array to validate.
+        context : str, optional
+            Name of the calling context (``"fit"`` or ``"predict"``)
+            for error messages.
+        """
+        is_1d = position.ndim == 1 or (position.ndim == 2 and position.shape[1] == 1)
+        if not is_1d:
+            return
+
+        has_track_graph = any(env.track_graph is not None for env in self.environments)
+        if has_track_graph:
+            raise ValidationError(
+                "Environment has a track_graph but position is 1D "
+                f"(shape {position.shape}). Track-graph environments "
+                "require raw 2D (x, y) position — the detector "
+                "linearizes internally. Passing pre-linearized 1D "
+                "position silently corrupts internal coordinates.",
+                expected="shape (n_time, 2) or (n_time, n_dims) with n_dims >= 2",
+                got=f"shape {position.shape}",
+                hint=(
+                    "If you already called get_linearized_position() to "
+                    "get 1D position, pass the raw 2D (x, y) array "
+                    "instead — the detector linearizes via the track_graph "
+                    "during both fit() and predict()."
+                ),
+                example=(
+                    "    # Raw 2D position, not pre-linearized\n"
+                    f"    detector.{context}(..., position=position_2d)"
+                ),
+            )
+
     def _compute_non_local_position_penalty(
         self, time, position_time, position, environment
     ):
@@ -1407,6 +1457,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # Tier 2: Validate data types and properties
         val.ensure_ndarray(position, "position")
         val.ensure_all_finite(position, "position")
+
+        # Raises ValidationError if position is 1D but env has track_graph.
+        self._validate_position_dimensionality(position, context="fit")
 
         if position.ndim == 1 or (position.ndim == 2 and position.shape[1] == 1):
             has_track_graph = any(
@@ -2774,6 +2827,8 @@ class ClusterlessDetector(_DetectorBase):
                 hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
                 example="    results = detector.predict(spikes=spikes_test, time=time_test, position=position_test)",
             )
+        if position is not None:
+            self._validate_position_dimensionality(position, context="predict")
 
         n_time = len(time)
         if is_missing is None:
@@ -3704,6 +3759,8 @@ class SortedSpikesDetector(_DetectorBase):
                 hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
                 example="    results = detector.predict(spikes=spikes_test, time=time_test, position=position_test)",
             )
+        if position is not None:
+            self._validate_position_dimensionality(position, context="predict")
 
         if is_missing is None:
             is_missing = np.zeros((n_time,), dtype=bool)
