@@ -153,3 +153,8 @@ markers = [
     "property: marks property-based tests",
     "snapshot: marks snapshot regression tests (update with --snapshot-update)",
 ]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+]
