@@ -19,13 +19,19 @@
 >   that estimated peak ≤ device memory × safety. Tasks 1–3 stay as
 >   foundations; Tasks 4–8 are new work.
 
-**Goal:** `detector.predict(...)` never OOMs on user-visible workloads.
-Users pass no memory knobs. The detector inspects device memory + the
-workload shape, picks every memory knob, and runs. For chronic
-recordings on small GPUs: it chunks aggressively. For typical
-workloads on a big GPU: it picks the fast-path configuration (1 chunk,
-large block size, no tiling). For everything in between: it picks the
-least-tuned configuration that still fits.
+**Goal:** `detector.fit(...)`, `detector.predict(...)`, and
+`detector.estimate_parameters(...)` never OOM on user-visible
+workloads. Users pass no memory knobs. The detector inspects device
+memory + the workload shape, picks every memory knob for every
+operation, and runs. For chronic recordings on small GPUs: aggressive
+chunking/tiling across both fit and predict. For typical workloads on
+a big GPU: the fast-path configuration (1 chunk, large block size, no
+tiling). For everything in between: the least-tuned configuration
+that still fits.
+
+Fit, predict, and estimate_parameters share the **same**
+`memory_budget` but use **separate** peak estimators and separate
+knob-selection — each operation has different memory characteristics.
 
 **Branch:** `streaming-likelihood-hmm` off `main`. Tasks 1–3 already
 landed; Tasks 4–8 continue here.
@@ -86,7 +92,7 @@ These remain valid. v3 extends (doesn't rewrite) them.
 
 ## Design: multi-knob memory-aware auto
 
-### Knobs and what they control
+### Knobs and what they control (predict-time)
 
 | Knob | Axis | What it bounds |
 |---|---|---|
@@ -94,6 +100,23 @@ These remain valid. v3 extends (doesn't rewrite) them.
 | `block_size` | decoding-spikes (per-electrode, per-chunk) | `(block_size, n_pos) × 4B` intermediate in the decoding-spike fori_loop |
 | `enc_tile_size` | encoding-spikes | `(enc_tile, n_pos) × 4B` for chunked logsumexp over encoding |
 | `pos_tile_size` | position-bins | `(block_size, pos_tile) × 4B` tiles per position |
+
+### Knobs and what they control (fit-time)
+
+| Knob | Axis | What it bounds |
+|---|---|---|
+| `fit_block_size` | position-samples | `(fit_block_size, n_pos_interior) × 4B` intermediate during `KDEModel.predict(interior_bins)` in occupancy + per-electrode kde distance evaluation. Peak scales with `n_time_pos`. |
+
+Fit's memory is dominated by the occupancy model's KDE evaluation
+across all `n_time_pos` position samples against `n_pos_interior`
+bins. For a 1-hour recording (1.8 M position samples × 1448 interior
+bins × 4B = **10.4 GB**), this alone can exceed a 16 GB GPU. The
+existing `block_size` parameter on KDE fit already controls this —
+auto just needs to pick the right value.
+
+Encoding-model memory (per-electrode kde eval of encoding_positions
+vs interior_bins) is small per electrode (20 k × 1448 × 4 B ≈ 120 MB)
+and iterates serially, so it's not the fit bottleneck in practice.
 
 Ordering of preference (fast → slow):
 1. `n_chunks=1`, `block_size` large, no tiling (fastest; single GPU compile, single chunk).
@@ -227,26 +250,45 @@ This is greedy but predictable. The ladders (`_chunk_ladder`, `_block_ladder`, `
 
 ### API surface
 
+A single `memory_budget` parameter lives on every top-level user entry
+point. Each operation internally selects its own knobs for that
+budget using its own peak estimator.
+
 ```python
+detector.fit(
+    position_time, position, spike_times, ...,
+    memory_budget: int | Literal["auto"] | None = "auto",
+)
+
 detector.predict(
-    ...,
+    spike_times, time, ...,
     memory_budget: int | Literal["auto"] | None = "auto",
     # Existing knobs stay as explicit overrides:
     n_chunks: int | Literal["auto"] = "auto",
-    # block_size / enc_tile_size / pos_tile_size live on
-    # clusterless_algorithm_params dict at the detector level
+)
+
+detector.estimate_parameters(
+    ...,
+    memory_budget: int | Literal["auto"] | None = "auto",
 )
 ```
 
-- `memory_budget="auto"`: query JAX device memory, run the heuristic.
+- `memory_budget="auto"`: query JAX device memory once per call, pass the byte count to the operation's knob-selection heuristic.
 - `memory_budget=<int>`: use that many bytes (for explicit control on shared GPUs, or to simulate smaller memory).
 - `memory_budget=None`: disable auto-selection; use existing explicit knobs (backward-compat).
-- Explicit `n_chunks` / `block_size` / etc. override the auto-picked values when provided.
+- Explicit per-knob overrides (e.g. `n_chunks=3`, or `block_size=1000` in `clusterless_algorithm_params`) override the auto-picked values when provided.
+
+`estimate_parameters` threads `memory_budget` down into both the fit
+iterations and the predict calls it performs; each call resolves
+knobs independently. On a fixed workload this converges to a stable
+per-operation configuration after the first iteration (shapes don't
+change between EM iterations).
 
 When auto-picked knobs differ from current explicit defaults, log the resolved configuration at INFO level:
 
 ```
-Auto-selected memory knobs: n_chunks=3, block_size=1000, enc_tile_size=None, pos_tile_size=None (budget=8.0 GB, estimated peak=7.2 GB).
+Auto-selected fit memory knobs: fit_block_size=5000 (budget=8.0 GB, estimated peak=7.2 GB).
+Auto-selected predict memory knobs: n_chunks=3, block_size=1000, enc_tile_size=None, pos_tile_size=None (budget=8.0 GB, estimated peak=7.2 GB).
 ```
 
 ---
@@ -287,9 +329,9 @@ Auto-selected memory knobs: n_chunks=3, block_size=1000, enc_tile_size=None, pos
 
 ### Task 3: `return_outputs` + streaming guard ✅ (already done, `caf78d4`)
 
-### Task 4: Per-algorithm `_estimate_predict_peak_bytes` functions
+### Task 4a: Per-algorithm `_estimate_predict_peak_bytes` functions
 
-For each non-local likelihood module (`sorted_spikes_kde`, `sorted_spikes_glm`, `clusterless_kde`, `clusterless_kde_log`, `clusterless_gmm`), add:
+For each non-local likelihood module, add:
 
 ```python
 def _estimate_predict_peak_bytes(
@@ -299,6 +341,42 @@ def _estimate_predict_peak_bytes(
 ) -> int:
     """Return estimated peak bytes for a predict call."""
 ```
+
+### Task 4b: Per-algorithm `_estimate_fit_peak_bytes` functions
+
+For each non-local likelihood module, add:
+
+```python
+def _estimate_fit_peak_bytes(
+    *, n_time_pos, n_pos, n_encoding_spikes_per_electrode,
+    n_waveform_features, fit_block_size, dtype_bytes=4,
+) -> int:
+    """Return estimated peak bytes for a fit_encoding_model call."""
+```
+
+Fit memory model for `clusterless_kde`:
+
+```
+# Occupancy model: KDEModel.predict(interior_bins) evaluated in
+# blocks of fit_block_size over n_time_pos samples.
+occupancy_eval = fit_block_size * n_pos * dtype_bytes
+occupancy_sum = n_pos * dtype_bytes  # accumulator
+
+# Per-electrode KDE distance (serial, one live at a time):
+per_electrode_kde = max(n_encoding_spikes_per_electrode) * n_pos * dtype_bytes
+
+# Waveform KDE fit (small):
+waveform_kde = max(n_encoding_spikes_per_electrode) * n_waveform_features * dtype_bytes
+
+fixed_scratch = 0.5 * 2**30  # 0.5 GB fit-time workspace (empirical, smaller than predict)
+
+peak = max(
+    occupancy_eval + occupancy_sum,        # occupancy fit peak
+    per_electrode_kde + waveform_kde,      # per-electrode peak (one electrode at a time)
+) + fixed_scratch
+```
+
+Each likelihood module implements a version appropriate to its fit path.
 
 Model derivation goes in the docstring. Constants (e.g. `fixed_scratch`) start conservative and are tightened via Task 6 measurement.
 
@@ -310,15 +388,28 @@ Model derivation goes in the docstring. Constants (e.g. `fixed_scratch`) start c
 - `src/non_local_detector/likelihoods/clusterless_gmm.py`
 - `src/non_local_detector/tests/test_memory_model.py` (new)
 
-### Task 5: `auto_select_memory_knobs` heuristic
+### Task 5: `auto_select_memory_knobs` + `auto_select_fit_memory_knobs` heuristics
+
+Two knob selectors, one per operation type, sharing the greedy ladder pattern:
 
 ```python
 # src/non_local_detector/streaming.py
-def auto_select_memory_knobs(workload_info, memory_budget_bytes, *, peak_estimator, safety_fraction=0.90) -> dict:
+def auto_select_predict_memory_knobs(
+    workload_info, memory_budget_bytes, *, peak_estimator,
+    safety_fraction=0.90,
+) -> dict:
+    """Returns {n_chunks, block_size, enc_tile_size, pos_tile_size}."""
+    ...
+
+def auto_select_fit_memory_knobs(
+    workload_info, memory_budget_bytes, *, peak_estimator,
+    safety_fraction=0.90,
+) -> dict:
+    """Returns {fit_block_size}.  Simpler — only one knob on fit path today."""
     ...
 ```
 
-- Ladder helpers: `_chunk_ladder(n_time)`, `_block_ladder()`, `_enc_tile_ladder(...)`.
+- Ladder helpers: `_chunk_ladder(n_time)`, `_block_ladder()`, `_enc_tile_ladder(...)`, `_fit_block_ladder()`.
 - Greedy search over (stage_1 → stage_2 → stage_3) preferring fast configs.
 - Returns `dict` of picked knobs.
 - `RuntimeError` when no config fits.
@@ -327,6 +418,7 @@ def auto_select_memory_knobs(workload_info, memory_budget_bytes, *, peak_estimat
 - Given synthetic `peak_estimator` (callable returning bytes), verify the returned config has estimated_peak ≤ budget × safety.
 - Verify stage escalation: huge-budget → stage 1; medium → stage 2; tiny → stage 3.
 - Verify the "no config fits" case raises.
+- Verify fit heuristic scales `fit_block_size` inversely with `n_time_pos`.
 
 ### Task 6: Real-data calibration of memory model constants
 
@@ -339,38 +431,72 @@ Write the calibration results to `docs/benchmarks/streaming-memory-model.md` wit
 - `docs/benchmarks/streaming-memory-model.md` (new)
 - Model constants updated in Task 4's functions.
 
-### Task 7: Wire `memory_budget` into detector.predict
+### Task 7: Wire `memory_budget` into detector.fit / detector.predict / estimate_parameters
 
-Replace the current `n_chunks="auto"` resolution with a broader `memory_budget="auto"` resolution that picks all knobs at once.
+Add `memory_budget: int | Literal["auto"] | None = "auto"` to each of:
+
+- `_DetectorBase.fit`
+- `_DetectorBase.estimate_parameters`
+- `_DetectorBase.most_likely_sequence` (inherits predict-side resolution)
+- `ClusterlessDetector.predict`, `ClusterlessDetector.estimate_parameters` (+ internal helpers)
+- `SortedSpikesDetector.predict`, `SortedSpikesDetector.estimate_parameters`
+
+In `predict()`:
 
 ```python
-# In predict():
 if memory_budget == "auto":
-    memory_budget = _query_device_memory_bytes() or None
+    memory_budget = _query_device_memory_bytes()  # may be None on CPU
 if memory_budget is not None:
-    auto_knobs = auto_select_memory_knobs(
+    auto_knobs = auto_select_predict_memory_knobs(
         workload=..., memory_budget_bytes=memory_budget,
-        peak_estimator=<per-algorithm estimator>,
+        peak_estimator=<per-algorithm predict estimator>,
     )
-    # Apply auto-selected knobs, respecting any explicit user overrides.
+    # Respect explicit user overrides; auto fills in the rest.
     n_chunks = n_chunks if isinstance(n_chunks, int) else auto_knobs["n_chunks"]
-    # Pass block_size / enc_tile_size / pos_tile_size into clusterless_algorithm_params.
+    # block_size, enc_tile_size, pos_tile_size go into clusterless_algorithm_params
+    # unless the user already set them explicitly there.
 ```
+
+In `fit()`:
+
+```python
+if memory_budget == "auto":
+    memory_budget = _query_device_memory_bytes()
+if memory_budget is not None:
+    auto_knobs = auto_select_fit_memory_knobs(
+        workload=..., memory_budget_bytes=memory_budget,
+        peak_estimator=<per-algorithm fit estimator>,
+    )
+    # fit_block_size goes into clusterless_algorithm_params['block_size'] unless user set it.
+```
+
+In `estimate_parameters()`: the outer EM loop resolves memory_budget once and threads the resolved knobs into every fit + predict call of every iteration. Shapes don't change between iterations, so re-resolving would give the same answer each time — cache on first iteration.
+
+**Backward compatibility:**
+- `memory_budget=None` preserves current behavior exactly.
+- `n_chunks=1` explicit → passthrough, auto only touches other knobs.
+- Fully-explicit `clusterless_algorithm_params={"block_size": 100, "enc_tile_size": 4096}` → passthrough, auto only touches `n_chunks`.
 
 **Files:**
 - `src/non_local_detector/models/base.py`
-- `src/non_local_detector/tests/test_streaming_predict.py` (extend)
+- `src/non_local_detector/tests/test_streaming_predict.py` (extend with fit + estimate_parameters tests)
 
 ### Task 8: Real-data validation at multiple memory caps
 
-Matrix: (80 GB baseline, 40 GB, 24 GB, 12 GB, 8 GB) × (ContFrag, NonLocal) × (clusterless_kde, clusterless_kde_log) × (`memory_budget="auto"`, `memory_budget=None`).
+Matrix: (80 GB baseline, 40 GB, 24 GB, 12 GB, 8 GB) × (ContFrag, NonLocal) × (clusterless_kde, clusterless_kde_log) × (fit only, predict only, fit+predict, estimate_parameters) × (`memory_budget="auto"`, `memory_budget=None`).
+
+Test `fit()` independently under memory caps — Task 4b's fit estimator needs real-data calibration.
 
 Expected outcomes (updated by Task 6 data):
-- 80 GB + auto: picks fast-path, matches `n_chunks=1` baseline to 1e-4.
-- 40 GB + auto: picks chunked, succeeds, matches baseline.
-- 24 GB + auto: may enable tiling, succeeds, matches baseline.
-- 12 GB + auto: aggressive knobs, succeeds on moderate workloads.
-- 8 GB + auto: may still fail on 22-tet/2D due to fit-time OOM (documented limit).
+- **80 GB + auto**: picks fast-path for both fit and predict, matches explicit-knob baselines to 1e-4.
+- **40 GB + auto**: predict picks chunked; fit likely stays fast-path (10 GB fit peak fits in 40 GB). Both succeed.
+- **24 GB + auto**: predict tightens more; fit may reduce fit_block_size if n_time_pos is large. Both succeed.
+- **12 GB + auto**: both operations scale down aggressively; predict likely enables tiling.
+- **8 GB + auto**: stress case. On 22-tet/2D HPC this should succeed now that fit is chunked (earlier v2 attempt OOMed on fit).
+
+**`estimate_parameters`** at each cap: converges to the same
+posterior as a bare fit+predict at that cap to 1e-4 (cache on first
+iteration keeps EM stable).
 
 Commit the benchmark run log + summary JSONs to `docs/benchmarks/` or attach to the PR.
 
@@ -408,8 +534,6 @@ Task 9 (optional chronic-scale synthetic demo)   ← 0.5 day
 
 ## Out of scope for this plan
 
-- **Fit-time memory auto-selection.** Fit's KDEModel eval has its own
-  block_size. Included as a separate follow-up when fit OOMs are observed.
 - **Bringing back PR #19's scan-over-electrodes path.** That path has a
   known ptxas compile pathology (issue #21). Clusterless v2 redesign
   (`docs/plans/2026-04-20-clusterless-gpu-optimization-redesign.md`)
@@ -417,19 +541,24 @@ Task 9 (optional chronic-scale synthetic demo)   ← 0.5 day
 - **GMM full support.** `clusterless_gmm` gets a trivial estimator
   (one that returns "n_time × n_state_bins × 4" + 20% slack) initially.
   Precise model deferred.
+- **Multi-GPU / multi-device auto.** Current heuristic assumes
+  single-device placement via `jax.devices()[0]`. Multi-device
+  sharding is out of scope.
 
 ---
 
 ## Expected Impact (user-facing)
 
-| Scenario | Current (v2, Tasks 1–3 only) | After Level 3 |
+| Scenario | Current (v2, Tasks 1–3 only) | After Level 3 (Tasks 4–9) |
 |---|---|---|
-| 22-tet 2D ContFrag, 80 GB GPU | auto picks 1 chunk; works | same; no regression |
-| 22-tet 2D ContFrag, 40 GB GPU | auto picks 1 chunk; OOM on KDE intermediates | auto picks 2 chunks + block_size; succeeds |
-| 22-tet 2D ContFrag, 16 GB GPU | OOM | auto picks 4 chunks + block_size + enc_tile; succeeds |
-| Chronic 1 h recording, 80 GB GPU | auto picks 1 chunk; works if likelihood slab fits | same |
-| Chronic 1 h recording, 16 GB GPU | OOM immediately | auto picks 8+ chunks; succeeds |
-| Multi-state classifier, 13 680 state bins | auto picks 1 chunk for moderate n_time; OOM on longer recordings | auto scales chunking with n_time × n_state_bins |
+| 22-tet 2D ContFrag fit+predict, 80 GB GPU | auto picks 1 chunk; works | same; no regression |
+| 22-tet 2D ContFrag predict, 40 GB GPU | auto picks 1 chunk; OOM on KDE intermediates | predict auto picks 2 chunks + block_size; succeeds |
+| 22-tet 2D ContFrag predict, 16 GB GPU | OOM | predict auto picks 4 chunks + block_size + enc_tile; succeeds |
+| Chronic 1 h recording fit, 80 GB GPU | fit may OOM on occupancy eval (n_time_pos × n_pos × 4B ≈ 10 GB + intermediates) | fit auto picks `fit_block_size`; succeeds |
+| Chronic 1 h recording predict, 80 GB GPU | auto picks 1 chunk; works if likelihood slab fits | same |
+| Chronic 1 h recording fit+predict, 16 GB GPU | OOM during fit or predict | both auto-tune; entire pipeline succeeds |
+| `estimate_parameters` at reduced memory | OOM on first EM iteration fit | auto knobs stable across iterations; succeeds |
+| Multi-state classifier × dense grid at chronic time | OOM on longer recordings | auto scales all knobs with workload shape |
 
 Users who never set memory knobs get a decoder that just works on their GPU. Users who do set knobs keep full control (auto yields to explicit values).
 
