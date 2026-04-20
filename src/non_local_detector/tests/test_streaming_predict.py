@@ -135,6 +135,33 @@ class TestStreamingPredictParity:
             err_msg="clusterless acausal_state_probabilities drifts",
         )
 
+    @pytest.mark.integration
+    def test_sorted_spikes_auto_matches_unchunked(self, sorted_spikes_fitted):
+        """``n_chunks='auto'`` must produce identical output to ``n_chunks=1``
+        on a small workload where the heuristic resolves to 1 (on CPU the
+        device-memory query returns None → fallback to 1)."""
+        detector, predict_kwargs = sorted_spikes_fitted
+        r1 = detector.predict(**predict_kwargs, n_chunks=1)
+        ra = detector.predict(**predict_kwargs, n_chunks="auto")
+        np.testing.assert_allclose(
+            ra.acausal_posterior.values,
+            r1.acausal_posterior.values,
+            **_TOL,
+            err_msg="sorted-spikes n_chunks='auto' drifts from n_chunks=1",
+        )
+
+    @pytest.mark.integration
+    def test_clusterless_auto_matches_unchunked(self, clusterless_fitted):
+        detector, predict_kwargs = clusterless_fitted
+        r1 = detector.predict(**predict_kwargs, n_chunks=1)
+        ra = detector.predict(**predict_kwargs, n_chunks="auto")
+        np.testing.assert_allclose(
+            ra.acausal_posterior.values,
+            r1.acausal_posterior.values,
+            **_TOL,
+            err_msg="clusterless n_chunks='auto' drifts from n_chunks=1",
+        )
+
 
 # ---------------------------------------------------------------------------
 # _resolve_n_chunks heuristic (Task 1) — unit tests
