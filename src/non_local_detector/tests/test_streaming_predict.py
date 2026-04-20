@@ -163,6 +163,56 @@ class TestStreamingPredictParity:
         )
 
 
+class TestReturnOutputsStreamingGuard:
+    """``return_outputs='log_likelihood'`` + streaming must raise, not silently
+    omit the array.  See :func:`_guard_return_outputs_streaming` in base.py."""
+
+    @pytest.mark.integration
+    def test_log_likelihood_with_explicit_streaming_raises(
+        self, sorted_spikes_fitted
+    ):
+        """Explicit ``n_chunks>1`` + ``return_outputs='log_likelihood'`` raises."""
+        from non_local_detector.exceptions import ValidationError
+
+        detector, predict_kwargs = sorted_spikes_fitted
+        with pytest.raises(ValidationError, match="log_likelihood"):
+            detector.predict(
+                **predict_kwargs, n_chunks=5, return_outputs="log_likelihood"
+            )
+
+    @pytest.mark.integration
+    def test_log_likelihood_with_all_outputs_and_streaming_raises(
+        self, sorted_spikes_fitted
+    ):
+        """``return_outputs='all'`` includes ``log_likelihood`` — must also raise."""
+        from non_local_detector.exceptions import ValidationError
+
+        detector, predict_kwargs = sorted_spikes_fitted
+        with pytest.raises(ValidationError, match="log_likelihood"):
+            detector.predict(**predict_kwargs, n_chunks=5, return_outputs="all")
+
+    @pytest.mark.integration
+    def test_no_log_likelihood_streaming_succeeds(self, sorted_spikes_fitted):
+        """``n_chunks>1`` without ``log_likelihood`` in outputs succeeds."""
+        detector, predict_kwargs = sorted_spikes_fitted
+        # Shouldn't raise; should produce a valid result with n_chunks=5
+        result = detector.predict(
+            **predict_kwargs, n_chunks=5, return_outputs=["filter"]
+        )
+        assert result.acausal_posterior.shape[0] == len(predict_kwargs["time"])
+
+    @pytest.mark.integration
+    def test_log_likelihood_with_n_chunks_one_succeeds(self, sorted_spikes_fitted):
+        """``log_likelihood`` output with explicit ``n_chunks=1`` works (user
+        opted into the memory cost)."""
+        detector, predict_kwargs = sorted_spikes_fitted
+        result = detector.predict(
+            **predict_kwargs, n_chunks=1, return_outputs="log_likelihood"
+        )
+        assert result.log_likelihood is not None
+        assert result.log_likelihood.shape[0] == len(predict_kwargs["time"])
+
+
 # ---------------------------------------------------------------------------
 # _resolve_n_chunks heuristic (Task 1) — unit tests
 # ---------------------------------------------------------------------------

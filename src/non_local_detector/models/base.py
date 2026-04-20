@@ -55,6 +55,39 @@ from non_local_detector.types import (
 logger = getLogger(__name__)
 sklearn.set_config(print_changed_only=False)
 
+
+def _guard_return_outputs_streaming(
+    requested_outputs: set[str],
+    n_chunks: int,
+    n_time: int,
+    n_state_bins: int,
+) -> None:
+    """Raise if the caller asked for log_likelihood but streaming is on.
+
+    When ``n_chunks > 1``, the filter consumes each chunk's log-likelihood
+    slab immediately and discards it — the full ``(n_time, n_state_bins)``
+    array is never materialized.  If the caller asked for it via
+    ``return_outputs``, silently omitting it would be confusing; silently
+    materializing it would defeat the point of streaming.  Raise with a
+    clear message so the caller knows how to proceed.
+    """
+    if n_chunks <= 1 or "log_likelihood" not in requested_outputs:
+        return
+    raise ValidationError(
+        "Cannot return log_likelihood when streaming (n_chunks > 1)",
+        expected="n_chunks=1 or no 'log_likelihood' in return_outputs",
+        got=(
+            f"n_chunks={n_chunks} (auto-resolved from device memory); "
+            f"the full ({n_time}, {n_state_bins}) log-likelihood array "
+            f"would be ~{n_time * n_state_bins * 4 / 1e9:.1f} GB and is "
+            f"not materialized per-chunk"
+        ),
+        hint=(
+            "Pass n_chunks=1 explicitly to force the full array, or remove "
+            "'log_likelihood' from return_outputs."
+        ),
+    )
+
 _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS = {
     "waveform_std": 24.0,
     "position_std": 6.0,
@@ -1578,7 +1611,23 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
 
-        # Automatically enable caching if log_likelihood is requested
+        # Resolve n_chunks early so the log_likelihood / streaming guard
+        # (below) can see the actual chunk count.  ``_predict`` will
+        # re-run the resolution; passthrough for int is cheap.
+        n_state_bins = int(self.is_track_interior_state_bins_.sum())
+        n_chunks = _resolve_n_chunks(
+            n_chunks, n_time=len(time), n_state_bins=n_state_bins
+        )
+        _guard_return_outputs_streaming(
+            requested_outputs,
+            n_chunks=n_chunks,
+            n_time=len(time),
+            n_state_bins=n_state_bins,
+        )
+
+        # Automatically enable caching if log_likelihood is requested.
+        # Combined with the guard above: we only reach this branch when
+        # n_chunks == 1, so caching is consistent with non-streaming.
         if "log_likelihood" in requested_outputs and not cache_likelihood:
             cache_likelihood = True
 
@@ -2862,7 +2911,23 @@ class ClusterlessDetector(_DetectorBase):
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
 
-        # Automatically enable caching if log_likelihood is requested
+        # Resolve n_chunks early so the log_likelihood / streaming guard
+        # (below) can see the actual chunk count.  ``_predict`` will
+        # re-run the resolution; passthrough for int is cheap.
+        n_state_bins = int(self.is_track_interior_state_bins_.sum())
+        n_chunks = _resolve_n_chunks(
+            n_chunks, n_time=len(time), n_state_bins=n_state_bins
+        )
+        _guard_return_outputs_streaming(
+            requested_outputs,
+            n_chunks=n_chunks,
+            n_time=len(time),
+            n_state_bins=n_state_bins,
+        )
+
+        # Automatically enable caching if log_likelihood is requested.
+        # Combined with the guard above: we only reach this branch when
+        # n_chunks == 1, so caching is consistent with non-streaming.
         if "log_likelihood" in requested_outputs and not cache_likelihood:
             cache_likelihood = True
 
@@ -3658,7 +3723,23 @@ class SortedSpikesDetector(_DetectorBase):
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
 
-        # Automatically enable caching if log_likelihood is requested
+        # Resolve n_chunks early so the log_likelihood / streaming guard
+        # (below) can see the actual chunk count.  ``_predict`` will
+        # re-run the resolution; passthrough for int is cheap.
+        n_state_bins = int(self.is_track_interior_state_bins_.sum())
+        n_chunks = _resolve_n_chunks(
+            n_chunks, n_time=len(time), n_state_bins=n_state_bins
+        )
+        _guard_return_outputs_streaming(
+            requested_outputs,
+            n_chunks=n_chunks,
+            n_time=len(time),
+            n_state_bins=n_state_bins,
+        )
+
+        # Automatically enable caching if log_likelihood is requested.
+        # Combined with the guard above: we only reach this branch when
+        # n_chunks == 1, so caching is consistent with non-streaming.
         if "log_likelihood" in requested_outputs and not cache_likelihood:
             cache_likelihood = True
 
