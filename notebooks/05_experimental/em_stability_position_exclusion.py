@@ -1,3 +1,15 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: -all
+#     formats: ipynb,py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.18.1
+# ---
+
 # %% [markdown]
 # # EM Stability: Soft Position Exclusion (`non_local_position_penalty`)
 #
@@ -78,10 +90,10 @@ position_subset = position2D[:N_TIME]
 # %%
 experiments = {
     "baseline (no penalty)": dict(),
-    "penalty=2, sigma=2": dict(non_local_position_penalty=2.0, non_local_penalty_sigma=2.0),
-    "penalty=5, sigma=3": dict(non_local_position_penalty=5.0, non_local_penalty_sigma=3.0),
-    "penalty=10, sigma=3": dict(non_local_position_penalty=10.0, non_local_penalty_sigma=3.0),
-    "penalty=10, sigma=5": dict(non_local_position_penalty=10.0, non_local_penalty_sigma=5.0),
+    "penalty=2, sigma=2": dict(non_local_position_penalty=2.0, non_local_penalty_std=2.0),
+    "penalty=5, sigma=3": dict(non_local_position_penalty=5.0, non_local_penalty_std=3.0),
+    "penalty=10, sigma=3": dict(non_local_position_penalty=10.0, non_local_penalty_std=3.0),
+    "penalty=10, sigma=5": dict(non_local_position_penalty=10.0, non_local_penalty_std=5.0),
 }
 
 results = {}

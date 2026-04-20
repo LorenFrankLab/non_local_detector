@@ -144,3 +144,164 @@ def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
         disable_progress_bar=True,
     )
     assert ll.shape[0] == time_edges.shape[0] and ll.ndim == 2
+
+
+# =============================================================================
+# get_distances_to_interior_bins
+# =============================================================================
+
+
+def test_get_distances_to_interior_bins_shape_1d_graph():
+    """1D track graph path returns (n_positions, n_interior_bins)."""
+    env = make_env_graph(place_bin_size=1.0)
+    positions = np.array([[2.5], [5.0], [7.5]])
+
+    distances = env.get_distances_to_interior_bins(positions)
+
+    n_interior = int(env.is_track_interior_.sum())
+    assert distances.shape == (3, n_interior)
+    assert np.all(distances >= 0) or np.any(np.isnan(distances))
+
+
+def test_get_distances_to_interior_bins_1d_graph_values():
+    """1D track graph distances are correct for a known linear track.
+
+    On a straight line with `place_bin_size=1.0` and track length 10,
+    interior bins are centered at 0.5, 1.5, ..., 9.5. Distance from
+    position 2.5 (≈ bin at 2.5) to bin 5.5 should be ~3.0.
+    """
+    env = make_env_graph(place_bin_size=1.0)
+    positions = np.array([[2.5]])
+
+    distances = env.get_distances_to_interior_bins(positions)
+
+    # Distance from animal at 2.5 to every interior bin center
+    interior_centers = env.place_bin_centers_[env.is_track_interior_.ravel()].ravel()
+    expected = np.abs(interior_centers - 2.5)
+    # Allow small tolerance for graph linearization approximations
+    np.testing.assert_allclose(distances[0], expected, atol=0.6)
+
+
+def test_get_distances_to_interior_bins_caches_matrix():
+    """First call on a 1D track graph populates _bin_distance_matrix_."""
+    env = make_env_graph(place_bin_size=1.0)
+    assert not hasattr(env, "_bin_distance_matrix_")
+
+    env.get_distances_to_interior_bins(np.array([[5.0]]))
+
+    assert hasattr(env, "_bin_distance_matrix_")
+    n_total_bins = env.place_bin_centers_.shape[0]
+    assert env._bin_distance_matrix_.shape == (n_total_bins, n_total_bins)
+
+
+def test_fit_place_grid_invalidates_distance_cache():
+    """Re-calling fit_place_grid removes the cached distance matrix."""
+    env = make_env_graph(place_bin_size=1.0)
+    env.get_distances_to_interior_bins(np.array([[5.0]]))
+    assert hasattr(env, "_bin_distance_matrix_")
+
+    env.fit_place_grid()
+
+    assert not hasattr(env, "_bin_distance_matrix_"), (
+        "fit_place_grid should invalidate the distance matrix cache"
+    )
+
+
+def test_get_distances_to_interior_bins_nd_array_path():
+    """1D open-field (no track_graph) uses the N-D array distance path.
+
+    When no ``track_graph`` is provided but position data is given,
+    ``fit_place_grid`` builds an internal N-D track graph and computes
+    ``distance_between_nodes_`` as a dense numpy array. This is the
+    most common path for user-facing decoders without a track graph.
+    """
+    env = Environment(place_bin_size=1.0)
+    position_1d = np.linspace(0, 10, 20)[:, np.newaxis]
+    env = env.fit_place_grid(position_1d)
+
+    # Sanity: this is the N-D array path, not 1D dict or Euclidean
+    assert env.track_graph is None
+    assert isinstance(env.distance_between_nodes_, np.ndarray)
+
+    # Query at a known interior position
+    distances = env.get_distances_to_interior_bins(np.array([[5.0]]))
+    n_interior = int(env.is_track_interior_.sum())
+    assert distances.shape == (1, n_interior)
+    assert np.all(distances >= 0)
+
+    # Distance from animal to its own bin should be 0
+    assert distances.min() == 0.0
+
+
+def test_get_distances_to_interior_bins_euclidean_fallback():
+    """Defensive Euclidean fallback runs when no distance matrix is available.
+
+    This path is reached if ``distance_between_nodes_`` was not computed
+    (e.g. a partially-constructed environment). We simulate this by
+    clearing the precomputed matrix after fitting.
+    """
+    env = Environment(place_bin_size=1.0)
+    position_1d = np.linspace(0, 10, 20)[:, np.newaxis]
+    env = env.fit_place_grid(position_1d)
+
+    # Force Euclidean fallback by clearing the precomputed matrix
+    env.distance_between_nodes_ = None
+
+    query = np.array([[5.0]])
+    distances = env.get_distances_to_interior_bins(query)
+
+    n_interior = int(env.is_track_interior_.sum())
+    assert distances.shape == (1, n_interior)
+
+    # Verify values match Euclidean distances to each interior bin center
+    interior_centers = env.place_bin_centers_[env.is_track_interior_.ravel()]
+    expected = np.sqrt(((interior_centers - query[0]) ** 2).sum(axis=-1))
+    np.testing.assert_allclose(distances[0], expected, atol=1e-10)
+
+
+def test_get_distances_to_interior_bins_gap_position_snaps_to_nearest_interior():
+    """Gap-position inputs snap to nearest interior bin via get_bin_ind.
+
+    A two-segment track with ``edge_spacing > 0`` creates gap bins
+    between the segments in the linearized grid. Positions that would
+    otherwise land in a gap bin (mid-gap or on an arm-boundary edge)
+    are snapped to the nearest interior bin by get_bin_ind, so the
+    distance lookup row is computed from that snapped interior bin.
+    Distances to unreachable interior bins on disconnected arms remain
+    as +inf (graph disconnection), but no NaN row is produced.
+    """
+    g = nx.Graph()
+    g.add_node(0, pos=(0.0, 0.0))
+    g.add_node(1, pos=(50.0, 0.0))
+    g.add_node(2, pos=(60.0, 0.0))
+    g.add_node(3, pos=(110.0, 0.0))
+    g.add_edge(0, 1, distance=50.0, edge_id=0)
+    g.add_edge(2, 3, distance=50.0, edge_id=1)
+
+    env = Environment(
+        environment_name="two-segment",
+        place_bin_size=5.0,
+        track_graph=g,
+        edge_order=[(0, 1), (2, 3)],
+        edge_spacing=10.0,
+    )
+    position_1d = np.concatenate(
+        [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
+    )
+    env = env.fit_place_grid(position_1d, infer_track_interior=True)
+
+    is_interior = env.is_track_interior_.ravel()
+    gap_bins = np.where(~is_interior)[0]
+    assert len(gap_bins) > 0
+    gap_center = env.place_bin_centers_[gap_bins[0]]
+
+    distances = env.get_distances_to_interior_bins(gap_center[np.newaxis])
+    # No NaN rows: get_bin_ind snaps to nearest interior before lookup.
+    assert not np.any(np.isnan(distances[0])), (
+        "Gap-position input must snap to nearest interior bin, not "
+        f"produce NaN distances. Got: {distances[0]}"
+    )
+    # At least one distance is zero (from the snapped bin to itself).
+    assert np.any(distances[0] == 0.0), (
+        f"Expected a zero self-distance from the snapped bin. Got: {distances[0]}"
+    )

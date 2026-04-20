@@ -38,16 +38,12 @@ class TestValidatePenaltyParams:
 
     def test_zero_sigma_raises(self):
         """Zero sigma should raise ValidationError (divide-by-zero)."""
-        with pytest.raises(
-            ValidationError, match="non_local_penalty_sigma must be > 0"
-        ):
+        with pytest.raises(ValidationError, match="non_local_penalty_std must be > 0"):
             _validate_penalty_params(1.0, 0.0)
 
     def test_negative_sigma_raises(self):
         """Negative sigma should raise ValidationError."""
-        with pytest.raises(
-            ValidationError, match="non_local_penalty_sigma must be > 0"
-        ):
+        with pytest.raises(ValidationError, match="non_local_penalty_std must be > 0"):
             _validate_penalty_params(1.0, -1.0)
 
     def test_very_small_positive_sigma_passes(self):
@@ -64,37 +60,37 @@ class TestDetectorPenaltyValidation:
             NonLocalSortedSpikesDetector(non_local_position_penalty=-0.5)
 
     def test_sorted_spikes_zero_sigma_raises(self):
-        with pytest.raises(ValidationError, match="non_local_penalty_sigma"):
-            NonLocalSortedSpikesDetector(non_local_penalty_sigma=0.0)
+        with pytest.raises(ValidationError, match="non_local_penalty_std"):
+            NonLocalSortedSpikesDetector(non_local_penalty_std=0.0)
 
     def test_clusterless_negative_penalty_raises(self):
         with pytest.raises(ValidationError, match="non_local_position_penalty"):
             NonLocalClusterlessDetector(non_local_position_penalty=-0.5)
 
     def test_clusterless_zero_sigma_raises(self):
-        with pytest.raises(ValidationError, match="non_local_penalty_sigma"):
-            NonLocalClusterlessDetector(non_local_penalty_sigma=0.0)
+        with pytest.raises(ValidationError, match="non_local_penalty_std"):
+            NonLocalClusterlessDetector(non_local_penalty_std=0.0)
 
     def test_sorted_spikes_valid_params_no_raise(self):
         """Constructor with valid penalty params should not raise."""
         detector = NonLocalSortedSpikesDetector(
-            non_local_position_penalty=0.0, non_local_penalty_sigma=1.0
+            non_local_position_penalty=0.0, non_local_penalty_std=1.0
         )
         assert detector.non_local_position_penalty == 0.0
-        assert detector.non_local_penalty_sigma == 1.0
+        assert detector.non_local_penalty_std == 1.0
 
     def test_clusterless_valid_params_no_raise(self):
         """Constructor with valid penalty params should not raise."""
         detector = NonLocalClusterlessDetector(
-            non_local_position_penalty=0.0, non_local_penalty_sigma=1.0
+            non_local_position_penalty=0.0, non_local_penalty_std=1.0
         )
         assert detector.non_local_position_penalty == 0.0
-        assert detector.non_local_penalty_sigma == 1.0
+        assert detector.non_local_penalty_std == 1.0
 
     def test_sorted_spikes_positive_penalty_accepted(self):
         """Constructor with positive penalty should succeed."""
         detector = NonLocalSortedSpikesDetector(
-            non_local_position_penalty=5.0, non_local_penalty_sigma=2.0
+            non_local_position_penalty=5.0, non_local_penalty_std=2.0
         )
         assert detector.non_local_position_penalty == 5.0
-        assert detector.non_local_penalty_sigma == 2.0
+        assert detector.non_local_penalty_std == 2.0

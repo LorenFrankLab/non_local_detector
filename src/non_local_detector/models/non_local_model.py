@@ -23,10 +23,76 @@ from non_local_detector.types import (
 )
 
 
+def _get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
+    """Extract the conditional posterior probability for non-local states.
+
+    Combines the posterior probabilities from both non-local continuous and
+    non-local fragmented states (indices 2 and 3 in the model's state list),
+    then normalizes across position.
+
+    Parameters
+    ----------
+    results : xr.Dataset
+        Results from a non-local detector's predict method containing
+        acausal_posterior with a ``state`` coordinate.
+
+    Returns
+    -------
+    conditional_posterior : xr.DataArray
+        Normalized posterior probability for non-local activity across
+        positions.  Shape is ``(n_time, n_position_bins)`` for 1-D
+        environments and ``(n_time, n_x_bins, n_y_bins)`` for 2-D.
+
+    Raises
+    ------
+    ValidationError
+        If the results dataset contains fewer than 4 unique states, which
+        indicates it did not come from a non-local detector.
+    """
+    state_names = results.acausal_posterior.coords["state"].values
+    unique_states = list(dict.fromkeys(state_names))
+    if len(unique_states) < 4:
+        raise ValidationError(
+            f"Expected at least 4 unique states in results, got {len(unique_states)}: "
+            f"{unique_states}",
+            expected="Results from a NonLocal detector with 4 states "
+            "(e.g. Local, No-Spike, Non-Local Continuous, Non-Local Fragmented)",
+            got=f"{len(unique_states)} states: {unique_states}",
+            hint="This method should only be called on results from "
+            "NonLocalSortedSpikesDetector or NonLocalClusterlessDetector",
+        )
+    non_local_continuous = unique_states[2]
+    non_local_fragmented = unique_states[3]
+
+    acausal_posterior = results.acausal_posterior.sel(
+        state=non_local_continuous
+    ) + results.acausal_posterior.sel(state=non_local_fragmented)
+
+    # Sum over all position dimensions (works for 1D "position" and
+    # 2D "x_position"/"y_position" alike)
+    position_dims = [d for d in acausal_posterior.dims if d != "time"]
+    return acausal_posterior / acausal_posterior.sum(position_dims)
+
+
 def _validate_penalty_params(
-    non_local_position_penalty: float, non_local_penalty_sigma: float
+    non_local_position_penalty: float, non_local_penalty_std: float
 ) -> None:
-    """Validate non-local position penalty parameters."""
+    """Validate non-local position penalty parameters.
+
+    Parameters
+    ----------
+    non_local_position_penalty : float
+        Magnitude of the Gaussian penalty. Must be non-negative.
+    non_local_penalty_std : float
+        Standard deviation of the penalty Gaussian in position units.
+        Must be strictly positive.
+
+    Raises
+    ------
+    ValidationError
+        If ``non_local_position_penalty < 0`` or
+        ``non_local_penalty_std <= 0``.
+    """
     if non_local_position_penalty < 0:
         raise ValidationError(
             "non_local_position_penalty must be >= 0",
@@ -35,13 +101,14 @@ def _validate_penalty_params(
             hint="A negative penalty would reward non-local states near the animal's "
             "position instead of suppressing them. Use 0.0 to disable the penalty.",
         )
-    if non_local_penalty_sigma <= 0:
+    if non_local_penalty_std <= 0:
         raise ValidationError(
-            "non_local_penalty_sigma must be > 0",
-            expected="non_local_penalty_sigma > 0",
-            got=f"{non_local_penalty_sigma}",
-            hint="Sigma controls the width of the Gaussian penalty and is used as a "
-            "divisor. A value <= 0 would cause divide-by-zero or invalid behavior.",
+            "non_local_penalty_std must be > 0",
+            expected="non_local_penalty_std > 0",
+            got=f"{non_local_penalty_std}",
+            hint="Standard deviation controls the width of the Gaussian penalty "
+            "and is used as a divisor. A value <= 0 would cause divide-by-zero "
+            "or invalid behavior.",
         )
 
 
@@ -90,11 +157,54 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         Sampling frequency in Hz, by default 500.0.
     no_spike_rate : float, optional
         Rate for no-spike observations, by default 1e-10.
+    non_local_position_penalty : float, optional
+        Magnitude of the Gaussian penalty subtracted from the non-local
+        states' log-likelihood near the animal's position. Suppresses
+        non-local replay detection near the current location. By default
+        ``0.0`` (no penalty).
+    non_local_penalty_std : float, optional
+        Standard deviation of the Gaussian penalty, in the same units as
+        ``position`` (typically centimeters). Controls the spatial
+        extent of the suppression zone around the animal; distances use
+        shortest-path along the track graph. Must be strictly positive.
+        By default ``1.0``.
+    discrete_transition_prior_weight : float or np.ndarray, optional
+        Dimensionless weight for data-adaptive Dirichlet prior scaling
+        during EM re-estimation of discrete transitions. By default
+        ``0.0`` (fixed-count prior).
     frozen_discrete_transition_rows : array-like or None, optional
         Discrete transition rows to freeze during EM re-estimation. By
         default ``(1,)``, which freezes the No-Spike row so its
         self-transition cannot collapse to fit stray spike gaps. Pass
         ``None`` to disable row freezing.
+    local_position_std : float or None, optional
+        Controls the Local state's spatial representation:
+
+        - ``None`` (default): legacy behavior. Local state occupies a
+          single bin; the likelihood is evaluated at the animal's exact
+          interpolated position (continuous).
+        - ``0.0``: delta-kernel multi-bin local. Local state spans all
+          position bins, with the kernel concentrated at the single bin
+          containing the animal. The per-bin likelihood is evaluated at
+          bin centers (discrete); only the animal's bin contributes
+          finite mass, the rest are suppressed.
+        - ``> 0``: multi-bin local with a Gaussian kernel of standard
+          deviation ``local_position_std`` (same units as ``position``,
+          typically centimeters) on the shortest-path track-graph
+          distance. Models spatial uncertainty in the local
+          representation.
+
+        All three modes produce a valid posterior.
+
+    Attributes
+    ----------
+    non_local_position_penalty : float
+        Stored copy of the ``non_local_position_penalty`` constructor
+        argument.
+    non_local_penalty_std : float
+        Stored copy of the ``non_local_penalty_std`` constructor argument.
+    local_position_std : float or None
+        Stored copy of the ``local_position_std`` constructor argument.
 
     Examples
     --------
@@ -122,11 +232,12 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         non_local_position_penalty: float = 0.0,
-        non_local_penalty_sigma: float = 1.0,
+        non_local_penalty_std: float = 1.0,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
         frozen_discrete_transition_rows: (
             np.ndarray | list[int] | tuple[int, ...] | None
         ) = (1,),
+        local_position_std: float | None = None,
     ):
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
@@ -158,32 +269,19 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
             no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
+            local_position_std=local_position_std,
         )
-        _validate_penalty_params(non_local_position_penalty, non_local_penalty_sigma)
+        _validate_penalty_params(non_local_position_penalty, non_local_penalty_std)
         self.non_local_position_penalty = non_local_position_penalty
-        self.non_local_penalty_sigma = non_local_penalty_sigma
+        self.non_local_penalty_std = non_local_penalty_std
 
     @staticmethod
     def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
         """Extract the conditional posterior probability for non-local states.
 
-        Combines the posterior probabilities from both non-local continuous and
-        non-local fragmented states, then normalizes across position.
-
-        Parameters
-        ----------
-        results : xr.Dataset
-            Results from the detector's predict method containing acausal_posterior.
-
-        Returns
-        -------
-        conditional_posterior : xr.DataArray, shape (n_time, n_position_bins)
-            Normalized posterior probability for non-local activity across positions.
+        See :func:`_get_conditional_non_local_posterior` for full documentation.
         """
-        acausal_posterior = results.acausal_posterior.sel(state="Non-Local Continuous")
-        acausal_posterior += results.acausal_posterior.sel(state="Non-Local Fragmented")
-
-        return acausal_posterior / acausal_posterior.sum("position")
+        return _get_conditional_non_local_posterior(results)
 
 
 class NonLocalClusterlessDetector(ClusterlessDetector):
@@ -232,11 +330,54 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         Sampling frequency in Hz, by default 500.0.
     no_spike_rate : float, optional
         Rate for no-spike observations, by default 1e-10.
+    non_local_position_penalty : float, optional
+        Magnitude of the Gaussian penalty subtracted from the non-local
+        states' log-likelihood near the animal's position. Suppresses
+        non-local replay detection near the current location. By default
+        ``0.0`` (no penalty).
+    non_local_penalty_std : float, optional
+        Standard deviation of the Gaussian penalty, in the same units as
+        ``position`` (typically centimeters). Controls the spatial
+        extent of the suppression zone around the animal; distances use
+        shortest-path along the track graph. Must be strictly positive.
+        By default ``1.0``.
+    discrete_transition_prior_weight : float or np.ndarray, optional
+        Dimensionless weight for data-adaptive Dirichlet prior scaling
+        during EM re-estimation of discrete transitions. By default
+        ``0.0`` (fixed-count prior).
     frozen_discrete_transition_rows : array-like or None, optional
         Discrete transition rows to freeze during EM re-estimation. By
         default ``(1,)``, which freezes the No-Spike row so its
         self-transition cannot collapse to fit stray spike gaps. Pass
         ``None`` to disable row freezing.
+    local_position_std : float or None, optional
+        Controls the Local state's spatial representation:
+
+        - ``None`` (default): legacy behavior. Local state occupies a
+          single bin; the likelihood is evaluated at the animal's exact
+          interpolated position (continuous).
+        - ``0.0``: delta-kernel multi-bin local. Local state spans all
+          position bins, with the kernel concentrated at the single bin
+          containing the animal. The per-bin likelihood is evaluated at
+          bin centers (discrete); only the animal's bin contributes
+          finite mass, the rest are suppressed.
+        - ``> 0``: multi-bin local with a Gaussian kernel of standard
+          deviation ``local_position_std`` (same units as ``position``,
+          typically centimeters) on the shortest-path track-graph
+          distance. Models spatial uncertainty in the local
+          representation.
+
+        All three modes produce a valid posterior.
+
+    Attributes
+    ----------
+    non_local_position_penalty : float
+        Stored copy of the ``non_local_position_penalty`` constructor
+        argument.
+    non_local_penalty_std : float
+        Stored copy of the ``non_local_penalty_std`` constructor argument.
+    local_position_std : float or None
+        Stored copy of the ``local_position_std`` constructor argument.
 
     Examples
     --------
@@ -264,11 +405,12 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
         sampling_frequency: float = 500.0,
         no_spike_rate: float = 1e-10,
         non_local_position_penalty: float = 0.0,
-        non_local_penalty_sigma: float = 1.0,
+        non_local_penalty_std: float = 1.0,
         discrete_transition_prior_weight: float | np.ndarray = 0.0,
         frozen_discrete_transition_rows: (
             np.ndarray | list[int] | tuple[int, ...] | None
         ) = (1,),
+        local_position_std: float | None = None,
     ):
         params = _initialize_params(
             _ModelDefaults.non_local_defaults(),
@@ -300,30 +442,16 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
             no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
+            local_position_std=local_position_std,
         )
-        _validate_penalty_params(non_local_position_penalty, non_local_penalty_sigma)
+        _validate_penalty_params(non_local_position_penalty, non_local_penalty_std)
         self.non_local_position_penalty = non_local_position_penalty
-        self.non_local_penalty_sigma = non_local_penalty_sigma
+        self.non_local_penalty_std = non_local_penalty_std
 
     @staticmethod
     def get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
         """Extract the conditional posterior probability for non-local states.
 
-        Combines the posterior probabilities from both non-local continuous and
-        non-local fragmented states, then normalizes across position.
-
-        Parameters
-        ----------
-        results : xr.Dataset
-            Results from the detector's predict method containing acausal_posterior.
-
-        Returns
-        -------
-        conditional_posterior : xr.DataArray, shape (n_time, n_position_bins)
-            Normalized posterior probability for non-local activity across positions.
+        See :func:`_get_conditional_non_local_posterior` for full documentation.
         """
-        acausal_posterior = results.acausal_posterior.sel(state="Non-Local Continuous")
-        acausal_posterior += results.acausal_posterior.sel(state="Non-Local Fragmented")
-
-        result = acausal_posterior / acausal_posterior.sum("position")
-        return xr.DataArray(result)
+        return _get_conditional_non_local_posterior(results)

@@ -5,6 +5,7 @@ import pickle
 import warnings
 from logging import getLogger
 
+import jax
 import jax.numpy as jnp
 import matplotlib
 import matplotlib.pyplot as plt
@@ -19,7 +20,11 @@ from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector import _validation as val
-from non_local_detector.continuous_state_transitions import EmpiricalMovement
+from non_local_detector.continuous_state_transitions import (
+    Discrete,
+    EmpiricalMovement,
+    Uniform,
+)
 from non_local_detector.core import (
     check_converged,
     chunked_filter_smoother,
@@ -270,6 +275,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         frozen_discrete_transition_rows: (
             np.ndarray | list[int] | tuple[int, ...] | None
         ) = None,
+        local_position_std: float | None = None,
     ) -> None:
         """
         Initialize the _DetectorBase class.
@@ -321,6 +327,20 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             structural states (e.g., a No-Spike self-transition) that
             should not be learned from data. Only applies to stationary
             (2D) transition matrices.
+        local_position_std : float or None, optional
+            Controls the Local state's spatial representation:
+
+            - ``None`` (default): legacy behavior. Local state occupies a
+              single bin; the likelihood is evaluated at the animal's
+              exact interpolated position (continuous).
+            - ``0.0``: delta-kernel multi-bin local. Local state spans all
+              position bins, with all mass concentrated at the single bin
+              containing the animal (one-hot). Likelihood is evaluated at
+              bin centers (discrete).
+            - ``> 0``: multi-bin local with a Gaussian kernel of standard
+              deviation ``local_position_std`` (same units as ``position``,
+              typically centimeters) on the shortest-path track-graph
+              distance; models spatial uncertainty.
         """
         # Validate all parameters early (Tier 1 & 2)
         self._validate_initial_conditions(
@@ -379,14 +399,97 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.sampling_frequency = sampling_frequency
         self.no_spike_rate = no_spike_rate
 
+        # Local position uncertainty parameter
+        if local_position_std is not None and local_position_std < 0:
+            raise ValidationError(
+                "local_position_std must be non-negative",
+                expected="float >= 0 or None",
+                got=str(local_position_std),
+                hint=(
+                    "Use None for legacy single-bin local (likelihood at "
+                    "the animal's exact interpolated position), 0.0 for "
+                    "multi-bin local with a delta kernel at the animal's "
+                    "bin, or > 0 for a Gaussian kernel."
+                ),
+            )
+        self.local_position_std = local_position_std
+
+    def _validate_position_dimensionality(
+        self, position: np.ndarray, context: str = "fit"
+    ) -> None:
+        """Check that position shape matches the environment type.
+
+        When any environment has a ``track_graph``, positions must be
+        raw 2D ``(x, y)`` coordinates — the detector linearizes
+        internally via ``get_position_at_time``. Passing already-
+        linearized 1D position in this case causes the internal
+        linearization step to silently produce garbage coordinates,
+        which mis-centers the local kernel and non-local penalty.
+
+        This check raises a clear ``ValidationError`` when the shape
+        does not match the environment type, rather than allowing
+        silent numerical corruption downstream.
+
+        Parameters
+        ----------
+        position : np.ndarray
+            Position array to validate.
+        context : str, optional
+            Name of the calling context (``"fit"`` or ``"predict"``)
+            for error messages.
+        """
+        is_1d = position.ndim == 1 or (position.ndim == 2 and position.shape[1] == 1)
+        if not is_1d:
+            return
+
+        has_track_graph = any(env.track_graph is not None for env in self.environments)
+        if has_track_graph:
+            raise ValidationError(
+                "Environment has a track_graph but position is 1D "
+                f"(shape {position.shape}). Track-graph environments "
+                "require raw 2D (x, y) position — the detector "
+                "linearizes internally. Passing pre-linearized 1D "
+                "position silently corrupts internal coordinates.",
+                expected="shape (n_time, 2) or (n_time, n_dims) with n_dims >= 2",
+                got=f"shape {position.shape}",
+                hint=(
+                    "If you already called get_linearized_position() to "
+                    "get 1D position, pass the raw 2D (x, y) array "
+                    "instead — the detector linearizes via the track_graph "
+                    "during both fit() and predict()."
+                ),
+                example=(
+                    "    # Raw 2D position, not pre-linearized\n"
+                    f"    detector.{context}(..., position=position_2d)"
+                ),
+            )
+
     def _compute_non_local_position_penalty(
         self, time, position_time, position, environment
     ):
         """Compute position-dependent penalty for non-local states.
 
-        Returns a (n_time, n_interior_bins) array of log-likelihood penalties
-        that suppress non-local likelihood near the animal's current position.
-        The penalty is a negative Gaussian centered on the animal's position.
+        Returns a ``(n_time, n_interior_bins)`` array of log-likelihood
+        penalties that suppress non-local likelihood near the animal's
+        current position. The penalty is a negative Gaussian centered on
+        the animal's position.
+
+        Uses topology-aware distances via
+        :meth:`Environment.get_distances_to_interior_bins`:
+
+        - 1D track graph: shortest-path distance along the linearized
+          track (handles multi-arm mazes correctly so the penalty at a
+          bin reflects its graph distance, not its linearized coordinate
+          difference).
+        - N-D environment: shortest-path distance on ``track_graphDD``
+          (respects holes and obstacles — the penalty follows the
+          reachable interior, not straight-line Euclidean).
+        - No precomputed distance matrix: Euclidean fallback.
+
+        NaN/inf distances (off-track animal position, unreachable bins)
+        are treated as infinite distance so the penalty at those bins is
+        zero — consistent with the intuition "cannot compute → no
+        penalty applied".
 
         Parameters
         ----------
@@ -403,28 +506,164 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Returns
         -------
         penalty : jnp.ndarray, shape (n_time, n_interior_bins)
-            Negative penalty values (to be added to log-likelihood).
+            Non-positive penalty values (to be added to log-likelihood).
         """
         from non_local_detector.likelihoods.common import get_position_at_time
 
         animal_pos = get_position_at_time(position_time, position, time, environment)
-        is_interior = environment.is_track_interior_.ravel()
-        bin_centers = environment.place_bin_centers_[is_interior]
+        animal_pos_arr = np.asarray(animal_pos)
 
-        # Compute squared distance between animal position and each bin
-        # animal_pos: (n_time, n_dims), bin_centers: (n_bins, n_dims)
+        # Detect NaN animal positions (tracking dropouts). get_bin_ind does
+        # not guard against NaN — np.searchsorted(nan) returns an arbitrary
+        # valid bin index, so a NaN position would produce a finite distance
+        # and thus a spurious penalty at an unrelated bin. Mask those rows
+        # to zero after computing the penalty.
+        if animal_pos_arr.ndim == 1:
+            nan_mask = jnp.isnan(jnp.asarray(animal_pos_arr))
+        else:
+            nan_mask = jnp.any(jnp.isnan(jnp.asarray(animal_pos_arr)), axis=-1)
+
+        # Topology-aware distance (graph shortest path when available).
+        # Replace NaN animal positions with 0 before the lookup to avoid
+        # undefined searchsorted behavior; nan_mask masks those rows below.
+        safe_animal_pos = np.nan_to_num(animal_pos_arr, nan=0.0)
+        dist = environment.get_distances_to_interior_bins(safe_animal_pos)
+
+        # NaN (off-track bin-to-bin lookups) and inf (unreachable bins) →
+        # treat as infinitely far so the penalty evaluates to zero at those
+        # cells, avoiding NaN propagation into the log-likelihood.
+        sq_dist = jnp.nan_to_num(jnp.asarray(dist) ** 2, nan=jnp.inf, posinf=jnp.inf)
+
+        penalty = -self.non_local_position_penalty * jnp.exp(
+            -0.5 * sq_dist / (self.non_local_penalty_std**2)
+        )
+
+        # NaN animal positions produce zero penalty (no constraint during
+        # tracking dropouts) rather than a spurious penalty at a searchsorted-
+        # dependent bin.
+        return jnp.where(nan_mask[:, jnp.newaxis], 0.0, penalty)
+
+    def _compute_local_position_kernel(
+        self,
+        time: jnp.ndarray,
+        position_time: jnp.ndarray,
+        position: jnp.ndarray,
+        environment: "Environment",
+    ) -> jnp.ndarray:
+        """Compute log position kernel for the local state.
+
+        Dispatches to one of two paths based on ``self.local_position_std``:
+
+        - ``== 0``: delta kernel. ``log(n_bins)`` at the animal's bin,
+          ``-inf`` elsewhere (one-hot).
+        - ``> 0``: Gaussian kernel over shortest-path track-graph
+          distance (Euclidean fallback when no graph is fitted), then
+          normalized so ``exp(log_kernel)`` sums to ``n_interior_bins``
+          per time step. Unreachable bins on disconnected graph
+          components get zero probability naturally via ``exp(-inf)``.
+
+        Gap-bin positions (e.g. positions exactly on an arm-boundary
+        edge of a linearized track) are snapped to the nearest interior
+        bin by :meth:`Environment.get_bin_ind`, so the kernel is always
+        defined on a real interior bin.
+
+        NaN animal positions (tracking dropouts) fall back to a uniform
+        kernel.
+
+        Both paths satisfy the invariant ``exp(log_kernel).sum(axis=1)
+        == n_bins``. Combined with the multi-bin local state's
+        ``1/n_bins`` uniform continuous initial conditions, this makes
+        the effective per-bin prior exactly ``exp(log_kernel)`` — so
+        the total Local state mass after the HMM forward step equals
+        ``p_local * P(spikes | animal_bin)`` in the delta limit.
+
+        In the sharp-sigma limit, the Gaussian concentrates at the
+        animal's bin and matches the delta-kernel behavior numerically.
+
+        Parameters
+        ----------
+        time : jnp.ndarray, shape (n_time,)
+            Decoding time bins.
+        position_time : jnp.ndarray, shape (n_time_position,)
+            Position sampling times.
+        position : jnp.ndarray, shape (n_time_position, n_position_dims)
+            Position samples.
+        environment : Environment
+            The spatial environment.
+
+        Returns
+        -------
+        log_kernel : jnp.ndarray, shape (n_time, n_interior_bins)
+            Log kernel. exp(log_kernel) sums to n_interior_bins per
+            time step (not 1).
+        """
+        from non_local_detector.likelihoods.common import get_position_at_time
+
+        assert self.local_position_std is not None  # narrowing for type checker
+
+        animal_pos = get_position_at_time(position_time, position, time, environment)
+
+        n_bins = int(environment.is_track_interior_.sum())
+        log_n_bins = jnp.log(jnp.array(n_bins, dtype=jnp.float32))
+
+        # Detect NaN positions (from gaps in position data)
         if animal_pos.ndim == 1:
-            animal_pos = animal_pos[:, jnp.newaxis]
-        if bin_centers.ndim == 1:
-            bin_centers = bin_centers[:, jnp.newaxis]
+            nan_mask = jnp.isnan(animal_pos)
+        else:
+            nan_mask = jnp.any(jnp.isnan(animal_pos), axis=-1)
 
-        dist_sq = jnp.sum(
-            (animal_pos[:, jnp.newaxis, :] - bin_centers[jnp.newaxis, :, :]) ** 2,
-            axis=-1,
+        # Delta kernel path: σ=0 concentrates the Local state on the
+        # single bin containing the animal. Emits log(n_bins) at that bin
+        # and -inf elsewhere, so after the multi-bin state's 1/n_bins
+        # uniform continuous IC, the total Local mass equals p_local ×
+        # P(spikes | animal_bin_center). Environment.get_bin_ind snaps
+        # gap-bin assignments to the nearest interior bin, so the only
+        # remaining case needing uniform fallback is a truly NaN animal
+        # position (tracking dropout).
+        if self.local_position_std == 0:
+            interior_bin_indices = np.where(environment.is_track_interior_.ravel())[0]
+            # Replace NaN animal positions with 0 before get_bin_ind (it
+            # has no NaN guard); nan_mask below masks those rows.
+            safe_animal_pos = np.nan_to_num(np.asarray(animal_pos), nan=0.0)
+            animal_bin_inds = environment.get_bin_ind(safe_animal_pos)
+            is_animal_bin = jnp.asarray(
+                animal_bin_inds[:, np.newaxis] == interior_bin_indices[np.newaxis, :]
+            )
+            log_kernel = jnp.where(is_animal_bin, log_n_bins, -jnp.inf)
+            log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
+            return log_kernel
+
+        # Gaussian kernel path (σ > 0). Uses topology-aware distance via
+        # Environment.get_distances_to_interior_bins(). After the
+        # get_bin_ind snap, the animal bin is always interior, so the
+        # distance-matrix row is always finite (no NaN rows). Unreachable
+        # bins on disconnected graph components stay as inf, which through
+        # exp(-0.5 * inf² / σ²) naturally yields zero probability there —
+        # the Gaussian concentrates on the reachable interior.
+        dist = environment.get_distances_to_interior_bins(np.asarray(animal_pos))
+        sq_dist = jnp.asarray(dist) ** 2
+
+        # Compute log-kernel with -inf at unreachable bins. jnp.where
+        # avoids inf/NaN propagation through the arithmetic ops below.
+        reachable = jnp.isfinite(sq_dist)
+        log_kernel = jnp.where(
+            reachable, -0.5 * sq_dist / (self.local_position_std**2), -jnp.inf
         )
-        return -self.non_local_position_penalty * jnp.exp(
-            -0.5 * dist_sq / (self.non_local_penalty_sigma**2)
+        # Normalize to sum to n_bins (not 1) per time step. This compensates
+        # for the 1/n_bins uniform continuous IC of the multi-bin local state
+        # so the effective per-bin prior matches the kernel itself. Without
+        # this scaling, non-local states dominate by a factor of n_bins.
+        log_kernel = (
+            log_kernel
+            - jax.scipy.special.logsumexp(log_kernel, axis=1, keepdims=True)
+            + log_n_bins
         )
+
+        # NaN animal positions (tracking dropout) fall back to a uniform
+        # kernel: each bin's exp value is 1, so log_kernel = 0 per bin.
+        log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
+
+        return log_kernel
 
     def _validate_initial_conditions(
         self,
@@ -791,7 +1030,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         state_ind = []
         is_track_interior = []
         for ind, obs in enumerate(self.observation_models):
-            if obs.is_local or obs.is_no_spike:
+            if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
                 bin_sizes.append(1)
                 state_ind.append(np.full(1, ind, dtype=int))
                 is_track_interior.append(np.ones(1, dtype=bool))
@@ -824,16 +1063,22 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Overall initial probability distribution across all state bins.
         """
         logger.info("Fitting initial conditions...")
-        self.continuous_initial_conditions_ = np.concatenate(
-            [
-                cont_ic.make_initial_conditions(obs, self.environments)
-                for obs, cont_ic in zip(
-                    self.observation_models,
-                    self.continuous_initial_conditions_types,
-                    strict=False,
-                )
-            ]
-        )
+        from dataclasses import replace
+
+        ic_parts = []
+        for obs, cont_ic in zip(
+            self.observation_models,
+            self.continuous_initial_conditions_types,
+            strict=False,
+        ):
+            # Multi-bin local uses full spatial initial conditions
+            effective_obs = obs
+            if obs.is_local and self.local_position_std is not None:
+                effective_obs = replace(obs, is_local=False)
+            ic_parts.append(
+                cont_ic.make_initial_conditions(effective_obs, self.environments)
+            )
+        self.continuous_initial_conditions_ = np.concatenate(ic_parts)
         self.initial_conditions_ = (
             self.continuous_initial_conditions_
             * self.discrete_initial_conditions[self.state_ind_]
@@ -917,6 +1162,33 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                         )
                     )
                 else:
+                    # Auto-upgrade Discrete() for multi-bin local states.
+                    # Must happen BEFORE make_state_transition() to avoid
+                    # (1,1) -> (n,n) broadcast corruption.
+                    if (
+                        isinstance(transition, Discrete)
+                        and self.local_position_std is not None
+                    ):
+                        from_obs = self.observation_models[from_state]
+                        to_obs = self.observation_models[to_state]
+                        if from_obs.is_local or to_obs.is_local:
+                            # Cross-environment transitions with multi-bin
+                            # local are not supported in v1.
+                            if from_obs.environment_name != to_obs.environment_name:
+                                raise ValueError(
+                                    f"Cross-environment Discrete() transition "
+                                    f"between '{from_obs.environment_name}' and "
+                                    f"'{to_obs.environment_name}' is not "
+                                    f"supported with multi-bin local "
+                                    f"(local_position_std is set). Use explicit "
+                                    f"Uniform(environment_name=..., "
+                                    f"environment2_name=...) instead."
+                                )
+                            local_obs = from_obs if from_obs.is_local else to_obs
+                            transition = Uniform(
+                                environment_name=local_obs.environment_name
+                            )
+
                     n_row_bins = np.max(inds[0].shape)
                     n_col_bins = np.max(inds[1].shape)
 
@@ -945,6 +1217,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                                 raise ValueError(
                                     "Environment must have place_bin_centers_ for discrete to continuous transitions"
                                 )
+                    elif n_row_bins > 1 and n_col_bins == 1:
+                        # Spatial to non-spatial: each source bin transitions
+                        # to the single target bin with probability 1.
+                        self.continuous_state_transitions_[inds] = np.ones(
+                            (n_row_bins, 1)
+                        )
                     else:
                         self.continuous_state_transitions_[inds] = (
                             transition.make_state_transition(self.environments)
@@ -1254,6 +1532,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # Tier 2: Validate data types and properties
         val.ensure_ndarray(position, "position")
         val.ensure_all_finite(position, "position")
+
+        # Raises ValidationError if position is 1D but env has track_graph.
+        self._validate_position_dimensionality(position, context="fit")
 
         if position.ndim == 1 or (position.ndim == 2 and position.shape[1] == 1):
             has_track_graph = any(
@@ -2034,7 +2315,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # Build position array
         position = []
         for obs in self.observation_models:
-            if obs.is_local or obs.is_no_spike:
+            if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
                 position.append(np.full((1, n_position_dims), np.nan))
             else:
                 environment = env_dict.get(obs.environment_name)
@@ -2172,7 +2453,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         environment_names = []
         encoding_group_names = []
         for obs in self.observation_models:
-            if obs.is_local or obs.is_no_spike:
+            if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
                 position.append(np.full((1, n_position_dims), np.nan))
                 environment_names.append([None])
                 encoding_group_names.append([None])
@@ -2240,6 +2521,7 @@ class ClusterlessDetector(_DetectorBase):
         frozen_discrete_transition_rows: (
             np.ndarray | list[int] | tuple[int, ...] | None
         ) = None,
+        local_position_std: float | None = None,
     ) -> None:
         """
         Initialize the ClusterlessDetector class.
@@ -2283,6 +2565,9 @@ class ClusterlessDetector(_DetectorBase):
             Rows of the discrete transition matrix to freeze during EM
             re-estimation, by default None. See ``_DetectorBase`` for
             details.
+        local_position_std : float or None, optional
+            Standard deviation of the position uncertainty kernel for the
+            local state. See ``_DetectorBase`` for details.
         """
         super().__init__(
             discrete_initial_conditions,
@@ -2300,6 +2585,7 @@ class ClusterlessDetector(_DetectorBase):
             no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
+            local_position_std=local_position_std,
         )
         self.clusterless_algorithm = clusterless_algorithm
         self.clusterless_algorithm_params = clusterless_algorithm_params
@@ -2545,6 +2831,36 @@ class ClusterlessDetector(_DetectorBase):
         """
         Compute the log likelihood for the given data.
 
+        Notes
+        -----
+        When ``local_position_std`` is set, the per-bin value returned
+        for local-state entries is not a pure observation likelihood.
+        It combines the spatial spike likelihood with the position
+        uncertainty kernel::
+
+            log_likelihood[local, b, t] =
+                log P(spikes_t | bin b)                   # spatial likelihood
+              + log_kernel(b | animal_pos_t)              # Gaussian anchor
+              + log(n_interior_bins)                      # mass-balance
+
+        The kernel term is a time-varying state-specific spatial prior.
+        Mathematically, injecting it into the likelihood is equivalent
+        to injecting it into the transition matrix — both multiply into
+        the HMM forward step — but avoids breaking the static-transition
+        assumption used by ``jax.lax.scan``. The ``log(n_interior_bins)``
+        constant compensates for the ``1/n_bins`` uniform continuous IC
+        so the effective per-bin prior is ``exp(log_kernel)`` itself.
+
+        The kernel is part of the likelihood model, not an ad-hoc
+        post-processing step, so the posterior returned by ``predict()``
+        is a valid probability distribution under the modified
+        generative model. Users comparing ``local_position_std=None`` to
+        a finite value will see different posteriors (the models
+        differ); users reading the raw ``log_likelihood`` (via
+        ``return_outputs='log_likelihood'``) should be aware that
+        local-state entries are *not* pure ``log P(spikes | state, bin)``
+        — they include the kernel and mass-balance terms.
+
         Parameters
         ----------
         time : np.ndarray, shape (n_time,)
@@ -2569,6 +2885,7 @@ class ClusterlessDetector(_DetectorBase):
         needs_position = (
             np.any([obs.is_local for obs in self.observation_models])
             or non_local_penalty > 0
+            or self.local_position_std is not None
         )
         if position is None and needs_position:
             reason = []
@@ -2576,6 +2893,8 @@ class ClusterlessDetector(_DetectorBase):
                 reason.append("local observation models")
             if non_local_penalty > 0:
                 reason.append("non_local_position_penalty > 0")
+            if self.local_position_std is not None:
+                reason.append("local_position_std is set")
             raise ValidationError(
                 f"Missing required parameter: position (needed for {', '.join(reason)})",
                 expected="position array with shape (n_time, n_dims)",
@@ -2583,6 +2902,8 @@ class ClusterlessDetector(_DetectorBase):
                 hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
                 example="    results = detector.predict(spikes=spikes_test, time=time_test, position=position_test)",
             )
+        if position is not None:
+            self._validate_position_dimensionality(position, context="predict")
 
         n_time = len(time)
         if is_missing is None:
@@ -2603,10 +2924,14 @@ class ClusterlessDetector(_DetectorBase):
         # Compute all likelihoods first (stays in JAX/GPU if available)
         likelihood_results = {}
         for state_id, obs in enumerate(self.observation_models):
+            # Multi-bin local computes full spatial likelihood (is_local=False)
+            # then adds position kernel afterward
+            effective_is_local = obs.is_local and self.local_position_std is None
+
             likelihood_name = (
                 obs.environment_name,
                 obs.encoding_group,
-                obs.is_local,
+                effective_is_local,
                 obs.is_no_spike,
             )
 
@@ -2622,7 +2947,7 @@ class ClusterlessDetector(_DetectorBase):
                     spike_times,
                     spike_waveform_features,
                     **self.encoding_model_[likelihood_name[:2]],
-                    is_local=obs.is_local,
+                    is_local=effective_is_local,
                 )
                 computed_likelihoods[likelihood_name] = state_id
             else:
@@ -2665,6 +2990,22 @@ class ClusterlessDetector(_DetectorBase):
                     is_state_bin = state_bin_masks[state_id]
                     log_likelihood = log_likelihood.at[:, is_state_bin].add(
                         env_penalties[env_name]
+                    )
+
+        # Apply local position kernel if configured
+        if self.local_position_std is not None:
+            env_kernels = {}
+            for state_id, obs in enumerate(self.observation_models):
+                if obs.is_local:
+                    env_name = obs.environment_name
+                    if env_name not in env_kernels:
+                        env = self._get_environment_by_name(env_name)
+                        env_kernels[env_name] = self._compute_local_position_kernel(
+                            time, position_time, position, env
+                        )
+                    is_state_bin = state_bin_masks[state_id]
+                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
+                        env_kernels[env_name]
                     )
 
         # Apply missing data mask
@@ -2790,6 +3131,18 @@ class ClusterlessDetector(_DetectorBase):
 
         >>> results = model.predict(spike_times, time, return_outputs='all')
         """
+        if position is not None and position_time is None:
+            raise ValidationError(
+                "position_time is required when position is provided",
+                expected="position_time array with shape (n_time_position,)",
+                got="None",
+                hint="Provide position_time corresponding to the position samples",
+                example="    results = detector.predict(\n"
+                "        spike_times=spike_times, spike_waveform_features=features,\n"
+                "        time=time, position=position, position_time=position_time\n"
+                "    )",
+            )
+
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
             nan_position = np.any(np.isnan(position), axis=1)
@@ -3107,6 +3460,7 @@ class SortedSpikesDetector(_DetectorBase):
         frozen_discrete_transition_rows: (
             np.ndarray | list[int] | tuple[int, ...] | None
         ) = None,
+        local_position_std: float | None = None,
     ) -> None:
         """
         Initialize the SortedSpikesDetector class.
@@ -3150,6 +3504,9 @@ class SortedSpikesDetector(_DetectorBase):
             Rows of the discrete transition matrix to freeze during EM
             re-estimation, by default None. See ``_DetectorBase`` for
             details.
+        local_position_std : float or None, optional
+            Standard deviation of the position uncertainty kernel for the
+            local state. See ``_DetectorBase`` for details.
         """
         super().__init__(
             discrete_initial_conditions,
@@ -3167,6 +3524,7 @@ class SortedSpikesDetector(_DetectorBase):
             no_spike_rate,
             discrete_transition_prior_weight=discrete_transition_prior_weight,
             frozen_discrete_transition_rows=frozen_discrete_transition_rows,
+            local_position_std=local_position_std,
         )
         self.sorted_spikes_algorithm = sorted_spikes_algorithm
         self.sorted_spikes_algorithm_params = sorted_spikes_algorithm_params
@@ -3405,6 +3763,36 @@ class SortedSpikesDetector(_DetectorBase):
         """
         Compute the log likelihood for the given data.
 
+        Notes
+        -----
+        When ``local_position_std`` is set, the per-bin value returned
+        for local-state entries is not a pure observation likelihood.
+        It combines the spatial spike likelihood with the position
+        uncertainty kernel::
+
+            log_likelihood[local, b, t] =
+                log P(spikes_t | bin b)                   # spatial likelihood
+              + log_kernel(b | animal_pos_t)              # Gaussian anchor
+              + log(n_interior_bins)                      # mass-balance
+
+        The kernel term is a time-varying state-specific spatial prior.
+        Mathematically, injecting it into the likelihood is equivalent
+        to injecting it into the transition matrix — both multiply into
+        the HMM forward step — but avoids breaking the static-transition
+        assumption used by ``jax.lax.scan``. The ``log(n_interior_bins)``
+        constant compensates for the ``1/n_bins`` uniform continuous IC
+        so the effective per-bin prior is ``exp(log_kernel)`` itself.
+
+        The kernel is part of the likelihood model, not an ad-hoc
+        post-processing step, so the posterior returned by ``predict()``
+        is a valid probability distribution under the modified
+        generative model. Users comparing ``local_position_std=None`` to
+        a finite value will see different posteriors (the models
+        differ); users reading the raw ``log_likelihood`` (via
+        ``return_outputs='log_likelihood'``) should be aware that
+        local-state entries are *not* pure ``log P(spikes | state, bin)``
+        — they include the kernel and mass-balance terms.
+
         Parameters
         ----------
         time : np.ndarray, shape (n_time,)
@@ -3429,6 +3817,7 @@ class SortedSpikesDetector(_DetectorBase):
         needs_position = (
             np.any([obs.is_local for obs in self.observation_models])
             or non_local_penalty > 0
+            or self.local_position_std is not None
         )
         if position is None and needs_position:
             reason = []
@@ -3436,6 +3825,8 @@ class SortedSpikesDetector(_DetectorBase):
                 reason.append("local observation models")
             if non_local_penalty > 0:
                 reason.append("non_local_position_penalty > 0")
+            if self.local_position_std is not None:
+                reason.append("local_position_std is set")
             raise ValidationError(
                 f"Missing required parameter: position (needed for {', '.join(reason)})",
                 expected="position array with shape (n_time, n_dims)",
@@ -3443,6 +3834,8 @@ class SortedSpikesDetector(_DetectorBase):
                 hint="Provide position data or set non_local_position_penalty=0.0 to disable the penalty",
                 example="    results = detector.predict(spikes=spikes_test, time=time_test, position=position_test)",
             )
+        if position is not None:
+            self._validate_position_dimensionality(position, context="predict")
 
         if is_missing is None:
             is_missing = np.zeros((n_time,), dtype=bool)
@@ -3462,10 +3855,14 @@ class SortedSpikesDetector(_DetectorBase):
         # Compute all likelihoods first (stays in JAX/GPU if available)
         likelihood_results = {}
         for state_id, obs in enumerate(self.observation_models):
+            # Multi-bin local computes full spatial likelihood (is_local=False)
+            # then adds position kernel afterward
+            effective_is_local = obs.is_local and self.local_position_std is None
+
             likelihood_name = (
                 obs.environment_name,
                 obs.encoding_group,
-                obs.is_local,
+                effective_is_local,
                 obs.is_no_spike,
             )
 
@@ -3480,7 +3877,7 @@ class SortedSpikesDetector(_DetectorBase):
                     position,
                     spike_times,
                     **self.encoding_model_[likelihood_name[:2]],
-                    is_local=obs.is_local,
+                    is_local=effective_is_local,
                 )
                 computed_likelihoods[likelihood_name] = state_id
             else:
@@ -3523,6 +3920,22 @@ class SortedSpikesDetector(_DetectorBase):
                     is_state_bin = state_bin_masks[state_id]
                     log_likelihood = log_likelihood.at[:, is_state_bin].add(
                         env_penalties[env_name]
+                    )
+
+        # Apply local position kernel if configured
+        if self.local_position_std is not None:
+            env_kernels = {}
+            for state_id, obs in enumerate(self.observation_models):
+                if obs.is_local:
+                    env_name = obs.environment_name
+                    if env_name not in env_kernels:
+                        env = self._get_environment_by_name(env_name)
+                        env_kernels[env_name] = self._compute_local_position_kernel(
+                            time, position_time, position, env
+                        )
+                    is_state_bin = state_bin_masks[state_id]
+                    log_likelihood = log_likelihood.at[:, is_state_bin].add(
+                        env_kernels[env_name]
                     )
 
         # Apply missing data mask
@@ -3577,6 +3990,18 @@ class SortedSpikesDetector(_DetectorBase):
         xr.Dataset
             Predicted posterior probabilities.
         """
+        if position is not None and position_time is None:
+            raise ValidationError(
+                "position_time is required when position is provided",
+                expected="position_time array with shape (n_time_position,)",
+                got="None",
+                hint="Provide position_time corresponding to the position samples",
+                example="    results = detector.predict(\n"
+                "        spike_times=spike_times, time=time,\n"
+                "        position=position, position_time=position_time\n"
+                "    )",
+            )
+
         if position is not None:
             position = position[:, np.newaxis] if position.ndim == 1 else position
             nan_position = np.any(np.isnan(position), axis=1)
