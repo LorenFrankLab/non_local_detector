@@ -160,6 +160,51 @@ class TestNonLocalPenaltyTopology:
             f"peak value {penalty_np[0, peak_idx]:.3f}"
         )
 
+    def test_penalty_zero_for_nan_animal_position(self):
+        """Tracking-dropout NaN animal positions produce zero penalty (no spurious firing).
+
+        Without an explicit NaN mask, ``np.searchsorted(nan, ...)`` returns
+        an arbitrary end-of-array bin index, then the distance-matrix
+        lookup returns finite values, and the penalty would fire at some
+        unrelated location on the track. This was a silent scientific bug
+        introduced when the penalty switched from Euclidean to graph
+        distance (Euclidean propagated NaN; graph distance does not).
+        The penalty must return zero for NaN rows.
+        """
+        env = _make_two_arm_track()
+        detector = NonLocalSortedSpikesDetector(
+            environments=[env],
+            non_local_position_penalty=10.0,
+            non_local_penalty_std=5.0,
+        )
+
+        # All-NaN animal position → penalty must be identically zero.
+        time = np.array([0.5])
+        position_time = np.array([0.0, 1.0])
+        animal_position = np.array([[np.nan], [np.nan]])
+
+        penalty = detector._compute_non_local_position_penalty(
+            jnp.array(time),
+            jnp.array(position_time),
+            jnp.array(animal_position),
+            env,
+        )
+        penalty_np = np.asarray(penalty)
+
+        assert np.all(np.isfinite(penalty_np)), (
+            "NaN animal position should not produce non-finite penalty"
+        )
+        np.testing.assert_allclose(
+            penalty_np,
+            0.0,
+            atol=1e-10,
+            err_msg=(
+                "NaN animal position should produce zero penalty (no constraint "
+                f"during tracking dropout), got max |penalty| = "
+                f"{np.max(np.abs(penalty_np)):.4f}"
+            ),
+        )
+
     def test_penalty_zero_when_disabled(self):
         """With non_local_position_penalty=0, penalty is identically zero."""
         env = _make_two_arm_track()

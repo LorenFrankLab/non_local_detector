@@ -511,18 +511,37 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         from non_local_detector.likelihoods.common import get_position_at_time
 
         animal_pos = get_position_at_time(position_time, position, time, environment)
+        animal_pos_arr = np.asarray(animal_pos)
+
+        # Detect NaN animal positions (tracking dropouts). get_bin_ind does
+        # not guard against NaN — np.searchsorted(nan) returns an arbitrary
+        # valid bin index, so a NaN position would produce a finite distance
+        # and thus a spurious penalty at an unrelated bin. Mask those rows
+        # to zero after computing the penalty.
+        if animal_pos_arr.ndim == 1:
+            nan_mask = jnp.isnan(jnp.asarray(animal_pos_arr))
+        else:
+            nan_mask = jnp.any(jnp.isnan(jnp.asarray(animal_pos_arr)), axis=-1)
 
         # Topology-aware distance (graph shortest path when available).
-        dist = environment.get_distances_to_interior_bins(np.asarray(animal_pos))
+        # Replace NaN animal positions with 0 before the lookup to avoid
+        # undefined searchsorted behavior; nan_mask masks those rows below.
+        safe_animal_pos = np.nan_to_num(animal_pos_arr, nan=0.0)
+        dist = environment.get_distances_to_interior_bins(safe_animal_pos)
 
-        # NaN (off-track animal) and inf (unreachable bins) → treat as
-        # infinitely far so the penalty evaluates to zero at those cells,
-        # avoiding NaN propagation into the log-likelihood.
+        # NaN (off-track bin-to-bin lookups) and inf (unreachable bins) →
+        # treat as infinitely far so the penalty evaluates to zero at those
+        # cells, avoiding NaN propagation into the log-likelihood.
         sq_dist = jnp.nan_to_num(jnp.asarray(dist) ** 2, nan=jnp.inf, posinf=jnp.inf)
 
-        return -self.non_local_position_penalty * jnp.exp(
+        penalty = -self.non_local_position_penalty * jnp.exp(
             -0.5 * sq_dist / (self.non_local_penalty_std**2)
         )
+
+        # NaN animal positions produce zero penalty (no constraint during
+        # tracking dropouts) rather than a spurious penalty at a searchsorted-
+        # dependent bin.
+        return jnp.where(nan_mask[:, jnp.newaxis], 0.0, penalty)
 
     def _compute_local_position_kernel(
         self,

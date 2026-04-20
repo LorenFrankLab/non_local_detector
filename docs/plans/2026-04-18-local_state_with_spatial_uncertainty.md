@@ -96,14 +96,20 @@ the codebase — the attribute is always present with a `None` default.
 Add `local_position_std: float | None = None` as a constructor parameter to
 `NonLocalClusterlessDetector` and `NonLocalSortedSpikesDetector`, passing through to super.
 
-**Validation:** Add input validation matching the style of `_validate_penalty_params`:
+**Validation:** Add input validation matching the style of `_validate_penalty_params`.
+Three valid modes: `None` (legacy single-bin), `0.0` (delta kernel — multi-bin with
+one-hot at the animal's bin), `> 0` (Gaussian kernel). Negative values are rejected:
 ```python
-if local_position_std is not None and local_position_std <= 0:
+if local_position_std is not None and local_position_std < 0:
     raise ValidationError(
-        "local_position_std must be positive",
-        expected="float > 0 or None",
+        "local_position_std must be non-negative",
+        expected="float >= 0 or None",
         got=str(local_position_std),
-        hint="Set to None for legacy single-bin local behavior",
+        hint=(
+            "Set to None for legacy single-bin local behavior, "
+            "0.0 for a delta kernel at the animal's bin, or "
+            "a positive value for a Gaussian kernel of that width"
+        ),
     )
 ```
 
@@ -498,7 +504,7 @@ if obs.is_no_spike or (obs.is_local and self.local_position_std is None):
 - Legacy behavior (`local_position_std=None`) produces identical results to current code
 - Multi-bin local + non-local states produce valid combined posteriors
 - Transition matrices are properly constructed (stochastic, correct shape)
-- Validation rejects `local_position_std <= 0`
+- Validation rejects `local_position_std < 0`; accepts `None`, `0.0` (delta kernel), and `> 0` (Gaussian kernel)
 
 #### 6c. Backward compatibility tests
 
