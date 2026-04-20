@@ -536,12 +536,20 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Dispatches to one of two paths based on ``self.local_position_std``:
 
         - ``== 0``: delta kernel. ``log(n_bins)`` at the animal's bin,
-          ``-inf`` elsewhere (one-hot). Off-track / NaN positions fall
-          back to a uniform kernel.
+          ``-inf`` elsewhere (one-hot).
         - ``> 0``: Gaussian kernel over shortest-path track-graph
           distance (Euclidean fallback when no graph is fitted), then
           normalized so ``exp(log_kernel)`` sums to ``n_interior_bins``
-          per time step.
+          per time step. Unreachable bins on disconnected graph
+          components get zero probability naturally via ``exp(-inf)``.
+
+        Gap-bin positions (e.g. positions exactly on an arm-boundary
+        edge of a linearized track) are snapped to the nearest interior
+        bin by :meth:`Environment.get_bin_ind`, so the kernel is always
+        defined on a real interior bin.
+
+        NaN animal positions (tracking dropouts) fall back to a uniform
+        kernel.
 
         Both paths satisfy the invariant ``exp(log_kernel).sum(axis=1)
         == n_bins``. Combined with the multi-bin local state's
@@ -585,50 +593,43 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         else:
             nan_mask = jnp.any(jnp.isnan(animal_pos), axis=-1)
 
-        # Delta kernel path: σ=0 means the Local state is concentrated on
-        # the single bin containing the animal. Emits log(n_bins) at that
-        # bin and -inf elsewhere, so after the multi-bin state's 1/n_bins
-        # continuous IC, the total Local mass equals p_local × P(spikes |
-        # animal_bin_center). Off-track / NaN animal positions fall back
-        # to the uniform kernel (same as the Gaussian path).
+        # Delta kernel path: σ=0 concentrates the Local state on the
+        # single bin containing the animal. Emits log(n_bins) at that bin
+        # and -inf elsewhere, so after the multi-bin state's 1/n_bins
+        # uniform continuous IC, the total Local mass equals p_local ×
+        # P(spikes | animal_bin_center). Environment.get_bin_ind snaps
+        # gap-bin assignments to the nearest interior bin, so the only
+        # remaining case needing uniform fallback is a truly NaN animal
+        # position (tracking dropout).
         if self.local_position_std == 0:
             interior_bin_indices = np.where(environment.is_track_interior_.ravel())[0]
             # Replace NaN animal positions with 0 before get_bin_ind (it
-            # has no NaN guard); the uniform_mask below will mask those
-            # rows regardless of the placeholder bin value used here.
+            # has no NaN guard); nan_mask below masks those rows.
             safe_animal_pos = np.nan_to_num(np.asarray(animal_pos), nan=0.0)
             animal_bin_inds = environment.get_bin_ind(safe_animal_pos)
             is_animal_bin = jnp.asarray(
                 animal_bin_inds[:, np.newaxis] == interior_bin_indices[np.newaxis, :]
             )
-            # Off-track positions (animal bin not in interior) → no match
-            # in any column → all-False row. Fall back to uniform.
-            off_track_mask = ~is_animal_bin.any(axis=-1)
-            uniform_mask = nan_mask | off_track_mask
             log_kernel = jnp.where(is_animal_bin, log_n_bins, -jnp.inf)
-            log_kernel = jnp.where(uniform_mask[:, jnp.newaxis], 0.0, log_kernel)
+            log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
             return log_kernel
 
         # Gaussian kernel path (σ > 0). Uses topology-aware distance via
-        # Environment.get_distances_to_interior_bins().
-
-        # Ask the environment for distances to interior bins.
-        # Off-track positions yield NaN rows; unreachable bins yield inf.
+        # Environment.get_distances_to_interior_bins(). After the
+        # get_bin_ind snap, the animal bin is always interior, so the
+        # distance-matrix row is always finite (no NaN rows). Unreachable
+        # bins on disconnected graph components stay as inf, which through
+        # exp(-0.5 * inf² / σ²) naturally yields zero probability there —
+        # the Gaussian concentrates on the reachable interior.
         dist = environment.get_distances_to_interior_bins(np.asarray(animal_pos))
         sq_dist = jnp.asarray(dist) ** 2
 
-        # Detect off-track positions (NaN or inf rows from track graph path).
-        # Uses ~isfinite to catch both NaN (off-track bins) and inf
-        # (unreachable nodes on disconnected graph components).
-        off_track_mask = jnp.any(~jnp.isfinite(sq_dist), axis=-1)
-        uniform_mask = nan_mask | off_track_mask
-
-        # Replace non-finite distances with 0 before computing kernel to
-        # avoid NaN/inf propagation through logsumexp. The uniform_mask
-        # will replace these rows with the true uniform kernel afterward.
-        sq_dist = jnp.nan_to_num(sq_dist, nan=0.0, posinf=0.0)
-
-        log_kernel = -0.5 * sq_dist / (self.local_position_std**2)
+        # Compute log-kernel with -inf at unreachable bins. jnp.where
+        # avoids inf/NaN propagation through the arithmetic ops below.
+        reachable = jnp.isfinite(sq_dist)
+        log_kernel = jnp.where(
+            reachable, -0.5 * sq_dist / (self.local_position_std**2), -jnp.inf
+        )
         # Normalize to sum to n_bins (not 1) per time step. This compensates
         # for the 1/n_bins uniform continuous IC of the multi-bin local state
         # so the effective per-bin prior matches the kernel itself. Without
@@ -639,9 +640,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             + log_n_bins
         )
 
-        # NaN/off-track positions get a uniform (flat) kernel. Uniform means
-        # each bin has kernel value 1 (so exp sums to n_bins), hence log = 0.
-        log_kernel = jnp.where(uniform_mask[:, jnp.newaxis], 0.0, log_kernel)
+        # NaN animal positions (tracking dropout) fall back to a uniform
+        # kernel: each bin's exp value is 1, so log_kernel = 0 per bin.
+        log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
 
         return log_kernel
 

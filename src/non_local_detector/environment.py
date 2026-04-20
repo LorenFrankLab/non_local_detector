@@ -597,7 +597,11 @@ class Environment:
     def get_bin_ind(self, sample: np.ndarray) -> np.ndarray:
         """Find the indices of the bins to which each value in input array belongs.
 
-        Uses the fitted grid edges (`self.edges_`).
+        Uses the fitted grid edges (`self.edges_`). When
+        ``is_track_interior_`` is available, gap-bin assignments (positions
+        that would otherwise land in a structural non-interior bin, e.g. on
+        an arm-boundary edge of a linearized track) are snapped to the
+        nearest interior bin by raw position-coordinate distance.
 
         Parameters
         ----------
@@ -607,7 +611,9 @@ class Environment:
         Returns
         -------
         bin_inds : np.ndarray, shape (n_time,)
-            Flat index of the bin for each data point in `sample`.
+            Flat index of the bin for each data point in `sample`. When
+            ``is_track_interior_`` is set, the returned index is always an
+            interior bin.
         """
         if not self._is_fitted:
             raise ConfigurationError(
@@ -650,10 +656,37 @@ class Environment:
             # Shift these points one bin to the left.
             Ncount[i][on_edge] -= 1
 
-        return np.ravel_multi_index(
-            Ncount,
-            nbin,
-        )
+        bin_inds = np.ravel_multi_index(Ncount, nbin)
+
+        # Snap gap-bin assignments to nearest interior bin. Gap bins exist
+        # as structural indexing artifacts (edge_spacing > 0 on a linearized
+        # track, or holes in an occupancy-inferred interior). No valid
+        # position belongs in them: positions at an arm-boundary edge land
+        # there via searchsorted(side="right") tie-breaking, and positions
+        # truly off-track should snap to the closest real bin.
+        if self.is_track_interior_ is not None and self.place_bin_centers_ is not None:
+            is_interior = self.is_track_interior_.ravel()
+            needs_snap = ~is_interior[bin_inds]
+            if needs_snap.any():
+                interior_bin_indices = np.where(is_interior)[0]
+                # Degenerate environment with no interior bins: skip snap
+                # and return raw binning rather than crashing on argmin over
+                # an empty axis.
+                if len(interior_bin_indices) > 0:
+                    interior_centers = self.place_bin_centers_[interior_bin_indices]
+                    pos_to_snap = sample[needs_snap]
+                    # Broadcasted Euclidean distance:
+                    # (n_snap, n_interior, n_dim) -> (n_snap, n_interior)
+                    dists = np.linalg.norm(
+                        pos_to_snap[:, np.newaxis, :]
+                        - interior_centers[np.newaxis, :, :],
+                        axis=-1,
+                    )
+                    bin_inds[needs_snap] = interior_bin_indices[
+                        np.argmin(dists, axis=1)
+                    ]
+
+        return bin_inds
 
     def get_manifold_distances(
         self, position1: np.ndarray, position2: np.ndarray
@@ -716,7 +749,10 @@ class Environment:
             node_ids2 = bin_to_node[bin_ind2]
             distances = np.full(node_ids1.shape, np.inf, dtype=float)
             for i, (n1, n2) in enumerate(zip(node_ids1, node_ids2, strict=True)):
-                # node_id == -1 marks bins that are off-track (gap bins).
+                # node_id == -1 marks gap bins. After the get_bin_ind snap,
+                # this case is unreachable for envs with is_track_interior_
+                # set, but retained for backward compatibility with
+                # partially-constructed or deserialized envs.
                 if n1 == -1 or n2 == -1:
                     continue
                 try:
@@ -736,9 +772,10 @@ class Environment:
         along the track manifold when a track graph is available
         (uses a lazily-built dense distance matrix cached as
         ``_bin_distance_matrix_`` for efficient ``np.ix_`` lookup), or
-        Euclidean distances otherwise. Off-track positions (mapping to
-        bins with ``node_id == -1``) produce NaN rows so callers can
-        apply a uniform fallback.
+        Euclidean distances otherwise. Positions that would otherwise
+        land in gap bins are snapped to the nearest interior bin by
+        :meth:`get_bin_ind`, so no NaN rows are produced for envs with
+        ``is_track_interior_`` set.
 
         This is the all-pairs analogue of :meth:`get_manifold_distances`:
         rather than pairwise distances between matched position arrays,

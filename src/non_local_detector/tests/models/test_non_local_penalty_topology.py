@@ -115,8 +115,14 @@ class TestNonLocalPenaltyTopology:
             penalty_np[0, animal_bin_idx]
         ), "Penalty at arm-1 bin should be much weaker than at animal bin"
 
-    def test_penalty_finite_when_animal_off_track(self):
-        """Off-track animal position produces finite (zero) penalty, not NaN."""
+    def test_penalty_finite_when_animal_in_gap_bin(self):
+        """Gap-bin animal position snaps to nearest interior; penalty is finite.
+
+        Environment.get_bin_ind snaps gap-bin positions to the nearest
+        interior bin. The penalty then fires as a Gaussian centered on
+        that snapped bin (suppressing non-local likelihood there), rather
+        than zeroing out as it did before the snap.
+        """
         env = _make_two_arm_track()
         detector = NonLocalSortedSpikesDetector(
             environments=[env],
@@ -124,10 +130,8 @@ class TestNonLocalPenaltyTopology:
             non_local_penalty_std=5.0,
         )
 
-        # Find a gap-bin center to use as the "off-track" animal position
         is_interior = env.is_track_interior_.ravel()
         gap_bins = np.where(~is_interior)[0]
-        assert len(gap_bins) > 0, "Environment should have gap bins"
         gap_center = env.place_bin_centers_[gap_bins[0], 0]
 
         time = np.array([0.5])
@@ -142,12 +146,19 @@ class TestNonLocalPenaltyTopology:
         )
         penalty_np = np.asarray(penalty)
 
-        # No NaN or inf
+        # No NaN or inf (no uniform fallback needed post-snap).
         assert np.all(np.isfinite(penalty_np)), (
-            "Off-track animal should not produce NaN/inf penalty"
+            f"Snapped gap-bin animal should produce finite penalty, got {penalty_np}"
         )
-        # All zero (exp(-inf) == 0)
-        np.testing.assert_allclose(penalty_np, 0.0, atol=1e-10)
+        # Penalty peaks (most negative) at the snapped interior bin. For
+        # mid-gap input, the snap chooses one of the two flanking arm-end
+        # interior bins. Peak magnitude should approach the configured
+        # non_local_position_penalty value.
+        peak_idx = int(np.argmin(penalty_np[0]))
+        assert penalty_np[0, peak_idx] < -5.0, (
+            f"Expected a strong peak near the snapped interior bin, got "
+            f"peak value {penalty_np[0, peak_idx]:.3f}"
+        )
 
     def test_penalty_zero_when_disabled(self):
         """With non_local_position_penalty=0, penalty is identically zero."""

@@ -461,15 +461,20 @@ class TestComputeLocalPositionKernel:
         peak_idx = int(np.argmax(log_kernel_np[0]))
         assert abs(bin_centers[peak_idx] - 50.0) < 10.0
 
-    def test_kernel_off_track_produces_uniform(self):
-        """Off-track animal position (gap bin) produces uniform kernel."""
+    def test_gaussian_kernel_at_arm_junction_centers_on_nearest_interior(self):
+        """Animal at an arm-end linear coord snaps, kernel centers on arm's last bin.
+
+        get_linearized_position places an animal at an arm endpoint at the
+        arm's linear length, which equals a gap-bin edge. Prior to the
+        get_bin_ind snap, this fell into the gap bin and triggered a uniform
+        fallback. Now the snap places it on the arm's last interior bin,
+        and the Gaussian concentrates there (not a flat row).
+        """
         import jax.numpy as jnp
         import networkx as nx
 
         from non_local_detector.environment import Environment
 
-        # Create a two-segment track with a gap between them.
-        # edge_spacing > 0 creates gap bins with node_id == -1.
         track_graph = nx.Graph()
         track_graph.add_node(0, pos=(0.0, 0.0))
         track_graph.add_node(1, pos=(50.0, 0.0))
@@ -492,10 +497,14 @@ class TestComputeLocalPositionKernel:
         detector.environments = (env,)
         detector.initialize_state_index()
 
-        # Place animal in the gap between the two segments
+        # Position exactly on the arm-A-end edge (the bug case).
+        is_interior = env.is_track_interior_.ravel()
+        first_gap = int(np.where(~is_interior)[0][0])
+        arm_end = float(env.edges_[0][first_gap])
+
         time = np.array([0.5])
         position_time = np.array([0.0, 1.0])
-        animal_position = np.array([[55.0], [55.0]])
+        animal_position = np.array([[arm_end], [arm_end]])
 
         log_kernel = detector._compute_local_position_kernel(
             jnp.array(time),
@@ -503,19 +512,35 @@ class TestComputeLocalPositionKernel:
             jnp.array(animal_position),
             env,
         )
+        lk = np.asarray(log_kernel)
 
-        log_kernel_np = np.asarray(log_kernel)
-        # Should be finite (no NaN — uniform fallback applied)
-        assert np.all(np.isfinite(log_kernel_np)), (
-            "Off-track position produced non-finite kernel"
+        # Kernel must NOT be uniform — snap brings the Gaussian to arm A's
+        # last interior bin, so adjacent-arm-A bins are weighted more than
+        # far-arm-A bins, and unreachable arm-B bins get zero probability.
+        assert not np.allclose(lk[0], lk[0, 0], atol=1e-3), (
+            "Kernel is still uniform after snap fix. Expected a Gaussian "
+            f"centered on the snapped bin. Got: {lk[0]}"
         )
-        # Should be uniform (all equal, all 0.0 since exp=1 per bin)
-        np.testing.assert_allclose(log_kernel_np[0], log_kernel_np[0, 0], atol=1e-6)
-        # Should sum to n_interior_bins (scaled normalization)
-        is_interior = env.is_track_interior_.ravel()
-        n_interior = int(is_interior.sum())
-        np.testing.assert_allclose(
-            np.exp(log_kernel_np[0]).sum(), n_interior, rtol=1e-5
+        # Peak should be at the arm-A side of the gap (the snapped bin).
+        interior_bin_indices = np.where(is_interior)[0]
+        arm_a_last_interior = int(
+            interior_bin_indices[np.sum(interior_bin_indices < first_gap) - 1]
+        )
+        # Among interior-only indexing (kernel is shape (n_time, n_interior)):
+        n_arm_a_interior = int(np.sum(interior_bin_indices < first_gap))
+        expected_peak = n_arm_a_interior - 1
+        peak = int(np.argmax(lk[0]))
+        assert peak == expected_peak, (
+            f"Expected peak at interior-index {expected_peak} (arm-A last bin "
+            f"{arm_a_last_interior}), got peak at {peak}"
+        )
+        # Arm-B interior bins are unreachable from the snapped arm-A bin
+        # (the two arms are a disconnected graph). They must get -inf
+        # log-probability, so exp() = 0 — no Gaussian bleed across the gap.
+        arm_b_log_kernel = lk[0, n_arm_a_interior:]
+        assert np.all(np.isneginf(arm_b_log_kernel)), (
+            "Arm-B bins should be unreachable from arm A; expected -inf "
+            f"log-probability, got: {arm_b_log_kernel}"
         )
 
 
@@ -637,15 +662,19 @@ class TestDeltaKernel:
         )
         np.testing.assert_allclose(log_kernel_np[0], 0.0, atol=1e-6)
 
-    def test_off_track_position_produces_uniform_fallback(self):
-        """Animal in a gap bin (off-track) → uniform kernel fallback."""
+    def test_delta_kernel_gap_position_snaps_to_nearest_interior(self):
+        """Animal in a gap bin snaps to nearest interior bin via get_bin_ind.
+
+        Prior to the get_bin_ind snap fix, positions landing in gap bins
+        (e.g. exactly on an arm-boundary edge, or in the middle of a gap)
+        produced a uniform fallback. Now they snap to the nearest interior
+        bin by position distance, so the delta fires at that snapped bin.
+        """
         import jax.numpy as jnp
         import networkx as nx
 
         from non_local_detector.environment import Environment
 
-        # Two-segment track with a gap between them (edge_spacing > 0
-        # creates gap bins with node_id == -1 on the 1D track graph).
         g = nx.Graph()
         g.add_node(0, pos=(0.0, 0.0))
         g.add_node(1, pos=(50.0, 0.0))
@@ -670,10 +699,8 @@ class TestDeltaKernel:
         detector.environments = (env,)
         detector.initialize_state_index()
 
-        # Find a gap-bin center to use as the "off-track" animal position
         is_interior = env.is_track_interior_.ravel()
         gap_bins = np.where(~is_interior)[0]
-        assert len(gap_bins) > 0
         gap_center = float(env.place_bin_centers_[gap_bins[0], 0])
 
         time = np.array([0.5])
@@ -686,13 +713,85 @@ class TestDeltaKernel:
             jnp.array(animal_position),
             env,
         )
-        log_kernel_np = np.asarray(log_kernel)
+        lk = np.asarray(log_kernel)
 
-        assert np.all(np.isfinite(log_kernel_np)), (
-            "Off-track fallback must produce finite kernel"
+        # Delta kernel: exactly one finite entry (the snapped interior bin),
+        # all others -inf. Not uniform.
+        assert np.isfinite(lk[0]).sum() == 1, (
+            f"Expected exactly one finite entry (delta), got "
+            f"{int(np.isfinite(lk[0]).sum())}. Row: {lk[0]}"
         )
-        # Uniform: all zeros
-        np.testing.assert_allclose(log_kernel_np[0], 0.0, atol=1e-6)
+        # The snapped bin should be the arm-A last interior bin (closer
+        # than arm-B first interior bin when the gap is wide and place_bin_size
+        # is small — here arm-A-last and arm-B-first are equidistant from the
+        # gap center, so we just assert the finite entry is one of them).
+        finite_idx = int(np.where(np.isfinite(lk[0]))[0][0])
+        interior_centers = env.place_bin_centers_[is_interior, 0]
+        # Distance from gap center to the snapped bin must be <= distance to
+        # any other interior bin.
+        dist_to_snapped = abs(interior_centers[finite_idx] - gap_center)
+        assert dist_to_snapped == np.min(np.abs(interior_centers - gap_center)), (
+            f"Snap didn't pick the nearest interior bin. "
+            f"Snapped: {interior_centers[finite_idx]}, gap center: {gap_center}"
+        )
+
+    def test_delta_kernel_at_arm_end_edge(self):
+        """The exact float-equality bug case: animal on arm-A end edge snaps to arm A."""
+        import jax.numpy as jnp
+        import networkx as nx
+
+        from non_local_detector.environment import Environment
+
+        g = nx.Graph()
+        g.add_node(0, pos=(0.0, 0.0))
+        g.add_node(1, pos=(50.0, 0.0))
+        g.add_node(2, pos=(60.0, 0.0))
+        g.add_node(3, pos=(110.0, 0.0))
+        g.add_edge(0, 1, distance=50.0, edge_id=0)
+        g.add_edge(2, 3, distance=50.0, edge_id=1)
+
+        env = Environment(
+            environment_name="",
+            place_bin_size=5.0,
+            track_graph=g,
+            edge_order=[(0, 1), (2, 3)],
+            edge_spacing=10.0,
+        )
+        position_1d = np.concatenate(
+            [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
+        )
+        env = env.fit_place_grid(position_1d, infer_track_interior=True)
+
+        detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
+        detector.environments = (env,)
+        detector.initialize_state_index()
+
+        # Use the exact arm-A-end edge value (the real-data bug case).
+        is_interior = env.is_track_interior_.ravel()
+        first_gap = int(np.where(~is_interior)[0][0])
+        arm_end = float(env.edges_[0][first_gap])
+
+        time = np.array([0.5])
+        position_time = np.array([0.0, 1.0])
+        animal_position = np.array([[arm_end], [arm_end]])
+
+        log_kernel = detector._compute_local_position_kernel(
+            jnp.array(time),
+            jnp.array(position_time),
+            jnp.array(animal_position),
+            env,
+        )
+        lk = np.asarray(log_kernel)
+
+        # Exactly one finite entry at the arm-A last interior bin.
+        assert np.isfinite(lk[0]).sum() == 1
+        interior_bin_indices = np.where(is_interior)[0]
+        expected_interior_idx = int(np.sum(interior_bin_indices < first_gap) - 1)
+        finite_idx = int(np.where(np.isfinite(lk[0]))[0][0])
+        assert finite_idx == expected_interior_idx, (
+            f"Expected snap to arm-A last interior bin (index "
+            f"{expected_interior_idx}), got {finite_idx}"
+        )
 
     def test_kernel_with_track_graph(self):
         """Delta kernel works on an Environment with a track_graph."""

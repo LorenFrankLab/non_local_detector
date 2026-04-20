@@ -259,13 +259,16 @@ def test_get_distances_to_interior_bins_euclidean_fallback():
     np.testing.assert_allclose(distances[0], expected, atol=1e-10)
 
 
-def test_get_distances_to_interior_bins_off_track_returns_nan():
-    """Off-track positions (gap bins, node_id == -1) return NaN rows.
+def test_get_distances_to_interior_bins_gap_position_snaps_to_nearest_interior():
+    """Gap-position inputs snap to nearest interior bin via get_bin_ind.
 
     A two-segment track with ``edge_spacing > 0`` creates gap bins
-    between the segments in the linearized grid. Animal positions that
-    linearize into those gap bins yield NaN distance rows so callers
-    can apply a uniform fallback.
+    between the segments in the linearized grid. Positions that would
+    otherwise land in a gap bin (mid-gap or on an arm-boundary edge)
+    are snapped to the nearest interior bin by get_bin_ind, so the
+    distance lookup row is computed from that snapped interior bin.
+    Distances to unreachable interior bins on disconnected arms remain
+    as +inf (graph disconnection), but no NaN row is produced.
     """
     g = nx.Graph()
     g.add_node(0, pos=(0.0, 0.0))
@@ -287,13 +290,18 @@ def test_get_distances_to_interior_bins_off_track_returns_nan():
     )
     env = env.fit_place_grid(position_1d, infer_track_interior=True)
 
-    # Find a bin that is off-track (gap) and query its center position
     is_interior = env.is_track_interior_.ravel()
     gap_bins = np.where(~is_interior)[0]
-    assert len(gap_bins) > 0, "Environment should have at least one gap bin"
+    assert len(gap_bins) > 0
     gap_center = env.place_bin_centers_[gap_bins[0]]
 
     distances = env.get_distances_to_interior_bins(gap_center[np.newaxis])
-    assert np.all(np.isnan(distances[0])), (
-        "Off-track animal position should produce NaN distance row"
+    # No NaN rows: get_bin_ind snaps to nearest interior before lookup.
+    assert not np.any(np.isnan(distances[0])), (
+        "Gap-position input must snap to nearest interior bin, not "
+        f"produce NaN distances. Got: {distances[0]}"
+    )
+    # At least one distance is zero (from the snapped bin to itself).
+    assert np.any(distances[0] == 0.0), (
+        f"Expected a zero self-distance from the snapped bin. Got: {distances[0]}"
     )
