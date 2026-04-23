@@ -17,6 +17,108 @@ from non_local_detector.likelihoods.common import (
 )
 
 
+def _estimate_predict_peak_bytes(
+    *,
+    n_time: int,
+    n_state_bins: int,
+    n_pos: int,
+    n_encoding_spikes_max: int,
+    n_decoding_spikes_max: int,
+    n_waveform_features: int = 0,  # noqa: ARG001 — reserved for future tiling knobs
+    n_chunks: int = 1,
+    block_size: int = 100,
+    enc_tile_size: int | None = None,
+    pos_tile_size: int | None = None,
+    dtype_bytes: int = 4,
+) -> int:
+    """Estimate peak GPU bytes for a clusterless-KDE predict call.
+
+    Models the dominant tensors live simultaneously at peak memory in
+    the serial-per-electrode loop inside
+    :func:`predict_clusterless_kde_log_likelihood`:
+
+    - ``likelihood_slab``: ``(chunk_size, n_state_bins)`` — per-chunk
+      accumulator summed across electrodes.
+    - ``position_distance``: ``(enc_dim, pos_dim)`` — per-electrode,
+      live during one electrode's processing.
+    - ``per_electrode_output``: ``(n_dec_chunk_max, pos_dim)`` — the
+      log joint mark intensity for one electrode.
+    - ``mark_kernel_tmp``: ``(enc_dim, block_size)`` — per-block
+      decoding-spike vs. all-encoding kernel.
+    - ``block_output_tmp``: ``(block_size, pos_dim)`` — per-block
+      output fragment.
+    - ``transition``: ``(n_state_bins, n_state_bins)`` — persistent.
+    - ``fixed_scratch``: 2 GB for XLA autotuning workspace + transient
+      scratch (empirical; refined in Task 6 of the streaming plan).
+
+    Then applies a multiplicative safety factor of 2.0 to absorb model
+    imprecision around JAX/XLA intermediate allocations.  Observed
+    peak at 22-tet/2D HPC was ~8× the bare likelihood slab (33 GB vs
+    4.1 GB); this model with the 2× multiplier captures the
+    non-trivial tensors explicitly and uses the multiplier for
+    untracked transients.
+
+    Parameters
+    ----------
+    n_time
+        Total decoding time bins (pre-chunking).
+    n_state_bins
+        Interior state bin count — typically
+        ``detector.is_track_interior_state_bins_.sum()``.
+    n_pos
+        Interior position bin count.
+    n_encoding_spikes_max
+        Max encoding-spike count over electrodes.
+    n_decoding_spikes_max
+        Max decoding-spike count over electrodes across the full time
+        window.
+    n_waveform_features
+        Waveform feature dim.  Reserved for future tiling knobs; not
+        used by the current model.
+    n_chunks
+        Streaming chunk count (Task 1 knob).
+    block_size
+        Decoding-spike block-loop size.
+    enc_tile_size
+        Encoding-spike tile size.  None disables encoding tiling.
+    pos_tile_size
+        Position-bin tile size.  None disables position tiling.
+    dtype_bytes
+        Bytes per element.  4 for fp32 (default), 8 for fp64.
+
+    Returns
+    -------
+    int
+        Estimated peak bytes.
+    """
+    chunk_size = (n_time + n_chunks - 1) // n_chunks
+    n_dec_per_chunk_max = (n_decoding_spikes_max + n_chunks - 1) // n_chunks
+    enc_dim = (
+        enc_tile_size if enc_tile_size is not None else n_encoding_spikes_max
+    )
+    pos_dim = pos_tile_size if pos_tile_size is not None else n_pos
+
+    likelihood_slab = chunk_size * n_state_bins * dtype_bytes
+    position_distance = enc_dim * pos_dim * dtype_bytes
+    per_electrode_output = n_dec_per_chunk_max * pos_dim * dtype_bytes
+    mark_kernel_tmp = enc_dim * block_size * dtype_bytes
+    block_output_tmp = block_size * pos_dim * dtype_bytes
+    transition = n_state_bins * n_state_bins * dtype_bytes
+    fixed_scratch = 2 * 2**30  # 2 GB empirical XLA scratch
+
+    per_electrode_live = (
+        position_distance
+        + per_electrode_output
+        + mark_kernel_tmp
+        + block_output_tmp
+    )
+    persistent = likelihood_slab + transition + fixed_scratch
+
+    # Safety multiplier absorbs XLA/autotuning overhead unmodeled above.
+    _SAFETY_MULTIPLIER = 2.0
+    return int(_SAFETY_MULTIPLIER * (per_electrode_live + persistent))
+
+
 def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:

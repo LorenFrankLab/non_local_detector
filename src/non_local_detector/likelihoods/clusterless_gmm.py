@@ -28,6 +28,64 @@ from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 # ---------------------------------------------------------------------
 
 
+def _estimate_predict_peak_bytes(
+    *,
+    n_time: int,
+    n_state_bins: int,
+    n_pos: int,
+    n_gmm_components: int = 16,
+    n_encoding_spikes_max: int = 0,  # noqa: ARG001
+    n_decoding_spikes_max: int = 0,
+    n_waveform_features: int = 4,
+    n_chunks: int = 1,
+    block_size: int = 100,
+    enc_tile_size: int | None = None,  # noqa: ARG001 — not supported on GMM path
+    pos_tile_size: int | None = None,
+    dtype_bytes: int = 4,
+) -> int:
+    """Estimate peak GPU bytes for a clusterless-GMM predict call (stub).
+
+    GMM path evaluates a multivariate Gaussian mixture per electrode for
+    each decoding spike.  Conservative model: treat the GMM as if it had
+    ``n_gmm_components`` virtual "encoding spikes" per electrode, then
+    delegate to the clusterless-KDE shape model.
+
+    Refinement deferred — GMM is rarely used in production and its
+    memory profile hasn't been benchmarked.  The numbers returned here
+    over-estimate peak relative to the real path, which is safe for
+    auto-selection (auto picks more-conservative knobs than necessary).
+
+    Parameters
+    ----------
+    n_gmm_components
+        GMM mixture components per electrode.  Default 16 = typical.
+    Other args
+        See :func:`clusterless_kde._estimate_predict_peak_bytes`.
+
+    Returns
+    -------
+    int
+        Estimated peak bytes.
+    """
+    from non_local_detector.likelihoods.clusterless_kde import (
+        _estimate_predict_peak_bytes as _kde_estimate,
+    )
+
+    return _kde_estimate(
+        n_time=n_time,
+        n_state_bins=n_state_bins,
+        n_pos=n_pos,
+        n_encoding_spikes_max=n_gmm_components,
+        n_decoding_spikes_max=n_decoding_spikes_max,
+        n_waveform_features=n_waveform_features,
+        n_chunks=n_chunks,
+        block_size=block_size,
+        enc_tile_size=None,
+        pos_tile_size=pos_tile_size,
+        dtype_bytes=dtype_bytes,
+    )
+
+
 def _as_jnp(x) -> jnp.ndarray:
     """Convert input to JAX array if not already.
 
