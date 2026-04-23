@@ -1338,6 +1338,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         log_likelihoods: np.ndarray | None = None,
         cache_likelihood: bool = True,
         n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
         discrete_state_transitions: np.ndarray | None = None,
     ) -> tuple[
         np.ndarray,
@@ -1395,8 +1396,25 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # Must happen before the cache-disable check below so that
         # caching is correctly disabled when the heuristic picks >1.
         n_state_bins = int(self.is_track_interior_state_bins_.sum())
+        # ``memory_budget`` overrides the device-memory query in
+        # ``_resolve_n_chunks``.  ``memory_budget=None`` means "don't auto";
+        # ``"auto"`` queries the device (same as default).  An int is a
+        # byte budget, useful to simulate smaller GPUs for testing or to
+        # reserve headroom on shared GPUs.
+        if memory_budget == "auto":
+            memory_budget_bytes: int | None = None  # defer to device query
+        elif memory_budget is None:
+            # Disable auto entirely: force n_chunks to pass through.
+            if not isinstance(n_chunks, int):
+                n_chunks = 1
+            memory_budget_bytes = None
+        else:
+            memory_budget_bytes = int(memory_budget)
         n_chunks = _resolve_n_chunks(
-            n_chunks, n_time=len(time), n_state_bins=n_state_bins
+            n_chunks,
+            n_time=len(time),
+            n_state_bins=n_state_bins,
+            memory_budget_bytes=memory_budget_bytes,
         )
         if n_chunks > 1:
             logger.info(
@@ -1500,6 +1518,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
@@ -1664,6 +1683,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 cache_likelihood=cache_likelihood,
                 log_likelihoods=getattr(self, "log_likelihood_", None),
                 n_chunks=n_chunks,
+                memory_budget=memory_budget,
             )
             # Maximization step
             logger.info("Maximization step...")
@@ -1840,6 +1860,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         log_likelihood_args: tuple | None = None,
         is_missing: np.ndarray | None = None,
         n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
     ) -> np.ndarray:
         """Find the most likely sequence of states.
 
@@ -2757,6 +2778,7 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         cache_likelihood: bool = False,
         n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         save_causal_posterior_to_results: bool | None = None,
@@ -2963,6 +2985,7 @@ class ClusterlessDetector(_DetectorBase):
             is_missing=is_missing,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
+            memory_budget=memory_budget,
             discrete_state_transitions=predicted_transitions,
         )
 
@@ -3012,6 +3035,7 @@ class ClusterlessDetector(_DetectorBase):
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
@@ -3142,6 +3166,7 @@ class ClusterlessDetector(_DetectorBase):
         time: np.ndarray,
         is_missing: np.ndarray | None = None,
         n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
     ) -> pd.DataFrame:
         """Find the most likely sequence of states.
 
@@ -3640,6 +3665,7 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         cache_likelihood: bool = False,
         n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         save_causal_posterior_to_results: bool | None = None,
@@ -3775,6 +3801,7 @@ class SortedSpikesDetector(_DetectorBase):
             is_missing=is_missing,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
+            memory_budget=memory_budget,
             discrete_state_transitions=predicted_transitions,
         )
 
@@ -3823,6 +3850,7 @@ class SortedSpikesDetector(_DetectorBase):
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
         n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
@@ -3947,6 +3975,7 @@ class SortedSpikesDetector(_DetectorBase):
         time: np.ndarray,
         is_missing: np.ndarray | None = None,
         n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
     ) -> pd.DataFrame:
         """Find the most likely sequence of states.
 

@@ -166,6 +166,34 @@ class TestStreamingPredictParity:
             err_msg="clusterless n_chunks='auto' drifts from n_chunks=1",
         )
 
+    @pytest.mark.integration
+    def test_clusterless_memory_budget_int_matches_unchunked(self, clusterless_fitted):
+        """Explicit ``memory_budget=<int>`` with a small budget forces
+        multiple chunks; output still matches unchunked."""
+        detector, predict_kwargs = clusterless_fitted
+        r1 = detector.predict(**predict_kwargs, n_chunks=1)
+        # Budget of 1 MB forces maximum chunking via _resolve_n_chunks.
+        r_budget = detector.predict(**predict_kwargs, memory_budget=1_000_000)
+        np.testing.assert_allclose(
+            r_budget.acausal_posterior.values,
+            r1.acausal_posterior.values,
+            **_TOL,
+            err_msg="memory_budget=<int> drifts from n_chunks=1",
+        )
+
+    @pytest.mark.integration
+    def test_clusterless_memory_budget_none_disables_auto(self, clusterless_fitted):
+        """``memory_budget=None`` falls back to no chunking (explicit opt-out)."""
+        detector, predict_kwargs = clusterless_fitted
+        r_none = detector.predict(**predict_kwargs, memory_budget=None)
+        r_nc1 = detector.predict(**predict_kwargs, n_chunks=1)
+        np.testing.assert_allclose(
+            r_none.acausal_posterior.values,
+            r_nc1.acausal_posterior.values,
+            **_TOL,
+            err_msg="memory_budget=None should match n_chunks=1",
+        )
+
 
 class TestReturnOutputsStreamingGuard:
     """``return_outputs='log_likelihood'`` + streaming must raise, not silently
