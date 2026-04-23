@@ -41,7 +41,10 @@ from non_local_detector.likelihoods import (
     predict_no_spike_log_likelihood,
 )
 from non_local_detector.observation_models import ObservationModel
-from non_local_detector.streaming import _resolve_n_chunks
+from non_local_detector.streaming import (
+    _resolve_n_chunks,
+    auto_select_predict_memory_knobs,
+)
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -54,6 +57,26 @@ from non_local_detector.types import (
 
 logger = getLogger(__name__)
 sklearn.set_config(print_changed_only=False)
+
+
+def _query_effective_device_budget_bytes() -> int | None:
+    """Return ``jax.devices()[0].memory_stats()['bytes_limit']`` or None.
+
+    Lazy JAX import (keeps module-import cost low).  Used by ``_predict``
+    when the caller passed ``memory_budget="auto"`` — we resolve at the
+    call site rather than eagerly during import.
+    """
+    try:
+        import jax
+    except ImportError:
+        return None
+    try:
+        dev = jax.devices()[0]
+        stats = dev.memory_stats() or {}
+        limit = int(stats.get("bytes_limit", 0))
+        return limit or None
+    except (AttributeError, NotImplementedError, RuntimeError, IndexError):
+        return None
 
 
 def _guard_return_outputs_streaming(
@@ -1330,6 +1353,28 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     def compute_log_likelihood(self):
         """Compute the log likelihood. To be implemented by inheriting class."""
 
+    def _get_predict_memory_workload(
+        self,
+        time: np.ndarray,  # noqa: ARG002
+        log_likelihood_args: tuple,  # noqa: ARG002
+    ) -> dict | None:
+        """Return workload-shape dict for the memory peak estimator.
+
+        Default returns ``None`` (disables multi-knob auto selection;
+        ``_predict`` falls back to its n_chunks-only path).  Subclasses
+        override to expose their workload shape when they also provide
+        a matching :meth:`_get_predict_peak_estimator`.
+        """
+        return None
+
+    def _get_predict_peak_estimator(self):
+        """Return a ``_estimate_predict_peak_bytes`` callable or ``None``.
+
+        Default returns ``None``.  Subclasses override to dispatch on
+        their algorithm choice.
+        """
+        return None
+
     def _predict(
         self,
         time: np.ndarray,
@@ -1416,6 +1461,60 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             n_state_bins=n_state_bins,
             memory_budget_bytes=memory_budget_bytes,
         )
+
+        # Multi-knob selector (Task 5): overrides block_size / enc_tile_size /
+        # pos_tile_size in ``clusterless_algorithm_params`` at this predict
+        # call (stashed on self; consumed by ``compute_log_likelihood``).
+        # Gated behind ``memory_budget`` + subclass providing the workload
+        # + peak estimator hooks.  On algorithms without hooks (e.g. sorted
+        # spikes until Task 7b extends there) this is a no-op.
+        self._memory_knob_overrides_ = None
+        if memory_budget is not None:
+            # Resolve the effective byte budget once (for both selectors).
+            effective_budget_bytes = (
+                memory_budget_bytes
+                if memory_budget_bytes is not None
+                else _query_effective_device_budget_bytes()
+            )
+            workload = self._get_predict_memory_workload(time, log_likelihood_args)
+            estimator = self._get_predict_peak_estimator()
+            if (
+                effective_budget_bytes is not None
+                and workload is not None
+                and estimator is not None
+            ):
+                try:
+                    auto_knobs = auto_select_predict_memory_knobs(
+                        peak_estimator=estimator,
+                        workload=workload,
+                        memory_budget_bytes=effective_budget_bytes,
+                    )
+                    # User-explicit ``n_chunks`` int already passed through
+                    # ``_resolve_n_chunks``; keep whichever is larger (more
+                    # conservative) so the selector's chunking can still
+                    # win when the user didn't specify.
+                    n_chunks = max(n_chunks, int(auto_knobs["n_chunks"]))
+                    self._memory_knob_overrides_ = {
+                        "block_size": auto_knobs["block_size"],
+                        "enc_tile_size": auto_knobs["enc_tile_size"],
+                        "pos_tile_size": auto_knobs["pos_tile_size"],
+                    }
+                    logger.info(
+                        "Auto-selected memory knobs: n_chunks=%d, block_size=%d, "
+                        "enc_tile_size=%s, pos_tile_size=%s (budget=%.1f GB)",
+                        n_chunks,
+                        auto_knobs["block_size"],
+                        auto_knobs["enc_tile_size"],
+                        auto_knobs["pos_tile_size"],
+                        effective_budget_bytes / 2**30,
+                    )
+                except RuntimeError as e:
+                    logger.warning(
+                        "auto_select_predict_memory_knobs failed; "
+                        "falling back to n_chunks-only: %s",
+                        e,
+                    )
+
         if n_chunks > 1:
             logger.info(
                 f"Streaming likelihood across n_chunks={n_chunks} "
@@ -2311,6 +2410,36 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         return state_bins.iloc[sequence_ind].set_index(pd.Index(time, name="time"))
 
 
+_CLUSTERLESS_PREDICT_PEAK_ESTIMATORS: dict = {}
+
+
+def _get_clusterless_predict_estimator(algorithm: str):
+    """Look up the predict peak estimator for a clusterless algorithm.
+
+    Lazily imports the per-algorithm module on first use; cached in
+    module-level dict.  Returns ``None`` for unknown algorithms — the
+    selector then skips and falls back to n_chunks-only.
+    """
+    if algorithm in _CLUSTERLESS_PREDICT_PEAK_ESTIMATORS:
+        return _CLUSTERLESS_PREDICT_PEAK_ESTIMATORS[algorithm]
+    import importlib
+
+    module_name = {
+        "clusterless_kde": "non_local_detector.likelihoods.clusterless_kde",
+        "clusterless_kde_log": "non_local_detector.likelihoods.clusterless_kde_log",
+        "clusterless_gmm": "non_local_detector.likelihoods.clusterless_gmm",
+    }.get(algorithm)
+    estimator = None
+    if module_name is not None:
+        try:
+            mod = importlib.import_module(module_name)
+            estimator = getattr(mod, "_estimate_predict_peak_bytes", None)
+        except ImportError:
+            estimator = None
+    _CLUSTERLESS_PREDICT_PEAK_ESTIMATORS[algorithm] = estimator
+    return estimator
+
+
 class ClusterlessDetector(_DetectorBase):
     """
     Detector class for clusterless spikes.
@@ -2630,6 +2759,47 @@ class ClusterlessDetector(_DetectorBase):
         )
         return self
 
+    def _get_predict_peak_estimator(self):
+        """Dispatch to the algorithm-specific predict peak estimator."""
+        return _get_clusterless_predict_estimator(self.clusterless_algorithm)
+
+    def _get_predict_memory_workload(
+        self,
+        time: np.ndarray,
+        log_likelihood_args: tuple,
+    ) -> dict | None:
+        """Extract workload shape for the clusterless memory estimator.
+
+        ``log_likelihood_args`` is ``(position_time, position, spike_times,
+        spike_waveform_features)`` per the ClusterlessDetector convention.
+        """
+        if len(log_likelihood_args) < 4:
+            return None
+        _, _, spike_times, _ = log_likelihood_args
+        algo_key = self.clusterless_algorithm[:2]
+        encoding_model = getattr(self, "encoding_model_", {}).get(algo_key)
+        if encoding_model is None:
+            return None
+        enc_wf = encoding_model.get("encoding_spike_waveform_features") or []
+        n_enc_max = max((s.shape[0] for s in enc_wf), default=0) if enc_wf else 0
+        n_features = (
+            int(enc_wf[0].shape[1]) if enc_wf and enc_wf[0].ndim > 1 else 0
+        )
+        n_dec_max = max((len(s) for s in spike_times), default=0)
+        # n_pos ≈ per-state interior bin count; n_state_bins already
+        # multiplies by n_states, so divide out to approximate.
+        n_state_bins = int(self.is_track_interior_state_bins_.sum())
+        n_states = len(self.observation_models) if self.observation_models else 1
+        n_pos = max(1, n_state_bins // max(1, n_states))
+        return {
+            "n_time": int(len(time)),
+            "n_state_bins": n_state_bins,
+            "n_pos": n_pos,
+            "n_encoding_spikes_max": int(n_enc_max),
+            "n_decoding_spikes_max": int(n_dec_max),
+            "n_waveform_features": n_features,
+        }
+
     def compute_log_likelihood(
         self,
         time: np.ndarray,
@@ -2712,13 +2882,24 @@ class ClusterlessDetector(_DetectorBase):
                     time, spike_times, self.no_spike_rate
                 )
             elif likelihood_name not in computed_likelihoods:
+                # Apply memory-knob overrides stashed by ``_predict`` when
+                # ``memory_budget`` was set.  User-explicit algorithm params
+                # in ``self.encoding_model_`` are overwritten for this call
+                # only; selector's choices win because they're memory-aware.
+                # ``memory_budget=None`` disables this entirely.
+                params = dict(self.encoding_model_[likelihood_name[:2]])
+                knob_overrides = getattr(self, "_memory_knob_overrides_", None)
+                if knob_overrides:
+                    for knob_name in ("block_size", "enc_tile_size", "pos_tile_size"):
+                        if knob_name in knob_overrides:
+                            params[knob_name] = knob_overrides[knob_name]
                 likelihood_results[state_id] = likelihood_func(
                     time,
                     position_time,
                     position,
                     spike_times,
                     spike_waveform_features,
-                    **self.encoding_model_[likelihood_name[:2]],
+                    **params,
                     is_local=obs.is_local,
                 )
                 computed_likelihoods[likelihood_name] = state_id
