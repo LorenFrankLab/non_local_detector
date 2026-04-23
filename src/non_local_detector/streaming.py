@@ -17,6 +17,7 @@ users pass ``n_chunks="auto"`` and not think about it.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Literal
 
 _DEFAULT_SAFETY_FRACTION = 0.40
@@ -132,3 +133,215 @@ def _resolve_n_chunks(
     chunk_size = max(1, effective_budget // per_time_bytes)
     n_chunks_auto = max(1, math.ceil(n_time / chunk_size))
     return int(n_chunks_auto)
+
+
+# ---------------------------------------------------------------------------
+# Multi-knob memory-knob selectors (Task 5)
+# ---------------------------------------------------------------------------
+
+_MULTI_KNOB_SAFETY_FRACTION = 0.90
+
+
+def _chunk_ladder(n_time: int) -> list[int]:
+    """Chunk counts to try, smallest-first.  Bounded by ``n_time``."""
+    candidates = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+    return [c for c in candidates if c <= max(1, n_time)]
+
+
+def _block_ladder() -> list[int]:
+    """Decoding-spike block sizes to try, largest-first.
+
+    Smaller than 100 is launch-overhead-bound on GPU and gains little
+    compared to the 2× memory cut; stop at 100.
+    """
+    return [10_000, 5_000, 2_000, 1_000, 500, 200, 100]
+
+
+def _enc_tile_ladder(n_encoding_spikes_max: int) -> list[int]:
+    """Encoding-spike tile sizes, largest-first.
+
+    The top of the ladder is ``n_encoding_spikes_max`` rounded up to a
+    power of 2; descend from there.  Anything smaller than 256 is
+    pathological; stop there.
+    """
+    if n_encoding_spikes_max <= 0:
+        return []
+    top = 1 << (n_encoding_spikes_max - 1).bit_length()  # round up to pow2
+    candidates = []
+    size = top
+    while size >= 256:
+        if size <= n_encoding_spikes_max:
+            candidates.append(size)
+        size //= 2
+    return candidates or [min(n_encoding_spikes_max, 256)]
+
+
+def _pos_tile_ladder(n_pos: int) -> list[int]:
+    """Position tile sizes, largest-first.  Stop at 64 (small-tile
+    overhead)."""
+    if n_pos <= 0:
+        return []
+    top = 1 << (n_pos - 1).bit_length()
+    candidates = []
+    size = top
+    while size >= 64:
+        if size <= n_pos:
+            candidates.append(size)
+        size //= 2
+    return candidates or [min(n_pos, 64)]
+
+
+def _fit_block_ladder() -> list[int]:
+    """Fit-time KDE block sizes, largest-first."""
+    return [100_000, 50_000, 20_000, 10_000, 5_000, 2_000, 1_000, 500]
+
+
+def auto_select_predict_memory_knobs(
+    *,
+    peak_estimator: Callable[..., int],
+    workload: dict,
+    memory_budget_bytes: int,
+    safety_fraction: float = _MULTI_KNOB_SAFETY_FRACTION,
+) -> dict:
+    """Pick ``{n_chunks, block_size, enc_tile_size, pos_tile_size}``
+    such that ``peak_estimator(**workload, **knobs) <= budget * safety``.
+
+    Greedy search, preference-ordered (fastest → slowest config):
+
+    1. Stage 1: vary ``n_chunks`` and ``block_size``; no tiling.
+    2. Stage 2: enable ``enc_tile_size``.
+    3. Stage 3: enable ``pos_tile_size``.
+
+    Returns the first config in that preference order whose estimated
+    peak fits the budget.
+
+    Parameters
+    ----------
+    peak_estimator
+        A callable with signature ``(**workload, **knobs) -> int bytes``.
+        Typically one of the algorithm-specific
+        ``_estimate_predict_peak_bytes`` functions in
+        ``non_local_detector.likelihoods.*``.
+    workload
+        Dict of workload shape args the estimator expects (n_time,
+        n_state_bins, n_pos, n_encoding_spikes_max, etc.).
+    memory_budget_bytes
+        Device memory budget.  Typically queried via
+        :func:`_query_device_memory_bytes`.
+    safety_fraction
+        Fraction of the budget the estimated peak is allowed to use.
+        Default 0.90 — the per-algorithm estimators include their own
+        2× multiplicative safety factor, so this is just for
+        model imprecision, not for hidden multipliers.
+
+    Returns
+    -------
+    dict
+        ``{n_chunks: int, block_size: int, enc_tile_size: int | None,
+        pos_tile_size: int | None}``.
+
+    Raises
+    ------
+    RuntimeError
+        If no knob combination fits the budget.
+    """
+    if memory_budget_bytes <= 0:
+        raise ValueError(
+            f"memory_budget_bytes must be positive; got {memory_budget_bytes}"
+        )
+    effective_budget = int(memory_budget_bytes * safety_fraction)
+    n_time = int(workload.get("n_time", 1))
+    n_enc = int(workload.get("n_encoding_spikes_max", 0))
+    n_pos = int(workload.get("n_pos", 1))
+
+    def _fits(knobs: dict) -> bool:
+        peak = peak_estimator(**workload, **knobs)
+        return peak <= effective_budget
+
+    # Stage 1: no tiling.
+    for n_chunks in _chunk_ladder(n_time):
+        for block_size in _block_ladder():
+            knobs = {
+                "n_chunks": n_chunks,
+                "block_size": block_size,
+                "enc_tile_size": None,
+                "pos_tile_size": None,
+            }
+            if _fits(knobs):
+                return knobs
+
+    # Stage 2: enable encoding tiling.  Only meaningful when the
+    # workload actually has encoding spikes (clusterless).
+    if n_enc > 0:
+        for n_chunks in _chunk_ladder(n_time):
+            for enc_tile in _enc_tile_ladder(n_enc):
+                knobs = {
+                    "n_chunks": n_chunks,
+                    "block_size": 1_000,
+                    "enc_tile_size": enc_tile,
+                    "pos_tile_size": None,
+                }
+                if _fits(knobs):
+                    return knobs
+
+    # Stage 3: enable position tiling.
+    for n_chunks in _chunk_ladder(n_time):
+        for pos_tile in _pos_tile_ladder(n_pos):
+            knobs = {
+                "n_chunks": n_chunks,
+                "block_size": 1_000,
+                "enc_tile_size": (
+                    min(_enc_tile_ladder(n_enc)) if n_enc > 0 else None
+                ),
+                "pos_tile_size": pos_tile,
+            }
+            if _fits(knobs):
+                return knobs
+
+    raise RuntimeError(
+        f"Workload does not fit in {memory_budget_bytes / 2**30:.1f} GB even "
+        f"with maximum chunking + tiling.  Reduce n_state_bins / n_pos / "
+        f"encoding cloud size, or increase the memory budget."
+    )
+
+
+def auto_select_fit_memory_knobs(
+    *,
+    peak_estimator: Callable[..., int],
+    workload: dict,
+    memory_budget_bytes: int,
+    safety_fraction: float = _MULTI_KNOB_SAFETY_FRACTION,
+) -> dict:
+    """Pick ``{fit_block_size}`` such that the fit peak fits the budget.
+
+    Only one fit-side knob today.  Greedy search over
+    :func:`_fit_block_ladder` largest-first.
+
+    Returns
+    -------
+    dict
+        ``{fit_block_size: int}``.
+
+    Raises
+    ------
+    RuntimeError
+        If no fit_block_size fits the budget (common for GLM fits,
+        where the design matrix isn't chunked).
+    """
+    if memory_budget_bytes <= 0:
+        raise ValueError(
+            f"memory_budget_bytes must be positive; got {memory_budget_bytes}"
+        )
+    effective_budget = int(memory_budget_bytes * safety_fraction)
+
+    for fit_block_size in _fit_block_ladder():
+        peak = peak_estimator(**workload, fit_block_size=fit_block_size)
+        if peak <= effective_budget:
+            return {"fit_block_size": fit_block_size}
+
+    raise RuntimeError(
+        f"Fit does not fit in {memory_budget_bytes / 2**30:.1f} GB even with "
+        f"smallest fit_block_size.  This typically means the workload has "
+        f"fixed allocations (GLM design matrix, occupancy output) too big for "
+        f"the budget; reduce n_pos / n_time_pos / n_coefficients."
+    )

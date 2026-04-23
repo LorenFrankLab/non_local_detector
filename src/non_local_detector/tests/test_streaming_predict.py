@@ -32,7 +32,11 @@ from non_local_detector import (
 )
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
-from non_local_detector.streaming import _resolve_n_chunks
+from non_local_detector.streaming import (
+    _resolve_n_chunks,
+    auto_select_fit_memory_knobs,
+    auto_select_predict_memory_knobs,
+)
 
 _TOL = {"atol": 1e-4, "rtol": 1e-4}
 
@@ -393,3 +397,148 @@ class TestResolveNChunksMathInvariants:
             memory_budget_bytes=10_000_000,
         )
         assert isinstance(n, int) and n >= 1
+
+
+# ---------------------------------------------------------------------------
+# Multi-knob selector tests (Task 5)
+# ---------------------------------------------------------------------------
+
+
+def _mock_peak_estimator(
+    *,
+    n_time: int,
+    n_state_bins: int,
+    n_pos: int,
+    n_encoding_spikes_max: int = 0,
+    n_decoding_spikes_max: int = 0,
+    n_waveform_features: int = 0,  # noqa: ARG001
+    n_chunks: int = 1,
+    block_size: int = 100,
+    enc_tile_size: int | None = None,
+    pos_tile_size: int | None = None,
+    dtype_bytes: int = 4,
+) -> int:
+    """Deterministic peak estimator for selector tests.
+
+    Returns (n_time / n_chunks) × n_state_bins × dtype + overhead per
+    knobs, with overhead that reduces when tiling is enabled.  Lets the
+    selector tests exercise stage transitions predictably.
+    """
+    chunk_size = (n_time + n_chunks - 1) // n_chunks
+    slab = chunk_size * n_state_bins * dtype_bytes
+    pos_dim = pos_tile_size if pos_tile_size is not None else n_pos
+    enc_dim = enc_tile_size if enc_tile_size is not None else n_encoding_spikes_max
+    overhead = enc_dim * pos_dim * dtype_bytes + block_size * pos_dim * dtype_bytes
+    return slab + overhead + 512 * 2**20  # 0.5 GB fixed
+
+
+@pytest.mark.unit
+class TestSelectorPredict:
+    _WORKLOAD = {
+        "n_time": 100_000,
+        "n_state_bins": 1_000,
+        "n_pos": 1_000,
+        "n_encoding_spikes_max": 10_000,
+        "n_decoding_spikes_max": 50_000,
+        "n_waveform_features": 4,
+    }
+
+    def test_huge_budget_picks_fast_path(self):
+        """With plentiful memory, selector returns (n_chunks=1, biggest
+        block_size, no tiling)."""
+        knobs = auto_select_predict_memory_knobs(
+            peak_estimator=_mock_peak_estimator,
+            workload=self._WORKLOAD,
+            memory_budget_bytes=100 * 2**30,  # 100 GB
+        )
+        assert knobs["n_chunks"] == 1
+        assert knobs["block_size"] == 10_000  # top of _block_ladder
+        assert knobs["enc_tile_size"] is None
+        assert knobs["pos_tile_size"] is None
+
+    def test_medium_budget_picks_chunking(self):
+        """Budget too small for unchunked → selector picks n_chunks > 1.
+
+        Mock peak at n_chunks=1 with smallest block_size ≈ 950 MB.  Budget
+        0.95 GB × 0.90 safety ≈ 854 MB — insufficient for any n_chunks=1
+        config, so selector must chunk.
+        """
+        knobs = auto_select_predict_memory_knobs(
+            peak_estimator=_mock_peak_estimator,
+            workload=self._WORKLOAD,
+            memory_budget_bytes=int(0.95 * 2**30),
+        )
+        assert knobs["n_chunks"] >= 2
+
+    def test_selector_peak_fits_budget(self):
+        budget = 4 * 2**30
+        knobs = auto_select_predict_memory_knobs(
+            peak_estimator=_mock_peak_estimator,
+            workload=self._WORKLOAD,
+            memory_budget_bytes=budget,
+        )
+        peak = _mock_peak_estimator(**self._WORKLOAD, **knobs)
+        # Selector uses safety_fraction = 0.90 by default
+        assert peak <= budget * 0.90 * 1.01  # 1% slack for int arith
+
+    def test_tiny_budget_raises(self):
+        """No knob combination fits an absurdly tiny budget."""
+        with pytest.raises(RuntimeError, match="does not fit"):
+            auto_select_predict_memory_knobs(
+                peak_estimator=_mock_peak_estimator,
+                workload=self._WORKLOAD,
+                memory_budget_bytes=1_000,  # 1 kB — nothing fits
+            )
+
+    def test_rejects_nonpositive_budget(self):
+        with pytest.raises(ValueError, match="memory_budget_bytes"):
+            auto_select_predict_memory_knobs(
+                peak_estimator=_mock_peak_estimator,
+                workload=self._WORKLOAD,
+                memory_budget_bytes=0,
+            )
+
+
+@pytest.mark.unit
+class TestSelectorFit:
+    _WORKLOAD = {
+        "n_time_pos": 100_000,
+        "n_pos": 1_000,
+        "n_encoding_spikes_max": 10_000,
+        "n_waveform_features": 4,
+    }
+
+    def _mock_fit_estimator(self, **kwargs):
+        # Peak = fit_block_size × n_pos × 4 + 0.5 GB + overhead
+        fbs = kwargs.get("fit_block_size", 10_000)
+        n_pos = kwargs.get("n_pos", 1)
+        return fbs * n_pos * 4 + 512 * 2**20
+
+    def test_huge_budget_picks_largest_fit_block(self):
+        knobs = auto_select_fit_memory_knobs(
+            peak_estimator=self._mock_fit_estimator,
+            workload=self._WORKLOAD,
+            memory_budget_bytes=100 * 2**30,
+        )
+        assert knobs["fit_block_size"] == 100_000  # top of _fit_block_ladder
+
+    def test_smaller_budget_reduces_fit_block(self):
+        big = auto_select_fit_memory_knobs(
+            peak_estimator=self._mock_fit_estimator,
+            workload=self._WORKLOAD,
+            memory_budget_bytes=50 * 2**30,
+        )
+        small = auto_select_fit_memory_knobs(
+            peak_estimator=self._mock_fit_estimator,
+            workload=self._WORKLOAD,
+            memory_budget_bytes=1 * 2**30,
+        )
+        assert small["fit_block_size"] <= big["fit_block_size"]
+
+    def test_tiny_budget_raises(self):
+        with pytest.raises(RuntimeError, match="does not fit"):
+            auto_select_fit_memory_knobs(
+                peak_estimator=self._mock_fit_estimator,
+                workload=self._WORKLOAD,
+                memory_budget_bytes=1_000,
+            )
