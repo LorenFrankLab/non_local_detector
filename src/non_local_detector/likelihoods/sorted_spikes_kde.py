@@ -121,6 +121,41 @@ def _estimate_predict_peak_bytes(
     )
 
 
+def _estimate_fit_peak_bytes(
+    *,
+    n_time_pos: int,
+    n_pos: int,
+    n_neurons: int,
+    n_spikes_per_neuron_max: int,
+    fit_block_size: int = 10_000,
+    dtype_bytes: int = 4,
+) -> int:
+    """Estimate peak GPU bytes for ``fit_sorted_spikes_kde_encoding_model``.
+
+    - ``occupancy_fit_peak``: ``(fit_block_size, n_pos)`` per-block occupancy eval
+    - ``per_neuron_kde``: ``(n_spikes_per_neuron_max, n_pos)`` — one neuron
+      at a time
+    - ``place_fields_output``: ``(n_neurons, n_pos)``
+    - ``fixed_scratch``: 0.5 GB
+
+    Safety factor 2.0.
+    """
+    occupancy_fit_peak = fit_block_size * n_pos * dtype_bytes
+    per_neuron_kde = n_spikes_per_neuron_max * n_pos * dtype_bytes
+    place_fields_output = n_neurons * n_pos * dtype_bytes
+    fixed_scratch = 512 * 2**20
+
+    _SAFETY_MULTIPLIER = 2.0
+    return int(
+        _SAFETY_MULTIPLIER
+        * (
+            max(occupancy_fit_peak, per_neuron_kde)
+            + place_fields_output
+            + fixed_scratch
+        )
+    )
+
+
 def fit_sorted_spikes_kde_encoding_model(
     position_time: jnp.ndarray,
     position: jnp.ndarray,

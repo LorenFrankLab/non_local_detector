@@ -128,6 +128,56 @@ def _estimate_predict_peak_bytes(
     )
 
 
+def _estimate_fit_peak_bytes(
+    *,
+    n_time_pos: int,
+    n_pos: int,
+    n_neurons: int,
+    n_coefficients: int = 0,
+    fit_block_size: int = 10_000,  # noqa: ARG001 — GLM fit uses scipy optimizer, no block knob
+    dtype_bytes: int = 4,
+) -> int:
+    """Estimate peak GPU bytes for ``fit_sorted_spikes_glm_encoding_model``.
+
+    GLM fit constructs the design matrix over all position samples, then
+    runs per-neuron Poisson regression via scipy.optimize.  Dominant
+    tensors:
+
+    - ``design_matrix``: ``(n_time_pos, n_coefficients)``
+    - ``coefficients_store``: ``(n_neurons, n_coefficients)``
+    - ``optimizer_scratch``: another ``(n_time_pos, n_coefficients)`` for
+      Hessian / gradient scratch
+    - ``place_fields``: ``(n_neurons, n_pos)`` — final cached rate maps
+    - ``fixed_scratch``: 0.5 GB
+
+    GLM fit has no tunable block-size knob today (scipy runs at full
+    matrix size), so ``fit_block_size`` is ignored.  Auto can still
+    detect OOM and warn.
+
+    Returns
+    -------
+    int
+        Estimated peak bytes.
+    """
+    design_matrix = n_time_pos * n_coefficients * dtype_bytes
+    coefficients_store = n_neurons * n_coefficients * dtype_bytes
+    optimizer_scratch = n_time_pos * n_coefficients * dtype_bytes
+    place_fields = n_neurons * n_pos * dtype_bytes
+    fixed_scratch = 512 * 2**20  # 0.5 GB
+
+    _SAFETY_MULTIPLIER = 2.0
+    return int(
+        _SAFETY_MULTIPLIER
+        * (
+            design_matrix
+            + coefficients_store
+            + optimizer_scratch
+            + place_fields
+            + fixed_scratch
+        )
+    )
+
+
 def make_spline_design_matrix(
     position: np.ndarray,
     place_bin_edges: np.ndarray,

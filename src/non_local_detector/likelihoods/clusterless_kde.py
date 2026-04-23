@@ -119,6 +119,52 @@ def _estimate_predict_peak_bytes(
     return int(_SAFETY_MULTIPLIER * (per_electrode_live + persistent))
 
 
+def _estimate_fit_peak_bytes(
+    *,
+    n_time_pos: int,
+    n_pos: int,
+    n_encoding_spikes_max: int,
+    n_electrodes: int = 1,  # noqa: ARG001 — electrodes iterate serially
+    n_waveform_features: int = 0,  # noqa: ARG001
+    fit_block_size: int = 10_000,
+    dtype_bytes: int = 4,
+) -> int:
+    """Estimate peak GPU bytes for ``fit_clusterless_kde_encoding_model``.
+
+    Models the dominant allocations during fit:
+
+    - ``occupancy_fit_peak``: ``(fit_block_size, n_pos)`` — per-block
+      occupancy KDE eval.
+    - ``per_electrode_kde``: ``(n_enc_max, n_pos)`` — one electrode's
+      encoding-positions KDE eval (serial per-electrode).
+    - ``occupancy_output``: ``(n_pos,)`` — final occupancy density.
+    - ``fixed_scratch``: 0.5 GB (fit is less scratch-heavy than predict).
+
+    Multiplicative safety factor of 2.0.  ``occupancy_fit_peak`` and
+    ``per_electrode_kde`` don't live simultaneously (occupancy finishes
+    before per-electrode starts), so we take the ``max`` of the two.
+
+    Returns
+    -------
+    int
+        Estimated peak bytes during fit.
+    """
+    occupancy_fit_peak = fit_block_size * n_pos * dtype_bytes
+    per_electrode_kde = n_encoding_spikes_max * n_pos * dtype_bytes
+    occupancy_output = n_pos * dtype_bytes
+    fixed_scratch = 512 * 2**20  # 0.5 GB
+
+    _SAFETY_MULTIPLIER = 2.0
+    return int(
+        _SAFETY_MULTIPLIER
+        * (
+            max(occupancy_fit_peak, per_electrode_kde)
+            + occupancy_output
+            + fixed_scratch
+        )
+    )
+
+
 def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
 ) -> jnp.ndarray:

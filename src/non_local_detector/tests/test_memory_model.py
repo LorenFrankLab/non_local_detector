@@ -255,3 +255,115 @@ class TestCommonInvariantsAllAlgorithms:
         peak_64 = estimator(**workload, dtype_bytes=8)
         ratio = peak_64 / peak_32
         assert 1.3 < ratio < 2.1, f"fp64/fp32 ratio = {ratio:.2f} (expected 1.3-2.1)"
+
+
+# ---------------------------------------------------------------------------
+# Fit-time peak estimators (Task 4b)
+# ---------------------------------------------------------------------------
+
+
+from non_local_detector.likelihoods.clusterless_gmm import (  # noqa: E402
+    _estimate_fit_peak_bytes as _gmm_fit_peak,
+)
+from non_local_detector.likelihoods.clusterless_kde import (  # noqa: E402
+    _estimate_fit_peak_bytes as _kde_fit_peak,
+)
+from non_local_detector.likelihoods.clusterless_kde_log import (  # noqa: E402
+    _estimate_fit_peak_bytes as _kde_log_fit_peak,
+)
+from non_local_detector.likelihoods.sorted_spikes_glm import (  # noqa: E402
+    _estimate_fit_peak_bytes as _glm_fit_peak,
+)
+from non_local_detector.likelihoods.sorted_spikes_kde import (  # noqa: E402
+    _estimate_fit_peak_bytes as _sorted_kde_fit_peak,
+)
+
+_FIT_WORKLOAD_CLUSTERLESS = {
+    "n_time_pos": 709_321,
+    "n_pos": 1_446,
+    "n_encoding_spikes_max": 20_000,
+    "n_waveform_features": 4,
+}
+
+_FIT_WORKLOAD_SORTED_KDE = {
+    "n_time_pos": 709_321,
+    "n_pos": 1_446,
+    "n_neurons": 100,
+    "n_spikes_per_neuron_max": 5_000,
+}
+
+_FIT_WORKLOAD_SORTED_GLM = {
+    "n_time_pos": 709_321,
+    "n_pos": 1_446,
+    "n_neurons": 100,
+    "n_coefficients": 16,
+}
+
+_FIT_WORKLOAD_GMM = {
+    **_FIT_WORKLOAD_CLUSTERLESS,
+    "n_gmm_components": 16,
+}
+
+
+@pytest.mark.unit
+class TestFitPeakInvariants:
+    """Shared invariants across fit-time estimators."""
+
+    def test_kde_fit_returns_positive_int(self):
+        assert _kde_fit_peak(**_FIT_WORKLOAD_CLUSTERLESS) > 0
+
+    def test_kde_log_fit_is_kde_fit(self):
+        """clusterless_kde_log re-exports the clusterless_kde fit estimator."""
+        assert _kde_log_fit_peak is _kde_fit_peak
+
+    def test_kde_fit_smaller_block_reduces_peak(self):
+        big = _kde_fit_peak(**_FIT_WORKLOAD_CLUSTERLESS, fit_block_size=100_000)
+        small = _kde_fit_peak(**_FIT_WORKLOAD_CLUSTERLESS, fit_block_size=1_000)
+        assert small <= big  # <= because occupancy might not be the max term
+
+    def test_kde_fit_more_encoding_spikes_increases_peak(self):
+        few = _kde_fit_peak(**{**_FIT_WORKLOAD_CLUSTERLESS, "n_encoding_spikes_max": 1_000})
+        many = _kde_fit_peak(**{**_FIT_WORKLOAD_CLUSTERLESS, "n_encoding_spikes_max": 100_000})
+        assert many > few
+
+    def test_sorted_kde_fit_scales_with_neurons(self):
+        few = _sorted_kde_fit_peak(**{**_FIT_WORKLOAD_SORTED_KDE, "n_neurons": 10})
+        many = _sorted_kde_fit_peak(**{**_FIT_WORKLOAD_SORTED_KDE, "n_neurons": 1_000})
+        assert many > few
+
+    def test_glm_fit_scales_with_coefficients(self):
+        few = _glm_fit_peak(**{**_FIT_WORKLOAD_SORTED_GLM, "n_coefficients": 8})
+        many = _glm_fit_peak(**{**_FIT_WORKLOAD_SORTED_GLM, "n_coefficients": 128})
+        assert many > few
+
+    def test_glm_fit_scales_with_n_time_pos(self):
+        """GLM fit dominated by (n_time_pos × n_coefficients) design matrix."""
+        short = _glm_fit_peak(**{**_FIT_WORKLOAD_SORTED_GLM, "n_time_pos": 100_000})
+        long = _glm_fit_peak(**{**_FIT_WORKLOAD_SORTED_GLM, "n_time_pos": 1_000_000})
+        assert long > short
+
+    def test_gmm_fit_delegates_to_kde_fit(self):
+        gmm = _gmm_fit_peak(**_FIT_WORKLOAD_GMM)
+        kde = _kde_fit_peak(**_FIT_WORKLOAD_CLUSTERLESS)
+        assert gmm == kde
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("estimator", "workload"),
+    [
+        pytest.param(_kde_fit_peak, _FIT_WORKLOAD_CLUSTERLESS, id="clusterless_kde_fit"),
+        pytest.param(_kde_log_fit_peak, _FIT_WORKLOAD_CLUSTERLESS, id="clusterless_kde_log_fit"),
+        pytest.param(_sorted_kde_fit_peak, _FIT_WORKLOAD_SORTED_KDE, id="sorted_kde_fit"),
+        pytest.param(_glm_fit_peak, _FIT_WORKLOAD_SORTED_GLM, id="sorted_glm_fit"),
+        pytest.param(_gmm_fit_peak, _FIT_WORKLOAD_GMM, id="clusterless_gmm_fit"),
+    ],
+)
+class TestCommonFitInvariants:
+    def test_returns_positive_int(self, estimator, workload):
+        assert estimator(**workload) > 0
+        assert isinstance(estimator(**workload), int)
+
+    def test_peak_in_plausible_range(self, estimator, workload):
+        peak_gb = estimator(**workload) / 2**30
+        assert 0.05 < peak_gb < 500, f"Fit peak {peak_gb:.2f} GB out of range"
