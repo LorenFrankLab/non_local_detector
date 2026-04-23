@@ -1,171 +1,572 @@
-# Streaming Likelihood Into HMM Plan
+# Streaming Likelihood + Memory-Aware Auto Plan (v3)
 
 > **For Claude:** REQUIRED SUB-SKILL: Use executing-plans to implement this plan task-by-task.
 
-**Goal:** Make the existing `n_chunks > 1` streaming path efficient by eliminating redundant per-chunk encoder-side computation. The plumbing already works: `_predict` disables caching for `n_chunks > 1` (base.py:1351), and `chunked_filter_smoother` calls `log_likelihood_func(time[chunk_indices], ...)` per chunk (core.py:373). The likelihood functions already respect time slices. What's missing is caching encoder-side work (position distances, GEMM quantities, place fields) across chunks so each chunk only pays for its decoding-side work.
+> **Plan history:**
+> - **v1 (2026-04-17)**: framed streaming as a per-chunk cache
+>   optimization. Back-of-envelope analysis + user feedback showed
+>   per-chunk encoder work is <0.003% of per-chunk total at real
+>   scale.
+> - **v2 (2026-04-20, Tasks 1–3 implemented)**: pivoted to memory-aware
+>   `n_chunks="auto"` heuristic that models the likelihood-slab
+>   memory. Task 4 validation discovered the ~**8× peak / slab**
+>   empirical ratio at 22-tet/2D HPC — meaning our single-knob
+>   likelihood-slab-only heuristic silently under-chunks and users still
+>   OOM.
+> - **v3 (2026-04-20)**: user wants the whole memory process figured
+>   out for the user. Extend to multi-knob auto: co-select
+>   `n_chunks`, `block_size`, `enc_tile_size`, `pos_tile_size` such
+>   that estimated peak ≤ device memory × safety. Tasks 1–3 stay as
+>   foundations; Tasks 4–8 are new work.
 
-**Branch:** Execute on branch `streaming-likelihood-hmm` off `main`. Test on CPU locally, then validate on GPU hardware before merging.
+**Goal:** `detector.fit(...)`, `detector.predict(...)`, and
+`detector.estimate_parameters(...)` never OOM on user-visible
+workloads. Users pass no memory knobs. The detector inspects device
+memory + the workload shape, picks every memory knob for every
+operation, and runs. For chronic recordings on small GPUs: aggressive
+chunking/tiling across both fit and predict. For typical workloads on
+a big GPU: the fast-path configuration (1 chunk, large block size, no
+tiling). For everything in between: the least-tuned configuration
+that still fits.
 
-**Tech Stack:** JAX, NumPy, pytest
+Fit, predict, and estimate_parameters share the **same**
+`memory_budget` but use **separate** peak estimators and separate
+knob-selection — each operation has different memory characteristics.
 
-**Why this matters:**
+**Branch:** `streaming-likelihood-hmm` off `main`. Tasks 1–3 already
+landed; Tasks 4–8 continue here.
 
-| Recording | n_time | n_state_bins | Full array size |
-|---|---|---|---|
-| 4ms / 15min | 225k | 200 | 172 MB |
-| 2ms / 60min | 1.8M | 200 | 1.4 GB |
-| 2ms / 60min | 1.8M | 500 | 3.4 GB |
-
-With `n_chunks > 1`, this array is never materialized — each chunk produces `(chunk_size, n_state_bins)` which the filter consumes and discards. But without caching, each chunk redundantly recomputes encoder-side quantities (position distances, place fields, GEMM scaling) that are constant across all chunks.
+**Tech Stack:** JAX, NumPy, pytest.
 
 ---
 
-## What Already Works
+## User problems this solves
 
-The streaming pipeline is already wired:
+| Problem | Current state (post–Tasks 1–3) | After Level 3 |
+|---|---|---|
+| Users don't know what memory knobs exist | `n_chunks="auto"` picks likelihood chunks, but not block_size / tile sizes | `memory_budget="auto"` picks everything |
+| Likelihood-slab not the bottleneck at typical 22-tet/2D | auto under-chunks (slab fits budget but peak 8× slab OOMs) | peak model accounts for KDE intermediates, auto chunks correctly |
+| Small GPUs (16–40 GB) on production workloads | OOMs mid-predict; users confused | auto tightens knobs, keeps peak ≤ budget |
+| Chronic recordings (1 h to days) on any GPU | full-time likelihood slab exceeds memory | auto enables streaming + tighter tiles as recording length grows |
+| Multi-state classifiers × dense grids | likelihood array grows linearly, OOMs | auto scales chunking with n_state_bins |
+
+---
+
+## The v2 finding that motivated v3
+
+At 22-tetrode / 2D 3420 pos / ContFrag (2 states) on A100 80 GB (PR #19
+validation artifact):
+
+- Likelihood slab (ContFrag): `n_time × n_state_bins × 4B` = 709 321 ×
+  1448 × 4 = **4.1 GB**
+- Observed peak predict memory: **33 GB**
+- Ratio: peak / slab ≈ **8×**
+
+Sources of the other 29 GB: per-electrode KDE position distance
+`(n_enc, n_pos) × 4B` ≈ 116 MB × live-at-a-time, per-electrode mark
+kernel `(n_dec_chunk, n_enc) × 4B` ≈ 0.5–2 GB per electrode,
+transition matrix, XLA autotuning workspace, fit-time intermediates
+lingering across fit→predict boundary.
+
+**Implication**: a heuristic that budgets only the likelihood slab
+lets `safety_fraction = 0.40` through, but actual peak is ~8× bigger
+and OOMs on anything smaller than the 80 GB A100. The v2 heuristic
+gives a false sense of "fits". Users still OOM and still have to
+figure out `block_size` / `enc_tile_size` by hand.
+
+v3 fixes this by modeling all the knobs.
+
+---
+
+## What already works (foundation from Tasks 1–3)
+
+Already committed on this branch:
+
+- **Task 1** (`ad08c2a`): `streaming.py::_resolve_n_chunks(n_chunks, *, n_time, n_state_bins, memory_budget_bytes=..., safety_fraction=...)` — passthrough for int, auto-select for `"auto"`. 22 unit tests.
+- **Task 2** (`410bad3`): `n_chunks: int | Literal["auto"] = "auto"` as the default on all 9 predict/estimate signatures in `base.py`. Backward-compat: explicit int still works.
+- **Task 3** (`caf78d4`): `_guard_return_outputs_streaming` raises when resolved `n_chunks > 1` and user asked for `return_outputs="log_likelihood"`. 4 guard tests.
+
+These remain valid. v3 extends (doesn't rewrite) them.
+
+---
+
+## Design: multi-knob memory-aware auto
+
+### Knobs and what they control (predict-time)
+
+| Knob | Axis | What it bounds |
+|---|---|---|
+| `n_chunks` | time (decoding) | `(n_time/n_chunks, n_state_bins) × 4B` likelihood slab |
+| `block_size` | decoding-spikes (per-electrode, per-chunk) | `(block_size, n_pos) × 4B` intermediate in the decoding-spike fori_loop |
+| `enc_tile_size` | encoding-spikes | `(enc_tile, n_pos) × 4B` for chunked logsumexp over encoding |
+| `pos_tile_size` | position-bins | `(block_size, pos_tile) × 4B` tiles per position |
+
+### Knobs and what they control (fit-time)
+
+| Knob | Axis | What it bounds |
+|---|---|---|
+| `fit_block_size` | position-samples | `(fit_block_size, n_pos_interior) × 4B` intermediate during `KDEModel.predict(interior_bins)` in occupancy + per-electrode kde distance evaluation. Peak scales with `n_time_pos`. |
+
+Fit's memory is dominated by the occupancy model's KDE evaluation
+across all `n_time_pos` position samples against `n_pos_interior`
+bins. For a 1-hour recording (1.8 M position samples × 1448 interior
+bins × 4B = **10.4 GB**), this alone can exceed a 16 GB GPU. The
+existing `block_size` parameter on KDE fit already controls this —
+auto just needs to pick the right value.
+
+Encoding-model memory (per-electrode kde eval of encoding_positions
+vs interior_bins) is small per electrode (20 k × 1448 × 4 B ≈ 120 MB)
+and iterates serially, so it's not the fit bottleneck in practice.
+
+Ordering of preference (fast → slow):
+1. `n_chunks=1`, `block_size` large, no tiling (fastest; single GPU compile, single chunk).
+2. `n_chunks>1`: time-axis chunking (modest overhead from chunk dispatch + per-chunk compile cache).
+3. `enc_tile_size` set: encoding-chunked path (slower, does online logsumexp).
+4. `pos_tile_size` set: position-tiled path (slowest, extra Python iterations).
+
+Auto prefers knobs in that order: increase `n_chunks` before reducing `block_size`; only enable tiling when chunking alone doesn't fit.
+
+### Memory model (per-algorithm)
+
+Each likelihood module exposes:
+
+```python
+def _estimate_predict_peak_bytes(
+    *,
+    n_time: int,
+    n_state_bins: int,
+    n_pos: int,
+    encoding_model: dict,
+    dec_spike_counts: list[int],  # per-electrode, total over n_time
+    n_waveform_features: int,
+    n_chunks: int,
+    block_size: int,
+    enc_tile_size: int | None,
+    pos_tile_size: int | None,
+    dtype_bytes: int = 4,
+) -> int:
+    """Return estimated peak bytes for a predict call with these knobs."""
+```
+
+For `clusterless_kde` (and `_log` variant) the model is:
 
 ```
-_predict(n_chunks=10):
-    cache_likelihood = False  # base.py:1351-1353
-    chunked_filter_smoother(..., cache_log_likelihoods=False):
-        for chunk in time_chunks:
-            ll_chunk = compute_log_likelihood(time[chunk_inds], ...)  # core.py:373
-            filter(ll_chunk)  # consumes and discards
+likelihood_slab = ceil(n_time / n_chunks) * n_state_bins * dtype_bytes
+
+# Per-electrode, per-chunk live allocations (max one electrode at a time):
+enc_live = n_enc  # per electrode
+pos_dim = pos_tile_size or n_pos
+
+# log_position_distance (or chunk if enc_tile_size):
+position_distance = (enc_tile_size or enc_live) * pos_dim * dtype_bytes
+
+# Mark kernel for the decoding-spike block:
+n_dec_per_chunk_per_electrode = ceil(max(dec_spike_counts) / n_chunks)
+block_peak = block_size * (enc_tile_size or enc_live) * dtype_bytes
+mark_kernel_per_block = block_peak
+block_output = block_size * pos_dim * dtype_bytes
+
+per_electrode_peak = position_distance + mark_kernel_per_block + block_output
+
+# Per-chunk accumulator (persists across electrodes):
+per_chunk_output = ceil(n_time / n_chunks) * n_pos * dtype_bytes
+
+# Fixed overheads:
+transition = n_state_bins ** 2 * dtype_bytes
+fixed_scratch = 1 * 2**30  # 1 GB XLA autotuning + transients (empirical)
+
+peak = max(
+    likelihood_slab + per_chunk_output + per_electrode_peak,
+    per_chunk_output * 2,  # build-next-chunk while filter consumes current
+) + transition + fixed_scratch
 ```
 
-The likelihood functions (`predict_sorted_spikes_*`, `predict_clusterless_kde_*`) already accept partial time arrays and produce correctly-sized output. No new plumbing needed.
+Constants (`fixed_scratch = 1 GB`) are empirical, refined via Task 6 real-data measurement.
 
-## What's Redundant Per Chunk
+For `sorted_spikes_kde` / `sorted_spikes_glm` the model is simpler (no mark kernel). For `clusterless_gmm` it's different (GMM eval instead of KDE). Each module implements its own.
 
-**Sorted spikes (non-local):** Each chunk call re-loops over all neurons, recomputing `get_spikecount_per_time_bin` and `xlogy`. With the vectorized path from the sorted spikes plan (sparse segment_sum or dense matmul), this becomes efficient — but `log(place_fields)` is still recomputed per call. Cache it.
+### Heuristic: multi-knob selector
 
-**Clusterless KDE (non-local):** Each chunk call re-loops over all electrodes, each time:
-- Recomputing `log_kde_distance(interior_bins, enc_positions, pos_std)` — O(n_enc × n_pos), constant across chunks
-- Recomputing the GEMM scaling (inv_sigma, Y, y2) — O(n_enc × n_wf), constant across chunks
-- Only the spike filtering and segment_sum are chunk-specific
+```python
+def auto_select_memory_knobs(
+    *,
+    workload: WorkloadInfo,
+    memory_budget_bytes: int,
+    safety_fraction: float = 0.90,  # use up to 90% of the budget; 10% headroom
+    peak_estimator: Callable[..., int],
+) -> dict:
+    """Pick (n_chunks, block_size, enc_tile_size, pos_tile_size).
 
-**Clusterless GMM (non-local):** Each chunk call re-evaluates GMM models on all encoding data — same redundancy.
+    Preference order: try least-tuned first, escalate only when peak
+    exceeds budget.  Safety_fraction stays at 0.90 because the peak
+    estimator already accounts for algorithm-specific overhead — the
+    safety margin is just for model imprecision, not for hidden
+    multipliers.
+    """
+    effective_budget = int(memory_budget_bytes * safety_fraction)
+
+    # Stage 1: unchunked, big block, no tiling
+    for n_chunks in _chunk_ladder(workload.n_time):  # [1, 2, 4, 8, 16, ...]
+        for block_size in _block_ladder():  # [10000, 1000, 100]
+            peak = peak_estimator(
+                **workload.asdict(),
+                n_chunks=n_chunks,
+                block_size=block_size,
+                enc_tile_size=None,
+                pos_tile_size=None,
+            )
+            if peak <= effective_budget:
+                return {
+                    "n_chunks": n_chunks,
+                    "block_size": block_size,
+                    "enc_tile_size": None,
+                    "pos_tile_size": None,
+                }
+
+    # Stage 2: enable encoding tiling
+    for n_chunks in _chunk_ladder(workload.n_time):
+        for enc_tile in _enc_tile_ladder(workload):
+            peak = peak_estimator(
+                **workload.asdict(),
+                n_chunks=n_chunks,
+                block_size=1000,
+                enc_tile_size=enc_tile,
+                pos_tile_size=None,
+            )
+            if peak <= effective_budget:
+                return {"n_chunks": n_chunks, "block_size": 1000, "enc_tile_size": enc_tile, "pos_tile_size": None}
+
+    # Stage 3: position tiling (slowest, last resort)
+    ...
+
+    raise RuntimeError(
+        f"Workload does not fit in {memory_budget_bytes / 2**30:.1f} GB even "
+        f"with max chunking + tiling.  Reduce n_state_bins / n_pos / "
+        f"encoding cloud size."
+    )
+```
+
+This is greedy but predictable. The ladders (`_chunk_ladder`, `_block_ladder`, `_enc_tile_ladder`) are bounded to avoid pathological small sizes (e.g. `block_size < 100` is launch-overhead-bound on GPU, rejected).
+
+### API surface
+
+A single `memory_budget` parameter lives on every top-level user entry
+point. Each operation internally selects its own knobs for that
+budget using its own peak estimator.
+
+```python
+detector.fit(
+    position_time, position, spike_times, ...,
+    memory_budget: int | Literal["auto"] | None = "auto",
+)
+
+detector.predict(
+    spike_times, time, ...,
+    memory_budget: int | Literal["auto"] | None = "auto",
+    # Existing knobs stay as explicit overrides:
+    n_chunks: int | Literal["auto"] = "auto",
+)
+
+detector.estimate_parameters(
+    ...,
+    memory_budget: int | Literal["auto"] | None = "auto",
+)
+```
+
+- `memory_budget="auto"`: query JAX device memory once per call, pass the byte count to the operation's knob-selection heuristic.
+- `memory_budget=<int>`: use that many bytes (for explicit control on shared GPUs, or to simulate smaller memory).
+- `memory_budget=None`: disable auto-selection; use existing explicit knobs (backward-compat).
+- Explicit per-knob overrides (e.g. `n_chunks=3`, or `block_size=1000` in `clusterless_algorithm_params`) override the auto-picked values when provided.
+
+`estimate_parameters` threads `memory_budget` down into both the fit
+iterations and the predict calls it performs; each call resolves
+knobs independently. On a fixed workload this converges to a stable
+per-operation configuration after the first iteration (shapes don't
+change between EM iterations).
+
+When auto-picked knobs differ from current explicit defaults, log the resolved configuration at INFO level:
+
+```
+Auto-selected fit memory knobs: fit_block_size=5000 (budget=8.0 GB, estimated peak=7.2 GB).
+Auto-selected predict memory knobs: n_chunks=3, block_size=1000, enc_tile_size=None, pos_tile_size=None (budget=8.0 GB, estimated peak=7.2 GB).
+```
 
 ---
 
 ## Verification Strategy
 
-1. **Accuracy (primary):** `predict(n_chunks=K)` matches `predict(n_chunks=1)` on realistic simulated data. Tolerance: 1e-4 (matching existing chunked-parity test tolerances in the codebase, not 1e-10 — floating-point reassociation from different chunking boundaries causes benign differences).
-2. **Memory:** Peak allocation with `n_chunks=10` is ~10x smaller than `n_chunks=1` for the log-likelihood array.
-3. **Performance:** Per-chunk time decreases after caching (the first chunk is slow, subsequent chunks skip encoder-side work).
+### Unit-level (CPU, fast)
+
+1. **`_estimate_predict_peak_bytes` tests**: given synthetic workloads, peak estimator returns plausible byte counts that scale with inputs as expected (doubling `n_time` at fixed `n_chunks` doubles the slab; doubling `n_chunks` halves it; etc.).
+2. **`auto_select_memory_knobs` tests**: given a peak-estimator + budget, heuristic picks config whose estimated peak ≤ budget × safety. Tiny budgets force tiling. Huge budgets return fast-path. No budget → raise.
+3. **Chunked-parity tests** (already have from v2): `predict(n_chunks=1)` == `predict(n_chunks=K)` on sorted-spikes + clusterless to 1e-4.
+4. **Memory-budget equivalence**: `predict(memory_budget=<big>)` == `predict(n_chunks=1)` (fast-path resolution) to 1e-4.
+5. **Auto knob override precedence**: explicit `n_chunks=3` with `memory_budget="auto"` keeps `n_chunks=3` and auto-picks only the remaining knobs.
+
+### Real-data GPU (A100, simulated memory caps via `XLA_PYTHON_CLIENT_MEM_FRACTION`)
+
+6. **80 GB baseline, auto**: matches `n_chunks=1` explicit (no chunking, fast-path picked) to 1e-4.
+7. **40 GB cap** (MEM_FRACTION=0.50): auto picks n_chunks > 1 (since 80 GB / 40 GB = 2×), predict succeeds, output matches baseline.
+8. **24 GB cap** (MEM_FRACTION=0.30): auto picks more aggressive knobs (n_chunks + possibly block_size), predict succeeds, output matches baseline.
+9. **12 GB cap** (MEM_FRACTION=0.15): auto enables encoding tiling, predict succeeds, output matches baseline.
+10. **8 GB cap** (MEM_FRACTION=0.10): stress case — auto tightens everything, may still fail if fit's non-chunked KDEModel eval OOMs. If it does, documented as a known limit (fit-time memory is a separate v4 target).
+
+### Chronic-scale synthetic demo (Task 8)
+
+11. Synthetic 1-hour recording by concatenating/repeating the HPC 20-min epoch. Auto at simulated 16 GB: picks `n_chunks=5+` and succeeds. At `memory_budget=None` (auto disabled): OOM on 16 GB. User-facing deliverable.
+
+### Compile-time (from PR #19 post-mortem)
+
+12. Every benchmark above: first-predict compile time ≤ 20 min. No scan path in this plan (we revert-preserved that ban), so ptxas pathology risk is low, but tracked as a regression gate.
 
 ---
 
-## Task 1: Cache Encoding-Side Quantities Across Chunks
+## Tasks
 
-When `compute_log_likelihood` is called repeatedly (once per chunk in the streaming path), encoder-side work should be computed once and reused.
+### Task 1: `_resolve_n_chunks` heuristic + unit tests ✅ (already done, `ad08c2a`)
 
-**For sorted spikes:** Cache `log(place_fields[:, is_track_interior])` and `no_spike_part[is_track_interior]` after fit. This is trivial — add to the encoding model dict in the fit functions. Already planned in sorted spikes plan Task 5.
+### Task 2: Flip `n_chunks` default to `"auto"` on detector.predict signatures ✅ (already done, `410bad3`)
 
-**For clusterless KDE:** Cache per-electrode position distances and GEMM precomputed quantities. Already planned in clusterless plan Task 2. The position distance `log_kde_distance(interior_bins, enc_positions, pos_std)` depends only on encoding data and environment — compute once at the start of `predict`, not per chunk.
+### Task 3: `return_outputs` + streaming guard ✅ (already done, `caf78d4`)
 
-**Implementation approach:** Add a `_prepare_for_streaming` method to the detector classes that precomputes and caches these quantities at the start of `predict` when `n_chunks > 1`. Clear the cache after `predict` returns.
+### Task 4a: Per-algorithm `_estimate_predict_peak_bytes` functions
+
+For each non-local likelihood module, add:
 
 ```python
-# In _predict(), before calling chunked_filter_smoother:
-if n_chunks > 1:
-    self._prepare_streaming_cache(
-        position_time, position, spike_times, spike_waveform_features, ...
+def _estimate_predict_peak_bytes(
+    *, n_time, n_state_bins, n_pos, encoding_model, dec_spike_counts,
+    n_waveform_features, n_chunks, block_size,
+    enc_tile_size=None, pos_tile_size=None, dtype_bytes=4,
+) -> int:
+    """Return estimated peak bytes for a predict call."""
+```
+
+### Task 4b: Per-algorithm `_estimate_fit_peak_bytes` functions
+
+For each non-local likelihood module, add:
+
+```python
+def _estimate_fit_peak_bytes(
+    *, n_time_pos, n_pos, n_encoding_spikes_per_electrode,
+    n_waveform_features, fit_block_size, dtype_bytes=4,
+) -> int:
+    """Return estimated peak bytes for a fit_encoding_model call."""
+```
+
+Fit memory model for `clusterless_kde`:
+
+```
+# Occupancy model: KDEModel.predict(interior_bins) evaluated in
+# blocks of fit_block_size over n_time_pos samples.
+occupancy_eval = fit_block_size * n_pos * dtype_bytes
+occupancy_sum = n_pos * dtype_bytes  # accumulator
+
+# Per-electrode KDE distance (serial, one live at a time):
+per_electrode_kde = max(n_encoding_spikes_per_electrode) * n_pos * dtype_bytes
+
+# Waveform KDE fit (small):
+waveform_kde = max(n_encoding_spikes_per_electrode) * n_waveform_features * dtype_bytes
+
+fixed_scratch = 0.5 * 2**30  # 0.5 GB fit-time workspace (empirical, smaller than predict)
+
+peak = max(
+    occupancy_eval + occupancy_sum,        # occupancy fit peak
+    per_electrode_kde + waveform_kde,      # per-electrode peak (one electrode at a time)
+) + fixed_scratch
+```
+
+Each likelihood module implements a version appropriate to its fit path.
+
+Model derivation goes in the docstring. Constants (e.g. `fixed_scratch`) start conservative and are tightened via Task 6 measurement.
+
+**Files:**
+- `src/non_local_detector/likelihoods/sorted_spikes_kde.py`
+- `src/non_local_detector/likelihoods/sorted_spikes_glm.py`
+- `src/non_local_detector/likelihoods/clusterless_kde.py`
+- `src/non_local_detector/likelihoods/clusterless_kde_log.py`
+- `src/non_local_detector/likelihoods/clusterless_gmm.py`
+- `src/non_local_detector/tests/test_memory_model.py` (new)
+
+### Task 5: `auto_select_memory_knobs` + `auto_select_fit_memory_knobs` heuristics
+
+Two knob selectors, one per operation type, sharing the greedy ladder pattern:
+
+```python
+# src/non_local_detector/streaming.py
+def auto_select_predict_memory_knobs(
+    workload_info, memory_budget_bytes, *, peak_estimator,
+    safety_fraction=0.90,
+) -> dict:
+    """Returns {n_chunks, block_size, enc_tile_size, pos_tile_size}."""
+    ...
+
+def auto_select_fit_memory_knobs(
+    workload_info, memory_budget_bytes, *, peak_estimator,
+    safety_fraction=0.90,
+) -> dict:
+    """Returns {fit_block_size}.  Simpler — only one knob on fit path today."""
+    ...
+```
+
+- Ladder helpers: `_chunk_ladder(n_time)`, `_block_ladder()`, `_enc_tile_ladder(...)`, `_fit_block_ladder()`.
+- Greedy search over (stage_1 → stage_2 → stage_3) preferring fast configs.
+- Returns `dict` of picked knobs.
+- `RuntimeError` when no config fits.
+
+**Tests:**
+- Given synthetic `peak_estimator` (callable returning bytes), verify the returned config has estimated_peak ≤ budget × safety.
+- Verify stage escalation: huge-budget → stage 1; medium → stage 2; tiny → stage 3.
+- Verify the "no config fits" case raises.
+- Verify fit heuristic scales `fit_block_size` inversely with `n_time_pos`.
+
+### Task 6: Real-data calibration of memory model constants
+
+Run `detector.predict(n_chunks=1, block_size=1000)` at full 80 GB on the reference workload (22-tet / 2D / ContFrag), capture `jax.devices()[0].memory_stats()["peak_bytes_in_use"]`. Repeat for `n_chunks=2, 4, 8`. Fit/verify the model's constants.
+
+Write the calibration results to `docs/benchmarks/streaming-memory-model.md` with the measured datapoints so future tuning is data-driven.
+
+**Files:**
+- `/cumulus/edeno/state-space-playground/scripts/benchmark_memory_model.py` (new)
+- `docs/benchmarks/streaming-memory-model.md` (new)
+- Model constants updated in Task 4's functions.
+
+### Task 7: Wire `memory_budget` into detector.fit / detector.predict / estimate_parameters
+
+Add `memory_budget: int | Literal["auto"] | None = "auto"` to each of:
+
+- `_DetectorBase.fit`
+- `_DetectorBase.estimate_parameters`
+- `_DetectorBase.most_likely_sequence` (inherits predict-side resolution)
+- `ClusterlessDetector.predict`, `ClusterlessDetector.estimate_parameters` (+ internal helpers)
+- `SortedSpikesDetector.predict`, `SortedSpikesDetector.estimate_parameters`
+
+In `predict()`:
+
+```python
+if memory_budget == "auto":
+    memory_budget = _query_device_memory_bytes()  # may be None on CPU
+if memory_budget is not None:
+    auto_knobs = auto_select_predict_memory_knobs(
+        workload=..., memory_budget_bytes=memory_budget,
+        peak_estimator=<per-algorithm predict estimator>,
     )
-try:
-    result = chunked_filter_smoother(...)
-finally:
-    self._clear_streaming_cache()
+    # Respect explicit user overrides; auto fills in the rest.
+    n_chunks = n_chunks if isinstance(n_chunks, int) else auto_knobs["n_chunks"]
+    # block_size, enc_tile_size, pos_tile_size go into clusterless_algorithm_params
+    # unless the user already set them explicitly there.
 ```
 
-The `compute_log_likelihood` method checks for the cache and uses it when available.
-
-**Files:**
-- Modify: `src/non_local_detector/models/base.py` (add `_prepare_streaming_cache`, `_clear_streaming_cache`)
-- Modify: `src/non_local_detector/likelihoods/sorted_spikes_kde.py` (cache log_place_fields after fit)
-- Modify: `src/non_local_detector/likelihoods/sorted_spikes_glm.py` (same)
-- Test: `src/non_local_detector/tests/test_streaming_predict.py` (new)
-
-### Step 1: Write the test
+In `fit()`:
 
 ```python
-class TestStreamingCache:
-    def test_clusterless_chunked_matches_unchunked(self, fitted_clusterless_detector):
-        """predict(n_chunks=5) matches predict(n_chunks=1)."""
-        result_1 = detector.predict(..., n_chunks=1)
-        result_5 = detector.predict(..., n_chunks=5)
-        np.testing.assert_allclose(
-            result_1["acausal_posterior"],
-            result_5["acausal_posterior"],
-            atol=1e-4, rtol=1e-4,
-        )
-
-    def test_sorted_spikes_chunked_matches_unchunked(self, fitted_sorted_detector):
-        """predict(n_chunks=5) matches predict(n_chunks=1)."""
-        result_1 = detector.predict(..., n_chunks=1)
-        result_5 = detector.predict(..., n_chunks=5)
-        np.testing.assert_allclose(
-            result_1["acausal_posterior"],
-            result_5["acausal_posterior"],
-            atol=1e-4, rtol=1e-4,
-        )
+if memory_budget == "auto":
+    memory_budget = _query_device_memory_bytes()
+if memory_budget is not None:
+    auto_knobs = auto_select_fit_memory_knobs(
+        workload=..., memory_budget_bytes=memory_budget,
+        peak_estimator=<per-algorithm fit estimator>,
+    )
+    # fit_block_size goes into clusterless_algorithm_params['block_size'] unless user set it.
 ```
 
-### Step 2: Implement caching, test, profile, commit
+In `estimate_parameters()`: the outer EM loop resolves memory_budget once and threads the resolved knobs into every fit + predict call of every iteration. Shapes don't change between iterations, so re-resolving would give the same answer each time — cache on first iteration.
 
----
-
-## Task 2: Profile and Document Memory Savings
-
-Measure peak memory with and without streaming on realistic data:
-
-```python
-# Without streaming (n_chunks=1): full (n_time, n_bins) materialized
-result_1 = detector.predict(..., n_chunks=1)
-
-# With streaming (n_chunks=10): only (chunk_size, n_bins) per chunk
-result_10 = detector.predict(..., n_chunks=10)
-```
-
-Document the memory difference and add guidance to the docstring/README about when to use `n_chunks > 1`.
-
----
-
-## Task 3: Verify `return_outputs` Interaction
-
-When streaming (`n_chunks > 1`), the full log-likelihood array is never built. Verify that:
-- `return_outputs=None` (default) — no log-likelihoods stored, no error
-- `return_outputs="log_likelihood"` — log-likelihoods are `None` in results (or raise a clear error explaining they're unavailable with `n_chunks > 1`)
-- `return_outputs="all"` — same behavior for log-likelihoods, other outputs present
+**Backward compatibility:**
+- `memory_budget=None` preserves current behavior exactly.
+- `n_chunks=1` explicit → passthrough, auto only touches other knobs.
+- Fully-explicit `clusterless_algorithm_params={"block_size": 100, "enc_tile_size": 4096}` → passthrough, auto only touches `n_chunks`.
 
 **Files:**
-- Possibly modify `_predict` to warn when `return_outputs` includes `"log_likelihood"` but `n_chunks > 1`
-- Test: verify the interaction
+- `src/non_local_detector/models/base.py`
+- `src/non_local_detector/tests/test_streaming_predict.py` (extend with fit + estimate_parameters tests)
+
+### Task 8: Real-data validation at multiple memory caps
+
+Matrix: (80 GB baseline, 40 GB, 24 GB, 12 GB, 8 GB) × (ContFrag, NonLocal) × (clusterless_kde, clusterless_kde_log) × (fit only, predict only, fit+predict, estimate_parameters) × (`memory_budget="auto"`, `memory_budget=None`).
+
+Test `fit()` independently under memory caps — Task 4b's fit estimator needs real-data calibration.
+
+Expected outcomes (updated by Task 6 data):
+- **80 GB + auto**: picks fast-path for both fit and predict, matches explicit-knob baselines to 1e-4.
+- **40 GB + auto**: predict picks chunked; fit likely stays fast-path (10 GB fit peak fits in 40 GB). Both succeed.
+- **24 GB + auto**: predict tightens more; fit may reduce fit_block_size if n_time_pos is large. Both succeed.
+- **12 GB + auto**: both operations scale down aggressively; predict likely enables tiling.
+- **8 GB + auto**: stress case. On 22-tet/2D HPC this should succeed now that fit is chunked (earlier v2 attempt OOMed on fit).
+
+**`estimate_parameters`** at each cap: converges to the same
+posterior as a bare fit+predict at that cap to 1e-4 (cache on first
+iteration keeps EM stable).
+
+Commit the benchmark run log + summary JSONs to `docs/benchmarks/` or attach to the PR.
+
+### Task 9 (optional): Chronic-recording synthetic demo
+
+Concatenate the 20-min HPC epoch 3× to produce a 1-hour equivalent. Show:
+
+- At 16 GB simulated + `memory_budget=None`: OOM.
+- At 16 GB simulated + `memory_budget="auto"`: succeeds, picks n_chunks ≥ 5 (likelihood slab scales with time).
+- Posteriors consistent with the 20-min baseline on each 1/3rd segment.
+
+This is the user-visible deliverable.
 
 ---
 
-## Execution Order and Dependencies
+## Execution Order
 
 ```
-Sorted spikes plan Task 5 (cache log_place_fields)     ← prerequisite
-Clusterless plan Task 2 (precompute GEMM)               ← prerequisite
+Task 1–3 ✅ done
     ↓
-Task 1 (cache encoding-side across chunks)              ← main work
+Task 4 (per-algorithm peak estimators)           ← 1-2 days
     ↓
-Task 2 (profile memory savings)                         ← validation
+Task 5 (auto_select_memory_knobs heuristic)      ← 1 day
     ↓
-Task 3 (return_outputs interaction)                     ← polish
+Task 6 (real-data calibration of constants)      ← 0.5 day
+    ↓
+Task 7 (wire into detector.predict)              ← 0.5 day
+    ↓
+Task 8 (multi-cap real-data validation)          ← 0.5 day (GPU time dominates)
+    ↓
+Task 9 (optional chronic-scale synthetic demo)   ← 0.5 day
 ```
-
-This plan is lightweight because the streaming infrastructure already exists. The work is caching encoder-side quantities so per-chunk calls don't redo constant work.
 
 ---
 
-## Expected Impact
+## Out of scope for this plan
 
-| Metric | n_chunks=1 (current default) | n_chunks=10 (streaming) |
+- **Bringing back PR #19's scan-over-electrodes path.** That path has a
+  known ptxas compile pathology (issue #21). Clusterless v2 redesign
+  (`docs/plans/2026-04-20-clusterless-gpu-optimization-redesign.md`)
+  addresses it.
+- **GMM full support.** `clusterless_gmm` gets a trivial estimator
+  (one that returns "n_time × n_state_bins × 4" + 20% slack) initially.
+  Precise model deferred.
+- **Multi-GPU / multi-device auto.** Current heuristic assumes
+  single-device placement via `jax.devices()[0]`. Multi-device
+  sharding is out of scope.
+
+---
+
+## Expected Impact (user-facing)
+
+| Scenario | Current (v2, Tasks 1–3 only) | After Level 3 (Tasks 4–9) |
 |---|---|---|
-| Log-likelihood peak memory | `n_time × n_bins × 4` bytes | `chunk_size × n_bins × 4` bytes |
-| Encoder-side compute | 1× (computed once) | 1× (cached after first chunk) |
-| Decoder-side compute | Same | Same (each time bin computed once) |
-| Per-chunk overhead | N/A | Function call + cache lookup (~1ms) |
+| 22-tet 2D ContFrag fit+predict, 80 GB GPU | auto picks 1 chunk; works | same; no regression |
+| 22-tet 2D ContFrag predict, 40 GB GPU | auto picks 1 chunk; OOM on KDE intermediates | predict auto picks 2 chunks + block_size; succeeds |
+| 22-tet 2D ContFrag predict, 16 GB GPU | OOM | predict auto picks 4 chunks + block_size + enc_tile; succeeds |
+| Chronic 1 h recording fit, 80 GB GPU | fit may OOM on occupancy eval (n_time_pos × n_pos × 4B ≈ 10 GB + intermediates) | fit auto picks `fit_block_size`; succeeds |
+| Chronic 1 h recording predict, 80 GB GPU | auto picks 1 chunk; works if likelihood slab fits | same |
+| Chronic 1 h recording fit+predict, 16 GB GPU | OOM during fit or predict | both auto-tune; entire pipeline succeeds |
+| `estimate_parameters` at reduced memory | OOM on first EM iteration fit | auto knobs stable across iterations; succeeds |
+| Multi-state classifier × dense grid at chronic time | OOM on longer recordings | auto scales all knobs with workload shape |
+
+Users who never set memory knobs get a decoder that just works on their GPU. Users who do set knobs keep full control (auto yields to explicit values).
+
+---
+
+## Related
+
+- Post-PR-19 validation workflow memory file: `.claude/.../real_data_pr_validation_workflow.md` — validation gates this plan must clear.
+- PR #19 redesign plan (clusterless GPU v2): `docs/plans/2026-04-20-clusterless-gpu-optimization-redesign.md` — orthogonal; shares the "validate on real-data at multiple shapes" principle.
+- Sorted-spikes GPU plan: `docs/plans/2026-04-17-sorted-spikes-gpu-optimization.md` — orthogonal.
+- PR #14 (landed `2026-04-20`): `kde_distance` log-space rewrite — unifies the numerical internals of `clusterless_kde` and `clusterless_kde_log`, making their memory profiles identical, which simplifies per-algorithm memory models in Task 4.

@@ -5,6 +5,10 @@ from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
+from non_local_detector.likelihoods.clusterless_kde import (
+    _estimate_fit_peak_bytes,  # re-exported; same fit path as product-space module
+    _estimate_predict_peak_bytes,  # re-exported; same predict math post-PR-14
+)
 from non_local_detector.likelihoods.common import (
     EPS,
     LOG_EPS,
@@ -15,6 +19,14 @@ from non_local_detector.likelihoods.common import (
     log_gaussian_pdf,
     safe_log,
 )
+
+# Re-export so ``from non_local_detector.likelihoods.clusterless_kde_log
+# import _estimate_predict_peak_bytes`` resolves without users needing to
+# know the two modules share the same math post-PR-14.
+__all_peak_bytes_source__ = (
+    _estimate_predict_peak_bytes,
+    _estimate_fit_peak_bytes,
+)  # noqa: F841
 
 # Maximum waveform feature dimensions for the compensated-linear fast path.
 # Above this threshold, mark kernel underflow causes accuracy degradation

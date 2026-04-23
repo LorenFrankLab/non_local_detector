@@ -62,6 +62,100 @@ from non_local_detector.likelihoods.common import (
 )
 
 
+def _estimate_predict_peak_bytes(
+    *,
+    n_time: int,
+    n_state_bins: int,
+    n_pos: int,
+    n_neurons: int,
+    n_encoding_spikes_max: int = 0,  # noqa: ARG001 — unused (sorted has no mark kernel)
+    n_decoding_spikes_max: int = 0,  # noqa: ARG001
+    n_waveform_features: int = 0,  # noqa: ARG001
+    n_chunks: int = 1,
+    block_size: int = 100,  # noqa: ARG001 — sorted KDE doesn't block over spikes
+    enc_tile_size: int | None = None,  # noqa: ARG001
+    pos_tile_size: int | None = None,
+    dtype_bytes: int = 4,
+) -> int:
+    """Estimate peak GPU bytes for a sorted-spikes-KDE predict call.
+
+    Sorted-spikes KDE has no waveform mark kernel; each neuron's place
+    field is evaluated per-chunk against every position bin.  Dominant
+    tensors:
+
+    - ``likelihood_slab``: ``(chunk_size, n_state_bins)``
+    - ``place_fields``: ``(n_neurons, n_pos)`` — fit-time, persistent
+    - ``per_neuron_tmp``: ``(chunk_size, pos_dim)`` — log-probability
+      contribution for one neuron
+    - ``transition``: ``(n_state_bins, n_state_bins)``
+    - ``fixed_scratch``: 1 GB (smaller than clusterless — no KDE mark
+      kernel intermediates)
+
+    Multiplicative safety factor of 2.0 absorbs XLA workspace.
+
+    Parameters
+    ----------
+    n_time, n_state_bins, n_pos, n_chunks, pos_tile_size, dtype_bytes
+        See :func:`clusterless_kde._estimate_predict_peak_bytes`.
+    n_neurons
+        Number of sorted units.
+
+    Returns
+    -------
+    int
+        Estimated peak bytes.
+    """
+    chunk_size = (n_time + n_chunks - 1) // n_chunks
+    pos_dim = pos_tile_size if pos_tile_size is not None else n_pos
+
+    likelihood_slab = chunk_size * n_state_bins * dtype_bytes
+    place_fields = n_neurons * n_pos * dtype_bytes
+    per_neuron_tmp = chunk_size * pos_dim * dtype_bytes
+    transition = n_state_bins * n_state_bins * dtype_bytes
+    fixed_scratch = 1 * 2**30  # 1 GB
+
+    _SAFETY_MULTIPLIER = 2.0
+    return int(
+        _SAFETY_MULTIPLIER
+        * (likelihood_slab + place_fields + per_neuron_tmp + transition + fixed_scratch)
+    )
+
+
+def _estimate_fit_peak_bytes(
+    *,
+    n_time_pos: int,
+    n_pos: int,
+    n_neurons: int,
+    n_spikes_per_neuron_max: int,
+    fit_block_size: int = 10_000,
+    dtype_bytes: int = 4,
+) -> int:
+    """Estimate peak GPU bytes for ``fit_sorted_spikes_kde_encoding_model``.
+
+    - ``occupancy_fit_peak``: ``(fit_block_size, n_pos)`` per-block occupancy eval
+    - ``per_neuron_kde``: ``(n_spikes_per_neuron_max, n_pos)`` — one neuron
+      at a time
+    - ``place_fields_output``: ``(n_neurons, n_pos)``
+    - ``fixed_scratch``: 0.5 GB
+
+    Safety factor 2.0.
+    """
+    occupancy_fit_peak = fit_block_size * n_pos * dtype_bytes
+    per_neuron_kde = n_spikes_per_neuron_max * n_pos * dtype_bytes
+    place_fields_output = n_neurons * n_pos * dtype_bytes
+    fixed_scratch = 512 * 2**20
+
+    _SAFETY_MULTIPLIER = 2.0
+    return int(
+        _SAFETY_MULTIPLIER
+        * (
+            max(occupancy_fit_peak, per_neuron_kde)
+            + place_fields_output
+            + fixed_scratch
+        )
+    )
+
+
 def fit_sorted_spikes_kde_encoding_model(
     position_time: jnp.ndarray,
     position: jnp.ndarray,

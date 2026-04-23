@@ -65,6 +65,119 @@ from non_local_detector.likelihoods.common import (
 )
 
 
+def _estimate_predict_peak_bytes(
+    *,
+    n_time: int,
+    n_state_bins: int,
+    n_pos: int,
+    n_neurons: int,
+    n_coefficients: int = 0,
+    n_encoding_spikes_max: int = 0,  # noqa: ARG001
+    n_decoding_spikes_max: int = 0,  # noqa: ARG001
+    n_waveform_features: int = 0,  # noqa: ARG001
+    n_chunks: int = 1,
+    block_size: int = 100,  # noqa: ARG001
+    enc_tile_size: int | None = None,  # noqa: ARG001
+    pos_tile_size: int | None = None,
+    dtype_bytes: int = 4,
+) -> int:
+    """Estimate peak GPU bytes for a sorted-spikes GLM predict call.
+
+    GLM evaluates ``design_matrix @ coefficients`` for each chunk, then
+    computes per-neuron Poisson log-likelihood contributions.  Dominant
+    tensors:
+
+    - ``likelihood_slab``: ``(chunk_size, n_state_bins)``
+    - ``design_matrix``: ``(chunk_size, n_coefficients)`` per chunk
+    - ``coefficients``: ``(n_neurons, n_coefficients)`` fit-time
+    - ``rates``: ``(chunk_size, n_neurons)`` intermediate
+    - ``per_neuron_tmp``: ``(chunk_size, pos_dim)`` log-prob
+    - ``transition``: ``(n_state_bins, n_state_bins)``
+    - ``fixed_scratch``: 1 GB
+
+    Multiplicative safety factor of 2.0 for XLA workspace.
+
+    Returns
+    -------
+    int
+        Estimated peak bytes.
+    """
+    chunk_size = (n_time + n_chunks - 1) // n_chunks
+    pos_dim = pos_tile_size if pos_tile_size is not None else n_pos
+
+    likelihood_slab = chunk_size * n_state_bins * dtype_bytes
+    design_matrix = chunk_size * n_coefficients * dtype_bytes
+    coefficients = n_neurons * n_coefficients * dtype_bytes
+    rates = chunk_size * n_neurons * dtype_bytes
+    per_neuron_tmp = chunk_size * pos_dim * dtype_bytes
+    transition = n_state_bins * n_state_bins * dtype_bytes
+    fixed_scratch = 1 * 2**30
+
+    _SAFETY_MULTIPLIER = 2.0
+    return int(
+        _SAFETY_MULTIPLIER
+        * (
+            likelihood_slab
+            + design_matrix
+            + coefficients
+            + rates
+            + per_neuron_tmp
+            + transition
+            + fixed_scratch
+        )
+    )
+
+
+def _estimate_fit_peak_bytes(
+    *,
+    n_time_pos: int,
+    n_pos: int,
+    n_neurons: int,
+    n_coefficients: int = 0,
+    fit_block_size: int = 10_000,  # noqa: ARG001 — GLM fit uses scipy optimizer, no block knob
+    dtype_bytes: int = 4,
+) -> int:
+    """Estimate peak GPU bytes for ``fit_sorted_spikes_glm_encoding_model``.
+
+    GLM fit constructs the design matrix over all position samples, then
+    runs per-neuron Poisson regression via scipy.optimize.  Dominant
+    tensors:
+
+    - ``design_matrix``: ``(n_time_pos, n_coefficients)``
+    - ``coefficients_store``: ``(n_neurons, n_coefficients)``
+    - ``optimizer_scratch``: another ``(n_time_pos, n_coefficients)`` for
+      Hessian / gradient scratch
+    - ``place_fields``: ``(n_neurons, n_pos)`` — final cached rate maps
+    - ``fixed_scratch``: 0.5 GB
+
+    GLM fit has no tunable block-size knob today (scipy runs at full
+    matrix size), so ``fit_block_size`` is ignored.  Auto can still
+    detect OOM and warn.
+
+    Returns
+    -------
+    int
+        Estimated peak bytes.
+    """
+    design_matrix = n_time_pos * n_coefficients * dtype_bytes
+    coefficients_store = n_neurons * n_coefficients * dtype_bytes
+    optimizer_scratch = n_time_pos * n_coefficients * dtype_bytes
+    place_fields = n_neurons * n_pos * dtype_bytes
+    fixed_scratch = 512 * 2**20  # 0.5 GB
+
+    _SAFETY_MULTIPLIER = 2.0
+    return int(
+        _SAFETY_MULTIPLIER
+        * (
+            design_matrix
+            + coefficients_store
+            + optimizer_scratch
+            + place_fields
+            + fixed_scratch
+        )
+    )
+
+
 def make_spline_design_matrix(
     position: np.ndarray,
     place_bin_edges: np.ndarray,

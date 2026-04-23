@@ -4,6 +4,7 @@ import inspect
 import pickle
 import warnings
 from logging import getLogger
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -45,6 +46,7 @@ from non_local_detector.likelihoods import (
     predict_no_spike_log_likelihood,
 )
 from non_local_detector.observation_models import ObservationModel
+from non_local_detector.streaming import _resolve_n_chunks
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -57,6 +59,39 @@ from non_local_detector.types import (
 
 logger = getLogger(__name__)
 sklearn.set_config(print_changed_only=False)
+
+
+def _guard_return_outputs_streaming(
+    requested_outputs: set[str],
+    n_chunks: int,
+    n_time: int,
+    n_state_bins: int,
+) -> None:
+    """Raise if the caller asked for log_likelihood but streaming is on.
+
+    When ``n_chunks > 1``, the filter consumes each chunk's log-likelihood
+    slab immediately and discards it — the full ``(n_time, n_state_bins)``
+    array is never materialized.  If the caller asked for it via
+    ``return_outputs``, silently omitting it would be confusing; silently
+    materializing it would defeat the point of streaming.  Raise with a
+    clear message so the caller knows how to proceed.
+    """
+    if n_chunks <= 1 or "log_likelihood" not in requested_outputs:
+        return
+    raise ValidationError(
+        "Cannot return log_likelihood when streaming (n_chunks > 1)",
+        expected="n_chunks=1 or no 'log_likelihood' in return_outputs",
+        got=(
+            f"n_chunks={n_chunks} (auto-resolved from device memory); "
+            f"the full ({n_time}, {n_state_bins}) log-likelihood array "
+            f"would be ~{n_time * n_state_bins * 4 / 1e9:.1f} GB and is "
+            f"not materialized per-chunk"
+        ),
+        hint=(
+            "Pass n_chunks=1 explicitly to force the full array, or remove "
+            "'log_likelihood' from return_outputs."
+        ),
+    )
 
 _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS = {
     "waveform_std": 24.0,
@@ -1583,7 +1618,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         is_missing: np.ndarray | None = None,
         log_likelihoods: np.ndarray | None = None,
         cache_likelihood: bool = True,
-        n_chunks: int = 1,
+        n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
         discrete_state_transitions: np.ndarray | None = None,
     ) -> tuple[
         np.ndarray,
@@ -1610,8 +1646,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Precomputed log likelihoods, by default None
         cache_likelihood : bool, optional
             Whether to cache the log likelihoods, by default True
-        n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
+        n_chunks : int or ``'auto'``, optional
+            Splits the decoding time axis into chunks so each chunk's
+            ``(chunk_size, n_state_bins)`` log-likelihood slab fits in
+            device memory; peak memory scales with ``chunk_size`` instead
+            of ``n_time``.  ``'auto'`` (default) queries JAX device
+            memory and picks a count that keeps each slab under a
+            safety fraction of the budget.  Pass an int to override.
+            ``n_chunks=1`` disables chunking (the pre-auto default) —
+            use when the full likelihood array fits and you want the
+            marginal speed from not dispatching per chunk.  See
+            :func:`non_local_detector.streaming._resolve_n_chunks`.
         discrete_state_transitions : np.ndarray, shape (n_time, n_states, n_states) or None, optional
             Covariate-driven transition matrices to use instead of
             self.discrete_state_transitions_. When None, falls back to the
@@ -1628,6 +1673,36 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         causal_posterior : np.ndarray, shape (n_time, n_state_bins)
         predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
         """
+        # Resolve ``'auto'`` against device memory.  Passthrough for int.
+        # Must happen before the cache-disable check below so that
+        # caching is correctly disabled when the heuristic picks >1.
+        n_state_bins = int(self.is_track_interior_state_bins_.sum())
+        # ``memory_budget`` overrides the device-memory query in
+        # ``_resolve_n_chunks``.  ``memory_budget=None`` means "don't auto";
+        # ``"auto"`` queries the device (same as default).  An int is a
+        # byte budget, useful to simulate smaller GPUs for testing or to
+        # reserve headroom on shared GPUs.
+        if memory_budget == "auto":
+            memory_budget_bytes: int | None = None  # defer to device query
+        elif memory_budget is None:
+            # Disable auto entirely: force n_chunks to pass through.
+            if not isinstance(n_chunks, int):
+                n_chunks = 1
+            memory_budget_bytes = None
+        else:
+            memory_budget_bytes = int(memory_budget)
+        n_chunks = _resolve_n_chunks(
+            n_chunks,
+            n_time=len(time),
+            n_state_bins=n_state_bins,
+            memory_budget_bytes=memory_budget_bytes,
+        )
+        if n_chunks > 1:
+            logger.info(
+                f"Streaming likelihood across n_chunks={n_chunks} "
+                f"(auto-resolved from device memory; pass n_chunks=1 to disable)"
+            )
+
         # Disable caching when using multiple chunks (memory optimization)
         if n_chunks > 1 and cache_likelihood:
             logger.info("Disabling likelihood caching for chunked processing")
@@ -1723,7 +1798,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
-        n_chunks: int = 1,
+        n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
@@ -1755,8 +1831,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
         store_log_likelihood : bool, optional
             Whether to store the log likelihoods in self.log_likelihoods_, by default False.
-        n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
+        n_chunks : int or ``'auto'``, optional
+            Splits data into chunks along the time axis so each chunk's
+            likelihood slab fits in device memory.  ``'auto'`` (default)
+            queries JAX device memory; pass an int to override, or
+            ``n_chunks=1`` to disable chunking.
         return_outputs : str, list of str, set of str, or None, optional
             Controls which optional outputs are returned.
 
@@ -1832,7 +1911,23 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
 
-        # Automatically enable caching if log_likelihood is requested
+        # Resolve n_chunks early so the log_likelihood / streaming guard
+        # (below) can see the actual chunk count.  ``_predict`` will
+        # re-run the resolution; passthrough for int is cheap.
+        n_state_bins = int(self.is_track_interior_state_bins_.sum())
+        n_chunks = _resolve_n_chunks(
+            n_chunks, n_time=len(time), n_state_bins=n_state_bins
+        )
+        _guard_return_outputs_streaming(
+            requested_outputs,
+            n_chunks=n_chunks,
+            n_time=len(time),
+            n_state_bins=n_state_bins,
+        )
+
+        # Automatically enable caching if log_likelihood is requested.
+        # Combined with the guard above: we only reach this branch when
+        # n_chunks == 1, so caching is consistent with non-streaming.
         if "log_likelihood" in requested_outputs and not cache_likelihood:
             cache_likelihood = True
 
@@ -1869,6 +1964,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 cache_likelihood=cache_likelihood,
                 log_likelihoods=getattr(self, "log_likelihood_", None),
                 n_chunks=n_chunks,
+                memory_budget=memory_budget,
             )
             # Maximization step
             logger.info("Maximization step...")
@@ -2044,7 +2140,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         time: np.ndarray,
         log_likelihood_args: tuple | None = None,
         is_missing: np.ndarray | None = None,
-        n_chunks: int = 1,
+        n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
     ) -> np.ndarray:
         """Find the most likely sequence of states.
 
@@ -3021,7 +3118,8 @@ class ClusterlessDetector(_DetectorBase):
         is_missing: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         cache_likelihood: bool = False,
-        n_chunks: int = 1,
+        n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         save_causal_posterior_to_results: bool | None = None,
@@ -3047,8 +3145,11 @@ class ClusterlessDetector(_DetectorBase):
             Covariate data for covariate-dependent discrete transition, by default None.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
-        n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
+        n_chunks : int or ``'auto'``, optional
+            Splits data into chunks along the time axis so each chunk's
+            likelihood slab fits in device memory.  ``'auto'`` (default)
+            queries JAX device memory; pass an int to override, or
+            ``n_chunks=1`` to disable chunking.
         return_outputs : str, list of str, set of str, or None, optional
             Controls which optional outputs are returned.
 
@@ -3185,7 +3286,23 @@ class ClusterlessDetector(_DetectorBase):
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
 
-        # Automatically enable caching if log_likelihood is requested
+        # Resolve n_chunks early so the log_likelihood / streaming guard
+        # (below) can see the actual chunk count.  ``_predict`` will
+        # re-run the resolution; passthrough for int is cheap.
+        n_state_bins = int(self.is_track_interior_state_bins_.sum())
+        n_chunks = _resolve_n_chunks(
+            n_chunks, n_time=len(time), n_state_bins=n_state_bins
+        )
+        _guard_return_outputs_streaming(
+            requested_outputs,
+            n_chunks=n_chunks,
+            n_time=len(time),
+            n_state_bins=n_state_bins,
+        )
+
+        # Automatically enable caching if log_likelihood is requested.
+        # Combined with the guard above: we only reach this branch when
+        # n_chunks == 1, so caching is consistent with non-streaming.
         if "log_likelihood" in requested_outputs and not cache_likelihood:
             cache_likelihood = True
 
@@ -3221,6 +3338,7 @@ class ClusterlessDetector(_DetectorBase):
             is_missing=is_missing,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
+            memory_budget=memory_budget,
             discrete_state_transitions=predicted_transitions,
         )
 
@@ -3269,7 +3387,8 @@ class ClusterlessDetector(_DetectorBase):
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
-        n_chunks: int = 1,
+        n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
@@ -3315,8 +3434,11 @@ class ClusterlessDetector(_DetectorBase):
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
         store_log_likelihood : bool, optional
             Whether to store the log likelihoods in self.log_likelihoods_, by default False.
-        n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
+        n_chunks : int or ``'auto'``, optional
+            Splits data into chunks along the time axis so each chunk's
+            likelihood slab fits in device memory.  ``'auto'`` (default)
+            queries JAX device memory; pass an int to override, or
+            ``n_chunks=1`` to disable chunking.
         return_outputs : str, list of str, set of str, or None, optional
             Controls which optional outputs are returned. See predict() for full
             documentation of options. By default None.
@@ -3396,7 +3518,8 @@ class ClusterlessDetector(_DetectorBase):
         spike_waveform_features: list[np.ndarray],
         time: np.ndarray,
         is_missing: np.ndarray | None = None,
-        n_chunks: int = 1,
+        n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
     ) -> pd.DataFrame:
         """Find the most likely sequence of states.
 
@@ -3414,8 +3537,11 @@ class ClusterlessDetector(_DetectorBase):
             Time points for decoding.
         is_missing : np.ndarray, shape (n_time,), optional
             Boolean array indicating missing data, by default None.
-        n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
+        n_chunks : int or ``'auto'``, optional
+            Splits data into chunks along the time axis so each chunk's
+            likelihood slab fits in device memory.  ``'auto'`` (default)
+            queries JAX device memory; pass an int to override, or
+            ``n_chunks=1`` to disable chunking.
 
         Returns
         -------
@@ -3951,7 +4077,8 @@ class SortedSpikesDetector(_DetectorBase):
         is_missing: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         cache_likelihood: bool = False,
-        n_chunks: int = 1,
+        n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         save_causal_posterior_to_results: bool | None = None,
@@ -3975,8 +4102,11 @@ class SortedSpikesDetector(_DetectorBase):
             Covariate data for covariate-dependent discrete transition, by default None.
         cache_likelihood : bool, optional
             Whether to cache the log likelihoods, by default False.
-        n_chunks : int, optional
-            Splits data into chunks for processing, by default 1
+        n_chunks : int or ``'auto'``, optional
+            Splits data into chunks along the time axis so each chunk's
+            likelihood slab fits in device memory.  ``'auto'`` (default)
+            queries JAX device memory; pass an int to override, or
+            ``n_chunks=1`` to disable chunking.
         return_outputs : str, list of str, set of str, or None, optional
             Controls which optional outputs are returned. See ClusterlessDetector.predict
             for full documentation. By default None.
@@ -4044,7 +4174,23 @@ class SortedSpikesDetector(_DetectorBase):
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
 
-        # Automatically enable caching if log_likelihood is requested
+        # Resolve n_chunks early so the log_likelihood / streaming guard
+        # (below) can see the actual chunk count.  ``_predict`` will
+        # re-run the resolution; passthrough for int is cheap.
+        n_state_bins = int(self.is_track_interior_state_bins_.sum())
+        n_chunks = _resolve_n_chunks(
+            n_chunks, n_time=len(time), n_state_bins=n_state_bins
+        )
+        _guard_return_outputs_streaming(
+            requested_outputs,
+            n_chunks=n_chunks,
+            n_time=len(time),
+            n_state_bins=n_state_bins,
+        )
+
+        # Automatically enable caching if log_likelihood is requested.
+        # Combined with the guard above: we only reach this branch when
+        # n_chunks == 1, so caching is consistent with non-streaming.
         if "log_likelihood" in requested_outputs and not cache_likelihood:
             cache_likelihood = True
 
@@ -4080,6 +4226,7 @@ class SortedSpikesDetector(_DetectorBase):
             is_missing=is_missing,
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
+            memory_budget=memory_budget,
             discrete_state_transitions=predicted_transitions,
         )
 
@@ -4127,7 +4274,8 @@ class SortedSpikesDetector(_DetectorBase):
         tolerance: float = 1e-4,
         cache_likelihood: bool = True,
         store_log_likelihood: bool = False,
-        n_chunks: int = 1,
+        n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
@@ -4251,7 +4399,8 @@ class SortedSpikesDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         time: np.ndarray,
         is_missing: np.ndarray | None = None,
-        n_chunks: int = 1,
+        n_chunks: int | Literal["auto"] = "auto",
+        memory_budget: int | Literal["auto"] | None = "auto",
     ) -> pd.DataFrame:
         """Find the most likely sequence of states.
 
