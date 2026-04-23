@@ -3388,6 +3388,30 @@ class ClusterlessDetector(_DetectorBase):
         )
 
 
+_SORTED_PREDICT_PEAK_ESTIMATORS: dict = {}
+
+
+def _get_sorted_predict_estimator(algorithm: str):
+    """Look up the predict peak estimator for a sorted-spikes algorithm."""
+    if algorithm in _SORTED_PREDICT_PEAK_ESTIMATORS:
+        return _SORTED_PREDICT_PEAK_ESTIMATORS[algorithm]
+    import importlib
+
+    module_name = {
+        "sorted_spikes_kde": "non_local_detector.likelihoods.sorted_spikes_kde",
+        "sorted_spikes_glm": "non_local_detector.likelihoods.sorted_spikes_glm",
+    }.get(algorithm)
+    estimator = None
+    if module_name is not None:
+        try:
+            mod = importlib.import_module(module_name)
+            estimator = getattr(mod, "_estimate_predict_peak_bytes", None)
+        except ImportError:
+            estimator = None
+    _SORTED_PREDICT_PEAK_ESTIMATORS[algorithm] = estimator
+    return estimator
+
+
 class SortedSpikesDetector(_DetectorBase):
     """
     Detector class for sorted spikes.
@@ -3701,6 +3725,47 @@ class SortedSpikesDetector(_DetectorBase):
         )
         return self
 
+    def _get_predict_peak_estimator(self):
+        """Dispatch to the algorithm-specific predict peak estimator."""
+        return _get_sorted_predict_estimator(self.sorted_spikes_algorithm)
+
+    def _get_predict_memory_workload(
+        self,
+        time: np.ndarray,
+        log_likelihood_args: tuple,
+    ) -> dict | None:
+        """Extract workload shape for the sorted-spikes memory estimator.
+
+        ``log_likelihood_args`` is ``(position_time, position, spike_times)``
+        per the SortedSpikesDetector convention.
+        """
+        if len(log_likelihood_args) < 3:
+            return None
+        algo_key = self.sorted_spikes_algorithm[:2]
+        encoding_model = getattr(self, "encoding_model_", {}).get(algo_key)
+        if encoding_model is None:
+            return None
+        # place_fields shape is (n_neurons, n_pos).
+        place_fields = encoding_model.get("place_fields")
+        if place_fields is None:
+            return None
+        n_neurons = int(place_fields.shape[0])
+        n_state_bins = int(self.is_track_interior_state_bins_.sum())
+        n_states = len(self.observation_models) if self.observation_models else 1
+        n_pos = max(1, n_state_bins // max(1, n_states))
+        workload: dict = {
+            "n_time": int(len(time)),
+            "n_state_bins": n_state_bins,
+            "n_pos": n_pos,
+            "n_neurons": n_neurons,
+        }
+        # GLM estimator also uses n_coefficients; extract from design_info
+        # when available.  KDE ignores this kwarg.
+        design_info = encoding_model.get("design_info")
+        if design_info is not None and hasattr(design_info, "column_names"):
+            workload["n_coefficients"] = len(design_info.column_names)
+        return workload
+
     def compute_log_likelihood(
         self,
         time: np.ndarray,
@@ -3781,12 +3846,23 @@ class SortedSpikesDetector(_DetectorBase):
                     time, spike_times, self.no_spike_rate
                 )
             elif likelihood_name not in computed_likelihoods:
+                # Apply memory-knob overrides stashed by ``_predict`` when
+                # ``memory_budget`` was set.  Sorted-spikes likelihoods
+                # don't use ``enc_tile_size`` (no encoding-side kernel),
+                # but the loop just filters by intersection of knobs the
+                # likelihood function accepts.
+                params = dict(self.encoding_model_[likelihood_name[:2]])
+                knob_overrides = getattr(self, "_memory_knob_overrides_", None)
+                if knob_overrides:
+                    for knob_name in ("block_size", "pos_tile_size"):
+                        if knob_name in knob_overrides and knob_name in params:
+                            params[knob_name] = knob_overrides[knob_name]
                 likelihood_results[state_id] = likelihood_func(
                     time,
                     position_time,
                     position,
                     spike_times,
-                    **self.encoding_model_[likelihood_name[:2]],
+                    **params,
                     is_local=obs.is_local,
                 )
                 computed_likelihoods[likelihood_name] = state_id
