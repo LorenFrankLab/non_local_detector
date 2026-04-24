@@ -114,8 +114,21 @@ def _estimate_predict_peak_bytes(
     )
     persistent = likelihood_slab + transition + fixed_scratch
 
-    # Safety multiplier absorbs XLA/autotuning overhead unmodeled above.
-    _SAFETY_MULTIPLIER = 2.0
+    # Safety multiplier calibrated against observed peak memory.
+    #
+    # Empirical from Task 8 real-data validation (22-tet 2D HPC ContFrag):
+    # - Per-tensor model predicts ~7.5 GB at n_chunks=1, block_size=10000.
+    # - Observed JAX ``peak_bytes_in_use`` at the same config: ~33 GB.
+    # - Ratio ~4.4× — the unmodeled overhead is primarily JAX async dispatch
+    #   keeping all 22 electrodes' ``position_distance`` +
+    #   ``per_electrode_output`` intermediates alive until the filter
+    #   consumes the chunk's likelihood.  At ``n_electrodes`` up to ~64 in
+    #   production this ratio can climb further, so we round up to 5×.
+    #
+    # Note: sorted-spikes peak/slab ratio is much smaller (~2×) because
+    # there's no per-electrode mark kernel; see sorted_spikes_kde /
+    # sorted_spikes_glm estimators for the algorithm-appropriate value.
+    _SAFETY_MULTIPLIER = 5.0
     return int(_SAFETY_MULTIPLIER * (per_electrode_live + persistent))
 
 

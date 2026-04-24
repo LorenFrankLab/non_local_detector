@@ -43,6 +43,7 @@ from non_local_detector.likelihoods import (
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.streaming import (
     _resolve_n_chunks,
+    auto_select_fit_memory_knobs,
     auto_select_predict_memory_knobs,
 )
 from non_local_detector.types import (
@@ -2411,6 +2412,29 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
 
 _CLUSTERLESS_PREDICT_PEAK_ESTIMATORS: dict = {}
+_CLUSTERLESS_FIT_PEAK_ESTIMATORS: dict = {}
+
+
+def _get_clusterless_fit_estimator(algorithm: str):
+    """Look up the fit peak estimator for a clusterless algorithm."""
+    if algorithm in _CLUSTERLESS_FIT_PEAK_ESTIMATORS:
+        return _CLUSTERLESS_FIT_PEAK_ESTIMATORS[algorithm]
+    import importlib
+
+    module_name = {
+        "clusterless_kde": "non_local_detector.likelihoods.clusterless_kde",
+        "clusterless_kde_log": "non_local_detector.likelihoods.clusterless_kde_log",
+        "clusterless_gmm": "non_local_detector.likelihoods.clusterless_gmm",
+    }.get(algorithm)
+    estimator = None
+    if module_name is not None:
+        try:
+            mod = importlib.import_module(module_name)
+            estimator = getattr(mod, "_estimate_fit_peak_bytes", None)
+        except ImportError:
+            estimator = None
+    _CLUSTERLESS_FIT_PEAK_ESTIMATORS[algorithm] = estimator
+    return estimator
 
 
 def _get_clusterless_predict_estimator(algorithm: str):
@@ -2615,6 +2639,7 @@ class ClusterlessDetector(_DetectorBase):
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
         weights: np.ndarray | None = None,
+        memory_budget: int | Literal["auto"] | None = "auto",
     ) -> None:
         """
         Fit the encoding model to the data.
@@ -2671,9 +2696,67 @@ class ClusterlessDetector(_DetectorBase):
         if weights is not None:
             weights = weights[~is_nan]
 
-        kwargs = self.clusterless_algorithm_params
-        if kwargs is None:
-            kwargs = {}
+        # Copy algorithm params so per-fit memory-budget overrides don't
+        # mutate the detector's persistent state.
+        kwargs = dict(self.clusterless_algorithm_params or {})
+
+        # Fit-time memory-aware auto: override ``block_size`` via the
+        # auto_select_fit_memory_knobs heuristic when ``memory_budget`` is
+        # set.  Disabled by ``memory_budget=None``; no-op on algorithms
+        # without a fit peak estimator.
+        if memory_budget is not None:
+            if memory_budget == "auto":
+                mem_bytes = _query_effective_device_budget_bytes()
+            else:
+                mem_bytes = int(memory_budget)
+            estimator = _get_clusterless_fit_estimator(self.clusterless_algorithm)
+            if mem_bytes is not None and estimator is not None:
+                # Max over electrodes is a conservative upper bound on
+                # per-electrode KDE eval memory.
+                n_enc_max = (
+                    max((len(st) for st in spike_times), default=0)
+                    if spike_times
+                    else 0
+                )
+                n_wf = (
+                    int(spike_waveform_features[0].shape[1])
+                    if spike_waveform_features
+                    and hasattr(spike_waveform_features[0], "ndim")
+                    and spike_waveform_features[0].ndim > 1
+                    else 0
+                )
+                n_pos_interior = int(
+                    self.environments[0]
+                    .place_bin_centers_[
+                        self.environments[0].is_track_interior_.ravel()
+                    ]
+                    .shape[0]
+                )
+                try:
+                    fit_knobs = auto_select_fit_memory_knobs(
+                        peak_estimator=estimator,
+                        workload={
+                            "n_time_pos": int(len(position_time)),
+                            "n_pos": n_pos_interior,
+                            "n_encoding_spikes_max": n_enc_max,
+                            "n_waveform_features": n_wf,
+                        },
+                        memory_budget_bytes=mem_bytes,
+                    )
+                    kwargs["block_size"] = fit_knobs["fit_block_size"]
+                    logger.info(
+                        "Auto-selected fit memory knobs: block_size=%d "
+                        "(budget=%.1f GB)",
+                        fit_knobs["fit_block_size"],
+                        mem_bytes / 2**30,
+                    )
+                except RuntimeError as e:
+                    logger.warning(
+                        "auto_select_fit_memory_knobs failed: %s "
+                        "(falling back to configured block_size=%s)",
+                        e,
+                        kwargs.get("block_size"),
+                    )
 
         self.encoding_model_ = {}
 
@@ -2713,6 +2796,7 @@ class ClusterlessDetector(_DetectorBase):
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
+        memory_budget: int | Literal["auto"] | None = "auto",
     ) -> "ClusterlessDetector":
         """
         Fit the detector to the data.
@@ -2756,6 +2840,7 @@ class ClusterlessDetector(_DetectorBase):
             is_training,
             encoding_group_labels,
             environment_labels,
+            memory_budget=memory_budget,
         )
         return self
 
@@ -3389,6 +3474,28 @@ class ClusterlessDetector(_DetectorBase):
 
 
 _SORTED_PREDICT_PEAK_ESTIMATORS: dict = {}
+_SORTED_FIT_PEAK_ESTIMATORS: dict = {}
+
+
+def _get_sorted_fit_estimator(algorithm: str):
+    """Look up the fit peak estimator for a sorted-spikes algorithm."""
+    if algorithm in _SORTED_FIT_PEAK_ESTIMATORS:
+        return _SORTED_FIT_PEAK_ESTIMATORS[algorithm]
+    import importlib
+
+    module_name = {
+        "sorted_spikes_kde": "non_local_detector.likelihoods.sorted_spikes_kde",
+        "sorted_spikes_glm": "non_local_detector.likelihoods.sorted_spikes_glm",
+    }.get(algorithm)
+    estimator = None
+    if module_name is not None:
+        try:
+            mod = importlib.import_module(module_name)
+            estimator = getattr(mod, "_estimate_fit_peak_bytes", None)
+        except ImportError:
+            estimator = None
+    _SORTED_FIT_PEAK_ESTIMATORS[algorithm] = estimator
+    return estimator
 
 
 def _get_sorted_predict_estimator(algorithm: str):
@@ -3567,6 +3674,7 @@ class SortedSpikesDetector(_DetectorBase):
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
         weights: np.ndarray | None = None,
+        memory_budget: int | Literal["auto"] | None = "auto",
     ) -> None:
         """
         Fit place fields to the data.
@@ -3619,9 +3727,58 @@ class SortedSpikesDetector(_DetectorBase):
         if weights is not None:
             weights = weights[~is_nan]
 
-        kwargs = self.sorted_spikes_algorithm_params
-        if kwargs is None:
-            kwargs = {}
+        # Copy algorithm params so per-fit memory-budget overrides don't
+        # mutate the detector's persistent state.
+        kwargs = dict(self.sorted_spikes_algorithm_params or {})
+
+        # Fit-time memory-aware auto (sorted-spikes version).  Tunes
+        # ``block_size`` via ``auto_select_fit_memory_knobs``.  See the
+        # clusterless counterpart in ``ClusterlessDetector.fit_encoding_model``
+        # for the full reasoning.
+        if memory_budget is not None:
+            if memory_budget == "auto":
+                mem_bytes = _query_effective_device_budget_bytes()
+            else:
+                mem_bytes = int(memory_budget)
+            estimator = _get_sorted_fit_estimator(self.sorted_spikes_algorithm)
+            if mem_bytes is not None and estimator is not None:
+                n_spikes_per_neuron_max = (
+                    max((len(st) for st in spike_times), default=0)
+                    if spike_times
+                    else 0
+                )
+                n_pos_interior = int(
+                    self.environments[0]
+                    .place_bin_centers_[
+                        self.environments[0].is_track_interior_.ravel()
+                    ]
+                    .shape[0]
+                )
+                try:
+                    fit_knobs = auto_select_fit_memory_knobs(
+                        peak_estimator=estimator,
+                        workload={
+                            "n_time_pos": int(len(position_time)),
+                            "n_pos": n_pos_interior,
+                            "n_neurons": len(spike_times),
+                            "n_spikes_per_neuron_max": n_spikes_per_neuron_max,
+                        },
+                        memory_budget_bytes=mem_bytes,
+                    )
+                    kwargs["block_size"] = fit_knobs["fit_block_size"]
+                    logger.info(
+                        "Auto-selected fit memory knobs: block_size=%d "
+                        "(budget=%.1f GB)",
+                        fit_knobs["fit_block_size"],
+                        mem_bytes / 2**30,
+                    )
+                except RuntimeError as e:
+                    logger.warning(
+                        "auto_select_fit_memory_knobs failed: %s "
+                        "(falling back to configured block_size=%s)",
+                        e,
+                        kwargs.get("block_size"),
+                    )
 
         self.encoding_model_ = {}
 
@@ -3682,6 +3839,7 @@ class SortedSpikesDetector(_DetectorBase):
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
+        memory_budget: int | Literal["auto"] | None = "auto",
     ) -> "SortedSpikesDetector":
         """
         Fit the detector to the data.
@@ -3722,6 +3880,7 @@ class SortedSpikesDetector(_DetectorBase):
             is_training,
             encoding_group_labels,
             environment_labels,
+            memory_budget=memory_budget,
         )
         return self
 
