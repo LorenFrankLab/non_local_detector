@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.discrete_state_transitions import (
+    DiscreteStationaryCustom,
     _estimate_discrete_transition,
     estimate_discrete_transition_counts_from_expanded_posteriors,
     estimate_discrete_transition_responses_from_expanded_posteriors,
@@ -20,7 +21,218 @@ from non_local_detector.discrete_state_transitions import (
     estimate_stationary_state_transition,
     estimate_stationary_state_transition_from_counts,
 )
+from non_local_detector.environment import Environment
+from non_local_detector.initial_conditions import UniformInitialConditions
+from non_local_detector.models.base import _DetectorBase
+from non_local_detector.observation_models import ObservationModel
 from non_local_detector.tests.conftest import assert_stochastic_matrix
+
+
+class _FixedTransition:
+    """Continuous transition object with deterministic test matrix."""
+
+    def __init__(self, transition_matrix: np.ndarray):
+        self.transition_matrix = np.asarray(transition_matrix, dtype=float)
+
+    def make_state_transition(self, environments):
+        return self.transition_matrix
+
+
+class _FixedLikelihoodDetector(_DetectorBase):
+    """Minimal detector that simulates observations as fixed log likelihoods."""
+
+    def __init__(
+        self,
+        log_likelihoods: np.ndarray,
+        discrete_initial_conditions: np.ndarray | None = None,
+        discrete_transition: np.ndarray | None = None,
+        continuous_transition_blocks: list[list[np.ndarray]] | None = None,
+    ):
+        self._fixed_log_likelihoods = np.asarray(log_likelihoods, dtype=float)
+
+        if discrete_initial_conditions is None:
+            discrete_initial_conditions = np.array([0.8, 0.2, 0.0])
+        if discrete_transition is None:
+            discrete_transition = np.array(
+                [
+                    [0.0, 0.0, 1.0],
+                    [0.0, 0.0, 1.0],
+                    [0.0, 0.0, 1.0],
+                ]
+            )
+        if continuous_transition_blocks is None:
+            source_a_to_target_bin_0 = np.array([[1.0, 0.0], [1.0, 0.0]])
+            source_b_to_target_bin_1 = np.array([[0.0, 1.0], [0.0, 1.0]])
+            identity = np.eye(2)
+            uniform = np.ones((2, 2)) / 2.0
+            continuous_transition_blocks = [
+                [identity, uniform, source_a_to_target_bin_0],
+                [uniform, identity, source_b_to_target_bin_1],
+                [uniform, uniform, identity],
+            ]
+
+        continuous_transition_types = [
+            [_FixedTransition(block) for block in row]
+            for row in continuous_transition_blocks
+        ]
+
+        super().__init__(
+            discrete_initial_conditions=discrete_initial_conditions,
+            continuous_initial_conditions_types=[UniformInitialConditions()] * 3,
+            discrete_transition_type=DiscreteStationaryCustom(
+                values=discrete_transition,
+            ),
+            discrete_transition_concentration=1.0,
+            discrete_transition_stickiness=np.zeros(3),
+            discrete_transition_regularization=0.0,
+            continuous_transition_types=continuous_transition_types,
+            observation_models=[
+                ObservationModel(),
+                ObservationModel(),
+                ObservationModel(),
+            ],
+            environments=Environment(
+                place_bin_size=1.0,
+                position_range=[(0.0, 2.0)],
+            ),
+            infer_track_interior=False,
+            state_names=["Source A", "Source B", "Target"],
+        )
+
+    def compute_log_likelihood(self, time, *args, is_missing=None):
+        return self._fixed_log_likelihoods
+
+    def fit_encoding_model(self, *args, **kwargs):
+        return None
+
+
+def _sample_categorical(rng: np.random.Generator, probabilities: np.ndarray) -> int:
+    """Sample one index from a probability vector."""
+    return int(rng.choice(probabilities.size, p=probabilities))
+
+
+def _simulate_expanded_hmm(
+    rng: np.random.Generator,
+    initial_conditions: np.ndarray,
+    discrete_transition: np.ndarray,
+    continuous_transition_blocks: list[list[np.ndarray]],
+    n_time: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Simulate discrete states and within-state bins from an expanded HMM."""
+    states = np.zeros(n_time, dtype=int)
+    bins = np.zeros(n_time, dtype=int)
+    states[0] = _sample_categorical(rng, initial_conditions)
+    bins[0] = int(
+        rng.integers(continuous_transition_blocks[states[0]][states[0]].shape[0])
+    )
+
+    for t in range(1, n_time):
+        previous_state = states[t - 1]
+        previous_bin = bins[t - 1]
+        states[t] = _sample_categorical(rng, discrete_transition[previous_state])
+        bins[t] = _sample_categorical(
+            rng,
+            continuous_transition_blocks[previous_state][states[t]][previous_bin],
+        )
+
+    return states, bins
+
+
+def _log_likelihoods_from_expanded_states(
+    states: np.ndarray,
+    bins: np.ndarray,
+    n_states: int,
+    n_bins: int,
+    off_target_log_likelihood: float = -6.0,
+) -> np.ndarray:
+    """Construct informative simulated log likelihoods from expanded states."""
+    log_likelihoods = np.full(
+        (states.size, n_states * n_bins), off_target_log_likelihood
+    )
+    log_likelihoods[np.arange(states.size), states * n_bins + bins] = 0.0
+    return log_likelihoods
+
+
+def _empirical_discrete_transition(states: np.ndarray, n_states: int) -> np.ndarray:
+    """Estimate row-stochastic transition probabilities from state samples."""
+    counts = np.zeros((n_states, n_states))
+    np.add.at(counts, (states[:-1], states[1:]), 1.0)
+    return counts / counts.sum(axis=1, keepdims=True)
+
+
+def _expanded_hmm_parameters() -> tuple[np.ndarray, np.ndarray, list[list[np.ndarray]]]:
+    """Return a small identifiable expanded HMM for transition-recovery tests."""
+    initial_conditions = np.full(3, 1.0 / 3.0)
+    discrete_transition = np.array(
+        [
+            [0.72, 0.18, 0.10],
+            [0.12, 0.75, 0.13],
+            [0.16, 0.14, 0.70],
+        ]
+    )
+    same = np.array([[0.90, 0.10], [0.10, 0.90]])
+    flip = np.array([[0.20, 0.80], [0.80, 0.20]])
+    left = np.array([[0.85, 0.15], [0.85, 0.15]])
+    right = np.array([[0.15, 0.85], [0.15, 0.85]])
+    continuous_transition_blocks = [
+        [same, left, right],
+        [right, same, left],
+        [left, right, flip],
+    ]
+    return initial_conditions, discrete_transition, continuous_transition_blocks
+
+
+def _estimate_simulated_discrete_transition(
+    seed: int,
+    n_time: int,
+    off_target_log_likelihood: float,
+    max_iter: int = 1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Simulate an expanded HMM and estimate its discrete transition matrix."""
+    rng = np.random.default_rng(seed)
+    n_states = 3
+    n_bins = 2
+    (
+        initial_conditions,
+        true_discrete_transition,
+        continuous_transition_blocks,
+    ) = _expanded_hmm_parameters()
+    states, bins = _simulate_expanded_hmm(
+        rng,
+        initial_conditions,
+        true_discrete_transition,
+        continuous_transition_blocks,
+        n_time,
+    )
+    log_likelihoods = _log_likelihoods_from_expanded_states(
+        states,
+        bins,
+        n_states,
+        n_bins,
+        off_target_log_likelihood=off_target_log_likelihood,
+    )
+    detector = _FixedLikelihoodDetector(
+        log_likelihoods,
+        discrete_initial_conditions=initial_conditions,
+        discrete_transition=np.full((n_states, n_states), 1.0 / n_states),
+        continuous_transition_blocks=continuous_transition_blocks,
+    )
+    detector._fit(position=np.array([[0.25], [1.25]]))
+    results = detector.estimate_parameters(
+        time=np.arange(n_time, dtype=float),
+        estimate_initial_conditions=False,
+        estimate_discrete_transition=True,
+        estimate_encoding_model=False,
+        max_iter=max_iter,
+        tolerance=0.0,
+    )
+
+    return (
+        detector.discrete_state_transitions_,
+        _empirical_discrete_transition(states, n_states),
+        true_discrete_transition,
+        results.attrs["marginal_log_likelihoods"],
+    )
 
 
 @pytest.mark.unit
@@ -256,6 +468,131 @@ class TestExpandedDiscreteTransitionCounts:
         )
 
         np.testing.assert_allclose(factorized, materialized, atol=1e-12)
+
+
+@pytest.mark.integration
+class TestExpandedTransitionMstepEndToEnd:
+    """Detector-level tests for exact expanded-state transition learning."""
+
+    def test_simulated_likelihoods_shift_learned_transition_to_matching_source(self):
+        """The learned matrix should credit the source with matching target bins."""
+        log_likelihoods = np.full((2, 6), -1000.0)
+        log_likelihoods[0, 0:4] = 0.0
+        log_likelihoods[1, 5] = 0.0
+
+        detector = _FixedLikelihoodDetector(log_likelihoods)
+        detector._fit(position=np.array([[0.25], [1.25]]))
+        detector.estimate_parameters(
+            time=np.array([0.0, 1.0]),
+            estimate_initial_conditions=False,
+            estimate_discrete_transition=True,
+            estimate_encoding_model=False,
+            max_iter=1,
+        )
+
+        learned_transition = detector.discrete_state_transitions_
+
+        assert learned_transition[1, 2] > learned_transition[0, 2]
+        assert learned_transition[1, 2] > 0.99
+        assert_stochastic_matrix(learned_transition)
+
+    def test_exact_update_beats_aggregated_negative_control(self):
+        """The detector update should avoid aggregate-state source credit."""
+        log_likelihoods = np.full((2, 6), -1000.0)
+        log_likelihoods[0, 0:4] = 0.0
+        log_likelihoods[1, 5] = 0.0
+
+        detector = _FixedLikelihoodDetector(log_likelihoods)
+        detector._fit(position=np.array([[0.25], [1.25]]))
+        initial_discrete_transition = detector.discrete_state_transitions_.copy()
+        results = detector.estimate_parameters(
+            time=np.array([0.0, 1.0]),
+            estimate_initial_conditions=False,
+            estimate_discrete_transition=True,
+            estimate_encoding_model=False,
+            max_iter=1,
+            return_outputs="all",
+        )
+
+        aggregate_counts = estimate_joint_distribution(
+            results.causal_state_probabilities.values,
+            results.predictive_state_probabilities.values,
+            initial_discrete_transition,
+            results.acausal_state_probabilities.values,
+        ).sum(axis=0)
+        learned_transition = detector.discrete_state_transitions_
+
+        assert aggregate_counts[0, 2] > aggregate_counts[1, 2]
+        assert learned_transition[1, 2] > learned_transition[0, 2]
+        assert learned_transition[1, 2] > 0.99
+        assert_stochastic_matrix(learned_transition)
+
+    def test_simulated_hmm_recovers_stationary_discrete_transition(self):
+        """With informative simulated emissions, the M-step recovers A."""
+        learned_transition, empirical_transition, true_discrete_transition, _ = (
+            _estimate_simulated_discrete_transition(
+                seed=11,
+                n_time=5_000,
+                off_target_log_likelihood=-12.0,
+            )
+        )
+
+        assert_stochastic_matrix(learned_transition)
+        np.testing.assert_allclose(
+            learned_transition,
+            empirical_transition,
+            atol=0.015,
+        )
+        np.testing.assert_allclose(
+            empirical_transition,
+            true_discrete_transition,
+            atol=0.04,
+        )
+
+    def test_recovery_improves_with_emission_strength_and_sample_size(self):
+        """Recovery should improve as emissions and sample size become stronger."""
+        emission_errors = []
+        for off_target_log_likelihood in (-3.0, -6.0, -12.0):
+            learned_transition, empirical_transition, _, _ = (
+                _estimate_simulated_discrete_transition(
+                    seed=11,
+                    n_time=2_000,
+                    off_target_log_likelihood=off_target_log_likelihood,
+                )
+            )
+            emission_errors.append(
+                np.max(np.abs(learned_transition - empirical_transition))
+            )
+
+        short_learned, _, short_true, _ = _estimate_simulated_discrete_transition(
+            seed=11,
+            n_time=300,
+            off_target_log_likelihood=-12.0,
+        )
+        long_learned, _, long_true, _ = _estimate_simulated_discrete_transition(
+            seed=11,
+            n_time=5_000,
+            off_target_log_likelihood=-12.0,
+        )
+        short_error = np.max(np.abs(short_learned - short_true))
+        long_error = np.max(np.abs(long_learned - long_true))
+
+        assert emission_errors[0] > emission_errors[1] > emission_errors[2]
+        assert emission_errors[2] < 0.001
+        assert long_error < short_error
+        assert long_error < 0.02
+
+    def test_exact_discrete_transition_em_is_monotonic(self):
+        """Repeated exact transition M-steps should not decrease likelihood."""
+        _, _, _, marginal_log_likelihoods = _estimate_simulated_discrete_transition(
+            seed=12,
+            n_time=600,
+            off_target_log_likelihood=-6.0,
+            max_iter=5,
+        )
+
+        assert len(marginal_log_likelihoods) == 5
+        assert np.all(np.diff(marginal_log_likelihoods) >= -1e-6)
 
 
 @pytest.mark.unit
