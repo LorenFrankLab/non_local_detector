@@ -123,6 +123,105 @@ def estimate_joint_distribution(
     return joint_distribution
 
 
+def _state_aggregation_matrix(state_ind: np.ndarray) -> np.ndarray:
+    """Return a bin-to-discrete-state aggregation matrix."""
+    state_ind = np.asarray(state_ind, dtype=int)
+    n_state_bins = state_ind.size
+    n_states = int(state_ind.max()) + 1
+    aggregation = np.zeros((n_state_bins, n_states))
+    aggregation[np.arange(n_state_bins), state_ind] = 1.0
+    return aggregation
+
+
+def estimate_discrete_transition_responses_from_expanded_posteriors(
+    causal_posterior: np.ndarray,
+    predictive_posterior: np.ndarray,
+    acausal_posterior: np.ndarray,
+    transition_matrix: np.ndarray,
+    state_ind: np.ndarray,
+) -> np.ndarray:
+    """Return exact expected discrete transition responses.
+
+    Parameters
+    ----------
+    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        Filtered posterior over expanded state bins.
+    predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
+        One-step predictive posterior over expanded state bins.
+    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        Smoothed posterior over expanded state bins.
+    transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins) or
+        (n_time, n_state_bins, n_state_bins)
+        Full expanded transition matrix used by filtering.
+    state_ind : np.ndarray, shape (n_state_bins,)
+        Discrete-state index for each expanded state bin.
+
+    Returns
+    -------
+    response : np.ndarray, shape (n_time - 1, n_states, n_states)
+        Exact expected transition counts from each discrete state to each
+        discrete state at each time.
+    """
+    aggregation = _state_aggregation_matrix(state_ind)
+    n_time = causal_posterior.shape[0]
+    n_states = aggregation.shape[1]
+    response = np.zeros((n_time - 1, n_states, n_states))
+
+    for t in range(n_time - 1):
+        ratio = np.divide(
+            acausal_posterior[t + 1],
+            predictive_posterior[t + 1],
+            out=np.zeros_like(acausal_posterior[t + 1]),
+            where=~np.isclose(predictive_posterior[t + 1], 0.0),
+        )
+        transition_t = (
+            transition_matrix if transition_matrix.ndim == 2 else transition_matrix[t]
+        )
+        xi = causal_posterior[t, :, np.newaxis] * transition_t * ratio[np.newaxis, :]
+        response[t] = aggregation.T @ xi @ aggregation
+
+    return response
+
+
+def estimate_discrete_transition_counts_from_expanded_posteriors(
+    causal_posterior: np.ndarray,
+    predictive_posterior: np.ndarray,
+    acausal_posterior: np.ndarray,
+    transition_matrix: np.ndarray,
+    state_ind: np.ndarray,
+) -> np.ndarray:
+    """Return exact expected discrete transition counts.
+
+    Parameters
+    ----------
+    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        Filtered posterior over expanded state bins.
+    predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
+        One-step predictive posterior over expanded state bins.
+    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        Smoothed posterior over expanded state bins.
+    transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins) or
+        (n_time, n_state_bins, n_state_bins)
+        Full expanded transition matrix used by filtering.
+    state_ind : np.ndarray, shape (n_state_bins,)
+        Discrete-state index for each expanded state bin.
+
+    Returns
+    -------
+    joint_sum : np.ndarray, shape (n_states, n_states)
+        Exact expected transition counts from each discrete state to each
+        discrete state.
+    """
+    response = estimate_discrete_transition_responses_from_expanded_posteriors(
+        causal_posterior,
+        predictive_posterior,
+        acausal_posterior,
+        transition_matrix,
+        state_ind,
+    )
+    return response.sum(axis=0)
+
+
 @jax.jit
 def jax_centered_log_softmax_forward(y: jnp.ndarray) -> jnp.ndarray:
     """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
@@ -292,6 +391,60 @@ def estimate_non_stationary_state_transition(
         acausal_posterior,
     )
 
+    return estimate_non_stationary_state_transition_from_responses(
+        transition_coefficients,
+        design_matrix,
+        joint_distribution,
+        concentration=concentration,
+        stickiness=stickiness,
+        transition_regularization=transition_regularization,
+        optimization_method=optimization_method,
+        maxiter=maxiter,
+        disp=disp,
+    )
+
+
+def estimate_non_stationary_state_transition_from_responses(
+    transition_coefficients: np.ndarray,
+    design_matrix: np.ndarray,
+    response: np.ndarray,
+    concentration: float = 1.0,
+    stickiness: float | np.ndarray = 0.0,
+    transition_regularization: float = 1e-5,
+    optimization_method: str = "Newton-CG",
+    maxiter: int | None = 100,
+    disp: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Estimate a non-stationary transition model from expected counts.
+
+    Parameters
+    ----------
+    transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+        Initial estimate of the transition coefficients.
+    design_matrix : np.ndarray, shape (n_time, n_coefficients)
+        Covariate design matrix.
+    response : np.ndarray, shape (n_time - 1, n_states, n_states)
+        Expected transition counts for each time and transition row.
+    concentration : float, optional
+        Dirichlet prior concentration parameter (uniform part), by default 1.0.
+    stickiness : float or np.ndarray, optional
+        Dirichlet prior stickiness parameter (diagonal enhancement), by default 0.0.
+    transition_regularization : float, optional
+        L2 penalty on coefficients (excluding intercept), by default 1e-5.
+    optimization_method : str, optional
+        Optimization method for `scipy.optimize.minimize`, by default "Newton-CG".
+    maxiter : int, optional
+        Maximum iterations for optimizer, by default 100.
+    disp : bool, optional
+        Display optimizer convergence messages, by default False.
+
+    Returns
+    -------
+    estimated_transition_coefficients : np.ndarray, shape (n_coefficients, n_states, n_states - 1)
+        Optimized transition coefficients.
+    estimated_transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
+        Resulting non-stationary transition matrix.
+    """
     n_coefficients, n_states = transition_coefficients.shape[:2]
     estimated_transition_coefficients = np.zeros(
         (n_coefficients, n_states, (n_states - 1))
@@ -301,6 +454,11 @@ def estimate_non_stationary_state_transition(
     estimated_transition_matrix = np.zeros((n_time, n_states, n_states))
 
     alpha = get_transition_prior(concentration, stickiness, n_states)
+    if np.any(alpha < 1.0):
+        raise ValueError(
+            "concentration and stickiness must produce prior parameters >= 1.0 "
+            "for this MAP transition update"
+        )
 
     # Estimate the transition coefficients for each state
     for from_state, row_alpha in enumerate(alpha):
@@ -312,7 +470,7 @@ def estimate_non_stationary_state_transition(
             hess=dirichlet_hessian,
             args=(
                 design_matrix[:-1],
-                joint_distribution[:, from_state, :],
+                response[:, from_state, :],
                 row_alpha,
                 transition_regularization,
             ),
@@ -386,7 +544,49 @@ def estimate_stationary_state_transition(
     -------
     new_transition_matrix : np.ndarray, shape (n_states, n_states)
     """
-    n_states = acausal_posterior.shape[1]
+    # p(x_t, x_{t+1} | O_{1:T})
+    joint_distribution = estimate_joint_distribution(
+        causal_posterior,
+        predictive_distribution,
+        transition_matrix,
+        acausal_posterior,
+    )
+
+    joint_sum = joint_distribution.sum(axis=0)  # (n_states, n_states)
+
+    return estimate_stationary_state_transition_from_counts(
+        joint_sum,
+        stickiness=stickiness,
+        concentration=concentration,
+        prior_weight=prior_weight,
+    )
+
+
+def estimate_stationary_state_transition_from_counts(
+    joint_sum: np.ndarray,
+    stickiness: float = 0.0,
+    concentration: float = 1.0,
+    prior_weight: float | np.ndarray = 0.0,
+) -> np.ndarray:
+    """Estimate a stationary transition matrix from expected transition counts.
+
+    Parameters
+    ----------
+    joint_sum : np.ndarray, shape (n_states, n_states)
+        Expected transition counts from each source state to each target state.
+    stickiness : float, optional
+        Diagonal stickiness parameter, by default 0.0.
+    concentration : float, optional
+        Dirichlet prior concentration parameter, by default 1.0.
+    prior_weight : float or np.ndarray, shape (n_states,), optional
+        Dimensionless data-adaptive prior weight. See
+        `estimate_stationary_state_transition`.
+
+    Returns
+    -------
+    new_transition_matrix : np.ndarray, shape (n_states, n_states)
+    """
+    n_states = joint_sum.shape[0]
 
     # Normalize prior_weight to shape (n_states,)
     prior_weight_arr = np.atleast_1d(np.asarray(prior_weight, dtype=float))
@@ -400,17 +600,12 @@ def estimate_stationary_state_transition(
     if np.any(prior_weight_arr < 0):
         raise ValueError(f"prior_weight must be non-negative, got {prior_weight_arr}")
 
-    # p(x_t, x_{t+1} | O_{1:T})
-    joint_distribution = estimate_joint_distribution(
-        causal_posterior,
-        predictive_distribution,
-        transition_matrix,
-        acausal_posterior,
-    )
-
-    joint_sum = joint_distribution.sum(axis=0)  # (n_states, n_states)
-
     alpha = get_transition_prior(concentration, stickiness, n_states)
+    if np.any(alpha < 1.0):
+        raise ValueError(
+            "concentration and stickiness must produce prior parameters >= 1.0 "
+            "for this MAP transition update"
+        )
 
     # Legacy prior for rows with prior_weight[i] == 0
     legacy_prior = alpha - 1.0  # (n_states, n_states)
@@ -638,6 +833,11 @@ def _estimate_discrete_transition(
     transition_stickiness: float | np.ndarray,
     transition_regularization: float,
     transition_prior_weight: float | np.ndarray = 0.0,
+    causal_posterior: np.ndarray | None = None,
+    predictive_posterior: np.ndarray | None = None,
+    acausal_posterior: np.ndarray | None = None,
+    continuous_transition: np.ndarray | None = None,
+    state_ind: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Estimate the discrete transition matrix (stationary or non-stationary).
 
@@ -665,6 +865,17 @@ def _estimate_discrete_transition(
         Data-adaptive prior weight for stationary transitions. When > 0,
         pseudo-counts scale with expected transition counts. Only applies
         to the stationary path. By default 0.0.
+    causal_posterior : np.ndarray, optional, shape (n_time, n_state_bins)
+        Expanded-bin filtered posterior. If supplied with the other expanded
+        arguments, the M-step uses exact expanded-state transition counts.
+    predictive_posterior : np.ndarray, optional, shape (n_time, n_state_bins)
+        Expanded-bin one-step predictive posterior.
+    acausal_posterior : np.ndarray, optional, shape (n_time, n_state_bins)
+        Expanded-bin smoothed posterior.
+    continuous_transition : np.ndarray, optional, shape (n_state_bins, n_state_bins)
+        Continuous transition matrix over expanded state bins.
+    state_ind : np.ndarray, optional, shape (n_state_bins,)
+        Discrete-state index for each expanded state bin.
 
     Returns
     -------
@@ -673,25 +884,61 @@ def _estimate_discrete_transition(
     estimated_discrete_transition_coefficients : np.ndarray | None
         Updated coefficients (if non-stationary).
     """
+    use_expanded_counts = all(
+        arg is not None
+        for arg in (
+            causal_posterior,
+            predictive_posterior,
+            acausal_posterior,
+            continuous_transition,
+            state_ind,
+        )
+    )
 
     if (
         discrete_transition_coefficients is not None
         and discrete_transition_design_matrix is not None
     ):
-        (
-            discrete_transition_coefficients,
-            discrete_transition,
-        ) = estimate_non_stationary_state_transition(
-            discrete_transition_coefficients,
-            discrete_transition_design_matrix,
-            causal_state_probabilities,
-            predictive_state_probabilities,
-            discrete_transition,
-            acausal_state_probabilities,
-            concentration=transition_concentration,
-            stickiness=transition_stickiness,
-            transition_regularization=transition_regularization,
-        )
+        if use_expanded_counts:
+            expanded_discrete_transition = discrete_transition[:, state_ind][
+                :, :, state_ind
+            ]
+            full_transition = (
+                continuous_transition[np.newaxis] * expanded_discrete_transition
+            )
+            response = estimate_discrete_transition_responses_from_expanded_posteriors(
+                causal_posterior,
+                predictive_posterior,
+                acausal_posterior,
+                full_transition,
+                state_ind,
+            )
+            (
+                discrete_transition_coefficients,
+                discrete_transition,
+            ) = estimate_non_stationary_state_transition_from_responses(
+                discrete_transition_coefficients,
+                discrete_transition_design_matrix,
+                response,
+                concentration=transition_concentration,
+                stickiness=transition_stickiness,
+                transition_regularization=transition_regularization,
+            )
+        else:
+            (
+                discrete_transition_coefficients,
+                discrete_transition,
+            ) = estimate_non_stationary_state_transition(
+                discrete_transition_coefficients,
+                discrete_transition_design_matrix,
+                causal_state_probabilities,
+                predictive_state_probabilities,
+                discrete_transition,
+                acausal_state_probabilities,
+                concentration=transition_concentration,
+                stickiness=transition_stickiness,
+                transition_regularization=transition_regularization,
+            )
 
     else:
         # Convert stickiness to float if needed
@@ -703,15 +950,34 @@ def _estimate_discrete_transition(
         else:
             stickiness_value = transition_stickiness
 
-        discrete_transition = estimate_stationary_state_transition(
-            causal_state_probabilities,
-            predictive_state_probabilities,
-            discrete_transition,
-            acausal_state_probabilities,
-            concentration=transition_concentration,
-            stickiness=stickiness_value,
-            prior_weight=transition_prior_weight,
-        )
+        if use_expanded_counts:
+            full_transition = (
+                continuous_transition
+                * discrete_transition[np.ix_(state_ind, state_ind)]
+            )
+            joint_sum = estimate_discrete_transition_counts_from_expanded_posteriors(
+                causal_posterior,
+                predictive_posterior,
+                acausal_posterior,
+                full_transition,
+                state_ind,
+            )
+            discrete_transition = estimate_stationary_state_transition_from_counts(
+                joint_sum,
+                concentration=transition_concentration,
+                stickiness=stickiness_value,
+                prior_weight=transition_prior_weight,
+            )
+        else:
+            discrete_transition = estimate_stationary_state_transition(
+                causal_state_probabilities,
+                predictive_state_probabilities,
+                discrete_transition,
+                acausal_state_probabilities,
+                concentration=transition_concentration,
+                stickiness=stickiness_value,
+                prior_weight=transition_prior_weight,
+            )
 
     return (
         discrete_transition,

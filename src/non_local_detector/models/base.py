@@ -1953,6 +1953,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     self.discrete_transition_stickiness,
                     self.discrete_transition_regularization,
                     self.discrete_transition_prior_weight,
+                    causal_posterior=causal_posterior,
+                    predictive_posterior=predictive_posterior,
+                    acausal_posterior=acausal_posterior,
+                    continuous_transition=self.continuous_state_transitions_[
+                        np.ix_(
+                            self.is_track_interior_state_bins_,
+                            self.is_track_interior_state_bins_,
+                        )
+                    ],
+                    state_ind=self.state_ind_[self.is_track_interior_state_bins_],
                 )
                 # Restore frozen rows: overwrite the M-step result with
                 # the initial snapshot for rows the user wants pinned.
