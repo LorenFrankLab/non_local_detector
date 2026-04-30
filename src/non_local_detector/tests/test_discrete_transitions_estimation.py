@@ -13,6 +13,7 @@ from non_local_detector.discrete_state_transitions import (
     _estimate_discrete_transition,
     estimate_discrete_transition_counts_from_expanded_posteriors,
     estimate_discrete_transition_responses_from_expanded_posteriors,
+    estimate_discrete_transition_responses_from_factorized_posteriors,
     estimate_joint_distribution,
     estimate_non_stationary_state_transition,
     estimate_non_stationary_state_transition_from_responses,
@@ -193,6 +194,68 @@ class TestExpandedDiscreteTransitionCounts:
         )
 
         np.testing.assert_allclose(response.sum(axis=0), counts, atol=1e-12)
+
+    def test_factorized_responses_match_materialized_full_transition(self):
+        """The streaming nonstationary helper should avoid changing the math."""
+        state_ind = np.array([0, 1, 2, 2])
+        discrete_transition = np.tile(
+            np.array(
+                [
+                    [0.0, 0.0, 1.0],
+                    [0.0, 0.0, 1.0],
+                    [0.0, 0.0, 1.0],
+                ]
+            ),
+            (2, 1, 1),
+        )
+        continuous_transition = np.array(
+            [
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        )
+        full_transition = (
+            continuous_transition[np.newaxis]
+            * discrete_transition[:, state_ind][:, :, state_ind]
+        )
+        causal = np.array(
+            [
+                [0.8, 0.2, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        )
+        predictive = np.array(
+            [
+                [0.8, 0.2, 0.0, 0.0],
+                [0.0, 0.0, 0.8, 0.2],
+            ]
+        )
+        acausal = np.array(
+            [
+                [0.8, 0.2, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        )
+
+        factorized = estimate_discrete_transition_responses_from_factorized_posteriors(
+            causal,
+            predictive,
+            acausal,
+            continuous_transition,
+            discrete_transition,
+            state_ind,
+        )
+        materialized = estimate_discrete_transition_responses_from_expanded_posteriors(
+            causal,
+            predictive,
+            acausal,
+            full_transition,
+            state_ind,
+        )
+
+        np.testing.assert_allclose(factorized, materialized, atol=1e-12)
 
 
 @pytest.mark.unit
@@ -924,6 +987,98 @@ class TestEstimateDiscreteTransition:
         assert new_coeffs.shape == dm["transition_coefficients"].shape
         for t in range(min(5, new_trans.shape[0])):
             assert_stochastic_matrix(new_trans[t])
+
+    def test_nonstationary_uses_expanded_responses_when_provided(self):
+        """Expanded nonstationary inputs should reach the exact response path."""
+        from unittest.mock import patch
+
+        state_ind = np.array([0, 1, 2, 2])
+        continuous_transition = np.array(
+            [
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        )
+        discrete_transition = np.tile(
+            np.array(
+                [
+                    [0.0, 0.0, 1.0],
+                    [0.0, 0.0, 1.0],
+                    [0.0, 0.0, 1.0],
+                ]
+            ),
+            (2, 1, 1),
+        )
+        causal_posterior = np.array(
+            [
+                [0.8, 0.2, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        )
+        predictive_posterior = np.array(
+            [
+                [0.8, 0.2, 0.0, 0.0],
+                [0.0, 0.0, 0.8, 0.2],
+            ]
+        )
+        acausal_posterior = np.array(
+            [
+                [0.8, 0.2, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        )
+        causal_state = np.column_stack(
+            (causal_posterior[:, :2], causal_posterior[:, 2:].sum(axis=1))
+        )
+        predictive_state = np.column_stack(
+            (
+                predictive_posterior[:, :2],
+                predictive_posterior[:, 2:].sum(axis=1),
+            )
+        )
+        acausal_state = np.column_stack(
+            (acausal_posterior[:, :2], acausal_posterior[:, 2:].sum(axis=1))
+        )
+        transition_coefficients = np.zeros((1, 3, 2))
+        design_matrix = np.ones((2, 1))
+        captured = {}
+
+        def fake_from_responses(
+            transition_coefficients,
+            design_matrix,
+            response,
+            **kwargs,
+        ):
+            captured["response"] = response
+            return transition_coefficients, np.tile(np.eye(3), (2, 1, 1))
+
+        with patch(
+            "non_local_detector.discrete_state_transitions."
+            "estimate_non_stationary_state_transition_from_responses",
+            side_effect=fake_from_responses,
+        ):
+            new_trans, new_coeffs = _estimate_discrete_transition(
+                causal_state_probabilities=causal_state,
+                predictive_state_probabilities=predictive_state,
+                acausal_state_probabilities=acausal_state,
+                discrete_transition=discrete_transition,
+                discrete_transition_coefficients=transition_coefficients,
+                discrete_transition_design_matrix=design_matrix,
+                transition_concentration=1.0,
+                transition_stickiness=0.0,
+                transition_regularization=1e-5,
+                causal_posterior=causal_posterior,
+                predictive_posterior=predictive_posterior,
+                acausal_posterior=acausal_posterior,
+                continuous_transition=continuous_transition,
+                state_ind=state_ind,
+            )
+
+        assert new_trans.shape == (2, 3, 3)
+        assert new_coeffs.shape == transition_coefficients.shape
+        assert captured["response"][0, 1, 2] > captured["response"][0, 0, 2]
 
 
 if __name__ == "__main__":

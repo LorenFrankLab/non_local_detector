@@ -222,6 +222,65 @@ def estimate_discrete_transition_counts_from_expanded_posteriors(
     return response.sum(axis=0)
 
 
+def estimate_discrete_transition_responses_from_factorized_posteriors(
+    causal_posterior: np.ndarray,
+    predictive_posterior: np.ndarray,
+    acausal_posterior: np.ndarray,
+    continuous_transition_matrix: np.ndarray,
+    discrete_transition_matrix: np.ndarray,
+    state_ind: np.ndarray,
+) -> np.ndarray:
+    """Return exact discrete transition responses from factorized transitions.
+
+    This is the streaming equivalent of first constructing
+    ``continuous_transition_matrix * discrete_transition_matrix[:, state_ind, state_ind]``
+    and then calling
+    `estimate_discrete_transition_responses_from_expanded_posteriors`.
+
+    Parameters
+    ----------
+    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        Filtered posterior over expanded state bins.
+    predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
+        One-step predictive posterior over expanded state bins.
+    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        Smoothed posterior over expanded state bins.
+    continuous_transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
+        Continuous transition matrix over expanded state bins.
+    discrete_transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
+        Time-varying discrete transition matrix.
+    state_ind : np.ndarray, shape (n_state_bins,)
+        Discrete-state index for each expanded state bin.
+
+    Returns
+    -------
+    response : np.ndarray, shape (n_time - 1, n_states, n_states)
+        Exact expected transition counts from each discrete state to each
+        discrete state at each time.
+    """
+    state_ind = np.asarray(state_ind, dtype=int)
+    aggregation = _state_aggregation_matrix(state_ind)
+    n_time = causal_posterior.shape[0]
+    n_states = aggregation.shape[1]
+    response = np.zeros((n_time - 1, n_states, n_states))
+
+    for t in range(n_time - 1):
+        ratio = np.divide(
+            acausal_posterior[t + 1],
+            predictive_posterior[t + 1],
+            out=np.zeros_like(acausal_posterior[t + 1]),
+            where=~np.isclose(predictive_posterior[t + 1], 0.0),
+        )
+        transition_t = (
+            continuous_transition_matrix
+            * discrete_transition_matrix[t][np.ix_(state_ind, state_ind)]
+        )
+        xi = causal_posterior[t, :, np.newaxis] * transition_t * ratio[np.newaxis, :]
+        response[t] = aggregation.T @ xi @ aggregation
+
+    return response
+
+
 @jax.jit
 def jax_centered_log_softmax_forward(y: jnp.ndarray) -> jnp.ndarray:
     """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
@@ -327,9 +386,8 @@ def get_transition_prior(
     else:
         # Assume stickiness provided per state
         stickiness_arr = np.diag(stickiness)
-    # Dirichlet requires strictly positive concentration parameters. Clamp to a
-    # small positive epsilon rather than 1.0 so callers can express
-    # sparse-favoring priors (concentration < 1).
+    # Dirichlet parameters must be strictly positive. MAP transition estimators
+    # that add alpha - 1 as pseudo-counts separately reject alpha < 1.
     return np.maximum(concentration * np.ones((n_states,)) + stickiness_arr, 1e-10)
 
 
@@ -900,18 +958,15 @@ def _estimate_discrete_transition(
         and discrete_transition_design_matrix is not None
     ):
         if use_expanded_counts:
-            expanded_discrete_transition = discrete_transition[:, state_ind][
-                :, :, state_ind
-            ]
-            full_transition = (
-                continuous_transition[np.newaxis] * expanded_discrete_transition
-            )
-            response = estimate_discrete_transition_responses_from_expanded_posteriors(
-                causal_posterior,
-                predictive_posterior,
-                acausal_posterior,
-                full_transition,
-                state_ind,
+            response = (
+                estimate_discrete_transition_responses_from_factorized_posteriors(
+                    causal_posterior,
+                    predictive_posterior,
+                    acausal_posterior,
+                    continuous_transition,
+                    discrete_transition,
+                    state_ind,
+                )
             )
             (
                 discrete_transition_coefficients,

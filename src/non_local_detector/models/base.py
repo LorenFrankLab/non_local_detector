@@ -777,7 +777,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Parameters
         ----------
         discrete_transition_concentration : float
-            Concentration parameter (must be > 0)
+            Concentration parameter (must be >= 1.0 for the MAP transition update)
         discrete_transition_regularization : float
             Regularization parameter (must be >= 0)
         sampling_frequency : float
@@ -793,8 +793,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         val.ensure_positive_scalar(
             discrete_transition_concentration,
             "discrete_transition_concentration",
-            minimum=0.0,
-            strict=True,
+            minimum=1.0,
+            strict=False,
         )
 
         val.ensure_positive_scalar(
