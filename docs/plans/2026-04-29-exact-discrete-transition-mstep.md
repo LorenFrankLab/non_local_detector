@@ -336,8 +336,10 @@ While changing the transition M-step, fix or explicitly defer two prior issues:
 
 1. `discrete_transition_concentration < 1` can create negative stationary
    pseudo-counts because the current code adds `alpha - 1` to expected counts.
-   Either reject `concentration < 1` for the current MAP update, or implement a
-   proper constrained MAP treatment for sparse Dirichlet priors.
+   The implemented MAP update rejects `concentration < 1` during detector
+   validation and in the low-level transition estimators. A future sparse-prior
+   implementation should use a proper constrained MAP treatment instead of
+   adding negative pseudo-counts.
 
 2. The nonstationary prior currently adds `alpha - 1` to every time sample in
    the objective. That does not match the stationary path's fixed-count prior.
@@ -381,8 +383,14 @@ behavior.
    stationary estimator when passed the legacy `joint_sum`.
 
 6. **Concentration guard.**
-   Add a test for `concentration < 1`. Either assert a clear validation error or
-   assert a valid stochastic matrix if sparse-prior MAP is implemented.
+   Add tests asserting a clear validation error for `concentration < 1` in both
+   detector validation and low-level transition estimation.
+
+7. **Nonstationary recovery evidence.**
+   Simulate covariate-dependent transition responses from known nonstationary
+   coefficients, fit `estimate_non_stationary_state_transition_from_responses()`,
+   and verify the recovered transition curve matches the true curve within
+   sampling tolerance.
 
 ### Integration Tests
 
@@ -457,7 +465,6 @@ default, because that matches the HMM actually used by filtering.
    Current behavior restores frozen stationary rows after the M-step; preserving
    that behavior is simplest.
 
-4. Should `concentration < 1` be rejected immediately? The current validation
-   permits it, but the current pseudo-count update can produce negative
-   probabilities.
-
+4. Should sparse Dirichlet priors with `concentration < 1` be supported later?
+   The current implementation intentionally rejects them because the present
+   pseudo-count update is only valid for nonnegative `alpha - 1`.

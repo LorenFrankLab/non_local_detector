@@ -160,6 +160,20 @@ def _empirical_discrete_transition(states: np.ndarray, n_states: int) -> np.ndar
     return counts / counts.sum(axis=1, keepdims=True)
 
 
+def _centered_softmax_forward_numpy(linear_predictor: np.ndarray) -> np.ndarray:
+    """Apply centered softmax with an implicit zero logit for the last state."""
+    logits = np.concatenate(
+        (
+            linear_predictor,
+            np.zeros((*linear_predictor.shape[:-1], 1)),
+        ),
+        axis=-1,
+    )
+    logits -= logits.max(axis=-1, keepdims=True)
+    probabilities = np.exp(logits)
+    return probabilities / probabilities.sum(axis=-1, keepdims=True)
+
+
 def _expanded_hmm_parameters() -> tuple[np.ndarray, np.ndarray, list[list[np.ndarray]]]:
     """Return a small identifiable expanded HMM for transition-recovery tests."""
     initial_conditions = np.full(3, 1.0 / 3.0)
@@ -691,6 +705,52 @@ class TestEstimateNonStationaryStateTransition:
 
         np.testing.assert_allclose(coeffs_from_response, coeffs_from_wrapper)
         np.testing.assert_allclose(trans_from_response, trans_from_wrapper)
+
+    def test_from_responses_recovers_covariate_dependent_transition(self):
+        """Sampled responses should recover a known nonstationary transition."""
+        rng = np.random.default_rng(0)
+        n_time = 600
+        n_states = 3
+        n_coefficients = 2
+        covariate = np.linspace(-1.0, 1.0, n_time)
+        design_matrix = np.column_stack((np.ones(n_time), covariate))
+        true_coefficients = np.zeros((n_coefficients, n_states, n_states - 1))
+        true_coefficients[:, 0, :] = np.array([[1.0, -0.5], [1.2, -0.8]])
+        true_coefficients[:, 1, :] = np.array([[-0.5, 1.0], [-1.0, 0.9]])
+        true_coefficients[:, 2, :] = np.array([[0.4, 0.2], [-0.7, 1.1]])
+        true_transition = np.zeros((n_time, n_states, n_states))
+        for from_state in range(n_states):
+            true_transition[:, from_state] = _centered_softmax_forward_numpy(
+                design_matrix @ true_coefficients[:, from_state, :]
+            )
+
+        response = np.zeros((n_time - 1, n_states, n_states))
+        for t in range(n_time - 1):
+            for from_state in range(n_states):
+                response[t, from_state] = rng.multinomial(
+                    50,
+                    true_transition[t, from_state],
+                )
+
+        _, estimated_transition = (
+            estimate_non_stationary_state_transition_from_responses(
+                transition_coefficients=np.zeros_like(true_coefficients),
+                design_matrix=design_matrix,
+                response=response,
+                concentration=1.0,
+                stickiness=0.0,
+                transition_regularization=1e-8,
+                maxiter=200,
+            )
+        )
+
+        np.testing.assert_allclose(
+            estimated_transition[:-1],
+            true_transition[:-1],
+            atol=0.02,
+        )
+        assert estimated_transition[-2, 0, 0] > estimated_transition[0, 0, 0]
+        assert estimated_transition[-2, 1, 1] > estimated_transition[0, 1, 1]
 
     def test_with_different_concentrations(self, posterior_data, design_matrix_data):
         """Test with different concentration (prior strength) values."""
