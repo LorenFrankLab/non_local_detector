@@ -1850,6 +1850,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 f"min_encoding_local_ess must be >= 0, got {min_encoding_local_ess}"
             )
 
+        if estimate_discrete_transition:
+            interior_state_bins = self.is_track_interior_state_bins_
+            interior_state_ind = self.state_ind_[interior_state_bins]
+            interior_continuous_transition = self.continuous_state_transitions_[
+                np.ix_(interior_state_bins, interior_state_bins)
+            ]
+
         while not converged and (n_iter < max_iter):
             # Expectation step
             logger.info("Expectation step...")
@@ -1956,13 +1963,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     causal_posterior=causal_posterior,
                     predictive_posterior=predictive_posterior,
                     acausal_posterior=acausal_posterior,
-                    continuous_transition=self.continuous_state_transitions_[
-                        np.ix_(
-                            self.is_track_interior_state_bins_,
-                            self.is_track_interior_state_bins_,
-                        )
-                    ],
-                    state_ind=self.state_ind_[self.is_track_interior_state_bins_],
+                    continuous_transition=interior_continuous_transition,
+                    state_ind=interior_state_ind,
                 )
                 # Restore frozen rows: overwrite the M-step result with
                 # the initial snapshot for rows the user wants pinned.

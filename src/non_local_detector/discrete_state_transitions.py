@@ -212,14 +212,25 @@ def estimate_discrete_transition_counts_from_expanded_posteriors(
         Exact expected transition counts from each discrete state to each
         discrete state.
     """
-    response = estimate_discrete_transition_responses_from_expanded_posteriors(
-        causal_posterior,
-        predictive_posterior,
-        acausal_posterior,
-        transition_matrix,
-        state_ind,
-    )
-    return response.sum(axis=0)
+    aggregation = _state_aggregation_matrix(state_ind)
+    n_time = causal_posterior.shape[0]
+    n_states = aggregation.shape[1]
+    joint_sum = np.zeros((n_states, n_states))
+
+    for t in range(n_time - 1):
+        ratio = np.divide(
+            acausal_posterior[t + 1],
+            predictive_posterior[t + 1],
+            out=np.zeros_like(acausal_posterior[t + 1]),
+            where=~np.isclose(predictive_posterior[t + 1], 0.0),
+        )
+        transition_t = (
+            transition_matrix if transition_matrix.ndim == 2 else transition_matrix[t]
+        )
+        xi = causal_posterior[t, :, np.newaxis] * transition_t * ratio[np.newaxis, :]
+        joint_sum += aggregation.T @ xi @ aggregation
+
+    return joint_sum
 
 
 def estimate_discrete_transition_responses_from_factorized_posteriors(
