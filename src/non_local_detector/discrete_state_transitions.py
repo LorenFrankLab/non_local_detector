@@ -139,6 +139,117 @@ def _n_states_from_state_ind(state_ind: np.ndarray) -> int:
     return int(np.max(state_ind)) + 1
 
 
+def _validate_expanded_posterior_shapes(
+    causal_posterior: np.ndarray,
+    predictive_posterior: np.ndarray,
+    acausal_posterior: np.ndarray,
+    state_ind: np.ndarray,
+) -> tuple[int, int]:
+    """Validate expanded posterior shapes and return ``(n_time, n_state_bins)``."""
+    if causal_posterior.ndim != 2:
+        raise ValueError(
+            "causal_posterior must have shape (n_time, n_state_bins), "
+            f"got shape {causal_posterior.shape}"
+        )
+
+    n_time, n_state_bins = causal_posterior.shape
+    expected_posterior_shape = (n_time, n_state_bins)
+    for name, posterior in (
+        ("predictive_posterior", predictive_posterior),
+        ("acausal_posterior", acausal_posterior),
+    ):
+        if posterior.shape != expected_posterior_shape:
+            raise ValueError(
+                f"{name} must have shape {expected_posterior_shape}, "
+                f"got shape {posterior.shape}"
+            )
+
+    if state_ind.shape != (n_state_bins,):
+        raise ValueError(
+            f"state_ind must have shape ({n_state_bins},), got shape {state_ind.shape}"
+        )
+
+    return n_time, n_state_bins
+
+
+def _validate_expanded_transition_shape(
+    transition_matrix: np.ndarray,
+    n_time: int,
+    n_state_bins: int,
+) -> bool:
+    """Validate expanded transition shape and return whether it is stationary."""
+    if transition_matrix.ndim == 2:
+        expected_shape = (n_state_bins, n_state_bins)
+    elif transition_matrix.ndim == 3:
+        expected_shape = (n_time, n_state_bins, n_state_bins)
+    else:
+        raise ValueError(
+            "transition_matrix must have shape (n_state_bins, n_state_bins) or "
+            "(n_time, n_state_bins, n_state_bins), "
+            f"got shape {transition_matrix.shape}"
+        )
+
+    if transition_matrix.shape != expected_shape:
+        raise ValueError(
+            f"transition_matrix must have shape {expected_shape}, "
+            f"got shape {transition_matrix.shape}"
+        )
+
+    return transition_matrix.ndim == 2
+
+
+def _validate_continuous_transition_shape(
+    continuous_transition_matrix: np.ndarray,
+    n_state_bins: int,
+) -> None:
+    """Validate stationary continuous transition shape."""
+    expected_shape = (n_state_bins, n_state_bins)
+    if continuous_transition_matrix.shape != expected_shape:
+        raise ValueError(
+            f"continuous_transition_matrix must have shape {expected_shape}, "
+            f"got shape {continuous_transition_matrix.shape}"
+        )
+
+
+def _validate_factorized_discrete_transition_shape(
+    discrete_transition_matrix: np.ndarray,
+    n_time: int,
+    n_states: int,
+    *,
+    require_stationary: bool,
+) -> bool:
+    """Validate discrete transition shape and return whether it is stationary."""
+    stationary_shape = (n_states, n_states)
+    nonstationary_shape = (n_time, n_states, n_states)
+
+    if require_stationary:
+        if discrete_transition_matrix.shape != stationary_shape:
+            raise ValueError(
+                "discrete_transition_matrix must be stationary with shape "
+                f"{stationary_shape}, got shape {discrete_transition_matrix.shape}"
+            )
+        return True
+
+    if discrete_transition_matrix.ndim == 2:
+        expected_shape = stationary_shape
+    elif discrete_transition_matrix.ndim == 3:
+        expected_shape = nonstationary_shape
+    else:
+        raise ValueError(
+            "discrete_transition_matrix must have shape (n_states, n_states) or "
+            "(n_time, n_states, n_states), "
+            f"got shape {discrete_transition_matrix.shape}"
+        )
+
+    if discrete_transition_matrix.shape != expected_shape:
+        raise ValueError(
+            f"discrete_transition_matrix must have shape {expected_shape}, "
+            f"got shape {discrete_transition_matrix.shape}"
+        )
+
+    return discrete_transition_matrix.ndim == 2
+
+
 def _aggregate_xi_by_state_jax(
     xi: jnp.ndarray, state_ind: jnp.ndarray, n_states: int
 ) -> jnp.ndarray:
@@ -378,7 +489,22 @@ def estimate_discrete_transition_responses_from_expanded_posteriors(
         Exact expected transition counts from each discrete state to each
         discrete state at each time.
     """
+    causal_posterior = np.asarray(causal_posterior)
+    predictive_posterior = np.asarray(predictive_posterior)
+    acausal_posterior = np.asarray(acausal_posterior)
     state_ind = np.asarray(state_ind, dtype=int)
+    n_time, n_state_bins = _validate_expanded_posterior_shapes(
+        causal_posterior,
+        predictive_posterior,
+        acausal_posterior,
+        state_ind,
+    )
+    transition_matrix = np.asarray(transition_matrix)
+    is_stationary = _validate_expanded_transition_shape(
+        transition_matrix,
+        n_time,
+        n_state_bins,
+    )
     n_states = _n_states_from_state_ind(state_ind)
     transition_matrix = jnp.asarray(transition_matrix)
     response = _transition_pair_stats_jax(
@@ -390,7 +516,7 @@ def estimate_discrete_transition_responses_from_expanded_posteriors(
         jnp.asarray(state_ind),
         n_states,
         is_factorized=False,
-        is_stationary=transition_matrix.ndim == 2,
+        is_stationary=is_stationary,
         return_time_series=True,
     )
 
@@ -426,7 +552,22 @@ def estimate_discrete_transition_counts_from_expanded_posteriors(
         Exact expected transition counts from each discrete state to each
         discrete state.
     """
+    causal_posterior = np.asarray(causal_posterior)
+    predictive_posterior = np.asarray(predictive_posterior)
+    acausal_posterior = np.asarray(acausal_posterior)
     state_ind = np.asarray(state_ind, dtype=int)
+    n_time, n_state_bins = _validate_expanded_posterior_shapes(
+        causal_posterior,
+        predictive_posterior,
+        acausal_posterior,
+        state_ind,
+    )
+    transition_matrix = np.asarray(transition_matrix)
+    is_stationary = _validate_expanded_transition_shape(
+        transition_matrix,
+        n_time,
+        n_state_bins,
+    )
     n_states = _n_states_from_state_ind(state_ind)
     transition_matrix = jnp.asarray(transition_matrix)
     joint_sum = _transition_pair_stats_jax(
@@ -438,7 +579,7 @@ def estimate_discrete_transition_counts_from_expanded_posteriors(
         jnp.asarray(state_ind),
         n_states,
         is_factorized=False,
-        is_stationary=transition_matrix.ndim == 2,
+        is_stationary=is_stationary,
         return_time_series=False,
     )
 
@@ -482,8 +623,29 @@ def estimate_discrete_transition_responses_from_factorized_posteriors(
         Exact expected transition counts from each discrete state to each
         discrete state at each time.
     """
+    causal_posterior = np.asarray(causal_posterior)
+    predictive_posterior = np.asarray(predictive_posterior)
+    acausal_posterior = np.asarray(acausal_posterior)
     state_ind = np.asarray(state_ind, dtype=int)
+    n_time, n_state_bins = _validate_expanded_posterior_shapes(
+        causal_posterior,
+        predictive_posterior,
+        acausal_posterior,
+        state_ind,
+    )
+    continuous_transition_matrix = np.asarray(continuous_transition_matrix)
+    _validate_continuous_transition_shape(
+        continuous_transition_matrix,
+        n_state_bins,
+    )
     n_states = _n_states_from_state_ind(state_ind)
+    discrete_transition_matrix = np.asarray(discrete_transition_matrix)
+    is_stationary = _validate_factorized_discrete_transition_shape(
+        discrete_transition_matrix,
+        n_time,
+        n_states,
+        require_stationary=False,
+    )
     continuous_transition_matrix = jnp.asarray(continuous_transition_matrix)
     discrete_transition_matrix = jnp.asarray(discrete_transition_matrix)
     response = _transition_pair_stats_jax(
@@ -495,7 +657,7 @@ def estimate_discrete_transition_responses_from_factorized_posteriors(
         jnp.asarray(state_ind),
         n_states,
         is_factorized=True,
-        is_stationary=discrete_transition_matrix.ndim == 2,
+        is_stationary=is_stationary,
         return_time_series=True,
     )
     return np.asarray(response)
@@ -538,13 +700,29 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
         If ``discrete_transition_matrix`` is not stationary with shape
         ``(n_states, n_states)``.
     """
-    if discrete_transition_matrix.ndim != 2:
-        raise ValueError(
-            "discrete_transition_matrix must be stationary with shape (n_states, n_states)."
-        )
-
+    causal_posterior = np.asarray(causal_posterior)
+    predictive_posterior = np.asarray(predictive_posterior)
+    acausal_posterior = np.asarray(acausal_posterior)
     state_ind = np.asarray(state_ind, dtype=int)
+    n_time, n_state_bins = _validate_expanded_posterior_shapes(
+        causal_posterior,
+        predictive_posterior,
+        acausal_posterior,
+        state_ind,
+    )
+    continuous_transition_matrix = np.asarray(continuous_transition_matrix)
+    _validate_continuous_transition_shape(
+        continuous_transition_matrix,
+        n_state_bins,
+    )
     n_states = _n_states_from_state_ind(state_ind)
+    discrete_transition_matrix = np.asarray(discrete_transition_matrix)
+    _validate_factorized_discrete_transition_shape(
+        discrete_transition_matrix,
+        n_time,
+        n_states,
+        require_stationary=True,
+    )
     continuous_transition_matrix = jnp.asarray(continuous_transition_matrix)
     joint_sum = _transition_pair_stats_jax(
         jnp.asarray(causal_posterior),

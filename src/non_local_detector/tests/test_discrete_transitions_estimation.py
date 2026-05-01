@@ -412,6 +412,97 @@ class TestExpandedDiscreteTransitionCounts:
                 state_ind,
             )
 
+    def test_expanded_counts_rejects_broadcastable_transition_shape(self):
+        """Broadcastable expanded transitions should not produce silent counts."""
+        causal = np.ones((3, 3)) / 3.0
+        predictive = causal.copy()
+        acausal = causal.copy()
+        state_ind = np.array([0, 1, 2])
+        transition = np.array([[0.2, 0.3, 0.5]])
+
+        with pytest.raises(ValueError, match="transition_matrix"):
+            estimate_discrete_transition_counts_from_expanded_posteriors(
+                causal,
+                predictive,
+                acausal,
+                transition,
+                state_ind,
+            )
+
+    def test_expanded_responses_rejects_bad_time_transition_shape(self):
+        """Time-varying expanded transitions must match n_time and n_state_bins."""
+        causal = np.ones((3, 3)) / 3.0
+        predictive = causal.copy()
+        acausal = causal.copy()
+        state_ind = np.array([0, 1, 2])
+        transition = np.ones((3, 1, 3)) / 3.0
+
+        with pytest.raises(ValueError, match="transition_matrix"):
+            estimate_discrete_transition_responses_from_expanded_posteriors(
+                causal,
+                predictive,
+                acausal,
+                transition,
+                state_ind,
+            )
+
+    def test_factorized_counts_rejects_broadcastable_discrete_transition_shape(self):
+        """Broadcastable stationary discrete transitions should raise."""
+        causal = np.ones((3, 3)) / 3.0
+        predictive = causal.copy()
+        acausal = causal.copy()
+        continuous_transition = np.eye(3)
+        discrete_transition = np.array([[0.2, 0.3, 0.5]])
+        state_ind = np.array([0, 1, 2])
+
+        with pytest.raises(ValueError, match="discrete_transition_matrix"):
+            estimate_discrete_transition_counts_from_factorized_posteriors(
+                causal,
+                predictive,
+                acausal,
+                continuous_transition,
+                discrete_transition,
+                state_ind,
+            )
+
+    def test_factorized_responses_rejects_bad_time_discrete_transition_shape(self):
+        """Time-varying discrete transitions must match n_time and n_states."""
+        causal = np.ones((3, 3)) / 3.0
+        predictive = causal.copy()
+        acausal = causal.copy()
+        continuous_transition = np.eye(3)
+        discrete_transition = np.ones((3, 1, 3)) / 3.0
+        state_ind = np.array([0, 1, 2])
+
+        with pytest.raises(ValueError, match="discrete_transition_matrix"):
+            estimate_discrete_transition_responses_from_factorized_posteriors(
+                causal,
+                predictive,
+                acausal,
+                continuous_transition,
+                discrete_transition,
+                state_ind,
+            )
+
+    def test_factorized_responses_rejects_bad_continuous_transition_shape(self):
+        """Continuous transitions must match expanded state bins exactly."""
+        causal = np.ones((3, 3)) / 3.0
+        predictive = causal.copy()
+        acausal = causal.copy()
+        continuous_transition = np.array([[0.2, 0.3, 0.5]])
+        discrete_transition = np.eye(3)
+        state_ind = np.array([0, 1, 2])
+
+        with pytest.raises(ValueError, match="continuous_transition_matrix"):
+            estimate_discrete_transition_responses_from_factorized_posteriors(
+                causal,
+                predictive,
+                acausal,
+                continuous_transition,
+                discrete_transition,
+                state_ind,
+            )
+
     def test_pure_discrete_hmm_matches_legacy_joint_sum(self, posterior_data):
         """One expanded bin per state should match the existing discrete formula."""
         post = posterior_data
