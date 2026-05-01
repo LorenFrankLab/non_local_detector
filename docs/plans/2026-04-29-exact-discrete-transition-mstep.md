@@ -267,10 +267,11 @@ joint_sum += G.T @ xi @ G
 or block sums by state index masks. Start with the clearest implementation and
 benchmark if needed.
 
-The implemented helper uses JAX kernels with `lax.scan` and `segment_sum` to
-stream over time without materializing all pair posteriors. Public helper
-outputs are converted back to NumPy arrays so the surrounding SciPy-based M-step
-APIs remain unchanged. The factorized JAX path also avoids materializing
+The implemented helpers use a parameterized JAX `lax.scan` kernel with
+`segment_sum` to stream over time without materializing all pair posteriors.
+Public helper outputs are converted back to NumPy arrays so the surrounding
+SciPy-based M-step APIs remain unchanged. The factorized JAX path also avoids
+materializing
 `continuous_transition * discrete_transition[state_ind, state_ind]`; it first
 aggregates the continuous transition into target discrete states, then applies
 source-state aggregation and the small discrete transition matrix. This still
