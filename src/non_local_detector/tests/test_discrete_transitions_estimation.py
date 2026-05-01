@@ -316,6 +316,100 @@ def _estimate_simulated_discrete_transition(
     )
 
 
+def _nonstationary_transition_parameters(
+    n_time: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return covariate, coefficients, and transitions for simulation tests."""
+    n_states = 3
+    covariate = np.sin(np.linspace(0.0, 12.0 * np.pi, n_time))
+    design_matrix = np.column_stack((np.ones(n_time), covariate))
+    true_coefficients = np.zeros((2, n_states, n_states - 1))
+    true_coefficients[:, 0, :] = np.array([[1.5, -0.5], [-2.0, 2.0]])
+    true_coefficients[:, 1, :] = np.array([[-0.5, 1.5], [2.0, -2.0]])
+    true_coefficients[:, 2, :] = np.array([[0.5, 0.0], [1.2, -1.2]])
+    true_transition = np.zeros((n_time, n_states, n_states))
+    for from_state in range(n_states):
+        true_transition[:, from_state] = _centered_softmax_forward_numpy(
+            design_matrix @ true_coefficients[:, from_state]
+        )
+
+    return covariate, true_coefficients, true_transition
+
+
+def _estimate_simulated_nonstationary_discrete_transition(
+    seed: int,
+    n_time: int,
+    off_target_log_likelihood: float,
+    max_iter: int = 1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Simulate and estimate a covariate-dependent expanded HMM."""
+    rng = np.random.default_rng(seed)
+    n_states = 3
+    n_bins = 2
+    covariate, _, true_transition = _nonstationary_transition_parameters(n_time)
+    initial_conditions, _, continuous_transition_blocks = _expanded_hmm_parameters()
+    states, bins = _simulate_nonstationary_expanded_hmm(
+        rng,
+        initial_conditions,
+        true_transition,
+        continuous_transition_blocks,
+    )
+    log_likelihoods = _log_likelihoods_from_expanded_states(
+        states,
+        bins,
+        n_states,
+        n_bins,
+        off_target_log_likelihood=off_target_log_likelihood,
+    )
+    detector = _FixedLikelihoodDetector(
+        log_likelihoods,
+        discrete_initial_conditions=initial_conditions,
+        discrete_transition_type=DiscreteNonStationaryCustom(
+            values=np.full((n_states, n_states), 1.0 / n_states),
+            formula="1 + covariate",
+        ),
+        continuous_transition_blocks=continuous_transition_blocks,
+    )
+    covariate_data = {"covariate": covariate}
+    detector._fit(
+        position=np.array([[0.25], [1.25]]),
+        discrete_transition_covariate_data=covariate_data,
+    )
+    results = detector.estimate_parameters(
+        time=np.arange(n_time, dtype=float),
+        estimate_initial_conditions=False,
+        estimate_discrete_transition=True,
+        estimate_encoding_model=False,
+        max_iter=max_iter,
+        tolerance=0.0,
+    )
+
+    return (
+        detector.discrete_state_transitions_,
+        true_transition,
+        covariate,
+        results.attrs["marginal_log_likelihoods"],
+    )
+
+
+def _low_high_covariate_transition_error(
+    learned_transition: np.ndarray,
+    true_transition: np.ndarray,
+    covariate: np.ndarray,
+) -> float:
+    """Return max low/high covariate transition error for identifiable rows."""
+    low_covariate = covariate[:-1] < -0.75
+    high_covariate = covariate[:-1] > 0.75
+    learned_low = learned_transition[:-1][low_covariate].mean(axis=0)
+    learned_high = learned_transition[:-1][high_covariate].mean(axis=0)
+    true_low = true_transition[:-1][low_covariate].mean(axis=0)
+    true_high = true_transition[:-1][high_covariate].mean(axis=0)
+    return max(
+        np.max(np.abs(learned_low[:2] - true_low[:2])),
+        np.max(np.abs(learned_high[:2] - true_high[:2])),
+    )
+
+
 @pytest.mark.unit
 class TestExpandedDiscreteTransitionCounts:
     """Test exact discrete transition counts from expanded-bin posteriors."""
@@ -941,60 +1035,14 @@ class TestExpandedTransitionMstepEndToEnd:
 
     def test_nonstationary_detector_recovers_covariate_direction(self):
         """Exact responses should learn a simple covariate-dependent transition."""
-        rng = np.random.default_rng(13)
         n_time = 1_200
-        n_states = 3
-        n_bins = 2
-        covariate = np.sin(np.linspace(0.0, 12.0 * np.pi, n_time))
-        design_matrix = np.column_stack((np.ones(n_time), covariate))
-        true_coefficients = np.zeros((2, n_states, n_states - 1))
-        true_coefficients[:, 0, :] = np.array([[1.5, -0.5], [-2.0, 2.0]])
-        true_coefficients[:, 1, :] = np.array([[-0.5, 1.5], [2.0, -2.0]])
-        true_coefficients[:, 2, :] = np.array([[0.5, 0.0], [1.2, -1.2]])
-        true_transition = np.zeros((n_time, n_states, n_states))
-        for from_state in range(n_states):
-            true_transition[:, from_state] = _centered_softmax_forward_numpy(
-                design_matrix @ true_coefficients[:, from_state]
+        learned_transition, true_transition, covariate, marginal_log_likelihoods = (
+            _estimate_simulated_nonstationary_discrete_transition(
+                seed=13,
+                n_time=n_time,
+                off_target_log_likelihood=-12.0,
             )
-
-        initial_conditions, _, continuous_transition_blocks = _expanded_hmm_parameters()
-        states, bins = _simulate_nonstationary_expanded_hmm(
-            rng,
-            initial_conditions,
-            true_transition,
-            continuous_transition_blocks,
         )
-        log_likelihoods = _log_likelihoods_from_expanded_states(
-            states,
-            bins,
-            n_states,
-            n_bins,
-            off_target_log_likelihood=-12.0,
-        )
-        detector = _FixedLikelihoodDetector(
-            log_likelihoods,
-            discrete_initial_conditions=initial_conditions,
-            discrete_transition_type=DiscreteNonStationaryCustom(
-                values=np.full((n_states, n_states), 1.0 / n_states),
-                formula="1 + covariate",
-            ),
-            continuous_transition_blocks=continuous_transition_blocks,
-        )
-        covariate_data = {"covariate": covariate}
-        detector._fit(
-            position=np.array([[0.25], [1.25]]),
-            discrete_transition_covariate_data=covariate_data,
-        )
-        results = detector.estimate_parameters(
-            time=np.arange(n_time, dtype=float),
-            estimate_initial_conditions=False,
-            estimate_discrete_transition=True,
-            estimate_encoding_model=False,
-            max_iter=1,
-            tolerance=0.0,
-        )
-
-        learned_transition = detector.discrete_state_transitions_
         low_covariate = covariate[:-1] < -0.75
         high_covariate = covariate[:-1] > 0.75
         learned_low = learned_transition[:-1][low_covariate].mean(axis=0)
@@ -1008,7 +1056,38 @@ class TestExpandedTransitionMstepEndToEnd:
         assert learned_low[1, 1] > learned_high[1, 1]
         np.testing.assert_allclose(learned_low[:2], true_low[:2], atol=0.16)
         np.testing.assert_allclose(learned_high[:2], true_high[:2], atol=0.16)
-        assert len(results.attrs["marginal_log_likelihoods"]) == 1
+        assert len(marginal_log_likelihoods) == 1
+
+    def test_nonstationary_recovery_improves_with_emission_strength(self):
+        """Nonstationary recovery should improve with more informative emissions."""
+        weak_learned, weak_true, weak_covariate, _ = (
+            _estimate_simulated_nonstationary_discrete_transition(
+                seed=17,
+                n_time=900,
+                off_target_log_likelihood=-3.0,
+            )
+        )
+        strong_learned, strong_true, strong_covariate, _ = (
+            _estimate_simulated_nonstationary_discrete_transition(
+                seed=17,
+                n_time=900,
+                off_target_log_likelihood=-12.0,
+            )
+        )
+
+        weak_error = _low_high_covariate_transition_error(
+            weak_learned,
+            weak_true,
+            weak_covariate,
+        )
+        strong_error = _low_high_covariate_transition_error(
+            strong_learned,
+            strong_true,
+            strong_covariate,
+        )
+
+        assert strong_error < weak_error
+        assert strong_error < 0.10
 
 
 @pytest.mark.unit
