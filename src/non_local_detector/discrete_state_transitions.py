@@ -188,6 +188,14 @@ def _safe_ratio_jax(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.nda
     return jnp.where(is_zero, 0.0, numerator / safe_denominator)
 
 
+def _assert_map_compatible_alpha(alpha: np.ndarray) -> None:
+    if np.any(alpha < 1.0):
+        raise ValueError(
+            "concentration and stickiness must produce prior parameters >= 1.0 "
+            "for this MAP transition update"
+        )
+
+
 @partial(jax.jit, static_argnames=("n_states",))
 def _expanded_responses_stationary_transition_jax(
     causal_posterior: jnp.ndarray,
@@ -842,11 +850,7 @@ def estimate_non_stationary_state_transition_from_responses(
     estimated_transition_matrix = np.zeros((n_time, n_states, n_states))
 
     alpha = get_transition_prior(concentration, stickiness, n_states)
-    if np.any(alpha < 1.0):
-        raise ValueError(
-            "concentration and stickiness must produce prior parameters >= 1.0 "
-            "for this MAP transition update"
-        )
+    _assert_map_compatible_alpha(alpha)
 
     # Estimate the transition coefficients for each state
     for from_state, row_alpha in enumerate(alpha):
@@ -985,11 +989,7 @@ def estimate_stationary_state_transition_from_counts(
         raise ValueError(f"prior_weight must be non-negative, got {prior_weight_arr}")
 
     alpha = get_transition_prior(concentration, stickiness, n_states)
-    if np.any(alpha < 1.0):
-        raise ValueError(
-            "concentration and stickiness must produce prior parameters >= 1.0 "
-            "for this MAP transition update"
-        )
+    _assert_map_compatible_alpha(alpha)
 
     # Legacy prior for rows with prior_weight[i] == 0
     legacy_prior = alpha - 1.0  # (n_states, n_states)

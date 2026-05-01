@@ -6,6 +6,8 @@ Tests the core EM algorithm functions that are currently untested:
 - _estimate_discrete_transition
 """
 
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 
@@ -1020,8 +1022,6 @@ class TestEstimateNonStationaryStateTransition:
         self, posterior_data, design_matrix_data
     ):
         """When optimizer fails, previous coefficients should be retained."""
-        from unittest.mock import patch
-
         post = posterior_data
         dm = design_matrix_data
         n_coeffs = dm["n_coefficients"]
@@ -1572,8 +1572,6 @@ class TestEstimateDiscreteTransition:
 
     def test_nonstationary_uses_expanded_responses_when_provided(self):
         """Expanded nonstationary inputs should reach the exact response path."""
-        from unittest.mock import patch
-
         state_ind = np.array([0, 1, 2, 2])
         continuous_transition = np.array(
             [
