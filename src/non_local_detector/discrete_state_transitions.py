@@ -1395,7 +1395,9 @@ def _estimate_discrete_transition(
         to the stationary path. By default 0.0.
     causal_posterior : np.ndarray, optional, shape (n_time, n_state_bins)
         Expanded-bin filtered posterior. If supplied with the other expanded
-        arguments, the M-step uses exact expanded-state transition counts.
+        arguments, the M-step uses exact expanded-state transition counts. This
+        is the default detector path; aggregate-state updates are a fallback
+        for callers that only have state-level posteriors.
     predictive_posterior : np.ndarray, optional, shape (n_time, n_state_bins)
         Expanded-bin one-step predictive posterior.
     acausal_posterior : np.ndarray, optional, shape (n_time, n_state_bins)
@@ -1412,7 +1414,7 @@ def _estimate_discrete_transition(
     estimated_discrete_transition_coefficients : np.ndarray | None
         Updated coefficients (if non-stationary).
     """
-    use_expanded_counts = all(
+    use_exact_mstep = all(
         arg is not None
         for arg in (
             causal_posterior,
@@ -1427,7 +1429,7 @@ def _estimate_discrete_transition(
         discrete_transition_coefficients is not None
         and discrete_transition_design_matrix is not None
     ):
-        if use_expanded_counts:
+        if use_exact_mstep:
             response = (
                 estimate_discrete_transition_responses_from_factorized_posteriors(
                     causal_posterior,
@@ -1475,7 +1477,7 @@ def _estimate_discrete_transition(
         else:
             stickiness_value = transition_stickiness
 
-        if use_expanded_counts:
+        if use_exact_mstep:
             joint_sum = estimate_discrete_transition_counts_from_factorized_posteriors(
                 causal_posterior,
                 predictive_posterior,

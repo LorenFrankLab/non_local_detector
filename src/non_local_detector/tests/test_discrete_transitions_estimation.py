@@ -1842,8 +1842,8 @@ class TestEstimateDiscreteTransition:
         assert new_trans.shape == (post["n_states"], post["n_states"])
         assert_stochastic_matrix(new_trans)
 
-    def test_stationary_uses_expanded_counts_when_provided(self):
-        """Expanded inputs should override the approximate aggregate path."""
+    def test_stationary_defaults_to_exact_counts_when_available(self):
+        """Expanded inputs should select the exact path by default."""
         state_ind = np.array([0, 1, 2, 2])
         continuous_transition = np.array(
             [

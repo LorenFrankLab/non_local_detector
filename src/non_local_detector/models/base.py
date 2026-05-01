@@ -1947,6 +1947,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                                 pass
 
             if estimate_discrete_transition:
+                # Pass expanded-bin posteriors and factorized transitions so the
+                # exact expanded-state M-step is the detector default. The
+                # aggregate-state update remains available only as a lower-level
+                # fallback when these quantities are unavailable.
                 (
                     self.discrete_state_transitions_,
                     self.discrete_transition_coefficients_,
