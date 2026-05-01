@@ -161,21 +161,19 @@ def _aggregate_factorized_xi_by_state_jax(
     ratio: jnp.ndarray,
     continuous_transition_matrix: jnp.ndarray,
     discrete_transition_matrix: jnp.ndarray,
-    state_ind: jnp.ndarray,
+    target_masks: jnp.ndarray,
+    source_state_ind: jnp.ndarray,
     n_states: int,
 ) -> jnp.ndarray:
     """Aggregate factorized expanded-bin pair probabilities by state."""
-    # For each source bin k and target state q, sum C[k, l] * ratio[l]
-    # over target bins l in q. This avoids forming
-    # C[k, l] * D[state(k), state(l)] or xi[k, l].
-    target_sum = jax.ops.segment_sum(
-        (continuous_transition_matrix * ratio[jnp.newaxis, :]).T,
-        state_ind,
-        num_segments=n_states,
-    ).T
+    # For each target state q, compute C @ (ratio * 1[state == q]).
+    # This follows the filter/smoother pattern of applying the transition as a
+    # dense operator to vectors, avoiding n_bins x n_bins pair-posterior
+    # temporaries while preserving exact dense-C semantics.
+    target_sum = continuous_transition_matrix @ (target_masks * ratio[jnp.newaxis, :]).T
     source_sum = jax.ops.segment_sum(
         causal_t[:, jnp.newaxis] * target_sum,
-        state_ind,
+        source_state_ind,
         num_segments=n_states,
     )
     return source_sum * discrete_transition_matrix
@@ -219,6 +217,12 @@ def _transition_pair_stats_jax(
     return_time_series: bool,
 ) -> jnp.ndarray:
     """JAX scan kernel for exact discrete transition responses or counts."""
+    if is_factorized:
+        target_masks = jax.nn.one_hot(
+            state_ind,
+            n_states,
+            dtype=continuous_transition_matrix.dtype,
+        ).T
 
     def aggregate(causal_t, predictive_next, acausal_next, transition_t):
         ratio = _safe_ratio_jax(acausal_next, predictive_next)
@@ -228,6 +232,7 @@ def _transition_pair_stats_jax(
                 ratio,
                 continuous_transition_matrix,
                 transition_t,
+                target_masks,
                 state_ind,
                 n_states,
             )
