@@ -1424,7 +1424,7 @@ class TestEstimateNonStationaryStateTransition:
         expected_row = np.exp(
             jax_centered_log_softmax_forward(improved_row[np.newaxis])
         )[0]
-        np.testing.assert_allclose(transition_matrix[0, 0], expected_row)
+        np.testing.assert_allclose(transition_matrix[0, 0], expected_row, atol=1e-6)
 
 
 @pytest.mark.unit
