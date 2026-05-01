@@ -272,7 +272,8 @@ The implemented helpers use a parameterized JAX `lax.scan` kernel with
 Public helper outputs are converted back to NumPy arrays so the surrounding
 SciPy-based M-step APIs remain unchanged. The factorized JAX path also avoids
 materializing
-`continuous_transition * discrete_transition[state_ind, state_ind]`; it first
+`continuous_transition * discrete_transition[state_ind, state_ind]` for both
+stationary counts and stationary or time-varying response series; it first
 aggregates the continuous transition into target discrete states, then applies
 source-state aggregation and the small discrete transition matrix. This still
 assumes the current dense continuous transition representation, so a future

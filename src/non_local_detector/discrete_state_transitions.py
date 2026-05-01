@@ -450,8 +450,8 @@ def estimate_discrete_transition_responses_from_factorized_posteriors(
 ) -> np.ndarray:
     """Return exact discrete transition responses from factorized transitions.
 
-    This is the streaming equivalent of first constructing
-    ``continuous_transition_matrix * discrete_transition_matrix[:, state_ind, state_ind]``
+    This is the streaming equivalent of first constructing the full expanded
+    transition from the stationary or time-varying discrete transition matrix
     and then calling
     `estimate_discrete_transition_responses_from_expanded_posteriors`.
 
@@ -465,8 +465,9 @@ def estimate_discrete_transition_responses_from_factorized_posteriors(
         Smoothed posterior over expanded state bins.
     continuous_transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
         Continuous transition matrix over expanded state bins.
-    discrete_transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
-        Time-varying discrete transition matrix.
+    discrete_transition_matrix : np.ndarray, shape (n_states, n_states) or
+        (n_time, n_states, n_states)
+        Stationary or time-varying discrete transition matrix.
     state_ind : np.ndarray, shape (n_state_bins,)
         Discrete-state index for each expanded state bin.
 
@@ -479,16 +480,17 @@ def estimate_discrete_transition_responses_from_factorized_posteriors(
     state_ind = np.asarray(state_ind, dtype=int)
     n_states = _n_states_from_state_ind(state_ind)
     continuous_transition_matrix = jnp.asarray(continuous_transition_matrix)
+    discrete_transition_matrix = jnp.asarray(discrete_transition_matrix)
     response = _transition_pair_stats_jax(
         jnp.asarray(causal_posterior),
         jnp.asarray(predictive_posterior),
         jnp.asarray(acausal_posterior),
-        jnp.asarray(discrete_transition_matrix),
+        discrete_transition_matrix,
         continuous_transition_matrix,
         jnp.asarray(state_ind),
         n_states,
         is_factorized=True,
-        is_stationary=False,
+        is_stationary=discrete_transition_matrix.ndim == 2,
         return_time_series=True,
     )
     return np.asarray(response)

@@ -355,6 +355,44 @@ class TestExpandedDiscreteTransitionCounts:
 
         np.testing.assert_allclose(counts, expected, atol=1e-6)
 
+    def test_stationary_factorized_responses_match_materialized_full_transition(self):
+        """Stationary factorized responses should avoid changing the math."""
+        rng = np.random.default_rng(8)
+        n_time = 7
+        state_ind = np.array([0, 0, 1, 2, 2])
+        n_bins = state_ind.size
+        n_states = 3
+        causal = rng.random((n_time, n_bins))
+        causal /= causal.sum(axis=1, keepdims=True)
+        continuous_transition = rng.random((n_bins, n_bins))
+        continuous_transition /= continuous_transition.sum(axis=1, keepdims=True)
+        discrete_transition = rng.random((n_states, n_states))
+        discrete_transition /= discrete_transition.sum(axis=1, keepdims=True)
+        full_transition = (
+            continuous_transition * discrete_transition[np.ix_(state_ind, state_ind)]
+        )
+        predictive = causal @ full_transition
+        acausal = predictive * rng.uniform(0.8, 1.2, size=predictive.shape)
+        acausal /= acausal.sum(axis=1, keepdims=True)
+
+        factorized = estimate_discrete_transition_responses_from_factorized_posteriors(
+            causal,
+            predictive,
+            acausal,
+            continuous_transition,
+            discrete_transition,
+            state_ind,
+        )
+        materialized = estimate_discrete_transition_responses_from_expanded_posteriors(
+            causal,
+            predictive,
+            acausal,
+            full_transition,
+            state_ind,
+        )
+
+        np.testing.assert_allclose(factorized, materialized, atol=1e-6)
+
     def test_factorized_counts_requires_stationary_discrete_transition(self):
         """The count helper should reject time-varying discrete transitions."""
         causal = np.array([[0.5, 0.5], [0.25, 0.75]])
