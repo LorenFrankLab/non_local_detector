@@ -156,6 +156,31 @@ def _aggregate_xi_by_state_jax(
     )
 
 
+def _aggregate_factorized_xi_by_state_jax(
+    causal_t: jnp.ndarray,
+    ratio: jnp.ndarray,
+    continuous_transition_matrix: jnp.ndarray,
+    discrete_transition_matrix: jnp.ndarray,
+    state_ind: jnp.ndarray,
+    n_states: int,
+) -> jnp.ndarray:
+    """Aggregate factorized expanded-bin pair probabilities by state."""
+    # For each source bin k and target state q, sum C[k, l] * ratio[l]
+    # over target bins l in q. This avoids forming
+    # C[k, l] * D[state(k), state(l)] or xi[k, l].
+    target_sum = jax.ops.segment_sum(
+        (continuous_transition_matrix * ratio[jnp.newaxis, :]).T,
+        state_ind,
+        num_segments=n_states,
+    ).T
+    source_sum = jax.ops.segment_sum(
+        causal_t[:, jnp.newaxis] * target_sum,
+        state_ind,
+        num_segments=n_states,
+    )
+    return source_sum * discrete_transition_matrix
+
+
 def _safe_ratio_jax(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.ndarray:
     """Return numerator / denominator with zero output near zero denominators."""
     is_zero = jnp.isclose(denominator, 0.0)
@@ -306,15 +331,15 @@ def _expanded_responses_factorized_jax(
     def step(_, inputs):
         causal_t, predictive_next, acausal_next, discrete_transition_t = inputs
         ratio = _safe_ratio_jax(acausal_next, predictive_next)
-        transition_t = (
-            continuous_transition_matrix
-            * discrete_transition_t[
-                state_ind[:, jnp.newaxis],
-                state_ind[jnp.newaxis, :],
-            ]
+        response_t = _aggregate_factorized_xi_by_state_jax(
+            causal_t,
+            ratio,
+            continuous_transition_matrix,
+            discrete_transition_t,
+            state_ind,
+            n_states,
         )
-        xi = causal_t[:, jnp.newaxis] * transition_t * ratio[jnp.newaxis, :]
-        return None, _aggregate_xi_by_state_jax(xi, state_ind, n_states)
+        return None, response_t
 
     _, response = jax.lax.scan(
         step,
@@ -340,24 +365,36 @@ def _expanded_counts_factorized_stationary_jax(
     n_states: int,
 ) -> jnp.ndarray:
     """JAX kernel for exact summed counts from stationary factorized transitions."""
-    # The stationary path intentionally builds one O(n_bins^2) transition matrix.
-    # This avoids building an O(n_time * n_bins^2) tensor while keeping the
-    # common hippocampal-grid case simple.
-    transition_matrix = (
-        continuous_transition_matrix
-        * discrete_transition_matrix[
-            state_ind[:, jnp.newaxis],
-            state_ind[jnp.newaxis, :],
-        ]
+
+    def step(joint_sum, inputs):
+        causal_t, predictive_next, acausal_next = inputs
+        ratio = _safe_ratio_jax(acausal_next, predictive_next)
+        counts_t = _aggregate_factorized_xi_by_state_jax(
+            causal_t,
+            ratio,
+            continuous_transition_matrix,
+            discrete_transition_matrix,
+            state_ind,
+            n_states,
+        )
+        return joint_sum + counts_t, None
+
+    initial_counts = jnp.zeros(
+        (n_states, n_states),
+        dtype=jnp.result_type(
+            causal_posterior,
+            predictive_posterior,
+            acausal_posterior,
+            continuous_transition_matrix,
+            discrete_transition_matrix,
+        ),
     )
-    return _expanded_counts_stationary_transition_jax(
-        causal_posterior,
-        predictive_posterior,
-        acausal_posterior,
-        transition_matrix,
-        state_ind,
-        n_states,
+    joint_sum, _ = jax.lax.scan(
+        step,
+        initial_counts,
+        (causal_posterior[:-1], predictive_posterior[1:], acausal_posterior[1:]),
     )
+    return joint_sum
 
 
 def estimate_discrete_transition_responses_from_expanded_posteriors(

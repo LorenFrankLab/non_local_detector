@@ -270,8 +270,16 @@ benchmark if needed.
 The implemented helper uses JAX kernels with `lax.scan` and `segment_sum` to
 stream over time without materializing all pair posteriors. Public helper
 outputs are converted back to NumPy arrays so the surrounding SciPy-based M-step
-APIs remain unchanged. With the default JAX configuration in the development
-environment (`jax_enable_x64=False`), parity checks use float32-level tolerance
+APIs remain unchanged. The factorized JAX path also avoids materializing
+`continuous_transition * discrete_transition[state_ind, state_ind]`; it first
+aggregates the continuous transition into target discrete states, then applies
+source-state aggregation and the small discrete transition matrix. This still
+assumes the current dense continuous transition representation, so a future
+sparse/banded transition representation would be needed to reduce the memory
+model from `O(n_state_bins^2)` to `O(nnz(C))`.
+
+With the default JAX configuration in the development environment
+(`jax_enable_x64=False`), parity checks use float32-level tolerance
 (`atol=1e-5`). Strict NumPy parity was also checked with `JAX_ENABLE_X64=1`,
 where the observed max absolute differences were:
 
