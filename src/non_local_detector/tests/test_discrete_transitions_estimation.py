@@ -25,6 +25,7 @@ from non_local_detector.discrete_state_transitions import (
     estimate_non_stationary_state_transition_from_responses,
     estimate_stationary_state_transition,
     estimate_stationary_state_transition_from_counts,
+    jax_centered_log_softmax_forward,
 )
 from non_local_detector.environment import Environment
 from non_local_detector.initial_conditions import UniformInitialConditions
@@ -1089,6 +1090,23 @@ class TestExpandedTransitionMstepEndToEnd:
         assert strong_error < weak_error
         assert strong_error < 0.10
 
+    def test_nonstationary_strong_emissions_do_not_freeze_rows(self):
+        """Strong emissions should still recover rows that are nearly separated."""
+        learned_transition, true_transition, covariate, _ = (
+            _estimate_simulated_nonstationary_discrete_transition(
+                seed=14,
+                n_time=900,
+                off_target_log_likelihood=-12.0,
+            )
+        )
+        error = _low_high_covariate_transition_error(
+            learned_transition,
+            true_transition,
+            covariate,
+        )
+
+        assert error < 0.10
+
 
 @pytest.mark.unit
 class TestEstimateNonStationaryStateTransition:
@@ -1370,6 +1388,43 @@ class TestEstimateNonStationaryStateTransition:
         # Transition matrix should still be valid stochastic matrices
         for t in range(trans_matrix.shape[0]):
             assert_stochastic_matrix(trans_matrix[t])
+
+    def test_uses_improved_coefficients_when_optimizer_reports_failure(self):
+        """A non-converged optimizer result should be used if it improves loss."""
+        n_time = 5
+        n_states = 3
+        design_matrix = np.ones((n_time, 1))
+        initial_coefficients = np.zeros((1, n_states, n_states - 1))
+        improved_row = np.array([2.0, -1.0])
+        response = np.tile(np.array([0.95, 0.04, 0.01]), (n_time - 1, 1))
+        response = response[:, np.newaxis, :] * np.ones((1, n_states, 1))
+
+        class FakeResult:
+            success = False
+            message = "iteration limit"
+            x = improved_row.copy()
+            fun = -1.0
+
+        with patch(
+            "non_local_detector.discrete_state_transitions.minimize",
+            return_value=FakeResult(),
+        ):
+            coefficients, transition_matrix = (
+                estimate_non_stationary_state_transition_from_responses(
+                    transition_coefficients=initial_coefficients,
+                    design_matrix=design_matrix,
+                    response=response,
+                    concentration=1.0,
+                    stickiness=0.0,
+                    transition_regularization=0.0,
+                )
+            )
+
+        np.testing.assert_allclose(coefficients[:, 0, :], improved_row[np.newaxis])
+        expected_row = np.exp(
+            jax_centered_log_softmax_forward(improved_row[np.newaxis])
+        )[0]
+        np.testing.assert_allclose(transition_matrix[0, 0], expected_row)
 
 
 @pytest.mark.unit

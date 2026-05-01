@@ -861,7 +861,7 @@ def estimate_non_stationary_state_transition(
     concentration: float = 1.0,
     stickiness: float | np.ndarray = 0.0,
     transition_regularization: float = 1e-5,
-    optimization_method: str = "Newton-CG",
+    optimization_method: str = "L-BFGS-B",
     maxiter: int | None = 100,
     disp: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -888,7 +888,7 @@ def estimate_non_stationary_state_transition(
     transition_regularization : float, optional
         L2 penalty on coefficients (excluding intercept), by default 1e-5.
     optimization_method : str, optional
-        Optimization method for `scipy.optimize.minimize`, by default "Newton-CG".
+        Optimization method for `scipy.optimize.minimize`, by default "L-BFGS-B".
     maxiter : int, optional
         Maximum iterations for optimizer, by default 100.
     disp : bool, optional
@@ -929,7 +929,7 @@ def estimate_non_stationary_state_transition_from_responses(
     concentration: float = 1.0,
     stickiness: float | np.ndarray = 0.0,
     transition_regularization: float = 1e-5,
-    optimization_method: str = "Newton-CG",
+    optimization_method: str = "L-BFGS-B",
     maxiter: int | None = 100,
     disp: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -950,7 +950,7 @@ def estimate_non_stationary_state_transition_from_responses(
     transition_regularization : float, optional
         L2 penalty on coefficients (excluding intercept), by default 1e-5.
     optimization_method : str, optional
-        Optimization method for `scipy.optimize.minimize`, by default "Newton-CG".
+        Optimization method for `scipy.optimize.minimize`, by default "L-BFGS-B".
     maxiter : int, optional
         Maximum iterations for optimizer, by default 100.
     disp : bool, optional
@@ -976,22 +976,37 @@ def estimate_non_stationary_state_transition_from_responses(
 
     # Estimate the transition coefficients for each state
     for from_state, row_alpha in enumerate(alpha):
-        result = minimize(
-            dirichlet_neg_log_likelihood,
-            x0=transition_coefficients[:, from_state].ravel(),
-            method=optimization_method,
-            jac=dirichlet_gradient,
-            hess=dirichlet_hessian,
-            args=(
-                design_matrix[:-1],
-                response[:, from_state, :],
-                row_alpha,
-                transition_regularization,
-            ),
-            options={"disp": disp, "maxiter": maxiter},
+        objective_args = (
+            design_matrix[:-1],
+            response[:, from_state, :],
+            row_alpha,
+            transition_regularization,
         )
+        minimize_kwargs = {
+            "fun": dirichlet_neg_log_likelihood,
+            "x0": transition_coefficients[:, from_state].ravel(),
+            "method": optimization_method,
+            "jac": dirichlet_gradient,
+            "args": objective_args,
+            "options": {"disp": disp, "maxiter": maxiter},
+        }
+        if optimization_method in {"Newton-CG", "trust-ncg", "dogleg", "trust-exact"}:
+            minimize_kwargs["hess"] = dirichlet_hessian
 
-        if not result.success:
+        result = minimize(**minimize_kwargs)
+
+        use_result = result.success
+        if not result.success and hasattr(result, "fun"):
+            initial_loss = float(
+                dirichlet_neg_log_likelihood(
+                    transition_coefficients[:, from_state].ravel(),
+                    *objective_args,
+                )
+            )
+            result_loss = float(result.fun)
+            use_result = np.isfinite(result_loss) and result_loss < initial_loss
+
+        if not use_result:
             logger.warning(
                 "Transition optimization did not converge for state %d: %s. "
                 "Keeping previous coefficients.",
@@ -1003,6 +1018,13 @@ def estimate_non_stationary_state_transition_from_responses(
                 transition_coefficients[:, from_state, :]
             )
         else:
+            if not result.success:
+                logger.warning(
+                    "Transition optimization did not report convergence for state %d: "
+                    "%s. Using improved coefficients.",
+                    from_state,
+                    result.message,
+                )
             estimated_transition_coefficients[:, from_state, :] = result.x.reshape(
                 (n_coefficients, n_states - 1)
             )
