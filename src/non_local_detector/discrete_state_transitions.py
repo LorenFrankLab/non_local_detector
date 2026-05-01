@@ -143,6 +143,7 @@ def _aggregate_xi_by_state_jax(
     xi: jnp.ndarray, state_ind: jnp.ndarray, n_states: int
 ) -> jnp.ndarray:
     """Aggregate expanded-bin pair probabilities to discrete-state pairs."""
+    # Equivalent to A.T @ xi @ A without materializing the bin-to-state matrix A.
     target_sum = jax.ops.segment_sum(
         xi.T,
         state_ind,
@@ -339,6 +340,9 @@ def _expanded_counts_factorized_stationary_jax(
     n_states: int,
 ) -> jnp.ndarray:
     """JAX kernel for exact summed counts from stationary factorized transitions."""
+    # The stationary path intentionally builds one O(n_bins^2) transition matrix.
+    # This avoids building an O(n_time * n_bins^2) tensor while keeping the
+    # common hippocampal-grid case simple.
     transition_matrix = (
         continuous_transition_matrix
         * discrete_transition_matrix[
@@ -520,7 +524,35 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
     discrete_transition_matrix: np.ndarray,
     state_ind: np.ndarray,
 ) -> np.ndarray:
-    """Return exact counts from stationary factorized transitions."""
+    """Return exact counts from stationary factorized transitions.
+
+    Parameters
+    ----------
+    causal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        Filtered posterior over expanded state bins.
+    predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
+        One-step predictive posterior over expanded state bins.
+    acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
+        Smoothed posterior over expanded state bins.
+    continuous_transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
+        Stationary continuous transition matrix over expanded state bins.
+    discrete_transition_matrix : np.ndarray, shape (n_states, n_states)
+        Stationary discrete transition matrix.
+    state_ind : np.ndarray, shape (n_state_bins,)
+        Discrete-state index for each expanded state bin.
+
+    Returns
+    -------
+    joint_sum : np.ndarray, shape (n_states, n_states)
+        Exact expected transition counts from each discrete state to each
+        discrete state.
+
+    Raises
+    ------
+    ValueError
+        If ``discrete_transition_matrix`` is not stationary with shape
+        ``(n_states, n_states)``.
+    """
     if discrete_transition_matrix.ndim != 2:
         raise ValueError(
             "discrete_transition_matrix must be stationary with shape (n_states, n_states)."
@@ -543,6 +575,8 @@ def estimate_discrete_transition_counts_from_factorized_posteriors(
 @jax.jit
 def jax_centered_log_softmax_forward(y: jnp.ndarray) -> jnp.ndarray:
     """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
+
+    The 1D and 2D input branches compile as separate JAX specializations.
 
     Parameters
     ----------
@@ -817,11 +851,6 @@ def estimate_non_stationary_state_transition_from_responses(
             jax_centered_log_softmax_forward(linear_predictor)
         )
 
-    # # if any is zero, set to small number
-    # estimated_transition_matrix = np.clip(
-    #     estimated_transition_matrix, 1e-16, 1.0 - 1e-16
-    # )
-
     return estimated_transition_coefficients, estimated_transition_matrix
 
 
@@ -830,7 +859,7 @@ def estimate_stationary_state_transition(
     predictive_distribution: np.ndarray,
     transition_matrix: np.ndarray,
     acausal_posterior: np.ndarray,
-    stickiness: float = 0.0,
+    stickiness: float | np.ndarray = 0.0,
     concentration: float = 1.0,
     prior_weight: float | np.ndarray = 0.0,
 ) -> np.ndarray:
@@ -881,7 +910,7 @@ def estimate_stationary_state_transition(
 
 def estimate_stationary_state_transition_from_counts(
     joint_sum: np.ndarray,
-    stickiness: float = 0.0,
+    stickiness: float | np.ndarray = 0.0,
     concentration: float = 1.0,
     prior_weight: float | np.ndarray = 0.0,
 ) -> np.ndarray:
@@ -892,7 +921,8 @@ def estimate_stationary_state_transition_from_counts(
     joint_sum : np.ndarray, shape (n_states, n_states)
         Expected transition counts from each source state to each target state.
     stickiness : float, optional
-        Diagonal stickiness parameter, by default 0.0.
+        Diagonal stickiness parameter, by default 0.0. If array-like, one
+        stickiness value per state.
     concentration : float, optional
         Dirichlet prior concentration parameter, by default 1.0.
     prior_weight : float or np.ndarray, shape (n_states,), optional
@@ -993,9 +1023,9 @@ def dirichlet_neg_log_likelihood(
     alpha : float | jnp.ndarray, shape (n_states,), optional
         Dirichlet prior parameters for this row of the transition matrix.
         If float, assumed uniform. Defaults to 1.0 (no prior effect).
-        Acts as a fixed pseudo-count total ``(alpha - 1)``, independent
-        of the number of time steps. This matches the stationary estimator
-        convention where ``alpha - 1`` is added to the summed joint
+        The non-stationary objective adds ``alpha - 1`` to each time sample's
+        response before averaging over samples. For stationary transitions,
+        the estimator instead adds ``alpha - 1`` once to the summed joint
         distribution.
     l2_penalty : float, optional
         L2 regularization penalty on coefficients (excluding intercept).
@@ -1014,9 +1044,9 @@ def dirichlet_neg_log_likelihood(
     # shape (n_samples, n_states)
     log_probs = jax_centered_log_softmax_forward(design_matrix @ coefficients)
 
-    # Dirichlet prior as fixed pseudo-count per time step, independent of
-    # temporal resolution.  This matches the stationary estimator where
-    # (alpha - 1) is added once to the summed joint distribution.
+    # Dirichlet prior as a per-time response offset. The objective is averaged
+    # over samples, so this behaves as per-time regularization rather than the
+    # stationary estimator's once-per-summed-row pseudo-count.
     n_samples = response.shape[0]
     prior = alpha - 1.0
 

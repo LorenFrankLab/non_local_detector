@@ -602,6 +602,53 @@ class TestExpandedDiscreteTransitionCounts:
 
         np.testing.assert_allclose(factorized, materialized, atol=1e-5)
 
+    def test_nonstationary_factorized_responses_reduce_to_expanded_counts(self):
+        """Summed factorized responses should match materialized expanded counts."""
+        rng = np.random.default_rng(7)
+        n_time = 6
+        state_ind = np.array([0, 0, 1, 2, 2])
+        n_bins = state_ind.size
+        n_states = 3
+        causal = rng.random((n_time, n_bins))
+        causal /= causal.sum(axis=1, keepdims=True)
+        continuous_transition = rng.random((n_bins, n_bins))
+        continuous_transition /= continuous_transition.sum(axis=1, keepdims=True)
+        discrete_transition = rng.random((n_time, n_states, n_states))
+        discrete_transition /= discrete_transition.sum(axis=2, keepdims=True)
+        full_transition = (
+            continuous_transition[np.newaxis]
+            * discrete_transition[:, state_ind][:, :, state_ind]
+        )
+        predictive = np.einsum("tk,tkl->tl", causal, full_transition)
+        acausal = predictive * rng.uniform(0.8, 1.2, size=predictive.shape)
+        acausal /= acausal.sum(axis=1, keepdims=True)
+
+        factorized_response = (
+            estimate_discrete_transition_responses_from_factorized_posteriors(
+                causal,
+                predictive,
+                acausal,
+                continuous_transition,
+                discrete_transition,
+                state_ind,
+            )
+        )
+        materialized_counts = (
+            estimate_discrete_transition_counts_from_expanded_posteriors(
+                causal,
+                predictive,
+                acausal,
+                full_transition,
+                state_ind,
+            )
+        )
+
+        np.testing.assert_allclose(
+            factorized_response.sum(axis=0),
+            materialized_counts,
+            atol=1e-5,
+        )
+
 
 @pytest.mark.integration
 class TestExpandedTransitionMstepEndToEnd:
@@ -780,6 +827,25 @@ class TestEstimateNonStationaryStateTransition:
         # Assert - check each time step
         for t in range(trans_matrix.shape[0]):
             assert_stochastic_matrix(trans_matrix[t])
+
+    def test_concentration_below_one_raises(self, posterior_data, design_matrix_data):
+        """The nonstationary MAP update rejects negative pseudo-counts."""
+        post = posterior_data
+        dm = design_matrix_data
+
+        with pytest.raises(ValueError, match="prior parameters >= 1.0"):
+            estimate_non_stationary_state_transition(
+                causal_posterior=post["causal_posterior"],
+                predictive_distribution=post["predictive_distribution"],
+                acausal_posterior=post["acausal_posterior"],
+                transition_matrix=post["transition_matrix"],
+                design_matrix=dm["design_matrix"][: post["n_time"]],
+                transition_coefficients=dm["transition_coefficients"],
+                concentration=0.5,
+                stickiness=0.0,
+                transition_regularization=1e-5,
+                maxiter=10,
+            )
 
     def test_from_responses_matches_posterior_wrapper(
         self, posterior_data, design_matrix_data

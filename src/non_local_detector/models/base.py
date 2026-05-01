@@ -777,7 +777,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Parameters
         ----------
         discrete_transition_concentration : float
-            Concentration parameter (must be >= 1.0 for the MAP transition update)
+            Concentration parameter (must be >= 1.0 for the MAP transition update).
+            This ensures the pseudo-count update adds non-negative values.
         discrete_transition_regularization : float
             Regularization parameter (must be >= 0)
         sampling_frequency : float
