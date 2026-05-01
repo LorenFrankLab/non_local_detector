@@ -267,6 +267,22 @@ joint_sum += G.T @ xi @ G
 or block sums by state index masks. Start with the clearest implementation and
 benchmark if needed.
 
+The implemented helper uses JAX kernels with `lax.scan` and `segment_sum` to
+stream over time without materializing all pair posteriors. Public helper
+outputs are converted back to NumPy arrays so the surrounding SciPy-based M-step
+APIs remain unchanged. With the default JAX configuration in the development
+environment (`jax_enable_x64=False`), parity checks use float32-level tolerance
+(`atol=1e-5`). Strict NumPy parity was also checked with `JAX_ENABLE_X64=1`,
+where the observed max absolute differences were:
+
+- expanded response helper: `5.551e-17`
+- stationary factorized counts helper: `8.882e-16`
+- expanded counts helper: `8.882e-16`
+
+The stationary factorized count helper is intentionally stationary-only; it
+rejects time-varying discrete transition arrays instead of silently indexing
+them as if they were stationary.
+
 ### Phase 2: Wire Stationary EM Path
 
 Update `_DetectorBase.estimate_parameters()` so the discrete transition M-step
@@ -422,6 +438,20 @@ Use at least:
 - moderate synthetic case with realistic `n_time` and `n_state_bins`
 
 Do not claim performance acceptability without recording these numbers.
+
+Current smoke evidence on the simulated clusterless run
+(`make_simulated_run_data(n_tetrodes=2, place_field_means=np.arange(0, 80, 20),
+n_runs=3, seed=42)`, `max_iter=3`, `estimate_encoding_model=False`):
+
+- branch smoke: `elapsed_s=3.510`, `n_ll=2`, `final_ll=-30780.550781`,
+  `maxrss=958545920`
+- row stochasticity smoke: one-state transition sum `1.0`
+
+Earlier same-setup comparison against `main` showed identical final likelihood
+and a first-call compile/runtime cost for the JAX exact-count branch on this
+small case. A warmed kernel-only microbenchmark favored the JAX aggregation
+kernel, so PR notes should distinguish first-call compile overhead from warmed
+kernel throughput.
 
 ## Rollout
 

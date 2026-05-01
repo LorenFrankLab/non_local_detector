@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -133,6 +134,228 @@ def _state_aggregation_matrix(state_ind: np.ndarray) -> np.ndarray:
     return aggregation
 
 
+def _n_states_from_state_ind(state_ind: np.ndarray) -> int:
+    """Return the number of discrete states represented by expanded bins."""
+    return int(np.max(state_ind)) + 1
+
+
+def _aggregate_xi_by_state_jax(
+    xi: jnp.ndarray, state_ind: jnp.ndarray, n_states: int
+) -> jnp.ndarray:
+    """Aggregate expanded-bin pair probabilities to discrete-state pairs."""
+    target_sum = jax.ops.segment_sum(
+        xi.T,
+        state_ind,
+        num_segments=n_states,
+    ).T
+    return jax.ops.segment_sum(
+        target_sum,
+        state_ind,
+        num_segments=n_states,
+    )
+
+
+def _safe_ratio_jax(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.ndarray:
+    """Return numerator / denominator with zero output near zero denominators."""
+    is_zero = jnp.isclose(denominator, 0.0)
+    safe_denominator = jnp.where(is_zero, 1.0, denominator)
+    return jnp.where(is_zero, 0.0, numerator / safe_denominator)
+
+
+@partial(jax.jit, static_argnames=("n_states",))
+def _expanded_responses_stationary_transition_jax(
+    causal_posterior: jnp.ndarray,
+    predictive_posterior: jnp.ndarray,
+    acausal_posterior: jnp.ndarray,
+    transition_matrix: jnp.ndarray,
+    state_ind: jnp.ndarray,
+    n_states: int,
+) -> jnp.ndarray:
+    """JAX kernel for exact responses with a stationary expanded transition."""
+
+    def step(_, inputs):
+        causal_t, predictive_next, acausal_next = inputs
+        ratio = _safe_ratio_jax(acausal_next, predictive_next)
+        xi = causal_t[:, jnp.newaxis] * transition_matrix * ratio[jnp.newaxis, :]
+        return None, _aggregate_xi_by_state_jax(xi, state_ind, n_states)
+
+    _, response = jax.lax.scan(
+        step,
+        None,
+        (causal_posterior[:-1], predictive_posterior[1:], acausal_posterior[1:]),
+    )
+    return response
+
+
+@partial(jax.jit, static_argnames=("n_states",))
+def _expanded_responses_nonstationary_transition_jax(
+    causal_posterior: jnp.ndarray,
+    predictive_posterior: jnp.ndarray,
+    acausal_posterior: jnp.ndarray,
+    transition_matrix: jnp.ndarray,
+    state_ind: jnp.ndarray,
+    n_states: int,
+) -> jnp.ndarray:
+    """JAX kernel for exact responses with time-varying expanded transitions."""
+
+    def step(_, inputs):
+        causal_t, predictive_next, acausal_next, transition_t = inputs
+        ratio = _safe_ratio_jax(acausal_next, predictive_next)
+        xi = causal_t[:, jnp.newaxis] * transition_t * ratio[jnp.newaxis, :]
+        return None, _aggregate_xi_by_state_jax(xi, state_ind, n_states)
+
+    _, response = jax.lax.scan(
+        step,
+        None,
+        (
+            causal_posterior[:-1],
+            predictive_posterior[1:],
+            acausal_posterior[1:],
+            transition_matrix[:-1],
+        ),
+    )
+    return response
+
+
+@partial(jax.jit, static_argnames=("n_states",))
+def _expanded_counts_stationary_transition_jax(
+    causal_posterior: jnp.ndarray,
+    predictive_posterior: jnp.ndarray,
+    acausal_posterior: jnp.ndarray,
+    transition_matrix: jnp.ndarray,
+    state_ind: jnp.ndarray,
+    n_states: int,
+) -> jnp.ndarray:
+    """JAX kernel for exact summed counts with a stationary transition."""
+
+    def step(joint_sum, inputs):
+        causal_t, predictive_next, acausal_next = inputs
+        ratio = _safe_ratio_jax(acausal_next, predictive_next)
+        xi = causal_t[:, jnp.newaxis] * transition_matrix * ratio[jnp.newaxis, :]
+        return joint_sum + _aggregate_xi_by_state_jax(xi, state_ind, n_states), None
+
+    initial_counts = jnp.zeros(
+        (n_states, n_states),
+        dtype=jnp.result_type(
+            causal_posterior,
+            predictive_posterior,
+            acausal_posterior,
+            transition_matrix,
+        ),
+    )
+    joint_sum, _ = jax.lax.scan(
+        step,
+        initial_counts,
+        (causal_posterior[:-1], predictive_posterior[1:], acausal_posterior[1:]),
+    )
+    return joint_sum
+
+
+@partial(jax.jit, static_argnames=("n_states",))
+def _expanded_counts_nonstationary_transition_jax(
+    causal_posterior: jnp.ndarray,
+    predictive_posterior: jnp.ndarray,
+    acausal_posterior: jnp.ndarray,
+    transition_matrix: jnp.ndarray,
+    state_ind: jnp.ndarray,
+    n_states: int,
+) -> jnp.ndarray:
+    """JAX kernel for exact summed counts with time-varying transitions."""
+
+    def step(joint_sum, inputs):
+        causal_t, predictive_next, acausal_next, transition_t = inputs
+        ratio = _safe_ratio_jax(acausal_next, predictive_next)
+        xi = causal_t[:, jnp.newaxis] * transition_t * ratio[jnp.newaxis, :]
+        return joint_sum + _aggregate_xi_by_state_jax(xi, state_ind, n_states), None
+
+    initial_counts = jnp.zeros(
+        (n_states, n_states),
+        dtype=jnp.result_type(
+            causal_posterior,
+            predictive_posterior,
+            acausal_posterior,
+            transition_matrix,
+        ),
+    )
+    joint_sum, _ = jax.lax.scan(
+        step,
+        initial_counts,
+        (
+            causal_posterior[:-1],
+            predictive_posterior[1:],
+            acausal_posterior[1:],
+            transition_matrix[:-1],
+        ),
+    )
+    return joint_sum
+
+
+@partial(jax.jit, static_argnames=("n_states",))
+def _expanded_responses_factorized_jax(
+    causal_posterior: jnp.ndarray,
+    predictive_posterior: jnp.ndarray,
+    acausal_posterior: jnp.ndarray,
+    continuous_transition_matrix: jnp.ndarray,
+    discrete_transition_matrix: jnp.ndarray,
+    state_ind: jnp.ndarray,
+    n_states: int,
+) -> jnp.ndarray:
+    """JAX kernel for exact responses from factorized transitions."""
+
+    def step(_, inputs):
+        causal_t, predictive_next, acausal_next, discrete_transition_t = inputs
+        ratio = _safe_ratio_jax(acausal_next, predictive_next)
+        transition_t = (
+            continuous_transition_matrix
+            * discrete_transition_t[
+                state_ind[:, jnp.newaxis],
+                state_ind[jnp.newaxis, :],
+            ]
+        )
+        xi = causal_t[:, jnp.newaxis] * transition_t * ratio[jnp.newaxis, :]
+        return None, _aggregate_xi_by_state_jax(xi, state_ind, n_states)
+
+    _, response = jax.lax.scan(
+        step,
+        None,
+        (
+            causal_posterior[:-1],
+            predictive_posterior[1:],
+            acausal_posterior[1:],
+            discrete_transition_matrix[:-1],
+        ),
+    )
+    return response
+
+
+@partial(jax.jit, static_argnames=("n_states",))
+def _expanded_counts_factorized_stationary_jax(
+    causal_posterior: jnp.ndarray,
+    predictive_posterior: jnp.ndarray,
+    acausal_posterior: jnp.ndarray,
+    continuous_transition_matrix: jnp.ndarray,
+    discrete_transition_matrix: jnp.ndarray,
+    state_ind: jnp.ndarray,
+    n_states: int,
+) -> jnp.ndarray:
+    """JAX kernel for exact summed counts from stationary factorized transitions."""
+    transition_matrix = (
+        continuous_transition_matrix
+        * discrete_transition_matrix[
+            state_ind[:, jnp.newaxis],
+            state_ind[jnp.newaxis, :],
+        ]
+    )
+    return _expanded_counts_stationary_transition_jax(
+        causal_posterior,
+        predictive_posterior,
+        acausal_posterior,
+        transition_matrix,
+        state_ind,
+        n_states,
+    )
+
+
 def estimate_discrete_transition_responses_from_expanded_posteriors(
     causal_posterior: np.ndarray,
     predictive_posterior: np.ndarray,
@@ -162,25 +385,28 @@ def estimate_discrete_transition_responses_from_expanded_posteriors(
         Exact expected transition counts from each discrete state to each
         discrete state at each time.
     """
-    aggregation = _state_aggregation_matrix(state_ind)
-    n_time = causal_posterior.shape[0]
-    n_states = aggregation.shape[1]
-    response = np.zeros((n_time - 1, n_states, n_states))
-
-    for t in range(n_time - 1):
-        ratio = np.divide(
-            acausal_posterior[t + 1],
-            predictive_posterior[t + 1],
-            out=np.zeros_like(acausal_posterior[t + 1]),
-            where=~np.isclose(predictive_posterior[t + 1], 0.0),
+    state_ind = np.asarray(state_ind, dtype=int)
+    n_states = _n_states_from_state_ind(state_ind)
+    if transition_matrix.ndim == 2:
+        response = _expanded_responses_stationary_transition_jax(
+            jnp.asarray(causal_posterior),
+            jnp.asarray(predictive_posterior),
+            jnp.asarray(acausal_posterior),
+            jnp.asarray(transition_matrix),
+            jnp.asarray(state_ind),
+            n_states,
         )
-        transition_t = (
-            transition_matrix if transition_matrix.ndim == 2 else transition_matrix[t]
+    else:
+        response = _expanded_responses_nonstationary_transition_jax(
+            jnp.asarray(causal_posterior),
+            jnp.asarray(predictive_posterior),
+            jnp.asarray(acausal_posterior),
+            jnp.asarray(transition_matrix),
+            jnp.asarray(state_ind),
+            n_states,
         )
-        xi = causal_posterior[t, :, np.newaxis] * transition_t * ratio[np.newaxis, :]
-        response[t] = aggregation.T @ xi @ aggregation
 
-    return response
+    return np.asarray(response)
 
 
 def estimate_discrete_transition_counts_from_expanded_posteriors(
@@ -212,25 +438,28 @@ def estimate_discrete_transition_counts_from_expanded_posteriors(
         Exact expected transition counts from each discrete state to each
         discrete state.
     """
-    aggregation = _state_aggregation_matrix(state_ind)
-    n_time = causal_posterior.shape[0]
-    n_states = aggregation.shape[1]
-    joint_sum = np.zeros((n_states, n_states))
-
-    for t in range(n_time - 1):
-        ratio = np.divide(
-            acausal_posterior[t + 1],
-            predictive_posterior[t + 1],
-            out=np.zeros_like(acausal_posterior[t + 1]),
-            where=~np.isclose(predictive_posterior[t + 1], 0.0),
+    state_ind = np.asarray(state_ind, dtype=int)
+    n_states = _n_states_from_state_ind(state_ind)
+    if transition_matrix.ndim == 2:
+        joint_sum = _expanded_counts_stationary_transition_jax(
+            jnp.asarray(causal_posterior),
+            jnp.asarray(predictive_posterior),
+            jnp.asarray(acausal_posterior),
+            jnp.asarray(transition_matrix),
+            jnp.asarray(state_ind),
+            n_states,
         )
-        transition_t = (
-            transition_matrix if transition_matrix.ndim == 2 else transition_matrix[t]
+    else:
+        joint_sum = _expanded_counts_nonstationary_transition_jax(
+            jnp.asarray(causal_posterior),
+            jnp.asarray(predictive_posterior),
+            jnp.asarray(acausal_posterior),
+            jnp.asarray(transition_matrix),
+            jnp.asarray(state_ind),
+            n_states,
         )
-        xi = causal_posterior[t, :, np.newaxis] * transition_t * ratio[np.newaxis, :]
-        joint_sum += aggregation.T @ xi @ aggregation
 
-    return joint_sum
+    return np.asarray(joint_sum)
 
 
 def estimate_discrete_transition_responses_from_factorized_posteriors(
@@ -270,26 +499,45 @@ def estimate_discrete_transition_responses_from_factorized_posteriors(
         discrete state at each time.
     """
     state_ind = np.asarray(state_ind, dtype=int)
-    aggregation = _state_aggregation_matrix(state_ind)
-    n_time = causal_posterior.shape[0]
-    n_states = aggregation.shape[1]
-    response = np.zeros((n_time - 1, n_states, n_states))
+    n_states = _n_states_from_state_ind(state_ind)
+    response = _expanded_responses_factorized_jax(
+        jnp.asarray(causal_posterior),
+        jnp.asarray(predictive_posterior),
+        jnp.asarray(acausal_posterior),
+        jnp.asarray(continuous_transition_matrix),
+        jnp.asarray(discrete_transition_matrix),
+        jnp.asarray(state_ind),
+        n_states,
+    )
+    return np.asarray(response)
 
-    for t in range(n_time - 1):
-        ratio = np.divide(
-            acausal_posterior[t + 1],
-            predictive_posterior[t + 1],
-            out=np.zeros_like(acausal_posterior[t + 1]),
-            where=~np.isclose(predictive_posterior[t + 1], 0.0),
-        )
-        transition_t = (
-            continuous_transition_matrix
-            * discrete_transition_matrix[t][np.ix_(state_ind, state_ind)]
-        )
-        xi = causal_posterior[t, :, np.newaxis] * transition_t * ratio[np.newaxis, :]
-        response[t] = aggregation.T @ xi @ aggregation
 
-    return response
+def estimate_discrete_transition_counts_from_factorized_posteriors(
+    causal_posterior: np.ndarray,
+    predictive_posterior: np.ndarray,
+    acausal_posterior: np.ndarray,
+    continuous_transition_matrix: np.ndarray,
+    discrete_transition_matrix: np.ndarray,
+    state_ind: np.ndarray,
+) -> np.ndarray:
+    """Return exact counts from stationary factorized transitions."""
+    if discrete_transition_matrix.ndim != 2:
+        raise ValueError(
+            "discrete_transition_matrix must be stationary with shape (n_states, n_states)."
+        )
+
+    state_ind = np.asarray(state_ind, dtype=int)
+    n_states = _n_states_from_state_ind(state_ind)
+    joint_sum = _expanded_counts_factorized_stationary_jax(
+        jnp.asarray(causal_posterior),
+        jnp.asarray(predictive_posterior),
+        jnp.asarray(acausal_posterior),
+        jnp.asarray(continuous_transition_matrix),
+        jnp.asarray(discrete_transition_matrix),
+        jnp.asarray(state_ind),
+        n_states,
+    )
+    return np.asarray(joint_sum)
 
 
 @jax.jit
@@ -1017,15 +1265,12 @@ def _estimate_discrete_transition(
             stickiness_value = transition_stickiness
 
         if use_expanded_counts:
-            full_transition = (
-                continuous_transition
-                * discrete_transition[np.ix_(state_ind, state_ind)]
-            )
-            joint_sum = estimate_discrete_transition_counts_from_expanded_posteriors(
+            joint_sum = estimate_discrete_transition_counts_from_factorized_posteriors(
                 causal_posterior,
                 predictive_posterior,
                 acausal_posterior,
-                full_transition,
+                continuous_transition,
+                discrete_transition,
                 state_ind,
             )
             discrete_transition = estimate_stationary_state_transition_from_counts(

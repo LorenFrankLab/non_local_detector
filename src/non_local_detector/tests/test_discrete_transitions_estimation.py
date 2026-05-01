@@ -12,7 +12,9 @@ import pytest
 from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryCustom,
     _estimate_discrete_transition,
+    _state_aggregation_matrix,
     estimate_discrete_transition_counts_from_expanded_posteriors,
+    estimate_discrete_transition_counts_from_factorized_posteriors,
     estimate_discrete_transition_responses_from_expanded_posteriors,
     estimate_discrete_transition_responses_from_factorized_posteriors,
     estimate_joint_distribution,
@@ -174,6 +176,35 @@ def _centered_softmax_forward_numpy(linear_predictor: np.ndarray) -> np.ndarray:
     return probabilities / probabilities.sum(axis=-1, keepdims=True)
 
 
+def _expanded_responses_numpy_reference(
+    causal_posterior: np.ndarray,
+    predictive_posterior: np.ndarray,
+    acausal_posterior: np.ndarray,
+    transition_matrix: np.ndarray,
+    state_ind: np.ndarray,
+) -> np.ndarray:
+    """Reference implementation matching the original NumPy loop."""
+    aggregation = _state_aggregation_matrix(state_ind)
+    n_time = causal_posterior.shape[0]
+    n_states = aggregation.shape[1]
+    response = np.zeros((n_time - 1, n_states, n_states))
+
+    for t in range(n_time - 1):
+        ratio = np.divide(
+            acausal_posterior[t + 1],
+            predictive_posterior[t + 1],
+            out=np.zeros_like(acausal_posterior[t + 1]),
+            where=~np.isclose(predictive_posterior[t + 1], 0.0),
+        )
+        transition_t = (
+            transition_matrix if transition_matrix.ndim == 2 else transition_matrix[t]
+        )
+        xi = causal_posterior[t, :, np.newaxis] * transition_t * ratio[np.newaxis, :]
+        response[t] = aggregation.T @ xi @ aggregation
+
+    return response
+
+
 def _expanded_hmm_parameters() -> tuple[np.ndarray, np.ndarray, list[list[np.ndarray]]]:
     """Return a small identifiable expanded HMM for transition-recovery tests."""
     initial_conditions = np.full(3, 1.0 / 3.0)
@@ -253,6 +284,94 @@ def _estimate_simulated_discrete_transition(
 class TestExpandedDiscreteTransitionCounts:
     """Test exact discrete transition counts from expanded-bin posteriors."""
 
+    def test_expanded_responses_match_numpy_reference(self):
+        """The JAX response kernel should match the original NumPy formula."""
+        rng = np.random.default_rng(5)
+        n_time = 6
+        state_ind = np.array([0, 0, 1, 2, 2])
+        n_bins = state_ind.size
+        causal = rng.random((n_time, n_bins))
+        causal /= causal.sum(axis=1, keepdims=True)
+        transition = rng.random((n_time, n_bins, n_bins))
+        transition /= transition.sum(axis=2, keepdims=True)
+        predictive = np.einsum("tk,tkl->tl", causal, transition)
+        acausal = predictive * rng.uniform(0.8, 1.2, size=predictive.shape)
+        acausal /= acausal.sum(axis=1, keepdims=True)
+
+        response = estimate_discrete_transition_responses_from_expanded_posteriors(
+            causal,
+            predictive,
+            acausal,
+            transition,
+            state_ind,
+        )
+        expected = _expanded_responses_numpy_reference(
+            causal,
+            predictive,
+            acausal,
+            transition,
+            state_ind,
+        )
+
+        np.testing.assert_allclose(response, expected, atol=1e-6)
+
+    def test_factorized_counts_match_numpy_reference(self):
+        """The stationary factorized JAX count helper should preserve answers."""
+        rng = np.random.default_rng(6)
+        n_time = 7
+        state_ind = np.array([0, 0, 1, 2, 2])
+        n_bins = state_ind.size
+        n_states = 3
+        causal = rng.random((n_time, n_bins))
+        causal /= causal.sum(axis=1, keepdims=True)
+        continuous_transition = rng.random((n_bins, n_bins))
+        continuous_transition /= continuous_transition.sum(axis=1, keepdims=True)
+        discrete_transition = rng.random((n_states, n_states))
+        discrete_transition /= discrete_transition.sum(axis=1, keepdims=True)
+        full_transition = (
+            continuous_transition * discrete_transition[np.ix_(state_ind, state_ind)]
+        )
+        predictive = causal @ full_transition
+        acausal = predictive * rng.uniform(0.8, 1.2, size=predictive.shape)
+        acausal /= acausal.sum(axis=1, keepdims=True)
+
+        counts = estimate_discrete_transition_counts_from_factorized_posteriors(
+            causal,
+            predictive,
+            acausal,
+            continuous_transition,
+            discrete_transition,
+            state_ind,
+        )
+        expected = _expanded_responses_numpy_reference(
+            causal,
+            predictive,
+            acausal,
+            full_transition,
+            state_ind,
+        ).sum(axis=0)
+
+        np.testing.assert_allclose(counts, expected, atol=1e-6)
+
+    def test_factorized_counts_requires_stationary_discrete_transition(self):
+        """The count helper should reject time-varying discrete transitions."""
+        causal = np.array([[0.5, 0.5], [0.25, 0.75]])
+        predictive = np.array([[0.5, 0.5], [0.25, 0.75]])
+        acausal = np.array([[0.5, 0.5], [0.25, 0.75]])
+        continuous_transition = np.eye(2)
+        discrete_transition = np.tile(np.eye(2), (2, 1, 1))
+        state_ind = np.array([0, 1])
+
+        with pytest.raises(ValueError, match="must be stationary"):
+            estimate_discrete_transition_counts_from_factorized_posteriors(
+                causal,
+                predictive,
+                acausal,
+                continuous_transition,
+                discrete_transition,
+                state_ind,
+            )
+
     def test_pure_discrete_hmm_matches_legacy_joint_sum(self, posterior_data):
         """One expanded bin per state should match the existing discrete formula."""
         post = posterior_data
@@ -272,7 +391,7 @@ class TestExpandedDiscreteTransitionCounts:
             post["acausal_posterior"],
         ).sum(axis=0)
 
-        np.testing.assert_allclose(exact_counts, legacy_counts, atol=1e-12)
+        np.testing.assert_allclose(exact_counts, legacy_counts, atol=1e-5)
 
     def test_uniform_continuous_transitions_match_aggregated_counts(self):
         """Source-independent target-bin predictions reduce to the aggregate path."""
@@ -325,7 +444,7 @@ class TestExpandedDiscreteTransitionCounts:
             acausal_state,
         ).sum(axis=0)
 
-        np.testing.assert_allclose(exact_counts, legacy_counts, atol=1e-12)
+        np.testing.assert_allclose(exact_counts, legacy_counts, atol=1e-5)
 
     def test_source_specific_spatial_prediction_changes_transition_credit(self):
         """Exact counts credit the source that predicts the supported target bin."""
@@ -419,7 +538,7 @@ class TestExpandedDiscreteTransitionCounts:
             state_ind,
         )
 
-        np.testing.assert_allclose(response.sum(axis=0), counts, atol=1e-12)
+        np.testing.assert_allclose(response.sum(axis=0), counts, atol=1e-5)
 
     def test_factorized_responses_match_materialized_full_transition(self):
         """The streaming nonstationary helper should avoid changing the math."""
@@ -481,7 +600,7 @@ class TestExpandedDiscreteTransitionCounts:
             state_ind,
         )
 
-        np.testing.assert_allclose(factorized, materialized, atol=1e-12)
+        np.testing.assert_allclose(factorized, materialized, atol=1e-5)
 
 
 @pytest.mark.integration
