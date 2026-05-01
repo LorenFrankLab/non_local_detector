@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.discrete_state_transitions import (
+    DiscreteNonStationaryCustom,
     DiscreteStationaryCustom,
     _estimate_discrete_transition,
     _state_aggregation_matrix,
@@ -50,6 +51,7 @@ class _FixedLikelihoodDetector(_DetectorBase):
         log_likelihoods: np.ndarray,
         discrete_initial_conditions: np.ndarray | None = None,
         discrete_transition: np.ndarray | None = None,
+        discrete_transition_type=None,
         continuous_transition_blocks: list[list[np.ndarray]] | None = None,
     ):
         self._fixed_log_likelihoods = np.asarray(log_likelihoods, dtype=float)
@@ -83,8 +85,10 @@ class _FixedLikelihoodDetector(_DetectorBase):
         super().__init__(
             discrete_initial_conditions=discrete_initial_conditions,
             continuous_initial_conditions_types=[UniformInitialConditions()] * 3,
-            discrete_transition_type=DiscreteStationaryCustom(
-                values=discrete_transition,
+            discrete_transition_type=(
+                DiscreteStationaryCustom(values=discrete_transition)
+                if discrete_transition_type is None
+                else discrete_transition_type
             ),
             discrete_transition_concentration=1.0,
             discrete_transition_stickiness=np.zeros(3),
@@ -134,6 +138,36 @@ def _simulate_expanded_hmm(
         previous_state = states[t - 1]
         previous_bin = bins[t - 1]
         states[t] = _sample_categorical(rng, discrete_transition[previous_state])
+        bins[t] = _sample_categorical(
+            rng,
+            continuous_transition_blocks[previous_state][states[t]][previous_bin],
+        )
+
+    return states, bins
+
+
+def _simulate_nonstationary_expanded_hmm(
+    rng: np.random.Generator,
+    initial_conditions: np.ndarray,
+    discrete_transition: np.ndarray,
+    continuous_transition_blocks: list[list[np.ndarray]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Simulate expanded states with time-varying discrete transitions."""
+    n_time = discrete_transition.shape[0]
+    states = np.zeros(n_time, dtype=int)
+    bins = np.zeros(n_time, dtype=int)
+    states[0] = _sample_categorical(rng, initial_conditions)
+    bins[0] = int(
+        rng.integers(continuous_transition_blocks[states[0]][states[0]].shape[0])
+    )
+
+    for t in range(1, n_time):
+        previous_state = states[t - 1]
+        previous_bin = bins[t - 1]
+        states[t] = _sample_categorical(
+            rng,
+            discrete_transition[t - 1, previous_state],
+        )
         bins[t] = _sample_categorical(
             rng,
             continuous_transition_blocks[previous_state][states[t]][previous_bin],
@@ -904,6 +938,77 @@ class TestExpandedTransitionMstepEndToEnd:
 
         assert len(marginal_log_likelihoods) == 5
         assert np.all(np.diff(marginal_log_likelihoods) >= -1e-6)
+
+    def test_nonstationary_detector_recovers_covariate_direction(self):
+        """Exact responses should learn a simple covariate-dependent transition."""
+        rng = np.random.default_rng(13)
+        n_time = 1_200
+        n_states = 3
+        n_bins = 2
+        covariate = np.sin(np.linspace(0.0, 12.0 * np.pi, n_time))
+        design_matrix = np.column_stack((np.ones(n_time), covariate))
+        true_coefficients = np.zeros((2, n_states, n_states - 1))
+        true_coefficients[:, 0, :] = np.array([[1.5, -0.5], [-2.0, 2.0]])
+        true_coefficients[:, 1, :] = np.array([[-0.5, 1.5], [2.0, -2.0]])
+        true_coefficients[:, 2, :] = np.array([[0.5, 0.0], [1.2, -1.2]])
+        true_transition = np.zeros((n_time, n_states, n_states))
+        for from_state in range(n_states):
+            true_transition[:, from_state] = _centered_softmax_forward_numpy(
+                design_matrix @ true_coefficients[:, from_state]
+            )
+
+        initial_conditions, _, continuous_transition_blocks = _expanded_hmm_parameters()
+        states, bins = _simulate_nonstationary_expanded_hmm(
+            rng,
+            initial_conditions,
+            true_transition,
+            continuous_transition_blocks,
+        )
+        log_likelihoods = _log_likelihoods_from_expanded_states(
+            states,
+            bins,
+            n_states,
+            n_bins,
+            off_target_log_likelihood=-12.0,
+        )
+        detector = _FixedLikelihoodDetector(
+            log_likelihoods,
+            discrete_initial_conditions=initial_conditions,
+            discrete_transition_type=DiscreteNonStationaryCustom(
+                values=np.full((n_states, n_states), 1.0 / n_states),
+                formula="1 + covariate",
+            ),
+            continuous_transition_blocks=continuous_transition_blocks,
+        )
+        covariate_data = {"covariate": covariate}
+        detector._fit(
+            position=np.array([[0.25], [1.25]]),
+            discrete_transition_covariate_data=covariate_data,
+        )
+        results = detector.estimate_parameters(
+            time=np.arange(n_time, dtype=float),
+            estimate_initial_conditions=False,
+            estimate_discrete_transition=True,
+            estimate_encoding_model=False,
+            max_iter=1,
+            tolerance=0.0,
+        )
+
+        learned_transition = detector.discrete_state_transitions_
+        low_covariate = covariate[:-1] < -0.75
+        high_covariate = covariate[:-1] > 0.75
+        learned_low = learned_transition[:-1][low_covariate].mean(axis=0)
+        learned_high = learned_transition[:-1][high_covariate].mean(axis=0)
+        true_low = true_transition[:-1][low_covariate].mean(axis=0)
+        true_high = true_transition[:-1][high_covariate].mean(axis=0)
+
+        assert learned_low[0, 0] > learned_high[0, 0]
+        assert learned_high[0, 1] > learned_low[0, 1]
+        assert learned_high[1, 0] > learned_low[1, 0]
+        assert learned_low[1, 1] > learned_high[1, 1]
+        np.testing.assert_allclose(learned_low[:2], true_low[:2], atol=0.16)
+        np.testing.assert_allclose(learned_high[:2], true_high[:2], atol=0.16)
+        assert len(results.attrs["marginal_log_likelihoods"]) == 1
 
 
 @pytest.mark.unit
