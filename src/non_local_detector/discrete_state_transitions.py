@@ -982,13 +982,16 @@ def estimate_non_stationary_state_transition_from_responses(
             row_alpha,
             transition_regularization,
         )
+        options = {"maxiter": maxiter}
+        if optimization_method != "L-BFGS-B":
+            options["disp"] = disp
         minimize_kwargs = {
             "fun": dirichlet_neg_log_likelihood,
             "x0": transition_coefficients[:, from_state].ravel(),
             "method": optimization_method,
             "jac": dirichlet_gradient,
             "args": objective_args,
-            "options": {"disp": disp, "maxiter": maxiter},
+            "options": options,
         }
         if optimization_method in {"Newton-CG", "trust-ncg", "dogleg", "trust-exact"}:
             minimize_kwargs["hess"] = dirichlet_hessian
