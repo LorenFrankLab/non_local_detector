@@ -188,11 +188,17 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
           containing the animal. The per-bin likelihood is evaluated at
           bin centers (discrete); only the animal's bin contributes
           finite mass, the rest are suppressed.
-        - ``> 0``: multi-bin local with a Gaussian kernel of standard
-          deviation ``local_position_std`` (same units as ``position``,
-          typically centimeters) on the shortest-path track-graph
-          distance. Models spatial uncertainty in the local
-          representation.
+        - ``> 0``: multi-bin local with a spatial-anchor kernel
+          ``raw = -0.5 * d² / σ²`` on the shortest-path track-graph
+          distance, rescaled per timestep so ``exp(log_kernel)`` sums
+          to ``n_bins``. The rescaling cancels the multi-bin Local
+          state's ``1/n_bins`` uniform continuous-IC factor — without
+          it, Non-Local dominates by a factor of ``n_bins``.
+          ``σ = local_position_std`` (same units as ``position``,
+          typically centimeters) is an anchor-width hyperparameter
+          that controls how far from the animal a Local bin remains
+          credible, not a calibrated measurement-noise standard
+          deviation.
 
         All three modes produce a valid posterior.
 
@@ -361,11 +367,17 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
           containing the animal. The per-bin likelihood is evaluated at
           bin centers (discrete); only the animal's bin contributes
           finite mass, the rest are suppressed.
-        - ``> 0``: multi-bin local with a Gaussian kernel of standard
-          deviation ``local_position_std`` (same units as ``position``,
-          typically centimeters) on the shortest-path track-graph
-          distance. Models spatial uncertainty in the local
-          representation.
+        - ``> 0``: multi-bin local with a spatial-anchor kernel
+          ``raw = -0.5 * d² / σ²`` on the shortest-path track-graph
+          distance, rescaled per timestep so ``exp(log_kernel)`` sums
+          to ``n_bins``. The rescaling cancels the multi-bin Local
+          state's ``1/n_bins`` uniform continuous-IC factor — without
+          it, Non-Local dominates by a factor of ``n_bins``.
+          ``σ = local_position_std`` (same units as ``position``,
+          typically centimeters) is an anchor-width hyperparameter
+          that controls how far from the animal a Local bin remains
+          credible, not a calibrated measurement-noise standard
+          deviation.
 
         All three modes produce a valid posterior.
 

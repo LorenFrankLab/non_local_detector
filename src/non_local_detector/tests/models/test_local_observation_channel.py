@@ -125,8 +125,19 @@ class TestDeltaKernel:
 
         finite_mask = np.isfinite(log_kernel[0])
         assert finite_mask.sum() == 1, "Delta kernel must be finite at exactly one bin"
-        np.testing.assert_allclose(log_kernel[0, finite_mask], 0.0, atol=1e-7)
+        # Mass balance: the lone finite cell carries log(n_bins) so
+        # exp(log_kernel) sums to n_bins (compensates for the multi-bin
+        # Local state's uniform 1/n_bins continuous IC).
+        n_bins_interior = int(env.is_track_interior_.sum())
+        np.testing.assert_allclose(
+            log_kernel[0, finite_mask], np.log(n_bins_interior), atol=1e-5
+        )
         assert np.all(log_kernel[0, ~finite_mask] == -np.inf)
+        np.testing.assert_allclose(
+            float(np.exp(log_kernel[0, finite_mask]).sum()),
+            float(n_bins_interior),
+            rtol=1e-5,
+        )
 
         # The finite bin is the one containing the animal.
         interior_bin_indices = np.where(env.is_track_interior_.ravel())[0]
@@ -179,13 +190,30 @@ class TestComputeLocalInitialConditions:
         )
         assert override is None
 
-    def test_returns_none_when_first_position_is_nan(self, _fitted_detector, _sim_data):
+    def test_first_position_nan_leaves_local_block_unchanged(
+        self, _fitted_detector, _sim_data
+    ):
+        """NaN at t=0 → Local block falls back to stored IC, not a delta.
+
+        The override walks each Local observation model; if the first
+        decoding frame's position is NaN it skips that state (logs a
+        warning) and leaves its block as-is. Functionally equivalent to
+        the legacy ``return None`` path for single-Local models, but
+        per-state so multi-environment configurations with one
+        droppedout Local don't disable overrides for the rest.
+        """
         position = np.array(_sim_data["position"], copy=True)
         position[0] = np.nan
         override = _fitted_detector.compute_local_initial_conditions(
             _sim_data["time"], position, _sim_data["time"]
         )
-        assert override is None
+        # Helper still returns an array (single-Local case → just a copy
+        # of the stored IC); Local block must equal the stored block.
+        assert override is not None
+        local_mask = _fitted_detector.state_ind_ == 0
+        np.testing.assert_array_equal(
+            override[local_mask], _fitted_detector.initial_conditions_[local_mask]
+        )
 
     def test_override_concentrates_local_at_animal_bin(
         self, _fitted_detector, _sim_data
@@ -541,6 +569,15 @@ class TestMostLikelySequenceUsesOverride:
             "Viterbi is using a different initial Local distribution from predict()."
         )
 
+    # Note: a "Viterbi sequence differs with vs without override" test
+    # is too strong under correct n_bins mass balance — Local dominates
+    # so cleanly on awake-behavior simulated data that Viterbi picks the
+    # same path regardless of whether the t=0 Local IC is delta or
+    # uniform. The spy test above (`test_sorted_spikes_invokes_override`)
+    # already pins that `most_likely_sequence` calls the override; the
+    # smoother-side `test_override_changes_t0_posterior_vs_uniform_ic`
+    # exercises the behavioral effect on the posterior.
+
 
 @pytest.mark.unit
 class TestPredictUsesOverride:
@@ -652,4 +689,47 @@ class TestPredictUsesOverride:
         assert diff > 1e-6, (
             "Override produced identical t=0 posterior to uniform IC; the "
             "override is not actually changing the forward pass."
+        )
+
+
+@pytest.mark.unit
+class TestLocalStateOccupancyRegression:
+    """Regression: Local state must dominate on awake-behavior simulated data.
+
+    The IC mass-balance compensation in ``_compute_local_position_kernel``
+    (and its delta-kernel sibling) cancels the multi-bin Local state's
+    uniform ``1/n_bins`` continuous IC factor; without it Non-Local
+    dominates by a factor of n_bins, regardless of σ. The previous test
+    suite checked posterior validity (sums to 1, finite) but missed the
+    occupancy collapse — this test pins it.
+
+    Threshold of 0.5 leaves ample headroom around the legacy ``None``
+    baseline of ~0.71 while flagging any reappearance of the
+    n_bins-collapse failure mode.
+    """
+
+    @pytest.mark.parametrize("sigma", [0.0, 0.5, 5.0])
+    def test_p_local_dominates_under_awake_behavior(self, _sim_data, sigma):
+        detector = NonLocalSortedSpikesDetector(
+            sampling_frequency=_sim_data["sampling_frequency"],
+            local_position_std=sigma,
+        )
+        detector.fit(
+            position_time=_sim_data["time"],
+            position=_sim_data["position"],
+            spike_times=_sim_data["spike_times"],
+        )
+        results = detector.predict(
+            spike_times=_sim_data["spike_times"],
+            position_time=_sim_data["time"],
+            position=_sim_data["position"],
+            time=_sim_data["time"],
+        )
+        state_probs = np.asarray(results.acausal_state_probabilities)
+        mean_p_local = float(state_probs[:, 0].mean())
+        assert mean_p_local > 0.5, (
+            f"σ={sigma}: mean P(Local) = {mean_p_local:.3f}, expected > 0.5 "
+            "on awake-behavior simulated data. If this fires, the multi-bin "
+            "Local kernel may have lost its 1/n_bins mass-balance "
+            "compensation — Non-Local dominates by a factor of n_bins."
         )

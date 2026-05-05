@@ -6,6 +6,7 @@ import warnings
 from collections.abc import Callable
 from logging import getLogger
 
+import jax
 import jax.numpy as jnp
 import matplotlib
 import matplotlib.pyplot as plt
@@ -619,26 +620,29 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     ) -> jnp.ndarray:
         """Spatial-anchor log-kernel for the multi-bin Local state.
 
-        For ``σ > 0`` returns the *unnormalized* anchor:
+        For ``σ > 0`` returns the anchor potential, normalized so that
+        ``exp(log_kernel)`` sums to ``n_bins`` per timestep:
 
-        ``log_kernel(t, b) = -0.5 * d(b, animal_t)² / σ²``
+        ``log_kernel(t, b) = raw(t, b) - logsumexp(raw(t, ·)) + log(n_bins)``
 
-        where ``d`` is shortest-path graph/geodesic distance (Euclidean
-        fallback when no distance matrix is fitted) and
-        ``σ = local_position_std``. The peak is always 0 at the animal's
-        bin and falls off with distance, so ``σ`` controls the *spatial
-        tolerance* of the Local state — how far from the animal a Local
-        bin can be while still being credible — without re-weighting the
-        Local-vs-non-Local global evidence balance via a normalizer.
+        where ``raw(t, b) = -0.5 * d(b, animal_t)² / σ²`` and ``d`` is
+        shortest-path graph/geodesic distance (Euclidean fallback when
+        no distance matrix is fitted). This is *not* density
+        normalization — it is HMM-state mass-balance calibration. The
+        multi-bin Local state has a uniform ``1 / n_bins`` continuous
+        prior, which would otherwise shrink the Local state's evidence
+        by a factor of ``n_bins`` relative to Non-Local on the forward
+        pass; rescaling the kernel to sum to ``n_bins`` cancels that
+        factor exactly. Without this scaling, Non-Local dominates by a
+        factor of ``n_bins`` regardless of σ.
 
-        This is **not** a normalized density; integrating
-        ``exp(log_kernel)`` over bins varies with σ and bin spacing.
-        Treat ``local_position_std`` as an anchor-width hyperparameter,
+        Treat ``σ = local_position_std`` as an anchor-width
+        hyperparameter (controls spatial tolerance of the Local state),
         not a calibrated measurement-noise scale.
 
-        For ``σ == 0`` returns the delta-kernel limit: ``0`` at the
-        animal's snapped interior bin, ``-inf`` elsewhere. Local mass
-        commits exactly to that bin per timestep.
+        For ``σ == 0`` returns the delta-kernel limit: ``log(n_bins)``
+        at the animal's snapped interior bin, ``-inf`` elsewhere — the
+        same ``n_bins`` mass-balance scaling reduced to a single bin.
 
         Gap-bin positions (e.g. exactly on an arm-boundary edge) are
         snapped to the nearest interior bin via
@@ -665,7 +669,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Returns
         -------
         log_kernel : jnp.ndarray, shape (n_time, n_interior_bins)
-            Spatial-anchor log-kernel; peak is 0 at the animal's bin.
+            Spatial-anchor log-kernel, normalized so
+            ``exp(log_kernel)`` sums to ``n_bins`` per timestep.
         """
         assert self.local_position_std is not None  # narrowing for type checker
 
@@ -679,12 +684,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             time, position_time, position, environment
         )
 
+        n_bins = sq_dist.shape[1]
+        log_n_bins = jnp.log(jnp.array(n_bins, dtype=jnp.float32))
+
         reachable = jnp.isfinite(sq_dist)
-        log_kernel = jnp.where(
-            reachable,
-            -0.5 * sq_dist / (sigma**2),
-            -jnp.inf,
+        raw = jnp.where(reachable, -0.5 * sq_dist / (sigma**2), -jnp.inf)
+        # Mass-balance: rescale so exp(log_kernel).sum(axis=1) == n_bins.
+        # Compensates for the multi-bin Local state's uniform 1/n_bins
+        # continuous IC; without it, Non-Local dominates by factor n_bins.
+        log_kernel = (
+            raw - jax.scipy.special.logsumexp(raw, axis=1, keepdims=True) + log_n_bins
         )
+
         # NaN animal positions (tracking dropout) → flat kernel at that step.
         log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
         return log_kernel
@@ -696,12 +707,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         position: jnp.ndarray,
         environment: "Environment",
     ) -> jnp.ndarray:
-        """One-hot kernel for the σ=0 limit of the multi-bin Local state.
+        """Delta-kernel for the σ=0 limit of the multi-bin Local state.
 
-        Returns ``log_kernel = 0`` at the animal's snapped interior bin and
-        ``-inf`` elsewhere, so the per-step Local state commits exactly to
-        the animal's bin. NaN animal positions fall back to a flat kernel
-        as in the Gaussian path.
+        Returns ``log_kernel = log(n_bins)`` at the animal's snapped
+        interior bin and ``-inf`` elsewhere, so ``exp(log_kernel)`` sums
+        to ``n_bins`` per timestep — the same mass-balance scaling
+        applied in the σ>0 path. This compensates for the multi-bin
+        Local state's uniform ``1/n_bins`` continuous IC; without it,
+        Non-Local dominates by a factor of ``n_bins``.
+
+        NaN animal positions (tracking dropouts) fall back to a flat
+        ``log_kernel = 0`` for that timestep.
         """
         safe_animal_pos, nan_mask = self._extract_animal_position(
             time, position_time, position, environment
@@ -711,7 +727,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         is_animal_bin = jnp.asarray(
             animal_bin_inds[:, np.newaxis] == interior_bin_indices[np.newaxis, :]
         )
-        log_kernel = jnp.where(is_animal_bin, 0.0, -jnp.inf)
+        n_bins = int(interior_bin_indices.size)
+        log_n_bins = jnp.log(jnp.array(n_bins, dtype=jnp.float32))
+        log_kernel = jnp.where(is_animal_bin, log_n_bins, -jnp.inf)
         return jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
 
     def _validate_initial_conditions(
@@ -1196,9 +1214,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             return None
 
         override = np.array(self.initial_conditions_, copy=True)
+        any_local = False
         for state_id, obs in enumerate(self.observation_models):
             if not obs.is_local:
                 continue
+            any_local = True
             env = self.environments[self.environments.index(obs.environment_name)]
             animal_pos_t0 = np.asarray(
                 get_position_at_time(
@@ -1208,13 +1228,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     env,
                 )
             )
+            # NaN at t=0 → skip just this Local state (leave its stored
+            # block untouched). Other Local states (multi-environment
+            # configurations) can still receive a delta override.
             if np.any(np.isnan(animal_pos_t0)):
                 logger.warning(
-                    "Multi-bin Local IC override skipped: first decoding "
-                    "frame's interpolated position is NaN. Stored Local "
-                    "IC will be used."
+                    "Multi-bin Local IC override skipped for state %d: "
+                    "first decoding frame's interpolated position is NaN. "
+                    "Stored Local IC will be used for this state.",
+                    state_id,
                 )
-                return None
+                continue
 
             animal_pos_2d = (
                 animal_pos_t0
@@ -1228,6 +1252,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             block[animal_bin] = float(self.discrete_initial_conditions[state_id])
             override[block_mask] = block
 
+        if not any_local:
+            return None
         return override
 
     def _initial_distribution_for_decode(
@@ -1244,6 +1270,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         ``most_likely_sequence()`` go through this so they always see the
         same initial Local distribution. Stored attribute is not mutated.
         """
+        # `log_likelihood_args` is normally a 4-tuple
+        # (position_time, position, ...), but `estimate_parameters` calls
+        # this helper with `log_likelihood_args=()` when reusing a cached
+        # likelihood — the override is unavailable in that path. Guard
+        # the indexing so the caller transparently falls back to the
+        # stored uniform Local IC.
         position_time = (
             log_likelihood_args[0] if len(log_likelihood_args) >= 2 else None
         )
@@ -2779,8 +2811,10 @@ class ClusterlessDetector(_DetectorBase):
             re-estimation, by default None. See ``_DetectorBase`` for
             details.
         local_position_std : float or None, optional
-            Standard deviation of the position uncertainty kernel for the
-            local state. See ``_DetectorBase`` for details.
+            Anchor-width parameter for the multi-bin Local state's
+            spatial-anchor kernel. See ``_DetectorBase`` for details
+            (``None`` = legacy single-bin Local; ``0.0`` = delta kernel;
+            ``> 0`` = unnormalized ``-0.5 * d² / σ²`` anchor).
         """
         super().__init__(
             discrete_initial_conditions,
@@ -3057,16 +3091,22 @@ class ClusterlessDetector(_DetectorBase):
                 log P(spikes_t | bin b)               # spatial likelihood
               + log_kernel(b, animal_t)               # anchor: peak 0 at animal_t
 
-        where ``log_kernel = -0.5 * d² / σ²`` with ``σ =
-        local_position_std``. The kernel is *not* a normalized density
-        (no ``log(2π σ²)`` term); ``σ`` controls Local's spatial
-        tolerance — how far from the animal a Local bin remains
-        credible — without re-weighting Local-vs-non-Local global
-        evidence via a normalizer. Mathematically, injecting this term
-        into the likelihood is equivalent to injecting it into the
-        transition matrix — both multiply into the HMM forward step —
-        but avoids breaking the static-transition assumption used by
-        ``jax.lax.scan``.
+        where ``log_kernel`` is the spatial-anchor potential
+        ``raw = -0.5 * d² / σ²`` (with ``σ = local_position_std``)
+        rescaled per timestep so ``exp(log_kernel).sum(axis=1) ==
+        n_bins``. The rescaling is HMM-state mass calibration, not
+        density normalization: the multi-bin Local state has a uniform
+        ``1/n_bins`` continuous IC, and without the ``+ log(n_bins)``
+        compensation the Local state's evidence is shrunk by
+        ``1/n_bins`` relative to Non-Local. ``σ`` controls Local's
+        spatial tolerance — how far from the animal a Local bin
+        remains credible — independent of the Local-vs-Non-Local
+        balance. Conceptually this is a time-varying, per-target-state
+        potential (``log_kernel`` depends on the animal's current
+        position); folding it into the likelihood keeps the discrete
+        transition matrix row-stochastic and static, as required by
+        ``jax.lax.scan``. It is *not* equivalent to a valid
+        (row-stochastic) transition matrix.
 
         The anchor is part of the scoring model, not an ad-hoc
         post-processing step, so the posterior returned by ``predict()``
@@ -3725,8 +3765,10 @@ class SortedSpikesDetector(_DetectorBase):
             re-estimation, by default None. See ``_DetectorBase`` for
             details.
         local_position_std : float or None, optional
-            Standard deviation of the position uncertainty kernel for the
-            local state. See ``_DetectorBase`` for details.
+            Anchor-width parameter for the multi-bin Local state's
+            spatial-anchor kernel. See ``_DetectorBase`` for details
+            (``None`` = legacy single-bin Local; ``0.0`` = delta kernel;
+            ``> 0`` = unnormalized ``-0.5 * d² / σ²`` anchor).
         """
         super().__init__(
             discrete_initial_conditions,
@@ -3996,16 +4038,22 @@ class SortedSpikesDetector(_DetectorBase):
                 log P(spikes_t | bin b)               # spatial likelihood
               + log_kernel(b, animal_t)               # anchor: peak 0 at animal_t
 
-        where ``log_kernel = -0.5 * d² / σ²`` with ``σ =
-        local_position_std``. The kernel is *not* a normalized density
-        (no ``log(2π σ²)`` term); ``σ`` controls Local's spatial
-        tolerance — how far from the animal a Local bin remains
-        credible — without re-weighting Local-vs-non-Local global
-        evidence via a normalizer. Mathematically, injecting this term
-        into the likelihood is equivalent to injecting it into the
-        transition matrix — both multiply into the HMM forward step —
-        but avoids breaking the static-transition assumption used by
-        ``jax.lax.scan``.
+        where ``log_kernel`` is the spatial-anchor potential
+        ``raw = -0.5 * d² / σ²`` (with ``σ = local_position_std``)
+        rescaled per timestep so ``exp(log_kernel).sum(axis=1) ==
+        n_bins``. The rescaling is HMM-state mass calibration, not
+        density normalization: the multi-bin Local state has a uniform
+        ``1/n_bins`` continuous IC, and without the ``+ log(n_bins)``
+        compensation the Local state's evidence is shrunk by
+        ``1/n_bins`` relative to Non-Local. ``σ`` controls Local's
+        spatial tolerance — how far from the animal a Local bin
+        remains credible — independent of the Local-vs-Non-Local
+        balance. Conceptually this is a time-varying, per-target-state
+        potential (``log_kernel`` depends on the animal's current
+        position); folding it into the likelihood keeps the discrete
+        transition matrix row-stochastic and static, as required by
+        ``jax.lax.scan``. It is *not* equivalent to a valid
+        (row-stochastic) transition matrix.
 
         The anchor is part of the scoring model, not an ad-hoc
         post-processing step, so the posterior returned by ``predict()``

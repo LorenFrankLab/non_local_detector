@@ -282,9 +282,16 @@ class TestComputeLocalPositionKernel:
         detector.initialize_state_index()
         return detector, position
 
-    def test_kernel_is_anchor_shape_only_1d(self):
-        """1D-track kernel matches the anchor formula -0.5 * d² / σ² with peak 0."""
+    def test_kernel_is_anchor_shape_with_n_bins_compensation_1d(self):
+        """1D kernel: shape -0.5 d²/σ², rescaled so exp(log_kernel) sums to n_bins.
+
+        The rescaling compensates for the multi-bin Local state's
+        ``1/n_bins`` uniform continuous IC; without it Non-Local
+        dominates by a factor of n_bins (verified by simulated-data
+        smoke check).
+        """
         import jax.numpy as jnp
+        from scipy.special import logsumexp
 
         from non_local_detector.likelihoods.common import get_position_at_time
 
@@ -312,22 +319,27 @@ class TestComputeLocalPositionKernel:
             env,
         )
         distances = env.get_distances_to_interior_bins(np.asarray(animal_pos_at_t))[0]
-        expected = -0.5 * distances**2 / sigma**2
-
+        n_bins = int(env.is_track_interior_.sum())
+        raw = -0.5 * distances**2 / sigma**2
+        expected = raw - logsumexp(raw) + np.log(n_bins)
         np.testing.assert_allclose(log_kernel, expected, atol=1e-5, rtol=1e-5)
-        # Anchor: peak is exactly 0 at the animal's bin (no normalizer).
-        assert float(log_kernel.max()) == pytest.approx(0.0, abs=1e-6)
+        # Mass balance: exp(log_kernel) sums to n_bins per timestep.
+        np.testing.assert_allclose(
+            float(np.exp(log_kernel).sum()), float(n_bins), rtol=1e-5
+        )
 
-    def test_kernel_is_anchor_shape_only_2d(self):
-        """2D open-field uses the same anchor formula — no n_dims normalizer.
+    def test_kernel_is_anchor_shape_with_n_bins_compensation_2d(self):
+        """2D open-field uses the same anchor formula with the same scaling.
 
         ``Environment.fit_place_grid`` builds ``track_graphDD`` for any
         non-track-graph fit (including 2D open-field), so distances are
-        geodesic on the grid. The anchor formula is shape-only, so 1D
-        and 2D environments use the same expression — σ controls
-        spatial tolerance, not a per-dimensional density normalization.
+        geodesic on the grid. The kernel formula is shape-only — σ
+        controls spatial tolerance, not a per-dimensional density
+        normalization — and the same n_bins mass-balance scaling
+        applies in 1D and 2D.
         """
         import jax.numpy as jnp
+        from scipy.special import logsumexp
 
         from non_local_detector.environment import Environment
         from non_local_detector.likelihoods.common import get_position_at_time
@@ -365,32 +377,45 @@ class TestComputeLocalPositionKernel:
             env,
         )
         distances = env.get_distances_to_interior_bins(np.asarray(animal_pos_at_t))[0]
-        expected = -0.5 * distances**2 / sigma**2
+        n_bins = int(env.is_track_interior_.sum())
+        raw = -0.5 * distances**2 / sigma**2
+        # Reachable-only logsumexp (unreachable bins are -inf and drop).
+        finite = np.isfinite(raw)
+        expected = np.where(
+            finite, raw - logsumexp(raw[finite]) + np.log(n_bins), -np.inf
+        )
         np.testing.assert_allclose(log_kernel, expected, atol=1e-5, rtol=1e-5)
-        assert float(log_kernel.max()) == pytest.approx(0.0, abs=1e-6)
+        np.testing.assert_allclose(
+            float(np.exp(log_kernel[finite]).sum()), float(n_bins), rtol=1e-5
+        )
 
-    def test_kernel_no_longer_sums_to_n_bins(self):
-        """The unnormalized anchor kernel does not satisfy exp.sum == n_bins."""
+    def test_kernel_sums_to_n_bins_per_timestep(self):
+        """exp(log_kernel) sums to n_bins per timestep (mass-balance contract).
+
+        Required for fair Local-vs-Non-Local mass balance under the
+        multi-bin Local state's uniform 1/n_bins continuous IC.
+        """
         import jax.numpy as jnp
 
         detector, position = self._make_fitted_detector(local_position_std=5.0)
         env = detector.environments[0]
 
-        time = np.array([0.5])
+        time = np.array([0.0, 0.5, 1.0])
         position_time = np.array([0.0, 1.0])
-        animal_position = np.array([[50.0], [50.0]])
+        animal_position = np.array([[20.0], [70.0]])
 
-        log_kernel = detector._compute_local_position_kernel(
-            jnp.array(time),
-            jnp.array(position_time),
-            jnp.array(animal_position),
-            env,
+        log_kernel = np.asarray(
+            detector._compute_local_position_kernel(
+                jnp.array(time),
+                jnp.array(position_time),
+                jnp.array(animal_position),
+                env,
+            )
         )
         n_interior = int(env.is_track_interior_.sum())
-        # The compensation has been removed; the row sum is governed by
-        # bin spacing and σ and is, in general, not n_bins.
-        row_sum = float(np.exp(np.asarray(log_kernel)).sum())
-        assert not np.isclose(row_sum, n_interior, rtol=1e-3)
+        finite = np.isfinite(log_kernel)
+        row_sums = (np.exp(log_kernel) * finite).sum(axis=1)
+        np.testing.assert_allclose(row_sums, n_interior, rtol=1e-5)
 
     def test_kernel_peak_at_nearest_bin(self):
         """Kernel peak is at the bin nearest to animal position."""
@@ -423,9 +448,10 @@ class TestComputeLocalPositionKernel:
     def test_kernel_narrows_with_smaller_std(self):
         """Smaller σ penalizes distant bins more heavily.
 
-        Both anchor-kernels peak at 0 at the animal's bin (no normalizer),
-        so the peak alone is insensitive to σ. Compare the kernel value at
-        a distant bin: narrow σ → much more negative log_kernel there.
+        Both kernels are normalized to sum to n_bins, so the *shape*
+        (relative weight at a distant bin vs the peak) is what changes
+        with σ. Narrow σ → more peaked → distant log_kernel is more
+        negative relative to the peak.
         """
         import jax.numpy as jnp
 
@@ -455,16 +481,18 @@ class TestComputeLocalPositionKernel:
             )
         )[0]
 
-        # Both peaks are 0 at the animal's bin.
-        np.testing.assert_allclose(log_kernel_wide.max(), 0.0, atol=1e-6)
-        np.testing.assert_allclose(log_kernel_narrow.max(), 0.0, atol=1e-6)
-        # Narrow σ is more negative at the bin farthest from the animal.
+        # Compare relative peak-to-far drop, since the absolute peak
+        # depends on the rescaling.
+        peak_wide = log_kernel_wide.max()
+        peak_narrow = log_kernel_narrow.max()
         far_idx = int(
             np.argmax(
                 np.abs(np.arange(log_kernel_wide.size) - log_kernel_wide.argmax())
             )
         )
-        assert log_kernel_narrow[far_idx] < log_kernel_wide[far_idx]
+        drop_wide = peak_wide - log_kernel_wide[far_idx]
+        drop_narrow = peak_narrow - log_kernel_narrow[far_idx]
+        assert drop_narrow > drop_wide
 
     def test_kernel_output_shape(self):
         """Output shape is (n_time, n_interior_bins)."""
