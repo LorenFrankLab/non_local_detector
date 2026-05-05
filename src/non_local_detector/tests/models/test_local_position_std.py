@@ -354,7 +354,7 @@ class TestComputeLocalPositionKernel:
         assert float(log_kernel.max()) == pytest.approx(0.0, abs=1e-6)
 
     def test_kernel_no_longer_sums_to_n_bins(self):
-        """The proper Gaussian density does not satisfy exp.sum == n_bins."""
+        """The unnormalized anchor kernel does not satisfy exp.sum == n_bins."""
         import jax.numpy as jnp
 
         detector, position = self._make_fitted_detector(local_position_std=5.0)

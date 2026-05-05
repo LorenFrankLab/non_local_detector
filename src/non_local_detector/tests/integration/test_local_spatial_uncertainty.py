@@ -355,8 +355,9 @@ def test_large_sigma_spreads_local_posterior(simulated_data):
     # (a deliberate concentration, not the σ-driven kernel diffusion this
     # test exercises). Normalize per time step; skip rows where local
     # mass is too small to compute a stable conditional. With very large
-    # σ the proper Gaussian density is small per bin, so total Local
-    # mass per step is also small — use a permissive floor.
+    # σ the anchor kernel is nearly flat (close to 0 everywhere) — the
+    # combined Local mass per step is small relative to non-Local — use
+    # a permissive floor.
     local_posterior = local_posterior[1:]
     local_mass = local_posterior.sum(axis=1, keepdims=True)
     active = local_mass.ravel() > 1e-12

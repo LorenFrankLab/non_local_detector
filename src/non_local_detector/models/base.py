@@ -3046,9 +3046,12 @@ class ClusterlessDetector(_DetectorBase):
         but avoids breaking the static-transition assumption used by
         ``jax.lax.scan``.
 
-        The kernel is part of the model, not an ad-hoc post-processing
-        step, so the posterior returned by ``predict()`` is a valid
-        probability distribution under the modified generative model.
+        The anchor is part of the scoring model, not an ad-hoc
+        post-processing step, so the posterior returned by ``predict()``
+        is a valid probability distribution under the modified scoring
+        model (the anchor is an unnormalized potential, not a calibrated
+        emission density, so this is not a generative model in the
+        strict sense).
         Users comparing ``local_position_std=None`` to a finite value
         will see different posteriors (the models differ); users reading
         the raw ``log_likelihood`` (via
@@ -3982,9 +3985,12 @@ class SortedSpikesDetector(_DetectorBase):
         but avoids breaking the static-transition assumption used by
         ``jax.lax.scan``.
 
-        The kernel is part of the model, not an ad-hoc post-processing
-        step, so the posterior returned by ``predict()`` is a valid
-        probability distribution under the modified generative model.
+        The anchor is part of the scoring model, not an ad-hoc
+        post-processing step, so the posterior returned by ``predict()``
+        is a valid probability distribution under the modified scoring
+        model (the anchor is an unnormalized potential, not a calibrated
+        emission density, so this is not a generative model in the
+        strict sense).
         Users comparing ``local_position_std=None`` to a finite value
         will see different posteriors (the models differ); users reading
         the raw ``log_likelihood`` (via
