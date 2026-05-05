@@ -445,6 +445,43 @@ class TestClusterlessOverride:
 
 
 @pytest.mark.unit
+class TestMostLikelySequenceUsesOverride:
+    """``most_likely_sequence`` (Viterbi) invokes the IC override.
+
+    Without this, ``predict()`` and ``most_likely_sequence()`` use
+    different initial Local distributions when ``local_position_std``
+    is set — a silent inconsistency between the smoother and the
+    most-likely-state path.
+    """
+
+    def test_sorted_spikes_invokes_override(self, _fitted_detector, _sim_data):
+        from unittest.mock import patch
+
+        original = type(_fitted_detector).compute_local_initial_conditions
+        calls = {"count": 0}
+
+        def spy(self, position_time, position, time):
+            calls["count"] += 1
+            return original(self, position_time, position, time)
+
+        with patch.object(
+            type(_fitted_detector),
+            "compute_local_initial_conditions",
+            new=spy,
+        ):
+            _fitted_detector.most_likely_sequence(
+                position_time=_sim_data["time"],
+                position=_sim_data["position"],
+                spike_times=_sim_data["spike_times"],
+                time=_sim_data["time"],
+            )
+        assert calls["count"] >= 1, (
+            "most_likely_sequence did not invoke compute_local_initial_conditions; "
+            "Viterbi is using a different initial Local distribution from predict()."
+        )
+
+
+@pytest.mark.unit
 class TestPredictUsesOverride:
     """End-to-end: predict() uses the override implicitly without any user opt-in."""
 

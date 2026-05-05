@@ -2260,10 +2260,23 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         is_track_interior = self.is_track_interior_state_bins_
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
         state_ind = self.state_ind_[is_track_interior]
+
+        # Mirror _predict()'s multi-bin Local IC override so Viterbi and the
+        # forward-backward smoother see the same initial Local distribution.
+        position_time = (
+            log_likelihood_args[0] if len(log_likelihood_args) >= 2 else None
+        )
+        position = log_likelihood_args[1] if len(log_likelihood_args) >= 2 else None
+        override = self.compute_local_initial_conditions(position_time, position, time)
+        initial_conditions_full = (
+            override if override is not None else self.initial_conditions_
+        )
+        initial_distribution = initial_conditions_full[is_track_interior]
+
         if self.discrete_state_transitions_.ndim == 2:
             sequence_ind, _ = most_likely_sequence(
                 time=time,
-                initial_distribution=self.initial_conditions_[is_track_interior],
+                initial_distribution=initial_distribution,
                 transition_matrix=(
                     self.continuous_state_transitions_[cross_is_track_interior]
                     * self.discrete_state_transitions_[np.ix_(state_ind, state_ind)]
@@ -2278,7 +2291,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             sequence_ind, _ = most_likely_sequence_covariate_dependent(
                 time=time,
                 state_ind=state_ind,
-                initial_distribution=self.initial_conditions_[is_track_interior],
+                initial_distribution=initial_distribution,
                 discrete_transition_matrix=self.discrete_state_transitions_,
                 continuous_transition_matrix=self.continuous_state_transitions_[
                     cross_is_track_interior
@@ -3033,19 +3046,23 @@ class ClusterlessDetector(_DetectorBase):
         -----
         When ``local_position_std`` is set, the per-bin value returned
         for local-state entries is not a pure spike likelihood. It
-        combines the spatial spike likelihood with the Gaussian
-        observation density of the tracked position::
+        combines the spatial spike likelihood with an isotropic Gaussian
+        radial likelihood on graph/geodesic distance from the animal's
+        position to each bin (see :meth:`_compute_local_position_kernel`
+        for the exact formula and dimensionality dispatch)::
 
             log_likelihood[local, b, t] =
                 log P(spikes_t | bin b)               # spatial likelihood
-              + log N(d(b, animal_t); 0, σ²)          # tracked-position density
+              + log_kernel(b, animal_t)               # radial position likelihood
 
-        where ``d`` is shortest-path track-graph distance and
-        ``σ = local_position_std``. Mathematically, injecting the
-        tracked-position density into the likelihood is equivalent to
-        injecting it into the transition matrix — both multiply into
-        the HMM forward step — but avoids breaking the static-transition
-        assumption used by ``jax.lax.scan``.
+        where ``log_kernel`` uses ``σ = local_position_std`` and a
+        ``n_dims``-aware Gaussian normalizer (``n_dims = 1`` for
+        explicit linearized tracks, otherwise the position grid's
+        coordinate dimension). Mathematically, injecting this term into
+        the likelihood is equivalent to injecting it into the transition
+        matrix — both multiply into the HMM forward step — but avoids
+        breaking the static-transition assumption used by
+        ``jax.lax.scan``.
 
         The kernel is part of the likelihood model, not an ad-hoc
         post-processing step, so the posterior returned by ``predict()``
@@ -3055,7 +3072,7 @@ class ClusterlessDetector(_DetectorBase):
         differ); users reading the raw ``log_likelihood`` (via
         ``return_outputs='log_likelihood'``) should be aware that
         local-state entries are *not* pure ``log P(spikes | state, bin)``
-        — they include the Gaussian observation density.
+        — they include the radial position likelihood.
 
         Parameters
         ----------
@@ -3963,19 +3980,23 @@ class SortedSpikesDetector(_DetectorBase):
         -----
         When ``local_position_std`` is set, the per-bin value returned
         for local-state entries is not a pure spike likelihood. It
-        combines the spatial spike likelihood with the Gaussian
-        observation density of the tracked position::
+        combines the spatial spike likelihood with an isotropic Gaussian
+        radial likelihood on graph/geodesic distance from the animal's
+        position to each bin (see :meth:`_compute_local_position_kernel`
+        for the exact formula and dimensionality dispatch)::
 
             log_likelihood[local, b, t] =
                 log P(spikes_t | bin b)               # spatial likelihood
-              + log N(d(b, animal_t); 0, σ²)          # tracked-position density
+              + log_kernel(b, animal_t)               # radial position likelihood
 
-        where ``d`` is shortest-path track-graph distance and
-        ``σ = local_position_std``. Mathematically, injecting the
-        tracked-position density into the likelihood is equivalent to
-        injecting it into the transition matrix — both multiply into
-        the HMM forward step — but avoids breaking the static-transition
-        assumption used by ``jax.lax.scan``.
+        where ``log_kernel`` uses ``σ = local_position_std`` and a
+        ``n_dims``-aware Gaussian normalizer (``n_dims = 1`` for
+        explicit linearized tracks, otherwise the position grid's
+        coordinate dimension). Mathematically, injecting this term into
+        the likelihood is equivalent to injecting it into the transition
+        matrix — both multiply into the HMM forward step — but avoids
+        breaking the static-transition assumption used by
+        ``jax.lax.scan``.
 
         The kernel is part of the likelihood model, not an ad-hoc
         post-processing step, so the posterior returned by ``predict()``
@@ -3985,7 +4006,7 @@ class SortedSpikesDetector(_DetectorBase):
         differ); users reading the raw ``log_likelihood`` (via
         ``return_outputs='log_likelihood'``) should be aware that
         local-state entries are *not* pure ``log P(spikes | state, bin)``
-        — they include the Gaussian observation density.
+        — they include the radial position likelihood.
 
         Parameters
         ----------
