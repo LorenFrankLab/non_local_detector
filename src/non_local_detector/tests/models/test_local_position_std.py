@@ -49,6 +49,16 @@ class TestLocalPositionStdValidation:
         with pytest.raises(ValidationError, match="local_position_std"):
             NonLocalSortedSpikesDetector(local_position_std=-1.0)
 
+    def test_float32_underflow_rejected(self):
+        """Positive σ that underflows to 0 in float32 is rejected.
+
+        The kernel evaluates ``-0.5 * d^2 / sigma^2`` at float32 precision,
+        so a positive but unrepresentably-small σ would silently divide by
+        zero. Callers should pass 0.0 explicitly for the delta kernel.
+        """
+        with pytest.raises(ValidationError, match="underflow"):
+            NonLocalSortedSpikesDetector(local_position_std=1e-50)
+
     def test_clusterless_default_is_none(self):
         """Default local_position_std is None on clusterless detector."""
         detector = NonLocalClusterlessDetector()

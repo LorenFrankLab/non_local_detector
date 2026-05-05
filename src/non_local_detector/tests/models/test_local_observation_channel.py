@@ -1,5 +1,5 @@
 """Tests for the predict-time Local-state initial conditions and the
-Local observation channel (Gaussian log-density kernel).
+Local observation channel (unnormalized spatial-anchor kernel).
 
 Covers the cleanup landed alongside `local_position_std`: the stored
 `initial_conditions_` is uniform over the Local block, and at predict
