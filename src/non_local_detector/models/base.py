@@ -525,6 +525,39 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # dependent bin.
         return jnp.where(nan_mask[:, jnp.newaxis], 0.0, penalty)
 
+    def _extract_animal_position(
+        self,
+        time: jnp.ndarray,
+        position_time: jnp.ndarray,
+        position: jnp.ndarray,
+        environment: "Environment",
+    ) -> tuple[np.ndarray, jnp.ndarray]:
+        """NaN-safe interpolated animal position and a NaN-row mask.
+
+        ``get_bin_ind`` and ``get_distances_to_interior_bins`` go through
+        ``np.searchsorted``, which is undefined on NaN. Replace NaN coords
+        with 0.0 before any downstream lookup; callers use ``nan_mask`` to
+        zero out the corresponding rows of the result.
+
+        Returns
+        -------
+        safe_animal_pos : np.ndarray, shape (n_time, n_position_dims)
+            Always 2D (1D inputs are reshaped) so callers can pass directly
+            to ``Environment`` lookups.
+        nan_mask : jnp.ndarray, shape (n_time,)  bool
+        """
+        from non_local_detector.likelihoods.common import get_position_at_time
+
+        animal_pos = get_position_at_time(position_time, position, time, environment)
+        animal_pos_arr = np.asarray(animal_pos)
+        if animal_pos_arr.ndim == 1:
+            nan_mask = jnp.isnan(jnp.asarray(animal_pos_arr))
+            animal_pos_arr = animal_pos_arr[:, np.newaxis]
+        else:
+            nan_mask = jnp.any(jnp.isnan(jnp.asarray(animal_pos_arr)), axis=-1)
+        safe_animal_pos = np.nan_to_num(animal_pos_arr, nan=0.0)
+        return safe_animal_pos, nan_mask
+
     def _animal_sq_distance_to_interior_bins(
         self,
         time: jnp.ndarray,
@@ -534,9 +567,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         """NaN-safe squared track-graph distances and a NaN-row mask.
 
-        ``get_bin_ind`` goes through ``np.searchsorted``, which is undefined
-        on NaN. Replace NaN coords with 0.0 before the distance lookup, then
-        let callers use the returned mask to zero out NaN-row outputs.
         Non-finite distances (NaN bin-to-bin lookups, inf unreachable bins)
         are mapped to ``inf`` so ``exp(-0.5 * inf / σ²) == 0`` cleanly.
 
@@ -545,34 +575,20 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         sq_dist : jnp.ndarray, shape (n_time, n_interior_bins)
         nan_mask : jnp.ndarray, shape (n_time,)  bool
         """
-        from non_local_detector.likelihoods.common import get_position_at_time
-
-        animal_pos = get_position_at_time(position_time, position, time, environment)
-        animal_pos_arr = np.asarray(animal_pos)
-        if animal_pos_arr.ndim == 1:
-            nan_mask = jnp.isnan(jnp.asarray(animal_pos_arr))
-        else:
-            nan_mask = jnp.any(jnp.isnan(jnp.asarray(animal_pos_arr)), axis=-1)
-
-        safe_animal_pos = np.nan_to_num(animal_pos_arr, nan=0.0)
+        safe_animal_pos, nan_mask = self._extract_animal_position(
+            time, position_time, position, environment
+        )
         dist = environment.get_distances_to_interior_bins(safe_animal_pos)
         sq_dist = jnp.nan_to_num(jnp.asarray(dist) ** 2, nan=jnp.inf, posinf=jnp.inf)
         return sq_dist, nan_mask
 
     def _local_position_density_dim(self, environment: "Environment") -> int:
-        """Dimensionality of the Local-state Gaussian radial likelihood.
+        """Dimensionality used in the Local-state Gaussian radial likelihood.
 
-        - Explicit linearized track (``track_graph is not None``): 1D
-          manifold density on shortest-path graph distance.
-        - Otherwise (``track_graphDD`` built by ``fit_place_grid`` for
-          2D / N-D occupancy grids, or the rare Euclidean fallback):
-          isotropic Gaussian on the position grid's coordinate
-          dimension.
-
-        Note: this is a radial likelihood using graph/geodesic distance,
-        not an exact normalized heat kernel on an arbitrary graph with
-        holes/boundaries. The choice is a modeling assumption, not a
-        derivation from graph Laplacian theory.
+        Returns 1 for explicit linearized tracks (``track_graph is not None``)
+        and the position grid's coordinate dimension otherwise. See
+        :meth:`_compute_local_position_kernel` for the full kernel formula
+        and the modeling-assumption caveat.
         """
         if environment.track_graph is not None:
             return 1
@@ -693,18 +709,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         the animal's bin. NaN animal positions fall back to a flat kernel
         as in the Gaussian path.
         """
-        from non_local_detector.likelihoods.common import get_position_at_time
-
-        animal_pos = get_position_at_time(position_time, position, time, environment)
-        animal_pos_arr = np.asarray(animal_pos)
-        if animal_pos_arr.ndim == 1:
-            nan_mask = jnp.isnan(jnp.asarray(animal_pos_arr))
-        else:
-            nan_mask = jnp.any(jnp.isnan(jnp.asarray(animal_pos_arr)), axis=-1)
-
-        safe_animal_pos = np.nan_to_num(animal_pos_arr, nan=0.0)
-        if safe_animal_pos.ndim == 1:
-            safe_animal_pos = safe_animal_pos[:, np.newaxis]
+        safe_animal_pos, nan_mask = self._extract_animal_position(
+            time, position_time, position, environment
+        )
         animal_bin_inds = environment.get_bin_ind(safe_animal_pos)
         interior_bin_indices = np.where(environment.is_track_interior_.ravel())[0]
         is_animal_bin = jnp.asarray(
@@ -1231,6 +1238,28 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             return None
         continuous_ic = np.concatenate(ic_parts).astype(np.float32)
         return continuous_ic * self.discrete_initial_conditions[self.state_ind_]
+
+    def _initial_distribution_for_decode(
+        self,
+        time: np.ndarray,
+        log_likelihood_args: tuple,
+        is_track_interior: np.ndarray,
+    ) -> np.ndarray:
+        """Initial state distribution for a single decode call (predict / Viterbi).
+
+        Returns the multi-bin Local override sliced to interior bins when it
+        applies, otherwise the interior-sliced stored
+        ``self.initial_conditions_``. Both ``_predict()`` and
+        ``most_likely_sequence()`` go through this so they always see the
+        same initial Local distribution. Stored attribute is not mutated.
+        """
+        position_time = (
+            log_likelihood_args[0] if len(log_likelihood_args) >= 2 else None
+        )
+        position = log_likelihood_args[1] if len(log_likelihood_args) >= 2 else None
+        override = self.compute_local_initial_conditions(position_time, position, time)
+        full = override if override is not None else self.initial_conditions_
+        return full[is_track_interior]
 
     def initialize_initial_conditions(self) -> None:
         """Constructs the initial probability for the state and each spatial bin.
@@ -1813,19 +1842,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
         state_ind = self.state_ind_[is_track_interior]
 
-        # When the multi-bin Local state is configured and position data is
-        # available in ``log_likelihood_args[:2]``, replace the Local rows
-        # of the IC with a delta at the animal's first-frame bin. Stored
-        # ``self.initial_conditions_`` is not mutated.
-        position_time = (
-            log_likelihood_args[0] if len(log_likelihood_args) >= 2 else None
+        initial_distribution = self._initial_distribution_for_decode(
+            time, log_likelihood_args, is_track_interior
         )
-        position = log_likelihood_args[1] if len(log_likelihood_args) >= 2 else None
-        override = self.compute_local_initial_conditions(position_time, position, time)
-        initial_conditions_full = (
-            override if override is not None else self.initial_conditions_
-        )
-        initial_distribution = initial_conditions_full[is_track_interior]
 
         # Use provided transitions or fall back to fitted attribute
         discrete_transitions = (
@@ -2261,17 +2280,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
         state_ind = self.state_ind_[is_track_interior]
 
-        # Mirror _predict()'s multi-bin Local IC override so Viterbi and the
-        # forward-backward smoother see the same initial Local distribution.
-        position_time = (
-            log_likelihood_args[0] if len(log_likelihood_args) >= 2 else None
+        initial_distribution = self._initial_distribution_for_decode(
+            time, log_likelihood_args, is_track_interior
         )
-        position = log_likelihood_args[1] if len(log_likelihood_args) >= 2 else None
-        override = self.compute_local_initial_conditions(position_time, position, time)
-        initial_conditions_full = (
-            override if override is not None else self.initial_conditions_
-        )
-        initial_distribution = initial_conditions_full[is_track_interior]
 
         if self.discrete_state_transitions_.ndim == 2:
             sequence_ind, _ = most_likely_sequence(

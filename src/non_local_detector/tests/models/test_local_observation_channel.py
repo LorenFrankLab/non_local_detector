@@ -7,6 +7,9 @@ time the multi-bin Local IC is concentrated at the bin containing the
 animal's first interpolated position.
 """
 
+from contextlib import contextmanager
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 
@@ -16,6 +19,22 @@ from non_local_detector.models import (
     NonLocalSortedSpikesDetector,
 )
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+
+
+@contextmanager
+def _spy_compute_local_initial_conditions(detector_cls):
+    """Yield a Mock that wraps ``compute_local_initial_conditions``.
+
+    Use ``mock.call_count`` to assert the override fired during a decode call.
+    """
+    original = detector_cls.compute_local_initial_conditions
+    with patch.object(
+        detector_cls,
+        "compute_local_initial_conditions",
+        autospec=True,
+        side_effect=original,
+    ) as mock_method:
+        yield mock_method
 
 
 @pytest.fixture(scope="module")
@@ -339,8 +358,6 @@ class TestEstimateParametersUsesOverride:
     """
 
     def test_estimate_parameters_runs_with_local_position_std(self, _sim_data):
-        from unittest.mock import patch
-
         detector = NonLocalSortedSpikesDetector(
             sampling_frequency=_sim_data["sampling_frequency"],
             local_position_std=0.5,
@@ -351,19 +368,7 @@ class TestEstimateParametersUsesOverride:
             spike_times=_sim_data["spike_times"],
         )
 
-        # Spy on the IC selector to assert it actually fires.
-        original = type(detector).compute_local_initial_conditions
-        calls = {"count": 0}
-
-        def spy(self, position_time, position, time):
-            calls["count"] += 1
-            return original(self, position_time, position, time)
-
-        with patch.object(
-            type(detector),
-            "compute_local_initial_conditions",
-            new=spy,
-        ):
+        with _spy_compute_local_initial_conditions(type(detector)) as spy:
             # max_iter=1 keeps the test fast; estimate_parameters runs at
             # least one E-step, which goes through _predict.
             detector.estimate_parameters(
@@ -376,8 +381,7 @@ class TestEstimateParametersUsesOverride:
                 estimate_initial_conditions=False,
                 estimate_discrete_transition=False,
             )
-
-        assert calls["count"] >= 1, (
+        assert spy.call_count >= 1, (
             "estimate_parameters did not invoke compute_local_initial_conditions; "
             "the multi-bin Local IC override is silently skipped on the EM path."
         )
@@ -455,27 +459,14 @@ class TestMostLikelySequenceUsesOverride:
     """
 
     def test_sorted_spikes_invokes_override(self, _fitted_detector, _sim_data):
-        from unittest.mock import patch
-
-        original = type(_fitted_detector).compute_local_initial_conditions
-        calls = {"count": 0}
-
-        def spy(self, position_time, position, time):
-            calls["count"] += 1
-            return original(self, position_time, position, time)
-
-        with patch.object(
-            type(_fitted_detector),
-            "compute_local_initial_conditions",
-            new=spy,
-        ):
+        with _spy_compute_local_initial_conditions(type(_fitted_detector)) as spy:
             _fitted_detector.most_likely_sequence(
                 position_time=_sim_data["time"],
                 position=_sim_data["position"],
                 spike_times=_sim_data["spike_times"],
                 time=_sim_data["time"],
             )
-        assert calls["count"] >= 1, (
+        assert spy.call_count >= 1, (
             "most_likely_sequence did not invoke compute_local_initial_conditions; "
             "Viterbi is using a different initial Local distribution from predict()."
         )
