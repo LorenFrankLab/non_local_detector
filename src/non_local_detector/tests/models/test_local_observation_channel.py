@@ -57,27 +57,19 @@ def _fitted_detector(_sim_data):
 @pytest.mark.unit
 class TestSigmaZeroRejected:
     def test_sorted_spikes(self):
-        with pytest.raises(
-            ValidationError, match="local_position_std must be a finite"
-        ):
+        with pytest.raises(ValidationError, match="local_position_std"):
             NonLocalSortedSpikesDetector(local_position_std=0.0)
 
     def test_clusterless(self):
-        with pytest.raises(
-            ValidationError, match="local_position_std must be a finite"
-        ):
+        with pytest.raises(ValidationError, match="local_position_std"):
             NonLocalClusterlessDetector(local_position_std=0.0)
 
     def test_nan_rejected(self):
-        with pytest.raises(
-            ValidationError, match="local_position_std must be a finite"
-        ):
+        with pytest.raises(ValidationError, match="local_position_std"):
             NonLocalSortedSpikesDetector(local_position_std=float("nan"))
 
     def test_inf_rejected(self):
-        with pytest.raises(
-            ValidationError, match="local_position_std must be a finite"
-        ):
+        with pytest.raises(ValidationError, match="local_position_std"):
             NonLocalSortedSpikesDetector(local_position_std=float("inf"))
 
 
@@ -168,7 +160,7 @@ class TestComputeLocalInitialConditions:
 
 @pytest.mark.unit
 class TestMultiArmTrackOverride:
-    """C1 regression: full-bin-length IC on linearized multi-arm tracks.
+    """Full-bin-length IC on linearized multi-arm tracks.
 
     Environments with ``edge_spacing > 0`` produce gap bins between arms.
     ``state_ind_`` and the rest of ``initial_conditions_`` are built at the
@@ -275,13 +267,13 @@ class TestMultiArmTrackOverride:
 
 @pytest.mark.unit
 class TestEstimateParametersUsesOverride:
-    """I6: ensure ``estimate_parameters()`` invokes the IC override.
+    """``estimate_parameters()`` invokes the IC override.
 
     The override flows through the same ``_predict()`` as ``predict()``,
     but ``estimate_parameters`` packs ``log_likelihood_args`` independently.
     A future refactor that reorders the tuple would silently disable the
-    override without breaking the existing tests, since uniform-IC and
-    delta-IC predictions both produce stochastic posteriors.
+    override without breaking other tests, since uniform-IC and delta-IC
+    predictions both produce stochastic posteriors.
     """
 
     def test_estimate_parameters_runs_with_local_position_std(self, _sim_data):
@@ -298,16 +290,16 @@ class TestEstimateParametersUsesOverride:
         )
 
         # Spy on the IC selector to assert it actually fires.
-        original = type(detector)._predict_time_initial_conditions
+        original = type(detector).compute_local_initial_conditions
         calls = {"count": 0}
 
-        def spy(self, time, log_likelihood_args):
+        def spy(self, position_time, position, time):
             calls["count"] += 1
-            return original(self, time, log_likelihood_args)
+            return original(self, position_time, position, time)
 
         with patch.object(
             type(detector),
-            "_predict_time_initial_conditions",
+            "compute_local_initial_conditions",
             new=spy,
         ):
             # max_iter=1 keeps the test fast; estimate_parameters runs at
@@ -324,14 +316,14 @@ class TestEstimateParametersUsesOverride:
             )
 
         assert calls["count"] >= 1, (
-            "estimate_parameters did not invoke _predict_time_initial_conditions; "
+            "estimate_parameters did not invoke compute_local_initial_conditions; "
             "the multi-bin Local IC override is silently skipped on the EM path."
         )
 
 
 @pytest.mark.unit
 class TestClusterlessOverride:
-    """I9: clusterless detector exercises the IC override end-to-end."""
+    """Clusterless detector exercises the IC override end-to-end."""
 
     @staticmethod
     def _make_detector():
@@ -460,9 +452,10 @@ class TestPredictUsesOverride:
     ):
         """Override makes a measurable, non-trivial difference at t=0.
 
-        Patches ``_predict_time_initial_conditions`` to always return the
-        stored uniform IC, then compares the causal posterior at t=0
-        against the unpatched run. The two must differ on the Local block.
+        Patches ``compute_local_initial_conditions`` to always return None
+        (so ``_predict()`` falls back to the stored uniform IC), then
+        compares the causal posterior at t=0 against the unpatched run.
+        The two must differ on the Local block.
         """
         from unittest.mock import patch
 
@@ -476,8 +469,8 @@ class TestPredictUsesOverride:
 
         with patch.object(
             type(_fitted_detector),
-            "_predict_time_initial_conditions",
-            return_value=_fitted_detector.initial_conditions_,
+            "compute_local_initial_conditions",
+            return_value=None,
         ):
             results_without_override = _fitted_detector.predict(
                 spike_times=_sim_data["spike_times"],
