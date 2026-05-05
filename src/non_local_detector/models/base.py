@@ -5,7 +5,6 @@ import pickle
 import warnings
 from logging import getLogger
 
-import jax
 import jax.numpy as jnp
 import matplotlib
 import matplotlib.pyplot as plt
@@ -400,16 +399,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.no_spike_rate = no_spike_rate
 
         # Local position uncertainty parameter
-        if local_position_std is not None and local_position_std < 0:
+        if local_position_std is not None and local_position_std <= 0:
             raise ValidationError(
-                "local_position_std must be non-negative",
-                expected="float >= 0 or None",
+                "local_position_std must be strictly positive",
+                expected="float > 0 or None",
                 got=str(local_position_std),
                 hint=(
                     "Use None for legacy single-bin local (likelihood at "
-                    "the animal's exact interpolated position), 0.0 for "
-                    "multi-bin local with a delta kernel at the animal's "
-                    "bin, or > 0 for a Gaussian kernel."
+                    "the animal's exact interpolated position) or > 0 for "
+                    "a Gaussian kernel. Pass a small positive value (e.g. "
+                    "0.01) for effectively-delta behavior; the previous "
+                    "0.0 delta-kernel mode was removed because a Dirac "
+                    "density cannot be represented in log space."
                 ),
             )
         self.local_position_std = local_position_std
@@ -550,35 +551,32 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         position: jnp.ndarray,
         environment: "Environment",
     ) -> jnp.ndarray:
-        """Compute log position kernel for the local state.
+        """Compute log observation density for the multi-bin Local state.
 
-        Dispatches to one of two paths based on ``self.local_position_std``:
+        Returns the log of a proper Gaussian density over position:
 
-        - ``== 0``: delta kernel. ``log(n_bins)`` at the animal's bin,
-          ``-inf`` elsewhere (one-hot).
-        - ``> 0``: Gaussian kernel over shortest-path track-graph
-          distance (Euclidean fallback when no graph is fitted), then
-          normalized so ``exp(log_kernel)`` sums to ``n_interior_bins``
-          per time step. Unreachable bins on disconnected graph
-          components get zero probability naturally via ``exp(-inf)``.
+        ``log_kernel(t, b) = -0.5 * log(2π σ²) - 0.5 * d(b, animal_t)² / σ²``
 
-        Gap-bin positions (e.g. positions exactly on an arm-boundary
-        edge of a linearized track) are snapped to the nearest interior
-        bin by :meth:`Environment.get_bin_ind`, so the kernel is always
-        defined on a real interior bin.
+        where ``d`` is shortest-path track-graph distance (Euclidean
+        fallback when no graph is fitted) and ``σ = local_position_std``.
 
-        NaN animal positions (tracking dropouts) fall back to a uniform
-        kernel.
+        This is the observation channel of the Local state: it expresses
+        ``P(animal_t | Local, bin=b)`` — how likely the animal's tracked
+        position is given that the population is coding for bin ``b``,
+        with measurement noise ``σ``. It is *not* a normalized prior
+        over bins; integrating ``exp(log_kernel)`` over bin centers does
+        not yield a fixed value (scale depends on σ and bin spacing).
 
-        Both paths satisfy the invariant ``exp(log_kernel).sum(axis=1)
-        == n_bins``. Combined with the multi-bin local state's
-        ``1/n_bins`` uniform continuous initial conditions, this makes
-        the effective per-bin prior exactly ``exp(log_kernel)`` — so
-        the total Local state mass after the HMM forward step equals
-        ``p_local * P(spikes | animal_bin)`` in the delta limit.
+        Gap-bin positions (e.g. exactly on an arm-boundary edge) are
+        snapped to the nearest interior bin via
+        :meth:`Environment.get_bin_ind`, so distances are always defined
+        on real interior bins. Unreachable bins on disconnected graph
+        components get ``-inf`` (zero density) through the
+        ``exp(-0.5 * inf² / σ²)`` limit.
 
-        In the sharp-sigma limit, the Gaussian concentrates at the
-        animal's bin and matches the delta-kernel behavior numerically.
+        NaN animal positions (tracking dropouts) fall back to a flat
+        kernel (``log_kernel = 0``), giving the forward step at that
+        timestep no spatial information from this channel.
 
         Parameters
         ----------
@@ -594,17 +592,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Returns
         -------
         log_kernel : jnp.ndarray, shape (n_time, n_interior_bins)
-            Log kernel. exp(log_kernel) sums to n_interior_bins per
-            time step (not 1).
+            Log Gaussian density of the tracked position given each
+            bin as the mean.
         """
         from non_local_detector.likelihoods.common import get_position_at_time
 
         assert self.local_position_std is not None  # narrowing for type checker
+        sigma = jnp.asarray(self.local_position_std, dtype=jnp.float32)
 
         animal_pos = get_position_at_time(position_time, position, time, environment)
-
-        n_bins = int(environment.is_track_interior_.sum())
-        log_n_bins = jnp.log(jnp.array(n_bins, dtype=jnp.float32))
 
         # Detect NaN positions (from gaps in position data)
         if animal_pos.ndim == 1:
@@ -612,55 +608,25 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         else:
             nan_mask = jnp.any(jnp.isnan(animal_pos), axis=-1)
 
-        # Delta kernel path: σ=0 concentrates the Local state on the
-        # single bin containing the animal. Emits log(n_bins) at that bin
-        # and -inf elsewhere, so after the multi-bin state's 1/n_bins
-        # uniform continuous IC, the total Local mass equals p_local ×
-        # P(spikes | animal_bin_center). Environment.get_bin_ind snaps
-        # gap-bin assignments to the nearest interior bin, so the only
-        # remaining case needing uniform fallback is a truly NaN animal
-        # position (tracking dropout).
-        if self.local_position_std == 0:
-            interior_bin_indices = np.where(environment.is_track_interior_.ravel())[0]
-            # Replace NaN animal positions with 0 before get_bin_ind (it
-            # has no NaN guard); nan_mask below masks those rows.
-            safe_animal_pos = np.nan_to_num(np.asarray(animal_pos), nan=0.0)
-            animal_bin_inds = environment.get_bin_ind(safe_animal_pos)
-            is_animal_bin = jnp.asarray(
-                animal_bin_inds[:, np.newaxis] == interior_bin_indices[np.newaxis, :]
-            )
-            log_kernel = jnp.where(is_animal_bin, log_n_bins, -jnp.inf)
-            log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
-            return log_kernel
-
-        # Gaussian kernel path (σ > 0). Uses topology-aware distance via
-        # Environment.get_distances_to_interior_bins(). After the
-        # get_bin_ind snap, the animal bin is always interior, so the
-        # distance-matrix row is always finite (no NaN rows). Unreachable
-        # bins on disconnected graph components stay as inf, which through
-        # exp(-0.5 * inf² / σ²) naturally yields zero probability there —
-        # the Gaussian concentrates on the reachable interior.
+        # Topology-aware distance via Environment.get_distances_to_interior_bins().
+        # After the get_bin_ind snap, the animal bin is always interior,
+        # so the distance-matrix row is always finite. Unreachable bins
+        # on disconnected components remain inf and become -inf log-density.
         dist = environment.get_distances_to_interior_bins(np.asarray(animal_pos))
         sq_dist = jnp.asarray(dist) ** 2
 
-        # Compute log-kernel with -inf at unreachable bins. jnp.where
-        # avoids inf/NaN propagation through the arithmetic ops below.
+        log_norm = -0.5 * jnp.log(2.0 * jnp.pi * sigma**2)
+
         reachable = jnp.isfinite(sq_dist)
         log_kernel = jnp.where(
-            reachable, -0.5 * sq_dist / (self.local_position_std**2), -jnp.inf
-        )
-        # Normalize to sum to n_bins (not 1) per time step. This compensates
-        # for the 1/n_bins uniform continuous IC of the multi-bin local state
-        # so the effective per-bin prior matches the kernel itself. Without
-        # this scaling, non-local states dominate by a factor of n_bins.
-        log_kernel = (
-            log_kernel
-            - jax.scipy.special.logsumexp(log_kernel, axis=1, keepdims=True)
-            + log_n_bins
+            reachable,
+            log_norm - 0.5 * sq_dist / (sigma**2),
+            -jnp.inf,
         )
 
-        # NaN animal positions (tracking dropout) fall back to a uniform
-        # kernel: each bin's exp value is 1, so log_kernel = 0 per bin.
+        # NaN animal positions (tracking dropout) fall back to a flat
+        # kernel (log_kernel = 0) so this channel contributes no spatial
+        # information at that timestep.
         log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
 
         return log_kernel
@@ -1052,6 +1018,119 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.n_state_bins_ = len(self.state_ind_)
         self.bin_sizes_ = np.array(bin_sizes)
         self.is_track_interior_state_bins_ = np.concatenate(is_track_interior)
+
+    def _predict_time_initial_conditions(
+        self,
+        time: np.ndarray,
+        log_likelihood_args: tuple,
+    ) -> np.ndarray:
+        """Return the initial conditions to use for a single ``_predict()`` call.
+
+        Falls back to ``self.initial_conditions_`` when the multi-bin Local
+        override doesn't apply (legacy single-bin Local, no position data,
+        or NaN initial position). Otherwise returns the full IC with the
+        Local rows replaced by a delta at the animal's first-bin.
+        """
+        position_time = log_likelihood_args[0] if len(log_likelihood_args) > 0 else None
+        position = log_likelihood_args[1] if len(log_likelihood_args) > 1 else None
+        override = self.compute_local_initial_conditions(position_time, position, time)
+        return override if override is not None else self.initial_conditions_
+
+    def compute_local_initial_conditions(
+        self,
+        position_time: np.ndarray | None,
+        position: np.ndarray | None,
+        time: np.ndarray,
+    ) -> np.ndarray | None:
+        """Predict-time initial conditions with the Local rows replaced by a
+        delta at the bin containing the animal's first interpolated position.
+
+        The stored ``self.initial_conditions_`` keeps a uniform Local block
+        because the IC depends on test-time data and cannot be fit-time data.
+        ``predict()`` and ``estimate_parameters()`` call this helper at the
+        start of each run and pass the result to ``_predict()`` as an
+        override; the stored array is never mutated.
+
+        Returns ``None`` (telling the caller to use the stored uniform IC)
+        when:
+
+        - ``self.local_position_std is None`` — legacy single-bin Local has
+          no per-bin distribution to override.
+        - ``position`` or ``position_time`` is None.
+        - The interpolated animal position at ``time[0]`` is NaN
+          (tracking dropout on the initial frame).
+
+        Parameters
+        ----------
+        position_time : np.ndarray, shape (n_time_position,) or None
+        position : np.ndarray, shape (n_time_position, n_position_dims) or None
+        time : np.ndarray, shape (n_time,)
+            Decoding time bins. The first entry determines the IC.
+
+        Returns
+        -------
+        override_initial_conditions : np.ndarray, shape (n_state_bins,) or None
+            Full IC array matching ``self.initial_conditions_``'s shape, with
+            Local rows replaced by a delta at the animal bin. ``None`` when
+            no override applies.
+        """
+        from dataclasses import replace as dataclass_replace
+
+        from non_local_detector.likelihoods.common import get_position_at_time
+
+        if (
+            self.local_position_std is None
+            or position is None
+            or position_time is None
+            or len(time) == 0
+        ):
+            return None
+
+        ic_parts = []
+        for obs, cont_ic in zip(
+            self.observation_models,
+            self.continuous_initial_conditions_types,
+            strict=False,
+        ):
+            if obs.is_local:
+                env = self.environments[self.environments.index(obs.environment_name)]
+                animal_pos_t0 = np.asarray(
+                    get_position_at_time(
+                        np.asarray(position_time),
+                        np.asarray(position),
+                        np.asarray(time[:1]),
+                        env,
+                    )
+                )
+                if np.any(np.isnan(animal_pos_t0)):
+                    return None
+
+                interior_bin_indices = np.where(env.is_track_interior_.ravel())[0]
+                n_interior = int(interior_bin_indices.size)
+                animal_pos_2d = (
+                    animal_pos_t0
+                    if animal_pos_t0.ndim == 2
+                    else animal_pos_t0[:, np.newaxis]
+                )
+                animal_bin = int(env.get_bin_ind(animal_pos_2d)[0])
+                interior_col = int(np.where(interior_bin_indices == animal_bin)[0][0])
+                delta_ic = np.zeros(n_interior, dtype=np.float32)
+                delta_ic[interior_col] = 1.0
+                ic_parts.append(delta_ic)
+            else:
+                # Multi-bin local case: ``initialize_initial_conditions`` builds
+                # spatial IC for non-local observation models via the stored
+                # ``cont_ic.make_initial_conditions(obs, ...)``. Reuse the
+                # same call so the non-Local rows stay identical.
+                effective_obs = obs
+                if obs.is_local and self.local_position_std is not None:
+                    effective_obs = dataclass_replace(obs, is_local=False)
+                ic_parts.append(
+                    cont_ic.make_initial_conditions(effective_obs, self.environments)
+                )
+
+        continuous_ic = np.concatenate(ic_parts).astype(np.float32)
+        return continuous_ic * self.discrete_initial_conditions[self.state_ind_]
 
     def initialize_initial_conditions(self) -> None:
         """Constructs the initial probability for the state and each spatial bin.
@@ -1618,6 +1697,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             self.discrete_state_transitions_. When None, falls back to the
             fitted attribute. By default None.
 
+        Notes
+        -----
+        When ``self.local_position_std`` is set and position data is
+        available in ``log_likelihood_args[:2]``, the multi-bin Local
+        state's initial conditions are replaced for this call with a
+        delta at the bin containing the animal's first interpolated
+        position (see :meth:`compute_local_initial_conditions`). The
+        stored ``self.initial_conditions_`` is not mutated.
+
         Returns
         -------
         acausal_posterior : np.ndarray, shape (n_time, n_state_bins)
@@ -1639,6 +1727,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
         state_ind = self.state_ind_[is_track_interior]
 
+        # The stored ``self.initial_conditions_`` keeps a uniform Local block
+        # because it was fit before the test-time animal position was known.
+        # When predicting on test data with a multi-bin Local state, replace
+        # that block with a delta at the bin containing the animal's first
+        # interpolated position. The stored attribute is not mutated.
+        initial_conditions_full = self._predict_time_initial_conditions(
+            time, log_likelihood_args
+        )
+        initial_distribution = initial_conditions_full[is_track_interior]
+
         # Use provided transitions or fall back to fitted attribute
         discrete_transitions = (
             discrete_state_transitions
@@ -1650,7 +1748,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             return chunked_filter_smoother(
                 time=time,
                 state_ind=state_ind,
-                initial_distribution=self.initial_conditions_[is_track_interior],
+                initial_distribution=initial_distribution,
                 transition_matrix=(
                     self.continuous_state_transitions_[cross_is_track_interior]
                     * discrete_transitions[np.ix_(state_ind, state_ind)]
@@ -1666,7 +1764,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             return chunked_filter_smoother_covariate_dependent(
                 time=time,
                 state_ind=state_ind,
-                initial_distribution=self.initial_conditions_[is_track_interior],
+                initial_distribution=initial_distribution,
                 discrete_transition_matrix=discrete_transitions,
                 continuous_transition_matrix=self.continuous_state_transitions_[
                     cross_is_track_interior

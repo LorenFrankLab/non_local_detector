@@ -130,64 +130,6 @@ class TestLocalPositionStdSnapshot:
             np.isneginf(acausal_safe)
         ), "Posterior must not contain Inf"
 
-    def test_sharp_sigma_approaches_delta_kernel(self, _sim_data):
-        """Narrow σ converges toward the delta-kernel path numerically.
-
-        If the normalization constant (log(n_bins) mass-balance) is ever
-        changed, the sharp-σ limit will diverge from the δ=0 path and
-        this test will catch it.
-        """
-        # Small σ: close to delta in behavior.
-        detector_sharp = NonLocalSortedSpikesDetector(
-            sampling_frequency=_sim_data["sampling_frequency"],
-            local_position_std=0.5,
-        )
-        # Exact delta.
-        detector_delta = NonLocalSortedSpikesDetector(
-            sampling_frequency=_sim_data["sampling_frequency"],
-            local_position_std=0.0,
-        )
-
-        for det in (detector_sharp, detector_delta):
-            det.fit(
-                position_time=_sim_data["time"],
-                position=_sim_data["position"],
-                spike_times=_sim_data["spike_times"],
-            )
-
-        r_sharp = detector_sharp.predict(
-            spike_times=_sim_data["spike_times"],
-            position_time=_sim_data["time"],
-            position=_sim_data["position"],
-            time=_sim_data["time"],
-        )
-        r_delta = detector_delta.predict(
-            spike_times=_sim_data["spike_times"],
-            position_time=_sim_data["time"],
-            position=_sim_data["position"],
-            time=_sim_data["time"],
-        )
-
-        sp_sharp = np.asarray(r_sharp.acausal_state_probabilities)
-        sp_delta = np.asarray(r_delta.acausal_state_probabilities)
-
-        # Mean per-state probabilities differ in detail but the ordering
-        # of states (which state dominates on average) is stable.
-        assert np.argmax(sp_sharp.mean(axis=0)) == np.argmax(sp_delta.mean(axis=0)), (
-            "Dominant state should agree between narrow σ and δ=0 kernels. "
-            f"sharp mean: {sp_sharp.mean(axis=0)}, delta mean: {sp_delta.mean(axis=0)}"
-        )
-        # Both should find Local dominant on awake behavior.
-        assert np.argmax(sp_delta.mean(axis=0)) == 0, (
-            f"Delta-kernel Local state should dominate; mean probs = {sp_delta.mean(axis=0)}"
-        )
-        # Mean Local probability between narrow-σ and delta differs by less
-        # than 10 percentage points — σ=0.5 is a good approximation of δ.
-        assert abs(sp_sharp[:, 0].mean() - sp_delta[:, 0].mean()) < 0.10, (
-            f"Narrow σ (0.5) Local probability = {sp_sharp[:, 0].mean():.4f} "
-            f"should be close to δ Local probability = {sp_delta[:, 0].mean():.4f}"
-        )
-
     def test_multibin_marginal_log_likelihood_finite_and_negative(self, _sim_data):
         """Marginal log-likelihood is finite and negative across modes.
 
@@ -195,7 +137,7 @@ class TestLocalPositionStdSnapshot:
         finite negative marginal log-likelihood. If mass-balance or
         normalization breaks, this can go positive or become -inf.
         """
-        for sigma in (None, 0.0, 0.5, 5.0):
+        for sigma in (None, 0.5, 5.0):
             detector = NonLocalSortedSpikesDetector(
                 sampling_frequency=_sim_data["sampling_frequency"],
                 local_position_std=sigma,

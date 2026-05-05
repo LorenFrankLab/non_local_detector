@@ -39,15 +39,17 @@ class TestLocalPositionStdValidation:
         detector = NonLocalSortedSpikesDetector(local_position_std=0.01)
         assert detector.local_position_std == 0.01
 
-    def test_zero_accepted(self):
-        """local_position_std=0 is accepted (delta-kernel mode)."""
-        detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
-        assert detector.local_position_std == 0.0
+    def test_zero_rejected(self):
+        """local_position_std=0 is rejected: Dirac density has no log form."""
+        with pytest.raises(
+            ValidationError, match="local_position_std must be strictly positive"
+        ):
+            NonLocalSortedSpikesDetector(local_position_std=0.0)
 
     def test_negative_rejected(self):
         """Negative local_position_std is rejected with ValidationError."""
         with pytest.raises(
-            ValidationError, match="local_position_std must be non-negative"
+            ValidationError, match="local_position_std must be strictly positive"
         ):
             NonLocalSortedSpikesDetector(local_position_std=-1.0)
 
@@ -61,15 +63,17 @@ class TestLocalPositionStdValidation:
         detector = NonLocalClusterlessDetector(local_position_std=5.0)
         assert detector.local_position_std == 5.0
 
-    def test_clusterless_zero_accepted(self):
-        """local_position_std=0 accepted on clusterless detector (delta mode)."""
-        detector = NonLocalClusterlessDetector(local_position_std=0.0)
-        assert detector.local_position_std == 0.0
+    def test_clusterless_zero_rejected(self):
+        """local_position_std=0 rejected on clusterless detector."""
+        with pytest.raises(
+            ValidationError, match="local_position_std must be strictly positive"
+        ):
+            NonLocalClusterlessDetector(local_position_std=0.0)
 
     def test_clusterless_negative_rejected(self):
         """Negative local_position_std rejected on clusterless detector."""
         with pytest.raises(
-            ValidationError, match="local_position_std must be non-negative"
+            ValidationError, match="local_position_std must be strictly positive"
         ):
             NonLocalClusterlessDetector(local_position_std=-1.0)
 
@@ -270,17 +274,21 @@ class TestComputeLocalPositionKernel:
         detector.initialize_state_index()
         return detector, position
 
-    def test_kernel_is_valid_log_probability(self):
-        """Kernel exp sums to 1 per time step (valid log-probability)."""
+    def test_kernel_is_proper_log_density(self):
+        """Kernel matches scipy.stats.norm.logpdf on the distance the helper
+        actually uses (snap-aware ``Environment.get_distances_to_interior_bins``)."""
         import jax.numpy as jnp
+        from scipy.stats import norm
 
-        detector, position = self._make_fitted_detector(local_position_std=5.0)
+        from non_local_detector.likelihoods.common import get_position_at_time
+
+        sigma = 5.0
+        detector, position = self._make_fitted_detector(local_position_std=sigma)
         env = detector.environments[0]
 
-        n_time = 10
-        time = np.linspace(0, 1, n_time)
-        position_time = np.linspace(0, 1, 50)
-        animal_position = np.linspace(10, 90, 50)[:, np.newaxis]
+        time = np.array([0.5])
+        position_time = np.array([0.0, 1.0])
+        animal_position = np.array([[50.0], [50.0]])
 
         log_kernel = detector._compute_local_position_kernel(
             jnp.array(time),
@@ -288,14 +296,43 @@ class TestComputeLocalPositionKernel:
             jnp.array(animal_position),
             env,
         )
+        log_kernel_np = np.asarray(log_kernel)[0]
 
-        # exp(log_kernel) should sum to n_interior_bins per time step
-        # (scaled to compensate for 1/n_bins uniform continuous IC).
-        # JAX computes in float32, so use rtol=1e-5.
-        probs = np.exp(np.asarray(log_kernel))
-        row_sums = probs.sum(axis=1)
+        # Use the same distances the kernel uses internally so the test
+        # asserts the log-density formula, not the distance function.
+        animal_pos_at_t = get_position_at_time(
+            jnp.array(position_time),
+            jnp.array(animal_position),
+            jnp.array(time),
+            env,
+        )
+        distances = env.get_distances_to_interior_bins(np.asarray(animal_pos_at_t))[0]
+        expected = norm.logpdf(distances, loc=0.0, scale=sigma)
+
+        np.testing.assert_allclose(log_kernel_np, expected, atol=1e-5, rtol=1e-5)
+
+    def test_kernel_no_longer_sums_to_n_bins(self):
+        """The proper Gaussian density does not satisfy exp.sum == n_bins."""
+        import jax.numpy as jnp
+
+        detector, position = self._make_fitted_detector(local_position_std=5.0)
+        env = detector.environments[0]
+
+        time = np.array([0.5])
+        position_time = np.array([0.0, 1.0])
+        animal_position = np.array([[50.0], [50.0]])
+
+        log_kernel = detector._compute_local_position_kernel(
+            jnp.array(time),
+            jnp.array(position_time),
+            jnp.array(animal_position),
+            env,
+        )
         n_interior = int(env.is_track_interior_.sum())
-        np.testing.assert_allclose(row_sums, n_interior, rtol=1e-5)
+        # The compensation has been removed; the row sum is governed by
+        # bin spacing and σ and is, in general, not n_bins.
+        row_sum = float(np.exp(np.asarray(log_kernel)).sum())
+        assert not np.isclose(row_sum, n_interior, rtol=1e-3)
 
     def test_kernel_peak_at_nearest_bin(self):
         """Kernel peak is at the bin nearest to animal position."""
@@ -400,13 +437,8 @@ class TestComputeLocalPositionKernel:
         # Should not contain NaN
         log_kernel_np = np.asarray(log_kernel)
         assert np.all(np.isfinite(log_kernel_np))
-        # Should be uniform (all equal values, all zero since exp=1 per bin)
-        np.testing.assert_allclose(log_kernel_np[0], log_kernel_np[0, 0], atol=1e-6)
-        # exp should sum to n_interior_bins (scaled normalization)
-        n_interior = int(env.is_track_interior_.sum())
-        np.testing.assert_allclose(
-            np.exp(log_kernel_np[0]).sum(), n_interior, rtol=1e-5
-        )
+        # Uniform fallback returns log_kernel = 0 everywhere (flat).
+        np.testing.assert_allclose(log_kernel_np[0], 0.0, atol=1e-6)
 
     def test_kernel_with_track_graph(self):
         """Kernel uses track graph distances when track graph is available."""
@@ -450,13 +482,8 @@ class TestComputeLocalPositionKernel:
         log_kernel_np = np.asarray(log_kernel)
         # Should be finite (no NaN from track graph path)
         assert np.all(np.isfinite(log_kernel_np))
-        # Should sum to n_interior_bins in probability space
-        is_interior = env.is_track_interior_.ravel()
-        n_interior = int(is_interior.sum())
-        np.testing.assert_allclose(
-            np.exp(log_kernel_np[0]).sum(), n_interior, rtol=1e-5
-        )
         # Peak should be near position 50
+        is_interior = env.is_track_interior_.ravel()
         bin_centers = env.place_bin_centers_[is_interior].ravel()
         peak_idx = int(np.argmax(log_kernel_np[0]))
         assert abs(bin_centers[peak_idx] - 50.0) < 10.0
@@ -541,300 +568,4 @@ class TestComputeLocalPositionKernel:
         assert np.all(np.isneginf(arm_b_log_kernel)), (
             "Arm-B bins should be unreachable from arm A; expected -inf "
             f"log-probability, got: {arm_b_log_kernel}"
-        )
-
-
-@pytest.mark.unit
-class TestDeltaKernel:
-    """Delta kernel (local_position_std=0) tests.
-
-    With σ=0 the Local state's kernel collapses to a one-hot at the
-    animal's bin: log(n_bins) at that bin, -inf elsewhere. After the
-    multi-bin state's 1/n_bins uniform continuous IC, the total Local
-    mass equals ``p_local × P(spikes | animal_bin_center)``.
-    """
-
-    def _make_detector_and_env(self):
-        detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
-        position = np.linspace(0, 100, 50)[:, np.newaxis]
-        detector.initialize_environments(position)
-        detector.initialize_state_index()
-        return detector, detector.environments[0]
-
-    def test_kernel_is_one_hot_at_animal_bin(self):
-        """At σ=0 the kernel is log(n_bins) at one bin and -inf elsewhere."""
-        import jax.numpy as jnp
-
-        detector, env = self._make_detector_and_env()
-
-        time = np.array([0.5])
-        position_time = np.array([0.0, 1.0])
-        animal_position = np.array([[50.0], [50.0]])
-
-        log_kernel = detector._compute_local_position_kernel(
-            jnp.array(time),
-            jnp.array(position_time),
-            jnp.array(animal_position),
-            env,
-        )
-        log_kernel_np = np.asarray(log_kernel)
-
-        n_interior = int(env.is_track_interior_.sum())
-        # One entry equals log(n_bins); all others are -inf.
-        finite_mask = np.isfinite(log_kernel_np[0])
-        assert finite_mask.sum() == 1, "Delta kernel must be non-inf at exactly one bin"
-        np.testing.assert_allclose(
-            log_kernel_np[0][finite_mask],
-            np.log(n_interior),
-            rtol=1e-6,
-        )
-        # -inf elsewhere
-        assert np.all(log_kernel_np[0][~finite_mask] == -np.inf)
-
-    def test_kernel_peak_at_animal_bin(self):
-        """The single finite bin is the one containing the animal."""
-        import jax.numpy as jnp
-
-        detector, env = self._make_detector_and_env()
-        time = np.array([0.5])
-        position_time = np.array([0.0, 1.0])
-        animal_position = np.array([[50.0], [50.0]])
-
-        log_kernel = detector._compute_local_position_kernel(
-            jnp.array(time),
-            jnp.array(position_time),
-            jnp.array(animal_position),
-            env,
-        )
-        log_kernel_np = np.asarray(log_kernel)
-
-        # Find which interior bin contains animal position 50
-        interior_bin_indices = np.where(env.is_track_interior_.ravel())[0]
-        expected_bin_ind = env.get_bin_ind(np.array([[50.0]]))[0]
-        # Convert full-bin index to interior-bin index (column index in log_kernel)
-        expected_col = int(np.where(interior_bin_indices == expected_bin_ind)[0][0])
-
-        peak_col = int(np.argmax(log_kernel_np[0]))
-        assert peak_col == expected_col
-
-    def test_kernel_sums_to_n_bins_in_prob_space(self):
-        """exp(log_kernel) sums to n_bins per time step — same invariant as σ>0."""
-        import jax.numpy as jnp
-
-        detector, env = self._make_detector_and_env()
-        time = np.linspace(0.0, 1.0, 5)
-        position_time = np.linspace(0.0, 1.0, 10)
-        animal_position = np.linspace(10, 90, 10)[:, np.newaxis]
-
-        log_kernel = detector._compute_local_position_kernel(
-            jnp.array(time),
-            jnp.array(position_time),
-            jnp.array(animal_position),
-            env,
-        )
-        log_kernel_np = np.asarray(log_kernel)
-
-        n_interior = int(env.is_track_interior_.sum())
-        # exp(log(n_bins)) + exp(-inf)*(n-1) = n_bins exactly
-        np.testing.assert_allclose(
-            np.exp(log_kernel_np).sum(axis=1), n_interior, rtol=1e-6
-        )
-
-    def test_nan_position_produces_uniform_fallback(self):
-        """NaN animal position → uniform kernel (all 0 in log-space)."""
-        import jax.numpy as jnp
-
-        detector, env = self._make_detector_and_env()
-        time = np.array([0.5])
-        position_time = np.array([0.0, 1.0])
-        animal_position = np.array([[np.nan], [np.nan]])
-
-        log_kernel = detector._compute_local_position_kernel(
-            jnp.array(time),
-            jnp.array(position_time),
-            jnp.array(animal_position),
-            env,
-        )
-        log_kernel_np = np.asarray(log_kernel)
-
-        assert np.all(np.isfinite(log_kernel_np)), (
-            "NaN fallback must produce finite kernel (uniform, 0 in log)"
-        )
-        np.testing.assert_allclose(log_kernel_np[0], 0.0, atol=1e-6)
-
-    def test_delta_kernel_gap_position_snaps_to_nearest_interior(self):
-        """Animal in a gap bin snaps to nearest interior bin via get_bin_ind.
-
-        Prior to the get_bin_ind snap fix, positions landing in gap bins
-        (e.g. exactly on an arm-boundary edge, or in the middle of a gap)
-        produced a uniform fallback. Now they snap to the nearest interior
-        bin by position distance, so the delta fires at that snapped bin.
-        """
-        import jax.numpy as jnp
-        import networkx as nx
-
-        from non_local_detector.environment import Environment
-
-        g = nx.Graph()
-        g.add_node(0, pos=(0.0, 0.0))
-        g.add_node(1, pos=(50.0, 0.0))
-        g.add_node(2, pos=(60.0, 0.0))
-        g.add_node(3, pos=(110.0, 0.0))
-        g.add_edge(0, 1, distance=50.0, edge_id=0)
-        g.add_edge(2, 3, distance=50.0, edge_id=1)
-
-        env = Environment(
-            environment_name="",
-            place_bin_size=5.0,
-            track_graph=g,
-            edge_order=[(0, 1), (2, 3)],
-            edge_spacing=10.0,
-        )
-        position_1d = np.concatenate(
-            [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
-        )
-        env = env.fit_place_grid(position_1d, infer_track_interior=True)
-
-        detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
-        detector.environments = (env,)
-        detector.initialize_state_index()
-
-        is_interior = env.is_track_interior_.ravel()
-        gap_bins = np.where(~is_interior)[0]
-        gap_center = float(env.place_bin_centers_[gap_bins[0], 0])
-
-        time = np.array([0.5])
-        position_time = np.array([0.0, 1.0])
-        animal_position = np.array([[gap_center], [gap_center]])
-
-        log_kernel = detector._compute_local_position_kernel(
-            jnp.array(time),
-            jnp.array(position_time),
-            jnp.array(animal_position),
-            env,
-        )
-        lk = np.asarray(log_kernel)
-
-        # Delta kernel: exactly one finite entry (the snapped interior bin),
-        # all others -inf. Not uniform.
-        assert np.isfinite(lk[0]).sum() == 1, (
-            f"Expected exactly one finite entry (delta), got "
-            f"{int(np.isfinite(lk[0]).sum())}. Row: {lk[0]}"
-        )
-        # The snapped bin should be the arm-A last interior bin (closer
-        # than arm-B first interior bin when the gap is wide and place_bin_size
-        # is small — here arm-A-last and arm-B-first are equidistant from the
-        # gap center, so we just assert the finite entry is one of them).
-        finite_idx = int(np.where(np.isfinite(lk[0]))[0][0])
-        interior_centers = env.place_bin_centers_[is_interior, 0]
-        # Distance from gap center to the snapped bin must be <= distance to
-        # any other interior bin.
-        dist_to_snapped = abs(interior_centers[finite_idx] - gap_center)
-        assert dist_to_snapped == np.min(np.abs(interior_centers - gap_center)), (
-            f"Snap didn't pick the nearest interior bin. "
-            f"Snapped: {interior_centers[finite_idx]}, gap center: {gap_center}"
-        )
-
-    def test_delta_kernel_at_arm_end_edge(self):
-        """The exact float-equality bug case: animal on arm-A end edge snaps to arm A."""
-        import jax.numpy as jnp
-        import networkx as nx
-
-        from non_local_detector.environment import Environment
-
-        g = nx.Graph()
-        g.add_node(0, pos=(0.0, 0.0))
-        g.add_node(1, pos=(50.0, 0.0))
-        g.add_node(2, pos=(60.0, 0.0))
-        g.add_node(3, pos=(110.0, 0.0))
-        g.add_edge(0, 1, distance=50.0, edge_id=0)
-        g.add_edge(2, 3, distance=50.0, edge_id=1)
-
-        env = Environment(
-            environment_name="",
-            place_bin_size=5.0,
-            track_graph=g,
-            edge_order=[(0, 1), (2, 3)],
-            edge_spacing=10.0,
-        )
-        position_1d = np.concatenate(
-            [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
-        )
-        env = env.fit_place_grid(position_1d, infer_track_interior=True)
-
-        detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
-        detector.environments = (env,)
-        detector.initialize_state_index()
-
-        # Use the exact arm-A-end edge value (the real-data bug case).
-        is_interior = env.is_track_interior_.ravel()
-        first_gap = int(np.where(~is_interior)[0][0])
-        arm_end = float(env.edges_[0][first_gap])
-
-        time = np.array([0.5])
-        position_time = np.array([0.0, 1.0])
-        animal_position = np.array([[arm_end], [arm_end]])
-
-        log_kernel = detector._compute_local_position_kernel(
-            jnp.array(time),
-            jnp.array(position_time),
-            jnp.array(animal_position),
-            env,
-        )
-        lk = np.asarray(log_kernel)
-
-        # Exactly one finite entry at the arm-A last interior bin.
-        assert np.isfinite(lk[0]).sum() == 1
-        interior_bin_indices = np.where(is_interior)[0]
-        expected_interior_idx = int(np.sum(interior_bin_indices < first_gap) - 1)
-        finite_idx = int(np.where(np.isfinite(lk[0]))[0][0])
-        assert finite_idx == expected_interior_idx, (
-            f"Expected snap to arm-A last interior bin (index "
-            f"{expected_interior_idx}), got {finite_idx}"
-        )
-
-    def test_kernel_with_track_graph(self):
-        """Delta kernel works on an Environment with a track_graph."""
-        import jax.numpy as jnp
-        import networkx as nx
-
-        from non_local_detector.environment import Environment
-
-        track_graph = nx.Graph()
-        track_graph.add_node(0, pos=(0.0, 0.0))
-        track_graph.add_node(1, pos=(100.0, 0.0))
-        track_graph.add_edge(0, 1, distance=100.0, edge_id=0)
-
-        env = Environment(
-            environment_name="",
-            place_bin_size=5.0,
-            track_graph=track_graph,
-            edge_order=[(0, 1)],
-            edge_spacing=0.0,
-        )
-        env = env.fit_place_grid(np.linspace(0, 100, 50), infer_track_interior=True)
-
-        detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
-        detector.environments = (env,)
-        detector.initialize_state_index()
-
-        time = np.array([0.5])
-        position_time = np.array([0.0, 1.0])
-        animal_position = np.array([[50.0], [50.0]])
-
-        log_kernel = detector._compute_local_position_kernel(
-            jnp.array(time),
-            jnp.array(position_time),
-            jnp.array(animal_position),
-            env,
-        )
-        log_kernel_np = np.asarray(log_kernel)
-
-        n_interior = int(env.is_track_interior_.sum())
-        finite_mask = np.isfinite(log_kernel_np[0])
-        assert finite_mask.sum() == 1
-        np.testing.assert_allclose(
-            log_kernel_np[0][finite_mask],
-            np.log(n_interior),
-            rtol=1e-6,
         )
