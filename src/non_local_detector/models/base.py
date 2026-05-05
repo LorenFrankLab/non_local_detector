@@ -568,12 +568,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     ) -> jnp.ndarray:
         """Compute log observation density for the multi-bin Local state.
 
-        For ``σ > 0`` returns a proper Gaussian density over position:
+        For ``σ > 0`` returns a Gaussian density:
 
-        ``log_kernel(t, b) = -0.5 * log(2π σ²) - 0.5 * d(b, animal_t)² / σ²``
+        ``log_kernel(t, b) = -0.5 * n_dims * log(2π σ²) - 0.5 * d(b, animal_t)² / σ²``
 
-        where ``d`` is shortest-path track-graph distance (Euclidean
-        fallback when no graph is fitted) and ``σ = local_position_std``.
+        where ``σ = local_position_std`` and ``d`` and ``n_dims`` depend on
+        the environment:
+
+        - **Track graph fitted**: ``d`` is shortest-path graph distance
+          (1D manifold), so the kernel is a 1D Gaussian with
+          ``n_dims = 1``.
+        - **Euclidean fallback** (no track graph): ``d`` is Euclidean
+          distance ``‖animal − bin_center‖`` in ``n_dims`` dimensions
+          (open-field case; ``n_dims = environment.place_bin_centers_.shape[1]``),
+          so the kernel is the n_dims-isotropic Gaussian with the
+          matching normalizer.
 
         For ``σ == 0`` returns the delta-kernel limit: ``0`` at the
         animal's snapped interior bin, ``-inf`` elsewhere. Local mass
@@ -626,7 +635,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             time, position_time, position, environment
         )
 
-        log_norm = -0.5 * jnp.log(2.0 * jnp.pi * sigma**2)
+        # Track-graph and N-D distance-matrix paths return shortest-path
+        # distance on a 1D manifold (univariate), so the 1D Gaussian
+        # normalizer is correct. The Euclidean fallback computes
+        # ‖animal − bin_center‖ in n_dims-dim space, where the isotropic
+        # Gaussian normalizer is ``-0.5 * n_dims * log(2πσ²)``.
+        if environment.track_graph is not None:
+            n_dims = 1
+        else:
+            n_dims = int(environment.place_bin_centers_.shape[1])
+        log_norm = -0.5 * n_dims * jnp.log(2.0 * jnp.pi * sigma**2)
+
         reachable = jnp.isfinite(sq_dist)
         log_kernel = jnp.where(
             reachable,

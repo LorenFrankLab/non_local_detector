@@ -303,6 +303,54 @@ class TestComputeLocalPositionKernel:
 
         np.testing.assert_allclose(log_kernel_np, expected, atol=1e-5, rtol=1e-5)
 
+    def test_kernel_normalizer_2d_euclidean_environment(self):
+        """Open-field 2D Euclidean fallback uses the 2D isotropic Gaussian normalizer."""
+        import jax.numpy as jnp
+
+        from non_local_detector.environment import Environment
+        from non_local_detector.likelihoods.common import get_position_at_time
+
+        sigma = 5.0
+        # Open-field 2D environment, no track graph.
+        env = Environment(environment_name="", place_bin_size=2.0)
+        rng = np.random.default_rng(0)
+        position_2d = rng.uniform(0.0, 20.0, size=(200, 2))
+        env = env.fit_place_grid(position_2d, infer_track_interior=True)
+        assert env.track_graph is None
+        assert env.place_bin_centers_.shape[1] == 2
+
+        detector = NonLocalSortedSpikesDetector(local_position_std=sigma)
+        detector.environments = (env,)
+        detector.initialize_state_index()
+
+        time = np.array([0.5])
+        position_time = np.array([0.0, 1.0])
+        animal_position = np.array([[10.0, 10.0], [10.0, 10.0]])
+
+        log_kernel = np.asarray(
+            detector._compute_local_position_kernel(
+                jnp.array(time),
+                jnp.array(position_time),
+                jnp.array(animal_position),
+                env,
+            )
+        )[0]
+
+        # Use the same distance the helper uses, with the 2D normalizer.
+        animal_pos_at_t = get_position_at_time(
+            jnp.array(position_time),
+            jnp.array(animal_position),
+            jnp.array(time),
+            env,
+        )
+        distances = env.get_distances_to_interior_bins(np.asarray(animal_pos_at_t))[0]
+        n_dims = 2
+        expected = (
+            -0.5 * n_dims * np.log(2.0 * np.pi * sigma**2)
+            - 0.5 * distances**2 / sigma**2
+        )
+        np.testing.assert_allclose(log_kernel, expected, atol=1e-5, rtol=1e-5)
+
     def test_kernel_no_longer_sums_to_n_bins(self):
         """The proper Gaussian density does not satisfy exp.sum == n_bins."""
         import jax.numpy as jnp
