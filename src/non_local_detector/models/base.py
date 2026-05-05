@@ -559,6 +559,30 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         sq_dist = jnp.nan_to_num(jnp.asarray(dist) ** 2, nan=jnp.inf, posinf=jnp.inf)
         return sq_dist, nan_mask
 
+    def _local_position_density_dim(self, environment: "Environment") -> int:
+        """Dimensionality of the Local-state Gaussian radial likelihood.
+
+        - Explicit linearized track (``track_graph is not None``): 1D
+          manifold density on shortest-path graph distance.
+        - Otherwise (``track_graphDD`` built by ``fit_place_grid`` for
+          2D / N-D occupancy grids, or the rare Euclidean fallback):
+          isotropic Gaussian on the position grid's coordinate
+          dimension.
+
+        Note: this is a radial likelihood using graph/geodesic distance,
+        not an exact normalized heat kernel on an arbitrary graph with
+        holes/boundaries. The choice is a modeling assumption, not a
+        derivation from graph Laplacian theory.
+        """
+        if environment.track_graph is not None:
+            return 1
+        if environment.place_bin_centers_ is None:
+            raise ValueError(
+                "environment.place_bin_centers_ is None; "
+                "fit the environment before computing the Local kernel."
+            )
+        return int(environment.place_bin_centers_.shape[1])
+
     def _compute_local_position_kernel(
         self,
         time: jnp.ndarray,
@@ -568,21 +592,28 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     ) -> jnp.ndarray:
         """Compute log observation density for the multi-bin Local state.
 
-        For ``σ > 0`` returns a Gaussian density:
+        For ``σ > 0`` returns an isotropic Gaussian *radial* likelihood:
 
         ``log_kernel(t, b) = -0.5 * n_dims * log(2π σ²) - 0.5 * d(b, animal_t)² / σ²``
 
         where ``σ = local_position_std`` and ``d`` and ``n_dims`` depend on
-        the environment:
+        the environment (see :meth:`_local_position_density_dim`):
 
-        - **Track graph fitted**: ``d`` is shortest-path graph distance
-          (1D manifold), so the kernel is a 1D Gaussian with
-          ``n_dims = 1``.
-        - **Euclidean fallback** (no track graph): ``d`` is Euclidean
-          distance ``‖animal − bin_center‖`` in ``n_dims`` dimensions
-          (open-field case; ``n_dims = environment.place_bin_centers_.shape[1]``),
-          so the kernel is the n_dims-isotropic Gaussian with the
-          matching normalizer.
+        - **Explicit linearized track** (``track_graph`` set): ``d`` is
+          shortest-path graph distance on a 1D manifold; ``n_dims = 1``.
+        - **2D / N-D occupancy grid** (``track_graphDD`` built by
+          ``Environment.fit_place_grid``, the default for fitted N-D
+          environments): ``d`` is graph/geodesic distance on the grid;
+          ``n_dims`` is the position grid's coordinate dimension.
+        - **Euclidean fallback** (no distance matrix): ``d`` is
+          Euclidean ``‖animal − bin_center‖``; same ``n_dims``.
+
+        This is a *radial* likelihood using graph/geodesic distance —
+        not an exact normalized heat kernel on an arbitrary graph with
+        holes/boundaries. The choice is a modeling assumption: σ has
+        units of distance, and the per-bin density treats the
+        animal-to-bin distance as the only quantity governing the
+        observation likelihood.
 
         For ``σ == 0`` returns the delta-kernel limit: ``0`` at the
         animal's snapped interior bin, ``-inf`` elsewhere. Local mass
@@ -635,15 +666,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             time, position_time, position, environment
         )
 
-        # Track-graph and N-D distance-matrix paths return shortest-path
-        # distance on a 1D manifold (univariate), so the 1D Gaussian
-        # normalizer is correct. The Euclidean fallback computes
-        # ‖animal − bin_center‖ in n_dims-dim space, where the isotropic
-        # Gaussian normalizer is ``-0.5 * n_dims * log(2πσ²)``.
-        if environment.track_graph is not None:
-            n_dims = 1
-        else:
-            n_dims = int(environment.place_bin_centers_.shape[1])
+        n_dims = self._local_position_density_dim(environment)
         log_norm = -0.5 * n_dims * jnp.log(2.0 * jnp.pi * sigma**2)
 
         reachable = jnp.isfinite(sq_dist)

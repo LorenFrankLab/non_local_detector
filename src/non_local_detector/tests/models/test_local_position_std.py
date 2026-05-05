@@ -303,20 +303,29 @@ class TestComputeLocalPositionKernel:
 
         np.testing.assert_allclose(log_kernel_np, expected, atol=1e-5, rtol=1e-5)
 
-    def test_kernel_normalizer_2d_euclidean_environment(self):
-        """Open-field 2D Euclidean fallback uses the 2D isotropic Gaussian normalizer."""
+    def test_kernel_normalizer_2d_track_graphdd_environment(self):
+        """2D open-field uses the 2D isotropic Gaussian normalizer.
+
+        ``Environment.fit_place_grid`` builds ``track_graphDD`` for any
+        non-track-graph fit (including 2D open-field), and
+        ``get_distances_to_interior_bins`` then returns geodesic
+        distances on that grid graph — *not* Euclidean. Confirm the
+        kernel uses the position grid's coordinate dimension as
+        ``n_dims`` for that path.
+        """
         import jax.numpy as jnp
 
         from non_local_detector.environment import Environment
         from non_local_detector.likelihoods.common import get_position_at_time
 
         sigma = 5.0
-        # Open-field 2D environment, no track graph.
         env = Environment(environment_name="", place_bin_size=2.0)
         rng = np.random.default_rng(0)
         position_2d = rng.uniform(0.0, 20.0, size=(200, 2))
         env = env.fit_place_grid(position_2d, infer_track_interior=True)
-        assert env.track_graph is None
+        assert env.track_graph is None  # no explicit linearized track
+        assert env.track_graphDD is not None  # built by fit_place_grid
+        assert env.distance_between_nodes_ is not None
         assert env.place_bin_centers_.shape[1] == 2
 
         detector = NonLocalSortedSpikesDetector(local_position_std=sigma)
@@ -336,7 +345,6 @@ class TestComputeLocalPositionKernel:
             )
         )[0]
 
-        # Use the same distance the helper uses, with the 2D normalizer.
         animal_pos_at_t = get_position_at_time(
             jnp.array(position_time),
             jnp.array(animal_position),
