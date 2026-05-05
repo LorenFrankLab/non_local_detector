@@ -55,14 +55,16 @@ def _fitted_detector(_sim_data):
 
 
 @pytest.mark.unit
-class TestSigmaZeroRejected:
-    def test_sorted_spikes(self):
-        with pytest.raises(ValidationError, match="local_position_std"):
-            NonLocalSortedSpikesDetector(local_position_std=0.0)
+class TestSigmaValidator:
+    """``local_position_std`` accepts None / 0 / positive finite; rejects NaN / Inf / negative."""
 
-    def test_clusterless(self):
-        with pytest.raises(ValidationError, match="local_position_std"):
-            NonLocalClusterlessDetector(local_position_std=0.0)
+    def test_zero_accepted_sorted_spikes(self):
+        detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
+        assert detector.local_position_std == 0.0
+
+    def test_zero_accepted_clusterless(self):
+        detector = NonLocalClusterlessDetector(local_position_std=0.0)
+        assert detector.local_position_std == 0.0
 
     def test_nan_rejected(self):
         with pytest.raises(ValidationError, match="local_position_std"):
@@ -71,6 +73,66 @@ class TestSigmaZeroRejected:
     def test_inf_rejected(self):
         with pytest.raises(ValidationError, match="local_position_std"):
             NonLocalSortedSpikesDetector(local_position_std=float("inf"))
+
+
+@pytest.mark.unit
+class TestDeltaKernel:
+    """``local_position_std=0`` produces a one-hot kernel at the animal's bin per timestep."""
+
+    @staticmethod
+    def _make_detector_and_env():
+        detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
+        position = np.linspace(0, 100, 50)[:, np.newaxis]
+        detector.initialize_environments(position)
+        detector.initialize_state_index()
+        return detector, detector.environments[0]
+
+    def test_kernel_is_one_hot_at_animal_bin(self):
+        import jax.numpy as jnp
+
+        detector, env = self._make_detector_and_env()
+        time = np.array([0.5])
+        position_time = np.array([0.0, 1.0])
+        animal_position = np.array([[50.0], [50.0]])
+
+        log_kernel = np.asarray(
+            detector._compute_local_position_kernel(
+                jnp.array(time),
+                jnp.array(position_time),
+                jnp.array(animal_position),
+                env,
+            )
+        )
+
+        finite_mask = np.isfinite(log_kernel[0])
+        assert finite_mask.sum() == 1, "Delta kernel must be finite at exactly one bin"
+        np.testing.assert_allclose(log_kernel[0, finite_mask], 0.0, atol=1e-7)
+        assert np.all(log_kernel[0, ~finite_mask] == -np.inf)
+
+        # The finite bin is the one containing the animal.
+        interior_bin_indices = np.where(env.is_track_interior_.ravel())[0]
+        expected_bin = int(env.get_bin_ind(np.array([[50.0]]))[0])
+        expected_col = int(np.where(interior_bin_indices == expected_bin)[0][0])
+        assert int(np.argmax(log_kernel[0])) == expected_col
+
+    def test_nan_position_falls_back_to_flat_kernel(self):
+        import jax.numpy as jnp
+
+        detector, env = self._make_detector_and_env()
+        time = np.array([0.5])
+        position_time = np.array([0.0, 1.0])
+        animal_position = np.array([[np.nan], [np.nan]])
+
+        log_kernel = np.asarray(
+            detector._compute_local_position_kernel(
+                jnp.array(time),
+                jnp.array(position_time),
+                jnp.array(animal_position),
+                env,
+            )
+        )
+        assert np.all(np.isfinite(log_kernel))
+        np.testing.assert_allclose(log_kernel[0], 0.0, atol=1e-7)
 
 
 @pytest.mark.unit

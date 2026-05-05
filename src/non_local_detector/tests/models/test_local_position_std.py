@@ -39,10 +39,10 @@ class TestLocalPositionStdValidation:
         detector = NonLocalSortedSpikesDetector(local_position_std=0.01)
         assert detector.local_position_std == 0.01
 
-    def test_zero_rejected(self):
-        """local_position_std=0 is rejected: Dirac density has no log form."""
-        with pytest.raises(ValidationError, match="local_position_std"):
-            NonLocalSortedSpikesDetector(local_position_std=0.0)
+    def test_zero_accepted(self):
+        """local_position_std=0 is accepted (delta-kernel mode)."""
+        detector = NonLocalSortedSpikesDetector(local_position_std=0.0)
+        assert detector.local_position_std == 0.0
 
     def test_negative_rejected(self):
         """Negative local_position_std is rejected with ValidationError."""
@@ -59,10 +59,10 @@ class TestLocalPositionStdValidation:
         detector = NonLocalClusterlessDetector(local_position_std=5.0)
         assert detector.local_position_std == 5.0
 
-    def test_clusterless_zero_rejected(self):
-        """local_position_std=0 rejected on clusterless detector."""
-        with pytest.raises(ValidationError, match="local_position_std"):
-            NonLocalClusterlessDetector(local_position_std=0.0)
+    def test_clusterless_zero_accepted(self):
+        """local_position_std=0 accepted on clusterless detector (delta mode)."""
+        detector = NonLocalClusterlessDetector(local_position_std=0.0)
+        assert detector.local_position_std == 0.0
 
     def test_clusterless_negative_rejected(self):
         """Negative local_position_std rejected on clusterless detector."""

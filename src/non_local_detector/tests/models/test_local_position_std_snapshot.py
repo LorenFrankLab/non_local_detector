@@ -137,7 +137,7 @@ class TestLocalPositionStdSnapshot:
         finite negative marginal log-likelihood. If mass-balance or
         normalization breaks, this can go positive or become -inf.
         """
-        for sigma in (None, 0.5, 5.0):
+        for sigma in (None, 0.0, 0.5, 5.0):
             detector = NonLocalSortedSpikesDetector(
                 sampling_frequency=_sim_data["sampling_frequency"],
                 local_position_std=sigma,

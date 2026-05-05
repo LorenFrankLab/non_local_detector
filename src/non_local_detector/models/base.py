@@ -333,12 +333,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             - ``None`` (default): legacy behavior. Local state occupies a
               single bin; the likelihood is evaluated at the animal's
               exact interpolated position (continuous).
-            - ``> 0``: multi-bin local with a Gaussian observation density
-              of standard deviation ``local_position_std`` (same units as
-              ``position``, typically centimeters) on the shortest-path
-              track-graph distance; models the tracked-position
-              measurement noise. Pass a small positive value (e.g. 0.01)
-              for effectively-delta behavior.
+            - ``0.0``: multi-bin Local with a delta kernel that commits
+              Local mass to the animal's snapped interior bin per
+              timestep (one-hot kernel: ``log_kernel = 0`` at the bin
+              and ``-inf`` elsewhere).
+            - ``> 0``: multi-bin Local with a Gaussian observation
+              density of standard deviation ``local_position_std`` (same
+              units as ``position``, typically centimeters) on the
+              shortest-path track-graph distance; models the
+              tracked-position measurement noise.
         """
         # Validate all parameters early (Tier 1 & 2)
         self._validate_initial_conditions(
@@ -399,17 +402,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         if local_position_std is not None:
             val.ensure_positive_scalar(
-                local_position_std, "local_position_std", minimum=0.0, strict=True
+                local_position_std, "local_position_std", minimum=0.0, strict=False
             )
             if not np.isfinite(local_position_std):
                 raise ValidationError(
                     "local_position_std must be finite",
-                    expected="finite float > 0 or None",
+                    expected="finite float >= 0 or None",
                     got=str(local_position_std),
                     hint=(
-                        "Use None for legacy single-bin local or a finite "
-                        "positive value (e.g. 0.01 for near-delta) for a "
-                        "Gaussian observation density."
+                        "Use None for legacy single-bin local, 0.0 for a "
+                        "delta kernel that commits Local mass to the "
+                        "animal's bin per timestep, or a finite positive "
+                        "value for a Gaussian observation density."
                     ),
                 )
         self.local_position_std = local_position_std
@@ -564,12 +568,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     ) -> jnp.ndarray:
         """Compute log observation density for the multi-bin Local state.
 
-        Returns the log of a proper Gaussian density over position:
+        For ``σ > 0`` returns a proper Gaussian density over position:
 
         ``log_kernel(t, b) = -0.5 * log(2π σ²) - 0.5 * d(b, animal_t)² / σ²``
 
         where ``d`` is shortest-path track-graph distance (Euclidean
         fallback when no graph is fitted) and ``σ = local_position_std``.
+
+        For ``σ == 0`` returns the delta-kernel limit: ``0`` at the
+        animal's snapped interior bin, ``-inf`` elsewhere. Local mass
+        commits exactly to that bin per timestep.
 
         This is the observation channel of the Local state: it expresses
         ``P(animal_t | Local, bin=b)`` — how likely the animal's tracked
@@ -607,8 +615,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             bin as the mean.
         """
         assert self.local_position_std is not None  # narrowing for type checker
-        sigma = jnp.asarray(self.local_position_std, dtype=jnp.float32)
 
+        if self.local_position_std == 0:
+            return self._compute_local_delta_kernel(
+                time, position_time, position, environment
+            )
+
+        sigma = jnp.asarray(self.local_position_std, dtype=jnp.float32)
         sq_dist, nan_mask = self._animal_sq_distance_to_interior_bins(
             time, position_time, position, environment
         )
@@ -623,6 +636,40 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # NaN animal positions (tracking dropout) → flat kernel at that step.
         log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
         return log_kernel
+
+    def _compute_local_delta_kernel(
+        self,
+        time: jnp.ndarray,
+        position_time: jnp.ndarray,
+        position: jnp.ndarray,
+        environment: "Environment",
+    ) -> jnp.ndarray:
+        """One-hot kernel for the σ=0 limit of the multi-bin Local state.
+
+        Returns ``log_kernel = 0`` at the animal's snapped interior bin and
+        ``-inf`` elsewhere, so the per-step Local state commits exactly to
+        the animal's bin. NaN animal positions fall back to a flat kernel
+        as in the Gaussian path.
+        """
+        from non_local_detector.likelihoods.common import get_position_at_time
+
+        animal_pos = get_position_at_time(position_time, position, time, environment)
+        animal_pos_arr = np.asarray(animal_pos)
+        if animal_pos_arr.ndim == 1:
+            nan_mask = jnp.isnan(jnp.asarray(animal_pos_arr))
+        else:
+            nan_mask = jnp.any(jnp.isnan(jnp.asarray(animal_pos_arr)), axis=-1)
+
+        safe_animal_pos = np.nan_to_num(animal_pos_arr, nan=0.0)
+        if safe_animal_pos.ndim == 1:
+            safe_animal_pos = safe_animal_pos[:, np.newaxis]
+        animal_bin_inds = environment.get_bin_ind(safe_animal_pos)
+        interior_bin_indices = np.where(environment.is_track_interior_.ravel())[0]
+        is_animal_bin = jnp.asarray(
+            animal_bin_inds[:, np.newaxis] == interior_bin_indices[np.newaxis, :]
+        )
+        log_kernel = jnp.where(is_animal_bin, 0.0, -jnp.inf)
+        return jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
 
     def _validate_initial_conditions(
         self,

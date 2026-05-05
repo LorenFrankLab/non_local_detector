@@ -373,9 +373,33 @@ def test_large_sigma_spreads_local_posterior(simulated_data):
 
 
 @pytest.mark.integration
-def test_zero_sigma_rejected_at_construction():
-    """local_position_std=0.0 is rejected (Dirac density has no log form)."""
-    from non_local_detector.exceptions import ValidationError
+def test_delta_kernel_fit_predict(simulated_data):
+    """local_position_std=0.0 fits + predicts without NaN/Inf."""
+    time = simulated_data["time"]
+    position = simulated_data["position"]
+    spike_times = simulated_data["spike_times"]
+    is_event = simulated_data["is_event"]
 
-    with pytest.raises(ValidationError, match="local_position_std"):
-        NonLocalSortedSpikesDetector(local_position_std=0.0)
+    detector = NonLocalSortedSpikesDetector(
+        local_position_std=0.0,
+        sorted_spikes_algorithm="sorted_spikes_kde",
+        sorted_spikes_algorithm_params={
+            "position_std": 6.0,
+            "block_size": int(2**12),
+        },
+    ).fit(time, position, spike_times, is_training=~is_event)
+
+    results = detector.predict(
+        spike_times=spike_times,
+        time=time,
+        position=position,
+        position_time=time,
+    )
+
+    assert np.all(np.isfinite(results.acausal_posterior.values)), (
+        "Delta-kernel posterior contains NaN/Inf"
+    )
+    posterior_sums = results.acausal_posterior.sum(axis=1)
+    np.testing.assert_allclose(posterior_sums, 1.0, rtol=1e-5, atol=1e-5)
+    state_prob_sums = results.acausal_state_probabilities.sum(axis=1)
+    np.testing.assert_allclose(state_prob_sums, 1.0, rtol=1e-5, atol=1e-5)
