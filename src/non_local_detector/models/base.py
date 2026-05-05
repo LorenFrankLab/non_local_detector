@@ -558,9 +558,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             -0.5 * sq_dist / (self.non_local_penalty_std**2)
         )
 
-        # NaN animal positions produce zero penalty (no constraint during
-        # tracking dropouts) rather than a spurious penalty at a searchsorted-
-        # dependent bin.
+        # Rows whose interpolated animal position is NaN produce zero
+        # penalty (no constraint during tracking dropouts) rather than
+        # a spurious penalty at a searchsorted-dependent bin.
         return jnp.where(nan_mask[:, jnp.newaxis], 0.0, penalty)
 
     def _extract_animal_position(
@@ -660,9 +660,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         components get ``-inf`` (zero kernel) through the
         ``exp(-0.5 * inf² / σ²)`` limit.
 
-        NaN animal positions (tracking dropouts) fall back to a flat
-        kernel (``log_kernel = 0``), giving the forward step at that
-        timestep no spatial information from this channel.
+        Rows whose interpolated animal position is NaN (tracking
+        dropouts) fall back to a flat kernel (``log_kernel = 0`` over
+        all bins), giving the forward step no spatial information from
+        this channel for those rows.
 
         Parameters
         ----------
@@ -705,7 +706,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             raw - jax.scipy.special.logsumexp(raw, axis=1, keepdims=True) + log_n_bins
         )
 
-        # NaN animal positions (tracking dropout) → flat kernel at that step.
+        # Rows whose interpolated animal position is NaN fall back to a
+        # flat kernel (log_kernel = 0 over all bins).
         log_kernel = jnp.where(nan_mask[:, jnp.newaxis], 0.0, log_kernel)
         return log_kernel
 
@@ -725,8 +727,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Local state's uniform ``1/n_bins`` continuous IC; without it,
         Non-Local dominates by a factor of ``n_bins``.
 
-        NaN animal positions (tracking dropouts) fall back to a flat
-        ``log_kernel = 0`` for that timestep.
+        Rows whose interpolated animal position is NaN (tracking
+        dropouts) fall back to a flat kernel (``log_kernel = 0`` over
+        all bins).
         """
         safe_animal_pos, nan_mask = self._extract_animal_position(
             time, position_time, position, environment
