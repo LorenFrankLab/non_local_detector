@@ -1,8 +1,8 @@
 """Tests for local_position_std parameter on detector classes.
 
 Tests cover:
-- Parameter acceptance (None default, positive values)
-- Validation rejection (zero, negative values)
+- Parameter acceptance (None default, 0.0 delta-kernel mode, positive values)
+- Validation rejection (negative values, NaN/Inf, float32-square underflow)
 - Parameter storage on instance
 - Backward compatibility (None preserves legacy behavior)
 - State index allocation (multi-bin vs single-bin local)
@@ -50,14 +50,20 @@ class TestLocalPositionStdValidation:
             NonLocalSortedSpikesDetector(local_position_std=-1.0)
 
     def test_float32_underflow_rejected(self):
-        """Positive σ that underflows to 0 in float32 is rejected.
+        """Positive σ whose float32 square underflows to 0 is rejected.
 
-        The kernel evaluates ``-0.5 * d^2 / sigma^2`` at float32 precision,
-        so a positive but unrepresentably-small σ would silently divide by
-        zero. Callers should pass 0.0 explicitly for the delta kernel.
+        The kernel evaluates ``-0.5 * d^2 / sigma^2`` at float32 precision.
+        A σ like ``1e-19`` is representable in float32, but ``σ**2`` is not
+        — it underflows to 0 and the kernel becomes a divide-by-zero. The
+        validator must reject based on the *squared* denominator, not σ
+        itself. Callers who want delta semantics should pass 0.0.
         """
+        # σ that underflows directly (σ ≈ 0 in float32).
         with pytest.raises(ValidationError, match="underflow"):
             NonLocalSortedSpikesDetector(local_position_std=1e-50)
+        # σ representable in float32 but whose square underflows to 0.
+        with pytest.raises(ValidationError, match="underflow"):
+            NonLocalSortedSpikesDetector(local_position_std=1e-19)
 
     def test_clusterless_default_is_none(self):
         """Default local_position_std is None on clusterless detector."""

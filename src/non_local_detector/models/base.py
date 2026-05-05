@@ -422,21 +422,26 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                         "value for the spatial-anchor kernel width."
                     ),
                 )
-            # Reject positive values that underflow to 0 in float32 — the
-            # kernel evaluates -0.5 * d^2 / sigma^2 at float32 precision, so
-            # sigma <= ~1.18e-38 silently becomes a divide-by-zero. Callers
-            # who want a delta should pass 0.0 explicitly.
-            if (
-                local_position_std > 0
-                and float(np.asarray(local_position_std, dtype=np.float32)) == 0.0
-            ):
+            # Reject positive values whose float32 *square* would underflow
+            # into 0 or the subnormal range. The kernel evaluates
+            # -0.5 * d^2 / sigma^2 at float32 precision, and JAX runtimes
+            # commonly flush subnormals to zero (FTZ), so any sigma below
+            # sqrt(float32 tiny) ≈ 1.085e-19 silently produces a divide-by-
+            # zero. Callers who want a delta should pass 0.0 explicitly.
+            f32_min_sigma = float(np.sqrt(np.finfo(np.float32).tiny))
+            if 0 < float(local_position_std) < f32_min_sigma:
                 raise ValidationError(
-                    "local_position_std underflows to 0 in float32",
-                    expected="0.0, or a positive value representable in float32",
+                    "local_position_std**2 underflows to 0 in float32",
+                    expected=(
+                        "0.0, or a positive value with a representable "
+                        "float32 square (>= sqrt(float32 tiny) "
+                        f"~{f32_min_sigma:.3e})"
+                    ),
                     got=str(local_position_std),
                     hint=(
-                        "Pass 0.0 explicitly for the delta kernel, or use a "
-                        "value larger than the float32 minimum (~1.18e-38)."
+                        "Pass 0.0 explicitly for the delta kernel, or use "
+                        f"a value >= {f32_min_sigma:.3e} so sigma**2 is "
+                        "representable as a normal float32."
                     ),
                 )
         self.local_position_std = local_position_std
