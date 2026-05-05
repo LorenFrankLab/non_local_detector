@@ -377,12 +377,17 @@ class TestClusterlessOverride:
         local_mask = detector.state_ind_ == 0
         local_t0 = causal[0, local_mask]
         local_t0 = np.where(np.isnan(local_t0), 0.0, local_t0)
-        if local_t0.sum() > 0:
-            assert int(np.argmax(local_t0)) == animal_bin, (
-                f"Clusterless causal t=0 peaks at bin {int(np.argmax(local_t0))}, "
-                f"expected animal_bin={animal_bin}. Override may not be wired "
-                "through the clusterless predict() path."
-            )
+        # Guard against the test silently passing if the Local block were
+        # entirely zero/NaN (itself a regression mode).
+        assert local_t0.sum() > 0, (
+            "Clusterless Local mass at t=0 is zero or all-NaN; the override "
+            "or the forward pass produced no Local probability."
+        )
+        assert int(np.argmax(local_t0)) == animal_bin, (
+            f"Clusterless causal t=0 peaks at bin {int(np.argmax(local_t0))}, "
+            f"expected animal_bin={animal_bin}. Override may not be wired "
+            "through the clusterless predict() path."
+        )
 
 
 @pytest.mark.unit
@@ -438,15 +443,17 @@ class TestPredictUsesOverride:
         # The override puts all Local mass on `animal_bin` at t=0; the only
         # source of redistribution before the t=0 causal posterior is the
         # observation likelihood, which for σ=0.5 (much smaller than the
-        # bin spacing) leaves most mass near the animal. Compare against a
-        # uniform-IC baseline computed from the same posterior shape.
+        # bin spacing) leaves most mass near the animal.
         assert local_t0.shape == (n_local_bins,)
-        if local_t0.sum() > 0:
-            normalized = local_t0 / local_t0.sum()
-            assert int(np.argmax(normalized)) == animal_bin, (
-                f"Causal posterior at t=0 peaks at bin {int(np.argmax(normalized))}, "
-                f"expected animal_bin={animal_bin}. The IC override may not be wired."
-            )
+        # Guard: an all-zero/NaN Local block is itself a regression mode.
+        assert local_t0.sum() > 0, (
+            "Local mass at t=0 is zero or all-NaN; cannot test argmax."
+        )
+        normalized = local_t0 / local_t0.sum()
+        assert int(np.argmax(normalized)) == animal_bin, (
+            f"Causal posterior at t=0 peaks at bin {int(np.argmax(normalized))}, "
+            f"expected animal_bin={animal_bin}. The IC override may not be wired."
+        )
 
     def test_override_changes_t0_posterior_vs_uniform_ic(
         self, _fitted_detector, _sim_data
