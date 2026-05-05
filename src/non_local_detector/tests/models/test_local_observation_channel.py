@@ -58,15 +58,27 @@ def _fitted_detector(_sim_data):
 class TestSigmaZeroRejected:
     def test_sorted_spikes(self):
         with pytest.raises(
-            ValidationError, match="local_position_std must be strictly positive"
+            ValidationError, match="local_position_std must be a finite"
         ):
             NonLocalSortedSpikesDetector(local_position_std=0.0)
 
     def test_clusterless(self):
         with pytest.raises(
-            ValidationError, match="local_position_std must be strictly positive"
+            ValidationError, match="local_position_std must be a finite"
         ):
             NonLocalClusterlessDetector(local_position_std=0.0)
+
+    def test_nan_rejected(self):
+        with pytest.raises(
+            ValidationError, match="local_position_std must be a finite"
+        ):
+            NonLocalSortedSpikesDetector(local_position_std=float("nan"))
+
+    def test_inf_rejected(self):
+        with pytest.raises(
+            ValidationError, match="local_position_std must be a finite"
+        ):
+            NonLocalSortedSpikesDetector(local_position_std=float("inf"))
 
 
 @pytest.mark.unit

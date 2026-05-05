@@ -332,14 +332,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             - ``None`` (default): legacy behavior. Local state occupies a
               single bin; the likelihood is evaluated at the animal's
               exact interpolated position (continuous).
-            - ``0.0``: delta-kernel multi-bin local. Local state spans all
-              position bins, with all mass concentrated at the single bin
-              containing the animal (one-hot). Likelihood is evaluated at
-              bin centers (discrete).
-            - ``> 0``: multi-bin local with a Gaussian kernel of standard
-              deviation ``local_position_std`` (same units as ``position``,
-              typically centimeters) on the shortest-path track-graph
-              distance; models spatial uncertainty.
+            - ``> 0``: multi-bin local with a Gaussian observation density
+              of standard deviation ``local_position_std`` (same units as
+              ``position``, typically centimeters) on the shortest-path
+              track-graph distance; models the tracked-position
+              measurement noise. Pass a small positive value (e.g. 0.01)
+              for effectively-delta behavior.
         """
         # Validate all parameters early (Tier 1 & 2)
         self._validate_initial_conditions(
@@ -399,18 +397,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.no_spike_rate = no_spike_rate
 
         # Local position uncertainty parameter
-        if local_position_std is not None and local_position_std <= 0:
+        if local_position_std is not None and not (
+            np.isfinite(local_position_std) and local_position_std > 0
+        ):
             raise ValidationError(
-                "local_position_std must be strictly positive",
+                "local_position_std must be a finite, strictly positive float",
                 expected="float > 0 or None",
                 got=str(local_position_std),
                 hint=(
                     "Use None for legacy single-bin local (likelihood at "
-                    "the animal's exact interpolated position) or > 0 for "
-                    "a Gaussian kernel. Pass a small positive value (e.g. "
-                    "0.01) for effectively-delta behavior; the previous "
-                    "0.0 delta-kernel mode was removed because a Dirac "
-                    "density cannot be represented in log space."
+                    "the animal's exact interpolated position) or a finite "
+                    "positive value for a Gaussian observation density. "
+                    "Pass a small positive value (e.g. 0.01) for "
+                    "effectively-delta behavior."
                 ),
             )
         self.local_position_std = local_position_std
@@ -608,11 +607,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         else:
             nan_mask = jnp.any(jnp.isnan(animal_pos), axis=-1)
 
-        # Topology-aware distance via Environment.get_distances_to_interior_bins().
-        # After the get_bin_ind snap, the animal bin is always interior,
-        # so the distance-matrix row is always finite. Unreachable bins
-        # on disconnected components remain inf and become -inf log-density.
-        dist = environment.get_distances_to_interior_bins(np.asarray(animal_pos))
+        # NaN-safe input to the topology-aware distance lookup. The post-hoc
+        # ``nan_mask`` overwrite below makes the final result correct, but
+        # the distance helper goes through ``get_bin_ind`` -> ``np.searchsorted``
+        # which is undefined on NaN. Replace NaN coords with 0.0 first to
+        # mirror ``_compute_non_local_position_penalty`` (line ~528).
+        safe_animal_pos = np.nan_to_num(np.asarray(animal_pos), nan=0.0)
+        dist = environment.get_distances_to_interior_bins(safe_animal_pos)
         sq_dist = jnp.asarray(dist) ** 2
 
         log_norm = -0.5 * jnp.log(2.0 * jnp.pi * sigma**2)
@@ -2967,22 +2968,20 @@ class ClusterlessDetector(_DetectorBase):
         Notes
         -----
         When ``local_position_std`` is set, the per-bin value returned
-        for local-state entries is not a pure observation likelihood.
-        It combines the spatial spike likelihood with the position
-        uncertainty kernel::
+        for local-state entries is not a pure spike likelihood. It
+        combines the spatial spike likelihood with the Gaussian
+        observation density of the tracked position::
 
             log_likelihood[local, b, t] =
-                log P(spikes_t | bin b)                   # spatial likelihood
-              + log_kernel(b | animal_pos_t)              # Gaussian anchor
-              + log(n_interior_bins)                      # mass-balance
+                log P(spikes_t | bin b)               # spatial likelihood
+              + log N(d(b, animal_t); 0, σ²)          # tracked-position density
 
-        The kernel term is a time-varying state-specific spatial prior.
-        Mathematically, injecting it into the likelihood is equivalent
-        to injecting it into the transition matrix — both multiply into
+        where ``d`` is shortest-path track-graph distance and
+        ``σ = local_position_std``. Mathematically, injecting the
+        tracked-position density into the likelihood is equivalent to
+        injecting it into the transition matrix — both multiply into
         the HMM forward step — but avoids breaking the static-transition
-        assumption used by ``jax.lax.scan``. The ``log(n_interior_bins)``
-        constant compensates for the ``1/n_bins`` uniform continuous IC
-        so the effective per-bin prior is ``exp(log_kernel)`` itself.
+        assumption used by ``jax.lax.scan``.
 
         The kernel is part of the likelihood model, not an ad-hoc
         post-processing step, so the posterior returned by ``predict()``
@@ -2992,7 +2991,7 @@ class ClusterlessDetector(_DetectorBase):
         differ); users reading the raw ``log_likelihood`` (via
         ``return_outputs='log_likelihood'``) should be aware that
         local-state entries are *not* pure ``log P(spikes | state, bin)``
-        — they include the kernel and mass-balance terms.
+        — they include the Gaussian observation density.
 
         Parameters
         ----------
@@ -3899,22 +3898,20 @@ class SortedSpikesDetector(_DetectorBase):
         Notes
         -----
         When ``local_position_std`` is set, the per-bin value returned
-        for local-state entries is not a pure observation likelihood.
-        It combines the spatial spike likelihood with the position
-        uncertainty kernel::
+        for local-state entries is not a pure spike likelihood. It
+        combines the spatial spike likelihood with the Gaussian
+        observation density of the tracked position::
 
             log_likelihood[local, b, t] =
-                log P(spikes_t | bin b)                   # spatial likelihood
-              + log_kernel(b | animal_pos_t)              # Gaussian anchor
-              + log(n_interior_bins)                      # mass-balance
+                log P(spikes_t | bin b)               # spatial likelihood
+              + log N(d(b, animal_t); 0, σ²)          # tracked-position density
 
-        The kernel term is a time-varying state-specific spatial prior.
-        Mathematically, injecting it into the likelihood is equivalent
-        to injecting it into the transition matrix — both multiply into
+        where ``d`` is shortest-path track-graph distance and
+        ``σ = local_position_std``. Mathematically, injecting the
+        tracked-position density into the likelihood is equivalent to
+        injecting it into the transition matrix — both multiply into
         the HMM forward step — but avoids breaking the static-transition
-        assumption used by ``jax.lax.scan``. The ``log(n_interior_bins)``
-        constant compensates for the ``1/n_bins`` uniform continuous IC
-        so the effective per-bin prior is ``exp(log_kernel)`` itself.
+        assumption used by ``jax.lax.scan``.
 
         The kernel is part of the likelihood model, not an ad-hoc
         post-processing step, so the posterior returned by ``predict()``
@@ -3924,7 +3921,7 @@ class SortedSpikesDetector(_DetectorBase):
         differ); users reading the raw ``log_likelihood`` (via
         ``return_outputs='log_likelihood'``) should be aware that
         local-state entries are *not* pure ``log P(spikes | state, bin)``
-        — they include the kernel and mass-balance terms.
+        — they include the Gaussian observation density.
 
         Parameters
         ----------

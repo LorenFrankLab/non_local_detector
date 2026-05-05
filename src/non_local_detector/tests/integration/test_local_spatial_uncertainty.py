@@ -377,7 +377,5 @@ def test_zero_sigma_rejected_at_construction():
     """local_position_std=0.0 is rejected (Dirac density has no log form)."""
     from non_local_detector.exceptions import ValidationError
 
-    with pytest.raises(
-        ValidationError, match="local_position_std must be strictly positive"
-    ):
+    with pytest.raises(ValidationError, match="local_position_std must be a finite"):
         NonLocalSortedSpikesDetector(local_position_std=0.0)
