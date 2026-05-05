@@ -337,11 +337,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
               Local mass to the animal's snapped interior bin per
               timestep (one-hot kernel: ``log_kernel = 0`` at the bin
               and ``-inf`` elsewhere).
-            - ``> 0``: multi-bin Local with a Gaussian observation
-              density of standard deviation ``local_position_std`` (same
-              units as ``position``, typically centimeters) on the
-              shortest-path track-graph distance; models the
-              tracked-position measurement noise.
+            - ``> 0``: multi-bin Local with an *anchor-width* kernel
+              ``log_kernel = -0.5 * d² / σ²`` over shortest-path
+              graph/geodesic distance ``d`` (Euclidean fallback when no
+              distance matrix is fitted) and ``σ = local_position_std``.
+              Peak is 0 at the animal's bin and falls off with distance,
+              so ``σ`` controls the *spatial tolerance* of Local — how
+              far from the animal a Local bin can be while still being
+              credible — without re-weighting the Local-vs-non-Local
+              global evidence balance via a normalizer. Not a normalized
+              density; treat ``σ`` as an anchor-width hyperparameter,
+              not a calibrated measurement-noise scale.
         """
         # Validate all parameters early (Tier 1 & 2)
         self._validate_initial_conditions(
@@ -582,23 +588,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         sq_dist = jnp.nan_to_num(jnp.asarray(dist) ** 2, nan=jnp.inf, posinf=jnp.inf)
         return sq_dist, nan_mask
 
-    def _local_position_density_dim(self, environment: "Environment") -> int:
-        """Dimensionality used in the Local-state Gaussian radial likelihood.
-
-        Returns 1 for explicit linearized tracks (``track_graph is not None``)
-        and the position grid's coordinate dimension otherwise. See
-        :meth:`_compute_local_position_kernel` for the full kernel formula
-        and the modeling-assumption caveat.
-        """
-        if environment.track_graph is not None:
-            return 1
-        if environment.place_bin_centers_ is None:
-            raise ValueError(
-                "environment.place_bin_centers_ is None; "
-                "fit the environment before computing the Local kernel."
-            )
-        return int(environment.place_bin_centers_.shape[1])
-
     def _compute_local_position_kernel(
         self,
         time: jnp.ndarray,
@@ -606,47 +595,34 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         position: jnp.ndarray,
         environment: "Environment",
     ) -> jnp.ndarray:
-        """Compute log observation density for the multi-bin Local state.
+        """Spatial-anchor log-kernel for the multi-bin Local state.
 
-        For ``σ > 0`` returns an isotropic Gaussian *radial* likelihood:
+        For ``σ > 0`` returns the *unnormalized* anchor:
 
-        ``log_kernel(t, b) = -0.5 * n_dims * log(2π σ²) - 0.5 * d(b, animal_t)² / σ²``
+        ``log_kernel(t, b) = -0.5 * d(b, animal_t)² / σ²``
 
-        where ``σ = local_position_std`` and ``d`` and ``n_dims`` depend on
-        the environment (see :meth:`_local_position_density_dim`):
+        where ``d`` is shortest-path graph/geodesic distance (Euclidean
+        fallback when no distance matrix is fitted) and
+        ``σ = local_position_std``. The peak is always 0 at the animal's
+        bin and falls off with distance, so ``σ`` controls the *spatial
+        tolerance* of the Local state — how far from the animal a Local
+        bin can be while still being credible — without re-weighting the
+        Local-vs-non-Local global evidence balance via a normalizer.
 
-        - **Explicit linearized track** (``track_graph`` set): ``d`` is
-          shortest-path graph distance on a 1D manifold; ``n_dims = 1``.
-        - **2D / N-D occupancy grid** (``track_graphDD`` built by
-          ``Environment.fit_place_grid``, the default for fitted N-D
-          environments): ``d`` is graph/geodesic distance on the grid;
-          ``n_dims`` is the position grid's coordinate dimension.
-        - **Euclidean fallback** (no distance matrix): ``d`` is
-          Euclidean ``‖animal − bin_center‖``; same ``n_dims``.
-
-        This is a *radial* likelihood using graph/geodesic distance —
-        not an exact normalized heat kernel on an arbitrary graph with
-        holes/boundaries. The choice is a modeling assumption: σ has
-        units of distance, and the per-bin density treats the
-        animal-to-bin distance as the only quantity governing the
-        observation likelihood.
+        This is **not** a normalized density; integrating
+        ``exp(log_kernel)`` over bins varies with σ and bin spacing.
+        Treat ``local_position_std`` as an anchor-width hyperparameter,
+        not a calibrated measurement-noise scale.
 
         For ``σ == 0`` returns the delta-kernel limit: ``0`` at the
         animal's snapped interior bin, ``-inf`` elsewhere. Local mass
         commits exactly to that bin per timestep.
 
-        This is the observation channel of the Local state: it expresses
-        ``P(animal_t | Local, bin=b)`` — how likely the animal's tracked
-        position is given that the population is coding for bin ``b``,
-        with measurement noise ``σ``. It is *not* a normalized prior
-        over bins; integrating ``exp(log_kernel)`` over bin centers does
-        not yield a fixed value (scale depends on σ and bin spacing).
-
         Gap-bin positions (e.g. exactly on an arm-boundary edge) are
         snapped to the nearest interior bin via
         :meth:`Environment.get_bin_ind`, so distances are always defined
         on real interior bins. Unreachable bins on disconnected graph
-        components get ``-inf`` (zero density) through the
+        components get ``-inf`` (zero kernel) through the
         ``exp(-0.5 * inf² / σ²)`` limit.
 
         NaN animal positions (tracking dropouts) fall back to a flat
@@ -667,8 +643,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Returns
         -------
         log_kernel : jnp.ndarray, shape (n_time, n_interior_bins)
-            Log Gaussian density of the tracked position given each
-            bin as the mean.
+            Spatial-anchor log-kernel; peak is 0 at the animal's bin.
         """
         assert self.local_position_std is not None  # narrowing for type checker
 
@@ -682,13 +657,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             time, position_time, position, environment
         )
 
-        n_dims = self._local_position_density_dim(environment)
-        log_norm = -0.5 * n_dims * jnp.log(2.0 * jnp.pi * sigma**2)
-
         reachable = jnp.isfinite(sq_dist)
         log_kernel = jnp.where(
             reachable,
-            log_norm - 0.5 * sq_dist / (sigma**2),
+            -0.5 * sq_dist / (sigma**2),
             -jnp.inf,
         )
         # NaN animal positions (tracking dropout) → flat kernel at that step.
@@ -1156,23 +1128,29 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         position: np.ndarray | None,
         time: np.ndarray,
     ) -> np.ndarray | None:
-        """Predict-time initial conditions with the Local block replaced by a
-        delta at the bin containing the animal's first interpolated position.
+        """Predict-time IC with the Local block replaced by a delta at the
+        bin containing the animal's first interpolated position.
 
-        Returns a full IC array matching the shape of
-        ``self.initial_conditions_``. The stored attribute is never mutated.
+        Starts from a copy of ``self.initial_conditions_`` and modifies
+        only the rows belonging to Local observation models, so any
+        EM-updated non-Local initial conditions (and the EM-updated
+        ``discrete_initial_conditions``, which are baked into the stored
+        full IC) are preserved verbatim. The Local block becomes a delta
+        scaled by ``discrete_initial_conditions[local_state_id]``. The
+        stored attribute is never mutated.
 
-        Returns ``None`` (signaling that the stored uniform Local IC should
-        be used unchanged) when:
+        Returns ``None`` (signaling that the stored uniform Local IC
+        should be used unchanged) when:
 
-        - ``self.local_position_std is None`` — legacy single-bin Local has
-          no per-bin distribution to override.
+        - ``self.local_position_std is None`` — legacy single-bin Local
+          has no per-bin distribution to override.
         - ``position`` or ``position_time`` is ``None`` — caller did not
           supply position data.
-        - The interpolated animal position at ``time[0]`` is NaN — tracking
-          dropout on the initial frame. A warning is logged in this case
-          because a frame-0 dropout usually indicates an upstream pipeline
-          issue.
+        - ``time`` is empty.
+        - The interpolated animal position at ``time[0]`` is NaN —
+          tracking dropout on the initial frame. A warning is logged
+          because a frame-0 dropout usually indicates an upstream
+          pipeline issue.
 
         Parameters
         ----------
@@ -1195,12 +1173,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         ):
             return None
 
-        nan_seen = False
-
-        def build_local_delta(
-            obs: "ObservationModel", env: "Environment"
-        ) -> np.ndarray:
-            nonlocal nan_seen
+        override = np.array(self.initial_conditions_, copy=True)
+        for state_id, obs in enumerate(self.observation_models):
+            if not obs.is_local:
+                continue
+            env = self.environments[self.environments.index(obs.environment_name)]
             animal_pos_t0 = np.asarray(
                 get_position_at_time(
                     np.asarray(position_time),
@@ -1209,15 +1186,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     env,
                 )
             )
-            n_local_bins = int(env.place_bin_centers_.shape[0])
             if np.any(np.isnan(animal_pos_t0)):
                 logger.warning(
                     "Multi-bin Local IC override skipped: first decoding "
-                    "frame's interpolated position is NaN. Stored uniform "
-                    "Local IC will be used."
+                    "frame's interpolated position is NaN. Stored Local "
+                    "IC will be used."
                 )
-                nan_seen = True
-                return np.zeros(n_local_bins, dtype=np.float32)
+                return None
 
             animal_pos_2d = (
                 animal_pos_t0
@@ -1225,19 +1200,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 else animal_pos_t0[:, np.newaxis]
             )
             animal_bin = int(env.get_bin_ind(animal_pos_2d)[0])
-            # Local block uses full place_bin_centers_ length to align with
-            # state_ind_ (interior + gap bins).
-            delta_ic = np.zeros(n_local_bins, dtype=np.float32)
-            delta_ic[animal_bin] = 1.0
-            return delta_ic
 
-        ic_parts = self._build_continuous_ic_parts(
-            local_block_builder=build_local_delta
-        )
-        if nan_seen:
-            return None
-        continuous_ic = np.concatenate(ic_parts).astype(np.float32)
-        return continuous_ic * self.discrete_initial_conditions[self.state_ind_]
+            block_mask = self.state_ind_ == state_id
+            block = np.zeros(int(block_mask.sum()), dtype=override.dtype)
+            block[animal_bin] = float(self.discrete_initial_conditions[state_id])
+            override[block_mask] = block
+
+        return override
 
     def _initial_distribution_for_decode(
         self,
@@ -3057,33 +3026,35 @@ class ClusterlessDetector(_DetectorBase):
         -----
         When ``local_position_std`` is set, the per-bin value returned
         for local-state entries is not a pure spike likelihood. It
-        combines the spatial spike likelihood with an isotropic Gaussian
-        radial likelihood on graph/geodesic distance from the animal's
-        position to each bin (see :meth:`_compute_local_position_kernel`
-        for the exact formula and dimensionality dispatch)::
+        combines the spatial spike likelihood with a spatial-anchor
+        log-kernel on graph/geodesic distance from the animal's position
+        to each bin (see :meth:`_compute_local_position_kernel` for the
+        exact formula)::
 
             log_likelihood[local, b, t] =
                 log P(spikes_t | bin b)               # spatial likelihood
-              + log_kernel(b, animal_t)               # radial position likelihood
+              + log_kernel(b, animal_t)               # anchor: peak 0 at animal_t
 
-        where ``log_kernel`` uses ``σ = local_position_std`` and a
-        ``n_dims``-aware Gaussian normalizer (``n_dims = 1`` for
-        explicit linearized tracks, otherwise the position grid's
-        coordinate dimension). Mathematically, injecting this term into
-        the likelihood is equivalent to injecting it into the transition
-        matrix — both multiply into the HMM forward step — but avoids
-        breaking the static-transition assumption used by
+        where ``log_kernel = -0.5 * d² / σ²`` with ``σ =
+        local_position_std``. The kernel is *not* a normalized density
+        (no ``log(2π σ²)`` term); ``σ`` controls Local's spatial
+        tolerance — how far from the animal a Local bin remains
+        credible — without re-weighting Local-vs-non-Local global
+        evidence via a normalizer. Mathematically, injecting this term
+        into the likelihood is equivalent to injecting it into the
+        transition matrix — both multiply into the HMM forward step —
+        but avoids breaking the static-transition assumption used by
         ``jax.lax.scan``.
 
-        The kernel is part of the likelihood model, not an ad-hoc
-        post-processing step, so the posterior returned by ``predict()``
-        is a valid probability distribution under the modified
-        generative model. Users comparing ``local_position_std=None`` to
-        a finite value will see different posteriors (the models
-        differ); users reading the raw ``log_likelihood`` (via
+        The kernel is part of the model, not an ad-hoc post-processing
+        step, so the posterior returned by ``predict()`` is a valid
+        probability distribution under the modified generative model.
+        Users comparing ``local_position_std=None`` to a finite value
+        will see different posteriors (the models differ); users reading
+        the raw ``log_likelihood`` (via
         ``return_outputs='log_likelihood'``) should be aware that
         local-state entries are *not* pure ``log P(spikes | state, bin)``
-        — they include the radial position likelihood.
+        — they include the anchor kernel.
 
         Parameters
         ----------
@@ -3991,33 +3962,35 @@ class SortedSpikesDetector(_DetectorBase):
         -----
         When ``local_position_std`` is set, the per-bin value returned
         for local-state entries is not a pure spike likelihood. It
-        combines the spatial spike likelihood with an isotropic Gaussian
-        radial likelihood on graph/geodesic distance from the animal's
-        position to each bin (see :meth:`_compute_local_position_kernel`
-        for the exact formula and dimensionality dispatch)::
+        combines the spatial spike likelihood with a spatial-anchor
+        log-kernel on graph/geodesic distance from the animal's position
+        to each bin (see :meth:`_compute_local_position_kernel` for the
+        exact formula)::
 
             log_likelihood[local, b, t] =
                 log P(spikes_t | bin b)               # spatial likelihood
-              + log_kernel(b, animal_t)               # radial position likelihood
+              + log_kernel(b, animal_t)               # anchor: peak 0 at animal_t
 
-        where ``log_kernel`` uses ``σ = local_position_std`` and a
-        ``n_dims``-aware Gaussian normalizer (``n_dims = 1`` for
-        explicit linearized tracks, otherwise the position grid's
-        coordinate dimension). Mathematically, injecting this term into
-        the likelihood is equivalent to injecting it into the transition
-        matrix — both multiply into the HMM forward step — but avoids
-        breaking the static-transition assumption used by
+        where ``log_kernel = -0.5 * d² / σ²`` with ``σ =
+        local_position_std``. The kernel is *not* a normalized density
+        (no ``log(2π σ²)`` term); ``σ`` controls Local's spatial
+        tolerance — how far from the animal a Local bin remains
+        credible — without re-weighting Local-vs-non-Local global
+        evidence via a normalizer. Mathematically, injecting this term
+        into the likelihood is equivalent to injecting it into the
+        transition matrix — both multiply into the HMM forward step —
+        but avoids breaking the static-transition assumption used by
         ``jax.lax.scan``.
 
-        The kernel is part of the likelihood model, not an ad-hoc
-        post-processing step, so the posterior returned by ``predict()``
-        is a valid probability distribution under the modified
-        generative model. Users comparing ``local_position_std=None`` to
-        a finite value will see different posteriors (the models
-        differ); users reading the raw ``log_likelihood`` (via
+        The kernel is part of the model, not an ad-hoc post-processing
+        step, so the posterior returned by ``predict()`` is a valid
+        probability distribution under the modified generative model.
+        Users comparing ``local_position_std=None`` to a finite value
+        will see different posteriors (the models differ); users reading
+        the raw ``log_likelihood`` (via
         ``return_outputs='log_likelihood'``) should be aware that
         local-state entries are *not* pure ``log P(spikes | state, bin)``
-        — they include the radial position likelihood.
+        — they include the anchor kernel.
 
         Parameters
         ----------

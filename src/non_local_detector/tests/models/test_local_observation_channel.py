@@ -218,6 +218,76 @@ class TestComputeLocalInitialConditions:
         )
         np.testing.assert_array_equal(_fitted_detector.initial_conditions_, ic_before)
 
+    def test_override_preserves_em_updated_non_local_blocks(self, _sim_data):
+        """EM-updated non-Local IC rows survive the override.
+
+        The override starts from a copy of ``self.initial_conditions_`` and
+        only writes the Local block, so any EM updates baked into
+        ``initial_conditions_`` (non-Local rows or
+        ``discrete_initial_conditions``) are preserved verbatim.
+        """
+        detector = NonLocalSortedSpikesDetector(
+            sampling_frequency=_sim_data["sampling_frequency"],
+            local_position_std=0.5,
+        )
+        detector.fit(
+            position_time=_sim_data["time"],
+            position=_sim_data["position"],
+            spike_times=_sim_data["spike_times"],
+        )
+
+        # Manually perturb a non-Local block to a recognizable pattern,
+        # mimicking what an EM ``estimate_initial_conditions=True`` step
+        # would do once it has updated the non-Local IC.
+        local_state_id = next(
+            i for i, obs in enumerate(detector.observation_models) if obs.is_local
+        )
+        non_local_state_id = next(
+            i
+            for i, obs in enumerate(detector.observation_models)
+            if not obs.is_local and not obs.is_no_spike
+        )
+        non_local_mask = detector.state_ind_ == non_local_state_id
+        n_non_local_bins = int(non_local_mask.sum())
+        # Pick something non-uniform but normalized so EM-style updates stay
+        # consistent with discrete_initial_conditions.
+        new_non_local_block = np.linspace(1.0, 2.0, n_non_local_bins).astype(
+            detector.initial_conditions_.dtype
+        )
+        new_non_local_block /= new_non_local_block.sum()
+        new_non_local_block *= float(
+            detector.discrete_initial_conditions[non_local_state_id]
+        )
+        detector.initial_conditions_[non_local_mask] = new_non_local_block
+        ic_before = np.array(detector.initial_conditions_, copy=True)
+
+        override = detector.compute_local_initial_conditions(
+            _sim_data["time"], _sim_data["position"], _sim_data["time"]
+        )
+        assert override is not None
+        assert override.shape == detector.initial_conditions_.shape
+
+        # Local block: one-hot at the animal's first-frame bin, scaled.
+        env = detector.environments[0]
+        first_pos = np.atleast_2d(np.asarray(_sim_data["position"])[0])
+        if first_pos.ndim == 1:
+            first_pos = first_pos[:, np.newaxis]
+        animal_bin = int(env.get_bin_ind(first_pos)[0])
+        local_block = override[detector.state_ind_ == local_state_id]
+        assert int(np.argmax(local_block)) == animal_bin
+        assert int((local_block > 0).sum()) == 1
+        np.testing.assert_allclose(
+            local_block.max(),
+            float(detector.discrete_initial_conditions[local_state_id]),
+            rtol=1e-6,
+        )
+
+        # Non-Local block: bit-equal to the (perturbed) stored IC.
+        np.testing.assert_array_equal(override[non_local_mask], new_non_local_block)
+
+        # Stored IC itself is not mutated.
+        np.testing.assert_array_equal(detector.initial_conditions_, ic_before)
+
     def test_override_matches_animal_first_position_bin(
         self, _fitted_detector, _sim_data
     ):
