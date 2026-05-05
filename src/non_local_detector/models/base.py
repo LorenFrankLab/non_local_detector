@@ -334,21 +334,30 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             - ``None`` (default): legacy behavior. Local state occupies a
               single bin; the likelihood is evaluated at the animal's
               exact interpolated position (continuous).
-            - ``0.0``: multi-bin Local with a delta kernel that commits
+            - ``0.0``: multi-bin Local with a delta kernel committing
               Local mass to the animal's snapped interior bin per
-              timestep (one-hot kernel: ``log_kernel = 0`` at the bin
-              and ``-inf`` elsewhere).
+              timestep. ``log_kernel = log(n_bins)`` at the bin and
+              ``-inf`` elsewhere, so ``exp(log_kernel)`` sums to
+              ``n_bins`` per timestep — see ``> 0`` for the rationale.
             - ``> 0``: multi-bin Local with an *anchor-width* kernel
-              ``log_kernel = -0.5 * d² / σ²`` over shortest-path
+              ``raw = -0.5 * d² / σ²`` over shortest-path
               graph/geodesic distance ``d`` (Euclidean fallback when no
-              distance matrix is fitted) and ``σ = local_position_std``.
-              Peak is 0 at the animal's bin and falls off with distance,
-              so ``σ`` controls the *spatial tolerance* of Local — how
-              far from the animal a Local bin can be while still being
-              credible — without re-weighting the Local-vs-non-Local
-              global evidence balance via a normalizer. Not a normalized
-              density; treat ``σ`` as an anchor-width hyperparameter,
-              not a calibrated measurement-noise scale.
+              distance matrix is fitted) and ``σ = local_position_std``,
+              rescaled per timestep so ``exp(log_kernel).sum(axis=1) ==
+              n_bins``. The rescaling is HMM-state mass calibration: it
+              cancels the multi-bin Local state's uniform ``1/n_bins``
+              continuous-IC factor, which would otherwise let Non-Local
+              dominate by a factor of ``n_bins`` regardless of σ. ``σ``
+              controls the *spatial tolerance* of Local — how far from
+              the animal a Local bin can be while still credible — and
+              is an anchor-width hyperparameter, not a calibrated
+              measurement-noise standard deviation. Note: at ``t=0``
+              the predict-time IC override already concentrates Local
+              mass at the animal's bin, so the kernel's
+              ``+ log(n_bins)`` compensation overlaps with the override
+              for that single frame; for typical decoding windows this
+              is negligible, but tight marginal-likelihood comparisons
+              of very short sequences should be aware of it.
         """
         # Validate all parameters early (Tier 1 & 2)
         self._validate_initial_conditions(
@@ -2812,9 +2821,13 @@ class ClusterlessDetector(_DetectorBase):
             details.
         local_position_std : float or None, optional
             Anchor-width parameter for the multi-bin Local state's
-            spatial-anchor kernel. See ``_DetectorBase`` for details
-            (``None`` = legacy single-bin Local; ``0.0`` = delta kernel;
-            ``> 0`` = unnormalized ``-0.5 * d² / σ²`` anchor).
+            spatial-anchor kernel, rescaled per timestep so
+            ``exp(log_kernel)`` sums to ``n_bins`` (HMM-state mass
+            calibration; cancels the multi-bin Local state's uniform
+            ``1/n_bins`` continuous IC). See ``_DetectorBase`` for
+            details. ``None`` = legacy single-bin Local; ``0.0`` =
+            delta kernel; ``> 0`` = ``raw - logsumexp(raw) +
+            log(n_bins)`` with ``raw = -0.5 * d² / σ²``.
         """
         super().__init__(
             discrete_initial_conditions,
@@ -3766,9 +3779,13 @@ class SortedSpikesDetector(_DetectorBase):
             details.
         local_position_std : float or None, optional
             Anchor-width parameter for the multi-bin Local state's
-            spatial-anchor kernel. See ``_DetectorBase`` for details
-            (``None`` = legacy single-bin Local; ``0.0`` = delta kernel;
-            ``> 0`` = unnormalized ``-0.5 * d² / σ²`` anchor).
+            spatial-anchor kernel, rescaled per timestep so
+            ``exp(log_kernel)`` sums to ``n_bins`` (HMM-state mass
+            calibration; cancels the multi-bin Local state's uniform
+            ``1/n_bins`` continuous IC). See ``_DetectorBase`` for
+            details. ``None`` = legacy single-bin Local; ``0.0`` =
+            delta kernel; ``> 0`` = ``raw - logsumexp(raw) +
+            log(n_bins)`` with ``raw = -0.5 * d² / σ²``.
         """
         super().__init__(
             discrete_initial_conditions,

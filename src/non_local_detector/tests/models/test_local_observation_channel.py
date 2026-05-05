@@ -1,5 +1,6 @@
 """Tests for the predict-time Local-state initial conditions and the
-Local observation channel (unnormalized spatial-anchor kernel).
+Local observation channel (spatial-anchor kernel rescaled to sum-to-n_bins
+per timestep for HMM-state mass balance).
 
 Covers the cleanup landed alongside `local_position_std`: the stored
 `initial_conditions_` is uniform over the Local block, and at predict
@@ -733,3 +734,55 @@ class TestLocalStateOccupancyRegression:
             "Local kernel may have lost its 1/n_bins mass-balance "
             "compensation — Non-Local dominates by a factor of n_bins."
         )
+
+
+@pytest.mark.unit
+class TestT0KernelOverrideOverlap:
+    """Document the kernel/IC-override overlap at t=0.
+
+    The kernel's per-timestep ``+ log(n_bins)`` rescaling cancels the
+    multi-bin Local state's uniform ``1/n_bins`` continuous IC for t≥1.
+    At t=0, however, the predict-time IC override has *already*
+    concentrated Local mass at the animal's bin (a delta scaled by
+    ``discrete_initial_conditions[Local]``), so the kernel's
+    ``+ log(n_bins)`` boost overlaps with the override for that single
+    frame. For typical decoding windows this is negligible; for very
+    short sequences or tight marginal-likelihood comparisons callers
+    should be aware of it.
+
+    This test pins acceptable t=0 behavior: the causal posterior at
+    t=0 is a valid probability distribution (rows sum to 1, finite,
+    non-negative), and the Local block's argmax is at the animal's
+    bin. We do not assert a specific magnitude — the overlap by
+    design produces a sharper-than-uniform distribution there.
+    """
+
+    def test_t0_local_block_is_valid_and_peaks_at_animal_bin(
+        self, _fitted_detector, _sim_data
+    ):
+        results = _fitted_detector.predict(
+            spike_times=_sim_data["spike_times"],
+            position_time=_sim_data["time"],
+            position=_sim_data["position"],
+            time=_sim_data["time"],
+            return_outputs="filter",
+        )
+        causal = np.asarray(results.causal_posterior)
+        # Validity: t=0 causal row sums to 1 over (state, bin).
+        causal_t0 = np.where(np.isnan(causal[0]), 0.0, causal[0])
+        np.testing.assert_allclose(causal_t0.sum(), 1.0, atol=1e-5)
+        assert np.all(np.isfinite(causal_t0))
+        assert np.all(causal_t0 >= -1e-7)
+
+        # Local block at t=0 peaks at the animal's bin (override + kernel
+        # both anchor on the same bin, so the overlap is benign — it
+        # sharpens but does not break the distribution).
+        local_mask = _fitted_detector.state_ind_ == 0
+        local_t0 = causal_t0[local_mask]
+        env = _fitted_detector.environments[0]
+        first_pos_2d = np.atleast_2d(np.asarray(_sim_data["position"])[0])
+        if first_pos_2d.ndim == 1:
+            first_pos_2d = first_pos_2d[:, np.newaxis]
+        animal_bin = int(env.get_bin_ind(first_pos_2d)[0])
+        assert local_t0.sum() > 0
+        assert int(np.argmax(local_t0)) == animal_bin
