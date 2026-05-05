@@ -1947,17 +1947,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                                 pass
 
             if estimate_discrete_transition:
-                # Pass expanded-bin posteriors and factorized transitions so the
-                # exact expanded-state M-step is the detector default. The
-                # aggregate-state update remains available only as a lower-level
-                # fallback when these quantities are unavailable.
                 (
                     self.discrete_state_transitions_,
                     self.discrete_transition_coefficients_,
                 ) = _estimate_discrete_transition(
-                    causal_state_probabilities,
-                    predictive_state_probabilities,
-                    acausal_state_probabilities,
+                    causal_posterior,
+                    predictive_posterior,
+                    acausal_posterior,
+                    interior_continuous_transition,
+                    interior_state_ind,
                     self.discrete_state_transitions_,
                     self.discrete_transition_coefficients_,
                     self.discrete_transition_design_matrix_,
@@ -1965,11 +1963,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     self.discrete_transition_stickiness,
                     self.discrete_transition_regularization,
                     self.discrete_transition_prior_weight,
-                    causal_posterior=causal_posterior,
-                    predictive_posterior=predictive_posterior,
-                    acausal_posterior=acausal_posterior,
-                    continuous_transition=interior_continuous_transition,
-                    state_ind=interior_state_ind,
                 )
                 # Restore frozen rows: overwrite the M-step result with
                 # the initial snapshot for rows the user wants pinned.

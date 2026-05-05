@@ -494,8 +494,13 @@ default, because that matches the HMM actually used by filtering.
 
 ## Open Questions
 
-1. Should the approximate aggregated path remain public, private, or be removed
-   after exact-count parity tests pass?
+1. ~~Should the approximate aggregated path remain public, private, or be removed
+   after exact-count parity tests pass?~~ Removed. The aggregated posterior
+   wrappers `estimate_stationary_state_transition` and
+   `estimate_non_stationary_state_transition` are gone, and
+   `_estimate_discrete_transition` now requires expanded-bin posteriors.
+   `estimate_joint_distribution` is retained as a standalone discrete-only
+   utility (still used by tests as a singleton-state parity reference).
 
 2. Should exact transition counts be computed during the smoother pass to avoid
    storing full `causal_posterior`, `predictive_posterior`, and
