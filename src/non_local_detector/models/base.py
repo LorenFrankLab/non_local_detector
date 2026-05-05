@@ -1027,13 +1027,26 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         """Return the initial conditions to use for a single ``_predict()`` call.
 
         Falls back to ``self.initial_conditions_`` when the multi-bin Local
-        override doesn't apply (legacy single-bin Local, no position data,
-        or NaN initial position). Otherwise returns the full IC with the
-        Local rows replaced by a delta at the animal's first-bin.
+        override doesn't apply (legacy single-bin Local, or no position data
+        is available — see :meth:`compute_local_initial_conditions`).
         """
-        position_time = log_likelihood_args[0] if len(log_likelihood_args) > 0 else None
-        position = log_likelihood_args[1] if len(log_likelihood_args) > 1 else None
-        override = self.compute_local_initial_conditions(position_time, position, time)
+        if self.local_position_std is None:
+            return self.initial_conditions_
+
+        if len(log_likelihood_args) < 2:
+            logger.warning(
+                "_predict() called with local_position_std=%g but "
+                "log_likelihood_args has only %d entries (expected position_time "
+                "at index 0 and position at index 1). Falling back to the stored "
+                "uniform Local initial conditions.",
+                self.local_position_std,
+                len(log_likelihood_args),
+            )
+            return self.initial_conditions_
+
+        override = self.compute_local_initial_conditions(
+            log_likelihood_args[0], log_likelihood_args[1], time
+        )
         return override if override is not None else self.initial_conditions_
 
     def compute_local_initial_conditions(
@@ -1042,23 +1055,23 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         position: np.ndarray | None,
         time: np.ndarray,
     ) -> np.ndarray | None:
-        """Predict-time initial conditions with the Local rows replaced by a
+        """Predict-time initial conditions with the Local block replaced by a
         delta at the bin containing the animal's first interpolated position.
 
-        The stored ``self.initial_conditions_`` keeps a uniform Local block
-        because the IC depends on test-time data and cannot be fit-time data.
-        ``predict()`` and ``estimate_parameters()`` call this helper at the
-        start of each run and pass the result to ``_predict()`` as an
-        override; the stored array is never mutated.
+        Returns a full IC array matching the shape of
+        ``self.initial_conditions_``. The stored attribute is never mutated.
 
-        Returns ``None`` (telling the caller to use the stored uniform IC)
-        when:
+        Returns ``None`` (signaling that the stored uniform Local IC should
+        be used unchanged) when:
 
         - ``self.local_position_std is None`` — legacy single-bin Local has
           no per-bin distribution to override.
-        - ``position`` or ``position_time`` is None.
-        - The interpolated animal position at ``time[0]`` is NaN
-          (tracking dropout on the initial frame).
+        - ``position`` or ``position_time`` is ``None`` — caller did not
+          supply position data.
+        - The interpolated animal position at ``time[0]`` is NaN — tracking
+          dropout on the initial frame. A warning is logged in this case
+          because a frame-0 dropout usually indicates an upstream pipeline
+          issue.
 
         Parameters
         ----------
@@ -1070,12 +1083,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Returns
         -------
         override_initial_conditions : np.ndarray, shape (n_state_bins,) or None
-            Full IC array matching ``self.initial_conditions_``'s shape, with
-            Local rows replaced by a delta at the animal bin. ``None`` when
-            no override applies.
         """
-        from dataclasses import replace as dataclass_replace
-
         from non_local_detector.likelihoods.common import get_position_at_time
 
         if (
@@ -1103,31 +1111,48 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     )
                 )
                 if np.any(np.isnan(animal_pos_t0)):
+                    logger.warning(
+                        "Multi-bin Local IC override skipped: first decoding "
+                        "frame's interpolated position is NaN. The stored "
+                        "uniform Local initial conditions will be used. This "
+                        "usually indicates a tracking dropout at the start of "
+                        "the recording or a time grid that begins before "
+                        "position data."
+                    )
                     return None
 
-                interior_bin_indices = np.where(env.is_track_interior_.ravel())[0]
-                n_interior = int(interior_bin_indices.size)
+                # Build the Local block at the FULL bin granularity (including
+                # gap bins for linearized multi-arm tracks). state_ind_ and the
+                # non-Local IC parts use the full place_bin_centers_ length, so
+                # the Local block must too — building at n_interior here would
+                # broadcast-fail at the discrete_initial_conditions[state_ind_]
+                # multiplication for any environment with edge_spacing > 0.
+                n_local_bins = int(env.place_bin_centers_.shape[0])
                 animal_pos_2d = (
                     animal_pos_t0
                     if animal_pos_t0.ndim == 2
                     else animal_pos_t0[:, np.newaxis]
                 )
                 animal_bin = int(env.get_bin_ind(animal_pos_2d)[0])
-                interior_col = int(np.where(interior_bin_indices == animal_bin)[0][0])
-                delta_ic = np.zeros(n_interior, dtype=np.float32)
-                delta_ic[interior_col] = 1.0
+                if not bool(env.is_track_interior_.ravel()[animal_bin]):
+                    raise ValidationError(
+                        "Multi-bin Local IC override could not place a delta: "
+                        "Environment.get_bin_ind returned a non-interior bin",
+                        expected="interior bin index",
+                        got=f"animal_bin={animal_bin} (gap bin)",
+                        hint=(
+                            "This usually means the animal's first-frame "
+                            "position is in a gap region where the snap "
+                            "could not find a nearby interior bin. Check "
+                            "your environment's edge_spacing and the "
+                            "first-frame position."
+                        ),
+                    )
+                delta_ic = np.zeros(n_local_bins, dtype=np.float32)
+                delta_ic[animal_bin] = 1.0
                 ic_parts.append(delta_ic)
             else:
-                # Multi-bin local case: ``initialize_initial_conditions`` builds
-                # spatial IC for non-local observation models via the stored
-                # ``cont_ic.make_initial_conditions(obs, ...)``. Reuse the
-                # same call so the non-Local rows stay identical.
-                effective_obs = obs
-                if obs.is_local and self.local_position_std is not None:
-                    effective_obs = dataclass_replace(obs, is_local=False)
-                ic_parts.append(
-                    cont_ic.make_initial_conditions(effective_obs, self.environments)
-                )
+                ic_parts.append(cont_ic.make_initial_conditions(obs, self.environments))
 
         continuous_ic = np.concatenate(ic_parts).astype(np.float32)
         return continuous_ic * self.discrete_initial_conditions[self.state_ind_]

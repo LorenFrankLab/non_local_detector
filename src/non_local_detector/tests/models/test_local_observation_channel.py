@@ -146,12 +146,119 @@ class TestComputeLocalInitialConditions:
         if first_pos.ndim == 1:
             first_pos = first_pos[:, np.newaxis]
         animal_bin = int(env.get_bin_ind(first_pos)[0])
-        interior_bin_indices = np.where(env.is_track_interior_.ravel())[0]
-        interior_col = int(np.where(interior_bin_indices == animal_bin)[0][0])
 
-        # Local state-bin block has the same length as n_interior bins.
+        # Local block is the full place_bin_centers length (interior + gap),
+        # so the argmax index is the full bin index `animal_bin`.
         local_block = override[_fitted_detector.state_ind_ == 0]
-        assert int(np.argmax(local_block)) == interior_col
+        assert local_block.shape[0] == int(env.place_bin_centers_.shape[0])
+        assert int(np.argmax(local_block)) == animal_bin
+
+
+@pytest.mark.unit
+class TestMultiArmTrackOverride:
+    """C1 regression: full-bin-length IC on linearized multi-arm tracks.
+
+    Environments with ``edge_spacing > 0`` produce gap bins between arms.
+    ``state_ind_`` and the rest of ``initial_conditions_`` are built at the
+    full ``place_bin_centers_`` length (interior + gap); the Local block
+    must too, otherwise the per-state multiplication broadcast-fails.
+    """
+
+    @staticmethod
+    def _make_two_arm_detector():
+        import networkx as nx
+
+        from non_local_detector.environment import Environment
+
+        track_graph = nx.Graph()
+        track_graph.add_node(0, pos=(0.0, 0.0))
+        track_graph.add_node(1, pos=(50.0, 0.0))
+        track_graph.add_node(2, pos=(60.0, 0.0))
+        track_graph.add_node(3, pos=(110.0, 0.0))
+        track_graph.add_edge(0, 1, distance=50.0, edge_id=0)
+        track_graph.add_edge(2, 3, distance=50.0, edge_id=1)
+
+        env = Environment(
+            environment_name="",
+            place_bin_size=5.0,
+            track_graph=track_graph,
+            edge_order=[(0, 1), (2, 3)],
+            edge_spacing=10.0,
+        )
+        position_1d = np.concatenate(
+            [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
+        )
+        env = env.fit_place_grid(position_1d, infer_track_interior=True)
+
+        detector = NonLocalSortedSpikesDetector(local_position_std=5.0)
+        detector.environments = (env,)
+        detector.initialize_state_index()
+        detector.initialize_initial_conditions()
+        return detector, env
+
+    def test_override_shape_matches_state_ind(self):
+        """Override's length must equal state_ind_ length on a track with gaps."""
+        detector, env = self._make_two_arm_detector()
+        # Confirm fixture actually has gap bins (otherwise this isn't a regression).
+        assert int((~env.is_track_interior_.ravel()).sum()) > 0
+
+        position_time = np.array([0.0, 1.0])
+        position = np.array([[20.0], [20.0]])  # arm A
+        time = np.array([0.5])
+
+        override = detector.compute_local_initial_conditions(
+            position_time, position, time
+        )
+
+        assert override is not None
+        assert override.shape == (detector.state_ind_.shape[0],)
+        assert override.shape == detector.initial_conditions_.shape
+
+    def test_override_places_delta_on_correct_arm(self):
+        """Animal on arm A → delta lands at an interior bin of arm A."""
+        detector, env = self._make_two_arm_detector()
+
+        position_time = np.array([0.0, 1.0])
+        position_arm_a = np.array([[20.0], [20.0]])
+        time = np.array([0.5])
+
+        override = detector.compute_local_initial_conditions(
+            position_time, position_arm_a, time
+        )
+        assert override is not None
+
+        local_block = override[detector.state_ind_ == 0]
+        animal_bin_a = int(env.get_bin_ind(position_arm_a[:1])[0])
+        assert int(np.argmax(local_block)) == animal_bin_a
+        # Sanity: that bin is interior (not a gap bin).
+        assert bool(env.is_track_interior_.ravel()[animal_bin_a])
+
+        # Same exercise for arm B.
+        position_arm_b = np.array([[80.0], [80.0]])
+        override_b = detector.compute_local_initial_conditions(
+            position_time, position_arm_b, time
+        )
+        local_block_b = override_b[detector.state_ind_ == 0]
+        animal_bin_b = int(env.get_bin_ind(position_arm_b[:1])[0])
+        assert int(np.argmax(local_block_b)) == animal_bin_b
+        assert animal_bin_b != animal_bin_a
+
+    def test_override_zero_at_gap_bins(self):
+        """Gap bins receive zero IC mass even though state_ind_ assigns them to Local."""
+        detector, env = self._make_two_arm_detector()
+        position_time = np.array([0.0, 1.0])
+        position = np.array([[20.0], [20.0]])
+        time = np.array([0.5])
+
+        override = detector.compute_local_initial_conditions(
+            position_time, position, time
+        )
+        assert override is not None
+
+        local_block = override[detector.state_ind_ == 0]
+        is_gap = ~env.is_track_interior_.ravel()
+        assert is_gap.any(), "Fixture must have gap bins to be a meaningful test"
+        np.testing.assert_array_equal(local_block[is_gap], 0.0)
 
 
 @pytest.mark.unit
