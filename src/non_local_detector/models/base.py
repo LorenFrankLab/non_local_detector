@@ -777,7 +777,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Parameters
         ----------
         discrete_transition_concentration : float
-            Concentration parameter (must be > 0)
+            Concentration parameter (must be >= 1.0 for the MAP transition update).
+            This ensures the pseudo-count update adds non-negative values.
         discrete_transition_regularization : float
             Regularization parameter (must be >= 0)
         sampling_frequency : float
@@ -793,8 +794,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         val.ensure_positive_scalar(
             discrete_transition_concentration,
             "discrete_transition_concentration",
-            minimum=0.0,
-            strict=True,
+            minimum=1.0,
+            strict=False,
         )
 
         val.ensure_positive_scalar(
@@ -1850,6 +1851,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 f"min_encoding_local_ess must be >= 0, got {min_encoding_local_ess}"
             )
 
+        if estimate_discrete_transition:
+            interior_state_bins = self.is_track_interior_state_bins_
+            interior_state_ind = self.state_ind_[interior_state_bins]
+            interior_continuous_transition = self.continuous_state_transitions_[
+                np.ix_(interior_state_bins, interior_state_bins)
+            ]
+
         while not converged and (n_iter < max_iter):
             # Expectation step
             logger.info("Expectation step...")
@@ -1939,6 +1947,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                                 pass
 
             if estimate_discrete_transition:
+                # Pass expanded-bin posteriors and factorized transitions so the
+                # exact expanded-state M-step is the detector default. The
+                # aggregate-state update remains available only as a lower-level
+                # fallback when these quantities are unavailable.
                 (
                     self.discrete_state_transitions_,
                     self.discrete_transition_coefficients_,
@@ -1953,6 +1965,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     self.discrete_transition_stickiness,
                     self.discrete_transition_regularization,
                     self.discrete_transition_prior_weight,
+                    causal_posterior=causal_posterior,
+                    predictive_posterior=predictive_posterior,
+                    acausal_posterior=acausal_posterior,
+                    continuous_transition=interior_continuous_transition,
+                    state_ind=interior_state_ind,
                 )
                 # Restore frozen rows: overwrite the M-step result with
                 # the initial snapshot for rows the user wants pinned.

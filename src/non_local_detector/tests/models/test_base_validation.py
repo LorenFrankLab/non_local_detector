@@ -221,17 +221,24 @@ class TestValidateNumericalParameters:
     def test_negative_concentration_raises_error(self):
         """Test that negative concentration parameter raises ValidationError."""
         # Arrange & Act: Try to create decoder with negative concentration
-        with pytest.raises(ValidationError, match="> 0"):
+        with pytest.raises(ValidationError, match=">= 1.0"):
             SortedSpikesDecoder(
                 discrete_transition_concentration=-1.0,  # Negative!
             )
 
     def test_zero_concentration_raises_error(self):
         """Test that zero concentration parameter raises ValidationError."""
-        # Arrange & Act: Try to create decoder with zero concentration (must be strictly positive)
-        with pytest.raises(ValidationError, match="> 0"):
+        # Arrange & Act: Try to create decoder with zero concentration
+        with pytest.raises(ValidationError, match=">= 1.0"):
             SortedSpikesDecoder(
-                discrete_transition_concentration=0.0,  # Zero not allowed for concentration
+                discrete_transition_concentration=0.0,
+            )
+
+    def test_concentration_below_one_raises_error(self):
+        """Test that sparse Dirichlet concentration raises ValidationError."""
+        with pytest.raises(ValidationError, match=">= 1.0"):
+            SortedSpikesDecoder(
+                discrete_transition_concentration=0.5,
             )
 
     def test_negative_regularization_raises_error(self):
