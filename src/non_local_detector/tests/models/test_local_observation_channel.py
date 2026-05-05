@@ -274,6 +274,118 @@ class TestMultiArmTrackOverride:
 
 
 @pytest.mark.unit
+class TestEstimateParametersUsesOverride:
+    """I6: ensure ``estimate_parameters()`` invokes the IC override.
+
+    The override flows through the same ``_predict()`` as ``predict()``,
+    but ``estimate_parameters`` packs ``log_likelihood_args`` independently.
+    A future refactor that reorders the tuple would silently disable the
+    override without breaking the existing tests, since uniform-IC and
+    delta-IC predictions both produce stochastic posteriors.
+    """
+
+    def test_estimate_parameters_runs_with_local_position_std(self, _sim_data):
+        from unittest.mock import patch
+
+        detector = NonLocalSortedSpikesDetector(
+            sampling_frequency=_sim_data["sampling_frequency"],
+            local_position_std=0.5,
+        )
+        detector.fit(
+            position_time=_sim_data["time"],
+            position=_sim_data["position"],
+            spike_times=_sim_data["spike_times"],
+        )
+
+        # Spy on the IC selector to assert it actually fires.
+        original = type(detector)._predict_time_initial_conditions
+        calls = {"count": 0}
+
+        def spy(self, time, log_likelihood_args):
+            calls["count"] += 1
+            return original(self, time, log_likelihood_args)
+
+        with patch.object(
+            type(detector),
+            "_predict_time_initial_conditions",
+            new=spy,
+        ):
+            # max_iter=1 keeps the test fast; estimate_parameters runs at
+            # least one E-step, which goes through _predict.
+            detector.estimate_parameters(
+                position_time=_sim_data["time"],
+                position=_sim_data["position"],
+                spike_times=_sim_data["spike_times"],
+                time=_sim_data["time"],
+                max_iter=1,
+                estimate_encoding_model=False,
+                estimate_initial_conditions=False,
+                estimate_discrete_transition=False,
+            )
+
+        assert calls["count"] >= 1, (
+            "estimate_parameters did not invoke _predict_time_initial_conditions; "
+            "the multi-bin Local IC override is silently skipped on the EM path."
+        )
+
+
+@pytest.mark.unit
+class TestClusterlessOverride:
+    """I9: clusterless detector exercises the IC override end-to-end."""
+
+    @staticmethod
+    def _make_detector():
+        from non_local_detector.simulate.clusterless_simulation import (
+            make_simulated_run_data,
+        )
+
+        # n_tetrodes must divide len(PLACE_FIELD_MEANS) (20).
+        sim = make_simulated_run_data(n_tetrodes=5, seed=42)
+        detector = NonLocalClusterlessDetector(
+            local_position_std=0.5,
+            clusterless_algorithm="clusterless_kde",
+            clusterless_algorithm_params={
+                "position_std": 6.0,
+                "block_size": int(2**12),
+            },
+        ).fit(
+            sim.position_time,
+            sim.position,
+            sim.spike_times,
+            sim.spike_waveform_features,
+        )
+        return detector, sim
+
+    def test_clusterless_causal_t0_peaks_at_animal_bin(self):
+        detector, sim = self._make_detector()
+        results = detector.predict(
+            spike_times=sim.spike_times,
+            spike_waveform_features=sim.spike_waveform_features,
+            time=sim.edges,
+            position=sim.position,
+            position_time=sim.position_time,
+            return_outputs="filter",
+        )
+
+        env = detector.environments[0]
+        first_pos = np.asarray(sim.position)[:1]
+        if first_pos.ndim == 1:
+            first_pos = first_pos[:, np.newaxis]
+        animal_bin = int(env.get_bin_ind(first_pos)[0])
+
+        causal = np.asarray(results.causal_posterior)
+        local_mask = detector.state_ind_ == 0
+        local_t0 = causal[0, local_mask]
+        local_t0 = np.where(np.isnan(local_t0), 0.0, local_t0)
+        if local_t0.sum() > 0:
+            assert int(np.argmax(local_t0)) == animal_bin, (
+                f"Clusterless causal t=0 peaks at bin {int(np.argmax(local_t0))}, "
+                f"expected animal_bin={animal_bin}. Override may not be wired "
+                "through the clusterless predict() path."
+            )
+
+
+@pytest.mark.unit
 class TestPredictUsesOverride:
     """End-to-end: predict() uses the override implicitly without any user opt-in."""
 
@@ -295,27 +407,89 @@ class TestPredictUsesOverride:
         if nonzero.size > 1:
             np.testing.assert_allclose(nonzero, nonzero[0], rtol=1e-5)
 
-    def test_first_timestep_local_concentrated_near_animal(
+    def test_causal_posterior_t0_peaks_at_animal_bin_with_override(
         self, _fitted_detector, _sim_data
     ):
+        """Override is wired correctly: causal posterior at t=0 peaks at animal_bin.
+
+        Uses ``return_outputs='filter'`` so the assertion exercises the
+        forward pass at t=0 directly, before any backward smoothing
+        could redistribute mass from t≥1.
+        """
         results = _fitted_detector.predict(
             spike_times=_sim_data["spike_times"],
             position_time=_sim_data["time"],
             position=_sim_data["position"],
             time=_sim_data["time"],
+            return_outputs="filter",
         )
-        acausal = np.asarray(results.acausal_posterior)
-        # Just sanity: the smoothed posterior at t=0 over Local bins should
-        # have most of its Local mass within a few bins of the animal.
-        # The Local block lives at state_ind == 0; check that the nonzero
-        # mass is local rather than spread.
+        causal = np.asarray(results.causal_posterior)
         local_mask = _fitted_detector.state_ind_ == 0
-        local_t0 = acausal[0, local_mask]
+
+        env = _fitted_detector.environments[0]
+        first_pos_2d = np.atleast_2d(np.asarray(_sim_data["position"])[0])
+        if first_pos_2d.ndim == 1:
+            first_pos_2d = first_pos_2d[:, np.newaxis]
+        animal_bin = int(env.get_bin_ind(first_pos_2d)[0])
+        n_local_bins = int(env.place_bin_centers_.shape[0])
+
+        local_t0 = causal[0, local_mask]
         local_t0 = np.where(np.isnan(local_t0), 0.0, local_t0)
+        # The override puts all Local mass on `animal_bin` at t=0; the only
+        # source of redistribution before the t=0 causal posterior is the
+        # observation likelihood, which for σ=0.5 (much smaller than the
+        # bin spacing) leaves most mass near the animal. Compare against a
+        # uniform-IC baseline computed from the same posterior shape.
+        assert local_t0.shape == (n_local_bins,)
         if local_t0.sum() > 0:
             normalized = local_t0 / local_t0.sum()
-            # The posterior should not be uniformly spread; the top bin
-            # should hold a substantial share.
-            assert normalized.max() > 5.0 / len(local_t0), (
-                "Multi-bin Local at t=0 should be concentrated, not uniform"
+            assert int(np.argmax(normalized)) == animal_bin, (
+                f"Causal posterior at t=0 peaks at bin {int(np.argmax(normalized))}, "
+                f"expected animal_bin={animal_bin}. The IC override may not be wired."
             )
+
+    def test_override_changes_t0_posterior_vs_uniform_ic(
+        self, _fitted_detector, _sim_data
+    ):
+        """Override makes a measurable, non-trivial difference at t=0.
+
+        Patches ``_predict_time_initial_conditions`` to always return the
+        stored uniform IC, then compares the causal posterior at t=0
+        against the unpatched run. The two must differ on the Local block.
+        """
+        from unittest.mock import patch
+
+        results_with_override = _fitted_detector.predict(
+            spike_times=_sim_data["spike_times"],
+            position_time=_sim_data["time"],
+            position=_sim_data["position"],
+            time=_sim_data["time"],
+            return_outputs="filter",
+        )
+
+        with patch.object(
+            type(_fitted_detector),
+            "_predict_time_initial_conditions",
+            return_value=_fitted_detector.initial_conditions_,
+        ):
+            results_without_override = _fitted_detector.predict(
+                spike_times=_sim_data["spike_times"],
+                position_time=_sim_data["time"],
+                position=_sim_data["position"],
+                time=_sim_data["time"],
+                return_outputs="filter",
+            )
+
+        causal_with = np.asarray(results_with_override.causal_posterior)
+        causal_without = np.asarray(results_without_override.causal_posterior)
+        local_mask = _fitted_detector.state_ind_ == 0
+
+        # The two t=0 Local blocks must differ — if they don't, the override
+        # is silently a no-op.
+        diff = np.nansum(
+            np.abs(causal_with[0, local_mask] - causal_without[0, local_mask])
+        )
+        assert diff > 1e-6, (
+            "Override produced identical t=0 posterior to uniform IC; the "
+            "override is not actually changing the forward pass."
+        )
