@@ -172,6 +172,23 @@ class QtViewer(QtWidgets.QMainWindow):
         env = new_detector.environments[0]
         self._panel._position_centers = np.asarray(env.place_bin_centers_).squeeze()
 
+    def closeEvent(self, event) -> None:  # noqa: N802 — Qt naming convention
+        """Drop self from the live-viewer registry on close."""
+        try:
+            _LIVE_VIEWERS.remove(self)
+        except ValueError:
+            pass
+        super().closeEvent(event)
+
+
+# Keeps non-blocking ``launch_qt`` viewers alive. Without this, a
+# ``QMainWindow`` with no retained Python reference is GC'd by
+# PySide6 and disappears immediately after ``launch_qt(block=False)``
+# returns. The blocking path doesn't strictly need it (the event
+# loop pins the window), but we register both branches uniformly so
+# `closeEvent` cleanup is symmetrical.
+_LIVE_VIEWERS: list["QtViewer"] = []
+
 
 def launch_qt(
     bundles: RunBundle | dict[str, RunBundle],
@@ -189,7 +206,11 @@ def launch_qt(
     block : bool, optional
         If True (default), call ``QApplication.exec()`` and block
         until the window closes; returns the exit code. If False,
-        creates the window without blocking — useful for tests.
+        creates the window and returns immediately — useful for
+        tests and notebook-driven inspection. The viewer is kept
+        alive in a module-level registry until the user closes the
+        window (otherwise PySide6 would GC it the moment this
+        function returns).
 
     Returns
     -------
@@ -207,6 +228,7 @@ def launch_qt(
     pg.setConfigOption("foreground", "k")
 
     viewer = QtViewer(data_source, t_width=t_width)
+    _LIVE_VIEWERS.append(viewer)
     viewer.show()
     if block:
         return int(app.exec())

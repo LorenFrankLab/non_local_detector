@@ -88,21 +88,44 @@ def test_qt_viewer_launches_and_routes_payload(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
 ) -> None:
-    """``launch_qt(block=False)`` builds the window + delivers a payload.
+    """``launch_qt(block=False)`` builds the window + keeps it alive.
 
-    The QtBackendAdapter dispatches a load on the QThreadPool; we
-    process events until the panel receives a non-empty image.
+    Regression: previously ``launch_qt`` returned without retaining a
+    reference to the QtViewer, so PySide6 GC'd the window before the
+    test could inspect it. The fix appends the viewer to a
+    module-level ``_LIVE_VIEWERS`` registry; ``closeEvent`` removes it.
     """
+    import gc
 
+    from non_local_detector.visualization.interactive.viewer import qt as qt_mod
     from non_local_detector.visualization.interactive.viewer.qt import (
+        QtViewer,
         launch_qt,
     )
 
-    # Disable threadpool for deterministic synchronous tests — drive
-    # the load via the public API, then process events until the
-    # signal-bridge delivers the payload.
-    code = launch_qt(multi_run_bundles, t_width=0.5, block=False)
-    assert code == 0
+    # Snapshot + isolate the registry for the test.
+    saved_registry = list(qt_mod._LIVE_VIEWERS)
+    qt_mod._LIVE_VIEWERS.clear()
+    try:
+        code = launch_qt(multi_run_bundles, t_width=0.5, block=False)
+        assert code == 0
+
+        # Force a GC pass + drain the event queue. If the viewer
+        # weren't retained, it would vanish here.
+        gc.collect()
+        qapp.processEvents()
+
+        live = [w for w in qapp.topLevelWidgets() if isinstance(w, QtViewer)]
+        assert len(live) == 1
+        viewer = live[0]
+        assert viewer in qt_mod._LIVE_VIEWERS
+
+        # closeEvent should pop the viewer off the registry.
+        viewer.close()
+        qapp.processEvents()
+        assert viewer not in qt_mod._LIVE_VIEWERS
+    finally:
+        qt_mod._LIVE_VIEWERS[:] = saved_registry
 
 
 @pytest.mark.unit
