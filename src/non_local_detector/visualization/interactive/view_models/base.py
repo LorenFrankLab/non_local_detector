@@ -29,6 +29,114 @@ if TYPE_CHECKING:
 ExtraMetricValue = Union[MetricSpec, "pd.Series"]
 
 
+@dataclass(frozen=True)
+class ViewState:
+    """Per-load request snapshot.
+
+    The window-load worker tags its result with ``request_id``; the
+    viewer drops a result if its ``request_id`` is older than the latest
+    committed one. Mirrors the statespacecheck pattern.
+
+    Carries only what's needed to fulfil one window-load request.
+    Pinned-event state, overlay state, and active-run state live on
+    ``ViewerCore`` (those don't influence which window the worker
+    fetches).
+    """
+
+    request_id: int
+    t_center: float
+    t_width: float
+    load_acausal: bool = False
+
+
+@dataclass(frozen=True)
+class PositionGrid:
+    """Position-axis description, abstracted over 1D / 2D.
+
+    v1 ships only the 1D path (``ndim == 1``). v3+ extends to 2D
+    decoders (``ndim == 2``) by populating the second-axis fields.
+    Panels that visualize position-distributions take a
+    ``PositionGrid`` and dispatch on ``.ndim``.
+    """
+
+    ndim: int
+    centers: np.ndarray
+    is_interior: np.ndarray | None = None
+    centers_y: np.ndarray | None = None
+    is_interior_y: np.ndarray | None = None
+
+    @classmethod
+    def from_environment(cls, environment) -> PositionGrid:
+        """Build a ``PositionGrid`` from a fitted ``Environment``."""
+        centers = np.asarray(environment.place_bin_centers_)
+        n_pos_dims = centers.shape[1]
+        is_interior = (
+            np.asarray(environment.is_track_interior_).ravel()
+            if environment.is_track_interior_ is not None
+            else None
+        )
+        if n_pos_dims == 1:
+            return cls(ndim=1, centers=centers.squeeze(-1), is_interior=is_interior)
+        if n_pos_dims == 2:
+            return cls(
+                ndim=2,
+                centers=centers[:, 0],
+                centers_y=centers[:, 1],
+                is_interior=is_interior,
+            )
+        raise ValueError(
+            f"PositionGrid supports 1D or 2D environments, got n_pos_dims={n_pos_dims}."
+        )
+
+
+@dataclass(frozen=True)
+class WindowPayload:
+    """Output of a window load — what a ``TimeAxisPanel.update_window`` consumes.
+
+    Each field carries data already shaped to ``(n_visible, ...)`` for
+    the window the worker resolved. ``request_id`` lets the viewer
+    drop stale results.
+    """
+
+    request_id: int
+    time: np.ndarray
+    indices: slice
+    posterior: np.ndarray | None = None
+    likelihood: np.ndarray | None = None
+    predictive: np.ndarray | None = None
+    state_probabilities: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class CellSlice:
+    """Per-cell row payload for the SlicePanel."""
+
+    cell_id: int
+    place_field_norm: np.ndarray
+    spike_count: int = 0
+    event_hpd_overlap: float | None = None
+    event_kl_divergence: float | None = None
+    event_spike_prob: float | None = None
+
+
+@dataclass(frozen=True)
+class BinPayload:
+    """Output of a single-bin load — what a ``BinSyncedPanel.update_for_index`` consumes.
+
+    ``top_curve`` is the population-likelihood (or fallback collapsed
+    posterior) over position; ``predictive_curve`` is the predictive
+    overlay; ``cells`` are the per-cell rows for cells that fired in
+    this bin.
+    """
+
+    t_idx: int
+    t: float
+    top_curve: np.ndarray | None = None
+    top_curve_label: str = ""
+    predictive_curve: np.ndarray | None = None
+    cells: tuple[CellSlice, ...] = ()
+
+
 @dataclass
 class RunBundle:
     """User-facing viewer input bundle.

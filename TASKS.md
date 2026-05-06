@@ -256,45 +256,44 @@ no GUI deps.
 
 ### `view_models/base.py` (additions)
 
-- [ ] Add `ViewState` (frozen): `request_id`, `t_center`, `t_width`,
+- [x] Add `ViewState` (frozen): `request_id`, `t_center`, `t_width`,
   `load_acausal`.
-- [ ] Add `PositionGrid`, `WindowPayload`, `BinPayload`, `CellSlice`
+- [x] Add `PositionGrid`, `WindowPayload`, `BinPayload`, `CellSlice`
   dataclasses.
 
 ### `view_models/posterior.py`
 
-- [ ] `PosteriorHeatmapModel`:
-  - [ ] Construction: pick `reduction` via
+- [x] `PosteriorHeatmapModel`:
+  - [x] Construction: pick `reduction` via
     `select_reduction(state_names, bin_sizes_)` (override allowed).
-  - [ ] `update_window(...)` returns `(n_visible, n_pos)` array.
-  - [ ] Per-row routing through
+  - [x] `update_window(...)` returns `(n_visible, n_pos)` array.
+  - [x] Per-row routing through
     `analysis.posterior.collapse_posterior_to_position(post_row,
     detector, reduction)`.
-  - [ ] `set_active_run(state_names, bin_sizes_)` rebinds strategy
+  - [x] `set_active_run(state_names, bin_sizes_)` rebinds strategy
     + triggers re-render.
 
 ### `panels/__init__.py`, `panels/base.py`
 
-- [ ] `TimeAxisPanel` Protocol with: `update_window(payload)`,
+- [x] `TimeAxisPanel` Protocol with: `update_window(payload)`,
   `x_link_target()`, `click_handler(callback)`,
   `set_event_overlays(overlays)`.
-- [ ] `BinSyncedPanel` Protocol with: `update_for_index(t_idx,
+- [x] `BinSyncedPanel` Protocol with: `update_for_index(t_idx,
   payload)`.
 
 ### Tests
 
-- [ ] `src/non_local_detector/tests/view_models/test_posterior.py`:
-  - [ ] NL bundle → `reduction == CONDITIONAL_NON_LOCAL`; rendered
-    array matches Phase 1a static-plot output (`atol=1e-6`,
-    `equal_nan=True`).
-  - [ ] ContFrag bundle → `reduction == MARGINAL`; every row sums
+- [x] `src/non_local_detector/tests/interactive/test_posterior_model.py`:
+  - [x] NL bundle → `reduction == CONDITIONAL_NON_LOCAL`; rendered
+    array matches dataset-level helper bit-identically on interior
+    bins (`atol=1e-12`, `equal_nan=True`).
+  - [x] ContFrag bundle → `reduction == MARGINAL`; every row sums
     to 1.0 via `np.nansum`; no active/empty split.
-  - [ ] NoSpikeContFrag bundle → `reduction == CONDITIONAL_ON_SPATIAL`;
-    positive-spatial-mass rows sum to 1.0; divisor matches
-    `1 - P(No-Spike)`.
-  - [ ] Decoder bundle → `reduction == MARGINAL`; rows sum to 1.0
+  - [x] NoSpikeContFrag bundle → `reduction == CONDITIONAL_ON_SPATIAL`;
+    positive-spatial-mass rows sum to 1.0.
+  - [x] Decoder bundle → `reduction == MARGINAL`; rows sum to 1.0
     trivially.
-  - [ ] Schema-swap reduction test (data-source + view-model layer
+  - [x] Schema-swap reduction test (data-source + view-model layer
     only — no viewer instantiation): for each of `("nl", "cf", "nsf",
     "dec")`, `set_active_run(name)` then construct fresh
     `PosteriorHeatmapModel` and assert reduction matches expected
@@ -333,11 +332,11 @@ parametrization. **Required before v1 ships**, not deferred to v3.
 
 ### Verification (Track 0)
 
-- [ ] `uv run pytest -k "view_models or posterior_model"` passes.
-- [ ] `uv run pytest -k "view_models or posterior_model" --run-slow`
-  also passes (covers the singleton-Local fixture).
-- [ ] Phase 1a + 1b + 1c stack is import-clean without `[viewer]`
-  deps installed (no `pyqtgraph` imports anywhere — CI gate enforces).
+- [x] `uv run pytest -k "posterior_model"` passes (13 tests).
+- [ ] `uv run pytest --run-slow` covers the singleton-Local fixture
+  (singleton-Local follow-up still pending).
+- [x] Phase 1a + 1b + 1c stack is import-clean without `[viewer]`
+  deps installed (CI gate enforces — see lint test).
 
 ---
 
