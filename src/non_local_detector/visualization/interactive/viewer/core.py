@@ -65,6 +65,7 @@ class ViewerCore:
         self._pinned_event_row: int | None = None
         self._active_overlay_name: str | None = None
         self._on_window_loaded: Callable[[WindowPayload], None] | None = None
+        self._on_active_run_changed_callbacks: list[Callable[[str], None]] = []
 
     # ------------------------------------------------------------------
     # State accessors
@@ -105,6 +106,16 @@ class ViewerCore:
     def on_window_loaded(self, callback: Callable[[WindowPayload], None]) -> None:
         """Register the callback the backend invokes when a load completes."""
         self._on_window_loaded = callback
+
+    def on_active_run_changed(self, callback: Callable[[str], None]) -> None:
+        """Register a callback fired when ``set_active_run`` swaps runs.
+
+        The callback receives the *new* active-run name. Multiple
+        callbacks may be registered (one per panel that needs to
+        rebind its view-model on schema swap — Posterior, Likelihood,
+        StateProb, Raster, Slice).
+        """
+        self._on_active_run_changed_callbacks.append(callback)
 
     # ------------------------------------------------------------------
     # Time navigation
@@ -166,8 +177,16 @@ class ViewerCore:
     # ------------------------------------------------------------------
 
     def set_active_run(self, name: str) -> None:
-        """Swap to a different run; preserves view state + pin + overlay name."""
+        """Swap to a different run; preserves view state + pin + overlay name.
+
+        Notifies every panel registered via ``on_active_run_changed``
+        *before* dispatching the new load — panels rebind their
+        view-models against the new detector schema, then receive the
+        new payload collapsed under the correct schema.
+        """
         self._data_source.set_active_run(name)
+        for callback in self._on_active_run_changed_callbacks:
+            callback(name)
         # Rebuild the request snapshot under the new run so the next
         # load tags freshly. Pin / overlay name / t_center / t_width
         # are intentionally preserved.

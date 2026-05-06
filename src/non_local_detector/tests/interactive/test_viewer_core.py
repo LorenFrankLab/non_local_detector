@@ -187,6 +187,42 @@ class TestViewerCoreModelSwap:
         core.set_active_run("cf")
         assert core.current_view_state.request_id > before
 
+    def test_on_active_run_changed_callbacks_fire_before_load(
+        self, core_factory
+    ) -> None:
+        """Callbacks fire on swap *before* the new load is dispatched.
+
+        Order matters: panels rebind their view-models on the
+        callback, then the new payload arrives and gets collapsed
+        under the correct schema. Reversed order would briefly
+        collapse the new payload under the stale schema.
+        """
+        core, backend, _ = core_factory()
+        events: list[str] = []
+
+        def _record_run_change(name: str) -> None:
+            events.append(f"run_changed:{name}:{len(backend.requests)}")
+
+        core.on_active_run_changed(_record_run_change)
+        before_requests = len(backend.requests)
+        core.set_active_run("cf")
+
+        assert events == [f"run_changed:cf:{before_requests}"]
+        # After the callback, exactly one additional load was issued.
+        assert len(backend.requests) == before_requests + 1
+
+    def test_multiple_active_run_callbacks_all_fire(self, core_factory) -> None:
+        """Several panels can register; every callback fires on each swap."""
+        core, _, _ = core_factory()
+        a_calls: list[str] = []
+        b_calls: list[str] = []
+        core.on_active_run_changed(a_calls.append)
+        core.on_active_run_changed(b_calls.append)
+        core.set_active_run("cf")
+        core.set_active_run("nsf")
+        assert a_calls == ["cf", "nsf"]
+        assert b_calls == ["cf", "nsf"]
+
 
 @pytest.mark.unit
 class TestViewerCoreOverlayNavigation:

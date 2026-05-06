@@ -64,19 +64,28 @@ class EventOverlayMixin:
 def _render_overlay(
     plot_item: pg.PlotItem, overlay: EventOverlay
 ) -> list[pg.GraphicsObject]:
-    """Build pyqtgraph items for one overlay; attach to ``plot_item``."""
+    """Build pyqtgraph items for one overlay; attach to ``plot_item``.
+
+    ``overlay.times`` / ``t_start`` / ``t_end`` are NumPy arrays, so
+    we explicitly check ``is None`` — truthy comparison
+    (``arr or []``) would raise ``ValueError: ambiguous truth value``
+    on multi-element arrays.
+    """
     color = QColor(overlay.color)
     items: list[pg.GraphicsObject] = []
     if overlay.kind == "points":
         pen = pg.mkPen(color=color, width=1)
-        for t in overlay.times or []:
+        times = overlay.times if overlay.times is not None else ()
+        for t in times:
             line = pg.InfiniteLine(pos=float(t), angle=90, pen=pen, movable=False)
             plot_item.addItem(line)
             items.append(line)
     elif overlay.kind == "intervals":
         brush_color = QColor(color)
         brush_color.setAlphaF(overlay.alpha)
-        for start, end in zip(overlay.t_start or [], overlay.t_end or [], strict=True):
+        t_start = overlay.t_start if overlay.t_start is not None else ()
+        t_end = overlay.t_end if overlay.t_end is not None else ()
+        for start, end in zip(t_start, t_end, strict=True):
             region = pg.LinearRegionItem(
                 values=(float(start), float(end)),
                 movable=False,

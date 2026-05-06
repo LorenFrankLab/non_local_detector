@@ -120,3 +120,86 @@ def test_qt_viewer_set_active_run_via_core(
     assert viewer.core.active_run_name == "nl"
     viewer.core.set_active_run("cf")
     assert viewer.core.active_run_name == "cf"
+
+
+@pytest.mark.unit
+def test_event_overlay_mixin_renders_numpy_arrays(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Regression: ``set_event_overlays`` must accept multi-element NumPy arrays.
+
+    The previous ``overlay.times or []`` fallback raised
+    ``ValueError: ambiguous truth value`` because ``bool(np.array([1, 2]))``
+    is ambiguous. The fix uses explicit ``is None`` comparisons.
+    """
+    from non_local_detector.visualization.interactive.panels.qt.posterior import (
+        QtPosteriorHeatmapPanel,
+    )
+    from non_local_detector.visualization.interactive.view_models.events import (
+        EventOverlay,
+    )
+    from non_local_detector.visualization.interactive.view_models.posterior import (
+        PosteriorHeatmapModel,
+    )
+
+    detector = multi_run_bundles["nl"].detector
+    env = detector.environments[0]
+    panel = QtPosteriorHeatmapPanel(
+        model=PosteriorHeatmapModel(detector),
+        position_centers=np.asarray(env.place_bin_centers_).squeeze(),
+    )
+
+    overlays = [
+        EventOverlay.points(
+            name="multi-point",
+            times=np.array([1.0, 2.0, 3.0, 4.0, 5.0]),
+        ),
+        EventOverlay.intervals(
+            name="multi-interval",
+            t_start=np.array([1.0, 5.0, 10.0]),
+            t_end=np.array([2.0, 7.0, 12.0]),
+        ),
+    ]
+    # Must not raise.
+    panel.set_event_overlays(overlays)
+    # 5 points + 3 intervals = 8 overlay items.
+    assert len(panel._overlay_items) == 8
+
+    # Idempotent: a fresh call replaces previously rendered items.
+    panel.set_event_overlays([overlays[0]])
+    assert len(panel._overlay_items) == 5
+
+    # Empty list clears.
+    panel.set_event_overlays([])
+    assert len(panel._overlay_items) == 0
+
+
+@pytest.mark.unit
+def test_qt_viewer_swap_rebinds_panel_model(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Regression: swap from NL to CF must rebind PosteriorHeatmapModel.
+
+    Before the fix, the panel held a model bound to the NL detector
+    forever, so a CF posterior payload (n_state_bins=2*n_pos) would
+    be collapsed under NL's state_ind_ (n_state_bins=n_pos+1+n_pos+n_pos)
+    and produce garbage / crash.
+    """
+    from non_local_detector.analysis.posterior import PosteriorReduction
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        QtViewer,
+    )
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    # Initial: NL → CONDITIONAL_NON_LOCAL.
+    assert viewer._posterior_model.reduction is PosteriorReduction.CONDITIONAL_NON_LOCAL
+    assert viewer._posterior_model.detector is multi_run_bundles["nl"].detector
+
+    viewer.core.set_active_run("cf")
+
+    # After swap: CF → MARGINAL, model bound to the CF detector.
+    assert viewer._posterior_model.reduction is PosteriorReduction.MARGINAL
+    assert viewer._posterior_model.detector is multi_run_bundles["cf"].detector

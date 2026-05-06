@@ -117,11 +117,12 @@ class QtViewer(QtWidgets.QMainWindow):
 
         env = data_source.active_run.detector.environments[0]
         position_centers = np.asarray(env.place_bin_centers_).squeeze()
-        model = PosteriorHeatmapModel(data_source.active_run.detector)
+        self._posterior_model = PosteriorHeatmapModel(data_source.active_run.detector)
         self._panel = QtPosteriorHeatmapPanel(
-            model=model, position_centers=position_centers
+            model=self._posterior_model, position_centers=position_centers
         )
         self._core.on_window_loaded(self._panel.update_window)
+        self._core.on_active_run_changed(self._rebind_panels)
 
         # Slider: integer indices into the time grid; map to t_center.
         n_time = data_source.n_time
@@ -154,6 +155,22 @@ class QtViewer(QtWidgets.QMainWindow):
     def _on_slider_value_changed(self, value: int) -> None:
         time = self._data_source.time
         self._core.set_t_center(float(time[value]))
+
+    def _rebind_panels(self, _new_run_name: str) -> None:
+        """Rebind all panels to the new active run's detector.
+
+        Triggered by ``ViewerCore.set_active_run`` *before* the new
+        load is dispatched so the panel collapses the new payload
+        under the correct schema. Currently only the posterior heatmap
+        exists; later milestones add likelihood / state-prob / raster
+        / slice rebind hooks here.
+        """
+        new_detector = self._data_source.active_run.detector
+        self._posterior_model.set_active_run(new_detector)
+        # Position grid may differ across detectors when the
+        # environment differs (v3+); for v1 the grid is shared.
+        env = new_detector.environments[0]
+        self._panel._position_centers = np.asarray(env.place_bin_centers_).squeeze()
 
 
 def launch_qt(
