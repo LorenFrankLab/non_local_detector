@@ -94,6 +94,11 @@ def test_qt_viewer_launches_and_routes_payload(
     reference to the QtViewer, so PySide6 GC'd the window before the
     test could inspect it. The fix appends the viewer to a
     module-level ``_LIVE_VIEWERS`` registry; ``closeEvent`` removes it.
+
+    Per-test ``_clear_qt_viewer_registry`` autouse fixture in
+    ``conftest.py`` closes + clears the registry after the test, so
+    later tests that count live windows aren't polluted by leaks
+    from this one.
     """
     import gc
 
@@ -103,29 +108,31 @@ def test_qt_viewer_launches_and_routes_payload(
         launch_qt,
     )
 
-    # Snapshot + isolate the registry for the test.
-    saved_registry = list(qt_mod._LIVE_VIEWERS)
-    qt_mod._LIVE_VIEWERS.clear()
-    try:
-        code = launch_qt(multi_run_bundles, t_width=0.5, block=False)
-        assert code == 0
+    code = launch_qt(multi_run_bundles, t_width=0.5, block=False)
+    assert code == 0
 
-        # Force a GC pass + drain the event queue. If the viewer
-        # weren't retained, it would vanish here.
-        gc.collect()
-        qapp.processEvents()
+    # Force a GC pass + drain the event queue. If the viewer
+    # weren't retained, it would vanish here.
+    gc.collect()
+    qapp.processEvents()
 
-        live = [w for w in qapp.topLevelWidgets() if isinstance(w, QtViewer)]
-        assert len(live) == 1
-        viewer = live[0]
-        assert viewer in qt_mod._LIVE_VIEWERS
+    # The registry is the source of truth — `topLevelWidgets()`
+    # can include closed-but-not-yet-deleted leftovers from prior
+    # tests. The autouse cleanup fixture flushes those between tests
+    # but defending against intra-test ordering matters too.
+    live = [v for v in qt_mod._LIVE_VIEWERS if isinstance(v, QtViewer)]
+    assert len(live) == 1
+    viewer = live[0]
+    # And it must also be in topLevelWidgets — i.e. PySide6 hasn't
+    # GC'd it.
+    assert viewer in qapp.topLevelWidgets()
 
-        # closeEvent should pop the viewer off the registry.
-        viewer.close()
-        qapp.processEvents()
-        assert viewer not in qt_mod._LIVE_VIEWERS
-    finally:
-        qt_mod._LIVE_VIEWERS[:] = saved_registry
+    # closeEvent + WA_DeleteOnClose should pop the viewer off the
+    # registry and ultimately delete the widget.
+    viewer.close()
+    qapp.processEvents()
+    qapp.processEvents()
+    assert viewer not in qt_mod._LIVE_VIEWERS
 
 
 @pytest.mark.unit

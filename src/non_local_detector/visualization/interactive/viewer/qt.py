@@ -110,6 +110,9 @@ class QtViewer(QtWidgets.QMainWindow):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("non_local_detector — interactive viewer")
+        # Ensure user-closed windows are actually destroyed (otherwise
+        # they linger in QApplication.topLevelWidgets() until GC).
+        self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
 
         self._data_source = data_source
         self._backend = QtBackendAdapter(data_source)
@@ -187,7 +190,7 @@ class QtViewer(QtWidgets.QMainWindow):
 # returns. The blocking path doesn't strictly need it (the event
 # loop pins the window), but we register both branches uniformly so
 # `closeEvent` cleanup is symmetrical.
-_LIVE_VIEWERS: list["QtViewer"] = []
+_LIVE_VIEWERS: list[QtViewer] = []
 
 
 def launch_qt(

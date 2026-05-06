@@ -121,3 +121,39 @@ def multi_run_bundles(
         "nsf": run_bundles["nsf_all"],
         "dec": run_bundles["dec_all"],
     }
+
+
+@pytest.fixture(autouse=True)
+def _clear_qt_viewer_registry():
+    """Close + delete any QtViewers registered during a test.
+
+    ``launch_qt`` retains every viewer in ``viewer.qt._LIVE_VIEWERS``
+    so PySide6 doesn't GC non-blocking windows. Without per-test
+    cleanup, viewers leak across tests; later tests that count live
+    windows then fail.
+
+    ``QtViewer`` sets ``WA_DeleteOnClose``, so closing schedules a
+    ``deleteLater`` which we drain with ``processEvents`` to actually
+    remove the widget from ``QApplication.topLevelWidgets()`` before
+    the next test runs. Autouse, but no-op if the [viewer] extra
+    isn't installed.
+    """
+    yield
+    try:
+        from PySide6 import QtWidgets
+
+        from non_local_detector.visualization.interactive.viewer import (
+            qt as qt_mod,
+        )
+    except ImportError:
+        return  # [viewer] extra not installed; nothing to clean.
+    for viewer in list(qt_mod._LIVE_VIEWERS):
+        viewer.close()
+        viewer.deleteLater()
+    qt_mod._LIVE_VIEWERS.clear()
+    app = QtWidgets.QApplication.instance()
+    if app is not None:
+        # Drain pending deletions so the next test sees a clean
+        # topLevelWidgets() list.
+        app.processEvents()
+        app.processEvents()
