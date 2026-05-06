@@ -143,111 +143,111 @@ no GUI deps.
 
 ### Package scaffolding
 
-- [ ] Create `src/non_local_detector/visualization/interactive/`
+- [x] Create `src/non_local_detector/visualization/interactive/`
   package with:
-  - [ ] `__init__.py`
-  - [ ] `view_models/__init__.py`
-  - [ ] `view_models/base.py`
-  - [ ] `view_models/events.py`
-  - [ ] `view_models/series.py` (only `MetricSpec` at this phase)
-  - [ ] `data_source.py`
-- [ ] Add `[viewer]` optional-dependency group in `pyproject.toml`
+  - [x] `__init__.py`
+  - [x] `view_models/__init__.py`
+  - [x] `view_models/base.py`
+  - [x] `view_models/events.py`
+  - [x] `view_models/series.py` (only `MetricSpec` at this phase)
+  - [x] `data_source.py`
+- [x] Add `[viewer]` optional-dependency group in `pyproject.toml`
   (`PySide6`, `pyqtgraph`).
 
 ### `view_models/events.py`
 
-- [ ] `EventOverlay` dataclass with `kind: Literal["points",
+- [x] `EventOverlay` dataclass with `kind: Literal["points",
   "intervals"]`.
-- [ ] `EventOverlay.points(name, times, color, ...)` constructor.
-- [ ] `EventOverlay.intervals(name, t_start, t_end, color, ...)`
+- [x] `EventOverlay.points(name, times, color, ...)` constructor.
+- [x] `EventOverlay.intervals(name, t_start, t_end, color, ...)`
   constructor.
 
 ### `view_models/series.py` (Phase 1b: MetricSpec only)
 
-- [ ] `MetricSpec` dataclass union with `MetricSpec.line(...)`,
+- [x] `MetricSpec` dataclass union with `MetricSpec.line(...)`,
   `MetricSpec.scatter(...)`, `MetricSpec.intervals(...)` constructors.
-- [ ] (Series-model classes deferred to Phase 3 — same file.)
+- [x] (Series-model classes deferred to Phase 3 — same file.)
 
 ### `view_models/base.py`
 
-- [ ] `RunBundle` dataclass (mutable, not frozen):
-  - [ ] Fields: `results`, `detector`, `spike_times`,
+- [x] `RunBundle` dataclass (mutable, not frozen):
+  - [x] Fields: `results`, `detector`, `spike_times`,
     `position_time`, `position`, optional `speed`, optional `events`,
     `extra_metrics: dict[str, MetricSpec | pd.Series]`,
     `event_overlays: list[EventOverlay]`.
-  - [ ] `__post_init__` validates monotonic `position_time`,
+  - [x] `__post_init__` validates monotonic `position_time`,
     position dimensionality matches detector environment,
     `len(spike_times) == n_neurons`.
-  - [ ] `from_predict(...)` classmethod.
+  - [x] `from_predict(...)` classmethod.
 
 ### `data_source.py`
 
-- [ ] `InMemoryDecoderDataSource(runs: dict[str, RunBundle])`.
-  - [ ] `from_single(bundle)` classmethod.
-  - [ ] Construction validates: (a) time-grid alignment across all
+- [x] `InMemoryDecoderDataSource(runs: dict[str, RunBundle])`.
+  - [x] `from_single(bundle)` classmethod.
+  - [x] Construction validates: (a) time-grid alignment across all
     runs, (b) overlay names unique within each bundle, (c)
     `(name, kind)` schema matches across all runs. Each mismatch
     raises with a clear message.
-- [ ] Hot-path methods:
-  - [ ] `window_indices(t_center, t_width)`
-  - [ ] `load_posterior(sl)` → `(n_visible, n_state_bins)` float32
-  - [ ] `load_likelihood(sl)` (raises clearly when `log_likelihood`
+- [x] Hot-path methods:
+  - [x] `window_indices(t_center, t_width)`
+  - [x] `load_posterior(sl)` → `(n_visible, n_state_bins)` float32
+  - [x] `load_likelihood(sl)` (raises clearly when `log_likelihood`
     not in results)
-  - [ ] `load_acausal(sl)` (returns None if absent)
-  - [ ] `load_predictive(sl)` (returns None if absent)
-  - [ ] `slice_at_index(t_idx, which="posterior"|"likelihood"|...)`
-  - [ ] `events_in_window(sl)`
-- [ ] State: `active_run` (RunBundle), `set_active_run(name)`,
+  - [x] `load_acausal(sl)` (returns None if absent)
+  - [x] `load_predictive(sl)` (returns None if absent)
+  - [x] `slice_at_index(t_idx, which="posterior"|"likelihood"|...)`
+  - [x] `events_in_window(sl)`
+- [x] State: `active_run` (RunBundle), `set_active_run(name)`,
   `available_outputs: set[str]`.
 
 ### CI gate (`src/non_local_detector/tests/lint/test_import_boundary.py`)
 
-- [ ] Function 1 — Qt-import scan: walk `*.py` under
+- [x] Function 1 — Qt-import scan: walk `*.py` under
   `src/non_local_detector/visualization/interactive/`, AST-parse,
   fail on `Import` / `ImportFrom` of `pyqtgraph` or `PySide6`
   outside allowlist `{viewer/qt.py, panels/qt/}`.
-- [ ] Function 2 — `encoding_model_[...]` scan: walk `*.py` under
+- [x] Function 2 — `encoding_model_[...]` scan: walk `*.py` under
   `src/non_local_detector/` (repo-wide), AST-parse, fail on
   `Subscript` of an `Attribute` matching `*.encoding_model_` outside
   allowlist `{analysis/place_fields.py, models/base.py}`.
-- [ ] Both functions ship in one file; both run by default `pytest`.
+- [x] Both functions ship in one file; both run by default `pytest`.
 
 ### Track 0 fixture (`src/non_local_detector/tests/interactive/conftest.py`)
 
-- [ ] Use `make_simulated_data(n_neurons=25, seed=0)` from
+- [x] Use `make_simulated_data(n_neurons=25, seed=0)` from
   `non_local_detector.simulate.sorted_spikes_simulation`.
-- [ ] Construct four detectors:
-  - [ ] `nl_detector = NonLocalSortedSpikesDetector(...,
+- [x] Construct four detectors:
+  - [x] `nl_detector = NonLocalSortedSpikesDetector(...,
     local_position_std=1.0)` (matches notebook params).
-  - [ ] `cf_detector = ContFragSortedSpikesClassifier(...)`.
-  - [ ] `nsf_detector = NoSpikeContFragSortedSpikesClassifier(...)`.
-  - [ ] `dec_detector = SortedSpikesDecoder(...)`.
-- [ ] For each detector: `estimate_parameters(...)` once with
+  - [x] `cf_detector = ContFragSortedSpikesClassifier(...)`.
+  - [x] `nsf_detector = NoSpikeContFragSortedSpikesClassifier(...)`.
+  - [x] `dec_detector = SortedSpikesDecoder(...)`.
+- [x] For each detector: `estimate_parameters(...)` once with
   `is_training=~is_event` (discard return), then `predict(...)` three
   times for `default` / `loglik` / `all` variants.
-- [ ] Assemble 12 RunBundles (4 detectors × 3 variants) keyed
+- [x] Assemble 12 RunBundles (4 detectors × 3 variants) keyed
   `<det>_<variant>`.
-- [ ] Multi-run dict `{"nl": ..., "cf": ..., "nsf": ..., "dec": ...}`
+- [x] Multi-run dict `{"nl": ..., "cf": ..., "nsf": ..., "dec": ...}`
   for swap tests.
 
 ### Smoke tests
 
-- [ ] Build three RunBundles from one fitted detector
+- [x] Build three RunBundles from one fitted detector
   (default-`predict()`, `return_outputs=["log_likelihood"]`,
   `return_outputs="all"`); assert `available_outputs` reflects each;
   `load_likelihood` succeeds on loglik-bearing variants and raises
   cleanly on default.
-- [ ] Multi-run construction with mismatched time grids → clear
+- [x] Multi-run construction with mismatched time grids → clear
   construction error.
-- [ ] Multi-run construction with overlay name-set mismatch /
+- [x] Multi-run construction with overlay name-set mismatch /
   schema mismatch / within-bundle duplicate names — each raises
   with the offending detail in the message.
 
 ### Verification (Track 0)
 
-- [ ] `uv run pytest -k "data_source or run_bundle"` passes against
+- [x] `uv run pytest -k "data_source or run_bundle"` passes against
   the simulated fixture's 12 RunBundle variants.
-- [ ] Default `uv sync` does not pull `PySide6`; `uv sync --extra
+- [x] Default `uv sync` does not pull `PySide6`; `uv sync --extra
   viewer` does.
 
 ---

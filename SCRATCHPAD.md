@@ -12,7 +12,7 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 
 > What I'm working on right now. Update when context-switching.
 
-Phase 1a complete (analysis helpers + static.py refactor). Moving to Phase 1b (RunBundle + InMemoryDecoderDataSource).
+Phase 1a + 1b complete. Moving to Phase 1c (PosteriorHeatmapModel + panel ABCs).
 
 ---
 

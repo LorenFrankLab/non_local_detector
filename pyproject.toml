@@ -60,6 +60,10 @@ dev = [
 ]
 gpu = ["jax[cuda]"]
 viz = ["sortingview"]
+viewer = [
+    "PySide6 >=6.6",
+    "pyqtgraph >=0.13",
+]
 
 [tool.hatch.version]
 source = "vcs"

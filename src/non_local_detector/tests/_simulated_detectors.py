@@ -141,3 +141,45 @@ def fit_dec_detector(session: SimulatedSession) -> FittedDetector:
     """Fit a ``SortedSpikesDecoder`` (single-state schema)."""
     detector = SortedSpikesDecoder(sorted_spikes_algorithm="sorted_spikes_kde")
     return _fit(detector, session)
+
+
+# ---------------------------------------------------------------------------
+# Predict-variant matrix (Phase 1b: 4 detectors × 3 return_outputs)
+# ---------------------------------------------------------------------------
+
+# Predict variants the Phase 1b interactive fixture exposes. Each maps
+# to a ``return_outputs`` value passed to ``detector.predict(...)``. The
+# resulting ``results`` shapes are:
+#
+# - default → only acausal_posterior + acausal_state_probabilities.
+# - loglik  → + log_likelihood.
+# - all     → + filter (causal_*), predictive (predictive_state_probabilities,
+#             predictive_posterior), log_likelihood.
+PREDICT_VARIANTS: dict[str, str | list[str] | None] = {
+    "default": None,
+    "loglik": ["log_likelihood"],
+    "all": "all",
+}
+
+
+def predict_variants(
+    fitted: FittedDetector, session: SimulatedSession
+) -> dict[str, xr.Dataset]:
+    """Run ``predict()`` once per variant against the post-fit detector.
+
+    The ``estimate_parameters``-returned dataset is *not* reused —
+    its parameters are one M-step behind the post-fit detector state.
+    Calling ``predict`` after ``estimate_parameters`` produces results
+    consistent with the parameters the detector currently holds.
+    """
+    variants: dict[str, xr.Dataset] = {}
+    for var_name, return_outputs in PREDICT_VARIANTS.items():
+        results = fitted.detector.predict(  # type: ignore[attr-defined]
+            spike_times=session.spike_times,
+            time=session.time,
+            position=session.position,
+            position_time=session.time,
+            return_outputs=return_outputs,
+        )
+        variants[var_name] = results
+    return variants
