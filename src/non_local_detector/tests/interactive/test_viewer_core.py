@@ -163,6 +163,37 @@ class TestViewerCoreStaleRejection:
         backend.fire_pending(indices=[0])
         assert len(received) == 1
 
+    def test_older_payload_arriving_first_is_dropped(
+        self, core_factory
+    ) -> None:
+        """Regression: request 0 must be dropped if request 1 has been
+        issued, even when request 0 is the *first* payload to arrive
+        (i.e. no commit has happened yet).
+
+        The naive rule ``payload.request_id > _latest_committed_request_id``
+        accepts request 0 here because nothing has committed yet — but
+        the user has already moved on to request 1, so rendering
+        request 0's data briefly shows an obsolete window.
+        """
+        core, backend, _ = core_factory(auto_fire=False)
+        received: list[WindowPayload] = []
+        core.on_window_loaded(received.append)
+
+        core.request_load()  # request A
+        core.set_t_center(core.t_center + 0.1)  # request B
+
+        request_a_id = backend.pending_callbacks[0][0].request_id
+        request_b_id = backend.pending_callbacks[1][0].request_id
+        assert request_a_id < request_b_id
+
+        # Fire A *first* (before B). A is stale.
+        backend.fire_pending(indices=[0])
+        assert received == []
+        # Then fire B — should commit.
+        backend.fire_pending(indices=[1])
+        assert len(received) == 1
+        assert received[0].request_id == request_b_id
+
 
 @pytest.mark.unit
 class TestViewerCoreModelSwap:

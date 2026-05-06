@@ -156,9 +156,19 @@ class ViewerCore:
         self._backend.schedule_window_load(state, self._handle_load_result)
 
     def _handle_load_result(self, payload: WindowPayload) -> None:
-        """Invoked on the UI thread when a backend load completes."""
+        """Invoked on the UI thread when a backend load completes.
+
+        Stale-result rejection rule: a payload commits only if it
+        matches the *currently pending* request and hasn't already
+        been committed. Just checking ``> _latest_committed_request_id``
+        is too loose — if request 0 lands after request 1 has been
+        issued (but before request 1 commits), it would still pass
+        that check and briefly render an obsolete window.
+        """
+        if payload.request_id != self._current_view_state.request_id:
+            return  # Stale: a newer request has been issued.
         if payload.request_id <= self._latest_committed_request_id:
-            return  # Stale: a newer request has already committed.
+            return  # Duplicate: this request has already committed.
         self._latest_committed_request_id = payload.request_id
         if self._on_window_loaded is not None:
             self._on_window_loaded(payload)
