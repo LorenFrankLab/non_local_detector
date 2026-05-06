@@ -156,6 +156,7 @@ markers = [
     "unit: marks unit tests",
     "property: marks property-based tests",
     "snapshot: marks snapshot regression tests (update with --snapshot-update)",
+    "gui: marks tests that construct a Qt window (requires [viewer] extra; offscreen platform OK)",
 ]
 
 [dependency-groups]

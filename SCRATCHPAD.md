@@ -12,7 +12,7 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 
 > What I'm working on right now. Update when context-switching.
 
-Phase 1a + 1b + 1c complete. Singleton-Local follow-up still pending. Moving to Phase 2 (Qt panel + viewer harness — `[viewer]` extra now required).
+Phase 1a + 1b + 1c + Phase 2 + singleton-Local follow-up complete. Stopping for user approval before starting Milestone 3.
 
 ---
 

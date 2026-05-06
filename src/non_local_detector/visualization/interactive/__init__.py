@@ -24,6 +24,29 @@ from non_local_detector.visualization.interactive.view_models import (
     WindowPayload,
 )
 
+
+def launch(bundle, t_width: float = 1.0, block: bool = True) -> int:
+    """Open the Qt viewer against a single ``RunBundle`` or named dict.
+
+    Lazy-imports the Qt frontend so the rest of the package stays
+    GUI-toolkit-free.
+
+    Parameters
+    ----------
+    bundle : RunBundle | dict[str, RunBundle]
+    t_width : float, optional
+    block : bool, optional
+        If True (default), blocks on ``QApplication.exec()`` and
+        returns the exit code. If False, the window is created but
+        ``exec()`` is not entered — useful for tests.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        launch_qt,
+    )
+
+    return launch_qt(bundle, t_width=t_width, block=block)
+
+
 __all__ = [
     "BinPayload",
     "BinSyncedPanel",
@@ -37,4 +60,5 @@ __all__ = [
     "TimeAxisPanel",
     "ViewState",
     "WindowPayload",
+    "launch",
 ]
