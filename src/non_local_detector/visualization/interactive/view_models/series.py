@@ -1,10 +1,4 @@
-"""Generic-series view-models and the user-facing ``MetricSpec`` carrier.
-
-Phase 1b ships only the ``MetricSpec`` dataclass (used as the type
-annotation for ``RunBundle.extra_metrics``). The ``LineSeriesModel`` /
-``MultiLineSeriesModel`` / ``ScatterSeriesModel`` / ``IntervalSeriesModel``
-implementations land in Phase 3 in this same file.
-"""
+"""Generic-series view-models and the user-facing ``MetricSpec`` carrier."""
 
 from __future__ import annotations
 
@@ -59,8 +53,7 @@ class MetricSpec:
         elif self.kind == "intervals":
             if self.t_start is None or self.t_end is None:
                 raise ValueError(
-                    "MetricSpec(kind='intervals') requires "
-                    "`t_start` and `t_end`."
+                    "MetricSpec(kind='intervals') requires `t_start` and `t_end`."
                 )
             if len(self.t_start) != len(self.t_end):
                 raise ValueError(

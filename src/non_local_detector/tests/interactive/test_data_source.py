@@ -112,9 +112,7 @@ class TestSingleRunDataSource:
     def test_available_outputs_reports_optional_arrays(
         self, run_bundles: dict[str, RunBundle]
     ) -> None:
-        ds_default = InMemoryDecoderDataSource.from_single(
-            run_bundles["nl_default"]
-        )
+        ds_default = InMemoryDecoderDataSource.from_single(run_bundles["nl_default"])
         ds_all = InMemoryDecoderDataSource.from_single(run_bundles["nl_all"])
         assert "log_likelihood" not in ds_default.available_outputs
         assert "log_likelihood" in ds_all.available_outputs
@@ -185,9 +183,7 @@ class TestMultiRunDataSource:
             position_time=sim_session.time,
             position=sim_session.position,
             event_overlays=[
-                EventOverlay.points(
-                    name="events", times=np.array([1.0, 2.0])
-                ),
+                EventOverlay.points(name="events", times=np.array([1.0, 2.0])),
             ],
         )
         cf_bundle = RunBundle(
@@ -247,17 +243,14 @@ class TestMultiRunDataSource:
         """
         # Snapshot to restore after — fixture is session-scoped.
         original = {
-            name: list(b.event_overlays)
-            for name, b in multi_run_bundles.items()
+            name: list(b.event_overlays) for name, b in multi_run_bundles.items()
         }
         try:
             # Construct under aligned (empty) overlays.
             ds = InMemoryDecoderDataSource(multi_run_bundles)
             # Mutate one bundle's overlays after construction.
             multi_run_bundles["cf"].event_overlays.append(
-                EventOverlay.points(
-                    name="drifted", times=np.array([1.0, 2.0])
-                )
+                EventOverlay.points(name="drifted", times=np.array([1.0, 2.0]))
             )
             with pytest.raises(ValueError, match="overlay"):
                 ds.set_active_run("cf")
@@ -273,8 +266,7 @@ class TestMultiRunDataSource:
         mutations.
         """
         original = {
-            name: list(b.event_overlays)
-            for name, b in multi_run_bundles.items()
+            name: list(b.event_overlays) for name, b in multi_run_bundles.items()
         }
         try:
             for run_name, bundle in multi_run_bundles.items():

@@ -1,8 +1,4 @@
-"""Core view-model dataclasses (Phase 1b: ``RunBundle`` only).
-
-Phase 1c will add ``ViewState``, ``PositionGrid``, ``WindowPayload``,
-``BinPayload``, and ``CellSlice`` here.
-"""
+"""Core view-model dataclasses for the interactive viewer."""
 
 from __future__ import annotations
 
@@ -13,8 +9,14 @@ import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 import xarray as xr
 
+from non_local_detector._validation import (
+    ensure_array_1d,
+    ensure_matching_lengths,
+    ensure_monotonic_increasing,
+)
 from non_local_detector.visualization.interactive.view_models.events import (
     EventOverlay,
+    find_duplicate_overlay_names,
 )
 from non_local_detector.visualization.interactive.view_models.series import (
     MetricSpec,
@@ -87,20 +89,12 @@ class RunBundle:
                     f"{sorted(self.results.data_vars)!r}"
                 )
 
-        # Monotonic position_time.
         position_time = np.asarray(self.position_time)
-        if position_time.ndim != 1:
-            raise ValueError(
-                f"RunBundle.position_time must be 1D. Got shape "
-                f"{position_time.shape}."
-            )
-        if not np.all(np.diff(position_time) > 0):
-            raise ValueError(
-                "RunBundle.position_time must be strictly monotonic "
-                "increasing."
-            )
+        ensure_array_1d(position_time, "RunBundle.position_time")
+        ensure_monotonic_increasing(
+            position_time, "RunBundle.position_time", strict=True
+        )
 
-        # Position dimensionality vs detector environment.
         env = self.detector.environments[0]
         n_pos_dims = env.place_bin_centers_.shape[1]
         position = np.asarray(self.position)
@@ -113,11 +107,12 @@ class RunBundle:
                 f"dim(s) but the detector's environment expects "
                 f"{n_pos_dims}."
             )
-        if position.shape[0] != position_time.shape[0]:
-            raise ValueError(
-                f"RunBundle.position has {position.shape[0]} samples "
-                f"but position_time has {position_time.shape[0]}."
-            )
+        ensure_matching_lengths(
+            position,
+            position_time,
+            "RunBundle.position",
+            "RunBundle.position_time",
+        )
 
         # spike_times length matches encoding-model neuron count.
         n_neurons_expected = self._infer_n_neurons()
@@ -130,9 +125,7 @@ class RunBundle:
                 f"{n_neurons_expected} neurons."
             )
 
-        # Within-bundle overlay-name uniqueness.
-        overlay_names = [ovl.name for ovl in self.event_overlays]
-        duplicates = sorted({n for n in overlay_names if overlay_names.count(n) > 1})
+        duplicates = find_duplicate_overlay_names(self.event_overlays)
         if duplicates:
             raise ValueError(
                 f"RunBundle.event_overlays has duplicate names: {duplicates}. "

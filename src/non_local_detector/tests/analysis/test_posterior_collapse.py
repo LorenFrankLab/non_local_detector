@@ -148,7 +148,8 @@ class TestCollapseLogLikelihoodToPosition:
         n_state_bins = nl_fitted.detector.n_state_bins_
         with pytest.raises(ValueError) as exc_info:
             collapse_log_likelihood_to_position(np.zeros(n_state_bins), detector)
-        assert "no spatial states" in str(exc_info.value).lower()
+        message = str(exc_info.value).lower()
+        assert "spatial state" in message
 
 
 # ---------------------------------------------------------------------------

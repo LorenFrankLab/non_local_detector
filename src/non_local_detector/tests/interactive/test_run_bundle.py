@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from non_local_detector.exceptions import DataError
 from non_local_detector.tests._simulated_detectors import (
     FittedDetector,
     SimulatedSession,
@@ -15,9 +16,7 @@ from non_local_detector.visualization.interactive.view_models.events import (
 )
 
 
-def _bundle_from(
-    fitted: FittedDetector, session: SimulatedSession
-) -> RunBundle:
+def _bundle_from(fitted: FittedDetector, session: SimulatedSession) -> RunBundle:
     return RunBundle(
         results=fitted.results,
         detector=fitted.detector,
@@ -68,7 +67,7 @@ class TestRunBundleConstruction:
         time = sim_session.time.copy()
         # Swap two adjacent samples to break monotonicity.
         time[10], time[11] = time[11], time[10]
-        with pytest.raises(ValueError, match="monotonic"):
+        with pytest.raises(DataError, match="monotonic|increasing"):
             RunBundle(
                 results=nl_fitted.results,
                 detector=nl_fitted.detector,

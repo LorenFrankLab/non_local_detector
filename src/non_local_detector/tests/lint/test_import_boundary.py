@@ -85,9 +85,7 @@ def test_no_qt_imports_outside_allowlist() -> None:
                         f"{rel}: imports {module!r} but is not under "
                         f"the Qt allowlist ({list(QT_ALLOWLIST_PREFIXES)!r})."
                     )
-    assert not violations, "Qt-import allowlist violations:\n" + "\n".join(
-        violations
-    )
+    assert not violations, "Qt-import allowlist violations:\n" + "\n".join(violations)
 
 
 def _is_encoding_model_subscript(node: ast.AST) -> bool:
@@ -129,6 +127,6 @@ def test_no_encoding_model_subscript_outside_allowlist() -> None:
                     f"`encoding_model_[...]` but is not in the allowlist "
                     f"({sorted(p.relative_to(PACKAGE_ROOT) for p in ENCODING_MODEL_ALLOWLIST)!r})."
                 )
-    assert not violations, (
-        "encoding_model_[...] allowlist violations:\n" + "\n".join(violations)
+    assert not violations, "encoding_model_[...] allowlist violations:\n" + "\n".join(
+        violations
     )

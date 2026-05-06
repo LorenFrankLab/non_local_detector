@@ -87,6 +87,31 @@ def _non_local_state_ids(detector: _DetectorBase) -> np.ndarray:
     return np.flatnonzero(["Non-Local" in s for s in detector.state_names])
 
 
+def _validate_rectangular_spatial(
+    detector: _DetectorBase, caller: str
+) -> tuple[np.ndarray, int]:
+    """Return ``(spatial_state_ids, n_pos)`` for a rectangular spatial layout.
+
+    Raises ``ValueError`` if the detector has no spatial states or its
+    spatial states disagree on ``n_position_bins``. ``caller`` names
+    the public function in the error message.
+    """
+    spatial_state_ids = _spatial_state_ids(detector)
+    bin_sizes = np.asarray(detector.bin_sizes_)
+    if spatial_state_ids.size == 0:
+        raise ValueError(
+            f"{caller} requires at least one spatial state. "
+            f"bin_sizes_={bin_sizes.tolist()}"
+        )
+    n_pos = int(bin_sizes[spatial_state_ids[0]])
+    if not np.all(bin_sizes[spatial_state_ids] == n_pos):
+        raise ValueError(
+            f"{caller} requires all spatial states to share the same "
+            f"n_position_bins. Got bin_sizes_={bin_sizes.tolist()}."
+        )
+    return spatial_state_ids, n_pos
+
+
 def _conditional_row(
     post_row: np.ndarray,
     detector: _DetectorBase,
@@ -121,32 +146,23 @@ def _conditional_row(
         rows with positive selected mass; otherwise filled with
         ``zero_mass_fill``.
     """
-    state_ind = np.asarray(detector.state_ind_)
-    bin_sizes = np.asarray(detector.bin_sizes_)
     selected_state_ids = np.asarray(list(selected_state_ids), dtype=int)
-
     if selected_state_ids.size == 0:
         raise ValueError(
             "_conditional_row requires at least one selected state id; "
             "got an empty sequence."
         )
-    spatial_mask = bin_sizes > 1
-    invalid_singletons = [int(s) for s in selected_state_ids if not spatial_mask[s]]
+    bin_sizes = np.asarray(detector.bin_sizes_)
+    invalid_singletons = [int(s) for s in selected_state_ids if bin_sizes[s] <= 1]
     if invalid_singletons:
         raise ValueError(
             "_conditional_row received singleton state ids "
             f"{invalid_singletons} (their bin_sizes_ entries are 1). "
             "Singleton states have no position axis to project onto."
         )
+    _, n_pos = _validate_rectangular_spatial(detector, "_conditional_row")
 
-    spatial_state_ids = np.flatnonzero(spatial_mask)
-    n_pos = int(bin_sizes[spatial_state_ids[0]])
-    if not np.all(bin_sizes[spatial_state_ids] == n_pos):
-        raise ValueError(
-            "_conditional_row requires all spatial states to share the "
-            f"same n_position_bins. Got bin_sizes_={bin_sizes.tolist()}."
-        )
-
+    state_ind = np.asarray(detector.state_ind_)
     selected_mask = np.isin(state_ind, selected_state_ids)
     # Cast to float64 so accumulation matches the static-plot inline
     # algorithm at base.py-style float64 accumulator precision (the
@@ -177,8 +193,9 @@ def conditional_non_local_posterior(
     ``plot_non_local_model`` (and any other caller that genuinely needs
     the entire session reduced at once). Per-row callers should prefer
     ``collapse_posterior_to_position(post_row, detector,
-    PosteriorReduction.CONDITIONAL_NON_LOCAL)``, which delegates to the
-    same private ``_conditional_row`` helper.
+    PosteriorReduction.CONDITIONAL_NON_LOCAL)``, which delegates to
+    ``_conditional_row``; the per-row output is bit-identical to one
+    row of this dataset-level result.
 
     Parameters
     ----------
@@ -205,19 +222,40 @@ def conditional_non_local_posterior(
             f"state_names={list(detector.state_names)!r}."
         )
 
+    bin_sizes = np.asarray(detector.bin_sizes_)
+    invalid_singletons = [int(s) for s in nl_state_ids if bin_sizes[s] <= 1]
+    if invalid_singletons:
+        raise ValueError(
+            "conditional_non_local_posterior received singleton non-local "
+            f"state ids {invalid_singletons}; non-local states must be "
+            "spatial."
+        )
+    _, n_pos = _validate_rectangular_spatial(
+        detector, "conditional_non_local_posterior"
+    )
+
     post = results["acausal_posterior"].values
     env = detector.environments[0]
-    n_pos = env.place_bin_centers_.shape[0]
-    n_time = post.shape[0]
+    state_ind = np.asarray(detector.state_ind_)
 
-    out = np.empty((n_time, n_pos), dtype=np.float64)
-    for t in range(n_time):
-        out[t] = _conditional_row(
-            post[t],
-            detector,
-            selected_state_ids=nl_state_ids,
-            zero_mass_fill=zero_mass_fill,
-        )
+    # Vectorized over time (mirrors the static-plot inline algorithm
+    # at float64 accumulator precision). Equivalent to looping
+    # `_conditional_row` per row, but ~100× faster for typical
+    # n_time = 10k–100k.
+    selected_mask = np.isin(state_ind, nl_state_ids)
+    selected = (
+        post[:, selected_mask]
+        .reshape(post.shape[0], nl_state_ids.size, n_pos)
+        .astype(np.float64)
+    )
+    column_sum = selected.sum(axis=1)
+    denom = np.nansum(column_sum, axis=1)[:, np.newaxis]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = column_sum / denom
+    fill_is_default_nan = isinstance(zero_mass_fill, float) and np.isnan(zero_mass_fill)
+    if not fill_is_default_nan:
+        zero_rows = (denom.squeeze(axis=1) == 0) | np.isnan(denom.squeeze(axis=1))
+        out[zero_rows] = zero_mass_fill
     out[:, ~env.is_track_interior_] = np.nan
     return xr.DataArray(
         out,
@@ -259,21 +297,9 @@ def collapse_log_likelihood_to_position(
     ValueError
         If the detector has no spatial states (every ``bin_sizes_`` is 1).
     """
-    spatial_state_ids = _spatial_state_ids(detector)
-    if spatial_state_ids.size == 0:
-        raise ValueError(
-            "Detector has no spatial states. "
-            f"bin_sizes_={np.asarray(detector.bin_sizes_).tolist()}"
-        )
-    bin_sizes = np.asarray(detector.bin_sizes_)
-    n_pos = int(bin_sizes[spatial_state_ids[0]])
-    if not np.all(bin_sizes[spatial_state_ids] == n_pos):
-        raise ValueError(
-            "collapse_log_likelihood_to_position requires all spatial "
-            "states to share the same n_position_bins. Got "
-            f"bin_sizes_={bin_sizes.tolist()}."
-        )
-
+    spatial_state_ids, n_pos = _validate_rectangular_spatial(
+        detector, "collapse_log_likelihood_to_position"
+    )
     state_ind = np.asarray(detector.state_ind_)
     log_per_state = np.stack([log_lik_row[state_ind == s] for s in spatial_state_ids])
 
@@ -322,19 +348,9 @@ def collapse_posterior_to_position(
     np.ndarray, shape (n_position_bins,)
     """
     if reduction is PosteriorReduction.MARGINAL:
-        spatial_state_ids = _spatial_state_ids(detector)
-        if spatial_state_ids.size == 0:
-            raise ValueError(
-                "MARGINAL reduction requires at least one spatial state. "
-                f"bin_sizes_={np.asarray(detector.bin_sizes_).tolist()}"
-            )
-        bin_sizes = np.asarray(detector.bin_sizes_)
-        n_pos = int(bin_sizes[spatial_state_ids[0]])
-        if not np.all(bin_sizes[spatial_state_ids] == n_pos):
-            raise ValueError(
-                "MARGINAL reduction requires all spatial states to share "
-                f"the same n_position_bins. Got bin_sizes_={bin_sizes.tolist()}."
-            )
+        spatial_state_ids, _ = _validate_rectangular_spatial(
+            detector, "collapse_posterior_to_position(MARGINAL)"
+        )
         state_ind = np.asarray(detector.state_ind_)
         per_state = np.stack([post_row[state_ind == s] for s in spatial_state_ids])
         # Column-sum: keeps NaN at non-interior columns (each spatial

@@ -1,18 +1,23 @@
 """``EventOverlay`` dataclass for marker-line / shaded-band overlays.
 
-Created in Phase 1b because ``RunBundle.event_overlays`` and the
-``TimeAxisPanel.set_event_overlays`` Protocol method (Phase 1c +
-Phase 3) both reference this type. Phase 3 adds the panel-side
-rendering (``EventOverlayMixin``) and the viewer-level dispatch loop;
-this module just defines the data carrier.
+Pure data carrier; the panel-side rendering (``EventOverlayMixin``)
+and viewer-level dispatch live in their respective modules.
 """
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
+
+
+def find_duplicate_overlay_names(overlays: Iterable[EventOverlay]) -> list[str]:
+    """Return sorted overlay names that appear more than once."""
+    counts = Counter(ovl.name for ovl in overlays)
+    return sorted(name for name, count in counts.items() if count > 1)
 
 
 @dataclass(frozen=True)
@@ -42,19 +47,15 @@ class EventOverlay:
     def __post_init__(self) -> None:
         if self.kind == "points":
             if self.times is None:
-                raise ValueError(
-                    "EventOverlay(kind='points') requires `times`."
-                )
+                raise ValueError("EventOverlay(kind='points') requires `times`.")
             if self.t_start is not None or self.t_end is not None:
                 raise ValueError(
-                    "EventOverlay(kind='points') must not pass "
-                    "`t_start` / `t_end`."
+                    "EventOverlay(kind='points') must not pass `t_start` / `t_end`."
                 )
         elif self.kind == "intervals":
             if self.t_start is None or self.t_end is None:
                 raise ValueError(
-                    "EventOverlay(kind='intervals') requires "
-                    "`t_start` and `t_end`."
+                    "EventOverlay(kind='intervals') requires `t_start` and `t_end`."
                 )
             if self.times is not None:
                 raise ValueError(
@@ -68,8 +69,7 @@ class EventOverlay:
                 )
         else:
             raise ValueError(
-                f"EventOverlay.kind must be 'points' or 'intervals'. "
-                f"Got {self.kind!r}."
+                f"EventOverlay.kind must be 'points' or 'intervals'. Got {self.kind!r}."
             )
 
     @classmethod

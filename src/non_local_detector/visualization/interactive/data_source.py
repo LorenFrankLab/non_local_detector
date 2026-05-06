@@ -18,6 +18,7 @@ import xarray as xr
 from non_local_detector.visualization.interactive.view_models.base import RunBundle
 from non_local_detector.visualization.interactive.view_models.events import (
     EventOverlay,
+    find_duplicate_overlay_names,
 )
 
 
@@ -46,9 +47,7 @@ class InMemoryDecoderDataSource:
 
     def __init__(self, runs: dict[str, RunBundle]):
         if not runs:
-            raise ValueError(
-                "InMemoryDecoderDataSource requires at least one run."
-            )
+            raise ValueError("InMemoryDecoderDataSource requires at least one run.")
         self._runs = dict(runs)
         self._validate_time_grid_alignment()
         self._validate_overlay_alignment()
@@ -63,9 +62,7 @@ class InMemoryDecoderDataSource:
             return
         names = list(self._runs)
         reference_name = names[0]
-        reference_time = np.asarray(
-            self._runs[reference_name].results["time"].values
-        )
+        reference_time = np.asarray(self._runs[reference_name].results["time"].values)
         for other in names[1:]:
             other_time = np.asarray(self._runs[other].results["time"].values)
             if other_time.shape != reference_time.shape or not np.array_equal(
@@ -79,12 +76,10 @@ class InMemoryDecoderDataSource:
                 )
 
     def _validate_overlay_alignment(self) -> None:
-        # Re-check within-bundle uniqueness (RunBundle.__post_init__
-        # already did this, but defensive — bundles are mutable and
-        # the check is cheap).
+        # Re-check within-bundle uniqueness — RunBundle.__post_init__
+        # ran this once at construction but bundles are mutable.
         for run_name, bundle in self._runs.items():
-            names = [ovl.name for ovl in bundle.event_overlays]
-            duplicates = sorted({n for n in names if names.count(n) > 1})
+            duplicates = find_duplicate_overlay_names(bundle.event_overlays)
             if duplicates:
                 raise ValueError(
                     f"Run {run_name!r} has duplicate overlay names: "
@@ -106,7 +101,7 @@ class InMemoryDecoderDataSource:
             raise ValueError(
                 "All RunBundles loaded together must declare the same "
                 "overlay (name, kind) schema. Got: "
-                f"{ {n: sorted(s) for n, s in schemas.items()} !r}."
+                f"{ {n: sorted(s) for n, s in schemas.items()}!r}."
             )
 
     # ------------------------------------------------------------------
@@ -141,16 +136,10 @@ class InMemoryDecoderDataSource:
 
     def set_active_run(self, name: str) -> None:
         if name not in self._runs:
-            raise ValueError(
-                f"No run named {name!r}. Available: {self.run_names!r}"
-            )
-        # RunBundles are mutable — overlays may have been added /
-        # removed since construction. Re-validate the cross-bundle
-        # overlay schema before swapping so a misaligned mutation can't
-        # silently land us in a state where the navigator's
-        # active-overlay name no longer resolves consistently across
-        # runs. Time-grid alignment is also re-checked because the
-        # results dataset is itself mutable in principle.
+            raise ValueError(f"No run named {name!r}. Available: {self.run_names!r}")
+        # RunBundles are mutable — re-validate so a post-construction
+        # overlay drift can't leave the navigator in an inconsistent
+        # state across runs.
         self._validate_time_grid_alignment()
         self._validate_overlay_alignment()
         self._active_run_name = name
@@ -159,9 +148,7 @@ class InMemoryDecoderDataSource:
     # Hot-path readers (slice into active run)
     # ------------------------------------------------------------------
 
-    def window_indices(
-        self, t_center: float, t_width: float
-    ) -> slice:
+    def window_indices(self, t_center: float, t_width: float) -> slice:
         """Return a ``slice`` selecting the visible time-window indices.
 
         Half-window on each side of ``t_center``.
@@ -179,9 +166,7 @@ class InMemoryDecoderDataSource:
     def load_posterior(self, sl: slice) -> np.ndarray:
         """Window slice of ``acausal_posterior``: ``(n_visible, n_state_bins)``."""
         return np.asarray(
-            self.active_run.results["acausal_posterior"]
-            .isel(time=sl)
-            .values,
+            self.active_run.results["acausal_posterior"].isel(time=sl).values,
             dtype=np.float32,
         )
 
@@ -219,10 +204,15 @@ class InMemoryDecoderDataSource:
         if "predictive_posterior" not in self.active_run.results:
             return None
         return np.asarray(
-            self.active_run.results["predictive_posterior"]
-            .isel(time=sl)
-            .values
+            self.active_run.results["predictive_posterior"].isel(time=sl).values
         )
+
+    _SLICE_VAR_MAP = {
+        "posterior": "acausal_posterior",
+        "acausal": "acausal_posterior",
+        "likelihood": "log_likelihood",
+        "predictive": "predictive_posterior",
+    }
 
     def slice_at_index(
         self,
@@ -232,36 +222,20 @@ class InMemoryDecoderDataSource:
         ] = "posterior",
     ) -> np.ndarray | None:
         """Single-row slice for the SlicePanel's per-bin readout."""
-        var_map = {
-            "posterior": "acausal_posterior",
-            "acausal": "acausal_posterior",
-            "likelihood": "log_likelihood",
-            "predictive": "predictive_posterior",
-        }
-        var = var_map.get(which)
-        if var is None:
-            raise ValueError(
-                f"Unknown `which`: {which!r}. Expected one of "
-                f"{list(var_map)!r}."
-            )
+        var = self._SLICE_VAR_MAP[which]
         if var not in self.active_run.results:
             if which == "likelihood":
-                raise KeyError(
-                    "Active run has no `log_likelihood` in results."
-                )
+                raise KeyError("Active run has no `log_likelihood` in results.")
             return None
-        return np.asarray(
-            self.active_run.results[var].isel(time=t_idx).values
-        )
+        return np.asarray(self.active_run.results[var].isel(time=t_idx).values)
 
     def events_in_window(self, _sl: slice) -> list[EventOverlay]:
-        """Return the active run's overlays clipped to the window.
+        """Return the active run's overlays.
 
-        Phase 1b returns the overlays unchanged; clipping to the
-        visible window happens in the panel renderer (Phase 3) where
-        the absolute-time → x-pixel mapping lives. The slice argument
-        is accepted now so panel callers don't need a signature change
-        in Phase 3.
+        Returned unchanged; the panel renderer maps absolute time to
+        x-coordinates and decides what to draw. The ``_sl`` argument
+        is accepted to match the future signature when window-clipping
+        moves into the data source.
         """
         return list(self.active_run.event_overlays)
 
