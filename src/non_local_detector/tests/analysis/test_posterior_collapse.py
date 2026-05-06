@@ -332,6 +332,34 @@ class TestCollapsePosteriorMarginal:
         singleton_mass = np.nansum(post[t_idx][singleton_bins_mask])
         assert np.isclose(np.nansum(out), 1.0 - singleton_mass, atol=1e-10)
 
+    @pytest.mark.slow
+    def test_nl_singleton_marginal_override_equals_one_minus_singletons(
+        self, nl_singleton_fitted: FittedDetector
+    ) -> None:
+        """Same MARGINAL invariant for the singleton-Local fixture.
+
+        ``local_position_std=None`` makes both ``Local`` and
+        ``No-Spike`` singletons (``bin_sizes_=[1, 1, n_pos, n_pos]``),
+        so the row sum should equal ``1 - P(Local) - P(No-Spike)``.
+        Tests that a future "fix" that adds renormalization to MARGINAL
+        gets caught against this schema as well as the
+        ``local_position_std=1.0`` schema.
+        """
+        detector = nl_singleton_fitted.detector
+        post = nl_singleton_fitted.results["acausal_posterior"].values
+        t_idx = _first_finite_row_index(post)
+        out = collapse_posterior_to_position(
+            post[t_idx], detector, PosteriorReduction.MARGINAL
+        )
+        bin_sizes = np.asarray(detector.bin_sizes_)
+        # Schema sanity check: both Local + No-Spike are singleton.
+        assert int(bin_sizes[0]) == 1
+        assert int(bin_sizes[1]) == 1
+        singleton_state_ids = np.flatnonzero(bin_sizes == 1)
+        singleton_bins_mask = np.isin(detector.state_ind_, singleton_state_ids)
+        singleton_mass = np.nansum(post[t_idx][singleton_bins_mask])
+        assert np.isclose(np.nansum(out), 1.0 - singleton_mass, atol=1e-6)
+
 
 # ---------------------------------------------------------------------------
 # collapse_posterior_to_position — CONDITIONAL_ON_SPATIAL on NSF

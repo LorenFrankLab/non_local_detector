@@ -17,6 +17,7 @@ import numpy as np
 
 from non_local_detector.analysis.posterior import (
     PosteriorReduction,
+    _validate_rectangular_spatial,
     collapse_posterior_to_position,
     select_reduction,
 )
@@ -83,14 +84,26 @@ class PosteriorHeatmapModel:
             )
         return self.collapse_rows(posterior_window)
 
+    @property
+    def n_pos(self) -> int:
+        """Number of position bins this model collapses to."""
+        _, n_pos = _validate_rectangular_spatial(
+            self._detector, "PosteriorHeatmapModel"
+        )
+        return n_pos
+
     def collapse_rows(self, posterior_window: np.ndarray) -> np.ndarray:
         """Vectorized helper used by ``update_window``.
 
         Public for the SlicePanel posterior-fallback path and the
-        Phase 1c property tests.
+        Phase 1c property tests. Always returns ``(n_visible, n_pos)``;
+        on an empty window the ``n_pos`` axis is preserved so
+        downstream renderers can still infer the position grid width.
         """
         n_visible = posterior_window.shape[0]
-        rows: list[np.ndarray] = [
+        if n_visible == 0:
+            return np.empty((0, self.n_pos), dtype=np.float64)
+        rows = [
             collapse_posterior_to_position(
                 posterior_window[i],
                 self._detector,
@@ -99,12 +112,19 @@ class PosteriorHeatmapModel:
             )
             for i in range(n_visible)
         ]
-        return np.stack(rows) if rows else np.empty((0, 0), dtype=np.float64)
+        return np.stack(rows)
 
     def collapse_at(
         self, posterior_window: np.ndarray, indices: Sequence[int]
     ) -> np.ndarray:
-        """Collapse only the rows at ``indices`` (Phase 4 SlicePanel use)."""
+        """Collapse only the rows at ``indices`` (Phase 4 SlicePanel use).
+
+        Always returns ``(len(indices), n_pos)``; an empty
+        ``indices`` preserves the ``n_pos`` axis.
+        """
+        indices = list(indices)
+        if not indices:
+            return np.empty((0, self.n_pos), dtype=np.float64)
         rows = [
             collapse_posterior_to_position(
                 posterior_window[i],
@@ -114,4 +134,4 @@ class PosteriorHeatmapModel:
             )
             for i in indices
         ]
-        return np.stack(rows) if rows else np.empty((0, 0), dtype=np.float64)
+        return np.stack(rows)

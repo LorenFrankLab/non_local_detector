@@ -196,6 +196,30 @@ class TestPosteriorHeatmapModelOutput:
         out = _model(bundle.detector).update_window(window)
         assert out.shape == (12, n_pos)
 
+    def test_empty_window_preserves_n_pos_axis(self, nl_fitted: FittedDetector) -> None:
+        """``update_window`` on an empty window must still return shape
+        ``(0, n_pos)`` — downstream renderers infer the position grid
+        width from this axis. Regression test for the
+        ``np.empty((0, 0))`` bug.
+        """
+        env = nl_fitted.detector.environments[0]
+        n_pos = int(env.place_bin_centers_.shape[0])
+        n_state_bins = int(nl_fitted.detector.n_state_bins_)
+        empty_window = np.empty((0, n_state_bins), dtype=np.float64)
+        out = _model(nl_fitted.detector).update_window(empty_window)
+        assert out.shape == (0, n_pos)
+
+    def test_collapse_at_empty_indices_preserves_n_pos_axis(
+        self, nl_fitted: FittedDetector
+    ) -> None:
+        """``collapse_at`` with empty ``indices`` returns shape ``(0, n_pos)``."""
+        env = nl_fitted.detector.environments[0]
+        n_pos = int(env.place_bin_centers_.shape[0])
+        n_state_bins = int(nl_fitted.detector.n_state_bins_)
+        window = np.zeros((5, n_state_bins), dtype=np.float64)
+        out = _model(nl_fitted.detector).collapse_at(window, indices=[])
+        assert out.shape == (0, n_pos)
+
 
 @pytest.mark.unit
 class TestPosteriorHeatmapModelSchemaSwap:

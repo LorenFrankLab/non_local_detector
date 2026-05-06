@@ -48,3 +48,19 @@ def nsf_fitted(sim_session: SimulatedSession) -> FittedDetector:
 def dec_fitted(sim_session: SimulatedSession) -> FittedDetector:
     """``SortedSpikesDecoder`` fit + results (single-state)."""
     return fit_dec_detector(sim_session)
+
+
+@pytest.fixture(scope="session")
+def nl_singleton_fitted(sim_session: SimulatedSession) -> FittedDetector:
+    """``NonLocalSortedSpikesDetector(local_position_std=None)``.
+
+    The fully-singleton schema (``bin_sizes_=[1, 1, n_pos, n_pos]``):
+    both ``Local`` and ``No-Spike`` are singleton states. This is the
+    original NL design referenced by the place-field +
+    posterior-collapse MARGINAL tests as a slow parametrization.
+    Substantially slower to fit than the ``local_position_std=1.0``
+    variant (the discrete-Local EM updates are slower than the
+    continuous-Gaussian variant), so tests using this fixture are
+    marked ``@pytest.mark.slow``.
+    """
+    return fit_nl_detector(sim_session, local_position_std=None)

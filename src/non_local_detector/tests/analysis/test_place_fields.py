@@ -107,3 +107,24 @@ class TestExtractStateAlignedPlaceFields:
         assert "extract_per_cell_place_fields" in message
         # bin_sizes_ for NL with local_position_std=1.0 is [n_pos, 1, n_pos, n_pos].
         assert str(np.asarray(nl_fitted.detector.bin_sizes_).tolist()) in message
+
+    @pytest.mark.slow
+    def test_nl_detector_singleton_local_raises(
+        self, nl_singleton_fitted: FittedDetector
+    ) -> None:
+        """``NonLocal(local_position_std=None)`` (both Local + No-Spike
+        singleton, ``bin_sizes_=[1, 1, n_pos, n_pos]``) → ValueError.
+
+        Slow because the singleton-Local EM is substantially slower
+        than the continuous-Gaussian Local variant.
+        """
+        with pytest.raises(ValueError) as exc_info:
+            extract_state_aligned_place_fields(nl_singleton_fitted.detector)
+        message = str(exc_info.value)
+        assert "bin_sizes_" in message
+        assert "extract_per_cell_place_fields" in message
+        bin_sizes = np.asarray(nl_singleton_fitted.detector.bin_sizes_)
+        # Verify the schema is what we expected (both Local + No-Spike singleton).
+        assert int(bin_sizes[0]) == 1
+        assert int(bin_sizes[1]) == 1
+        assert str(bin_sizes.tolist()) in message
