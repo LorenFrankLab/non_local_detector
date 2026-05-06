@@ -7,6 +7,8 @@ import pandas as pd  # type: ignore[import-untyped]
 import xarray as xr
 from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
+from non_local_detector.analysis.place_fields import extract_per_cell_place_fields
+from non_local_detector.analysis.posterior import conditional_non_local_posterior
 from non_local_detector.models import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
@@ -125,21 +127,19 @@ def plot_non_local_model(
 
     env = detector.environments[0]
     try:
-        place_fields = detector.encoding_model_[("", 0)]["place_fields"]
+        place_fields = extract_per_cell_place_fields(detector)
         neuron_sort_ind = np.argsort(
             env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()
         )
         cell_label = "Neuron"
-    except KeyError:
+    except (KeyError, ValueError):
         neuron_sort_ind = np.arange(len(spike_times))
         cell_label = "Electrode\nGroup"
 
-    state_ind = detector.state_ind_
     state_names = detector.state_names
     acausal_state_probabilities = results.sel(
         time=time_slice
     ).acausal_state_probabilities.values
-    acausal_posterior = results.sel(time=time_slice).acausal_posterior.values
     results_time = results.sel(time=time_slice).time.values
 
     _, axes = plt.subplots(
@@ -153,20 +153,9 @@ def plot_non_local_model(
 
     t, x = np.meshgrid(results_time, env.place_bin_centers_)
 
-    non_local_inds = np.nonzero(
-        ["Non-Local" in state for state in detector.state_names]
-    )[0]
-    conditional_non_local_acausal_posterior = np.zeros(
-        (len(results_time), len(env.place_bin_centers_))
-    )
-    for non_local_ind in non_local_inds:
-        conditional_non_local_acausal_posterior += acausal_posterior[
-            :, state_ind == non_local_ind
-        ]
-    conditional_non_local_acausal_posterior /= np.nansum(
-        conditional_non_local_acausal_posterior, axis=1
-    )[:, np.newaxis]
-    conditional_non_local_acausal_posterior[:, ~env.is_track_interior_] = np.nan
+    conditional_non_local_acausal_posterior = conditional_non_local_posterior(
+        results.sel(time=time_slice), detector
+    ).values
 
     new_spike_times = [
         spike_times[neuron_id][

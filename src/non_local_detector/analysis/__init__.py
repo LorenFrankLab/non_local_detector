@@ -13,7 +13,16 @@ from non_local_detector.analysis.distance2D import (
     head_direction_simliarity,
     make_2D_track_graph_from_environment,
 )
+from non_local_detector.analysis.place_fields import (
+    extract_per_cell_place_fields,
+    extract_state_aligned_place_fields,
+)
 from non_local_detector.analysis.posterior import (
+    PosteriorReduction,
+    collapse_log_likelihood_to_position,
+    collapse_posterior_to_position,
+    conditional_non_local_posterior,
     maximum_a_posteriori_estimate,
     sample_posterior,
+    select_reduction,
 )

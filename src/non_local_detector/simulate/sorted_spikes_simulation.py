@@ -511,7 +511,14 @@ def make_simulated_data(
     n_neurons: int = 25,
     seed: int | None = 0,
 ) -> tuple[
-    np.ndarray, np.ndarray, list[np.ndarray], np.ndarray, np.ndarray, int, np.ndarray
+    np.ndarray,
+    np.ndarray,
+    list[np.ndarray],
+    np.ndarray,
+    np.ndarray,
+    int,
+    np.ndarray,
+    np.ndarray,
 ]:
     """Make simulated data for testing.
 
@@ -534,6 +541,9 @@ def make_simulated_data(
     event_times : np.ndarray, shape (n_events, 2)
     sampling_frequency : int
     is_event : np.ndarray, shape (n_time,)
+    place_fields : np.ndarray, shape (n_time, n_neurons)
+        Per-neuron firing-rate place fields evaluated at each timestep
+        (transposed so cells index columns).
     """
     rng = np.random.default_rng(seed)
 
