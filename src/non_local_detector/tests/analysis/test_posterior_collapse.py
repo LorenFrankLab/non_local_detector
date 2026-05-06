@@ -151,6 +151,58 @@ class TestCollapseLogLikelihoodToPosition:
         message = str(exc_info.value).lower()
         assert "spatial state" in message
 
+    @pytest.mark.slow
+    def test_singleton_local_drops_local_from_position_curve(
+        self, nl_singleton_fitted: FittedDetector
+    ) -> None:
+        """Phase 1c SlicePanel design check: singleton-Local schema.
+
+        With ``local_position_std=None`` the detector has
+        ``bin_sizes_=[1, 1, n_pos, n_pos]`` — both ``Local`` and
+        ``No-Spike`` are singleton, leaving the two ``Non-Local``
+        states as the only spatial states. The top SlicePanel curve
+        is built by ``collapse_log_likelihood_to_position`` summing
+        only those spatial-state slices; ``Local``'s scalar
+        likelihood gets dropped from the position axis.
+
+        Asserts:
+        - Output shape is ``(n_pos,)`` (not ``(2, n_pos)`` /
+          ``(n_state_bins,)``).
+        - The output equals (within float64 precision) what you get
+          by re-running the helper on a synthetic row that zeroes
+          out the singleton (``Local`` + ``No-Spike``) bins — i.e.
+          singleton entries genuinely don't contribute.
+        - Peak-normalized to 1.0 on a finite row.
+        """
+        detector = nl_singleton_fitted.detector
+        bin_sizes = np.asarray(detector.bin_sizes_)
+        # Schema sanity: both Local + No-Spike are singleton.
+        assert int(bin_sizes[0]) == 1
+        assert int(bin_sizes[1]) == 1
+        env = detector.environments[0]
+        n_pos = int(env.place_bin_centers_.shape[0])
+
+        log_lik = nl_singleton_fitted.results["log_likelihood"].values
+        t_idx = _first_finite_row_index(log_lik)
+        row = log_lik[t_idx]
+
+        out = collapse_log_likelihood_to_position(row, detector)
+        assert out.shape == (n_pos,)
+        assert np.isclose(out.max(), 1.0)
+
+        # Zero out the two singleton-state bins and recompute. Result
+        # must be identical: singletons don't contribute to the
+        # position-axis sum.
+        row_no_singletons = row.copy()
+        state_ind = np.asarray(detector.state_ind_)
+        singleton_ids = np.flatnonzero(bin_sizes == 1)
+        singleton_mask = np.isin(state_ind, singleton_ids)
+        row_no_singletons[singleton_mask] = -np.inf
+        out_no_singletons = collapse_log_likelihood_to_position(
+            row_no_singletons, detector
+        )
+        np.testing.assert_allclose(out, out_no_singletons, atol=1e-12, equal_nan=True)
+
 
 # ---------------------------------------------------------------------------
 # collapse_posterior_to_position — shared row math + zero-mass

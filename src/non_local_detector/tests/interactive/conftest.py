@@ -58,6 +58,18 @@ def dec_fitted(sim_session: SimulatedSession) -> FittedDetector:
     return fit_dec_detector(sim_session)
 
 
+@pytest.fixture(scope="session")
+def nl_singleton_fitted(sim_session: SimulatedSession) -> FittedDetector:
+    """``NonLocalSortedSpikesDetector(local_position_std=None)``.
+
+    Fully-singleton schema (``bin_sizes_=[1, 1, n_pos, n_pos]``) for
+    the Phase 1c singleton-Local follow-up tests. Tests using this
+    fixture should be marked ``@pytest.mark.slow`` — the discrete-Local
+    EM is substantially slower than the continuous-Gaussian variant.
+    """
+    return fit_nl_detector(sim_session, local_position_std=None)
+
+
 def _build_bundles(
     det_key: str,
     fitted: FittedDetector,

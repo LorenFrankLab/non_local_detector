@@ -63,6 +63,8 @@ viz = ["sortingview"]
 viewer = [
     "PySide6 >=6.6",
     "pyqtgraph >=0.13",
+    # CLI bundle loading: position files use parquet.
+    "pyarrow >=14",
 ]
 
 [tool.hatch.version]

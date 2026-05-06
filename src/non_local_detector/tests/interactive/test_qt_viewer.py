@@ -30,7 +30,6 @@ from non_local_detector.visualization.interactive.view_models.base import (
     RunBundle,
 )
 
-
 pytestmark = pytest.mark.gui
 
 
@@ -94,7 +93,6 @@ def test_qt_viewer_launches_and_routes_payload(
     The QtBackendAdapter dispatches a load on the QThreadPool; we
     process events until the panel receives a non-empty image.
     """
-    from PySide6 import QtCore
 
     from non_local_detector.visualization.interactive.viewer.qt import (
         launch_qt,

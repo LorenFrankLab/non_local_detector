@@ -135,7 +135,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     bundles_dict = {}
     for raw_arg in args.run:
-        spec = _parse_run_arg(raw_arg)
+        try:
+            spec = _parse_run_arg(raw_arg)
+        except argparse.ArgumentTypeError as exc:
+            parser.error(str(exc))
         name, bundle = _load_run(spec)
         if name in bundles_dict:
             parser.error(f"duplicate run name {name!r}")

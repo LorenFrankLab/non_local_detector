@@ -309,32 +309,33 @@ is the original NL design and is referenced by Phase 1a place-field
 tests + Phase 1c posterior-collapse `MARGINAL` tests as a slow-marker
 parametrization. **Required before v1 ships**, not deferred to v3.
 
-- [ ] Add a parametrized version of the Track 0 NL fixture in
-  `src/non_local_detector/tests/interactive/conftest.py` that
-  constructs a second NL detector with `local_position_std=None`
-  alongside the default `local_position_std=1.0` detector.
-- [ ] Mark the slow variant `@pytest.mark.slow`; configure
-  `pytest.ini_options.markers` (or equivalent) and gate on a
-  `--run-slow` pytest flag so default CI stays fast.
-- [ ] Phase 1a place-field tests: parametrize
-  `extract_state_aligned_place_fields` raise-coverage to run against
-  both NL fixture variants (`local_position_std=1.0` and `None`).
-- [ ] Phase 1a `collapse_posterior_to_position` NL `MARGINAL`
-  override test: parametrize against both fixtures so a future
-  "fix" that adds renormalization gets caught against either schema.
-- [ ] Phase 1c SlicePanel design check: confirm the
-  `collapse_log_likelihood_to_position` algorithm handles the
-  all-singleton-Local case (top curve sums only the two NL spatial
-  states; Local's likelihood is a scalar that gets dropped from the
-  position plot). Add a dedicated test under
-  `src/non_local_detector/tests/view_models/test_slice_singleton_local.py`
-  marked `@pytest.mark.slow`.
+- [x] Add ``nl_singleton_fitted`` fixture in
+  ``src/non_local_detector/tests/interactive/conftest.py`` and
+  ``src/non_local_detector/tests/analysis/conftest.py``
+  (constructs an NL detector with ``local_position_std=None``).
+- [x] Mark the slow variant ``@pytest.mark.slow``; the project's
+  existing ``slow`` marker is registered in ``pyproject.toml``.
+  Project convention is to skip slow tests with ``-m "not slow"``;
+  CI runs all tests by default (no ``--run-slow`` flag introduced).
+- [x] Phase 1a place-field tests: ``test_nl_detector_singleton_local_raises``
+  exercises the ``[1, 1, n_pos, n_pos]`` schema raise path
+  (separate test rather than parametrized — equivalent coverage).
+- [x] Phase 1a ``collapse_posterior_to_position`` NL ``MARGINAL``
+  override test: ``test_nl_singleton_marginal_override_equals_one_minus_singletons``
+  asserts row sum equals ``1 - P(Local) - P(No-Spike)`` against the
+  fully-singleton schema.
+- [x] Phase 1c SlicePanel design check:
+  ``test_singleton_local_drops_local_from_position_curve`` in
+  ``tests/analysis/test_posterior_collapse.py`` confirms
+  ``collapse_log_likelihood_to_position`` keeps shape ``(n_pos,)``
+  and that singleton-state bins (``Local`` + ``No-Spike``) don't
+  contribute to the output.
 
 ### Verification (Track 0)
 
 - [x] `uv run pytest -k "posterior_model"` passes (13 tests).
-- [ ] `uv run pytest --run-slow` covers the singleton-Local fixture
-  (singleton-Local follow-up still pending).
+- [x] Singleton-Local fixture covered by 4 ``@pytest.mark.slow``
+  tests (3 in test_posterior_collapse + 1 in test_place_fields).
 - [x] Phase 1a + 1b + 1c stack is import-clean without `[viewer]`
   deps installed (CI gate enforces — see lint test).
 
@@ -393,10 +394,13 @@ First Qt rendering. `[viewer]` extra required from this point.
 
 ### Verification (Track 0)
 
-- [ ] `python -m non_local_detector.visualization.interactive
-  --run default:<paths>` end-to-end CLI smoke test (deferred: needs
-  user-supplied bundle dir; the CLI parser + loader is unit-tested
-  via test_qt_viewer's path).
+- [x] `python -m non_local_detector.visualization.interactive
+  --run default:<paths>` end-to-end CLI smoke test:
+  ``test_python_m_interactive_launches_against_simulated_bundle``
+  serializes the Track 0 NL bundle to ``tmp_path/{results.nc,
+  model.pkl, spikes.npz, position.parquet}``, runs ``app.main(argv)``
+  with ``block=False``, asserts exit code 0. Plus two CLI parser
+  tests (malformed --run, missing --run).
 - [x] Headless `QtViewer` constructs against the simulated
   `multi_run_bundles` fixture; `launch_qt(block=False)` and
   `set_active_run` round-trip without errors.
