@@ -280,6 +280,7 @@ class QtViewer(QtWidgets.QMainWindow):
             (QtGui.QKeySequence("N"), self._core.next_event),
             (QtGui.QKeySequence("Shift+N"), self._core.prev_event),
             (QtGui.QKeySequence("Escape"), self._slice_panel.clear_pins),
+            (QtGui.QKeySequence("M"), self._cycle_model),
         ):
             shortcut = QtGui.QShortcut(key_seq, self)
             shortcut.activated.connect(fn)
@@ -307,37 +308,77 @@ class QtViewer(QtWidgets.QMainWindow):
         layout = QtWidgets.QHBoxLayout(bar)
         layout.setContentsMargins(4, 2, 4, 2)
         overlays = self._data_source.active_run.event_overlays
-        if not overlays:
+        run_names = self._data_source.run_names
+        multi_run = len(run_names) > 1
+
+        # Model-selector dropdown (M-key cycles). Only present when
+        # multiple runs are loaded; the M-key path goes *through* the
+        # combo so user-clicks and keyboard cycling share one signal
+        # path (combo.currentIndexChanged → core.set_active_run).
+        self._model_combo: QtWidgets.QComboBox | None = None
+        if multi_run:
+            layout.addWidget(QtWidgets.QLabel("Model (M):"))
+            self._model_combo = QtWidgets.QComboBox()
+            for name in run_names:
+                self._model_combo.addItem(name, userData=name)
+            self._model_combo.setCurrentText(self._data_source.active_run_name)
+            self._model_combo.currentIndexChanged.connect(self._on_active_run_changed)
+            layout.addWidget(self._model_combo)
+            layout.addSpacing(12)
+
+        if not overlays and not multi_run:
             bar.hide()
             return bar
-        # Overlay-selector dropdown picks the navigator target.
-        layout.addWidget(QtWidgets.QLabel("Overlay (N/Shift+N):"))
-        self._overlay_combo = QtWidgets.QComboBox()
-        self._overlay_combo.addItem("(none)", userData=None)
-        for ovl in overlays:
-            self._overlay_combo.addItem(ovl.name, userData=ovl.name)
-        self._overlay_combo.currentIndexChanged.connect(self._on_active_overlay_changed)
-        layout.addWidget(self._overlay_combo)
-        # Per-overlay visibility checkboxes.
-        layout.addSpacing(12)
-        layout.addWidget(QtWidgets.QLabel("Visible:"))
-        self._overlay_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
-        for ovl in overlays:
-            cb = QtWidgets.QCheckBox(ovl.name)
-            cb.setChecked(True)
-            cb.toggled.connect(
-                lambda checked, name=ovl.name: self._core.set_overlay_visibility(
-                    name, checked
-                )
+        if overlays:
+            # Overlay-selector dropdown picks the navigator target.
+            layout.addWidget(QtWidgets.QLabel("Overlay (N/Shift+N):"))
+            self._overlay_combo = QtWidgets.QComboBox()
+            self._overlay_combo.addItem("(none)", userData=None)
+            for ovl in overlays:
+                self._overlay_combo.addItem(ovl.name, userData=ovl.name)
+            self._overlay_combo.currentIndexChanged.connect(
+                self._on_active_overlay_changed
             )
-            layout.addWidget(cb)
-            self._overlay_checkboxes[ovl.name] = cb
+            layout.addWidget(self._overlay_combo)
+            # Per-overlay visibility checkboxes.
+            layout.addSpacing(12)
+            layout.addWidget(QtWidgets.QLabel("Visible:"))
+            self._overlay_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
+            for ovl in overlays:
+                cb = QtWidgets.QCheckBox(ovl.name)
+                cb.setChecked(True)
+                cb.toggled.connect(
+                    lambda checked, name=ovl.name: self._core.set_overlay_visibility(
+                        name, checked
+                    )
+                )
+                layout.addWidget(cb)
+                self._overlay_checkboxes[ovl.name] = cb
         layout.addStretch(1)
         return bar
 
     def _on_active_overlay_changed(self, index: int) -> None:
         name = self._overlay_combo.itemData(index)
         self._core.set_active_overlay(name)
+
+    def _on_active_run_changed(self, index: int) -> None:
+        if self._model_combo is None:
+            return
+        name = self._model_combo.itemData(index)
+        if name is None or name == self._data_source.active_run_name:
+            return
+        self._core.set_active_run(name)
+
+    def _cycle_model(self) -> None:
+        """M-key handler: advance to the next run in the dropdown order.
+
+        Single-run viewers have no model dropdown, so this is a no-op
+        in that case.
+        """
+        if self._model_combo is None:
+            return
+        next_index = (self._model_combo.currentIndex() + 1) % self._model_combo.count()
+        self._model_combo.setCurrentIndex(next_index)
 
     def _on_window_loaded(self, payload) -> None:
         for panel in self._all_panels:
@@ -385,8 +426,14 @@ class QtViewer(QtWidgets.QMainWindow):
         """Rebind all panels to the new active run's detector.
 
         Fires *before* the new load is dispatched so payload collapse
-        runs under the new schema.
+        runs under the new schema. Also syncs the model dropdown so a
+        programmatic ``core.set_active_run(...)`` keeps the UI in
+        lockstep (signal blocker prevents the combo's
+        ``currentIndexChanged`` from firing back into ``set_active_run``).
         """
+        if self._model_combo is not None:
+            with QtCore.QSignalBlocker(self._model_combo):
+                self._model_combo.setCurrentText(_new_run_name)
         new_run = self._data_source.active_run
         new_detector = new_run.detector
         grid = PositionGrid.from_environment(new_detector.environments[0])

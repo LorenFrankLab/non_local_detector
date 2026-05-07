@@ -232,6 +232,127 @@ def test_qt_viewer_swap_preserves_user_supplied_extras(
 
 
 @pytest.mark.unit
+def test_model_dropdown_visible_only_when_multi_run(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+    nl_fitted: FittedDetector,
+    sim_session,
+) -> None:
+    """Model dropdown only appears when there are multiple runs."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    multi_ds = InMemoryDecoderDataSource(multi_run_bundles)
+    multi_viewer = QtViewer(multi_ds, t_width=0.5)
+    assert multi_viewer._model_combo is not None
+    assert [
+        multi_viewer._model_combo.itemText(i)
+        for i in range(multi_viewer._model_combo.count())
+    ] == ["nl", "cf", "nsf", "dec"]
+    assert multi_viewer._model_combo.currentText() == "nl"
+
+    single_bundle = RunBundle(
+        results=nl_fitted.results,
+        detector=nl_fitted.detector,
+        spike_times=sim_session.spike_times,
+        position_time=sim_session.time,
+        position=sim_session.position,
+        speed=sim_session.speed,
+    )
+    single_ds = InMemoryDecoderDataSource.from_single(single_bundle)
+    single_viewer = QtViewer(single_ds, t_width=0.5)
+    assert single_viewer._model_combo is None
+
+
+@pytest.mark.unit
+def test_model_combo_drives_set_active_run(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """User selecting a run in the dropdown swaps the active run."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    assert viewer.core.active_run_name == "nl"
+
+    # Pick the second run via the combo.
+    cf_idx = viewer._model_combo.findText("cf")
+    viewer._model_combo.setCurrentIndex(cf_idx)
+    assert viewer.core.active_run_name == "cf"
+
+
+@pytest.mark.unit
+def test_m_key_cycles_through_runs(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """``M`` cycles through the run list in dropdown order, wrapping at the end."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    sequence = []
+    for _ in range(5):
+        sequence.append(viewer.core.active_run_name)
+        viewer._cycle_model()
+    # nl → cf → nsf → dec → nl (wrap) → cf
+    assert sequence == ["nl", "cf", "nsf", "dec", "nl"]
+
+
+@pytest.mark.unit
+def test_swap_via_core_syncs_model_combo(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Programmatic ``core.set_active_run`` updates the dropdown selection."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    assert viewer._model_combo.currentText() == "nl"
+    viewer.core.set_active_run("nsf")
+    assert viewer._model_combo.currentText() == "nsf"
+
+
+@pytest.mark.unit
+def test_swap_preserves_view_state(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Swap preserves t_center, t_width, active_overlay_name."""
+    from non_local_detector.visualization.interactive.view_models.events import (
+        EventOverlay,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    # Attach a shared overlay so set_active_overlay has something to bind to.
+    original = {n: list(b.event_overlays) for n, b in multi_run_bundles.items()}
+    try:
+        shared = EventOverlay.points(name="swr", times=np.array([0.5, 1.5]))
+        for bundle in multi_run_bundles.values():
+            bundle.event_overlays.append(shared)
+        ds = InMemoryDecoderDataSource(multi_run_bundles)
+        viewer = QtViewer(ds, t_width=0.7)
+
+        # Manipulate view state.
+        viewer.core.set_t_center(viewer.core.t_center + 0.123)
+        viewer.core.set_t_width(0.42)
+        viewer.core.set_active_overlay("swr")
+
+        snap_t_center = viewer.core.t_center
+        snap_t_width = viewer.core.t_width
+        snap_overlay = viewer.core.active_overlay_name
+
+        viewer.core.set_active_run("cf")
+        assert viewer.core.t_center == pytest.approx(snap_t_center)
+        assert viewer.core.t_width == pytest.approx(snap_t_width)
+        assert viewer.core.active_overlay_name == snap_overlay
+    finally:
+        for n, b in multi_run_bundles.items():
+            b.event_overlays[:] = original[n]
+
+
+@pytest.mark.unit
 def test_qt_viewer_keyboard_window_scaling(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
@@ -261,16 +382,45 @@ def test_qt_viewer_keyboard_window_scaling(
 
 
 @pytest.mark.unit
-def test_qt_viewer_controls_bar_hidden_with_no_overlays(
+def test_qt_viewer_controls_bar_hidden_when_no_overlays_and_single_run(
+    qapp,
+    nl_fitted: FittedDetector,
+    sim_session,
+) -> None:
+    """Controls bar is hidden only when there's nothing to put in it.
+
+    The bar holds the model-swap dropdown (multi-run) and the
+    overlay selector (when overlays exist). Single-run + no overlays
+    → both blocks are skipped → bar is hidden for a clean UI.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    bundle = RunBundle(
+        results=nl_fitted.results,
+        detector=nl_fitted.detector,
+        spike_times=sim_session.spike_times,
+        position_time=sim_session.time,
+        position=sim_session.position,
+        speed=sim_session.speed,
+    )
+    ds = InMemoryDecoderDataSource.from_single(bundle)
+    viewer = QtViewer(ds, t_width=0.5)
+    assert viewer._controls_bar.isHidden()
+
+
+@pytest.mark.unit
+def test_qt_viewer_controls_bar_visible_when_multi_run_no_overlays(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
 ) -> None:
-    """No overlays attached → controls bar is hidden (clean default UI)."""
+    """Multi-run alone is enough to keep the controls bar visible
+    (the model-swap dropdown lives there)."""
     from non_local_detector.visualization.interactive.viewer.qt import QtViewer
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
-    assert viewer._controls_bar.isHidden()
+    assert not viewer._controls_bar.isHidden()
+    assert viewer._model_combo is not None
 
 
 @pytest.mark.unit
