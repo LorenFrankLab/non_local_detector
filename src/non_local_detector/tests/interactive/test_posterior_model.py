@@ -72,6 +72,24 @@ class TestPosteriorHeatmapModelStrategySelection:
         )
         assert model.reduction is PosteriorReduction.MARGINAL
 
+    def test_conditional_non_local_on_detector_without_non_local_states_raises(
+        self, cf_fitted: FittedDetector
+    ) -> None:
+        """Vectorized update_window must agree with collapse_at /
+        collapse_posterior_to_position for invalid conditional overrides.
+
+        ContFrag has no ``Non-Local`` state, so requesting
+        ``CONDITIONAL_NON_LOCAL`` on it is a configuration error.
+        Previously the vectorized hot path silently produced
+        zero-mass-fill rows while the per-row helper raised — those
+        two behaviors must agree.
+        """
+        with pytest.raises(ValueError, match="CONDITIONAL_NON_LOCAL"):
+            PosteriorHeatmapModel(
+                cf_fitted.detector,
+                reduction=PosteriorReduction.CONDITIONAL_NON_LOCAL,
+            )
+
 
 @pytest.mark.unit
 class TestPosteriorHeatmapModelOutput:

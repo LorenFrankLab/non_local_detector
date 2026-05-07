@@ -68,6 +68,22 @@ class PosteriorHeatmapModel:
         else:
             # MARGINAL and CONDITIONAL_ON_SPATIAL both pick spatial states.
             self._selected_state_ids = _spatial_state_ids(detector)
+        # Mirror analysis.posterior._conditional_row's validation: the
+        # vectorized hot path silently produces zero_mass_fill rows on
+        # an empty selection, while the per-row primitive
+        # collapse_at routes to raises ValueError. Catch the
+        # mis-configuration up-front so both code paths agree.
+        if (
+            self._reduction is not PosteriorReduction.MARGINAL
+            and self._selected_state_ids.size == 0
+        ):
+            raise ValueError(
+                f"PosteriorHeatmapModel({self._reduction!r}) requires at "
+                "least one selected state, but the detector has none. "
+                "For CONDITIONAL_NON_LOCAL, no state name contains "
+                "'Non-Local'. Pick a different reduction (e.g. MARGINAL) "
+                "or use a detector whose schema matches the strategy."
+            )
         # Boolean mask into state_bins — the per-row primitive uses
         # this; computing it once per swap means no per-tick re-build.
         self._selected_mask = np.isin(
