@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pyqtgraph as pg
+from PySide6 import QtCore
 from PySide6.QtGui import QColor
 
 from non_local_detector.analysis.posterior import _non_local_state_ids
@@ -35,7 +36,17 @@ class QtRasterPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
     exceeds ``non_local_threshold`` — a translucent band drawn
     behind the spikes makes those windows immediately visible
     against the raster.
+
+    Click on a spike → ``cell_clicked.emit(cell_id)`` (the viewer
+    routes this to ``QtSlicePanel.toggle_pin``). The y-coordinate of
+    the clicked spot is mapped through ``RasterModel.sort_indices``
+    to the original cell id. Clicks on empty raster area still drive
+    the inherited ``ClickRecenterMixin`` recenter handler — the
+    mixin skips when ``ScatterPlotItem.sigClicked`` accepted the
+    underlying mouse event.
     """
+
+    cell_clicked = QtCore.Signal(int)
 
     def __init__(
         self,
@@ -64,6 +75,7 @@ class QtRasterPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
         self.addItem(self._scatter)
         self._non_local_regions: list[pg.LinearRegionItem] = []
         self._install_click_recenter()
+        self._scatter.sigClicked.connect(self._handle_spike_click)
         self._overlay_items: list[pg.GraphicsObject] = []
 
     @staticmethod
@@ -94,6 +106,25 @@ class QtRasterPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
         detector); update the y-axis text to match.
         """
         self.setLabel("left", self._model.cell_label)
+
+    def _handle_spike_click(self, _scatter, points) -> None:
+        """Resolve clicked spot's y-row to a cell_id and emit ``cell_clicked``.
+
+        Y-rows in the scatter are sorted positions; ``RasterModel.sort_indices``
+        maps row index → original cell id. ``ScatterPlotItem.sigClicked``
+        emits ``points`` as either a list of ``SpotItem`` or a numpy
+        object array depending on pyqtgraph version — ``len()`` works
+        for both.
+        """
+        if len(points) == 0:
+            return
+        spot = points[0]
+        y_row = int(round(float(spot.pos().y())))
+        sort_indices = self._model.sort_indices
+        if not 0 <= y_row < sort_indices.size:
+            return
+        cell_id = int(sort_indices[y_row])
+        self.cell_clicked.emit(cell_id)
 
     def _render_spikes(self, t_start: float, t_stop: float) -> None:
         raster = self._model.update_window(t_start, t_stop)

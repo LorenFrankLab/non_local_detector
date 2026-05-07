@@ -323,10 +323,13 @@ def test_qt_viewer_constructs_full_left_column_stack(
         QtLikelihoodHeatmapPanel,
         QtPosteriorHeatmapPanel,
     ]
-    layout = viewer.centralWidget().layout()
-    layout_widgets = [layout.itemAt(i).widget() for i in range(layout.count())]
+    # Built-in panels live in the left column of the body's QHBoxLayout.
+    left_col_layout = viewer._left_column_layout
+    left_col_widgets = [
+        left_col_layout.itemAt(i).widget() for i in range(left_col_layout.count())
+    ]
     for panel in viewer._builtin_panels:
-        assert panel in layout_widgets
+        assert panel in left_col_widgets
         assert panel in viewer._all_panels
 
 
@@ -363,6 +366,152 @@ def test_qt_viewer_payload_routes_to_all_left_column_panels(
     # ScatterPlotItem.getData returns (x, y); spike count may be 0 in
     # the window so just check API shape.
     assert len(viewer._raster_panel._scatter.getData()) == 2
+
+
+@pytest.mark.unit
+def test_qt_viewer_constructs_slice_panel_from_active_run(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """SliceModel + QtSlicePanel are built from ``data_source.active_run``."""
+    from non_local_detector.visualization.interactive.panels.qt.slice import (
+        QtSlicePanel,
+    )
+    from non_local_detector.visualization.interactive.view_models.slice import (
+        SliceModel,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    assert isinstance(viewer._slice_model, SliceModel)
+    assert isinstance(viewer._slice_panel, QtSlicePanel)
+    assert viewer._slice_model.detector is multi_run_bundles["nl"].detector
+    # Slice panel is in the layout (under the body widget that holds
+    # the two-column split).
+    body = viewer.centralWidget().layout().itemAt(1).widget()
+    body_widgets = [
+        body.layout().itemAt(i).widget() for i in range(body.layout().count())
+    ]
+    assert viewer._slice_panel in body_widgets
+
+
+@pytest.mark.unit
+def test_qt_viewer_slider_drives_slice_panel(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Slider tick reaches the slice panel via the synchronous per-tick path.
+
+    Without this wiring, the slice panel only updates on async window
+    loads, which adds ~16ms of perceived lag during scrubbing.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    # Prime the buffer first (the slice update is a no-op without it).
+    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    viewer._on_window_loaded(payload)
+
+    initial_y = viewer._slice_panel._top_curve_item.getData()[1]
+    # Pick a target inside the buffered window so update_for_index
+    # actually re-renders. The buffer covers ``payload.indices``;
+    # offset by one bin from its start.
+    sl = payload.indices
+    target = sl.start + 1
+    initial_t_idx = viewer._slider.value()
+    assert target != initial_t_idx, "target must differ from initial slider value"
+    viewer._on_slider_value_changed(target)
+    after_y = viewer._slice_panel._top_curve_item.getData()[1]
+    # Top curve changed (different t_idx → different row).
+    assert initial_y is not None and after_y is not None
+    assert not np.array_equal(initial_y, after_y)
+
+
+@pytest.mark.unit
+def test_qt_viewer_window_load_sets_slice_buffer(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """``_on_window_loaded`` must populate ``slice_panel.set_window_buffer``."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    assert viewer._slice_panel._buffered_payload is None
+
+    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    viewer._on_window_loaded(payload)
+    assert viewer._slice_panel._buffered_payload is payload
+
+
+@pytest.mark.unit
+def test_qt_viewer_raster_click_toggles_slice_pin(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """``raster.cell_clicked.emit(cell_id)`` toggles the slice panel's pin."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    assert viewer._slice_panel.pinned_cell_ids == frozenset()
+    viewer._raster_panel.cell_clicked.emit(3)
+    assert 3 in viewer._slice_panel.pinned_cell_ids
+    # Click again → unpin (toggle semantics).
+    viewer._raster_panel.cell_clicked.emit(3)
+    assert 3 not in viewer._slice_panel.pinned_cell_ids
+
+
+@pytest.mark.unit
+def test_qt_viewer_esc_clears_pins(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """``Esc`` shortcut routes to ``slice_panel.clear_pins()``."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    viewer._slice_panel.pin_cell(2)
+    viewer._slice_panel.pin_cell(5)
+    assert viewer._slice_panel.pinned_cell_ids == frozenset({2, 5})
+
+    # Find the Esc shortcut and trigger it.
+    from PySide6 import QtGui
+
+    target_key = QtGui.QKeySequence("Escape")
+    esc_shortcut = next(
+        s
+        for s in viewer.findChildren(QtGui.QShortcut)
+        if s.key().toString() == target_key.toString()
+    )
+    esc_shortcut.activated.emit()
+    assert viewer._slice_panel.pinned_cell_ids == frozenset()
+
+
+@pytest.mark.unit
+def test_qt_viewer_swap_rebinds_slice_model_and_clears_pins(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Swap rebinds the slice model from new active_run AND clears pins."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    viewer._slice_panel.pin_cell(0)
+    assert 0 in viewer._slice_panel.pinned_cell_ids
+
+    viewer.core.set_active_run("cf")
+    cf = multi_run_bundles["cf"].detector
+
+    assert viewer._slice_model.detector is cf
+    # Cell IDs are run-local — pins must clear on swap.
+    assert viewer._slice_panel.pinned_cell_ids == frozenset()
 
 
 @pytest.mark.unit

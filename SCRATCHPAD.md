@@ -15,12 +15,14 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 > What I'm working on right now. Update when context-switching.
 
 **M1+M2+M3 complete and committed; M3 review fixes committed in
-`e000eb8`. M4 progress:** Track A devtool across `eab0478` /
-`97bb59e` / `a958a50`; `--run-from-dir` in `e6621b5`; SliceModel
-in `0a840e0`. **QtSlicePanel base widget uncommitted** (window
-buffer + per-cell pool + truncation, 7 tests passing). Pinning
-surfaced to user as next decision: pin-state on panel + raster→pin
-wiring in viewer chunk. Then full viewer integration.
+`e000eb8`. M4 Track 0 work all committed: devtool across `eab0478`
+/ `97bb59e` / `a958a50`; `--run-from-dir` in `e6621b5`; SliceModel
+in `0a840e0`; QtSlicePanel base in `c3ea841`; pin state in
+`89239ee`. **Viewer integration uncommitted** — right-column
+layout, raster `cell_clicked` signal, slider→slice direct render,
+window-load→slice buffer, Esc→clear pins, swap rebinds slice
+model. Track A optional real-data check deferred to M5 (env-var
+gated, follows the devtool test pattern).
 
 **Important user-set rule (do not violate):**
 
@@ -397,6 +399,69 @@ Latest at top:
     - `rebind_after_swap` empties the pin set.
 
   Tests: 151 → 161 (10 new). Lint + interactive suite green.
+- **M4 SlicePanel viewer integration (uncommitted)** — wires
+  `QtSlicePanel` into `QtViewer` end-to-end.
+  - **Layout**: split into a right-column `QHBoxLayout` body. Left
+    column holds the existing built-in panels + extras
+    (`_left_column_layout`); right column holds the slice panel.
+    Slider stretches across the full width below the body. Existing
+    `_extras_insert_index` now indexes into `_left_column_layout`
+    so `_rebuild_auto_extras` keeps working unchanged.
+  - **Construction from `data_source.active_run`**: per user spec,
+    `SliceModel(detector=run.detector, spike_times=run.spike_times,
+    time=np.asarray(run.results["time"].values))`. Same shape on
+    swap via `set_active_run(...)`.
+  - **Per-tick path**: slider → `_on_slider_value_changed(value)` →
+    `core.set_t_center(time[value])` (existing) **plus**
+    `slice_panel.update_for_index(value)` (sub-ms direct render
+    against the buffered window).
+  - **Window-load path**: `_on_window_loaded(payload)` adds
+    `slice_panel.set_window_buffer(payload)` then
+    `slice_panel.update_for_index(slider.value())` so the slice
+    re-renders against the freshly-arrived buffer.
+  - **Raster click**: `QtRasterPanel.cell_clicked: Signal(int)`
+    resolves the clicked spot's y-row through
+    `RasterModel.sort_indices` to the cell id (matches upstream's
+    sigClicked-on-scatter pattern). Viewer connects
+    `raster.cell_clicked → slice_panel.toggle_pin` (toggle
+    semantics — click pinned cell to unpin). Click conflict with
+    `ClickRecenterMixin` resolved in the mixin: skips when
+    `mouse_event.isAccepted()` is True (scatter accepts on point
+    hit, leaving empty-area clicks for the recenter handler).
+  - **Esc shortcut**: registered in the existing keyboard-shortcut
+    block; routes to `slice_panel.clear_pins`.
+  - **Swap rebind** (`_rebind_panels`): added `slice_model.set_active_run(
+    new_detector, new_run.spike_times,
+    np.asarray(new_run.results["time"].values))` +
+    `slice_panel.set_position_centers(grid.centers)` +
+    `slice_panel.rebind_after_swap()` (the latter clears pins +
+    drops the stale buffer).
+  - **Tests** (6 new in test_qt_viewer.py):
+    - viewer constructs slice model + panel from active_run; panel
+      is in the body layout.
+    - slider tick re-renders the slice (using a buffer-resident
+      target so update_for_index actually fires).
+    - window-load installs the buffer.
+    - raster `cell_clicked.emit(3)` toggles the pin.
+    - Esc shortcut clears all pins.
+    - swap rebinds the slice model + clears pins.
+  - **Lessons logged**:
+    - When a test depends on an in-RAM window buffer, the target
+      `t_idx` must fall inside the buffered slice. My first attempt
+      used `t_idx=0` against a 0.5s buffer → silent no-op rendered
+      identical data → test failed with "arrays equal" instead of
+      "out of buffer". Pick targets relative to `payload.indices`,
+      not absolute slider extremes.
+    - Existing test
+      `test_qt_viewer_constructs_full_left_column_stack` checked
+      the outer `_layout` for built-in widgets, but the layout
+      restructure moved them into a nested `_left_column_layout`.
+      Updated the test to match. Pattern: layout restructures
+      always require auditing tests that reach into widget
+      hierarchies.
+
+  Tests: 161 → 167 (6 new + 1 fixture-corrected existing test).
+  Lint + interactive suite green.
 
 ---
 

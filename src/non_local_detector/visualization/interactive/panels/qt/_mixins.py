@@ -59,6 +59,11 @@ class ClickRecenterMixin:
     def _handle_click(self, mouse_event) -> None:
         if self._click_callback is None:
             return
+        # Skip recenter if a child item already handled the click
+        # (e.g. ScatterPlotItem.sigClicked on a spike — that's a
+        # cell-pin action, not a scrub-target).
+        if mouse_event.isAccepted():
+            return
         scene_pos = mouse_event.scenePos()
         view_pos = self.getPlotItem().vb.mapSceneToView(scene_pos)
         self._click_callback(float(view_pos.x()))

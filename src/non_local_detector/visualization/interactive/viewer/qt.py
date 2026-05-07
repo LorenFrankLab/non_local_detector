@@ -31,6 +31,9 @@ from non_local_detector.visualization.interactive.panels.qt.series import (
     LineSeriesPanel,
     ScatterSeriesPanel,
 )
+from non_local_detector.visualization.interactive.panels.qt.slice import (
+    QtSlicePanel,
+)
 from non_local_detector.visualization.interactive.panels.qt.state_prob import (
     QtStateProbabilityPanel,
 )
@@ -54,6 +57,9 @@ from non_local_detector.visualization.interactive.view_models.series import (
     LineSeriesModel,
     MetricSpec,
     ScatterSeriesModel,
+)
+from non_local_detector.visualization.interactive.view_models.slice import (
+    SliceModel,
 )
 from non_local_detector.visualization.interactive.view_models.state_prob import (
     StateProbabilityModel,
@@ -185,6 +191,23 @@ class QtViewer(QtWidgets.QMainWindow):
             self._panel,
         ]
 
+        # Right-column slice panel — per-bin readout of population
+        # likelihood/posterior + predictive overlay + per-cell rows
+        # for cells active in the cursor bin (and pinned cells).
+        self._slice_model = SliceModel(
+            detector=detector,
+            spike_times=active_run.spike_times,
+            time=np.asarray(active_run.results["time"].values),
+        )
+        self._slice_panel = QtSlicePanel(
+            model=self._slice_model, position_centers=grid.centers
+        )
+        # Raster click → toggle pin on the slice panel. The viewer
+        # owns the connection so swap can re-bind cleanly (the panel
+        # references survive a swap; pin state clears via
+        # ``rebind_after_swap``).
+        self._raster_panel.cell_clicked.connect(self._slice_panel.toggle_pin)
+
         # User-supplied extras are owned by the caller; auto-built
         # extras get rebuilt on M-key swap. No way to tell apart
         # post-hoc (both end up as a list) so capture intent here.
@@ -209,15 +232,28 @@ class QtViewer(QtWidgets.QMainWindow):
         # overlays — keeps the window clean for the common case.
         self._controls_bar = self._build_controls_bar()
 
-        # Built-in panels are at fixed layout positions so M-key
-        # swap can rebuild only the extras block.
+        # Two-column body inside the root vertical layout.
+        # Left column: built-in time-axis panels + extras.
+        # Right column: slice panel.
+        # Slider stretches across the full width below both columns.
+        self._left_column_layout = QtWidgets.QVBoxLayout()
+        for panel in self._builtin_panels:
+            self._left_column_layout.addWidget(panel, stretch=1)
+        self._extras_insert_index = self._left_column_layout.count()
+        for extra in self._extra_panels:
+            self._left_column_layout.addWidget(extra, stretch=1)
+        left_column = QtWidgets.QWidget()
+        left_column.setLayout(self._left_column_layout)
+
+        body_layout = QtWidgets.QHBoxLayout()
+        body_layout.addWidget(left_column, stretch=2)
+        body_layout.addWidget(self._slice_panel, stretch=1)
+        body_widget = QtWidgets.QWidget()
+        body_widget.setLayout(body_layout)
+
         self._layout = QtWidgets.QVBoxLayout()
         self._layout.addWidget(self._controls_bar, stretch=0)
-        for panel in self._builtin_panels:
-            self._layout.addWidget(panel, stretch=1)
-        self._extras_insert_index = self._layout.count()
-        for extra in self._extra_panels:
-            self._layout.addWidget(extra, stretch=1)
+        self._layout.addWidget(body_widget, stretch=1)
         self._layout.addWidget(self._slider, stretch=0)
         container = QtWidgets.QWidget()
         container.setLayout(self._layout)
@@ -243,6 +279,7 @@ class QtViewer(QtWidgets.QMainWindow):
             (QtGui.QKeySequence("R"), self._reset_view),
             (QtGui.QKeySequence("N"), self._core.next_event),
             (QtGui.QKeySequence("Shift+N"), self._core.prev_event),
+            (QtGui.QKeySequence("Escape"), self._slice_panel.clear_pins),
         ):
             shortcut = QtGui.QShortcut(key_seq, self)
             shortcut.activated.connect(fn)
@@ -305,6 +342,10 @@ class QtViewer(QtWidgets.QMainWindow):
     def _on_window_loaded(self, payload) -> None:
         for panel in self._all_panels:
             panel.update_window(payload)
+        self._slice_panel.set_window_buffer(payload)
+        # Re-render the slice at the current cursor — the new buffer
+        # may extend coverage past the cursor's previous reach.
+        self._slice_panel.update_for_index(self._slider.value())
 
     def _step_window(self, direction: int) -> None:
         self._core.set_t_center(self._core.t_center + direction * self._core.t_width)
@@ -335,6 +376,10 @@ class QtViewer(QtWidgets.QMainWindow):
     def _on_slider_value_changed(self, value: int) -> None:
         time = self._data_source.time
         self._core.set_t_center(float(time[value]))
+        # Drive the slice panel synchronously off the slider so per-tick
+        # cursor updates land sub-ms (the heavier window load is async
+        # and refreshes the buffer when it commits).
+        self._slice_panel.update_for_index(value)
 
     def _rebind_panels(self, _new_run_name: str) -> None:
         """Rebind all panels to the new active run's detector.
@@ -358,6 +403,14 @@ class QtViewer(QtWidgets.QMainWindow):
         self._raster_model.set_active_run(new_detector, new_run.spike_times)
         self._raster_panel.rebind_after_swap()
 
+        self._slice_model.set_active_run(
+            new_detector,
+            new_run.spike_times,
+            np.asarray(new_run.results["time"].values),
+        )
+        self._slice_panel.set_position_centers(grid.centers)
+        self._slice_panel.rebind_after_swap()
+
         if not self._extra_panels_user_supplied:
             self._rebuild_auto_extras(new_run.extra_metrics)
 
@@ -370,13 +423,15 @@ class QtViewer(QtWidgets.QMainWindow):
         """
         for old_panel in self._extra_panels:
             self._core.off_overlays_changed(old_panel.set_event_overlays)
-            self._layout.removeWidget(old_panel)
+            self._left_column_layout.removeWidget(old_panel)
             old_panel.setParent(None)
             old_panel.deleteLater()
 
         new_extras = _auto_panels_from_extra_metrics(extra_metrics)
         for offset, panel in enumerate(new_extras):
-            self._layout.insertWidget(self._extras_insert_index + offset, panel, 1)
+            self._left_column_layout.insertWidget(
+                self._extras_insert_index + offset, panel, 1
+            )
 
         self._extra_panels = new_extras
         self._all_panels = [*self._builtin_panels, *self._extra_panels]

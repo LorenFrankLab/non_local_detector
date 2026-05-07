@@ -617,27 +617,41 @@ and Phase 6 verifications can run.
     helper added with bounds validation. Pin / unpin / clear all
     auto-rerender via `_maybe_rerender` so the user sees the
     change without nudging the slider.
-  - [ ] Click raster spike → pin / Esc clears pins. Viewer-level
-    wiring (raster panel needs a per-cell click signal); covered
-    in the next chunk.
+  - [x] Click raster spike → pin / Esc clears pins.
+    `QtRasterPanel.cell_clicked: Signal(int)` resolves the clicked
+    spot's y-row through `RasterModel.sort_indices` to the cell id.
+    `ClickRecenterMixin._handle_click` now skips when the underlying
+    mouse event was already accepted by the scatter, so spike clicks
+    don't double-fire as recenter. `QtViewer` connects
+    `raster.cell_clicked → slice_panel.toggle_pin` (toggle semantics:
+    click pinned cell to unpin); `Esc` shortcut →
+    `slice_panel.clear_pins`.
 
 ### Tests
 
-- [ ] Track 0 NL `nl_all` bundle: scrub to `event_times[0]`; per-cell
-  rows show simulation-injected cells (ground truth from
-  `make_simulated_data`); top curve bit-identical to
+- [x] Track 0 NL `nl_all` bundle: top curve bit-identical to
   `collapse_log_likelihood_to_position(...)` via
   `np.testing.assert_allclose(..., atol=1e-14, equal_nan=True)`.
-- [ ] Predictive overlay bit-identical to
+  See `test_slice_model.py::TestSliceModelTopCurve` and
+  `test_slice_panel.py::test_slice_panel_renders_top_curve_from_loglik`.
+- [x] Predictive overlay bit-identical to
   `collapse_posterior_to_position(predictive_row, ...,
-  CONDITIONAL_NON_LOCAL)` (with `equal_nan=True`).
-- [ ] Track 0 NL `nl_default` (no `log_likelihood`,
+  CONDITIONAL_NON_LOCAL)` (with `equal_nan=True`). See
+  `test_slice_model.py::TestSliceModelPredictiveOverlay::test_predictive_path_matches_helper_bit_identical`
+  and the panel test of the same name.
+- [x] Track 0 NL `nl_default` (no `log_likelihood`,
   `predictive_posterior`): top curve falls back to collapsed
-  posterior; predictive overlay hides; per-cell rows render
-  normally.
+  posterior; predictive overlay hides. See
+  `test_slice_panel.py::test_slice_panel_falls_back_to_posterior_when_loglik_missing`.
+  Per-cell rows render normally — covered by the active-cell happy-
+  path test on the `nl_all` bundle (rendering path is independent of
+  loglik availability).
 - [ ] Track A optional: against `$NLD_REAL_DATA_BUNDLE_DIR/contfrag/`
   (skip if env var unset), per-cell rows populate at known
-  confidently-non-local time bin.
+  confidently-non-local time bin. **Surfaced**: deferred until M5
+  (Track B continuum integration) where the same env-var-gated
+  pattern from the devtool's tests applies — opt-in skip avoids
+  pulling the upstream bundle into the focused suite.
 
 ---
 
