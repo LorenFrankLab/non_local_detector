@@ -1,22 +1,70 @@
 """Shared Qt mixins for the panel layer.
 
-``EventOverlayMixin`` provides the default ``set_event_overlays``
-implementation against pyqtgraph primitives. Concrete panels mix it
-in alongside ``pg.PlotWidget`` (or whatever they wrap) so they get
-overlay support for free.
+- ``EventOverlayMixin`` — default ``set_event_overlays`` against
+  pyqtgraph primitives (``InfiniteLine`` / ``LinearRegionItem``).
+- ``ClickRecenterMixin`` — wires ``scene().sigMouseClicked`` to a
+  user-supplied ``Callable[[float], None]`` invoked with the clicked
+  x-coordinate (absolute time in seconds).
+
+Concrete panels mix these in alongside ``pg.PlotWidget`` (or whatever
+they wrap) so they get the shared behavior for free.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pyqtgraph as pg
 from PySide6.QtGui import QColor
+
+
+def bone_lookup_table() -> np.ndarray:
+    """matplotlib `bone_r` analogue as a uint8 LUT — used by heatmap panels."""
+    n = 256
+    t = np.linspace(0, 1, n)
+    # white → blue-grey → black
+    r = (1.0 - t) * 0.875 + (1.0 - 0.875) * (1.0 - t)
+    g = (1.0 - t) * 0.875 + (1.0 - 0.875) * (1.0 - t)
+    b = 1.0 - t
+    return np.stack([r * 255, g * 255, b * 255, np.full(n, 255.0)], axis=-1).astype(
+        np.uint8
+    )
+
 
 if TYPE_CHECKING:
     from non_local_detector.visualization.interactive.view_models.events import (
         EventOverlay,
     )
+
+
+class ClickRecenterMixin:
+    """Wire ``scene().sigMouseClicked`` to a ``click_handler`` callback.
+
+    Subclasses must call ``self._install_click_recenter()`` after
+    ``pg.PlotWidget.__init__`` has run so ``self.scene()`` is
+    available. The callback receives the clicked x-coordinate.
+    """
+
+    _click_callback: Callable[[float], None] | None
+
+    def _install_click_recenter(self) -> None:
+        self._click_callback = None
+        self.scene().sigMouseClicked.connect(self._handle_click)
+
+    def click_handler(self, callback: Callable[[float], None]) -> None:
+        self._click_callback = callback
+
+    def _handle_click(self, mouse_event) -> None:
+        if self._click_callback is None:
+            return
+        scene_pos = mouse_event.scenePos()
+        view_pos = self.getPlotItem().vb.mapSceneToView(scene_pos)
+        self._click_callback(float(view_pos.x()))
+
+    def x_link_target(self):
+        return self.getPlotItem()
 
 
 class EventOverlayMixin:

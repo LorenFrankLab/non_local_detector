@@ -15,21 +15,35 @@ from non_local_detector.visualization.interactive.view_models.base import (
 from non_local_detector.visualization.interactive.view_models.events import (
     EventOverlay,
 )
+from non_local_detector.visualization.interactive.view_models.likelihood import (
+    LikelihoodHeatmapModel,
+)
 from non_local_detector.visualization.interactive.view_models.posterior import (
     PosteriorHeatmapModel,
 )
+from non_local_detector.visualization.interactive.view_models.raster import (
+    RasterModel,
+    RasterPayload,
+)
 from non_local_detector.visualization.interactive.view_models.series import (
     MetricSpec,
+)
+from non_local_detector.visualization.interactive.view_models.state_prob import (
+    StateProbabilityModel,
 )
 
 __all__ = [
     "BinPayload",
     "CellSlice",
     "EventOverlay",
+    "LikelihoodHeatmapModel",
     "MetricSpec",
     "PositionGrid",
     "PosteriorHeatmapModel",
+    "RasterModel",
+    "RasterPayload",
     "RunBundle",
+    "StateProbabilityModel",
     "ViewState",
     "WindowPayload",
 ]

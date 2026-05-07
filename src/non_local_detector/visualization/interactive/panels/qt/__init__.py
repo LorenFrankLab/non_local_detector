@@ -5,10 +5,27 @@ must remain GUI-toolkit-free (CI gate enforces).
 """
 
 from non_local_detector.visualization.interactive.panels.qt._mixins import (
+    ClickRecenterMixin,
     EventOverlayMixin,
+)
+from non_local_detector.visualization.interactive.panels.qt.likelihood import (
+    QtLikelihoodHeatmapPanel,
 )
 from non_local_detector.visualization.interactive.panels.qt.posterior import (
     QtPosteriorHeatmapPanel,
 )
+from non_local_detector.visualization.interactive.panels.qt.raster import (
+    QtRasterPanel,
+)
+from non_local_detector.visualization.interactive.panels.qt.state_prob import (
+    QtStateProbabilityPanel,
+)
 
-__all__ = ["EventOverlayMixin", "QtPosteriorHeatmapPanel"]
+__all__ = [
+    "ClickRecenterMixin",
+    "EventOverlayMixin",
+    "QtLikelihoodHeatmapPanel",
+    "QtPosteriorHeatmapPanel",
+    "QtRasterPanel",
+    "QtStateProbabilityPanel",
+]
