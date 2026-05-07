@@ -107,12 +107,17 @@ _QT_FONT_FAMILY_PREFERENCES = (
     "Noto Sans",
 )
 
-# Layout constants — give heatmap panels a tall stretch and the
-# raster + state-prob panels a compact stretch so the visual weight
-# matches statespacecheck-paper-viewer (heatmaps dominate the column).
-_LEFT_COLUMN_HEATMAP_STRETCH = 3
+# Layout constants mirror statespacecheck-paper-viewer: 1200×900
+# default window, ~70/30 body split, heatmap rows at stretch 2,
+# compact rows at stretch 1, and a right-column slice panel aligned
+# to the posterior heatmap's vertical extent (2 of 8 units).
+_DEFAULT_WINDOW_WIDTH = 1200
+_DEFAULT_WINDOW_HEIGHT = 900
+_LEFT_COLUMN_HEATMAP_STRETCH = 2
 _LEFT_COLUMN_COMPACT_STRETCH = 1
 _LEFT_COLUMN_EXTRA_STRETCH = _LEFT_COLUMN_COMPACT_STRETCH
+_RIGHT_COLUMN_SLICE_STRETCH = 2
+_RIGHT_COLUMN_TRAILING_STRETCH = 6
 
 # Splitter weights for the body's left vs right column. Sum doesn't
 # matter; pyqtgraph divides by total. 7:3 mirrors the paper viewer.
@@ -121,8 +126,11 @@ _BODY_SPLITTER_RIGHT_STRETCH = 3
 
 # Tight margins/spacing so the panels read as one figure rather than
 # four separate boxes.
-_BODY_MARGIN = 2
-_BODY_SPACING = 2
+_OUTER_MARGIN = 4
+_OUTER_SPACING = 4
+_COLUMN_MARGIN = 0
+_COLUMN_SPACING = 2
+_SLICE_COLUMN_SPACING = 0
 
 
 def _format_speed(speed: float) -> str:
@@ -341,6 +349,7 @@ class QtViewer(QtWidgets.QMainWindow):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("non_local_detector — interactive viewer")
+        self.resize(_DEFAULT_WINDOW_WIDTH, _DEFAULT_WINDOW_HEIGHT)
         # Ensure user-closed windows are actually destroyed (otherwise
         # they linger in QApplication.topLevelWidgets() until GC).
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
@@ -466,9 +475,9 @@ class QtViewer(QtWidgets.QMainWindow):
         # statespacecheck-paper-viewer (~70/30).
         self._left_column_layout = QtWidgets.QVBoxLayout()
         self._left_column_layout.setContentsMargins(
-            _BODY_MARGIN, _BODY_MARGIN, _BODY_MARGIN, _BODY_MARGIN
+            _COLUMN_MARGIN, _COLUMN_MARGIN, _COLUMN_MARGIN, _COLUMN_MARGIN
         )
-        self._left_column_layout.setSpacing(_BODY_SPACING)
+        self._left_column_layout.setSpacing(_COLUMN_SPACING)
         for panel in self._builtin_panels:
             stretch = self._builtin_panel_stretch[id(panel)]
             self._left_column_layout.addWidget(panel, stretch=stretch)
@@ -487,13 +496,15 @@ class QtViewer(QtWidgets.QMainWindow):
         # where the right column sits at the top with empty space below.
         self._right_column_layout = QtWidgets.QVBoxLayout()
         self._right_column_layout.setContentsMargins(
-            _BODY_MARGIN, _BODY_MARGIN, _BODY_MARGIN, _BODY_MARGIN
+            _COLUMN_MARGIN, _COLUMN_MARGIN, _COLUMN_MARGIN, _COLUMN_MARGIN
         )
-        self._right_column_layout.setSpacing(_BODY_SPACING)
-        self._right_column_layout.addWidget(self._slice_panel, stretch=0)
+        self._right_column_layout.setSpacing(_SLICE_COLUMN_SPACING)
+        self._right_column_layout.addWidget(
+            self._slice_panel, stretch=_RIGHT_COLUMN_SLICE_STRETCH
+        )
         for bin_panel in self._extra_bin_panels:
             self._right_column_layout.addWidget(bin_panel, stretch=0)
-        self._right_column_layout.addStretch(1)
+        self._right_column_layout.addStretch(_RIGHT_COLUMN_TRAILING_STRETCH)
         right_column = QtWidgets.QWidget()
         right_column.setLayout(self._right_column_layout)
 
@@ -519,9 +530,9 @@ class QtViewer(QtWidgets.QMainWindow):
 
         self._layout = QtWidgets.QVBoxLayout()
         self._layout.setContentsMargins(
-            _BODY_MARGIN, _BODY_MARGIN, _BODY_MARGIN, _BODY_MARGIN
+            _OUTER_MARGIN, _OUTER_MARGIN, _OUTER_MARGIN, _OUTER_MARGIN
         )
-        self._layout.setSpacing(_BODY_SPACING)
+        self._layout.setSpacing(_OUTER_SPACING)
         self._layout.addWidget(self._controls_bar, stretch=0)
         self._layout.addWidget(self._body_splitter, stretch=1)
         self._layout.addWidget(self._slider, stretch=0)

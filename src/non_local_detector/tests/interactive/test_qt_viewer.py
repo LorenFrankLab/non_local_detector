@@ -597,6 +597,26 @@ def test_qt_viewer_body_is_horizontal_qsplitter(
 
 
 @pytest.mark.unit
+def test_qt_viewer_default_window_size_matches_paper_viewer(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Default window dimensions mirror statespacecheck-paper-viewer."""
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _DEFAULT_WINDOW_HEIGHT,
+        _DEFAULT_WINDOW_WIDTH,
+        QtViewer,
+    )
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    assert (_DEFAULT_WINDOW_WIDTH, _DEFAULT_WINDOW_HEIGHT) == (1200, 900)
+    assert viewer.size().width() == _DEFAULT_WINDOW_WIDTH
+    assert viewer.size().height() == _DEFAULT_WINDOW_HEIGHT
+
+
+@pytest.mark.unit
 def test_qt_viewer_body_splitter_stretch_factors_70_30(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
@@ -700,11 +720,14 @@ def test_qt_viewer_right_column_top_aligned_with_trailing_stretch(
 ) -> None:
     """The slice panel is top-aligned: trailing item is a stretch, not a widget.
 
-    A trailing ``addStretch(1)`` keeps the slice panel at its natural
-    height instead of expanding to fill the full window — the paper
-    viewer's right column sits at the top with empty space below.
+    A trailing stretch keeps the slice panel aligned to the posterior
+    heatmap's vertical extent instead of expanding to fill the full window.
     """
-    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _RIGHT_COLUMN_SLICE_STRETCH,
+        _RIGHT_COLUMN_TRAILING_STRETCH,
+        QtViewer,
+    )
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
@@ -714,6 +737,7 @@ def test_qt_viewer_right_column_top_aligned_with_trailing_stretch(
     assert n_items >= 2
     # First item must be the slice panel.
     assert right_layout.itemAt(0).widget() is viewer._slice_panel
+    assert right_layout.stretch(0) == _RIGHT_COLUMN_SLICE_STRETCH
     # Last item must be a spacer (stretch), not a widget.
     last_item = right_layout.itemAt(n_items - 1)
     assert last_item.widget() is None, (
@@ -721,6 +745,7 @@ def test_qt_viewer_right_column_top_aligned_with_trailing_stretch(
         "would otherwise fill the full column height."
     )
     assert last_item.spacerItem() is not None
+    assert right_layout.stretch(n_items - 1) == _RIGHT_COLUMN_TRAILING_STRETCH
 
 
 @pytest.mark.unit

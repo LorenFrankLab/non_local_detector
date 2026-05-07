@@ -115,6 +115,10 @@ def test_slice_panel_pins_axes_and_hidden_row_footprint(
 
     top_autorange = panel._top_plot.getViewBox().state["autoRange"]
     assert top_autorange == [False, False]
+    assert (
+        panel._title_label.sizePolicy().horizontalPolicy()
+        == panel._title_label.sizePolicy().Policy.Ignored
+    )
     for row in panel._per_cell_rows:
         row_autorange = row.plot.getViewBox().state["autoRange"]
         assert row_autorange == [False, False]

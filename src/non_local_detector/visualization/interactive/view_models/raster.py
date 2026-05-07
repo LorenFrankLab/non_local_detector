@@ -74,15 +74,12 @@ class RasterModel:
 
     def update_window(self, t_start: float, t_stop: float) -> RasterPayload:
         """Return per-cell spike times clipped to ``[t_start, t_stop]``."""
-        per_cell = [
-            self._spike_times[cell_id][
-                np.logical_and(
-                    self._spike_times[cell_id] >= t_start,
-                    self._spike_times[cell_id] <= t_stop,
-                )
-            ]
-            for cell_id in self._sort_indices
-        ]
+        per_cell = []
+        for cell_id in self._sort_indices:
+            spikes = self._spike_times[cell_id]
+            i_start = int(np.searchsorted(spikes, t_start, side="left"))
+            i_stop = int(np.searchsorted(spikes, t_stop, side="right"))
+            per_cell.append(spikes[i_start:i_stop])
         return RasterPayload(
             cell_label=self._cell_label,
             sort_indices=self._sort_indices,

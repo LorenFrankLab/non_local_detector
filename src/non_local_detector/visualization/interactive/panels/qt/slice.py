@@ -150,6 +150,11 @@ class QtSlicePanel(QtWidgets.QWidget):
         title_row.setContentsMargins(0, 0, 0, 0)
         self._title_label = QtWidgets.QLabel("")
         self._title_label.setStyleSheet("font-weight: bold;")
+        self._title_label.setMinimumWidth(0)
+        self._title_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
         title_row.addWidget(self._title_label, stretch=1)
         title_row.addWidget(QtWidgets.QLabel("Overlay:"))
         self._overlay_combo = QtWidgets.QComboBox()
