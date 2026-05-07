@@ -70,14 +70,15 @@ def test_qt_raster_panel_shades_non_local_active_bins(
     window. Panel must render exactly one shaded span at that
     location.
     """
-    from PySide6 import QtWidgets
-
     from non_local_detector.analysis.posterior import _non_local_state_ids
     from non_local_detector.visualization.interactive.panels.qt.raster import (
         QtRasterPanel,
     )
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _ensure_qapplication,
+    )
 
-    _ = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = _ensure_qapplication()
     detector = nl_fitted.detector
     nl_ids = _non_local_state_ids(detector)
     assert nl_ids.size > 0

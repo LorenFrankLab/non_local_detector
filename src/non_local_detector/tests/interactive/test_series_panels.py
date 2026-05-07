@@ -18,7 +18,6 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pyqtgraph as pg
-from PySide6 import QtWidgets
 
 from non_local_detector.visualization.interactive.panels.qt.series import (
     IntervalSeriesPanel,
@@ -33,13 +32,14 @@ from non_local_detector.visualization.interactive.view_models.series import (
     MultiLineSeriesModel,
     ScatterSeriesModel,
 )
+from non_local_detector.visualization.interactive.viewer.qt import _ensure_qapplication
 
 pytestmark = pytest.mark.gui
 
 
 @pytest.fixture
 def qapp():
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app = _ensure_qapplication()
     yield app
 
 

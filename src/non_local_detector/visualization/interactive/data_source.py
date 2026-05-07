@@ -219,9 +219,13 @@ class InMemoryDecoderDataSource:
         ``RunBundle.__post_init__``, so this method is unconditional —
         no ``None`` return for the canonical construction path.
         """
-        return np.asarray(
+        probs = np.asarray(
             self.active_run.results["acausal_state_probabilities"].isel(time=sl).values
         )
+        n_states = len(self.active_run.detector.state_names)
+        if probs.ndim == 1 and n_states == 1:
+            return probs[:, np.newaxis]
+        return probs
 
     def load_position(self, sl: slice) -> np.ndarray | None:
         """Window slice of the bundle's true position aligned to decoder time.

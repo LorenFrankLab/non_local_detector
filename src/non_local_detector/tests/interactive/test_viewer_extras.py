@@ -27,9 +27,11 @@ pytestmark = pytest.mark.gui
 
 @pytest.fixture
 def qapp():
-    from PySide6 import QtWidgets
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _ensure_qapplication,
+    )
 
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app = _ensure_qapplication()
     yield app
 
 

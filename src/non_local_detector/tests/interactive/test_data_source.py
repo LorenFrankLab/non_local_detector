@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import xarray as xr
 
 from non_local_detector.tests._simulated_detectors import (
     FittedDetector,
@@ -116,6 +117,33 @@ class TestSingleRunDataSource:
             assert probs.ndim == 2
             assert probs.shape[0] == sl.stop - sl.start
             assert probs.shape[1] == len(ds.active_run.detector.state_names)
+
+    def test_load_state_probabilities_expands_single_state_1d_results(
+        self,
+        multi_run_bundles: dict[str, RunBundle],
+    ) -> None:
+        """Single-state NetCDF round-trips may load state probabilities as 1D."""
+        bundle = multi_run_bundles["dec"]
+        results = bundle.results.copy()
+        results["acausal_state_probabilities"] = xr.DataArray(
+            np.ones(results.sizes["time"]),
+            dims=("time",),
+            coords={"time": results["time"].values},
+        )
+        ds = InMemoryDecoderDataSource.from_single(
+            RunBundle(
+                results=results,
+                detector=bundle.detector,
+                spike_times=bundle.spike_times,
+                position_time=bundle.position_time,
+                position=bundle.position,
+                speed=bundle.speed,
+            )
+        )
+        sl = slice(2, 8)
+        probs = ds.load_state_probabilities(sl)
+        assert probs.shape == (sl.stop - sl.start, 1)
+        np.testing.assert_array_equal(probs[:, 0], 1.0)
 
     def test_slice_at_index_likelihood_raises_when_missing(
         self, run_bundles: dict[str, RunBundle]
@@ -415,7 +443,6 @@ class TestPositionLoad:
     ) -> None:
         """Repeat calls return the same array object; swap re-derives."""
         ds = InMemoryDecoderDataSource(multi_run_bundles)
-        sl = ds.window_indices(t_center=float(ds.time[ds.n_time // 2]), t_width=1.0)
         first = ds._position_at_decoder_time()
         assert first is not None
         second = ds._position_at_decoder_time()

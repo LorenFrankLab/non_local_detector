@@ -42,6 +42,32 @@ _PREDICTIVE_PEN = pg.mkPen(
     color="#ff7f0e", width=1, style=QtCore.Qt.PenStyle.DashLine
 )
 _PER_CELL_PEN = pg.mkPen(color="#444444", width=1)
+_SLICE_Y_MIN = -0.02
+_SLICE_Y_MAX = 1.05
+
+
+def _pin_slice_axes(plot: pg.PlotWidget, position_centers: np.ndarray) -> None:
+    """Keep slice subplots from auto-ranging/reflowing on every tick."""
+    centers = np.asarray(position_centers, dtype=float).squeeze()
+    if centers.size == 0:
+        return
+    x_min = float(np.nanmin(centers))
+    x_max = float(np.nanmax(centers))
+    if not np.isfinite(x_min) or not np.isfinite(x_max):
+        return
+    if x_min == x_max:
+        x_min -= 0.5
+        x_max += 0.5
+    vb = plot.getViewBox()
+    vb.disableAutoRange()
+    vb.setXRange(x_min, x_max, padding=0)
+    vb.setYRange(_SLICE_Y_MIN, _SLICE_Y_MAX, padding=0)
+    vb.setLimits(
+        xMin=x_min,
+        xMax=x_max,
+        yMin=_SLICE_Y_MIN,
+        yMax=_SLICE_Y_MAX,
+    )
 
 
 class _PerCellRow:
@@ -59,20 +85,35 @@ class _PerCellRow:
         self.plot.setMouseEnabled(x=False, y=False)
         self.plot.hideAxis("bottom")
         self.plot.hideAxis("left")
+        _pin_slice_axes(self.plot, position_centers)
         _empty = np.empty(0, dtype=float)
         self.curve = self.plot.plot(_empty, _empty, pen=_PER_CELL_PEN)
         layout.addWidget(self.label)
         layout.addWidget(self.plot, stretch=1)
         self._position_centers = np.asarray(position_centers).squeeze()
+        self._last_label = ""
+        size_policy = self.container.sizePolicy()
+        size_policy.setRetainSizeWhenHidden(True)
+        self.container.setSizePolicy(size_policy)
         self.container.setVisible(False)
 
     def show_cell(self, label: str, place_field_norm: np.ndarray) -> None:
-        self.label.setText(label)
-        self.curve.setData(self._position_centers, place_field_norm)
-        self.container.setVisible(True)
+        if label != self._last_label:
+            self.label.setText(label)
+            self.curve.setData(self._position_centers, place_field_norm)
+            self._last_label = label
+        if not self.container.isVisible():
+            self.container.setVisible(True)
+
+    def set_position_centers(self, centers: np.ndarray) -> None:
+        self._position_centers = np.asarray(centers).squeeze()
+        _pin_slice_axes(self.plot, self._position_centers)
+        self._last_label = ""
 
     def hide(self) -> None:
-        self.container.setVisible(False)
+        if self.container.isVisible():
+            self.container.setVisible(False)
+        self._last_label = ""
 
 
 class QtSlicePanel(QtWidgets.QWidget):
@@ -123,6 +164,7 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._top_plot.setLabel("left", "Probability / Likelihood")
         self._top_plot.setLabel("bottom", "Position [cm]")
         self._top_plot.setMouseEnabled(x=False, y=False)
+        _pin_slice_axes(self._top_plot, self._position_centers)
         # Pre-init with explicit empty arrays so ``getData()`` always
         # returns ndarrays (pyqtgraph returns ``(None, None)`` when
         # data was set with empty Python lists or never set at all).
@@ -249,8 +291,9 @@ class QtSlicePanel(QtWidgets.QWidget):
     def set_position_centers(self, centers: np.ndarray) -> None:
         """Re-bind the position grid (called on M-key swap)."""
         self._position_centers = np.asarray(centers).squeeze()
+        _pin_slice_axes(self._top_plot, self._position_centers)
         for row in self._per_cell_rows:
-            row._position_centers = self._position_centers  # noqa: SLF001
+            row.set_position_centers(self._position_centers)
 
     def rebind_after_swap(self) -> None:
         """Drop the stale buffer after the model schema changes.

@@ -30,9 +30,11 @@ pytestmark = pytest.mark.gui
 
 @pytest.fixture
 def qapp():
-    from PySide6 import QtWidgets
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _ensure_qapplication,
+    )
 
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app = _ensure_qapplication()
     yield app
 
 
@@ -97,6 +99,26 @@ def test_slice_panel_renders_top_curve_from_loglik(
     x_data, y_data = panel._top_curve_item.getData()
     np.testing.assert_array_equal(x_data, centers)
     np.testing.assert_allclose(y_data, expected, atol=1e-14, equal_nan=True)
+
+
+@pytest.mark.unit
+def test_slice_panel_pins_axes_and_hidden_row_footprint(
+    qapp,
+    run_bundles: dict[str, RunBundle],
+) -> None:
+    """Per-tick rendering should not trigger slice autorange/layout churn."""
+    bundle = run_bundles["nl_all"]
+    detector = bundle.detector
+    centers = np.asarray(detector.environments[0].place_bin_centers_).squeeze()
+    model = SliceModel(detector, bundle.spike_times, bundle.results["time"].values)
+    panel = _make_panel(qapp, model, centers)
+
+    top_autorange = panel._top_plot.getViewBox().state["autoRange"]
+    assert top_autorange == [False, False]
+    for row in panel._per_cell_rows:
+        row_autorange = row.plot.getViewBox().state["autoRange"]
+        assert row_autorange == [False, False]
+        assert row.container.sizePolicy().retainSizeWhenHidden()
 
 
 @pytest.mark.unit

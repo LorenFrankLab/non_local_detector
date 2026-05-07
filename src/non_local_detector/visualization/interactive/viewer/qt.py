@@ -7,6 +7,7 @@ This module is the only place in the codebase that creates a
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
@@ -74,6 +75,9 @@ if TYPE_CHECKING:
     pass
 
 
+_LOAD_LOGGER = logging.getLogger(__name__)
+
+
 # Auto-scroll constants (mirror upstream statespacecheck). Multipliers
 # of real-time playback rate; tick fires at AUTOSCROLL_TICK_HZ Hz and
 # advances the slider by ``rate / TICK_HZ`` seconds per tick.
@@ -89,6 +93,19 @@ AUTOSCROLL_SPEED_OPTIONS: tuple[float, ...] = (
     8.0,
 )
 AUTOSCROLL_DEFAULT_SPEED = 0.05
+
+# Qt's offscreen macOS default can report "Sans Serif" even though no
+# such family is installed, which triggers a slow alias-population path
+# the first time labels render. Pick an installed concrete family once
+# per QApplication.
+_QT_FONT_FAMILY_PREFERENCES = (
+    ".AppleSystemUIFont",
+    "Arial",
+    "Helvetica",
+    "DejaVu Sans",
+    "Liberation Sans",
+    "Noto Sans",
+)
 
 # Layout constants — give heatmap panels a tall stretch and the
 # raster + state-prob panels a compact stretch so the visual weight
@@ -113,6 +130,27 @@ def _format_speed(speed: float) -> str:
     if speed >= 1.0 and float(speed).is_integer():
         return f"{speed:.0f}×"
     return f"{speed:.2g}×"
+
+
+def _ensure_qapplication() -> QtWidgets.QApplication:
+    """Return the singleton ``QApplication`` with a concrete installed font."""
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ensure_concrete_application_font(app)
+    return app
+
+
+def _ensure_concrete_application_font(app: QtWidgets.QApplication) -> None:
+    """Replace Qt's missing generic default font family when needed."""
+    families = set(QtGui.QFontDatabase.families())
+    current = app.font().family()
+    if current in families:
+        return
+    for family in _QT_FONT_FAMILY_PREFERENCES:
+        if family in families:
+            font = QtGui.QFont(app.font())
+            font.setFamily(family)
+            app.setFont(font)
+            return
 
 
 class _LoadSignals(QtCore.QObject):
@@ -198,7 +236,19 @@ class QtBackendAdapter(BackendAdapter):
         self._inflight = True
 
         def _work() -> None:
-            payload = self._build_payload(state)
+            # ``_inflight`` MUST be cleared on completion, success or
+            # failure. We always emit a signal back to the UI thread —
+            # ``_deliver_payload`` clears the flag in its ``finally``
+            # block. Without this, an exception in ``_build_payload``
+            # would leave ``_inflight=True`` forever and the backend
+            # would silently drop every subsequent ``schedule_window_load``
+            # because the new state would just park in ``_pending_state``.
+            try:
+                payload = self._build_payload(state)
+            except Exception as exc:  # noqa: BLE001 — see comment above
+                if not self._closed:
+                    self._signals.done.emit((None, exc))
+                return
             if self._closed:
                 return
             self._signals.done.emit((on_done, payload))
@@ -206,13 +256,29 @@ class QtBackendAdapter(BackendAdapter):
         self._executor.submit(_work)
 
     def _deliver_payload(
-        self, result: tuple[Callable[[WindowPayload], None], WindowPayload]
+        self,
+        result: tuple[
+            Callable[[WindowPayload], None] | None, WindowPayload | BaseException
+        ],
     ) -> None:
         try:
             if self._closed:
                 return
-            on_done, payload = result
-            on_done(payload)
+            on_done, payload_or_exc = result
+            if on_done is None:
+                # Worker raised; ``payload_or_exc`` is the exception.
+                # Log and let the UI carry on so the user can keep
+                # navigating. The previous view stays on screen.
+                exc = payload_or_exc
+                assert isinstance(exc, BaseException)
+                _LOAD_LOGGER.warning(
+                    "interactive viewer window-load worker raised; "
+                    "view will refresh on the next request",
+                    exc_info=exc,
+                )
+                return
+            assert not isinstance(payload_or_exc, BaseException)
+            on_done(payload_or_exc)
         finally:
             self._inflight = False
             # Burst handling: if a new state arrived during the flight,
@@ -989,7 +1055,7 @@ def launch_qt(
     else:
         data_source = InMemoryDecoderDataSource(bundles)
 
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app = _ensure_qapplication()
     pg.setConfigOption("background", "w")
     pg.setConfigOption("foreground", "k")
 

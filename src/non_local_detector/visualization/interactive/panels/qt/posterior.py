@@ -18,6 +18,7 @@ from non_local_detector.visualization.interactive.panels.qt._mixins import (
     EventOverlayMixin,
     PositionTraceMixin,
     bone_lookup_table,
+    position_grid_layout,
 )
 
 if TYPE_CHECKING:
@@ -52,7 +53,7 @@ class QtPosteriorHeatmapPanel(
     ) -> None:
         super().__init__(parent=parent, background="w")
         self._model = model
-        self._position_centers = np.asarray(position_centers).squeeze()
+        self._set_position_grid(position_centers)
         self._vmax = float(vmax)
         self._image_item = pg.ImageItem(axisOrder="row-major")
         self._image_item.setLookupTable(bone_lookup_table())
@@ -81,7 +82,23 @@ class QtPosteriorHeatmapPanel(
 
     def set_position_centers(self, centers: np.ndarray) -> None:
         """Re-bind the y-axis position grid (called on M-key swap)."""
-        self._position_centers = np.asarray(centers).squeeze()
+        self._set_position_grid(centers)
+
+    def _set_position_grid(self, centers: np.ndarray) -> None:
+        """Cache the layout used by ``setRect`` + the position trace.
+
+        Pads by half a uniform step so pixel CENTERS sit at bin
+        centers — the trace and the heatmap bins land on the same
+        pixel rows even on non-uniform grids.
+        """
+        (
+            self._position_centers,
+            self._y0,
+            self._y1,
+            self._dy_half,
+            self._uniform_step,
+            self._arange_n_pos,
+        ) = position_grid_layout(centers)
 
     def _set_image(self, collapsed: np.ndarray, time: np.ndarray) -> None:
         # ImageItem rows are y, columns are x (axisOrder="row-major").
@@ -89,11 +106,13 @@ class QtPosteriorHeatmapPanel(
         # on y — so transpose before set.
         self._image_item.setImage(collapsed.T, autoLevels=False)
         # Map x to time, y to position so axes display real units.
+        # Pad the y bounds by half a bin so each pixel CENTER sits at
+        # the bin center, matching ``statespacecheck-paper-viewer``'s
+        # convention. Without the pad the position trace would be
+        # half a bin off the heatmap rows.
         if time.size and self._position_centers.size:
             x_min = float(time[0])
             x_extent = float(time[-1] - time[0]) if time.size > 1 else 1.0
-            y_min = float(self._position_centers.min())
-            y_extent = float(
-                self._position_centers.max() - self._position_centers.min()
-            )
+            y_min = self._y0 - self._dy_half
+            y_extent = (self._y1 - self._y0) + 2 * self._dy_half
             self._image_item.setRect(pg.QtCore.QRectF(x_min, y_min, x_extent, y_extent))

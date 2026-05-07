@@ -37,9 +37,11 @@ pytestmark = pytest.mark.gui
 @pytest.fixture
 def qapp():
     """Provide a singleton QApplication for all GUI tests."""
-    from PySide6 import QtWidgets
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _ensure_qapplication,
+    )
 
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    app = _ensure_qapplication()
     yield app
 
 
@@ -766,12 +768,35 @@ def test_window_payload_carries_position_for_visible_window(
     assert np.all(np.isfinite(payload.position))
 
 
+def _expected_trace_y(panel, position: np.ndarray) -> np.ndarray:
+    """Reference cm→pixel-y mapping (matches the panel's PositionTraceMixin).
+
+    Bin centers sit at pixel centers (via the half-bin-padded
+    ``setRect``), so plot a position cm at
+    ``y0 + np.interp(cm, centers, arange) * uniform_step``. Equivalent
+    to ``statespacecheck-paper-viewer``'s
+    ``update_position_trajectory``.
+    """
+    fractional_idx = np.interp(position, panel._position_centers, panel._arange_n_pos)
+    return panel._y0 + fractional_idx * panel._uniform_step
+
+
 @pytest.mark.unit
 def test_posterior_panel_renders_white_position_trace(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
 ) -> None:
-    """``QtPosteriorHeatmapPanel`` draws a 1-px white trace at the true position."""
+    """``QtPosteriorHeatmapPanel`` draws a 1-px white trace mapped to pixel-y.
+
+    The trace's y values are real cm interpolated through the
+    panel's grid into the heatmap's pixel-center y so bin ``i`` of
+    the trace lines up with row ``i`` of the image. On a uniform
+    grid the mapping is identity in the interior, but values that
+    exceed the grid endpoints clip to the last pixel center — the
+    simulated fixture's position briefly hits 170 cm against a
+    ~169 cm last-bin center, so we assert against the mapped value
+    rather than raw cm.
+    """
     from non_local_detector.visualization.interactive.viewer.qt import QtViewer
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
@@ -784,7 +809,8 @@ def test_posterior_panel_renders_white_position_trace(
     assert x is not None and y is not None
     assert x.size == payload.time.size
     np.testing.assert_array_equal(x, payload.time)
-    np.testing.assert_allclose(y, payload.position, atol=1e-6)
+    expected = _expected_trace_y(viewer._panel, payload.position)
+    np.testing.assert_allclose(y, expected, atol=1e-6)
 
 
 @pytest.mark.unit
@@ -803,7 +829,8 @@ def test_likelihood_panel_renders_white_position_trace(
     trace = viewer._likelihood_panel._position_trace
     x, y = trace.getData()
     assert x.size == payload.time.size
-    np.testing.assert_allclose(y, payload.position, atol=1e-6)
+    expected = _expected_trace_y(viewer._likelihood_panel, payload.position)
+    np.testing.assert_allclose(y, expected, atol=1e-6)
 
 
 @pytest.mark.unit
@@ -875,7 +902,8 @@ def test_position_trace_updates_after_active_run_swap(
     x, y = viewer._panel._position_trace.getData()
     assert x is not None
     assert x.size == payload_after.time.size
-    np.testing.assert_allclose(y, payload_after.position, atol=1e-6)
+    expected = _expected_trace_y(viewer._panel, payload_after.position)
+    np.testing.assert_allclose(y, expected, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -1017,4 +1045,207 @@ def test_backend_only_one_inflight_at_a_time(
     assert len(submitted) == 2, (
         f"latest pending state must run after the held job completes; "
         f"got {submitted}"
+    )
+
+
+@pytest.mark.unit
+def test_backend_recovers_when_worker_raises(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+    caplog,
+) -> None:
+    """A ``_build_payload`` that raises must not freeze the backend.
+
+    Bug repro: ``_flush_pending`` set ``_inflight=True`` before
+    submitting; if the worker raised before emitting the done signal,
+    ``_deliver_payload`` never ran and ``_inflight`` stayed True
+    forever. Subsequent ``schedule_window_load`` calls only parked
+    pending state, so the viewer silently stopped loading windows.
+    """
+    import logging
+
+    from PySide6 import QtCore
+
+    from non_local_detector.visualization.interactive.viewer.core import (
+        ViewerCore,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    backend = viewer._backend
+
+    # Phase 1: drive the first load through a raising _build_payload.
+    real_build_payload = backend._build_payload
+    raise_now = {"value": True}
+
+    def _flaky_build_payload(state):
+        if raise_now["value"]:
+            raise RuntimeError("simulated worker failure")
+        return real_build_payload(state)
+
+    backend._build_payload = _flaky_build_payload  # type: ignore[assignment]
+
+    core = ViewerCore(ds, backend)
+    # Capture against this module's logger explicitly so the test
+    # doesn't depend on propagation to root.
+    caplog.set_level(
+        logging.WARNING,
+        logger="non_local_detector.visualization.interactive.viewer.qt",
+    )
+    core.set_t_center(float(ds.time[ds.n_time // 2 + 1]))
+
+    # Drain the full ``debounce timer → worker → deliver`` cycle.
+    # ``_inflight`` is False at the moment we return from
+    # ``schedule_window_load`` (the debounce hasn't fired yet), so a
+    # ``while _inflight`` loop would exit immediately. Wait until both
+    # the pending-state slot and the inflight flag are cleared.
+    deadline = QtCore.QElapsedTimer()
+    deadline.start()
+    while (
+        backend._pending_state is not None
+        or backend._inflight
+        or backend._debounce_timer.isActive()
+    ) and deadline.elapsed() < 500:
+        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 5)
+
+    assert backend._inflight is False, (
+        "worker exception must clear _inflight via the delivery path"
+    )
+    # The error should have been logged through the deliver path so
+    # the failure isn't silent.
+    assert any(
+        "window-load worker raised" in rec.getMessage()
+        for rec in caplog.records
+    ), (
+        f"worker exception should be logged; got records: "
+        f"{[rec.getMessage() for rec in caplog.records]!r}"
+    )
+
+    # Phase 2: stop raising; a fresh schedule must complete normally.
+    raise_now["value"] = False
+    delivered: list[int] = []
+    core.on_window_loaded(lambda payload: delivered.append(payload.request_id))
+
+    core.set_t_center(float(ds.time[ds.n_time // 2 + 2]))
+    deadline.restart()
+    while not delivered and deadline.elapsed() < 1000:
+        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 5)
+    assert delivered, (
+        "schedule after worker exception must run to completion; "
+        "_inflight likely never cleared"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Position trace registration on non-uniform grids — interpolate cm through
+# the grid's pixel-y coords so the white trace lines up with image rows.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_position_trace_maps_through_non_uniform_grid(
+    qapp,
+    nl_fitted: FittedDetector,
+) -> None:
+    """Real-cm position is interpolated to the heatmap's uniform pixel-y.
+
+    On a non-uniform position grid (e.g. linearised W-track), plotting
+    raw cm on top of the image misregisters the trace against the
+    image rows because ``ImageItem.setRect`` distributes rows
+    uniformly between ``centers.min()`` and ``.max()``. The fix:
+    interpolate cm through ``position_centers`` to a uniform-pixel
+    space so a position falling in bin ``i`` is plotted at the y of
+    image row ``i``.
+    """
+    from non_local_detector.visualization.interactive.panels.qt.posterior import (
+        QtPosteriorHeatmapPanel,
+    )
+    from non_local_detector.visualization.interactive.view_models.base import (
+        WindowPayload,
+    )
+    from non_local_detector.visualization.interactive.view_models.posterior import (
+        PosteriorHeatmapModel,
+    )
+
+    detector = nl_fitted.detector
+    # Synthetic non-uniform grid: pack the first half densely then
+    # spread the second half. Real W-track linearisation looks like
+    # this around junctions.
+    n_pos = 10
+    centers = np.array(
+        [0.0, 0.5, 1.0, 1.5, 2.0, 5.0, 10.0, 20.0, 40.0, 80.0],
+        dtype=np.float64,
+    )
+    assert centers.size == n_pos
+    panel = QtPosteriorHeatmapPanel(
+        model=PosteriorHeatmapModel(detector),
+        position_centers=centers,
+    )
+
+    # Position vector targets bin 5 (cm == 5.0). On the non-uniform
+    # grid that's row 5 of n_pos; the image row's y-center for a 10-
+    # row image spanning [0, 80] is at y_min + (5.5 / 10) * 80 = 44.0.
+    time = np.linspace(0.0, 1.0, 5)
+    position = np.array([5.0, 5.0, 5.0, 5.0, 5.0], dtype=np.float64)
+    posterior = nl_fitted.results["acausal_posterior"].values[:5]
+    panel.update_window(
+        WindowPayload(
+            request_id=0,
+            time=time,
+            indices=slice(0, 5),
+            posterior=posterior,
+            position=position,
+        )
+    )
+
+    _, y = panel._position_trace.getData()
+    # Expected: np.interp(5.0, centers, np.linspace(0, 80, 10))
+    image_y = np.linspace(centers.min(), centers.max(), centers.size)
+    expected = np.interp(position, centers, image_y)
+    np.testing.assert_allclose(y, expected, atol=1e-12)
+    # And critically, the mapped y is NOT the raw cm.
+    assert not np.allclose(y, position), (
+        "raw cm passed through unmapped — trace would misregister"
+    )
+
+
+@pytest.mark.unit
+def test_position_trace_uniform_grid_round_trips(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """On a uniform grid, the cm→pixel-y mapping is the identity.
+
+    Guards against the fix introducing drift on the common
+    simulated-data case where position bins are evenly spaced.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    viewer._on_window_loaded(payload)
+
+    centers = viewer._panel._position_centers
+    assert centers.size > 1
+    # Verify uniformity — if this fixture ever moves to a non-uniform
+    # grid the assertion will surface and we'll know to update the test.
+    spacings = np.diff(centers)
+    assert np.allclose(spacings, spacings[0], atol=1e-9), (
+        "fixture position grid is no longer uniform; rewrite this test"
+    )
+
+    _, y = viewer._panel._position_trace.getData()
+    expected = _expected_trace_y(viewer._panel, payload.position)
+    np.testing.assert_allclose(y, expected, atol=1e-6)
+    # On a uniform grid the mapping is identity for positions
+    # *inside* the grid range. Ensure that's what the values
+    # look like (with the simulated fixture's brief over-shoot
+    # clipped to the last bin center, which is what the heatmap
+    # itself does).
+    centers = viewer._panel._position_centers
+    in_range = (payload.position >= centers[0]) & (payload.position <= centers[-1])
+    np.testing.assert_allclose(
+        y[in_range], payload.position[in_range], atol=1e-6
     )

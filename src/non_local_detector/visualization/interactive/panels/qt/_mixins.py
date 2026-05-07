@@ -108,8 +108,10 @@ class CursorMarkersMixin:
 
     _center_line: pg.InfiniteLine
     _active_bin_band: pg.LinearRegionItem
+    _cursor_marker_bounds: tuple[float, float, float] | None
 
     def _install_cursor_markers(self) -> None:
+        self._cursor_marker_bounds = None
         self._center_line = pg.InfiniteLine(
             angle=90,
             pos=0.0,
@@ -134,11 +136,50 @@ class CursorMarkersMixin:
         self, t_center: float, t_lo: float, t_hi: float
     ) -> None:
         """Move both markers in lockstep. Called by ``QtViewer``."""
-        self._center_line.setPos(float(t_center))
-        self._active_bin_band.setRegion([float(t_lo), float(t_hi)])
+        bounds = (float(t_center), float(t_lo), float(t_hi))
+        if bounds == self._cursor_marker_bounds:
+            return
+        self._cursor_marker_bounds = bounds
+        self._center_line.setPos(bounds[0])
+        self._active_bin_band.setRegion([bounds[1], bounds[2]])
 
 
 _POSITION_TRACE_Z = 10  # Above the heatmap image (z=0 default).
+
+
+def position_grid_layout(
+    position_centers: np.ndarray,
+) -> tuple[np.ndarray, float, float, float, float, np.ndarray]:
+    """Return the heatmap-y layout for a set of position bin centers.
+
+    Ports the convention used by ``statespacecheck-paper-viewer``:
+    bin centers are placed at *pixel centers*, so the heatmap rect
+    must be padded by half a uniform step on each side and the
+    cm→pixel-y mapping is
+
+        fractional_idx = np.interp(cm, position_centers, arange_n_pos)
+        pixel_y         = y0 + fractional_idx * uniform_step
+
+    Returns ``(centers, y0, y1, dy_half, uniform_step, arange_n_pos)``.
+    Edge cases (``n_pos == 0`` or ``1``) collapse the step + half to
+    zero so callers can use the values uniformly.
+    """
+    centers = np.asarray(position_centers, dtype=np.float64).squeeze()
+    if centers.ndim == 0:
+        centers = centers[None]
+    n_pos = int(centers.shape[0])
+    if n_pos == 0:
+        return centers, 0.0, 0.0, 0.0, 0.0, np.empty(0, dtype=np.float64)
+    y0 = float(centers[0])
+    y1 = float(centers[-1])
+    if n_pos > 1:
+        uniform_step = (y1 - y0) / (n_pos - 1)
+        dy_half = uniform_step / 2.0
+    else:
+        uniform_step = 0.0
+        dy_half = 0.0
+    arange = np.arange(n_pos, dtype=np.float64)
+    return centers, y0, y1, dy_half, uniform_step, arange
 
 
 class PositionTraceMixin:
@@ -168,12 +209,38 @@ class PositionTraceMixin:
     def _set_position_trace(
         self, time: np.ndarray, position: np.ndarray | None
     ) -> None:
-        """Update the white trace; pass ``None`` to clear."""
+        """Update the white trace; pass ``None`` to clear.
+
+        Position values are real-cm coordinates that may live on a
+        non-uniform grid (e.g. linearised W-track). The heatmap
+        ``ImageItem`` lays pixel CENTERS at ``position_centers`` (via
+        the half-bin-padded ``setRect`` in the panel), so the trace
+        is mapped through the same convention: convert each cm to a
+        fractional bin index against ``position_centers``, then to a
+        uniform-pixel-y via ``y0 + frac_idx * uniform_step``. This is
+        the same mapping ``statespacecheck-paper-viewer`` uses.
+
+        Subclasses provide ``_position_centers``, ``_y0``,
+        ``_uniform_step``, and ``_arange_n_pos`` (computed once via
+        ``position_grid_layout`` at panel init / swap).
+        """
         if position is None or position.size == 0:
             self._position_trace.setData([], [])
             return
-        # ``np.interp`` may return float64; PlotDataItem handles either.
-        self._position_trace.setData(np.asarray(time), np.asarray(position))
+        arange = getattr(self, "_arange_n_pos", None)
+        centers = getattr(self, "_position_centers", None)
+        if arange is None or centers is None or arange.size == 0:
+            # Fallback: no grid available, plot raw cm. Only hit by
+            # tests that drive the mixin in isolation.
+            self._position_trace.setData(np.asarray(time), np.asarray(position))
+            return
+        position = np.asarray(position)
+        if arange.size == 1:
+            mapped = np.full_like(position, getattr(self, "_y0", 0.0), dtype=np.float64)
+        else:
+            fractional_idx = np.interp(position, centers, arange)
+            mapped = self._y0 + fractional_idx * self._uniform_step
+        self._position_trace.setData(np.asarray(time), mapped)
 
     def _clear_position_trace(self) -> None:
         self._position_trace.setData([], [])
