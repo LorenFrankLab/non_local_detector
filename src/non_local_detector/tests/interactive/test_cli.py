@@ -119,3 +119,66 @@ def test_cli_requires_at_least_one_run() -> None:
     with pytest.raises(SystemExit) as exc_info:
         app_main([])
     assert exc_info.value.code != 0
+
+
+@pytest.mark.unit
+def test_cli_run_from_dir_loads_bundle_directory(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """``--run-from-dir name:dir/`` expands to the four canonical paths."""
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    _save_bundle_files(bundle_dir, nl_fitted, sim_session)
+
+    import non_local_detector.visualization.interactive.viewer.qt as qt_mod
+
+    original_launch = qt_mod.launch_qt
+
+    def _launch_no_block(bundles, **kwargs):
+        kwargs["block"] = False
+        return original_launch(bundles, **kwargs)
+
+    qt_mod.launch_qt = _launch_no_block
+    try:
+        exit_code = app_main(
+            ["--run-from-dir", f"default:{bundle_dir}", "--t-width", "0.5"]
+        )
+    finally:
+        qt_mod.launch_qt = original_launch
+
+    assert exit_code == 0
+
+
+@pytest.mark.unit
+def test_cli_run_from_dir_rejects_missing_directory(tmp_path: Path) -> None:
+    nonexistent = tmp_path / "no_such_dir"
+    with pytest.raises(SystemExit) as exc_info:
+        app_main(["--run-from-dir", f"default:{nonexistent}"])
+    assert exc_info.value.code != 0
+
+
+@pytest.mark.unit
+def test_cli_run_from_dir_rejects_incomplete_bundle(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """Missing one of the four expected files must surface a clear error."""
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    _save_bundle_files(bundle_dir, nl_fitted, sim_session)
+    (bundle_dir / "spikes.npz").unlink()
+
+    with pytest.raises(SystemExit) as exc_info:
+        app_main(["--run-from-dir", f"default:{bundle_dir}"])
+    assert exc_info.value.code != 0
+
+
+@pytest.mark.unit
+def test_cli_run_from_dir_rejects_malformed_arg() -> None:
+    """Missing colon → clear argparse error."""
+    with pytest.raises(SystemExit) as exc_info:
+        app_main(["--run-from-dir", "no_colon_here"])
+    assert exc_info.value.code != 0

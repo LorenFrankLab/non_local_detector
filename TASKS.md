@@ -549,9 +549,13 @@ and Phase 6 verifications can run.
   should be the cache or the intermediates.
 - [x] Writes a CLI-compatible bundle directory at `--out` with
   `results.nc`, `model.pkl`, `spikes.npz`, `position.parquet` (the
-  four files the viewer's `--run` flag reads). The `--run-from-dir`
-  convenience flag mentioned in the plan is a future M4 polish item;
-  the four-file format itself is sufficient to consume via `--run`.
+  four files the viewer's `--run-from-dir` flag reads, or
+  `--run` with the explicit four paths).
+- [x] Add `--run-from-dir name:dir/` to `app.py` so devtool output
+  can be loaded as `--run-from-dir continuous:bundles/continuous/`
+  without expanding the four paths by hand. Validates dir exists +
+  contains the four bundle files; mixes with `--run` for hybrid
+  multi-run setups.
 - [x] Optional flags: `--results-nc <path>`, `--model-pkl <path>`,
   `--results-from-zarr` (with explicit `acausal_posterior` +
   `acausal_state_probabilities` validation when substituting the

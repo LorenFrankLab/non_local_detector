@@ -15,11 +15,12 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 > What I'm working on right now. Update when context-switching.
 
 **M1+M2+M3 complete and committed; M3 review fixes committed in
-`e000eb8`.** **M4 Track A devtool complete (uncommitted)**:
-`bundle-from-statespacecheck-cache` CLI under
-`devtools/bundle_from_statespacecheck.py`, 10 passing tests + 1
-zarr-skip. Next M4 task: Track 0 SliceModel/QtSlicePanel work
-(pending user approval on the devtool diff).
+`e000eb8`. M4 Track A devtool committed across `eab0478` (initial),
+`97bb59e` (joblib loader fix), `a958a50` (load_results scalar-coord
+filter).** **`--run-from-dir` flag added (uncommitted)**: `app.py`
+now expands `--run-from-dir name:dir/` to the four bundle paths so
+devtool output can be loaded directly. Next M4 task: Track 0
+SliceModel/QtSlicePanel.
 
 **Important user-set rule (do not violate):**
 
@@ -246,15 +247,26 @@ Latest at top:
     - `--results-nc` override + `__main__.main` argv dispatch +
       position parquet preserves time index.
   - **Plan deferrals (surfaced)**:
-    - `--run-from-dir` convenience flag in `app.py` deferred to a
-      later M4 polish task; the four-file output is fully consumable
-      via the existing `--run` flag.
+    - ~~`--run-from-dir` convenience flag~~ — added in the
+      follow-up commit (see "M4 `--run-from-dir`" entry below).
     - Full `NLD_REAL_DATA_BUNDLE_DIR`-rooted bundle-build docs
       deferred to Phase 6 docs pass; CLI `--help` covers
       per-invocation usage now.
 
   Tests: 120 → 130 (10 new + 1 skip). Lint + suite green with
   `-m "not slow"`.
+- **M4 `--run-from-dir` (uncommitted)** — `app.py` gains
+  `--run-from-dir name:dir/`. Splits on the first colon (paths may
+  contain colons), validates the directory exists and contains all
+  four bundle files (`results.nc`, `model.pkl`, `spikes.npz`,
+  `position.parquet`), then expands to the same internal spec
+  `--run` produces. Multiple `--run-from-dir` flags compose with
+  each other and with `--run`. Help epilog now leads with the
+  `--run-from-dir` form for the common case (devtool output).
+  Tests in `test_cli.py`: happy path loads through the full Qt
+  pipeline; missing dir, missing bundle file, malformed `name:dir`
+  arg all surface clear argparse errors. Tests: 132 → 136 (4 new).
+  Lint + interactive suite green.
 
 ---
 

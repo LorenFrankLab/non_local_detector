@@ -10,6 +10,18 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from pathlib import Path
+
+# The four files a viewer bundle directory must contain. Bundles
+# emitted by the ``devtools/bundle_from_statespacecheck.py`` CLI use
+# this layout, and ``--run-from-dir`` expands a single dir argument
+# into the four explicit paths ``--run`` consumes.
+_BUNDLE_FILENAMES = {
+    "results": "results.nc",
+    "model": "model.pkl",
+    "spikes": "spikes.npz",
+    "position": "position.parquet",
+}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -38,6 +50,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help=("Add a named run from four files. May be repeated for multi-run mode."),
     )
     parser.add_argument(
+        "--run-from-dir",
+        action="append",
+        default=[],
+        metavar="NAME:DIR/",
+        dest="run_from_dir",
+        help=(
+            "Add a named run from a bundle directory containing "
+            "results.nc + model.pkl + spikes.npz + position.parquet. "
+            "May be repeated. Accepts the directory layout emitted by "
+            "the bundle-from-statespacecheck-cache devtool."
+        ),
+    )
+    parser.add_argument(
         "--t-width",
         type=float,
         default=1.0,
@@ -63,6 +88,34 @@ def _parse_run_arg(arg: str) -> dict[str, str]:
         "spikes": spikes,
         "position": position,
     }
+
+
+def _parse_run_from_dir_arg(arg: str) -> dict[str, str]:
+    """Split a ``name:dir/`` arg into the canonical five-field run spec.
+
+    Splits on the *first* colon so directory paths may contain colons
+    (rare on POSIX but legal). Validates the directory exists and
+    contains the four bundle files; raises with the missing names so
+    the user knows which file to add.
+    """
+    name, sep, dir_str = arg.partition(":")
+    if not sep or not name or not dir_str:
+        raise argparse.ArgumentTypeError(
+            f"--run-from-dir expects 'name:dir/'; got {arg!r}"
+        )
+    bundle_dir = Path(dir_str)
+    if not bundle_dir.is_dir():
+        raise argparse.ArgumentTypeError(
+            f"--run-from-dir bundle directory does not exist: {bundle_dir}"
+        )
+    paths = {key: bundle_dir / fname for key, fname in _BUNDLE_FILENAMES.items()}
+    missing = [str(p.name) for p in paths.values() if not p.exists()]
+    if missing:
+        raise argparse.ArgumentTypeError(
+            f"--run-from-dir {bundle_dir} is missing required bundle files: "
+            f"{missing!r}. Expected: {sorted(_BUNDLE_FILENAMES.values())!r}"
+        )
+    return {"name": name, **{key: str(p) for key, p in paths.items()}}
 
 
 def _load_run(spec: dict[str, str]):
@@ -132,13 +185,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if not args.run:
-        parser.error("at least one --run argument is required")
+    if not args.run and not args.run_from_dir:
+        parser.error("at least one --run or --run-from-dir argument is required")
 
     bundles_dict = {}
-    for raw_arg in args.run:
+    for raw_arg, parse_fn in (
+        *((arg, _parse_run_arg) for arg in args.run),
+        *((arg, _parse_run_from_dir_arg) for arg in args.run_from_dir),
+    ):
         try:
-            spec = _parse_run_arg(raw_arg)
+            spec = parse_fn(raw_arg)
         except argparse.ArgumentTypeError as exc:
             parser.error(str(exc))
         name, bundle = _load_run(spec)
@@ -159,14 +215,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 _HELP_EPILOG = """\
 Examples:
 
-  Single run:
+  Single run from explicit files:
     python -m non_local_detector.visualization.interactive \\
       --run default:results.nc:model.pkl:spikes.npz:position.parquet
 
+  Single run from a bundle directory (e.g. devtool output):
+    python -m non_local_detector.visualization.interactive \\
+      --run-from-dir continuous:bundles/continuous/
+
   Multi-run model swap:
     python -m non_local_detector.visualization.interactive \\
-      --run nl:nl_results.nc:nl_model.pkl:spikes.npz:position.parquet \\
-      --run cf:cf_results.nc:cf_model.pkl:spikes.npz:position.parquet
+      --run-from-dir continuous:bundles/continuous/ \\
+      --run-from-dir contfrag:bundles/contfrag/
 
 For optional `predict()` outputs (log_likelihood, predictive_posterior),
 re-run `predict(return_outputs=['log_likelihood', 'predictive_posterior'])`
