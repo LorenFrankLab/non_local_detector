@@ -590,14 +590,17 @@ and Phase 6 verifications can run.
     Event-metric fields on ``CellSlice`` (HPD overlap, KL, spike
     prob) stay at their dataclass defaults until the panel-side
     bundle wiring exposes them — surfaced as a polish follow-up.
-- [ ] Per-tick path uses in-RAM window buffer (statespacecheck
-  pattern). Confirmed against upstream
-  ``panels.py:909`` — the buffer is panel-side, not model-side:
-  the panel caches the latest ``WindowPayload`` arrays so
-  ``update_for_index(t_idx)`` becomes ``array[t_idx - sl.start]``
-  instead of a fresh data-source read. SliceModel's row-in/row-out
-  API already supports this — implement in the QtSlicePanel chunk
-  via ``set_window_buffer(payload)`` + ``update_for_index(t_idx)``.
+- [x] Per-tick path uses in-RAM window buffer (statespacecheck
+  pattern). Implemented panel-side via
+  ``QtSlicePanel.set_window_buffer(payload)`` +
+  ``update_for_index(t_idx)`` indexing locally into the buffered
+  arrays. Not a strict circular ring buffer (it's a single
+  most-recent-window cache), but it satisfies the intended
+  requirement: the per-tick render path doesn't refetch from the
+  data source. The viewer drives both halves —
+  ``_on_window_loaded`` installs the buffer; the slider's
+  ``_on_slider_value_changed`` drives ``update_for_index``
+  synchronously alongside the async window-load dispatch.
 
 ### `panels/qt/slice.py`
 
