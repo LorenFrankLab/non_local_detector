@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD024 MD004 MD050 MD031 MD032 -->
+
 # Interactive Decoder Viewer — Scratchpad
 
 Branch-local working notes for the v1 implementation. Use freely;
@@ -12,7 +14,49 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 
 > What I'm working on right now. Update when context-switching.
 
-Milestones 1 + 2 + 3 complete (left-column panels, generic series, overlay dispatch, viewer extras). Visual-diff verification + UI polish (overlay selector dropdown, multi-line / fill-below render tests) deferred to Milestones 5/6.
+**Milestones 1 + 2 + 3 complete and committed (21 commits).** Ready to
+start **Milestone 4 — Right-column SlicePanel** on user approval.
+TASKS.md has all M1–M3 boxes checked except one (the full left-column
+visual diff against `plot_non_local_model`, which the plan groups with
+the Milestone 5 `plot_detector` parity check).
+
+**Important user-set rule (do not violate):**
+
+- The user explicitly told me **"you're not allowed to defer things
+  until consulting me"**. Don't punt items to a later milestone
+  without surfacing them first. The plan's natural deferrals
+  (Milestone 5 visual diff, Milestone 6 polish) are fine; my own
+  ad-hoc "I'll do this in M4 instead" is not.
+- The user reviews each milestone for issues before approving the
+  next. Wait for their go before starting M4.
+
+---
+
+## Branch commits (since branching from main)
+
+Latest at top:
+
+- `1e10cfb` M3 close-out 3 — series-panel construction tests (9 GUI tests)
+- `ce8b2f5` M3 close-out 2 — overlay selector + visibility checkboxes
+- `da434db` M3 close-out 1 — raster non-local shading
+- `f888429` Mark M3 done in TASKS / SCRATCHPAD
+- `2ed3622` M3 step 4 — extra_panels + auto-render + wheel/keyboard
+- `d722c86` M3 step 3 — overlay dispatch + N/Shift+N
+- `c2e8889` M3 step 2 — generic series view-models + panels
+- `aa24ed9` M3 step 1 — Likelihood/StateProb/Raster view-models + panels
+- `e24d45e` Validate empty selected-state set in PosteriorHeatmapModel
+- `7cb9867` Simplify Phase 1c + Phase 2
+- `9b3b23e` Order-independent Qt viewer cleanup
+- `94a0054` Retain QtViewer in `_LIVE_VIEWERS`
+- `6268d3a` Tighten stale-result rejection
+- `a92d944` Phase 2 review fixes (stale model on swap + overlay arrays)
+- `211b6d7` Phase 1c followups + CLI smoke test
+- `7d38177` Milestone 2 — Qt panel + viewer harness
+- `6864059` Singleton-Local NL fixture + empty-input fix
+- `65cafa1` Phase 1c — PosteriorHeatmapModel + payload dataclasses
+- `6b8fb71` Simplify Phase 1a + 1b
+- `1595874` Phase 1b — RunBundle + InMemoryDecoderDataSource
+- `e17fbc4` Phase 1a — analysis helpers + static.py refactor
 
 ---
 
@@ -29,9 +73,35 @@ Milestones 1 + 2 + 3 complete (left-column panels, generic series, overlay dispa
 
 ## Issues encountered (and resolutions)
 
-> Bugs, surprising behavior, gotchas. Date each entry.
+> Bugs caught by user review of each milestone. The user reviews
+> diffs and flags issues; I fix + add regression tests. Pattern
+> reliably surfaces real bugs — keep the loop.
 
-(empty)
+- **Phase 2** — `QtViewer` swap held a stale `PosteriorHeatmapModel`
+  bound to the original detector. Fixed by adding
+  `ViewerCore.on_active_run_changed(callback)` + `QtViewer._rebind_panels`
+  (commit `a92d944`).
+- **Phase 2** — `EventOverlayMixin._render_overlay` used
+  `overlay.times or []`, raising "ambiguous truth value" on
+  multi-element NumPy arrays. Fixed with explicit `is None` checks
+  (commit `a92d944`).
+- **Phase 2** — Stale-result rejection rule was too loose: an older
+  request committing first slipped through. Tightened to `payload.request_id
+  == current_view_state.request_id` (commit `6268d3a`).
+- **Phase 2** — `launch_qt(block=False)` returned 0 but PySide6 GC'd the
+  window. Added module-level `_LIVE_VIEWERS` registry +
+  `WA_DeleteOnClose` + autouse cleanup fixture (commits `94a0054`,
+  `9b3b23e`).
+- **Phase 1c followup** — Vectorized `PosteriorHeatmapModel.collapse_rows`
+  diverged from the per-row `collapse_at`/`collapse_posterior_to_position`
+  helper on invalid `CONDITIONAL_*` configs (vectorized produced
+  `zero_mass_fill` rows; per-row raised). Added the same
+  selected-state validation in `_bind` (commit `e24d45e`).
+- **Pattern**: I keep deferring construction-time tests as
+  "visual diff is M5 work" — they're not the same thing. The user
+  has called this out twice. Construction tests = does the panel
+  actually wire up the option? Visual diff = pixel/render comparison
+  against `plot_detector`. Don't conflate.
 
 ---
 
@@ -41,26 +111,46 @@ Milestones 1 + 2 + 3 complete (left-column panels, generic series, overlay dispa
 
 ### Track 0 simulated fixture
 
-- Phase 1a: 33/33 tests pass against the four-detector simulated fixture
-  (NL local_position_std=1.0, ContFrag, NoSpikeContFrag, Decoder).
-- Each session-scoped detector fit takes ~12-30s; total Phase 1a suite
-  ~100s wall.
-- `acausal_posterior` / `log_likelihood` arrays are float32; bumped
-  several `atol` from the plan's `1e-10` to `1e-6` accordingly.
-  Bit-identity assertions for the static-plot refactor required
-  casting `_conditional_row` to float64 internally (matches the inline
-  algorithm's float64 accumulator).
+**Current totals (after M3 close-out, commit `1e10cfb`):**
+
+- 111 interactive + lint tests pass with `-m "not slow"`.
+- 4 slow tests (singleton-Local fixture) pass when run with the
+  default invocation (no `--run-slow` flag — the project convention
+  is `-m "not slow"` to skip).
+- Per-detector EM fits: NL ≈30s, NSF ≈22s, CF ≈13s, Decoder ≈2s.
+  Singleton-Local NL ≈3 minutes.
+- Session-scoped fixtures keep each fit to once per pytest invocation.
+
+**Run commands:**
+
+```bash
+# Full interactive + lint (fast):
+QT_QPA_PLATFORM=offscreen uv run pytest \
+  src/non_local_detector/tests/interactive/ \
+  src/non_local_detector/tests/lint/ -m "not slow"
+
+# Include singleton-Local slow tests (~5 min total):
+QT_QPA_PLATFORM=offscreen uv run pytest \
+  src/non_local_detector/tests/interactive/ \
+  src/non_local_detector/tests/lint/
+
+# Full repo (ran successfully after Phase 1a, 835 tests):
+uv run pytest src/non_local_detector/tests/ -x -m "not slow" -q
+```
+
+**Key requirement:** GUI tests need `QT_QPA_PLATFORM=offscreen` for
+headless platforms (CI / no-display dev machines).
 
 ### Track A statespacecheck real data
 
 > Whether `NLD_REAL_DATA_BUNDLE_DIR` is set, what subdirectories
 > exist, what skipped vs ran.
 
-(empty)
+(empty — Track A devtool comes in Milestone 4.)
 
 ### Track B continuum integration
 
-(empty)
+(empty — Milestone 5.)
 
 ---
 
@@ -69,7 +159,20 @@ Milestones 1 + 2 + 3 complete (left-column panels, generic series, overlay dispa
 > Anything measured: per-tick latency, window-load timing, memory
 > footprint of fixtures, etc.
 
-(empty)
+- `PosteriorHeatmapModel.collapse_rows` was vectorized in commit
+  `7cb9867`: per-row Python loop replaced with one cached
+  `selected_mask` + one `np.sum(axis=1)`. Estimated ~100× speedup
+  on slider tick at typical n_visible=1000.
+- `conditional_non_local_posterior` (dataset-level) similarly
+  vectorized in commit `6b8fb71` to match the static-plot inline
+  algorithm exactly.
+- ViewerCore `set_t_center` / `set_t_width` early-return on
+  identical values (commit `7cb9867`) so slider re-fires at the
+  same position don't burn requests.
+- Outstanding (not yet a measurable problem):
+  - `_LoadSignals` + `QRunnable` allocated per-tick in
+    `QtBackendAdapter.schedule_window_load`. Could be reused;
+    deferred until profiling flags it.
 
 ---
 
@@ -87,6 +190,14 @@ Milestones 1 + 2 + 3 complete (left-column panels, generic series, overlay dispa
   bit-identity comparisons is too tight for float32-stored
   posteriors. Used `1e-6` for posterior-row sums, and forced float64
   inside `_conditional_row` so refactor bit-identity assertions hold.
+- The plan's `--run-slow` pytest flag for the singleton-Local fixture
+  doesn't match the project's existing convention (`@pytest.mark.slow`
+  with `-m "not slow"` to opt out). Used the existing convention.
+- The plan documents a `joblib.dump`/`joblib.load` for the CLI
+  `model.pkl`, but `_DetectorBase.save_model`/`load_model` already
+  uses `pickle` directly. The CLI now routes through the canonical
+  pair to keep the `state_bins` MultiIndex round-trip working
+  (`xr.open_dataset` alone drops it).
 
 ---
 
@@ -96,29 +207,32 @@ Milestones 1 + 2 + 3 complete (left-column panels, generic series, overlay dispa
 > implement them out of order — log here and pick up in the right
 > phase.
 
-### Phase 1a → 1b
+### Phase 1a → 1b — done
 
-(empty)
+### Phase 1b → 1c — done
 
-### Phase 1b → 1c
+### Phase 1c → 2 — done
 
-(empty)
-
-### Phase 1c → 2
-
-(empty)
-
-### Phase 2 → 3
-
-(empty)
+### Phase 2 → 3 — done
 
 ### Phase 3 → 4
 
-(empty)
+- The plan's "Full left-column stack visual diff against
+  `plot_non_local_model`" verification (TASKS.md line 492) is the
+  only unchecked M3 item; defer to Milestone 5 per the plan's own
+  Track B grouping.
+- SlicePanel will need access to `RasterPayload` per-cell sort
+  indices (already exposed on `RasterModel.sort_indices`). The
+  per-cell rows in the slice panel should match the raster sort.
+- The per-bin "non-local active" mask logic in
+  `QtRasterPanel._render_non_local_regions` is reusable for the
+  SlicePanel's "non-local at cursor" highlight. If it grows beyond
+  threshold-comparison, consider lifting `_non_local_mass(probs,
+  detector)` into `analysis.posterior`.
 
 ### Phase 4 → 5
 
-(empty)
+(empty — fill as Milestone 4 progresses.)
 
 ### Phase 5 → 6
 
@@ -137,6 +251,8 @@ Milestones 1 + 2 + 3 complete (left-column panels, generic series, overlay dispa
 - `ZarrDecoderDataSource` for sessions too large for memory.
 - `MetricPanel` (HPD overlap, KL divergence, spike prob) — requires
   porting `event_*` computations to `non_local_detector.analysis`.
+- `_LoadSignals` reuse in `QtBackendAdapter` (currently allocated
+  per-tick — small win, defer until profiling flags it).
 
 ### v3+ candidates
 
@@ -155,4 +271,16 @@ Milestones 1 + 2 + 3 complete (left-column panels, generic series, overlay dispa
 
 > Anything that doesn't fit above. Snippets, links, reminders.
 
-(empty)
+**Recurring conftest pattern.** The autouse
+`_clear_qt_viewer_registry` in `tests/interactive/conftest.py`
+closes + `deleteLater()`s every QtViewer registered during a test,
+then drains events twice. Without it the GUI suite is order-dependent
+because PySide6 keeps closed top-level widgets in
+`QApplication.topLevelWidgets()` until they're properly destroyed.
+`QtViewer` sets `WA_DeleteOnClose` to make the cleanup actually
+reap the widget.
+
+**Detector type-checker noise.** Many test files raise ty warnings
+about "object has no attribute X" because the `_simulated_detectors`
+helper returns `FittedDetector` with `detector: object`. These are
+ty false positives — the runtime type is fine. Ignored throughout.
