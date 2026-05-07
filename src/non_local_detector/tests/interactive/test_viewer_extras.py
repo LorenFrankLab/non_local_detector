@@ -491,6 +491,146 @@ def test_extra_panels_remains_time_axis_only(
 
 
 @pytest.mark.unit
+def test_play_button_default_state_is_paused(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    assert not viewer._play_button.isChecked()
+    assert viewer._play_button.text() == "▶"
+    assert viewer._autoscroll_timer is None
+
+
+@pytest.mark.unit
+def test_speed_combo_default_is_005x(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Default playback speed matches the upstream ``AUTOSCROLL_DEFAULT_SPEED``."""
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        AUTOSCROLL_DEFAULT_SPEED,
+        AUTOSCROLL_SPEED_OPTIONS,
+        QtViewer,
+    )
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    assert viewer._autoscroll_rate == AUTOSCROLL_DEFAULT_SPEED
+    assert viewer._speed_combo.itemData(viewer._speed_combo.currentIndex()) == (
+        AUTOSCROLL_DEFAULT_SPEED
+    )
+    items = [
+        viewer._speed_combo.itemData(i) for i in range(viewer._speed_combo.count())
+    ]
+    assert tuple(items) == AUTOSCROLL_SPEED_OPTIONS
+
+
+@pytest.mark.unit
+def test_toggle_play_starts_and_stops_timer(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Space (and clicking the play button) starts/stops the autoscroll timer."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    viewer._toggle_play()
+    assert viewer._play_button.isChecked()
+    assert viewer._play_button.text() == "⏸"
+    assert viewer._autoscroll_timer is not None
+    viewer._toggle_play()
+    assert not viewer._play_button.isChecked()
+    assert viewer._play_button.text() == "▶"
+    assert viewer._autoscroll_timer is None
+
+
+@pytest.mark.unit
+def test_speed_combo_change_updates_rate(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    target_idx = viewer._speed_combo.findData(1.0)
+    viewer._speed_combo.setCurrentIndex(target_idx)
+    assert viewer._autoscroll_rate == 1.0
+
+
+@pytest.mark.unit
+def test_step_speed_advances_through_preset_list(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """``,`` / ``.`` step through the preset list, clamped at the ends."""
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        AUTOSCROLL_SPEED_OPTIONS,
+        QtViewer,
+    )
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    initial = viewer._speed_combo.currentIndex()
+    viewer._step_speed(+1)
+    assert viewer._speed_combo.currentIndex() == initial + 1
+    viewer._step_speed(-1)
+    assert viewer._speed_combo.currentIndex() == initial
+    # Clamp at lower bound.
+    for _ in range(len(AUTOSCROLL_SPEED_OPTIONS)):
+        viewer._step_speed(-1)
+    assert viewer._speed_combo.currentIndex() == 0
+    # Clamp at upper bound.
+    for _ in range(len(AUTOSCROLL_SPEED_OPTIONS) * 2):
+        viewer._step_speed(+1)
+    assert viewer._speed_combo.currentIndex() == len(AUTOSCROLL_SPEED_OPTIONS) - 1
+
+
+@pytest.mark.unit
+def test_autoscroll_tick_advances_slider(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """One tick at a non-zero speed must move the slider forward."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    # Crank speed up so a single tick covers many bins (at 0.05× one
+    # tick is < 2 ms, smaller than the simulated bin width — slider
+    # would round-trip to the same index).
+    high_idx = viewer._speed_combo.findData(8.0)
+    viewer._speed_combo.setCurrentIndex(high_idx)
+    initial = viewer._slider.value()
+    viewer._autoscroll_tick()
+    assert viewer._slider.value() > initial
+
+
+@pytest.mark.unit
+def test_autoscroll_pauses_at_end_of_session(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Reaching the session's last bin auto-toggles play off."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    # Park the cursor at the very end first.
+    viewer._slider.setValue(viewer._slider.maximum())
+    viewer._toggle_play()
+    assert viewer._play_button.isChecked()
+    viewer._autoscroll_tick()
+    # End-of-session → auto-pause.
+    assert not viewer._play_button.isChecked()
+    assert viewer._autoscroll_timer is None
+
+
+@pytest.mark.unit
 def test_qt_viewer_keyboard_window_scaling(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
@@ -520,16 +660,16 @@ def test_qt_viewer_keyboard_window_scaling(
 
 
 @pytest.mark.unit
-def test_qt_viewer_controls_bar_hidden_when_no_overlays_and_single_run(
+def test_qt_viewer_controls_bar_always_visible(
     qapp,
     nl_fitted: FittedDetector,
     sim_session,
 ) -> None:
-    """Controls bar is hidden only when there's nothing to put in it.
+    """Controls bar is always visible — play/pause + speed are universal.
 
-    The bar holds the model-swap dropdown (multi-run) and the
-    overlay selector (when overlays exist). Single-run + no overlays
-    → both blocks are skipped → bar is hidden for a clean UI.
+    Earlier the bar hid itself when neither overlays nor multi-run
+    populated it. Auto-scroll added play + speed as universal
+    affordances, so the bar is always present.
     """
     from non_local_detector.visualization.interactive.viewer.qt import QtViewer
 
@@ -543,7 +683,9 @@ def test_qt_viewer_controls_bar_hidden_when_no_overlays_and_single_run(
     )
     ds = InMemoryDecoderDataSource.from_single(bundle)
     viewer = QtViewer(ds, t_width=0.5)
-    assert viewer._controls_bar.isHidden()
+    assert not viewer._controls_bar.isHidden()
+    assert viewer._play_button is not None
+    assert viewer._speed_combo is not None
 
 
 @pytest.mark.unit

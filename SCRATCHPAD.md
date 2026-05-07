@@ -541,6 +541,40 @@ Latest at top:
       caught it by direct construction. Lesson: when a README
       table promises plugin variants, write a runtime test that
       passes each variant through the documented kwarg.
+- **M6 auto-scroll (uncommitted)** — playback controls + Space /
+  `,` / `.` shortcuts. Mirrors upstream constants
+  (`AUTOSCROLL_TICK_HZ = 30.0`, `AUTOSCROLL_SPEED_OPTIONS =
+  (0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0)`,
+  `AUTOSCROLL_DEFAULT_SPEED = 0.05`).
+  - Controls bar gets a play `QToolButton` (▶/⏸) + speed
+    `QComboBox`. The combo's `itemData` carries the float
+    multiplier directly so the per-tick path doesn't reparse the
+    label.
+  - `_autoscroll_timer` is lazy-allocated on play, destroyed on
+    pause. Each tick: `t_center += rate / TICK_HZ` →
+    `np.searchsorted` to bin index → `slider.setValue(idx)`. The
+    slider is the single source of truth — its `valueChanged`
+    already drives `core.set_t_center` + the per-bin slice
+    update.
+  - Auto-pause at end of session (toggling `play_button.setChecked(False)`
+    fires `_on_play_toggled(False)` which destroys the timer).
+  - Controls bar is now always visible (play+speed are universal);
+    earlier "hide if no overlays AND single-run" branch removed.
+  - **Tests** (7 new + 1 reframed):
+    - default state paused; default speed 0.05×.
+    - speed combo populated with the upstream preset list.
+    - `_toggle_play()` flips checked state + button text + timer
+      lifecycle.
+    - speed-combo selection updates `_autoscroll_rate`.
+    - `_step_speed(±1)` advances the combo and clamps at the
+      ends.
+    - `_autoscroll_tick()` at 8× speed advances the slider.
+    - end-of-session tick auto-pauses (timer destroyed,
+      play_button unchecked).
+    - reframed: `test_qt_viewer_controls_bar_always_visible`
+      replaces the old "hidden when single-run + no overlays" test.
+
+  19 → 26 tests in `test_viewer_extras.py`. Lint green.
 
 ---
 

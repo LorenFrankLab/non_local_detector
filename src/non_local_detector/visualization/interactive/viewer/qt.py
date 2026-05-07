@@ -73,6 +73,30 @@ if TYPE_CHECKING:
     pass
 
 
+# Auto-scroll constants (mirror upstream statespacecheck). Multipliers
+# of real-time playback rate; tick fires at AUTOSCROLL_TICK_HZ Hz and
+# advances the slider by ``rate / TICK_HZ`` seconds per tick.
+AUTOSCROLL_TICK_HZ = 30.0
+AUTOSCROLL_SPEED_OPTIONS: tuple[float, ...] = (
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.0,
+    4.0,
+    8.0,
+)
+AUTOSCROLL_DEFAULT_SPEED = 0.05
+
+
+def _format_speed(speed: float) -> str:
+    """Render a multiplier as ``"1×"`` / ``"2×"`` / ``"0.05×"`` etc."""
+    if speed >= 1.0 and float(speed).is_integer():
+        return f"{speed:.0f}×"
+    return f"{speed:.2g}×"
+
+
 class _LoadSignals(QtCore.QObject):
     """Signal bridge for thread-safe payload delivery (statespacecheck pattern).
 
@@ -166,6 +190,12 @@ class QtViewer(QtWidgets.QMainWindow):
         self._initial_t_center: float | None = None
         self._core = ViewerCore(data_source, self._backend, t_width=t_width)
         self._initial_t_center = self._core.t_center
+
+        # Auto-scroll state (driven by the controls-bar play button +
+        # speed combo, plus Space/,/. shortcuts). Lazy-allocated timer
+        # so we don't burn a QTimer slot when playback is never used.
+        self._autoscroll_rate = AUTOSCROLL_DEFAULT_SPEED
+        self._autoscroll_timer: QtCore.QTimer | None = None
 
         active_run = data_source.active_run
         detector = active_run.detector
@@ -302,6 +332,9 @@ class QtViewer(QtWidgets.QMainWindow):
             (QtGui.QKeySequence("Shift+N"), self._core.prev_event),
             (QtGui.QKeySequence("Escape"), self._slice_panel.clear_pins),
             (QtGui.QKeySequence("M"), self._cycle_model),
+            (QtGui.QKeySequence("Space"), self._toggle_play),
+            (QtGui.QKeySequence(","), lambda: self._step_speed(-1)),
+            (QtGui.QKeySequence("."), lambda: self._step_speed(+1)),
         ):
             shortcut = QtGui.QShortcut(key_seq, self)
             shortcut.activated.connect(fn)
@@ -332,6 +365,27 @@ class QtViewer(QtWidgets.QMainWindow):
         run_names = self._data_source.run_names
         multi_run = len(run_names) > 1
 
+        # Play / pause + speed are always present — auto-scroll is a
+        # universal affordance, not gated on overlays / multi-run. The
+        # combo's ``itemData`` carries the float multiplier directly so
+        # the per-tick path doesn't have to reparse the display label.
+        self._play_button = QtWidgets.QToolButton()
+        self._play_button.setText("▶")
+        self._play_button.setToolTip("Play / pause auto-scroll (Space)")
+        self._play_button.setCheckable(True)
+        self._play_button.toggled.connect(self._on_play_toggled)
+        layout.addWidget(self._play_button)
+
+        layout.addWidget(QtWidgets.QLabel("Speed (,/.):"))
+        self._speed_combo = QtWidgets.QComboBox()
+        for speed in AUTOSCROLL_SPEED_OPTIONS:
+            self._speed_combo.addItem(_format_speed(speed), userData=speed)
+        default_idx = AUTOSCROLL_SPEED_OPTIONS.index(AUTOSCROLL_DEFAULT_SPEED)
+        self._speed_combo.setCurrentIndex(default_idx)
+        self._speed_combo.currentIndexChanged.connect(self._on_speed_combo_changed)
+        layout.addWidget(self._speed_combo)
+        layout.addSpacing(12)
+
         # Model-selector dropdown (M-key cycles). Only present when
         # multiple runs are loaded; the M-key path goes *through* the
         # combo so user-clicks and keyboard cycling share one signal
@@ -347,9 +401,6 @@ class QtViewer(QtWidgets.QMainWindow):
             layout.addWidget(self._model_combo)
             layout.addSpacing(12)
 
-        if not overlays and not multi_run:
-            bar.hide()
-            return bar
         if overlays:
             # Overlay-selector dropdown picks the navigator target.
             layout.addWidget(QtWidgets.QLabel("Overlay (N/Shift+N):"))
@@ -400,6 +451,71 @@ class QtViewer(QtWidgets.QMainWindow):
             return
         next_index = (self._model_combo.currentIndex() + 1) % self._model_combo.count()
         self._model_combo.setCurrentIndex(next_index)
+
+    # --------------------------------------------------------------
+    # Auto-scroll
+    # --------------------------------------------------------------
+
+    def _on_play_toggled(self, on: bool) -> None:
+        if on:
+            self._start_autoscroll()
+            self._play_button.setText("⏸")
+        else:
+            self._stop_autoscroll()
+            self._play_button.setText("▶")
+
+    def _on_speed_combo_changed(self, index: int) -> None:
+        speed = self._speed_combo.itemData(index)
+        if speed is not None:
+            self._autoscroll_rate = float(speed)
+
+    def _toggle_play(self) -> None:
+        """Space-key handler — flip the play button's checked state."""
+        self._play_button.toggle()
+
+    def _step_speed(self, delta: int) -> None:
+        """``,`` / ``.`` — step through ``AUTOSCROLL_SPEED_OPTIONS``."""
+        new_idx = max(
+            0, min(self._speed_combo.count() - 1, self._speed_combo.currentIndex() + delta)
+        )
+        if new_idx != self._speed_combo.currentIndex():
+            self._speed_combo.setCurrentIndex(new_idx)
+
+    def _start_autoscroll(self) -> None:
+        if self._autoscroll_timer is not None:
+            return
+        timer = QtCore.QTimer(self)
+        timer.setInterval(int(round(1000.0 / AUTOSCROLL_TICK_HZ)))
+        timer.timeout.connect(self._autoscroll_tick)
+        self._autoscroll_timer = timer
+        timer.start()
+
+    def _stop_autoscroll(self) -> None:
+        if self._autoscroll_timer is None:
+            return
+        self._autoscroll_timer.stop()
+        self._autoscroll_timer.deleteLater()
+        self._autoscroll_timer = None
+
+    def _autoscroll_tick(self) -> None:
+        """One tick of playback. Drives the slider as the single source
+        of truth (slider ``valueChanged`` already wires
+        ``core.set_t_center`` + the per-bin slice update)."""
+        dt = self._autoscroll_rate / AUTOSCROLL_TICK_HZ
+        new_t = self._core.t_center + dt
+        time = self._data_source.time
+        t_max = float(time[-1])
+        if new_t >= t_max:
+            # Reached end of session — auto-pause. Setting checked=False
+            # toggles the button which fires ``_on_play_toggled(False)``
+            # and stops/destroys the timer.
+            if self._play_button.isChecked():
+                self._play_button.setChecked(False)
+            return
+        new_idx = int(np.searchsorted(time, new_t, side="right") - 1)
+        new_idx = max(0, min(len(time) - 1, new_idx))
+        if self._slider.value() != new_idx:
+            self._slider.setValue(new_idx)
 
     def _on_window_loaded(self, payload) -> None:
         for panel in self._all_panels:
