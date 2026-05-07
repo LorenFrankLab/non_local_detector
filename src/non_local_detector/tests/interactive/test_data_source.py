@@ -297,3 +297,134 @@ class TestMultiRunDataSource:
         finally:
             for name, bundle in multi_run_bundles.items():
                 bundle.event_overlays[:] = original[name]
+
+
+@pytest.mark.unit
+class TestPositionLoad:
+    """``load_position`` interpolation + per-run cache + 2D guard."""
+
+    def test_load_position_aligns_to_decoder_time_grid(
+        self,
+        sim_session: SimulatedSession,
+        nl_fitted: FittedDetector,
+    ) -> None:
+        """1D position is interpolated onto the decoder ``time`` grid."""
+        bundle = RunBundle(
+            results=nl_fitted.results,
+            detector=nl_fitted.detector,
+            spike_times=sim_session.spike_times,
+            position_time=sim_session.time,
+            position=sim_session.position,
+        )
+        ds = InMemoryDecoderDataSource.from_single(bundle)
+        sl = ds.window_indices(t_center=float(ds.time[ds.n_time // 2]), t_width=1.0)
+        position_window = ds.load_position(sl)
+        assert position_window is not None
+        assert position_window.ndim == 1
+        assert position_window.size == sl.stop - sl.start
+        assert np.all(np.isfinite(position_window))
+
+    def test_load_position_returns_none_when_post_construction_drop(
+        self,
+        sim_session: SimulatedSession,
+        nl_fitted: FittedDetector,
+    ) -> None:
+        """``RunBundle`` is mutable; clearing ``position`` after
+        construction makes ``load_position`` return ``None``.
+
+        Mirrors the v1 contract: ``RunBundle`` requires position at
+        construction (``__post_init__`` validates 1D vs 2D against the
+        detector). The "no-trace" path is reached when the bundle
+        loses its position post-hoc, or when the position is multi-
+        dim (v3 2D detectors). Either way the data source returns
+        ``None`` and the panels skip drawing the trace.
+        """
+        bundle = RunBundle(
+            results=nl_fitted.results,
+            detector=nl_fitted.detector,
+            spike_times=sim_session.spike_times,
+            position_time=sim_session.time,
+            position=sim_session.position,
+        )
+        ds = InMemoryDecoderDataSource.from_single(bundle)
+        # Flip the bundle's position to None — bypasses re-validation.
+        bundle.position = None
+        # Cache wasn't populated yet, so the next call uses the new
+        # state and returns None.
+        sl = ds.window_indices(t_center=float(ds.time[ds.n_time // 2]), t_width=1.0)
+        assert ds.load_position(sl) is None
+
+    def test_load_position_returns_none_for_2d_position(
+        self,
+        sim_session: SimulatedSession,
+        nl_fitted: FittedDetector,
+    ) -> None:
+        """2D position → ``None``; v1 heatmap trace is 1D-only.
+
+        ``RunBundle.__post_init__`` rejects 2D position against a 1D
+        detector, so we have to mutate after construction to exercise
+        the data source's 2D guard. v3+ ships a 2D detector path that
+        will accept this directly.
+        """
+        bundle = RunBundle(
+            results=nl_fitted.results,
+            detector=nl_fitted.detector,
+            spike_times=sim_session.spike_times,
+            position_time=sim_session.time,
+            position=sim_session.position,
+        )
+        ds = InMemoryDecoderDataSource.from_single(bundle)
+        bundle.position = np.column_stack(
+            [sim_session.position, sim_session.position]
+        )
+        sl = ds.window_indices(t_center=float(ds.time[ds.n_time // 2]), t_width=1.0)
+        assert ds.load_position(sl) is None
+
+    def test_load_position_interpolates_when_grids_differ(
+        self,
+        sim_session: SimulatedSession,
+        nl_fitted: FittedDetector,
+    ) -> None:
+        """Decoder time != ``position_time``: interpolation lands on the
+        decoder grid with no NaN at the head/tail (np.interp clips to edges)."""
+        # Subsample position to half the decoder rate, so position_time
+        # and decoder time genuinely differ in length.
+        coarse_pt = sim_session.time[::2]
+        coarse_pos = sim_session.position[::2]
+        bundle = RunBundle(
+            results=nl_fitted.results,
+            detector=nl_fitted.detector,
+            spike_times=sim_session.spike_times,
+            position_time=coarse_pt,
+            position=coarse_pos,
+        )
+        ds = InMemoryDecoderDataSource.from_single(bundle)
+        # Pull the full session via a window covering it.
+        sl = slice(0, ds.n_time)
+        full = ds.load_position(sl)
+        assert full is not None
+        assert full.size == ds.n_time
+        assert np.all(np.isfinite(full))
+        # Edges must equal the position-time edges (np.interp clips).
+        np.testing.assert_allclose(full[0], coarse_pos[0], rtol=0, atol=1e-3)
+        np.testing.assert_allclose(full[-1], coarse_pos[-1], rtol=0, atol=1e-3)
+
+    def test_load_position_caches_per_active_run(
+        self,
+        multi_run_bundles: dict[str, RunBundle],
+    ) -> None:
+        """Repeat calls return the same array object; swap re-derives."""
+        ds = InMemoryDecoderDataSource(multi_run_bundles)
+        sl = ds.window_indices(t_center=float(ds.time[ds.n_time // 2]), t_width=1.0)
+        first = ds._position_at_decoder_time()
+        assert first is not None
+        second = ds._position_at_decoder_time()
+        # Cached: same ndarray object both calls.
+        assert second is first
+        # Swap: cache key changes, so the next call may return a fresh
+        # array — the contract is that it's still finite + same length.
+        next_run = next(name for name in ds.run_names if name != ds.active_run_name)
+        ds.set_active_run(next_run)
+        after_swap = ds._position_at_decoder_time()
+        assert after_swap is not None
+        assert after_swap.size == ds.n_time

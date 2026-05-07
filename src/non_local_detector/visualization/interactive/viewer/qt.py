@@ -186,6 +186,7 @@ class QtBackendAdapter(BackendAdapter):
             else None
         )
         state_probabilities = self._data_source.load_state_probabilities(sl)
+        position = self._data_source.load_position(sl)
         return WindowPayload(
             request_id=state.request_id,
             time=np.asarray(time),
@@ -194,6 +195,7 @@ class QtBackendAdapter(BackendAdapter):
             likelihood=likelihood,
             predictive=predictive,
             state_probabilities=state_probabilities,
+            position=position,
         )
 
 

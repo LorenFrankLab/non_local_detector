@@ -138,6 +138,47 @@ class CursorMarkersMixin:
         self._active_bin_band.setRegion([float(t_lo), float(t_hi)])
 
 
+_POSITION_TRACE_Z = 10  # Above the heatmap image (z=0 default).
+
+
+class PositionTraceMixin:
+    """Adds a thin white line plotting the true 1D position trajectory.
+
+    Used by ``QtPosteriorHeatmapPanel`` and ``QtLikelihoodHeatmapPanel``
+    to overlay the recorded behaviour trace on top of the heatmap —
+    matches statespacecheck-paper-viewer's "Predictive distribution"
+    panel where the white line is the rat's actual position.
+
+    Subclasses must call ``self._install_position_trace()`` after the
+    heatmap ``ImageItem`` is added so the trace's z-order ends up
+    above the image. Drive the trace via ``_set_position_trace(time,
+    position)`` or clear it with ``_clear_position_trace``.
+    """
+
+    _position_trace: pg.PlotDataItem
+
+    def _install_position_trace(self) -> None:
+        self._position_trace = pg.PlotDataItem(
+            pen=pg.mkPen("w", width=1),
+            antialias=True,
+        )
+        self._position_trace.setZValue(_POSITION_TRACE_Z)
+        self.addItem(self._position_trace)
+
+    def _set_position_trace(
+        self, time: np.ndarray, position: np.ndarray | None
+    ) -> None:
+        """Update the white trace; pass ``None`` to clear."""
+        if position is None or position.size == 0:
+            self._position_trace.setData([], [])
+            return
+        # ``np.interp`` may return float64; PlotDataItem handles either.
+        self._position_trace.setData(np.asarray(time), np.asarray(position))
+
+    def _clear_position_trace(self) -> None:
+        self._position_trace.setData([], [])
+
+
 class EventOverlayMixin:
     """Default ``set_event_overlays`` for any panel wrapping a ``pg.PlotItem``.
 

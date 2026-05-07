@@ -16,6 +16,7 @@ from non_local_detector.visualization.interactive.panels.qt._mixins import (
     ClickRecenterMixin,
     CursorMarkersMixin,
     EventOverlayMixin,
+    PositionTraceMixin,
     bone_lookup_table,
 )
 
@@ -29,7 +30,11 @@ if TYPE_CHECKING:
 
 
 class QtPosteriorHeatmapPanel(
-    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, CursorMarkersMixin
+    pg.PlotWidget,
+    EventOverlayMixin,
+    ClickRecenterMixin,
+    CursorMarkersMixin,
+    PositionTraceMixin,
 ):
     """Time × position heatmap of the collapsed posterior.
 
@@ -57,14 +62,17 @@ class QtPosteriorHeatmapPanel(
         self.setLabel("bottom", "Time [s]")
         self._install_click_recenter()
         self._install_cursor_markers()
+        self._install_position_trace()
         self._overlay_items: list[pg.GraphicsObject] = []
 
     def update_window(self, payload: WindowPayload) -> None:
         if payload.posterior is None:
             self._image_item.clear()
+            self._clear_position_trace()
             return
         collapsed = self._model.update_window(payload.posterior)
         self._set_image(collapsed, payload.time)
+        self._set_position_trace(payload.time, payload.position)
 
     def update_for_array(self, time: np.ndarray, posterior: np.ndarray) -> None:
         """Direct entry point for tests / callers that already have an array."""

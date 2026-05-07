@@ -11,6 +11,7 @@ from non_local_detector.visualization.interactive.panels.qt._mixins import (
     ClickRecenterMixin,
     CursorMarkersMixin,
     EventOverlayMixin,
+    PositionTraceMixin,
     bone_lookup_table,
 )
 
@@ -24,7 +25,11 @@ if TYPE_CHECKING:
 
 
 class QtLikelihoodHeatmapPanel(
-    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, CursorMarkersMixin
+    pg.PlotWidget,
+    EventOverlayMixin,
+    ClickRecenterMixin,
+    CursorMarkersMixin,
+    PositionTraceMixin,
 ):
     """Time × position heatmap of the population log-likelihood.
 
@@ -71,15 +76,18 @@ class QtLikelihoodHeatmapPanel(
         self._title_message: str | None = None
         self._install_click_recenter()
         self._install_cursor_markers()
+        self._install_position_trace()
         self._overlay_items: list[pg.GraphicsObject] = []
 
     def update_window(self, payload: WindowPayload) -> None:
         if payload.likelihood is None:
             self._image_item.clear()
+            self._clear_position_trace()
             self._set_title_message(self.MISSING_DATA_MESSAGE)
             return
         collapsed = self._model.update_window(payload.likelihood)
         self._set_image(collapsed, payload.time)
+        self._set_position_trace(payload.time, payload.position)
         self._set_title_message(None)
 
     def update_for_array(self, time: np.ndarray, log_lik: np.ndarray) -> None:

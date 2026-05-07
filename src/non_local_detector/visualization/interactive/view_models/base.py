@@ -105,6 +105,11 @@ class WindowPayload:
     likelihood: np.ndarray | None = None
     predictive: np.ndarray | None = None
     state_probabilities: np.ndarray | None = None
+    # 1D position (true behaviour) interpolated onto ``time``. Used
+    # for the white trace overlaid on the posterior + likelihood
+    # heatmaps. ``None`` when the bundle has no position or when the
+    # position is 2D (heatmap overlay is 1D only in v1).
+    position: np.ndarray | None = None
 
 
 @dataclass(frozen=True)

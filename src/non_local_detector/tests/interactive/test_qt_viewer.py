@@ -741,3 +741,138 @@ def test_qt_viewer_body_uses_tight_margins(
     assert margins.right() <= 4
     assert margins.bottom() <= 4
     assert viewer._left_column_layout.spacing() <= 4
+
+
+# ---------------------------------------------------------------------------
+# Position trace (Chunk 2) — white line on posterior + likelihood panels.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_window_payload_carries_position_for_visible_window(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """A live window load attaches the per-time-bin position to the payload."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+
+    assert payload.position is not None
+    assert payload.position.ndim == 1
+    assert payload.position.size == payload.time.size
+    assert np.all(np.isfinite(payload.position))
+
+
+@pytest.mark.unit
+def test_posterior_panel_renders_white_position_trace(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """``QtPosteriorHeatmapPanel`` draws a 1-px white trace at the true position."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    viewer._on_window_loaded(payload)
+
+    trace = viewer._panel._position_trace
+    x, y = trace.getData()
+    assert x is not None and y is not None
+    assert x.size == payload.time.size
+    np.testing.assert_array_equal(x, payload.time)
+    np.testing.assert_allclose(y, payload.position, atol=1e-6)
+
+
+@pytest.mark.unit
+def test_likelihood_panel_renders_white_position_trace(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """``QtLikelihoodHeatmapPanel`` mirrors the posterior panel's trace."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    viewer._on_window_loaded(payload)
+
+    trace = viewer._likelihood_panel._position_trace
+    x, y = trace.getData()
+    assert x.size == payload.time.size
+    np.testing.assert_allclose(y, payload.position, atol=1e-6)
+
+
+@pytest.mark.unit
+def test_position_trace_clears_when_payload_position_is_none(
+    qapp,
+    nl_fitted: FittedDetector,
+) -> None:
+    """Position trace empties when ``payload.position is None``.
+
+    Direct ``update_window(None-position payload)`` exercises the
+    branch panels take when a bundle ships without position (e.g.
+    bundles built straight from ``predict()`` results without a
+    behaviour stream).
+    """
+    from non_local_detector.visualization.interactive.panels.qt.posterior import (
+        QtPosteriorHeatmapPanel,
+    )
+    from non_local_detector.visualization.interactive.view_models.base import (
+        WindowPayload,
+    )
+    from non_local_detector.visualization.interactive.view_models.posterior import (
+        PosteriorHeatmapModel,
+    )
+
+    detector = nl_fitted.detector
+    env = detector.environments[0]
+    panel = QtPosteriorHeatmapPanel(
+        model=PosteriorHeatmapModel(detector),
+        position_centers=np.asarray(env.place_bin_centers_).squeeze(),
+    )
+    posterior = nl_fitted.results["acausal_posterior"].values[:10]
+    panel.update_window(
+        WindowPayload(
+            request_id=0,
+            time=np.linspace(0.0, 1.0, 10),
+            indices=slice(0, 10),
+            posterior=posterior,
+            position=None,
+        )
+    )
+    x, y = panel._position_trace.getData()
+    assert x is None or x.size == 0
+    assert y is None or y.size == 0
+
+
+@pytest.mark.unit
+def test_position_trace_updates_after_active_run_swap(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """After an M-key swap, the next window load redraws the trace.
+
+    The bundles share a session and therefore share position data,
+    but the dispatch path must still re-render so any future bundle
+    with distinct position picks up cleanly.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    payload_before = viewer._backend._build_payload(viewer.core.current_view_state)
+    viewer._on_window_loaded(payload_before)
+
+    next_run = next(name for name in ds.run_names if name != ds.active_run_name)
+    viewer._core.set_active_run(next_run)
+    payload_after = viewer._backend._build_payload(viewer.core.current_view_state)
+    viewer._on_window_loaded(payload_after)
+
+    x, y = viewer._panel._position_trace.getData()
+    assert x is not None
+    assert x.size == payload_after.time.size
+    np.testing.assert_allclose(y, payload_after.position, atol=1e-6)

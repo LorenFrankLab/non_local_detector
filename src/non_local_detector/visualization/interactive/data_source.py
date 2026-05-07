@@ -52,6 +52,11 @@ class InMemoryDecoderDataSource:
         self._validate_time_grid_alignment()
         self._validate_overlay_alignment()
         self._active_run_name = next(iter(self._runs))
+        # Cache the per-run position interpolated onto the decoder
+        # time grid, computed lazily on first ``load_position`` call.
+        # Cleared on ``set_active_run`` because the new bundle may
+        # have a different position trajectory.
+        self._position_cache: dict[str, np.ndarray | None] = {}
 
     # ------------------------------------------------------------------
     # Construction validators
@@ -217,6 +222,53 @@ class InMemoryDecoderDataSource:
         return np.asarray(
             self.active_run.results["acausal_state_probabilities"].isel(time=sl).values
         )
+
+    def load_position(self, sl: slice) -> np.ndarray | None:
+        """Window slice of the bundle's true position aligned to decoder time.
+
+        Returns a ``(n_visible,)`` 1D array — the bundle's
+        ``position`` (sampled at ``position_time``) linearly
+        interpolated onto the decoder result's ``time`` grid, then
+        sliced to ``sl``. Returns ``None`` when the bundle has no
+        position (``position`` is None) or when the position is 2D
+        (``position.ndim > 1``); the v1 heatmap overlay supports 1D
+        position only.
+
+        Caches the full interpolated array on first call per active
+        run; ``set_active_run`` clears the cache because the next
+        bundle's position trajectory may differ.
+        """
+        position_at_decoder_time = self._position_at_decoder_time()
+        if position_at_decoder_time is None:
+            return None
+        return position_at_decoder_time[sl]
+
+    def _position_at_decoder_time(self) -> np.ndarray | None:
+        """Return position interpolated onto the decoder time grid (cached).
+
+        Returns ``None`` if the active run has no 1D position to
+        align — caller treats that as "skip the position trace".
+        """
+        cached = self._position_cache.get(self._active_run_name, ...)
+        if cached is not ...:
+            return cached  # may be a real array or None
+        run = self.active_run
+        position = np.asarray(run.position) if run.position is not None else None
+        position_time = (
+            np.asarray(run.position_time) if run.position_time is not None else None
+        )
+        if position is None or position_time is None or position.ndim != 1:
+            self._position_cache[self._active_run_name] = None
+            return None
+        decoder_time = np.asarray(run.results["time"].values)
+        # ``np.interp`` clips to the position-time bounds — the head
+        # and tail of the decoder grid get the edge position values
+        # rather than NaN, which matches statespacecheck-paper-viewer.
+        interpolated = np.interp(
+            decoder_time, position_time.astype(float), position.astype(float)
+        ).astype(np.float32)
+        self._position_cache[self._active_run_name] = interpolated
+        return interpolated
 
     _SLICE_VAR_MAP = {
         "posterior": "acausal_posterior",
