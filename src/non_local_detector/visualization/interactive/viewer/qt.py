@@ -90,6 +90,23 @@ AUTOSCROLL_SPEED_OPTIONS: tuple[float, ...] = (
 )
 AUTOSCROLL_DEFAULT_SPEED = 0.05
 
+# Layout constants — give heatmap panels a tall stretch and the
+# raster + state-prob panels a compact stretch so the visual weight
+# matches statespacecheck-paper-viewer (heatmaps dominate the column).
+_LEFT_COLUMN_HEATMAP_STRETCH = 3
+_LEFT_COLUMN_COMPACT_STRETCH = 1
+_LEFT_COLUMN_EXTRA_STRETCH = _LEFT_COLUMN_COMPACT_STRETCH
+
+# Splitter weights for the body's left vs right column. Sum doesn't
+# matter; pyqtgraph divides by total. 7:3 mirrors the paper viewer.
+_BODY_SPLITTER_LEFT_STRETCH = 7
+_BODY_SPLITTER_RIGHT_STRETCH = 3
+
+# Tight margins/spacing so the panels read as one figure rather than
+# four separate boxes.
+_BODY_MARGIN = 2
+_BODY_SPACING = 2
+
 
 def _format_speed(speed: float) -> str:
     """Render a multiplier as ``"1×"`` / ``"2×"`` / ``"0.05×"`` etc."""
@@ -243,12 +260,27 @@ class QtViewer(QtWidgets.QMainWindow):
         self._panel = QtPosteriorHeatmapPanel(
             model=self._posterior_model, position_centers=grid.centers
         )
+        # Top-to-bottom visual order matches
+        # ``statespacecheck-paper-viewer`` (posterior + likelihood
+        # heatmaps dominate the column; raster and state-probability
+        # are compact rows beneath). The list order is also the
+        # left-column layout add order.
         self._builtin_panels: list = [
+            self._panel,
+            self._likelihood_panel,
             self._raster_panel,
             self._state_prob_panel,
-            self._likelihood_panel,
-            self._panel,
         ]
+        # Per-panel stretch in the left column. Heatmaps get a tall
+        # weight; raster + state-prob compact. ``extra_panels`` use
+        # ``_LEFT_COLUMN_EXTRA_STRETCH`` (compact). See
+        # ``_LEFT_COLUMN_STRETCH`` mapping below.
+        self._builtin_panel_stretch: dict[int, int] = {
+            id(self._panel): _LEFT_COLUMN_HEATMAP_STRETCH,
+            id(self._likelihood_panel): _LEFT_COLUMN_HEATMAP_STRETCH,
+            id(self._raster_panel): _LEFT_COLUMN_COMPACT_STRETCH,
+            id(self._state_prob_panel): _LEFT_COLUMN_COMPACT_STRETCH,
+        }
 
         # Right-column slice panel — per-bin readout of population
         # likelihood/posterior + predictive overlay + per-cell rows
@@ -302,37 +334,71 @@ class QtViewer(QtWidgets.QMainWindow):
 
         # Two-column body inside the root vertical layout.
         # Left column: built-in time-axis panels + extras.
-        # Right column: slice panel.
+        # Right column: slice panel + bin-synced extras.
         # Slider stretches across the full width below both columns.
+        # Body uses a ``QSplitter`` so the user can drag the divider
+        # to rebalance the columns; default stretch factors mirror
+        # statespacecheck-paper-viewer (~70/30).
         self._left_column_layout = QtWidgets.QVBoxLayout()
+        self._left_column_layout.setContentsMargins(
+            _BODY_MARGIN, _BODY_MARGIN, _BODY_MARGIN, _BODY_MARGIN
+        )
+        self._left_column_layout.setSpacing(_BODY_SPACING)
         for panel in self._builtin_panels:
-            self._left_column_layout.addWidget(panel, stretch=1)
+            stretch = self._builtin_panel_stretch[id(panel)]
+            self._left_column_layout.addWidget(panel, stretch=stretch)
         self._extras_insert_index = self._left_column_layout.count()
         for extra in self._extra_panels:
-            self._left_column_layout.addWidget(extra, stretch=1)
+            self._left_column_layout.addWidget(
+                extra, stretch=_LEFT_COLUMN_EXTRA_STRETCH
+            )
         left_column = QtWidgets.QWidget()
         left_column.setLayout(self._left_column_layout)
 
         # Right column: slice panel on top, extra bin-synced plugins
-        # below it. Built via a fresh QVBoxLayout so the slice panel
-        # plus any plugins live under one widget that the body's
-        # QHBoxLayout owns.
-        right_column_layout = QtWidgets.QVBoxLayout()
-        right_column_layout.addWidget(self._slice_panel, stretch=2)
+        # below it. Top-aligned with a trailing stretch so the slice
+        # panel and plugins keep their natural heights instead of
+        # filling the full window — matches the paper-viewer aesthetic
+        # where the right column sits at the top with empty space below.
+        self._right_column_layout = QtWidgets.QVBoxLayout()
+        self._right_column_layout.setContentsMargins(
+            _BODY_MARGIN, _BODY_MARGIN, _BODY_MARGIN, _BODY_MARGIN
+        )
+        self._right_column_layout.setSpacing(_BODY_SPACING)
+        self._right_column_layout.addWidget(self._slice_panel, stretch=0)
         for bin_panel in self._extra_bin_panels:
-            right_column_layout.addWidget(bin_panel, stretch=1)
+            self._right_column_layout.addWidget(bin_panel, stretch=0)
+        self._right_column_layout.addStretch(1)
         right_column = QtWidgets.QWidget()
-        right_column.setLayout(right_column_layout)
+        right_column.setLayout(self._right_column_layout)
 
-        body_layout = QtWidgets.QHBoxLayout()
-        body_layout.addWidget(left_column, stretch=2)
-        body_layout.addWidget(right_column, stretch=1)
-        body_widget = QtWidgets.QWidget()
-        body_widget.setLayout(body_layout)
+        self._body_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self._body_splitter.addWidget(left_column)
+        self._body_splitter.addWidget(right_column)
+        self._body_splitter.setStretchFactor(0, _BODY_SPLITTER_LEFT_STRETCH)
+        self._body_splitter.setStretchFactor(1, _BODY_SPLITTER_RIGHT_STRETCH)
+        # ``setStretchFactor`` only resolves the ratio when both child
+        # widgets have non-trivial size policies — in practice with
+        # Expanding panels we still see a near-50/50 initial split.
+        # Force the desired ratio with explicit pixel-equivalent
+        # ``setSizes``; the user can drag from there.
+        self._body_splitter.setSizes(
+            [
+                _BODY_SPLITTER_LEFT_STRETCH * 100,
+                _BODY_SPLITTER_RIGHT_STRETCH * 100,
+            ]
+        )
+        # Don't allow either pane to fully collapse on drag; small
+        # minimum keeps the column dragable but always visible.
+        self._body_splitter.setChildrenCollapsible(False)
 
         self._layout = QtWidgets.QVBoxLayout()
+        self._layout.setContentsMargins(
+            _BODY_MARGIN, _BODY_MARGIN, _BODY_MARGIN, _BODY_MARGIN
+        )
+        self._layout.setSpacing(_BODY_SPACING)
         self._layout.addWidget(self._controls_bar, stretch=0)
-        self._layout.addWidget(body_widget, stretch=1)
+        self._layout.addWidget(self._body_splitter, stretch=1)
         self._layout.addWidget(self._slider, stretch=0)
         container = QtWidgets.QWidget()
         container.setLayout(self._layout)
@@ -765,7 +831,9 @@ class QtViewer(QtWidgets.QMainWindow):
         new_extras = _auto_panels_from_extra_metrics(extra_metrics)
         for offset, panel in enumerate(new_extras):
             self._left_column_layout.insertWidget(
-                self._extras_insert_index + offset, panel, 1
+                self._extras_insert_index + offset,
+                panel,
+                _LEFT_COLUMN_EXTRA_STRETCH,
             )
 
         self._extra_panels = new_extras

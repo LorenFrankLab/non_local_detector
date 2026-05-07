@@ -394,12 +394,15 @@ def test_extra_bin_panels_appear_under_slice_panel(
     plugin = _make_recording_bin_panel()
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5, extra_bin_panels=[plugin])
-    body = viewer.centralWidget().layout().itemAt(1).widget()
-    right_column = body.layout().itemAt(1).widget()
+    splitter = viewer._body_splitter
+    right_column = splitter.widget(1)
     right_column_widgets = [
         right_column.layout().itemAt(i).widget()
         for i in range(right_column.layout().count())
+        if right_column.layout().itemAt(i).widget() is not None
     ]
+    # Slice panel sits at the top of the right column followed by
+    # any bin plugins; the trailing item is a stretch (None widget).
     assert right_column_widgets[0] is viewer._slice_panel
     assert plugin in right_column_widgets
 

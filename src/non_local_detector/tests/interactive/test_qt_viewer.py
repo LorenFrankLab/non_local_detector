@@ -317,11 +317,13 @@ def test_qt_viewer_constructs_full_left_column_stack(
     viewer = QtViewer(ds, t_width=0.5)
 
     builtin_types = [type(p) for p in viewer._builtin_panels]
+    # Top-to-bottom visual order matches statespacecheck-paper-viewer:
+    # heatmaps dominate; raster + state-prob are compact rows beneath.
     assert builtin_types == [
+        QtPosteriorHeatmapPanel,
+        QtLikelihoodHeatmapPanel,
         QtRasterPanel,
         QtStateProbabilityPanel,
-        QtLikelihoodHeatmapPanel,
-        QtPosteriorHeatmapPanel,
     ]
     # Built-in panels live in the left column of the body's QHBoxLayout.
     left_col_layout = viewer._left_column_layout
@@ -389,13 +391,14 @@ def test_qt_viewer_constructs_slice_panel_from_active_run(
     assert isinstance(viewer._slice_panel, QtSlicePanel)
     assert viewer._slice_model.detector is multi_run_bundles["nl"].detector
     # Slice panel sits inside the right-column wrapper widget under
-    # the body's QHBoxLayout split. (Right-column wrapper exists so
+    # the body splitter. (Right-column wrapper exists so
     # ``extra_bin_panels`` can stack below the slice panel.)
-    body = viewer.centralWidget().layout().itemAt(1).widget()
-    right_column = body.layout().itemAt(1).widget()
+    splitter = viewer._body_splitter
+    right_column = splitter.widget(1)
     right_column_widgets = [
         right_column.layout().itemAt(i).widget()
         for i in range(right_column.layout().count())
+        if right_column.layout().itemAt(i).widget() is not None
     ]
     assert viewer._slice_panel in right_column_widgets
 
@@ -556,3 +559,185 @@ def test_qt_viewer_swap_rebinds_built_in_panel_models(
     # Smoke check: a fresh load under CF must complete without raising.
     payload = viewer._backend._build_payload(viewer.core.current_view_state)
     viewer._on_window_loaded(payload)
+
+
+# ---------------------------------------------------------------------------
+# Layout parity (Chunk 1) — assertions on body splitter, stretch factors,
+# slice top-alignment, and per-panel weights matching paper-viewer parity.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_qt_viewer_body_is_horizontal_qsplitter(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """The body container must be a QSplitter so the user can drag the divider.
+
+    QHBoxLayout's stretch factors are static; QSplitter lets the user
+    rebalance left vs right at runtime, matching the paper viewer.
+    """
+    from PySide6 import QtCore, QtWidgets
+
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    splitter = viewer._body_splitter
+    assert isinstance(splitter, QtWidgets.QSplitter)
+    assert splitter.orientation() == QtCore.Qt.Horizontal
+    assert splitter.count() == 2
+    # The splitter is the second child of the root QVBoxLayout
+    # (controls bar above, slider below).
+    root = viewer.centralWidget().layout()
+    assert root.itemAt(1).widget() is splitter
+
+
+@pytest.mark.unit
+def test_qt_viewer_body_splitter_stretch_factors_70_30(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Left:right body splitter weight ratio is roughly 70:30 (paper parity).
+
+    QSplitter has no public getter for per-widget stretch factors, so
+    we verify behaviour two ways: pin the module-level constants
+    (a refactor that equalises them must update both places) and
+    read ``splitter.sizes()`` post-construction (before the show
+    event re-balances by Qt size policy).
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _BODY_SPLITTER_LEFT_STRETCH,
+        _BODY_SPLITTER_RIGHT_STRETCH,
+        QtViewer,
+    )
+
+    assert _BODY_SPLITTER_LEFT_STRETCH > _BODY_SPLITTER_RIGHT_STRETCH
+    constant_ratio = _BODY_SPLITTER_LEFT_STRETCH / _BODY_SPLITTER_RIGHT_STRETCH
+    assert 2.0 <= constant_ratio <= 3.0, (
+        f"left:right stretch constants ratio {constant_ratio:.2f} outside "
+        "[2.0, 3.0] (target ~70:30)"
+    )
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    # ``QtViewer`` calls ``setSizes`` at construction. Read back to
+    # confirm the call landed before the widget show event re-balances
+    # by Qt size policy. The post-show balance varies by platform
+    # (offscreen Qt sometimes equalises panes regardless of setSizes),
+    # which is why this test reads the pre-show value rather than the
+    # realised on-screen layout.
+    sizes = viewer._body_splitter.sizes()
+    assert sum(sizes) > 0, "splitter has no initial sizes set"
+    initial_ratio = sizes[0] / max(sizes[1], 1)
+    # Qt may pull the ratio toward 1:1 if the right column has a
+    # large minimum size hint (the slice panel has per-cell rows
+    # that demand vertical space). Accept anything clearly
+    # left-dominant — a 50/50 regression would fail this.
+    assert initial_ratio >= 1.5, (
+        f"initial splitter sizes {sizes} ratio {initial_ratio:.2f} below 1.5 — "
+        "viewer must call setSizes so the left column dominates"
+    )
+
+
+@pytest.mark.unit
+def test_qt_viewer_left_column_stretch_heatmaps_dominate(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Posterior + likelihood heatmaps get a taller stretch than raster + state-prob.
+
+    Mirrors the paper-viewer layout: the heatmaps are the primary
+    visual context; raster and state-probability are compact rows.
+    """
+    from non_local_detector.visualization.interactive.panels.qt.likelihood import (
+        QtLikelihoodHeatmapPanel,
+    )
+    from non_local_detector.visualization.interactive.panels.qt.posterior import (
+        QtPosteriorHeatmapPanel,
+    )
+    from non_local_detector.visualization.interactive.panels.qt.raster import (
+        QtRasterPanel,
+    )
+    from non_local_detector.visualization.interactive.panels.qt.state_prob import (
+        QtStateProbabilityPanel,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    layout = viewer._left_column_layout
+
+    stretch_by_type: dict[type, int] = {}
+    for i in range(layout.count()):
+        widget = layout.itemAt(i).widget()
+        if widget is None:
+            continue
+        stretch_by_type[type(widget)] = layout.stretch(i)
+
+    heatmap_stretch = min(
+        stretch_by_type[QtPosteriorHeatmapPanel],
+        stretch_by_type[QtLikelihoodHeatmapPanel],
+    )
+    compact_stretch = max(
+        stretch_by_type[QtRasterPanel],
+        stretch_by_type[QtStateProbabilityPanel],
+    )
+    assert heatmap_stretch > compact_stretch, (
+        f"heatmap stretch ({heatmap_stretch}) must exceed compact stretch "
+        f"({compact_stretch}); layout would otherwise distribute height equally."
+    )
+
+
+@pytest.mark.unit
+def test_qt_viewer_right_column_top_aligned_with_trailing_stretch(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """The slice panel is top-aligned: trailing item is a stretch, not a widget.
+
+    A trailing ``addStretch(1)`` keeps the slice panel at its natural
+    height instead of expanding to fill the full window — the paper
+    viewer's right column sits at the top with empty space below.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    right_layout = viewer._right_column_layout
+    n_items = right_layout.count()
+    assert n_items >= 2
+    # First item must be the slice panel.
+    assert right_layout.itemAt(0).widget() is viewer._slice_panel
+    # Last item must be a spacer (stretch), not a widget.
+    last_item = right_layout.itemAt(n_items - 1)
+    assert last_item.widget() is None, (
+        "trailing item must be a stretch, not a widget — slice panel "
+        "would otherwise fill the full column height."
+    )
+    assert last_item.spacerItem() is not None
+
+
+@pytest.mark.unit
+def test_qt_viewer_body_uses_tight_margins(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Outer margins + spacing are small so panels read as one figure.
+
+    Default Qt margins (~9 px each side) produce visible gutters
+    between panels. The paper viewer pulls them in tight.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    margins = viewer._left_column_layout.contentsMargins()
+    assert margins.left() <= 4
+    assert margins.top() <= 4
+    assert margins.right() <= 4
+    assert margins.bottom() <= 4
+    assert viewer._left_column_layout.spacing() <= 4
