@@ -66,6 +66,11 @@ class ViewerCore:
         self._active_overlay_name: str | None = None
         self._on_window_loaded: Callable[[WindowPayload], None] | None = None
         self._on_active_run_changed_callbacks: list[Callable[[str], None]] = []
+        self._on_overlays_changed_callbacks: list[
+            Callable[[list[EventOverlay]], None]
+        ] = []
+        # Per-overlay visibility (keyed by overlay name); absent = visible.
+        self._overlay_visibility: dict[str, bool] = {}
 
     # ------------------------------------------------------------------
     # State accessors
@@ -116,6 +121,17 @@ class ViewerCore:
         StateProb, Raster, Slice).
         """
         self._on_active_run_changed_callbacks.append(callback)
+
+    def on_overlays_changed(
+        self, callback: Callable[[list[EventOverlay]], None]
+    ) -> None:
+        """Register a callback fired when the visible overlay set changes.
+
+        The callback receives the *visible* overlays (already filtered
+        by ``_overlay_visibility``). Each panel registers one
+        callback that calls its ``set_event_overlays(...)``.
+        """
+        self._on_overlays_changed_callbacks.append(callback)
 
     # ------------------------------------------------------------------
     # Time navigation
@@ -208,6 +224,10 @@ class ViewerCore:
         self._data_source.set_active_run(name)
         for callback in self._on_active_run_changed_callbacks:
             callback(name)
+        # The new run may carry different overlay data (per-run
+        # model-derived events, etc.); push the visible set to every
+        # panel so markers update for the new run.
+        self._dispatch_overlays()
         # Rebuild the request snapshot under the new run so the next
         # load tags freshly. Pin / overlay name / t_center / t_width
         # are intentionally preserved.
@@ -238,6 +258,29 @@ class ViewerCore:
         if name not in names:
             raise ValueError(f"No overlay named {name!r}. Available: {sorted(names)!r}")
         self._active_overlay_name = name
+
+    def set_overlay_visibility(self, name: str, visible: bool) -> None:
+        """Toggle a single overlay on/off; redispatches to all panels."""
+        self._overlay_visibility[name] = bool(visible)
+        self._dispatch_overlays()
+
+    def refresh_overlays(self) -> None:
+        """Push the current visible-overlay set to every registered panel.
+
+        Called by panels after they subscribe so they get the
+        initial overlay state, and after any external mutation of
+        ``bundle.event_overlays``.
+        """
+        self._dispatch_overlays()
+
+    def _dispatch_overlays(self) -> None:
+        visible = [
+            ovl
+            for ovl in self._data_source.active_run.event_overlays
+            if self._overlay_visibility.get(ovl.name, True)
+        ]
+        for callback in self._on_overlays_changed_callbacks:
+            callback(visible)
 
     def next_event(self) -> float | None:
         """Recenter on the next event of the active overlay, return its time.

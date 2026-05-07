@@ -317,3 +317,97 @@ class TestViewerCoreOverlayNavigation:
         core, _, _ = core_factory()
         assert core.next_event() is None
         assert core.prev_event() is None
+
+
+@pytest.mark.unit
+class TestViewerCoreOverlayDispatch:
+    """``on_overlays_changed`` + ``set_overlay_visibility`` + ``refresh_overlays``."""
+
+    def _attach_overlay_to_all(self, multi_run_bundles, overlay):
+        for bundle in multi_run_bundles.values():
+            bundle.event_overlays.append(overlay)
+
+    def test_refresh_overlays_pushes_visible_set(
+        self, multi_run_bundles
+    ) -> None:
+        original = {n: list(b.event_overlays) for n, b in multi_run_bundles.items()}
+        try:
+            swr = EventOverlay.points(name="swr", times=np.array([1.0]))
+            theta = EventOverlay.points(name="theta", times=np.array([2.0]))
+            self._attach_overlay_to_all(multi_run_bundles, swr)
+            self._attach_overlay_to_all(multi_run_bundles, theta)
+            ds = InMemoryDecoderDataSource(multi_run_bundles)
+            core = ViewerCore(ds, StubBackend())
+            received: list[list[EventOverlay]] = []
+            core.on_overlays_changed(received.append)
+            core.refresh_overlays()
+            assert len(received) == 1
+            assert {ovl.name for ovl in received[0]} == {"swr", "theta"}
+        finally:
+            for n, b in multi_run_bundles.items():
+                b.event_overlays[:] = original[n]
+
+    def test_set_overlay_visibility_filters(self, multi_run_bundles) -> None:
+        original = {n: list(b.event_overlays) for n, b in multi_run_bundles.items()}
+        try:
+            swr = EventOverlay.points(name="swr", times=np.array([1.0]))
+            theta = EventOverlay.points(name="theta", times=np.array([2.0]))
+            self._attach_overlay_to_all(multi_run_bundles, swr)
+            self._attach_overlay_to_all(multi_run_bundles, theta)
+            ds = InMemoryDecoderDataSource(multi_run_bundles)
+            core = ViewerCore(ds, StubBackend())
+            received: list[list[EventOverlay]] = []
+            core.on_overlays_changed(received.append)
+            # Hide theta.
+            core.set_overlay_visibility("theta", False)
+            assert {ovl.name for ovl in received[-1]} == {"swr"}
+            # Re-enable theta.
+            core.set_overlay_visibility("theta", True)
+            assert {ovl.name for ovl in received[-1]} == {"swr", "theta"}
+        finally:
+            for n, b in multi_run_bundles.items():
+                b.event_overlays[:] = original[n]
+
+    def test_swap_dispatches_overlays_for_new_run(
+        self, multi_run_bundles
+    ) -> None:
+        """Per-run overlay data updates on swap.
+
+        Both runs declare the same ``("non_local_events", "points")``
+        schema but with different times; after swap, the panel must
+        get the new run's data.
+        """
+        original = {n: list(b.event_overlays) for n, b in multi_run_bundles.items()}
+        try:
+            multi_run_bundles["nl"].event_overlays.append(
+                EventOverlay.points(
+                    name="non_local_events", times=np.array([1.0, 2.0, 3.0])
+                )
+            )
+            multi_run_bundles["cf"].event_overlays.append(
+                EventOverlay.points(
+                    name="non_local_events", times=np.array([10.0, 20.0])
+                )
+            )
+            multi_run_bundles["nsf"].event_overlays.append(
+                EventOverlay.points(
+                    name="non_local_events", times=np.array([100.0])
+                )
+            )
+            multi_run_bundles["dec"].event_overlays.append(
+                EventOverlay.points(
+                    name="non_local_events", times=np.array([1000.0])
+                )
+            )
+            ds = InMemoryDecoderDataSource(multi_run_bundles)
+            core = ViewerCore(ds, StubBackend())
+            received: list[list[EventOverlay]] = []
+            core.on_overlays_changed(received.append)
+            core.refresh_overlays()  # initial NL
+            assert received[-1][0].times.tolist() == [1.0, 2.0, 3.0]
+            core.set_active_run("cf")
+            # After swap, the panel got the CF overlay data.
+            assert received[-1][0].times.tolist() == [10.0, 20.0]
+        finally:
+            for n, b in multi_run_bundles.items():
+                b.event_overlays[:] = original[n]

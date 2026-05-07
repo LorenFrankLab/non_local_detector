@@ -128,6 +128,8 @@ class QtViewer(QtWidgets.QMainWindow):
         )
         self._core.on_window_loaded(self._panel.update_window)
         self._core.on_active_run_changed(self._rebind_panels)
+        self._core.on_overlays_changed(self._panel.set_event_overlays)
+        self._core.refresh_overlays()
 
         # Slider: integer indices into the time grid; map to t_center.
         n_time = data_source.n_time
@@ -146,11 +148,13 @@ class QtViewer(QtWidgets.QMainWindow):
 
         # Keyboard shortcuts.
         QtCore.QTimer.singleShot(0, self._core.request_load)
-        for key, fn in (
-            (QtCore.Qt.Key_Left, self._core.step_left),
-            (QtCore.Qt.Key_Right, self._core.step_right),
+        for key_seq, fn in (
+            (QtGui.QKeySequence(QtCore.Qt.Key_Left), self._core.step_left),
+            (QtGui.QKeySequence(QtCore.Qt.Key_Right), self._core.step_right),
+            (QtGui.QKeySequence("N"), self._core.next_event),
+            (QtGui.QKeySequence("Shift+N"), self._core.prev_event),
         ):
-            shortcut = QtGui.QShortcut(QtGui.QKeySequence(key), self)
+            shortcut = QtGui.QShortcut(key_seq, self)
             shortcut.activated.connect(fn)
 
     @property
