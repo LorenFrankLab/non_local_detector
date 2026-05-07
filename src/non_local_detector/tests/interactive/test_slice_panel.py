@@ -425,6 +425,92 @@ class TestSlicePanelPinning:
 
 
 @pytest.mark.unit
+def test_slice_panel_overlay_mode_switches_overlay_source(
+    qapp,
+    run_bundles: dict[str, RunBundle],
+) -> None:
+    """``set_overlay_mode`` swaps between predictive and smoothed sources.
+
+    On the same buffered payload, the dashed overlay curve must match
+    the analysis-helper output for whichever row source the panel is
+    currently configured to use, and ``"off"`` must drop the overlay
+    entirely.
+    """
+    bundle = run_bundles["nl_all"]
+    detector = bundle.detector
+    centers = np.asarray(detector.environments[0].place_bin_centers_).squeeze()
+    time = bundle.results["time"].values
+    model = SliceModel(detector, bundle.spike_times, time)
+    panel = _make_panel(qapp, model, centers)
+
+    payload = _payload_for_results(bundle.results)
+    panel.set_window_buffer(payload)
+    t_idx = first_finite_row_index(bundle.results["log_likelihood"].values)
+    panel.update_for_index(t_idx)
+
+    expected_predictive = collapse_posterior_to_position(
+        bundle.results["predictive_posterior"].values[t_idx],
+        detector,
+        PosteriorReduction.CONDITIONAL_NON_LOCAL,
+    )
+    expected_smoothed = collapse_posterior_to_position(
+        bundle.results["acausal_posterior"].values[t_idx],
+        detector,
+        PosteriorReduction.CONDITIONAL_NON_LOCAL,
+    )
+
+    # Default mode is "predictive".
+    assert panel.overlay_mode == "predictive"
+    _, y_pred = panel._predictive_curve_item.getData()
+    np.testing.assert_allclose(y_pred, expected_predictive, atol=1e-14, equal_nan=True)
+
+    # Switch to smoothed — overlay tracks the acausal-collapsed curve.
+    panel.set_overlay_mode("smoothed")
+    assert panel.overlay_mode == "smoothed"
+    _, y_smooth = panel._predictive_curve_item.getData()
+    np.testing.assert_allclose(y_smooth, expected_smoothed, atol=1e-14, equal_nan=True)
+
+    # Switch to off — overlay hides.
+    panel.set_overlay_mode("off")
+    assert panel.overlay_mode == "off"
+    _, y_off = panel._predictive_curve_item.getData()
+    assert y_off is None or y_off.size == 0
+
+
+@pytest.mark.unit
+def test_slice_panel_overlay_combo_drives_set_overlay_mode(
+    qapp,
+    run_bundles: dict[str, RunBundle],
+) -> None:
+    """User-facing combo box selection routes through ``set_overlay_mode``."""
+    bundle = run_bundles["nl_all"]
+    detector = bundle.detector
+    centers = np.asarray(detector.environments[0].place_bin_centers_).squeeze()
+    time = bundle.results["time"].values
+    model = SliceModel(detector, bundle.spike_times, time)
+    panel = _make_panel(qapp, model, centers)
+
+    panel.set_window_buffer(_payload_for_results(bundle.results))
+    t_idx = first_finite_row_index(bundle.results["log_likelihood"].values)
+    panel.update_for_index(t_idx)
+
+    smoothed_idx = next(
+        j
+        for j in range(panel._overlay_combo.count())
+        if panel._overlay_combo.itemData(j) == "smoothed"
+    )
+    panel._overlay_combo.setCurrentIndex(smoothed_idx)
+    assert panel.overlay_mode == "smoothed"
+    expected_smoothed = collapse_posterior_to_position(
+        bundle.results["acausal_posterior"].values[t_idx],
+        detector,
+        PosteriorReduction.CONDITIONAL_NON_LOCAL,
+    )
+    _, y = panel._predictive_curve_item.getData()
+    np.testing.assert_allclose(y, expected_smoothed, atol=1e-14, equal_nan=True)
+
+
+@pytest.mark.unit
 def test_slice_panel_rebind_after_swap_clears_buffer(
     qapp,
     run_bundles: dict[str, RunBundle],

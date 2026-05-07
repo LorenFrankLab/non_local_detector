@@ -10,7 +10,7 @@ the buffer makes the cursor updates O(1).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pyqtgraph as pg
@@ -29,6 +29,13 @@ if TYPE_CHECKING:
 # fall under the "(+K more)" truncation indicator. Mirrors upstream
 # (panels.py:95).
 MAX_PER_CELL_PLOTS = 6
+
+OverlayMode = Literal["predictive", "smoothed", "off"]
+_OVERLAY_MODE_CHOICES: tuple[tuple[OverlayMode, str], ...] = (
+    ("predictive", "Predictive (causal)"),
+    ("smoothed", "Smoothed (acausal)"),
+    ("off", "Off"),
+)
 
 _TOP_CURVE_PEN = pg.mkPen(color="#1f77b4", width=2)
 _PREDICTIVE_PEN = pg.mkPen(
@@ -81,18 +88,36 @@ class QtSlicePanel(QtWidgets.QWidget):
         self,
         model: SliceModel,
         position_centers: np.ndarray,
+        overlay_mode: OverlayMode = "predictive",
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._model = model
         self._position_centers = np.asarray(position_centers).squeeze()
+        self._overlay_mode: OverlayMode = overlay_mode
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
 
+        # Title row: bold prose on the left, overlay-source dropdown on the
+        # right. The dropdown lets the user choose between the predictive
+        # (causal) overlay — the prior the decoder used at this bin — and
+        # the smoothed (acausal) overlay derived from the same
+        # ``acausal_posterior`` the heatmap shows. See
+        # docs/plans/2026-05-06-interactive-decoder-viewer.md (Milestone 6).
+        title_row = QtWidgets.QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
         self._title_label = QtWidgets.QLabel("")
         self._title_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(self._title_label)
+        title_row.addWidget(self._title_label, stretch=1)
+        title_row.addWidget(QtWidgets.QLabel("Overlay:"))
+        self._overlay_combo = QtWidgets.QComboBox()
+        for mode_key, mode_label in _OVERLAY_MODE_CHOICES:
+            self._overlay_combo.addItem(mode_label, userData=mode_key)
+        self._set_combo_to_mode(overlay_mode)
+        self._overlay_combo.currentIndexChanged.connect(self._on_overlay_combo_changed)
+        title_row.addWidget(self._overlay_combo)
+        layout.addLayout(title_row)
 
         self._top_plot = pg.PlotWidget(background="w")
         self._top_plot.setLabel("left", "Probability / Likelihood")
@@ -136,6 +161,54 @@ class QtSlicePanel(QtWidgets.QWidget):
     @property
     def model(self) -> SliceModel:
         return self._model
+
+    @property
+    def overlay_mode(self) -> OverlayMode:
+        return self._overlay_mode
+
+    def set_overlay_mode(self, mode: OverlayMode) -> None:
+        """Switch the overlay source between predictive / smoothed / off.
+
+        ``"predictive"`` draws the predictive (causal) posterior collapsed
+        via the active reduction — the prior the decoder used at the
+        cursor bin. Hidden when ``predictive_posterior`` is missing from
+        the buffered window.
+
+        ``"smoothed"`` draws the acausal posterior collapsed the same
+        way. Always available because ``acausal_posterior`` is always in
+        a default ``predict()`` output.
+
+        ``"off"`` hides the overlay entirely.
+
+        Updates the dropdown to match and re-renders at the last bin so
+        the change is visible without a slider nudge.
+        """
+        if mode not in {"predictive", "smoothed", "off"}:
+            raise ValueError(
+                f"overlay_mode must be 'predictive', 'smoothed', or 'off'; got {mode!r}"
+            )
+        if mode == self._overlay_mode:
+            return
+        self._overlay_mode = mode
+        self._set_combo_to_mode(mode)
+        self._maybe_rerender()
+
+    def _set_combo_to_mode(self, mode: OverlayMode) -> None:
+        """Sync the combo box to ``mode`` without firing the signal."""
+        for i, (mode_key, _label) in enumerate(_OVERLAY_MODE_CHOICES):
+            if mode_key == mode:
+                with QtCore.QSignalBlocker(self._overlay_combo):
+                    self._overlay_combo.setCurrentIndex(i)
+                return
+
+    def _on_overlay_combo_changed(self, idx: int) -> None:
+        if not 0 <= idx < len(_OVERLAY_MODE_CHOICES):
+            return
+        new_mode: OverlayMode = _OVERLAY_MODE_CHOICES[idx][0]
+        if new_mode == self._overlay_mode:
+            return
+        self._overlay_mode = new_mode
+        self._maybe_rerender()
 
     @property
     def pinned_cell_ids(self) -> frozenset[int]:
@@ -216,11 +289,24 @@ class QtSlicePanel(QtWidgets.QWidget):
         log_lik_row = (
             payload.likelihood[local_idx] if payload.likelihood is not None else None
         )
-        predictive_row = (
-            payload.predictive[local_idx] if payload.predictive is not None else None
-        )
+        # Overlay row depends on the user-selected mode: predictive picks
+        # the causal-prior posterior, smoothed picks the same acausal row
+        # the heatmap collapses, off hides the overlay. Each falls back
+        # to ``None`` (overlay hidden) when the chosen array isn't in the
+        # window — predictive_posterior is opt-in and therefore commonly
+        # absent.
+        if self._overlay_mode == "predictive":
+            overlay_row = (
+                payload.predictive[local_idx]
+                if payload.predictive is not None
+                else None
+            )
+        elif self._overlay_mode == "smoothed":
+            overlay_row = posterior_row
+        else:  # "off"
+            overlay_row = None
         bin_payload = self._model.update_for_index(
-            t_idx, posterior_row, log_lik_row=log_lik_row, predictive_row=predictive_row
+            t_idx, posterior_row, log_lik_row=log_lik_row, predictive_row=overlay_row
         )
         self._last_t_idx = t_idx
         self._render(bin_payload)
