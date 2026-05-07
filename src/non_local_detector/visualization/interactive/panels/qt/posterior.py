@@ -67,6 +67,10 @@ class QtPosteriorHeatmapPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMix
         collapsed = self._model.update_window(posterior)
         self._set_image(collapsed, np.asarray(time))
 
+    def set_position_centers(self, centers: np.ndarray) -> None:
+        """Re-bind the y-axis position grid (called on M-key swap)."""
+        self._position_centers = np.asarray(centers).squeeze()
+
     def _set_image(self, collapsed: np.ndarray, time: np.ndarray) -> None:
         # ImageItem rows are y, columns are x (axisOrder="row-major").
         # Our collapsed array is (n_visible, n_pos) — time on x, position

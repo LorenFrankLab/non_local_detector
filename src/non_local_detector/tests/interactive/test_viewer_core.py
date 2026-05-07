@@ -366,6 +366,21 @@ class TestViewerCoreOverlayDispatch:
             for n, b in multi_run_bundles.items():
                 b.event_overlays[:] = original[n]
 
+    def test_off_overlays_changed_unregisters_callback(
+        self, multi_run_bundles
+    ) -> None:
+        """``off_overlays_changed`` removes a previously registered callback."""
+        ds = InMemoryDecoderDataSource(multi_run_bundles)
+        core = ViewerCore(ds, StubBackend())
+        received: list[list[EventOverlay]] = []
+        core.on_overlays_changed(received.append)
+        core.refresh_overlays()
+        assert len(received) == 1
+        core.off_overlays_changed(received.append)
+        core.refresh_overlays()
+        # No new dispatch; received still length 1.
+        assert len(received) == 1
+
     def test_swap_dispatches_overlays_for_new_run(self, multi_run_bundles) -> None:
         """Per-run overlay data updates on swap.
 

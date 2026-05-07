@@ -232,3 +232,175 @@ def test_qt_viewer_swap_rebinds_panel_model(
     # After swap: CF → MARGINAL, model bound to the CF detector.
     assert viewer._posterior_model.reduction is PosteriorReduction.MARGINAL
     assert viewer._posterior_model.detector is multi_run_bundles["cf"].detector
+
+
+@pytest.mark.unit
+def test_qt_likelihood_panel_explains_missing_log_likelihood(
+    qapp,
+    nl_fitted: FittedDetector,
+) -> None:
+    """No-likelihood payload surfaces the re-``predict`` instruction in the title."""
+    from non_local_detector.visualization.interactive.panels.qt.likelihood import (
+        QtLikelihoodHeatmapPanel,
+    )
+    from non_local_detector.visualization.interactive.view_models.base import (
+        WindowPayload,
+    )
+    from non_local_detector.visualization.interactive.view_models.likelihood import (
+        LikelihoodHeatmapModel,
+    )
+
+    detector = nl_fitted.detector
+    env = detector.environments[0]
+    panel = QtLikelihoodHeatmapPanel(
+        model=LikelihoodHeatmapModel(detector),
+        position_centers=np.asarray(env.place_bin_centers_).squeeze(),
+    )
+
+    panel.update_window(
+        WindowPayload(
+            request_id=0,
+            time=np.linspace(0.0, 1.0, 10),
+            indices=slice(0, 10),
+            likelihood=None,
+        )
+    )
+    assert panel._title_message == panel.MISSING_DATA_MESSAGE
+    assert "log_likelihood" in panel.MISSING_DATA_MESSAGE
+    assert "predict" in panel.MISSING_DATA_MESSAGE
+    # Mirror-only assertion would miss stale-text bugs: pg.setTitle(None)
+    # hides the label without clearing cached text. Check the widget too.
+    title_label = panel.plotItem.titleLabel
+    assert title_label.text == panel.MISSING_DATA_MESSAGE
+    assert title_label.isVisible()
+
+    n_state_bins = detector.n_state_bins_
+    log_lik = nl_fitted.results["log_likelihood"].values[
+        first_finite_row_index(nl_fitted.results["log_likelihood"].values)
+        : first_finite_row_index(nl_fitted.results["log_likelihood"].values) + 10
+    ]
+    assert log_lik.shape == (10, n_state_bins)
+    panel.update_window(
+        WindowPayload(
+            request_id=1,
+            time=np.linspace(0.0, 1.0, 10),
+            indices=slice(0, 10),
+            likelihood=log_lik,
+        )
+    )
+    assert panel._title_message is None
+    assert title_label.text == ""
+    assert not title_label.isVisible()
+
+
+@pytest.mark.unit
+def test_qt_viewer_constructs_full_left_column_stack(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """All four built-in left-column panels are constructed and laid out."""
+    from non_local_detector.visualization.interactive.panels.qt.likelihood import (
+        QtLikelihoodHeatmapPanel,
+    )
+    from non_local_detector.visualization.interactive.panels.qt.posterior import (
+        QtPosteriorHeatmapPanel,
+    )
+    from non_local_detector.visualization.interactive.panels.qt.raster import (
+        QtRasterPanel,
+    )
+    from non_local_detector.visualization.interactive.panels.qt.state_prob import (
+        QtStateProbabilityPanel,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    builtin_types = [type(p) for p in viewer._builtin_panels]
+    assert builtin_types == [
+        QtRasterPanel,
+        QtStateProbabilityPanel,
+        QtLikelihoodHeatmapPanel,
+        QtPosteriorHeatmapPanel,
+    ]
+    layout = viewer.centralWidget().layout()
+    layout_widgets = [layout.itemAt(i).widget() for i in range(layout.count())]
+    for panel in viewer._builtin_panels:
+        assert panel in layout_widgets
+        assert panel in viewer._all_panels
+
+
+@pytest.mark.unit
+def test_qt_viewer_payload_routes_to_all_left_column_panels(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """A live load populates the render artifacts of every built-in panel."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+
+    assert payload.state_probabilities is not None
+    n_visible = payload.state_probabilities.shape[0]
+    assert payload.state_probabilities.shape == (
+        n_visible,
+        len(multi_run_bundles["nl"].detector.state_names),
+    )
+    assert payload.posterior is not None and payload.posterior.shape[0] == n_visible
+    assert payload.likelihood is not None and payload.likelihood.shape[0] == n_visible
+
+    viewer._on_window_loaded(payload)
+
+    for line in viewer._state_prob_panel._lines:
+        x, _ = line.getData()
+        assert x.size == n_visible
+
+    n_pos = int(multi_run_bundles["nl"].detector.environments[0].place_bin_centers_.shape[0])
+    assert viewer._likelihood_panel._image_item.image.shape == (n_pos, n_visible)
+    assert viewer._panel._image_item.image.shape == (n_pos, n_visible)
+    # ScatterPlotItem.getData returns (x, y); spike count may be 0 in
+    # the window so just check API shape.
+    assert len(viewer._raster_panel._scatter.getData()) == 2
+
+
+@pytest.mark.unit
+def test_qt_viewer_swap_rebinds_built_in_panel_models(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Run swap rebinds every left-column model to the new schema."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    nl = multi_run_bundles["nl"].detector
+    assert viewer._likelihood_model.detector is nl
+    assert viewer._state_prob_model.detector is nl
+    assert viewer._raster_model.detector is nl
+    assert viewer._state_prob_model.state_names == list(nl.state_names)
+    n_lines_nl = len(viewer._state_prob_panel._lines)
+
+    viewer.core.set_active_run("cf")
+    cf = multi_run_bundles["cf"].detector
+
+    assert viewer._likelihood_model.detector is cf
+    assert viewer._state_prob_model.detector is cf
+    assert viewer._raster_model.detector is cf
+    assert viewer._state_prob_model.state_names == list(cf.state_names)
+
+    # State-prob panel must rebuild lines on swap (NL=4 states, CF=2);
+    # without ``rebind_after_swap`` the line count would briefly
+    # mismatch the new payload until the next ``_set_data`` rebuild.
+    assert n_lines_nl == 4
+    assert len(viewer._state_prob_panel._lines) == 2
+
+    cf_centers = np.asarray(cf.environments[0].place_bin_centers_).squeeze()
+    np.testing.assert_array_equal(viewer._panel._position_centers, cf_centers)
+    np.testing.assert_array_equal(viewer._likelihood_panel._position_centers, cf_centers)
+
+    # Smoke check: a fresh load under CF must complete without raising.
+    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    viewer._on_window_loaded(payload)

@@ -102,6 +102,21 @@ class TestSingleRunDataSource:
         assert pred is not None
         assert pred.shape[0] == sl.stop - sl.start
 
+    def test_load_state_probabilities_returns_window_slice(
+        self, run_bundles: dict[str, RunBundle]
+    ) -> None:
+        """Loader must return state probabilities for every predict variant."""
+        for variant in ("nl_default", "nl_loglik", "nl_all"):
+            ds = InMemoryDecoderDataSource.from_single(run_bundles[variant])
+            sl = ds.window_indices(
+                t_center=float(ds.time[len(ds.time) // 2]),
+                t_width=0.2,
+            )
+            probs = ds.load_state_probabilities(sl)
+            assert probs.ndim == 2
+            assert probs.shape[0] == sl.stop - sl.start
+            assert probs.shape[1] == len(ds.active_run.detector.state_names)
+
     def test_slice_at_index_likelihood_raises_when_missing(
         self, run_bundles: dict[str, RunBundle]
     ) -> None:

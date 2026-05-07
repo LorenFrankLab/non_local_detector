@@ -109,6 +109,129 @@ def test_qt_viewer_auto_builds_panels_from_extra_metrics(
 
 
 @pytest.mark.unit
+def test_qt_viewer_swap_rebuilds_auto_extras(
+    qapp,
+    nl_fitted: FittedDetector,
+    cf_fitted: FittedDetector,
+    sim_session,
+) -> None:
+    """Auto-built extras rebuild against the new run's ``extra_metrics`` on swap."""
+    from non_local_detector.visualization.interactive.panels.qt.series import (
+        IntervalSeriesPanel,
+        LineSeriesPanel,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    # NL bundle ships a single line metric; CF bundle ships a different
+    # set (one line + one intervals panel). After swap the panel type
+    # set must reflect CF, not NL.
+    nl_bundle = RunBundle(
+        results=nl_fitted.results,
+        detector=nl_fitted.detector,
+        spike_times=sim_session.spike_times,
+        position_time=sim_session.time,
+        position=sim_session.position,
+        speed=sim_session.speed,
+        extra_metrics={
+            "nl_only_metric": pd.Series(
+                np.linspace(0.0, 1.0, 50),
+                index=np.linspace(0.0, 5.0, 50),
+            ),
+        },
+    )
+    cf_bundle = RunBundle(
+        results=cf_fitted.results,
+        detector=cf_fitted.detector,
+        spike_times=sim_session.spike_times,
+        position_time=sim_session.time,
+        position=sim_session.position,
+        speed=sim_session.speed,
+        extra_metrics={
+            "cf_line": pd.Series(
+                np.linspace(0.0, 0.5, 50),
+                index=np.linspace(0.0, 5.0, 50),
+            ),
+            "cf_events": MetricSpec.intervals(
+                name="cf_events",
+                t_start=np.array([1.0, 2.0]),
+                t_end=np.array([1.5, 2.5]),
+            ),
+        },
+    )
+    ds = InMemoryDecoderDataSource({"nl": nl_bundle, "cf": cf_bundle})
+    viewer = QtViewer(ds, t_width=0.5)
+
+    # Initial: NL extras → one LineSeriesPanel.
+    assert [type(p) for p in viewer._extra_panels] == [LineSeriesPanel]
+    initial_extras = list(viewer._extra_panels)
+
+    viewer.core.set_active_run("cf")
+
+    new_types = [type(p) for p in viewer._extra_panels]
+    assert LineSeriesPanel in new_types
+    assert IntervalSeriesPanel in new_types
+    for old in initial_extras:
+        assert old not in viewer._extra_panels
+    for new_panel in viewer._extra_panels:
+        assert new_panel in viewer._all_panels
+
+    # Old extras' overlay callbacks must be unregistered from
+    # ViewerCore — otherwise dispatch hits deleted Qt widgets.
+    callbacks = viewer.core._on_overlays_changed_callbacks
+    assert len(callbacks) == len(viewer._all_panels)
+    callback_owners = [getattr(cb, "__self__", None) for cb in callbacks]
+    for old in initial_extras:
+        assert old not in callback_owners
+
+    # Smoke check: dispatch after swap must not raise on deleted widgets.
+    viewer.core.refresh_overlays()
+
+
+@pytest.mark.unit
+def test_qt_viewer_swap_preserves_user_supplied_extras(
+    qapp,
+    nl_fitted: FittedDetector,
+    cf_fitted: FittedDetector,
+    sim_session,
+) -> None:
+    """User-supplied ``extra_panels`` are not torn down on swap (caller-owned)."""
+    from non_local_detector.visualization.interactive.panels.qt.series import (
+        LineSeriesPanel,
+    )
+    from non_local_detector.visualization.interactive.view_models.series import (
+        LineSeriesModel,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    nl_bundle = RunBundle(
+        results=nl_fitted.results,
+        detector=nl_fitted.detector,
+        spike_times=sim_session.spike_times,
+        position_time=sim_session.time,
+        position=sim_session.position,
+        speed=sim_session.speed,
+    )
+    cf_bundle = RunBundle(
+        results=cf_fitted.results,
+        detector=cf_fitted.detector,
+        spike_times=sim_session.spike_times,
+        position_time=sim_session.time,
+        position=sim_session.position,
+        speed=sim_session.speed,
+    )
+    user_panel = LineSeriesPanel(
+        LineSeriesModel(name="user", t=np.arange(10.0), y=np.arange(10.0))
+    )
+    ds = InMemoryDecoderDataSource({"nl": nl_bundle, "cf": cf_bundle})
+    viewer = QtViewer(ds, t_width=0.5, extra_panels=[user_panel])
+
+    assert viewer._extra_panels == [user_panel]
+    viewer.core.set_active_run("cf")
+    # Same user-supplied panel object — not torn down + rebuilt.
+    assert viewer._extra_panels == [user_panel]
+
+
+@pytest.mark.unit
 def test_qt_viewer_keyboard_window_scaling(
     qapp,
     multi_run_bundles: dict[str, RunBundle],

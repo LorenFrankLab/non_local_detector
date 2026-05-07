@@ -26,6 +26,17 @@ from non_local_detector.visualization.interactive.view_models.raster import Rast
 
 
 @pytest.mark.unit
+def test_qt_raster_panel_class_methods_are_accessible() -> None:
+    """Regression guard: methods stayed nested inside ``_contiguous_spans``."""
+    from non_local_detector.visualization.interactive.panels.qt.raster import (
+        QtRasterPanel,
+    )
+
+    assert callable(QtRasterPanel.update_for_window)
+    assert callable(QtRasterPanel.rebind_after_swap)
+
+
+@pytest.mark.unit
 class TestContiguousSpans:
     def test_empty_mask(self) -> None:
         assert _contiguous_spans(np.array([], dtype=bool)) == []

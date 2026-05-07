@@ -133,6 +133,23 @@ class ViewerCore:
         """
         self._on_overlays_changed_callbacks.append(callback)
 
+    def off_overlays_changed(
+        self, callback: Callable[[list[EventOverlay]], None]
+    ) -> None:
+        """Unregister a callback previously added via ``on_overlays_changed``.
+
+        Required when a subscriber's lifetime is shorter than the
+        core's — e.g. ``QtViewer._rebuild_auto_extras`` must release
+        deleted-panel bound methods so future ``_dispatch_overlays``
+        calls don't invoke ``set_event_overlays`` on a Qt widget the
+        runtime has scheduled for ``deleteLater``.
+
+        Bound methods compare equal across accesses (``c.m == c.m``
+        on the same instance), so passing ``panel.set_event_overlays``
+        works without keeping the original reference.
+        """
+        self._on_overlays_changed_callbacks.remove(callback)
+
     # ------------------------------------------------------------------
     # Time navigation
     # ------------------------------------------------------------------

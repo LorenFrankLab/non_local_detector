@@ -102,6 +102,90 @@ Latest at top:
   has called this out twice. Construction tests = does the panel
   actually wire up the option? Visual diff = pixel/render comparison
   against `plot_detector`. Don't conflate.
+- **M3 review (4 issues, all fixed; uncommitted)** — User flagged
+  that TASKS.md M3 boxes were checked but the live viewer didn't
+  actually render the left-column stack. Pattern: construction tests
+  pass on isolated panel classes, but the integration in `QtViewer`
+  was missing.
+  1. *High*: `QtViewer.__init__` only constructed
+     `QtPosteriorHeatmapPanel`. Added Likelihood/StateProb/Raster
+     models + panels, laid out top-to-bottom matching
+     `plot_non_local_model`, factored x-link/overlay/click/wheel
+     wiring into `_wire_panels`. Test:
+     `test_qt_viewer_constructs_full_left_column_stack`.
+  2. *High*: `_build_payload` never set
+     `WindowPayload.state_probabilities`, so the StateProb panel and
+     Raster non-local shading silently no-op'd. Added
+     `InMemoryDecoderDataSource.load_state_probabilities` (always
+     present per `RunBundle.__post_init__`); `_build_payload` now
+     populates the field. Tests:
+     `test_load_state_probabilities_returns_window_slice` +
+     `test_qt_viewer_payload_routes_to_all_left_column_panels`.
+  3. *Medium*: `QtRasterPanel.update_for_window` and
+     `rebind_after_swap` were indented inside `_contiguous_spans`
+     after its `return` — unreachable nested defs, not class
+     methods. Outdented into the class. Test:
+     `test_qt_raster_panel_class_methods_are_accessible` (asserts
+     `hasattr(QtRasterPanel, "update_for_window")`).
+  4. *Medium*: `_rebind_panels` only updated the posterior model;
+     auto-built extras and the Likelihood/StateProb/Raster models
+     stayed bound to the previous run. Added per-built-in
+     `set_active_run` + `rebind_after_swap` calls; auto-built extras
+     are torn down + rebuilt from the new run's `extra_metrics`
+     while user-supplied `extra_panels` are preserved (the user
+     owns their lifecycle). Tests:
+     `test_qt_viewer_swap_rebinds_built_in_panel_models`,
+     `test_qt_viewer_swap_rebuilds_auto_extras`,
+     `test_qt_viewer_swap_preserves_user_supplied_extras`.
+
+  Tests: 111 → 118 (7 new). Lint + suite green with `-m "not slow"`.
+- **M3 review follow-up #5** — Even after #4, `_rebuild_auto_extras`
+  removed widgets from the layout but left their
+  `set_event_overlays` bound methods in
+  `ViewerCore._on_overlays_changed_callbacks`. Future
+  `_dispatch_overlays` would call into `deleteLater`'d Qt widgets.
+  Added symmetric `ViewerCore.off_overlays_changed(callback)`;
+  `_rebuild_auto_extras` now unregisters before delete. Tests:
+  `test_off_overlays_changed_unregisters_callback` (direct unit) +
+  the existing `test_qt_viewer_swap_rebuilds_auto_extras` extended
+  to assert (a) the core callback list length matches `_all_panels`
+  after swap, (b) no callback owner is a torn-down panel, and (c)
+  `core.refresh_overlays()` after swap doesn't raise.
+
+  Tests: 118 → 119 (1 new). Lint + suite green with `-m "not slow"`.
+- **M3 review follow-up #6** — `QtLikelihoodHeatmapPanel.update_window`
+  silently cleared the image when `payload.likelihood is None`,
+  leaving `nl_default` users with an unexplained blank panel. The
+  `RunBundle` docstring promises optional-array panels "disable
+  themselves with a clear title-bar message". Added
+  `MISSING_DATA_MESSAGE` class constant + `_set_title_message` that
+  routes through `pg.PlotWidget.setTitle`; cleared on the next valid
+  payload. Internal mirror `_title_message` lets tests assert the
+  surfaced text without reaching into pyqtgraph LabelItem internals.
+  Test: `test_qt_likelihood_panel_explains_missing_log_likelihood`
+  asserts the message names `predict` + `log_likelihood` and clears
+  on next valid payload.
+
+  Tests: 119 → 120 (1 new). Lint + suite green with `-m "not slow"`.
+- **M3 review follow-up #7** — Follow-up #6's `_set_title_message`
+  used `pg.PlotWidget.setTitle(None)` to clear, but PG's
+  `setTitle(None)` only hides the label; the cached
+  `titleLabel.text` keeps the previous string. Verified directly:
+  after `setTitle('hello')` then `setTitle(None)`,
+  `titleLabel.text` still equals `'hello'` (and any future code
+  path that re-shows the label without resetting text would surface
+  the stale warning). My #6 test only asserted the mirrored
+  `_title_message`, so it passed while user-visible text stayed
+  stale. Fix: when clearing, call `setTitle('')` first (forces text
+  → '') then `setTitle(None)` (hides the label). Test
+  strengthened to assert both `panel.plotItem.titleLabel.text` and
+  `titleLabel.isVisible()` — catches the regression even if the
+  mirror diverges from the widget. Pattern note: when wrapping a
+  third-party API behind a mirror attribute, never assert only on
+  the mirror — always assert the externally observable state too,
+  or the mirror becomes a tautology.
+
+  Tests: 120 → 120 (test strengthened in place). Lint + suite green.
 
 ---
 

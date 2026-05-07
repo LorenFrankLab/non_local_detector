@@ -79,6 +79,23 @@ class QtRasterPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
             return
         t_start = float(payload.time[0])
         t_stop = float(payload.time[-1])
+        self._render_spikes(t_start, t_stop)
+        self._render_non_local_regions(payload)
+
+    def update_for_window(self, t_start: float, t_stop: float) -> None:
+        """Direct entry for tests / callers without a payload."""
+        self._render_spikes(t_start, t_stop)
+
+    def rebind_after_swap(self) -> None:
+        """Refresh axis label after the model rebinds.
+
+        ``RasterModel.set_active_run`` may have changed the
+        ``cell_label`` (e.g., switching to/from a multi-encoding-group
+        detector); update the y-axis text to match.
+        """
+        self.setLabel("left", self._model.cell_label)
+
+    def _render_spikes(self, t_start: float, t_stop: float) -> None:
         raster = self._model.update_window(t_start, t_stop)
         xs: list[float] = []
         ys: list[float] = []
@@ -86,7 +103,6 @@ class QtRasterPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
             xs.extend(cell_spikes.tolist())
             ys.extend([float(y_row)] * cell_spikes.size)
         self._scatter.setData(xs, ys)
-        self._render_non_local_regions(payload)
 
     def _clear_non_local_regions(self) -> None:
         for region in self._non_local_regions:
@@ -131,22 +147,3 @@ def _contiguous_spans(mask: np.ndarray) -> list[tuple[int, int]]:
     starts = np.flatnonzero(diff == 1)
     stops = np.flatnonzero(diff == -1)
     return list(zip(starts.tolist(), stops.tolist(), strict=True))
-
-    def update_for_window(self, t_start: float, t_stop: float) -> None:
-        """Direct entry for tests / callers without a payload."""
-        raster = self._model.update_window(t_start, t_stop)
-        xs: list[float] = []
-        ys: list[float] = []
-        for y_row, cell_spikes in enumerate(raster.spike_times_per_cell):
-            xs.extend(cell_spikes.tolist())
-            ys.extend([float(y_row)] * cell_spikes.size)
-        self._scatter.setData(xs, ys)
-
-    def rebind_after_swap(self) -> None:
-        """Refresh axis label after the model rebinds.
-
-        ``RasterModel.set_active_run`` may have changed the
-        ``cell_label`` (e.g., switching to/from a multi-encoding-group
-        detector); update the y-axis text to match.
-        """
-        self.setLabel("left", self._model.cell_label)

@@ -207,6 +207,17 @@ class InMemoryDecoderDataSource:
             self.active_run.results["predictive_posterior"].isel(time=sl).values
         )
 
+    def load_state_probabilities(self, sl: slice) -> np.ndarray:
+        """Window slice of ``acausal_state_probabilities``: ``(n_visible, n_states)``.
+
+        ``acausal_state_probabilities`` is required by
+        ``RunBundle.__post_init__``, so this method is unconditional —
+        no ``None`` return for the canonical construction path.
+        """
+        return np.asarray(
+            self.active_run.results["acausal_state_probabilities"].isel(time=sl).values
+        )
+
     _SLICE_VAR_MAP = {
         "posterior": "acausal_posterior",
         "acausal": "acausal_posterior",

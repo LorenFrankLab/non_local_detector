@@ -17,13 +17,22 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from non_local_detector.visualization.interactive.data_source import (
     InMemoryDecoderDataSource,
 )
+from non_local_detector.visualization.interactive.panels.qt.likelihood import (
+    QtLikelihoodHeatmapPanel,
+)
 from non_local_detector.visualization.interactive.panels.qt.posterior import (
     QtPosteriorHeatmapPanel,
+)
+from non_local_detector.visualization.interactive.panels.qt.raster import (
+    QtRasterPanel,
 )
 from non_local_detector.visualization.interactive.panels.qt.series import (
     IntervalSeriesPanel,
     LineSeriesPanel,
     ScatterSeriesPanel,
+)
+from non_local_detector.visualization.interactive.panels.qt.state_prob import (
+    QtStateProbabilityPanel,
 )
 from non_local_detector.visualization.interactive.view_models.base import (
     PositionGrid,
@@ -31,14 +40,23 @@ from non_local_detector.visualization.interactive.view_models.base import (
     ViewState,
     WindowPayload,
 )
+from non_local_detector.visualization.interactive.view_models.likelihood import (
+    LikelihoodHeatmapModel,
+)
 from non_local_detector.visualization.interactive.view_models.posterior import (
     PosteriorHeatmapModel,
+)
+from non_local_detector.visualization.interactive.view_models.raster import (
+    RasterModel,
 )
 from non_local_detector.visualization.interactive.view_models.series import (
     IntervalSeriesModel,
     LineSeriesModel,
     MetricSpec,
     ScatterSeriesModel,
+)
+from non_local_detector.visualization.interactive.view_models.state_prob import (
+    StateProbabilityModel,
 )
 from non_local_detector.visualization.interactive.viewer.backend import (
     BackendAdapter,
@@ -101,6 +119,7 @@ class QtBackendAdapter(BackendAdapter):
             if "predictive_posterior" in self._data_source.available_outputs
             else None
         )
+        state_probabilities = self._data_source.load_state_probabilities(sl)
         return WindowPayload(
             request_id=state.request_id,
             time=np.asarray(time),
@@ -108,11 +127,18 @@ class QtBackendAdapter(BackendAdapter):
             posterior=posterior,
             likelihood=likelihood,
             predictive=predictive,
+            state_probabilities=state_probabilities,
         )
 
 
 class QtViewer(QtWidgets.QMainWindow):
-    """v1 viewer: posterior heatmap + slider + optional ``extra_panels``."""
+    """v1 viewer: full left-column stack (raster / state-prob / likelihood /
+    posterior) + slider + optional ``extra_panels``.
+
+    Layout top-to-bottom matches ``plot_non_local_model``: raster on
+    top, state-probability lines, likelihood heatmap, posterior
+    heatmap, then any user/auto extras, then the time slider.
+    """
 
     def __init__(
         self,
@@ -134,41 +160,41 @@ class QtViewer(QtWidgets.QMainWindow):
         self._core = ViewerCore(data_source, self._backend, t_width=t_width)
         self._initial_t_center = self._core.t_center
 
-        grid = PositionGrid.from_environment(
-            data_source.active_run.detector.environments[0]
+        active_run = data_source.active_run
+        detector = active_run.detector
+        grid = PositionGrid.from_environment(detector.environments[0])
+
+        # Built-in left-column view-models + panels. Order top-to-bottom
+        # mirrors the static ``plot_non_local_model`` figure.
+        self._raster_model = RasterModel(detector, active_run.spike_times)
+        self._raster_panel = QtRasterPanel(model=self._raster_model)
+        self._state_prob_model = StateProbabilityModel(detector)
+        self._state_prob_panel = QtStateProbabilityPanel(model=self._state_prob_model)
+        self._likelihood_model = LikelihoodHeatmapModel(detector)
+        self._likelihood_panel = QtLikelihoodHeatmapPanel(
+            model=self._likelihood_model, position_centers=grid.centers
         )
-        self._posterior_model = PosteriorHeatmapModel(data_source.active_run.detector)
+        self._posterior_model = PosteriorHeatmapModel(detector)
         self._panel = QtPosteriorHeatmapPanel(
             model=self._posterior_model, position_centers=grid.centers
         )
-        # All panels we drive — posterior + any extras (user-supplied
-        # or auto-built from bundle.extra_metrics).
+        self._builtin_panels: list = [
+            self._raster_panel,
+            self._state_prob_panel,
+            self._likelihood_panel,
+            self._panel,
+        ]
+
+        # User-supplied extras are owned by the caller; auto-built
+        # extras get rebuilt on M-key swap. No way to tell apart
+        # post-hoc (both end up as a list) so capture intent here.
+        self._extra_panels_user_supplied = extra_panels is not None
         self._extra_panels: list = (
             list(extra_panels)
             if extra_panels is not None
-            else (_auto_panels_from_extra_metrics(data_source.active_run.extra_metrics))
+            else _auto_panels_from_extra_metrics(active_run.extra_metrics)
         )
-        self._all_panels = [self._panel, *self._extra_panels]
-
-        for panel in self._all_panels:
-            self._core.on_overlays_changed(panel.set_event_overlays)
-        self._core.on_window_loaded(self._on_window_loaded)
-        self._core.on_active_run_changed(self._rebind_panels)
-        self._core.refresh_overlays()
-
-        # Wire click-to-recenter on every panel that supports it.
-        for panel in self._all_panels:
-            handler = getattr(panel, "click_handler", None)
-            if handler is not None:
-                handler(self._core.set_t_center)
-
-        # Link x-axes across the left-column stack so the user can
-        # zoom/pan one panel and the others follow.
-        link_target = self._panel.x_link_target()
-        for extra in self._extra_panels:
-            target = getattr(extra, "x_link_target", lambda: None)()
-            if target is not None and target is not link_target:
-                target.setXLink(link_target)
+        self._all_panels: list = [*self._builtin_panels, *self._extra_panels]
 
         # Slider: integer indices into the time grid; map to t_center.
         n_time = data_source.n_time
@@ -183,22 +209,25 @@ class QtViewer(QtWidgets.QMainWindow):
         # overlays — keeps the window clean for the common case.
         self._controls_bar = self._build_controls_bar()
 
-        layout = QtWidgets.QVBoxLayout()
-        layout.addWidget(self._controls_bar, stretch=0)
-        layout.addWidget(self._panel, stretch=1)
+        # Built-in panels are at fixed layout positions so M-key
+        # swap can rebuild only the extras block.
+        self._layout = QtWidgets.QVBoxLayout()
+        self._layout.addWidget(self._controls_bar, stretch=0)
+        for panel in self._builtin_panels:
+            self._layout.addWidget(panel, stretch=1)
+        self._extras_insert_index = self._layout.count()
         for extra in self._extra_panels:
-            layout.addWidget(extra, stretch=1)
-        layout.addWidget(self._slider, stretch=0)
+            self._layout.addWidget(extra, stretch=1)
+        self._layout.addWidget(self._slider, stretch=0)
         container = QtWidgets.QWidget()
-        container.setLayout(layout)
+        container.setLayout(self._layout)
         self.setCentralWidget(container)
 
-        # Wheel-over-time-axis = window-width scrub.
-        self._panel.viewport().installEventFilter(self)
-        for extra in self._extra_panels:
-            viewport = getattr(extra, "viewport", lambda: None)()
-            if viewport is not None:
-                viewport.installEventFilter(self)
+        self._wire_panels(self._all_panels)
+
+        self._core.on_window_loaded(self._on_window_loaded)
+        self._core.on_active_run_changed(self._rebind_panels)
+        self._core.refresh_overlays()
 
         # Keyboard shortcuts. ``[`` / ``]`` shrink/grow the window
         # width; ``Shift+Left`` / ``Shift+Right`` step a full window
@@ -217,6 +246,24 @@ class QtViewer(QtWidgets.QMainWindow):
         ):
             shortcut = QtGui.QShortcut(key_seq, self)
             shortcut.activated.connect(fn)
+
+    def _wire_panels(self, panels: list) -> None:
+        """Wire panels into the core (overlays, click, x-link, wheel).
+
+        ``self._panel`` (posterior) is the canonical x-link anchor.
+        """
+        link_target = self._panel.x_link_target()
+        for panel in panels:
+            self._core.on_overlays_changed(panel.set_event_overlays)
+            handler = getattr(panel, "click_handler", None)
+            if handler is not None:
+                handler(self._core.set_t_center)
+            target = getattr(panel, "x_link_target", lambda: None)()
+            if target is not None and target is not link_target:
+                target.setXLink(link_target)
+            viewport = getattr(panel, "viewport", lambda: None)()
+            if viewport is not None:
+                viewport.installEventFilter(self)
 
     def _build_controls_bar(self) -> QtWidgets.QWidget:
         bar = QtWidgets.QWidget()
@@ -292,14 +339,48 @@ class QtViewer(QtWidgets.QMainWindow):
     def _rebind_panels(self, _new_run_name: str) -> None:
         """Rebind all panels to the new active run's detector.
 
-        Triggered by ``ViewerCore.set_active_run`` *before* the new
-        load is dispatched so the panel collapses the new payload
-        under the correct schema.
+        Fires *before* the new load is dispatched so payload collapse
+        runs under the new schema.
         """
-        new_detector = self._data_source.active_run.detector
-        self._posterior_model.set_active_run(new_detector)
+        new_run = self._data_source.active_run
+        new_detector = new_run.detector
         grid = PositionGrid.from_environment(new_detector.environments[0])
-        self._panel._position_centers = grid.centers
+
+        self._posterior_model.set_active_run(new_detector)
+        self._panel.set_position_centers(grid.centers)
+
+        self._likelihood_model.set_active_run(new_detector)
+        self._likelihood_panel.set_position_centers(grid.centers)
+
+        self._state_prob_model.set_active_run(new_detector)
+        self._state_prob_panel.rebind_after_swap()
+
+        self._raster_model.set_active_run(new_detector, new_run.spike_times)
+        self._raster_panel.rebind_after_swap()
+
+        if not self._extra_panels_user_supplied:
+            self._rebuild_auto_extras(new_run.extra_metrics)
+
+    def _rebuild_auto_extras(self, extra_metrics: dict) -> None:
+        """Tear down auto-built extras and rebuild from new ``extra_metrics``.
+
+        Overlay callbacks must be unregistered *before* ``deleteLater``
+        so a queued ``_dispatch_overlays`` can't call into a widget the
+        runtime has scheduled for deletion.
+        """
+        for old_panel in self._extra_panels:
+            self._core.off_overlays_changed(old_panel.set_event_overlays)
+            self._layout.removeWidget(old_panel)
+            old_panel.setParent(None)
+            old_panel.deleteLater()
+
+        new_extras = _auto_panels_from_extra_metrics(extra_metrics)
+        for offset, panel in enumerate(new_extras):
+            self._layout.insertWidget(self._extras_insert_index + offset, panel, 1)
+
+        self._extra_panels = new_extras
+        self._all_panels = [*self._builtin_panels, *self._extra_panels]
+        self._wire_panels(new_extras)
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt naming convention
         """Drop self from the live-viewer registry on close."""
