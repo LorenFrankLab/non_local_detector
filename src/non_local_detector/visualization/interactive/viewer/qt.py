@@ -322,6 +322,7 @@ class QtViewer(QtWidgets.QMainWindow):
 
         self._core.on_window_loaded(self._on_window_loaded)
         self._core.on_active_run_changed(self._rebind_panels)
+        self._core.on_t_center_changed(self._sync_autoscroll_cursor_to_core)
         self._core.refresh_overlays()
 
         # Keyboard shortcuts. ``[`` / ``]`` shrink/grow the window
@@ -580,6 +581,9 @@ class QtViewer(QtWidgets.QMainWindow):
 
     def _on_slider_value_changed(self, value: int) -> None:
         time = self._data_source.time
+        # Calling ``core.set_t_center`` fires
+        # ``_sync_autoscroll_cursor_to_core``, which handles the
+        # resync (lock-gated against tick-driven setValue).
         self._core.set_t_center(float(time[value]))
         # Drive the slice panel + extra bin-synced plugins synchronously
         # off the slider so per-tick cursor updates land sub-ms (the
@@ -587,15 +591,24 @@ class QtViewer(QtWidgets.QMainWindow):
         # commits).
         for bin_panel in (self._slice_panel, *self._extra_bin_panels):
             bin_panel.update_for_index(value)
-        # Manual scrub during play → re-anchor the float playback
-        # cursor to the slider's quantized time so playback continues
-        # from there. The lock suppresses this when the slider change
-        # was tick-driven (otherwise we'd lose sub-bin accumulation).
+
+    def _sync_autoscroll_cursor_to_core(self, new_t_center: float) -> None:
+        """Re-anchor the float playback cursor to ``new_t_center``.
+
+        Subscribed to ``ViewerCore.on_t_center_changed`` so every
+        navigation path that recenters during play (slider drag,
+        Shift+Left/Right step-window, R reset, Left/Right step,
+        click-to-recenter, N/Shift+N event navigator) brings the
+        playback cursor along. The lock suppresses this for
+        tick-driven setValue → set_t_center → callback → here, so
+        sub-bin accumulation in the cursor isn't snapped back to
+        the slider's quantized time on every tick.
+        """
         if (
             self._autoscroll_cursor is not None
             and not self._autoscroll_resync_lock
         ):
-            self._autoscroll_cursor = float(time[value])
+            self._autoscroll_cursor = float(new_t_center)
 
     def _rebind_panels(self, _new_run_name: str) -> None:
         """Rebind all panels to the new active run's detector.

@@ -616,6 +616,38 @@ Latest at top:
     visible range (here: the default 0.05×, which is also the
     speed users will hit first). Picking a fast value to "make the
     test work" is the symptom of the bug.
+- **M6 cursor resync — non-slider paths (uncommitted)** — User
+  caught that the sub-bin fix only resynced the cursor on slider
+  drags. Several controls move ``t_center`` without touching the
+  slider: Shift+Left/Right (`_step_window`), R (`_reset_view`),
+  panel click handlers wired to `core.set_t_center`, and N/Shift+N
+  (`core.next_event` / `prev_event`). During play, those would
+  leave the float cursor stale and the next tick would pull the
+  view back.
+  - **Fix**: lift the resync to ViewerCore via a new
+    `on_t_center_changed(callback)` API. ``set_t_center`` fires
+    the callback synchronously after committing the new value. The
+    viewer subscribes a single `_sync_autoscroll_cursor_to_core`
+    handler — every recenter path now resyncs uniformly.
+  - The lock semantics are unchanged: tick-driven slider setValue
+    still sets `_autoscroll_resync_lock` around its call so the
+    resync handler skips and sub-bin accumulation is preserved.
+  - Removed the redundant inline resync in
+    `_on_slider_value_changed` — the slider path now goes through
+    `core.set_t_center` → callback like every other path.
+  - **Tests** (2 new): `test_core_set_t_center_during_play_resyncs_cursor`
+    (general mechanism via direct `core.set_t_center`) +
+    `test_step_window_during_play_resyncs_cursor` (specific
+    Shift+Left/Right path). The pre-existing slider resync test
+    still passes because the slider path now routes through the
+    same callback.
+  - **Lesson logged**: when several controls converge on one state
+    write (here: `core.set_t_center`), centralise the side-effect
+    *at the write*, not at each call site. Subscribing to
+    `on_t_center_changed` covers the keyboard/click/event-jump
+    paths I'd otherwise miss one-by-one.
+
+  28 → 30 tests in `test_viewer_extras.py`. Lint green.
 
 ---
 

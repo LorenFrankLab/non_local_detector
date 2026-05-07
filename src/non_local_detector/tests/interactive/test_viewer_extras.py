@@ -672,6 +672,49 @@ def test_manual_scrub_during_play_resyncs_cursor(
 
 
 @pytest.mark.unit
+def test_core_set_t_center_during_play_resyncs_cursor(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Every navigation path that recenters during play must resync the cursor.
+
+    Generalises the slider-drag test: any caller of
+    ``core.set_t_center`` (Shift+Left/Right step-window, R reset,
+    Left/Right step, click-to-recenter, N/Shift+N event navigator)
+    routes through the same ``on_t_center_changed`` callback. Without
+    this, the float cursor would lag the user's manual jumps and
+    autoscroll would pull the view back on the next tick.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    viewer._toggle_play()
+    target_t = float(
+        viewer._data_source.time[viewer._slider.value() + 200]
+    )
+    viewer._core.set_t_center(target_t)
+    assert viewer._autoscroll_cursor == pytest.approx(target_t)
+
+
+@pytest.mark.unit
+def test_step_window_during_play_resyncs_cursor(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Shift+Left/Right (``_step_window``) re-anchors the cursor."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    viewer._toggle_play()
+    initial_t_center = viewer._core.t_center
+    viewer._step_window(+1)
+    assert viewer._core.t_center > initial_t_center
+    assert viewer._autoscroll_cursor == pytest.approx(viewer._core.t_center)
+
+
+@pytest.mark.unit
 def test_autoscroll_pauses_at_end_of_session(
     qapp,
     multi_run_bundles: dict[str, RunBundle],

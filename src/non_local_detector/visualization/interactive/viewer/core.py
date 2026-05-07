@@ -69,6 +69,12 @@ class ViewerCore:
         self._on_overlays_changed_callbacks: list[
             Callable[[list[EventOverlay]], None]
         ] = []
+        # Fired synchronously inside ``set_t_center`` whenever the
+        # value changes. Subscribers are panels / viewer state that
+        # tracks ``t_center`` outside the slider tick path (e.g. the
+        # autoscroll float cursor needs to resync when keyboard /
+        # click navigation moves t_center while playback is on).
+        self._on_t_center_changed_callbacks: list[Callable[[float], None]] = []
         # Per-overlay visibility (keyed by overlay name); absent = visible.
         self._overlay_visibility: dict[str, bool] = {}
 
@@ -133,6 +139,19 @@ class ViewerCore:
         """
         self._on_overlays_changed_callbacks.append(callback)
 
+    def on_t_center_changed(self, callback: Callable[[float], None]) -> None:
+        """Register a callback fired synchronously when ``t_center`` changes.
+
+        The callback receives the *new* ``t_center`` value. Fires from
+        every navigation path that calls ``set_t_center`` —
+        slider-driven, keyboard step (Left/Right/Shift+Left/Shift+Right/R),
+        click-to-recenter, and the next/prev-event navigator. Used by
+        the autoscroll cursor: any non-tick-driven recenter while
+        playing must re-anchor the float playback cursor so the next
+        tick continues from the user's new position.
+        """
+        self._on_t_center_changed_callbacks.append(callback)
+
     def off_overlays_changed(
         self, callback: Callable[[list[EventOverlay]], None]
     ) -> None:
@@ -160,12 +179,18 @@ class ViewerCore:
         No-op if ``t_center`` is unchanged — the slider re-fires
         ``valueChanged`` on identical positions and we don't want to
         burn a request_id + worker dispatch per redundant event.
+
+        Fires ``on_t_center_changed`` callbacks synchronously after
+        the new value is committed so subscribers (autoscroll
+        cursor) can react before the async window load returns.
         """
         new_t_center = float(t_center)
         if new_t_center == self._t_center:
             return
         self._t_center = new_t_center
         self._current_view_state = self._build_view_state()
+        for callback in self._on_t_center_changed_callbacks:
+            callback(new_t_center)
         self.request_load()
 
     def set_t_width(self, t_width: float) -> None:
