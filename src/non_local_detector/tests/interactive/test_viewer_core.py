@@ -327,9 +327,7 @@ class TestViewerCoreOverlayDispatch:
         for bundle in multi_run_bundles.values():
             bundle.event_overlays.append(overlay)
 
-    def test_refresh_overlays_pushes_visible_set(
-        self, multi_run_bundles
-    ) -> None:
+    def test_refresh_overlays_pushes_visible_set(self, multi_run_bundles) -> None:
         original = {n: list(b.event_overlays) for n, b in multi_run_bundles.items()}
         try:
             swr = EventOverlay.points(name="swr", times=np.array([1.0]))
@@ -368,9 +366,7 @@ class TestViewerCoreOverlayDispatch:
             for n, b in multi_run_bundles.items():
                 b.event_overlays[:] = original[n]
 
-    def test_swap_dispatches_overlays_for_new_run(
-        self, multi_run_bundles
-    ) -> None:
+    def test_swap_dispatches_overlays_for_new_run(self, multi_run_bundles) -> None:
         """Per-run overlay data updates on swap.
 
         Both runs declare the same ``("non_local_events", "points")``
@@ -390,14 +386,10 @@ class TestViewerCoreOverlayDispatch:
                 )
             )
             multi_run_bundles["nsf"].event_overlays.append(
-                EventOverlay.points(
-                    name="non_local_events", times=np.array([100.0])
-                )
+                EventOverlay.points(name="non_local_events", times=np.array([100.0]))
             )
             multi_run_bundles["dec"].event_overlays.append(
-                EventOverlay.points(
-                    name="non_local_events", times=np.array([1000.0])
-                )
+                EventOverlay.points(name="non_local_events", times=np.array([1000.0]))
             )
             ds = InMemoryDecoderDataSource(multi_run_bundles)
             core = ViewerCore(ds, StubBackend())

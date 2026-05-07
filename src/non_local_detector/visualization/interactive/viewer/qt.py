@@ -20,6 +20,11 @@ from non_local_detector.visualization.interactive.data_source import (
 from non_local_detector.visualization.interactive.panels.qt.posterior import (
     QtPosteriorHeatmapPanel,
 )
+from non_local_detector.visualization.interactive.panels.qt.series import (
+    IntervalSeriesPanel,
+    LineSeriesPanel,
+    ScatterSeriesPanel,
+)
 from non_local_detector.visualization.interactive.view_models.base import (
     PositionGrid,
     RunBundle,
@@ -28,6 +33,12 @@ from non_local_detector.visualization.interactive.view_models.base import (
 )
 from non_local_detector.visualization.interactive.view_models.posterior import (
     PosteriorHeatmapModel,
+)
+from non_local_detector.visualization.interactive.view_models.series import (
+    IntervalSeriesModel,
+    LineSeriesModel,
+    MetricSpec,
+    ScatterSeriesModel,
 )
 from non_local_detector.visualization.interactive.viewer.backend import (
     BackendAdapter,
@@ -101,12 +112,13 @@ class QtBackendAdapter(BackendAdapter):
 
 
 class QtViewer(QtWidgets.QMainWindow):
-    """Minimal v1 viewer: posterior heatmap + center-time slider."""
+    """v1 viewer: posterior heatmap + slider + optional ``extra_panels``."""
 
     def __init__(
         self,
         data_source: InMemoryDecoderDataSource,
         t_width: float = 1.0,
+        extra_panels: list | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -117,7 +129,10 @@ class QtViewer(QtWidgets.QMainWindow):
 
         self._data_source = data_source
         self._backend = QtBackendAdapter(data_source)
+        self._initial_t_width = float(t_width)
+        self._initial_t_center: float | None = None
         self._core = ViewerCore(data_source, self._backend, t_width=t_width)
+        self._initial_t_center = self._core.t_center
 
         grid = PositionGrid.from_environment(
             data_source.active_run.detector.environments[0]
@@ -126,10 +141,34 @@ class QtViewer(QtWidgets.QMainWindow):
         self._panel = QtPosteriorHeatmapPanel(
             model=self._posterior_model, position_centers=grid.centers
         )
-        self._core.on_window_loaded(self._panel.update_window)
+        # All panels we drive — posterior + any extras (user-supplied
+        # or auto-built from bundle.extra_metrics).
+        self._extra_panels: list = (
+            list(extra_panels)
+            if extra_panels is not None
+            else (_auto_panels_from_extra_metrics(data_source.active_run.extra_metrics))
+        )
+        self._all_panels = [self._panel, *self._extra_panels]
+
+        for panel in self._all_panels:
+            self._core.on_overlays_changed(panel.set_event_overlays)
+        self._core.on_window_loaded(self._on_window_loaded)
         self._core.on_active_run_changed(self._rebind_panels)
-        self._core.on_overlays_changed(self._panel.set_event_overlays)
         self._core.refresh_overlays()
+
+        # Wire click-to-recenter on every panel that supports it.
+        for panel in self._all_panels:
+            handler = getattr(panel, "click_handler", None)
+            if handler is not None:
+                handler(self._core.set_t_center)
+
+        # Link x-axes across the left-column stack so the user can
+        # zoom/pan one panel and the others follow.
+        link_target = self._panel.x_link_target()
+        for extra in self._extra_panels:
+            target = getattr(extra, "x_link_target", lambda: None)()
+            if target is not None and target is not link_target:
+                target.setXLink(link_target)
 
         # Slider: integer indices into the time grid; map to t_center.
         n_time = data_source.n_time
@@ -141,21 +180,63 @@ class QtViewer(QtWidgets.QMainWindow):
 
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(self._panel, stretch=1)
+        for extra in self._extra_panels:
+            layout.addWidget(extra, stretch=1)
         layout.addWidget(self._slider, stretch=0)
         container = QtWidgets.QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
 
-        # Keyboard shortcuts.
+        # Wheel-over-time-axis = window-width scrub.
+        self._panel.viewport().installEventFilter(self)
+        for extra in self._extra_panels:
+            viewport = getattr(extra, "viewport", lambda: None)()
+            if viewport is not None:
+                viewport.installEventFilter(self)
+
+        # Keyboard shortcuts. ``[`` / ``]`` shrink/grow the window
+        # width; ``Shift+Left`` / ``Shift+Right`` step a full window
+        # at a time; ``R`` resets center + width.
         QtCore.QTimer.singleShot(0, self._core.request_load)
         for key_seq, fn in (
             (QtGui.QKeySequence(QtCore.Qt.Key_Left), self._core.step_left),
             (QtGui.QKeySequence(QtCore.Qt.Key_Right), self._core.step_right),
+            (QtGui.QKeySequence("Shift+Left"), lambda: self._step_window(-1)),
+            (QtGui.QKeySequence("Shift+Right"), lambda: self._step_window(+1)),
+            (QtGui.QKeySequence("["), lambda: self._scale_t_width(0.5)),
+            (QtGui.QKeySequence("]"), lambda: self._scale_t_width(2.0)),
+            (QtGui.QKeySequence("R"), self._reset_view),
             (QtGui.QKeySequence("N"), self._core.next_event),
             (QtGui.QKeySequence("Shift+N"), self._core.prev_event),
         ):
             shortcut = QtGui.QShortcut(key_seq, self)
             shortcut.activated.connect(fn)
+
+    def _on_window_loaded(self, payload) -> None:
+        for panel in self._all_panels:
+            panel.update_window(payload)
+
+    def _step_window(self, direction: int) -> None:
+        self._core.set_t_center(self._core.t_center + direction * self._core.t_width)
+
+    def _scale_t_width(self, factor: float) -> None:
+        new_width = max(1e-6, self._core.t_width * factor)
+        self._core.set_t_width(new_width)
+
+    def _reset_view(self) -> None:
+        if self._initial_t_center is not None:
+            self._core.set_t_center(self._initial_t_center)
+        self._core.set_t_width(self._initial_t_width)
+
+    def eventFilter(self, obj, event) -> bool:
+        # Wheel over a time-axis panel scrubs the window width.
+        if event.type() == QtCore.QEvent.Wheel:
+            delta = event.angleDelta().y()
+            if delta != 0:
+                factor = 0.9 if delta > 0 else 1.1
+                self._scale_t_width(factor)
+                return True
+        return super().eventFilter(obj, event)
 
     @property
     def core(self) -> ViewerCore:
@@ -195,10 +276,47 @@ class QtViewer(QtWidgets.QMainWindow):
 _LIVE_VIEWERS: list[QtViewer] = []
 
 
+def _auto_panels_from_extra_metrics(extra_metrics: dict) -> list:
+    """Build series panels from ``RunBundle.extra_metrics`` entries.
+
+    Each ``MetricSpec`` lifts to the matching panel class. A
+    ``pd.Series`` lifts to a default ``LineSeriesPanel`` named after
+    the dict key.
+    """
+    import pandas as pd  # type: ignore[import-untyped]
+
+    panels: list = []
+    for name, value in extra_metrics.items():
+        if isinstance(value, MetricSpec):
+            panels.append(_panel_for_metric_spec(value))
+        elif isinstance(value, pd.Series):
+            t = np.asarray(value.index, dtype=float)
+            y = np.asarray(value.values, dtype=float)
+            panels.append(LineSeriesPanel(LineSeriesModel(name=name, t=t, y=y)))
+        else:
+            raise TypeError(
+                f"extra_metrics[{name!r}] must be a MetricSpec or pd.Series; "
+                f"got {type(value).__name__}."
+            )
+    return panels
+
+
+def _panel_for_metric_spec(spec: MetricSpec):
+    """Lift a ``MetricSpec`` to the matching Qt panel."""
+    if spec.kind == "line":
+        return LineSeriesPanel(LineSeriesModel.from_metric_spec(spec))
+    if spec.kind == "scatter":
+        return ScatterSeriesPanel(ScatterSeriesModel.from_metric_spec(spec))
+    if spec.kind == "intervals":
+        return IntervalSeriesPanel(IntervalSeriesModel.from_metric_spec(spec))
+    raise ValueError(f"Unknown MetricSpec.kind: {spec.kind!r}")
+
+
 def launch_qt(
     bundles: RunBundle | dict[str, RunBundle],
     t_width: float = 1.0,
     block: bool = True,
+    extra_panels: list | None = None,
 ) -> int:
     """Open a ``QtViewer`` against the supplied bundle(s).
 
@@ -232,7 +350,7 @@ def launch_qt(
     pg.setConfigOption("background", "w")
     pg.setConfigOption("foreground", "k")
 
-    viewer = QtViewer(data_source, t_width=t_width)
+    viewer = QtViewer(data_source, t_width=t_width, extra_panels=extra_panels)
     _LIVE_VIEWERS.append(viewer)
     viewer.show()
     if block:
