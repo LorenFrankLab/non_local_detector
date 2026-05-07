@@ -590,19 +590,32 @@ and Phase 6 verifications can run.
     Event-metric fields on ``CellSlice`` (HPD overlap, KL, spike
     prob) stay at their dataclass defaults until the panel-side
     bundle wiring exposes them — surfaced as a polish follow-up.
-- [ ] Per-tick path uses in-RAM ring buffer (statespacecheck pattern)
-  — deferred. Current path is direct collapse on each
-  ``update_for_index``; no observed perf issue yet, profile-driven
-  rather than speculative.
+- [ ] Per-tick path uses in-RAM window buffer (statespacecheck
+  pattern). Confirmed against upstream
+  ``panels.py:909`` — the buffer is panel-side, not model-side:
+  the panel caches the latest ``WindowPayload`` arrays so
+  ``update_for_index(t_idx)`` becomes ``array[t_idx - sl.start]``
+  instead of a fresh data-source read. SliceModel's row-in/row-out
+  API already supports this — implement in the QtSlicePanel chunk
+  via ``set_window_buffer(payload)`` + ``update_for_index(t_idx)``.
 
 ### `panels/qt/slice.py`
 
-- [ ] `QtSlicePanel(QWidget)`:
-  - [ ] Population top plot.
-  - [ ] Pre-allocated per-cell row pool (`MAX_PER_CELL_PLOTS = 6`).
+- [x] `QtSlicePanel(QWidget)` — base widget done in this chunk:
+  - [x] Population top plot (top curve + dashed predictive overlay).
+  - [x] Pre-allocated per-cell row pool (`MAX_PER_CELL_PLOTS = 6`).
+  - [x] `(+K more)` truncation indicator when > 6 cells fired.
+  - [x] Window buffer (statespacecheck pattern, panel-side):
+    `set_window_buffer(payload)` caches the latest WindowPayload;
+    `update_for_index(t_idx)` indexes locally instead of refetching.
   - [ ] Pinning logic: click raster spike → cell stays in slice
-    panel until `Esc` or click-pinned-again.
-  - [ ] `(+K more)` truncation indicator when > 6 cells fired.
+    panel until `Esc` or click-pinned-again. **Surfaced to user**:
+    splits naturally into (a) pin state on the panel (`pin_cell`,
+    `unpin_cell`, `clear_pins`, modified render to keep pinned
+    cells visible across bins) — adds a small SliceModel
+    `cell_slice(cell_id)` helper to fetch a CellSlice for any
+    cell — and (b) raster→slice click wiring, which is a
+    viewer-level concern. Pending decision on order.
 
 ### Tests
 

@@ -17,8 +17,10 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 **M1+M2+M3 complete and committed; M3 review fixes committed in
 `e000eb8`. M4 progress:** Track A devtool across `eab0478` /
 `97bb59e` / `a958a50`; `--run-from-dir` in `e6621b5`; SliceModel
-view-model uncommitted (10 tests passing). Next M4 task:
-QtSlicePanel widget, then wire into QtViewer.
+in `0a840e0`. **QtSlicePanel base widget uncommitted** (window
+buffer + per-cell pool + truncation, 7 tests passing). Pinning
+surfaced to user as next decision: pin-state on panel + raster→pin
+wiring in viewer chunk. Then full viewer integration.
 
 **Important user-set rule (do not violate):**
 
@@ -307,11 +309,61 @@ Latest at top:
     (`event_hpd_overlap`, `event_kl_divergence`, `event_spike_prob`)
     stay at dataclass defaults until the panel pulls them off
     `bundle.events`. That's a polish follow-up after the basic
-    panel renders. The plan's "in-RAM ring buffer (statespacecheck
-    pattern)" is also deferred — the current direct-collapse path
-    has no observed perf issue.
+    panel renders.
+  - **Correction**: I initially marked "in-RAM ring buffer
+    (statespacecheck pattern)" as deferred too. User caught the
+    deferral and asked me not to. Re-read upstream
+    `panels.py:909`: the "ring buffer" is actually a panel-side
+    *window cache* (`set_window_buffer(sl, post, lik, acausal)`),
+    not a model concern. SliceModel's row-in/row-out API already
+    supports it — implement the buffer in the QtSlicePanel chunk
+    (next commit). Lesson: when the plan says "(statespacecheck
+    pattern)", look at upstream code instead of guessing whether
+    it's needed.
 
   Tests: 136 → 144 (10 new). Lint + interactive suite green.
+- **M4 QtSlicePanel base (uncommitted)** —
+  `panels/qt/slice.py:QtSlicePanel`. Population top plot (top curve
+  + dashed predictive overlay), pre-allocated per-cell row pool
+  (`MAX_PER_CELL_PLOTS = 6`), `(+K more)` truncation indicator,
+  panel-side window buffer (`set_window_buffer(payload)` →
+  `update_for_index(t_idx)` indexes locally). Out-of-buffer
+  `t_idx` is a no-op. `rebind_after_swap` drops the buffer +
+  clears the rendered items.
+  - **Lessons logged from this chunk**:
+    - User caught me deferring the "in-RAM ring buffer" — I'd
+      misread it as a model-side concern. Reading upstream
+      `panels.py:909` clarified it's a panel-side window cache.
+      Pattern: when the plan says "(statespacecheck pattern)",
+      open the upstream file before guessing.
+    - `event_times` is shape `(n_events, 2)` (start/end pairs),
+      not 1-D. Reading the simulation contract before testing
+      against it would've avoided this.
+    - pyqtgraph `PlotDataItem.getData()` returns `(None, None)`
+      for empty arrays (verified — even pre-init with
+      `np.empty(0)` round-trips through None). Tests must
+      `assert x is None or x.size == 0`.
+    - Qt's `widget.isVisible()` requires the parent to be
+      `.show()`n; in offscreen tests the panel isn't shown so
+      visibility is always False. Use `not widget.isHidden()`
+      instead — that's the "would be visible if shown" check.
+  - **Tests** (7 in `test_slice_panel.py`):
+    - top curve bit-identical against `collapse_log_likelihood_to_position`.
+    - predictive overlay bit-identical against `collapse_posterior_to_position(..., CONDITIONAL_NON_LOCAL)`.
+    - `nl_default` fallback: top curve renders posterior collapse, predictive hides.
+    - out-of-buffer `t_idx` is a no-op (no crash, no stale-data overwrite).
+    - per-cell rows show active cells (scans bin window for the first hit because the simulated bin is sparse).
+    - truncation indicator activates when n_cells > MAX_PER_CELL_PLOTS.
+    - `rebind_after_swap` drops buffer + clears rendered items.
+  - **Pinning surfaced**, not deferred: panel-side state
+    (`pin_cell` / `unpin_cell` / `clear_pins` + render keeps pinned
+    rows across bins, requires SliceModel `cell_slice(cell_id)`)
+    is a small addition; raster→slice click wiring belongs in the
+    viewer chunk. Pending user decision on whether to do the
+    panel-side state in this chunk's commit (would need an
+    amendment) or as part of the viewer chunk.
+
+  Tests: 144 → 151 (7 new). Lint + interactive suite green.
 
 ---
 
