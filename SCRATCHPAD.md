@@ -15,12 +15,10 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 > What I'm working on right now. Update when context-switching.
 
 **M1+M2+M3 complete and committed; M3 review fixes committed in
-`e000eb8`. M4 Track A devtool committed across `eab0478` (initial),
-`97bb59e` (joblib loader fix), `a958a50` (load_results scalar-coord
-filter).** **`--run-from-dir` flag added (uncommitted)**: `app.py`
-now expands `--run-from-dir name:dir/` to the four bundle paths so
-devtool output can be loaded directly. Next M4 task: Track 0
-SliceModel/QtSlicePanel.
+`e000eb8`. M4 progress:** Track A devtool across `eab0478` /
+`97bb59e` / `a958a50`; `--run-from-dir` in `e6621b5`; SliceModel
+view-model uncommitted (10 tests passing). Next M4 task:
+QtSlicePanel widget, then wire into QtViewer.
 
 **Important user-set rule (do not violate):**
 
@@ -267,6 +265,53 @@ Latest at top:
   pipeline; missing dir, missing bundle file, malformed `name:dir`
   arg all surface clear argparse errors. Tests: 132 → 136 (4 new).
   Lint + interactive suite green.
+- **M4 SliceModel (uncommitted)** —
+  `view_models/slice.py:SliceModel`. `update_for_index(t_idx,
+  posterior_row, log_lik_row, predictive_row)` returns a
+  ``BinPayload``:
+  - **Top curve**: `collapse_log_likelihood_to_position` when
+    `log_lik_row` is present, else falls back to
+    `collapse_posterior_to_position(posterior_row, detector,
+    reduction)`. `top_curve_label` constants
+    (`TOP_CURVE_LIKELIHOOD_LABEL`,
+    `TOP_CURVE_POSTERIOR_FALLBACK_LABEL`) drive the panel-side
+    title text — single source of truth for tests + panel.
+  - **Predictive overlay**: same collapse path with
+    `predictive_row`; `BinPayload.predictive_curve` is `None` when
+    the row is missing (panel hides).
+  - **Per-cell rows**: bin window inferred from time-grid midpoints
+    (handles uniform + non-uniform grids; first/last bins use
+    one-sided half). Cells that fired in `[t_lo, t_hi]` produce a
+    `CellSlice` carrying the peak-normalised place-field row +
+    spike count. Place-field normalisation is safe against
+    all-zero / all-NaN cells (never divides by 0).
+  - **Schema awareness**: routes everything through the
+    `analysis.posterior` collapse helpers, which already enforce
+    `_validate_rectangular_spatial`. `select_reduction` picks the
+    default (NL → CONDITIONAL_NON_LOCAL, CF → MARGINAL).
+    `set_active_run` rebinds detector + spike_times + time +
+    reduction default in one call for M-key swap.
+  - **Tests** (10 in `test_slice_model.py`):
+    - reduction defaults: NL → CONDITIONAL_NON_LOCAL, CF → MARGINAL.
+    - top curve bit-identical via `np.testing.assert_allclose(
+      atol=1e-14, equal_nan=True)` against the per-row helper for
+      both the loglik path and the posterior fallback.
+    - predictive overlay bit-identical (uses `nl_all` bundle for
+      `predictive_posterior` — `nl_fitted` is the EM result and
+      doesn't carry it).
+    - per-cell rows: real-spike happy path; empty-window returns
+      `()`; place-field rows are bounded `[0, 1]` and finite.
+    - `set_active_run` swaps detector + reduction default.
+    - `update_for_index` validates bounds (IndexError on out-of-range).
+  - **Deferred (surfaced)**: `CellSlice` event-metric fields
+    (`event_hpd_overlap`, `event_kl_divergence`, `event_spike_prob`)
+    stay at dataclass defaults until the panel pulls them off
+    `bundle.events`. That's a polish follow-up after the basic
+    panel renders. The plan's "in-RAM ring buffer (statespacecheck
+    pattern)" is also deferred — the current direct-collapse path
+    has no observed perf issue.
+
+  Tests: 136 → 144 (10 new). Lint + interactive suite green.
 
 ---
 

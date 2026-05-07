@@ -568,25 +568,32 @@ and Phase 6 verifications can run.
 
 ### `view_models/slice.py`
 
-- [ ] `SliceModel.update_for_index(t_idx)` returning `BinPayload`.
-  - [ ] Schema-aware state-bin slicing using `detector.state_ind_`
-    + `bin_sizes_` (NOT blind reshape — non-rectangular detectors
-    raise on `(n_states, n_pos)` reshape).
-  - [ ] Top likelihood curve via
-    `collapse_log_likelihood_to_position(...)` when `log_likelihood`
-    available; fallback to collapsed posterior via
-    `collapse_posterior_to_position(..., reduction)` when missing,
-    with title-bar note.
-  - [ ] Predictive overlay via
+- [x] `SliceModel.update_for_index(t_idx, posterior_row, log_lik_row,
+  predictive_row)` returning `BinPayload`.
+  - [x] Schema-aware: routes through
+    `analysis.posterior.collapse_*_to_position` so the
+    state-bin slicing matches whatever `select_reduction` picks
+    (NL → CONDITIONAL_NON_LOCAL, CF → MARGINAL, etc.); no blind
+    `(n_states, n_pos)` reshape.
+  - [x] Top likelihood curve via
+    `collapse_log_likelihood_to_position` when `log_lik_row` is
+    given; falls back to
+    `collapse_posterior_to_position(post_row, detector, reduction)`
+    with `top_curve_label` set to the explanation text.
+  - [x] Predictive overlay via
     `collapse_posterior_to_position(predictive_row, detector,
-    reduction)` when `predictive_posterior` available; hide when
-    missing.
-  - [ ] Per-cell rows: list of `CellSlice` dataclasses. Each
-    carries `cell_id`, `place_field_norm` (peak-normalized row of
-    `extract_per_cell_place_fields(detector)`), optional event
-    metrics from `bundle.events`. Rendered for cells that spiked in
-    the cursor's bin.
-- [ ] Per-tick path uses in-RAM ring buffer (statespacecheck pattern).
+    reduction)` when present; ``payload.predictive_curve`` is
+    ``None`` when missing (panel hides accordingly).
+  - [x] Per-cell rows: ``CellSlice`` dataclasses carrying
+    ``cell_id``, peak-normalised place_field row, ``spike_count``.
+    Bin window inferred from time grid via midpoints to neighbors.
+    Event-metric fields on ``CellSlice`` (HPD overlap, KL, spike
+    prob) stay at their dataclass defaults until the panel-side
+    bundle wiring exposes them — surfaced as a polish follow-up.
+- [ ] Per-tick path uses in-RAM ring buffer (statespacecheck pattern)
+  — deferred. Current path is direct collapse on each
+  ``update_for_index``; no observed perf issue yet, profile-driven
+  rather than speculative.
 
 ### `panels/qt/slice.py`
 

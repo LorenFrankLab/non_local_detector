@@ -1,0 +1,225 @@
+"""Tests for ``SliceModel`` per-bin slice behaviour against Track 0 fixtures."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from non_local_detector.analysis.posterior import (
+    PosteriorReduction,
+    collapse_log_likelihood_to_position,
+    collapse_posterior_to_position,
+)
+from non_local_detector.tests._simulated_detectors import (
+    FittedDetector,
+    SimulatedSession,
+    first_finite_row_index,
+)
+from non_local_detector.visualization.interactive.view_models.slice import (
+    TOP_CURVE_LIKELIHOOD_LABEL,
+    TOP_CURVE_POSTERIOR_FALLBACK_LABEL,
+    SliceModel,
+)
+
+
+def _t_idx_of_first_finite_loglik(results) -> int:
+    """Return the first time index whose log-likelihood row is fully finite."""
+    log_lik = results["log_likelihood"].values
+    return first_finite_row_index(log_lik)
+
+
+@pytest.mark.unit
+class TestSliceModelDefaultReduction:
+    def test_nl_picks_conditional_non_local(
+        self, nl_fitted: FittedDetector, sim_session: SimulatedSession
+    ) -> None:
+        model = SliceModel(
+            detector=nl_fitted.detector,
+            spike_times=sim_session.spike_times,
+            time=nl_fitted.results["time"].values,
+        )
+        assert model.reduction is PosteriorReduction.CONDITIONAL_NON_LOCAL
+
+    def test_cf_picks_marginal(
+        self, cf_fitted: FittedDetector, sim_session: SimulatedSession
+    ) -> None:
+        model = SliceModel(
+            detector=cf_fitted.detector,
+            spike_times=sim_session.spike_times,
+            time=cf_fitted.results["time"].values,
+        )
+        assert model.reduction is PosteriorReduction.MARGINAL
+
+
+@pytest.mark.unit
+class TestSliceModelTopCurve:
+    def test_loglik_path_matches_helper_bit_identical(
+        self, nl_fitted: FittedDetector, sim_session: SimulatedSession
+    ) -> None:
+        """Top curve via ``log_lik`` must match the analysis helper exactly."""
+        results = nl_fitted.results
+        time = results["time"].values
+        t_idx = _t_idx_of_first_finite_loglik(results)
+        log_lik_row = results["log_likelihood"].values[t_idx]
+        posterior_row = results["acausal_posterior"].values[t_idx]
+
+        model = SliceModel(nl_fitted.detector, sim_session.spike_times, time)
+        payload = model.update_for_index(
+            t_idx, posterior_row=posterior_row, log_lik_row=log_lik_row
+        )
+
+        expected = collapse_log_likelihood_to_position(log_lik_row, nl_fitted.detector)
+        np.testing.assert_allclose(
+            payload.top_curve, expected, atol=1e-14, equal_nan=True
+        )
+        assert payload.top_curve_label == TOP_CURVE_LIKELIHOOD_LABEL
+
+    def test_posterior_fallback_when_loglik_missing(
+        self, nl_fitted: FittedDetector, sim_session: SimulatedSession
+    ) -> None:
+        """When ``log_lik_row=None`` the top curve falls back to collapsed posterior."""
+        results = nl_fitted.results
+        time = results["time"].values
+        t_idx = _t_idx_of_first_finite_loglik(results)
+        posterior_row = results["acausal_posterior"].values[t_idx]
+
+        model = SliceModel(nl_fitted.detector, sim_session.spike_times, time)
+        payload = model.update_for_index(
+            t_idx, posterior_row=posterior_row, log_lik_row=None
+        )
+
+        expected = collapse_posterior_to_position(
+            posterior_row, nl_fitted.detector, PosteriorReduction.CONDITIONAL_NON_LOCAL
+        )
+        np.testing.assert_allclose(
+            payload.top_curve, expected, atol=1e-14, equal_nan=True
+        )
+        assert payload.top_curve_label == TOP_CURVE_POSTERIOR_FALLBACK_LABEL
+
+
+@pytest.mark.unit
+class TestSliceModelPredictiveOverlay:
+    def test_predictive_path_matches_helper_bit_identical(
+        self,
+        run_bundles,
+        sim_session: SimulatedSession,
+    ) -> None:
+        # ``predictive_posterior`` only appears in predict(return_outputs="all"),
+        # which is the ``nl_all`` bundle variant (not the EM result on
+        # ``nl_fitted``).
+        bundle = run_bundles["nl_all"]
+        results = bundle.results
+        time = results["time"].values
+        t_idx = _t_idx_of_first_finite_loglik(results)
+        posterior_row = results["acausal_posterior"].values[t_idx]
+        log_lik_row = results["log_likelihood"].values[t_idx]
+        predictive_row = results["predictive_posterior"].values[t_idx]
+
+        model = SliceModel(bundle.detector, sim_session.spike_times, time)
+        payload = model.update_for_index(
+            t_idx,
+            posterior_row=posterior_row,
+            log_lik_row=log_lik_row,
+            predictive_row=predictive_row,
+        )
+
+        expected = collapse_posterior_to_position(
+            predictive_row,
+            bundle.detector,
+            PosteriorReduction.CONDITIONAL_NON_LOCAL,
+        )
+        assert payload.predictive_curve is not None
+        np.testing.assert_allclose(
+            payload.predictive_curve, expected, atol=1e-14, equal_nan=True
+        )
+
+    def test_predictive_hidden_when_missing(
+        self, nl_fitted: FittedDetector, sim_session: SimulatedSession
+    ) -> None:
+        results = nl_fitted.results
+        time = results["time"].values
+        t_idx = _t_idx_of_first_finite_loglik(results)
+        posterior_row = results["acausal_posterior"].values[t_idx]
+
+        model = SliceModel(nl_fitted.detector, sim_session.spike_times, time)
+        payload = model.update_for_index(
+            t_idx, posterior_row=posterior_row, predictive_row=None
+        )
+        assert payload.predictive_curve is None
+
+
+@pytest.mark.unit
+class TestSliceModelPerCellRows:
+    def test_cells_at_bin_with_real_spike(
+        self, nl_fitted: FittedDetector, sim_session: SimulatedSession
+    ) -> None:
+        """Pick a real spike, find its bin, assert that cell appears in the slice."""
+        time = nl_fitted.results["time"].values
+        # Choose any cell with at least one spike inside the time window.
+        cell_id = next(
+            i
+            for i, st in enumerate(sim_session.spike_times)
+            if st.size and time[0] <= st[0] <= time[-1]
+        )
+        spike_t = float(sim_session.spike_times[cell_id][0])
+        t_idx = int(np.searchsorted(time, spike_t, side="right") - 1)
+        posterior_row = nl_fitted.results["acausal_posterior"].values[t_idx]
+
+        model = SliceModel(nl_fitted.detector, sim_session.spike_times, time)
+        payload = model.update_for_index(t_idx, posterior_row=posterior_row)
+        active_ids = {c.cell_id for c in payload.cells}
+        assert cell_id in active_ids
+        # Place-field rows are peak-normalised (≤ 1, ≥ 0) and finite.
+        for c in payload.cells:
+            assert np.all(c.place_field_norm >= 0)
+            assert np.all(c.place_field_norm <= 1.0 + 1e-12)
+            assert np.all(np.isfinite(c.place_field_norm))
+
+    def test_cells_at_empty_bin_returns_empty(
+        self, nl_fitted: FittedDetector, sim_session: SimulatedSession
+    ) -> None:
+        """Bin with no spikes anywhere → empty cell tuple."""
+        time = nl_fitted.results["time"].values
+        # Build synthetic spike_times that have no events near the cursor.
+        n_cells = len(sim_session.spike_times)
+        far_off = float(time[-1] + 1000.0)
+        empty_spikes = [np.array([far_off]) for _ in range(n_cells)]
+        t_idx = len(time) // 2
+        posterior_row = nl_fitted.results["acausal_posterior"].values[t_idx]
+
+        model = SliceModel(nl_fitted.detector, empty_spikes, time)
+        payload = model.update_for_index(t_idx, posterior_row=posterior_row)
+        assert payload.cells == ()
+
+
+@pytest.mark.unit
+def test_set_active_run_rebinds_detector_and_spikes(
+    nl_fitted: FittedDetector,
+    cf_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """``set_active_run`` swaps detector + spike_times + reduction default."""
+    time = nl_fitted.results["time"].values
+    model = SliceModel(nl_fitted.detector, sim_session.spike_times, time)
+    assert model.reduction is PosteriorReduction.CONDITIONAL_NON_LOCAL
+
+    model.set_active_run(
+        cf_fitted.detector,
+        sim_session.spike_times,
+        cf_fitted.results["time"].values,
+    )
+    assert model.detector is cf_fitted.detector
+    assert model.reduction is PosteriorReduction.MARGINAL
+
+
+@pytest.mark.unit
+def test_update_for_index_validates_bounds(
+    nl_fitted: FittedDetector, sim_session: SimulatedSession
+) -> None:
+    time = nl_fitted.results["time"].values
+    model = SliceModel(nl_fitted.detector, sim_session.spike_times, time)
+    posterior_row = nl_fitted.results["acausal_posterior"].values[0]
+    with pytest.raises(IndexError):
+        model.update_for_index(len(time), posterior_row=posterior_row)
+    with pytest.raises(IndexError):
+        model.update_for_index(-1, posterior_row=posterior_row)

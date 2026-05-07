@@ -1,0 +1,183 @@
+"""``SliceModel`` — per-bin slice readouts for the right-column panel.
+
+Wraps the analysis-layer collapse helpers + per-cell place-field
+lookup so ``QtSlicePanel.update_for_index`` can render the cursor
+bin's likelihood/posterior curve, predictive overlay, and per-cell
+rows from a single dataclass output.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import numpy as np
+
+from non_local_detector.analysis.place_fields import extract_per_cell_place_fields
+from non_local_detector.analysis.posterior import (
+    PosteriorReduction,
+    collapse_log_likelihood_to_position,
+    collapse_posterior_to_position,
+    select_reduction,
+)
+from non_local_detector.visualization.interactive.view_models.base import (
+    BinPayload,
+    CellSlice,
+)
+
+if TYPE_CHECKING:
+    from non_local_detector.models.base import _DetectorBase
+
+
+# Title strings used by the panel; constants so tests can match
+# them exactly without re-typing the prose.
+TOP_CURVE_LIKELIHOOD_LABEL = "Likelihood (peak-normalised, all spatial states)"
+TOP_CURVE_POSTERIOR_FALLBACK_LABEL = (
+    "Posterior (likelihood unavailable; collapsed via active reduction)"
+)
+
+
+class SliceModel:
+    """Per-bin slice over the active run's results + spike times.
+
+    Construction caches the detector schema, the peak-normalised
+    per-cell place fields, and the time grid; ``update_for_index``
+    routes a single time-bin's posterior / log-likelihood / predictive
+    rows through the analysis-layer collapse helpers and gathers the
+    cells that fired in the cursor bin.
+
+    The caller (``QtSlicePanel``) is responsible for fetching the
+    per-bin rows from the data source and passing them in. Bin
+    boundaries are inferred from the time grid as midpoints to
+    neighbors.
+    """
+
+    def __init__(
+        self,
+        detector: _DetectorBase,
+        spike_times: list[np.ndarray],
+        time: np.ndarray,
+        reduction: PosteriorReduction | None = None,
+    ) -> None:
+        self._bind(detector, spike_times, time, reduction)
+
+    def _bind(
+        self,
+        detector: _DetectorBase,
+        spike_times: list[np.ndarray],
+        time: np.ndarray,
+        reduction: PosteriorReduction | None,
+    ) -> None:
+        self._detector = detector
+        self._spike_times = [np.asarray(st, dtype=np.float64) for st in spike_times]
+        self._time = np.asarray(time, dtype=np.float64)
+        self._reduction = reduction or select_reduction(
+            detector.state_names, np.asarray(detector.bin_sizes_)
+        )
+        self._per_cell_pf_normalized = self._peak_normalize(
+            extract_per_cell_place_fields(detector)
+        )
+
+    @staticmethod
+    def _peak_normalize(per_cell_pf: np.ndarray) -> np.ndarray:
+        # Peak-normalize per cell. Cells with all-zero / all-NaN place
+        # fields stay all-zero — never divide by 0 / NaN.
+        peaks = np.nanmax(per_cell_pf, axis=1, keepdims=True)
+        safe = np.where(np.isfinite(peaks) & (peaks > 0), peaks, 1.0)
+        out = per_cell_pf / safe
+        out = np.where(np.isfinite(out), out, 0.0)
+        return out
+
+    @property
+    def detector(self) -> _DetectorBase:
+        return self._detector
+
+    @property
+    def reduction(self) -> PosteriorReduction:
+        return self._reduction
+
+    @property
+    def n_cells(self) -> int:
+        return len(self._spike_times)
+
+    def set_active_run(
+        self,
+        detector: _DetectorBase,
+        spike_times: list[np.ndarray],
+        time: np.ndarray,
+        reduction: PosteriorReduction | None = None,
+    ) -> None:
+        """Rebind to a new run (M-key swap)."""
+        self._bind(detector, spike_times, time, reduction)
+
+    def update_for_index(
+        self,
+        t_idx: int,
+        posterior_row: np.ndarray,
+        log_lik_row: np.ndarray | None = None,
+        predictive_row: np.ndarray | None = None,
+    ) -> BinPayload:
+        """Return a ``BinPayload`` describing the cursor bin."""
+        if t_idx < 0 or t_idx >= self._time.size:
+            raise IndexError(
+                f"t_idx={t_idx} out of range for time grid of size {self._time.size}"
+            )
+        t = float(self._time[t_idx])
+        if log_lik_row is not None:
+            top_curve = collapse_log_likelihood_to_position(
+                log_lik_row, self._detector
+            )
+            top_curve_label = TOP_CURVE_LIKELIHOOD_LABEL
+        else:
+            top_curve = collapse_posterior_to_position(
+                posterior_row, self._detector, self._reduction
+            )
+            top_curve_label = TOP_CURVE_POSTERIOR_FALLBACK_LABEL
+        predictive_curve = (
+            collapse_posterior_to_position(
+                predictive_row, self._detector, self._reduction
+            )
+            if predictive_row is not None
+            else None
+        )
+        bin_lo, bin_hi = self._bin_edges(t_idx)
+        cells = self._cells_at_window(bin_lo, bin_hi)
+        return BinPayload(
+            t_idx=t_idx,
+            t=t,
+            top_curve=top_curve,
+            top_curve_label=top_curve_label,
+            predictive_curve=predictive_curve,
+            cells=tuple(cells),
+        )
+
+    def _bin_edges(self, t_idx: int) -> tuple[float, float]:
+        """Return ``(t_lo, t_hi)`` for bin ``t_idx`` using midpoints."""
+        n = self._time.size
+        if n == 1:
+            return float(self._time[0]), float(self._time[0])
+        t = float(self._time[t_idx])
+        if t_idx == 0:
+            half = (self._time[1] - self._time[0]) / 2.0
+        elif t_idx == n - 1:
+            half = (self._time[n - 1] - self._time[n - 2]) / 2.0
+        else:
+            half_lo = (t - self._time[t_idx - 1]) / 2.0
+            half_hi = (self._time[t_idx + 1] - t) / 2.0
+            return float(t - half_lo), float(t + half_hi)
+        return float(t - half), float(t + half)
+
+    def _cells_at_window(self, t_lo: float, t_hi: float) -> list[CellSlice]:
+        out: list[CellSlice] = []
+        for cell_id, st in enumerate(self._spike_times):
+            if st.size == 0:
+                continue
+            count = int(np.count_nonzero((st >= t_lo) & (st <= t_hi)))
+            if count > 0:
+                out.append(
+                    CellSlice(
+                        cell_id=cell_id,
+                        place_field_norm=self._per_cell_pf_normalized[cell_id],
+                        spike_count=count,
+                    )
+                )
+        return out
