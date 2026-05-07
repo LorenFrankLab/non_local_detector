@@ -61,11 +61,16 @@ class QtLikelihoodHeatmapPanel(
         parent=None,
     ) -> None:
         super().__init__(parent=parent, background="w")
+        self.setMenuEnabled(False)
+        self.setMouseEnabled(x=False, y=False)
+        self.getAxis("bottom").enableAutoSIPrefix(False)
+        self.getAxis("left").enableAutoSIPrefix(False)
         self._model = model
         self._set_position_grid(position_centers)
+        self._vmax = float(vmax)
         self._image_item = pg.ImageItem(axisOrder="row-major")
         self._image_item.setLookupTable(bone_lookup_table())
-        self._image_item.setLevels((0.0, float(vmax)))
+        self._image_item.setLevels((0.0, self._vmax))
         self.addItem(self._image_item)
         self.setLabel("left", "Position [cm]")
         self.setLabel(
@@ -114,6 +119,12 @@ class QtLikelihoodHeatmapPanel(
             self._uniform_step,
             self._arange_n_pos,
         ) = position_grid_layout(centers)
+        y_min = self._y0 - self._dy_half
+        y_max = self._y1 + self._dy_half
+        vb = self.getViewBox()
+        vb.disableAutoRange()
+        vb.setYRange(y_min, y_max, padding=0)
+        vb.setLimits(yMin=y_min, yMax=y_max)
 
     def _set_title_message(self, message: str | None) -> None:
         """Show ``message`` in the title bar; pass ``None`` to clear.
@@ -135,7 +146,12 @@ class QtLikelihoodHeatmapPanel(
             self.setTitle(message)
 
     def _set_image(self, collapsed: np.ndarray, time: np.ndarray) -> None:
-        self._image_item.setImage(collapsed.T, autoLevels=False)
+        self._image_item.setImage(
+            collapsed.T,
+            autoLevels=False,
+            levels=(0.0, self._vmax),
+            autoDownsample=False,
+        )
         if time.size and self._position_centers.size:
             x_min = float(time[0])
             x_extent = float(time[-1] - time[0]) if time.size > 1 else 1.0

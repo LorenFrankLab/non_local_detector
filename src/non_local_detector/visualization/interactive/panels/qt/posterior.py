@@ -52,6 +52,10 @@ class QtPosteriorHeatmapPanel(
         parent=None,
     ) -> None:
         super().__init__(parent=parent, background="w")
+        self.setMenuEnabled(False)
+        self.setMouseEnabled(x=False, y=False)
+        self.getAxis("bottom").enableAutoSIPrefix(False)
+        self.getAxis("left").enableAutoSIPrefix(False)
         self._model = model
         self._set_position_grid(position_centers)
         self._vmax = float(vmax)
@@ -99,12 +103,23 @@ class QtPosteriorHeatmapPanel(
             self._uniform_step,
             self._arange_n_pos,
         ) = position_grid_layout(centers)
+        y_min = self._y0 - self._dy_half
+        y_max = self._y1 + self._dy_half
+        vb = self.getViewBox()
+        vb.disableAutoRange()
+        vb.setYRange(y_min, y_max, padding=0)
+        vb.setLimits(yMin=y_min, yMax=y_max)
 
     def _set_image(self, collapsed: np.ndarray, time: np.ndarray) -> None:
         # ImageItem rows are y, columns are x (axisOrder="row-major").
         # Our collapsed array is (n_visible, n_pos) — time on x, position
         # on y — so transpose before set.
-        self._image_item.setImage(collapsed.T, autoLevels=False)
+        self._image_item.setImage(
+            collapsed.T,
+            autoLevels=False,
+            levels=(0.0, self._vmax),
+            autoDownsample=False,
+        )
         # Map x to time, y to position so axes display real units.
         # Pad the y bounds by half a bin so each pixel CENTER sits at
         # the bin center, matching ``statespacecheck-paper-viewer``'s
