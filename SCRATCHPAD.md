@@ -14,11 +14,12 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 
 > What I'm working on right now. Update when context-switching.
 
-**Milestones 1 + 2 + 3 complete and committed (21 commits).** Ready to
-start **Milestone 4 — Right-column SlicePanel** on user approval.
-TASKS.md has all M1–M3 boxes checked except one (the full left-column
-visual diff against `plot_non_local_model`, which the plan groups with
-the Milestone 5 `plot_detector` parity check).
+**M1+M2+M3 complete and committed; M3 review fixes committed in
+`e000eb8`.** **M4 Track A devtool complete (uncommitted)**:
+`bundle-from-statespacecheck-cache` CLI under
+`devtools/bundle_from_statespacecheck.py`, 10 passing tests + 1
+zarr-skip. Next M4 task: Track 0 SliceModel/QtSlicePanel work
+(pending user approval on the devtool diff).
 
 **Important user-set rule (do not violate):**
 
@@ -186,6 +187,53 @@ Latest at top:
   or the mirror becomes a tautology.
 
   Tests: 120 → 120 (test strengthened in place). Lint + suite green.
+- **M4 Track A devtool (uncommitted)** —
+  `bundle-from-statespacecheck-cache` CLI bundles the upstream
+  `statespacecheck-paper-viewer` cache + intermediates layout into a
+  CLI-compatible viewer bundle directory.
+  - **Module**: `visualization/interactive/devtools/{__init__.py,
+    __main__.py, bundle_from_statespacecheck.py}`. `__main__.py`
+    uses argparse subparsers so future devtool subcommands slot in.
+  - **Path table re-encoded locally** (12-line `_model_paths`)
+    rather than importing `statespacecheck_paper.interactive.cache`,
+    so the devtool runs in the project's venv without the upstream
+    package installed. If upstream changes the convention, both
+    repos break together regardless of import vs. local copy.
+  - **Place-field cross-check**: compares the cache's interior-only
+    `figure04_<model>_place_fields.npz` against
+    `extract_state_aligned_place_fields(detector)[:, is_track_interior_state_bins_]`
+    with `rtol=1e-5, atol=1e-6`. Error message names the likely
+    fix ("rebuild whichever is older") plus shape + max-abs-diff.
+  - **Detector pickle**: read source via the canonical
+    `_DetectorBase.load_model` (plain `pickle.load`; works on joblib
+    output too because joblib uses pickle protocol). Round-tripped
+    on output via `detector.save_model` so `app._load_run` reads it
+    cleanly.
+  - **Zarr fallback**: `--results-from-zarr` lazy-imports `zarr`
+    with a clear "install zarr or drop the flag" error if missing.
+    `acausal_posterior` is optional in upstream's Zarr; devtool
+    revalidates both required vars and refuses to run if either is
+    absent.
+  - **Tests**: 10 against synthesized cache layout from `cf_fitted`
+    + `sim_session` fixtures (no upstream data needed); +1
+    skip-if-no-zarr for the Zarr fallback.
+    - Happy path round-trips through `app._load_run`.
+    - Out-dir auto-created on missing nested parents.
+    - Errors: unknown model, missing required results var,
+      place-fields shape mismatch, place-fields value mismatch,
+      mutually-exclusive `--results-nc` + `--results-from-zarr`.
+    - `--results-nc` override + `__main__.main` argv dispatch +
+      position parquet preserves time index.
+  - **Plan deferrals (surfaced)**:
+    - `--run-from-dir` convenience flag in `app.py` deferred to a
+      later M4 polish task; the four-file output is fully consumable
+      via the existing `--run` flag.
+    - Full `NLD_REAL_DATA_BUNDLE_DIR`-rooted bundle-build docs
+      deferred to Phase 6 docs pass; CLI `--help` covers
+      per-invocation usage now.
+
+  Tests: 120 → 130 (10 new + 1 skip). Lint + suite green with
+  `-m "not slow"`.
 
 ---
 

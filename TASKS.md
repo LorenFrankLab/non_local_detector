@@ -507,7 +507,7 @@ requires a CLI-compatible bundle directory built from
 statespacecheck's intermediates. Build the devtool here so Phase 4
 and Phase 6 verifications can run.
 
-- [ ] Add
+- [x] Add
   `src/non_local_detector/visualization/interactive/devtools/__init__.py`
   and `devtools/bundle_from_statespacecheck.py` implementing the
   CLI shown below:
@@ -521,31 +521,42 @@ and Phase 6 verifications can run.
       --out <bundles_root>/<model_name>/
   ```
 
-- [ ] Use upstream statespacecheck's `model_paths(intermediates_dir,
+- [x] Use upstream statespacecheck's `model_paths(intermediates_dir,
   model)` to resolve filenames (`continuous → cont_results.nc +
   cont_model.pkl`, `contfrag → cont_frag_results.nc +
-  cont_frag_model.pkl`).
-- [ ] Loads `results` from `model_paths.results_nc`; validates
+  cont_frag_model.pkl`). Implementation note: the path table is
+  re-encoded locally in `_model_paths` (12 lines) so the devtool runs
+  without the upstream package installed; if upstream changes the
+  convention, both repos need updates anyway.
+- [x] Loads `results` from `model_paths.results_nc`; validates
   `acausal_posterior` + `acausal_state_probabilities` present.
-- [ ] Loads detector via `joblib.load(model_paths.model_pkl)`.
-- [ ] Reads shared `<cache-dir>/figure04_meta.npz` for time + linear
+- [x] Loads detector via `joblib.load(model_paths.model_pkl)`. (Plain
+  `pickle.load` via `_DetectorBase.load_model` works because joblib
+  uses the pickle protocol with numpy extensions.)
+- [x] Reads shared `<cache-dir>/figure04_meta.npz` for time + linear
   position.
-- [ ] Reads shared `<cache-dir>/figure04_spike_times.npy` for
+- [x] Reads shared `<cache-dir>/figure04_spike_times.npy` for
   per-cell spike times.
-- [ ] Cross-checks `<cache-dir>/figure04_<model>_place_fields.npz`
+- [x] Cross-checks `<cache-dir>/figure04_<model>_place_fields.npz`
   against
   `extract_state_aligned_place_fields(detector)[:, detector.is_track_interior_state_bins_]`
-  (interior-only).
-- [ ] Writes a CLI-compatible bundle directory at `--out` with
+  (interior-only). Tolerance: `rtol=1e-5, atol=1e-6` against the
+  upstream float32 sidecar; clear error names whether the rebuild
+  should be the cache or the intermediates.
+- [x] Writes a CLI-compatible bundle directory at `--out` with
   `results.nc`, `model.pkl`, `spikes.npz`, `position.parquet` (the
-  four files the viewer's `--run-from-dir` flag reads).
-- [ ] Optional flags: `--results-nc <path>`, `--model-pkl <path>`,
+  four files the viewer's `--run` flag reads). The `--run-from-dir`
+  convenience flag mentioned in the plan is a future M4 polish item;
+  the four-file format itself is sufficient to consume via `--run`.
+- [x] Optional flags: `--results-nc <path>`, `--model-pkl <path>`,
   `--results-from-zarr` (with explicit `acausal_posterior` +
   `acausal_state_probabilities` validation when substituting the
-  Zarr store).
+  Zarr store). `--results-from-zarr` lazy-imports `zarr` with a
+  clear "install zarr" error if missing.
 - [ ] Document the build command for both bundles
   (`continuous/`, `contfrag/`) under one parent dir referenced by
-  `NLD_REAL_DATA_BUNDLE_DIR`.
+  `NLD_REAL_DATA_BUNDLE_DIR` — defer to the Phase 6 docs pass; CLI
+  `--help` already covers per-invocation usage.
 
 ### `view_models/slice.py`
 
