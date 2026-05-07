@@ -419,9 +419,9 @@ First Qt rendering. `[viewer]` extra required from this point.
 - [x] `view_models/state_prob.py` + `panels/qt/state_prob.py`:
   `StateProbabilityModel` (multi-line over states).
 - [x] `view_models/raster.py` + `panels/qt/raster.py`: `RasterModel`
-  + `QtRasterPanel` with place-field-peak sort. Non-local shaded
-  bar deferred to Milestone 4 (depends on per-bin state
-  probabilities the slice panel surfaces).
+  + `QtRasterPanel` with place-field-peak sort + non-local shaded
+  bar (translucent ``LinearRegionItem`` over time-bins where
+  ``P(Non-Local) > 0.5``).
 - [x] X-axes linked across all left-column panels.
 
 ### Generic series panels
@@ -445,11 +445,9 @@ First Qt rendering. `[viewer]` extra required from this point.
   every registered panel.
 - [x] Navigator: `next_event()`/`prev_event()` per overlay kind
   (already in Phase 2 ViewerCore — points + intervals semantics).
-- [x] `viewer/qt.py`: `N` / `Shift+N` keyboard shortcuts wired.
-  Overlay selector dropdown + per-overlay visibility checkboxes
-  deferred to Milestone 6 (UI polish — the underlying
-  `set_overlay_visibility` and `set_active_overlay` core APIs
-  are already in place).
+- [x] `viewer/qt.py`: overlay selector dropdown + per-overlay
+  visibility checkboxes in the controls bar; ``N`` / ``Shift+N``
+  keyboard shortcuts wired.
 
 ### Viewer extras
 
@@ -474,12 +472,16 @@ First Qt rendering. `[viewer]` extra required from this point.
   panel set (pd.Series → line panel; MetricSpec.scatter/intervals
   → matching panels). Click-to-recenter wired via
   `ScatterSeriesPanel`.
-- [ ] `LineSeriesPanel(fill_below=True, thresholds=[2.0])` renders
-  filled area + dashed threshold visually verified (deferred to a
-  Milestone 5 visual diff; the construction path is exercised by
-  the auto-render test).
-- [ ] `MultiLineSeriesPanel` rendering test (deferred — Milestone 5
-  visual diff against `plot_detector` covers it).
+- [x] `LineSeriesPanel(fill_below=True, thresholds=[2.0])`
+  construction tests in ``test_series_panels.py`` — verifies
+  ``_fill_curve`` is a ``FillBetweenItem`` and that
+  ``thresholds=(0.25, 0.75)`` adds two ``InfiniteLine`` items at
+  the right y-positions; plain (no fill, no thresholds) variant
+  has neither.
+- [x] ``MultiLineSeriesPanel`` construction tests — three-entry
+  ``ys`` produces three ``PlotDataItem`` lines with three
+  distinct pen colors from the default palette;
+  ``colors={...}`` overrides the palette per-label.
 - [x] Event overlays: ViewerCore dispatch + visibility filtering +
   swap behavior covered in `test_viewer_core.py`. Per-panel
   marker rendering covered in `test_qt_viewer.py`. End-to-end
