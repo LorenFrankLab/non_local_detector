@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD060 -->
+
 # Interactive decoder viewer — plugin contract
 
 Authoring reference for custom panels in the v1 Qt viewer. For
@@ -50,10 +52,20 @@ its own metrics.
 
 ## When you do need a plugin
 
-For project-specific rendering (e.g. ratemaps, pose overlays, custom
-math), implement one of the panel ABCs and pass it via
-`extra_panels=[...]`. User-supplied panels are owned by the caller
-and **not** torn down on swap.
+For project-specific rendering (ratemaps, pose overlays, custom
+math), implement one of the two panel ABCs and pass it via the
+matching kwarg. User-supplied panels are owned by the caller and
+**not** torn down on model swap.
+
+| Plugin lane  | Kwarg                    | Where it renders                                | Protocol         |
+| ------------ | ------------------------ | ----------------------------------------------- | ---------------- |
+| Window-based | `extra_panels=[...]`     | Below the built-in left column                  | `TimeAxisPanel`  |
+| Bin-based    | `extra_bin_panels=[...]` | Below the built-in slice panel (right column)   | `BinSyncedPanel` |
+
+The two lanes are **separate** — passing a `BinSyncedPanel` via
+`extra_panels` will fail on the first window load because
+`update_window` is missing. Use the right kwarg for the protocol
+your panel implements.
 
 ### `TimeAxisPanel` Protocol
 
@@ -69,28 +81,46 @@ class TimeAxisPanel(Protocol):
     def set_event_overlays(self, overlays: list[EventOverlay]) -> None: ...
 ```
 
-| Method | Contract |
-|---|---|
-| `update_window(payload)` | Render the time-axis window described by `payload`. Called once per committed window load. The payload carries `time` (1-D, n_visible), `posterior`, `likelihood` (may be None), `predictive` (may be None), `state_probabilities`, and `indices` (the slice into the full session). |
-| `x_link_target()` | Return the Qt object other panels link x-axes to (typically `self.getPlotItem()` for `pg.PlotWidget` subclasses). The viewer wires every panel's x-axis to the posterior panel's link target. |
-| `click_handler(callback)` | Register a callback invoked when the user clicks empty space on the panel; the callback receives the clicked x-coordinate in absolute seconds. The viewer uses this to recenter. |
+| Method                         | Contract |
+| ------------------------------ | -------- |
+| `update_window(payload)`       | Render the time-axis window described by `payload`. Called once per committed window load. The payload carries `time` (1-D, n_visible), `posterior`, `likelihood` (may be None), `predictive` (may be None), `state_probabilities`, and `indices` (the slice into the full session). |
+| `x_link_target()`              | Return the Qt object other panels link x-axes to (typically `self.getPlotItem()` for `pg.PlotWidget` subclasses). The viewer wires every panel's x-axis to the posterior panel's link target. |
+| `click_handler(callback)`      | Register a callback invoked when the user clicks empty space on the panel; the callback receives the clicked x-coordinate in absolute seconds. The viewer uses this to recenter. |
 | `set_event_overlays(overlays)` | Replace this panel's overlay set. Called whenever overlay visibility changes. Idempotent — the new list fully replaces previously rendered markers. |
 
 ### `BinSyncedPanel` Protocol
 
-For panels that render the cursor's single time bin. The right-column
-slice panel implements this.
+For panels that render the cursor's single time bin. The viewer
+drives bin-synced plugins on the same buffered low-latency path the
+built-in `QtSlicePanel` uses: each new `WindowPayload` is handed to
+every bin plugin via `set_window_buffer`, then per-tick cursor
+moves dispatch `update_for_index(t_idx)` synchronously so the
+render reads from the cached arrays instead of re-fetching from the
+data source.
 
 ```python
 class BinSyncedPanel(Protocol):
-    def update_for_index(self, t_idx: int, payload: BinPayload) -> None: ...
+    def set_window_buffer(self, payload: WindowPayload) -> None: ...
+    def update_for_index(self, t_idx: int) -> None: ...
 ```
 
-`BinPayload` carries `t_idx`, `t`, `top_curve`, `top_curve_label`,
-`predictive_curve` (may be None), and `cells` (tuple of
-`CellSlice`). v1 ships one `BinSyncedPanel` (`QtSlicePanel`); the
-ABC exists so future per-bin readouts (HPD, KL, custom metrics) can
-plug in alongside it.
+| Method | Contract |
+|---|---|
+| `set_window_buffer(payload)` | Cache the latest `WindowPayload` for per-tick row reads. Called by the viewer once per committed window load. |
+| `update_for_index(t_idx)` | Render the cursor's bin from the cached buffer. Out-of-buffer `t_idx` should be a no-op — the next window load will refresh the buffer and the viewer will re-issue the cursor update. Called per slider tick (synchronously) and once after each window-load commit. |
+
+`rebind_after_swap()` is **optional**: implement it if your plugin
+caches run-local state (e.g. a per-cell place-field map keyed by
+cell id). The viewer calls it via `getattr` after
+`ViewerCore.set_active_run` so plugins without run-local state
+need not implement it.
+
+```python
+class CachingBinPanel:
+    def rebind_after_swap(self) -> None:  # optional
+        self._buffered_payload = None
+        self._cell_field_cache.clear()
+```
 
 ## Mixins available for Qt panel implementations
 

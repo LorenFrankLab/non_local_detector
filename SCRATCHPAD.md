@@ -14,15 +14,13 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 
 > What I'm working on right now. Update when context-switching.
 
-**M1+M2+M3 complete and committed; M3 review fixes in `e000eb8`.
-M4 done across `eab0478` / `97bb59e` / `a958a50` / `e6621b5` /
-`0a840e0` / `c3ea841` / `89239ee` / `de5b46d` / `d38fe27`.**
-**M5 in-repo docs uncommitted** — plugin contract README at
-`src/non_local_detector/visualization/interactive/README.md`.
-Per user direction (2026-05-07), the `continuum-swr-replay`
-downstream consumer + Track B verification are deferred (separate
-repo, separate PR); the in-repo plugin contract is documented so
-the deferred work has something to land against.
+**M1+M2+M3+M4 done. M5 in-repo docs in `ebcdefe`. M6 progress:
+model-swap UI in `1eea901`. **Real `extra_bin_panels` plugin lane
+uncommitted** — fixes a finding on `ebcdefe` where the README
+promised BinSyncedPanel as part of `extra_panels` but the viewer
+only handled TimeAxisPanel-shaped widgets. New parallel kwarg
+`extra_bin_panels` + corrected protocol (`set_window_buffer` +
+`update_for_index(t_idx)` + optional `rebind_after_swap`).
 
 **Important user-set rule (do not violate):**
 
@@ -480,6 +478,69 @@ Latest at top:
     for in-tree contributions.
 
   No new tests (docs-only change). Lint clean.
+- **M6 model-swap UI** (commit `1eea901`) — controls bar now shows
+  a `Model (M):` dropdown when multi-run; M-key cycles through
+  runs in dropdown order. The combo's `currentIndexChanged`
+  routes to `core.set_active_run`; `_rebind_panels` syncs the
+  combo back (signal-blocked) after a programmatic
+  `core.set_active_run`. View state (`t_center`, `t_width`,
+  `active_overlay_name`) preserved across swap by virtue of
+  existing rebind plumbing (verified by new test). Controls bar
+  visibility now requires both single-run AND no overlays before
+  hiding (model dropdown alone keeps it visible). 5 new tests + 1
+  reframed visibility test.
+- **M6 `extra_bin_panels` plugin lane (uncommitted)** — fixes a
+  user-caught hole in the M5 README docs (commit `ebcdefe`):
+  README documented `BinSyncedPanel` as part of the plugin contract
+  via `extra_panels`, but the viewer's `extra_panels` path requires
+  `update_window` + `set_event_overlays` (TimeAxisPanel surface).
+  A bin-only widget passed via `extra_panels` would AttributeError
+  at viewer construction (`_wire_panels` step).
+  - **Protocol fix in `panels/base.py`**: `BinSyncedPanel` now
+    matches `QtSlicePanel`'s actual buffered design:
+    `set_window_buffer(payload)` + `update_for_index(t_idx)`.
+    `rebind_after_swap` is documented as optional and called by the
+    viewer via `getattr` so plugins without run-local caches can
+    omit it.
+  - **New kwarg `extra_bin_panels`** on `QtViewer`, `launch_qt`,
+    and the public `interactive.launch`. Bin plugins are stacked
+    below the built-in `QtSlicePanel` in the right column; the
+    viewer drives them on the same buffered low-latency path
+    (`set_window_buffer` on window load + `update_for_index` on
+    each slider tick AND once after each window-load commit).
+  - **Layout change**: right column now has its own `QVBoxLayout`
+    (slice panel on top, extras below). Body's `QHBoxLayout` holds
+    the left column + this right column.
+  - **README rewrite**: split the plugin section into a
+    "two-lane" table (TimeAxisPanel via `extra_panels`,
+    BinSyncedPanel via `extra_bin_panels`); explicit warning that
+    mixing them fails at construction. Per-method contract tables
+    for both protocols.
+  - **Tests** (6 new in `test_viewer_extras.py`):
+    - layout: bin panels appear under `QtSlicePanel`.
+    - `set_window_buffer` dispatched on window load (also drives
+      one immediate `update_for_index` at the slider value).
+    - slider tick reaches bin plugins synchronously.
+    - swap calls `rebind_after_swap` when present.
+    - swap with a plugin that omits `rebind_after_swap` doesn't
+      crash (optional-hook contract).
+    - `extra_panels=[bin_only_widget]` raises `AttributeError`
+      with `set_event_overlays` in the message at viewer
+      construction (documented contract: lanes are separate; fail
+      early rather than render nothing).
+  - **Test plumbing**: added a `_make_recording_bin_panel(*,
+    with_rebind=True)` factory because PySide6's `QWidget` is
+    only imported lazily in this test module — a class
+    declaration at module scope referencing `QtWidgets.QWidget`
+    would fail when the `[viewer]` extra isn't installed.
+  - **Lessons logged**:
+    - When two protocols share a kwarg slot in code but a doc
+      promises both lanes, the runtime check fails at the first
+      `getattr` for the missing method — silent in tests that
+      don't construct a viewer with the wrong-lane plugin. User
+      caught it by direct construction. Lesson: when a README
+      table promises plugin variants, write a runtime test that
+      passes each variant through the documented kwarg.
 
 ---
 

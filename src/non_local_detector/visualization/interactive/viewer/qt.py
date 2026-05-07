@@ -151,6 +151,7 @@ class QtViewer(QtWidgets.QMainWindow):
         data_source: InMemoryDecoderDataSource,
         t_width: float = 1.0,
         extra_panels: list | None = None,
+        extra_bin_panels: list | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -219,6 +220,15 @@ class QtViewer(QtWidgets.QMainWindow):
         )
         self._all_panels: list = [*self._builtin_panels, *self._extra_panels]
 
+        # Bin-synced plugins are a separate lane: caller-owned (always
+        # treated as user-supplied), driven via the same buffered
+        # set_window_buffer + update_for_index path as ``QtSlicePanel``.
+        # No auto-build path here — bin-synced rendering depends on
+        # project-specific data (e.g. video frames, metric scalars).
+        self._extra_bin_panels: list = (
+            list(extra_bin_panels) if extra_bin_panels is not None else []
+        )
+
         # Slider: integer indices into the time grid; map to t_center.
         n_time = data_source.n_time
         self._slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -245,9 +255,20 @@ class QtViewer(QtWidgets.QMainWindow):
         left_column = QtWidgets.QWidget()
         left_column.setLayout(self._left_column_layout)
 
+        # Right column: slice panel on top, extra bin-synced plugins
+        # below it. Built via a fresh QVBoxLayout so the slice panel
+        # plus any plugins live under one widget that the body's
+        # QHBoxLayout owns.
+        right_column_layout = QtWidgets.QVBoxLayout()
+        right_column_layout.addWidget(self._slice_panel, stretch=2)
+        for bin_panel in self._extra_bin_panels:
+            right_column_layout.addWidget(bin_panel, stretch=1)
+        right_column = QtWidgets.QWidget()
+        right_column.setLayout(right_column_layout)
+
         body_layout = QtWidgets.QHBoxLayout()
         body_layout.addWidget(left_column, stretch=2)
-        body_layout.addWidget(self._slice_panel, stretch=1)
+        body_layout.addWidget(right_column, stretch=1)
         body_widget = QtWidgets.QWidget()
         body_widget.setLayout(body_layout)
 
@@ -383,10 +404,12 @@ class QtViewer(QtWidgets.QMainWindow):
     def _on_window_loaded(self, payload) -> None:
         for panel in self._all_panels:
             panel.update_window(payload)
-        self._slice_panel.set_window_buffer(payload)
-        # Re-render the slice at the current cursor — the new buffer
-        # may extend coverage past the cursor's previous reach.
-        self._slice_panel.update_for_index(self._slider.value())
+        slider_value = self._slider.value()
+        for bin_panel in (self._slice_panel, *self._extra_bin_panels):
+            bin_panel.set_window_buffer(payload)
+            # Re-render at the current cursor — the new buffer may
+            # extend coverage past the cursor's previous reach.
+            bin_panel.update_for_index(slider_value)
 
     def _step_window(self, direction: int) -> None:
         self._core.set_t_center(self._core.t_center + direction * self._core.t_width)
@@ -417,10 +440,12 @@ class QtViewer(QtWidgets.QMainWindow):
     def _on_slider_value_changed(self, value: int) -> None:
         time = self._data_source.time
         self._core.set_t_center(float(time[value]))
-        # Drive the slice panel synchronously off the slider so per-tick
-        # cursor updates land sub-ms (the heavier window load is async
-        # and refreshes the buffer when it commits).
-        self._slice_panel.update_for_index(value)
+        # Drive the slice panel + extra bin-synced plugins synchronously
+        # off the slider so per-tick cursor updates land sub-ms (the
+        # heavier window load is async and refreshes the buffer when it
+        # commits).
+        for bin_panel in (self._slice_panel, *self._extra_bin_panels):
+            bin_panel.update_for_index(value)
 
     def _rebind_panels(self, _new_run_name: str) -> None:
         """Rebind all panels to the new active run's detector.
@@ -457,6 +482,14 @@ class QtViewer(QtWidgets.QMainWindow):
         )
         self._slice_panel.set_position_centers(grid.centers)
         self._slice_panel.rebind_after_swap()
+
+        # Bin-synced plugins drop run-local caches if they expose
+        # ``rebind_after_swap``. The hook is optional in the protocol
+        # so plugins without run-local state need not implement it.
+        for bin_panel in self._extra_bin_panels:
+            rebind = getattr(bin_panel, "rebind_after_swap", None)
+            if callable(rebind):
+                rebind()
 
         if not self._extra_panels_user_supplied:
             self._rebuild_auto_extras(new_run.extra_metrics)
@@ -543,6 +576,7 @@ def launch_qt(
     t_width: float = 1.0,
     block: bool = True,
     extra_panels: list | None = None,
+    extra_bin_panels: list | None = None,
 ) -> int:
     """Open a ``QtViewer`` against the supplied bundle(s).
 
@@ -576,7 +610,12 @@ def launch_qt(
     pg.setConfigOption("background", "w")
     pg.setConfigOption("foreground", "k")
 
-    viewer = QtViewer(data_source, t_width=t_width, extra_panels=extra_panels)
+    viewer = QtViewer(
+        data_source,
+        t_width=t_width,
+        extra_panels=extra_panels,
+        extra_bin_panels=extra_bin_panels,
+    )
     _LIVE_VIEWERS.append(viewer)
     viewer.show()
     if block:

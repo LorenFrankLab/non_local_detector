@@ -25,7 +25,13 @@ from non_local_detector.visualization.interactive.view_models import (
 )
 
 
-def launch(bundle, t_width: float = 1.0, block: bool = True) -> int:
+def launch(
+    bundle,
+    t_width: float = 1.0,
+    block: bool = True,
+    extra_panels: list | None = None,
+    extra_bin_panels: list | None = None,
+) -> int:
     """Open the Qt viewer against a single ``RunBundle`` or named dict.
 
     Lazy-imports the Qt frontend so the rest of the package stays
@@ -39,12 +45,26 @@ def launch(bundle, t_width: float = 1.0, block: bool = True) -> int:
         If True (default), blocks on ``QApplication.exec()`` and
         returns the exit code. If False, the window is created but
         ``exec()`` is not entered — useful for tests.
+    extra_panels : list of TimeAxisPanel, optional
+        Custom time-axis panels appended below the built-in
+        left-column stack. Each must implement ``TimeAxisPanel``.
+    extra_bin_panels : list of BinSyncedPanel, optional
+        Custom bin-synced plugins stacked below the built-in slice
+        panel in the right column. Each must implement
+        ``BinSyncedPanel`` (``set_window_buffer`` +
+        ``update_for_index``); ``rebind_after_swap`` is optional.
     """
     from non_local_detector.visualization.interactive.viewer.qt import (
         launch_qt,
     )
 
-    return launch_qt(bundle, t_width=t_width, block=block)
+    return launch_qt(
+        bundle,
+        t_width=t_width,
+        block=block,
+        extra_panels=extra_panels,
+        extra_bin_panels=extra_bin_panels,
+    )
 
 
 __all__ = [

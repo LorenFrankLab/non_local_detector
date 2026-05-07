@@ -352,6 +352,144 @@ def test_swap_preserves_view_state(
             b.event_overlays[:] = original[n]
 
 
+def _make_recording_bin_panel(*, with_rebind: bool = True):
+    """Build a ``BinSyncedPanel`` test double that records calls.
+
+    Defined as a factory because PySide6 is imported lazily; class
+    definitions referencing ``QtWidgets.QWidget`` at module top
+    level would fail when the ``[viewer]`` extra isn't installed.
+    """
+    from PySide6 import QtWidgets as _W
+
+    class _RecordingBinPanel(_W.QWidget):
+        def __init__(self) -> None:
+            _W.QWidget.__init__(self)
+            self.buffer_calls: list = []
+            self.index_calls: list[int] = []
+            self.rebind_calls: int = 0
+
+        def set_window_buffer(self, payload) -> None:
+            self.buffer_calls.append(payload)
+
+        def update_for_index(self, t_idx: int) -> None:
+            self.index_calls.append(t_idx)
+
+        if with_rebind:
+
+            def rebind_after_swap(self) -> None:
+                self.rebind_calls += 1
+
+    return _RecordingBinPanel()
+
+
+@pytest.mark.unit
+def test_extra_bin_panels_appear_under_slice_panel(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """``extra_bin_panels`` are stacked below the built-in slice panel
+    in the right column of the body layout."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    plugin = _make_recording_bin_panel()
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5, extra_bin_panels=[plugin])
+    body = viewer.centralWidget().layout().itemAt(1).widget()
+    right_column = body.layout().itemAt(1).widget()
+    right_column_widgets = [
+        right_column.layout().itemAt(i).widget()
+        for i in range(right_column.layout().count())
+    ]
+    assert right_column_widgets[0] is viewer._slice_panel
+    assert plugin in right_column_widgets
+
+
+@pytest.mark.unit
+def test_extra_bin_panels_get_window_buffer_on_load(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Each window load dispatches ``set_window_buffer`` to every bin plugin."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    plugin = _make_recording_bin_panel()
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5, extra_bin_panels=[plugin])
+    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    viewer._on_window_loaded(payload)
+    assert plugin.buffer_calls == [payload]
+    # Same load also drives an immediate update_for_index at the slider.
+    assert plugin.index_calls == [viewer._slider.value()]
+
+
+@pytest.mark.unit
+def test_extra_bin_panels_get_update_for_index_on_slider_tick(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Slider ticks reach bin plugins synchronously off the main thread."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    plugin = _make_recording_bin_panel()
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5, extra_bin_panels=[plugin])
+    plugin.index_calls.clear()
+    target = viewer._slider.value() + 1
+    viewer._on_slider_value_changed(target)
+    assert plugin.index_calls == [target]
+
+
+@pytest.mark.unit
+def test_extra_bin_panels_rebind_after_swap_when_present(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Active-run swap calls ``rebind_after_swap`` when the plugin defines it."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    plugin = _make_recording_bin_panel()
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5, extra_bin_panels=[plugin])
+    assert plugin.rebind_calls == 0
+    viewer.core.set_active_run("cf")
+    assert plugin.rebind_calls == 1
+
+
+@pytest.mark.unit
+def test_extra_bin_panels_swap_without_rebind_method_does_not_crash(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Plugins that omit ``rebind_after_swap`` are tolerated (optional hook)."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    plugin = _make_recording_bin_panel(with_rebind=False)
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5, extra_bin_panels=[plugin])
+    viewer.core.set_active_run("cf")  # must not raise
+
+
+@pytest.mark.unit
+def test_extra_panels_remains_time_axis_only(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """``extra_panels`` is left-column only — bin-only plugins must use
+    ``extra_bin_panels`` instead.
+
+    Passing a ``BinSyncedPanel``-shaped widget through ``extra_panels``
+    fails at viewer-construction time inside ``_wire_panels`` because
+    the time-axis path requires ``set_event_overlays``. That early
+    failure is preferable to silently rendering nothing.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    bin_only_plugin = _make_recording_bin_panel()
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    with pytest.raises(AttributeError, match="set_event_overlays"):
+        QtViewer(ds, t_width=0.5, extra_panels=[bin_only_plugin])
+
+
 @pytest.mark.unit
 def test_qt_viewer_keyboard_window_scaling(
     qapp,

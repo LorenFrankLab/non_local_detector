@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from non_local_detector.visualization.interactive.view_models.base import (
-        BinPayload,
         WindowPayload,
     )
     from non_local_detector.visualization.interactive.view_models.events import (
@@ -57,8 +56,28 @@ class TimeAxisPanel(Protocol):
 
 @runtime_checkable
 class BinSyncedPanel(Protocol):
-    """Point-based panel rendered to the right of the time-axis stack."""
+    """Point-based panel rendered to the right of the time-axis stack.
 
-    def update_for_index(self, t_idx: int, payload: BinPayload) -> None:
-        """Render the single-bin readout described by ``payload``."""
+    The viewer drives bin-synced plugins on a buffered low-latency
+    path: each new ``WindowPayload`` is handed to every panel via
+    ``set_window_buffer``, then per-tick cursor moves dispatch
+    ``update_for_index(t_idx)`` synchronously so the per-tick render
+    can index into the cached arrays without re-fetching from the
+    data source. Plugins may optionally implement ``rebind_after_swap``
+    to drop run-local caches when ``ViewerCore.set_active_run`` swaps
+    the active run; the viewer calls it via ``getattr`` so it stays
+    optional from a typing standpoint.
+    """
+
+    def set_window_buffer(self, payload: WindowPayload) -> None:
+        """Cache the latest window payload for per-tick row reads."""
+        ...
+
+    def update_for_index(self, t_idx: int) -> None:
+        """Render the cursor's bin from the cached buffer.
+
+        Out-of-buffer ``t_idx`` should be a no-op — the next window
+        load will refresh the buffer and the viewer will re-issue
+        the cursor update.
+        """
         ...
