@@ -109,6 +109,25 @@ class SliceModel:
         """Rebind to a new run (M-key swap)."""
         self._bind(detector, spike_times, time, reduction)
 
+    def cell_slice(self, cell_id: int, spike_count: int = 0) -> CellSlice:
+        """Return a ``CellSlice`` for ``cell_id``, regardless of activity.
+
+        Used by the panel's pin path: pinned cells that didn't fire in
+        the cursor bin still need their place-field row rendered.
+        ``spike_count`` defaults to 0 (the typical pin case); callers
+        with a real count (e.g. cell is both active *and* pinned) pass
+        it explicitly.
+        """
+        if cell_id < 0 or cell_id >= self.n_cells:
+            raise IndexError(
+                f"cell_id={cell_id} out of range for {self.n_cells} cells"
+            )
+        return CellSlice(
+            cell_id=cell_id,
+            place_field_norm=self._per_cell_pf_normalized[cell_id],
+            spike_count=spike_count,
+        )
+
     def update_for_index(
         self,
         t_idx: int,

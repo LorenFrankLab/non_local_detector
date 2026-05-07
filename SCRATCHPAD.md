@@ -364,6 +364,39 @@ Latest at top:
     amendment) or as part of the viewer chunk.
 
   Tests: 144 → 151 (7 new). Lint + interactive suite green.
+- **M4 SlicePanel pinning (uncommitted)** — User picked option A:
+  panel-side state now, raster click wiring in the viewer chunk.
+  - `SliceModel.cell_slice(cell_id, spike_count=0)` returns a
+    `CellSlice` for any cell with bounds validation. Used by the
+    panel to render pinned cells that didn't fire in the bin.
+  - `QtSlicePanel`: `pin_cell`, `unpin_cell`, `toggle_pin`,
+    `clear_pins`, `pinned_cell_ids` (frozenset snapshot).
+    `_maybe_rerender` re-runs `update_for_index(self._last_t_idx)`
+    on pin changes so the user sees the change immediately.
+  - Render order: pinned cells first (sorted by `cell_id` for
+    stability), then active not-already-pinned. Dedup: a cell
+    that is both pinned and active is rendered once with its
+    real spike count (active CellSlice wins over the
+    `cell_slice(spike_count=0)` placeholder).
+  - `rebind_after_swap` clears the pin set — cell IDs are
+    run-local, silently re-applying old pins across a model swap
+    would surface the wrong place fields.
+  - Label format: `"#<id>"` for active-only, `"#<id> ★"` for
+    pinned (bool tested without color reliance).
+  - `_last_t_idx` is reset by `rebind_after_swap` so `_maybe_rerender`
+    no-ops correctly across swaps.
+  - **Tests** (10 new — 3 in test_slice_model.py for
+    `cell_slice`, 7 in test_slice_panel.py for pinning):
+    - `cell_slice` happy path, explicit `spike_count`, bounds.
+    - pin/unpin/toggle/clear set semantics.
+    - bounds validation on `pin_cell`.
+    - pinned-inactive cell renders with count=0 + ★ marker.
+    - pinned-active cell keeps its real count from the bin.
+    - render order: pinned first (cell_id ascending), then active.
+    - dedup: cell that's both pinned and active appears once.
+    - `rebind_after_swap` empties the pin set.
+
+  Tests: 151 → 161 (10 new). Lint + interactive suite green.
 
 ---
 

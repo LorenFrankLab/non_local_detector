@@ -271,6 +271,160 @@ def test_slice_panel_truncation_indicator_when_more_than_pool(
 
 
 @pytest.mark.unit
+class TestSlicePanelPinning:
+    """Pin state on the panel — render order, rebind clears, validation."""
+
+    def _setup(self, qapp, run_bundles, sim_session=None):
+        bundle = run_bundles["nl_all"]
+        detector = bundle.detector
+        centers = np.asarray(detector.environments[0].place_bin_centers_).squeeze()
+        time = bundle.results["time"].values
+        spike_times = (
+            sim_session.spike_times if sim_session is not None else bundle.spike_times
+        )
+        model = SliceModel(detector, spike_times, time)
+        panel = _make_panel(qapp, model, centers)
+        panel.set_window_buffer(_payload_for_results(bundle.results))
+        return bundle, panel
+
+    def test_pin_unpin_toggle_updates_set(
+        self, qapp, run_bundles: dict[str, RunBundle]
+    ) -> None:
+        _, panel = self._setup(qapp, run_bundles)
+        panel.pin_cell(3)
+        assert 3 in panel.pinned_cell_ids
+        panel.pin_cell(7)
+        assert {3, 7} <= set(panel.pinned_cell_ids)
+        panel.unpin_cell(3)
+        assert 3 not in panel.pinned_cell_ids
+        panel.toggle_pin(7)  # was pinned → unpin
+        assert 7 not in panel.pinned_cell_ids
+        panel.toggle_pin(7)  # was unpinned → pin
+        assert 7 in panel.pinned_cell_ids
+        panel.clear_pins()
+        assert panel.pinned_cell_ids == frozenset()
+
+    def test_pin_validates_cell_id(
+        self, qapp, run_bundles: dict[str, RunBundle]
+    ) -> None:
+        _, panel = self._setup(qapp, run_bundles)
+        with pytest.raises(IndexError):
+            panel.pin_cell(-1)
+        with pytest.raises(IndexError):
+            panel.pin_cell(panel.model.n_cells)
+
+    def test_pinned_inactive_cell_renders_with_zero_count(
+        self,
+        qapp,
+        run_bundles: dict[str, RunBundle],
+    ) -> None:
+        """Pin a cell that doesn't fire in the current bin → still rendered, count=0."""
+        bundle, panel = self._setup(qapp, run_bundles)
+        first_finite = first_finite_row_index(bundle.results["log_likelihood"].values)
+        panel.update_for_index(first_finite)
+        # Pin a specific cell.
+        panel.pin_cell(11)
+        # Re-render at the same bin via the auto-rerender path.
+        visible_rows = [r for r in panel._per_cell_rows if not r.container.isHidden()]
+        assert any("#11 ★" in r.label.text() for r in visible_rows)
+        # And the count for the pinned-inactive case is 0.
+        pinned_row_label = next(r.label.text() for r in visible_rows if "#11" in r.label.text())
+        assert "(×0)" in pinned_row_label
+
+    def test_pinned_active_cell_keeps_real_spike_count(
+        self,
+        qapp,
+        run_bundles: dict[str, RunBundle],
+        sim_session: SimulatedSession,
+    ) -> None:
+        """Pinned cell that *also* fires in the bin shows the real count."""
+        bundle, panel = self._setup(qapp, run_bundles, sim_session)
+        time = bundle.results["time"].values
+        # Find a bin with at least one spike in cell_id=0.
+        bin_dt = float(time[1] - time[0])
+        st0 = sim_session.spike_times[0]
+        first_in = next(s for s in st0 if time[0] <= s <= time[-1])
+        t_idx = int(np.searchsorted(time, first_in, side="right") - 1)
+        panel.update_for_index(t_idx)
+        panel.pin_cell(0)
+        visible_rows = [r for r in panel._per_cell_rows if not r.container.isHidden()]
+        pinned_label = next(r.label.text() for r in visible_rows if "#0 " in r.label.text())
+        assert "★" in pinned_label
+        # Real count is whatever fell in the bin window — must be > 0.
+        n_in_bin = int(
+            np.count_nonzero(
+                (st0 >= time[t_idx] - bin_dt / 2) & (st0 <= time[t_idx] + bin_dt / 2)
+            )
+        )
+        assert n_in_bin > 0
+        assert f"(×{n_in_bin})" in pinned_label
+
+    def test_pin_render_order_pinned_first_then_active(
+        self,
+        qapp,
+        run_bundles: dict[str, RunBundle],
+        sim_session: SimulatedSession,
+    ) -> None:
+        """Pinned cells (sorted by cell_id) come before active not-already-pinned."""
+        bundle, panel = self._setup(qapp, run_bundles, sim_session)
+        time = bundle.results["time"].values
+        bin_dt = float(time[1] - time[0])
+        # Find an active bin.
+        i_lo = int(np.searchsorted(time, sim_session.event_times[0, 0], side="left"))
+        i_hi = int(np.searchsorted(time, sim_session.event_times[0, 1], side="right"))
+        t_idx = next(
+            i
+            for i in range(i_lo, i_hi)
+            if any(
+                np.any((st >= time[i] - bin_dt / 2) & (st <= time[i] + bin_dt / 2))
+                for st in sim_session.spike_times
+            )
+        )
+        panel.update_for_index(t_idx)
+        # Pin two cells that probably aren't active right now (high IDs).
+        panel.pin_cell(panel.model.n_cells - 1)
+        panel.pin_cell(panel.model.n_cells - 2)
+        visible_rows = [r for r in panel._per_cell_rows if not r.container.isHidden()]
+        labels = [r.label.text() for r in visible_rows]
+        # Pinned cells appear first, sorted by cell_id ascending.
+        assert "★" in labels[0]
+        assert "★" in labels[1]
+        # And the IDs go in ascending order.
+        first_pinned_id = int(labels[0].split("#")[1].split(" ")[0])
+        second_pinned_id = int(labels[1].split("#")[1].split(" ")[0])
+        assert first_pinned_id < second_pinned_id
+
+    def test_pin_dedupes_when_active_and_pinned(
+        self,
+        qapp,
+        run_bundles: dict[str, RunBundle],
+        sim_session: SimulatedSession,
+    ) -> None:
+        """A cell that's both pinned and active is rendered once, not twice."""
+        bundle, panel = self._setup(qapp, run_bundles, sim_session)
+        time = bundle.results["time"].values
+        st0 = sim_session.spike_times[0]
+        first_in = next(s for s in st0 if time[0] <= s <= time[-1])
+        t_idx = int(np.searchsorted(time, first_in, side="right") - 1)
+        panel.update_for_index(t_idx)
+        panel.pin_cell(0)  # cell 0 is active at this bin
+        visible_rows = [r for r in panel._per_cell_rows if not r.container.isHidden()]
+        cell_0_rows = [r for r in visible_rows if "#0 " in r.label.text()]
+        assert len(cell_0_rows) == 1
+
+    def test_rebind_after_swap_clears_pins(
+        self, qapp, run_bundles: dict[str, RunBundle]
+    ) -> None:
+        """Cell IDs are run-local; the swap must drop the pin set."""
+        _, panel = self._setup(qapp, run_bundles)
+        panel.pin_cell(3)
+        panel.pin_cell(5)
+        assert len(panel.pinned_cell_ids) == 2
+        panel.rebind_after_swap()
+        assert panel.pinned_cell_ids == frozenset()
+
+
+@pytest.mark.unit
 def test_slice_panel_rebind_after_swap_clears_buffer(
     qapp,
     run_bundles: dict[str, RunBundle],

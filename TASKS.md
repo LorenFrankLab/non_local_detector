@@ -608,14 +608,18 @@ and Phase 6 verifications can run.
   - [x] Window buffer (statespacecheck pattern, panel-side):
     `set_window_buffer(payload)` caches the latest WindowPayload;
     `update_for_index(t_idx)` indexes locally instead of refetching.
-  - [ ] Pinning logic: click raster spike → cell stays in slice
-    panel until `Esc` or click-pinned-again. **Surfaced to user**:
-    splits naturally into (a) pin state on the panel (`pin_cell`,
-    `unpin_cell`, `clear_pins`, modified render to keep pinned
-    cells visible across bins) — adds a small SliceModel
-    `cell_slice(cell_id)` helper to fetch a CellSlice for any
-    cell — and (b) raster→slice click wiring, which is a
-    viewer-level concern. Pending decision on order.
+  - [x] Pin state on the panel: `pin_cell`, `unpin_cell`,
+    `toggle_pin`, `clear_pins`, `pinned_cell_ids` snapshot.
+    Pinned cells appear first in cell_id order, then active
+    not-already-pinned. Cells that are both pinned and active
+    keep their real spike count. `rebind_after_swap` clears
+    pins (cell IDs are run-local). `SliceModel.cell_slice(cell_id)`
+    helper added with bounds validation. Pin / unpin / clear all
+    auto-rerender via `_maybe_rerender` so the user sees the
+    change without nudging the slider.
+  - [ ] Click raster spike → pin / Esc clears pins. Viewer-level
+    wiring (raster panel needs a per-cell click signal); covered
+    in the next chunk.
 
 ### Tests
 

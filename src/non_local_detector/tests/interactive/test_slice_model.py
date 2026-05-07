@@ -223,3 +223,50 @@ def test_update_for_index_validates_bounds(
         model.update_for_index(len(time), posterior_row=posterior_row)
     with pytest.raises(IndexError):
         model.update_for_index(-1, posterior_row=posterior_row)
+
+
+@pytest.mark.unit
+class TestSliceModelCellSlice:
+    def test_cell_slice_returns_normalised_place_field(
+        self, nl_fitted: FittedDetector, sim_session: SimulatedSession
+    ) -> None:
+        model = SliceModel(
+            nl_fitted.detector,
+            sim_session.spike_times,
+            nl_fitted.results["time"].values,
+        )
+        cs = model.cell_slice(0)
+        assert cs.cell_id == 0
+        assert cs.spike_count == 0
+        assert cs.place_field_norm.shape == (
+            model._per_cell_pf_normalized.shape[1],  # type: ignore[has-type]
+        )
+        # Same row the active path would emit.
+        np.testing.assert_array_equal(
+            cs.place_field_norm,
+            model._per_cell_pf_normalized[0],  # type: ignore[has-type]
+        )
+
+    def test_cell_slice_carries_explicit_spike_count(
+        self, nl_fitted: FittedDetector, sim_session: SimulatedSession
+    ) -> None:
+        model = SliceModel(
+            nl_fitted.detector,
+            sim_session.spike_times,
+            nl_fitted.results["time"].values,
+        )
+        cs = model.cell_slice(2, spike_count=7)
+        assert cs.spike_count == 7
+
+    def test_cell_slice_validates_bounds(
+        self, nl_fitted: FittedDetector, sim_session: SimulatedSession
+    ) -> None:
+        model = SliceModel(
+            nl_fitted.detector,
+            sim_session.spike_times,
+            nl_fitted.results["time"].values,
+        )
+        with pytest.raises(IndexError):
+            model.cell_slice(-1)
+        with pytest.raises(IndexError):
+            model.cell_slice(model.n_cells)

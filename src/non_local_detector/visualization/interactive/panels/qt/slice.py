@@ -125,10 +125,49 @@ class QtSlicePanel(QtWidgets.QWidget):
         layout.addStretch(1)
 
         self._buffered_payload: WindowPayload | None = None
+        # Last successfully-rendered ``t_idx`` so pin/unpin can
+        # re-render in place without waiting for a slider tick.
+        self._last_t_idx: int | None = None
+        # Pinned cells survive bin-window scrubbing — the panel keeps
+        # showing them with ``spike_count=0`` (or the real count when
+        # they're also active). Cell IDs are run-local, so swap clears.
+        self._pinned_cell_ids: set[int] = set()
 
     @property
     def model(self) -> SliceModel:
         return self._model
+
+    @property
+    def pinned_cell_ids(self) -> frozenset[int]:
+        """Snapshot of currently pinned cell IDs (read-only view)."""
+        return frozenset(self._pinned_cell_ids)
+
+    def pin_cell(self, cell_id: int) -> None:
+        """Pin ``cell_id`` so it stays visible across bin scrubbing."""
+        self._model.cell_slice(cell_id)  # validates bounds; raises on bad id
+        self._pinned_cell_ids.add(cell_id)
+        self._maybe_rerender()
+
+    def unpin_cell(self, cell_id: int) -> None:
+        """Remove ``cell_id`` from the pin set (no-op if not pinned)."""
+        self._pinned_cell_ids.discard(cell_id)
+        self._maybe_rerender()
+
+    def toggle_pin(self, cell_id: int) -> None:
+        """Flip pin state for ``cell_id``."""
+        self._model.cell_slice(cell_id)  # validate before flipping
+        if cell_id in self._pinned_cell_ids:
+            self._pinned_cell_ids.discard(cell_id)
+        else:
+            self._pinned_cell_ids.add(cell_id)
+        self._maybe_rerender()
+
+    def clear_pins(self) -> None:
+        """Drop all pins."""
+        if not self._pinned_cell_ids:
+            return
+        self._pinned_cell_ids.clear()
+        self._maybe_rerender()
 
     def set_window_buffer(self, payload: WindowPayload) -> None:
         """Cache the latest window payload for per-tick row reads."""
@@ -141,8 +180,16 @@ class QtSlicePanel(QtWidgets.QWidget):
             row._position_centers = self._position_centers  # noqa: SLF001
 
     def rebind_after_swap(self) -> None:
-        """Drop the stale buffer after the model schema changes."""
+        """Drop the stale buffer after the model schema changes.
+
+        Pins are cleared because cell IDs are run-local — the new
+        run's neuron 0 is a different physical cell from the old
+        run's neuron 0, and silently re-applying pins across that
+        boundary would surface the wrong place fields.
+        """
         self._buffered_payload = None
+        self._last_t_idx = None
+        self._pinned_cell_ids.clear()
         self._top_curve_item.setData(np.empty(0, dtype=float), np.empty(0, dtype=float))
         self._predictive_curve_item.setData(np.empty(0, dtype=float), np.empty(0, dtype=float))
         for row in self._per_cell_rows:
@@ -175,7 +222,20 @@ class QtSlicePanel(QtWidgets.QWidget):
         bin_payload = self._model.update_for_index(
             t_idx, posterior_row, log_lik_row=log_lik_row, predictive_row=predictive_row
         )
+        self._last_t_idx = t_idx
         self._render(bin_payload)
+
+    def _maybe_rerender(self) -> None:
+        """Re-render at the last bin if the buffer is still around.
+
+        Pin/unpin/clear call this so the user sees the change without
+        having to nudge the slider. No-op when no payload has been
+        loaded yet — the pin set is still recorded; the next
+        ``update_for_index`` will surface it.
+        """
+        if self._last_t_idx is None or self._buffered_payload is None:
+            return
+        self.update_for_index(self._last_t_idx)
 
     def _render(self, bin_payload) -> None:
         self._title_label.setText(
@@ -196,13 +256,16 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._render_per_cell_rows(bin_payload.cells)
 
     def _render_per_cell_rows(self, cells) -> None:
-        n_total = len(cells)
+        merged = self._merge_pinned_and_active(cells)
+        n_total = len(merged)
         n_shown = min(n_total, MAX_PER_CELL_PLOTS)
+        pinned = self._pinned_cell_ids
         for i in range(n_shown):
-            cell = cells[i]
+            cell = merged[i]
             row = self._per_cell_rows[i]
+            star = " ★" if cell.cell_id in pinned else ""
             row.show_cell(
-                f"#{cell.cell_id}  (×{cell.spike_count})",
+                f"#{cell.cell_id}{star}  (×{cell.spike_count})",
                 cell.place_field_norm,
             )
         for i in range(n_shown, MAX_PER_CELL_PLOTS):
@@ -214,3 +277,23 @@ class QtSlicePanel(QtWidgets.QWidget):
             self._truncation_label.setVisible(True)
         else:
             self._truncation_label.setVisible(False)
+
+    def _merge_pinned_and_active(self, active_cells) -> list:
+        """Pinned cells first (sorted by cell_id), then active not-already-pinned.
+
+        When a cell is both pinned and active, the active CellSlice
+        wins so the spike-count is the real (>0) count from the bin
+        rather than a placeholder 0.
+        """
+        active_by_id = {c.cell_id: c for c in active_cells}
+        pinned_ids = self._pinned_cell_ids
+        merged: list = []
+        for cell_id in sorted(pinned_ids):
+            if cell_id in active_by_id:
+                merged.append(active_by_id[cell_id])
+            else:
+                merged.append(self._model.cell_slice(cell_id))
+        for cell in active_cells:
+            if cell.cell_id not in pinned_ids:
+                merged.append(cell)
+        return merged
