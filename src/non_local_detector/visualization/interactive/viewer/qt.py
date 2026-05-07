@@ -133,6 +133,14 @@ class QtBackendAdapter(BackendAdapter):
     thread is the one that touches widgets.
     """
 
+    # 16 ms ≈ one screen frame at 60 Hz; matches statespacecheck's
+    # debounce. Slider scrubbing fires ``valueChanged`` 30+ times per
+    # second on a fast drag, and each event would otherwise queue a
+    # full window-load through the executor. With this debounce the
+    # executor sees at most ~60 loads/s, and ``_pending_state``
+    # coalesces bursts so only the *latest* state runs.
+    LOAD_DEBOUNCE_MS = 16
+
     def __init__(self, data_source: InMemoryDecoderDataSource) -> None:
         self._data_source = data_source
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nld-viewer")
@@ -141,12 +149,53 @@ class QtBackendAdapter(BackendAdapter):
         self._signals.done.connect(
             self._deliver_payload, type=QtCore.Qt.QueuedConnection
         )
+        # Single-shot debounce timer that drains the latest pending
+        # state. Replaces the previous "every schedule submits to the
+        # executor" path.
+        self._debounce_timer = QtCore.QTimer()
+        self._debounce_timer.setSingleShot(True)
+        self._debounce_timer.setInterval(self.LOAD_DEBOUNCE_MS)
+        self._debounce_timer.timeout.connect(self._flush_pending)
+        self._pending_state: ViewState | None = None
+        self._pending_callback: Callable[[WindowPayload], None] | None = None
+        # ``True`` while a worker job is running; new schedule calls
+        # park their state in ``_pending_state`` instead of submitting
+        # another job. ``_deliver_payload`` consults this when re-
+        # arming the debounce.
+        self._inflight = False
 
     def schedule_window_load(
         self, state: ViewState, on_done: Callable[[WindowPayload], None]
     ) -> None:
         if self._closed:
             return
+        # Coalesce: latest state wins. The previous pending state is
+        # dropped — its ``request_id`` will never commit because
+        # ``ViewerCore._handle_load_result`` checks the active
+        # request_id, but more importantly the executor never even
+        # sees it, saving the per-load NumPy + xarray work.
+        self._pending_state = state
+        self._pending_callback = on_done
+        if self._inflight:
+            # The current job's ``_deliver_payload`` will re-arm the
+            # debounce after it completes.
+            return
+        if not self._debounce_timer.isActive():
+            self._debounce_timer.start()
+
+    def _flush_pending(self) -> None:
+        """Submit the latest pending state to the executor."""
+        if self._closed or self._pending_state is None:
+            return
+        if self._inflight:
+            # A debounce fire collided with a still-running job; the
+            # delivery handler will pick up where we left off.
+            return
+        state = self._pending_state
+        on_done = self._pending_callback
+        self._pending_state = None
+        self._pending_callback = None
+        self._inflight = True
 
         def _work() -> None:
             payload = self._build_payload(state)
@@ -159,10 +208,18 @@ class QtBackendAdapter(BackendAdapter):
     def _deliver_payload(
         self, result: tuple[Callable[[WindowPayload], None], WindowPayload]
     ) -> None:
-        if self._closed:
-            return
-        on_done, payload = result
-        on_done(payload)
+        try:
+            if self._closed:
+                return
+            on_done, payload = result
+            on_done(payload)
+        finally:
+            self._inflight = False
+            # Burst handling: if a new state arrived during the flight,
+            # kick the debounce so the next pending state runs without
+            # waiting for another debounce window.
+            if self._pending_state is not None and not self._debounce_timer.isActive():
+                self._debounce_timer.start(0)
 
     def shutdown(self, *, wait: bool = True) -> None:
         self._closed = True

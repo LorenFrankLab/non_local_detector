@@ -270,3 +270,70 @@ class TestSliceModelCellSlice:
             model.cell_slice(-1)
         with pytest.raises(IndexError):
             model.cell_slice(model.n_cells)
+
+
+@pytest.mark.unit
+class TestPrecomputedBinIndex:
+    """Per-bin cell-count lookup is built once at bind and matches the scan."""
+
+    def test_cells_at_index_matches_scan_across_bins(
+        self,
+        nl_fitted: FittedDetector,
+        sim_session: SimulatedSession,
+    ) -> None:
+        """``_cells_at_index(t_idx)`` produces the same cell set / counts as a
+        bin-edge scan for every bin where data is available.
+
+        The scan uses each bin's midpoint-derived ``[t_lo, t_hi]``
+        edges (matching ``_bin_edges``) and counts spikes in
+        ``[t_lo, t_hi]``. The new path uses ``searchsorted`` on
+        precomputed edges; for spikes that don't fall exactly on a
+        midpoint the two methods agree on every bin.
+        """
+        from non_local_detector.visualization.interactive.view_models.slice import (
+            SliceModel,
+        )
+
+        time = np.asarray(nl_fitted.results["time"].values)
+        model = SliceModel(nl_fitted.detector, sim_session.spike_times, time)
+
+        # Spot-check across the session: head, tail, and a few middle
+        # bins. Full-loop comparison is slow (n_bins ≈ 100k); a
+        # representative sample catches a real drift.
+        sample_indices = np.linspace(1, time.size - 2, num=50, dtype=int)
+        for t_idx in sample_indices:
+            t_lo, t_hi = model._bin_edges(int(t_idx))
+            expected: dict[int, int] = {}
+            for cell_id, st in enumerate(sim_session.spike_times):
+                if st.size == 0:
+                    continue
+                count = int(np.count_nonzero((st >= t_lo) & (st < t_hi)))
+                if count > 0:
+                    expected[cell_id] = count
+            actual = {c.cell_id: c.spike_count for c in model._cells_at_index(int(t_idx))}
+            assert actual == expected, (
+                f"bin {t_idx}: precomputed index disagrees with bin-edge scan. "
+                f"expected={expected!r}, actual={actual!r}"
+            )
+
+    def test_per_bin_index_rebuilt_after_active_run_swap(
+        self,
+        nl_fitted: FittedDetector,
+        cf_fitted: FittedDetector,
+        sim_session: SimulatedSession,
+    ) -> None:
+        """``set_active_run`` rebuilds ``_per_bin_cell_counts`` for the new run."""
+        from non_local_detector.visualization.interactive.view_models.slice import (
+            SliceModel,
+        )
+
+        time = np.asarray(nl_fitted.results["time"].values)
+        model = SliceModel(nl_fitted.detector, sim_session.spike_times, time)
+        nl_index_id = id(model._per_bin_cell_counts)
+
+        # Swap to CF (different detector — different state schema +
+        # potentially different cell ordering).
+        cf_time = np.asarray(cf_fitted.results["time"].values)
+        model.set_active_run(cf_fitted.detector, sim_session.spike_times, cf_time)
+        assert id(model._per_bin_cell_counts) != nl_index_id
+        assert len(model._per_bin_cell_counts) == cf_time.size

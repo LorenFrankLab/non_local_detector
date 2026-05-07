@@ -76,6 +76,12 @@ class SliceModel:
         self._per_cell_pf_normalized = self._peak_normalize(
             extract_per_cell_place_fields(detector)
         )
+        # Precompute the per-bin (cell_id, count) lookup so per-tick
+        # cell readouts are O(n_active_cells_in_bin) instead of
+        # O(n_cells × spikes_per_cell). The full session usually
+        # has a few tens of cells × ~10^4 spikes, and the previous
+        # per-call scan dominated cursor-update latency on fast drags.
+        self._per_bin_cell_counts = self._build_bin_index()
 
     @staticmethod
     def _peak_normalize(per_cell_pf: np.ndarray) -> np.ndarray:
@@ -158,8 +164,7 @@ class SliceModel:
             if predictive_row is not None
             else None
         )
-        bin_lo, bin_hi = self._bin_edges(t_idx)
-        cells = self._cells_at_window(bin_lo, bin_hi)
+        cells = self._cells_at_index(t_idx)
         return BinPayload(
             t_idx=t_idx,
             t=t,
@@ -185,18 +190,59 @@ class SliceModel:
             return float(t - half_lo), float(t + half_hi)
         return float(t - half), float(t + half)
 
-    def _cells_at_window(self, t_lo: float, t_hi: float) -> list[CellSlice]:
-        out: list[CellSlice] = []
+    def _build_bin_index(self) -> list[dict[int, int]]:
+        """Return ``per_bin[t_idx] = {cell_id: spike_count_in_bin}``.
+
+        Spikes are assigned to a bin via ``searchsorted`` over
+        midpoint-derived bin edges (matching ``_bin_edges``). Spikes
+        before the first edge or after the last edge are dropped.
+        """
+        n_bins = self._time.size
+        per_bin: list[dict[int, int]] = [dict() for _ in range(n_bins)]
+        if n_bins == 0:
+            return per_bin
+        edges = self._bin_edges_array()
         for cell_id, st in enumerate(self._spike_times):
             if st.size == 0:
                 continue
-            count = int(np.count_nonzero((st >= t_lo) & (st <= t_hi)))
-            if count > 0:
-                out.append(
-                    CellSlice(
-                        cell_id=cell_id,
-                        place_field_norm=self._per_cell_pf_normalized[cell_id],
-                        spike_count=count,
-                    )
-                )
-        return out
+            idx = np.searchsorted(edges, st, side="right") - 1
+            valid = (idx >= 0) & (idx < n_bins)
+            for bin_i in idx[valid]:
+                bucket = per_bin[int(bin_i)]
+                bucket[cell_id] = bucket.get(cell_id, 0) + 1
+        return per_bin
+
+    def _bin_edges_array(self) -> np.ndarray:
+        """Return ``(n_bins + 1,)`` midpoint-derived bin edges.
+
+        Matches the per-bin-edge convention used by ``_bin_edges``:
+        each bin is centered on ``time[i]`` and bounded by the
+        midpoint to its neighbors. Used by ``_build_bin_index`` for a
+        single vectorised ``searchsorted`` call.
+        """
+        time = self._time
+        n = time.size
+        if n == 0:
+            return np.empty(0, dtype=np.float64)
+        if n == 1:
+            half = 0.5
+            return np.array([time[0] - half, time[0] + half], dtype=np.float64)
+        midpoints = (time[1:] + time[:-1]) / 2.0
+        first = float(time[0] - (midpoints[0] - time[0]))
+        last = float(time[-1] + (time[-1] - midpoints[-1]))
+        return np.concatenate([[first], midpoints, [last]])
+
+    def _cells_at_index(self, t_idx: int) -> list[CellSlice]:
+        """Return active-cell slices for bin ``t_idx`` from the prebuilt index."""
+        if t_idx < 0 or t_idx >= len(self._per_bin_cell_counts):
+            return []
+        bucket = self._per_bin_cell_counts[t_idx]
+        # Sort by cell_id for stable downstream rendering.
+        return [
+            CellSlice(
+                cell_id=cell_id,
+                place_field_norm=self._per_cell_pf_normalized[cell_id],
+                spike_count=count,
+            )
+            for cell_id, count in sorted(bucket.items())
+        ]

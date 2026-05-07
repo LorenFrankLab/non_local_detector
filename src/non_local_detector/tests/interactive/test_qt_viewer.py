@@ -876,3 +876,145 @@ def test_position_trace_updates_after_active_run_swap(
     assert x is not None
     assert x.size == payload_after.time.size
     np.testing.assert_allclose(y, payload_after.position, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Interaction-speed parity (Chunk 3) — debounce + one-in-flight coalescing
+# in the backend adapter.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_backend_coalesces_burst_of_schedule_calls(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """A rapid burst of ``schedule_window_load`` calls submits exactly one job
+    to the executor — the latest pending state.
+
+    Replaces the previous "every schedule submits to executor" path
+    where 30+ slider events per second swamped the executor with
+    ~1 second of stale loads.
+    """
+    from PySide6 import QtCore
+
+    from non_local_detector.visualization.interactive.viewer.core import (
+        ViewerCore,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    backend = viewer._backend
+
+    submitted: list[int] = []
+    real_executor_submit = backend._executor.submit
+
+    def _spy_submit(work):
+        submitted.append(1)
+        return real_executor_submit(work)
+
+    backend._executor.submit = _spy_submit  # type: ignore[assignment]
+
+    core = ViewerCore(ds, backend)
+    # Stage three rapid t_center moves — each goes through schedule.
+    for offset in (0.1, 0.2, 0.3):
+        core.set_t_center(float(ds.time[ds.n_time // 2 + int(offset * 100)]))
+
+    # Before the debounce timer fires, no executor submit yet.
+    assert submitted == []
+    assert backend._pending_state is not None
+
+    # Drain the debounce timer (16 ms) — singleShot fires once on the
+    # event loop. Process events until the timer fires.
+    QtCore.QCoreApplication.processEvents()
+    QtCore.QTest = None  # noqa: SLF001 — placeholder
+    # Wait the debounce window deterministically.
+    deadline = QtCore.QElapsedTimer()
+    deadline.start()
+    while submitted == [] and deadline.elapsed() < 200:
+        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 5)
+
+    # Exactly one executor submit despite three schedule calls.
+    assert len(submitted) == 1, (
+        f"debounce should coalesce burst into one executor submit; got {submitted}"
+    )
+
+
+@pytest.mark.unit
+def test_backend_only_one_inflight_at_a_time(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """While a load is in-flight, new ``schedule_window_load`` calls park their
+    state instead of submitting another executor job.
+
+    Verified by holding the executor's worker on a sentinel until we
+    enqueue several follow-up states; only one job runs at a time and
+    the latest pending state is dispatched after the held job
+    completes.
+    """
+    import threading
+
+    from PySide6 import QtCore
+
+    from non_local_detector.visualization.interactive.viewer.core import (
+        ViewerCore,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    backend = viewer._backend
+    submitted: list[int] = []
+    release = threading.Event()
+
+    real_executor_submit = backend._executor.submit
+    real_build_payload = backend._build_payload
+
+    def _slow_build_payload(state):
+        # Block the worker until the test releases, simulating a
+        # long-running window read.
+        release.wait(timeout=2.0)
+        return real_build_payload(state)
+
+    backend._build_payload = _slow_build_payload  # type: ignore[assignment]
+
+    def _spy_submit(work):
+        submitted.append(1)
+        return real_executor_submit(work)
+
+    backend._executor.submit = _spy_submit  # type: ignore[assignment]
+
+    core = ViewerCore(ds, backend)
+    # First schedule: kicks the debounce.
+    core.set_t_center(float(ds.time[ds.n_time // 2 + 10]))
+
+    # Drain the debounce so the first job submits.
+    deadline = QtCore.QElapsedTimer()
+    deadline.start()
+    while submitted == [] and deadline.elapsed() < 200:
+        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 5)
+    assert submitted == [1]
+    assert backend._inflight is True
+
+    # Now schedule several more while in-flight. None should submit.
+    for offset in range(1, 4):
+        core.set_t_center(float(ds.time[ds.n_time // 2 + 10 + offset]))
+    QtCore.QCoreApplication.processEvents()
+    assert submitted == [1], (
+        "in-flight job must block new executor submits; "
+        f"got {submitted} after parking states"
+    )
+    assert backend._pending_state is not None
+
+    # Release the held job; the deliver path should re-arm the
+    # debounce so the latest pending state runs next.
+    release.set()
+    deadline.restart()
+    while len(submitted) < 2 and deadline.elapsed() < 1000:
+        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 5)
+    assert len(submitted) == 2, (
+        f"latest pending state must run after the held job completes; "
+        f"got {submitted}"
+    )
