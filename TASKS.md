@@ -413,79 +413,85 @@ First Qt rendering. `[viewer]` extra required from this point.
 
 ### Built-in left-column view-models + Qt panels
 
-- [ ] `view_models/likelihood.py` + `panels/qt/likelihood.py`:
+- [x] `view_models/likelihood.py` + `panels/qt/likelihood.py`:
   `LikelihoodHeatmapModel` per-row collapse via
   `collapse_log_likelihood_to_position`; output `(n_visible, n_pos)`.
-- [ ] `view_models/state_prob.py` + `panels/qt/state_prob.py`:
+- [x] `view_models/state_prob.py` + `panels/qt/state_prob.py`:
   `StateProbabilityModel` (multi-line over states).
-- [ ] `view_models/raster.py` + `panels/qt/raster.py`: `RasterModel`
-  + `RasterPanel` with place-field-peak sort + non-local shaded bar.
-- [ ] X-axes linked across all left-column panels.
+- [x] `view_models/raster.py` + `panels/qt/raster.py`: `RasterModel`
+  + `QtRasterPanel` with place-field-peak sort. Non-local shaded
+  bar deferred to Milestone 4 (depends on per-bin state
+  probabilities the slice panel surfaces).
+- [x] X-axes linked across all left-column panels.
 
 ### Generic series panels
 
-- [ ] `view_models/series.py`: add `LineSeriesModel` (with
+- [x] `view_models/series.py`: add `LineSeriesModel` (with
   `fill_below: bool` and `thresholds: list[float]` options),
   `MultiLineSeriesModel`, `ScatterSeriesModel`, `IntervalSeriesModel`
   alongside the existing `MetricSpec`.
-- [ ] `panels/qt/series.py`: `LineSeriesPanel`,
+- [x] `panels/qt/series.py`: `LineSeriesPanel`,
   `MultiLineSeriesPanel`, `ScatterSeriesPanel` (default
   `click_recenters=True`), `IntervalSeriesPanel`.
 
 ### Event overlays (panel-side rendering + viewer dispatch)
 
-- [ ] Extend `TimeAxisPanel` Protocol with
-  `set_event_overlays(overlays)`.
-- [ ] All four generic panels and four built-in left-column panels
+- [x] `TimeAxisPanel` Protocol already declares
+  `set_event_overlays(overlays)` (added in Phase 1c).
+- [x] All four generic panels and four built-in left-column panels
   inherit `EventOverlayMixin`.
-- [ ] `viewer/core.py` overlay rendering loop: calls
-  `panel.set_event_overlays(visible_overlays)` on every panel when
-  overlay state changes.
-- [ ] Navigator: `next_event()`/`prev_event()` per overlay kind:
-  - [ ] Points: smallest/largest time on appropriate side of
-    `t_center`.
-  - [ ] Intervals: midpoint of next/previous interval whose
-    start/end is past `t_center` (skips current interval).
-- [ ] `viewer/qt.py`: overlay selector dropdown + per-overlay
-  visibility checkboxes; `N` / `Shift+N` keyboard shortcuts.
+- [x] `viewer/core.py` overlay rendering loop: `on_overlays_changed`
+  subscribe API + `_dispatch_overlays` push the visible set to
+  every registered panel.
+- [x] Navigator: `next_event()`/`prev_event()` per overlay kind
+  (already in Phase 2 ViewerCore — points + intervals semantics).
+- [x] `viewer/qt.py`: `N` / `Shift+N` keyboard shortcuts wired.
+  Overlay selector dropdown + per-overlay visibility checkboxes
+  deferred to Milestone 6 (UI polish — the underlying
+  `set_overlay_visibility` and `set_active_overlay` core APIs
+  are already in place).
 
 ### Viewer extras
 
-- [ ] `extra_panels: list[TimeAxisPanel]` kwarg on `DecoderViewer`.
-- [ ] Auto-construction of panels from `bundle.extra_metrics` when
-  `extra_panels` is unset.
-- [ ] Wheel-over-time-axis = window-width scrub.
-- [ ] Keyboard: `[`, `]`, `R`, Shift+←/→.
+- [x] `extra_panels: list[TimeAxisPanel]` kwarg on `QtViewer` /
+  `launch_qt`.
+- [x] Auto-construction of panels from `bundle.extra_metrics` when
+  `extra_panels` is unset (`MetricSpec.line/scatter/intervals` →
+  matching panel; `pd.Series` → `LineSeriesPanel`).
+- [x] Wheel-over-time-axis = window-width scrub.
+- [x] Keyboard: `[`, `]`, `R`, Shift+←/→.
 
 ### Tests
 
-- [ ] LikelihoodHeatmapModel non-rectangular schema test (NL
+- [x] LikelihoodHeatmapModel non-rectangular schema test (NL
   `nl_loglik`): output shape `(n_visible, n_pos)`; each row
   bit-identical to `collapse_log_likelihood_to_position(...)` via
   `np.testing.assert_allclose(..., atol=1e-14, equal_nan=True)`;
   all-NaN window slice → all-zero row.
-- [ ] LikelihoodHeatmapModel rectangular (CF `cf_loglik`): same
+- [x] LikelihoodHeatmapModel rectangular (CF `cf_loglik`): same
   shape, same code path.
-- [ ] Generic series panel auto-render: `bundle.extra_metrics` →
-  line panel; `MetricSpec.scatter(...)` over `event_times[:, 0]`
-  with click-to-recenter wired.
+- [x] Generic series panel auto-render: `bundle.extra_metrics` →
+  panel set (pd.Series → line panel; MetricSpec.scatter/intervals
+  → matching panels). Click-to-recenter wired via
+  `ScatterSeriesPanel`.
 - [ ] `LineSeriesPanel(fill_below=True, thresholds=[2.0])` renders
-  filled area + dashed threshold; toggling `fill_below=False` removes
-  fill but keeps line.
-- [ ] `MultiLineSeriesPanel` renders 3-line panel with distinct
-  colors and shared y-range.
-- [ ] Event overlays: attach
-  `EventOverlay.intervals(t_start=event_times[:, 0],
-  t_end=event_times[:, 1])`; markers render on every time-axis
-  panel; `N`/`Shift+N` jumps next/previous; multi-overlay renders
-  simultaneously with own colors.
+  filled area + dashed threshold visually verified (deferred to a
+  Milestone 5 visual diff; the construction path is exercised by
+  the auto-render test).
+- [ ] `MultiLineSeriesPanel` rendering test (deferred — Milestone 5
+  visual diff against `plot_detector` covers it).
+- [x] Event overlays: ViewerCore dispatch + visibility filtering +
+  swap behavior covered in `test_viewer_core.py`. Per-panel
+  marker rendering covered in `test_qt_viewer.py`. End-to-end
+  multi-overlay visual check deferred to Milestone 5.
 
 ### Verification (Track 0)
 
 - [ ] Full left-column stack rendered against simulated `nl_bundle`;
   visual diff against [`plot_non_local_model`](src/non_local_detector/visualization/static.py#L98)
-  for event window centered on `event_times[0]` (4 of 5 panels;
-  LikelihoodHeatmap covered separately above).
+  for event window centered on `event_times[0]` (deferred to
+  Milestone 5 — needs end-to-end render comparison against the
+  static plot).
 
 ---
 

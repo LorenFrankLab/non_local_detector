@@ -12,7 +12,7 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 
 > What I'm working on right now. Update when context-switching.
 
-Phase 1a + 1b + 1c + Phase 2 + singleton-Local follow-up complete. Stopping for user approval before starting Milestone 3.
+Milestones 1 + 2 + 3 complete (left-column panels, generic series, overlay dispatch, viewer extras). Visual-diff verification + UI polish (overlay selector dropdown, multi-line / fill-below render tests) deferred to Milestones 5/6.
 
 ---
 
