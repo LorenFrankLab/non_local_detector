@@ -26,7 +26,11 @@ from non_local_detector.visualization.interactive.view_models.raster import (
     RasterPayload,
 )
 from non_local_detector.visualization.interactive.view_models.series import (
+    IntervalSeriesModel,
+    LineSeriesModel,
     MetricSpec,
+    MultiLineSeriesModel,
+    ScatterSeriesModel,
 )
 from non_local_detector.visualization.interactive.view_models.state_prob import (
     StateProbabilityModel,
@@ -36,13 +40,17 @@ __all__ = [
     "BinPayload",
     "CellSlice",
     "EventOverlay",
+    "IntervalSeriesModel",
     "LikelihoodHeatmapModel",
+    "LineSeriesModel",
     "MetricSpec",
+    "MultiLineSeriesModel",
     "PositionGrid",
     "PosteriorHeatmapModel",
     "RasterModel",
     "RasterPayload",
     "RunBundle",
+    "ScatterSeriesModel",
     "StateProbabilityModel",
     "ViewState",
     "WindowPayload",

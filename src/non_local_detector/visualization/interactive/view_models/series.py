@@ -124,3 +124,138 @@ class MetricSpec:
             t_end=np.asarray(t_end),
             color=color,
         )
+
+
+# ---------------------------------------------------------------------------
+# Series view-models — backend-agnostic data carriers consumed by the four
+# generic series panels in panels/qt/series.py.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LineSeriesModel:
+    """Single time-series line, optionally with fill-below + threshold lines."""
+
+    name: str
+    t: np.ndarray
+    y: np.ndarray
+    color: str = "#1f77b4"
+    fill_below: bool = False
+    thresholds: tuple[float, ...] = ()
+    y_range: tuple[float, float] | None = None
+
+    @classmethod
+    def from_metric_spec(cls, spec: MetricSpec) -> LineSeriesModel:
+        if spec.kind != "line":
+            raise ValueError(
+                f"LineSeriesModel.from_metric_spec requires kind='line'; "
+                f"got {spec.kind!r}."
+            )
+        return cls(
+            name=spec.name,
+            t=np.asarray(spec.t),
+            y=np.asarray(spec.y),
+            color=spec.color,
+            fill_below=spec.fill_below,
+            thresholds=spec.thresholds,
+            y_range=spec.y_range,
+        )
+
+    def window(self, t_start: float, t_stop: float) -> tuple[np.ndarray, np.ndarray]:
+        """Return ``(t_window, y_window)`` clipped to ``[t_start, t_stop]``."""
+        mask = (self.t >= t_start) & (self.t <= t_stop)
+        return self.t[mask], self.y[mask]
+
+
+@dataclass(frozen=True)
+class MultiLineSeriesModel:
+    """Multiple lines on one panel, sharing a common time axis."""
+
+    name: str
+    t: np.ndarray
+    ys: dict[str, np.ndarray]
+    colors: dict[str, str] | None = None
+    y_range: tuple[float, float] | None = None
+
+    def __post_init__(self) -> None:
+        for label, y in self.ys.items():
+            if len(y) != len(self.t):
+                raise ValueError(
+                    f"MultiLineSeriesModel: ys[{label!r}] has len {len(y)} "
+                    f"but t has len {len(self.t)}."
+                )
+
+    def window(
+        self, t_start: float, t_stop: float
+    ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+        mask = (self.t >= t_start) & (self.t <= t_stop)
+        return self.t[mask], {label: y[mask] for label, y in self.ys.items()}
+
+
+@dataclass(frozen=True)
+class ScatterSeriesModel:
+    """Scatter of ``(t, y)`` points; click-to-recenter on by default."""
+
+    name: str
+    t: np.ndarray
+    y: np.ndarray
+    color: str = "#1f77b4"
+    click_recenters: bool = True
+    y_range: tuple[float, float] | None = None
+
+    @classmethod
+    def from_metric_spec(cls, spec: MetricSpec) -> ScatterSeriesModel:
+        if spec.kind != "scatter":
+            raise ValueError(
+                f"ScatterSeriesModel.from_metric_spec requires "
+                f"kind='scatter'; got {spec.kind!r}."
+            )
+        return cls(
+            name=spec.name,
+            t=np.asarray(spec.t),
+            y=np.asarray(spec.y),
+            color=spec.color,
+            click_recenters=spec.click_recenters,
+            y_range=spec.y_range,
+        )
+
+    def window(self, t_start: float, t_stop: float) -> tuple[np.ndarray, np.ndarray]:
+        mask = (self.t >= t_start) & (self.t <= t_stop)
+        return self.t[mask], self.y[mask]
+
+
+@dataclass(frozen=True)
+class IntervalSeriesModel:
+    """Shaded vertical bands per ``(t_start[i], t_end[i])`` pair."""
+
+    name: str
+    t_start: np.ndarray
+    t_end: np.ndarray
+    color: str = "#1f77b4"
+    alpha: float = 0.15
+
+    def __post_init__(self) -> None:
+        if len(self.t_start) != len(self.t_end):
+            raise ValueError(
+                "IntervalSeriesModel: t_start and t_end must be the same "
+                f"length. Got {len(self.t_start)} vs {len(self.t_end)}."
+            )
+
+    @classmethod
+    def from_metric_spec(cls, spec: MetricSpec) -> IntervalSeriesModel:
+        if spec.kind != "intervals":
+            raise ValueError(
+                f"IntervalSeriesModel.from_metric_spec requires "
+                f"kind='intervals'; got {spec.kind!r}."
+            )
+        return cls(
+            name=spec.name,
+            t_start=np.asarray(spec.t_start),
+            t_end=np.asarray(spec.t_end),
+            color=spec.color,
+        )
+
+    def window(self, t_start: float, t_stop: float) -> tuple[np.ndarray, np.ndarray]:
+        """Return intervals overlapping ``[t_start, t_stop]``."""
+        mask = (self.t_end >= t_start) & (self.t_start <= t_stop)
+        return self.t_start[mask], self.t_end[mask]

@@ -17,6 +17,12 @@ from non_local_detector.visualization.interactive.panels.qt.posterior import (
 from non_local_detector.visualization.interactive.panels.qt.raster import (
     QtRasterPanel,
 )
+from non_local_detector.visualization.interactive.panels.qt.series import (
+    IntervalSeriesPanel,
+    LineSeriesPanel,
+    MultiLineSeriesPanel,
+    ScatterSeriesPanel,
+)
 from non_local_detector.visualization.interactive.panels.qt.state_prob import (
     QtStateProbabilityPanel,
 )
@@ -24,8 +30,12 @@ from non_local_detector.visualization.interactive.panels.qt.state_prob import (
 __all__ = [
     "ClickRecenterMixin",
     "EventOverlayMixin",
+    "IntervalSeriesPanel",
+    "LineSeriesPanel",
+    "MultiLineSeriesPanel",
     "QtLikelihoodHeatmapPanel",
     "QtPosteriorHeatmapPanel",
     "QtRasterPanel",
     "QtStateProbabilityPanel",
+    "ScatterSeriesPanel",
 ]
