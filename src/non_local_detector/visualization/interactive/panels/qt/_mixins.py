@@ -5,6 +5,9 @@
 - ``ClickRecenterMixin`` — wires ``scene().sigMouseClicked`` to a
   user-supplied ``Callable[[float], None]`` invoked with the clicked
   x-coordinate (absolute time in seconds).
+- ``CursorMarkersMixin`` — dashed center-line at ``t_center`` + a
+  translucent ``LinearRegionItem`` covering the active bin's
+  ``[t_lo, t_hi]``, both updated together via ``set_cursor_markers``.
 
 Concrete panels mix these in alongside ``pg.PlotWidget`` (or whatever
 they wrap) so they get the shared behavior for free.
@@ -17,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pyqtgraph as pg
+from PySide6 import QtCore
 from PySide6.QtGui import QColor
 
 
@@ -52,6 +56,14 @@ class ClickRecenterMixin:
     def _install_click_recenter(self) -> None:
         self._click_callback = None
         self.scene().sigMouseClicked.connect(self._handle_click)
+        # Disable pyqtgraph's right-click ViewBox menu. It builds a
+        # ``ViewBoxMenu`` with sub-templates (``axisCtrlTemplate_generic``)
+        # whose Qt ``QAction`` parents leak across QtViewer instances and
+        # accumulate enough state to crash ``setupUi`` after ~14 viewers in
+        # a single process. Removing the menu eliminates that leak path
+        # without affecting the panel's primary interactions (click → scrub,
+        # spike-click → pin) which are wired explicitly.
+        self.getPlotItem().setMenuEnabled(False)
 
     def click_handler(self, callback: Callable[[float], None]) -> None:
         self._click_callback = callback
@@ -70,6 +82,60 @@ class ClickRecenterMixin:
 
     def x_link_target(self):
         return self.getPlotItem()
+
+
+# Z-values for cursor markers — both negative so any panel-specific
+# overlay (event lines, non-local shading, etc.) renders on top.
+# The band is one step further back so the dashed center line stays
+# legible against the band's translucent yellow.
+_CURSOR_BAND_Z = -6
+_CURSOR_LINE_Z = -5
+
+
+class CursorMarkersMixin:
+    """Adds a dashed center line + translucent active-bin band.
+
+    Subclasses must call ``self._install_cursor_markers()`` after
+    ``pg.PlotWidget.__init__`` so ``self.addItem`` is available. The
+    viewer's cursor-dispatch path then drives both items via
+    ``set_cursor_markers(t_center, t_lo, t_hi)``.
+
+    The band gives the user an unambiguous "this is the bin you're
+    looking at" cue when zoomed in far enough that bin width is
+    visible; the dashed line is a precise pointer at ``t_center``
+    that stays useful at any zoom level.
+    """
+
+    _center_line: pg.InfiniteLine
+    _active_bin_band: pg.LinearRegionItem
+
+    def _install_cursor_markers(self) -> None:
+        self._center_line = pg.InfiniteLine(
+            angle=90,
+            pos=0.0,
+            pen=pg.mkPen(
+                (100, 100, 100), width=1, style=QtCore.Qt.PenStyle.DashLine
+            ),
+            movable=False,
+        )
+        self._center_line.setZValue(_CURSOR_LINE_Z)
+        self.addItem(self._center_line)
+        self._active_bin_band = pg.LinearRegionItem(
+            values=(0.0, 0.0),
+            orientation="vertical",
+            brush=pg.mkBrush(255, 255, 0, 40),
+            pen=pg.mkPen(None),
+            movable=False,
+        )
+        self._active_bin_band.setZValue(_CURSOR_BAND_Z)
+        self.addItem(self._active_bin_band)
+
+    def set_cursor_markers(
+        self, t_center: float, t_lo: float, t_hi: float
+    ) -> None:
+        """Move both markers in lockstep. Called by ``QtViewer``."""
+        self._center_line.setPos(float(t_center))
+        self._active_bin_band.setRegion([float(t_lo), float(t_hi)])
 
 
 class EventOverlayMixin:

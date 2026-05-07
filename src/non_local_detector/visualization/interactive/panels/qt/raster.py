@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor
 from non_local_detector.analysis.posterior import _non_local_state_ids
 from non_local_detector.visualization.interactive.panels.qt._mixins import (
     ClickRecenterMixin,
+    CursorMarkersMixin,
     EventOverlayMixin,
 )
 
@@ -24,7 +25,9 @@ if TYPE_CHECKING:
     )
 
 
-class QtRasterPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
+class QtRasterPanel(
+    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, CursorMarkersMixin
+):
     """Per-cell spike-time raster.
 
     Cells are sorted by place-field peak (handled by ``RasterModel``).
@@ -75,6 +78,7 @@ class QtRasterPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
         self.addItem(self._scatter)
         self._non_local_regions: list[pg.LinearRegionItem] = []
         self._install_click_recenter()
+        self._install_cursor_markers()
         self._scatter.sigClicked.connect(self._handle_spike_click)
         self._overlay_items: list[pg.GraphicsObject] = []
 

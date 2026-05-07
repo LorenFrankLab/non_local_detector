@@ -125,19 +125,28 @@ def multi_run_bundles(
 
 @pytest.fixture(autouse=True)
 def _clear_qt_viewer_registry():
-    """Close + delete any QtViewers registered during a test.
+    """Close + delete every Qt top-level widget after each test.
 
-    ``launch_qt`` retains every viewer in ``viewer.qt._LIVE_VIEWERS``
-    so PySide6 doesn't GC non-blocking windows. Without per-test
-    cleanup, viewers leak across tests; later tests that count live
-    windows then fail.
+    Two paths leave widgets behind:
 
-    ``QtViewer`` sets ``WA_DeleteOnClose``, so closing schedules a
-    ``deleteLater`` which we drain with ``processEvents`` to actually
-    remove the widget from ``QApplication.topLevelWidgets()`` before
-    the next test runs. Autouse, but no-op if the [viewer] extra
-    isn't installed.
+    1. ``launch_qt(block=False)`` registers in ``viewer.qt._LIVE_VIEWERS``
+       so PySide6 doesn't GC non-blocking windows; close those
+       explicitly.
+    2. Tests that construct ``QtViewer(...)`` directly hold a
+       Python local. When the local goes out of scope the GC path
+       eventually destroys the C++ widget, but ``cumulative`` Qt
+       state (graphics scenes, deferred deletions, font caches
+       reachable from undeleted ViewBoxMenu instances) builds up
+       across tests and can crash pyqtgraph's ``ViewBoxMenu.setupUi``
+       around the 14th–17th constructed viewer. The crash trace
+       points at ``axisCtrlTemplate_generic.py``; clearing every
+       ``topLevelWidget`` and running a Python GC pass between
+       tests keeps the per-test working set bounded.
+
+    Autouse, but no-op if the ``[viewer]`` extra isn't installed.
     """
+    import gc
+
     yield
     try:
         from PySide6 import QtWidgets
@@ -152,8 +161,20 @@ def _clear_qt_viewer_registry():
         viewer.deleteLater()
     qt_mod._LIVE_VIEWERS.clear()
     app = QtWidgets.QApplication.instance()
-    if app is not None:
-        # Drain pending deletions so the next test sees a clean
-        # topLevelWidgets() list.
-        app.processEvents()
-        app.processEvents()
+    if app is None:
+        return
+    # Close + deleteLater every other top-level widget the test left
+    # behind (e.g. ``QtViewer(ds)`` constructed without going through
+    # ``launch_qt``). ``WA_DeleteOnClose`` is set on QtViewer; for
+    # other widgets close() is still safe and the Python GC pass
+    # below releases C++ ownership.
+    for widget in list(app.topLevelWidgets()):
+        if widget.isVisible() or not widget.isHidden():
+            widget.close()
+        widget.deleteLater()
+    # processEvents drains queued ``deleteLater`` calls; double pass
+    # because some destructions schedule further deferred deletions.
+    app.processEvents()
+    app.processEvents()
+    gc.collect()
+    app.processEvents()

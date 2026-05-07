@@ -9,6 +9,7 @@ import pyqtgraph as pg
 
 from non_local_detector.visualization.interactive.panels.qt._mixins import (
     ClickRecenterMixin,
+    CursorMarkersMixin,
     EventOverlayMixin,
     bone_lookup_table,
 )
@@ -22,7 +23,9 @@ if TYPE_CHECKING:
     )
 
 
-class QtLikelihoodHeatmapPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
+class QtLikelihoodHeatmapPanel(
+    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, CursorMarkersMixin
+):
     """Time × position heatmap of the population log-likelihood.
 
     Title-bar text mirrors the SlicePanel: "Likelihood across all
@@ -67,6 +70,7 @@ class QtLikelihoodHeatmapPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMi
         # post-swap rebind logic can read back the displayed message.
         self._title_message: str | None = None
         self._install_click_recenter()
+        self._install_cursor_markers()
         self._overlay_items: list[pg.GraphicsObject] = []
 
     def update_window(self, payload: WindowPayload) -> None:

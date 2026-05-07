@@ -15,12 +15,35 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 > What I'm working on right now. Update when context-switching.
 
 **M1+M2+M3+M4 done. M5 in-repo docs in `ebcdefe`. M6 progress:
-model-swap UI in `1eea901`. **Real `extra_bin_panels` plugin lane
-uncommitted** — fixes a finding on `ebcdefe` where the README
-promised BinSyncedPanel as part of `extra_panels` but the viewer
-only handled TimeAxisPanel-shaped widgets. New parallel kwarg
-`extra_bin_panels` + corrected protocol (`set_window_buffer` +
-`update_for_index(t_idx)` + optional `rebind_after_swap`).
+model-swap UI in `1eea901`, `extra_bin_panels` lane in `d8a978e`,
+auto-scroll + sub-bin float cursor + sync-on-non-slider-paths in
+`52ad257` / `9751ca2`. Cursor markers + segfault mitigation
+**uncommitted** (working-tree).
+
+**Cumulative-Qt-state segfault** (still partially open):
+running the full `test_viewer_extras.py` (33 GUI tests) crashes
+inside pyqtgraph after ~14–16 viewers in a single process. Each
+test constructs a fresh `QtViewer` (4 panels × ~16 graphics
+items now that cursor markers are wired). pyqtgraph's
+`ViewBoxMenu` actions and `LinearRegionItem` internals
+accumulate Qt state that the per-test `_clear_qt_viewer_registry`
+fixture can't fully drain. Mitigations applied:
+
+- Aggressive cleanup in [conftest.py](src/non_local_detector/tests/interactive/conftest.py):
+  close all `QApplication.topLevelWidgets()` + `gc.collect()` +
+  multiple `processEvents()` passes between tests.
+- Disabled per-panel right-click menu via
+  `getPlotItem().setMenuEnabled(False)` in
+  [_mixins.py](src/non_local_detector/visualization/interactive/panels/qt/_mixins.py)
+  `_install_click_recenter` — eliminates the original
+  `axisCtrlTemplate_generic.py:36 setupUi` crash signature.
+
+Net effect: pushed the crash from test ~13 → test ~16 (~9–11
+tests further). Tests pass individually and in subset
+selections. Suspect path forward if it must be fully fixed:
+`pytest-forked` for per-test process isolation (adds dev dep)
+or finer pyqtgraph internal cleanup (removeItem on every child
+of every PlotItem before deleteLater). Timeboxed; moving on.
 
 **Important user-set rule (do not violate):**
 

@@ -698,6 +698,89 @@ def test_core_set_t_center_during_play_resyncs_cursor(
 
 
 @pytest.mark.unit
+def test_cursor_markers_initial_dispatch(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Every built-in TimeAxisPanel has its center line + active-bin band
+    placed at the initial t_center on construction."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    expected = viewer.core.t_center
+    for panel in viewer._builtin_panels:
+        assert panel._center_line.value() == pytest.approx(expected)
+        lo, hi = panel._active_bin_band.getRegion()
+        # Cursor lands inside its bin's [t_lo, t_hi] band.
+        assert lo <= expected <= hi
+
+
+@pytest.mark.unit
+def test_cursor_markers_follow_t_center_changes(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Any ``core.set_t_center`` call updates every panel's markers."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    target_t = float(viewer._data_source.time[100])
+    viewer.core.set_t_center(target_t)
+    for panel in viewer._builtin_panels:
+        assert panel._center_line.value() == pytest.approx(target_t)
+        lo, hi = panel._active_bin_band.getRegion()
+        assert lo <= target_t <= hi
+
+
+@pytest.mark.unit
+def test_cursor_markers_dispatched_to_extras_via_getattr(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """User-supplied ``extra_panels`` exposing ``set_cursor_markers``
+    receive markers through the same dispatch (opt-in via ``getattr``)."""
+    from PySide6 import QtWidgets as _W
+
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    class _CursorRecordingPanel(_W.QWidget):
+        cell_clicked = None  # marker not used here
+
+        def __init__(self) -> None:
+            _W.QWidget.__init__(self)
+            self.cursor_calls: list[tuple[float, float, float]] = []
+
+        # TimeAxisPanel surface (minimal — set_cursor_markers is opt-in).
+        def update_window(self, payload) -> None:  # noqa: D401, ARG002
+            return
+
+        def x_link_target(self):
+            return None
+
+        def click_handler(self, callback) -> None:  # noqa: ARG002
+            return
+
+        def set_event_overlays(self, overlays) -> None:  # noqa: ARG002
+            return
+
+        def set_cursor_markers(
+            self, t_center: float, t_lo: float, t_hi: float
+        ) -> None:
+            self.cursor_calls.append((t_center, t_lo, t_hi))
+
+    plugin = _CursorRecordingPanel()
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5, extra_panels=[plugin])
+    # Initial dispatch should already have hit the plugin once.
+    assert len(plugin.cursor_calls) >= 1
+    target_t = float(viewer._data_source.time[200])
+    viewer.core.set_t_center(target_t)
+    assert plugin.cursor_calls[-1][0] == pytest.approx(target_t)
+
+
+@pytest.mark.unit
 def test_step_window_during_play_resyncs_cursor(
     qapp,
     multi_run_bundles: dict[str, RunBundle],

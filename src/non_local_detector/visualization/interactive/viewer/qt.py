@@ -323,7 +323,11 @@ class QtViewer(QtWidgets.QMainWindow):
         self._core.on_window_loaded(self._on_window_loaded)
         self._core.on_active_run_changed(self._rebind_panels)
         self._core.on_t_center_changed(self._sync_autoscroll_cursor_to_core)
+        self._core.on_t_center_changed(self._sync_cursor_markers)
         self._core.refresh_overlays()
+        # Initial cursor-marker placement — t_center_changed only
+        # fires on subsequent moves, not on construction.
+        self._sync_cursor_markers(self._core.t_center)
 
         # Keyboard shortcuts. ``[`` / ``]`` shrink/grow the window
         # width; ``Shift+Left`` / ``Shift+Right`` step a full window
@@ -591,6 +595,51 @@ class QtViewer(QtWidgets.QMainWindow):
         # commits).
         for bin_panel in (self._slice_panel, *self._extra_bin_panels):
             bin_panel.update_for_index(value)
+
+    def _sync_cursor_markers(self, new_t_center: float) -> None:
+        """Push ``(t_center, t_lo, t_hi)`` to every TimeAxisPanel.
+
+        ``t_center`` is the dashed-line position; ``[t_lo, t_hi]`` is
+        the active-bin band. Bin edges come from the time grid's
+        midpoints (matches ``SliceModel._bin_edges``). Built-in
+        panels all mix in ``CursorMarkersMixin``; user-supplied
+        ``extra_panels`` opt in by exposing a ``set_cursor_markers``
+        method (called via ``getattr`` so the kwarg stays
+        backward-compatible).
+        """
+        time = self._data_source.time
+        t_idx = int(np.searchsorted(time, new_t_center, side="right") - 1)
+        t_idx = max(0, min(time.size - 1, t_idx))
+        t_lo, t_hi = self._bin_edges_at(t_idx)
+        for panel in self._builtin_panels:
+            panel.set_cursor_markers(new_t_center, t_lo, t_hi)
+        for panel in self._extra_panels:
+            setter = getattr(panel, "set_cursor_markers", None)
+            if setter is not None:
+                setter(new_t_center, t_lo, t_hi)
+
+    def _bin_edges_at(self, t_idx: int) -> tuple[float, float]:
+        """Return ``(t_lo, t_hi)`` for bin ``t_idx`` using midpoints to neighbors.
+
+        Mirrors ``SliceModel._bin_edges`` — kept inline here rather
+        than lifted to a shared helper because the only other caller
+        is the slice model and the math is six lines.
+        """
+        time = self._data_source.time
+        n = time.size
+        if n <= 1:
+            t = float(time[0]) if n == 1 else 0.0
+            return t, t
+        t = float(time[t_idx])
+        if t_idx == 0:
+            half = (time[1] - time[0]) / 2.0
+            return float(t - half), float(t + half)
+        if t_idx == n - 1:
+            half = (time[n - 1] - time[n - 2]) / 2.0
+            return float(t - half), float(t + half)
+        half_lo = (t - time[t_idx - 1]) / 2.0
+        half_hi = (time[t_idx + 1] - t) / 2.0
+        return float(t - half_lo), float(t + half_hi)
 
     def _sync_autoscroll_cursor_to_core(self, new_t_center: float) -> None:
         """Re-anchor the float playback cursor to ``new_t_center``.

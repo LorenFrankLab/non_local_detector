@@ -14,6 +14,7 @@ import pyqtgraph as pg
 
 from non_local_detector.visualization.interactive.panels.qt._mixins import (
     ClickRecenterMixin,
+    CursorMarkersMixin,
     EventOverlayMixin,
     bone_lookup_table,
 )
@@ -27,7 +28,9 @@ if TYPE_CHECKING:
     )
 
 
-class QtPosteriorHeatmapPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
+class QtPosteriorHeatmapPanel(
+    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, CursorMarkersMixin
+):
     """Time × position heatmap of the collapsed posterior.
 
     The model handles strategy selection (``CONDITIONAL_NON_LOCAL`` /
@@ -53,6 +56,7 @@ class QtPosteriorHeatmapPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMix
         self.setLabel("left", "Position [cm]")
         self.setLabel("bottom", "Time [s]")
         self._install_click_recenter()
+        self._install_cursor_markers()
         self._overlay_items: list[pg.GraphicsObject] = []
 
     def update_window(self, payload: WindowPayload) -> None:

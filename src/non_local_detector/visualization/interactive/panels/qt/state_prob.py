@@ -9,6 +9,7 @@ import pyqtgraph as pg
 
 from non_local_detector.visualization.interactive.panels.qt._mixins import (
     ClickRecenterMixin,
+    CursorMarkersMixin,
     EventOverlayMixin,
 )
 
@@ -33,7 +34,9 @@ _DEFAULT_STATE_COLORS = (
 )
 
 
-class QtStateProbabilityPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
+class QtStateProbabilityPanel(
+    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, CursorMarkersMixin
+):
     """One ``pg.PlotDataItem`` line per discrete state."""
 
     def __init__(
@@ -50,6 +53,7 @@ class QtStateProbabilityPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMix
         self._lines: list[pg.PlotDataItem] = []
         self._build_lines()
         self._install_click_recenter()
+        self._install_cursor_markers()
         self._overlay_items: list[pg.GraphicsObject] = []
 
     def _build_lines(self) -> None:
