@@ -14,20 +14,23 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 
 > What I'm working on right now. Update when context-switching.
 
-**M1+M2+M3+M4 done. M5 in-repo docs in `ebcdefe`. M6 progress:
-model-swap UI in `1eea901`, `extra_bin_panels` lane in `d8a978e`,
-auto-scroll + sub-bin float cursor + sync-on-non-slider-paths in
-`52ad257` / `9751ca2`. Cursor markers + segfault mitigation
-**uncommitted** (working-tree).
+**M1–M5 done. M6 effectively done modulo two boxes (README
+screencast + Track-A optional verification + kernel run of demo
+notebook with `[viewer]` installed). Pre-merge checklist next.**
 
-**Cumulative-Qt-state segfault** (still partially open):
+Branch is in pre-merge state. Outstanding work is itemised in
+[TASKS.md](TASKS.md) Milestone 6; the only blocking concern is
+the cumulative-Qt-state segfault below (mitigated, not fully
+fixed) and the user's call on README screencast scope.
+
+**Cumulative-Qt-state segfault** (mitigated, not fully fixed):
 running the full `test_viewer_extras.py` (33 GUI tests) crashes
 inside pyqtgraph after ~14–16 viewers in a single process. Each
 test constructs a fresh `QtViewer` (4 panels × ~16 graphics
 items now that cursor markers are wired). pyqtgraph's
 `ViewBoxMenu` actions and `LinearRegionItem` internals
 accumulate Qt state that the per-test `_clear_qt_viewer_registry`
-fixture can't fully drain. Mitigations applied:
+fixture can't fully drain. Mitigations applied in `6f03718`:
 
 - Aggressive cleanup in [conftest.py](src/non_local_detector/tests/interactive/conftest.py):
   close all `QApplication.topLevelWidgets()` + `gc.collect()` +
@@ -40,10 +43,10 @@ fixture can't fully drain. Mitigations applied:
 
 Net effect: pushed the crash from test ~13 → test ~16 (~9–11
 tests further). Tests pass individually and in subset
-selections. Suspect path forward if it must be fully fixed:
-`pytest-forked` for per-test process isolation (adds dev dep)
-or finer pyqtgraph internal cleanup (removeItem on every child
-of every PlotItem before deleteLater). Timeboxed; moving on.
+selections. Path forward if it must be fully fixed: `pytest-forked`
+for per-test process isolation (adds dev dep) or finer
+pyqtgraph internal cleanup (removeItem on every child of every
+PlotItem before deleteLater). Surface to user before merge.
 
 **Important user-set rule (do not violate):**
 
@@ -61,6 +64,21 @@ of every PlotItem before deleteLater). Timeboxed; moving on.
 
 Latest at top:
 
+- `9734952` Fix two findings on the lazy-launch chunk (P1 + P2)
+- `ecc962a` Demo notebook (paired ipynb,py:percent)
+- `5a4753b` Lazy-expose `launch` from `non_local_detector.visualization`
+- `94f9f50` Smoothed-overlay choice in slice panel
+- `6f03718` Cursor markers on every TimeAxisPanel + Qt segfault mitigation
+- `9751ca2` Resync autoscroll cursor on every navigation path that recenters
+- `52ad257` Fix sub-bin playback freeze in auto-scroll
+- `8c0b1d2` Add auto-scroll: play/pause + speed combo + Space/,/. (M6)
+- `1c8a943` Fix two follow-ups on d8a978e
+- `d8a978e` Add real extra_bin_panels plugin lane (M5 doc-vs-code fix)
+- `1eea901` Add model swap UI: dropdown + M-key + view-state preservation (M6)
+- `ebcdefe` Document plugin contract for the interactive viewer (Milestone 5)
+- `d38fe27` Close M4 'in-RAM window buffer' checkbox
+- `de5b46d` Wire QtSlicePanel into QtViewer (Milestone 4)
+- `89239ee` Add pin state to QtSlicePanel + SliceModel.cell_slice helper
 - `1e10cfb` M3 close-out 3 — series-panel construction tests (9 GUI tests)
 - `ce8b2f5` M3 close-out 2 — overlay selector + visibility checkboxes
 - `da434db` M3 close-out 1 — raster non-local shading

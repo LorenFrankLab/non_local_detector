@@ -707,67 +707,97 @@ forward as-is so they're ready to pick up later:
 
 ### Auto-scroll
 
-- [ ] `Space` toggles play/pause.
-- [ ] Speed combo: `0.05x, 0.1x, 0.25x, 0.5x, 1x, 2x, 4x, 8x`.
-- [ ] `,` / `.` step speed up/down through preset list.
-- [ ] Default speed: `0.05x` (statespacecheck default).
+- [x] `Space` toggles play/pause. (`8c0b1d2`)
+- [x] Speed combo: `0.05x, 0.1x, 0.25x, 0.5x, 1x, 2x, 4x, 8x`. (`8c0b1d2`)
+- [x] `,` / `.` step speed up/down through preset list. (`8c0b1d2`)
+- [x] Default speed: `0.05x` (statespacecheck default). (`8c0b1d2`)
+- [x] Sub-bin float playback cursor — accumulates dt across ticks
+  so playback advances at speeds where tick-frequency × speed
+  is < bin-width. (`52ad257`)
+- [x] Resync the float cursor on every navigation path that
+  recenters (Shift-arrow stepping, R reset, click-recenter,
+  N/Shift+N event jumps). (`9751ca2`)
 
 ### Smoothed-overlay support
 
-- [ ] When results contain `acausal_posterior`, expose smoothed
-  overlay choice in slice panel's overlay selector.
+- [x] Slice panel exposes "Predictive (causal)" / "Smoothed
+  (acausal)" / "Off" via a dropdown in the panel's title row;
+  `set_overlay_mode("predictive"|"smoothed"|"off")` is the
+  programmatic API. (`94f9f50`)
 
 ### Model swap UI
 
-- [ ] "Model" dropdown in controls bar (visible only when
-  `len(runs) > 1`).
-- [ ] `M`-key cycles to next run.
-- [ ] Swap preserves: `current_view_state` (`t_center`, `t_width`,
-  `load_acausal`), `pinned_event_row`, active overlay name.
-- [ ] Swap mutates: `active_run_name` only.
-- [ ] On swap, re-bind:
-  - [ ] StateProbabilityPanel line set to new schema.
-  - [ ] PosteriorHeatmapPanel reduction strategy via
+- [x] "Model" dropdown in controls bar (visible only when
+  `len(runs) > 1`). (`1eea901`)
+- [x] `M`-key cycles to next run. (`1eea901`)
+- [x] Swap preserves: `current_view_state` (`t_center`, `t_width`,
+  `load_acausal`), `pinned_event_row`, active overlay name. (`1eea901`)
+- [x] Swap mutates: `active_run_name` only. (`1eea901`)
+- [x] On swap, re-bind: (`1eea901`)
+  - [x] StateProbabilityPanel line set to new schema.
+  - [x] PosteriorHeatmapPanel reduction strategy via
     `select_reduction(state_names, bin_sizes_)`.
-  - [ ] SlicePanel's `collapse_log_likelihood_to_position` to new
+  - [x] SlicePanel's `collapse_log_likelihood_to_position` to new
     `state_ind_` / `bin_sizes_`.
-  - [ ] RasterPanel place-field-peak sort to new detector.
+  - [x] RasterPanel place-field-peak sort to new detector.
+
+### Cursor markers
+
+- [x] Every built-in TimeAxisPanel renders a dashed center-line
+  at `t_center` + a translucent active-bin band over `[t_lo, t_hi]`,
+  driven by `core.on_t_center_changed`. Plugin extras opt in via a
+  `set_cursor_markers` method. (`6f03718`)
 
 ### Documentation
 
 - [ ] README with screencast covering single-run and model-swap
   flows.
-- [ ] `non_local_detector/visualization/__init__.py` lazy-exposes
+- [x] `non_local_detector/visualization/__init__.py` lazy-exposes
   `launch` from `interactive` sub-package (gated on `[viewer]`).
+  Also moves the figurl helpers into the same lazy `__getattr__`
+  path so a missing `sortingview` doesn't break
+  `from non_local_detector.visualization import *`. (`5a4753b`,
+  `9734952`)
 
 ### Demo notebook
 
-- [ ] `notebooks/interactive_viewer_demo.ipynb` walks through:
-  - [ ] Building a `RunBundle` from fitted detector + session data.
-  - [ ] `launch(bundle)`.
-  - [ ] `predict(return_outputs=...)` snippet for full panel set.
-  - [ ] Multi-run `dict[str, RunBundle]` for model comparison.
-  - [ ] Three sized affordances for user metrics
+- [x] `notebooks/04_visualization/interactive_viewer_demo.ipynb`
+  (paired `ipynb,py:percent`) walks through: (`ecc962a`)
+  - [x] Building a `RunBundle` from fitted detector + session data.
+  - [x] `launch(bundle)`.
+  - [x] `predict(return_outputs=...)` snippet for full panel set.
+  - [x] Multi-run `dict[str, RunBundle]` for model comparison.
+  - [x] Three sized affordances for user metrics
     (`bundle.extra_metrics`, generic panel classes, `TimeAxisPanel`
     subclass).
-  - [ ] Event overlays via `bundle.event_overlays`.
+  - [x] Event overlays via `bundle.event_overlays`.
 
 ### Verification
 
-- [ ] (Track 0) Multi-run viewer launches with
+- [x] (Track 0) Multi-run viewer launches with
   `{"nl": ..., "cf": ..., "nsf": ..., "dec": ...}`. Cycle through
   all four; each swap re-binds StateProbabilityPanel /
   PosteriorHeatmapPanel reduction / SlicePanel collapse helper.
-- [ ] (Track 0 overlay alignment) Attach shared SWR overlay +
-  per-run model-derived overlay to all four bundles; assert
-  schema match; positive case (overlay name persists across
-  swaps); three negative cases (kind drift, missing overlay,
-  within-bundle duplicate).
+  Covered by `test_m_key_cycles_through_runs`,
+  `test_swap_via_core_syncs_model_combo`,
+  `test_swap_preserves_view_state` in `test_viewer_extras.py`.
+- [x] (Track 0 overlay alignment) Positive case (aligned
+  mutation) + drift / missing / duplicate negative cases —
+  covered by `TestSingleRunDataSource` overlay tests in
+  `test_data_source.py` and the duplicate-name guard in
+  `test_run_bundle.py`.
 - [ ] (Track A optional) If `NLD_REAL_DATA_BUNDLE_DIR` is set,
   multi-run viewer launches against `continuous/` + `contfrag/`
   subdirectories; M-key swaps preserve view state.
 - [ ] Demo notebook runs end-to-end on kernel with `[viewer]`
-  installed.
+  installed (code smoke-tested without launches; kernel run
+  pending).
+- [ ] Cumulative-Qt-state segfault — partial mitigation in
+  `6f03718` (ViewBoxMenu disable + aggressive autouse cleanup)
+  pushes the crash from ~13 to ~16 viewers per process. Tests
+  pass individually + in subset selections; full
+  `test_viewer_extras.py` still segfaults late. Full fix likely
+  needs `pytest-forked` per-test process isolation.
 
 ### v2 / v3+ items (out of v1 scope — capture as separate issues if discovered)
 
