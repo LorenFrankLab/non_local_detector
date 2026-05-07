@@ -2192,7 +2192,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Decoding results
         """
         results = xr.open_dataset(filename)
-        coord_names = list(results["state_bins"].coords)
+        # Only 1-D coords sharing ``state_bins`` become MultiIndex levels.
+        # Real upstream NetCDFs attach scalar coords (e.g.
+        # ``environments``, ``encoding_groups``) to ``state_bins`` for
+        # provenance; passing them to ``set_index`` raises
+        # ``ValueError: PandasMultiIndex only accepts 1-dimensional
+        # variables``. Filter them out so they survive as scalar coords
+        # on the dataset instead of breaking the round-trip.
+        coord_names = [
+            name
+            for name, coord in results["state_bins"].coords.items()
+            if coord.dims == ("state_bins",)
+        ]
         return results.set_index(state_bins=coord_names)
 
     def copy(self) -> "_DetectorBase":

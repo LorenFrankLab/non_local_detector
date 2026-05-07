@@ -33,8 +33,31 @@ def _interior_place_fields(detector) -> np.ndarray:
     return full[:, interior].astype(np.float32)
 
 
+def _attach_upstream_scalar_coords(results):
+    """Attach the 0-D scalar coords found on real upstream NetCDFs.
+
+    Real ``cont_results.nc`` / ``cont_frag_results.nc`` carry
+    ``environments`` and ``encoding_groups`` as **0-D** coords (verified
+    against ``cont_results.nc`` directly — not multi-element). They
+    appear in ``list(ds["state_bins"].coords)`` regardless of dim, and
+    the devtool's ``_DetectorBase.load_results`` call previously fed
+    them to ``set_index`` which raised ``PandasMultiIndex only accepts
+    1-dimensional variables``. Our fixture detectors don't emit these
+    coords, so without this attach the devtool tests miss the real
+    upstream schema entirely.
+    """
+    return results.assign_coords(
+        environments="env0",
+        encoding_groups="grp0",
+    )
+
+
 def _populate_intermediates(
-    intermediates_dir: Path, fitted: FittedDetector, model_filename: str
+    intermediates_dir: Path,
+    fitted: FittedDetector,
+    model_filename: str,
+    *,
+    add_upstream_scalar_coords: bool = False,
 ) -> None:
     """Mirror upstream's writer exactly: NetCDF + ``joblib.dump`` for the pkl.
 
@@ -47,8 +70,13 @@ def _populate_intermediates(
     from non_local_detector.models.base import _DetectorBase
 
     intermediates_dir.mkdir(parents=True, exist_ok=True)
+    results = (
+        _attach_upstream_scalar_coords(fitted.results)
+        if add_upstream_scalar_coords
+        else fitted.results
+    )
     _DetectorBase.save_results(
-        fitted.results, str(intermediates_dir / f"{model_filename}_results.nc")
+        results, str(intermediates_dir / f"{model_filename}_results.nc")
     )
     joblib.dump(
         fitted.detector, str(intermediates_dir / f"{model_filename}_model.pkl")
@@ -90,11 +118,19 @@ def staged_layout(
     cf_fitted: FittedDetector,
     sim_session: SimulatedSession,
 ) -> tuple[Path, Path, Path]:
-    """Build a fresh upstream-shaped layout under ``tmp_path``."""
+    """Build a fresh upstream-shaped layout under ``tmp_path``.
+
+    Includes the scalar ``state_bins`` coords (``environments``,
+    ``encoding_groups``) found on real upstream NetCDFs so the
+    happy-path test covers the schema that ``cont_results.nc``
+    actually has, not just the minimal fixture form.
+    """
     cache_dir = tmp_path / "cache"
     intermediates_dir = tmp_path / "intermediates"
     out_dir = tmp_path / "bundle"
-    _populate_intermediates(intermediates_dir, cf_fitted, "cont_frag")
+    _populate_intermediates(
+        intermediates_dir, cf_fitted, "cont_frag", add_upstream_scalar_coords=True
+    )
     _populate_cache(cache_dir, sim_session, cf_fitted, "contfrag")
     return cache_dir, intermediates_dir, out_dir
 

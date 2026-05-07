@@ -214,6 +214,22 @@ Latest at top:
     when the loader is wrong.) Round-tripped on output via
     `detector.save_model` so `app._load_run` keeps using the
     canonical pickle-based loader.
+  - **Source bug in `_DetectorBase.load_results`** (caught by user
+    review against real `cont_results.nc`): the loader passed every
+    coord on `state_bins` (including 0-D scalars like `environments`,
+    `encoding_groups`) to `set_index`, which raised
+    `ValueError: PandasMultiIndex only accepts 1-dimensional
+    variables`. Filter added — only 1-D coords sharing the
+    `state_bins` dim become MultiIndex levels; scalar coords stay as
+    scalar coords. Two regression tests in
+    `tests/models/test_results_persistence.py` use 0-D scalar coords
+    that mirror the real schema; verified they fail without the fix
+    with the same error class. Devtool fixture's scalar-coord helper
+    initially used multi-element coords (which are valid 1-D index
+    levels) and missed the bug entirely; corrected to true 0-D
+    scalars so the devtool happy-path test now exercises the real
+    schema. End-to-end verified against real
+    `cont_results.nc + cont_model.pkl`.
   - **Zarr fallback**: `--results-from-zarr` lazy-imports `zarr`
     with a clear "install zarr or drop the flag" error if missing.
     `acausal_posterior` is optional in upstream's Zarr; devtool
