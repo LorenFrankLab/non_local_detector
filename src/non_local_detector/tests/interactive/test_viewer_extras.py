@@ -135,3 +135,59 @@ def test_qt_viewer_keyboard_window_scaling(
     viewer._reset_view()
     assert viewer.core.t_width == pytest.approx(initial)
     assert viewer.core.t_center == pytest.approx(initial_center)
+
+
+@pytest.mark.unit
+def test_qt_viewer_controls_bar_hidden_with_no_overlays(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """No overlays attached → controls bar is hidden (clean default UI)."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    assert viewer._controls_bar.isHidden()
+
+
+@pytest.mark.unit
+def test_qt_viewer_controls_bar_with_overlays(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Attached overlays → dropdown lists them, checkbox toggles
+    visibility, dropdown change updates active overlay name."""
+    from non_local_detector.visualization.interactive.view_models.events import (
+        EventOverlay,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    original = {n: list(b.event_overlays) for n, b in multi_run_bundles.items()}
+    try:
+        swr = EventOverlay.points(name="swr", times=np.array([1.0, 2.0]))
+        theta = EventOverlay.points(name="theta", times=np.array([1.5]))
+        for bundle in multi_run_bundles.values():
+            bundle.event_overlays.append(swr)
+            bundle.event_overlays.append(theta)
+        ds = InMemoryDecoderDataSource(multi_run_bundles)
+        viewer = QtViewer(ds, t_width=0.5)
+
+        # Bar visible + dropdown contains "(none)" + each overlay.
+        assert not viewer._controls_bar.isHidden()
+        items = [
+            viewer._overlay_combo.itemText(i)
+            for i in range(viewer._overlay_combo.count())
+        ]
+        assert items == ["(none)", "swr", "theta"]
+
+        # Selecting "swr" updates core.active_overlay_name.
+        swr_idx = viewer._overlay_combo.findText("swr")
+        viewer._overlay_combo.setCurrentIndex(swr_idx)
+        assert viewer.core.active_overlay_name == "swr"
+
+        # Toggling theta's checkbox hides it.
+        viewer._overlay_checkboxes["theta"].setChecked(False)
+        assert viewer.core._overlay_visibility["theta"] is False
+    finally:
+        for n, b in multi_run_bundles.items():
+            b.event_overlays[:] = original[n]

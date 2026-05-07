@@ -178,7 +178,13 @@ class QtViewer(QtWidgets.QMainWindow):
         self._slider.setValue(n_time // 2)
         self._slider.valueChanged.connect(self._on_slider_value_changed)
 
+        # Controls bar: overlay-selector dropdown + per-overlay
+        # visibility checkboxes. Hidden when the bundle has no
+        # overlays — keeps the window clean for the common case.
+        self._controls_bar = self._build_controls_bar()
+
         layout = QtWidgets.QVBoxLayout()
+        layout.addWidget(self._controls_bar, stretch=0)
         layout.addWidget(self._panel, stretch=1)
         for extra in self._extra_panels:
             layout.addWidget(extra, stretch=1)
@@ -211,6 +217,43 @@ class QtViewer(QtWidgets.QMainWindow):
         ):
             shortcut = QtGui.QShortcut(key_seq, self)
             shortcut.activated.connect(fn)
+
+    def _build_controls_bar(self) -> QtWidgets.QWidget:
+        bar = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(bar)
+        layout.setContentsMargins(4, 2, 4, 2)
+        overlays = self._data_source.active_run.event_overlays
+        if not overlays:
+            bar.hide()
+            return bar
+        # Overlay-selector dropdown picks the navigator target.
+        layout.addWidget(QtWidgets.QLabel("Overlay (N/Shift+N):"))
+        self._overlay_combo = QtWidgets.QComboBox()
+        self._overlay_combo.addItem("(none)", userData=None)
+        for ovl in overlays:
+            self._overlay_combo.addItem(ovl.name, userData=ovl.name)
+        self._overlay_combo.currentIndexChanged.connect(self._on_active_overlay_changed)
+        layout.addWidget(self._overlay_combo)
+        # Per-overlay visibility checkboxes.
+        layout.addSpacing(12)
+        layout.addWidget(QtWidgets.QLabel("Visible:"))
+        self._overlay_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
+        for ovl in overlays:
+            cb = QtWidgets.QCheckBox(ovl.name)
+            cb.setChecked(True)
+            cb.toggled.connect(
+                lambda checked, name=ovl.name: self._core.set_overlay_visibility(
+                    name, checked
+                )
+            )
+            layout.addWidget(cb)
+            self._overlay_checkboxes[ovl.name] = cb
+        layout.addStretch(1)
+        return bar
+
+    def _on_active_overlay_changed(self, index: int) -> None:
+        name = self._overlay_combo.itemData(index)
+        self._core.set_active_overlay(name)
 
     def _on_window_loaded(self, payload) -> None:
         for panel in self._all_panels:
