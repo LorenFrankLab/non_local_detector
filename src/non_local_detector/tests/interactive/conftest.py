@@ -149,7 +149,8 @@ def _clear_qt_viewer_registry():
 
     yield
     try:
-        from PySide6 import QtWidgets
+        import shiboken6
+        from PySide6 import QtCore, QtWidgets
 
         from non_local_detector.visualization.interactive.viewer import (
             qt as qt_mod,
@@ -158,22 +159,32 @@ def _clear_qt_viewer_registry():
         return  # [viewer] extra not installed; nothing to clean.
     for viewer in list(qt_mod._LIVE_VIEWERS):
         viewer.close()
-        viewer.deleteLater()
     qt_mod._LIVE_VIEWERS.clear()
     app = QtWidgets.QApplication.instance()
     if app is None:
         return
-    # Close + deleteLater every other top-level widget the test left
-    # behind (e.g. ``QtViewer(ds)`` constructed without going through
-    # ``launch_qt``). ``WA_DeleteOnClose`` is set on QtViewer; for
-    # other widgets close() is still safe and the Python GC pass
-    # below releases C++ ownership.
+    # Delete app-owned top-level widgets left by tests (e.g.
+    # ``QtViewer(ds)`` constructed without going through ``launch_qt``).
+    # Leave pyqtgraph's internal top-level menus alone; deleting those
+    # directly is unstable under the offscreen backend.
     for widget in list(app.topLevelWidgets()):
-        if widget.isVisible() or not widget.isHidden():
-            widget.close()
-        widget.deleteLater()
-    # processEvents drains queued ``deleteLater`` calls; double pass
-    # because some destructions schedule further deferred deletions.
+        widget_type = type(widget)
+        module_name = widget_type.__module__
+        if not (
+            module_name.startswith("non_local_detector.")
+            or widget_type.__name__ == "PlotWidget"
+        ):
+            continue
+        backend = getattr(widget, "_backend", None)
+        if backend is not None and hasattr(backend, "shutdown"):
+            backend.shutdown()
+        widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        widget.close()
+        if shiboken6.isValid(widget):
+            shiboken6.delete(widget)
+    # ``deleteLater`` + ``sendPostedEvents`` is fragile under PySide6's
+    # offscreen backend here. Immediate Shiboken deletion keeps pyqtgraph
+    # top-level menus/widgets from accumulating across viewer-heavy files.
     app.processEvents()
     app.processEvents()
     gc.collect()

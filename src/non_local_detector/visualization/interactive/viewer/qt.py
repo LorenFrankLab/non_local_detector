@@ -8,6 +8,7 @@ This module is the only place in the codebase that creates a
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -110,27 +111,45 @@ class _LoadSignals(QtCore.QObject):
 class QtBackendAdapter(BackendAdapter):
     """Qt implementation of the backend protocol.
 
-    Schedules window-load work on the global ``QThreadPool`` and
+    Schedules window-load work on a background Python executor and
     marshals the result back via a ``QObject`` signal so the UI
     thread is the one that touches widgets.
     """
 
     def __init__(self, data_source: InMemoryDecoderDataSource) -> None:
         self._data_source = data_source
-        self._thread_pool = QtCore.QThreadPool.globalInstance()
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nld-viewer")
+        self._closed = False
+        self._signals = _LoadSignals()
+        self._signals.done.connect(
+            self._deliver_payload, type=QtCore.Qt.QueuedConnection
+        )
 
     def schedule_window_load(
         self, state: ViewState, on_done: Callable[[WindowPayload], None]
     ) -> None:
-        signals = _LoadSignals()
-        signals.done.connect(on_done, type=QtCore.Qt.QueuedConnection)
+        if self._closed:
+            return
 
         def _work() -> None:
             payload = self._build_payload(state)
-            signals.done.emit(payload)
+            if self._closed:
+                return
+            self._signals.done.emit((on_done, payload))
 
-        runnable = QtCore.QRunnable.create(_work)
-        self._thread_pool.start(runnable)
+        self._executor.submit(_work)
+
+    def _deliver_payload(
+        self, result: tuple[Callable[[WindowPayload], None], WindowPayload]
+    ) -> None:
+        if self._closed:
+            return
+        on_done, payload = result
+        on_done(payload)
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        self._closed = True
+        self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def post_to_ui_thread(self, fn: Callable[[], None]) -> None:
         QtCore.QTimer.singleShot(0, fn)
@@ -204,6 +223,7 @@ class QtViewer(QtWidgets.QMainWindow):
         self._autoscroll_timer: QtCore.QTimer | None = None
         self._autoscroll_cursor: float | None = None
         self._autoscroll_resync_lock = False
+        self._initial_load_requested = False
 
         active_run = data_source.active_run
         detector = active_run.detector
@@ -332,7 +352,6 @@ class QtViewer(QtWidgets.QMainWindow):
         # Keyboard shortcuts. ``[`` / ``]`` shrink/grow the window
         # width; ``Shift+Left`` / ``Shift+Right`` step a full window
         # at a time; ``R`` resets center + width.
-        QtCore.QTimer.singleShot(0, self._core.request_load)
         for key_seq, fn in (
             (QtGui.QKeySequence(QtCore.Qt.Key_Left), self._core.step_left),
             (QtGui.QKeySequence(QtCore.Qt.Key_Right), self._core.step_right),
@@ -351,6 +370,14 @@ class QtViewer(QtWidgets.QMainWindow):
         ):
             shortcut = QtGui.QShortcut(key_seq, self)
             shortcut.activated.connect(fn)
+
+    def showEvent(self, event) -> None:  # noqa: N802 — Qt naming convention
+        """Kick off the first async window load once the viewer is shown."""
+        super().showEvent(event)
+        if self._initial_load_requested:
+            return
+        self._initial_load_requested = True
+        QtCore.QTimer.singleShot(0, self._core.request_load)
 
     def _wire_panels(self, panels: list) -> None:
         """Wire panels into the core (overlays, click, x-link, wheel).
@@ -731,6 +758,7 @@ class QtViewer(QtWidgets.QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt naming convention
         """Drop self from the live-viewer registry on close."""
+        self._backend.shutdown()
         try:
             _LIVE_VIEWERS.remove(self)
         except ValueError:
