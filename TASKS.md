@@ -662,10 +662,20 @@ and Phase 6 verifications can run.
 
 ### Documentation
 
-- [ ] Document `TimeAxisPanel` / `BinSyncedPanel` ABCs in the
-  package README.
+- [x] Document `TimeAxisPanel` / `BinSyncedPanel` ABCs in the
+  package README. See
+  [`src/non_local_detector/visualization/interactive/README.md`](src/non_local_detector/visualization/interactive/README.md):
+  plugin-author reference covering the protocol contracts, mixin
+  composition, a minimal custom `TimeAxisPanel` example, and the
+  `extra_metrics` auto-build path for the no-plugin case.
 
-### `continuum-swr-replay` (separate repo, separate PR)
+### `continuum-swr-replay` (separate repo, separate PR) — DEFERRED
+
+Per user direction (2026-05-07): downstream-consumer work is out
+of scope for this branch. The in-repo plugin contract is
+documented; consuming packages can land in their own repos against
+that contract whenever they're ready. Carrying the M5 sub-tasks
+forward as-is so they're ready to pick up later:
 
 - [ ] Add `interactive_panels/view_models.py` +
   `interactive_panels/qt.py` for project-specific panels:
@@ -684,7 +694,7 @@ and Phase 6 verifications can run.
   explicit note: `plot_peri_event_probability` stays as static
   figure — event-aligned, not session-time-aligned).
 
-### Verification (Track B)
+### Verification (Track B) — DEFERRED with the consumer work
 
 - [ ] Continuum integration test: `load_data(small NWB slice)` →
   fit `SortedSpikesDecoder` → `RunBundle.from_continuum_data(...)` →

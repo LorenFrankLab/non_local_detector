@@ -14,15 +14,15 @@ Plan: [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-0
 
 > What I'm working on right now. Update when context-switching.
 
-**M1+M2+M3 complete and committed; M3 review fixes committed in
-`e000eb8`. M4 Track 0 work all committed: devtool across `eab0478`
-/ `97bb59e` / `a958a50`; `--run-from-dir` in `e6621b5`; SliceModel
-in `0a840e0`; QtSlicePanel base in `c3ea841`; pin state in
-`89239ee`. **Viewer integration uncommitted** — right-column
-layout, raster `cell_clicked` signal, slider→slice direct render,
-window-load→slice buffer, Esc→clear pins, swap rebinds slice
-model. Track A optional real-data check deferred to M5 (env-var
-gated, follows the devtool test pattern).
+**M1+M2+M3 complete and committed; M3 review fixes in `e000eb8`.
+M4 done across `eab0478` / `97bb59e` / `a958a50` / `e6621b5` /
+`0a840e0` / `c3ea841` / `89239ee` / `de5b46d` / `d38fe27`.**
+**M5 in-repo docs uncommitted** — plugin contract README at
+`src/non_local_detector/visualization/interactive/README.md`.
+Per user direction (2026-05-07), the `continuum-swr-replay`
+downstream consumer + Track B verification are deferred (separate
+repo, separate PR); the in-repo plugin contract is documented so
+the deferred work has something to land against.
 
 **Important user-set rule (do not violate):**
 
@@ -462,6 +462,24 @@ Latest at top:
 
   Tests: 161 → 167 (6 new + 1 fixture-corrected existing test).
   Lint + interactive suite green.
+- **M5 in-repo docs (uncommitted)** — plugin-author reference at
+  `src/non_local_detector/visualization/interactive/README.md`.
+  Covers:
+  - When you don't need a plugin (the `extra_metrics` auto-build
+    path with `MetricSpec` + `pd.Series`).
+  - `TimeAxisPanel` Protocol (the four-method contract used by
+    every left-column panel) with a per-method table.
+  - `BinSyncedPanel` Protocol (used by `QtSlicePanel`; reserved for
+    future per-bin readouts).
+  - Composing with `ClickRecenterMixin` + `EventOverlayMixin`,
+    including the `mouse_event.isAccepted()` quirk that lets
+    scatter-point clicks pin without recentering.
+  - Minimal custom `TimeAxisPanel` example.
+  - `runtime_checkable` validation pointer +
+    `tests/lint/test_import_boundary.py` Qt-import allowlist note
+    for in-tree contributions.
+
+  No new tests (docs-only change). Lint clean.
 
 ---
 
