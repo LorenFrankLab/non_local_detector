@@ -577,6 +577,22 @@ class QtViewer(QtWidgets.QMainWindow):
     def _on_window_loaded(self, payload) -> None:
         for panel in self._all_panels:
             panel.update_window(payload)
+        # Pin the link-target's viewbox X range to the loaded window.
+        # Two reasons we don't rely on pyqtgraph's autoRange:
+        #   (1) ``ImageItem.setRect`` doesn't update the viewbox
+        #       autoRange bounds — the heatmap stays at its default
+        #       empty [-0.5, 0.5] X range until told otherwise.
+        #   (2) The other built-in panels are ``setXLink``'d to the
+        #       posterior so they inherit its (broken) range.
+        # Setting the range here lets every X-linked panel render
+        # against the actual loaded window.
+        if payload.time.size:
+            t_start = float(payload.time[0])
+            t_stop = float(payload.time[-1])
+            if t_stop > t_start:
+                self._panel.getPlotItem().vb.setXRange(
+                    t_start, t_stop, padding=0
+                )
         slider_value = self._slider.value()
         for bin_panel in (self._slice_panel, *self._extra_bin_panels):
             bin_panel.set_window_buffer(payload)
