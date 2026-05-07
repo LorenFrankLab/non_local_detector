@@ -163,9 +163,7 @@ class TestViewerCoreStaleRejection:
         backend.fire_pending(indices=[0])
         assert len(received) == 1
 
-    def test_older_payload_arriving_first_is_dropped(
-        self, core_factory
-    ) -> None:
+    def test_older_payload_arriving_first_is_dropped(self, core_factory) -> None:
         """Regression: request 0 must be dropped if request 1 has been
         issued, even when request 0 is the *first* payload to arrive
         (i.e. no commit has happened yet).

@@ -14,7 +14,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import joblib  # type: ignore[import-untyped]
 import numpy as np
 import pandas as pd
 import pytest
@@ -22,6 +21,7 @@ import pytest
 # Force offscreen Qt platform before any Qt import.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from non_local_detector.models.base import _DetectorBase
 from non_local_detector.tests._simulated_detectors import (
     FittedDetector,
     SimulatedSession,
@@ -44,12 +44,10 @@ def _save_bundle_files(
         "position": out_dir / "position.parquet",
     }
 
-    # results.nc — drop the multi-index coords xarray complains about
-    # on `to_netcdf` (state_bins multi-index).
-    results = fitted.results.reset_index("state_bins")
-    results.to_netcdf(paths["results"])
-
-    joblib.dump(fitted.detector, paths["model"])
+    # Use the canonical save_results / save_model so the round-trip
+    # restores the state_bins MultiIndex on load.
+    _DetectorBase.save_results(fitted.results, str(paths["results"]))
+    fitted.detector.save_model(str(paths["model"]))
 
     spike_times_obj = np.empty(len(session.spike_times), dtype=object)
     for i, st in enumerate(session.spike_times):

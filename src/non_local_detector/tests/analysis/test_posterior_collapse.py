@@ -16,19 +16,16 @@ from non_local_detector.analysis.posterior import (
     conditional_non_local_posterior,
     select_reduction,
 )
-from non_local_detector.tests._simulated_detectors import FittedDetector
+from non_local_detector.tests._simulated_detectors import (
+    FittedDetector,
+)
+from non_local_detector.tests._simulated_detectors import (
+    first_finite_row_index as _first_finite_row_index,
+)
 
 
 def _n_pos(detector) -> int:
     return int(detector.environments[0].place_bin_centers_.shape[0])
-
-
-def _first_finite_row_index(values: np.ndarray) -> int:
-    """Return the first time index with at least one finite value in any column."""
-    finite_mask = np.isfinite(values).any(axis=-1)
-    finite_indices = np.flatnonzero(finite_mask)
-    assert finite_indices.size > 0, "No finite rows in supplied array"
-    return int(finite_indices[0])
 
 
 # ---------------------------------------------------------------------------

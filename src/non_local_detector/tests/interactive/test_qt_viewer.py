@@ -22,6 +22,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from non_local_detector.tests._simulated_detectors import (
     FittedDetector,
     SimulatedSession,
+    first_finite_row_index,
 )
 from non_local_detector.visualization.interactive.data_source import (
     InMemoryDecoderDataSource,
@@ -69,9 +70,7 @@ def test_qt_panel_renders_collapsed_array(
         position_centers=np.asarray(env.place_bin_centers_).squeeze(),
     )
     post = nl_fitted.results["acausal_posterior"].values
-    # First 50 rows starting from the first finite row.
-    finite = np.flatnonzero(np.isfinite(post).any(axis=-1))
-    start = int(finite[0])
+    start = first_finite_row_index(post)
     window = post[start : start + 50]
     panel.update_for_array(
         time=np.linspace(0.0, 1.0, window.shape[0]),

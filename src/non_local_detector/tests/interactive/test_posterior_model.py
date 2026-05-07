@@ -12,6 +12,7 @@ from non_local_detector.analysis.posterior import (
 from non_local_detector.tests._simulated_detectors import (
     FittedDetector,
     SimulatedSession,
+    first_finite_row_index,
 )
 from non_local_detector.visualization.interactive.data_source import (
     InMemoryDecoderDataSource,
@@ -36,11 +37,8 @@ def _full_window_posterior(bundle: RunBundle) -> np.ndarray:
 def _midwindow_slice(bundle: RunBundle, n_visible: int = 50) -> np.ndarray:
     """Pick a small contiguous slice with non-zero mass for assertion targets."""
     post = _full_window_posterior(bundle)
-    # Find the first row with any finite value, then take a window of
-    # n_visible rows starting there.
-    finite_rows = np.flatnonzero(np.isfinite(post).any(axis=-1))
-    assert finite_rows.size >= n_visible
-    start = int(finite_rows[0])
+    start = first_finite_row_index(post)
+    assert post.shape[0] - start >= n_visible
     return post[start : start + n_visible]
 
 
@@ -296,16 +294,7 @@ class TestPosteriorHeatmapModelSchemaSwap:
                 )
 
 
-def _first_finite_row(values: np.ndarray) -> int:
-    finite = np.isfinite(values).any(axis=-1)
-    indices = np.flatnonzero(finite)
-    assert indices.size > 0
-    return int(indices[0])
-
-
 def _window_slice_bounds(bundle: RunBundle, n_visible: int) -> tuple[int, int]:
     """Match ``_midwindow_slice``'s start/stop selection."""
-    post = _full_window_posterior(bundle)
-    finite_rows = np.flatnonzero(np.isfinite(post).any(axis=-1))
-    start = int(finite_rows[0])
+    start = first_finite_row_index(_full_window_posterior(bundle))
     return start, start + n_visible

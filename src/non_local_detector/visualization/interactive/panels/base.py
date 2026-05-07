@@ -2,16 +2,12 @@
 
 Two protocols, one per axis kind:
 
-- ``TimeAxisPanel``: window-based panel rendered in the left column
-  (posterior heatmap, raster, state probabilities, generic series).
+- ``TimeAxisPanel``: window-based panel rendered in the left column.
 - ``BinSyncedPanel``: point-based panel rendered to the right of the
-  time-axis stack at the cursor's single time bin (SlicePanel; future
-  ``VideoOverlayPanel``).
+  time-axis stack at the cursor's single time bin.
 
-Concrete Qt implementations subclass the appropriate Protocol plus the
-``EventOverlayMixin`` (Phase 3) for default overlay rendering.
-Project-specific panels in ``continuum-swr-replay`` follow the same
-pattern.
+Concrete Qt implementations subclass the appropriate Protocol plus
+``EventOverlayMixin`` for default overlay rendering.
 """
 
 from __future__ import annotations

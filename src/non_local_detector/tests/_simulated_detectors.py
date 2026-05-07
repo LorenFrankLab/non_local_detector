@@ -162,6 +162,19 @@ PREDICT_VARIANTS: dict[str, str | list[str] | None] = {
 }
 
 
+def first_finite_row_index(values: np.ndarray) -> int:
+    """Return the first time index with at least one finite value in any column.
+
+    Many tests need to skip the initial-burn-in NaN rows in a
+    decoder's ``acausal_posterior`` / ``log_likelihood`` array before
+    asserting on a representative row. Centralised here so the
+    selection rule is consistent across tests.
+    """
+    finite_indices = np.flatnonzero(np.isfinite(values).any(axis=-1))
+    assert finite_indices.size > 0, "No finite rows in supplied array"
+    return int(finite_indices[0])
+
+
 def predict_variants(
     fitted: FittedDetector, session: SimulatedSession
 ) -> dict[str, xr.Dataset]:

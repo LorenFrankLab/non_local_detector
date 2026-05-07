@@ -70,11 +70,12 @@ def _load_run(spec: dict[str, str]):
 
     Schema:
 
-    - ``results.nc``: NetCDF written from ``predict()`` output. Required
-      variables: ``acausal_posterior``, ``acausal_state_probabilities``.
+    - ``results.nc``: NetCDF written via
+      ``_DetectorBase.save_results``. Required variables:
+      ``acausal_posterior``, ``acausal_state_probabilities``.
       Optional: ``log_likelihood``, ``predictive_posterior``.
-    - ``model.pkl``: joblib-pickled fitted detector
-      (``SortedSpikesDecoder`` /
+    - ``model.pkl``: pickled fitted detector written via
+      ``_DetectorBase.save_model`` (``SortedSpikesDecoder`` /
       ``ContFragSortedSpikesClassifier`` /
       ``NoSpikeContFragSortedSpikesClassifier`` /
       ``NonLocalSortedSpikesDetector``).
@@ -86,17 +87,18 @@ def _load_run(spec: dict[str, str]):
       Required column: ``position`` (1D) or ``x_position`` +
       ``y_position`` (2D, v3+). Optional: ``speed``.
     """
-    import joblib  # type: ignore[import-untyped]
     import numpy as np
     import pandas as pd
-    import xarray as xr
 
+    from non_local_detector.models.base import _DetectorBase
     from non_local_detector.visualization.interactive.view_models.base import (
         RunBundle,
     )
 
-    results = xr.open_dataset(spec["results"])
-    detector = joblib.load(spec["model"])
+    # Use the canonical save/load pair so the state_bins MultiIndex
+    # gets re-attached on load (xr.open_dataset alone drops it).
+    results = _DetectorBase.load_results(spec["results"])
+    detector = _DetectorBase.load_model(spec["model"])
     spike_times_npz = np.load(spec["spikes"], allow_pickle=True)
     spike_times = list(spike_times_npz["spike_times"])
     position_df = pd.read_parquet(spec["position"])

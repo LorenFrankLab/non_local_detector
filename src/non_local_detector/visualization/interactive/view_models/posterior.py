@@ -17,6 +17,8 @@ import numpy as np
 
 from non_local_detector.analysis.posterior import (
     PosteriorReduction,
+    _non_local_state_ids,
+    _spatial_state_ids,
     _validate_rectangular_spatial,
     collapse_posterior_to_position,
     select_reduction,
@@ -30,9 +32,11 @@ class PosteriorHeatmapModel:
     """Per-row posterior → ``(n_visible, n_pos)`` collapse for the heatmap panel.
 
     Construction picks ``reduction`` via ``select_reduction`` (or the
-    user override). ``update_window`` returns a ``(n_visible, n_pos)``
-    NumPy array; ``set_active_run`` rebinds the strategy when the
-    viewer swaps to a different detector schema.
+    user override) and caches the per-detector projection (selected
+    state ids, the column mask into ``state_bins``, and ``n_pos``)
+    once. ``update_window`` then collapses an entire visible window
+    in one vectorized NumPy reduction. ``set_active_run`` rebinds the
+    cache when the viewer swaps to a different detector schema.
     """
 
     def __init__(
@@ -41,11 +45,34 @@ class PosteriorHeatmapModel:
         reduction: PosteriorReduction | None = None,
         zero_mass_fill: float = np.nan,
     ) -> None:
+        self._zero_mass_fill = zero_mass_fill
+        self._bind(detector, reduction)
+
+    def _bind(
+        self,
+        detector: _DetectorBase,
+        reduction: PosteriorReduction | None,
+    ) -> None:
+        """Cache everything that's invariant per-detector for hot-path reuse."""
         self._detector = detector
         self._reduction = reduction or select_reduction(
             detector.state_names, detector.bin_sizes_
         )
-        self._zero_mass_fill = zero_mass_fill
+        # Validate once + cache n_pos so per-tick collapse skips it.
+        _, self._n_pos = _validate_rectangular_spatial(
+            detector, "PosteriorHeatmapModel"
+        )
+        # Selected discrete-state ids for the chosen reduction.
+        if self._reduction is PosteriorReduction.CONDITIONAL_NON_LOCAL:
+            self._selected_state_ids = _non_local_state_ids(detector)
+        else:
+            # MARGINAL and CONDITIONAL_ON_SPATIAL both pick spatial states.
+            self._selected_state_ids = _spatial_state_ids(detector)
+        # Boolean mask into state_bins — the per-row primitive uses
+        # this; computing it once per swap means no per-tick re-build.
+        self._selected_mask = np.isin(
+            np.asarray(detector.state_ind_), self._selected_state_ids
+        )
 
     @property
     def reduction(self) -> PosteriorReduction:
@@ -54,6 +81,10 @@ class PosteriorHeatmapModel:
     @property
     def detector(self) -> _DetectorBase:
         return self._detector
+
+    @property
+    def n_pos(self) -> int:
+        return self._n_pos
 
     def set_active_run(
         self,
@@ -65,16 +96,14 @@ class PosteriorHeatmapModel:
         Called by ``ViewerCore`` on M-key swap. Pass ``reduction``
         explicitly to override the auto-detect.
         """
-        self._detector = detector
-        self._reduction = reduction or select_reduction(
-            detector.state_names, detector.bin_sizes_
-        )
+        self._bind(detector, reduction)
 
     def update_window(self, posterior_window: np.ndarray) -> np.ndarray:
         """Collapse a ``(n_visible, n_state_bins)`` window to ``(n_visible, n_pos)``.
 
-        Per-row routing through ``collapse_posterior_to_position``
-        keeps every reduction path on the same primitive.
+        Vectorized: select selected-state columns out of every row,
+        sum across the state axis, divide by per-row mass for the
+        ``CONDITIONAL_*`` strategies (``MARGINAL`` skips the divide).
         """
         if posterior_window.ndim != 2:
             raise ValueError(
@@ -84,47 +113,52 @@ class PosteriorHeatmapModel:
             )
         return self.collapse_rows(posterior_window)
 
-    @property
-    def n_pos(self) -> int:
-        """Number of position bins this model collapses to."""
-        _, n_pos = _validate_rectangular_spatial(
-            self._detector, "PosteriorHeatmapModel"
-        )
-        return n_pos
-
     def collapse_rows(self, posterior_window: np.ndarray) -> np.ndarray:
-        """Vectorized helper used by ``update_window``.
+        """Vectorized window-level collapse.
 
-        Public for the SlicePanel posterior-fallback path and the
-        Phase 1c property tests. Always returns ``(n_visible, n_pos)``;
-        on an empty window the ``n_pos`` axis is preserved so
-        downstream renderers can still infer the position grid width.
+        Always returns ``(n_visible, n_pos)``; the ``n_pos`` axis is
+        preserved on empty input so downstream renderers can still
+        infer the position grid width.
         """
         n_visible = posterior_window.shape[0]
         if n_visible == 0:
-            return np.empty((0, self.n_pos), dtype=np.float64)
-        rows = [
-            collapse_posterior_to_position(
-                posterior_window[i],
-                self._detector,
-                self._reduction,
-                zero_mass_fill=self._zero_mass_fill,
-            )
-            for i in range(n_visible)
-        ]
-        return np.stack(rows)
+            return np.empty((0, self._n_pos), dtype=np.float64)
+
+        # Cast to float64 so accumulation matches the static-plot
+        # inline algorithm — see analysis.posterior._conditional_row.
+        selected = (
+            posterior_window[:, self._selected_mask]
+            .reshape(n_visible, self._selected_state_ids.size, self._n_pos)
+            .astype(np.float64)
+        )
+        column_sum = selected.sum(axis=1)  # (n_visible, n_pos)
+
+        if self._reduction is PosteriorReduction.MARGINAL:
+            return column_sum
+
+        # CONDITIONAL_*: divide by per-row mass; rows with zero
+        # selected mass take ``zero_mass_fill``.
+        mass = np.nansum(column_sum, axis=1, keepdims=True)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out = column_sum / mass
+        zero_mask = (mass.squeeze(axis=1) == 0) | np.isnan(mass.squeeze(axis=1))
+        if zero_mask.any():
+            out[zero_mask] = self._zero_mass_fill
+        return out
 
     def collapse_at(
         self, posterior_window: np.ndarray, indices: Sequence[int]
     ) -> np.ndarray:
-        """Collapse only the rows at ``indices`` (Phase 4 SlicePanel use).
+        """Collapse only the rows at ``indices``.
 
         Always returns ``(len(indices), n_pos)``; an empty
         ``indices`` preserves the ``n_pos`` axis.
         """
         indices = list(indices)
         if not indices:
-            return np.empty((0, self.n_pos), dtype=np.float64)
+            return np.empty((0, self._n_pos), dtype=np.float64)
+        # Per-row routing keeps bit-for-bit equivalence with
+        # ``collapse_posterior_to_position`` for unit-test parity.
         rows = [
             collapse_posterior_to_position(
                 posterior_window[i],

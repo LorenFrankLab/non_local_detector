@@ -122,15 +122,26 @@ class ViewerCore:
     # ------------------------------------------------------------------
 
     def set_t_center(self, t_center: float) -> None:
-        """Move the view center; emits a new load request."""
-        self._t_center = float(t_center)
+        """Move the view center; emits a new load request.
+
+        No-op if ``t_center`` is unchanged — the slider re-fires
+        ``valueChanged`` on identical positions and we don't want to
+        burn a request_id + worker dispatch per redundant event.
+        """
+        new_t_center = float(t_center)
+        if new_t_center == self._t_center:
+            return
+        self._t_center = new_t_center
         self._current_view_state = self._build_view_state()
         self.request_load()
 
     def set_t_width(self, t_width: float) -> None:
         if t_width <= 0:
             raise ValueError(f"t_width must be positive. Got {t_width}.")
-        self._t_width = float(t_width)
+        new_t_width = float(t_width)
+        if new_t_width == self._t_width:
+            return
+        self._t_width = new_t_width
         self._current_view_state = self._build_view_state()
         self.request_load()
 

@@ -21,6 +21,7 @@ from non_local_detector.visualization.interactive.panels.qt.posterior import (
     QtPosteriorHeatmapPanel,
 )
 from non_local_detector.visualization.interactive.view_models.base import (
+    PositionGrid,
     RunBundle,
     ViewState,
     WindowPayload,
@@ -118,11 +119,12 @@ class QtViewer(QtWidgets.QMainWindow):
         self._backend = QtBackendAdapter(data_source)
         self._core = ViewerCore(data_source, self._backend, t_width=t_width)
 
-        env = data_source.active_run.detector.environments[0]
-        position_centers = np.asarray(env.place_bin_centers_).squeeze()
+        grid = PositionGrid.from_environment(
+            data_source.active_run.detector.environments[0]
+        )
         self._posterior_model = PosteriorHeatmapModel(data_source.active_run.detector)
         self._panel = QtPosteriorHeatmapPanel(
-            model=self._posterior_model, position_centers=position_centers
+            model=self._posterior_model, position_centers=grid.centers
         )
         self._core.on_window_loaded(self._panel.update_window)
         self._core.on_active_run_changed(self._rebind_panels)
@@ -164,16 +166,12 @@ class QtViewer(QtWidgets.QMainWindow):
 
         Triggered by ``ViewerCore.set_active_run`` *before* the new
         load is dispatched so the panel collapses the new payload
-        under the correct schema. Currently only the posterior heatmap
-        exists; later milestones add likelihood / state-prob / raster
-        / slice rebind hooks here.
+        under the correct schema.
         """
         new_detector = self._data_source.active_run.detector
         self._posterior_model.set_active_run(new_detector)
-        # Position grid may differ across detectors when the
-        # environment differs (v3+); for v1 the grid is shared.
-        env = new_detector.environments[0]
-        self._panel._position_centers = np.asarray(env.place_bin_centers_).squeeze()
+        grid = PositionGrid.from_environment(new_detector.environments[0])
+        self._panel._position_centers = grid.centers
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt naming convention
         """Drop self from the live-viewer registry on close."""
