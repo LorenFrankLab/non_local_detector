@@ -388,13 +388,16 @@ def test_qt_viewer_constructs_slice_panel_from_active_run(
     assert isinstance(viewer._slice_model, SliceModel)
     assert isinstance(viewer._slice_panel, QtSlicePanel)
     assert viewer._slice_model.detector is multi_run_bundles["nl"].detector
-    # Slice panel is in the layout (under the body widget that holds
-    # the two-column split).
+    # Slice panel sits inside the right-column wrapper widget under
+    # the body's QHBoxLayout split. (Right-column wrapper exists so
+    # ``extra_bin_panels`` can stack below the slice panel.)
     body = viewer.centralWidget().layout().itemAt(1).widget()
-    body_widgets = [
-        body.layout().itemAt(i).widget() for i in range(body.layout().count())
+    right_column = body.layout().itemAt(1).widget()
+    right_column_widgets = [
+        right_column.layout().itemAt(i).widget()
+        for i in range(right_column.layout().count())
     ]
-    assert viewer._slice_panel in body_widgets
+    assert viewer._slice_panel in right_column_widgets
 
 
 @pytest.mark.unit

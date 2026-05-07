@@ -63,9 +63,10 @@ matching kwarg. User-supplied panels are owned by the caller and
 | Bin-based    | `extra_bin_panels=[...]` | Below the built-in slice panel (right column)   | `BinSyncedPanel` |
 
 The two lanes are **separate** — passing a `BinSyncedPanel` via
-`extra_panels` will fail on the first window load because
-`update_window` is missing. Use the right kwarg for the protocol
-your panel implements.
+`extra_panels` raises `AttributeError: ... 'set_event_overlays'`
+at viewer construction time (the time-axis wiring step requires
+overlay registration). Use the right kwarg for the protocol your
+panel implements.
 
 ### `TimeAxisPanel` Protocol
 
