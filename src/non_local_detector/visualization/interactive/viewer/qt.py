@@ -191,11 +191,19 @@ class QtViewer(QtWidgets.QMainWindow):
         self._core = ViewerCore(data_source, self._backend, t_width=t_width)
         self._initial_t_center = self._core.t_center
 
-        # Auto-scroll state (driven by the controls-bar play button +
-        # speed combo, plus Space/,/. shortcuts). Lazy-allocated timer
-        # so we don't burn a QTimer slot when playback is never used.
+        # Auto-scroll state. Lazy-allocated timer so we don't burn a
+        # QTimer slot when playback is never used. ``_autoscroll_cursor``
+        # is a float absolute-time accumulator initialised at play
+        # start: each tick adds ``rate / TICK_HZ`` seconds to it,
+        # independent of slider quantization. Without this, sub-bin
+        # ticks (e.g. default 0.05× / 30Hz ≈ 1.67ms vs a 2ms bin)
+        # would round back to the same index, ``setValue`` would skip,
+        # ``_core.t_center`` would never advance, and playback would
+        # appear frozen on coarse time grids.
         self._autoscroll_rate = AUTOSCROLL_DEFAULT_SPEED
         self._autoscroll_timer: QtCore.QTimer | None = None
+        self._autoscroll_cursor: float | None = None
+        self._autoscroll_resync_lock = False
 
         active_run = data_source.active_run
         detector = active_run.detector
@@ -484,6 +492,9 @@ class QtViewer(QtWidgets.QMainWindow):
     def _start_autoscroll(self) -> None:
         if self._autoscroll_timer is not None:
             return
+        # Initialise the float playback cursor from the current center
+        # so playback continues from wherever the user left the slider.
+        self._autoscroll_cursor = float(self._core.t_center)
         timer = QtCore.QTimer(self)
         timer.setInterval(int(round(1000.0 / AUTOSCROLL_TICK_HZ)))
         timer.timeout.connect(self._autoscroll_tick)
@@ -496,13 +507,19 @@ class QtViewer(QtWidgets.QMainWindow):
         self._autoscroll_timer.stop()
         self._autoscroll_timer.deleteLater()
         self._autoscroll_timer = None
+        self._autoscroll_cursor = None
 
     def _autoscroll_tick(self) -> None:
-        """One tick of playback. Drives the slider as the single source
-        of truth (slider ``valueChanged`` already wires
-        ``core.set_t_center`` + the per-bin slice update)."""
+        """One tick of playback. Accumulates ``rate / TICK_HZ`` seconds
+        into the float playback cursor and only updates the slider
+        when the cursor crosses a bin boundary. The slider remains
+        the single source of truth for ``_core.t_center`` + slice
+        updates (its ``valueChanged`` wires both)."""
+        if self._autoscroll_cursor is None:
+            return
         dt = self._autoscroll_rate / AUTOSCROLL_TICK_HZ
-        new_t = self._core.t_center + dt
+        self._autoscroll_cursor += dt
+        new_t = self._autoscroll_cursor
         time = self._data_source.time
         t_max = float(time[-1])
         if new_t >= t_max:
@@ -515,7 +532,15 @@ class QtViewer(QtWidgets.QMainWindow):
         new_idx = int(np.searchsorted(time, new_t, side="right") - 1)
         new_idx = max(0, min(len(time) - 1, new_idx))
         if self._slider.value() != new_idx:
-            self._slider.setValue(new_idx)
+            # Tick-driven slider update — block the resync path so
+            # ``_on_slider_value_changed`` doesn't snap our float
+            # cursor back to ``time[new_idx]`` and lose the sub-bin
+            # accumulation we just built up.
+            self._autoscroll_resync_lock = True
+            try:
+                self._slider.setValue(new_idx)
+            finally:
+                self._autoscroll_resync_lock = False
 
     def _on_window_loaded(self, payload) -> None:
         for panel in self._all_panels:
@@ -562,6 +587,15 @@ class QtViewer(QtWidgets.QMainWindow):
         # commits).
         for bin_panel in (self._slice_panel, *self._extra_bin_panels):
             bin_panel.update_for_index(value)
+        # Manual scrub during play → re-anchor the float playback
+        # cursor to the slider's quantized time so playback continues
+        # from there. The lock suppresses this when the slider change
+        # was tick-driven (otherwise we'd lose sub-bin accumulation).
+        if (
+            self._autoscroll_cursor is not None
+            and not self._autoscroll_resync_lock
+        ):
+            self._autoscroll_cursor = float(time[value])
 
     def _rebind_panels(self, _new_run_name: str) -> None:
         """Rebind all panels to the new active run's detector.

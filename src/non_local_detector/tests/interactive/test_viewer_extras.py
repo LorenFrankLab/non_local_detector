@@ -600,14 +600,75 @@ def test_autoscroll_tick_advances_slider(
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
-    # Crank speed up so a single tick covers many bins (at 0.05× one
-    # tick is < 2 ms, smaller than the simulated bin width — slider
-    # would round-trip to the same index).
+    # Crank speed up so a single tick crosses many bins.
     high_idx = viewer._speed_combo.findData(8.0)
     viewer._speed_combo.setCurrentIndex(high_idx)
+    viewer._toggle_play()  # initialise the float playback cursor
     initial = viewer._slider.value()
     viewer._autoscroll_tick()
     assert viewer._slider.value() > initial
+
+
+@pytest.mark.unit
+def test_autoscroll_accumulates_subbin_progress_at_default_speed(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Default 0.05× ticks must accumulate across bins (regression).
+
+    Earlier the tick computed ``new_t = core.t_center + dt`` then
+    quantized to a slider index. At default speed (0.05/30 ≈ 1.67ms)
+    versus a 2ms simulated bin, the quantized index equalled the
+    current slider, ``setValue`` was skipped, ``_core.t_center``
+    never advanced, and playback froze. Fix: accumulate dt into a
+    float playback cursor independent of slider quantization.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        AUTOSCROLL_DEFAULT_SPEED,
+        AUTOSCROLL_TICK_HZ,
+        QtViewer,
+    )
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    viewer._toggle_play()  # initialise the float cursor
+    initial_slider = viewer._slider.value()
+    initial_cursor = viewer._autoscroll_cursor
+    assert initial_cursor is not None
+
+    # One tick advances the float cursor regardless of bin width.
+    viewer._autoscroll_tick()
+    assert viewer._autoscroll_cursor > initial_cursor
+
+    # Enough ticks at default speed must cross at least one bin.
+    time = viewer._data_source.time
+    bin_dt = float(time[1] - time[0])
+    per_tick = AUTOSCROLL_DEFAULT_SPEED / AUTOSCROLL_TICK_HZ
+    n_ticks_to_cross = max(2, int(np.ceil(bin_dt / per_tick)))
+    for _ in range(n_ticks_to_cross + 1):
+        viewer._autoscroll_tick()
+    assert viewer._slider.value() > initial_slider
+
+
+@pytest.mark.unit
+def test_manual_scrub_during_play_resyncs_cursor(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """User scrubbing the slider during playback resets the float cursor.
+
+    Without resync, autoscroll would continue from the pre-scrub
+    cursor position, snapping back on the next tick.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    viewer._toggle_play()
+    target_idx = viewer._slider.value() + 100
+    viewer._slider.setValue(target_idx)
+    expected_cursor = float(viewer._data_source.time[target_idx])
+    assert viewer._autoscroll_cursor == pytest.approx(expected_cursor)
 
 
 @pytest.mark.unit

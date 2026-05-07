@@ -575,6 +575,47 @@ Latest at top:
       replaces the old "hidden when single-run + no overlays" test.
 
   19 → 26 tests in `test_viewer_extras.py`. Lint green.
+- **M6 sub-bin playback freeze fix (uncommitted)** — User caught
+  that the auto-scroll commit (`8c0b1d2`) computed
+  `new_t = self._core.t_center + dt` per tick and quantized to a
+  slider index. At default 0.05× / 30Hz (≈1.67ms per tick) versus
+  a 2ms simulated bin width, the quantized index equalled the
+  current slider, `setValue` was skipped, `_core.t_center` never
+  advanced, and playback froze. The new test in `8c0b1d2`
+  explicitly avoided default speed (used 8×) and so missed this.
+  - **Fix**: float playback cursor `_autoscroll_cursor` initialised
+    on play start from the current `_core.t_center`. Each tick
+    accumulates `rate / TICK_HZ` into the cursor; slider
+    `setValue` only fires when the cursor crosses a bin boundary.
+    Stop releases the cursor (`= None`) — that's the in-play
+    sentinel.
+  - **Manual scrub during play** must re-anchor the cursor to the
+    slider's quantized time so playback continues from the
+    user's drag target. Implemented via
+    `_autoscroll_resync_lock` flag the tick path raises around
+    its own `setValue`, so the slot can distinguish tick-driven
+    setValue (skip resync, preserve sub-bin accumulation) from
+    user drags (re-anchor cursor).
+  - **Tests** (2 new, 1 reframed):
+    - `test_autoscroll_accumulates_subbin_progress_at_default_speed`
+      — explicit regression: at default speed, cursor advances
+      per tick even when slider doesn't, and after enough ticks
+      the slider does cross a bin.
+    - `test_manual_scrub_during_play_resyncs_cursor` — slider
+      drag during play snaps the cursor to the target time.
+    - existing `test_autoscroll_tick_advances_slider` reframed:
+      now calls `_toggle_play()` first to initialize the cursor
+      (mirroring real usage; calling `_autoscroll_tick` without
+      play active is now a documented no-op).
+
+  26 → 28 tests in `test_viewer_extras.py`. Lint green.
+  - **Lesson logged**: my "sufficient speed for visible advance"
+    test (8×) hid the very freeze the user was worried about. When
+    a tick frequency / bin width interaction is at issue, the
+    regression test must use the *minimum* speed in the user-
+    visible range (here: the default 0.05×, which is also the
+    speed users will hit first). Picking a fast value to "make the
+    test work" is the symptom of the bug.
 
 ---
 
