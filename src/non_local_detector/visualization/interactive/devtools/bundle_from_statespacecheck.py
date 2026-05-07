@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import joblib
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 import xarray as xr
@@ -307,10 +308,14 @@ def bundle_from_statespacecheck_cache(
         raise FileNotFoundError(
             f"Detector pickle not found at {resolved_model_pkl}."
         )
-    # Upstream pickles are joblib-serialized; joblib output is
-    # readable via plain ``pickle.load`` (joblib uses the pickle
-    # protocol with numpy extensions), so the canonical loader works.
-    detector = _DetectorBase.load_model(str(resolved_model_pkl))
+    # Upstream pickles are joblib-serialized. joblib's numpy codec
+    # produces files that ``pickle.load`` *cannot* read (verified
+    # against the real ``cont_model.pkl`` — fails with
+    # ``UnpicklingError: invalid load key``); use ``joblib.load`` for
+    # the source. The viewer bundle's ``model.pkl`` is then re-emitted
+    # via ``detector.save_model`` so ``app._load_run`` keeps using the
+    # canonical pickle-based loader.
+    detector = joblib.load(str(resolved_model_pkl))
 
     time, linear_position = _read_meta(cache_dir)
     spike_times = _read_spike_times(cache_dir)

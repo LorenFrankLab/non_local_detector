@@ -531,8 +531,12 @@ and Phase 6 verifications can run.
 - [x] Loads `results` from `model_paths.results_nc`; validates
   `acausal_posterior` + `acausal_state_probabilities` present.
 - [x] Loads detector via `joblib.load(model_paths.model_pkl)`. (Plain
-  `pickle.load` via `_DetectorBase.load_model` works because joblib
-  uses the pickle protocol with numpy extensions.)
+  `pickle.load` does **not** work on real upstream pickles — joblib's
+  numpy codec produces files that fail with
+  `UnpicklingError: invalid load key`. Verified against the actual
+  `cont_model.pkl`. Output bundle is re-emitted via
+  `detector.save_model` so `app._load_run` keeps using the canonical
+  pickle-based loader.)
 - [x] Reads shared `<cache-dir>/figure04_meta.npz` for time + linear
   position.
 - [x] Reads shared `<cache-dir>/figure04_spike_times.npy` for

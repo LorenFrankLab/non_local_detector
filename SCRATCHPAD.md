@@ -204,11 +204,16 @@ Latest at top:
     `extract_state_aligned_place_fields(detector)[:, is_track_interior_state_bins_]`
     with `rtol=1e-5, atol=1e-6`. Error message names the likely
     fix ("rebuild whichever is older") plus shape + max-abs-diff.
-  - **Detector pickle**: read source via the canonical
-    `_DetectorBase.load_model` (plain `pickle.load`; works on joblib
-    output too because joblib uses pickle protocol). Round-tripped
-    on output via `detector.save_model` so `app._load_run` reads it
-    cleanly.
+  - **Detector pickle**: read source via `joblib.load` — verified
+    against the real upstream `cont_model.pkl` that plain
+    `pickle.load` fails with `UnpicklingError: invalid load key`
+    because joblib's numpy codec produces files outside the pure
+    pickle format. (My initial commit `eab0478` got this wrong; user
+    review caught it before any real-data check ran. Test fixture
+    now writes via `joblib.dump` so it reproduces the failure mode
+    when the loader is wrong.) Round-tripped on output via
+    `detector.save_model` so `app._load_run` keeps using the
+    canonical pickle-based loader.
   - **Zarr fallback**: `--results-from-zarr` lazy-imports `zarr`
     with a clear "install zarr or drop the flag" error if missing.
     `acausal_posterior` is optional in upstream's Zarr; devtool

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 import pytest
@@ -35,13 +36,23 @@ def _interior_place_fields(detector) -> np.ndarray:
 def _populate_intermediates(
     intermediates_dir: Path, fitted: FittedDetector, model_filename: str
 ) -> None:
+    """Mirror upstream's writer exactly: NetCDF + ``joblib.dump`` for the pkl.
+
+    Critical that this stays as ``joblib.dump`` (not ``detector.save_model``).
+    Joblib's numpy codec produces files that plain ``pickle.load``
+    cannot read, and the devtool reads the source via ``joblib.load``;
+    a pickle-flavoured fixture would silently let a pickle-only loader
+    pass these tests while failing on the real upstream pkl.
+    """
     from non_local_detector.models.base import _DetectorBase
 
     intermediates_dir.mkdir(parents=True, exist_ok=True)
     _DetectorBase.save_results(
         fitted.results, str(intermediates_dir / f"{model_filename}_results.nc")
     )
-    fitted.detector.save_model(str(intermediates_dir / f"{model_filename}_model.pkl"))
+    joblib.dump(
+        fitted.detector, str(intermediates_dir / f"{model_filename}_model.pkl")
+    )
 
 
 def _populate_cache(
@@ -169,7 +180,7 @@ def test_missing_required_results_var_raises(
     _DetectorBase.save_results(
         stripped, str(intermediates_dir / "cont_frag_results.nc")
     )
-    cf_fitted.detector.save_model(str(intermediates_dir / "cont_frag_model.pkl"))
+    joblib.dump(cf_fitted.detector, str(intermediates_dir / "cont_frag_model.pkl"))
     _populate_cache(cache_dir, sim_session, cf_fitted, "contfrag")
 
     with pytest.raises(ValueError, match="acausal_state_probabilities"):
@@ -251,7 +262,7 @@ def test_results_nc_override_used(
     custom_results = tmp_path / "custom" / "my_results.nc"
     custom_results.parent.mkdir(parents=True)
     _DetectorBase.save_results(cf_fitted.results, str(custom_results))
-    cf_fitted.detector.save_model(str(intermediates_dir / "cont_frag_model.pkl"))
+    joblib.dump(cf_fitted.detector, str(intermediates_dir / "cont_frag_model.pkl"))
     _populate_cache(cache_dir, sim_session, cf_fitted, "contfrag")
 
     out_dir = tmp_path / "out"
@@ -277,7 +288,7 @@ def test_results_from_zarr_validates_required_vars(
     cache_dir = tmp_path / "cache"
     intermediates_dir = tmp_path / "intermediates"
     intermediates_dir.mkdir(parents=True)
-    cf_fitted.detector.save_model(str(intermediates_dir / "cont_frag_model.pkl"))
+    joblib.dump(cf_fitted.detector, str(intermediates_dir / "cont_frag_model.pkl"))
     _populate_cache(cache_dir, sim_session, cf_fitted, "contfrag")
     # Write a Zarr that lacks ``acausal_posterior`` to mimic upstream's
     # "optional" stance on it.
