@@ -15,7 +15,12 @@ from typing import Literal
 import numpy as np
 import xarray as xr
 
-from non_local_detector.visualization.interactive.view_models.base import RunBundle
+from non_local_detector.visualization.interactive.view_models.base import (
+    RunBundle,
+    SpikeEvent,
+    SpikeEventIndex,
+    bin_edges_array,
+)
 from non_local_detector.visualization.interactive.view_models.events import (
     EventOverlay,
     find_duplicate_overlay_names,
@@ -58,6 +63,13 @@ class InMemoryDecoderDataSource:
         # would re-wrap on every read. Refreshed by ``set_active_run``.
         self._time_cache: np.ndarray = np.asarray(
             self.active_run.results["time"].values
+        )
+        # ``QtBackendAdapter._build_payload`` calls ``bin_edges_array``
+        # on every window load to derive the heatmap rect's left/right
+        # bounds; the result is fixed per active run, so cache it.
+        self._time_edges_cache: np.ndarray = bin_edges_array(self._time_cache)
+        self._event_index_cache: SpikeEventIndex = SpikeEventIndex.from_spike_times(
+            self.active_run.spike_times, self._time_cache
         )
         # Cache the per-run position interpolated onto the decoder
         # time grid, computed lazily on first ``load_position`` call.
@@ -154,6 +166,10 @@ class InMemoryDecoderDataSource:
         self._validate_overlay_alignment()
         self._active_run_name = name
         self._time_cache = np.asarray(self.active_run.results["time"].values)
+        self._time_edges_cache = bin_edges_array(self._time_cache)
+        self._event_index_cache = SpikeEventIndex.from_spike_times(
+            self.active_run.spike_times, self._time_cache
+        )
 
     # ------------------------------------------------------------------
     # Hot-path readers (slice into active run)
@@ -302,6 +318,23 @@ class InMemoryDecoderDataSource:
             return None
         return np.asarray(self.active_run.results[var].isel(time=t_idx).values)
 
+    @property
+    def event_index(self) -> SpikeEventIndex:
+        """Stable spike-event index for the active run."""
+        return self._event_index_cache
+
+    def spike_event_at(self, event_id: int) -> SpikeEvent:
+        """Return one spike event by stable row id."""
+        return self._event_index_cache.event_at(event_id)
+
+    def event_ids_at_bin(self, t_idx: int) -> np.ndarray:
+        """Event ids whose spike times fall in decoder bin ``t_idx``."""
+        return self._event_index_cache.event_ids_at_bin(t_idx)
+
+    def event_ids_for_window(self, sl: slice) -> np.ndarray:
+        """Event ids whose decoder bins overlap ``sl``."""
+        return self._event_index_cache.event_ids_for_window(sl)
+
     def events_in_window(self, _sl: slice) -> list[EventOverlay]:
         """Return the active run's overlays.
 
@@ -320,6 +353,16 @@ class InMemoryDecoderDataSource:
     def time(self) -> np.ndarray:
         """Active run's time grid (shared across runs after validation)."""
         return self._time_cache
+
+    @property
+    def time_edges(self) -> np.ndarray:
+        """``(n_time + 1,)`` left-edge bin boundaries for the active run.
+
+        Cached at bind / swap because every window load reads
+        ``edges[sl.start]`` + ``edges[sl.stop]`` to set the heatmap
+        rect's x bounds.
+        """
+        return self._time_edges_cache
 
     @property
     def n_time(self) -> int:

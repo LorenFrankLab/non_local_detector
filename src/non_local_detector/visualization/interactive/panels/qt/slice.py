@@ -113,7 +113,16 @@ def _pin_slice_axes(plot: pg.PlotWidget, position_centers: np.ndarray) -> None:
 
 
 def _display_position_axis(layout: PositionGridLayout) -> np.ndarray:
-    """Return slice x-coordinates that match heatmap pixel rows."""
+    """Return slice x-coordinates aligned to heatmap pixel-y rows.
+
+    The slice panel's x-axis is in *heatmap pixel-y space*, not real
+    cm. On a non-uniform position grid this means bin ``i`` is plotted
+    at ``y0 + i * uniform_step`` (uniformly spaced) rather than at
+    ``position_centers[i]`` (the true cm value). The trade-off lets the
+    slice curves and the heatmap pixels share one axis convention so a
+    bin's slice value lines up directly with the corresponding heatmap
+    row when reading vertically.
+    """
     if layout.arange_n_pos.size == 0:
         return np.empty(0, dtype=np.float64)
     return layout.y0 + layout.arange_n_pos * layout.uniform_step
@@ -443,7 +452,18 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._buffered_payload = None
         self._last_t_idx = None
         self._pinned_cell_ids.clear()
-        self._clear_top_curve_items()
+        # Drop any extra plot items the previous run grew the pool to,
+        # so a swap to a run with fewer spatial states doesn't leak
+        # hidden ``PlotDataItem``s onto the plot. The first item
+        # (``self._top_curve_item``) is always retained; extras are
+        # removed from both the plot and the cache list.
+        for extra in self._top_curve_items[1:]:
+            self._top_plot.removeItem(extra)
+        del self._top_curve_items[1:]
+        self._top_curve_item.setData(
+            np.empty(0, dtype=float), np.empty(0, dtype=float)
+        )
+        self._top_curve_item.setVisible(True)
         self._predictive_curve_item.setData(
             np.empty(0, dtype=float), np.empty(0, dtype=float)
         )

@@ -43,7 +43,6 @@ from non_local_detector.visualization.interactive.view_models.base import (
     RunBundle,
     ViewState,
     WindowPayload,
-    bin_edges_array,
     bin_edges_at,
 )
 from non_local_detector.visualization.interactive.view_models.likelihood import (
@@ -336,7 +335,7 @@ class QtBackendAdapter(BackendAdapter):
     def _build_payload(self, state: ViewState) -> WindowPayload:
         sl = self._data_source.window_indices(state.t_center, state.t_width)
         time = self._data_source.time[sl]
-        edges = bin_edges_array(self._data_source.time)
+        edges = self._data_source.time_edges
         time_start = float(edges[sl.start]) if time.size else None
         time_stop = float(edges[sl.stop]) if time.size else None
         posterior = self._data_source.load_posterior(sl)

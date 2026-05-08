@@ -106,6 +106,19 @@ class SliceModel:
         self._per_cell_pf_normalized = self._peak_normalize(
             extract_per_cell_place_fields(detector)
         )
+        # Cache the per-spatial-state projection so per-tick top-curve
+        # collapse is one ``[mask].reshape`` plus per-row max-subtract
+        # / exp / peak-normalise — no ``state_ind == s`` rebuild, no
+        # ``_validate_rectangular_spatial`` walk per tick.
+        spatial_state_ids, n_pos_per_state = _validate_rectangular_spatial(
+            detector, "SliceModel"
+        )
+        self._spatial_state_ids = np.asarray(spatial_state_ids)
+        self._spatial_n_pos = int(n_pos_per_state)
+        self._spatial_n_states = int(self._spatial_state_ids.size)
+        self._spatial_state_mask = np.isin(
+            np.asarray(detector.state_ind_), self._spatial_state_ids
+        )
         # Precompute the per-bin (cell_id, count) lookup so per-tick
         # cell readouts are O(n_active_cells_in_bin) instead of
         # O(n_cells × spikes_per_cell). The full session usually
@@ -178,9 +191,7 @@ class SliceModel:
         top_curves: tuple[np.ndarray, ...] = ()
         if log_lik_row is not None:
             top_curve = collapse_log_likelihood_to_position(log_lik_row, self._detector)
-            top_curves = collapse_log_likelihood_per_spatial_state(
-                log_lik_row, self._detector
-            )
+            top_curves = self._per_state_curves(log_lik_row)
             top_curve_label = TOP_CURVE_LIKELIHOOD_LABEL
         else:
             top_curve = collapse_posterior_to_position(
@@ -209,6 +220,38 @@ class SliceModel:
             predictive_curve=predictive_curve,
             cells=tuple(cells),
         )
+
+    def _per_state_curves(self, log_lik_row: np.ndarray) -> tuple[np.ndarray, ...]:
+        """Per-spatial-state peak-normalised likelihood curves (vectorised).
+
+        Same output as ``collapse_log_likelihood_per_spatial_state`` but
+        uses the cached ``_spatial_state_mask``/``_spatial_n_pos`` so
+        the per-tick path doesn't re-derive them.
+        """
+        if self._spatial_n_states == 0:
+            return ()
+        # ``(n_states, n_pos)`` — rows in ``_spatial_state_ids`` order
+        # because ``state_ind_`` groups by state and ``_spatial_state_mask``
+        # preserves that ordering.
+        log_per_state = log_lik_row[self._spatial_state_mask].reshape(
+            self._spatial_n_states, self._spatial_n_pos
+        )
+        log_per_state = np.where(np.isfinite(log_per_state), log_per_state, -np.inf)
+        any_finite = np.isfinite(log_per_state).any(axis=1)
+        # Per-row max over finite entries; fully-non-finite rows fall
+        # through to the all-zero output below.
+        per_row_max = np.where(
+            any_finite,
+            np.where(np.isfinite(log_per_state), log_per_state, -np.inf).max(axis=1),
+            0.0,
+        )
+        lik = np.exp(log_per_state - per_row_max[:, None])
+        peaks = lik.max(axis=1, keepdims=True)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            normed = np.where(peaks > 0, lik / peaks, lik)
+        # Restore the all-zero contract for fully-non-finite rows.
+        normed = np.where(any_finite[:, None], normed, 0.0)
+        return tuple(normed[i] for i in range(self._spatial_n_states))
 
     def _bin_edges(self, t_idx: int) -> tuple[float, float]:
         """Return left-edge ``(t_lo, t_hi)`` for bin ``t_idx``."""
