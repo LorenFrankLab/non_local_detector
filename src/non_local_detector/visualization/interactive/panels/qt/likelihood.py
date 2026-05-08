@@ -5,14 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-import pyqtgraph as pg
 
 from non_local_detector.visualization.interactive.panels.qt._mixins import (
-    ClickRecenterMixin,
-    CursorMarkersMixin,
-    EventOverlayMixin,
-    PositionTraceMixin,
-    position_grid_layout,
+    HeatmapPanelBase,
 )
 
 if TYPE_CHECKING:
@@ -24,13 +19,7 @@ if TYPE_CHECKING:
     )
 
 
-class QtLikelihoodHeatmapPanel(
-    pg.PlotWidget,
-    EventOverlayMixin,
-    ClickRecenterMixin,
-    CursorMarkersMixin,
-    PositionTraceMixin,
-):
+class QtLikelihoodHeatmapPanel(HeatmapPanelBase):
     """Time × position heatmap of the population log-likelihood.
 
     Title-bar text mirrors the SlicePanel: "Likelihood across all
@@ -59,32 +48,16 @@ class QtLikelihoodHeatmapPanel(
         vmax: float = 1.0,
         parent=None,
     ) -> None:
-        super().__init__(parent=parent, background="w")
-        self.setMenuEnabled(False)
-        self.setMouseEnabled(x=False, y=False)
-        self.getAxis("bottom").enableAutoSIPrefix(False)
-        self.getAxis("left").enableAutoSIPrefix(False)
+        super().__init__(
+            position_centers=position_centers,
+            vmax=vmax,
+            bottom_label="Likelihood (peak-normalised, all spatial states)",
+            parent=parent,
+        )
         self._model = model
-        self._set_position_grid(position_centers)
-        self._vmax = float(vmax)
-        self._image_item = pg.ImageItem(axisOrder="row-major")
-        self._image_item.setLookupTable(
-            pg.colormap.get("viridis").getLookupTable(0.0, 1.0, 256)
-        )
-        self._image_item.setLevels((0.0, self._vmax))
-        self.addItem(self._image_item)
-        self.setLabel("left", "Position [cm]")
-        self.setLabel(
-            "bottom",
-            "Likelihood (peak-normalised, all spatial states)",
-        )
         # Mirrors whatever was last passed to setTitle so tests +
         # post-swap rebind logic can read back the displayed message.
         self._title_message: str | None = None
-        self._install_click_recenter()
-        self._install_cursor_markers()
-        self._install_position_trace()
-        self._overlay_items: list[pg.GraphicsObject] = []
 
     def update_window(self, payload: WindowPayload) -> None:
         if payload.likelihood is None:
@@ -101,31 +74,6 @@ class QtLikelihoodHeatmapPanel(
         collapsed = self._model.update_window(log_lik)
         self._set_image(collapsed, np.asarray(time))
         self._set_title_message(None)
-
-    def set_position_centers(self, centers: np.ndarray) -> None:
-        """Re-bind the y-axis position grid (called on M-key swap)."""
-        self._set_position_grid(centers)
-
-    def _set_position_grid(self, centers: np.ndarray) -> None:
-        """Cache layout for ``setRect`` + the position trace.
-
-        See ``QtPosteriorHeatmapPanel._set_position_grid`` for the
-        half-bin-pad convention.
-        """
-        (
-            self._position_centers,
-            self._y0,
-            self._y1,
-            self._dy_half,
-            self._uniform_step,
-            self._arange_n_pos,
-        ) = position_grid_layout(centers)
-        y_min = self._y0 - self._dy_half
-        y_max = self._y1 + self._dy_half
-        vb = self.getViewBox()
-        vb.disableAutoRange()
-        vb.setYRange(y_min, y_max, padding=0)
-        vb.setLimits(yMin=y_min, yMax=y_max)
 
     def _set_title_message(self, message: str | None) -> None:
         """Show ``message`` in the title bar; pass ``None`` to clear.
@@ -145,17 +93,3 @@ class QtLikelihoodHeatmapPanel(
             self.setTitle(None)
         else:
             self.setTitle(message)
-
-    def _set_image(self, collapsed: np.ndarray, time: np.ndarray) -> None:
-        self._image_item.setImage(
-            collapsed.T,
-            autoLevels=False,
-            levels=(0.0, self._vmax),
-            autoDownsample=False,
-        )
-        if time.size and self._position_centers.size:
-            x_min = float(time[0])
-            x_extent = float(time[-1] - time[0]) if time.size > 1 else 1.0
-            y_min = self._y0 - self._dy_half
-            y_extent = (self._y1 - self._y0) + 2 * self._dy_half
-            self._image_item.setRect(pg.QtCore.QRectF(x_min, y_min, x_extent, y_extent))

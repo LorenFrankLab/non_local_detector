@@ -664,9 +664,9 @@ def test_qt_viewer_swap_rebinds_built_in_panel_models(
     assert len(viewer._state_prob_panel._lines) == 2
 
     cf_centers = np.asarray(cf.environments[0].place_bin_centers_).squeeze()
-    np.testing.assert_array_equal(viewer._panel._position_centers, cf_centers)
+    np.testing.assert_array_equal(viewer._panel.grid_layout.centers, cf_centers)
     np.testing.assert_array_equal(
-        viewer._likelihood_panel._position_centers, cf_centers
+        viewer._likelihood_panel.grid_layout.centers, cf_centers
     )
 
     # Smoke check: a fresh load under CF must complete without raising.
@@ -913,8 +913,7 @@ def _expected_trace_y(panel, position: np.ndarray) -> np.ndarray:
     to ``statespacecheck-paper-viewer``'s
     ``update_position_trajectory``.
     """
-    fractional_idx = np.interp(position, panel._position_centers, panel._arange_n_pos)
-    return panel._y0 + fractional_idx * panel._uniform_step
+    return panel.grid_layout.cm_to_pixel_y(np.asarray(position))
 
 
 @pytest.mark.unit
@@ -1361,7 +1360,7 @@ def test_position_trace_uniform_grid_round_trips(
     payload = viewer._backend._build_payload(viewer.core.current_view_state)
     viewer._on_window_loaded(payload)
 
-    centers = viewer._panel._position_centers
+    centers = viewer._panel.grid_layout.centers
     assert centers.size > 1
     # Verify uniformity — if this fixture ever moves to a non-uniform
     # grid the assertion will surface and we'll know to update the test.
@@ -1378,6 +1377,5 @@ def test_position_trace_uniform_grid_round_trips(
     # look like (with the simulated fixture's brief over-shoot
     # clipped to the last bin center, which is what the heatmap
     # itself does).
-    centers = viewer._panel._position_centers
     in_range = (payload.position >= centers[0]) & (payload.position <= centers[-1])
     np.testing.assert_allclose(y[in_range], payload.position[in_range], atol=1e-6)

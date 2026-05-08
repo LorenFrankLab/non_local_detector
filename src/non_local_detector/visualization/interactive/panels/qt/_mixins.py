@@ -16,6 +16,7 @@ they wrap) so they get the shared behavior for free.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -148,29 +149,66 @@ class CursorMarkersMixin:
 _POSITION_TRACE_Z = 10  # Above the heatmap image (z=0 default).
 
 
-def position_grid_layout(
-    position_centers: np.ndarray,
-) -> tuple[np.ndarray, float, float, float, float, np.ndarray]:
-    """Return the heatmap-y layout for a set of position bin centers.
+@dataclass(frozen=True)
+class PositionGridLayout:
+    """Heatmap-y layout for a set of position bin centers.
 
-    Ports the convention used by ``statespacecheck-paper-viewer``:
-    bin centers are placed at *pixel centers*, so the heatmap rect
-    must be padded by half a uniform step on each side and the
-    cm→pixel-y mapping is
+    Ports ``statespacecheck-paper-viewer``'s convention: bin centers
+    sit at pixel centers (heatmap rect padded by ``dy_half`` per
+    side), and cm → pixel-y maps via
+    ``y0 + np.interp(cm, centers, arange_n_pos) * uniform_step``.
 
-        fractional_idx = np.interp(cm, position_centers, arange_n_pos)
-        pixel_y         = y0 + fractional_idx * uniform_step
-
-    Returns ``(centers, y0, y1, dy_half, uniform_step, arange_n_pos)``.
-    Edge cases (``n_pos == 0`` or ``1``) collapse the step + half to
-    zero so callers can use the values uniformly.
+    Edge cases (``n_pos == 0`` or ``1``) collapse ``uniform_step`` +
+    ``dy_half`` to zero so callers don't need special-case branches.
     """
+
+    centers: np.ndarray
+    y0: float
+    y1: float
+    dy_half: float
+    uniform_step: float
+    arange_n_pos: np.ndarray
+
+    @property
+    def y_min(self) -> float:
+        """Bottom edge of the heatmap rect (``y0 - dy_half``)."""
+        return self.y0 - self.dy_half
+
+    @property
+    def y_max(self) -> float:
+        """Top edge of the heatmap rect (``y1 + dy_half``)."""
+        return self.y1 + self.dy_half
+
+    @property
+    def y_extent(self) -> float:
+        """Heatmap rect height (``y_max - y_min``)."""
+        return (self.y1 - self.y0) + 2 * self.dy_half
+
+    def cm_to_pixel_y(self, position_cm: np.ndarray) -> np.ndarray:
+        """Map real-cm position to the heatmap's uniform pixel-y."""
+        if self.arange_n_pos.size == 0:
+            return np.asarray(position_cm, dtype=np.float64)
+        if self.arange_n_pos.size == 1:
+            return np.full_like(position_cm, self.y0, dtype=np.float64)
+        fractional_idx = np.interp(position_cm, self.centers, self.arange_n_pos)
+        return self.y0 + fractional_idx * self.uniform_step
+
+
+def position_grid_layout(position_centers: np.ndarray) -> PositionGridLayout:
+    """Return a ``PositionGridLayout`` for a set of position bin centers."""
     centers = np.asarray(position_centers, dtype=np.float64).squeeze()
     if centers.ndim == 0:
         centers = centers[None]
     n_pos = int(centers.shape[0])
     if n_pos == 0:
-        return centers, 0.0, 0.0, 0.0, 0.0, np.empty(0, dtype=np.float64)
+        return PositionGridLayout(
+            centers=centers,
+            y0=0.0,
+            y1=0.0,
+            dy_half=0.0,
+            uniform_step=0.0,
+            arange_n_pos=np.empty(0, dtype=np.float64),
+        )
     y0 = float(centers[0])
     y1 = float(centers[-1])
     if n_pos > 1:
@@ -179,8 +217,14 @@ def position_grid_layout(
     else:
         uniform_step = 0.0
         dy_half = 0.0
-    arange = np.arange(n_pos, dtype=np.float64)
-    return centers, y0, y1, dy_half, uniform_step, arange
+    return PositionGridLayout(
+        centers=centers,
+        y0=y0,
+        y1=y1,
+        dy_half=dy_half,
+        uniform_step=uniform_step,
+        arange_n_pos=np.arange(n_pos, dtype=np.float64),
+    )
 
 
 class PositionTraceMixin:
@@ -215,32 +259,24 @@ class PositionTraceMixin:
         Position values are real-cm coordinates that may live on a
         non-uniform grid (e.g. linearised W-track). The heatmap
         ``ImageItem`` lays pixel CENTERS at ``position_centers`` (via
-        the half-bin-padded ``setRect`` in the panel), so the trace
-        is mapped through the same convention: convert each cm to a
-        fractional bin index against ``position_centers``, then to a
-        uniform-pixel-y via ``y0 + frac_idx * uniform_step``. This is
-        the same mapping ``statespacecheck-paper-viewer`` uses.
+        the half-bin-padded ``setRect`` in the panel); the trace is
+        mapped through ``PositionGridLayout.cm_to_pixel_y`` so bin
+        ``i`` of the trace lines up with row ``i`` of the heatmap.
+        Same mapping ``statespacecheck-paper-viewer`` uses.
 
-        Subclasses provide ``_position_centers``, ``_y0``,
-        ``_uniform_step``, and ``_arange_n_pos`` (computed once via
+        Subclasses provide ``_grid_layout`` (computed once via
         ``position_grid_layout`` at panel init / swap).
         """
         if position is None or position.size == 0:
             self._position_trace.setData([], [])
             return
-        arange = getattr(self, "_arange_n_pos", None)
-        centers = getattr(self, "_position_centers", None)
-        if arange is None or centers is None or arange.size == 0:
+        layout: PositionGridLayout | None = getattr(self, "_grid_layout", None)
+        if layout is None or layout.arange_n_pos.size == 0:
             # Fallback: no grid available, plot raw cm. Only hit by
             # tests that drive the mixin in isolation.
             self._position_trace.setData(np.asarray(time), np.asarray(position))
             return
-        position = np.asarray(position)
-        if arange.size == 1:
-            mapped = np.full_like(position, getattr(self, "_y0", 0.0), dtype=np.float64)
-        else:
-            fractional_idx = np.interp(position, centers, arange)
-            mapped = self._y0 + fractional_idx * self._uniform_step
+        mapped = layout.cm_to_pixel_y(np.asarray(position))
         self._position_trace.setData(np.asarray(time), mapped)
 
     def _clear_position_trace(self) -> None:
@@ -287,6 +323,87 @@ class EventOverlayMixin:
                 "`getPlotItem()` method (or override `_overlay_plot_item`)."
             )
         return get_plot()
+
+
+class HeatmapPanelBase(
+    pg.PlotWidget,
+    EventOverlayMixin,
+    ClickRecenterMixin,
+    CursorMarkersMixin,
+    PositionTraceMixin,
+):
+    """Common chrome for the time × position heatmap panels.
+
+    Owns the ``ImageItem`` (with the viridis lookup), the
+    ``PositionGridLayout`` cache, the rect/y-range setup, and all
+    panel mixins. Subclasses (``QtPosteriorHeatmapPanel``,
+    ``QtLikelihoodHeatmapPanel``) just override ``update_window`` to
+    pick the right field off the payload.
+    """
+
+    DEFAULT_BOTTOM_LABEL = "Time [s]"
+
+    def __init__(
+        self,
+        *,
+        position_centers: np.ndarray,
+        vmax: float,
+        bottom_label: str = DEFAULT_BOTTOM_LABEL,
+        parent=None,
+    ) -> None:
+        super().__init__(parent=parent, background="w")
+        self.setMenuEnabled(False)
+        self.setMouseEnabled(x=False, y=False)
+        self.getAxis("bottom").enableAutoSIPrefix(False)
+        self.getAxis("left").enableAutoSIPrefix(False)
+        self._set_position_grid(position_centers)
+        self._vmax = float(vmax)
+        self._image_item = pg.ImageItem(axisOrder="row-major")
+        self._image_item.setLookupTable(
+            pg.colormap.get("viridis").getLookupTable(0.0, 1.0, 256)
+        )
+        self._image_item.setLevels((0.0, self._vmax))
+        self.addItem(self._image_item)
+        self.setLabel("left", "Position [cm]")
+        self.setLabel("bottom", bottom_label)
+        self._install_click_recenter()
+        self._install_cursor_markers()
+        self._install_position_trace()
+        self._overlay_items: list[pg.GraphicsObject] = []
+
+    @property
+    def grid_layout(self) -> PositionGridLayout:
+        """Public read-only view of the heatmap-y layout (used by tests)."""
+        return self._grid_layout
+
+    def set_position_centers(self, centers: np.ndarray) -> None:
+        """Re-bind the y-axis position grid (called on M-key swap)."""
+        self._set_position_grid(centers)
+
+    def _set_position_grid(self, centers: np.ndarray) -> None:
+        """Cache the layout used by ``setRect`` + the position trace."""
+        self._grid_layout = position_grid_layout(centers)
+        layout = self._grid_layout
+        vb = self.getViewBox()
+        vb.disableAutoRange()
+        vb.setYRange(layout.y_min, layout.y_max, padding=0)
+        vb.setLimits(yMin=layout.y_min, yMax=layout.y_max)
+
+    def _set_image(self, collapsed: np.ndarray, time: np.ndarray) -> None:
+        """Render ``collapsed`` (n_visible, n_pos) and pin the rect."""
+        self._image_item.setImage(
+            collapsed.T,
+            autoLevels=False,
+            levels=(0.0, self._vmax),
+            autoDownsample=False,
+        )
+        layout = self._grid_layout
+        if time.size and layout.centers.size:
+            x_min = float(time[0])
+            x_extent = float(time[-1] - time[0]) if time.size > 1 else 1.0
+            self._image_item.setRect(
+                pg.QtCore.QRectF(x_min, layout.y_min, x_extent, layout.y_extent)
+            )
 
 
 def _render_overlay(
