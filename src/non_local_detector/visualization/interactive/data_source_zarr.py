@@ -72,6 +72,7 @@ def _load_zarr_results(zarr_path: Path) -> xr.Dataset:
 
 def load_zarr_cache_or_fall_back(
     zarr_path: Path,
+    canonical_path: Path,
     canonical_results: xr.Dataset,
 ) -> xr.Dataset:
     """Validate ``results.zarr`` against the canonical NetCDF; return it.
@@ -84,15 +85,19 @@ def load_zarr_cache_or_fall_back(
     validates the viewer uses lazy chunked reads, otherwise we fail
     loud rather than silently render misaligned data.
 
-    Validation is intentionally cheap (no full-array reads): the time
-    grid must match and *every* time-dim data variable in the canonical
-    results must be present in the cache with matching shape. The
-    second check is what stops a stale cache from silently dropping
-    optional outputs (``log_likelihood``, ``predictive_posterior``,
-    ``causal_posterior``, ...) — without it the viewer's
-    ``available_outputs`` would come from the cache and panels would
-    quietly disable themselves even though the canonical ``.nc`` still
-    has the data.
+    Validation is intentionally cheap (no full-array reads):
+
+    1. The cache's ``viewer_cache_source_mtime_ns`` /
+       ``viewer_cache_source_size_bytes`` attrs must match the current
+       ``canonical_path``'s stat. Without this, a re-saved
+       ``results.nc`` whose time grid and shape happen to match the old
+       cache would silently render stale posterior/likelihood values.
+    2. The time grid must match.
+    3. Every time-dim data variable in the canonical results must be
+       present in the cache with matching shape — without (3) a stale
+       cache could drop optional outputs (``log_likelihood``,
+       ``predictive_posterior``, ...) and quietly disable the panels
+       that consume them.
 
     Raises:
         ValueError: cache does not match canonical results. Message
@@ -107,6 +112,30 @@ def load_zarr_cache_or_fall_back(
         ".interactive.devtools build-viewer-cache --run-dir "
         f"{zarr_path.parent!s}` or delete the cache."
     )
+
+    # Source-fingerprint check — primary staleness gate. mtime+size is
+    # what ``make`` and friends use and catches the common case (user
+    # re-ran the analysis and re-saved results.nc). It will not catch
+    # an mtime-preserving copy with identical size, but the shape /
+    # time-grid checks below are a second line of defense for that.
+    src_stat = canonical_path.stat()
+    cached_mtime_attr = cached.attrs.get("viewer_cache_source_mtime_ns")
+    cached_size_attr = cached.attrs.get("viewer_cache_source_size_bytes")
+    if cached_mtime_attr is None or cached_size_attr is None:
+        raise ValueError(
+            f"results.zarr cache at {zarr_path!s} is missing the source "
+            f"fingerprint (predates the staleness check). {rebuild_hint}"
+        )
+    if (
+        int(cached_mtime_attr) != src_stat.st_mtime_ns
+        or int(cached_size_attr) != src_stat.st_size
+    ):
+        raise ValueError(
+            f"results.zarr cache at {zarr_path!s} is stale: built from a "
+            f"different {canonical_path.name} (cached mtime/size "
+            f"{cached_mtime_attr}/{cached_size_attr} vs current "
+            f"{src_stat.st_mtime_ns}/{src_stat.st_size}). {rebuild_hint}"
+        )
 
     if "time" not in cached.coords or "time" not in canonical_results.coords:
         raise ValueError(

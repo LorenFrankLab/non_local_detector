@@ -76,5 +76,16 @@ def build_viewer_cache(
         chunks["time"] = time_chunk
     if chunks:
         flat = flat.chunk(chunks)
+    # Stamp the source ``results.nc`` mtime + size onto the cache
+    # attrs. The validator compares these against the live file's stat
+    # to detect a re-saved canonical that happens to share shape with
+    # the cache (otherwise stale arrays would silently render). Stored
+    # as strings because mtime_ns exceeds JSON's safe integer range
+    # (2**53) and zarr attrs round-trip through .zattrs JSON.
+    src_stat = nc_path.stat()
+    flat = flat.assign_attrs(
+        viewer_cache_source_mtime_ns=str(src_stat.st_mtime_ns),
+        viewer_cache_source_size_bytes=str(src_stat.st_size),
+    )
     flat.to_zarr(str(zarr_path), mode="w", consolidated=True)
     return zarr_path

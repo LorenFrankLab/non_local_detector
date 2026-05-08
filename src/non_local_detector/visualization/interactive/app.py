@@ -180,6 +180,7 @@ def _load_run(spec: dict[str, str]):
         try:
             results = load_zarr_cache_or_fall_back(
                 zarr_path=Path(spec["zarr_cache"]),
+                canonical_path=Path(spec["results"]),
                 canonical_results=results,
             )
         except ImportError as exc:

@@ -194,9 +194,7 @@ class SpikeEventIndex:
             kept_indices = np.searchsorted(edges, kept_spikes, side="right") - 1
             kept_ordinals = np.flatnonzero(valid).astype(np.int64, copy=False)
             event_times.append(kept_spikes)
-            event_cells.append(
-                np.full(kept_spikes.shape, cell_id, dtype=np.int64)
-            )
+            event_cells.append(np.full(kept_spikes.shape, cell_id, dtype=np.int64))
             event_ordinals.append(kept_ordinals)
             event_time_indices.append(kept_indices.astype(np.int64, copy=False))
         if not event_times:
@@ -337,12 +335,6 @@ class WindowPayload:
     # heatmaps. ``None`` when the bundle has no position or when the
     # position is 2D (heatmap overlay is 1D only in v1).
     position: np.ndarray | None = None
-    # Row-wise peak-normalized linear likelihood derived from
-    # ``likelihood`` by the backend worker. Kept separate because the
-    # heatmap/top-curve path still wants log-likelihood, while the
-    # filtered slice overlay wants a linear likelihood without doing
-    # exponentiation on the UI thread.
-    likelihood_linear: np.ndarray | None = None
 
 
 @dataclass(frozen=True)

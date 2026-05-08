@@ -111,9 +111,11 @@ def test_load_zarr_cache_round_trips_against_canonical(
     nl_fitted: FittedDetector,
 ) -> None:
     """A fresh cache validates and returns the lazy zarr Dataset."""
-    canonical = _DetectorBase.load_results(str(cached_run_dir / "results.nc"))
+    canonical_path = cached_run_dir / "results.nc"
+    canonical = _DetectorBase.load_results(str(canonical_path))
     cached = load_zarr_cache_or_fall_back(
         zarr_path=cached_run_dir / "results.zarr",
+        canonical_path=canonical_path,
         canonical_results=canonical,
     )
     np.testing.assert_array_equal(
@@ -135,13 +137,17 @@ def test_load_zarr_cache_rejects_stale_time_grid(
     cached_run_dir: Path,
 ) -> None:
     """A canonical with a different time grid must trigger rebuild error."""
-    canonical = _DetectorBase.load_results(str(cached_run_dir / "results.nc"))
+    canonical_path = cached_run_dir / "results.nc"
+    canonical = _DetectorBase.load_results(str(canonical_path))
     # Simulate a canonical that drifted to a longer time axis (e.g. a
-    # rerun extended the session). The cache no longer aligns.
+    # rerun extended the session). The cache no longer aligns. The
+    # on-disk file is unchanged so the source fingerprint still
+    # matches; this exercises the time-grid check, not the fingerprint.
     drifted = canonical.isel(time=slice(0, canonical.sizes["time"] - 1))
-    with pytest.raises(ValueError, match="stale|time grid"):
+    with pytest.raises(ValueError, match="time grid"):
         load_zarr_cache_or_fall_back(
             zarr_path=cached_run_dir / "results.zarr",
+            canonical_path=canonical_path,
             canonical_results=drifted,
         )
 
@@ -151,13 +157,15 @@ def test_load_zarr_cache_rejects_shape_mismatch(
     cached_run_dir: Path,
 ) -> None:
     """A posterior shape mismatch on the same time grid still rebuilds."""
-    canonical = _DetectorBase.load_results(str(cached_run_dir / "results.nc"))
+    canonical_path = cached_run_dir / "results.nc"
+    canonical = _DetectorBase.load_results(str(canonical_path))
     # Trim a state-bin row so the time grid still matches but the
     # acausal_posterior shape differs from the cached store.
     trimmed = canonical.isel(state_bins=slice(0, canonical.sizes["state_bins"] - 1))
     with pytest.raises(ValueError, match="acausal_posterior"):
         load_zarr_cache_or_fall_back(
             zarr_path=cached_run_dir / "results.zarr",
+            canonical_path=canonical_path,
             canonical_results=trimmed,
         )
 
@@ -175,7 +183,8 @@ def test_load_zarr_cache_rejects_missing_optional_output(
     simulate that by writing a *partial* cache (acausal_posterior +
     state probs only) and then loading it against the full canonical.
     """
-    canonical = _DetectorBase.load_results(str(cached_run_dir / "results.nc"))
+    canonical_path = cached_run_dir / "results.nc"
+    canonical = _DetectorBase.load_results(str(canonical_path))
     # Pick an optional output the canonical actually has, so the test
     # is meaningful regardless of which fixture surfaced it.
     optional = next(
@@ -196,12 +205,73 @@ def test_load_zarr_cache_rejects_missing_optional_output(
     partial_cache_dir = cached_run_dir.parent / "partial"
     partial_cache_dir.mkdir()
     partial_zarr = partial_cache_dir / "results.zarr"
-    canonical.drop_vars(optional).reset_index("state_bins").to_zarr(
-        str(partial_zarr), mode="w", consolidated=True
-    )
+    # Stamp the same fingerprint a real ``build_viewer_cache`` write
+    # would so the validator skips the fingerprint gate and reaches
+    # the per-variable check we actually want to exercise here.
+    src_stat = canonical_path.stat()
+    canonical.drop_vars(optional).reset_index("state_bins").assign_attrs(
+        viewer_cache_source_mtime_ns=str(src_stat.st_mtime_ns),
+        viewer_cache_source_size_bytes=str(src_stat.st_size),
+    ).to_zarr(str(partial_zarr), mode="w", consolidated=True)
 
     with pytest.raises(ValueError, match=optional):
         load_zarr_cache_or_fall_back(
             zarr_path=partial_zarr,
+            canonical_path=canonical_path,
+            canonical_results=canonical,
+        )
+
+
+@pytest.mark.unit
+def test_load_zarr_cache_rejects_when_canonical_was_resaved(
+    cached_run_dir: Path,
+    nl_fitted: FittedDetector,
+) -> None:
+    """A re-saved ``results.nc`` invalidates a same-shape cache.
+
+    The earlier shape/time checks all pass when the user re-runs the
+    decoder with the same time grid + state-bin count and re-saves to
+    ``results.nc`` without rebuilding the cache. The source-mtime
+    fingerprint is the only thing that catches this; without it the
+    viewer would silently render the *old* cached posterior values.
+    """
+    import time
+
+    canonical_path = cached_run_dir / "results.nc"
+    # Bump mtime by re-saving the same Dataset. NetCDF resolution can
+    # be coarser than ns so we sleep briefly to guarantee the new
+    # mtime is observably different from the cache's stamp.
+    time.sleep(0.05)
+    _DetectorBase.save_results(nl_fitted.results, str(canonical_path))
+
+    canonical = _DetectorBase.load_results(str(canonical_path))
+    with pytest.raises(ValueError, match="stale|different results.nc"):
+        load_zarr_cache_or_fall_back(
+            zarr_path=cached_run_dir / "results.zarr",
+            canonical_path=canonical_path,
+            canonical_results=canonical,
+        )
+
+
+@pytest.mark.unit
+def test_load_zarr_cache_rejects_cache_without_fingerprint(
+    cached_run_dir: Path,
+) -> None:
+    """A pre-fingerprint cache (no source-mtime attrs) must rebuild.
+
+    Defends against silently consuming a hand-written or older cache
+    that lacks the fingerprint stamp added by ``build_viewer_cache``.
+    """
+    canonical_path = cached_run_dir / "results.nc"
+    canonical = _DetectorBase.load_results(str(canonical_path))
+    bare_zarr = cached_run_dir.parent / "bare" / "results.zarr"
+    bare_zarr.parent.mkdir()
+    canonical.reset_index("state_bins").to_zarr(
+        str(bare_zarr), mode="w", consolidated=True
+    )
+    with pytest.raises(ValueError, match="source fingerprint"):
+        load_zarr_cache_or_fall_back(
+            zarr_path=bare_zarr,
+            canonical_path=canonical_path,
             canonical_results=canonical,
         )

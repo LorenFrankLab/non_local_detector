@@ -44,7 +44,6 @@ SliceRowProvider = Callable[
         np.ndarray,
         np.ndarray | None,
         np.ndarray | None,
-        np.ndarray | None,
         float | None,
     ]
     | None,
@@ -441,9 +440,7 @@ class QtSlicePanel(QtWidgets.QWidget):
         for extra in self._top_curve_items[1:]:
             self._top_plot.removeItem(extra)
         del self._top_curve_items[1:]
-        self._top_curve_item.setData(
-            np.empty(0, dtype=float), np.empty(0, dtype=float)
-        )
+        self._top_curve_item.setData(np.empty(0, dtype=float), np.empty(0, dtype=float))
         self._top_curve_item.setVisible(True)
         self._predictive_curve_item.setData(
             np.empty(0, dtype=float), np.empty(0, dtype=float)
@@ -473,9 +470,6 @@ class QtSlicePanel(QtWidgets.QWidget):
                     payload.likelihood[local_idx]
                     if payload.likelihood is not None
                     else None,
-                    payload.likelihood_linear[local_idx]
-                    if payload.likelihood_linear is not None
-                    else None,
                     payload.predictive[local_idx]
                     if payload.predictive is not None
                     else None,
@@ -487,11 +481,16 @@ class QtSlicePanel(QtWidgets.QWidget):
             rows = self._row_provider(t_idx)
             if rows is None:
                 return
-        posterior_row, log_lik_row, likelihood_linear_row, predictive_row, true_position = rows
+        posterior_row, log_lik_row, predictive_row, true_position = rows
         if self._overlay_mode == "predictive":
             overlay_row = predictive_row
         elif self._overlay_mode == "filtered":
-            overlay_row = _filtered_row(predictive_row, likelihood_linear_row)
+            # Exp-on-demand: one row per UI tick instead of the whole
+            # window. The full-window pass used to fire on every wheel
+            # resize and dominate the wheel-resize latency.
+            overlay_row = _filtered_row(
+                predictive_row, _linear_likelihood_row(log_lik_row)
+            )
         elif self._overlay_mode == "smoothed":
             overlay_row = posterior_row
         else:
@@ -642,6 +641,29 @@ class QtSlicePanel(QtWidgets.QWidget):
             return
         self._true_position_line.setPos(float(true_position))
         self._true_position_line.setVisible(True)
+
+
+def _linear_likelihood_row(
+    log_lik_row: np.ndarray | None,
+) -> np.ndarray | None:
+    """Peak-normalize-and-exp a single log-likelihood row.
+
+    Called inline at slice-render time only when the filtered overlay
+    is active, so we exponentiate one ``(n_state_bins,)`` row per UI
+    tick instead of the entire visible window every time the user
+    drags the t-width slider.
+    """
+    if log_lik_row is None:
+        return None
+    log = np.asarray(log_lik_row, dtype=np.float64)
+    if log.size == 0:
+        return log
+    finite = np.isfinite(log)
+    if not finite.any():
+        return np.zeros_like(log)
+    out = np.zeros_like(log)
+    out[finite] = np.exp(log[finite] - log[finite].max())
+    return out
 
 
 def _filtered_row(

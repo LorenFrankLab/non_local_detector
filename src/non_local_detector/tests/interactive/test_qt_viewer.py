@@ -35,23 +35,31 @@ pytestmark = pytest.mark.gui
 
 
 @pytest.mark.unit
-def test_backend_worker_builds_linear_likelihood_for_filtered_overlay() -> None:
-    """Linear likelihood is precomputed outside the slice widget path."""
-    from non_local_detector.visualization.interactive.viewer.qt import (
-        _linear_likelihood_from_log,
+def test_slice_panel_linear_likelihood_row_helper() -> None:
+    """Per-row peak-normalize-and-exp pins the filtered-overlay contract.
+
+    The slice panel now derives the linear likelihood for the active
+    bin only (was a full-window pass on the worker that scaled with
+    ``n_visible`` and dominated wheel-resize latency). The numerical
+    contract for one row is unchanged: finite entries get
+    ``exp(log - row_max)``, all-non-finite rows return zeros.
+    """
+    from non_local_detector.visualization.interactive.panels.qt.slice import (
+        _linear_likelihood_row,
     )
 
-    log_lik = np.array(
-        [
-            [0.0, -1.0, -np.inf],
-            [np.nan, np.nan, np.nan],
-        ]
+    finite_row = np.array([0.0, -1.0, -np.inf])
+    np.testing.assert_allclose(
+        _linear_likelihood_row(finite_row), [1.0, np.exp(-1.0), 0.0]
     )
-    linear = _linear_likelihood_from_log(log_lik)
 
-    assert linear is not None
-    np.testing.assert_allclose(linear[0], [1.0, np.exp(-1.0), 0.0])
-    np.testing.assert_array_equal(linear[1], [0.0, 0.0, 0.0])
+    nan_row = np.array([np.nan, np.nan, np.nan])
+    np.testing.assert_array_equal(_linear_likelihood_row(nan_row), [0.0, 0.0, 0.0])
+
+    assert _linear_likelihood_row(None) is None
+    np.testing.assert_array_equal(
+        _linear_likelihood_row(np.array([])), np.array([], dtype=np.float64)
+    )
 
 
 @pytest.fixture

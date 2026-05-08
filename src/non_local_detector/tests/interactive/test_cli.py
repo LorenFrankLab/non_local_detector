@@ -197,23 +197,27 @@ def test_cli_run_from_dir_uses_zarr_cache_when_present(
     that the cache loader was called (not just shadowed).
     """
     pytest.importorskip("zarr")
+    from non_local_detector.visualization.interactive.devtools.build_viewer_cache import (
+        build_viewer_cache,
+    )
+
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
     _save_bundle_files(bundle_dir, nl_fitted, sim_session)
-
-    # Write the optional zarr cache from the canonical results.
-    nl_fitted.results.reset_index("state_bins").to_zarr(
-        str(bundle_dir / "results.zarr"), mode="w", consolidated=True
-    )
+    # Build the optional cache the same way the devtool would so its
+    # source-mtime fingerprint matches the on-disk results.nc and the
+    # validator returns the lazy zarr Dataset to the CLI.
+    build_viewer_cache(bundle_dir)
 
     seen: dict[str, object] = {}
     import non_local_detector.visualization.interactive.data_source_zarr as dsz
 
     original_loader = dsz.load_zarr_cache_or_fall_back
 
-    def _wrap_loader(zarr_path, canonical_results):
-        seen["zarr_path"] = zarr_path
-        return original_loader(zarr_path, canonical_results)
+    def _wrap_loader(*args, **kwargs):
+        seen["zarr_path"] = kwargs.get("zarr_path", args[0] if args else None)
+        seen["canonical_path"] = kwargs.get("canonical_path")
+        return original_loader(*args, **kwargs)
 
     monkeypatch.setattr(dsz, "load_zarr_cache_or_fall_back", _wrap_loader)
     # ``app._load_run`` does ``from ...data_source_zarr import

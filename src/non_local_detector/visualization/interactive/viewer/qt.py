@@ -147,35 +147,6 @@ def _format_speed(speed: float) -> str:
     return f"{speed:.2g}×"
 
 
-def _linear_likelihood_from_log(log_likelihood: np.ndarray | None) -> np.ndarray | None:
-    """Return row-wise peak-normalized linear likelihood.
-
-    Runs on the backend worker path so filtered slice overlays do not
-    exponentiate log-likelihood rows on every UI tick.
-    """
-    if log_likelihood is None:
-        return None
-    log_lik = np.asarray(log_likelihood)
-    if log_lik.size == 0:
-        return np.asarray(log_lik, dtype=np.float64)
-    out = np.zeros(log_lik.shape, dtype=np.float64)
-    finite = np.isfinite(log_lik)
-    row_has_finite = finite.any(axis=1)
-    if not row_has_finite.any():
-        return out
-    row_max = np.max(
-        np.where(finite[row_has_finite], log_lik[row_has_finite], -np.inf),
-        axis=1,
-        keepdims=True,
-    )
-    out[row_has_finite] = np.where(
-        finite[row_has_finite],
-        np.exp(log_lik[row_has_finite] - row_max),
-        0.0,
-    )
-    return out
-
-
 def _ensure_qapplication() -> QtWidgets.QApplication:
     """Return the singleton ``QApplication`` with a concrete installed font."""
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -352,7 +323,6 @@ class QtBackendAdapter(BackendAdapter):
             if "log_likelihood" in self._data_source.available_outputs
             else None
         )
-        likelihood_linear = _linear_likelihood_from_log(likelihood)
         predictive = (
             self._data_source.load_predictive(sl)
             if "predictive_posterior" in self._data_source.available_outputs
@@ -368,7 +338,6 @@ class QtBackendAdapter(BackendAdapter):
             time_stop=time_stop,
             posterior=posterior,
             likelihood=likelihood,
-            likelihood_linear=likelihood_linear,
             predictive=predictive,
             state_probabilities=state_probabilities,
             position=position,
@@ -945,7 +914,12 @@ class QtViewer(QtWidgets.QMainWindow):
             bin_panel.update_for_index(slider_value)
 
     def _slice_row_at(self, t_idx: int):
-        """Single-row fallback for slice ticks outside the buffered window."""
+        """Single-row fallback for slice ticks outside the buffered window.
+
+        Returns log-likelihood only; the slice panel exponentiates one
+        row at render time when the filtered overlay is active, so we
+        never pay the full-window exp() cost on either path.
+        """
         if t_idx < 0 or t_idx >= self._data_source.n_time:
             return None
         posterior_row = self._data_source.slice_at_index(t_idx, which="posterior")
@@ -956,10 +930,6 @@ class QtViewer(QtWidgets.QMainWindow):
             if "log_likelihood" in self._data_source.available_outputs
             else None
         )
-        likelihood_linear_row = None
-        if log_lik_row is not None:
-            linear = _linear_likelihood_from_log(np.asarray(log_lik_row)[None, :])
-            likelihood_linear_row = linear[0] if linear is not None else None
         predictive_row = (
             self._data_source.slice_at_index(t_idx, which="predictive")
             if "predictive_posterior" in self._data_source.available_outputs
@@ -972,7 +942,6 @@ class QtViewer(QtWidgets.QMainWindow):
         return (
             np.asarray(posterior_row),
             np.asarray(log_lik_row) if log_lik_row is not None else None,
-            likelihood_linear_row,
             np.asarray(predictive_row) if predictive_row is not None else None,
             true_position,
         )

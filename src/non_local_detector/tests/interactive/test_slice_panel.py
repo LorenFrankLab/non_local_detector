@@ -40,27 +40,6 @@ def qapp():
     yield app
 
 
-def _linear_likelihood(log_likelihood: np.ndarray | None) -> np.ndarray | None:
-    if log_likelihood is None:
-        return None
-    out = np.zeros_like(log_likelihood, dtype=float)
-    finite = np.isfinite(log_likelihood)
-    row_has_finite = finite.any(axis=1)
-    if not row_has_finite.any():
-        return out
-    row_max = np.max(
-        np.where(finite[row_has_finite], log_likelihood[row_has_finite], -np.inf),
-        axis=1,
-        keepdims=True,
-    )
-    out[row_has_finite] = np.where(
-        finite[row_has_finite],
-        np.exp(log_likelihood[row_has_finite] - row_max),
-        0.0,
-    )
-    return out
-
-
 def _peak_normalize(curve: np.ndarray) -> np.ndarray:
     y = np.nan_to_num(np.asarray(curve, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
     peak = float(np.nanmax(y)) if y.size else 0.0
@@ -86,7 +65,6 @@ def _payload_for_results(
         indices=sl,
         posterior=np.asarray(results["acausal_posterior"].values),
         likelihood=likelihood,
-        likelihood_linear=_linear_likelihood(likelihood),
         predictive=(
             np.asarray(results["predictive_posterior"].values)
             if "predictive_posterior" in results.data_vars and not posterior_only
@@ -252,9 +230,6 @@ def test_slice_panel_out_of_buffer_index_is_no_op(
         indices=sl,
         posterior=bundle.results["acausal_posterior"].values[:50],
         likelihood=bundle.results["log_likelihood"].values[:50],
-        likelihood_linear=_linear_likelihood(
-            bundle.results["log_likelihood"].values[:50]
-        ),
         predictive=bundle.results["predictive_posterior"].values[:50],
         state_probabilities=bundle.results["acausal_state_probabilities"].values[:50],
     )
@@ -293,11 +268,10 @@ def test_slice_panel_out_of_buffer_uses_row_provider(
             indices=sl,
             posterior=bundle.results["acausal_posterior"].values[sl],
             likelihood=likelihood,
-            likelihood_linear=_linear_likelihood(likelihood),
             predictive=bundle.results["predictive_posterior"].values[sl],
-            state_probabilities=bundle.results[
-                "acausal_state_probabilities"
-            ].values[sl],
+            state_probabilities=bundle.results["acausal_state_probabilities"].values[
+                sl
+            ],
         )
     )
 
@@ -306,11 +280,11 @@ def test_slice_panel_out_of_buffer_uses_row_provider(
     )
 
     def row_provider(t_idx: int):
-        log_lik_row = bundle.results["log_likelihood"].values[t_idx]
+        # 4-tuple now — slice panel exponentiates the log-lik row
+        # itself only when the filtered overlay is active.
         return (
             bundle.results["acausal_posterior"].values[t_idx],
-            log_lik_row,
-            _linear_likelihood(log_lik_row[None, :])[0],
+            bundle.results["log_likelihood"].values[t_idx],
             bundle.results["predictive_posterior"].values[t_idx],
             None,
         )
