@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pyqtgraph as pg
+from PySide6 import QtCore, QtWidgets
 
 from non_local_detector.visualization.interactive.panels.qt._mixins import (
     ClickRecenterMixin,
@@ -33,23 +34,37 @@ _DEFAULT_STATE_COLORS = (
     "#8c564b",
 )
 
+_LEGEND_STYLE = (
+    "QLabel { background-color: #ffffff; color: #202020; "
+    "padding: 4px 6px; border: 1px solid #cccccc; border-radius: 3px; "
+    "font-size: 11pt; }"
+)
 
-class QtStateProbabilityPanel(
+
+def _legend_html(items: list[tuple[str, str]]) -> str:
+    """Build the HTML for a sidebar legend from ``[(color, label), ...]``."""
+    rows = [
+        f"<span style='color:{color};font-size:14pt'>━</span> {label}"
+        for color, label in items
+    ]
+    return "<br>".join(rows)
+
+
+class _StateProbabilityPlot(
     pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, CursorMarkersMixin
 ):
-    """One ``pg.PlotDataItem`` line per discrete state."""
+    """Internal plot widget — one ``pg.PlotDataItem`` line per discrete state.
 
-    def __init__(
-        self,
-        model: StateProbabilityModel,
-        parent=None,
-    ) -> None:
+    Owns the lines + mixin behaviours; the parent wrapper
+    ``QtStateProbabilityPanel`` lays it out next to a sidebar legend.
+    """
+
+    def __init__(self, model: StateProbabilityModel, parent=None) -> None:
         super().__init__(parent=parent, background="w")
         self._model = model
         self.setLabel("left", "State probability")
         self.setLabel("bottom", "Time [s]")
         self.setYRange(0.0, 1.05)
-        self.addLegend()
         self._lines: list[pg.PlotDataItem] = []
         self._build_lines()
         self._install_click_recenter()
@@ -96,3 +111,62 @@ class QtStateProbabilityPanel(
         next payload arrives.
         """
         self._build_lines()
+
+
+class QtStateProbabilityPanel(QtWidgets.QWidget):
+    """State-probability plot with the legend laid out *outside* the plot.
+
+    A pyqtgraph ``LegendItem`` floats inside the viewbox; on small
+    panels it can occlude the data. This wrapper places the plot in
+    one column and an HTML legend ``QLabel`` in a sidebar so the
+    legend never overlaps the curves. Mixin / pyqtgraph methods that
+    callers expect on the panel (``addItem``, ``set_event_overlays``,
+    ``viewport``, ``scene``, ``getPlotItem``, ``set_cursor_markers``,
+    ``click_handler``, ``x_link_target``) forward to the inner plot
+    widget via ``__getattr__``.
+    """
+
+    def __init__(
+        self,
+        model: StateProbabilityModel,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._plot = _StateProbabilityPlot(model)
+        self._legend = QtWidgets.QLabel()
+        self._legend.setStyleSheet(_LEGEND_STYLE)
+        self._legend.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft
+        )
+        self._legend.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        self._refresh_legend()
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(self._plot, stretch=1)
+        layout.addWidget(self._legend, stretch=0)
+
+    def __getattr__(self, name: str):
+        # Forward unknown attributes to the inner plot widget. ``_plot``
+        # is set in ``__init__`` before any forwarding happens; the
+        # ``__dict__`` check avoids infinite recursion if Qt's metaclass
+        # asks for an attribute mid-construction.
+        plot = self.__dict__.get("_plot")
+        if plot is None:
+            raise AttributeError(name)
+        return getattr(plot, name)
+
+    def rebind_after_swap(self) -> None:
+        """Rebuild lines + legend after the model schema changes."""
+        self._plot.rebind_after_swap()
+        self._refresh_legend()
+
+    def _refresh_legend(self) -> None:
+        items: list[tuple[str, str]] = [
+            (
+                _DEFAULT_STATE_COLORS[i % len(_DEFAULT_STATE_COLORS)],
+                state_name,
+            )
+            for i, state_name in enumerate(self._plot._model.state_names)
+        ]
+        self._legend.setText(_legend_html(items))

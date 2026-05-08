@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pyqtgraph as pg
+from PySide6 import QtCore, QtWidgets
 from PySide6.QtGui import QColor
 
 from non_local_detector.visualization.interactive.panels.qt._mixins import (
@@ -99,21 +100,36 @@ _DEFAULT_MULTI_COLORS = (
 )
 
 
-class MultiLineSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
-    """Several lines on one panel sharing a common time axis + y-range."""
+_LEGEND_STYLE = (
+    "QLabel { background-color: #ffffff; color: #202020; "
+    "padding: 4px 6px; border: 1px solid #cccccc; border-radius: 3px; "
+    "font-size: 11pt; }"
+)
 
-    def __init__(
-        self,
-        model: MultiLineSeriesModel,
-        parent=None,
-    ) -> None:
+
+def _legend_html(items: list[tuple[str, str]]) -> str:
+    """Build the HTML for a sidebar legend from ``[(color, label), ...]``."""
+    rows = [
+        f"<span style='color:{color};font-size:14pt'>━</span> {label}"
+        for color, label in items
+    ]
+    return "<br>".join(rows)
+
+
+class _MultiLineSeriesPlot(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
+    """Internal plot widget — one line per ``model.ys`` entry.
+
+    Lifted out of ``MultiLineSeriesPanel`` so the wrapper can lay the
+    plot next to a sidebar legend.
+    """
+
+    def __init__(self, model: MultiLineSeriesModel, parent=None) -> None:
         super().__init__(parent=parent, background="w")
         self._model = model
         self.setLabel("left", model.name)
         self.setLabel("bottom", "Time [s]")
         if model.y_range is not None:
             self.setYRange(*model.y_range)
-        self.addLegend()
         self._lines: dict[str, pg.PlotDataItem] = {}
         for i, label in enumerate(model.ys):
             color = (
@@ -136,6 +152,57 @@ class MultiLineSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin)
         t, ys = self._model.window(t_start, t_stop)
         for label, line in self._lines.items():
             line.setData(t, ys[label])
+
+
+class MultiLineSeriesPanel(QtWidgets.QWidget):
+    """Multi-line plot with the legend laid out *outside* the plot.
+
+    A pyqtgraph ``LegendItem`` floats inside the viewbox and can
+    occlude the lines on small panels. This wrapper places the plot
+    in one column and an HTML legend ``QLabel`` in a sidebar so the
+    legend never overlaps the data. Mixin / pyqtgraph methods that
+    callers expect on the panel forward to the inner plot widget via
+    ``__getattr__``.
+    """
+
+    def __init__(
+        self,
+        model: MultiLineSeriesModel,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._plot = _MultiLineSeriesPlot(model)
+        self._legend = QtWidgets.QLabel()
+        self._legend.setStyleSheet(_LEGEND_STYLE)
+        self._legend.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft
+        )
+        self._legend.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        self._refresh_legend()
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(self._plot, stretch=1)
+        layout.addWidget(self._legend, stretch=0)
+
+    def __getattr__(self, name: str):
+        plot = self.__dict__.get("_plot")
+        if plot is None:
+            raise AttributeError(name)
+        return getattr(plot, name)
+
+    def _refresh_legend(self) -> None:
+        items: list[tuple[str, str]] = []
+        for i, label in enumerate(self._plot._model.ys):
+            color_value = (
+                self._plot._model.colors.get(label)
+                if self._plot._model.colors
+                else None
+            )
+            if color_value is None:
+                color_value = _DEFAULT_MULTI_COLORS[i % len(_DEFAULT_MULTI_COLORS)]
+            items.append((color_value, label))
+        self._legend.setText(_legend_html(items))
 
 
 # ---------------------------------------------------------------------------
