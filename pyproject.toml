@@ -66,6 +66,14 @@ viewer = [
     # CLI bundle loading: position files use parquet.
     "pyarrow >=14",
 ]
+# Optional acceleration cache for --run-from-dir bundles. The viewer
+# falls back to results.nc when this extra is not installed; the
+# build-viewer-cache devtool requires it to write results.zarr/.
+viewer-cache = [
+    "non_local_detector[viewer]",
+    "zarr >=2.16",
+    "dask >=2024.1",
+]
 
 [tool.hatch.version]
 source = "vcs"

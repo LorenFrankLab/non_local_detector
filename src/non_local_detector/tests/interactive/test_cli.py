@@ -63,43 +63,43 @@ def _save_bundle_files(
     return paths
 
 
+def _patch_launch_no_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force ``launch_qt_with_source`` to skip ``app.exec()``.
+
+    ``app.main`` calls ``launch_qt_with_source`` directly, so patching
+    the older ``launch_qt`` wrapper is not enough — the test would
+    enter the Qt event loop and hang.
+    """
+    import non_local_detector.visualization.interactive.viewer.qt as qt_mod
+
+    original = qt_mod.launch_qt_with_source
+
+    def _no_block(data_source, **kwargs):
+        kwargs["block"] = False
+        return original(data_source, **kwargs)
+
+    monkeypatch.setattr(qt_mod, "launch_qt_with_source", _no_block)
+
+
 @pytest.mark.unit
 def test_python_m_interactive_launches_against_simulated_bundle(
     tmp_path: Path,
     nl_fitted: FittedDetector,
     sim_session: SimulatedSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """End-to-end CLI: serialize a bundle, run main(argv), verify success.
 
     Doesn't assert pixel content — just that argparse + loaders +
-    QtViewer construction round-trip without raising. Patches
-    ``launch_qt`` to ``block=False`` so the test doesn't enter the
-    Qt event loop.
+    QtViewer construction round-trip without raising.
     """
     paths = _save_bundle_files(tmp_path, nl_fitted, sim_session)
     run_arg = (
         f"default:{paths['results']}:{paths['model']}:"
         f"{paths['spikes']}:{paths['position']}"
     )
-
-    # Force the Qt window not to enter exec() — block=False — so the
-    # test doesn't hang. We monkey-patch the launch function the CLI
-    # calls.
-    import non_local_detector.visualization.interactive.viewer.qt as qt_mod
-
-    original_launch = qt_mod.launch_qt
-
-    def _launch_no_block(bundles, **kwargs):
-        kwargs.setdefault("block", False)
-        kwargs["block"] = False
-        return original_launch(bundles, **kwargs)
-
-    qt_mod.launch_qt = _launch_no_block
-    try:
-        exit_code = app_main(["--run", run_arg, "--t-width", "0.5"])
-    finally:
-        qt_mod.launch_qt = original_launch
-
+    _patch_launch_no_block(monkeypatch)
+    exit_code = app_main(["--run", run_arg, "--t-width", "0.5"])
     assert exit_code == 0
 
 
@@ -126,29 +126,107 @@ def test_cli_run_from_dir_loads_bundle_directory(
     tmp_path: Path,
     nl_fitted: FittedDetector,
     sim_session: SimulatedSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``--run-from-dir name:dir/`` expands to the four canonical paths."""
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
     _save_bundle_files(bundle_dir, nl_fitted, sim_session)
+    _patch_launch_no_block(monkeypatch)
+    exit_code = app_main(
+        ["--run-from-dir", f"default:{bundle_dir}", "--t-width", "0.5"]
+    )
+    assert exit_code == 0
 
-    import non_local_detector.visualization.interactive.viewer.qt as qt_mod
 
-    original_launch = qt_mod.launch_qt
+@pytest.mark.unit
+def test_cli_run_from_dir_falls_back_when_zarr_backend_missing(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bundle with ``results.zarr/`` present must NOT abort when the
+    zarr backend isn't installed — the viewer should warn and fall back
+    to ``results.nc``.
 
-    def _launch_no_block(bundles, **kwargs):
-        kwargs["block"] = False
-        return original_launch(bundles, **kwargs)
+    Pins the [viewer]-only contract: the cache is optional, so a user
+    who installed only ``[viewer]`` (no ``zarr``) should still be able
+    to open a bundle that happens to ship a cache directory.
+    """
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    _save_bundle_files(bundle_dir, nl_fitted, sim_session)
+    # ``is_dir()`` is the only check ``_parse_run_from_dir_arg`` does —
+    # an empty stub is enough to flip ``spec["zarr_cache"]`` on without
+    # depending on zarr being installed at test time.
+    (bundle_dir / "results.zarr").mkdir()
 
-    qt_mod.launch_qt = _launch_no_block
-    try:
+    # Force the zarr-cache loader to mimic a missing backend so the
+    # fallback path is exercised regardless of whether the dev env
+    # actually has zarr installed.
+    import non_local_detector.visualization.interactive.data_source_zarr as dsz
+
+    def _raise_missing(*_args, **_kwargs):
+        raise ImportError("No module named 'zarr'")
+
+    monkeypatch.setattr(dsz, "load_zarr_cache_or_fall_back", _raise_missing)
+
+    _patch_launch_no_block(monkeypatch)
+    with pytest.warns(UserWarning, match="zarr backend is unavailable"):
         exit_code = app_main(
             ["--run-from-dir", f"default:{bundle_dir}", "--t-width", "0.5"]
         )
-    finally:
-        qt_mod.launch_qt = original_launch
-
     assert exit_code == 0
+
+
+@pytest.mark.unit
+def test_cli_run_from_dir_uses_zarr_cache_when_present(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``results.zarr/`` sits next to ``results.nc`` the viewer
+    consumes it via ``load_zarr_cache_or_fall_back``.
+
+    The bundle directory still contains the canonical ``results.nc`` +
+    sidecars; ``results.zarr/`` is the optional acceleration cache
+    written by the ``build-viewer-cache`` devtool. We sanity-check that
+    ``--run-from-dir`` accepts the augmented bundle without error and
+    that the cache loader was called (not just shadowed).
+    """
+    pytest.importorskip("zarr")
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    _save_bundle_files(bundle_dir, nl_fitted, sim_session)
+
+    # Write the optional zarr cache from the canonical results.
+    nl_fitted.results.reset_index("state_bins").to_zarr(
+        str(bundle_dir / "results.zarr"), mode="w", consolidated=True
+    )
+
+    seen: dict[str, object] = {}
+    import non_local_detector.visualization.interactive.data_source_zarr as dsz
+
+    original_loader = dsz.load_zarr_cache_or_fall_back
+
+    def _wrap_loader(zarr_path, canonical_results):
+        seen["zarr_path"] = zarr_path
+        return original_loader(zarr_path, canonical_results)
+
+    monkeypatch.setattr(dsz, "load_zarr_cache_or_fall_back", _wrap_loader)
+    # ``app._load_run`` does ``from ...data_source_zarr import
+    # load_zarr_cache_or_fall_back`` *inside* the function — patching
+    # the module attribute lets that import resolve to the wrapper.
+
+    _patch_launch_no_block(monkeypatch)
+    exit_code = app_main(
+        ["--run-from-dir", f"default:{bundle_dir}", "--t-width", "0.5"]
+    )
+    assert exit_code == 0
+    assert "zarr_path" in seen, "cache loader was not invoked"
+    assert Path(seen["zarr_path"]).name == "results.zarr"
 
 
 @pytest.mark.unit

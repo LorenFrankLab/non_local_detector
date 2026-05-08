@@ -1303,6 +1303,39 @@ def _panel_for_metric_spec(spec: MetricSpec):
     return panel_cls(model_cls.from_metric_spec(spec))
 
 
+def launch_qt_with_source(
+    data_source: InMemoryDecoderDataSource,
+    t_width: float = 1.0,
+    block: bool = True,
+    extra_panels: list | None = None,
+    extra_bin_panels: list | None = None,
+) -> int:
+    """Open a ``QtViewer`` against a pre-built data source.
+
+    Bypasses the eager-bundle path so callers (the CLI in particular)
+    can hand in an ``InMemoryDecoderDataSource`` whose ``RunBundle``
+    results Datasets may be either eager (NetCDF) or zarr-backed (via
+    the optional ``results.zarr/`` cache validated by
+    ``load_zarr_cache_or_fall_back``). ``launch_qt`` continues to wrap
+    this for the ``RunBundle`` / dict-of-bundles convenience case.
+    """
+    app = _ensure_qapplication()
+    pg.setConfigOption("background", "w")
+    pg.setConfigOption("foreground", "k")
+
+    viewer = QtViewer(
+        data_source,
+        t_width=t_width,
+        extra_panels=extra_panels,
+        extra_bin_panels=extra_bin_panels,
+    )
+    _LIVE_VIEWERS.append(viewer)
+    viewer.show()
+    if block:
+        return int(app.exec())
+    return 0
+
+
 def launch_qt(
     bundles: RunBundle | dict[str, RunBundle],
     t_width: float = 1.0,
@@ -1337,19 +1370,10 @@ def launch_qt(
         data_source = InMemoryDecoderDataSource.from_single(bundles)
     else:
         data_source = InMemoryDecoderDataSource(bundles)
-
-    app = _ensure_qapplication()
-    pg.setConfigOption("background", "w")
-    pg.setConfigOption("foreground", "k")
-
-    viewer = QtViewer(
+    return launch_qt_with_source(
         data_source,
         t_width=t_width,
+        block=block,
         extra_panels=extra_panels,
         extra_bin_panels=extra_bin_panels,
     )
-    _LIVE_VIEWERS.append(viewer)
-    viewer.show()
-    if block:
-        return int(app.exec())
-    return 0

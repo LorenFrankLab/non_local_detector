@@ -5,6 +5,9 @@ Subcommands:
 - ``bundle-from-statespacecheck-cache``: build a viewer bundle directory
   from the upstream ``statespacecheck-paper-viewer`` cache + intermediates
   layout. See ``bundle_from_statespacecheck_cache`` for parameter details.
+- ``build-viewer-cache``: write a chunked ``results.zarr/`` next to an
+  existing ``results.nc`` so ``--run-from-dir`` can lazy-load the
+  large per-time arrays.
 """
 
 from __future__ import annotations
@@ -14,6 +17,10 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from non_local_detector.visualization.interactive.devtools.build_viewer_cache import (
+    DEFAULT_TIME_CHUNK,
+    build_viewer_cache,
+)
 from non_local_detector.visualization.interactive.devtools.bundle_from_statespacecheck import (  # noqa: E501
     MODEL_NAMES,
     bundle_from_statespacecheck_cache,
@@ -78,6 +85,37 @@ def _build_parser() -> argparse.ArgumentParser:
             "NetCDF. Required vars are revalidated; refuses to run if absent."
         ),
     )
+
+    cache = subparsers.add_parser(
+        "build-viewer-cache",
+        help=(
+            "Write results.zarr/ next to an existing results.nc so "
+            "--run-from-dir can lazy-load large per-time arrays."
+        ),
+    )
+    cache.add_argument(
+        "--run-dir",
+        type=Path,
+        required=True,
+        help=(
+            "Bundle directory containing results.nc. The cache is written "
+            "in-place as results.zarr/."
+        ),
+    )
+    cache.add_argument(
+        "--time-chunk",
+        type=int,
+        default=DEFAULT_TIME_CHUNK,
+        help=(
+            f"Time-axis chunk size for the four large per-time arrays "
+            f"(default: {DEFAULT_TIME_CHUNK})."
+        ),
+    )
+    cache.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing results.zarr/ instead of erroring.",
+    )
     return parser
 
 
@@ -96,6 +134,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             results_from_zarr=args.results_from_zarr,
         )
         print(f"Wrote bundle directory: {out}")
+        return 0
+    if args.subcommand == "build-viewer-cache":
+        out = build_viewer_cache(
+            run_dir=args.run_dir,
+            time_chunk=args.time_chunk,
+            overwrite=args.overwrite,
+        )
+        print(f"Wrote viewer cache: {out}")
         return 0
     parser.error(f"unknown subcommand {args.subcommand!r}")
     return 1

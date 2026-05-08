@@ -1989,6 +1989,14 @@ viewer = [
     { name = "pyqtgraph" },
     { name = "pyside6" },
 ]
+viewer-cache = [
+    { name = "dask" },
+    { name = "pyarrow" },
+    { name = "pyqtgraph" },
+    { name = "pyside6" },
+    { name = "zarr", version = "2.18.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "zarr", version = "2.18.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
 viz = [
     { name = "sortingview" },
 ]
@@ -2000,6 +2008,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "dask", marker = "extra == 'viewer-cache'", specifier = ">=2024.1" },
     { name = "hypothesis", marker = "extra == 'dev'" },
     { name = "hypothesis", marker = "extra == 'test'" },
     { name = "ipython", marker = "extra == 'dev'" },
@@ -2013,8 +2022,11 @@ requires-dist = [
     { name = "patsy", specifier = ">=0.5" },
     { name = "pre-commit", marker = "extra == 'dev'" },
     { name = "pyarrow", marker = "extra == 'viewer'", specifier = ">=14" },
+    { name = "pyarrow", marker = "extra == 'viewer-cache'", specifier = ">=14" },
     { name = "pyqtgraph", marker = "extra == 'viewer'", specifier = ">=0.13" },
+    { name = "pyqtgraph", marker = "extra == 'viewer-cache'", specifier = ">=0.13" },
     { name = "pyside6", marker = "extra == 'viewer'", specifier = ">=6.6" },
+    { name = "pyside6", marker = "extra == 'viewer-cache'", specifier = ">=6.6" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'test'" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
@@ -2027,8 +2039,9 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.60" },
     { name = "track-linearization" },
     { name = "xarray", specifier = ">=2023.1" },
+    { name = "zarr", marker = "extra == 'viewer-cache'", specifier = ">=2.16" },
 ]
-provides-extras = ["dev", "gpu", "test", "viewer", "viz"]
+provides-extras = ["dev", "gpu", "test", "viewer", "viewer-cache", "viz"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ipykernel", specifier = ">=7.2.0" }]

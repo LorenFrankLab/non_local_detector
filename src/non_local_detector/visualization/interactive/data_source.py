@@ -4,8 +4,11 @@ Holds a dict of named ``RunBundle``s, validates cross-bundle
 invariants (time-grid alignment, overlay-schema alignment), and exposes
 the hot-path window-load methods the viewer's panels consume.
 
-The data source is a thin abstraction so a v2 ``ZarrDecoderDataSource``
-can be swapped in without changing panel code.
+The data source operates uniformly over eager (NetCDF) and lazy (zarr)
+``results`` Datasets — the per-window slice goes through xarray's
+``isel(time=sl).values`` either way — so the optional ``results.zarr/``
+cache (see ``data_source_zarr.load_zarr_cache_or_fall_back``) drops
+straight into the run bundle without a separate data-source class.
 """
 
 from __future__ import annotations

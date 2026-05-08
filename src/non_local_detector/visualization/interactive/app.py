@@ -94,9 +94,12 @@ def _parse_run_from_dir_arg(arg: str) -> dict[str, str]:
     """Split a ``name:dir/`` arg into the canonical five-field run spec.
 
     Splits on the *first* colon so directory paths may contain colons
-    (rare on POSIX but legal). Validates the directory exists and
-    contains the four bundle files; raises with the missing names so
-    the user knows which file to add.
+    (rare on POSIX but legal). The bundle's canonical input is
+    ``results.nc`` plus the three sidecars (``model.pkl``,
+    ``spikes.npz``, ``position.parquet``); raises with the missing
+    file names so the user knows which to add. ``results.zarr/`` is
+    optional and consulted by ``_load_run`` for chunked acceleration —
+    it doesn't satisfy the canonical-input requirement on its own.
     """
     name, sep, dir_str = arg.partition(":")
     if not sep or not name or not dir_str:
@@ -115,7 +118,15 @@ def _parse_run_from_dir_arg(arg: str) -> dict[str, str]:
             f"--run-from-dir {bundle_dir} is missing required bundle files: "
             f"{missing!r}. Expected: {sorted(_BUNDLE_FILENAMES.values())!r}"
         )
-    return {"name": name, **{key: str(p) for key, p in paths.items()}}
+    spec = {
+        "name": name,
+        "bundle_dir": str(bundle_dir),
+        **{key: str(p) for key, p in paths.items()},
+    }
+    zarr_path = bundle_dir / "results.zarr"
+    if zarr_path.is_dir():
+        spec["zarr_cache"] = str(zarr_path)
+    return spec
 
 
 def _load_run(spec: dict[str, str]):
@@ -151,6 +162,34 @@ def _load_run(spec: dict[str, str]):
     # Use the canonical save/load pair so the state_bins MultiIndex
     # gets re-attached on load (xr.open_dataset alone drops it).
     results = _DetectorBase.load_results(spec["results"])
+    if spec.get("zarr_cache"):
+        # Optional acceleration: the bundle ships a derived
+        # ``results.zarr/`` cache next to the canonical ``results.nc``.
+        # Validate shape / time grid before using; fail loud on a
+        # stale cache instead of silently rendering misaligned data.
+        # When the zarr backend isn't installed (``[viewer]`` without
+        # ``[viewer-cache]``), fall back to the canonical NetCDF with
+        # a one-line warning rather than aborting — the cache is meant
+        # to be a transparent acceleration, not a hard requirement.
+        import warnings
+
+        from non_local_detector.visualization.interactive.data_source_zarr import (
+            load_zarr_cache_or_fall_back,
+        )
+
+        try:
+            results = load_zarr_cache_or_fall_back(
+                zarr_path=Path(spec["zarr_cache"]),
+                canonical_results=results,
+            )
+        except ImportError as exc:
+            warnings.warn(
+                f"results.zarr/ found at {spec['zarr_cache']!s} but the "
+                f"zarr backend is unavailable ({exc}); falling back to "
+                "results.nc. Install the cache backend with `pip install "
+                "'non_local_detector[viewer-cache]'` to use the cache.",
+                stacklevel=2,
+            )
     detector = _DetectorBase.load_model(spec["model"])
     spike_times_npz = np.load(spec["spikes"], allow_pickle=True)
     spike_times = list(spike_times_npz["spike_times"])
@@ -188,7 +227,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.run and not args.run_from_dir:
         parser.error("at least one --run or --run-from-dir argument is required")
 
-    bundles_dict = {}
+    bundles_dict: dict[str, object] = {}
+    seen_names: set[str] = set()
     for raw_arg, parse_fn in (
         *((arg, _parse_run_arg) for arg in args.run),
         *((arg, _parse_run_from_dir_arg) for arg in args.run_from_dir),
@@ -197,17 +237,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             spec = parse_fn(raw_arg)
         except argparse.ArgumentTypeError as exc:
             parser.error(str(exc))
-        name, bundle = _load_run(spec)
-        if name in bundles_dict:
+        name = spec["name"]
+        if name in seen_names:
             parser.error(f"duplicate run name {name!r}")
+        seen_names.add(name)
+        _, bundle = _load_run(spec)
         bundles_dict[name] = bundle
+
+    from non_local_detector.visualization.interactive.data_source import (
+        InMemoryDecoderDataSource,
+    )
+
+    data_source = InMemoryDecoderDataSource(bundles_dict)  # type: ignore[arg-type]
 
     if args.backend == "qt":
         from non_local_detector.visualization.interactive.viewer.qt import (
-            launch_qt,
+            launch_qt_with_source,
         )
 
-        return launch_qt(bundles_dict, t_width=args.t_width)
+        return launch_qt_with_source(data_source, t_width=args.t_width)
     parser.error(f"unsupported backend {args.backend!r}")
     return 1
 
@@ -227,6 +275,19 @@ Examples:
     python -m non_local_detector.visualization.interactive \\
       --run-from-dir continuous:bundles/continuous/ \\
       --run-from-dir contfrag:bundles/contfrag/
+
+`--run-from-dir` requires a NetCDF results bundle (`results.nc` plus
+`model.pkl`, `spikes.npz`, `position.parquet`). When a `results.zarr/`
+acceleration cache sits next to `results.nc` and the zarr backend is
+installed (the `[viewer-cache]` extra), the viewer reads large per-time
+arrays lazily through the cache; otherwise it falls back to `results.nc`
+with a warning. Build the cache with:
+
+  python -m non_local_detector.visualization.interactive.devtools \\
+    build-viewer-cache --run-dir bundles/continuous/
+
+The cache is validated against `results.nc` on load (time grid + every
+time-dim variable); a stale cache is rejected with a rebuild hint.
 
 For optional `predict()` outputs (log_likelihood, predictive_posterior),
 re-run `predict(return_outputs=['log_likelihood', 'predictive_posterior'])`
