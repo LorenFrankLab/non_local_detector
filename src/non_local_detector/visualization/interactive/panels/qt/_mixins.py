@@ -24,6 +24,9 @@ import pyqtgraph as pg
 from PySide6 import QtCore
 from PySide6.QtGui import QColor
 
+from non_local_detector.visualization.interactive.view_models.base import (
+    bin_edges_array,
+)
 
 if TYPE_CHECKING:
     from non_local_detector.visualization.interactive.view_models.events import (
@@ -389,7 +392,14 @@ class HeatmapPanelBase(
         vb.setYRange(layout.y_min, layout.y_max, padding=0)
         vb.setLimits(yMin=layout.y_min, yMax=layout.y_max)
 
-    def _set_image(self, collapsed: np.ndarray, time: np.ndarray) -> None:
+    def _set_image(
+        self,
+        collapsed: np.ndarray,
+        time: np.ndarray,
+        *,
+        time_start: float | None = None,
+        time_stop: float | None = None,
+    ) -> None:
         """Render ``collapsed`` (n_visible, n_pos) and pin the rect."""
         self._image_item.setImage(
             collapsed.T,
@@ -399,8 +409,16 @@ class HeatmapPanelBase(
         )
         layout = self._grid_layout
         if time.size and layout.centers.size:
-            x_min = float(time[0])
-            x_extent = float(time[-1] - time[0]) if time.size > 1 else 1.0
+            if time_start is None or time_stop is None:
+                edges = bin_edges_array(np.asarray(time, dtype=np.float64))
+                x_min = float(edges[0])
+                x_stop = float(edges[-1])
+            else:
+                x_min = float(time_start)
+                x_stop = float(time_stop)
+            x_extent = x_stop - x_min
+            if x_extent <= 0.0:
+                x_extent = 1.0
             self._image_item.setRect(
                 pg.QtCore.QRectF(x_min, layout.y_min, x_extent, layout.y_extent)
             )

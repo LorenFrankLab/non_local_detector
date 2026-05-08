@@ -16,6 +16,11 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtWidgets
 
+from non_local_detector.visualization.interactive.panels.qt._mixins import (
+    PositionGridLayout,
+    position_grid_layout,
+)
+
 if TYPE_CHECKING:
     from non_local_detector.visualization.interactive.view_models.base import (
         WindowPayload,
@@ -39,10 +44,17 @@ _OVERLAY_MODE_CHOICES: tuple[tuple[OverlayMode, str], ...] = (
     ("smoothed", "Smoothed (acausal)"),
 )
 
-_TOP_CURVE_PEN = pg.mkPen(color="#1f77b4", width=3)
-_PREDICTIVE_PEN = pg.mkPen(color="#ff7f0e", width=3, style=QtCore.Qt.PenStyle.DashLine)
+_LIKELIHOOD_PENS = (
+    pg.mkPen(color=(255, 127, 14), width=3),
+    pg.mkPen(color=(214, 39, 40), width=3),
+    pg.mkPen(color=(148, 103, 189), width=3),
+    pg.mkPen(color=(140, 86, 75), width=3),
+)
+_PREDICTIVE_PEN = pg.mkPen(color=(31, 119, 180), width=3)
 _PER_CELL_PEN = pg.mkPen(color="#444444", width=3)
 _TRUE_POSITION_PEN = pg.mkPen((50, 50, 50), width=2, style=QtCore.Qt.PenStyle.DashLine)
+_LIKELIHOOD_Z = 1
+_OVERLAY_Z = 3
 _SLICE_Y_MIN = -0.02
 _SLICE_Y_MAX = 1.05
 _PER_CELL_PALETTE = (
@@ -100,10 +112,18 @@ def _pin_slice_axes(plot: pg.PlotWidget, position_centers: np.ndarray) -> None:
     )
 
 
+def _display_position_axis(layout: PositionGridLayout) -> np.ndarray:
+    """Return slice x-coordinates that match heatmap pixel rows."""
+    if layout.arange_n_pos.size == 0:
+        return np.empty(0, dtype=np.float64)
+    return layout.y0 + layout.arange_n_pos * layout.uniform_step
+
+
 class _PerCellRow:
     """One pre-allocated per-cell row widget (header + line plot)."""
 
     def __init__(self, position_centers: np.ndarray) -> None:
+        self._set_position_layout(position_centers)
         self.container = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(self.container)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -116,7 +136,7 @@ class _PerCellRow:
         self.plot.setMouseEnabled(x=False, y=False)
         self.plot.hideAxis("bottom")
         self.plot.hideAxis("left")
-        _pin_slice_axes(self.plot, position_centers)
+        _pin_slice_axes(self.plot, self._position_x)
         _empty = np.empty(0, dtype=float)
         self.curve = self.plot.plot(_empty, _empty, pen=_PER_CELL_PEN)
         self.overlay_curve = self.plot.plot(_empty, _empty, pen=_PREDICTIVE_PEN)
@@ -126,10 +146,9 @@ class _PerCellRow:
         self.true_position_line.setZValue(10)
         self.true_position_line.setVisible(False)
         self.plot.addItem(self.true_position_line)
-        _pin_slice_axes(self.plot, position_centers)
+        _pin_slice_axes(self.plot, self._position_x)
         layout.addWidget(self.label)
         layout.addWidget(self.plot)
-        self._position_centers = np.asarray(position_centers).squeeze()
         self._last_label = ""
         size_policy = self.container.sizePolicy()
         size_policy.setRetainSizeWhenHidden(True)
@@ -145,10 +164,10 @@ class _PerCellRow:
     ) -> None:
         if label != self._last_label:
             self.label.setText(label)
-            self.curve.setData(self._position_centers, place_field_norm)
+            self.curve.setData(self._position_x, place_field_norm)
             self._last_label = label
         if overlay_curve is not None:
-            self.overlay_curve.setData(self._position_centers, overlay_curve)
+            self.overlay_curve.setData(self._position_x, overlay_curve)
         else:
             self.overlay_curve.setData(
                 np.empty(0, dtype=float), np.empty(0, dtype=float)
@@ -158,8 +177,8 @@ class _PerCellRow:
             self.container.setVisible(True)
 
     def set_position_centers(self, centers: np.ndarray) -> None:
-        self._position_centers = np.asarray(centers).squeeze()
-        _pin_slice_axes(self.plot, self._position_centers)
+        self._set_position_layout(centers)
+        _pin_slice_axes(self.plot, self._position_x)
         self._last_label = ""
 
     def hide(self) -> None:
@@ -173,6 +192,10 @@ class _PerCellRow:
             return
         self.true_position_line.setPos(float(true_position))
         self.true_position_line.setVisible(True)
+
+    def _set_position_layout(self, centers: np.ndarray) -> None:
+        self._position_layout = position_grid_layout(centers)
+        self._position_x = _display_position_axis(self._position_layout)
 
 
 class QtSlicePanel(QtWidgets.QWidget):
@@ -193,7 +216,7 @@ class QtSlicePanel(QtWidgets.QWidget):
     ) -> None:
         super().__init__(parent)
         self._model = model
-        self._position_centers = np.asarray(position_centers).squeeze()
+        self._set_position_layout(position_centers)
         self._overlay_mode: OverlayMode = overlay_mode
         self._per_cell_visible = True
 
@@ -235,22 +258,27 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._top_plot.setLabel("left", "Probability / Likelihood")
         self._top_plot.setLabel("bottom", "Position [cm]")
         self._top_plot.setMouseEnabled(x=False, y=False)
-        _pin_slice_axes(self._top_plot, self._position_centers)
+        _pin_slice_axes(self._top_plot, self._position_x)
         # Pre-init with explicit empty arrays so ``getData()`` always
         # returns ndarrays (pyqtgraph returns ``(None, None)`` when
         # data was set with empty Python lists or never set at all).
         _empty = np.empty(0, dtype=float)
-        self._top_curve_item = self._top_plot.plot(_empty, _empty, pen=_TOP_CURVE_PEN)
+        self._top_curve_item = self._top_plot.plot(
+            _empty, _empty, pen=_LIKELIHOOD_PENS[0]
+        )
+        self._top_curve_item.setZValue(_LIKELIHOOD_Z)
+        self._top_curve_items: list[pg.PlotDataItem] = [self._top_curve_item]
         self._predictive_curve_item = self._top_plot.plot(
             _empty, _empty, pen=_PREDICTIVE_PEN
         )
+        self._predictive_curve_item.setZValue(_OVERLAY_Z)
         self._true_position_line = pg.InfiniteLine(
             angle=90, movable=False, pen=_TRUE_POSITION_PEN
         )
         self._true_position_line.setZValue(10)
         self._true_position_line.setVisible(False)
         self._top_plot.addItem(self._true_position_line)
-        _pin_slice_axes(self._top_plot, self._position_centers)
+        _pin_slice_axes(self._top_plot, self._position_x)
         layout.addWidget(self._top_plot, stretch=2)
 
         self._per_cell_container = QtWidgets.QWidget()
@@ -262,7 +290,8 @@ class QtSlicePanel(QtWidgets.QWidget):
         # Rows are hidden until ``update_for_index`` activates them; this
         # keeps per-tick rendering allocation-free.
         self._per_cell_rows: list[_PerCellRow] = [
-            _PerCellRow(self._position_centers) for _ in range(MAX_PER_CELL_PLOTS)
+            _PerCellRow(self._position_layout.centers)
+            for _ in range(MAX_PER_CELL_PLOTS)
         ]
         for row in self._per_cell_rows:
             self._per_cell_layout.addWidget(row.container)
@@ -290,9 +319,9 @@ class QtSlicePanel(QtWidgets.QWidget):
     @staticmethod
     def _build_legend_html() -> str:
         return (
-            "<span style='color:rgb(31,119,180);font-size:14pt'>━</span> "
-            "Likelihood &nbsp;&nbsp; "
             "<span style='color:rgb(255,127,14);font-size:14pt'>━</span> "
+            "Likelihood &nbsp;&nbsp; "
+            "<span style='color:rgb(31,119,180);font-size:14pt'>━</span> "
             "Overlay &nbsp;&nbsp; "
             "<span style='color:rgb(44,160,44);font-size:14pt'>━</span> "
             "Cell place fields &nbsp;&nbsp; "
@@ -398,10 +427,10 @@ class QtSlicePanel(QtWidgets.QWidget):
 
     def set_position_centers(self, centers: np.ndarray) -> None:
         """Re-bind the position grid (called on M-key swap)."""
-        self._position_centers = np.asarray(centers).squeeze()
-        _pin_slice_axes(self._top_plot, self._position_centers)
+        self._set_position_layout(centers)
+        _pin_slice_axes(self._top_plot, self._position_x)
         for row in self._per_cell_rows:
-            row.set_position_centers(self._position_centers)
+            row.set_position_centers(self._position_layout.centers)
 
     def rebind_after_swap(self) -> None:
         """Drop the stale buffer after the model schema changes.
@@ -414,7 +443,7 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._buffered_payload = None
         self._last_t_idx = None
         self._pinned_cell_ids.clear()
-        self._top_curve_item.setData(np.empty(0, dtype=float), np.empty(0, dtype=float))
+        self._clear_top_curve_items()
         self._predictive_curve_item.setData(
             np.empty(0, dtype=float), np.empty(0, dtype=float)
         )
@@ -491,25 +520,58 @@ class QtSlicePanel(QtWidgets.QWidget):
             f"t={bin_payload.t:.3f} s    cells={len(bin_payload.cells)}    "
             f"{bin_payload.top_curve_label}"
         )
-        if bin_payload.top_curve is not None:
-            self._top_curve_item.setData(self._position_centers, bin_payload.top_curve)
-        else:
-            self._top_curve_item.setData(
-                np.empty(0, dtype=float), np.empty(0, dtype=float)
-            )
+        top_curves = bin_payload.top_curves
+        if not top_curves and bin_payload.top_curve is not None:
+            top_curves = (bin_payload.top_curve,)
+        self._render_top_curves(top_curves)
         overlay_curve = _peak_normalize_curve(bin_payload.predictive_curve)
         if overlay_curve is not None:
-            self._predictive_curve_item.setData(self._position_centers, overlay_curve)
+            self._predictive_curve_item.setData(self._position_x, overlay_curve)
         else:
             self._predictive_curve_item.setData(
                 np.empty(0, dtype=float), np.empty(0, dtype=float)
             )
-        self._set_true_position(true_position)
+        true_position_x = self._map_position_to_display(true_position)
+        self._set_true_position(true_position_x)
         self._render_per_cell_rows(
             bin_payload.cells,
             overlay_curve=overlay_curve,
-            true_position=true_position,
+            true_position=true_position_x,
         )
+
+    def _set_position_layout(self, centers: np.ndarray) -> None:
+        self._position_layout = position_grid_layout(centers)
+        self._position_x = _display_position_axis(self._position_layout)
+
+    def _map_position_to_display(self, true_position: float | None) -> float | None:
+        if true_position is None or not np.isfinite(true_position):
+            return None
+        mapped = self._position_layout.cm_to_pixel_y(
+            np.asarray([true_position], dtype=np.float64)
+        )
+        return float(mapped[0]) if mapped.size else None
+
+    def _ensure_top_curve_items(self, n_items: int) -> None:
+        _empty = np.empty(0, dtype=float)
+        while len(self._top_curve_items) < n_items:
+            pen = _LIKELIHOOD_PENS[len(self._top_curve_items) % len(_LIKELIHOOD_PENS)]
+            item = self._top_plot.plot(_empty, _empty, pen=pen)
+            item.setZValue(_LIKELIHOOD_Z)
+            self._top_curve_items.append(item)
+
+    def _render_top_curves(self, top_curves: tuple[np.ndarray, ...]) -> None:
+        self._ensure_top_curve_items(len(top_curves))
+        _empty = np.empty(0, dtype=float)
+        for i, item in enumerate(self._top_curve_items):
+            if i < len(top_curves):
+                item.setData(self._position_x, top_curves[i])
+                item.setVisible(True)
+            else:
+                item.setData(_empty, _empty)
+                item.setVisible(False)
+
+    def _clear_top_curve_items(self) -> None:
+        self._render_top_curves(())
 
     def _render_per_cell_rows(
         self,

@@ -45,7 +45,12 @@ class QtPosteriorHeatmapPanel(HeatmapPanelBase):
             self._clear_position_trace()
             return
         collapsed = self._model.update_window(payload.posterior)
-        self._set_image(collapsed, payload.time)
+        self._set_image(
+            collapsed,
+            payload.time,
+            time_start=payload.time_start,
+            time_stop=payload.time_stop,
+        )
         self._set_position_trace(payload.time, payload.position)
 
     def update_for_array(self, time: np.ndarray, posterior: np.ndarray) -> None:

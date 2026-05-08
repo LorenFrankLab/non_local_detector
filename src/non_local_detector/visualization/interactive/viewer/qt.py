@@ -43,6 +43,7 @@ from non_local_detector.visualization.interactive.view_models.base import (
     RunBundle,
     ViewState,
     WindowPayload,
+    bin_edges_array,
     bin_edges_at,
 )
 from non_local_detector.visualization.interactive.view_models.likelihood import (
@@ -335,6 +336,9 @@ class QtBackendAdapter(BackendAdapter):
     def _build_payload(self, state: ViewState) -> WindowPayload:
         sl = self._data_source.window_indices(state.t_center, state.t_width)
         time = self._data_source.time[sl]
+        edges = bin_edges_array(self._data_source.time)
+        time_start = float(edges[sl.start]) if time.size else None
+        time_stop = float(edges[sl.stop]) if time.size else None
         posterior = self._data_source.load_posterior(sl)
         likelihood = (
             self._data_source.load_likelihood(sl)
@@ -353,6 +357,8 @@ class QtBackendAdapter(BackendAdapter):
             request_id=state.request_id,
             time=np.asarray(time),
             indices=sl,
+            time_start=time_start,
+            time_stop=time_stop,
             posterior=posterior,
             likelihood=likelihood,
             likelihood_linear=likelihood_linear,
@@ -888,8 +894,16 @@ class QtViewer(QtWidgets.QMainWindow):
         # Setting the range here lets every X-linked panel render
         # against the actual loaded window.
         if payload.time.size:
-            t_start = float(payload.time[0])
-            t_stop = float(payload.time[-1])
+            t_start = (
+                float(payload.time_start)
+                if payload.time_start is not None
+                else float(payload.time[0])
+            )
+            t_stop = (
+                float(payload.time_stop)
+                if payload.time_stop is not None
+                else float(payload.time[-1])
+            )
             if t_stop > t_start:
                 self._panel.getPlotItem().vb.setXRange(t_start, t_stop, padding=0)
         slider_value = self._slider.value()

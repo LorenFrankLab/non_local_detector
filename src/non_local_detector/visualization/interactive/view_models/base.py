@@ -137,6 +137,8 @@ class WindowPayload:
     request_id: int
     time: np.ndarray
     indices: slice
+    time_start: float | None = None
+    time_stop: float | None = None
     posterior: np.ndarray | None = None
     likelihood: np.ndarray | None = None
     predictive: np.ndarray | None = None
@@ -176,6 +178,7 @@ class BinPayload:
     t_idx: int
     t: float
     top_curve: np.ndarray | None = None
+    top_curves: tuple[np.ndarray, ...] = ()
     top_curve_label: str = ""
     predictive_curve: np.ndarray | None = None
     cells: tuple[CellSlice, ...] = ()

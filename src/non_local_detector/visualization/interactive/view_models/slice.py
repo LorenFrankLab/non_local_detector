@@ -15,6 +15,7 @@ import numpy as np
 from non_local_detector.analysis.place_fields import extract_per_cell_place_fields
 from non_local_detector.analysis.posterior import (
     PosteriorReduction,
+    _validate_rectangular_spatial,
     collapse_log_likelihood_to_position,
     collapse_posterior_to_position,
     select_reduction,
@@ -36,6 +37,33 @@ TOP_CURVE_LIKELIHOOD_LABEL = "Likelihood (peak-normalised, all spatial states)"
 TOP_CURVE_POSTERIOR_FALLBACK_LABEL = (
     "Posterior (likelihood unavailable; collapsed via active reduction)"
 )
+
+
+def collapse_log_likelihood_per_spatial_state(
+    log_lik_row: np.ndarray, detector: _DetectorBase
+) -> tuple[np.ndarray, ...]:
+    """Return one peak-normalized likelihood curve per spatial state.
+
+    This preserves the state-space-check top-slice convention where
+    each spatial state's likelihood is visible instead of immediately
+    summed into one aggregate curve.
+    """
+    spatial_state_ids, n_pos = _validate_rectangular_spatial(
+        detector, "collapse_log_likelihood_per_spatial_state"
+    )
+    state_ind = np.asarray(detector.state_ind_)
+    curves: list[np.ndarray] = []
+    for state_id in spatial_state_ids:
+        log_state = np.asarray(log_lik_row[state_ind == state_id])
+        log_state = np.where(np.isfinite(log_state), log_state, -np.inf)
+        if not np.isfinite(log_state).any():
+            curves.append(np.zeros(n_pos, dtype=log_state.dtype))
+            continue
+        finite_max = log_state[np.isfinite(log_state)].max()
+        curve = np.exp(log_state - finite_max)
+        peak = curve.max()
+        curves.append(curve / peak if peak > 0 else curve)
+    return tuple(curves)
 
 
 class SliceModel:
@@ -147,8 +175,12 @@ class SliceModel:
                 f"t_idx={t_idx} out of range for time grid of size {self._time.size}"
             )
         t = float(self._time[t_idx])
+        top_curves: tuple[np.ndarray, ...] = ()
         if log_lik_row is not None:
             top_curve = collapse_log_likelihood_to_position(log_lik_row, self._detector)
+            top_curves = collapse_log_likelihood_per_spatial_state(
+                log_lik_row, self._detector
+            )
             top_curve_label = TOP_CURVE_LIKELIHOOD_LABEL
         else:
             top_curve = collapse_posterior_to_position(
@@ -172,6 +204,7 @@ class SliceModel:
             t_idx=t_idx,
             t=t,
             top_curve=top_curve,
+            top_curves=top_curves,
             top_curve_label=top_curve_label,
             predictive_curve=predictive_curve,
             cells=tuple(cells),

@@ -66,7 +66,12 @@ class QtLikelihoodHeatmapPanel(HeatmapPanelBase):
             self._set_title_message(self.MISSING_DATA_MESSAGE)
             return
         collapsed = self._model.update_window(payload.likelihood)
-        self._set_image(collapsed, payload.time)
+        self._set_image(
+            collapsed,
+            payload.time,
+            time_start=payload.time_start,
+            time_stop=payload.time_stop,
+        )
         self._set_position_trace(payload.time, payload.position)
         self._set_title_message(None)
 

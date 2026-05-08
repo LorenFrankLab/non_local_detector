@@ -19,6 +19,7 @@ from non_local_detector.visualization.interactive.view_models.slice import (
     TOP_CURVE_LIKELIHOOD_LABEL,
     TOP_CURVE_POSTERIOR_FALLBACK_LABEL,
     SliceModel,
+    collapse_log_likelihood_per_spatial_state,
 )
 
 
@@ -72,6 +73,14 @@ class TestSliceModelTopCurve:
         np.testing.assert_allclose(
             payload.top_curve, expected, atol=1e-14, equal_nan=True
         )
+        expected_per_state = collapse_log_likelihood_per_spatial_state(
+            log_lik_row, nl_fitted.detector
+        )
+        assert len(payload.top_curves) == len(expected_per_state)
+        for actual, expected in zip(
+            payload.top_curves, expected_per_state, strict=True
+        ):
+            np.testing.assert_allclose(actual, expected, atol=1e-14, equal_nan=True)
         assert payload.top_curve_label == TOP_CURVE_LIKELIHOOD_LABEL
 
     def test_posterior_fallback_when_loglik_missing(
@@ -94,6 +103,7 @@ class TestSliceModelTopCurve:
         np.testing.assert_allclose(
             payload.top_curve, expected, atol=1e-14, equal_nan=True
         )
+        assert payload.top_curves == ()
         assert payload.top_curve_label == TOP_CURVE_POSTERIOR_FALLBACK_LABEL
 
 

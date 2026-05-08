@@ -105,6 +105,38 @@ def test_qt_panel_renders_collapsed_array(
 
 
 @pytest.mark.unit
+def test_qt_heatmap_rect_uses_left_edge_time_bounds(
+    qapp,
+    nl_fitted: FittedDetector,
+) -> None:
+    """Heatmap images span bin edges, not center-to-center sample times."""
+    from non_local_detector.visualization.interactive.panels.qt.posterior import (
+        QtPosteriorHeatmapPanel,
+    )
+    from non_local_detector.visualization.interactive.view_models.posterior import (
+        PosteriorHeatmapModel,
+    )
+
+    detector = nl_fitted.detector
+    env = detector.environments[0]
+    panel = QtPosteriorHeatmapPanel(
+        model=PosteriorHeatmapModel(detector),
+        position_centers=np.asarray(env.place_bin_centers_).squeeze(),
+    )
+    post = nl_fitted.results["acausal_posterior"].values
+    start = first_finite_row_index(post)
+    window = post[start : start + 3]
+    panel.update_for_array(
+        time=np.array([10.0, 10.1, 10.2]),
+        posterior=window,
+    )
+    rect = panel._image_item.mapRectToParent(panel._image_item.boundingRect())
+
+    assert rect.left() == pytest.approx(10.0)
+    assert rect.right() == pytest.approx(10.3)
+
+
+@pytest.mark.unit
 def test_qt_viewer_launches_and_routes_payload(
     qapp,
     multi_run_bundles: dict[str, RunBundle],

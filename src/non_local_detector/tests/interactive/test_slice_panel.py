@@ -12,7 +12,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from non_local_detector.analysis.posterior import (
     PosteriorReduction,
-    collapse_log_likelihood_to_position,
     collapse_posterior_to_position,
 )
 from non_local_detector.tests._simulated_detectors import (
@@ -23,7 +22,10 @@ from non_local_detector.visualization.interactive.view_models.base import (
     RunBundle,
     WindowPayload,
 )
-from non_local_detector.visualization.interactive.view_models.slice import SliceModel
+from non_local_detector.visualization.interactive.view_models.slice import (
+    SliceModel,
+    collapse_log_likelihood_per_spatial_state,
+)
 
 pytestmark = pytest.mark.gui
 
@@ -123,12 +125,16 @@ def test_slice_panel_renders_top_curve_from_loglik(
     t_idx = first_finite_row_index(bundle.results["log_likelihood"].values)
     panel.update_for_index(t_idx)
 
-    expected = collapse_log_likelihood_to_position(
+    expected_curves = collapse_log_likelihood_per_spatial_state(
         bundle.results["log_likelihood"].values[t_idx], detector
     )
     x_data, y_data = panel._top_curve_item.getData()
-    np.testing.assert_array_equal(x_data, centers)
-    np.testing.assert_allclose(y_data, expected, atol=1e-14, equal_nan=True)
+    np.testing.assert_array_equal(x_data, panel._position_x)
+    np.testing.assert_allclose(y_data, expected_curves[0], atol=1e-14, equal_nan=True)
+    assert len(panel._top_curve_items) == len(expected_curves)
+    for item, expected in zip(panel._top_curve_items, expected_curves, strict=True):
+        _, y = item.getData()
+        np.testing.assert_allclose(y, expected, atol=1e-14, equal_nan=True)
 
 
 @pytest.mark.unit
@@ -595,15 +601,16 @@ def test_slice_panel_draws_true_position_and_row_overlay(
     panel.update_for_index(t_idx)
 
     expected_position = float(position[t_idx])
+    expected_position_x = panel._map_position_to_display(expected_position)
     assert panel._true_position_line.isVisible()
-    assert panel._true_position_line.value() == pytest.approx(expected_position)
+    assert panel._true_position_line.value() == pytest.approx(expected_position_x)
     _, top_overlay = panel._predictive_curve_item.getData()
 
     visible_rows = [r for r in panel._per_cell_rows if not r.container.isHidden()]
     assert visible_rows
     for row in visible_rows:
         assert row.true_position_line.isVisible()
-        assert row.true_position_line.value() == pytest.approx(expected_position)
+        assert row.true_position_line.value() == pytest.approx(expected_position_x)
         _, row_overlay = row.overlay_curve.getData()
         np.testing.assert_allclose(row_overlay, top_overlay, atol=1e-14, equal_nan=True)
 
