@@ -270,6 +270,68 @@ def test_slice_panel_out_of_buffer_index_is_no_op(
 
 
 @pytest.mark.unit
+def test_slice_panel_out_of_buffer_uses_row_provider(
+    qapp,
+    run_bundles: dict[str, RunBundle],
+) -> None:
+    """Playback can render a spike bin before the next window load commits."""
+    bundle = run_bundles["nl_all"]
+    detector = bundle.detector
+    centers = np.asarray(detector.environments[0].place_bin_centers_).squeeze()
+    time = bundle.results["time"].values
+    model = SliceModel(detector, bundle.spike_times, time)
+    panel = _make_panel(qapp, model, centers)
+
+    # Buffer only the first few bins, then render a later bin through
+    # the single-row fallback.
+    sl = slice(0, 5)
+    likelihood = bundle.results["log_likelihood"].values[sl]
+    panel.set_window_buffer(
+        WindowPayload(
+            request_id=0,
+            time=time[sl],
+            indices=sl,
+            posterior=bundle.results["acausal_posterior"].values[sl],
+            likelihood=likelihood,
+            likelihood_linear=_linear_likelihood(likelihood),
+            predictive=bundle.results["predictive_posterior"].values[sl],
+            state_probabilities=bundle.results[
+                "acausal_state_probabilities"
+            ].values[sl],
+        )
+    )
+
+    target = next(
+        i for i in range(sl.stop + 1, time.size) if model.event_ids_at_bin(i).size
+    )
+
+    def row_provider(t_idx: int):
+        log_lik_row = bundle.results["log_likelihood"].values[t_idx]
+        return (
+            bundle.results["acausal_posterior"].values[t_idx],
+            log_lik_row,
+            _linear_likelihood(log_lik_row[None, :])[0],
+            bundle.results["predictive_posterior"].values[t_idx],
+            None,
+        )
+
+    panel.set_row_provider(row_provider)
+    panel.update_for_index(target)
+
+    assert panel._last_t_idx == target
+    visible_rows = [r for r in panel._per_cell_rows if not r.container.isHidden()]
+    assert visible_rows
+    active_cells = {
+        int(model._event_index.cell_ids[event_id])
+        for event_id in model.event_ids_at_bin(target)
+    }
+    rendered_cells = {
+        int(row.label.text().split("#")[1].split(" ")[0]) for row in visible_rows
+    }
+    assert active_cells & rendered_cells
+
+
+@pytest.mark.unit
 def test_slice_panel_per_cell_rows_show_active_cells(
     qapp,
     run_bundles: dict[str, RunBundle],

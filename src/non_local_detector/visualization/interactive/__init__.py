@@ -20,6 +20,8 @@ from non_local_detector.visualization.interactive.view_models import (
     PositionGrid,
     PosteriorHeatmapModel,
     RunBundle,
+    SpikeEvent,
+    SpikeEventIndex,
     ViewState,
     WindowPayload,
 )
@@ -77,6 +79,8 @@ __all__ = [
     "PositionGrid",
     "PosteriorHeatmapModel",
     "RunBundle",
+    "SpikeEvent",
+    "SpikeEventIndex",
     "TimeAxisPanel",
     "ViewState",
     "WindowPayload",

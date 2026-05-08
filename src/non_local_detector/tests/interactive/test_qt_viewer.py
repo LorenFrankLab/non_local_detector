@@ -515,28 +515,36 @@ def test_qt_viewer_raster_spike_click_toggles_spike_pin(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
 ) -> None:
-    """Raster spike clicks pin by ``(cell_id, spike_time)`` identity."""
+    """Raster spike clicks pin by stable event-id identity."""
     from non_local_detector.visualization.interactive.viewer.qt import QtViewer
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
+    first = ds.spike_event_at(0)
+    same_cell_events = [
+        event_id
+        for event_id in range(ds.event_index.n_events)
+        if ds.spike_event_at(event_id).cell_id == first.cell_id and event_id != 0
+    ]
+    second_event_id = same_cell_events[0] if same_cell_events else 1
+    second = ds.spike_event_at(second_event_id)
 
     assert viewer._slice_panel.pinned_cell_ids == frozenset()
-    viewer._raster_panel.spike_clicked.emit(3, 1.25)
-    assert 3 in viewer._slice_panel.pinned_cell_ids
-    assert viewer._pinned_spike_key == (3, 1.25)
-    assert viewer._pinned_time == 1.25
+    viewer._raster_panel.event_clicked.emit(first.event_id)
+    assert first.cell_id in viewer._slice_panel.pinned_cell_ids
+    assert viewer._pinned_event_id == first.event_id
+    assert viewer._pinned_time == first.time
 
-    # Same spike → unpin.
-    viewer._raster_panel.spike_clicked.emit(3, 1.25)
-    assert 3 not in viewer._slice_panel.pinned_cell_ids
-    assert viewer._pinned_spike_key is None
+    # Same event → unpin.
+    viewer._raster_panel.event_clicked.emit(first.event_id)
+    assert first.cell_id not in viewer._slice_panel.pinned_cell_ids
+    assert viewer._pinned_event_id is None
 
     # Another spike from the same cell repins/recenters to that event.
-    viewer._raster_panel.spike_clicked.emit(3, 1.50)
-    assert viewer._slice_panel.pinned_cell_ids == frozenset({3})
-    assert viewer._pinned_spike_key == (3, 1.50)
-    assert viewer.core.t_center == pytest.approx(1.50)
+    viewer._raster_panel.event_clicked.emit(second.event_id)
+    assert viewer._slice_panel.pinned_cell_ids == frozenset({second.cell_id})
+    assert viewer._pinned_event_id == second.event_id
+    assert viewer.core.t_center == pytest.approx(second.time)
 
 
 @pytest.mark.unit
@@ -550,24 +558,16 @@ def test_qt_viewer_raster_spike_click_updates_slice_to_spike_bin(
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
 
-    chosen: tuple[int, float, int] | None = None
-    for cell_id, spike_times in enumerate(ds.active_run.spike_times):
-        for spike_t in np.asarray(spike_times, dtype=float):
-            t_idx = viewer._time_to_bin_index(float(spike_t))
-            bucket = viewer._slice_model._per_bin_cell_counts[t_idx]
-            if bucket.get(cell_id, 0) > 0:
-                chosen = (cell_id, float(spike_t), t_idx)
-                break
-        if chosen is not None:
-            break
-    assert chosen is not None
-    cell_id, spike_t, t_idx = chosen
+    event = ds.spike_event_at(0)
+    cell_id = event.cell_id
+    spike_t = event.time
+    t_idx = event.time_index
 
     viewer.core.set_t_center(spike_t)
     viewer._on_window_loaded(
         viewer._backend._build_payload(viewer.core.current_view_state)
     )
-    viewer._on_spike_clicked(cell_id, spike_t)
+    viewer._on_event_clicked(event.event_id)
 
     assert viewer._slider.value() == t_idx
     visible_rows = [
@@ -576,7 +576,10 @@ def test_qt_viewer_raster_spike_click_updates_slice_to_spike_bin(
     pinned_label = next(
         r.label.text() for r in visible_rows if f"#{cell_id}" in r.label.text()
     )
-    expected_count = viewer._slice_model._per_bin_cell_counts[t_idx][cell_id]
+    event_ids = viewer._slice_model.event_ids_at_bin(t_idx)
+    expected_count = int(
+        np.count_nonzero(ds.event_index.cell_ids[event_ids] == cell_id)
+    )
     assert f"(×{expected_count})" in pinned_label
     assert "(×0)" not in pinned_label
 
@@ -592,25 +595,26 @@ def test_qt_viewer_manual_navigation_clears_pins(
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
 
-    viewer._on_spike_clicked(3, 1.25)
-    assert viewer._slice_panel.pinned_cell_ids == frozenset({3})
+    event = ds.spike_event_at(0)
+    viewer._on_event_clicked(event.event_id)
+    assert viewer._slice_panel.pinned_cell_ids == frozenset({event.cell_id})
     viewer._on_slider_value_changed(viewer._slider.value() + 1)
     assert viewer._slice_panel.pinned_cell_ids == frozenset()
-    assert viewer._pinned_spike_key is None
+    assert viewer._pinned_event_id is None
 
-    viewer._on_spike_clicked(3, 1.25)
+    viewer._on_event_clicked(event.event_id)
     viewer._set_t_center_from_panel_click(1.75)
     assert viewer._slice_panel.pinned_cell_ids == frozenset()
 
-    viewer._on_spike_clicked(3, 1.25)
+    viewer._on_event_clicked(event.event_id)
     viewer._step_right()
     assert viewer._slice_panel.pinned_cell_ids == frozenset()
 
-    viewer._on_spike_clicked(3, 1.25)
+    viewer._on_event_clicked(event.event_id)
     viewer._step_window(+1)
     assert viewer._slice_panel.pinned_cell_ids == frozenset()
 
-    viewer._on_spike_clicked(3, 1.25)
+    viewer._on_event_clicked(event.event_id)
     viewer._reset_view()
     assert viewer._slice_panel.pinned_cell_ids == frozenset()
 

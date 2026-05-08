@@ -9,6 +9,8 @@ from non_local_detector.visualization.interactive.view_models.base import (
     CellSlice,
     PositionGrid,
     RunBundle,
+    SpikeEvent,
+    SpikeEventIndex,
     ViewState,
     WindowPayload,
 )
@@ -51,6 +53,8 @@ __all__ = [
     "RasterPayload",
     "RunBundle",
     "ScatterSeriesModel",
+    "SpikeEvent",
+    "SpikeEventIndex",
     "StateProbabilityModel",
     "ViewState",
     "WindowPayload",

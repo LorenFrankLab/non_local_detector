@@ -10,6 +10,7 @@ the buffer makes the cursor updates O(1).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -37,6 +38,17 @@ _TOP_SLICE_MIN_HEIGHT = 140
 _PER_CELL_SLICE_MIN_HEIGHT = 70
 
 OverlayMode = Literal["predictive", "filtered", "smoothed"]
+SliceRowProvider = Callable[
+    [int],
+    tuple[
+        np.ndarray,
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
+        float | None,
+    ]
+    | None,
+]
 _OVERLAY_MODE_VALUES: frozenset[str] = frozenset(("predictive", "filtered", "smoothed"))
 _OVERLAY_MODE_CHOICES: tuple[tuple[OverlayMode, str], ...] = (
     ("predictive", "Predictive (causal)"),
@@ -317,6 +329,7 @@ class QtSlicePanel(QtWidgets.QWidget):
         layout.addWidget(self._readout_label)
 
         self._buffered_payload: WindowPayload | None = None
+        self._row_provider: SliceRowProvider | None = None
         # Last successfully-rendered ``t_idx`` so pin/unpin can
         # re-render in place without waiting for a slider tick.
         self._last_t_idx: int | None = None
@@ -429,6 +442,10 @@ class QtSlicePanel(QtWidgets.QWidget):
         """Cache the latest window payload for per-tick row reads."""
         self._buffered_payload = payload
 
+    def set_row_provider(self, provider: SliceRowProvider | None) -> None:
+        """Register a single-row fallback for out-of-buffer cursor ticks."""
+        self._row_provider = provider
+
     def set_per_cell_visible(self, visible: bool) -> None:
         """Show/hide per-cell rows without disabling the population slice."""
         self._per_cell_visible = bool(visible)
@@ -477,35 +494,36 @@ class QtSlicePanel(QtWidgets.QWidget):
     def update_for_index(self, t_idx: int) -> None:
         """Read row ``t_idx`` from the buffered window + render the slice.
 
-        Out-of-buffer ``t_idx`` is a no-op: the viewer's next window
-        load will refresh the buffer and re-issue the cursor update.
+        Out-of-buffer ``t_idx`` falls back to the registered row
+        provider so playback can keep animating while the next async
+        window load catches up.
         """
         payload = self._buffered_payload
-        if payload is None:
-            return
-        sl = payload.indices
-        if t_idx < sl.start or t_idx >= sl.stop:
-            return
-        local_idx = t_idx - sl.start
-        if payload.posterior is None:
-            return
-        posterior_row = payload.posterior[local_idx]
-        log_lik_row = (
-            payload.likelihood[local_idx] if payload.likelihood is not None else None
-        )
-        likelihood_linear_row = (
-            payload.likelihood_linear[local_idx]
-            if payload.likelihood_linear is not None
-            else None
-        )
-        true_position = _true_position_at(payload.position, local_idx)
-        # Overlay row depends on the user-selected mode. Predictive is
-        # the causal prior, filtered is predictive × likelihood, and
-        # smoothed is the acausal row the heatmap collapses. Predictive
-        # posterior is opt-in and therefore commonly absent.
-        predictive_row = (
-            payload.predictive[local_idx] if payload.predictive is not None else None
-        )
+        rows = None
+        if payload is not None:
+            sl = payload.indices
+            if sl.start <= t_idx < sl.stop and payload.posterior is not None:
+                local_idx = t_idx - sl.start
+                rows = (
+                    payload.posterior[local_idx],
+                    payload.likelihood[local_idx]
+                    if payload.likelihood is not None
+                    else None,
+                    payload.likelihood_linear[local_idx]
+                    if payload.likelihood_linear is not None
+                    else None,
+                    payload.predictive[local_idx]
+                    if payload.predictive is not None
+                    else None,
+                    _true_position_at(payload.position, local_idx),
+                )
+        if rows is None:
+            if self._row_provider is None:
+                return
+            rows = self._row_provider(t_idx)
+            if rows is None:
+                return
+        posterior_row, log_lik_row, likelihood_linear_row, predictive_row, true_position = rows
         if self._overlay_mode == "predictive":
             overlay_row = predictive_row
         elif self._overlay_mode == "filtered":

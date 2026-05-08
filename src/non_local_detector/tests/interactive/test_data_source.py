@@ -160,6 +160,18 @@ class TestSingleRunDataSource:
         assert "log_likelihood" not in ds_default.available_outputs
         assert "log_likelihood" in ds_all.available_outputs
 
+    def test_event_index_maps_spikes_to_left_edge_bins(
+        self, run_bundles: dict[str, RunBundle]
+    ) -> None:
+        ds = InMemoryDecoderDataSource.from_single(run_bundles["nl_all"])
+        event = ds.spike_event_at(0)
+        assert event.time_index == int(
+            np.searchsorted(ds.time, event.time, side="right") - 1
+        )
+        event_ids = ds.event_ids_at_bin(event.time_index)
+        assert event.event_id in set(event_ids.tolist())
+        assert event.cell_id in set(ds.event_index.cell_ids[event_ids].tolist())
+
 
 @pytest.mark.unit
 class TestMultiRunDataSource:

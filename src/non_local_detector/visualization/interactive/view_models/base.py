@@ -126,6 +126,150 @@ class PositionGrid:
 
 
 @dataclass(frozen=True)
+class SpikeEvent:
+    """One sorted spike event in the interactive viewer event index."""
+
+    event_id: int
+    cell_id: int
+    time: float
+    time_index: int
+
+
+@dataclass(frozen=True)
+class SpikeEventIndex:
+    """Stable event table built from per-cell spike times.
+
+    Events are sorted by ``(time, cell_id, within_cell_ordinal)``. The
+    row position is the stable ``event_id`` used by raster clicks and
+    pin state. Only spikes that fall inside the decoder's left-edge
+    bin range ``[time[0], inferred_final_edge)`` are retained.
+    """
+
+    times: np.ndarray
+    cell_ids: np.ndarray
+    time_indices: np.ndarray
+    cell_event_ids: tuple[np.ndarray, ...]
+
+    @classmethod
+    def from_spike_times(
+        cls, spike_times: list[np.ndarray], time: np.ndarray
+    ) -> SpikeEventIndex:
+        time = np.asarray(time, dtype=np.float64)
+        n_time = int(time.size)
+        n_cells = len(spike_times)
+        if n_time == 0 or n_cells == 0:
+            empty_i64 = np.empty(0, dtype=np.int64)
+            empty_f64 = np.empty(0, dtype=np.float64)
+            return cls(
+                times=empty_f64,
+                cell_ids=empty_i64,
+                time_indices=empty_i64,
+                cell_event_ids=tuple(empty_i64.copy() for _ in range(n_cells)),
+            )
+
+        edges = bin_edges_array(time)
+        event_times: list[np.ndarray] = []
+        event_cells: list[np.ndarray] = []
+        event_ordinals: list[np.ndarray] = []
+        for cell_id, st in enumerate(spike_times):
+            spikes = np.asarray(st, dtype=np.float64)
+            if spikes.size == 0:
+                continue
+            event_times.append(spikes)
+            event_cells.append(np.full(spikes.shape, cell_id, dtype=np.int64))
+            event_ordinals.append(np.arange(spikes.size, dtype=np.int64))
+        if not event_times:
+            empty_i64 = np.empty(0, dtype=np.int64)
+            return cls(
+                times=np.empty(0, dtype=np.float64),
+                cell_ids=empty_i64,
+                time_indices=empty_i64,
+                cell_event_ids=tuple(empty_i64.copy() for _ in range(n_cells)),
+            )
+
+        flat_times = np.concatenate(event_times)
+        flat_cells = np.concatenate(event_cells)
+        flat_ordinals = np.concatenate(event_ordinals)
+        time_indices = np.searchsorted(edges, flat_times, side="right") - 1
+        valid = (time_indices >= 0) & (time_indices < n_time)
+        flat_times = flat_times[valid]
+        flat_cells = flat_cells[valid]
+        flat_ordinals = flat_ordinals[valid]
+        time_indices = time_indices[valid].astype(np.int64, copy=False)
+        order = np.lexsort((flat_ordinals, flat_cells, flat_times))
+        times = flat_times[order].astype(np.float64, copy=False)
+        cell_ids = flat_cells[order].astype(np.int64, copy=False)
+        time_indices = time_indices[order]
+
+        event_ids_by_cell = []
+        for cell_id in range(n_cells):
+            event_ids_by_cell.append(
+                np.flatnonzero(cell_ids == cell_id).astype(np.int64, copy=False)
+            )
+        return cls(
+            times=times,
+            cell_ids=cell_ids,
+            time_indices=time_indices,
+            cell_event_ids=tuple(event_ids_by_cell),
+        )
+
+    @property
+    def n_events(self) -> int:
+        return int(self.times.size)
+
+    def event_at(self, event_id: int) -> SpikeEvent:
+        if event_id < 0 or event_id >= self.n_events:
+            raise IndexError(
+                f"event_id={event_id} out of range for {self.n_events} events"
+            )
+        return SpikeEvent(
+            event_id=int(event_id),
+            cell_id=int(self.cell_ids[event_id]),
+            time=float(self.times[event_id]),
+            time_index=int(self.time_indices[event_id]),
+        )
+
+    def event_ids_at_bin(self, t_idx: int) -> np.ndarray:
+        """Return event ids whose precomputed decoder bin is ``t_idx``."""
+        if self.time_indices.size == 0:
+            return np.empty(0, dtype=np.int64)
+        i0 = int(np.searchsorted(self.time_indices, t_idx, side="left"))
+        i1 = int(np.searchsorted(self.time_indices, t_idx, side="right"))
+        return np.arange(i0, i1, dtype=np.int64)
+
+    def event_ids_for_window(self, sl: slice) -> np.ndarray:
+        """Return event ids whose bins fall in ``[sl.start, sl.stop)``."""
+        if self.time_indices.size == 0:
+            return np.empty(0, dtype=np.int64)
+        i0 = int(np.searchsorted(self.time_indices, sl.start, side="left"))
+        i1 = int(np.searchsorted(self.time_indices, sl.stop, side="left"))
+        return np.arange(i0, i1, dtype=np.int64)
+
+    def event_ids_for_cell_window(
+        self, cell_id: int, t_start: float, t_stop: float
+    ) -> np.ndarray:
+        """Return event ids for one cell with times in ``[t_start, t_stop)``."""
+        if cell_id < 0 or cell_id >= len(self.cell_event_ids):
+            return np.empty(0, dtype=np.int64)
+        event_ids = self.cell_event_ids[cell_id]
+        times = self.times[event_ids]
+        i0 = int(np.searchsorted(times, t_start, side="left"))
+        i1 = int(np.searchsorted(times, t_stop, side="left"))
+        return event_ids[i0:i1]
+
+    def event_id_for_cell_time(self, cell_id: int, t: float) -> int | None:
+        """Return the first exact event id for ``(cell_id, t)``, if present."""
+        if cell_id < 0 or cell_id >= len(self.cell_event_ids):
+            return None
+        event_ids = self.cell_event_ids[cell_id]
+        times = self.times[event_ids]
+        i = int(np.searchsorted(times, t, side="left"))
+        if i >= times.size or times[i] != t:
+            return None
+        return int(event_ids[i])
+
+
+@dataclass(frozen=True)
 class WindowPayload:
     """Output of a window load — what a ``TimeAxisPanel.update_window`` consumes.
 

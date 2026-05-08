@@ -327,27 +327,28 @@ class TestPrecomputedBinIndex:
                 f"expected={expected!r}, actual={actual!r}"
             )
 
-    def test_per_bin_index_rebuilt_after_active_run_swap(
+    def test_event_index_rebuilt_after_active_run_swap(
         self,
         nl_fitted: FittedDetector,
         cf_fitted: FittedDetector,
         sim_session: SimulatedSession,
     ) -> None:
-        """``set_active_run`` rebuilds ``_per_bin_cell_counts`` for the new run."""
+        """``set_active_run`` rebuilds the run-local spike event index."""
         from non_local_detector.visualization.interactive.view_models.slice import (
             SliceModel,
         )
 
         time = np.asarray(nl_fitted.results["time"].values)
         model = SliceModel(nl_fitted.detector, sim_session.spike_times, time)
-        nl_index_id = id(model._per_bin_cell_counts)
+        nl_index_id = id(model._event_index)
 
         # Swap to CF (different detector — different state schema +
         # potentially different cell ordering).
         cf_time = np.asarray(cf_fitted.results["time"].values)
         model.set_active_run(cf_fitted.detector, sim_session.spike_times, cf_time)
-        assert id(model._per_bin_cell_counts) != nl_index_id
-        assert len(model._per_bin_cell_counts) == cf_time.size
+        assert id(model._event_index) != nl_index_id
+        assert model._event_index.time_indices.size > 0
+        assert np.all(model._event_index.time_indices < cf_time.size)
 
     def test_left_edge_active_bin_convention(self, nl_fitted: FittedDetector) -> None:
         """Spikes at ``time[i]`` belong to bin ``i``, not the previous midpoint bin."""

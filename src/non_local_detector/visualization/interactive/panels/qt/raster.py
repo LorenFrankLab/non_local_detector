@@ -40,8 +40,9 @@ class QtRasterPanel(
     behind the spikes makes those windows immediately visible
     against the raster.
 
-    Click on a spike → ``spike_clicked.emit(cell_id, t)``. The
-    y-coordinate of the clicked spot is mapped through
+    Click on a spike → ``event_clicked.emit(event_id)`` plus the
+    compatibility ``spike_clicked.emit(cell_id, t)`` signal. The y
+    coordinate of the clicked spot is mapped through
     ``RasterModel.sort_indices`` to the original cell id. Clicks on
     empty raster area still drive the inherited ``ClickRecenterMixin``
     recenter handler — the mixin skips when ``ScatterPlotItem.sigClicked``
@@ -50,6 +51,7 @@ class QtRasterPanel(
 
     cell_clicked = QtCore.Signal(int)
     spike_clicked = QtCore.Signal(int, float)
+    event_clicked = QtCore.Signal(int)
 
     def __init__(
         self,
@@ -105,8 +107,16 @@ class QtRasterPanel(
             self._clear_non_local_regions()
             self._pin_y_range()
             return
-        t_start = float(payload.time[0])
-        t_stop = float(payload.time[-1])
+        t_start = (
+            float(payload.time_start)
+            if payload.time_start is not None
+            else float(payload.time[0])
+        )
+        t_stop = (
+            float(payload.time_stop)
+            if payload.time_stop is not None
+            else float(payload.time[-1])
+        )
         self._render_spikes(t_start, t_stop)
         self._render_non_local_regions(payload)
 
@@ -142,6 +152,9 @@ class QtRasterPanel(
             return
         cell_id = int(sort_indices[y_row])
         self.cell_clicked.emit(cell_id)
+        event_id = spot.data()
+        if event_id is not None and int(event_id) >= 0:
+            self.event_clicked.emit(int(event_id))
         self.spike_clicked.emit(cell_id, float(spot.pos().x()))
 
     def set_spike_pin_marker(self, t: float | None, cell_id: int | None) -> None:
@@ -161,10 +174,12 @@ class QtRasterPanel(
         raster = self._model.update_window(t_start, t_stop)
         xs: list[float] = []
         ys: list[float] = []
+        event_ids: list[int] = []
         for y_row, cell_spikes in enumerate(raster.spike_times_per_cell):
             xs.extend(cell_spikes.tolist())
             ys.extend([float(y_row)] * cell_spikes.size)
-        self._scatter.setData(xs, ys)
+            event_ids.extend(raster.event_ids_per_cell[y_row].astype(int).tolist())
+        self._scatter.setData(xs, ys, data=event_ids)
         self._pin_y_range()
 
     def _pin_y_range(self) -> None:

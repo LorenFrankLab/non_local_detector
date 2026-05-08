@@ -23,6 +23,7 @@ from non_local_detector.analysis.posterior import (
 from non_local_detector.visualization.interactive.view_models.base import (
     BinPayload,
     CellSlice,
+    SpikeEventIndex,
     bin_edges_array,
     bin_edges_at,
 )
@@ -87,8 +88,9 @@ class SliceModel:
         spike_times: list[np.ndarray],
         time: np.ndarray,
         reduction: PosteriorReduction | None = None,
+        event_index: SpikeEventIndex | None = None,
     ) -> None:
-        self._bind(detector, spike_times, time, reduction)
+        self._bind(detector, spike_times, time, reduction, event_index)
 
     def _bind(
         self,
@@ -96,6 +98,7 @@ class SliceModel:
         spike_times: list[np.ndarray],
         time: np.ndarray,
         reduction: PosteriorReduction | None,
+        event_index: SpikeEventIndex | None,
     ) -> None:
         self._detector = detector
         self._spike_times = [np.asarray(st, dtype=np.float64) for st in spike_times]
@@ -119,12 +122,9 @@ class SliceModel:
         self._spatial_state_mask = np.isin(
             np.asarray(detector.state_ind_), self._spatial_state_ids
         )
-        # Precompute the per-bin (cell_id, count) lookup so per-tick
-        # cell readouts are O(n_active_cells_in_bin) instead of
-        # O(n_cells × spikes_per_cell). The full session usually
-        # has a few tens of cells × ~10^4 spikes, and the previous
-        # per-call scan dominated cursor-update latency on fast drags.
-        self._per_bin_cell_counts = self._build_bin_index()
+        self._event_index = event_index or SpikeEventIndex.from_spike_times(
+            self._spike_times, self._time
+        )
 
     @staticmethod
     def _peak_normalize(per_cell_pf: np.ndarray) -> np.ndarray:
@@ -154,9 +154,10 @@ class SliceModel:
         spike_times: list[np.ndarray],
         time: np.ndarray,
         reduction: PosteriorReduction | None = None,
+        event_index: SpikeEventIndex | None = None,
     ) -> None:
         """Rebind to a new run (M-key swap)."""
-        self._bind(detector, spike_times, time, reduction)
+        self._bind(detector, spike_times, time, reduction, event_index)
 
     def cell_slice(self, cell_id: int, spike_count: int = 0) -> CellSlice:
         """Return a ``CellSlice`` for ``cell_id``, regardless of activity.
@@ -257,43 +258,30 @@ class SliceModel:
         """Return left-edge ``(t_lo, t_hi)`` for bin ``t_idx``."""
         return bin_edges_at(self._time, t_idx)
 
-    def _build_bin_index(self) -> list[dict[int, int]]:
-        """Return ``per_bin[t_idx] = {cell_id: spike_count_in_bin}``.
-
-        Spikes are assigned to left-edge bins via ``searchsorted`` over
-        ``[time[0], time[1], ..., inferred_last_edge]``. Spikes before
-        the first edge or after the last edge are dropped.
-        """
-        n_bins = self._time.size
-        per_bin: list[dict[int, int]] = [{} for _ in range(n_bins)]
-        if n_bins == 0:
-            return per_bin
-        edges = self._bin_edges_array()
-        for cell_id, st in enumerate(self._spike_times):
-            if st.size == 0:
-                continue
-            idx = np.searchsorted(edges, st, side="right") - 1
-            valid = (idx >= 0) & (idx < n_bins)
-            for bin_i in idx[valid]:
-                bucket = per_bin[int(bin_i)]
-                bucket[cell_id] = bucket.get(cell_id, 0) + 1
-        return per_bin
-
     def _bin_edges_array(self) -> np.ndarray:
         """Return ``(n_bins + 1,)`` left-edge bin boundaries (left-edge convention)."""
         return bin_edges_array(self._time)
 
     def _cells_at_index(self, t_idx: int) -> list[CellSlice]:
-        """Return active-cell slices for bin ``t_idx`` from the prebuilt index."""
-        if t_idx < 0 or t_idx >= len(self._per_bin_cell_counts):
+        """Return active-cell slices for bin ``t_idx`` from event ids."""
+        return self.cell_slices_for_events(self._event_index.event_ids_at_bin(t_idx))
+
+    def cell_slices_for_events(self, event_ids: np.ndarray) -> list[CellSlice]:
+        """Return one ``CellSlice`` per unique cell in ``event_ids``."""
+        event_ids = np.asarray(event_ids, dtype=np.int64)
+        if event_ids.size == 0:
             return []
-        bucket = self._per_bin_cell_counts[t_idx]
-        # Sort by cell_id for stable downstream rendering.
+        cell_ids = self._event_index.cell_ids[event_ids]
+        unique_cell_ids, counts = np.unique(cell_ids, return_counts=True)
         return [
             CellSlice(
-                cell_id=cell_id,
-                place_field_norm=self._per_cell_pf_normalized[cell_id],
-                spike_count=count,
+                cell_id=int(cell_id),
+                place_field_norm=self._per_cell_pf_normalized[int(cell_id)],
+                spike_count=int(count),
             )
-            for cell_id, count in sorted(bucket.items())
+            for cell_id, count in zip(unique_cell_ids, counts, strict=True)
         ]
+
+    def event_ids_at_bin(self, t_idx: int) -> np.ndarray:
+        """Expose event ids for tests/viewer parity checks."""
+        return self._event_index.event_ids_at_bin(t_idx)

@@ -412,7 +412,7 @@ class QtViewer(QtWidgets.QMainWindow):
         self._autoscroll_cursor: float | None = None
         self._autoscroll_resync_lock = False
         self._pinned_time: float | None = None
-        self._pinned_spike_key: tuple[int, float] | None = None
+        self._pinned_event_id: int | None = None
         self._initial_load_requested = False
 
         active_run = data_source.active_run
@@ -421,7 +421,9 @@ class QtViewer(QtWidgets.QMainWindow):
 
         # Built-in left-column view-models + panels. Order top-to-bottom
         # mirrors the static ``plot_non_local_model`` figure.
-        self._raster_model = RasterModel(detector, active_run.spike_times)
+        self._raster_model = RasterModel(
+            detector, active_run.spike_times, event_index=data_source.event_index
+        )
         self._raster_panel = QtRasterPanel(model=self._raster_model)
         self._state_prob_model = StateProbabilityModel(detector)
         self._state_prob_panel = QtStateProbabilityPanel(model=self._state_prob_model)
@@ -462,15 +464,17 @@ class QtViewer(QtWidgets.QMainWindow):
             detector=detector,
             spike_times=active_run.spike_times,
             time=np.asarray(active_run.results["time"].values),
+            event_index=data_source.event_index,
         )
         self._slice_panel = QtSlicePanel(
             model=self._slice_model, position_centers=grid.centers
         )
+        self._slice_panel.set_row_provider(self._slice_row_at)
         # Raster spike click → pin that spike's cell row on the slice
         # panel. The viewer owns the connection so swap can re-bind cleanly
         # (the panel references survive a swap; pin state clears via
         # ``rebind_after_swap``).
-        self._raster_panel.spike_clicked.connect(self._on_spike_clicked)
+        self._raster_panel.event_clicked.connect(self._on_event_clicked)
 
         # User-supplied extras are owned by the caller; auto-built
         # extras get rebuilt on M-key swap. No way to tell apart
@@ -912,6 +916,39 @@ class QtViewer(QtWidgets.QMainWindow):
             # extend coverage past the cursor's previous reach.
             bin_panel.update_for_index(slider_value)
 
+    def _slice_row_at(self, t_idx: int):
+        """Single-row fallback for slice ticks outside the buffered window."""
+        if t_idx < 0 or t_idx >= self._data_source.n_time:
+            return None
+        posterior_row = self._data_source.slice_at_index(t_idx, which="posterior")
+        if posterior_row is None:
+            return None
+        log_lik_row = (
+            self._data_source.slice_at_index(t_idx, which="likelihood")
+            if "log_likelihood" in self._data_source.available_outputs
+            else None
+        )
+        likelihood_linear_row = None
+        if log_lik_row is not None:
+            linear = _linear_likelihood_from_log(np.asarray(log_lik_row)[None, :])
+            likelihood_linear_row = linear[0] if linear is not None else None
+        predictive_row = (
+            self._data_source.slice_at_index(t_idx, which="predictive")
+            if "predictive_posterior" in self._data_source.available_outputs
+            else None
+        )
+        position = self._data_source.load_position(slice(t_idx, t_idx + 1))
+        true_position = (
+            float(position[0]) if position is not None and position.size else None
+        )
+        return (
+            np.asarray(posterior_row),
+            np.asarray(log_lik_row) if log_lik_row is not None else None,
+            likelihood_linear_row,
+            np.asarray(predictive_row) if predictive_row is not None else None,
+            true_position,
+        )
+
     def _step_window(self, direction: int) -> None:
         self._clear_pins()
         new_t = self._core.t_center + direction * self._core.t_width
@@ -1057,13 +1094,16 @@ class QtViewer(QtWidgets.QMainWindow):
         self._state_prob_model.set_active_run(new_detector)
         self._state_prob_panel.rebind_after_swap()
 
-        self._raster_model.set_active_run(new_detector, new_run.spike_times)
+        self._raster_model.set_active_run(
+            new_detector, new_run.spike_times, event_index=self._data_source.event_index
+        )
         self._raster_panel.rebind_after_swap()
 
         self._slice_model.set_active_run(
             new_detector,
             new_run.spike_times,
             np.asarray(new_run.results["time"].values),
+            event_index=self._data_source.event_index,
         )
         self._slice_panel.set_position_centers(grid.centers)
         self._slice_panel.rebind_after_swap()
@@ -1079,7 +1119,7 @@ class QtViewer(QtWidgets.QMainWindow):
         if not self._extra_panels_user_supplied:
             self._rebuild_auto_extras(new_run.extra_metrics)
         self._pinned_time = None
-        self._pinned_spike_key = None
+        self._pinned_event_id = None
         self._refresh_pin_markers()
 
     def _rebuild_auto_extras(self, extra_metrics: dict) -> None:
@@ -1107,33 +1147,45 @@ class QtViewer(QtWidgets.QMainWindow):
         self._all_panels = [*self._builtin_panels, *self._extra_panels]
         self._wire_panels(new_extras)
 
-    def _on_spike_clicked(self, cell_id: int, t: float) -> None:
-        key = (int(cell_id), float(t))
-        if key == self._pinned_spike_key:
+    def _on_event_clicked(self, event_id: int) -> None:
+        event_id = int(event_id)
+        if event_id == self._pinned_event_id:
             self._clear_pins()
             return
+        event = self._data_source.spike_event_at(event_id)
         self._slice_panel.clear_pins()
-        self._slice_panel.pin_cell(key[0])
-        self._pinned_spike_key = key
-        self._pinned_time = key[1]
+        self._slice_panel.pin_cell(event.cell_id)
+        self._pinned_event_id = event_id
+        self._pinned_time = event.time
         self._refresh_pin_markers()
-        self._core.set_t_center(key[1])
-        self._sync_slider_and_bin_panels_for_time(key[1])
+        self._core.set_t_center(event.time)
+        self._sync_slider_and_bin_panels_for_time(event.time)
+
+    def _on_spike_clicked(self, cell_id: int, t: float) -> None:
+        """Compatibility shim for tests/plugins still emitting cell/time."""
+        event_id = self._data_source.event_index.event_id_for_cell_time(
+            int(cell_id), float(t)
+        )
+        if event_id is not None:
+            self._on_event_clicked(event_id)
 
     def _clear_pins(self) -> None:
         self._slice_panel.clear_pins()
         self._pinned_time = None
-        self._pinned_spike_key = None
+        self._pinned_event_id = None
         self._refresh_pin_markers()
 
     def _refresh_pin_markers(self) -> None:
+        pinned_cell_id = (
+            self._data_source.spike_event_at(self._pinned_event_id).cell_id
+            if self._pinned_event_id is not None
+            else None
+        )
         for panel in (*self._builtin_panels, *self._extra_panels):
             if panel is self._raster_panel:
                 self._raster_panel.set_spike_pin_marker(
                     self._pinned_time,
-                    self._pinned_spike_key[0]
-                    if self._pinned_spike_key is not None
-                    else None,
+                    pinned_cell_id,
                 )
                 continue
             setter = getattr(panel, "set_pin_marker", None)
