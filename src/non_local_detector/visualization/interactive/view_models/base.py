@@ -347,7 +347,12 @@ class WindowPayload:
 
 @dataclass(frozen=True)
 class CellSlice:
-    """Per-cell row payload for the SlicePanel."""
+    """Per-cell row payload for the SlicePanel.
+
+    ``place_field_norm`` is the row curve to draw. For active cells this
+    is the observed-count Poisson likelihood over position; for inactive
+    pinned cells it falls back to the normalized place field.
+    """
 
     cell_id: int
     place_field_norm: np.ndarray

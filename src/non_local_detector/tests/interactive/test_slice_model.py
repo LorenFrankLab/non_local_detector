@@ -29,6 +29,15 @@ def _t_idx_of_first_finite_loglik(results) -> int:
     return first_finite_row_index(log_lik)
 
 
+def _expected_spike_count_likelihood(rate: np.ndarray, spike_count: int) -> np.ndarray:
+    """Peak-normalized Poisson likelihood over position, omitting k!."""
+    log_lik = np.full(rate.shape, -np.inf, dtype=float)
+    positive = rate > 0.0
+    log_lik[positive] = spike_count * np.log(rate[positive]) - rate[positive]
+    log_lik -= np.max(log_lik[np.isfinite(log_lik)])
+    return np.exp(log_lik)
+
+
 @pytest.mark.unit
 class TestSliceModelDefaultReduction:
     def test_nl_picks_conditional_non_local(
@@ -267,6 +276,22 @@ class TestSliceModelCellSlice:
         )
         cs = model.cell_slice(2, spike_count=7)
         assert cs.spike_count == 7
+
+    def test_active_cell_slice_is_spike_count_likelihood(
+        self, nl_fitted: FittedDetector, sim_session: SimulatedSession
+    ) -> None:
+        model = SliceModel(
+            nl_fitted.detector,
+            sim_session.spike_times,
+            nl_fitted.results["time"].values,
+        )
+
+        cs = model.cell_slice(0, spike_count=1)
+        expected = _expected_spike_count_likelihood(
+            model._per_cell_place_fields[0], 1  # type: ignore[attr-defined]
+        )
+
+        np.testing.assert_allclose(cs.place_field_norm, expected, atol=1e-14)
 
     def test_cell_slice_validates_bounds(
         self, nl_fitted: FittedDetector, sim_session: SimulatedSession

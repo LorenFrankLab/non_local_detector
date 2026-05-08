@@ -106,8 +106,11 @@ class SliceModel:
         self._reduction = reduction or select_reduction(
             detector.state_names, np.asarray(detector.bin_sizes_)
         )
-        self._per_cell_pf_normalized = self._peak_normalize(
+        self._per_cell_place_fields = self._clean_place_fields(
             extract_per_cell_place_fields(detector)
+        )
+        self._per_cell_pf_normalized = self._peak_normalize(
+            self._per_cell_place_fields
         )
         # Cache the per-spatial-state projection so per-tick top-curve
         # collapse is one ``[mask].reshape`` plus per-row max-subtract
@@ -125,6 +128,13 @@ class SliceModel:
         self._event_index = event_index or SpikeEventIndex.from_spike_times(
             self._spike_times, self._time
         )
+
+    @staticmethod
+    def _clean_place_fields(per_cell_pf: np.ndarray) -> np.ndarray:
+        """Return finite, non-negative expected spike counts per bin."""
+        rates = np.asarray(per_cell_pf, dtype=float)
+        rates = np.nan_to_num(rates, nan=0.0, posinf=0.0, neginf=0.0)
+        return np.clip(rates, 0.0, None)
 
     @staticmethod
     def _peak_normalize(per_cell_pf: np.ndarray) -> np.ndarray:
@@ -172,7 +182,7 @@ class SliceModel:
             raise IndexError(f"cell_id={cell_id} out of range for {self.n_cells} cells")
         return CellSlice(
             cell_id=cell_id,
-            place_field_norm=self._per_cell_pf_normalized[cell_id],
+            place_field_norm=self._cell_curve_norm(cell_id, spike_count),
             spike_count=spike_count,
         )
 
@@ -274,13 +284,32 @@ class SliceModel:
         cell_ids = self._event_index.cell_ids[event_ids]
         unique_cell_ids, counts = np.unique(cell_ids, return_counts=True)
         return [
-            CellSlice(
-                cell_id=int(cell_id),
-                place_field_norm=self._per_cell_pf_normalized[int(cell_id)],
-                spike_count=int(count),
-            )
+            self.cell_slice(int(cell_id), spike_count=int(count))
             for cell_id, count in zip(unique_cell_ids, counts, strict=True)
         ]
+
+    def _cell_curve_norm(self, cell_id: int, spike_count: int) -> np.ndarray:
+        """Return the per-cell row curve for an observed spike count.
+
+        Active rows show the single-cell Poisson likelihood
+        ``P(k=spike_count | position)`` up to the position-independent
+        factorial constant, peak-normalized for plotting. Inactive pinned
+        rows keep the place-field display so a pinned cell remains
+        interpretable when it did not fire in the current bin.
+        """
+        if spike_count <= 0:
+            return self._per_cell_pf_normalized[cell_id]
+        rate = self._per_cell_place_fields[cell_id]
+        log_lik = np.full(rate.shape, -np.inf, dtype=float)
+        positive = rate > 0.0
+        log_lik[positive] = spike_count * np.log(rate[positive]) - rate[positive]
+        if not np.isfinite(log_lik).any():
+            return np.zeros_like(rate, dtype=float)
+        log_lik -= np.max(log_lik[np.isfinite(log_lik)])
+        likelihood = np.exp(log_lik)
+        likelihood = np.nan_to_num(likelihood, nan=0.0, posinf=0.0, neginf=0.0)
+        peak = float(np.max(likelihood))
+        return likelihood / peak if peak > 0.0 else likelihood
 
     def event_ids_at_bin(self, t_idx: int) -> np.ndarray:
         """Expose event ids for tests/viewer parity checks."""

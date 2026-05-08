@@ -370,6 +370,11 @@ def test_slice_panel_per_cell_rows_show_active_cells(
         x, y = row.curve.getData()
         assert x.size == centers.size
         assert y.size == centers.size
+        label = row.label.text()
+        cell_id = int(label.split("#")[1].split(" ")[0])
+        spike_count = int(label.split("×")[1].split(")")[0])
+        expected = panel.model.cell_slice(cell_id, spike_count).place_field_norm
+        np.testing.assert_allclose(y, expected, atol=1e-14)
 
 
 @pytest.mark.unit
