@@ -29,6 +29,42 @@ if TYPE_CHECKING:
 ExtraMetricValue = Union[MetricSpec, "pd.Series"]
 
 
+def bin_edges_array(time: np.ndarray) -> np.ndarray:
+    """Return ``(n_bins + 1,)`` left-edge bin edges for a 1D time grid.
+
+    Left-edge convention: bin ``i`` covers ``[time[i], time[i + 1])``;
+    the trailing edge is inferred from the last delta.
+    Empty input returns an empty array; size-1 input returns a unit
+    interval centred on ``time[0]``.
+    """
+    time = np.asarray(time)
+    n = time.size
+    if n == 0:
+        return np.empty(0, dtype=np.float64)
+    if n == 1:
+        t = float(time[0])
+        return np.array([t, t + 1.0], dtype=np.float64)
+    return np.concatenate(
+        [time.astype(np.float64), [float(time[-1] + (time[-1] - time[-2]))]]
+    )
+
+
+def bin_edges_at(time: np.ndarray, t_idx: int) -> tuple[float, float]:
+    """Return ``(t_lo, t_hi)`` for bin ``t_idx`` under the left-edge
+    convention; matches ``bin_edges_array`` at indices ``t_idx``,
+    ``t_idx + 1``."""
+    n = time.size
+    if n == 0:
+        return 0.0, 0.0
+    if n == 1:
+        t = float(time[0])
+        return t, t
+    t_lo = float(time[t_idx])
+    if t_idx < n - 1:
+        return t_lo, float(time[t_idx + 1])
+    return t_lo, float(t_lo + (time[-1] - time[-2]))
+
+
 @dataclass(frozen=True)
 class ViewState:
     """Per-load request snapshot.

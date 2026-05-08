@@ -24,19 +24,6 @@ from PySide6 import QtCore
 from PySide6.QtGui import QColor
 
 
-def bone_lookup_table() -> np.ndarray:
-    """matplotlib `bone_r` analogue as a uint8 LUT — used by heatmap panels."""
-    n = 256
-    t = np.linspace(0, 1, n)
-    # white → blue-grey → black
-    r = (1.0 - t) * 0.875 + (1.0 - 0.875) * (1.0 - t)
-    g = (1.0 - t) * 0.875 + (1.0 - 0.875) * (1.0 - t)
-    b = 1.0 - t
-    return np.stack([r * 255, g * 255, b * 255, np.full(n, 255.0)], axis=-1).astype(
-        np.uint8
-    )
-
-
 if TYPE_CHECKING:
     from non_local_detector.visualization.interactive.view_models.events import (
         EventOverlay,

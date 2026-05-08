@@ -26,13 +26,13 @@ if TYPE_CHECKING:
 
 
 # Pre-allocated per-cell row pool size. Cells beyond this threshold
-# fall under the "(+K more)" truncation indicator. Mirrors upstream
-# (panels.py:95).
+# fall under the "(+K more)" truncation indicator.
 MAX_PER_CELL_PLOTS = 6
 _TOP_SLICE_MIN_HEIGHT = 140
 _PER_CELL_SLICE_MIN_HEIGHT = 70
 
 OverlayMode = Literal["predictive", "filtered", "smoothed"]
+_OVERLAY_MODE_VALUES: frozenset[str] = frozenset(("predictive", "filtered", "smoothed"))
 _OVERLAY_MODE_CHOICES: tuple[tuple[OverlayMode, str], ...] = (
     ("predictive", "Predictive (causal)"),
     ("filtered", "Filtered"),
@@ -203,8 +203,7 @@ class QtSlicePanel(QtWidgets.QWidget):
 
         # Title row: bold prose on the left, overlay-source dropdown on the
         # right. The dropdown lets the user choose predictive (causal),
-        # filtered, or smoothed (acausal) collapsed overlays. See
-        # docs/plans/2026-05-06-interactive-decoder-viewer.md (Milestone 6).
+        # filtered, or smoothed (acausal) collapsed overlays.
         title_row = QtWidgets.QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         self._title_label = QtWidgets.QLabel("")
@@ -328,10 +327,10 @@ class QtSlicePanel(QtWidgets.QWidget):
         Updates the dropdown to match and re-renders at the last bin so
         the change is visible without a slider nudge.
         """
-        if mode not in {"predictive", "filtered", "smoothed"}:
+        if mode not in _OVERLAY_MODE_VALUES:
             raise ValueError(
-                "overlay_mode must be 'predictive', 'filtered', or "
-                f"'smoothed'; got {mode!r}"
+                f"overlay_mode must be one of {sorted(_OVERLAY_MODE_VALUES)!r}; "
+                f"got {mode!r}"
             )
         if mode == self._overlay_mode:
             return
@@ -464,6 +463,11 @@ class QtSlicePanel(QtWidgets.QWidget):
             overlay_row = _filtered_row(predictive_row, likelihood_linear_row)
         elif self._overlay_mode == "smoothed":
             overlay_row = posterior_row
+        else:
+            raise AssertionError(
+                f"unhandled overlay_mode {self._overlay_mode!r}; "
+                f"add a branch above or update _OVERLAY_MODE_VALUES"
+            )
         bin_payload = self._model.update_for_index(
             t_idx, posterior_row, log_lik_row=log_lik_row, predictive_row=overlay_row
         )

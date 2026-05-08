@@ -22,6 +22,8 @@ from non_local_detector.analysis.posterior import (
 from non_local_detector.visualization.interactive.view_models.base import (
     BinPayload,
     CellSlice,
+    bin_edges_array,
+    bin_edges_at,
 )
 
 if TYPE_CHECKING:
@@ -177,13 +179,7 @@ class SliceModel:
 
     def _bin_edges(self, t_idx: int) -> tuple[float, float]:
         """Return left-edge ``(t_lo, t_hi)`` for bin ``t_idx``."""
-        n = self._time.size
-        if n <= 1:
-            return float(self._time[0]), float(self._time[0])
-        t_lo = float(self._time[t_idx])
-        if t_idx < n - 1:
-            return t_lo, float(self._time[t_idx + 1])
-        return t_lo, float(t_lo + (self._time[-1] - self._time[-2]))
+        return bin_edges_at(self._time, t_idx)
 
     def _build_bin_index(self) -> list[dict[int, int]]:
         """Return ``per_bin[t_idx] = {cell_id: spike_count_in_bin}``.
@@ -208,20 +204,8 @@ class SliceModel:
         return per_bin
 
     def _bin_edges_array(self) -> np.ndarray:
-        """Return ``(n_bins + 1,)`` left-edge bin boundaries.
-
-        Matches statespacecheck's active-bin convention: bin ``i`` is
-        ``[time[i], time[i + 1])``. The final right edge is inferred
-        from the last observed timestep.
-        """
-        time = self._time
-        n = time.size
-        if n == 0:
-            return np.empty(0, dtype=np.float64)
-        if n == 1:
-            return np.array([time[0], time[0]], dtype=np.float64)
-        last = float(time[-1] + (time[-1] - time[-2]))
-        return np.concatenate([time, [last]]).astype(np.float64, copy=False)
+        """Return ``(n_bins + 1,)`` left-edge bin boundaries (left-edge convention)."""
+        return bin_edges_array(self._time)
 
     def _cells_at_index(self, t_idx: int) -> list[CellSlice]:
         """Return active-cell slices for bin ``t_idx`` from the prebuilt index."""

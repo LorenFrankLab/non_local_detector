@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING
 
 import numpy as np
 import pyqtgraph as pg
@@ -44,6 +43,7 @@ from non_local_detector.visualization.interactive.view_models.base import (
     RunBundle,
     ViewState,
     WindowPayload,
+    bin_edges_at,
 )
 from non_local_detector.visualization.interactive.view_models.likelihood import (
     LikelihoodHeatmapModel,
@@ -70,10 +70,6 @@ from non_local_detector.visualization.interactive.viewer.backend import (
     BackendAdapter,
 )
 from non_local_detector.visualization.interactive.viewer.core import ViewerCore
-
-if TYPE_CHECKING:
-    pass
-
 
 _LOAD_LOGGER = logging.getLogger(__name__)
 
@@ -1006,15 +1002,7 @@ class QtViewer(QtWidgets.QMainWindow):
 
     def _bin_edges_at(self, t_idx: int) -> tuple[float, float]:
         """Return left-edge ``(t_lo, t_hi)`` for active bin ``t_idx``."""
-        time = self._data_source.time
-        n = time.size
-        if n <= 1:
-            t = float(time[0]) if n == 1 else 0.0
-            return t, t
-        t = float(time[t_idx])
-        if t_idx < n - 1:
-            return t, float(time[t_idx + 1])
-        return t, float(t + (time[-1] - time[-2]))
+        return bin_edges_at(self._data_source.time, t_idx)
 
     def _sync_autoscroll_cursor_to_core(self, new_t_center: float) -> None:
         """Re-anchor the float playback cursor to ``new_t_center``.

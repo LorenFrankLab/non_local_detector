@@ -52,10 +52,15 @@ class InMemoryDecoderDataSource:
         self._validate_time_grid_alignment()
         self._validate_overlay_alignment()
         self._active_run_name = next(iter(self._runs))
+        # Cache the active run's time grid as an ndarray. Hot-path
+        # callers (slider scrub at 30+ Hz, autoscroll tick) access
+        # ``self.time`` repeatedly; the xarray ``.values`` property
+        # would re-wrap on every read. Refreshed by ``set_active_run``.
+        self._time_cache: np.ndarray = np.asarray(
+            self.active_run.results["time"].values
+        )
         # Cache the per-run position interpolated onto the decoder
         # time grid, computed lazily on first ``load_position`` call.
-        # Cleared on ``set_active_run`` because the new bundle may
-        # have a different position trajectory.
         self._position_cache: dict[str, np.ndarray | None] = {}
 
     # ------------------------------------------------------------------
@@ -148,6 +153,7 @@ class InMemoryDecoderDataSource:
         self._validate_time_grid_alignment()
         self._validate_overlay_alignment()
         self._active_run_name = name
+        self._time_cache = np.asarray(self.active_run.results["time"].values)
 
     # ------------------------------------------------------------------
     # Hot-path readers (slice into active run)
@@ -160,7 +166,7 @@ class InMemoryDecoderDataSource:
         """
         if t_width <= 0:
             raise ValueError(f"t_width must be positive. Got {t_width}.")
-        time = np.asarray(self.active_run.results["time"].values)
+        time = self._time_cache
         half = t_width / 2.0
         start = float(t_center - half)
         stop = float(t_center + half)
@@ -313,7 +319,7 @@ class InMemoryDecoderDataSource:
     @property
     def time(self) -> np.ndarray:
         """Active run's time grid (shared across runs after validation)."""
-        return np.asarray(self.active_run.results["time"].values)
+        return self._time_cache
 
     @property
     def n_time(self) -> int:
