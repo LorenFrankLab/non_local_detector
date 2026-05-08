@@ -153,9 +153,14 @@ class SliceModel:
                 posterior_row, self._detector, self._reduction
             )
             top_curve_label = TOP_CURVE_POSTERIOR_FALLBACK_LABEL
+        # Slice-panel overlays mirror statespacecheck's visual
+        # convention: predictive / filtered / smoothed rows are
+        # collapsed marginally across spatial states so local-dominated
+        # bins still display a meaningful curve. The panel then
+        # peak-normalizes for plotting.
         predictive_curve = (
             collapse_posterior_to_position(
-                predictive_row, self._detector, self._reduction
+                predictive_row, self._detector, PosteriorReduction.MARGINAL
             )
             if predictive_row is not None
             else None

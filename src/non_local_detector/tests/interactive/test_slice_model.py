@@ -126,7 +126,7 @@ class TestSliceModelPredictiveOverlay:
         expected = collapse_posterior_to_position(
             predictive_row,
             bundle.detector,
-            PosteriorReduction.CONDITIONAL_NON_LOCAL,
+            PosteriorReduction.MARGINAL,
         )
         assert payload.predictive_curve is not None
         np.testing.assert_allclose(

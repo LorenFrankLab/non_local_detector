@@ -59,6 +59,12 @@ def _linear_likelihood(log_likelihood: np.ndarray | None) -> np.ndarray | None:
     return out
 
 
+def _peak_normalize(curve: np.ndarray) -> np.ndarray:
+    y = np.nan_to_num(np.asarray(curve, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    peak = float(np.nanmax(y)) if y.size else 0.0
+    return y / peak if peak > 0.0 else y
+
+
 def _payload_for_results(
     results, posterior_only: bool = False, position: np.ndarray | None = None
 ) -> WindowPayload:
@@ -172,10 +178,12 @@ def test_slice_panel_renders_predictive_overlay(
     expected = collapse_posterior_to_position(
         bundle.results["predictive_posterior"].values[t_idx],
         detector,
-        PosteriorReduction.CONDITIONAL_NON_LOCAL,
+        PosteriorReduction.MARGINAL,
     )
     _, y_data = panel._predictive_curve_item.getData()
-    np.testing.assert_allclose(y_data, expected, atol=1e-14, equal_nan=True)
+    np.testing.assert_allclose(
+        y_data, _peak_normalize(expected), atol=1e-14, equal_nan=True
+    )
 
 
 @pytest.mark.unit
@@ -202,12 +210,19 @@ def test_slice_panel_falls_back_to_posterior_when_loglik_missing(
         detector,
         PosteriorReduction.CONDITIONAL_NON_LOCAL,
     )
+    expected_overlay = collapse_posterior_to_position(
+        bundle.results["acausal_posterior"].values[t_idx],
+        detector,
+        PosteriorReduction.MARGINAL,
+    )
     _, y_data = panel._top_curve_item.getData()
     np.testing.assert_allclose(y_data, expected, atol=1e-14, equal_nan=True)
     # Default overlay is smoothed/acausal, so it remains available even
     # when predictive/log-likelihood outputs are absent.
     _, pred_y = panel._predictive_curve_item.getData()
-    np.testing.assert_allclose(pred_y, expected, atol=1e-14, equal_nan=True)
+    np.testing.assert_allclose(
+        pred_y, _peak_normalize(expected_overlay), atol=1e-14, equal_nan=True
+    )
 
 
 @pytest.mark.unit
@@ -506,7 +521,7 @@ def test_slice_panel_overlay_mode_switches_overlay_source(
     expected_predictive = collapse_posterior_to_position(
         bundle.results["predictive_posterior"].values[t_idx],
         detector,
-        PosteriorReduction.CONDITIONAL_NON_LOCAL,
+        PosteriorReduction.MARGINAL,
     )
     predictive_row = bundle.results["predictive_posterior"].values[t_idx]
     log_lik_row = bundle.results["log_likelihood"].values[t_idx]
@@ -518,38 +533,45 @@ def test_slice_panel_overlay_mode_switches_overlay_source(
     expected_filtered = collapse_posterior_to_position(
         filtered_row,
         detector,
-        PosteriorReduction.CONDITIONAL_NON_LOCAL,
+        PosteriorReduction.MARGINAL,
     )
     expected_smoothed = collapse_posterior_to_position(
         bundle.results["acausal_posterior"].values[t_idx],
         detector,
-        PosteriorReduction.CONDITIONAL_NON_LOCAL,
+        PosteriorReduction.MARGINAL,
     )
 
     # Default mode is "smoothed" / acausal.
     assert panel.overlay_mode == "smoothed"
     _, y_smooth = panel._predictive_curve_item.getData()
-    np.testing.assert_allclose(y_smooth, expected_smoothed, atol=1e-14, equal_nan=True)
+    np.testing.assert_allclose(
+        y_smooth, _peak_normalize(expected_smoothed), atol=1e-14, equal_nan=True
+    )
 
     # Switch to predictive — overlay tracks the causal prior curve.
     panel.set_overlay_mode("predictive")
     assert panel.overlay_mode == "predictive"
     _, y_pred = panel._predictive_curve_item.getData()
-    np.testing.assert_allclose(y_pred, expected_predictive, atol=1e-14, equal_nan=True)
+    np.testing.assert_allclose(
+        y_pred, _peak_normalize(expected_predictive), atol=1e-14, equal_nan=True
+    )
 
     # Switch to filtered — overlay tracks predictive × likelihood.
     panel.set_overlay_mode("filtered")
     assert panel.overlay_mode == "filtered"
     _, y_filtered = panel._predictive_curve_item.getData()
     np.testing.assert_allclose(
-        y_filtered, expected_filtered, atol=1e-14, equal_nan=True
+        y_filtered, _peak_normalize(expected_filtered), atol=1e-14, equal_nan=True
     )
+    assert not np.allclose(y_pred, y_filtered)
 
     # Switch to smoothed — overlay tracks the acausal-collapsed curve.
     panel.set_overlay_mode("smoothed")
     assert panel.overlay_mode == "smoothed"
     _, y_smooth = panel._predictive_curve_item.getData()
-    np.testing.assert_allclose(y_smooth, expected_smoothed, atol=1e-14, equal_nan=True)
+    np.testing.assert_allclose(
+        y_smooth, _peak_normalize(expected_smoothed), atol=1e-14, equal_nan=True
+    )
 
 
 @pytest.mark.unit
@@ -613,10 +635,12 @@ def test_slice_panel_overlay_combo_drives_set_overlay_mode(
     expected_smoothed = collapse_posterior_to_position(
         bundle.results["acausal_posterior"].values[t_idx],
         detector,
-        PosteriorReduction.CONDITIONAL_NON_LOCAL,
+        PosteriorReduction.MARGINAL,
     )
     _, y = panel._predictive_curve_item.getData()
-    np.testing.assert_allclose(y, expected_smoothed, atol=1e-14, equal_nan=True)
+    np.testing.assert_allclose(
+        y, _peak_normalize(expected_smoothed), atol=1e-14, equal_nan=True
+    )
 
 
 @pytest.mark.unit

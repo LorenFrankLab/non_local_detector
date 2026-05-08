@@ -493,10 +493,9 @@ class QtSlicePanel(QtWidgets.QWidget):
             self._top_curve_item.setData(
                 np.empty(0, dtype=float), np.empty(0, dtype=float)
             )
-        if bin_payload.predictive_curve is not None:
-            self._predictive_curve_item.setData(
-                self._position_centers, bin_payload.predictive_curve
-            )
+        overlay_curve = _peak_normalize_curve(bin_payload.predictive_curve)
+        if overlay_curve is not None:
+            self._predictive_curve_item.setData(self._position_centers, overlay_curve)
         else:
             self._predictive_curve_item.setData(
                 np.empty(0, dtype=float), np.empty(0, dtype=float)
@@ -504,7 +503,7 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._set_true_position(true_position)
         self._render_per_cell_rows(
             bin_payload.cells,
-            overlay_curve=bin_payload.predictive_curve,
+            overlay_curve=overlay_curve,
             true_position=true_position,
         )
 
@@ -594,6 +593,19 @@ def _filtered_row(
     if total <= 0.0:
         return None
     return filtered / total
+
+
+def _peak_normalize_curve(curve: np.ndarray | None) -> np.ndarray | None:
+    """Return a finite curve scaled to unit peak for plotting."""
+    if curve is None:
+        return None
+    y = np.nan_to_num(np.asarray(curve, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    if y.size == 0:
+        return y
+    peak = float(np.nanmax(y))
+    if peak <= 0.0 or not np.isfinite(peak):
+        return y
+    return y / peak
 
 
 def _true_position_at(position: np.ndarray | None, local_idx: int) -> float | None:
