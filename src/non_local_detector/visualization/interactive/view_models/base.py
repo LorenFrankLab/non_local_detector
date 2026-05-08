@@ -110,6 +110,12 @@ class WindowPayload:
     # heatmaps. ``None`` when the bundle has no position or when the
     # position is 2D (heatmap overlay is 1D only in v1).
     position: np.ndarray | None = None
+    # Row-wise peak-normalized linear likelihood derived from
+    # ``likelihood`` by the backend worker. Kept separate because the
+    # heatmap/top-curve path still wants log-likelihood, while the
+    # filtered slice overlay wants a linear likelihood without doing
+    # exponentiation on the UI thread.
+    likelihood_linear: np.ndarray | None = None
 
 
 @dataclass(frozen=True)

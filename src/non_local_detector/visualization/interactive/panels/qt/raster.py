@@ -69,17 +69,18 @@ class QtRasterPanel(
         )
         self.setLabel("left", model.cell_label)
         self.setLabel("bottom", "Time [s]")
+        self.setMouseEnabled(x=False, y=False)
         self._scatter = pg.ScatterPlotItem(
-            pen=pg.mkPen(color=spike_color, width=1),
+            pen=pg.mkPen(color=spike_color, width=2),
             brush=pg.mkBrush(spike_color),
-            size=2,
+            size=4,
             symbol="s",
         )
         self.addItem(self._scatter)
         self._pin_dot = pg.ScatterPlotItem(
-            pen=pg.mkPen((255, 215, 0), width=2),
+            pen=pg.mkPen((255, 215, 0), width=3),
             brush=pg.mkBrush(255, 215, 0),
-            size=8,
+            size=10,
             symbol="o",
         )
         self._pin_dot.setZValue(21)
@@ -90,6 +91,7 @@ class QtRasterPanel(
         self._install_cursor_markers()
         self._scatter.sigClicked.connect(self._handle_spike_click)
         self._overlay_items: list[pg.GraphicsObject] = []
+        self._pin_y_range()
 
     @staticmethod
     def _build_non_local_brush(color: str, alpha: float):
@@ -101,6 +103,7 @@ class QtRasterPanel(
         if payload.time.size == 0:
             self._scatter.setData([], [])
             self._clear_non_local_regions()
+            self._pin_y_range()
             return
         t_start = float(payload.time[0])
         t_stop = float(payload.time[-1])
@@ -119,6 +122,7 @@ class QtRasterPanel(
         detector); update the y-axis text to match.
         """
         self.setLabel("left", self._model.cell_label)
+        self._pin_y_range()
 
     def _handle_spike_click(self, _scatter, points) -> None:
         """Resolve clicked spot's y-row to a cell_id and emit spike identity.
@@ -161,6 +165,19 @@ class QtRasterPanel(
             xs.extend(cell_spikes.tolist())
             ys.extend([float(y_row)] * cell_spikes.size)
         self._scatter.setData(xs, ys)
+        self._pin_y_range()
+
+    def _pin_y_range(self) -> None:
+        """Keep the full sorted cell axis visible without per-window autorange."""
+        n_cells = int(self._model.sort_indices.size)
+        if n_cells <= 0:
+            y_min, y_max = -0.5, 0.5
+        else:
+            y_min, y_max = -0.5, float(n_cells) - 0.5
+        vb = self.getViewBox()
+        vb.disableAutoRange(axis=pg.ViewBox.YAxis)
+        vb.setYRange(y_min, y_max, padding=0)
+        vb.setLimits(yMin=y_min, yMax=y_max)
 
     def _clear_non_local_regions(self) -> None:
         for region in self._non_local_regions:

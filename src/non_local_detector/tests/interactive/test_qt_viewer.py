@@ -34,6 +34,26 @@ from non_local_detector.visualization.interactive.view_models.base import (
 pytestmark = pytest.mark.gui
 
 
+@pytest.mark.unit
+def test_backend_worker_builds_linear_likelihood_for_filtered_overlay() -> None:
+    """Linear likelihood is precomputed outside the slice widget path."""
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _linear_likelihood_from_log,
+    )
+
+    log_lik = np.array(
+        [
+            [0.0, -1.0, -np.inf],
+            [np.nan, np.nan, np.nan],
+        ]
+    )
+    linear = _linear_likelihood_from_log(log_lik)
+
+    assert linear is not None
+    np.testing.assert_allclose(linear[0], [1.0, np.exp(-1.0), 0.0])
+    np.testing.assert_array_equal(linear[1], [0.0, 0.0, 0.0])
+
+
 @pytest.fixture
 def qapp():
     """Provide a singleton QApplication for all GUI tests."""
@@ -485,6 +505,48 @@ def test_qt_viewer_raster_spike_click_toggles_spike_pin(
     assert viewer._slice_panel.pinned_cell_ids == frozenset({3})
     assert viewer._pinned_spike_key == (3, 1.50)
     assert viewer.core.t_center == pytest.approx(1.50)
+
+
+@pytest.mark.unit
+def test_qt_viewer_raster_spike_click_updates_slice_to_spike_bin(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Clicking a visible spike renders that spike cell with a nonzero count."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    chosen: tuple[int, float, int] | None = None
+    for cell_id, spike_times in enumerate(ds.active_run.spike_times):
+        for spike_t in np.asarray(spike_times, dtype=float):
+            t_idx = viewer._time_to_bin_index(float(spike_t))
+            bucket = viewer._slice_model._per_bin_cell_counts[t_idx]
+            if bucket.get(cell_id, 0) > 0:
+                chosen = (cell_id, float(spike_t), t_idx)
+                break
+        if chosen is not None:
+            break
+    assert chosen is not None
+    cell_id, spike_t, t_idx = chosen
+
+    viewer.core.set_t_center(spike_t)
+    viewer._on_window_loaded(
+        viewer._backend._build_payload(viewer.core.current_view_state)
+    )
+    viewer._on_spike_clicked(cell_id, spike_t)
+
+    assert viewer._slider.value() == t_idx
+    visible_rows = [
+        r for r in viewer._slice_panel._per_cell_rows if not r.container.isHidden()
+    ]
+    pinned_label = next(
+        r.label.text() for r in visible_rows if f"#{cell_id}" in r.label.text()
+    )
+    expected_count = viewer._slice_model._per_bin_cell_counts[t_idx][cell_id]
+    assert f"(×{expected_count})" in pinned_label
+    assert "(×0)" not in pinned_label
 
 
 @pytest.mark.unit

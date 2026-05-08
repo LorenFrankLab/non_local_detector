@@ -143,6 +143,35 @@ def _format_speed(speed: float) -> str:
     return f"{speed:.2g}×"
 
 
+def _linear_likelihood_from_log(log_likelihood: np.ndarray | None) -> np.ndarray | None:
+    """Return row-wise peak-normalized linear likelihood.
+
+    Runs on the backend worker path so filtered slice overlays do not
+    exponentiate log-likelihood rows on every UI tick.
+    """
+    if log_likelihood is None:
+        return None
+    log_lik = np.asarray(log_likelihood)
+    if log_lik.size == 0:
+        return np.asarray(log_lik, dtype=np.float64)
+    out = np.zeros(log_lik.shape, dtype=np.float64)
+    finite = np.isfinite(log_lik)
+    row_has_finite = finite.any(axis=1)
+    if not row_has_finite.any():
+        return out
+    row_max = np.max(
+        np.where(finite[row_has_finite], log_lik[row_has_finite], -np.inf),
+        axis=1,
+        keepdims=True,
+    )
+    out[row_has_finite] = np.where(
+        finite[row_has_finite],
+        np.exp(log_lik[row_has_finite] - row_max),
+        0.0,
+    )
+    return out
+
+
 def _ensure_qapplication() -> QtWidgets.QApplication:
     """Return the singleton ``QApplication`` with a concrete installed font."""
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -316,6 +345,7 @@ class QtBackendAdapter(BackendAdapter):
             if "log_likelihood" in self._data_source.available_outputs
             else None
         )
+        likelihood_linear = _linear_likelihood_from_log(likelihood)
         predictive = (
             self._data_source.load_predictive(sl)
             if "predictive_posterior" in self._data_source.available_outputs
@@ -329,6 +359,7 @@ class QtBackendAdapter(BackendAdapter):
             indices=sl,
             posterior=posterior,
             likelihood=likelihood,
+            likelihood_linear=likelihood_linear,
             predictive=predictive,
             state_probabilities=state_probabilities,
             position=position,
@@ -874,15 +905,19 @@ class QtViewer(QtWidgets.QMainWindow):
 
     def _step_window(self, direction: int) -> None:
         self._clear_pins()
-        self._core.set_t_center(self._core.t_center + direction * self._core.t_width)
+        new_t = self._core.t_center + direction * self._core.t_width
+        self._core.set_t_center(new_t)
+        self._sync_slider_and_bin_panels_for_time(new_t)
 
     def _step_left(self) -> None:
         self._clear_pins()
         self._core.step_left()
+        self._sync_slider_and_bin_panels_for_time(self._core.t_center)
 
     def _step_right(self) -> None:
         self._clear_pins()
         self._core.step_right()
+        self._sync_slider_and_bin_panels_for_time(self._core.t_center)
 
     def _scale_t_width(self, factor: float) -> None:
         new_width = max(1e-6, self._core.t_width * factor)
@@ -893,6 +928,7 @@ class QtViewer(QtWidgets.QMainWindow):
         self._clear_pins()
         if self._initial_t_center is not None:
             self._core.set_t_center(self._initial_t_center)
+            self._sync_slider_and_bin_panels_for_time(self._initial_t_center)
         self._core.set_t_width(self._initial_t_width)
         self._sync_control_labels()
 
@@ -929,21 +965,37 @@ class QtViewer(QtWidgets.QMainWindow):
     def _set_t_center_from_panel_click(self, t: float) -> None:
         self._clear_pins()
         self._core.set_t_center(float(t))
+        self._sync_slider_and_bin_panels_for_time(float(t))
+
+    def _time_to_bin_index(self, t: float) -> int:
+        """Return the left-edge-binned index containing absolute time ``t``."""
+        time = self._data_source.time
+        if time.size <= 1:
+            return 0
+        idx = int(np.searchsorted(time, float(t), side="right") - 1)
+        return max(0, min(time.size - 1, idx))
+
+    def _sync_slider_and_bin_panels_for_time(self, t: float) -> int:
+        """Update slider + bin-synced panels without re-entering slider handlers."""
+        t_idx = self._time_to_bin_index(t)
+        with QtCore.QSignalBlocker(self._slider):
+            self._slider.setValue(t_idx)
+        self._sync_control_labels()
+        for bin_panel in (self._slice_panel, *self._extra_bin_panels):
+            bin_panel.update_for_index(t_idx)
+        return t_idx
 
     def _sync_cursor_markers(self, new_t_center: float) -> None:
         """Push ``(t_center, t_lo, t_hi)`` to every TimeAxisPanel.
 
         ``t_center`` is the dashed-line position; ``[t_lo, t_hi]`` is
-        the active-bin band. Bin edges come from the time grid's
-        midpoints (matches ``SliceModel._bin_edges``). Built-in
-        panels all mix in ``CursorMarkersMixin``; user-supplied
-        ``extra_panels`` opt in by exposing a ``set_cursor_markers``
-        method (called via ``getattr`` so the kwarg stays
-        backward-compatible).
+        the active-bin band. Bin edges use the same left-edge
+        convention as ``SliceModel``. Built-in panels all mix in
+        ``CursorMarkersMixin``; user-supplied ``extra_panels`` opt in
+        by exposing a ``set_cursor_markers`` method (called via
+        ``getattr`` so the kwarg stays backward-compatible).
         """
-        time = self._data_source.time
-        t_idx = int(np.searchsorted(time, new_t_center, side="right") - 1)
-        t_idx = max(0, min(time.size - 1, t_idx))
+        t_idx = self._time_to_bin_index(new_t_center)
         t_lo, t_hi = self._bin_edges_at(t_idx)
         for panel in self._builtin_panels:
             panel.set_cursor_markers(new_t_center, t_lo, t_hi)
@@ -953,27 +1005,16 @@ class QtViewer(QtWidgets.QMainWindow):
                 setter(new_t_center, t_lo, t_hi)
 
     def _bin_edges_at(self, t_idx: int) -> tuple[float, float]:
-        """Return ``(t_lo, t_hi)`` for bin ``t_idx`` using midpoints to neighbors.
-
-        Mirrors ``SliceModel._bin_edges`` — kept inline here rather
-        than lifted to a shared helper because the only other caller
-        is the slice model and the math is six lines.
-        """
+        """Return left-edge ``(t_lo, t_hi)`` for active bin ``t_idx``."""
         time = self._data_source.time
         n = time.size
         if n <= 1:
             t = float(time[0]) if n == 1 else 0.0
             return t, t
         t = float(time[t_idx])
-        if t_idx == 0:
-            half = (time[1] - time[0]) / 2.0
-            return float(t - half), float(t + half)
-        if t_idx == n - 1:
-            half = (time[n - 1] - time[n - 2]) / 2.0
-            return float(t - half), float(t + half)
-        half_lo = (t - time[t_idx - 1]) / 2.0
-        half_hi = (time[t_idx + 1] - t) / 2.0
-        return float(t - half_lo), float(t + half_hi)
+        if t_idx < n - 1:
+            return t, float(time[t_idx + 1])
+        return t, float(t + (time[-1] - time[-2]))
 
     def _sync_autoscroll_cursor_to_core(self, new_t_center: float) -> None:
         """Re-anchor the float playback cursor to ``new_t_center``.
@@ -1076,6 +1117,7 @@ class QtViewer(QtWidgets.QMainWindow):
         self._pinned_time = key[1]
         self._refresh_pin_markers()
         self._core.set_t_center(key[1])
+        self._sync_slider_and_bin_panels_for_time(key[1])
 
     def _clear_pins(self) -> None:
         self._slice_panel.clear_pins()

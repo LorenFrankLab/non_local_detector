@@ -144,3 +144,37 @@ def test_qt_raster_panel_spike_pin_marker_draws_row_dot(
     panel.set_spike_pin_marker(None, None)
     assert not panel._pin_line.isVisible()
     assert not panel._pin_dot.isVisible()
+
+
+@pytest.mark.gui
+def test_qt_raster_panel_keeps_full_cell_axis_pinned(
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """Sparse windows should not autorange the raster down to active rows."""
+    from non_local_detector.visualization.interactive.panels.qt.raster import (
+        QtRasterPanel,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _ensure_qapplication,
+    )
+
+    _ = _ensure_qapplication()
+    model = RasterModel(nl_fitted.detector, sim_session.spike_times)
+    panel = QtRasterPanel(model)
+    n_cells = model.sort_indices.size
+    expected_y = (-0.5, float(n_cells) - 0.5)
+
+    time = np.linspace(0.0, 0.01, 3)
+    panel.update_window(WindowPayload(request_id=0, time=time, indices=slice(0, 3)))
+    y_min, y_max = panel.viewRange()[1]
+    assert y_min == pytest.approx(expected_y[0])
+    assert y_max == pytest.approx(expected_y[1])
+
+    # Empty updates should retain the same full-cell range.
+    panel.update_window(
+        WindowPayload(request_id=1, time=np.array([]), indices=slice(0, 0))
+    )
+    y_min, y_max = panel.viewRange()[1]
+    assert y_min == pytest.approx(expected_y[0])
+    assert y_max == pytest.approx(expected_y[1])

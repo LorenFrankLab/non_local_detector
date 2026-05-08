@@ -38,28 +38,54 @@ def qapp():
     yield app
 
 
-def _payload_for_results(results, posterior_only: bool = False) -> WindowPayload:
+def _linear_likelihood(log_likelihood: np.ndarray | None) -> np.ndarray | None:
+    if log_likelihood is None:
+        return None
+    out = np.zeros_like(log_likelihood, dtype=float)
+    finite = np.isfinite(log_likelihood)
+    row_has_finite = finite.any(axis=1)
+    if not row_has_finite.any():
+        return out
+    row_max = np.max(
+        np.where(finite[row_has_finite], log_likelihood[row_has_finite], -np.inf),
+        axis=1,
+        keepdims=True,
+    )
+    out[row_has_finite] = np.where(
+        finite[row_has_finite],
+        np.exp(log_likelihood[row_has_finite] - row_max),
+        0.0,
+    )
+    return out
+
+
+def _payload_for_results(
+    results, posterior_only: bool = False, position: np.ndarray | None = None
+) -> WindowPayload:
     """Build a WindowPayload covering the full session (window = whole results)."""
     n_time = results.sizes["time"]
     sl = slice(0, n_time)
+    likelihood = (
+        None
+        if posterior_only
+        else np.asarray(results["log_likelihood"].values)
+        if "log_likelihood" in results.data_vars
+        else None
+    )
     return WindowPayload(
         request_id=0,
         time=np.asarray(results["time"].values),
         indices=sl,
         posterior=np.asarray(results["acausal_posterior"].values),
-        likelihood=(
-            None
-            if posterior_only
-            else np.asarray(results["log_likelihood"].values)
-            if "log_likelihood" in results.data_vars
-            else None
-        ),
+        likelihood=likelihood,
+        likelihood_linear=_linear_likelihood(likelihood),
         predictive=(
             np.asarray(results["predictive_posterior"].values)
             if "predictive_posterior" in results.data_vars and not posterior_only
             else None
         ),
         state_probabilities=np.asarray(results["acausal_state_probabilities"].values),
+        position=position,
     )
 
 
@@ -113,6 +139,7 @@ def test_slice_panel_pins_axes_and_hidden_row_footprint(
 
     top_autorange = panel._top_plot.getViewBox().state["autoRange"]
     assert top_autorange == [False, False]
+    assert panel._top_plot.minimumHeight() == 140
     assert (
         panel._title_label.sizePolicy().horizontalPolicy()
         == panel._title_label.sizePolicy().Policy.Ignored
@@ -204,6 +231,9 @@ def test_slice_panel_out_of_buffer_index_is_no_op(
         indices=sl,
         posterior=bundle.results["acausal_posterior"].values[:50],
         likelihood=bundle.results["log_likelihood"].values[:50],
+        likelihood_linear=_linear_likelihood(
+            bundle.results["log_likelihood"].values[:50]
+        ),
         predictive=bundle.results["predictive_posterior"].values[:50],
         state_probabilities=bundle.results["acausal_state_probabilities"].values[:50],
     )
@@ -235,18 +265,16 @@ def test_slice_panel_per_cell_rows_show_active_cells(
     panel.set_window_buffer(payload)
 
     # event_times is shape (n_events, 2). Scan inside the first event
-    # window for a t_idx with >=1 spike — at 500 Hz with sparse firing
-    # the midpoint bin often contains 0 spikes, so pick the first bin
-    # that actually has activity instead of a fixed offset.
+    # window for a t_idx with >=1 spike under the active-bin
+    # convention.
     event_start, event_end = sim_session.event_times[0]
     i_lo = int(np.searchsorted(time, event_start, side="left"))
     i_hi = int(np.searchsorted(time, event_end, side="right"))
-    bin_dt = float(time[1] - time[0])
     t_idx = next(
         i
         for i in range(i_lo, i_hi)
         if any(
-            np.any((st >= time[i] - bin_dt / 2) & (st <= time[i] + bin_dt / 2))
+            np.any((st >= model._bin_edges(i)[0]) & (st < model._bin_edges(i)[1]))
             for st in sim_session.spike_times
         )
     )
@@ -369,7 +397,6 @@ class TestSlicePanelPinning:
         bundle, panel = self._setup(qapp, run_bundles, sim_session)
         time = bundle.results["time"].values
         # Find a bin with at least one spike in cell_id=0.
-        bin_dt = float(time[1] - time[0])
         st0 = sim_session.spike_times[0]
         first_in = next(s for s in st0 if time[0] <= s <= time[-1])
         t_idx = int(np.searchsorted(time, first_in, side="right") - 1)
@@ -381,11 +408,8 @@ class TestSlicePanelPinning:
         )
         assert "★" in pinned_label
         # Real count is whatever fell in the bin window — must be > 0.
-        n_in_bin = int(
-            np.count_nonzero(
-                (st0 >= time[t_idx] - bin_dt / 2) & (st0 <= time[t_idx] + bin_dt / 2)
-            )
-        )
+        t_lo, t_hi = panel.model._bin_edges(t_idx)
+        n_in_bin = int(np.count_nonzero((st0 >= t_lo) & (st0 < t_hi)))
         assert n_in_bin > 0
         assert f"(×{n_in_bin})" in pinned_label
 
@@ -398,7 +422,6 @@ class TestSlicePanelPinning:
         """Pinned cells (sorted by cell_id) come before active not-already-pinned."""
         bundle, panel = self._setup(qapp, run_bundles, sim_session)
         time = bundle.results["time"].values
-        bin_dt = float(time[1] - time[0])
         # Find an active bin.
         i_lo = int(np.searchsorted(time, sim_session.event_times[0, 0], side="left"))
         i_hi = int(np.searchsorted(time, sim_session.event_times[0, 1], side="right"))
@@ -406,7 +429,10 @@ class TestSlicePanelPinning:
             i
             for i in range(i_lo, i_hi)
             if any(
-                np.any((st >= time[i] - bin_dt / 2) & (st <= time[i] + bin_dt / 2))
+                np.any(
+                    (st >= panel.model._bin_edges(i)[0])
+                    & (st < panel.model._bin_edges(i)[1])
+                )
                 for st in sim_session.spike_times
             )
         )
@@ -524,6 +550,40 @@ def test_slice_panel_overlay_mode_switches_overlay_source(
     assert panel.overlay_mode == "smoothed"
     _, y_smooth = panel._predictive_curve_item.getData()
     np.testing.assert_allclose(y_smooth, expected_smoothed, atol=1e-14, equal_nan=True)
+
+
+@pytest.mark.unit
+def test_slice_panel_draws_true_position_and_row_overlay(
+    qapp,
+    run_bundles: dict[str, RunBundle],
+) -> None:
+    """Top slice and per-cell rows share the selected overlay + position marker."""
+    bundle = run_bundles["nl_all"]
+    detector = bundle.detector
+    centers = np.asarray(detector.environments[0].place_bin_centers_).squeeze()
+    time = bundle.results["time"].values
+    t_idx = first_finite_row_index(bundle.results["log_likelihood"].values)
+    fake_spikes = [np.array([float(time[t_idx])]) for _ in bundle.spike_times]
+    model = SliceModel(detector, fake_spikes, time)
+    panel = _make_panel(qapp, model, centers)
+    position = np.linspace(float(centers[0]), float(centers[-1]), time.size)
+
+    panel.set_window_buffer(_payload_for_results(bundle.results, position=position))
+    panel.set_overlay_mode("filtered")
+    panel.update_for_index(t_idx)
+
+    expected_position = float(position[t_idx])
+    assert panel._true_position_line.isVisible()
+    assert panel._true_position_line.value() == pytest.approx(expected_position)
+    _, top_overlay = panel._predictive_curve_item.getData()
+
+    visible_rows = [r for r in panel._per_cell_rows if not r.container.isHidden()]
+    assert visible_rows
+    for row in visible_rows:
+        assert row.true_position_line.isVisible()
+        assert row.true_position_line.value() == pytest.approx(expected_position)
+        _, row_overlay = row.overlay_curve.getData()
+        np.testing.assert_allclose(row_overlay, top_overlay, atol=1e-14, equal_nan=True)
 
 
 @pytest.mark.unit

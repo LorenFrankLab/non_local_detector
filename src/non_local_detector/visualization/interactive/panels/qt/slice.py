@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 # fall under the "(+K more)" truncation indicator. Mirrors upstream
 # (panels.py:95).
 MAX_PER_CELL_PLOTS = 6
+_TOP_SLICE_MIN_HEIGHT = 140
+_PER_CELL_SLICE_MIN_HEIGHT = 70
 
 OverlayMode = Literal["predictive", "filtered", "smoothed"]
 _OVERLAY_MODE_CHOICES: tuple[tuple[OverlayMode, str], ...] = (
@@ -37,9 +39,10 @@ _OVERLAY_MODE_CHOICES: tuple[tuple[OverlayMode, str], ...] = (
     ("smoothed", "Smoothed (acausal)"),
 )
 
-_TOP_CURVE_PEN = pg.mkPen(color="#1f77b4", width=2)
-_PREDICTIVE_PEN = pg.mkPen(color="#ff7f0e", width=1, style=QtCore.Qt.PenStyle.DashLine)
-_PER_CELL_PEN = pg.mkPen(color="#444444", width=1)
+_TOP_CURVE_PEN = pg.mkPen(color="#1f77b4", width=3)
+_PREDICTIVE_PEN = pg.mkPen(color="#ff7f0e", width=3, style=QtCore.Qt.PenStyle.DashLine)
+_PER_CELL_PEN = pg.mkPen(color="#444444", width=3)
+_TRUE_POSITION_PEN = pg.mkPen((50, 50, 50), width=2, style=QtCore.Qt.PenStyle.DashLine)
 _SLICE_Y_MIN = -0.02
 _SLICE_Y_MAX = 1.05
 _PER_CELL_PALETTE = (
@@ -98,26 +101,34 @@ def _pin_slice_axes(plot: pg.PlotWidget, position_centers: np.ndarray) -> None:
 
 
 class _PerCellRow:
-    """One pre-allocated per-cell row widget (label + tiny line plot)."""
+    """One pre-allocated per-cell row widget (header + line plot)."""
 
     def __init__(self, position_centers: np.ndarray) -> None:
         self.container = QtWidgets.QWidget()
-        layout = QtWidgets.QHBoxLayout(self.container)
+        layout = QtWidgets.QVBoxLayout(self.container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(1)
         self.label = QtWidgets.QLabel("")
-        self.label.setMinimumWidth(80)
         self.label.setStyleSheet(_SLICE_CELL_HEADER_STYLE)
         self.plot = pg.PlotWidget(background="w")
-        self.plot.setMaximumHeight(40)
+        self.plot.setMinimumHeight(_PER_CELL_SLICE_MIN_HEIGHT)
+        self.plot.setMaximumHeight(_PER_CELL_SLICE_MIN_HEIGHT + 10)
         self.plot.setMouseEnabled(x=False, y=False)
         self.plot.hideAxis("bottom")
         self.plot.hideAxis("left")
         _pin_slice_axes(self.plot, position_centers)
         _empty = np.empty(0, dtype=float)
         self.curve = self.plot.plot(_empty, _empty, pen=_PER_CELL_PEN)
+        self.overlay_curve = self.plot.plot(_empty, _empty, pen=_PREDICTIVE_PEN)
+        self.true_position_line = pg.InfiniteLine(
+            angle=90, movable=False, pen=_TRUE_POSITION_PEN
+        )
+        self.true_position_line.setZValue(10)
+        self.true_position_line.setVisible(False)
+        self.plot.addItem(self.true_position_line)
+        _pin_slice_axes(self.plot, position_centers)
         layout.addWidget(self.label)
-        layout.addWidget(self.plot, stretch=1)
+        layout.addWidget(self.plot)
         self._position_centers = np.asarray(position_centers).squeeze()
         self._last_label = ""
         size_policy = self.container.sizePolicy()
@@ -125,11 +136,24 @@ class _PerCellRow:
         self.container.setSizePolicy(size_policy)
         self.container.setVisible(False)
 
-    def show_cell(self, label: str, place_field_norm: np.ndarray) -> None:
+    def show_cell(
+        self,
+        label: str,
+        place_field_norm: np.ndarray,
+        overlay_curve: np.ndarray | None,
+        true_position: float | None,
+    ) -> None:
         if label != self._last_label:
             self.label.setText(label)
             self.curve.setData(self._position_centers, place_field_norm)
             self._last_label = label
+        if overlay_curve is not None:
+            self.overlay_curve.setData(self._position_centers, overlay_curve)
+        else:
+            self.overlay_curve.setData(
+                np.empty(0, dtype=float), np.empty(0, dtype=float)
+            )
+        self._set_true_position(true_position)
         if not self.container.isVisible():
             self.container.setVisible(True)
 
@@ -142,6 +166,13 @@ class _PerCellRow:
         if self.container.isVisible():
             self.container.setVisible(False)
         self._last_label = ""
+
+    def _set_true_position(self, true_position: float | None) -> None:
+        if true_position is None or not np.isfinite(true_position):
+            self.true_position_line.setVisible(False)
+            return
+        self.true_position_line.setPos(float(true_position))
+        self.true_position_line.setVisible(True)
 
 
 class QtSlicePanel(QtWidgets.QWidget):
@@ -168,6 +199,7 @@ class QtSlicePanel(QtWidgets.QWidget):
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(4)
 
         # Title row: bold prose on the left, overlay-source dropdown on the
         # right. The dropdown lets the user choose predictive (causal),
@@ -200,6 +232,7 @@ class QtSlicePanel(QtWidgets.QWidget):
         layout.addWidget(self._legend_label)
 
         self._top_plot = pg.PlotWidget(background="w")
+        self._top_plot.setMinimumHeight(_TOP_SLICE_MIN_HEIGHT)
         self._top_plot.setLabel("left", "Probability / Likelihood")
         self._top_plot.setLabel("bottom", "Position [cm]")
         self._top_plot.setMouseEnabled(x=False, y=False)
@@ -212,7 +245,19 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._predictive_curve_item = self._top_plot.plot(
             _empty, _empty, pen=_PREDICTIVE_PEN
         )
+        self._true_position_line = pg.InfiniteLine(
+            angle=90, movable=False, pen=_TRUE_POSITION_PEN
+        )
+        self._true_position_line.setZValue(10)
+        self._true_position_line.setVisible(False)
+        self._top_plot.addItem(self._true_position_line)
+        _pin_slice_axes(self._top_plot, self._position_centers)
         layout.addWidget(self._top_plot, stretch=2)
+
+        self._per_cell_container = QtWidgets.QWidget()
+        self._per_cell_layout = QtWidgets.QVBoxLayout(self._per_cell_container)
+        self._per_cell_layout.setContentsMargins(0, 0, 0, 0)
+        self._per_cell_layout.setSpacing(2)
 
         # Pre-allocate the per-cell row pool up to MAX_PER_CELL_PLOTS.
         # Rows are hidden until ``update_for_index`` activates them; this
@@ -221,7 +266,8 @@ class QtSlicePanel(QtWidgets.QWidget):
             _PerCellRow(self._position_centers) for _ in range(MAX_PER_CELL_PLOTS)
         ]
         for row in self._per_cell_rows:
-            layout.addWidget(row.container)
+            self._per_cell_layout.addWidget(row.container)
+        layout.addWidget(self._per_cell_container, stretch=4)
 
         self._truncation_label = QtWidgets.QLabel("")
         self._truncation_label.setStyleSheet("color: #888;")
@@ -232,8 +278,6 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._readout_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self._readout_label.setStyleSheet(_SLICE_READOUT_STYLE)
         layout.addWidget(self._readout_label)
-
-        layout.addStretch(1)
 
         self._buffered_payload: WindowPayload | None = None
         # Last successfully-rendered ``t_idx`` so pin/unpin can
@@ -247,12 +291,14 @@ class QtSlicePanel(QtWidgets.QWidget):
     @staticmethod
     def _build_legend_html() -> str:
         return (
-            "<span style='color:rgb(255,127,14);font-size:14pt'>━</span> "
-            "Likelihood &nbsp;&nbsp; "
             "<span style='color:rgb(31,119,180);font-size:14pt'>━</span> "
+            "Likelihood &nbsp;&nbsp; "
+            "<span style='color:rgb(255,127,14);font-size:14pt'>━</span> "
             "Overlay &nbsp;&nbsp; "
             "<span style='color:rgb(44,160,44);font-size:14pt'>━</span> "
-            "Cell place fields"
+            "Cell place fields &nbsp;&nbsp; "
+            "<span style='color:rgb(50,50,50);font-size:14pt'>┆</span> "
+            "Position"
         )
 
     @property
@@ -373,6 +419,7 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._predictive_curve_item.setData(
             np.empty(0, dtype=float), np.empty(0, dtype=float)
         )
+        self._true_position_line.setVisible(False)
         for row in self._per_cell_rows:
             row.hide()
         self._truncation_label.setVisible(False)
@@ -398,6 +445,12 @@ class QtSlicePanel(QtWidgets.QWidget):
         log_lik_row = (
             payload.likelihood[local_idx] if payload.likelihood is not None else None
         )
+        likelihood_linear_row = (
+            payload.likelihood_linear[local_idx]
+            if payload.likelihood_linear is not None
+            else None
+        )
+        true_position = _true_position_at(payload.position, local_idx)
         # Overlay row depends on the user-selected mode. Predictive is
         # the causal prior, filtered is predictive × likelihood, and
         # smoothed is the acausal row the heatmap collapses. Predictive
@@ -408,14 +461,14 @@ class QtSlicePanel(QtWidgets.QWidget):
         if self._overlay_mode == "predictive":
             overlay_row = predictive_row
         elif self._overlay_mode == "filtered":
-            overlay_row = _filtered_row(predictive_row, log_lik_row)
+            overlay_row = _filtered_row(predictive_row, likelihood_linear_row)
         elif self._overlay_mode == "smoothed":
             overlay_row = posterior_row
         bin_payload = self._model.update_for_index(
             t_idx, posterior_row, log_lik_row=log_lik_row, predictive_row=overlay_row
         )
         self._last_t_idx = t_idx
-        self._render(bin_payload)
+        self._render(bin_payload, true_position=true_position)
 
     def _maybe_rerender(self) -> None:
         """Re-render at the last bin if the buffer is still around.
@@ -429,7 +482,7 @@ class QtSlicePanel(QtWidgets.QWidget):
             return
         self.update_for_index(self._last_t_idx)
 
-    def _render(self, bin_payload) -> None:
+    def _render(self, bin_payload, *, true_position: float | None) -> None:
         self._readout_label.setText(
             f"t={bin_payload.t:.3f} s    cells={len(bin_payload.cells)}    "
             f"{bin_payload.top_curve_label}"
@@ -448,9 +501,20 @@ class QtSlicePanel(QtWidgets.QWidget):
             self._predictive_curve_item.setData(
                 np.empty(0, dtype=float), np.empty(0, dtype=float)
             )
-        self._render_per_cell_rows(bin_payload.cells)
+        self._set_true_position(true_position)
+        self._render_per_cell_rows(
+            bin_payload.cells,
+            overlay_curve=bin_payload.predictive_curve,
+            true_position=true_position,
+        )
 
-    def _render_per_cell_rows(self, cells) -> None:
+    def _render_per_cell_rows(
+        self,
+        cells,
+        *,
+        overlay_curve: np.ndarray | None,
+        true_position: float | None,
+    ) -> None:
         merged = self._merge_pinned_and_active(cells)
         if not self._per_cell_visible:
             for row in self._per_cell_rows:
@@ -465,7 +529,7 @@ class QtSlicePanel(QtWidgets.QWidget):
             row = self._per_cell_rows[i]
             star = " ★" if cell.cell_id in pinned else ""
             rgb = _PER_CELL_PALETTE[cell.cell_id % len(_PER_CELL_PALETTE)]
-            row.curve.setPen(pg.mkPen(color=rgb, width=2))
+            row.curve.setPen(pg.mkPen(color=rgb, width=3))
             row.label.setStyleSheet(
                 _SLICE_CELL_HEADER_PINNED_STYLE
                 if cell.cell_id in pinned
@@ -474,6 +538,8 @@ class QtSlicePanel(QtWidgets.QWidget):
             row.show_cell(
                 f"#{cell.cell_id}{star}  (×{cell.spike_count})",
                 cell.place_field_norm,
+                overlay_curve,
+                true_position,
             )
         for i in range(n_shown, MAX_PER_CELL_PLOTS):
             self._per_cell_rows[i].hide()
@@ -503,24 +569,39 @@ class QtSlicePanel(QtWidgets.QWidget):
                 merged.append(cell)
         return merged
 
+    def _set_true_position(self, true_position: float | None) -> None:
+        if true_position is None or not np.isfinite(true_position):
+            self._true_position_line.setVisible(False)
+            return
+        self._true_position_line.setPos(float(true_position))
+        self._true_position_line.setVisible(True)
+
 
 def _filtered_row(
-    predictive_row: np.ndarray | None, log_lik_row: np.ndarray | None
+    predictive_row: np.ndarray | None, likelihood_row: np.ndarray | None
 ) -> np.ndarray | None:
     """Return normalized ``predictive * likelihood`` in state-bin space."""
-    if predictive_row is None or log_lik_row is None:
+    if predictive_row is None or likelihood_row is None:
         return None
     predictive = np.asarray(predictive_row, dtype=float)
-    log_lik = np.asarray(log_lik_row, dtype=float)
-    if predictive.shape != log_lik.shape:
+    likelihood = np.asarray(likelihood_row, dtype=float)
+    if predictive.shape != likelihood.shape:
         return None
-    finite = np.isfinite(log_lik)
-    if not finite.any():
-        return None
-    likelihood = np.zeros_like(log_lik, dtype=float)
-    likelihood[finite] = np.exp(log_lik[finite] - np.max(log_lik[finite]))
-    filtered = np.nan_to_num(predictive, nan=0.0, posinf=0.0, neginf=0.0) * likelihood
+    filtered = np.nan_to_num(
+        predictive, nan=0.0, posinf=0.0, neginf=0.0
+    ) * np.nan_to_num(likelihood, nan=0.0, posinf=0.0, neginf=0.0)
     total = float(filtered.sum())
     if total <= 0.0:
         return None
     return filtered / total
+
+
+def _true_position_at(position: np.ndarray | None, local_idx: int) -> float | None:
+    """Return finite 1D true position for ``local_idx`` if available."""
+    if position is None:
+        return None
+    pos = np.asarray(position)
+    if pos.ndim != 1 or local_idx < 0 or local_idx >= pos.size:
+        return None
+    value = float(pos[local_idx])
+    return value if np.isfinite(value) else None

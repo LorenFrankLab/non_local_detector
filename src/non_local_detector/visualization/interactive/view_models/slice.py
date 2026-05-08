@@ -47,8 +47,8 @@ class SliceModel:
 
     The caller (``QtSlicePanel``) is responsible for fetching the
     per-bin rows from the data source and passing them in. Bin
-    boundaries are inferred from the time grid as midpoints to
-    neighbors.
+    boundaries use the statespacecheck active-bin convention:
+    bin ``i`` covers ``[time[i], time[i + 1])``.
     """
 
     def __init__(
@@ -125,9 +125,7 @@ class SliceModel:
         it explicitly.
         """
         if cell_id < 0 or cell_id >= self.n_cells:
-            raise IndexError(
-                f"cell_id={cell_id} out of range for {self.n_cells} cells"
-            )
+            raise IndexError(f"cell_id={cell_id} out of range for {self.n_cells} cells")
         return CellSlice(
             cell_id=cell_id,
             place_field_norm=self._per_cell_pf_normalized[cell_id],
@@ -148,9 +146,7 @@ class SliceModel:
             )
         t = float(self._time[t_idx])
         if log_lik_row is not None:
-            top_curve = collapse_log_likelihood_to_position(
-                log_lik_row, self._detector
-            )
+            top_curve = collapse_log_likelihood_to_position(log_lik_row, self._detector)
             top_curve_label = TOP_CURVE_LIKELIHOOD_LABEL
         else:
             top_curve = collapse_posterior_to_position(
@@ -175,27 +171,21 @@ class SliceModel:
         )
 
     def _bin_edges(self, t_idx: int) -> tuple[float, float]:
-        """Return ``(t_lo, t_hi)`` for bin ``t_idx`` using midpoints."""
+        """Return left-edge ``(t_lo, t_hi)`` for bin ``t_idx``."""
         n = self._time.size
-        if n == 1:
+        if n <= 1:
             return float(self._time[0]), float(self._time[0])
-        t = float(self._time[t_idx])
-        if t_idx == 0:
-            half = (self._time[1] - self._time[0]) / 2.0
-        elif t_idx == n - 1:
-            half = (self._time[n - 1] - self._time[n - 2]) / 2.0
-        else:
-            half_lo = (t - self._time[t_idx - 1]) / 2.0
-            half_hi = (self._time[t_idx + 1] - t) / 2.0
-            return float(t - half_lo), float(t + half_hi)
-        return float(t - half), float(t + half)
+        t_lo = float(self._time[t_idx])
+        if t_idx < n - 1:
+            return t_lo, float(self._time[t_idx + 1])
+        return t_lo, float(t_lo + (self._time[-1] - self._time[-2]))
 
     def _build_bin_index(self) -> list[dict[int, int]]:
         """Return ``per_bin[t_idx] = {cell_id: spike_count_in_bin}``.
 
-        Spikes are assigned to a bin via ``searchsorted`` over
-        midpoint-derived bin edges (matching ``_bin_edges``). Spikes
-        before the first edge or after the last edge are dropped.
+        Spikes are assigned to left-edge bins via ``searchsorted`` over
+        ``[time[0], time[1], ..., inferred_last_edge]``. Spikes before
+        the first edge or after the last edge are dropped.
         """
         n_bins = self._time.size
         per_bin: list[dict[int, int]] = [{} for _ in range(n_bins)]
@@ -213,24 +203,20 @@ class SliceModel:
         return per_bin
 
     def _bin_edges_array(self) -> np.ndarray:
-        """Return ``(n_bins + 1,)`` midpoint-derived bin edges.
+        """Return ``(n_bins + 1,)`` left-edge bin boundaries.
 
-        Matches the per-bin-edge convention used by ``_bin_edges``:
-        each bin is centered on ``time[i]`` and bounded by the
-        midpoint to its neighbors. Used by ``_build_bin_index`` for a
-        single vectorised ``searchsorted`` call.
+        Matches statespacecheck's active-bin convention: bin ``i`` is
+        ``[time[i], time[i + 1])``. The final right edge is inferred
+        from the last observed timestep.
         """
         time = self._time
         n = time.size
         if n == 0:
             return np.empty(0, dtype=np.float64)
         if n == 1:
-            half = 0.5
-            return np.array([time[0] - half, time[0] + half], dtype=np.float64)
-        midpoints = (time[1:] + time[:-1]) / 2.0
-        first = float(time[0] - (midpoints[0] - time[0]))
-        last = float(time[-1] + (time[-1] - midpoints[-1]))
-        return np.concatenate([[first], midpoints, [last]])
+            return np.array([time[0], time[0]], dtype=np.float64)
+        last = float(time[-1] + (time[-1] - time[-2]))
+        return np.concatenate([time, [last]]).astype(np.float64, copy=False)
 
     def _cells_at_index(self, t_idx: int) -> list[CellSlice]:
         """Return active-cell slices for bin ``t_idx`` from the prebuilt index."""

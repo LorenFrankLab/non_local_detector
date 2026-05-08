@@ -63,7 +63,7 @@ class QtStateProbabilityPanel(
         for i, state_name in enumerate(self._model.state_names):
             color = _DEFAULT_STATE_COLORS[i % len(_DEFAULT_STATE_COLORS)]
             line = self.plot(
-                [], [], pen=pg.mkPen(color=color, width=2), name=state_name
+                [], [], pen=pg.mkPen(color=color, width=3), name=state_name
             )
             self._lines.append(line)
 

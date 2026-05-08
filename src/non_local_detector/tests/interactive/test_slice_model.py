@@ -284,11 +284,10 @@ class TestPrecomputedBinIndex:
         """``_cells_at_index(t_idx)`` produces the same cell set / counts as a
         bin-edge scan for every bin where data is available.
 
-        The scan uses each bin's midpoint-derived ``[t_lo, t_hi]``
-        edges (matching ``_bin_edges``) and counts spikes in
-        ``[t_lo, t_hi]``. The new path uses ``searchsorted`` on
-        precomputed edges; for spikes that don't fall exactly on a
-        midpoint the two methods agree on every bin.
+        The scan uses each bin's left-edge ``[t_lo, t_hi]`` edges
+        (matching ``_bin_edges``) and counts spikes in ``[t_lo,
+        t_hi]``. The new path uses ``searchsorted`` on precomputed
+        edges, so the two methods should agree on every sampled bin.
         """
         from non_local_detector.visualization.interactive.view_models.slice import (
             SliceModel,
@@ -310,7 +309,9 @@ class TestPrecomputedBinIndex:
                 count = int(np.count_nonzero((st >= t_lo) & (st < t_hi)))
                 if count > 0:
                     expected[cell_id] = count
-            actual = {c.cell_id: c.spike_count for c in model._cells_at_index(int(t_idx))}
+            actual = {
+                c.cell_id: c.spike_count for c in model._cells_at_index(int(t_idx))
+            }
             assert actual == expected, (
                 f"bin {t_idx}: precomputed index disagrees with bin-edge scan. "
                 f"expected={expected!r}, actual={actual!r}"
@@ -337,3 +338,24 @@ class TestPrecomputedBinIndex:
         model.set_active_run(cf_fitted.detector, sim_session.spike_times, cf_time)
         assert id(model._per_bin_cell_counts) != nl_index_id
         assert len(model._per_bin_cell_counts) == cf_time.size
+
+    def test_left_edge_active_bin_convention(self, nl_fitted: FittedDetector) -> None:
+        """Spikes at ``time[i]`` belong to bin ``i``, not the previous midpoint bin."""
+        time = np.asarray(nl_fitted.results["time"].values[:5], dtype=float)
+        spike_times = [
+            np.array(
+                [
+                    time[1],
+                    np.nextafter(time[2], time[1]),
+                    time[2],
+                ]
+            )
+        ]
+        encoding_entry = next(iter(nl_fitted.detector.encoding_model_.values()))
+        n_cells = encoding_entry["place_fields"].shape[0]
+        spike_times.extend(np.array([], dtype=float) for _ in range(n_cells - 1))
+        model = SliceModel(nl_fitted.detector, spike_times, time)
+
+        assert {c.cell_id: c.spike_count for c in model._cells_at_index(1)} == {0: 2}
+        assert {c.cell_id: c.spike_count for c in model._cells_at_index(2)} == {0: 1}
+        assert model._bin_edges(1) == (pytest.approx(time[1]), pytest.approx(time[2]))

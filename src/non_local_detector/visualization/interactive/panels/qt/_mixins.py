@@ -117,9 +117,7 @@ class CursorMarkersMixin:
         self._center_line = pg.InfiniteLine(
             angle=90,
             pos=0.0,
-            pen=pg.mkPen(
-                (100, 100, 100), width=1, style=QtCore.Qt.PenStyle.DashLine
-            ),
+            pen=pg.mkPen((100, 100, 100), width=2, style=QtCore.Qt.PenStyle.DashLine),
             movable=False,
         )
         self._center_line.setZValue(_CURSOR_LINE_Z)
@@ -135,16 +133,14 @@ class CursorMarkersMixin:
         self.addItem(self._active_bin_band)
         self._pin_line = pg.InfiniteLine(
             angle=90,
-            pen=pg.mkPen((255, 215, 0), width=2),
+            pen=pg.mkPen((255, 215, 0), width=3),
             movable=False,
         )
         self._pin_line.setZValue(_PIN_LINE_Z)
         self._pin_line.setVisible(False)
         self.addItem(self._pin_line)
 
-    def set_cursor_markers(
-        self, t_center: float, t_lo: float, t_hi: float
-    ) -> None:
+    def set_cursor_markers(self, t_center: float, t_lo: float, t_hi: float) -> None:
         """Move both markers in lockstep. Called by ``QtViewer``."""
         bounds = (float(t_center), float(t_lo), float(t_hi))
         if bounds == self._cursor_marker_bounds:
@@ -218,7 +214,7 @@ class PositionTraceMixin:
 
     def _install_position_trace(self) -> None:
         self._position_trace = pg.PlotDataItem(
-            pen=pg.mkPen("w", width=1),
+            pen=pg.mkPen("w", width=2),
             antialias=True,
         )
         self._position_trace.setZValue(_POSITION_TRACE_Z)
@@ -319,7 +315,7 @@ def _render_overlay(
     color = QColor(overlay.color)
     items: list[pg.GraphicsObject] = []
     if overlay.kind == "points":
-        pen = pg.mkPen(color=color, width=1)
+        pen = pg.mkPen(color=color, width=2)
         times = overlay.times if overlay.times is not None else ()
         for t in times:
             line = pg.InfiniteLine(pos=float(t), angle=90, pen=pen, movable=False)

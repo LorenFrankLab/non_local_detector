@@ -51,7 +51,7 @@ class LineSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
         self.setLabel("bottom", "Time [s]")
         if model.y_range is not None:
             self.setYRange(*model.y_range)
-        pen = pg.mkPen(color=QColor(model.color), width=2)
+        pen = pg.mkPen(color=QColor(model.color), width=3)
         self._line = self.plot([], [], pen=pen, name=model.name)
         self._fill_curve: pg.FillBetweenItem | None = None
         if model.fill_below:
@@ -67,7 +67,7 @@ class LineSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
             line = pg.InfiniteLine(
                 pos=float(threshold),
                 angle=0,
-                pen=pg.mkPen("k", style=pg.QtCore.Qt.DashLine, width=1),
+                pen=pg.mkPen("k", style=pg.QtCore.Qt.DashLine, width=2),
             )
             self.addItem(line)
         self._install_click_recenter()
@@ -122,7 +122,7 @@ class MultiLineSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin)
                 else _DEFAULT_MULTI_COLORS[i % len(_DEFAULT_MULTI_COLORS)]
             )
             self._lines[label] = self.plot(
-                [], [], pen=pg.mkPen(color=color, width=2), name=label
+                [], [], pen=pg.mkPen(color=color, width=3), name=label
             )
         self._install_click_recenter()
         self._overlay_items: list[pg.GraphicsObject] = []
@@ -160,9 +160,9 @@ class ScatterSeriesPanel(
         if model.y_range is not None:
             self.setYRange(*model.y_range)
         self._scatter = pg.ScatterPlotItem(
-            pen=pg.mkPen(QColor(model.color), width=1),
+            pen=pg.mkPen(QColor(model.color), width=2),
             brush=pg.mkBrush(model.color),
-            size=6,
+            size=8,
         )
         self.addItem(self._scatter)
         self._install_click_recenter()
