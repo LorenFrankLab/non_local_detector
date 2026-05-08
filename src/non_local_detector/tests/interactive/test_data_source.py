@@ -172,6 +172,68 @@ class TestSingleRunDataSource:
         assert event.event_id in set(event_ids.tolist())
         assert event.cell_id in set(ds.event_index.cell_ids[event_ids].tolist())
 
+    def test_event_index_drops_spikes_outside_decoder_range(
+        self, run_bundles: dict[str, RunBundle]
+    ) -> None:
+        """``from_spike_times`` filters per-cell BEFORE the flat concat.
+
+        Pads each cell's spikes with sentinels far before / after the
+        decoder time grid; the resulting index must match the
+        unpadded version event-for-event (same total count, same
+        ``cell_event_ids`` lengths). This pins the per-cell filter:
+        a regression that drops the filter would let the sentinels
+        through and bump every count.
+        """
+        from non_local_detector.visualization.interactive.view_models.base import (
+            SpikeEventIndex,
+        )
+
+        bundle = run_bundles["nl_all"]
+        time = np.asarray(bundle.results["time"].values)
+        clean = SpikeEventIndex.from_spike_times(bundle.spike_times, time)
+
+        far_lo = float(time[0]) - 1000.0
+        far_hi = float(time[-1]) + 1000.0
+        padded_spikes = [
+            np.concatenate([[far_lo], st, [far_hi]]) for st in bundle.spike_times
+        ]
+        padded = SpikeEventIndex.from_spike_times(padded_spikes, time)
+
+        assert padded.n_events == clean.n_events
+        for clean_ids, padded_ids in zip(
+            clean.cell_event_ids, padded.cell_event_ids, strict=True
+        ):
+            assert clean_ids.size == padded_ids.size
+
+    def test_event_index_nearest_handles_float32_round_trip(
+        self, run_bundles: dict[str, RunBundle]
+    ) -> None:
+        """Float32-rounded ``t`` (raster click semantic) still resolves.
+
+        Strict-equal lookup fails under the rounding; the nearest
+        helper picks the right event within ``atol``.
+        """
+        ds = InMemoryDecoderDataSource.from_single(run_bundles["nl_all"])
+        event = ds.spike_event_at(0)
+        # pyqtgraph ScatterPlotItem stores positions as float32.
+        rounded_t = float(np.float32(event.time))
+        assert (
+            ds.event_index.event_id_for_cell_time(event.cell_id, rounded_t) is None
+        )
+        assert (
+            ds.event_index.nearest_event_id_for_cell_time(
+                event.cell_id, rounded_t
+            )
+            == event.event_id
+        )
+        # Beyond tolerance → None.
+        assert (
+            ds.event_index.nearest_event_id_for_cell_time(
+                event.cell_id, event.time + 1.0
+            )
+            is None
+        )
+
 
 @pytest.mark.unit
 class TestMultiRunDataSource:

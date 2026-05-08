@@ -143,6 +143,13 @@ class SpikeEventIndex:
     row position is the stable ``event_id`` used by raster clicks and
     pin state. Only spikes that fall inside the decoder's left-edge
     bin range ``[time[0], inferred_final_edge)`` are retained.
+
+    **Run-local.** ``event_id`` values are only meaningful within a
+    single index. A different ``RunBundle`` (or even the same bundle
+    rebuilt against a different time grid) produces a fresh index
+    with potentially different ids — the viewer's M-key swap clears
+    any pinned event id for this reason. Pass the index instance
+    explicitly when sharing across view-models so they don't drift.
     """
 
     times: np.ndarray
@@ -167,17 +174,31 @@ class SpikeEventIndex:
                 cell_event_ids=tuple(empty_i64.copy() for _ in range(n_cells)),
             )
 
+        # Filter per-cell BEFORE concatenation so we don't allocate
+        # full-session flat arrays just to mask out edge spikes.
         edges = bin_edges_array(time)
+        edge_lo = float(edges[0])
+        edge_hi = float(edges[-1])
         event_times: list[np.ndarray] = []
         event_cells: list[np.ndarray] = []
         event_ordinals: list[np.ndarray] = []
+        event_time_indices: list[np.ndarray] = []
         for cell_id, st in enumerate(spike_times):
             spikes = np.asarray(st, dtype=np.float64)
             if spikes.size == 0:
                 continue
-            event_times.append(spikes)
-            event_cells.append(np.full(spikes.shape, cell_id, dtype=np.int64))
-            event_ordinals.append(np.arange(spikes.size, dtype=np.int64))
+            valid = (spikes >= edge_lo) & (spikes < edge_hi)
+            if not valid.any():
+                continue
+            kept_spikes = spikes[valid]
+            kept_indices = np.searchsorted(edges, kept_spikes, side="right") - 1
+            kept_ordinals = np.flatnonzero(valid).astype(np.int64, copy=False)
+            event_times.append(kept_spikes)
+            event_cells.append(
+                np.full(kept_spikes.shape, cell_id, dtype=np.int64)
+            )
+            event_ordinals.append(kept_ordinals)
+            event_time_indices.append(kept_indices.astype(np.int64, copy=False))
         if not event_times:
             empty_i64 = np.empty(0, dtype=np.int64)
             return cls(
@@ -190,16 +211,11 @@ class SpikeEventIndex:
         flat_times = np.concatenate(event_times)
         flat_cells = np.concatenate(event_cells)
         flat_ordinals = np.concatenate(event_ordinals)
-        time_indices = np.searchsorted(edges, flat_times, side="right") - 1
-        valid = (time_indices >= 0) & (time_indices < n_time)
-        flat_times = flat_times[valid]
-        flat_cells = flat_cells[valid]
-        flat_ordinals = flat_ordinals[valid]
-        time_indices = time_indices[valid].astype(np.int64, copy=False)
+        flat_time_indices = np.concatenate(event_time_indices)
         order = np.lexsort((flat_ordinals, flat_cells, flat_times))
         times = flat_times[order].astype(np.float64, copy=False)
         cell_ids = flat_cells[order].astype(np.int64, copy=False)
-        time_indices = time_indices[order]
+        time_indices = flat_time_indices[order]
 
         event_ids_by_cell = []
         for cell_id in range(n_cells):
@@ -267,6 +283,35 @@ class SpikeEventIndex:
         if i >= times.size or times[i] != t:
             return None
         return int(event_ids[i])
+
+    def nearest_event_id_for_cell_time(
+        self, cell_id: int, t: float, *, atol: float = 1e-6
+    ) -> int | None:
+        """Return the closest event id for ``(cell_id, t)`` within ``atol``.
+
+        Float-rounded ``t`` (e.g. from a pyqtgraph float32 spot
+        position) won't survive strict equality against the float64
+        spike-time table; this helper picks the nearer of the two
+        bracketing events and returns it iff its absolute distance
+        from ``t`` is within ``atol``. Returns ``None`` when no event
+        exists within the tolerance.
+        """
+        if cell_id < 0 or cell_id >= len(self.cell_event_ids):
+            return None
+        event_ids = self.cell_event_ids[cell_id]
+        times = self.times[event_ids]
+        if times.size == 0:
+            return None
+        i = int(np.searchsorted(times, t, side="left"))
+        candidates: list[int] = []
+        if i < times.size:
+            candidates.append(i)
+        if i > 0:
+            candidates.append(i - 1)
+        best = min(candidates, key=lambda j: abs(float(times[j]) - t))
+        if abs(float(times[best]) - t) > atol:
+            return None
+        return int(event_ids[best])
 
 
 @dataclass(frozen=True)

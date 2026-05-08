@@ -1162,12 +1162,28 @@ class QtViewer(QtWidgets.QMainWindow):
         self._sync_slider_and_bin_panels_for_time(event.time)
 
     def _on_spike_clicked(self, cell_id: int, t: float) -> None:
-        """Compatibility shim for tests/plugins still emitting cell/time."""
-        event_id = self._data_source.event_index.event_id_for_cell_time(
-            int(cell_id), float(t)
+        """Compatibility shim for tests/plugins still emitting cell/time.
+
+        ``t`` from a pyqtgraph float32 spot position won't survive
+        strict equality against the float64 spike-time table, so the
+        shim uses ``nearest_event_id_for_cell_time`` (atol=1e-6).
+        Logs the miss so a no-op pin from a stale plugin shows up in
+        the log instead of silently failing.
+        """
+        cell_id = int(cell_id)
+        t = float(t)
+        event_id = self._data_source.event_index.nearest_event_id_for_cell_time(
+            cell_id, t
         )
-        if event_id is not None:
-            self._on_event_clicked(event_id)
+        if event_id is None:
+            _LOAD_LOGGER.debug(
+                "spike_clicked(cell_id=%d, t=%g) did not match any event "
+                "(no event within 1e-6 of t for this cell)",
+                cell_id,
+                t,
+            )
+            return
+        self._on_event_clicked(event_id)
 
     def _clear_pins(self) -> None:
         self._slice_panel.clear_pins()
