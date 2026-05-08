@@ -893,6 +893,29 @@ def test_qt_viewer_right_column_top_aligned_with_trailing_stretch(
     )
     assert last_item.spacerItem() is not None
     assert right_layout.stretch(n_items - 1) == _RIGHT_COLUMN_TRAILING_STRETCH
+    assert _RIGHT_COLUMN_SLICE_STRETCH == 2
+    assert _RIGHT_COLUMN_TRAILING_STRETCH == 4
+
+
+@pytest.mark.unit
+def test_qt_viewer_slice_overlay_combo_drives_slice_panel(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """The slice overlay mode is controlled from the bottom controls bar."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    assert not hasattr(viewer._slice_panel, "_overlay_combo")
+    combo = viewer._slice_overlay_combo
+    filtered_idx = next(
+        i for i in range(combo.count()) if combo.itemData(i) == "filtered"
+    )
+    combo.setCurrentIndex(filtered_idx)
+
+    assert viewer._slice_panel.overlay_mode == "filtered"
 
 
 @pytest.mark.unit

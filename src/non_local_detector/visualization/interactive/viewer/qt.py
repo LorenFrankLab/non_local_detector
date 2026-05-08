@@ -33,6 +33,7 @@ from non_local_detector.visualization.interactive.panels.qt.series import (
     ScatterSeriesPanel,
 )
 from non_local_detector.visualization.interactive.panels.qt.slice import (
+    OverlayMode,
     QtSlicePanel,
 )
 from non_local_detector.visualization.interactive.panels.qt.state_prob import (
@@ -106,17 +107,18 @@ _QT_FONT_FAMILY_PREFERENCES = (
     "Noto Sans",
 )
 
-# Layout constants mirror statespacecheck-paper-viewer: 1200×900
-# default window, ~70/30 body split, heatmap rows at stretch 2,
-# compact rows at stretch 1, and a right-column slice panel aligned
-# to the posterior heatmap's vertical extent (2 of 8 units).
+# Layout constants mirror statespacecheck-paper-viewer after dropping the
+# three diagnostic metric rows: 1200x900 default window, ~70/30 body
+# split, heatmap rows at stretch 2, compact rows at stretch 1, and a
+# right-column slice panel aligned to the posterior heatmap's vertical
+# extent (2 of 6 units).
 _DEFAULT_WINDOW_WIDTH = 1200
 _DEFAULT_WINDOW_HEIGHT = 900
 _LEFT_COLUMN_HEATMAP_STRETCH = 2
 _LEFT_COLUMN_COMPACT_STRETCH = 1
 _LEFT_COLUMN_EXTRA_STRETCH = _LEFT_COLUMN_COMPACT_STRETCH
 _RIGHT_COLUMN_SLICE_STRETCH = 2
-_RIGHT_COLUMN_TRAILING_STRETCH = 6
+_RIGHT_COLUMN_TRAILING_STRETCH = 4
 
 # Splitter weights for the body's left vs right column. Sum doesn't
 # matter; pyqtgraph divides by total. 7:3 mirrors the paper viewer.
@@ -130,6 +132,12 @@ _OUTER_SPACING = 4
 _COLUMN_MARGIN = 0
 _COLUMN_SPACING = 2
 _SLICE_COLUMN_SPACING = 0
+
+_SLICE_OVERLAY_CHOICES: tuple[tuple[OverlayMode, str], ...] = (
+    ("predictive", "Predictive (causal)"),
+    ("filtered", "Filtered"),
+    ("smoothed", "Smoothed (acausal)"),
+)
 
 
 def _format_speed(speed: float) -> str:
@@ -674,6 +682,20 @@ class QtViewer(QtWidgets.QMainWindow):
         layout.addWidget(self._per_cell_checkbox)
         layout.addSpacing(12)
 
+        layout.addWidget(QtWidgets.QLabel("Slice overlay:"))
+        self._slice_overlay_combo = QtWidgets.QComboBox()
+        for mode_key, mode_label in _SLICE_OVERLAY_CHOICES:
+            self._slice_overlay_combo.addItem(mode_label, userData=mode_key)
+        for i in range(self._slice_overlay_combo.count()):
+            if self._slice_overlay_combo.itemData(i) == self._slice_panel.overlay_mode:
+                self._slice_overlay_combo.setCurrentIndex(i)
+                break
+        self._slice_overlay_combo.currentIndexChanged.connect(
+            self._on_slice_overlay_changed
+        )
+        layout.addWidget(self._slice_overlay_combo)
+        layout.addSpacing(12)
+
         # Play / pause + speed are always present — auto-scroll is a
         # universal affordance, not gated on overlays / multi-run. The
         # combo's ``itemData`` carries the float multiplier directly so
@@ -741,6 +763,12 @@ class QtViewer(QtWidgets.QMainWindow):
     def _on_active_overlay_changed(self, index: int) -> None:
         name = self._overlay_combo.itemData(index)
         self._core.set_active_overlay(name)
+
+    def _on_slice_overlay_changed(self, index: int) -> None:
+        mode = self._slice_overlay_combo.itemData(index)
+        if mode is None:
+            return
+        self._slice_panel.set_overlay_mode(mode)
 
     def _on_active_run_changed(self, index: int) -> None:
         if self._model_combo is None:

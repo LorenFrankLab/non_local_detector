@@ -50,11 +50,6 @@ SliceRowProvider = Callable[
     | None,
 ]
 _OVERLAY_MODE_VALUES: frozenset[str] = frozenset(("predictive", "filtered", "smoothed"))
-_OVERLAY_MODE_CHOICES: tuple[tuple[OverlayMode, str], ...] = (
-    ("predictive", "Predictive (causal)"),
-    ("filtered", "Filtered"),
-    ("smoothed", "Smoothed (acausal)"),
-)
 
 _LIKELIHOOD_PENS = (
     pg.mkPen(color=(255, 127, 14), width=3),
@@ -245,11 +240,6 @@ class QtSlicePanel(QtWidgets.QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(4)
 
-        # Title row: bold prose on the left, overlay-source dropdown on the
-        # right. The dropdown lets the user choose predictive (causal),
-        # filtered, or smoothed (acausal) collapsed overlays.
-        title_row = QtWidgets.QHBoxLayout()
-        title_row.setContentsMargins(0, 0, 0, 0)
         self._title_label = QtWidgets.QLabel("")
         self._title_label.setStyleSheet("font-weight: bold;")
         self._title_label.setMinimumWidth(0)
@@ -258,15 +248,7 @@ class QtSlicePanel(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Policy.Preferred,
         )
         self._title_label.setText("Slice")
-        title_row.addWidget(self._title_label, stretch=1)
-        title_row.addWidget(QtWidgets.QLabel("Overlay:"))
-        self._overlay_combo = QtWidgets.QComboBox()
-        for mode_key, mode_label in _OVERLAY_MODE_CHOICES:
-            self._overlay_combo.addItem(mode_label, userData=mode_key)
-        self._set_combo_to_mode(overlay_mode)
-        self._overlay_combo.currentIndexChanged.connect(self._on_overlay_combo_changed)
-        title_row.addWidget(self._overlay_combo)
-        layout.addLayout(title_row)
+        layout.addWidget(self._title_label)
 
         self._legend_label = QtWidgets.QLabel(self._build_legend_html())
         self._legend_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
@@ -375,8 +357,8 @@ class QtSlicePanel(QtWidgets.QWidget):
         way. Always available because ``acausal_posterior`` is always in
         a default ``predict()`` output.
 
-        Updates the dropdown to match and re-renders at the last bin so
-        the change is visible without a slider nudge.
+        Re-renders at the last bin so the change is visible without a
+        slider nudge.
         """
         if mode not in _OVERLAY_MODE_VALUES:
             raise ValueError(
@@ -386,24 +368,6 @@ class QtSlicePanel(QtWidgets.QWidget):
         if mode == self._overlay_mode:
             return
         self._overlay_mode = mode
-        self._set_combo_to_mode(mode)
-        self._maybe_rerender()
-
-    def _set_combo_to_mode(self, mode: OverlayMode) -> None:
-        """Sync the combo box to ``mode`` without firing the signal."""
-        for i, (mode_key, _label) in enumerate(_OVERLAY_MODE_CHOICES):
-            if mode_key == mode:
-                with QtCore.QSignalBlocker(self._overlay_combo):
-                    self._overlay_combo.setCurrentIndex(i)
-                return
-
-    def _on_overlay_combo_changed(self, idx: int) -> None:
-        if not 0 <= idx < len(_OVERLAY_MODE_CHOICES):
-            return
-        new_mode: OverlayMode = _OVERLAY_MODE_CHOICES[idx][0]
-        if new_mode == self._overlay_mode:
-            return
-        self._overlay_mode = new_mode
         self._maybe_rerender()
 
     @property

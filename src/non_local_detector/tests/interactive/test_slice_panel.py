@@ -678,41 +678,6 @@ def test_slice_panel_draws_true_position_and_row_overlay(
 
 
 @pytest.mark.unit
-def test_slice_panel_overlay_combo_drives_set_overlay_mode(
-    qapp,
-    run_bundles: dict[str, RunBundle],
-) -> None:
-    """User-facing combo box selection routes through ``set_overlay_mode``."""
-    bundle = run_bundles["nl_all"]
-    detector = bundle.detector
-    centers = np.asarray(detector.environments[0].place_bin_centers_).squeeze()
-    time = bundle.results["time"].values
-    model = SliceModel(detector, bundle.spike_times, time)
-    panel = _make_panel(qapp, model, centers)
-
-    panel.set_window_buffer(_payload_for_results(bundle.results))
-    t_idx = first_finite_row_index(bundle.results["log_likelihood"].values)
-    panel.update_for_index(t_idx)
-
-    smoothed_idx = next(
-        j
-        for j in range(panel._overlay_combo.count())
-        if panel._overlay_combo.itemData(j) == "smoothed"
-    )
-    panel._overlay_combo.setCurrentIndex(smoothed_idx)
-    assert panel.overlay_mode == "smoothed"
-    expected_smoothed = collapse_posterior_to_position(
-        bundle.results["acausal_posterior"].values[t_idx],
-        detector,
-        PosteriorReduction.MARGINAL,
-    )
-    _, y = panel._predictive_curve_item.getData()
-    np.testing.assert_allclose(
-        y, _peak_normalize(expected_smoothed), atol=1e-14, equal_nan=True
-    )
-
-
-@pytest.mark.unit
 def test_slice_panel_rebind_after_swap_clears_buffer(
     qapp,
     run_bundles: dict[str, RunBundle],
