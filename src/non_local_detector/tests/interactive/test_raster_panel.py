@@ -114,3 +114,33 @@ def test_qt_raster_panel_shades_non_local_active_bins(
     )
     panel.update_window(payload_no_probs)
     assert panel._non_local_regions == []
+
+
+@pytest.mark.gui
+def test_qt_raster_panel_spike_pin_marker_draws_row_dot(
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """Pinned spike feedback includes both the vertical line and row dot."""
+    from non_local_detector.visualization.interactive.panels.qt.raster import (
+        QtRasterPanel,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _ensure_qapplication,
+    )
+
+    _ = _ensure_qapplication()
+    model = RasterModel(nl_fitted.detector, sim_session.spike_times)
+    panel = QtRasterPanel(model)
+
+    cell_id = int(model.sort_indices[0])
+    panel.set_spike_pin_marker(10.25, cell_id)
+    assert panel._pin_line.isVisible()
+    assert panel._pin_dot.isVisible()
+    x, y = panel._pin_dot.getData()
+    np.testing.assert_allclose(x, [10.25])
+    np.testing.assert_allclose(y, [0.0])
+
+    panel.set_spike_pin_marker(None, None)
+    assert not panel._pin_line.isVisible()
+    assert not panel._pin_dot.isVisible()

@@ -278,8 +278,9 @@ def test_qt_likelihood_panel_explains_missing_log_likelihood(
 
     n_state_bins = detector.n_state_bins_
     log_lik = nl_fitted.results["log_likelihood"].values[
-        first_finite_row_index(nl_fitted.results["log_likelihood"].values)
-        : first_finite_row_index(nl_fitted.results["log_likelihood"].values) + 10
+        first_finite_row_index(
+            nl_fitted.results["log_likelihood"].values
+        ) : first_finite_row_index(nl_fitted.results["log_likelihood"].values) + 10
     ]
     assert log_lik.shape == (10, n_state_bins)
     panel.update_window(
@@ -364,7 +365,9 @@ def test_qt_viewer_payload_routes_to_all_left_column_panels(
         x, _ = line.getData()
         assert x.size == n_visible
 
-    n_pos = int(multi_run_bundles["nl"].detector.environments[0].place_bin_centers_.shape[0])
+    n_pos = int(
+        multi_run_bundles["nl"].detector.environments[0].place_bin_centers_.shape[0]
+    )
     assert viewer._likelihood_panel._image_item.image.shape == (n_pos, n_visible)
     assert viewer._panel._image_item.image.shape == (n_pos, n_visible)
     # ScatterPlotItem.getData returns (x, y); spike count may be 0 in
@@ -456,22 +459,66 @@ def test_qt_viewer_window_load_sets_slice_buffer(
 
 
 @pytest.mark.unit
-def test_qt_viewer_raster_click_toggles_slice_pin(
+def test_qt_viewer_raster_spike_click_toggles_spike_pin(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
 ) -> None:
-    """``raster.cell_clicked.emit(cell_id)`` toggles the slice panel's pin."""
+    """Raster spike clicks pin by ``(cell_id, spike_time)`` identity."""
     from non_local_detector.visualization.interactive.viewer.qt import QtViewer
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
 
     assert viewer._slice_panel.pinned_cell_ids == frozenset()
-    viewer._raster_panel.cell_clicked.emit(3)
+    viewer._raster_panel.spike_clicked.emit(3, 1.25)
     assert 3 in viewer._slice_panel.pinned_cell_ids
-    # Click again → unpin (toggle semantics).
-    viewer._raster_panel.cell_clicked.emit(3)
+    assert viewer._pinned_spike_key == (3, 1.25)
+    assert viewer._pinned_time == 1.25
+
+    # Same spike → unpin.
+    viewer._raster_panel.spike_clicked.emit(3, 1.25)
     assert 3 not in viewer._slice_panel.pinned_cell_ids
+    assert viewer._pinned_spike_key is None
+
+    # Another spike from the same cell repins/recenters to that event.
+    viewer._raster_panel.spike_clicked.emit(3, 1.50)
+    assert viewer._slice_panel.pinned_cell_ids == frozenset({3})
+    assert viewer._pinned_spike_key == (3, 1.50)
+    assert viewer.core.t_center == pytest.approx(1.50)
+
+
+@pytest.mark.unit
+def test_qt_viewer_manual_navigation_clears_pins(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Manual scrub/step/reset interactions clear stale spike pins."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    viewer._on_spike_clicked(3, 1.25)
+    assert viewer._slice_panel.pinned_cell_ids == frozenset({3})
+    viewer._on_slider_value_changed(viewer._slider.value() + 1)
+    assert viewer._slice_panel.pinned_cell_ids == frozenset()
+    assert viewer._pinned_spike_key is None
+
+    viewer._on_spike_clicked(3, 1.25)
+    viewer._set_t_center_from_panel_click(1.75)
+    assert viewer._slice_panel.pinned_cell_ids == frozenset()
+
+    viewer._on_spike_clicked(3, 1.25)
+    viewer._step_right()
+    assert viewer._slice_panel.pinned_cell_ids == frozenset()
+
+    viewer._on_spike_clicked(3, 1.25)
+    viewer._step_window(+1)
+    assert viewer._slice_panel.pinned_cell_ids == frozenset()
+
+    viewer._on_spike_clicked(3, 1.25)
+    viewer._reset_view()
+    assert viewer._slice_panel.pinned_cell_ids == frozenset()
 
 
 @pytest.mark.unit
@@ -556,7 +603,9 @@ def test_qt_viewer_swap_rebinds_built_in_panel_models(
 
     cf_centers = np.asarray(cf.environments[0].place_bin_centers_).squeeze()
     np.testing.assert_array_equal(viewer._panel._position_centers, cf_centers)
-    np.testing.assert_array_equal(viewer._likelihood_panel._position_centers, cf_centers)
+    np.testing.assert_array_equal(
+        viewer._likelihood_panel._position_centers, cf_centers
+    )
 
     # Smoke check: a fresh load under CF must complete without raising.
     payload = viewer._backend._build_payload(viewer.core.current_view_state)
@@ -1068,8 +1117,7 @@ def test_backend_only_one_inflight_at_a_time(
     while len(submitted) < 2 and deadline.elapsed() < 1000:
         QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 5)
     assert len(submitted) == 2, (
-        f"latest pending state must run after the held job completes; "
-        f"got {submitted}"
+        f"latest pending state must run after the held job completes; got {submitted}"
     )
 
 
@@ -1140,8 +1188,7 @@ def test_backend_recovers_when_worker_raises(
     # The error should have been logged through the deliver path so
     # the failure isn't silent.
     assert any(
-        "window-load worker raised" in rec.getMessage()
-        for rec in caplog.records
+        "window-load worker raised" in rec.getMessage() for rec in caplog.records
     ), (
         f"worker exception should be logged; got records: "
         f"{[rec.getMessage() for rec in caplog.records]!r}"
@@ -1271,6 +1318,4 @@ def test_position_trace_uniform_grid_round_trips(
     # itself does).
     centers = viewer._panel._position_centers
     in_range = (payload.position >= centers[0]) & (payload.position <= centers[-1])
-    np.testing.assert_allclose(
-        y[in_range], payload.position[in_range], atol=1e-6
-    )
+    np.testing.assert_allclose(y[in_range], payload.position[in_range], atol=1e-6)

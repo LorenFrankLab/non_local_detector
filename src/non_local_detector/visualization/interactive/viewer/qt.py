@@ -192,7 +192,9 @@ class QtBackendAdapter(BackendAdapter):
 
     def __init__(self, data_source: InMemoryDecoderDataSource) -> None:
         self._data_source = data_source
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nld-viewer")
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="nld-viewer"
+        )
         self._closed = False
         self._signals = _LoadSignals()
         self._signals.done.connect(
@@ -378,6 +380,7 @@ class QtViewer(QtWidgets.QMainWindow):
         self._autoscroll_cursor: float | None = None
         self._autoscroll_resync_lock = False
         self._pinned_time: float | None = None
+        self._pinned_spike_key: tuple[int, float] | None = None
         self._initial_load_requested = False
 
         active_run = data_source.active_run
@@ -431,11 +434,10 @@ class QtViewer(QtWidgets.QMainWindow):
         self._slice_panel = QtSlicePanel(
             model=self._slice_model, position_centers=grid.centers
         )
-        # Raster click → toggle pin on the slice panel. The viewer
-        # owns the connection so swap can re-bind cleanly (the panel
-        # references survive a swap; pin state clears via
+        # Raster spike click → pin that spike's cell row on the slice
+        # panel. The viewer owns the connection so swap can re-bind cleanly
+        # (the panel references survive a swap; pin state clears via
         # ``rebind_after_swap``).
-        self._raster_panel.cell_clicked.connect(self._on_raster_cell_clicked)
         self._raster_panel.spike_clicked.connect(self._on_spike_clicked)
 
         # User-supplied extras are owned by the caller; auto-built
@@ -559,8 +561,8 @@ class QtViewer(QtWidgets.QMainWindow):
         # width; ``Shift+Left`` / ``Shift+Right`` step a full window
         # at a time; ``R`` resets center + width.
         for key_seq, fn in (
-            (QtGui.QKeySequence(QtCore.Qt.Key_Left), self._core.step_left),
-            (QtGui.QKeySequence(QtCore.Qt.Key_Right), self._core.step_right),
+            (QtGui.QKeySequence(QtCore.Qt.Key_Left), self._step_left),
+            (QtGui.QKeySequence(QtCore.Qt.Key_Right), self._step_right),
             (QtGui.QKeySequence("Shift+Left"), lambda: self._step_window(-1)),
             (QtGui.QKeySequence("Shift+Right"), lambda: self._step_window(+1)),
             (QtGui.QKeySequence("["), lambda: self._scale_t_width(0.5)),
@@ -595,7 +597,7 @@ class QtViewer(QtWidgets.QMainWindow):
             self._core.on_overlays_changed(panel.set_event_overlays)
             handler = getattr(panel, "click_handler", None)
             if handler is not None:
-                handler(self._core.set_t_center)
+                handler(self._set_t_center_from_panel_click)
             target = getattr(panel, "x_link_target", lambda: None)()
             if target is not None and target is not link_target:
                 target.setXLink(link_target)
@@ -747,7 +749,10 @@ class QtViewer(QtWidgets.QMainWindow):
     def _step_speed(self, delta: int) -> None:
         """``,`` / ``.`` — step through ``AUTOSCROLL_SPEED_OPTIONS``."""
         new_idx = max(
-            0, min(self._speed_combo.count() - 1, self._speed_combo.currentIndex() + delta)
+            0,
+            min(
+                self._speed_combo.count() - 1, self._speed_combo.currentIndex() + delta
+            ),
         )
         if new_idx != self._speed_combo.currentIndex():
             self._speed_combo.setCurrentIndex(new_idx)
@@ -859,9 +864,7 @@ class QtViewer(QtWidgets.QMainWindow):
             t_start = float(payload.time[0])
             t_stop = float(payload.time[-1])
             if t_stop > t_start:
-                self._panel.getPlotItem().vb.setXRange(
-                    t_start, t_stop, padding=0
-                )
+                self._panel.getPlotItem().vb.setXRange(t_start, t_stop, padding=0)
         slider_value = self._slider.value()
         for bin_panel in (self._slice_panel, *self._extra_bin_panels):
             bin_panel.set_window_buffer(payload)
@@ -870,7 +873,16 @@ class QtViewer(QtWidgets.QMainWindow):
             bin_panel.update_for_index(slider_value)
 
     def _step_window(self, direction: int) -> None:
+        self._clear_pins()
         self._core.set_t_center(self._core.t_center + direction * self._core.t_width)
+
+    def _step_left(self) -> None:
+        self._clear_pins()
+        self._core.step_left()
+
+    def _step_right(self) -> None:
+        self._clear_pins()
+        self._core.step_right()
 
     def _scale_t_width(self, factor: float) -> None:
         new_width = max(1e-6, self._core.t_width * factor)
@@ -878,6 +890,7 @@ class QtViewer(QtWidgets.QMainWindow):
         self._sync_control_labels()
 
     def _reset_view(self) -> None:
+        self._clear_pins()
         if self._initial_t_center is not None:
             self._core.set_t_center(self._initial_t_center)
         self._core.set_t_width(self._initial_t_width)
@@ -899,6 +912,8 @@ class QtViewer(QtWidgets.QMainWindow):
 
     def _on_slider_value_changed(self, value: int) -> None:
         time = self._data_source.time
+        if not self._autoscroll_resync_lock:
+            self._clear_pins()
         # Calling ``core.set_t_center`` fires
         # ``_sync_autoscroll_cursor_to_core``, which handles the
         # resync (lock-gated against tick-driven setValue).
@@ -910,6 +925,10 @@ class QtViewer(QtWidgets.QMainWindow):
         # commits).
         for bin_panel in (self._slice_panel, *self._extra_bin_panels):
             bin_panel.update_for_index(value)
+
+    def _set_t_center_from_panel_click(self, t: float) -> None:
+        self._clear_pins()
+        self._core.set_t_center(float(t))
 
     def _sync_cursor_markers(self, new_t_center: float) -> None:
         """Push ``(t_center, t_lo, t_hi)`` to every TimeAxisPanel.
@@ -968,10 +987,7 @@ class QtViewer(QtWidgets.QMainWindow):
         sub-bin accumulation in the cursor isn't snapped back to
         the slider's quantized time on every tick.
         """
-        if (
-            self._autoscroll_cursor is not None
-            and not self._autoscroll_resync_lock
-        ):
+        if self._autoscroll_cursor is not None and not self._autoscroll_resync_lock:
             self._autoscroll_cursor = float(new_t_center)
 
     def _rebind_panels(self, _new_run_name: str) -> None:
@@ -1021,6 +1037,7 @@ class QtViewer(QtWidgets.QMainWindow):
         if not self._extra_panels_user_supplied:
             self._rebuild_auto_extras(new_run.extra_metrics)
         self._pinned_time = None
+        self._pinned_spike_key = None
         self._refresh_pin_markers()
 
     def _rebuild_auto_extras(self, extra_metrics: dict) -> None:
@@ -1048,23 +1065,34 @@ class QtViewer(QtWidgets.QMainWindow):
         self._all_panels = [*self._builtin_panels, *self._extra_panels]
         self._wire_panels(new_extras)
 
-    def _on_raster_cell_clicked(self, cell_id: int) -> None:
-        self._slice_panel.toggle_pin(cell_id)
-
     def _on_spike_clicked(self, cell_id: int, t: float) -> None:
-        self._pinned_time = (
-            float(t) if cell_id in self._slice_panel.pinned_cell_ids else None
-        )
+        key = (int(cell_id), float(t))
+        if key == self._pinned_spike_key:
+            self._clear_pins()
+            return
+        self._slice_panel.clear_pins()
+        self._slice_panel.pin_cell(key[0])
+        self._pinned_spike_key = key
+        self._pinned_time = key[1]
         self._refresh_pin_markers()
-        self._core.set_t_center(float(t))
+        self._core.set_t_center(key[1])
 
     def _clear_pins(self) -> None:
         self._slice_panel.clear_pins()
         self._pinned_time = None
+        self._pinned_spike_key = None
         self._refresh_pin_markers()
 
     def _refresh_pin_markers(self) -> None:
         for panel in (*self._builtin_panels, *self._extra_panels):
+            if panel is self._raster_panel:
+                self._raster_panel.set_spike_pin_marker(
+                    self._pinned_time,
+                    self._pinned_spike_key[0]
+                    if self._pinned_spike_key is not None
+                    else None,
+                )
+                continue
             setter = getattr(panel, "set_pin_marker", None)
             if setter is not None:
                 setter(self._pinned_time)

@@ -30,17 +30,15 @@ if TYPE_CHECKING:
 # (panels.py:95).
 MAX_PER_CELL_PLOTS = 6
 
-OverlayMode = Literal["predictive", "smoothed", "off"]
+OverlayMode = Literal["predictive", "filtered", "smoothed"]
 _OVERLAY_MODE_CHOICES: tuple[tuple[OverlayMode, str], ...] = (
     ("predictive", "Predictive (causal)"),
+    ("filtered", "Filtered"),
     ("smoothed", "Smoothed (acausal)"),
-    ("off", "Off"),
 )
 
 _TOP_CURVE_PEN = pg.mkPen(color="#1f77b4", width=2)
-_PREDICTIVE_PEN = pg.mkPen(
-    color="#ff7f0e", width=1, style=QtCore.Qt.PenStyle.DashLine
-)
+_PREDICTIVE_PEN = pg.mkPen(color="#ff7f0e", width=1, style=QtCore.Qt.PenStyle.DashLine)
 _PER_CELL_PEN = pg.mkPen(color="#444444", width=1)
 _SLICE_Y_MIN = -0.02
 _SLICE_Y_MAX = 1.05
@@ -159,7 +157,7 @@ class QtSlicePanel(QtWidgets.QWidget):
         self,
         model: SliceModel,
         position_centers: np.ndarray,
-        overlay_mode: OverlayMode = "predictive",
+        overlay_mode: OverlayMode = "smoothed",
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -172,10 +170,8 @@ class QtSlicePanel(QtWidgets.QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
 
         # Title row: bold prose on the left, overlay-source dropdown on the
-        # right. The dropdown lets the user choose between the predictive
-        # (causal) overlay — the prior the decoder used at this bin — and
-        # the smoothed (acausal) overlay derived from the same
-        # ``acausal_posterior`` the heatmap shows. See
+        # right. The dropdown lets the user choose predictive (causal),
+        # filtered, or smoothed (acausal) collapsed overlays. See
         # docs/plans/2026-05-06-interactive-decoder-viewer.md (Milestone 6).
         title_row = QtWidgets.QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
@@ -268,25 +264,28 @@ class QtSlicePanel(QtWidgets.QWidget):
         return self._overlay_mode
 
     def set_overlay_mode(self, mode: OverlayMode) -> None:
-        """Switch the overlay source between predictive / smoothed / off.
+        """Switch the overlay source between predictive / filtered / smoothed.
 
         ``"predictive"`` draws the predictive (causal) posterior collapsed
         via the active reduction — the prior the decoder used at the
         cursor bin. Hidden when ``predictive_posterior`` is missing from
         the buffered window.
 
+        ``"filtered"`` draws the one-bin filtered posterior,
+        proportional to predictive posterior × likelihood, collapsed
+        the same way. Hidden when either source is missing.
+
         ``"smoothed"`` draws the acausal posterior collapsed the same
         way. Always available because ``acausal_posterior`` is always in
         a default ``predict()`` output.
 
-        ``"off"`` hides the overlay entirely.
-
         Updates the dropdown to match and re-renders at the last bin so
         the change is visible without a slider nudge.
         """
-        if mode not in {"predictive", "smoothed", "off"}:
+        if mode not in {"predictive", "filtered", "smoothed"}:
             raise ValueError(
-                f"overlay_mode must be 'predictive', 'smoothed', or 'off'; got {mode!r}"
+                "overlay_mode must be 'predictive', 'filtered', or "
+                f"'smoothed'; got {mode!r}"
             )
         if mode == self._overlay_mode:
             return
@@ -371,7 +370,9 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._last_t_idx = None
         self._pinned_cell_ids.clear()
         self._top_curve_item.setData(np.empty(0, dtype=float), np.empty(0, dtype=float))
-        self._predictive_curve_item.setData(np.empty(0, dtype=float), np.empty(0, dtype=float))
+        self._predictive_curve_item.setData(
+            np.empty(0, dtype=float), np.empty(0, dtype=float)
+        )
         for row in self._per_cell_rows:
             row.hide()
         self._truncation_label.setVisible(False)
@@ -397,22 +398,19 @@ class QtSlicePanel(QtWidgets.QWidget):
         log_lik_row = (
             payload.likelihood[local_idx] if payload.likelihood is not None else None
         )
-        # Overlay row depends on the user-selected mode: predictive picks
-        # the causal-prior posterior, smoothed picks the same acausal row
-        # the heatmap collapses, off hides the overlay. Each falls back
-        # to ``None`` (overlay hidden) when the chosen array isn't in the
-        # window — predictive_posterior is opt-in and therefore commonly
-        # absent.
+        # Overlay row depends on the user-selected mode. Predictive is
+        # the causal prior, filtered is predictive × likelihood, and
+        # smoothed is the acausal row the heatmap collapses. Predictive
+        # posterior is opt-in and therefore commonly absent.
+        predictive_row = (
+            payload.predictive[local_idx] if payload.predictive is not None else None
+        )
         if self._overlay_mode == "predictive":
-            overlay_row = (
-                payload.predictive[local_idx]
-                if payload.predictive is not None
-                else None
-            )
+            overlay_row = predictive_row
+        elif self._overlay_mode == "filtered":
+            overlay_row = _filtered_row(predictive_row, log_lik_row)
         elif self._overlay_mode == "smoothed":
             overlay_row = posterior_row
-        else:  # "off"
-            overlay_row = None
         bin_payload = self._model.update_for_index(
             t_idx, posterior_row, log_lik_row=log_lik_row, predictive_row=overlay_row
         )
@@ -437,17 +435,19 @@ class QtSlicePanel(QtWidgets.QWidget):
             f"{bin_payload.top_curve_label}"
         )
         if bin_payload.top_curve is not None:
-            self._top_curve_item.setData(
-                self._position_centers, bin_payload.top_curve
-            )
+            self._top_curve_item.setData(self._position_centers, bin_payload.top_curve)
         else:
-            self._top_curve_item.setData(np.empty(0, dtype=float), np.empty(0, dtype=float))
+            self._top_curve_item.setData(
+                np.empty(0, dtype=float), np.empty(0, dtype=float)
+            )
         if bin_payload.predictive_curve is not None:
             self._predictive_curve_item.setData(
                 self._position_centers, bin_payload.predictive_curve
             )
         else:
-            self._predictive_curve_item.setData(np.empty(0, dtype=float), np.empty(0, dtype=float))
+            self._predictive_curve_item.setData(
+                np.empty(0, dtype=float), np.empty(0, dtype=float)
+            )
         self._render_per_cell_rows(bin_payload.cells)
 
     def _render_per_cell_rows(self, cells) -> None:
@@ -478,9 +478,7 @@ class QtSlicePanel(QtWidgets.QWidget):
         for i in range(n_shown, MAX_PER_CELL_PLOTS):
             self._per_cell_rows[i].hide()
         if n_total > MAX_PER_CELL_PLOTS:
-            self._truncation_label.setText(
-                f"(+{n_total - MAX_PER_CELL_PLOTS} more)"
-            )
+            self._truncation_label.setText(f"(+{n_total - MAX_PER_CELL_PLOTS} more)")
             self._truncation_label.setVisible(True)
         else:
             self._truncation_label.setVisible(False)
@@ -504,3 +502,25 @@ class QtSlicePanel(QtWidgets.QWidget):
             if cell.cell_id not in pinned_ids:
                 merged.append(cell)
         return merged
+
+
+def _filtered_row(
+    predictive_row: np.ndarray | None, log_lik_row: np.ndarray | None
+) -> np.ndarray | None:
+    """Return normalized ``predictive * likelihood`` in state-bin space."""
+    if predictive_row is None or log_lik_row is None:
+        return None
+    predictive = np.asarray(predictive_row, dtype=float)
+    log_lik = np.asarray(log_lik_row, dtype=float)
+    if predictive.shape != log_lik.shape:
+        return None
+    finite = np.isfinite(log_lik)
+    if not finite.any():
+        return None
+    likelihood = np.zeros_like(log_lik, dtype=float)
+    likelihood[finite] = np.exp(log_lik[finite] - np.max(log_lik[finite]))
+    filtered = np.nan_to_num(predictive, nan=0.0, posinf=0.0, neginf=0.0) * likelihood
+    total = float(filtered.sum())
+    if total <= 0.0:
+        return None
+    return filtered / total

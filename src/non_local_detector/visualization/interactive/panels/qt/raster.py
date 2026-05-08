@@ -40,13 +40,12 @@ class QtRasterPanel(
     behind the spikes makes those windows immediately visible
     against the raster.
 
-    Click on a spike → ``cell_clicked.emit(cell_id)`` (the viewer
-    routes this to ``QtSlicePanel.toggle_pin``). The y-coordinate of
-    the clicked spot is mapped through ``RasterModel.sort_indices``
-    to the original cell id. Clicks on empty raster area still drive
-    the inherited ``ClickRecenterMixin`` recenter handler — the
-    mixin skips when ``ScatterPlotItem.sigClicked`` accepted the
-    underlying mouse event.
+    Click on a spike → ``spike_clicked.emit(cell_id, t)``. The
+    y-coordinate of the clicked spot is mapped through
+    ``RasterModel.sort_indices`` to the original cell id. Clicks on
+    empty raster area still drive the inherited ``ClickRecenterMixin``
+    recenter handler — the mixin skips when ``ScatterPlotItem.sigClicked``
+    accepted the underlying mouse event.
     """
 
     cell_clicked = QtCore.Signal(int)
@@ -77,6 +76,15 @@ class QtRasterPanel(
             symbol="s",
         )
         self.addItem(self._scatter)
+        self._pin_dot = pg.ScatterPlotItem(
+            pen=pg.mkPen((255, 215, 0), width=2),
+            brush=pg.mkBrush(255, 215, 0),
+            size=8,
+            symbol="o",
+        )
+        self._pin_dot.setZValue(21)
+        self._pin_dot.setVisible(False)
+        self.addItem(self._pin_dot)
         self._non_local_regions: list[pg.LinearRegionItem] = []
         self._install_click_recenter()
         self._install_cursor_markers()
@@ -113,7 +121,7 @@ class QtRasterPanel(
         self.setLabel("left", self._model.cell_label)
 
     def _handle_spike_click(self, _scatter, points) -> None:
-        """Resolve clicked spot's y-row to a cell_id and emit ``cell_clicked``.
+        """Resolve clicked spot's y-row to a cell_id and emit spike identity.
 
         Y-rows in the scatter are sorted positions; ``RasterModel.sort_indices``
         maps row index → original cell id. ``ScatterPlotItem.sigClicked``
@@ -131,6 +139,19 @@ class QtRasterPanel(
         cell_id = int(sort_indices[y_row])
         self.cell_clicked.emit(cell_id)
         self.spike_clicked.emit(cell_id, float(spot.pos().x()))
+
+    def set_spike_pin_marker(self, t: float | None, cell_id: int | None) -> None:
+        """Show/hide the pinned spike line plus row-local dot."""
+        self.set_pin_marker(t)
+        if t is None or cell_id is None:
+            self._pin_dot.setVisible(False)
+            return
+        rows = np.flatnonzero(self._model.sort_indices == int(cell_id))
+        if rows.size == 0:
+            self._pin_dot.setVisible(False)
+            return
+        self._pin_dot.setData([float(t)], [float(rows[0])])
+        self._pin_dot.setVisible(True)
 
     def _render_spikes(self, t_start: float, t_stop: float) -> None:
         raster = self._model.update_window(t_start, t_stop)

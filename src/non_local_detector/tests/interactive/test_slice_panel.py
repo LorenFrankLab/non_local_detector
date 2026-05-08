@@ -59,9 +59,7 @@ def _payload_for_results(results, posterior_only: bool = False) -> WindowPayload
             if "predictive_posterior" in results.data_vars and not posterior_only
             else None
         ),
-        state_probabilities=np.asarray(
-            results["acausal_state_probabilities"].values
-        ),
+        state_probabilities=np.asarray(results["acausal_state_probabilities"].values),
     )
 
 
@@ -139,6 +137,7 @@ def test_slice_panel_renders_predictive_overlay(
 
     payload = _payload_for_results(bundle.results)
     panel.set_window_buffer(payload)
+    panel.set_overlay_mode("predictive")
 
     t_idx = first_finite_row_index(bundle.results["log_likelihood"].values)
     panel.update_for_index(t_idx)
@@ -178,9 +177,10 @@ def test_slice_panel_falls_back_to_posterior_when_loglik_missing(
     )
     _, y_data = panel._top_curve_item.getData()
     np.testing.assert_allclose(y_data, expected, atol=1e-14, equal_nan=True)
-    # Predictive overlay hides — pyqtgraph maps empty/never-set to None.
+    # Default overlay is smoothed/acausal, so it remains available even
+    # when predictive/log-likelihood outputs are absent.
     _, pred_y = panel._predictive_curve_item.getData()
-    assert pred_y is None or pred_y.size == 0
+    np.testing.assert_allclose(pred_y, expected, atol=1e-14, equal_nan=True)
 
 
 @pytest.mark.unit
@@ -354,7 +354,9 @@ class TestSlicePanelPinning:
         visible_rows = [r for r in panel._per_cell_rows if not r.container.isHidden()]
         assert any("#11 ★" in r.label.text() for r in visible_rows)
         # And the count for the pinned-inactive case is 0.
-        pinned_row_label = next(r.label.text() for r in visible_rows if "#11" in r.label.text())
+        pinned_row_label = next(
+            r.label.text() for r in visible_rows if "#11" in r.label.text()
+        )
         assert "(×0)" in pinned_row_label
 
     def test_pinned_active_cell_keeps_real_spike_count(
@@ -374,7 +376,9 @@ class TestSlicePanelPinning:
         panel.update_for_index(t_idx)
         panel.pin_cell(0)
         visible_rows = [r for r in panel._per_cell_rows if not r.container.isHidden()]
-        pinned_label = next(r.label.text() for r in visible_rows if "#0 " in r.label.text())
+        pinned_label = next(
+            r.label.text() for r in visible_rows if "#0 " in r.label.text()
+        )
         assert "★" in pinned_label
         # Real count is whatever fell in the bin window — must be > 0.
         n_in_bin = int(
@@ -455,12 +459,11 @@ def test_slice_panel_overlay_mode_switches_overlay_source(
     qapp,
     run_bundles: dict[str, RunBundle],
 ) -> None:
-    """``set_overlay_mode`` swaps between predictive and smoothed sources.
+    """``set_overlay_mode`` swaps between predictive / filtered / smoothed.
 
     On the same buffered payload, the dashed overlay curve must match
     the analysis-helper output for whichever row source the panel is
-    currently configured to use, and ``"off"`` must drop the overlay
-    entirely.
+    currently configured to use.
     """
     bundle = run_bundles["nl_all"]
     detector = bundle.detector
@@ -479,28 +482,48 @@ def test_slice_panel_overlay_mode_switches_overlay_source(
         detector,
         PosteriorReduction.CONDITIONAL_NON_LOCAL,
     )
+    predictive_row = bundle.results["predictive_posterior"].values[t_idx]
+    log_lik_row = bundle.results["log_likelihood"].values[t_idx]
+    likelihood = np.zeros_like(log_lik_row, dtype=float)
+    finite = np.isfinite(log_lik_row)
+    likelihood[finite] = np.exp(log_lik_row[finite] - np.max(log_lik_row[finite]))
+    filtered_row = predictive_row * likelihood
+    filtered_row = filtered_row / filtered_row.sum()
+    expected_filtered = collapse_posterior_to_position(
+        filtered_row,
+        detector,
+        PosteriorReduction.CONDITIONAL_NON_LOCAL,
+    )
     expected_smoothed = collapse_posterior_to_position(
         bundle.results["acausal_posterior"].values[t_idx],
         detector,
         PosteriorReduction.CONDITIONAL_NON_LOCAL,
     )
 
-    # Default mode is "predictive".
+    # Default mode is "smoothed" / acausal.
+    assert panel.overlay_mode == "smoothed"
+    _, y_smooth = panel._predictive_curve_item.getData()
+    np.testing.assert_allclose(y_smooth, expected_smoothed, atol=1e-14, equal_nan=True)
+
+    # Switch to predictive — overlay tracks the causal prior curve.
+    panel.set_overlay_mode("predictive")
     assert panel.overlay_mode == "predictive"
     _, y_pred = panel._predictive_curve_item.getData()
     np.testing.assert_allclose(y_pred, expected_predictive, atol=1e-14, equal_nan=True)
+
+    # Switch to filtered — overlay tracks predictive × likelihood.
+    panel.set_overlay_mode("filtered")
+    assert panel.overlay_mode == "filtered"
+    _, y_filtered = panel._predictive_curve_item.getData()
+    np.testing.assert_allclose(
+        y_filtered, expected_filtered, atol=1e-14, equal_nan=True
+    )
 
     # Switch to smoothed — overlay tracks the acausal-collapsed curve.
     panel.set_overlay_mode("smoothed")
     assert panel.overlay_mode == "smoothed"
     _, y_smooth = panel._predictive_curve_item.getData()
     np.testing.assert_allclose(y_smooth, expected_smoothed, atol=1e-14, equal_nan=True)
-
-    # Switch to off — overlay hides.
-    panel.set_overlay_mode("off")
-    assert panel.overlay_mode == "off"
-    _, y_off = panel._predictive_curve_item.getData()
-    assert y_off is None or y_off.size == 0
 
 
 @pytest.mark.unit
@@ -550,7 +573,9 @@ def test_slice_panel_rebind_after_swap_clears_buffer(
     panel = _make_panel(qapp, model, centers)
 
     panel.set_window_buffer(_payload_for_results(bundle.results))
-    panel.update_for_index(first_finite_row_index(bundle.results["log_likelihood"].values))
+    panel.update_for_index(
+        first_finite_row_index(bundle.results["log_likelihood"].values)
+    )
     assert panel._top_curve_item.getData()[1].size > 0
 
     panel.rebind_after_swap()
