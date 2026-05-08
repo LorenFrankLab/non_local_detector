@@ -165,7 +165,6 @@ def test_bundle_writes_loadable_run(
     assert "acausal_posterior" in bundle.results.data_vars
     assert "acausal_state_probabilities" in bundle.results.data_vars
 
-
 @pytest.mark.unit
 def test_bundle_creates_out_dir_if_missing(
     tmp_path: Path,

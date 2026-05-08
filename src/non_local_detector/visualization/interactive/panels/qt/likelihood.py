@@ -12,7 +12,6 @@ from non_local_detector.visualization.interactive.panels.qt._mixins import (
     CursorMarkersMixin,
     EventOverlayMixin,
     PositionTraceMixin,
-    bone_lookup_table,
     position_grid_layout,
 )
 
@@ -69,7 +68,9 @@ class QtLikelihoodHeatmapPanel(
         self._set_position_grid(position_centers)
         self._vmax = float(vmax)
         self._image_item = pg.ImageItem(axisOrder="row-major")
-        self._image_item.setLookupTable(bone_lookup_table())
+        self._image_item.setLookupTable(
+            pg.colormap.get("viridis").getLookupTable(0.0, 1.0, 256)
+        )
         self._image_item.setLevels((0.0, self._vmax))
         self.addItem(self._image_item)
         self.setLabel("left", "Position [cm]")

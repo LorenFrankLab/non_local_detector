@@ -90,6 +90,7 @@ class ClickRecenterMixin:
 # legible against the band's translucent yellow.
 _CURSOR_BAND_Z = -6
 _CURSOR_LINE_Z = -5
+_PIN_LINE_Z = 20
 
 
 class CursorMarkersMixin:
@@ -108,6 +109,7 @@ class CursorMarkersMixin:
 
     _center_line: pg.InfiniteLine
     _active_bin_band: pg.LinearRegionItem
+    _pin_line: pg.InfiniteLine
     _cursor_marker_bounds: tuple[float, float, float] | None
 
     def _install_cursor_markers(self) -> None:
@@ -131,6 +133,14 @@ class CursorMarkersMixin:
         )
         self._active_bin_band.setZValue(_CURSOR_BAND_Z)
         self.addItem(self._active_bin_band)
+        self._pin_line = pg.InfiniteLine(
+            angle=90,
+            pen=pg.mkPen((255, 215, 0), width=2),
+            movable=False,
+        )
+        self._pin_line.setZValue(_PIN_LINE_Z)
+        self._pin_line.setVisible(False)
+        self.addItem(self._pin_line)
 
     def set_cursor_markers(
         self, t_center: float, t_lo: float, t_hi: float
@@ -142,6 +152,14 @@ class CursorMarkersMixin:
         self._cursor_marker_bounds = bounds
         self._center_line.setPos(bounds[0])
         self._active_bin_band.setRegion([bounds[1], bounds[2]])
+
+    def set_pin_marker(self, t: float | None) -> None:
+        """Show/hide the pinned event/spike marker on this time-axis panel."""
+        if t is None:
+            self._pin_line.setVisible(False)
+            return
+        self._pin_line.setPos(float(t))
+        self._pin_line.setVisible(True)
 
 
 _POSITION_TRACE_Z = 10  # Above the heatmap image (z=0 default).

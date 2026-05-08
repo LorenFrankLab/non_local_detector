@@ -590,10 +590,10 @@ def test_qt_viewer_body_is_horizontal_qsplitter(
     assert isinstance(splitter, QtWidgets.QSplitter)
     assert splitter.orientation() == QtCore.Qt.Horizontal
     assert splitter.count() == 2
-    # The splitter is the second child of the root QVBoxLayout
-    # (controls bar above, slider below).
+    # The splitter is the first child of the root QVBoxLayout; the
+    # bottom controls bar now owns the center-time slider.
     root = viewer.centralWidget().layout()
-    assert root.itemAt(1).widget() is splitter
+    assert root.itemAt(0).widget() is splitter
 
 
 @pytest.mark.unit

@@ -16,6 +16,7 @@ from PySide6.QtGui import QColor
 
 from non_local_detector.visualization.interactive.panels.qt._mixins import (
     ClickRecenterMixin,
+    CursorMarkersMixin,
     EventOverlayMixin,
 )
 
@@ -142,7 +143,9 @@ class MultiLineSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin)
 # ---------------------------------------------------------------------------
 
 
-class ScatterSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
+class ScatterSeriesPanel(
+    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, CursorMarkersMixin
+):
     """Scatter of ``(t, y)`` points; click-on-point recenters."""
 
     def __init__(
@@ -163,6 +166,7 @@ class ScatterSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
         )
         self.addItem(self._scatter)
         self._install_click_recenter()
+        self._install_cursor_markers()
         self._overlay_items: list[pg.GraphicsObject] = []
         if model.click_recenters:
             self._scatter.sigClicked.connect(self._on_point_clicked)
@@ -176,11 +180,13 @@ class ScatterSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
         self._scatter.setData(t, y)
 
     def _on_point_clicked(self, _scatter, points) -> None:
-        if not points or self._click_callback is None:
+        if not points:
             return
         # Recenter on the first clicked point's x coordinate.
-        x = float(points[0].pos().x())
-        self._click_callback(x)
+        point = points[0]
+        x = float(point.pos().x())
+        if self._click_callback is not None:
+            self._click_callback(x)
 
 
 # ---------------------------------------------------------------------------

@@ -50,6 +50,7 @@ class QtRasterPanel(
     """
 
     cell_clicked = QtCore.Signal(int)
+    spike_clicked = QtCore.Signal(int, float)
 
     def __init__(
         self,
@@ -129,6 +130,7 @@ class QtRasterPanel(
             return
         cell_id = int(sort_indices[y_row])
         self.cell_clicked.emit(cell_id)
+        self.spike_clicked.emit(cell_id, float(spot.pos().x()))
 
     def _render_spikes(self, t_start: float, t_stop: float) -> None:
         raster = self._model.update_window(t_start, t_stop)

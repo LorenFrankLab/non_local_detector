@@ -93,6 +93,9 @@ AUTOSCROLL_SPEED_OPTIONS: tuple[float, ...] = (
     8.0,
 )
 AUTOSCROLL_DEFAULT_SPEED = 0.05
+WINDOW_SLIDER_RESOLUTION = 1000
+MIN_WINDOW_SECONDS = 0.05
+MAX_WINDOW_SECONDS = 30.0
 
 # Qt's offscreen macOS default can report "Sans Serif" even though no
 # such family is installed, which triggers a slow alias-population path
@@ -374,6 +377,7 @@ class QtViewer(QtWidgets.QMainWindow):
         self._autoscroll_timer: QtCore.QTimer | None = None
         self._autoscroll_cursor: float | None = None
         self._autoscroll_resync_lock = False
+        self._pinned_time: float | None = None
         self._initial_load_requested = False
 
         active_run = data_source.active_run
@@ -431,7 +435,8 @@ class QtViewer(QtWidgets.QMainWindow):
         # owns the connection so swap can re-bind cleanly (the panel
         # references survive a swap; pin state clears via
         # ``rebind_after_swap``).
-        self._raster_panel.cell_clicked.connect(self._slice_panel.toggle_pin)
+        self._raster_panel.cell_clicked.connect(self._on_raster_cell_clicked)
+        self._raster_panel.spike_clicked.connect(self._on_spike_clicked)
 
         # User-supplied extras are owned by the caller; auto-built
         # extras get rebuilt on M-key swap. No way to tell apart
@@ -533,9 +538,8 @@ class QtViewer(QtWidgets.QMainWindow):
             _OUTER_MARGIN, _OUTER_MARGIN, _OUTER_MARGIN, _OUTER_MARGIN
         )
         self._layout.setSpacing(_OUTER_SPACING)
-        self._layout.addWidget(self._controls_bar, stretch=0)
         self._layout.addWidget(self._body_splitter, stretch=1)
-        self._layout.addWidget(self._slider, stretch=0)
+        self._layout.addWidget(self._controls_bar, stretch=0)
         container = QtWidgets.QWidget()
         container.setLayout(self._layout)
         self.setCentralWidget(container)
@@ -564,7 +568,7 @@ class QtViewer(QtWidgets.QMainWindow):
             (QtGui.QKeySequence("R"), self._reset_view),
             (QtGui.QKeySequence("N"), self._core.next_event),
             (QtGui.QKeySequence("Shift+N"), self._core.prev_event),
-            (QtGui.QKeySequence("Escape"), self._slice_panel.clear_pins),
+            (QtGui.QKeySequence("Escape"), self._clear_pins),
             (QtGui.QKeySequence("M"), self._cycle_model),
             (QtGui.QKeySequence("Space"), self._toggle_play),
             (QtGui.QKeySequence(","), lambda: self._step_speed(-1)),
@@ -602,10 +606,35 @@ class QtViewer(QtWidgets.QMainWindow):
     def _build_controls_bar(self) -> QtWidgets.QWidget:
         bar = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(bar)
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(0, 0, 0, 0)
         overlays = self._data_source.active_run.event_overlays
         run_names = self._data_source.run_names
         multi_run = len(run_names) > 1
+
+        layout.addWidget(QtWidgets.QLabel("Center time:"))
+        layout.addWidget(self._slider, stretch=1)
+        self._time_label = QtWidgets.QLabel(self._format_time_label())
+        self._time_label.setMinimumWidth(260)
+        layout.addWidget(self._time_label)
+        layout.addSpacing(12)
+
+        layout.addWidget(QtWidgets.QLabel("Window:"))
+        self._window_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._window_slider.setRange(0, WINDOW_SLIDER_RESOLUTION)
+        self._window_slider.setValue(self._window_slider_value_for(self._core.t_width))
+        self._window_slider.setMaximumWidth(140)
+        self._window_slider.valueChanged.connect(self._on_window_slider_changed)
+        layout.addWidget(self._window_slider)
+        self._window_label = QtWidgets.QLabel(self._format_window_label())
+        self._window_label.setMinimumWidth(70)
+        layout.addWidget(self._window_label)
+        layout.addSpacing(12)
+
+        self._per_cell_checkbox = QtWidgets.QCheckBox("Per-cell rows")
+        self._per_cell_checkbox.setChecked(True)
+        self._per_cell_checkbox.toggled.connect(self._slice_panel.set_per_cell_visible)
+        layout.addWidget(self._per_cell_checkbox)
+        layout.addSpacing(12)
 
         # Play / pause + speed are always present — auto-scroll is a
         # universal affordance, not gated on overlays / multi-run. The
@@ -723,6 +752,44 @@ class QtViewer(QtWidgets.QMainWindow):
         if new_idx != self._speed_combo.currentIndex():
             self._speed_combo.setCurrentIndex(new_idx)
 
+    def _format_time_label(self) -> str:
+        rel = self._core.t_center - float(self._data_source.time[0])
+        return (
+            f"t={self._core.t_center:.3f}  "
+            f"({rel:.2f} s into session, w={self._core.t_width:.2f} s)"
+        )
+
+    def _format_window_label(self) -> str:
+        return f"{self._core.t_width:.2f} s"
+
+    def _window_slider_value_for(self, window_seconds: float) -> int:
+        w = float(np.clip(window_seconds, MIN_WINDOW_SECONDS, MAX_WINDOW_SECONDS))
+        log_min = np.log10(MIN_WINDOW_SECONDS)
+        log_max = np.log10(MAX_WINDOW_SECONDS)
+        frac = (np.log10(w) - log_min) / (log_max - log_min)
+        return int(round(frac * WINDOW_SLIDER_RESOLUTION))
+
+    def _window_seconds_for_slider(self, value: int) -> float:
+        frac = value / WINDOW_SLIDER_RESOLUTION
+        log_min = np.log10(MIN_WINDOW_SECONDS)
+        log_max = np.log10(MAX_WINDOW_SECONDS)
+        return float(10 ** (log_min + frac * (log_max - log_min)))
+
+    def _sync_control_labels(self) -> None:
+        if hasattr(self, "_time_label"):
+            self._time_label.setText(self._format_time_label())
+        if hasattr(self, "_window_label"):
+            self._window_label.setText(self._format_window_label())
+        if hasattr(self, "_window_slider"):
+            with QtCore.QSignalBlocker(self._window_slider):
+                self._window_slider.setValue(
+                    self._window_slider_value_for(self._core.t_width)
+                )
+
+    def _on_window_slider_changed(self, value: int) -> None:
+        self._core.set_t_width(self._window_seconds_for_slider(value))
+        self._sync_control_labels()
+
     def _start_autoscroll(self) -> None:
         if self._autoscroll_timer is not None:
             return
@@ -808,11 +875,13 @@ class QtViewer(QtWidgets.QMainWindow):
     def _scale_t_width(self, factor: float) -> None:
         new_width = max(1e-6, self._core.t_width * factor)
         self._core.set_t_width(new_width)
+        self._sync_control_labels()
 
     def _reset_view(self) -> None:
         if self._initial_t_center is not None:
             self._core.set_t_center(self._initial_t_center)
         self._core.set_t_width(self._initial_t_width)
+        self._sync_control_labels()
 
     def eventFilter(self, obj, event) -> bool:
         # Wheel over a time-axis panel scrubs the window width.
@@ -834,6 +903,7 @@ class QtViewer(QtWidgets.QMainWindow):
         # ``_sync_autoscroll_cursor_to_core``, which handles the
         # resync (lock-gated against tick-driven setValue).
         self._core.set_t_center(float(time[value]))
+        self._sync_control_labels()
         # Drive the slice panel + extra bin-synced plugins synchronously
         # off the slider so per-tick cursor updates land sub-ms (the
         # heavier window load is async and refreshes the buffer when it
@@ -950,6 +1020,8 @@ class QtViewer(QtWidgets.QMainWindow):
 
         if not self._extra_panels_user_supplied:
             self._rebuild_auto_extras(new_run.extra_metrics)
+        self._pinned_time = None
+        self._refresh_pin_markers()
 
     def _rebuild_auto_extras(self, extra_metrics: dict) -> None:
         """Tear down auto-built extras and rebuild from new ``extra_metrics``.
@@ -975,6 +1047,27 @@ class QtViewer(QtWidgets.QMainWindow):
         self._extra_panels = new_extras
         self._all_panels = [*self._builtin_panels, *self._extra_panels]
         self._wire_panels(new_extras)
+
+    def _on_raster_cell_clicked(self, cell_id: int) -> None:
+        self._slice_panel.toggle_pin(cell_id)
+
+    def _on_spike_clicked(self, cell_id: int, t: float) -> None:
+        self._pinned_time = (
+            float(t) if cell_id in self._slice_panel.pinned_cell_ids else None
+        )
+        self._refresh_pin_markers()
+        self._core.set_t_center(float(t))
+
+    def _clear_pins(self) -> None:
+        self._slice_panel.clear_pins()
+        self._pinned_time = None
+        self._refresh_pin_markers()
+
+    def _refresh_pin_markers(self) -> None:
+        for panel in (*self._builtin_panels, *self._extra_panels):
+            setter = getattr(panel, "set_pin_marker", None)
+            if setter is not None:
+                setter(self._pinned_time)
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt naming convention
         """Drop self from the live-viewer registry on close."""

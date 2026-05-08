@@ -119,9 +119,6 @@ class CellSlice:
     cell_id: int
     place_field_norm: np.ndarray
     spike_count: int = 0
-    event_hpd_overlap: float | None = None
-    event_kl_divergence: float | None = None
-    event_spike_prob: float | None = None
 
 
 @dataclass(frozen=True)

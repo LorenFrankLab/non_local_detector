@@ -44,6 +44,35 @@ _PREDICTIVE_PEN = pg.mkPen(
 _PER_CELL_PEN = pg.mkPen(color="#444444", width=1)
 _SLICE_Y_MIN = -0.02
 _SLICE_Y_MAX = 1.05
+_PER_CELL_PALETTE = (
+    (44, 160, 44),
+    (214, 39, 40),
+    (148, 103, 189),
+    (227, 119, 194),
+    (23, 190, 207),
+    (140, 86, 75),
+)
+_SLICE_LEGEND_STYLE = (
+    "QLabel { background-color: #ffffff; color: #202020; "
+    "padding: 4px 6px; border: 1px solid #cccccc; border-radius: 3px; "
+    "font-size: 11pt; }"
+)
+_SLICE_READOUT_STYLE = (
+    "QLabel { background-color: #ffffff; color: #202020; "
+    "padding: 4px 6px; border: 1px solid #cccccc; border-radius: 3px; "
+    "font-family: 'Menlo', 'Consolas', monospace; font-size: 11pt; }"
+)
+_SLICE_CELL_HEADER_STYLE = (
+    "QLabel { background-color: #f4f4f4; color: #202020; "
+    "padding: 2px 6px; border: 1px solid #d8d8d8; border-radius: 3px; "
+    "font-family: 'Menlo', 'Consolas', monospace; font-size: 10pt; }"
+)
+_SLICE_CELL_HEADER_PINNED_STYLE = (
+    "QLabel { background-color: #fff2a8; color: #4d3700; "
+    "padding: 2px 6px; border: 2px solid #d4b85a; border-radius: 3px; "
+    "font-family: 'Menlo', 'Consolas', monospace; font-size: 10pt; "
+    "font-weight: bold; }"
+)
 
 
 def _pin_slice_axes(plot: pg.PlotWidget, position_centers: np.ndarray) -> None:
@@ -80,6 +109,7 @@ class _PerCellRow:
         layout.setSpacing(4)
         self.label = QtWidgets.QLabel("")
         self.label.setMinimumWidth(80)
+        self.label.setStyleSheet(_SLICE_CELL_HEADER_STYLE)
         self.plot = pg.PlotWidget(background="w")
         self.plot.setMaximumHeight(40)
         self.plot.setMouseEnabled(x=False, y=False)
@@ -136,6 +166,7 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._model = model
         self._position_centers = np.asarray(position_centers).squeeze()
         self._overlay_mode: OverlayMode = overlay_mode
+        self._per_cell_visible = True
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -155,6 +186,7 @@ class QtSlicePanel(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Policy.Ignored,
             QtWidgets.QSizePolicy.Policy.Preferred,
         )
+        self._title_label.setText("Slice")
         title_row.addWidget(self._title_label, stretch=1)
         title_row.addWidget(QtWidgets.QLabel("Overlay:"))
         self._overlay_combo = QtWidgets.QComboBox()
@@ -164,6 +196,12 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._overlay_combo.currentIndexChanged.connect(self._on_overlay_combo_changed)
         title_row.addWidget(self._overlay_combo)
         layout.addLayout(title_row)
+
+        self._legend_label = QtWidgets.QLabel(self._build_legend_html())
+        self._legend_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        self._legend_label.setWordWrap(True)
+        self._legend_label.setStyleSheet(_SLICE_LEGEND_STYLE)
+        layout.addWidget(self._legend_label)
 
         self._top_plot = pg.PlotWidget(background="w")
         self._top_plot.setLabel("left", "Probability / Likelihood")
@@ -194,6 +232,11 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._truncation_label.setVisible(False)
         layout.addWidget(self._truncation_label)
 
+        self._readout_label = QtWidgets.QLabel("")
+        self._readout_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._readout_label.setStyleSheet(_SLICE_READOUT_STYLE)
+        layout.addWidget(self._readout_label)
+
         layout.addStretch(1)
 
         self._buffered_payload: WindowPayload | None = None
@@ -204,6 +247,17 @@ class QtSlicePanel(QtWidgets.QWidget):
         # showing them with ``spike_count=0`` (or the real count when
         # they're also active). Cell IDs are run-local, so swap clears.
         self._pinned_cell_ids: set[int] = set()
+
+    @staticmethod
+    def _build_legend_html() -> str:
+        return (
+            "<span style='color:rgb(255,127,14);font-size:14pt'>━</span> "
+            "Likelihood &nbsp;&nbsp; "
+            "<span style='color:rgb(31,119,180);font-size:14pt'>━</span> "
+            "Overlay &nbsp;&nbsp; "
+            "<span style='color:rgb(44,160,44);font-size:14pt'>━</span> "
+            "Cell place fields"
+        )
 
     @property
     def model(self) -> SliceModel:
@@ -293,6 +347,11 @@ class QtSlicePanel(QtWidgets.QWidget):
         """Cache the latest window payload for per-tick row reads."""
         self._buffered_payload = payload
 
+    def set_per_cell_visible(self, visible: bool) -> None:
+        """Show/hide per-cell rows without disabling the population slice."""
+        self._per_cell_visible = bool(visible)
+        self._maybe_rerender()
+
     def set_position_centers(self, centers: np.ndarray) -> None:
         """Re-bind the position grid (called on M-key swap)."""
         self._position_centers = np.asarray(centers).squeeze()
@@ -316,7 +375,8 @@ class QtSlicePanel(QtWidgets.QWidget):
         for row in self._per_cell_rows:
             row.hide()
         self._truncation_label.setVisible(False)
-        self._title_label.setText("")
+        self._title_label.setText("Slice")
+        self._readout_label.setText("")
 
     def update_for_index(self, t_idx: int) -> None:
         """Read row ``t_idx`` from the buffered window + render the slice.
@@ -372,8 +432,9 @@ class QtSlicePanel(QtWidgets.QWidget):
         self.update_for_index(self._last_t_idx)
 
     def _render(self, bin_payload) -> None:
-        self._title_label.setText(
-            f"t={bin_payload.t:.3f} s — {bin_payload.top_curve_label}"
+        self._readout_label.setText(
+            f"t={bin_payload.t:.3f} s    cells={len(bin_payload.cells)}    "
+            f"{bin_payload.top_curve_label}"
         )
         if bin_payload.top_curve is not None:
             self._top_curve_item.setData(
@@ -391,6 +452,11 @@ class QtSlicePanel(QtWidgets.QWidget):
 
     def _render_per_cell_rows(self, cells) -> None:
         merged = self._merge_pinned_and_active(cells)
+        if not self._per_cell_visible:
+            for row in self._per_cell_rows:
+                row.hide()
+            self._truncation_label.setVisible(False)
+            return
         n_total = len(merged)
         n_shown = min(n_total, MAX_PER_CELL_PLOTS)
         pinned = self._pinned_cell_ids
@@ -398,6 +464,13 @@ class QtSlicePanel(QtWidgets.QWidget):
             cell = merged[i]
             row = self._per_cell_rows[i]
             star = " ★" if cell.cell_id in pinned else ""
+            rgb = _PER_CELL_PALETTE[cell.cell_id % len(_PER_CELL_PALETTE)]
+            row.curve.setPen(pg.mkPen(color=rgb, width=2))
+            row.label.setStyleSheet(
+                _SLICE_CELL_HEADER_PINNED_STYLE
+                if cell.cell_id in pinned
+                else _SLICE_CELL_HEADER_STYLE
+            )
             row.show_cell(
                 f"#{cell.cell_id}{star}  (×{cell.spike_count})",
                 cell.place_field_norm,

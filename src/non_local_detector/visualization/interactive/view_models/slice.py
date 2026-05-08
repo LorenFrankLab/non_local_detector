@@ -198,7 +198,7 @@ class SliceModel:
         before the first edge or after the last edge are dropped.
         """
         n_bins = self._time.size
-        per_bin: list[dict[int, int]] = [dict() for _ in range(n_bins)]
+        per_bin: list[dict[int, int]] = [{} for _ in range(n_bins)]
         if n_bins == 0:
             return per_bin
         edges = self._bin_edges_array()
