@@ -1171,15 +1171,27 @@ def _auto_panels_from_extra_metrics(extra_metrics: dict) -> list:
     return panels
 
 
+# MetricSpec.kind → (model class, panel class). The single source of
+# truth for "which Qt panel renders which spec kind"; adding a new
+# kind means appending one entry here. ``MetricSpec.__post_init__``
+# already validates ``kind`` against the same set of strings.
+_METRIC_SPEC_DISPATCH: dict[str, tuple[type, type]] = {
+    "line": (LineSeriesModel, LineSeriesPanel),
+    "scatter": (ScatterSeriesModel, ScatterSeriesPanel),
+    "intervals": (IntervalSeriesModel, IntervalSeriesPanel),
+}
+
+
 def _panel_for_metric_spec(spec: MetricSpec):
     """Lift a ``MetricSpec`` to the matching Qt panel."""
-    if spec.kind == "line":
-        return LineSeriesPanel(LineSeriesModel.from_metric_spec(spec))
-    if spec.kind == "scatter":
-        return ScatterSeriesPanel(ScatterSeriesModel.from_metric_spec(spec))
-    if spec.kind == "intervals":
-        return IntervalSeriesPanel(IntervalSeriesModel.from_metric_spec(spec))
-    raise ValueError(f"Unknown MetricSpec.kind: {spec.kind!r}")
+    try:
+        model_cls, panel_cls = _METRIC_SPEC_DISPATCH[spec.kind]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unknown MetricSpec.kind: {spec.kind!r}; expected one of "
+            f"{sorted(_METRIC_SPEC_DISPATCH)!r}"
+        ) from exc
+    return panel_cls(model_cls.from_metric_spec(spec))
 
 
 def launch_qt(
