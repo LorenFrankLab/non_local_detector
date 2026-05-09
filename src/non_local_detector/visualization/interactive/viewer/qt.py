@@ -16,6 +16,7 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from non_local_detector.visualization.interactive.data_source import (
+    DecoderDataSource,
     InMemoryDecoderDataSource,
 )
 from non_local_detector.visualization.interactive.panels.qt.likelihood import (
@@ -284,7 +285,7 @@ class QtBackendAdapter(BackendAdapter):
     # work via this name.
     LOAD_DEBOUNCE_MS = SCRUB_DEBOUNCE_MS
 
-    def __init__(self, data_source: InMemoryDecoderDataSource) -> None:
+    def __init__(self, data_source: DecoderDataSource) -> None:
         self._data_source = data_source
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="nld-viewer"
@@ -508,7 +509,7 @@ class QtViewer(QtWidgets.QMainWindow):
 
     def __init__(
         self,
-        data_source: InMemoryDecoderDataSource,
+        data_source: DecoderDataSource,
         t_width: float = 1.0,
         extra_panels: list | None = None,
         extra_bin_panels: list | None = None,

@@ -13,7 +13,7 @@ straight into the run bundle without a separate data-source class.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -27,6 +27,74 @@ from non_local_detector.visualization.interactive.view_models.events import (
     EventOverlay,
     find_duplicate_overlay_names,
 )
+
+SliceWhich = Literal["posterior", "likelihood", "predictive", "acausal"]
+
+
+@runtime_checkable
+class DecoderDataSource(Protocol):
+    """Read-side contract the viewer + backend rely on.
+
+    Two implementations satisfy this Protocol:
+
+    - ``InMemoryDecoderDataSource``: eager xarray ``isel(time=sl)``
+      reads against ``RunBundle.results``. Suitable for any bundle
+      including pure-NetCDF sessions; works on every supported
+      output combination.
+    - ``ZarrDirectDecoderDataSource`` (Phase 5.2): direct
+      ``zarr.Array[sl, :]`` reads against ``results.zarr/``,
+      bypassing xarray for the per-window hot path. Faster for long
+      sessions cached via the ``build-viewer-cache`` devtool, but
+      only works on a directory layout that includes a stamped zarr
+      cache.
+
+    The Protocol is the seam: viewer code that touches the data
+    source goes through these methods/properties exclusively, so
+    swapping the implementation is a CLI-resolution concern (Phase
+    5.4), not a viewer concern.
+    """
+
+    @property
+    def time(self) -> np.ndarray: ...
+
+    @property
+    def time_edges(self) -> np.ndarray: ...
+
+    @property
+    def n_time(self) -> int: ...
+
+    @property
+    def available_outputs(self) -> set[str]: ...
+
+    @property
+    def active_run_name(self) -> str: ...
+
+    @property
+    def run_names(self) -> list[str]: ...
+
+    @property
+    def active_run(self) -> RunBundle: ...
+
+    @property
+    def event_index(self) -> SpikeEventIndex: ...
+
+    def window_indices(self, t_center: float, t_width: float) -> slice: ...
+
+    def load_posterior(self, sl: slice) -> np.ndarray: ...
+
+    def load_likelihood(self, sl: slice) -> np.ndarray: ...
+
+    def load_predictive(self, sl: slice) -> np.ndarray | None: ...
+
+    def load_state_probabilities(self, sl: slice) -> np.ndarray: ...
+
+    def load_position(self, sl: slice) -> np.ndarray | None: ...
+
+    def slice_at_index(
+        self, t_idx: int, which: SliceWhich = "posterior"
+    ) -> np.ndarray | None: ...
+
+    def set_active_run(self, name: str) -> None: ...
 
 
 class InMemoryDecoderDataSource:

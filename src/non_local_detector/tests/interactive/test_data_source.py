@@ -20,6 +20,24 @@ from non_local_detector.visualization.interactive.view_models.events import (
 
 
 @pytest.mark.unit
+def test_in_memory_data_source_satisfies_decoder_data_source_protocol(
+    run_bundles: dict[str, RunBundle],
+) -> None:
+    """``InMemoryDecoderDataSource`` is a structural ``DecoderDataSource``.
+
+    The Protocol is the seam viewer code goes through (Phase 5.1);
+    pin it on a runtime-checkable ``isinstance`` so a future API
+    drift on either side is caught here, not in a viewer integration
+    test where the cause is harder to localise."""
+    from non_local_detector.visualization.interactive.data_source import (
+        DecoderDataSource,
+    )
+
+    ds = InMemoryDecoderDataSource.from_single(run_bundles["nl_all"])
+    assert isinstance(ds, DecoderDataSource)
+
+
+@pytest.mark.unit
 class TestSingleRunDataSource:
     """One-bundle source: from_single + hot-path readers."""
 

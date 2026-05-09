@@ -29,7 +29,7 @@ from non_local_detector.visualization.interactive.view_models.base import (
 
 if TYPE_CHECKING:
     from non_local_detector.visualization.interactive.data_source import (
-        InMemoryDecoderDataSource,
+        DecoderDataSource,
     )
     from non_local_detector.visualization.interactive.view_models.base import (
         WindowPayload,
@@ -65,7 +65,7 @@ class ViewerCore:
 
     def __init__(
         self,
-        data_source: InMemoryDecoderDataSource,
+        data_source: DecoderDataSource,
         backend: BackendAdapter,
         t_center: float | None = None,
         t_width: float = 1.0,
@@ -105,7 +105,7 @@ class ViewerCore:
     # ------------------------------------------------------------------
 
     @property
-    def data_source(self) -> InMemoryDecoderDataSource:
+    def data_source(self) -> DecoderDataSource:
         return self._data_source
 
     @property
