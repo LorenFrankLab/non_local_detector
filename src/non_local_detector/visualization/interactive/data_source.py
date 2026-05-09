@@ -183,10 +183,10 @@ class InMemoryDecoderDataSource:
 
         The returned slice is always valid for ``time`` and
         ``time_edges`` indexing and non-empty when the session is
-        non-empty. When ``t_center`` is past the session end, the slice
-        snaps to a ``t_width``-wide window anchored at the right edge
-        (``[time[-1] - t_width, time[-1]]``); when before the start,
-        anchored at the left edge (``[time[0], time[0] + t_width]``).
+        non-empty. Any out-of-session ``t_center`` snaps to a
+        ``t_width``-wide window anchored at the nearer edge:
+        ``t_center > time[-1]`` → ``[time[-1] - t_width, time[-1]]``;
+        ``t_center < time[0]`` → ``[time[0], time[0] + t_width]``.
         """
         if t_width <= 0:
             raise ValueError(f"t_width must be positive. Got {t_width}.")
@@ -194,19 +194,19 @@ class InMemoryDecoderDataSource:
         n_time = len(time)
         if n_time == 0:
             return slice(0, 0)
-        half = t_width / 2.0
-        i_start = int(np.searchsorted(time, t_center - half, side="left"))
-        i_stop = int(np.searchsorted(time, t_center + half, side="right"))
-        if i_start >= n_time:
-            # Wholly past the session end → rightmost t_width-wide window.
+        if t_center > time[-1]:
+            # Past the session end → rightmost t_width-wide window.
             i_start = int(np.searchsorted(time, time[-1] - t_width, side="left"))
             i_start = max(0, min(i_start, n_time - 1))
             return slice(i_start, n_time)
-        if i_stop <= 0:
-            # Wholly before the session start → leftmost t_width-wide window.
+        if t_center < time[0]:
+            # Before the session start → leftmost t_width-wide window.
             i_stop = int(np.searchsorted(time, time[0] + t_width, side="right"))
             i_stop = max(1, min(i_stop, n_time))
             return slice(0, i_stop)
+        half = t_width / 2.0
+        i_start = int(np.searchsorted(time, t_center - half, side="left"))
+        i_stop = int(np.searchsorted(time, t_center + half, side="right"))
         i_start = max(0, i_start)
         i_stop = max(i_start + 1, min(i_stop, n_time))
         return slice(i_start, i_stop)

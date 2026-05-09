@@ -51,32 +51,36 @@ class TestSingleRunDataSource:
         sl = ds.window_indices(t_center=float(time[0]), t_width=1.0e9)
         assert sl == slice(0, len(time))
 
+    @pytest.mark.parametrize("delta", [0.001, 0.1, 100.0])
     def test_window_indices_clamps_when_center_past_end(
-        self, run_bundles: dict[str, RunBundle]
+        self, run_bundles: dict[str, RunBundle], delta: float
     ) -> None:
         """Past-end ``t_center`` snaps to a t_width-wide rightmost window
-        (NOT collapsed to a single sample at the boundary)."""
+        (NOT a partial slice; NOT collapsed to a single sample). Adjacent
+        cases (delta ~ bin width) and far cases (delta >> session) must
+        both snap to the same edge window."""
         ds = InMemoryDecoderDataSource.from_single(run_bundles["nl_all"])
         time = ds.time
         t_width = 1.0
-        sl = ds.window_indices(t_center=float(time[-1]) + 100.0, t_width=t_width)
+        sl = ds.window_indices(t_center=float(time[-1]) + delta, t_width=t_width)
         assert sl.stop == len(time)
         assert sl.start < sl.stop
-        # Width contract: rightmost window must be t_width-wide, not 1 sample.
+        # Width contract: rightmost window must be t_width-wide, not partial.
         # Allow one bin of slack for searchsorted boundary effects.
         bin_width = float(np.median(np.diff(time)))
         duration = float(time[sl.stop - 1] - time[sl.start])
         assert duration >= t_width - bin_width
 
+    @pytest.mark.parametrize("delta", [0.001, 0.1, 100.0])
     def test_window_indices_clamps_when_center_before_start(
-        self, run_bundles: dict[str, RunBundle]
+        self, run_bundles: dict[str, RunBundle], delta: float
     ) -> None:
-        """Before-start ``t_center`` snaps to a t_width-wide leftmost window
-        (NOT collapsed to a single sample at the boundary)."""
+        """Before-start ``t_center`` snaps to a t_width-wide leftmost
+        window (NOT a partial slice). Adjacent and far cases match."""
         ds = InMemoryDecoderDataSource.from_single(run_bundles["nl_all"])
         time = ds.time
         t_width = 1.0
-        sl = ds.window_indices(t_center=float(time[0]) - 100.0, t_width=t_width)
+        sl = ds.window_indices(t_center=float(time[0]) - delta, t_width=t_width)
         assert sl.start == 0
         assert sl.start < sl.stop
         bin_width = float(np.median(np.diff(time)))
