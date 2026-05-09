@@ -158,6 +158,11 @@ def test_qt_viewer_swap_rebuilds_auto_extras(
                 t_start=np.array([1.0, 2.0]),
                 t_end=np.array([1.5, 2.5]),
             ),
+            "cf_scatter": MetricSpec.scatter(
+                name="cf_scatter",
+                t=np.array([0.5, 1.5, 2.5]),
+                y=np.array([0.2, 0.4, 0.6]),
+            ),
         },
     )
     ds = InMemoryDecoderDataSource({"nl": nl_bundle, "cf": cf_bundle})
@@ -190,7 +195,8 @@ def test_qt_viewer_swap_rebuilds_auto_extras(
 
     # Phase 3.1d invariant: rebuilt extras must inherit the current
     # x-offset (so absolute-time event overlays render at the right
-    # relative position) and x-range lock — not the default zero.
+    # relative position), x-range lock, and cursor-band placement —
+    # not their constructor defaults.
     expected_offset = float(viewer.core.t_center)
     expected_half = float(viewer.core.t_width) / 2.0
     for new_panel in viewer._extra_panels:
@@ -200,6 +206,15 @@ def test_qt_viewer_swap_rebuilds_auto_extras(
             x_low, x_high = new_panel.getViewBox().viewRange()[0]
             assert x_low == pytest.approx(-expected_half)
             assert x_high == pytest.approx(expected_half)
+        # Panels with cursor markers (e.g. ScatterSeriesPanel) must
+        # have the active-bin band at a non-(0, 0) location matching
+        # the current cursor's bin in relative coords.
+        if hasattr(new_panel, "_active_bin_band"):
+            band_lo, band_hi = new_panel._active_bin_band.getRegion()
+            assert band_lo <= 0.0 <= band_hi, (
+                f"cursor band {(band_lo, band_hi)!r} doesn't straddle "
+                f"relative 0; rebuilt extra missed cursor-marker init"
+            )
 
 
 @pytest.mark.unit

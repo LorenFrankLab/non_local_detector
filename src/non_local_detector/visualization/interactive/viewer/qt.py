@@ -1400,16 +1400,27 @@ class QtViewer(QtWidgets.QMainWindow):
 
         # Push current view state to the freshly-built panels BEFORE
         # the upstream overlay/cursor dispatch fires. New panels start
-        # with ``_overlay_x_offset == 0.0`` and an unlocked x-range, so
-        # without this initial sync their first overlay render lands
-        # at absolute coords on a relative ``[-w/2, +w/2]`` view.
+        # with ``_overlay_x_offset == 0.0``, an unlocked x-range, and
+        # the cursor band at its default ``(0, 0)``; without this
+        # initial sync their first render lands at absolute coords on
+        # a relative ``[-w/2, +w/2]`` view. ``set_active_run``'s
+        # built-in dispatch covers overlays but not cursor markers.
+        t_width = self._core.t_width
+        t_center = float(self._core.t_center)
+        t_idx = self._time_to_bin_index(t_center)
+        t_lo, t_hi = self._bin_edges_at(t_idx)
+        t_lo_rel = t_lo - t_center
+        t_hi_rel = t_hi - t_center
         for panel in new_extras:
             t_width_setter = getattr(panel, "set_t_width", None)
             if t_width_setter is not None:
-                t_width_setter(self._core.t_width)
+                t_width_setter(t_width)
             offset_setter = getattr(panel, "apply_x_offset", None)
             if offset_setter is not None:
-                offset_setter(float(self._core.t_center))
+                offset_setter(t_center)
+            cursor_setter = getattr(panel, "set_cursor_markers", None)
+            if cursor_setter is not None:
+                cursor_setter(0.0, t_lo_rel, t_hi_rel)
 
     def _on_event_clicked(self, event_id: int) -> None:
         event_id = int(event_id)
