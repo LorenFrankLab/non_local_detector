@@ -70,7 +70,11 @@ from non_local_detector.visualization.interactive.view_models.state_prob import 
 from non_local_detector.visualization.interactive.viewer.backend import (
     BackendAdapter,
 )
-from non_local_detector.visualization.interactive.viewer.core import ViewerCore
+from non_local_detector.visualization.interactive.viewer.core import (
+    MAX_T_WIDTH_SECONDS,
+    MIN_T_WIDTH_SECONDS,
+    ViewerCore,
+)
 
 _LOAD_LOGGER = logging.getLogger(__name__)
 
@@ -91,8 +95,10 @@ AUTOSCROLL_SPEED_OPTIONS: tuple[float, ...] = (
 )
 AUTOSCROLL_DEFAULT_SPEED = 0.05
 WINDOW_SLIDER_RESOLUTION = 1000
-MIN_WINDOW_SECONDS = 0.05
-MAX_WINDOW_SECONDS = 30.0
+# Re-export the core's t_width bounds so the slider, wheel, and
+# keyboard halve/double paths all clamp to the same range.
+MIN_WINDOW_SECONDS = MIN_T_WIDTH_SECONDS
+MAX_WINDOW_SECONDS = MAX_T_WIDTH_SECONDS
 
 # Qt's offscreen macOS default can report "Sans Serif" even though no
 # such family is installed, which triggers a slow alias-population path
@@ -186,13 +192,20 @@ class QtBackendAdapter(BackendAdapter):
     thread is the one that touches widgets.
     """
 
-    # 16 ms ≈ one screen frame at 60 Hz; matches statespacecheck's
-    # debounce. Slider scrubbing fires ``valueChanged`` 30+ times per
-    # second on a fast drag, and each event would otherwise queue a
-    # full window-load through the executor. With this debounce the
-    # executor sees at most ~60 loads/s, and ``_pending_state``
-    # coalesces bursts so only the *latest* state runs.
-    LOAD_DEBOUNCE_MS = 16
+    # 16 ms ≈ one screen frame at 60 Hz — used for center-time
+    # scrubbing where the user expects to see the window track the
+    # slider in near-realtime. Matches statespacecheck's debounce.
+    SCRUB_DEBOUNCE_MS = 16
+    # Wheel- / slider-driven *resize* fires per-pixel and each load
+    # touches arrays whose size scales with ``n_visible``; coalescing
+    # the burst into one trailing load (~100 ms after the last event)
+    # is the difference between a smooth drag and the UI pinning the
+    # CPU on every wheel detent at 10 s windows.
+    RESIZE_DEBOUNCE_MS = 100
+    # Backwards-compatible alias for the per-frame debounce. Tests
+    # that monkey-patched the old ``LOAD_DEBOUNCE_MS`` constant still
+    # work via this name.
+    LOAD_DEBOUNCE_MS = SCRUB_DEBOUNCE_MS
 
     def __init__(self, data_source: InMemoryDecoderDataSource) -> None:
         self._data_source = data_source
@@ -205,11 +218,10 @@ class QtBackendAdapter(BackendAdapter):
             self._deliver_payload, type=QtCore.Qt.QueuedConnection
         )
         # Single-shot debounce timer that drains the latest pending
-        # state. Replaces the previous "every schedule submits to the
-        # executor" path.
+        # state. The interval is set per-call (scrub vs resize) so the
+        # initial value here is just a placeholder.
         self._debounce_timer = QtCore.QTimer()
         self._debounce_timer.setSingleShot(True)
-        self._debounce_timer.setInterval(self.LOAD_DEBOUNCE_MS)
         self._debounce_timer.timeout.connect(self._flush_pending)
         self._pending_state: ViewState | None = None
         self._pending_callback: Callable[[WindowPayload], None] | None = None
@@ -218,6 +230,36 @@ class QtBackendAdapter(BackendAdapter):
         # another job. ``_deliver_payload`` consults this when re-
         # arming the debounce.
         self._inflight = False
+        # ``t_width`` of the most recently *scheduled* state. Used to
+        # detect resize bursts (``state.t_width`` changed since last
+        # call) and pick the long debounce. ``_in_resize_burst`` keeps
+        # us on the long debounce until a flush completes, so a
+        # transient same-width tick mid-drag doesn't snap-fire a load.
+        self._last_scheduled_t_width: float | None = None
+        self._in_resize_burst = False
+        # Optional per-time arrays that the worker can skip when no
+        # visible panel consumes them. Defaults to *all* loaded; the
+        # viewer narrows this set when e.g. the slice overlay is
+        # ``"smoothed"`` (predictive isn't needed). Loading a
+        # ``predictive_posterior`` array we'll just throw away is the
+        # easiest large-window cycle to recover.
+        self._required_outputs: set[str] = {
+            "posterior",
+            "likelihood",
+            "predictive",
+            "state_probabilities",
+            "position",
+        }
+
+    def set_required_outputs(self, outputs: set[str]) -> None:
+        """Narrow the optional outputs the worker loads per window.
+
+        ``"posterior"`` is implicitly always required (the heatmap is
+        the viewer's primary panel) — passing a set that omits it is
+        treated as a bug rather than a feature, so the worker still
+        loads it and just doesn't read the override.
+        """
+        self._required_outputs = set(outputs) | {"posterior"}
 
     def schedule_window_load(
         self, state: ViewState, on_done: Callable[[WindowPayload], None]
@@ -229,14 +271,27 @@ class QtBackendAdapter(BackendAdapter):
         # ``ViewerCore._handle_load_result`` checks the active
         # request_id, but more importantly the executor never even
         # sees it, saving the per-load NumPy + xarray work.
+        is_resize_step = (
+            self._last_scheduled_t_width is not None
+            and state.t_width != self._last_scheduled_t_width
+        )
+        if is_resize_step:
+            self._in_resize_burst = True
+        self._last_scheduled_t_width = state.t_width
         self._pending_state = state
         self._pending_callback = on_done
         if self._inflight:
             # The current job's ``_deliver_payload`` will re-arm the
             # debounce after it completes.
             return
-        if not self._debounce_timer.isActive():
-            self._debounce_timer.start()
+        debounce_ms = (
+            self.RESIZE_DEBOUNCE_MS if self._in_resize_burst else self.SCRUB_DEBOUNCE_MS
+        )
+        # ``QTimer.start(ms)`` is restart-safe: if the timer is
+        # already running it's restarted with the new interval, which
+        # is exactly the trailing-edge-only debounce we want for
+        # resize bursts.
+        self._debounce_timer.start(debounce_ms)
 
     def _flush_pending(self) -> None:
         """Submit the latest pending state to the executor."""
@@ -251,6 +306,9 @@ class QtBackendAdapter(BackendAdapter):
         self._pending_state = None
         self._pending_callback = None
         self._inflight = True
+        # The drag (if any) is over once we commit a load — subsequent
+        # same-width events go back to the short scrub debounce.
+        self._in_resize_burst = False
 
         def _work() -> None:
             # ``_inflight`` MUST be cleared on completion, success or
@@ -302,7 +360,12 @@ class QtBackendAdapter(BackendAdapter):
             # kick the debounce so the next pending state runs without
             # waiting for another debounce window.
             if self._pending_state is not None and not self._debounce_timer.isActive():
-                self._debounce_timer.start(0)
+                # A new state arrived while the worker was busy. Use
+                # the same debounce policy ``schedule_window_load``
+                # would have, so a mid-flight resize burst doesn't
+                # snap-fire on the trailing event.
+                debounce_ms = self.RESIZE_DEBOUNCE_MS if self._in_resize_burst else 0
+                self._debounce_timer.start(debounce_ms)
 
     def shutdown(self, *, wait: bool = True) -> None:
         self._closed = True
@@ -317,19 +380,33 @@ class QtBackendAdapter(BackendAdapter):
         edges = self._data_source.time_edges
         time_start = float(edges[sl.start]) if time.size else None
         time_stop = float(edges[sl.stop]) if time.size else None
+        required = self._required_outputs
         posterior = self._data_source.load_posterior(sl)
         likelihood = (
             self._data_source.load_likelihood(sl)
-            if "log_likelihood" in self._data_source.available_outputs
+            if "likelihood" in required
+            and "log_likelihood" in self._data_source.available_outputs
             else None
         )
+        # ``predictive`` is consumed only by the slice panel's
+        # ``"predictive"`` / ``"filtered"`` overlays. When the slice
+        # is in ``"smoothed"`` mode we skip the load entirely — at 10 s
+        # windows that's a (~330, n_state_bins) array that no panel
+        # would have rendered.
         predictive = (
             self._data_source.load_predictive(sl)
-            if "predictive_posterior" in self._data_source.available_outputs
+            if "predictive" in required
+            and "predictive_posterior" in self._data_source.available_outputs
             else None
         )
-        state_probabilities = self._data_source.load_state_probabilities(sl)
-        position = self._data_source.load_position(sl)
+        state_probabilities = (
+            self._data_source.load_state_probabilities(sl)
+            if "state_probabilities" in required
+            else None
+        )
+        position = (
+            self._data_source.load_position(sl) if "position" in required else None
+        )
         return WindowPayload(
             request_id=state.request_id,
             time=np.asarray(time),
@@ -447,6 +524,13 @@ class QtViewer(QtWidgets.QMainWindow):
             model=self._slice_model, position_centers=grid.centers
         )
         self._slice_panel.set_row_provider(self._slice_row_at)
+        # Tell the backend which optional outputs the visible panels
+        # actually consume so it skips per-window loads we'd just throw
+        # away (e.g. ``predictive_posterior`` when the slice is in the
+        # ``"smoothed"`` overlay mode). Recomputed whenever the slice
+        # overlay changes; the initial sync runs here against the
+        # default overlay mode.
+        self._sync_required_outputs_with_panels()
         # Raster spike click → pin that spike's cell row on the slice
         # panel. The viewer owns the connection so swap can re-bind cleanly
         # (the panel references survive a swap; pin state clears via
@@ -738,6 +822,27 @@ class QtViewer(QtWidgets.QMainWindow):
         if mode is None:
             return
         self._slice_panel.set_overlay_mode(mode)
+        self._sync_required_outputs_with_panels()
+
+    def _sync_required_outputs_with_panels(self) -> None:
+        """Tell the backend which optional outputs panels actually use.
+
+        ``predictive_posterior`` is the one big array we can drop on a
+        per-window basis: only the slice panel reads it, and only in
+        ``"predictive"`` / ``"filtered"`` overlay modes. ``"smoothed"``
+        renders the posterior row instead, so loading
+        ``predictive_posterior`` is wasted work — large windows
+        materialise a ``(n_visible, n_state_bins)`` array we'd
+        immediately throw away.
+        """
+        outputs = {"posterior", "likelihood", "state_probabilities", "position"}
+        if self._slice_panel.overlay_mode in {"predictive", "filtered"}:
+            outputs.add("predictive")
+        # ``BackendAdapter`` is the abstract protocol; the QtViewer
+        # always builds a ``QtBackendAdapter`` so the cast is safe and
+        # keeps non-Qt backends from inheriting the override.
+        if isinstance(self._backend, QtBackendAdapter):
+            self._backend.set_required_outputs(outputs)
 
     def _on_active_run_changed(self, index: int) -> None:
         if self._model_combo is None:
@@ -963,7 +1068,16 @@ class QtViewer(QtWidgets.QMainWindow):
         self._sync_slider_and_bin_panels_for_time(self._core.t_center)
 
     def _scale_t_width(self, factor: float) -> None:
-        new_width = max(1e-6, self._core.t_width * factor)
+        # ``ViewerCore.set_t_width`` clamps to ``[MIN, MAX]_T_WIDTH``;
+        # the explicit clamp here is just so the keyboard halve/double
+        # bottoms out at the same floor (otherwise repeated ``[`` would
+        # propose 2^-N seconds and only get clamped once it reached
+        # the core, leaving the next ``[`` to halve the clamped value).
+        new_width = float(
+            np.clip(
+                self._core.t_width * factor, MIN_T_WIDTH_SECONDS, MAX_T_WIDTH_SECONDS
+            )
+        )
         self._core.set_t_width(new_width)
         self._sync_control_labels()
 

@@ -29,6 +29,7 @@ from non_local_detector.visualization.interactive.data_source import (
 )
 from non_local_detector.visualization.interactive.view_models.base import (
     RunBundle,
+    ViewState,
 )
 
 pytestmark = pytest.mark.gui
@@ -1169,6 +1170,110 @@ def test_backend_coalesces_burst_of_schedule_calls(
     assert len(submitted) == 1, (
         f"debounce should coalesce burst into one executor submit; got {submitted}"
     )
+
+
+@pytest.mark.unit
+def test_backend_uses_long_debounce_for_resize_burst(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """A wheel- or slider-driven resize burst sits on the long debounce.
+
+    Center scrubbing fires per frame and benefits from the 16 ms
+    debounce. Wheel-resize at 10 s windows would otherwise spawn a
+    full per-pixel load that pins the CPU; the 100 ms trailing-edge
+    debounce coalesces the entire drag into one final load.
+
+    Drives the backend directly (not through ``ViewerCore``) so the
+    test isn't entangled with ``QtViewer`` construction also scheduling
+    initial loads — we want to exercise the per-call width-vs-last
+    comparison in isolation.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        QtBackendAdapter,
+    )
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    backend = QtBackendAdapter(ds)
+    t_center = float(ds.time[ds.n_time // 2])
+
+    def _state(request_id: int, t_center: float, t_width: float) -> ViewState:
+        return ViewState(request_id=request_id, t_center=t_center, t_width=t_width)
+
+    def _no_op(_payload):
+        return None
+
+    # First-ever schedule: no prior width to compare against → scrub.
+    backend.schedule_window_load(_state(0, t_center, 0.5), _no_op)
+    assert backend._debounce_timer.interval() == backend.SCRUB_DEBOUNCE_MS
+    assert not backend._in_resize_burst
+
+    # Same-width center scrub stays on the short debounce.
+    backend.schedule_window_load(_state(1, t_center + 0.1, 0.5), _no_op)
+    assert backend._debounce_timer.interval() == backend.SCRUB_DEBOUNCE_MS
+    assert not backend._in_resize_burst
+
+    # Width change → resize burst → long debounce.
+    backend.schedule_window_load(_state(2, t_center + 0.1, 0.6), _no_op)
+    assert backend._in_resize_burst
+    assert backend._debounce_timer.interval() == backend.RESIZE_DEBOUNCE_MS
+
+    # Subsequent same-width center scrub mid-drag does NOT collapse
+    # the long debounce — the burst flag persists until a flush.
+    backend.schedule_window_load(_state(3, t_center + 0.2, 0.6), _no_op)
+    assert backend._in_resize_burst
+    assert backend._debounce_timer.interval() == backend.RESIZE_DEBOUNCE_MS
+
+    # The drain path is decoupled from this test (it depends on the
+    # executor and the Qt event loop). Pin only the state-transition
+    # contract: ``_flush_pending`` must clear the burst flag so a
+    # subsequent same-width tick can re-enter the short-debounce
+    # path. The next live ``schedule_window_load`` after the executor
+    # finishes will see ``_in_resize_burst=False`` + matching
+    # ``_last_scheduled_t_width`` and pick ``SCRUB_DEBOUNCE_MS``.
+    backend._pending_state = None
+    backend._inflight = False
+    backend._in_resize_burst = False
+
+    backend.schedule_window_load(_state(4, t_center + 0.25, 0.6), _no_op)
+    assert not backend._in_resize_burst
+    assert backend._debounce_timer.interval() == backend.SCRUB_DEBOUNCE_MS
+
+
+@pytest.mark.unit
+def test_backend_skips_predictive_when_slice_is_smoothed(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """The smoothed overlay doesn't read predictive — backend skips the load.
+
+    At 10 s windows ``predictive_posterior`` is a
+    ``(n_visible, n_state_bins)`` array that no panel renders when the
+    slice is in ``"smoothed"`` mode. The QtViewer narrows the
+    backend's required-outputs set on slice-overlay change so the
+    worker doesn't materialize it.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    backend = viewer._backend
+
+    # Default overlay mode is "smoothed" → predictive must be excluded.
+    assert "predictive" not in backend._required_outputs
+
+    state = ViewState(request_id=0, t_center=ds.time[ds.n_time // 2], t_width=0.5)
+    payload = backend._build_payload(state)
+    assert payload.predictive is None
+    assert payload.posterior is not None  # heatmap still loaded
+    assert payload.likelihood is not None
+
+    # Switch to "predictive" → predictive must be loaded again.
+    viewer._slice_panel.set_overlay_mode("predictive")
+    viewer._sync_required_outputs_with_panels()
+    assert "predictive" in backend._required_outputs
+    payload = backend._build_payload(state)
+    assert payload.predictive is not None
 
 
 @pytest.mark.unit

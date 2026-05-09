@@ -42,6 +42,24 @@ if TYPE_CHECKING:
     )
 
 
+# Hard floor / ceiling on the visible window width. The slider in
+# ``viewer/qt.py`` already clipped to ``MIN_WINDOW_SECONDS=0.05`` /
+# ``MAX_WINDOW_SECONDS=30.0``, but ``_scale_t_width``'s keyboard ``[``
+# halving and the CLI ``--t-width`` flag both bypassed the slider and
+# could drive the window to ~0 — at which point ``window_indices``
+# returns an empty slice and the heatmap panels render nothing while
+# the worker still pays full per-load overhead. Centralising the
+# clamp here means every entry point (slider, wheel, keyboard, CLI)
+# agrees on the bounds.
+MIN_T_WIDTH_SECONDS = 0.05
+MAX_T_WIDTH_SECONDS = 30.0
+
+
+def _clamp_t_width(t_width: float) -> float:
+    """Clamp a requested ``t_width`` to ``[MIN, MAX]_T_WIDTH_SECONDS``."""
+    return float(min(MAX_T_WIDTH_SECONDS, max(MIN_T_WIDTH_SECONDS, float(t_width))))
+
+
 class ViewerCore:
     """Frontend-agnostic state + orchestration for the decoder viewer."""
 
@@ -54,7 +72,7 @@ class ViewerCore:
     ) -> None:
         self._data_source = data_source
         self._backend = backend
-        self._t_width = float(t_width)
+        self._t_width = _clamp_t_width(t_width)
         time = data_source.time
         self._t_center = (
             float(t_center) if t_center is not None else float(time[len(time) // 2])
@@ -196,7 +214,7 @@ class ViewerCore:
     def set_t_width(self, t_width: float) -> None:
         if t_width <= 0:
             raise ValueError(f"t_width must be positive. Got {t_width}.")
-        new_t_width = float(t_width)
+        new_t_width = _clamp_t_width(t_width)
         if new_t_width == self._t_width:
             return
         self._t_width = new_t_width

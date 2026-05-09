@@ -118,6 +118,38 @@ class TestViewerCoreBasics:
         with pytest.raises(ValueError, match="t_width"):
             core.set_t_width(-1.0)
 
+    def test_set_t_width_clamps_to_min_max(self, core_factory) -> None:
+        """Sub-floor / above-ceiling values get clipped, not raw-stored.
+
+        Pins the fix for the "window size 0" bug: ``_scale_t_width``'s
+        keyboard ``[`` halving and the CLI ``--t-width`` flag could
+        bypass the slider's ``[MIN, MAX]_WINDOW_SECONDS`` clamp and
+        drive ``t_width`` arbitrarily small (the old ``1e-6`` floor),
+        at which point ``window_indices`` returns an empty slice and
+        the heatmap renders nothing.
+        """
+        from non_local_detector.visualization.interactive.viewer.core import (
+            MAX_T_WIDTH_SECONDS,
+            MIN_T_WIDTH_SECONDS,
+        )
+
+        core, _, _ = core_factory()
+        core.set_t_width(1e-9)
+        assert core.t_width == pytest.approx(MIN_T_WIDTH_SECONDS)
+        core.set_t_width(1e6)
+        assert core.t_width == pytest.approx(MAX_T_WIDTH_SECONDS)
+
+    def test_constructor_clamps_t_width(self, multi_run_bundles) -> None:
+        """A CLI ``--t-width 0`` or stale persisted value can't sneak past."""
+        from non_local_detector.visualization.interactive.viewer.core import (
+            MIN_T_WIDTH_SECONDS,
+        )
+
+        ds = InMemoryDecoderDataSource(multi_run_bundles)
+        backend = StubBackend()
+        core = ViewerCore(ds, backend, t_width=1e-9)
+        assert core.t_width == pytest.approx(MIN_T_WIDTH_SECONDS)
+
     def test_step_left_right_clamped(self, core_factory) -> None:
         core, _, ds = core_factory()
         time = ds.time
@@ -366,9 +398,7 @@ class TestViewerCoreOverlayDispatch:
             for n, b in multi_run_bundles.items():
                 b.event_overlays[:] = original[n]
 
-    def test_off_overlays_changed_unregisters_callback(
-        self, multi_run_bundles
-    ) -> None:
+    def test_off_overlays_changed_unregisters_callback(self, multi_run_bundles) -> None:
         """``off_overlays_changed`` removes a previously registered callback."""
         ds = InMemoryDecoderDataSource(multi_run_bundles)
         core = ViewerCore(ds, StubBackend())
