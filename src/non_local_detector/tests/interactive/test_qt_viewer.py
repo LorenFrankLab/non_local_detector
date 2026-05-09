@@ -511,6 +511,47 @@ def test_t_width_change_relocks_x_view_range(
 
 
 @pytest.mark.unit
+def test_wheel_resize_integrates_small_deltas(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """30 small touchpad events of ``delta=4`` produce approximately
+    the same final ``t_width`` as one mouse-wheel detent of
+    ``delta=120`` (within 1%) — proves
+    ``factor = exp(-delta * RESIZE_GAIN)`` integrates additively."""
+    from PySide6 import QtCore, QtGui
+
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    def _wheel_event(delta: int) -> QtGui.QWheelEvent:
+        return QtGui.QWheelEvent(
+            QtCore.QPointF(0, 0),
+            QtCore.QPointF(0, 0),
+            QtCore.QPoint(0, 0),
+            QtCore.QPoint(0, delta),
+            QtCore.Qt.MouseButton.NoButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+            QtCore.Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+
+    # Path A: one big detent.
+    viewer_a = QtViewer(ds, t_width=1.0)
+    viewer_a.eventFilter(viewer_a, _wheel_event(120))
+    final_a = viewer_a._core.t_width
+
+    ds_b = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer_b = QtViewer(ds_b, t_width=1.0)
+    for _ in range(30):
+        viewer_b.eventFilter(viewer_b, _wheel_event(4))
+    final_b = viewer_b._core.t_width
+
+    np.testing.assert_allclose(final_b, final_a, rtol=0.01)
+
+
+@pytest.mark.unit
 def test_window_payload_carries_view_state(
     qapp,
     multi_run_bundles: dict[str, RunBundle],

@@ -99,6 +99,14 @@ WINDOW_SLIDER_RESOLUTION = 1000
 # keyboard halve/double paths all clamp to the same range.
 MIN_WINDOW_SECONDS = MIN_T_WIDTH_SECONDS
 MAX_WINDOW_SECONDS = MAX_T_WIDTH_SECONDS
+# Wheel-resize sensitivity. ``factor = exp(-delta * RESIZE_GAIN)``
+# integrates fluidly across both mouse-wheel detents (one event of
+# ``angleDelta().y() == 120``) and touchpad pinch (many small events
+# summing to the same ``delta``). Tuned to match the
+# ``statespacecheck-paper-viewer`` feel: a single 120-detent gives
+# ``factor ≈ 0.886`` (~12.6% shrink), one wheel-up + wheel-down pair
+# round-trips within 1% of unity.
+RESIZE_GAIN = 0.001
 
 # Qt's offscreen macOS default can report "Sans Serif" even though no
 # such family is installed, which triggers a slow alias-population path
@@ -1099,28 +1107,12 @@ class QtViewer(QtWidgets.QMainWindow):
     def _on_window_loaded(self, payload) -> None:
         for panel in self._all_panels:
             panel.update_window(payload)
-        # Pin the link-target's viewbox X range to the loaded window.
-        # Two reasons we don't rely on pyqtgraph's autoRange:
-        #   (1) ``ImageItem.setRect`` doesn't update the viewbox
-        #       autoRange bounds — the heatmap stays at its default
-        #       empty [-0.5, 0.5] X range until told otherwise.
-        #   (2) The other built-in panels are ``setXLink``'d to the
-        #       posterior so they inherit its (broken) range.
-        # Setting the range here lets every X-linked panel render
-        # against the actual loaded window.
-        if payload.time.size:
-            t_start = (
-                float(payload.time_start)
-                if payload.time_start is not None
-                else float(payload.time[0])
-            )
-            t_stop = (
-                float(payload.time_stop)
-                if payload.time_stop is not None
-                else float(payload.time[-1])
-            )
-            if t_stop > t_start:
-                self._panel.getPlotItem().vb.setXRange(t_start, t_stop, padding=0)
+        # Phase 3.1: panels render in a relative ``[-t_width/2,
+        # +t_width/2]`` x-range owned by ``RelativeTimeAxisMixin``;
+        # ``_sync_panel_xrange`` (driven by ``on_t_width_changed``) is
+        # the only place that x-range changes. The previous absolute-X
+        # setRange after load is no longer needed and would fight with
+        # the relative anchor.
         slider_value = self._slider.value()
         for bin_panel in (self._slice_panel, *self._extra_bin_panels):
             bin_panel.set_window_buffer(payload)
@@ -1200,11 +1192,13 @@ class QtViewer(QtWidgets.QMainWindow):
         self._sync_control_labels()
 
     def eventFilter(self, obj, event) -> bool:
-        # Wheel over a time-axis panel scrubs the window width.
+        # Wheel over a time-axis panel scrubs the window width using
+        # ``factor = exp(-delta * RESIZE_GAIN)`` so 30 small touchpad
+        # events sum to the same final width as one big wheel detent.
         if event.type() == QtCore.QEvent.Wheel:
             delta = event.angleDelta().y()
             if delta != 0:
-                factor = 0.9 if delta > 0 else 1.1
+                factor = float(np.exp(-delta * RESIZE_GAIN))
                 self._scale_t_width(factor)
                 return True
         return super().eventFilter(obj, event)
