@@ -556,7 +556,7 @@ def test_window_payload_carries_view_state(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
 ) -> None:
-    """``_build_payload`` propagates the requested ``t_center`` and
+    """``build_payload`` propagates the requested ``t_center`` and
     ``t_width`` so panels can render at relative coordinates against
     a fixed ``[-t_width/2, +t_width/2]`` x-range without re-deriving
     the view from ``time_start`` / ``time_stop``."""
@@ -567,7 +567,7 @@ def test_window_payload_carries_view_state(
     target_t = float(ds.time[len(ds.time) // 2])
     viewer._core.set_t_center(target_t)
 
-    payload = viewer._backend._build_payload(viewer._core.current_view_state)
+    payload = viewer._backend.build_payload(viewer._core.current_view_state)
     assert payload.t_center == target_t
     assert payload.t_width == 0.4
 
@@ -788,7 +788,7 @@ def test_qt_viewer_payload_routes_to_all_left_column_panels(
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
-    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    payload = viewer._backend.build_payload(viewer.core.current_view_state)
 
     assert payload.state_probabilities is not None
     n_visible = payload.state_probabilities.shape[0]
@@ -863,7 +863,7 @@ def test_qt_viewer_slider_drives_slice_panel(
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
     # Prime the buffer first (the slice update is a no-op without it).
-    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    payload = viewer._backend.build_payload(viewer.core.current_view_state)
     viewer._on_window_loaded(payload)
 
     initial_y = viewer._slice_panel._top_curve_item.getData()[1]
@@ -893,7 +893,7 @@ def test_qt_viewer_window_load_sets_slice_buffer(
     viewer = QtViewer(ds, t_width=0.5)
     assert viewer._slice_panel._buffered_payload is None
 
-    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    payload = viewer._backend.build_payload(viewer.core.current_view_state)
     viewer._on_window_loaded(payload)
     assert viewer._slice_panel._buffered_payload is payload
 
@@ -962,7 +962,7 @@ def test_qt_viewer_raster_spike_click_updates_slice_to_spike_bin(
 
     viewer.core.set_t_center(spike_t)
     viewer._on_window_loaded(
-        viewer._backend._build_payload(viewer.core.current_view_state)
+        viewer._backend.build_payload(viewer.core.current_view_state)
     )
     viewer._on_event_clicked(event.event_id)
 
@@ -1117,7 +1117,7 @@ def test_qt_viewer_swap_rebinds_built_in_panel_models(
     )
 
     # Smoke check: a fresh load under CF must complete without raising.
-    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    payload = viewer._backend.build_payload(viewer.core.current_view_state)
     viewer._on_window_loaded(payload)
 
 
@@ -1366,7 +1366,7 @@ def test_window_payload_carries_position_for_visible_window(
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
-    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    payload = viewer._backend.build_payload(viewer.core.current_view_state)
 
     assert payload.position is not None
     assert payload.position.ndim == 1
@@ -1406,7 +1406,7 @@ def test_posterior_panel_renders_white_position_trace(
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
-    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    payload = viewer._backend.build_payload(viewer.core.current_view_state)
     viewer._on_window_loaded(payload)
 
     trace = viewer._panel._position_trace
@@ -1429,7 +1429,7 @@ def test_likelihood_panel_renders_white_position_trace(
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
-    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    payload = viewer._backend.build_payload(viewer.core.current_view_state)
     viewer._on_window_loaded(payload)
 
     trace = viewer._likelihood_panel._position_trace
@@ -1497,12 +1497,12 @@ def test_position_trace_updates_after_active_run_swap(
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
-    payload_before = viewer._backend._build_payload(viewer.core.current_view_state)
+    payload_before = viewer._backend.build_payload(viewer.core.current_view_state)
     viewer._on_window_loaded(payload_before)
 
     next_run = next(name for name in ds.run_names if name != ds.active_run_name)
     viewer._core.set_active_run(next_run)
-    payload_after = viewer._backend._build_payload(viewer.core.current_view_state)
+    payload_after = viewer._backend.build_payload(viewer.core.current_view_state)
     viewer._on_window_loaded(payload_after)
 
     x, y = viewer._panel._position_trace.getData()
@@ -1760,7 +1760,7 @@ def test_backend_skips_predictive_when_slice_is_smoothed(
     assert "predictive" not in backend._required_outputs
 
     state = ViewState(request_id=0, t_center=ds.time[ds.n_time // 2], t_width=0.5)
-    payload = backend._build_payload(state)
+    payload = backend.build_payload(state)
     assert payload.predictive is None
     assert payload.posterior is not None  # heatmap still loaded
     assert payload.likelihood is not None
@@ -1769,7 +1769,7 @@ def test_backend_skips_predictive_when_slice_is_smoothed(
     viewer._slice_panel.set_overlay_mode("predictive")
     viewer._sync_required_outputs_with_panels()
     assert "predictive" in backend._required_outputs
-    payload = backend._build_payload(state)
+    payload = backend.build_payload(state)
     assert payload.predictive is not None
 
 
@@ -1802,15 +1802,15 @@ def test_backend_only_one_inflight_at_a_time(
     release = threading.Event()
 
     real_executor_submit = backend._executor.submit
-    real_build_payload = backend._build_payload
+    realbuild_payload = backend.build_payload
 
-    def _slow_build_payload(state):
+    def _slowbuild_payload(state):
         # Block the worker until the test releases, simulating a
         # long-running window read.
         release.wait(timeout=2.0)
-        return real_build_payload(state)
+        return realbuild_payload(state)
 
-    backend._build_payload = _slow_build_payload  # type: ignore[assignment]
+    backend.build_payload = _slowbuild_payload  # type: ignore[assignment]
 
     def _spy_submit(work):
         submitted.append(1)
@@ -1857,7 +1857,7 @@ def test_backend_recovers_when_worker_raises(
     multi_run_bundles: dict[str, RunBundle],
     caplog,
 ) -> None:
-    """A ``_build_payload`` that raises must not freeze the backend.
+    """A ``build_payload`` that raises must not freeze the backend.
 
     Bug repro: ``_flush_pending`` set ``_inflight=True`` before
     submitting; if the worker raised before emitting the done signal,
@@ -1878,16 +1878,16 @@ def test_backend_recovers_when_worker_raises(
     viewer = QtViewer(ds, t_width=0.5)
     backend = viewer._backend
 
-    # Phase 1: drive the first load through a raising _build_payload.
-    real_build_payload = backend._build_payload
+    # Phase 1: drive the first load through a raising build_payload.
+    realbuild_payload = backend.build_payload
     raise_now = {"value": True}
 
-    def _flaky_build_payload(state):
+    def _flakybuild_payload(state):
         if raise_now["value"]:
             raise RuntimeError("simulated worker failure")
-        return real_build_payload(state)
+        return realbuild_payload(state)
 
-    backend._build_payload = _flaky_build_payload  # type: ignore[assignment]
+    backend.build_payload = _flakybuild_payload  # type: ignore[assignment]
 
     core = ViewerCore(ds, backend)
     # Capture against this module's logger explicitly so the test
@@ -2026,7 +2026,7 @@ def test_position_trace_uniform_grid_round_trips(
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
-    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    payload = viewer._backend.build_payload(viewer.core.current_view_state)
     viewer._on_window_loaded(payload)
 
     centers = viewer._panel.grid_layout.centers

@@ -82,7 +82,6 @@ class ViewState:
     request_id: int
     t_center: float
     t_width: float
-    load_acausal: bool = False
 
 
 @dataclass(frozen=True)

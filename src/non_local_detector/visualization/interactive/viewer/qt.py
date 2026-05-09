@@ -391,12 +391,12 @@ class QtBackendAdapter(BackendAdapter):
             # ``_inflight`` MUST be cleared on completion, success or
             # failure. We always emit a signal back to the UI thread —
             # ``_deliver_payload`` clears the flag in its ``finally``
-            # block. Without this, an exception in ``_build_payload``
+            # block. Without this, an exception in ``build_payload``
             # would leave ``_inflight=True`` forever and the backend
             # would silently drop every subsequent ``schedule_window_load``
             # because the new state would just park in ``_pending_state``.
             try:
-                payload = self._build_payload(state)
+                payload = self.build_payload(state)
             except Exception as exc:  # noqa: BLE001 — see comment above
                 if not self._closed:
                     self._signals.done.emit((None, exc))
@@ -448,10 +448,7 @@ class QtBackendAdapter(BackendAdapter):
         self._closed = True
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
-    def post_to_ui_thread(self, fn: Callable[[], None]) -> None:
-        QtCore.QTimer.singleShot(0, fn)
-
-    def _build_payload(self, state: ViewState) -> WindowPayload:
+    def build_payload(self, state: ViewState) -> WindowPayload:
         sl = self._data_source.window_indices(state.t_center, state.t_width)
         time = self._data_source.time[sl]
         edges = self._data_source.time_edges
@@ -939,11 +936,9 @@ class QtViewer(QtWidgets.QMainWindow):
         outputs = {"posterior", "likelihood", "state_probabilities", "position"}
         if self._slice_panel.overlay_mode in {"predictive", "filtered"}:
             outputs.add("predictive")
-        # ``BackendAdapter`` is the abstract protocol; the QtViewer
-        # always builds a ``QtBackendAdapter`` so the cast is safe and
-        # keeps non-Qt backends from inheriting the override.
-        if isinstance(self._backend, QtBackendAdapter):
-            self._backend.set_required_outputs(outputs)
+        # ``set_required_outputs`` is a required method on
+        # ``BackendAdapter`` (Phase 4.3) — no isinstance guard.
+        self._backend.set_required_outputs(outputs)
 
     def _apply_overlay_availability(self, run: RunBundle) -> None:
         """Enable/disable slice-overlay combo items based on outputs in

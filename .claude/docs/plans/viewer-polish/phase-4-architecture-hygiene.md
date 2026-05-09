@@ -22,23 +22,24 @@ depends on this phase.**
 
 ## 4.1 — Remove dead code
 
-- [ ] Remove `ViewState.load_acausal: bool = False` field
+- [x] Remove `ViewState.load_acausal: bool = False` field
   ([view_models/base.py:85](../../../../src/non_local_detector/visualization/interactive/view_models/base.py#L85))
   and `InMemoryDecoderDataSource.load_acausal` method (no production
   callers).
-- [ ] Remove `data_source.results` passthrough property
+- [x] Remove `data_source.results` passthrough property
   ([data_source.py:375–376](../../../../src/non_local_detector/visualization/interactive/data_source.py#L375-L376))
   — no production callers, leaks active-run indirection.
-- [ ] Remove `BackendAdapter.post_to_ui_thread`
+- [x] Remove `BackendAdapter.post_to_ui_thread`
   ([viewer/backend.py:33](../../../../src/non_local_detector/visualization/interactive/viewer/backend.py#L33))
   from the Protocol *or* document as reserved (no production
-  callers; tests stub it).
+  callers; tests stub it). *Removed from Protocol, the Qt impl, and
+  the test stub.*
 
 ---
 
 ## 4.2 — Fix misleading docstrings
 
-- [ ] [data_source.py:267](../../../../src/non_local_detector/visualization/interactive/data_source.py#L267)
+- [x] [data_source.py:267](../../../../src/non_local_detector/visualization/interactive/data_source.py#L267)
   `load_position` docstring claims `set_active_run` clears the
   cache. It doesn't (per-run keying is intentional). Rewrite to
   describe actual behaviour: "keyed by run name — entry for the
@@ -48,7 +49,7 @@ depends on this phase.**
 
 ## 4.3 — Tighten Protocol (eliminate isinstance leaks)
 
-- [ ] Add `set_required_outputs(set[str]) -> None` to
+- [x] Add `set_required_outputs(set[str]) -> None` to
   [viewer/backend.py:BackendAdapter](../../../../src/non_local_detector/visualization/interactive/viewer/backend.py)
   as a **required** Protocol method (not a default-no-op). A
   default no-op would silently swallow output gating for any
@@ -57,11 +58,11 @@ depends on this phase.**
   prevent. `StubBackend` in tests must gain an explicit
   implementation (record the calls or store the set; either is
   fine).
-- [ ] Remove the `isinstance(self._backend, QtBackendAdapter)` guard
+- [x] Remove the `isinstance(self._backend, QtBackendAdapter)` guard
   in `_sync_required_outputs_with_panels`
   ([viewer/qt.py:858–859](../../../../src/non_local_detector/visualization/interactive/viewer/qt.py#L858-L859))
   — the Protocol now guarantees the method exists.
-- [ ] Promote `_build_payload` → `build_payload` (public) since 9
+- [x] Promote `_build_payload` → `build_payload` (public) since 9
   tests depend on it as the synchronous-entry contract. Add to
   Protocol so a future backend implementation has a clear contract.
 
@@ -69,7 +70,7 @@ depends on this phase.**
 
 ## 4.4 — Defensive teardown
 
-- [ ] [viewer/core.py:188](../../../../src/non_local_detector/visualization/interactive/viewer/core.py#L188)
+- [x] [viewer/core.py:188](../../../../src/non_local_detector/visualization/interactive/viewer/core.py#L188)
   `off_overlays_changed` uses `list.remove()` which raises
   `ValueError` on a double-unregister. Wrap in
   `try/except ValueError: pass` (or `if cb in list:` guard) so
@@ -114,10 +115,11 @@ charter.
 
 ## Phase 4 done when
 
-- Tasks 4.1–4.4 land; 4.5 stays deferred per its rationale block
-- Full sweep green (verify command from
-  [README.md](README.md) §Per-phase verification)
-- **No behavioural production changes beyond the defensive
+- [x] Tasks 4.1–4.4 land; 4.5 stays deferred per its rationale block
+- [x] Full sweep green (verify command from
+  [README.md](README.md) §Per-phase verification) — 276 passed
+  (Phase 3 baseline 276 → 0 net new tests; pure refactor)
+- [x] **No behavioural production changes beyond the defensive
   teardown in 4.4.** Test/stub updates *are* expected and allowed:
   4.3 specifically requires `StubBackend` to gain a
   `set_required_outputs` implementation, and `build_payload`

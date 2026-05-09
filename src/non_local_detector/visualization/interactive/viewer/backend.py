@@ -30,6 +30,25 @@ class BackendAdapter(Protocol):
         """Run a background load; call ``on_done`` on the UI thread when ready."""
         ...
 
-    def post_to_ui_thread(self, fn: Callable[[], None]) -> None:
-        """Marshal a callback onto the frontend's event loop."""
+    def build_payload(self, state: ViewState) -> WindowPayload:
+        """Build a ``WindowPayload`` synchronously for ``state``.
+
+        Synchronous-entry contract: callers (notably tests + the
+        slice panel's bin-buffer hot path) hand a ``ViewState`` in,
+        get back a fully-resolved ``WindowPayload`` without going
+        through the executor / debounce path. Any frontend that
+        implements ``BackendAdapter`` must support this — it's the
+        only direct way to materialise a payload.
+        """
+        ...
+
+    def set_required_outputs(self, outputs: set[str]) -> None:
+        """Declare which optional ``WindowPayload`` fields the panels
+        actually use, so the backend can skip loading the others.
+
+        Required, NOT a default no-op: a default no-op would silently
+        swallow output gating for any future backend that forgot to
+        override, exactly the drift the Protocol cleanup is meant to
+        prevent.
+        """
         ...

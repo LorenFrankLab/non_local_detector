@@ -44,7 +44,7 @@ class StubBackend(BackendAdapter):
     pending_callbacks: list[tuple[ViewState, Callable[[WindowPayload], None]]] = field(
         default_factory=list
     )
-    posted_callbacks: list[Callable[[], None]] = field(default_factory=list)
+    required_outputs_calls: list[set[str]] = field(default_factory=list)
 
     def schedule_window_load(
         self, state: ViewState, on_done: Callable[[WindowPayload], None]
@@ -55,8 +55,11 @@ class StubBackend(BackendAdapter):
         else:
             self.pending_callbacks.append((state, on_done))
 
-    def post_to_ui_thread(self, fn: Callable[[], None]) -> None:
-        self.posted_callbacks.append(fn)
+    def build_payload(self, state: ViewState) -> WindowPayload:
+        return _payload_for(state)
+
+    def set_required_outputs(self, outputs: set[str]) -> None:
+        self.required_outputs_calls.append(set(outputs))
 
     def fire_pending(self, indices: list[int] | None = None) -> None:
         """Manually fire queued callbacks (for stale-result tests)."""

@@ -196,9 +196,15 @@ class ViewerCore:
 
         Bound methods compare equal across accesses (``c.m == c.m``
         on the same instance), so passing ``panel.set_event_overlays``
-        works without keeping the original reference.
+        works without keeping the original reference. Tolerates
+        double-unregister (no-op when the callback isn't registered)
+        so teardown paths that may run twice — e.g. a panel rebuilt
+        before the previous tear-down has completed — don't raise.
         """
-        self._on_overlays_changed_callbacks.remove(callback)
+        try:
+            self._on_overlays_changed_callbacks.remove(callback)
+        except ValueError:
+            pass
 
     # ------------------------------------------------------------------
     # Time navigation

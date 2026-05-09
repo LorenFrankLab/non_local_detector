@@ -448,7 +448,7 @@ def test_extra_bin_panels_get_window_buffer_on_load(
     plugin = _make_recording_bin_panel()
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5, extra_bin_panels=[plugin])
-    payload = viewer._backend._build_payload(viewer.core.current_view_state)
+    payload = viewer._backend.build_payload(viewer.core.current_view_state)
     viewer._on_window_loaded(payload)
     assert plugin.buffer_calls == [payload]
     # Same load also drives an immediate update_for_index at the slider.

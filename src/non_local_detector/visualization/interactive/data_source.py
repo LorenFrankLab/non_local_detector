@@ -16,7 +16,6 @@ from __future__ import annotations
 from typing import Literal
 
 import numpy as np
-import xarray as xr
 
 from non_local_detector.visualization.interactive.view_models.base import (
     RunBundle,
@@ -67,7 +66,7 @@ class InMemoryDecoderDataSource:
         self._time_cache: np.ndarray = np.asarray(
             self.active_run.results["time"].values
         )
-        # ``QtBackendAdapter._build_payload`` calls ``bin_edges_array``
+        # ``QtBackendAdapter.build_payload`` calls ``bin_edges_array``
         # on every window load to derive the heatmap rect's left/right
         # bounds; the result is fixed per active run, so cache it.
         self._time_edges_cache: np.ndarray = bin_edges_array(self._time_cache)
@@ -235,18 +234,6 @@ class InMemoryDecoderDataSource:
             self.active_run.results["log_likelihood"].isel(time=sl).values
         )
 
-    def load_acausal(self, sl: slice) -> np.ndarray | None:
-        """Window slice of ``acausal_posterior`` (alias of ``load_posterior``).
-
-        Returns ``None`` only if no ``acausal_posterior`` is present;
-        in practice ``acausal_posterior`` is always required by
-        ``RunBundle.__post_init__``, so this only returns ``None`` for
-        tests that bypass validation.
-        """
-        if "acausal_posterior" not in self.active_run.results:
-            return None
-        return self.load_posterior(sl)
-
     def load_predictive(self, sl: slice) -> np.ndarray | None:
         """Window slice of ``predictive_posterior``, or ``None`` if absent."""
         if "predictive_posterior" not in self.active_run.results:
@@ -281,9 +268,12 @@ class InMemoryDecoderDataSource:
         (``position.ndim > 1``); the v1 heatmap overlay supports 1D
         position only.
 
-        Caches the full interpolated array on first call per active
-        run; ``set_active_run`` clears the cache because the next
-        bundle's position trajectory may differ.
+        Caches the full interpolated array per run name. Entries are
+        keyed by ``run.name`` so ``set_active_run`` does NOT clear the
+        cache — entries for previously-visited runs are retained and
+        reused on the next swap back. (Multi-run swap latency dominated
+        first-load profile before the cache; keep-alive across swaps
+        is intentional.)
         """
         position_at_decoder_time = self._position_at_decoder_time()
         if position_at_decoder_time is None:
@@ -388,7 +378,3 @@ class InMemoryDecoderDataSource:
     @property
     def n_time(self) -> int:
         return int(self.active_run.results.sizes["time"])
-
-    @property
-    def results(self) -> xr.Dataset:
-        return self.active_run.results
