@@ -86,7 +86,7 @@ class TimeAxisPanel(Protocol):
 | ------------------------------ | -------- |
 | `update_window(payload)`       | Render the time-axis window described by `payload`. Called once per committed window load. The payload carries `time` (1-D, n_visible), `posterior`, `likelihood` (may be None), `predictive` (may be None), `state_probabilities`, and `indices` (the slice into the full session). |
 | `x_link_target()`              | Return the Qt object other panels link x-axes to (typically `self.getPlotItem()` for `pg.PlotWidget` subclasses). The viewer wires every panel's x-axis to the posterior panel's link target. |
-| `click_handler(callback)`      | Register a callback invoked when the user clicks empty space on the panel; the callback receives the clicked x-coordinate in absolute seconds. The viewer uses this to recenter. |
+| `click_handler(callback)`      | Register a callback invoked when the user clicks empty space on the panel; the callback receives the clicked x-coordinate as a *relative* offset in seconds against the panel's fixed `[-t_width/2, +t_width/2]` x-range (Phase 3.1). The viewer adds the current `t_center` back before recentering. |
 | `set_event_overlays(overlays)` | Replace this panel's overlay set. Called whenever overlay visibility changes. Idempotent — the new list fully replaces previously rendered markers. |
 
 ### `BinSyncedPanel` Protocol
@@ -165,11 +165,15 @@ class MyMetricPanel(pg.PlotWidget, ClickRecenterMixin, EventOverlayMixin):
         self._overlay_items = []  # required by EventOverlayMixin
 
     def update_window(self, payload) -> None:
-        # Use payload.time to slice your metric to the visible window.
+        # Time-axis panels render at relative coordinates against the
+        # fixed ``[-t_width/2, +t_width/2]`` x-range (Phase 3.1). Use
+        # ``payload.time`` to slice your metric to the visible window,
+        # then subtract ``payload.t_center`` before plotting.
         sl = (self._metric_t >= payload.time[0]) & (
             self._metric_t <= payload.time[-1]
         )
-        self._curve.setData(self._metric_t[sl], self._metric_y[sl])
+        rel_t = self._metric_t[sl] - payload.t_center
+        self._curve.setData(rel_t, self._metric_y[sl])
 ```
 
 Inject it:

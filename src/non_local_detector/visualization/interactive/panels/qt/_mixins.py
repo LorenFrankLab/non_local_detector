@@ -39,7 +39,11 @@ class ClickRecenterMixin:
 
     Subclasses must call ``self._install_click_recenter()`` after
     ``pg.PlotWidget.__init__`` has run so ``self.scene()`` is
-    available. The callback receives the clicked x-coordinate.
+    available. The callback receives the clicked x-coordinate in the
+    plot's view-coordinate system. Under Phase 3.1's relative-time
+    contract that means *relative seconds against
+    ``[-t_width/2, +t_width/2]``* — the viewer adds ``t_center`` back
+    before recentering.
     """
 
     _click_callback: Callable[[float], None] | None
@@ -360,10 +364,21 @@ class RelativeTimeAxisMixin:
     """
 
     def set_t_width(self, t_width: float) -> None:
-        """Lock the visible x-range to ``[-t_width/2, +t_width/2]``."""
+        """Lock the visible x-range to ``[-t_width/2, +t_width/2]``.
+
+        Sets *both* an explicit range and matching limits because
+        ``disableAutoRange(XAxis)`` alone is not sticky against
+        pyqtgraph's ``PlotDataItem.setData`` path: the ViewBox
+        re-enables auto-range internally when a child item's bounds
+        change. ``setLimits(xMin, xMax)`` clamps the visible range
+        regardless, which is the right contract here — mouse pan/zoom
+        is already disabled on these panels and ``setLimits`` is the
+        upstream-recommended way to enforce a fixed view.
+        """
         half = float(t_width) / 2.0
         vb = self.getViewBox()
         vb.disableAutoRange(axis=vb.XAxis)
+        vb.setLimits(xMin=-half, xMax=half)
         vb.setXRange(-half, half, padding=0)
 
 

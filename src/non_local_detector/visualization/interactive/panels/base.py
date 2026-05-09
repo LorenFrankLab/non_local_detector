@@ -39,8 +39,13 @@ class TimeAxisPanel(Protocol):
     def click_handler(self, callback: Callable[[float], None]) -> None:
         """Register a callback invoked when the user clicks empty space.
 
-        The callback receives the clicked x-coordinate (absolute time
-        in seconds). Used by the viewer to recenter on click.
+        The callback receives the clicked x-coordinate as a *relative*
+        offset in seconds against the panel's fixed
+        ``[-t_width/2, +t_width/2]`` x-range (Phase 3.1). The viewer
+        adds the current ``t_center`` back to recover absolute time
+        before recentering, so panel-side renderers (and any custom
+        ``TimeAxisPanel`` implementation) work entirely in relative
+        coordinates.
         """
         ...
 

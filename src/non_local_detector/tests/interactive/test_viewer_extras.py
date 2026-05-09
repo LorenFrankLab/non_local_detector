@@ -188,6 +188,19 @@ def test_qt_viewer_swap_rebuilds_auto_extras(
     # Smoke check: dispatch after swap must not raise on deleted widgets.
     viewer.core.refresh_overlays()
 
+    # Phase 3.1d invariant: rebuilt extras must inherit the current
+    # x-offset (so absolute-time event overlays render at the right
+    # relative position) and x-range lock — not the default zero.
+    expected_offset = float(viewer.core.t_center)
+    expected_half = float(viewer.core.t_width) / 2.0
+    for new_panel in viewer._extra_panels:
+        if hasattr(new_panel, "_overlay_x_offset"):
+            assert new_panel._overlay_x_offset == pytest.approx(expected_offset)
+        if hasattr(new_panel, "getViewBox"):
+            x_low, x_high = new_panel.getViewBox().viewRange()[0]
+            assert x_low == pytest.approx(-expected_half)
+            assert x_high == pytest.approx(expected_half)
+
 
 @pytest.mark.unit
 def test_qt_viewer_swap_preserves_user_supplied_extras(

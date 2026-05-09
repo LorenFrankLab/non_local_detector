@@ -933,6 +933,15 @@ def test_qt_viewer_raster_spike_click_toggles_spike_pin(
     assert viewer._slice_panel.pinned_cell_ids == frozenset({second.cell_id})
     assert viewer._pinned_event_id == second.event_id
     assert viewer.core.t_center == pytest.approx(second.time)
+    # Phase 3.1d invariant: pin marker x lives in the panel's relative
+    # frame; after recentering on ``second.time`` the pin should land
+    # at relative 0 (i.e. inside the visible window), NOT off-screen
+    # at the old ``second.time - first.time`` offset.
+    pin_x = viewer._raster_panel._pin_line.value()
+    assert abs(pin_x) < viewer.core.t_width, (
+        f"pin marker x={pin_x} lives outside the visible window "
+        f"[-t_width/2, +t_width/2]; refresh ordering regressed"
+    )
 
 
 @pytest.mark.unit

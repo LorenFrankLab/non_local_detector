@@ -1398,6 +1398,19 @@ class QtViewer(QtWidgets.QMainWindow):
         self._all_panels = [*self._builtin_panels, *self._extra_panels]
         self._wire_panels(new_extras)
 
+        # Push current view state to the freshly-built panels BEFORE
+        # the upstream overlay/cursor dispatch fires. New panels start
+        # with ``_overlay_x_offset == 0.0`` and an unlocked x-range, so
+        # without this initial sync their first overlay render lands
+        # at absolute coords on a relative ``[-w/2, +w/2]`` view.
+        for panel in new_extras:
+            t_width_setter = getattr(panel, "set_t_width", None)
+            if t_width_setter is not None:
+                t_width_setter(self._core.t_width)
+            offset_setter = getattr(panel, "apply_x_offset", None)
+            if offset_setter is not None:
+                offset_setter(float(self._core.t_center))
+
     def _on_event_clicked(self, event_id: int) -> None:
         event_id = int(event_id)
         if event_id == self._pinned_event_id:
@@ -1408,9 +1421,12 @@ class QtViewer(QtWidgets.QMainWindow):
         self._slice_panel.pin_cell(event.cell_id)
         self._pinned_event_id = event_id
         self._pinned_time = event.time
-        self._refresh_pin_markers()
+        # Recenter FIRST: ``_refresh_pin_markers`` shifts the pin x by
+        # ``-t_center``, so it must run after the recenter or the pin
+        # lands off-screen. Phase 3.1d invariant.
         self._core.set_t_center(event.time)
         self._sync_slider_and_bin_panels_for_time(event.time)
+        self._refresh_pin_markers()
 
     def _on_spike_clicked(self, cell_id: int, t: float) -> None:
         """Compatibility shim for tests/plugins still emitting cell/time.
