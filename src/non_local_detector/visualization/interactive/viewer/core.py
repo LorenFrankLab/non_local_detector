@@ -238,9 +238,36 @@ class ViewerCore:
     # ------------------------------------------------------------------
 
     def request_load(self) -> None:
-        """Dispatch a window-load request via the backend adapter."""
+        """Dispatch a window-load request via the backend adapter.
+
+        Reuses ``_current_view_state`` as-is — internal navigation
+        callers (``set_t_center``, ``set_t_width``, ``set_active_run``)
+        rebuild that state via ``_build_view_state`` first so the
+        dispatched ``request_id`` is fresh. External callers that need
+        to *re-fetch the same window* (e.g. the slice overlay-mode
+        toggle widening ``_required_outputs``) must use ``refresh``
+        instead — re-dispatching the unchanged state lets
+        ``_handle_load_result``'s ``request_id <= latest_committed``
+        rule silently drop the new payload.
+        """
         state = self._current_view_state
         self._backend.schedule_window_load(state, self._handle_load_result)
+
+    def refresh(self) -> None:
+        """Re-dispatch the current view as a *fresh* request.
+
+        Mints a new ``request_id`` so the resulting payload commits
+        even though ``t_center`` / ``t_width`` / ``active_run`` are
+        unchanged. The QtViewer calls this when the visible-panel
+        consumed-arrays set widens (slice overlay toggle from
+        ``"smoothed"`` to ``"predictive"`` / ``"filtered"``) — without
+        the bump, the new payload would carry the previously-committed
+        request_id and be dropped by the stale-result rule.
+        """
+        self._current_view_state = self._build_view_state()
+        self._backend.schedule_window_load(
+            self._current_view_state, self._handle_load_result
+        )
 
     def _handle_load_result(self, payload: WindowPayload) -> None:
         """Invoked on the UI thread when a backend load completes.

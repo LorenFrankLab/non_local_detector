@@ -830,13 +830,13 @@ class QtViewer(QtWidgets.QMainWindow):
         # Switching from ``"smoothed"`` to ``"predictive"`` /
         # ``"filtered"`` widens ``_required_outputs`` to include
         # ``predictive_posterior``, but the panel still holds the old
-        # buffered payload (where ``predictive`` is ``None``) so the
-        # overlay would render blank until the user nudged the slider
-        # or t_width. Force a same-window reload so newly-required
-        # outputs land in the buffer immediately. ``set_t_center`` /
-        # ``set_t_width`` self-no-op on unchanged values, so a direct
-        # ``request_load`` is the only way to re-fetch the same window.
-        self._core.request_load()
+        # buffered payload (where ``predictive`` is ``None``). Force
+        # a same-window refresh so newly-required outputs land in the
+        # buffer. ``refresh`` (not ``request_load``) is the right tool:
+        # the latter reuses the current ``request_id`` and the new
+        # payload would be dropped by the stale-result rule once the
+        # initial window has committed.
+        self._core.refresh()
 
     def _sync_required_outputs_with_panels(self) -> None:
         """Tell the backend which optional outputs panels actually use.

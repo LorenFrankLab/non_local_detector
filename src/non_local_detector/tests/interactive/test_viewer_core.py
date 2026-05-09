@@ -150,6 +150,54 @@ class TestViewerCoreBasics:
         core = ViewerCore(ds, backend, t_width=1e-9)
         assert core.t_width == pytest.approx(MIN_T_WIDTH_SECONDS)
 
+    def test_refresh_dispatches_with_fresh_request_id(self, core_factory) -> None:
+        """``refresh`` must mint a new ``request_id`` so the payload commits.
+
+        After the first window has committed, calling ``request_load``
+        with the same ``_current_view_state`` re-uses the committed
+        ``request_id`` and the new payload is silently dropped by the
+        ``request_id <= latest_committed`` rule. ``refresh`` exists
+        precisely so external callers (slice-overlay-mode toggle) can
+        re-fetch the same window when ``_required_outputs`` widens.
+        """
+        core, backend, _ = core_factory(auto_fire=True)
+        # Seed an initial commit (``__init__`` builds the state but
+        # doesn't fire a load).
+        core.request_load()
+        committed_before = core._latest_committed_request_id
+        prior_request_id = core.current_view_state.request_id
+        assert committed_before >= 0
+
+        baseline_requests = len(backend.requests)
+        core.refresh()
+        assert len(backend.requests) == baseline_requests + 1
+        # The dispatched state must carry a fresh request_id and that
+        # request_id must commit (auto_fire fires the callback inline).
+        assert backend.requests[-1].request_id > prior_request_id
+        assert core._latest_committed_request_id > committed_before
+
+    def test_request_load_alone_is_dropped_after_commit(self, core_factory) -> None:
+        """Demonstrates why ``refresh`` is necessary, not redundant.
+
+        ``request_load`` reuses the existing ``_current_view_state``,
+        so a same-window re-dispatch *after* a prior commit hits the
+        stale-result rule and is dropped. Pinning this explicitly so
+        future readers don't accidentally swap ``refresh`` back to
+        ``request_load``.
+        """
+        core, backend, _ = core_factory(auto_fire=True)
+        # Seed an initial commit so the stale-result rule has
+        # something to compare against.
+        core.request_load()
+        committed_before = core._latest_committed_request_id
+        assert committed_before >= 0
+
+        core.request_load()
+        # The backend saw the call …
+        assert backend.requests[-1].request_id == committed_before
+        # … but the commit pointer didn't advance — the payload was dropped.
+        assert core._latest_committed_request_id == committed_before
+
     def test_step_left_right_clamped(self, core_factory) -> None:
         core, _, ds = core_factory()
         time = ds.time

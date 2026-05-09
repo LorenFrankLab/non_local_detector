@@ -30,6 +30,7 @@ from non_local_detector.visualization.interactive.data_source import (
 from non_local_detector.visualization.interactive.view_models.base import (
     RunBundle,
     ViewState,
+    WindowPayload,
 )
 
 pytestmark = pytest.mark.gui
@@ -1245,30 +1246,41 @@ def test_overlay_change_to_predictive_triggers_window_reload(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
 ) -> None:
-    """Switching from ``smoothed`` to ``predictive`` reloads the buffer.
+    """Switching from ``smoothed`` to ``predictive`` actually commits a load.
 
-    Without the reload the buffered payload still has
-    ``predictive=None`` (loaded under the narrower required-outputs
-    set for ``smoothed``) and the overlay renders blank until the
-    user separately nudges the slider or t_width. Pin: the overlay
-    change must dispatch a fresh load so newly-required outputs
-    actually land in the buffer.
+    The earlier (incorrect) fix called ``request_load`` which reuses
+    the existing ``request_id``; once the initial window had committed
+    the new payload was silently dropped by
+    ``_handle_load_result``'s ``request_id <= latest_committed`` rule.
+    This test pins the commit-side contract: after an overlay toggle
+    the buffer must actually update with the new array (here,
+    ``predictive`` becomes non-None).
     """
+    from PySide6 import QtCore
+
     from non_local_detector.visualization.interactive.viewer.qt import QtViewer
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
 
-    # Reset the schedule-spy after construction so we only count the
-    # loads triggered by the overlay change itself.
-    scheduled: list[ViewState] = []
-    original_schedule = viewer._backend.schedule_window_load
+    # Drive an initial smoothed-mode load to completion so the
+    # ``latest_committed_request_id`` reflects a real commit
+    # (``QtViewer.__init__`` builds the core but doesn't fire a load).
+    # Without this seed the ``request_load`` vs ``refresh`` distinction
+    # wouldn't bite — the bug only fires *after* a prior commit.
+    viewer._core.request_load()
+    deadline = QtCore.QElapsedTimer()
+    deadline.start()
+    while viewer._core._latest_committed_request_id < 0 and deadline.elapsed() < 2000:
+        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 5)
+    assert viewer._core._latest_committed_request_id >= 0, (
+        "initial load never committed within 2s — Qt event-loop seed failed"
+    )
+    initial_committed = viewer._core._latest_committed_request_id
 
-    def _spy(state, on_done):
-        scheduled.append(state)
-        return original_schedule(state, on_done)
-
-    viewer._backend.schedule_window_load = _spy  # type: ignore[method-assign]
+    # Default overlay = ``"smoothed"`` — predictive was excluded.
+    received: list[WindowPayload] = []
+    viewer._core.on_window_loaded(received.append)
 
     overlay_index = next(
         i
@@ -1277,9 +1289,19 @@ def test_overlay_change_to_predictive_triggers_window_reload(
     )
     viewer._slice_overlay_combo.setCurrentIndex(overlay_index)
 
-    assert scheduled, "overlay change must enqueue a fresh window load"
-    assert scheduled[-1].t_center == pytest.approx(viewer._core.t_center)
-    assert scheduled[-1].t_width == pytest.approx(viewer._core.t_width)
+    # Drain the event loop until the new load commits.
+    deadline.start()
+    while (
+        viewer._core._latest_committed_request_id == initial_committed
+        and deadline.elapsed() < 1500
+    ):
+        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.AllEvents, 5)
+    assert viewer._core._latest_committed_request_id > initial_committed, (
+        "overlay change must commit a fresh payload, not be dropped by "
+        "the stale-result rule"
+    )
+    assert received, "on_window_loaded must fire for the refreshed payload"
+    assert received[-1].predictive is not None
 
 
 @pytest.mark.unit
