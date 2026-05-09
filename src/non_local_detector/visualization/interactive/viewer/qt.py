@@ -725,12 +725,13 @@ class QtViewer(QtWidgets.QMainWindow):
         self._core.on_t_center_changed(self._sync_autoscroll_cursor_to_core)
         self._core.on_t_center_changed(self._sync_cursor_markers)
         self._core.on_t_width_changed(self._sync_panel_xrange)
-        self._core.refresh_overlays()
-        # Initial cursor-marker placement — t_center_changed only
-        # fires on subsequent moves, not on construction.
+        # Push the initial cursor-marker placement + overlay x-offset
+        # before refreshing overlays so the first overlay render lands
+        # at the right relative position. ``_sync_cursor_markers`` also
+        # propagates the offset via ``apply_x_offset`` on each panel.
         self._sync_cursor_markers(self._core.t_center)
-        # Initial x-range lock for relative time-axis panels.
         self._sync_panel_xrange(self._core.t_width)
+        self._core.refresh_overlays()
 
         self._register_shortcuts()
 
@@ -1257,23 +1258,30 @@ class QtViewer(QtWidgets.QMainWindow):
         return t_idx
 
     def _sync_cursor_markers(self, new_t_center: float) -> None:
-        """Push ``(t_center, t_lo, t_hi)`` to every TimeAxisPanel.
+        """Push ``(0.0, t_lo - t_center, t_hi - t_center)`` to every panel.
 
-        ``t_center`` is the dashed-line position; ``[t_lo, t_hi]`` is
-        the active-bin band. Bin edges use the same left-edge
-        convention as ``SliceModel``. Built-in panels all mix in
-        ``CursorMarkersMixin``; user-supplied ``extra_panels`` opt in
-        by exposing a ``set_cursor_markers`` method (called via
-        ``getattr`` so the kwarg stays backward-compatible).
+        Panels render in a relative ``[-t_width/2, +t_width/2]`` x-range
+        (Phase 3.1) so the dashed center line lives at relative 0 and
+        the active-bin band is shifted by ``-t_center``. Also updates
+        every panel's event-overlay x-offset so absolute-time overlays
+        scroll with the cursor.
+
+        Built-in panels all mix in ``CursorMarkersMixin`` /
+        ``EventOverlayMixin``; user-supplied ``extra_panels`` opt in by
+        exposing ``set_cursor_markers`` / ``apply_x_offset`` methods.
         """
         t_idx = self._time_to_bin_index(new_t_center)
         t_lo, t_hi = self._bin_edges_at(t_idx)
-        for panel in self._builtin_panels:
-            panel.set_cursor_markers(new_t_center, t_lo, t_hi)
-        for panel in self._extra_panels:
-            setter = getattr(panel, "set_cursor_markers", None)
-            if setter is not None:
-                setter(new_t_center, t_lo, t_hi)
+        t_lo_rel = t_lo - new_t_center
+        t_hi_rel = t_hi - new_t_center
+        all_panels = (*self._builtin_panels, *self._extra_panels)
+        for panel in all_panels:
+            cursor_setter = getattr(panel, "set_cursor_markers", None)
+            if cursor_setter is not None:
+                cursor_setter(0.0, t_lo_rel, t_hi_rel)
+            offset_setter = getattr(panel, "apply_x_offset", None)
+            if offset_setter is not None:
+                offset_setter(float(new_t_center))
 
     def _bin_edges_at(self, t_idx: int) -> tuple[float, float]:
         """Return left-edge ``(t_lo, t_hi)`` for active bin ``t_idx``."""
@@ -1446,16 +1454,22 @@ class QtViewer(QtWidgets.QMainWindow):
             if self._pinned_event_id is not None
             else None
         )
+        # Pin coords are absolute times; panels render in a relative
+        # x-range so subtract t_center before pushing.
+        if self._pinned_time is None:
+            pinned_t_rel: float | None = None
+        else:
+            pinned_t_rel = float(self._pinned_time) - float(self._core.t_center)
         for panel in (*self._builtin_panels, *self._extra_panels):
             if panel is self._raster_panel:
                 self._raster_panel.set_spike_pin_marker(
-                    self._pinned_time,
+                    pinned_t_rel,
                     pinned_cell_id,
                 )
                 continue
             setter = getattr(panel, "set_pin_marker", None)
             if setter is not None:
-                setter(self._pinned_time)
+                setter(pinned_t_rel)
 
     def _register_shortcuts(self) -> None:
         """Wire ``_SHORTCUT_TABLE`` rows to bound-method handlers.

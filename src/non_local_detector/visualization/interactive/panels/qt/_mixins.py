@@ -297,19 +297,41 @@ class EventOverlayMixin:
       ``pg.LinearRegionItem`` per ``(t_start[i], t_end[i])``.
 
     Idempotent: a new list fully replaces previously rendered markers.
+    Overlays are stored in absolute time; ``apply_x_offset(offset)``
+    re-renders them at ``t - offset`` so panels using a relative
+    ``[-t_width/2, +t_width/2]`` x-range scroll correctly.
     """
 
     _overlay_items: list[pg.GraphicsObject]  # populated lazily
 
     def set_event_overlays(self, overlays: list[EventOverlay]) -> None:
+        self._overlays_cache: list[EventOverlay] = list(overlays)
+        self._render_overlays()
+
+    def apply_x_offset(self, offset: float) -> None:
+        """Subtract ``offset`` from rendered overlay x-coords.
+
+        Called by the viewer when ``t_center`` changes so absolute-time
+        overlays appear at the right relative position. Stores the
+        offset on first call (``_overlay_x_offset`` attribute). A no-op
+        if the offset is unchanged.
+        """
+        new_offset = float(offset)
+        if new_offset == getattr(self, "_overlay_x_offset", 0.0):
+            self._overlay_x_offset = new_offset
+            return
+        self._overlay_x_offset = new_offset
+        self._render_overlays()
+
+    def _render_overlays(self) -> None:
         plot_item = self._overlay_plot_item()
-        # Remove the previously rendered overlay items.
         existing = getattr(self, "_overlay_items", None) or []
         for item in existing:
             plot_item.removeItem(item)
+        offset = float(getattr(self, "_overlay_x_offset", 0.0))
         new_items: list[pg.GraphicsObject] = []
-        for overlay in overlays:
-            new_items.extend(_render_overlay(plot_item, overlay))
+        for overlay in getattr(self, "_overlays_cache", []):
+            new_items.extend(_render_overlay(plot_item, overlay, x_offset=offset))
         self._overlay_items = new_items
 
     def _overlay_plot_item(self) -> pg.PlotItem:
@@ -443,7 +465,10 @@ class HeatmapPanelBase(
 
 
 def _render_overlay(
-    plot_item: pg.PlotItem, overlay: EventOverlay
+    plot_item: pg.PlotItem,
+    overlay: EventOverlay,
+    *,
+    x_offset: float = 0.0,
 ) -> list[pg.GraphicsObject]:
     """Build pyqtgraph items for one overlay; attach to ``plot_item``.
 
@@ -451,6 +476,10 @@ def _render_overlay(
     we explicitly check ``is None`` — truthy comparison
     (``arr or []``) would raise ``ValueError: ambiguous truth value``
     on multi-element arrays.
+
+    ``x_offset`` is subtracted from each rendered coordinate, so panels
+    using a relative ``[-t_width/2, +t_width/2]`` x-range can render
+    overlays stored in absolute time at the right position.
     """
     color = QColor(overlay.color)
     items: list[pg.GraphicsObject] = []
@@ -458,7 +487,9 @@ def _render_overlay(
         pen = pg.mkPen(color=color, width=2)
         times = overlay.times if overlay.times is not None else ()
         for t in times:
-            line = pg.InfiniteLine(pos=float(t), angle=90, pen=pen, movable=False)
+            line = pg.InfiniteLine(
+                pos=float(t) - x_offset, angle=90, pen=pen, movable=False
+            )
             plot_item.addItem(line)
             items.append(line)
     elif overlay.kind == "intervals":
@@ -468,7 +499,7 @@ def _render_overlay(
         t_end = overlay.t_end if overlay.t_end is not None else ()
         for start, end in zip(t_start, t_end, strict=True):
             region = pg.LinearRegionItem(
-                values=(float(start), float(end)),
+                values=(float(start) - x_offset, float(end) - x_offset),
                 movable=False,
                 brush=brush_color,
             )

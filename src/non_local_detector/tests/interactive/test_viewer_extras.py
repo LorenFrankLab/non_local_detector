@@ -706,17 +706,18 @@ def test_cursor_markers_initial_dispatch(
     multi_run_bundles: dict[str, RunBundle],
 ) -> None:
     """Every built-in TimeAxisPanel has its center line + active-bin band
-    placed at the initial t_center on construction."""
+    placed at relative 0 on construction (Phase 3.1d: panels render in
+    a fixed ``[-t_width/2, +t_width/2]`` x-range)."""
     from non_local_detector.visualization.interactive.viewer.qt import QtViewer
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
-    expected = viewer.core.t_center
     for panel in viewer._builtin_panels:
-        assert panel._center_line.value() == pytest.approx(expected)
+        # Dashed center line lives at relative 0.
+        assert panel._center_line.value() == pytest.approx(0.0)
         lo, hi = panel._active_bin_band.getRegion()
-        # Cursor lands inside its bin's [t_lo, t_hi] band.
-        assert lo <= expected <= hi
+        # Active-bin band straddles relative 0 (the cursor's bin).
+        assert lo <= 0.0 <= hi
 
 
 @pytest.mark.unit
@@ -724,7 +725,10 @@ def test_cursor_markers_follow_t_center_changes(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
 ) -> None:
-    """Any ``core.set_t_center`` call updates every panel's markers."""
+    """``core.set_t_center`` updates the active-bin band but the dashed
+    center line stays at relative 0 — panels render in a fixed
+    relative x-range so the cursor's position-on-screen doesn't move
+    when the window scrolls (Phase 3.1d)."""
     from non_local_detector.visualization.interactive.viewer.qt import QtViewer
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
@@ -732,9 +736,9 @@ def test_cursor_markers_follow_t_center_changes(
     target_t = float(viewer._data_source.time[100])
     viewer.core.set_t_center(target_t)
     for panel in viewer._builtin_panels:
-        assert panel._center_line.value() == pytest.approx(target_t)
+        assert panel._center_line.value() == pytest.approx(0.0)
         lo, hi = panel._active_bin_band.getRegion()
-        assert lo <= target_t <= hi
+        assert lo <= 0.0 <= hi
 
 
 @pytest.mark.unit
@@ -774,11 +778,17 @@ def test_cursor_markers_dispatched_to_extras_via_getattr(
     plugin = _CursorRecordingPanel()
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5, extra_panels=[plugin])
-    # Initial dispatch should already have hit the plugin once.
+    # Initial dispatch should already have hit the plugin once. Phase
+    # 3.1d: panels render in a relative x-range so the dashed-line
+    # ``t_center`` argument is always 0.0; the band ``t_lo`` / ``t_hi``
+    # are also relative.
     assert len(plugin.cursor_calls) >= 1
     target_t = float(viewer._data_source.time[200])
     viewer.core.set_t_center(target_t)
-    assert plugin.cursor_calls[-1][0] == pytest.approx(target_t)
+    last_call = plugin.cursor_calls[-1]
+    assert last_call[0] == pytest.approx(0.0)
+    # Bin band straddles relative 0.
+    assert last_call[1] <= 0.0 <= last_call[2]
 
 
 @pytest.mark.unit
