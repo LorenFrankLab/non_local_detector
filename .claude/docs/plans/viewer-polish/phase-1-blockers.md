@@ -22,12 +22,12 @@ the branch.
 
 ## 1.1 — `ruff format src/` on unformatted files
 
-- [ ] Run `uv run ruff format src/`. Five files are unformatted
+- [x] Run `uv run ruff format src/`. Five files are unformatted
   (flagged by `ruff format --check src/`):
   `devtools/bundle_from_statespacecheck.py`,
   `panels/qt/posterior.py`, `view_models/likelihood.py`,
   `view_models/raster.py`, `view_models/slice.py`.
-- [ ] Verify `uv run ruff format --check src/` exits 0.
+- [x] Verify `uv run ruff format --check src/` exits 0.
 
 **Done when:** CI quality-gate passes locally.
 
@@ -42,9 +42,9 @@ widget already in its destruction path. PySide6
 use-after-partial-delete → segfault when a user closes the window
 while playback is running.
 
-- [ ] Add `self._stop_autoscroll()` as the first line of `closeEvent`
+- [x] Add `self._stop_autoscroll()` as the first line of `closeEvent`
   in [viewer/qt.py](../../../../src/non_local_detector/visualization/interactive/viewer/qt.py).
-- [ ] Add a `gui`-marked test (in
+- [x] Add a `gui`-marked test (in
   [test_qt_viewer.py](../../../../src/non_local_detector/tests/interactive/test_qt_viewer.py))
   that constructs a viewer, calls `_start_autoscroll`, calls
   `closeEvent` (or `close()`), and asserts:
@@ -69,7 +69,7 @@ can push `t_center` past recording end → out-of-range edge lookup
 or empty/bad window. Reference implementation clamps at
 `statespacecheck-paper-viewer/data_source.py:335`.
 
-- [ ] In `InMemoryDecoderDataSource.window_indices`, clamp `sl.start`
+- [x] In `InMemoryDecoderDataSource.window_indices`, clamp `sl.start`
   to `≥ 0` and `sl.stop` to `≤ len(self.time)`. **The returned slice
   must always be non-empty when the session is non-empty** — match
   the reference invariant at
@@ -79,11 +79,11 @@ or empty/bad window. Reference implementation clamps at
   start, the leftmost. The blank-window UX at the boundary case is
   exactly what we want to avoid — there is always *some* recorded
   data to display.
-- [ ] Update the docstring: "returned slice is always valid for
+- [x] Update the docstring: "returned slice is always valid for
   `time` and `time_edges` indexing AND non-empty when the session
   is non-empty; out-of-session `t_center` clamps to the nearest
   valid window."
-- [ ] Add a test in
+- [x] Add a test in
   [test_data_source.py](../../../../src/non_local_detector/tests/interactive/test_data_source.py)
   that pins:
   - `window_indices(t_center=time[0], t_width=large)` →
@@ -108,10 +108,11 @@ the visible window non-empty and pinned at the session edge.
 
 ## Phase 1 done when
 
-- All three tasks pass tests
-- Full sweep green (run the verify command from
-  [README.md](README.md) §Per-phase verification)
-- `[manual]` item from 1.3 surfaced to user
+- [x] All three tasks pass tests
+- [x] Full sweep green (run the verify command from
+  [README.md](README.md) §Per-phase verification) — 257 passed
+  (baseline 252 → +5 new tests)
+- [ ] `[manual]` item from 1.3 surfaced to user
 
 Then **stop and wait for user review** before proceeding to
 [Phase 2](phase-2-ux-correctness.md).

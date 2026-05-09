@@ -43,6 +43,41 @@ class TestSingleRunDataSource:
         # Slice covers the center.
         assert sl.start <= len(time) // 2 < sl.stop
 
+    def test_window_indices_huge_width_covers_full_session(
+        self, run_bundles: dict[str, RunBundle]
+    ) -> None:
+        ds = InMemoryDecoderDataSource.from_single(run_bundles["nl_all"])
+        time = ds.time
+        sl = ds.window_indices(t_center=float(time[0]), t_width=1.0e9)
+        assert sl == slice(0, len(time))
+
+    def test_window_indices_clamps_when_center_past_end(
+        self, run_bundles: dict[str, RunBundle]
+    ) -> None:
+        ds = InMemoryDecoderDataSource.from_single(run_bundles["nl_all"])
+        time = ds.time
+        sl = ds.window_indices(t_center=float(time[-1]) + 100.0, t_width=1.0)
+        assert sl.stop == len(time)
+        assert sl.start < sl.stop  # non-empty rightmost window
+
+    def test_window_indices_clamps_when_center_before_start(
+        self, run_bundles: dict[str, RunBundle]
+    ) -> None:
+        ds = InMemoryDecoderDataSource.from_single(run_bundles["nl_all"])
+        time = ds.time
+        sl = ds.window_indices(t_center=float(time[0]) - 100.0, t_width=1.0)
+        assert sl.start == 0
+        assert sl.start < sl.stop  # non-empty leftmost window
+
+    def test_window_indices_no_overshoot_at_session_end(
+        self, run_bundles: dict[str, RunBundle]
+    ) -> None:
+        ds = InMemoryDecoderDataSource.from_single(run_bundles["nl_all"])
+        time = ds.time
+        sl = ds.window_indices(t_center=float(time[-1]), t_width=2.0)
+        assert sl.stop == len(time)
+        assert sl.start < sl.stop
+
     def test_load_posterior_returns_window_slice(
         self, run_bundles: dict[str, RunBundle]
     ) -> None:
@@ -217,13 +252,9 @@ class TestSingleRunDataSource:
         event = ds.spike_event_at(0)
         # pyqtgraph ScatterPlotItem stores positions as float32.
         rounded_t = float(np.float32(event.time))
+        assert ds.event_index.event_id_for_cell_time(event.cell_id, rounded_t) is None
         assert (
-            ds.event_index.event_id_for_cell_time(event.cell_id, rounded_t) is None
-        )
-        assert (
-            ds.event_index.nearest_event_id_for_cell_time(
-                event.cell_id, rounded_t
-            )
+            ds.event_index.nearest_event_id_for_cell_time(event.cell_id, rounded_t)
             == event.event_id
         )
         # Beyond tolerance → None.
@@ -476,9 +507,7 @@ class TestPositionLoad:
             position=sim_session.position,
         )
         ds = InMemoryDecoderDataSource.from_single(bundle)
-        bundle.position = np.column_stack(
-            [sim_session.position, sim_session.position]
-        )
+        bundle.position = np.column_stack([sim_session.position, sim_session.position])
         sl = ds.window_indices(t_center=float(ds.time[ds.n_time // 2]), t_width=1.0)
         assert ds.load_position(sl) is None
 

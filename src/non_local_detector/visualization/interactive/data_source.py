@@ -179,18 +179,24 @@ class InMemoryDecoderDataSource:
     # ------------------------------------------------------------------
 
     def window_indices(self, t_center: float, t_width: float) -> slice:
-        """Return a ``slice`` selecting the visible time-window indices.
+        """Return a half-open slice into ``time`` for ``[t-w/2, t+w/2]``.
 
-        Half-window on each side of ``t_center``.
+        Both endpoints are clamped to the session range, so the returned
+        slice is always valid for ``time`` and ``time_edges`` indexing
+        AND non-empty when the session is non-empty; out-of-session
+        ``t_center`` clamps to the nearest valid window.
         """
         if t_width <= 0:
             raise ValueError(f"t_width must be positive. Got {t_width}.")
         time = self._time_cache
+        n_time = len(time)
+        if n_time == 0:
+            return slice(0, 0)
         half = t_width / 2.0
-        start = float(t_center - half)
-        stop = float(t_center + half)
-        i_start = int(np.searchsorted(time, start, side="left"))
-        i_stop = int(np.searchsorted(time, stop, side="right"))
+        i_start = int(np.searchsorted(time, t_center - half, side="left"))
+        i_stop = int(np.searchsorted(time, t_center + half, side="right"))
+        i_start = max(0, min(i_start, n_time - 1))
+        i_stop = max(i_start + 1, min(i_stop, n_time))
         return slice(i_start, i_stop)
 
     def load_posterior(self, sl: slice) -> np.ndarray:
