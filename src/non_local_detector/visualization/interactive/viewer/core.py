@@ -93,6 +93,10 @@ class ViewerCore:
         # autoscroll float cursor needs to resync when keyboard /
         # click navigation moves t_center while playback is on).
         self._on_t_center_changed_callbacks: list[Callable[[float], None]] = []
+        # Fired when ``t_width`` changes — panels use it to lock the
+        # relative ``[-t_width/2, +t_width/2]`` x-range without going
+        # through the per-load payload path.
+        self._on_t_width_changed_callbacks: list[Callable[[float], None]] = []
         # Per-overlay visibility (keyed by overlay name); absent = visible.
         self._overlay_visibility: dict[str, bool] = {}
 
@@ -157,6 +161,15 @@ class ViewerCore:
         """
         self._on_overlays_changed_callbacks.append(callback)
 
+    def on_t_width_changed(self, callback: Callable[[float], None]) -> None:
+        """Register a callback fired when ``t_width`` changes.
+
+        Panels use this to lock the visible x-range to
+        ``[-t_width/2, +t_width/2]`` exactly once per width change,
+        outside the per-load payload path.
+        """
+        self._on_t_width_changed_callbacks.append(callback)
+
     def on_t_center_changed(self, callback: Callable[[float], None]) -> None:
         """Register a callback fired synchronously when ``t_center`` changes.
 
@@ -219,6 +232,8 @@ class ViewerCore:
             return
         self._t_width = new_t_width
         self._current_view_state = self._build_view_state()
+        for callback in self._on_t_width_changed_callbacks:
+            callback(new_t_width)
         self.request_load()
 
     def step_left(self, n_bins: int = 1) -> None:

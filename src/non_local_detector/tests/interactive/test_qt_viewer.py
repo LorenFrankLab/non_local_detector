@@ -1307,7 +1307,8 @@ def test_posterior_panel_renders_white_position_trace(
     x, y = trace.getData()
     assert x is not None and y is not None
     assert x.size == payload.time.size
-    np.testing.assert_array_equal(x, payload.time)
+    # Heatmap renders at relative coordinates (Phase 3.1).
+    np.testing.assert_array_equal(x, payload.time - payload.t_center)
     expected = _expected_trace_y(viewer._panel, payload.position)
     np.testing.assert_allclose(y, expected, atol=1e-6)
 

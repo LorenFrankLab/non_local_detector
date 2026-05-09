@@ -724,10 +724,13 @@ class QtViewer(QtWidgets.QMainWindow):
         self._core.on_active_run_changed(self._rebind_panels)
         self._core.on_t_center_changed(self._sync_autoscroll_cursor_to_core)
         self._core.on_t_center_changed(self._sync_cursor_markers)
+        self._core.on_t_width_changed(self._sync_panel_xrange)
         self._core.refresh_overlays()
         # Initial cursor-marker placement — t_center_changed only
         # fires on subsequent moves, not on construction.
         self._sync_cursor_markers(self._core.t_center)
+        # Initial x-range lock for relative time-axis panels.
+        self._sync_panel_xrange(self._core.t_width)
 
         self._register_shortcuts()
 
@@ -1270,6 +1273,18 @@ class QtViewer(QtWidgets.QMainWindow):
     def _bin_edges_at(self, t_idx: int) -> tuple[float, float]:
         """Return left-edge ``(t_lo, t_hi)`` for active bin ``t_idx``."""
         return bin_edges_at(self._data_source.time, t_idx)
+
+    def _sync_panel_xrange(self, t_width: float) -> None:
+        """Lock every relative-time-axis panel to ``[-t_width/2, +t_width/2]``.
+
+        Panels that support relative rendering expose ``set_t_width``
+        (provided by ``RelativeTimeAxisMixin``); others are skipped via
+        ``getattr`` so user-supplied extras stay back-compat.
+        """
+        for panel in (*self._builtin_panels, *self._extra_panels):
+            setter = getattr(panel, "set_t_width", None)
+            if setter is not None:
+                setter(t_width)
 
     def _sync_autoscroll_cursor_to_core(self, new_t_center: float) -> None:
         """Re-anchor the float playback cursor to ``new_t_center``.

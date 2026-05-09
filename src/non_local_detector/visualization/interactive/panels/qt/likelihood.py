@@ -72,13 +72,26 @@ class QtLikelihoodHeatmapPanel(HeatmapPanelBase):
             self._set_title_message(self.MISSING_DATA_MESSAGE)
             return
         collapsed = self._model.update_window(payload.likelihood)
+        # Render at relative coords against the fixed
+        # ``[-t_width/2, +t_width/2]`` x-range.
+        rel_time = payload.time - payload.t_center
+        rel_start = (
+            payload.time_start - payload.t_center
+            if payload.time_start is not None
+            else None
+        )
+        rel_stop = (
+            payload.time_stop - payload.t_center
+            if payload.time_stop is not None
+            else None
+        )
         self._set_image(
             collapsed,
-            payload.time,
-            time_start=payload.time_start,
-            time_stop=payload.time_stop,
+            rel_time,
+            time_start=rel_start,
+            time_stop=rel_stop,
         )
-        self._set_position_trace(payload.time, payload.position)
+        self._set_position_trace(rel_time, payload.position)
         self._set_title_message(None)
 
     def update_for_array(self, time: np.ndarray, log_lik: np.ndarray) -> None:

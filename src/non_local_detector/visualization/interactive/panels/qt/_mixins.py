@@ -328,12 +328,30 @@ class EventOverlayMixin:
         return get_plot()
 
 
+class RelativeTimeAxisMixin:
+    """Pins the x-axis to a fixed ``[-t_width/2, +t_width/2]`` range.
+
+    Subclasses render data at relative coordinates (``time - t_center``)
+    so the axis ticks and view range stay constant during scroll —
+    eliminating absolute-tick churn. The ``set_t_width`` setter is the
+    only place x-range changes.
+    """
+
+    def set_t_width(self, t_width: float) -> None:
+        """Lock the visible x-range to ``[-t_width/2, +t_width/2]``."""
+        half = float(t_width) / 2.0
+        vb = self.getViewBox()
+        vb.disableAutoRange(axis=vb.XAxis)
+        vb.setXRange(-half, half, padding=0)
+
+
 class HeatmapPanelBase(
     pg.PlotWidget,
     EventOverlayMixin,
     ClickRecenterMixin,
     CursorMarkersMixin,
     PositionTraceMixin,
+    RelativeTimeAxisMixin,
 ):
     """Common chrome for the time × position heatmap panels.
 
@@ -344,7 +362,7 @@ class HeatmapPanelBase(
     pick the right field off the payload.
     """
 
-    DEFAULT_BOTTOM_LABEL = "Time [s]"
+    DEFAULT_BOTTOM_LABEL = "Time [s] (relative)"
 
     def __init__(
         self,
