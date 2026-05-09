@@ -47,7 +47,26 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="NAME:RESULTS.NC:MODEL.PKL:SPIKES.NPZ:POSITION.PARQUET",
-        help=("Add a named run from four files. May be repeated for multi-run mode."),
+        help=(
+            "POSIX shorthand: add a named run from four colon-separated "
+            "files. May be repeated for multi-run mode. Does NOT support "
+            "paths containing ':' (Windows drive letters); use "
+            "--run-files or --run-from-dir on Windows."
+        ),
+    )
+    parser.add_argument(
+        "--run-files",
+        action="append",
+        default=[],
+        nargs=5,
+        metavar=("NAME", "RESULTS.NC", "MODEL.PKL", "SPIKES.NPZ", "POSITION.PARQUET"),
+        dest="run_files",
+        help=(
+            "Cross-platform: add a named run from five separate "
+            "arguments. Each value is its own shell argument so paths "
+            "containing ':' (e.g. Windows drive letters) work. "
+            "May be repeated for multi-run mode."
+        ),
     )
     parser.add_argument(
         "--run-from-dir",
@@ -81,6 +100,31 @@ def _parse_run_arg(arg: str) -> dict[str, str]:
             f"got {len(parts)}: {arg!r}"
         )
     name, results, model, spikes, position = parts
+    return {
+        "name": name,
+        "results": results,
+        "model": model,
+        "spikes": spikes,
+        "position": position,
+    }
+
+
+def _parse_run_files_arg(values: list[str]) -> dict[str, str]:
+    """Translate ``--run-files NAME RESULTS MODEL SPIKES POSITION`` to a spec.
+
+    The argparse ``nargs=5`` already enforces exactly five values; this
+    function validates that none is empty (an empty ``name`` would
+    masquerade as a different run later).
+    """
+    if len(values) != 5:
+        raise argparse.ArgumentTypeError(
+            f"--run-files expects exactly 5 values "
+            f"(name, results.nc, model.pkl, spikes.npz, position.parquet); "
+            f"got {len(values)}: {values!r}"
+        )
+    name, results, model, spikes, position = values
+    if not name:
+        raise argparse.ArgumentTypeError("--run-files NAME must be non-empty")
     return {
         "name": name,
         "results": results,
@@ -225,25 +269,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if not args.run and not args.run_from_dir:
-        parser.error("at least one --run or --run-from-dir argument is required")
+    if not args.run and not args.run_from_dir and not args.run_files:
+        parser.error(
+            "at least one --run / --run-files / --run-from-dir argument is required"
+        )
 
     bundles_dict: dict[str, object] = {}
     seen_names: set[str] = set()
-    for raw_arg, parse_fn in (
-        *((arg, _parse_run_arg) for arg in args.run),
-        *((arg, _parse_run_from_dir_arg) for arg in args.run_from_dir),
-    ):
-        try:
-            spec = parse_fn(raw_arg)
-        except argparse.ArgumentTypeError as exc:
-            parser.error(str(exc))
+
+    def _ingest(spec: dict[str, str]) -> None:
         name = spec["name"]
         if name in seen_names:
             parser.error(f"duplicate run name {name!r}")
         seen_names.add(name)
         _, bundle = _load_run(spec)
         bundles_dict[name] = bundle
+
+    for arg in args.run:
+        try:
+            _ingest(_parse_run_arg(arg))
+        except argparse.ArgumentTypeError as exc:
+            parser.error(str(exc))
+    for values in args.run_files:
+        try:
+            _ingest(_parse_run_files_arg(values))
+        except argparse.ArgumentTypeError as exc:
+            parser.error(str(exc))
+    for arg in args.run_from_dir:
+        try:
+            _ingest(_parse_run_from_dir_arg(arg))
+        except argparse.ArgumentTypeError as exc:
+            parser.error(str(exc))
 
     from non_local_detector.visualization.interactive.data_source import (
         InMemoryDecoderDataSource,
@@ -264,13 +320,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 _HELP_EPILOG = """\
 Examples:
 
-  Single run from explicit files:
-    python -m non_local_detector.visualization.interactive \\
-      --run default:results.nc:model.pkl:spikes.npz:position.parquet
-
-  Single run from a bundle directory (e.g. devtool output):
+  Single run from a bundle directory (e.g. devtool output) — preferred:
     python -m non_local_detector.visualization.interactive \\
       --run-from-dir continuous:bundles/continuous/
+
+  Single run from explicit files (cross-platform; safe for Windows
+  drive-letter paths):
+    python -m non_local_detector.visualization.interactive \\
+      --run-files default results.nc model.pkl spikes.npz position.parquet
+
+  Single run from explicit files (POSIX shorthand — does NOT support
+  paths containing ':'):
+    python -m non_local_detector.visualization.interactive \\
+      --run default:results.nc:model.pkl:spikes.npz:position.parquet
 
   Multi-run model swap:
     python -m non_local_detector.visualization.interactive \\

@@ -31,27 +31,27 @@ x-axis relabeling. Reference
 fixed at `[-w/2, +w/2]` and renders data at `t - t_center`.
 Eliminates absolute-tick churn during autoscroll.
 
-- [ ] Update each panel's `update_window` (PosteriorHeatmapPanel,
+- [x] Update each panel's `update_window` (PosteriorHeatmapPanel,
   LikelihoodHeatmapPanel, RasterPanel, StateProbabilityPanel,
   generic series panels) to render at relative coordinates
   (`payload.time - t_center`).
-- [ ] Update `EventOverlayMixin`, the pin line, and the true-position
+- [x] Update `EventOverlayMixin`, the pin line, and the true-position
   line to use relative coordinates.
-- [ ] Lock the visible x-range once with
+- [x] Lock the visible x-range once with
   `setXRange(-t_width/2, +t_width/2, padding=0)` and update only
   when `t_width` changes (not when `t_center` changes).
-- [ ] **Tick labels stay relative** (e.g. `-0.5 s`, `0`, `+0.5 s`).
+- [x] **Tick labels stay relative** (e.g. `-0.5 s`, `0`, `+0.5 s`).
   Do *not* add a tick formatter that remaps to absolute time —
   absolute labels would change on every scrub and re-introduce the
   exact churn this task is meant to eliminate. Reference does the
   same: relative axis labels + a separate absolute readout.
-- [ ] The existing absolute-time readout in the controls bar (the
+- [x] The existing absolute-time readout in the controls bar (the
   `t=...` label rendered by `_format_time_label`) is the one place
   absolute time is shown; verify it still updates correctly under
   relative rendering.
-- [ ] Cross-panel x-link: keep the existing wiring; relative
+- [x] Cross-panel x-link: keep the existing wiring; relative
   coordinates work the same way.
-- [ ] Tests:
+- [x] Tests:
   - Pin behaviour on a uniform grid: scroll one window forward,
     assert the visible x-range did NOT change AND the rendered
     tick labels are unchanged (deterministic relative ticks).
@@ -71,13 +71,13 @@ uses fixed `0.9 / 1.1` per wheel event; touchpads emit many small
 delta events that should produce one fluid resize, not 30 discrete
 steps.
 
-- [ ] Replace fixed factor with `factor = exp(-delta * RESIZE_GAIN)`
+- [x] Replace fixed factor with `factor = exp(-delta * RESIZE_GAIN)`
   where `delta = event.angleDelta().y()` and
   `RESIZE_GAIN ≈ 0.001` (tune to match
   `statespacecheck-paper-viewer/viewer.py:1086` feel).
-- [ ] Define `RESIZE_GAIN` as a module-level constant near
+- [x] Define `RESIZE_GAIN` as a module-level constant near
   `MIN_T_WIDTH_SECONDS` for discoverability.
-- [ ] Test: 30 small events of `delta=120/30 = 4` produce
+- [x] Test: 30 small events of `delta=120/30 = 4` produce
   approximately the same final `t_width` as one event of `delta=120`
   (within 1%).
 
@@ -95,21 +95,21 @@ indistinguishable from a field separator.
 **Fix:** stop trying to make `:` work as a delimiter for paths.
 Provide an unambiguous alternative.
 
-- [ ] Add a new flag `--run-files NAME RESULTS MODEL SPIKES POSITION`
+- [x] Add a new flag `--run-files NAME RESULTS MODEL SPIKES POSITION`
   using `nargs=5`. Each value is a separate shell argument, so
   Windows drive letters are no longer ambiguous. May be repeated
   for multi-run mode (mirrors the `action="append"` behaviour of
   `--run` / `--run-from-dir`).
-- [ ] Update `_parse_run_arg` (or add a sibling for `--run-files`)
+- [x] Update `_parse_run_arg` (or add a sibling for `--run-files`)
   to emit the same 5-field `spec` dict that `_load_run` consumes.
-- [ ] Keep `--run` as-is (back-compat) but document in its `help=`
+- [x] Keep `--run` as-is (back-compat) but document in its `help=`
   string that the colon-delimited form does not support paths
   containing `:` and that `--run-files` (or `--run-from-dir`) is
   the cross-platform alternative.
-- [ ] Update the help epilog to lead with `--run-from-dir` and
+- [x] Update the help epilog to lead with `--run-from-dir` and
   `--run-files` examples; demote the colon-delimited `--run` to
   "POSIX shorthand".
-- [ ] Tests:
+- [x] Tests:
   - `--run-files default results.nc model.pkl spikes.npz position.parquet`
     parses and round-trips the existing CLI smoke test
   - `--run-files default 'C:\foo\results.nc' 'C:\foo\model.pkl'
@@ -127,10 +127,11 @@ add the unambiguous alternative.
 
 ## Phase 3 done when
 
-- All three tasks pass tests
-- Full sweep green (verify command from
-  [README.md](README.md) §Per-phase verification)
-- **[manual]** touchpad smoke produces a fluid resize (surface to
+- [x] All three tasks pass tests
+- [x] Full sweep green (verify command from
+  [README.md](README.md) §Per-phase verification) — 276 passed
+  (Phase 2 baseline 269 → +7 new tests)
+- [ ] **[manual]** touchpad smoke produces a fluid resize (surface to
   user — Claude cannot perform live touchpad input)
 
 Then **stop and wait for user review** before proceeding to

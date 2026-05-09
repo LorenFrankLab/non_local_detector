@@ -115,6 +115,103 @@ def test_cli_rejects_malformed_run_arg(
 
 
 @pytest.mark.unit
+def test_cli_run_files_cross_platform_explicit_paths(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--run-files`` takes 5 separate args so paths with ':' (Windows
+    drive letters) are unambiguous."""
+    paths = _save_bundle_files(tmp_path, nl_fitted, sim_session)
+    _patch_launch_no_block(monkeypatch)
+    exit_code = app_main(
+        [
+            "--run-files",
+            "default",
+            str(paths["results"]),
+            str(paths["model"]),
+            str(paths["spikes"]),
+            str(paths["position"]),
+            "--t-width",
+            "0.5",
+        ]
+    )
+    assert exit_code == 0
+
+
+@pytest.mark.unit
+def test_cli_run_files_parses_windows_style_paths_on_posix() -> None:
+    """``--run-files`` argparse accepts paths containing ':' (e.g.
+    Windows drive letters) without splitting them — the argument
+    boundary is the shell argv slot, not a delimiter character. We
+    test the parsing surface only; the loader rejects nonexistent
+    files later (string handling vs. file existence)."""
+    from non_local_detector.visualization.interactive.app import (
+        _build_parser,
+        _parse_run_files_arg,
+    )
+
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "--run-files",
+            "default",
+            r"C:\foo\results.nc",
+            r"C:\foo\model.pkl",
+            r"C:\foo\spikes.npz",
+            r"C:\foo\position.parquet",
+        ]
+    )
+    assert args.run_files == [
+        [
+            "default",
+            r"C:\foo\results.nc",
+            r"C:\foo\model.pkl",
+            r"C:\foo\spikes.npz",
+            r"C:\foo\position.parquet",
+        ]
+    ]
+    spec = _parse_run_files_arg(args.run_files[0])
+    assert spec["name"] == "default"
+    assert spec["results"] == r"C:\foo\results.nc"
+
+
+@pytest.mark.unit
+def test_cli_run_files_multi_run(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two ``--run-files`` invocations build two distinct bundles."""
+    dir_a = tmp_path / "a"
+    dir_a.mkdir()
+    dir_b = tmp_path / "b"
+    dir_b.mkdir()
+    a_paths = _save_bundle_files(dir_a, nl_fitted, sim_session)
+    b_paths = _save_bundle_files(dir_b, nl_fitted, sim_session)
+    _patch_launch_no_block(monkeypatch)
+    exit_code = app_main(
+        [
+            "--run-files",
+            "alpha",
+            str(a_paths["results"]),
+            str(a_paths["model"]),
+            str(a_paths["spikes"]),
+            str(a_paths["position"]),
+            "--run-files",
+            "beta",
+            str(b_paths["results"]),
+            str(b_paths["model"]),
+            str(b_paths["spikes"]),
+            str(b_paths["position"]),
+        ]
+    )
+    assert exit_code == 0
+
+
+@pytest.mark.unit
 def test_cli_requires_at_least_one_run() -> None:
     with pytest.raises(SystemExit) as exc_info:
         app_main([])
