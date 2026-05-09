@@ -56,21 +56,21 @@ contiguous read.
 
 ## 5.2 — `ZarrDirectDecoderDataSource`
 
-- [ ] New module
+- [x] New module
   `src/non_local_detector/visualization/interactive/data_source_zarr_direct.py`
   with `ZarrDirectDecoderDataSource(DecoderDataSource)`.
-- [ ] Open `results.zarr/` once via `zarr.open_consolidated(path)`
+- [x] Open `results.zarr/` once via `zarr.open_consolidated(path)`
   (fall back to `zarr.open(path)`). Cache direct `zarr.Array`
   handles for: `acausal_posterior`, `log_likelihood`,
   `predictive_posterior`, `acausal_state_probabilities`, `time`.
-- [ ] `load_posterior(sl)` → `np.asarray(self._posterior[sl, :])` —
+- [x] `load_posterior(sl)` → `np.asarray(self._posterior[sl, :])` —
   one contiguous read, no xarray.
-- [ ] Sidecars (model.pkl, spikes.npz, position.parquet, place
+- [x] Sidecars (model.pkl, spikes.npz, position.parquet, place
   fields, fitted detector, event index) load eagerly at
   construction — they're small + on the per-tick hot path.
-- [ ] `set_active_run(name)` rebinds the zarr handles for the new
+- [x] `set_active_run(name)` rebinds the zarr handles for the new
   run.
-- [ ] Multi-run support: `for_directories(dict[str, Path])`
+- [x] Multi-run support: `for_directories(dict[str, Path])`
   classmethod mirroring `InMemoryDecoderDataSource.from_bundles`.
 
 ---
@@ -80,16 +80,28 @@ contiguous read.
 The direct-zarr path skips the xarray MultiIndex restoration (panel
 collapse helpers must work without it).
 
-- [ ] Audit each panel's collapse helper for `state_bins` MultiIndex
+- [x] Audit each panel's collapse helper for `state_bins` MultiIndex
   assumptions (look for `.sel(state_bins=...)`, `.unstack`,
   `.indexes`).
-- [ ] Where a helper assumes the MultiIndex, refactor to integer-
+- [x] Where a helper assumes the MultiIndex, refactor to integer-
   position indexing (use `state_ind` 1D coord — present on both
-  paths).
-- [ ] Document the contract: collapse helpers accept a 2D
+  paths). **No refactor required**: the audit confirms all four
+  collapse helpers (`PosteriorHeatmapModel.collapse_rows`,
+  `LikelihoodHeatmapModel.update_window`, `SliceModel`'s top-curve
+  + per-cell paths, and the analysis-layer
+  `collapse_log_likelihood_per_spatial_state`) already operate on
+  integer-position indexing into 2D `(n_visible, n_state_bins)`
+  numpy arrays via `np.isin(detector.state_ind_, ...)` masks.
+  Zero `.sel(state_bins=...)` / `.unstack` usage outside
+  `data_source_zarr._restore_state_bins_multiindex` (which restores
+  the MultiIndex on the *xarray* Dataset for code that walks
+  `results.data_vars`, not for the per-window hot path).
+- [x] Document the contract: collapse helpers accept a 2D
   `(n_time, n_state_bins)` array + a 1D
   `state_ind: (n_state_bins,)` array; never relies on xarray
-  MultiIndex semantics.
+  MultiIndex semantics. *Documented in
+  `PosteriorHeatmapModel.collapse_rows` docstring; the contract
+  applies symmetrically to the likelihood + slice helpers.*
 
 ---
 

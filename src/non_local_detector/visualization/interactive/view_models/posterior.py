@@ -135,6 +135,14 @@ class PosteriorHeatmapModel:
         Always returns ``(n_visible, n_pos)``; the ``n_pos`` axis is
         preserved on empty input so downstream renderers can still
         infer the position grid width.
+
+        **Contract**: input is a 2D ``(n_visible, n_state_bins)``
+        numpy array; the column axis is integer-positional, not the
+        xarray ``state_bins`` MultiIndex. ``state_ind`` (1D, present
+        on both eager and zarr-direct data sources) is the column
+        labeller. This keeps the collapse path identical regardless
+        of whether the underlying data source goes through xarray
+        or reads ``zarr.Array[sl, :]`` directly (Phase 5.3 audit).
         """
         n_visible = posterior_window.shape[0]
         if n_visible == 0:
