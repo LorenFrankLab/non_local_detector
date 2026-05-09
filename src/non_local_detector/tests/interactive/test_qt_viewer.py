@@ -199,6 +199,35 @@ def test_qt_viewer_launches_and_routes_payload(
 
 
 @pytest.mark.unit
+def test_qt_viewer_close_stops_autoscroll_timer(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Regression: closing the window mid-playback must stop the
+    autoscroll timer before the widget enters its destruction path,
+    otherwise the next ``_autoscroll_tick`` fires against a partially
+    deleted Qt widget and segfaults.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        QtViewer,
+    )
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    viewer._start_autoscroll()
+    assert viewer._autoscroll_timer is not None
+    viewer._play_button.setChecked(True)
+    qapp.processEvents()
+    assert viewer._play_button.isChecked()
+
+    viewer.close()
+    qapp.processEvents()
+
+    assert viewer._autoscroll_timer is None
+    assert viewer._play_button.isChecked() is False
+
+
+@pytest.mark.unit
 def test_qt_viewer_set_active_run_via_core(
     qapp,
     multi_run_bundles: dict[str, RunBundle],

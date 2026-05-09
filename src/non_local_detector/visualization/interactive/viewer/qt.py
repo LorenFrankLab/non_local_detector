@@ -1335,6 +1335,9 @@ class QtViewer(QtWidgets.QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt naming convention
         """Drop self from the live-viewer registry on close."""
+        self._stop_autoscroll()
+        if self._play_button.isChecked():
+            self._play_button.setChecked(False)
         self._backend.shutdown()
         try:
             _LIVE_VIEWERS.remove(self)
