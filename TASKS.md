@@ -5,8 +5,15 @@
 Branch-local task tracker for the v1 implementation of
 [docs/plans/2026-05-06-interactive-decoder-viewer.md](docs/plans/2026-05-06-interactive-decoder-viewer.md).
 
-**This file is temporary** — delete before merging the v1 PR. Same for
-`SCRATCHPAD.md`.
+**Post-v1 polish** identified by the 2026-05-09 multi-agent review
+lives in
+[.claude/docs/plans/viewer-polish/README.md](.claude/docs/plans/viewer-polish/README.md)
+(separate per-phase files). Read that plan after the v1 milestones
+in this file are checked off.
+
+**This file is temporary** — delete before merging the v1 PR. Same
+for `SCRATCHPAD.md` and the entire
+`.claude/docs/plans/viewer-polish/` directory.
 
 Milestones map to plan phases. Each task is concrete and testable;
 mark with `[x]` when done. If a task is blocked, note why on the line
@@ -817,5 +824,6 @@ plan file when v1 ships.
 - [ ] `uv run ruff check src/` green.
 - [ ] `uv run ruff format --check src/` green.
 - [ ] CI passes on the PR.
-- [ ] **Delete `TASKS.md` and `SCRATCHPAD.md` from the branch
-  before merging** (these files are branch-local working notes).
+- [ ] **Delete `TASKS.md`, `SCRATCHPAD.md`, and
+  `.claude/docs/plans/viewer-polish/` from the branch before
+  merging** (these files are branch-local working notes).
