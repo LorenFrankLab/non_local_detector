@@ -455,6 +455,62 @@ def test_qt_viewer_shortcut_handlers_match_table(
 
 
 @pytest.mark.unit
+def test_scroll_keeps_x_view_range_fixed_and_absolute_readout_moves(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Phase 3.1 invariance: scrolling the t_center forward leaves the
+    visible x-range and tick labels of every relative-time-axis panel
+    unchanged, while the absolute-time readout in the controls bar
+    tracks ``t_center``. Catches regressions that re-introduce
+    absolute-axis churn."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.4)
+
+    panels = viewer._builtin_panels
+    initial_ranges = [panel.getViewBox().viewRange()[0] for panel in panels]
+    initial_label = viewer._time_label.text()
+
+    # Pick a different time bin so t_center actually changes.
+    target_t = float(ds.time[len(ds.time) // 4])
+    assert target_t != viewer._core.t_center, "fixture should give us motion"
+    viewer._core.set_t_center(target_t)
+    viewer._sync_control_labels()
+    qapp.processEvents()
+
+    after_ranges = [panel.getViewBox().viewRange()[0] for panel in panels]
+    after_label = viewer._time_label.text()
+    for before, after in zip(initial_ranges, after_ranges, strict=True):
+        np.testing.assert_allclose(after, before, atol=1e-9)
+    # Visible x-range should be exactly [-t_width/2, +t_width/2].
+    for low, high in after_ranges:
+        np.testing.assert_allclose([low, high], [-0.2, 0.2], atol=1e-9)
+    # Absolute-time readout must have moved (it shows t_center).
+    assert initial_label != after_label
+
+
+@pytest.mark.unit
+def test_t_width_change_relocks_x_view_range(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Changing ``t_width`` re-locks every panel's x-range to the new
+    ``[-t_width/2, +t_width/2]`` bounds — the only event that should
+    update the visible x-range under relative rendering."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.4)
+    viewer._core.set_t_width(1.0)
+    qapp.processEvents()
+    for panel in viewer._builtin_panels:
+        low, high = panel.getViewBox().viewRange()[0]
+        np.testing.assert_allclose([low, high], [-0.5, 0.5], atol=1e-9)
+
+
+@pytest.mark.unit
 def test_window_payload_carries_view_state(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
