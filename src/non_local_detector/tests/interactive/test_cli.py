@@ -331,6 +331,140 @@ def test_cli_run_from_dir_uses_zarr_cache_when_present(
 
 
 @pytest.mark.unit
+def test_cli_all_run_from_dir_with_caches_uses_zarr_direct(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When every spec is a ``--run-from-dir`` with a valid
+    ``results.zarr/`` cache, ``main()`` builds a
+    ``ZarrDirectDecoderDataSource`` (Phase 5.4 perf path)."""
+    pytest.importorskip("zarr")
+    from non_local_detector.visualization.interactive.devtools.build_viewer_cache import (
+        build_viewer_cache,
+    )
+
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    _save_bundle_files(bundle_dir, nl_fitted, sim_session)
+    build_viewer_cache(bundle_dir)
+
+    seen: dict[str, object] = {}
+    from non_local_detector.visualization.interactive.viewer import (
+        qt as qt_mod,
+    )
+
+    original_launch = qt_mod.launch_qt_with_source
+
+    def _capture(data_source, **kwargs):
+        seen["data_source"] = data_source
+        kwargs["block"] = False
+        return original_launch(data_source, **kwargs)
+
+    monkeypatch.setattr(qt_mod, "launch_qt_with_source", _capture)
+    exit_code = app_main(["--run-from-dir", f"default:{bundle_dir}"])
+    assert exit_code == 0
+    from non_local_detector.visualization.interactive.data_source_zarr_direct import (
+        ZarrDirectDecoderDataSource,
+    )
+
+    assert isinstance(seen["data_source"], ZarrDirectDecoderDataSource)
+
+
+@pytest.mark.unit
+def test_cli_mixed_specs_warn_and_fall_back_to_in_memory(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mixed CLI (one cached `--run-from-dir` + one cache-less spec)
+    emits a ``UserWarning`` and falls back to
+    ``InMemoryDecoderDataSource``. Phase 5.4 documents the
+    constraint; mixing isn't supported by ZarrDirect's
+    ``for_directories`` API."""
+    pytest.importorskip("zarr")
+    from non_local_detector.visualization.interactive.devtools.build_viewer_cache import (
+        build_viewer_cache,
+    )
+
+    cached_dir = tmp_path / "cached"
+    cached_dir.mkdir()
+    _save_bundle_files(cached_dir, nl_fitted, sim_session)
+    build_viewer_cache(cached_dir)
+
+    bare_dir = tmp_path / "bare"
+    bare_dir.mkdir()
+    bare_paths = _save_bundle_files(bare_dir, nl_fitted, sim_session)
+    bare_run_arg = (
+        f"bare:{bare_paths['results']}:{bare_paths['model']}:"
+        f"{bare_paths['spikes']}:{bare_paths['position']}"
+    )
+
+    seen: dict[str, object] = {}
+    from non_local_detector.visualization.interactive.viewer import (
+        qt as qt_mod,
+    )
+
+    original_launch = qt_mod.launch_qt_with_source
+
+    def _capture(data_source, **kwargs):
+        seen["data_source"] = data_source
+        kwargs["block"] = False
+        return original_launch(data_source, **kwargs)
+
+    monkeypatch.setattr(qt_mod, "launch_qt_with_source", _capture)
+
+    with pytest.warns(UserWarning, match="Mixed CLI"):
+        exit_code = app_main(
+            ["--run-from-dir", f"cached:{cached_dir}", "--run", bare_run_arg]
+        )
+    assert exit_code == 0
+    from non_local_detector.visualization.interactive.data_source import (
+        InMemoryDecoderDataSource,
+    )
+
+    assert isinstance(seen["data_source"], InMemoryDecoderDataSource)
+
+
+@pytest.mark.unit
+def test_cli_no_caches_uses_in_memory(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plain ``--run`` (no zarr cache anywhere) gives the eager
+    ``InMemoryDecoderDataSource`` with no warning."""
+    paths = _save_bundle_files(tmp_path, nl_fitted, sim_session)
+    run_arg = (
+        f"default:{paths['results']}:{paths['model']}:"
+        f"{paths['spikes']}:{paths['position']}"
+    )
+    seen: dict[str, object] = {}
+    from non_local_detector.visualization.interactive.viewer import (
+        qt as qt_mod,
+    )
+
+    original_launch = qt_mod.launch_qt_with_source
+
+    def _capture(data_source, **kwargs):
+        seen["data_source"] = data_source
+        kwargs["block"] = False
+        return original_launch(data_source, **kwargs)
+
+    monkeypatch.setattr(qt_mod, "launch_qt_with_source", _capture)
+    exit_code = app_main(["--run", run_arg])
+    assert exit_code == 0
+    from non_local_detector.visualization.interactive.data_source import (
+        InMemoryDecoderDataSource,
+    )
+
+    assert isinstance(seen["data_source"], InMemoryDecoderDataSource)
+
+
+@pytest.mark.unit
 def test_cli_run_from_dir_rejects_missing_directory(tmp_path: Path) -> None:
     nonexistent = tmp_path / "no_such_dir"
     with pytest.raises(SystemExit) as exc_info:

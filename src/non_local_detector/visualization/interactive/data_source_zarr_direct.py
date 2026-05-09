@@ -31,10 +31,8 @@ from pathlib import Path
 
 import numpy as np
 
+from non_local_detector.visualization.interactive import data_source_zarr as _dsz
 from non_local_detector.visualization.interactive.data_source import SliceWhich
-from non_local_detector.visualization.interactive.data_source_zarr import (
-    load_zarr_cache_or_fall_back,
-)
 from non_local_detector.visualization.interactive.view_models.base import (
     RunBundle,
     SpikeEvent,
@@ -111,7 +109,10 @@ def _load_run_bundle_from_dir(
     # check the eager path uses) before trusting either the lazy results
     # Dataset or the direct zarr handles below.
     canonical_results = _DetectorBase.load_results(str(nc_path))
-    results = load_zarr_cache_or_fall_back(
+    # Re-resolve through the module attribute (rather than a bound
+    # local) so test monkey-patches on ``data_source_zarr`` take effect
+    # here too.
+    results = _dsz.load_zarr_cache_or_fall_back(
         zarr_path=zarr_path,
         canonical_path=nc_path,
         canonical_results=canonical_results,

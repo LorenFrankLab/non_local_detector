@@ -261,6 +261,82 @@ def _load_run(spec: dict[str, str]):
     )
 
 
+def _zarr_direct_eligible(spec: dict[str, str]) -> bool:
+    """A spec qualifies for the zarr-direct path iff it carries a
+    valid ``results.zarr/`` (set by ``_parse_run_from_dir_arg`` only).
+
+    ``--run`` and ``--run-files`` never carry one; they ship four
+    explicit paths and never imply a directory layout.
+    """
+    return "zarr_cache" in spec and "bundle_dir" in spec
+
+
+def _resolve_data_source(
+    specs: list[dict[str, str]],
+):
+    """Build the right ``DecoderDataSource`` for ``specs``.
+
+    Three branches:
+
+    1. Every spec is zarr-direct-eligible AND the zarr backend
+       imports cleanly → ``ZarrDirectDecoderDataSource.for_directories``.
+       This is the perf-win path (Phase 5.2).
+    2. Mixed (some zarr-eligible, some not) → emit ``UserWarning``,
+       fall back to eagerly loading every spec via ``_load_run`` and
+       wrapping in ``InMemoryDecoderDataSource``. Mixed-mode
+       one-data-source-per-run is harder than this phase warrants.
+    3. None zarr-eligible OR zarr import fails → eager
+       ``InMemoryDecoderDataSource``. (The ``_load_run`` path's
+       existing ``ImportError`` fallback already emits its own
+       ``UserWarning`` when the cache is present but the backend is
+       missing.)
+    """
+    import warnings
+
+    from non_local_detector.visualization.interactive.data_source import (
+        InMemoryDecoderDataSource,
+    )
+
+    eligible = [s for s in specs if _zarr_direct_eligible(s)]
+    all_eligible = len(eligible) == len(specs)
+
+    if all_eligible and eligible:
+        try:
+            from non_local_detector.visualization.interactive.data_source_zarr_direct import (
+                ZarrDirectDecoderDataSource,
+            )
+
+            dirs = {spec["name"]: Path(spec["bundle_dir"]) for spec in specs}
+            return ZarrDirectDecoderDataSource.for_directories(dirs)
+        except ImportError as exc:
+            warnings.warn(
+                f"All --run-from-dir bundles have results.zarr/ caches but "
+                f"the zarr backend is unavailable ({exc}); falling back to "
+                "eager InMemoryDecoderDataSource. Install the cache backend "
+                "with `pip install 'non_local_detector[viewer-cache]'` to "
+                "use the direct-zarr path.",
+                stacklevel=2,
+            )
+
+    if eligible and not all_eligible:
+        warnings.warn(
+            "Mixed CLI: some runs carry a results.zarr/ cache but others "
+            "don't. The viewer is degrading the cached runs to in-memory "
+            "loads so a single InMemoryDecoderDataSource can hold every "
+            "bundle. Use the build-viewer-cache devtool on the remaining "
+            "runs (`python -m non_local_detector.visualization.interactive"
+            ".devtools build-viewer-cache --run-dir <dir>`) to enable "
+            "the direct-zarr path for the whole session.",
+            stacklevel=2,
+        )
+
+    bundles: dict[str, object] = {}
+    for spec in specs:
+        name, bundle = _load_run(spec)
+        bundles[name] = bundle
+    return InMemoryDecoderDataSource(bundles)  # type: ignore[arg-type]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point.
 
@@ -274,38 +350,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             "at least one --run / --run-files / --run-from-dir argument is required"
         )
 
-    bundles_dict: dict[str, object] = {}
+    specs: list[dict[str, str]] = []
     seen_names: set[str] = set()
 
-    def _ingest(spec: dict[str, str]) -> None:
+    def _add_spec(spec: dict[str, str]) -> None:
         name = spec["name"]
         if name in seen_names:
             parser.error(f"duplicate run name {name!r}")
         seen_names.add(name)
-        _, bundle = _load_run(spec)
-        bundles_dict[name] = bundle
+        specs.append(spec)
 
     for arg in args.run:
         try:
-            _ingest(_parse_run_arg(arg))
+            _add_spec(_parse_run_arg(arg))
         except argparse.ArgumentTypeError as exc:
             parser.error(str(exc))
     for values in args.run_files:
         try:
-            _ingest(_parse_run_files_arg(values))
+            _add_spec(_parse_run_files_arg(values))
         except argparse.ArgumentTypeError as exc:
             parser.error(str(exc))
     for arg in args.run_from_dir:
         try:
-            _ingest(_parse_run_from_dir_arg(arg))
+            _add_spec(_parse_run_from_dir_arg(arg))
         except argparse.ArgumentTypeError as exc:
             parser.error(str(exc))
 
-    from non_local_detector.visualization.interactive.data_source import (
-        InMemoryDecoderDataSource,
-    )
-
-    data_source = InMemoryDecoderDataSource(bundles_dict)  # type: ignore[arg-type]
+    data_source = _resolve_data_source(specs)
 
     if args.backend == "qt":
         from non_local_detector.visualization.interactive.viewer.qt import (
@@ -318,9 +389,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 _HELP_EPILOG = """\
+For sessions over ~1 hour, prefer `--run-from-dir` plus
+`build-viewer-cache` for fluid scroll/playback — the cache lets the
+viewer read each window directly from a chunked zarr array via
+ZarrDirectDecoderDataSource (Phase 5 perf path), which is markedly
+faster than the eager NetCDF path.
+
+  Build the cache once:
+    python -m non_local_detector.visualization.interactive.devtools \\
+      build-viewer-cache --run-dir bundles/continuous/
+
+  Then launch via the cached path (preferred):
+    python -m non_local_detector.visualization.interactive \\
+      --run-from-dir continuous:bundles/continuous/
+
 Examples:
 
-  Single run from a bundle directory (e.g. devtool output) — preferred:
+  Single run from a bundle directory:
     python -m non_local_detector.visualization.interactive \\
       --run-from-dir continuous:bundles/continuous/
 
@@ -338,6 +423,14 @@ Examples:
     python -m non_local_detector.visualization.interactive \\
       --run-from-dir continuous:bundles/continuous/ \\
       --run-from-dir contfrag:bundles/contfrag/
+
+The direct-zarr path requires every spec on the command line to be
+a `--run-from-dir` with a valid `results.zarr/` cache. Mixing
+zarr-cached runs with non-cached runs (e.g. one `--run-from-dir`
+plus one `--run`) is supported but emits a `UserWarning` and
+degrades every run to the eager InMemoryDecoderDataSource —
+build the cache for the remaining runs to use the direct-zarr path
+across the whole session.
 
 `--run-from-dir` requires a NetCDF results bundle (`results.nc` plus
 `model.pkl`, `spikes.npz`, `position.parquet`). When a `results.zarr/`
