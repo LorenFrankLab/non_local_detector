@@ -455,6 +455,27 @@ def test_qt_viewer_shortcut_handlers_match_table(
 
 
 @pytest.mark.unit
+def test_window_payload_carries_view_state(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """``_build_payload`` propagates the requested ``t_center`` and
+    ``t_width`` so panels can render at relative coordinates against
+    a fixed ``[-t_width/2, +t_width/2]`` x-range without re-deriving
+    the view from ``time_start`` / ``time_stop``."""
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.4)
+    target_t = float(ds.time[len(ds.time) // 2])
+    viewer._core.set_t_center(target_t)
+
+    payload = viewer._backend._build_payload(viewer._core.current_view_state)
+    assert payload.t_center == target_t
+    assert payload.t_width == 0.4
+
+
+@pytest.mark.unit
 def test_qt_viewer_set_active_run_via_core(
     qapp,
     multi_run_bundles: dict[str, RunBundle],

@@ -482,6 +482,8 @@ class QtBackendAdapter(BackendAdapter):
             indices=sl,
             time_start=time_start,
             time_stop=time_stop,
+            t_center=float(state.t_center),
+            t_width=float(state.t_width),
             posterior=posterior,
             likelihood=likelihood,
             predictive=predictive,

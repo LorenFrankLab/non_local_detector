@@ -326,6 +326,13 @@ class WindowPayload:
     indices: slice
     time_start: float | None = None
     time_stop: float | None = None
+    # ``t_center`` / ``t_width`` carry the requested view state so
+    # panels can render at relative coordinates (``time - t_center``)
+    # against a fixed ``[-t_width/2, +t_width/2]`` x-range without
+    # re-deriving the view from ``time_start`` / ``time_stop`` —
+    # which is unstable at session edges and on non-uniform grids.
+    t_center: float = 0.0
+    t_width: float = 0.0
     posterior: np.ndarray | None = None
     likelihood: np.ndarray | None = None
     predictive: np.ndarray | None = None
