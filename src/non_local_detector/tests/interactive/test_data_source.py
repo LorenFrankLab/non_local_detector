@@ -54,20 +54,34 @@ class TestSingleRunDataSource:
     def test_window_indices_clamps_when_center_past_end(
         self, run_bundles: dict[str, RunBundle]
     ) -> None:
+        """Past-end ``t_center`` snaps to a t_width-wide rightmost window
+        (NOT collapsed to a single sample at the boundary)."""
         ds = InMemoryDecoderDataSource.from_single(run_bundles["nl_all"])
         time = ds.time
-        sl = ds.window_indices(t_center=float(time[-1]) + 100.0, t_width=1.0)
+        t_width = 1.0
+        sl = ds.window_indices(t_center=float(time[-1]) + 100.0, t_width=t_width)
         assert sl.stop == len(time)
-        assert sl.start < sl.stop  # non-empty rightmost window
+        assert sl.start < sl.stop
+        # Width contract: rightmost window must be t_width-wide, not 1 sample.
+        # Allow one bin of slack for searchsorted boundary effects.
+        bin_width = float(np.median(np.diff(time)))
+        duration = float(time[sl.stop - 1] - time[sl.start])
+        assert duration >= t_width - bin_width
 
     def test_window_indices_clamps_when_center_before_start(
         self, run_bundles: dict[str, RunBundle]
     ) -> None:
+        """Before-start ``t_center`` snaps to a t_width-wide leftmost window
+        (NOT collapsed to a single sample at the boundary)."""
         ds = InMemoryDecoderDataSource.from_single(run_bundles["nl_all"])
         time = ds.time
-        sl = ds.window_indices(t_center=float(time[0]) - 100.0, t_width=1.0)
+        t_width = 1.0
+        sl = ds.window_indices(t_center=float(time[0]) - 100.0, t_width=t_width)
         assert sl.start == 0
-        assert sl.start < sl.stop  # non-empty leftmost window
+        assert sl.start < sl.stop
+        bin_width = float(np.median(np.diff(time)))
+        duration = float(time[sl.stop - 1] - time[sl.start])
+        assert duration >= t_width - bin_width
 
     def test_window_indices_no_overshoot_at_session_end(
         self, run_bundles: dict[str, RunBundle]
