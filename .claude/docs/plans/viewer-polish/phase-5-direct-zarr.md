@@ -32,7 +32,7 @@ contiguous read.
 
 ## 5.1 — Define `DecoderDataSource` Protocol
 
-- [ ] Extract a `DecoderDataSource` Protocol from the current
+- [x] Extract a `DecoderDataSource` Protocol from the current
   `InMemoryDecoderDataSource` API surface that `ViewerCore` and
   `QtBackendAdapter.build_payload` depend on:
   - Properties: `time`, `time_edges`, `n_time`, `available_outputs`,
@@ -42,13 +42,13 @@ contiguous read.
     `load_predictive(sl)`, `load_state_probabilities(sl)`,
     `load_position(sl)`, `slice_at_index(t_idx, which)`,
     `set_active_run(name)`
-- [ ] Place the Protocol in
+- [x] Place the Protocol in
   [data_source.py](../../../../src/non_local_detector/visualization/interactive/data_source.py)
   near the top so both implementations import it from there.
-- [ ] Update `ViewerCore.__init__` and `QtBackendAdapter.__init__`
+- [x] Update `ViewerCore.__init__` and `QtBackendAdapter.__init__`
   type hints to accept `DecoderDataSource` instead of
   `InMemoryDecoderDataSource`.
-- [ ] Test: `InMemoryDecoderDataSource` still satisfies the
+- [x] Test: `InMemoryDecoderDataSource` still satisfies the
   Protocol (use `runtime_checkable` + an `isinstance` assertion in
   tests).
 
