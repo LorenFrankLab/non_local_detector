@@ -145,6 +145,75 @@ _SLICE_OVERLAY_CHOICES: tuple[tuple[OverlayMode, str], ...] = (
     ("smoothed", "Smoothed (acausal)"),
 )
 
+# Per-mode rebuild instructions surfaced as tooltips on disabled
+# slice-overlay combo items (via ``Qt.ToolTipRole``). The likelihood
+# heatmap panel's missing-output overlay carries its own
+# ``MISSING_DATA_MESSAGE`` (different context — only mentions
+# ``log_likelihood``).
+_OVERLAY_DISABLED_TOOLTIP: dict[OverlayMode, str] = {
+    "predictive": (
+        "Predictive overlay needs predictive_posterior. "
+        "Re-run predict(return_outputs=['predictive_posterior'])."
+    ),
+    "filtered": (
+        "Filtered overlay needs predictive_posterior + log_likelihood. "
+        "Re-run predict(return_outputs=['predictive_posterior', "
+        "'log_likelihood'])."
+    ),
+}
+
+
+def _available_overlay_modes(run: RunBundle) -> set[OverlayMode]:
+    """Return the overlay modes the slice panel can render for ``run``.
+
+    ``"smoothed"`` is always available because ``acausal_posterior`` is
+    a required ``RunBundle`` invariant; ``"predictive"`` and
+    ``"filtered"`` depend on per-run optional outputs.
+    """
+    available: set[OverlayMode] = {"smoothed"}
+    data_vars = run.results.data_vars
+    has_predictive = "predictive_posterior" in data_vars
+    has_loglik = "log_likelihood" in data_vars
+    if has_predictive:
+        available.add("predictive")
+    if has_predictive and has_loglik:
+        available.add("filtered")
+    return available
+
+
+# Single source of truth for keyboard shortcuts. Rows are
+# ``(category, key, action, description)``; the ``action`` string keys
+# into a ``_shortcut_handlers`` dict built per-instance, so this table
+# stays free of bound-method references and can be rendered into the
+# help dialog directly. Categories order in the help dialog: Navigation,
+# Window, Playback, Pin, Model, Help.
+_SHORTCUT_TABLE: list[tuple[str, str, str, str]] = [
+    ("Navigation", "Left", "step_left", "Step one bin earlier"),
+    ("Navigation", "Right", "step_right", "Step one bin later"),
+    ("Navigation", "G", "go_to_time", "Go to time (input dialog)"),
+    ("Navigation", "R", "reset_view", "Reset window to default center & width"),
+    ("Navigation", "N", "next_event", "Jump to next event"),
+    ("Navigation", "Shift+N", "prev_event", "Jump to previous event"),
+    ("Window", "Shift+Left", "step_window_back", "Step a full window earlier"),
+    ("Window", "Shift+Right", "step_window_forward", "Step a full window later"),
+    ("Window", "[", "shrink_window", "Halve window width"),
+    ("Window", "]", "grow_window", "Double window width"),
+    ("Playback", "Space", "toggle_play", "Play / pause autoscroll"),
+    ("Playback", ",", "step_speed_down", "Slower autoscroll"),
+    ("Playback", ".", "step_speed_up", "Faster autoscroll"),
+    ("Pin", "Esc", "clear_pins", "Clear all pinned items"),
+    ("Model", "M", "cycle_model", "Cycle to next run"),
+    ("Help", "?", "show_help", "Show keyboard shortcuts dialog"),
+]
+_SHORTCUT_CATEGORY_ORDER: tuple[str, ...] = (
+    "Navigation",
+    "Window",
+    "Playback",
+    "Pin",
+    "Model",
+    "Help",
+)
+
 
 def _format_speed(speed: float) -> str:
     """Render a multiplier as ``"1×"`` / ``"2×"`` / ``"0.05×"`` etc."""
@@ -658,27 +727,7 @@ class QtViewer(QtWidgets.QMainWindow):
         # fires on subsequent moves, not on construction.
         self._sync_cursor_markers(self._core.t_center)
 
-        # Keyboard shortcuts. ``[`` / ``]`` shrink/grow the window
-        # width; ``Shift+Left`` / ``Shift+Right`` step a full window
-        # at a time; ``R`` resets center + width.
-        for key_seq, fn in (
-            (QtGui.QKeySequence(QtCore.Qt.Key_Left), self._step_left),
-            (QtGui.QKeySequence(QtCore.Qt.Key_Right), self._step_right),
-            (QtGui.QKeySequence("Shift+Left"), lambda: self._step_window(-1)),
-            (QtGui.QKeySequence("Shift+Right"), lambda: self._step_window(+1)),
-            (QtGui.QKeySequence("["), lambda: self._scale_t_width(0.5)),
-            (QtGui.QKeySequence("]"), lambda: self._scale_t_width(2.0)),
-            (QtGui.QKeySequence("R"), self._reset_view),
-            (QtGui.QKeySequence("N"), self._core.next_event),
-            (QtGui.QKeySequence("Shift+N"), self._core.prev_event),
-            (QtGui.QKeySequence("Escape"), self._clear_pins),
-            (QtGui.QKeySequence("M"), self._cycle_model),
-            (QtGui.QKeySequence("Space"), self._toggle_play),
-            (QtGui.QKeySequence(","), lambda: self._step_speed(-1)),
-            (QtGui.QKeySequence("."), lambda: self._step_speed(+1)),
-        ):
-            shortcut = QtGui.QShortcut(key_seq, self)
-            shortcut.activated.connect(fn)
+        self._register_shortcuts()
 
     def showEvent(self, event) -> None:  # noqa: N802 — Qt naming convention
         """Kick off the first async window load once the viewer is shown."""
@@ -715,6 +764,10 @@ class QtViewer(QtWidgets.QMainWindow):
         multi_run = len(run_names) > 1
 
         layout.addWidget(QtWidgets.QLabel("Center time:"))
+        self._slider.setToolTip(
+            "Center time of the visible window. Drag, click to jump, "
+            "or use Left / Right keys."
+        )
         layout.addWidget(self._slider, stretch=1)
         self._time_label = QtWidgets.QLabel(self._format_time_label())
         self._time_label.setMinimumWidth(260)
@@ -726,6 +779,9 @@ class QtViewer(QtWidgets.QMainWindow):
         self._window_slider.setRange(0, WINDOW_SLIDER_RESOLUTION)
         self._window_slider.setValue(self._window_slider_value_for(self._core.t_width))
         self._window_slider.setMaximumWidth(140)
+        self._window_slider.setToolTip(
+            "Window width in seconds. Use [ / ] keys or scroll wheel to resize."
+        )
         self._window_slider.valueChanged.connect(self._on_window_slider_changed)
         layout.addWidget(self._window_slider)
         self._window_label = QtWidgets.QLabel(self._format_window_label())
@@ -735,14 +791,21 @@ class QtViewer(QtWidgets.QMainWindow):
 
         self._per_cell_checkbox = QtWidgets.QCheckBox("Per-cell rows")
         self._per_cell_checkbox.setChecked(True)
+        self._per_cell_checkbox.setToolTip(
+            "Show per-cell likelihood rows under the slice plot."
+        )
         self._per_cell_checkbox.toggled.connect(self._slice_panel.set_per_cell_visible)
         layout.addWidget(self._per_cell_checkbox)
         layout.addSpacing(12)
 
         layout.addWidget(QtWidgets.QLabel("Slice overlay:"))
         self._slice_overlay_combo = QtWidgets.QComboBox()
+        self._slice_overlay_combo.setToolTip(
+            "Which posterior to render as the blue overlay curve in the slice panel."
+        )
         for mode_key, mode_label in _SLICE_OVERLAY_CHOICES:
             self._slice_overlay_combo.addItem(mode_label, userData=mode_key)
+        self._apply_overlay_availability(self._data_source.active_run)
         for i in range(self._slice_overlay_combo.count()):
             if self._slice_overlay_combo.itemData(i) == self._slice_panel.overlay_mode:
                 self._slice_overlay_combo.setCurrentIndex(i)
@@ -759,13 +822,18 @@ class QtViewer(QtWidgets.QMainWindow):
         # the per-tick path doesn't have to reparse the display label.
         self._play_button = QtWidgets.QToolButton()
         self._play_button.setText("▶")
-        self._play_button.setToolTip("Play / pause auto-scroll (Space)")
+        self._play_button.setToolTip(
+            "Play / pause autoscroll (Space). , and . step the speed."
+        )
         self._play_button.setCheckable(True)
         self._play_button.toggled.connect(self._on_play_toggled)
         layout.addWidget(self._play_button)
 
         layout.addWidget(QtWidgets.QLabel("Speed (,/.):"))
         self._speed_combo = QtWidgets.QComboBox()
+        self._speed_combo.setToolTip(
+            "Autoscroll rate × real-time. , and . cycle through options."
+        )
         for speed in AUTOSCROLL_SPEED_OPTIONS:
             self._speed_combo.addItem(_format_speed(speed), userData=speed)
         default_idx = AUTOSCROLL_SPEED_OPTIONS.index(AUTOSCROLL_DEFAULT_SPEED)
@@ -782,6 +850,7 @@ class QtViewer(QtWidgets.QMainWindow):
         if multi_run:
             layout.addWidget(QtWidgets.QLabel("Model (M):"))
             self._model_combo = QtWidgets.QComboBox()
+            self._model_combo.setToolTip("Active run; M cycles forward.")
             for name in run_names:
                 self._model_combo.addItem(name, userData=name)
             self._model_combo.setCurrentText(self._data_source.active_run_name)
@@ -793,6 +862,9 @@ class QtViewer(QtWidgets.QMainWindow):
             # Overlay-selector dropdown picks the navigator target.
             layout.addWidget(QtWidgets.QLabel("Overlay (N/Shift+N):"))
             self._overlay_combo = QtWidgets.QComboBox()
+            self._overlay_combo.setToolTip(
+                "Active event-overlay set; N / Shift+N navigate events."
+            )
             self._overlay_combo.addItem("(none)", userData=None)
             for ovl in overlays:
                 self._overlay_combo.addItem(ovl.name, userData=ovl.name)
@@ -807,6 +879,7 @@ class QtViewer(QtWidgets.QMainWindow):
             for ovl in overlays:
                 cb = QtWidgets.QCheckBox(ovl.name)
                 cb.setChecked(True)
+                cb.setToolTip(f"Show / hide the {ovl.name!r} event overlay.")
                 cb.toggled.connect(
                     lambda checked, name=ovl.name: self._core.set_overlay_visibility(
                         name, checked
@@ -857,6 +930,23 @@ class QtViewer(QtWidgets.QMainWindow):
         # keeps non-Qt backends from inheriting the override.
         if isinstance(self._backend, QtBackendAdapter):
             self._backend.set_required_outputs(outputs)
+
+    def _apply_overlay_availability(self, run: RunBundle) -> None:
+        """Enable/disable slice-overlay combo items based on outputs in
+        ``run.results``. Disabled items get a per-item rebuild tooltip
+        via ``Qt.ToolTipRole`` (combo's own ``setToolTip`` only applies
+        to the widget itself, not popup-list items)."""
+        available = _available_overlay_modes(run)
+        model = self._slice_overlay_combo.model()
+        for i in range(self._slice_overlay_combo.count()):
+            mode = self._slice_overlay_combo.itemData(i)
+            item = model.item(i)
+            if mode in available:
+                item.setEnabled(True)
+                item.setData(None, QtCore.Qt.ToolTipRole)
+            else:
+                item.setEnabled(False)
+                item.setData(_OVERLAY_DISABLED_TOOLTIP[mode], QtCore.Qt.ToolTipRole)
 
     def _on_active_run_changed(self, index: int) -> None:
         if self._model_combo is None:
@@ -1247,6 +1337,18 @@ class QtViewer(QtWidgets.QMainWindow):
         self._pinned_event_id = None
         self._refresh_pin_markers()
 
+        # Re-evaluate slice overlay availability for the new run; fall
+        # back to "smoothed" (always present) if the active mode just
+        # became unavailable.
+        self._apply_overlay_availability(new_run)
+        if self._slice_panel.overlay_mode not in _available_overlay_modes(new_run):
+            target_index = next(
+                i
+                for i in range(self._slice_overlay_combo.count())
+                if self._slice_overlay_combo.itemData(i) == "smoothed"
+            )
+            self._slice_overlay_combo.setCurrentIndex(target_index)
+
     def _rebuild_auto_extras(self, extra_metrics: dict) -> None:
         """Tear down auto-built extras and rebuild from new ``extra_metrics``.
 
@@ -1332,6 +1434,106 @@ class QtViewer(QtWidgets.QMainWindow):
             setter = getattr(panel, "set_pin_marker", None)
             if setter is not None:
                 setter(self._pinned_time)
+
+    def _register_shortcuts(self) -> None:
+        """Wire ``_SHORTCUT_TABLE`` rows to bound-method handlers.
+
+        Single source of truth: each row's ``action`` keys into
+        ``self._shortcut_handlers``. A startup assertion catches drift
+        between the table and the handler dict so a future edit can't
+        leave a row unbound or a handler orphaned.
+        """
+        self._shortcut_handlers: dict[str, Callable[[], None]] = {
+            "step_left": self._step_left,
+            "step_right": self._step_right,
+            "go_to_time": self._show_go_to_time_dialog,
+            "reset_view": self._reset_view,
+            "next_event": self._core.next_event,
+            "prev_event": self._core.prev_event,
+            "step_window_back": lambda: self._step_window(-1),
+            "step_window_forward": lambda: self._step_window(+1),
+            "shrink_window": lambda: self._scale_t_width(0.5),
+            "grow_window": lambda: self._scale_t_width(2.0),
+            "toggle_play": self._toggle_play,
+            "step_speed_down": lambda: self._step_speed(-1),
+            "step_speed_up": lambda: self._step_speed(+1),
+            "clear_pins": self._clear_pins,
+            "cycle_model": self._cycle_model,
+            "show_help": self._show_help_dialog,
+        }
+        actions_in_table = {row[2] for row in _SHORTCUT_TABLE}
+        handlers_present = set(self._shortcut_handlers.keys())
+        missing = actions_in_table - handlers_present
+        extra = handlers_present - actions_in_table
+        assert not missing, (
+            f"_SHORTCUT_TABLE references unmapped actions: {sorted(missing)}"
+        )
+        assert not extra, (
+            f"_shortcut_handlers has actions not in _SHORTCUT_TABLE: {sorted(extra)}"
+        )
+        for _, key, action, _ in _SHORTCUT_TABLE:
+            shortcut = QtGui.QShortcut(QtGui.QKeySequence(key), self)
+            shortcut.activated.connect(self._shortcut_handlers[action])
+
+    def _build_help_text(self) -> str:
+        """Render ``_SHORTCUT_TABLE`` as a plain-text reference, grouped
+        by category for the help dialog."""
+        by_category: dict[str, list[tuple[str, str]]] = {}
+        for category, key, _, description in _SHORTCUT_TABLE:
+            by_category.setdefault(category, []).append((key, description))
+        lines: list[str] = ["Keyboard shortcuts", ""]
+        for category in _SHORTCUT_CATEGORY_ORDER:
+            rows = by_category.get(category, [])
+            if not rows:
+                continue
+            lines.append(f"-- {category} --")
+            for key, description in rows:
+                lines.append(f"  {key:<14s}  {description}")
+            lines.append("")
+        lines.append("Click a spike in the raster to pin its cell + event.")
+        lines.append("Esc clears all pins.")
+        return "\n".join(lines).rstrip()
+
+    def _show_go_to_time_dialog(self) -> None:
+        """Open an input dialog asking for a center time in seconds and
+        recenter the core to that value (clamped to the session range).
+        """
+        time = self._data_source.time
+        t_min = float(time[0])
+        t_max = float(time[-1])
+        current = float(self._core.t_center)
+        value, accepted = QtWidgets.QInputDialog.getDouble(
+            self,
+            "Go to time",
+            f"Time (seconds, {t_min:.3f} – {t_max:.3f}):",
+            current,
+            t_min,
+            t_max,
+            3,
+        )
+        if not accepted:
+            return
+        # Manual navigation paths clear pins so a stale spike-pin doesn't
+        # follow the user to an unrelated timestamp; mirrors _step_left,
+        # _step_window, _reset_view, etc.
+        self._clear_pins()
+        self._core.set_t_center(float(value))
+        self._sync_slider_and_bin_panels_for_time(self._core.t_center)
+
+    def _show_help_dialog(self) -> None:
+        """Open a modal dialog showing the shortcut reference."""
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Keyboard shortcuts")
+        layout = QtWidgets.QVBoxLayout(dialog)
+        body = QtWidgets.QPlainTextEdit(self._build_help_text())
+        body.setReadOnly(True)
+        body.setStyleSheet("font-family: monospace; font-size: 10pt;")
+        layout.addWidget(body)
+        close = QtWidgets.QPushButton("Close")
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close)
+        dialog.resize(520, 420)
+        dialog.exec()
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt naming convention
         """Drop self from the live-viewer registry on close."""

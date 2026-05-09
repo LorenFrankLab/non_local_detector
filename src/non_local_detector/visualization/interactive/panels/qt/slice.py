@@ -49,6 +49,11 @@ SliceRowProvider = Callable[
     | None,
 ]
 _OVERLAY_MODE_VALUES: frozenset[str] = frozenset(("predictive", "filtered", "smoothed"))
+_OVERLAY_MODE_DISPLAY: dict[str, str] = {
+    "predictive": "Predictive (causal)",
+    "filtered": "Filtered",
+    "smoothed": "Smoothed (acausal)",
+}
 
 _LIKELIHOOD_PENS = (
     pg.mkPen(color=(255, 127, 14), width=3),
@@ -249,7 +254,9 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._title_label.setText("Slice")
         layout.addWidget(self._title_label)
 
-        self._legend_label = QtWidgets.QLabel(self._build_legend_html())
+        self._legend_label = QtWidgets.QLabel(
+            self._build_legend_html(self._overlay_mode)
+        )
         self._legend_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self._legend_label.setWordWrap(True)
         self._legend_label.setStyleSheet(_SLICE_LEGEND_STYLE)
@@ -320,12 +327,13 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._pinned_cell_ids: set[int] = set()
 
     @staticmethod
-    def _build_legend_html() -> str:
+    def _build_legend_html(overlay_mode: OverlayMode) -> str:
+        overlay_label = _OVERLAY_MODE_DISPLAY[overlay_mode]
         return (
             "<span style='color:rgb(255,127,14);font-size:14pt'>━</span> "
             "Likelihood &nbsp;&nbsp; "
             "<span style='color:rgb(31,119,180);font-size:14pt'>━</span> "
-            "Overlay &nbsp;&nbsp; "
+            f"{overlay_label} &nbsp;&nbsp; "
             "<span style='color:rgb(44,160,44);font-size:14pt'>━</span> "
             "Cell place fields &nbsp;&nbsp; "
             "<span style='color:rgb(50,50,50);font-size:14pt'>┆</span> "
@@ -367,6 +375,7 @@ class QtSlicePanel(QtWidgets.QWidget):
         if mode == self._overlay_mode:
             return
         self._overlay_mode = mode
+        self._legend_label.setText(self._build_legend_html(mode))
         self._maybe_rerender()
 
     @property

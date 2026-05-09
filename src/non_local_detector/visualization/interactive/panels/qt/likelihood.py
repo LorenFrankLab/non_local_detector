@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
+from PySide6 import QtCore, QtWidgets
 
 from non_local_detector.visualization.interactive.panels.qt._mixins import (
     HeatmapPanelBase,
@@ -22,18 +23,12 @@ if TYPE_CHECKING:
 class QtLikelihoodHeatmapPanel(HeatmapPanelBase):
     """Time × position heatmap of the population log-likelihood.
 
-    Title-bar text mirrors the SlicePanel: "Likelihood across all
-    spatial states; heatmap below shows non-local states only" so
-    users see why the likelihood and posterior heatmaps may diverge
-    for NL fits with ``local_position_std=1.0``.
-
     When the active run was produced without ``log_likelihood``
-    (default ``predict()`` call), the heatmap blanks and the panel's
-    title displays a ``MISSING_DATA_MESSAGE`` explaining the
-    re-``predict`` step needed to enable it. Empty/cleared display
-    on its own is ambiguous (could be "no spikes in window" or
-    "log_likelihood not requested"); the title disambiguates per the
-    documented ``RunBundle`` contract.
+    (default ``predict()`` call), the heatmap blanks and a wrapping
+    QLabel overlay surfaces ``MISSING_DATA_MESSAGE`` explaining the
+    re-``predict`` step needed to enable it. The overlay (rather than
+    a pyqtgraph title) is used so the message word-wraps and stays
+    legible at any panel width — the title bar truncates instructions.
     """
 
     MISSING_DATA_MESSAGE = (
@@ -55,9 +50,20 @@ class QtLikelihoodHeatmapPanel(HeatmapPanelBase):
             parent=parent,
         )
         self._model = model
-        # Mirrors whatever was last passed to setTitle so tests +
-        # post-swap rebind logic can read back the displayed message.
         self._title_message: str | None = None
+        self._missing_label = QtWidgets.QLabel("", parent=self)
+        self._missing_label.setAlignment(QtCore.Qt.AlignCenter)
+        self._missing_label.setWordWrap(True)
+        self._missing_label.setStyleSheet(
+            "QLabel {"
+            " color: rgb(60, 60, 60);"
+            " background: rgba(255, 255, 255, 220);"
+            " border: 1px solid rgb(180, 180, 180);"
+            " padding: 10px;"
+            " font-size: 11pt;"
+            "}"
+        )
+        self._missing_label.setVisible(False)
 
     def update_window(self, payload: WindowPayload) -> None:
         if payload.likelihood is None:
@@ -80,21 +86,34 @@ class QtLikelihoodHeatmapPanel(HeatmapPanelBase):
         self._set_image(collapsed, np.asarray(time))
         self._set_title_message(None)
 
-    def _set_title_message(self, message: str | None) -> None:
-        """Show ``message`` in the title bar; pass ``None`` to clear.
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt naming convention
+        super().resizeEvent(event)
+        # ``super().__init__`` issues resize events before ``__init__``
+        # creates ``self._missing_label``; ``getattr(...)`` skips those.
+        label = getattr(self, "_missing_label", None)
+        if label is not None and label.isVisible():
+            self._reposition_missing_label()
 
-        ``pg.PlotWidget.setTitle(None)`` only hides the label; it does
-        not touch the cached text. If we relied on that alone, any
-        future code path that re-shows the label without resetting
-        text would surface the stale warning. Clear the text first
-        (via empty-string ``setTitle``) and then hide so both the
-        ``titleLabel.text`` and the visible bar end up empty.
-        """
+    def _reposition_missing_label(self) -> None:
+        w, h = self.width(), self.height()
+        target_w = min(max(w - 80, 200), 480)
+        target_h = self._missing_label.heightForWidth(target_w)
+        if target_h <= 0:
+            target_h = 60
+        x = max(0, (w - target_w) // 2)
+        y = max(0, (h - target_h) // 2)
+        self._missing_label.setGeometry(x, y, target_w, target_h)
+
+    def _set_title_message(self, message: str | None) -> None:
+        """Show or clear the missing-data overlay."""
         if self._title_message == message:
             return
         self._title_message = message
         if message is None:
-            self.setTitle("")
-            self.setTitle(None)
+            self._missing_label.setText("")
+            self._missing_label.setVisible(False)
         else:
-            self.setTitle(message)
+            self._missing_label.setText(message)
+            self._reposition_missing_label()
+            self._missing_label.setVisible(True)
+            self._missing_label.raise_()

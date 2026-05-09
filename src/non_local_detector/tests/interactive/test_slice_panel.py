@@ -622,6 +622,36 @@ def test_slice_panel_overlay_mode_switches_overlay_source(
 
 
 @pytest.mark.unit
+def test_slice_panel_legend_text_reflects_overlay_mode(
+    qapp,
+    run_bundles: dict[str, RunBundle],
+) -> None:
+    """Legend identifies the active overlay source so a user looking at
+    the curve cannot misinterpret which posterior is plotted."""
+    bundle = run_bundles["nl_all"]
+    detector = bundle.detector
+    centers = np.asarray(detector.environments[0].place_bin_centers_).squeeze()
+    time = bundle.results["time"].values
+    model = SliceModel(detector, bundle.spike_times, time)
+    panel = _make_panel(qapp, model, centers)
+
+    panel.set_overlay_mode("smoothed")
+    assert "Smoothed (acausal)" in panel._legend_label.text()
+    assert "Predictive" not in panel._legend_label.text()
+    assert "Filtered" not in panel._legend_label.text()
+
+    panel.set_overlay_mode("predictive")
+    assert "Predictive (causal)" in panel._legend_label.text()
+    assert "Smoothed" not in panel._legend_label.text()
+    assert "Filtered" not in panel._legend_label.text()
+
+    panel.set_overlay_mode("filtered")
+    assert "Filtered" in panel._legend_label.text()
+    assert "Smoothed" not in panel._legend_label.text()
+    assert "Predictive" not in panel._legend_label.text()
+
+
+@pytest.mark.unit
 def test_slice_panel_draws_true_position_and_row_overlay(
     qapp,
     run_bundles: dict[str, RunBundle],

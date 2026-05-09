@@ -228,6 +228,233 @@ def test_qt_viewer_close_stops_autoscroll_timer(
 
 
 @pytest.mark.unit
+def test_qt_viewer_help_text_covers_all_shortcuts(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """``?`` opens a help dialog whose text covers every registered key."""
+    from PySide6 import QtGui
+
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _SHORTCUT_TABLE,
+        QtViewer,
+    )
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    text = viewer._build_help_text()
+    assert text  # non-empty
+    for _, key, _, _ in _SHORTCUT_TABLE:
+        assert key in text, f"shortcut {key!r} missing from help text"
+
+    help_key = QtGui.QKeySequence("?").toString()
+    bound = [
+        s
+        for s in viewer.findChildren(QtGui.QShortcut)
+        if s.key().toString() == help_key
+    ]
+    assert bound, "? shortcut not registered"
+
+
+@pytest.mark.unit
+def test_qt_viewer_controls_bar_widgets_have_tooltips(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Every interactive controls-bar widget (button / combo / slider)
+    has a non-empty tooltip — labels and frame separators are exempt."""
+    from PySide6 import QtWidgets
+
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    bar = viewer._controls_bar
+    interactive: list[QtWidgets.QWidget] = []
+    for cls in (
+        QtWidgets.QAbstractButton,
+        QtWidgets.QComboBox,
+        QtWidgets.QAbstractSlider,
+    ):
+        # ``findChildren`` is recursive; QComboBox popups contain
+        # internal QScrollBar instances that aren't user-facing.
+        for w in bar.findChildren(cls):
+            if isinstance(w, QtWidgets.QScrollBar):
+                continue
+            interactive.append(w)
+
+    assert interactive, "controls bar produced no interactive widgets"
+    missing = [w for w in interactive if not w.toolTip()]
+    assert not missing, (
+        f"controls-bar widgets without tooltip: {[type(w).__name__ for w in missing]}"
+    )
+
+
+@pytest.mark.unit
+def test_slice_overlay_combo_disables_unavailable_modes(
+    qapp,
+    run_bundles: dict[str, RunBundle],
+) -> None:
+    """When the active run lacks ``predictive_posterior``, the
+    Predictive and Filtered combo items are disabled (Smoothed always
+    enabled). When it has ``predictive_posterior`` but not
+    ``log_likelihood``, only Filtered is disabled."""
+    from dataclasses import replace
+
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    # No predictive, no log_likelihood → only Smoothed is available.
+    bundle_default = run_bundles["nl_default"]
+    ds = InMemoryDecoderDataSource.from_single(bundle_default)
+    viewer = QtViewer(ds, t_width=0.5)
+    combo = viewer._slice_overlay_combo
+    model = combo.model()
+    enabled_by_mode = {
+        combo.itemData(i): model.item(i).isEnabled() for i in range(combo.count())
+    }
+    assert enabled_by_mode == {
+        "predictive": False,
+        "filtered": False,
+        "smoothed": True,
+    }
+    viewer.close()
+
+    # Predictive present, log_likelihood missing → Filtered disabled.
+    full = run_bundles["nl_all"]
+    bundle_no_loglik = replace(full, results=full.results.drop_vars("log_likelihood"))
+    ds2 = InMemoryDecoderDataSource.from_single(bundle_no_loglik)
+    viewer2 = QtViewer(ds2, t_width=0.5)
+    combo2 = viewer2._slice_overlay_combo
+    model2 = combo2.model()
+    enabled_by_mode2 = {
+        combo2.itemData(i): model2.item(i).isEnabled() for i in range(combo2.count())
+    }
+    assert enabled_by_mode2 == {
+        "predictive": True,
+        "filtered": False,
+        "smoothed": True,
+    }
+
+
+@pytest.mark.unit
+def test_slice_overlay_combo_disabled_items_carry_rebuild_tooltip(
+    qapp,
+    run_bundles: dict[str, RunBundle],
+) -> None:
+    """Disabled items expose the rebuild instruction via Qt.ToolTipRole
+    so a hovering user gets actionable guidance, not silence."""
+    from PySide6 import QtCore
+
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    bundle_default = run_bundles["nl_default"]
+    ds = InMemoryDecoderDataSource.from_single(bundle_default)
+    viewer = QtViewer(ds, t_width=0.5)
+    combo = viewer._slice_overlay_combo
+    model = combo.model()
+    for i in range(combo.count()):
+        if combo.itemData(i) == "predictive":
+            tip = model.item(i).data(QtCore.Qt.ToolTipRole)
+            assert tip and "predictive_posterior" in tip
+        elif combo.itemData(i) == "filtered":
+            tip = model.item(i).data(QtCore.Qt.ToolTipRole)
+            assert tip and "predictive_posterior" in tip
+            assert "log_likelihood" in tip
+
+
+@pytest.mark.unit
+def test_slice_overlay_falls_back_when_active_mode_unavailable(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+    run_bundles: dict[str, RunBundle],
+) -> None:
+    """Swapping to a run that lacks the active overlay mode falls back
+    to ``smoothed`` (always present) and refreshes the slice."""
+    from dataclasses import replace
+
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    nl = run_bundles["nl_all"]
+    bundles = {
+        "nl": nl,
+        "default": replace(nl, results=nl.results.drop_vars("predictive_posterior")),
+    }
+    ds = InMemoryDecoderDataSource(bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+    viewer._slice_overlay_combo.setCurrentIndex(
+        next(
+            i
+            for i in range(viewer._slice_overlay_combo.count())
+            if viewer._slice_overlay_combo.itemData(i) == "predictive"
+        )
+    )
+    qapp.processEvents()
+    assert viewer._slice_panel.overlay_mode == "predictive"
+
+    # Swap to the run missing predictive_posterior.
+    viewer._core.set_active_run("default")
+    qapp.processEvents()
+    assert viewer._slice_panel.overlay_mode == "smoothed"
+    assert viewer._slice_overlay_combo.currentData() == "smoothed"
+
+
+@pytest.mark.unit
+def test_qt_viewer_go_to_time_recenters_core(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+    monkeypatch,
+) -> None:
+    """``g`` opens an input dialog whose accepted value drives
+    ``core.set_t_center``."""
+    from PySide6 import QtGui, QtWidgets
+
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    # Patch the dialog so the test doesn't block. Return (5.0, True).
+    target_t = float(viewer._data_source.time[len(viewer._data_source.time) // 2])
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getDouble",
+        staticmethod(lambda *args, **kwargs: (target_t, True)),
+    )
+
+    viewer._show_go_to_time_dialog()
+    assert viewer._core.t_center == target_t
+
+    # ``g`` is registered as a shortcut.
+    g_key = QtGui.QKeySequence("G").toString()
+    matches = [
+        s for s in viewer.findChildren(QtGui.QShortcut) if s.key().toString() == g_key
+    ]
+    assert matches, "g shortcut not registered"
+
+
+@pytest.mark.unit
+def test_qt_viewer_shortcut_handlers_match_table(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Every action string in ``_SHORTCUT_TABLE`` has a handler, and
+    every handler maps to a row in the table — guards against silent
+    drift on future table edits."""
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _SHORTCUT_TABLE,
+        QtViewer,
+    )
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    actions_in_table = {row[2] for row in _SHORTCUT_TABLE}
+    handlers_present = set(viewer._shortcut_handlers.keys())
+    assert actions_in_table == handlers_present
+
+
+@pytest.mark.unit
 def test_qt_viewer_set_active_run_via_core(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
@@ -358,14 +585,19 @@ def test_qt_likelihood_panel_explains_missing_log_likelihood(
             likelihood=None,
         )
     )
-    assert panel._title_message == panel.MISSING_DATA_MESSAGE
+    # Missing-data message lives in a wrapping QLabel overlay so the
+    # text isn't truncated by the panel-width-bound pyqtgraph title.
+    # ``isVisible()`` returns False in offscreen Qt when the panel
+    # isn't attached to a shown top-level — use the explicit
+    # ``isHidden()`` flag instead (False ⇒ setVisible(True) was called).
+    assert panel._missing_label.text() == panel.MISSING_DATA_MESSAGE
+    assert not panel._missing_label.isHidden()
     assert "log_likelihood" in panel.MISSING_DATA_MESSAGE
     assert "predict" in panel.MISSING_DATA_MESSAGE
-    # Mirror-only assertion would miss stale-text bugs: pg.setTitle(None)
-    # hides the label without clearing cached text. Check the widget too.
+    # Title bar must not carry the missing-data text — that was the
+    # bug the overlay refactor fixes.
     title_label = panel.plotItem.titleLabel
-    assert title_label.text == panel.MISSING_DATA_MESSAGE
-    assert title_label.isVisible()
+    assert title_label.text == ""
 
     n_state_bins = detector.n_state_bins_
     log_lik = nl_fitted.results["log_likelihood"].values[
@@ -382,9 +614,8 @@ def test_qt_likelihood_panel_explains_missing_log_likelihood(
             likelihood=log_lik,
         )
     )
-    assert panel._title_message is None
-    assert title_label.text == ""
-    assert not title_label.isVisible()
+    assert panel._missing_label.isHidden()
+    assert panel._missing_label.text() == ""
 
 
 @pytest.mark.unit
@@ -627,8 +858,11 @@ def test_qt_viewer_raster_spike_click_updates_slice_to_spike_bin(
 def test_qt_viewer_manual_navigation_clears_pins(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
+    monkeypatch,
 ) -> None:
-    """Manual scrub/step/reset interactions clear stale spike pins."""
+    """Manual scrub/step/reset/go-to-time interactions clear stale spike pins."""
+    from PySide6 import QtWidgets
+
     from non_local_detector.visualization.interactive.viewer.qt import QtViewer
 
     ds = InMemoryDecoderDataSource(multi_run_bundles)
@@ -655,6 +889,17 @@ def test_qt_viewer_manual_navigation_clears_pins(
 
     viewer._on_event_clicked(event.event_id)
     viewer._reset_view()
+    assert viewer._slice_panel.pinned_cell_ids == frozenset()
+
+    # Go-to-time recenters via dialog; must clear pins like other manual nav.
+    viewer._on_event_clicked(event.event_id)
+    target_t = float(ds.time[len(ds.time) // 2])
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getDouble",
+        staticmethod(lambda *args, **kwargs: (target_t, True)),
+    )
+    viewer._show_go_to_time_dialog()
     assert viewer._slice_panel.pinned_cell_ids == frozenset()
 
 
