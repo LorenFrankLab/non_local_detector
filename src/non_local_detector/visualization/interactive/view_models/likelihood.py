@@ -92,9 +92,7 @@ class LikelihoodHeatmapModel:
         # Per-row scalar mode: NaN → -inf, then max-subtract on the
         # finite entries. Rows with no finite entries collapse to
         # all-zeros to match the per-row helper's contract.
-        log_per_state = np.where(
-            np.isfinite(log_per_state), log_per_state, -np.inf
-        )
+        log_per_state = np.where(np.isfinite(log_per_state), log_per_state, -np.inf)
         # Per-row max across (state, pos) — broadcast for subtraction.
         # ``where=isfinite`` keeps the max from picking up -inf when
         # any finite value exists; ``initial=-inf`` is the fallback

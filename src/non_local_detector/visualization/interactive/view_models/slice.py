@@ -109,9 +109,7 @@ class SliceModel:
         self._per_cell_place_fields = self._clean_place_fields(
             extract_per_cell_place_fields(detector)
         )
-        self._per_cell_pf_normalized = self._peak_normalize(
-            self._per_cell_place_fields
-        )
+        self._per_cell_pf_normalized = self._peak_normalize(self._per_cell_place_fields)
         # Cache the per-spatial-state projection so per-tick top-curve
         # collapse is one ``[mask].reshape`` plus per-row max-subtract
         # / exp / peak-normalise — no ``state_ind == s`` rebuild, no

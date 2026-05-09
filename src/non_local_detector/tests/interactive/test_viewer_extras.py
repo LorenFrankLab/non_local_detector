@@ -695,9 +695,7 @@ def test_core_set_t_center_during_play_resyncs_cursor(
     ds = InMemoryDecoderDataSource(multi_run_bundles)
     viewer = QtViewer(ds, t_width=0.5)
     viewer._toggle_play()
-    target_t = float(
-        viewer._data_source.time[viewer._slider.value() + 200]
-    )
+    target_t = float(viewer._data_source.time[viewer._slider.value() + 200])
     viewer._core.set_t_center(target_t)
     assert viewer._autoscroll_cursor == pytest.approx(target_t)
 
@@ -770,9 +768,7 @@ def test_cursor_markers_dispatched_to_extras_via_getattr(
         def set_event_overlays(self, overlays) -> None:  # noqa: ARG002
             return
 
-        def set_cursor_markers(
-            self, t_center: float, t_lo: float, t_hi: float
-        ) -> None:
+        def set_cursor_markers(self, t_center: float, t_lo: float, t_hi: float) -> None:
             self.cursor_calls.append((t_center, t_lo, t_hi))
 
     plugin = _CursorRecordingPanel()

@@ -57,8 +57,7 @@ def test_launch_lazy_exposed_from_visualization():
         check=False,
     )
     assert result.returncode == 0, (
-        f"lazy-import probe failed:\nstdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
+        f"lazy-import probe failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert result.stdout.strip().endswith("OK")
 
@@ -103,7 +102,6 @@ def test_visualization_star_import_only_exposes_resolvable_names():
         check=False,
     )
     assert result.returncode == 0, (
-        f"star-import probe failed:\nstdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
+        f"star-import probe failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert result.stdout.strip().endswith("OK")

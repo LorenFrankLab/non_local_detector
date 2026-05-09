@@ -288,7 +288,8 @@ class TestSliceModelCellSlice:
 
         cs = model.cell_slice(0, spike_count=1)
         expected = _expected_spike_count_likelihood(
-            model._per_cell_place_fields[0], 1  # type: ignore[attr-defined]
+            model._per_cell_place_fields[0],
+            1,  # type: ignore[attr-defined]
         )
 
         np.testing.assert_allclose(cs.place_field_norm, expected, atol=1e-14)

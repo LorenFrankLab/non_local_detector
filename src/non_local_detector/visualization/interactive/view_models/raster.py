@@ -96,9 +96,7 @@ class RasterModel:
                 i_start = int(np.searchsorted(spikes, t_start, side="left"))
                 i_stop = int(np.searchsorted(spikes, t_stop, side="left"))
                 per_cell.append(spikes[i_start:i_stop])
-                per_cell_event_ids.append(
-                    np.full(i_stop - i_start, -1, dtype=np.int64)
-                )
+                per_cell_event_ids.append(np.full(i_stop - i_start, -1, dtype=np.int64))
             else:
                 event_ids = self._event_index.event_ids_for_cell_window(
                     int(cell_id), t_start, t_stop

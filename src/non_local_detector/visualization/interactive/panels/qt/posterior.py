@@ -48,9 +48,7 @@ class QtPosteriorHeatmapPanel(HeatmapPanelBase):
         vmax: float = 0.25,
         parent=None,
     ) -> None:
-        super().__init__(
-            position_centers=position_centers, vmax=vmax, parent=parent
-        )
+        super().__init__(position_centers=position_centers, vmax=vmax, parent=parent)
         self._model = model
         self._refresh_title()
 

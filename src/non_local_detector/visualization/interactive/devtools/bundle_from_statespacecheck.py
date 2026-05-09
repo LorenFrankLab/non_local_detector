@@ -63,9 +63,7 @@ def _model_paths(intermediates_dir: Path, model: ModelName) -> _ModelPaths:
             results_nc=intermediates_dir / "cont_frag_results.nc",
             model_pkl=intermediates_dir / "cont_frag_model.pkl",
         )
-    raise ValueError(
-        f"Unknown model {model!r}. Expected one of: {list(MODEL_NAMES)!r}"
-    )
+    raise ValueError(f"Unknown model {model!r}. Expected one of: {list(MODEL_NAMES)!r}")
 
 
 def _zarr_path(cache_dir: Path, model: ModelName) -> Path:
@@ -182,8 +180,7 @@ def _read_meta(cache_dir: Path) -> tuple[np.ndarray, np.ndarray]:
         for key in ("time", "linear_position"):
             if key not in npz:
                 raise ValueError(
-                    f"{meta_p} has no {key!r} key. "
-                    f"Got keys: {sorted(npz.keys())!r}."
+                    f"{meta_p} has no {key!r} key. Got keys: {sorted(npz.keys())!r}."
                 )
         time = np.asarray(npz["time"], dtype=np.float64)
         linear_position = np.asarray(npz["linear_position"], dtype=np.float64)
@@ -229,9 +226,9 @@ def _write_bundle_dir(
         out_dir / "spikes.npz",
         spike_times=np.asarray(spike_times, dtype=object),
     )
-    pd.DataFrame({"position": linear_position}, index=pd.Index(time, name="time")).to_parquet(
-        out_dir / "position.parquet"
-    )
+    pd.DataFrame(
+        {"position": linear_position}, index=pd.Index(time, name="time")
+    ).to_parquet(out_dir / "position.parquet")
 
 
 def bundle_from_statespacecheck_cache(
@@ -305,9 +302,7 @@ def bundle_from_statespacecheck_cache(
     _validate_required_results_vars(results, results_source)
 
     if not resolved_model_pkl.exists():
-        raise FileNotFoundError(
-            f"Detector pickle not found at {resolved_model_pkl}."
-        )
+        raise FileNotFoundError(f"Detector pickle not found at {resolved_model_pkl}.")
     # Upstream pickles are joblib-serialized. joblib's numpy codec
     # produces files that ``pickle.load`` *cannot* read (verified
     # against the real ``cont_model.pkl`` — fails with
@@ -319,9 +314,7 @@ def bundle_from_statespacecheck_cache(
 
     time, linear_position = _read_meta(cache_dir)
     spike_times = _read_spike_times(cache_dir)
-    _cross_check_place_fields(
-        detector, _place_fields_path(cache_dir, model), model
-    )
+    _cross_check_place_fields(detector, _place_fields_path(cache_dir, model), model)
 
     _write_bundle_dir(out, results, detector, spike_times, time, linear_position)
     return out

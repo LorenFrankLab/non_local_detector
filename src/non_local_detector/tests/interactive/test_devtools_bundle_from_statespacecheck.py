@@ -78,9 +78,7 @@ def _populate_intermediates(
     _DetectorBase.save_results(
         results, str(intermediates_dir / f"{model_filename}_results.nc")
     )
-    joblib.dump(
-        fitted.detector, str(intermediates_dir / f"{model_filename}_model.pkl")
-    )
+    joblib.dump(fitted.detector, str(intermediates_dir / f"{model_filename}_model.pkl"))
 
 
 def _populate_cache(
@@ -164,6 +162,7 @@ def test_bundle_writes_loadable_run(
     assert name == "contfrag"
     assert "acausal_posterior" in bundle.results.data_vars
     assert "acausal_state_probabilities" in bundle.results.data_vars
+
 
 @pytest.mark.unit
 def test_bundle_creates_out_dir_if_missing(
