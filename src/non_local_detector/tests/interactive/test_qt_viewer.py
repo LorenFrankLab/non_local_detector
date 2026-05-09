@@ -573,6 +573,98 @@ def test_window_payload_carries_view_state(
 
 
 @pytest.mark.unit
+def test_launch_qt_per_component_kwargs_constructs_run(
+    qapp,
+    nl_fitted,
+    sim_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``launch_qt(detector=..., results=..., ...)`` builds the bundle
+    internally so notebook callers don't need to import ``RunBundle``
+    (Phase 6.1)."""
+    from non_local_detector.visualization.interactive.viewer import qt as qt_mod
+    from non_local_detector.visualization.interactive.viewer.qt import launch_qt
+
+    seen: dict[str, object] = {}
+    original = qt_mod.launch_qt_with_source
+
+    def _capture(data_source, **kwargs):
+        seen["data_source"] = data_source
+        kwargs["block"] = False
+        return original(data_source, **kwargs)
+
+    monkeypatch.setattr(qt_mod, "launch_qt_with_source", _capture)
+
+    code = launch_qt(
+        detector=nl_fitted.detector,
+        results=nl_fitted.results,
+        spike_times=sim_session.spike_times,
+        position=sim_session.position,
+        position_time=sim_session.time,
+        speed=sim_session.speed,
+    )
+    assert code == 0
+    ds = seen["data_source"]
+    assert ds.run_names == ["default"]
+
+
+@pytest.mark.unit
+def test_launch_qt_rejects_mixed_bundle_and_per_component(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+    nl_fitted,
+) -> None:
+    """Mixing the bundle form with per-component kwargs raises
+    ``ValueError`` naming the conflict — public-API silent-drop is a
+    footgun (Phase 6.1 dispatch contract)."""
+    from non_local_detector.visualization.interactive.viewer.qt import launch_qt
+
+    with pytest.raises(ValueError, match="cannot mix"):
+        launch_qt(
+            multi_run_bundles,
+            detector=nl_fitted.detector,
+        )
+
+
+@pytest.mark.unit
+def test_launch_qt_rejects_per_component_missing_required(
+    qapp,
+    nl_fitted,
+) -> None:
+    """Per-component form without all required kwargs raises
+    ``ValueError`` listing the missing arg(s)."""
+    from non_local_detector.visualization.interactive.viewer.qt import launch_qt
+
+    with pytest.raises(ValueError, match="missing"):
+        launch_qt(
+            detector=nl_fitted.detector,
+            results=nl_fitted.results,
+            # spike_times, position, position_time omitted
+        )
+
+
+@pytest.mark.unit
+def test_launch_qt_bundle_form_still_works(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Back-compat: the original bundle form still constructs a viewer."""
+    from non_local_detector.visualization.interactive.viewer import qt as qt_mod
+    from non_local_detector.visualization.interactive.viewer.qt import launch_qt
+
+    original = qt_mod.launch_qt_with_source
+
+    def _no_block(data_source, **kwargs):
+        kwargs["block"] = False
+        return original(data_source, **kwargs)
+
+    monkeypatch.setattr(qt_mod, "launch_qt_with_source", _no_block)
+    code = launch_qt(multi_run_bundles)
+    assert code == 0
+
+
+@pytest.mark.unit
 def test_qt_viewer_set_active_run_via_core(
     qapp,
     multi_run_bundles: dict[str, RunBundle],

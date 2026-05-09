@@ -3151,6 +3151,13 @@ class ClusterlessDetector(_DetectorBase):
         Get everything for debugging:
 
         >>> results = model.predict(spike_times, time, return_outputs='all')
+
+        See Also
+        --------
+        non_local_detector.visualization.interactive.launch_qt :
+            Open an interactive Qt viewer over the returned ``results``
+            (no ``RunBundle`` import needed — pass the detector +
+            ``results`` + per-arg components directly).
         """
         if position is not None and position_time is None:
             raise ValidationError(

@@ -231,6 +231,20 @@ def _format_speed(speed: float) -> str:
     return f"{speed:.2g}×"
 
 
+def _make_vertical_separator() -> QtWidgets.QFrame:
+    """Thin vertical line for visual cluster grouping in the controls bar.
+
+    Phase 6.5 gestalt grouping: separators sit between Navigation /
+    Playback / Swap clusters so a user scanning the bar sees three
+    related groups instead of one flat row of 10–15 widgets.
+    """
+    sep = QtWidgets.QFrame()
+    sep.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+    sep.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
+    sep.setStyleSheet("color: rgb(180, 180, 180);")
+    return sep
+
+
 def _ensure_qapplication() -> QtWidgets.QApplication:
     """Return the singleton ``QApplication`` with a concrete installed font."""
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -775,6 +789,7 @@ class QtViewer(QtWidgets.QMainWindow):
         run_names = self._data_source.run_names
         multi_run = len(run_names) > 1
 
+        # ---- Navigation cluster: where in time you are + how wide ----
         layout.addWidget(QtWidgets.QLabel("Center time:"))
         self._slider.setToolTip(
             "Center time of the visible window. Drag, click to jump, "
@@ -784,7 +799,7 @@ class QtViewer(QtWidgets.QMainWindow):
         self._time_label = QtWidgets.QLabel(self._format_time_label())
         self._time_label.setMinimumWidth(260)
         layout.addWidget(self._time_label)
-        layout.addSpacing(12)
+        layout.addSpacing(6)
 
         layout.addWidget(QtWidgets.QLabel("Window:"))
         self._window_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -799,8 +814,12 @@ class QtViewer(QtWidgets.QMainWindow):
         self._window_label = QtWidgets.QLabel(self._format_window_label())
         self._window_label.setMinimumWidth(70)
         layout.addWidget(self._window_label)
-        layout.addSpacing(12)
 
+        layout.addSpacing(8)
+        layout.addWidget(_make_vertical_separator())
+        layout.addSpacing(8)
+
+        # ---- Playback cluster: what the slice shows + autoscroll ----
         self._per_cell_checkbox = QtWidgets.QCheckBox("Per-cell rows")
         self._per_cell_checkbox.setChecked(True)
         self._per_cell_checkbox.setToolTip(
@@ -808,7 +827,7 @@ class QtViewer(QtWidgets.QMainWindow):
         )
         self._per_cell_checkbox.toggled.connect(self._slice_panel.set_per_cell_visible)
         layout.addWidget(self._per_cell_checkbox)
-        layout.addSpacing(12)
+        layout.addSpacing(6)
 
         layout.addWidget(QtWidgets.QLabel("Slice overlay:"))
         self._slice_overlay_combo = QtWidgets.QComboBox()
@@ -852,7 +871,16 @@ class QtViewer(QtWidgets.QMainWindow):
         self._speed_combo.setCurrentIndex(default_idx)
         self._speed_combo.currentIndexChanged.connect(self._on_speed_combo_changed)
         layout.addWidget(self._speed_combo)
-        layout.addSpacing(12)
+
+        # ---- Swap cluster: which run + which event overlay ----
+        # Only render this cluster + its leading separator when at
+        # least one widget would be present (multi-run swap or any
+        # event overlays). Otherwise the separator dangles next to
+        # the layout's trailing stretch with nothing after it.
+        if multi_run or overlays:
+            layout.addSpacing(8)
+            layout.addWidget(_make_vertical_separator())
+            layout.addSpacing(8)
 
         # Model-selector dropdown (M-key cycles). Only present when
         # multiple runs are loaded; the M-key path goes *through* the
@@ -1691,19 +1719,81 @@ def launch_qt_with_source(
     return 0
 
 
+_PER_COMPONENT_KWARGS = (
+    "detector",
+    "results",
+    "spike_times",
+    "position",
+    "position_time",
+    "speed",
+)
+
+
 def launch_qt(
-    bundles: RunBundle | dict[str, RunBundle],
+    bundles: RunBundle | dict[str, RunBundle] | None = None,
     t_width: float = 1.0,
     block: bool = True,
     extra_panels: list | None = None,
     extra_bin_panels: list | None = None,
+    *,
+    detector=None,
+    results=None,
+    spike_times=None,
+    position=None,
+    position_time=None,
+    speed=None,
+    name: str = "default",
 ) -> int:
-    """Open a ``QtViewer`` against the supplied bundle(s).
+    """Open the interactive viewer.
+
+    Most callers want the per-component form — pass the fitted
+    detector and the four arrays you already have from
+    ``detector.predict(...)``::
+
+        from non_local_detector.visualization.interactive import launch_qt
+
+        results = detector.predict(
+            spike_times=spike_times,
+            time=time,
+            position=position,
+            position_time=time,
+            return_outputs="all",
+        )
+        launch_qt(
+            detector=detector,
+            results=results,
+            spike_times=spike_times,
+            position=position,
+            position_time=time,
+        )
+
+    No ``RunBundle`` import needed — the bundle is constructed
+    internally from the per-component kwargs.
+
+    Advanced — multi-run / extras
+    -----------------------------
+    For multi-run model swap or to attach overlays / extra metrics,
+    build ``RunBundle`` instances directly and pass them as the
+    first positional argument (single bundle or
+    ``{name: RunBundle}`` dict). See ``RunBundle`` for the full
+    field set.
 
     Parameters
     ----------
-    bundles : RunBundle | dict[str, RunBundle]
-        Single bundle or named multi-run dict.
+    bundles : RunBundle | dict[str, RunBundle] | None, optional
+        Pre-built bundle(s); mutually exclusive with the
+        per-component kwargs below. Pass this when you need the
+        full ``RunBundle`` API (overlays, extra_metrics, multi-run).
+    detector, results, spike_times, position, position_time : optional
+        Per-component inputs — provide all five together to build
+        a single-run bundle internally. Mutually exclusive with
+        ``bundles``.
+    speed : np.ndarray | None, optional
+        Optional speed array, only meaningful with the
+        per-component form.
+    name : str, optional
+        Name for the constructed run when using the per-component
+        form (default ``"default"``).
     t_width : float, optional
         Initial window width in seconds.
     block : bool, optional
@@ -1720,7 +1810,52 @@ def launch_qt(
     int
         Exit code from ``QApplication.exec()`` when ``block=True``;
         ``0`` otherwise.
+
+    Raises
+    ------
+    ValueError
+        If both ``bundles`` and any per-component kwarg are
+        provided (mixed forms), or if the per-component form is
+        used without all of ``detector``, ``results``,
+        ``spike_times``, ``position``, ``position_time``.
     """
+    per_component = {
+        "detector": detector,
+        "results": results,
+        "spike_times": spike_times,
+        "position": position,
+        "position_time": position_time,
+        "speed": speed,
+    }
+    provided_per_component = {k: v for k, v in per_component.items() if v is not None}
+    if bundles is not None and provided_per_component:
+        raise ValueError(
+            "launch_qt: cannot mix the bundle form with per-component "
+            f"kwargs. Got bundles={bundles!r} AND "
+            f"{sorted(provided_per_component)!r}. Pass either:\n"
+            "  - launch_qt(bundle_or_dict, ...) for the bundle form, OR\n"
+            "  - launch_qt(detector=..., results=..., spike_times=..., "
+            "position=..., position_time=..., ...) for the "
+            "per-component form."
+        )
+    if bundles is None:
+        required = ("detector", "results", "spike_times", "position", "position_time")
+        missing = [k for k in required if per_component[k] is None]
+        if missing:
+            raise ValueError(
+                "launch_qt: per-component form requires all of "
+                f"{required!r}; missing {missing!r}."
+            )
+        bundles = RunBundle(
+            results=results,
+            detector=detector,
+            spike_times=spike_times,
+            position_time=position_time,
+            position=position,
+            speed=speed,
+        )
+        bundles = {name: bundles}
+
     if isinstance(bundles, RunBundle):
         data_source = InMemoryDecoderDataSource.from_single(bundles)
     else:

@@ -36,7 +36,7 @@ came before it.
 
 ## 6.1 — `launch_qt(...)` overload accepting natural inputs
 
-- [ ] Widen
+- [x] Widen
   [viewer/qt.py:launch_qt](../../../../src/non_local_detector/visualization/interactive/viewer/qt.py)
   to accept either:
   - The current `bundle` form (back-compat — pure
@@ -44,39 +44,32 @@ came before it.
     existing kwargs), or
   - `detector=..., results=..., spike_times=..., position=...,
     position_time=..., speed=None, name="default"` (builds the
-    bundle internally via `RunBundle.from_predict(...)`).
-- [ ] Dispatch logic — **fail loud on mixed forms, do not silently
-  ignore.** Public-API silent-drop is a footgun: a user who passes
-  both a bundle and `detector=...` (e.g. while migrating their
-  code) would get the bundle without warning that the detector
-  kwarg was thrown away.
-  - If `bundle` is provided AND any of the per-component kwargs
-    (`detector` / `results` / `spike_times` / `position` /
-    `position_time` / `speed`) are non-default → raise
-    `ValueError` naming both the bundle and the conflicting
-    kwarg(s), and pointing at the two valid call shapes.
-  - If `bundle` is provided alone → use it (back-compat).
-  - If only per-component kwargs are provided → require all of
-    `detector`, `results`, `spike_times`, `position`,
-    `position_time` (raise `ValueError` listing which are
-    missing); construct the bundle internally.
-- [ ] Tests:
-  - Notebook-style invocation (per-component kwargs) passes
-  - Existing bundle-form tests still pass
-  - Mixed form (`bundle=...` + `detector=...`) raises `ValueError`
-    with a message that names both the bundle and the conflicting
-    kwarg
-  - Per-component form missing one required arg raises
-    `ValueError` listing the missing arg(s)
+    bundle internally; user already has ``results`` from a prior
+    ``predict`` call so the implementation constructs ``RunBundle``
+    directly rather than re-running ``predict`` via
+    ``RunBundle.from_predict``).
+- [x] Dispatch logic — **fail loud on mixed forms, do not silently
+  ignore.**
+  - Mixed form raises `ValueError` naming both the bundle and the
+    conflicting kwarg(s) and pointing at the two valid call shapes.
+  - Bundle alone → use it (back-compat).
+  - Per-component form requires all five of
+    `detector`/`results`/`spike_times`/`position`/`position_time`;
+    raises `ValueError` listing missing names.
+- [x] Tests (all in `test_qt_viewer.py`):
+  - `test_launch_qt_per_component_kwargs_constructs_run`
+  - `test_launch_qt_bundle_form_still_works`
+  - `test_launch_qt_rejects_mixed_bundle_and_per_component`
+  - `test_launch_qt_rejects_per_component_missing_required`
 
 ---
 
 ## 6.2 — Discoverable docstrings
 
-- [ ] `launch_qt` docstring: lead with the per-component example
+- [x] `launch_qt` docstring: lead with the per-component example
   (3 lines: fit → predict → launch_qt(detector=..., results=...,
   ...)). Move the bundle form to "Advanced — multi-run".
-- [ ] `_DetectorBase.predict` docstring gets a one-line
+- [x] `_DetectorBase.predict` docstring gets a one-line
   cross-reference: "see
   `non_local_detector.visualization.interactive.launch_qt`
   for an interactive view of these results".
@@ -85,27 +78,36 @@ came before it.
 
 ## 6.3 — Notebook example
 
-- [ ] Add a short `notebooks/interactive_viewer_quickstart.ipynb`
+- [x] Add a short `notebooks/interactive_viewer_quickstart.ipynb`
   (or extend an existing notebook with a section): fit a small
   detector, call predict, call `launch_qt(...)` with the four
-  natural inputs.
-- [ ] Notebook **must not** call `RunBundle` directly — that's the
-  whole point.
+  natural inputs. *Lives at
+  `notebooks/04_visualization/interactive_viewer_quickstart.{py,ipynb}`
+  paired via jupytext, mirroring the existing
+  `interactive_viewer_demo.{py,ipynb}` pattern.*
+- [x] Notebook **must not** call `RunBundle` directly — that's the
+  whole point. Confirmed: the quickstart imports only
+  `launch_qt` from
+  `non_local_detector.visualization.interactive`.
 - [ ] Run the notebook end-to-end; confirm cell outputs are
-  reasonable.
+  reasonable. **[manual]** the final cell calls `launch_qt(...)`
+  with `block=True` (the documented default), which opens the Qt
+  window and blocks until the user closes it; not feasible to
+  exercise in offscreen pytest. The Phase 6.1 tests already cover
+  the per-component dispatch path the notebook uses.
 
 ---
 
 ## 6.4 — `bundle-from-detector` devtool subcommand
 
-- [ ] New subcommand in
+- [x] New subcommand in
   [devtools/__main__.py](../../../../src/non_local_detector/visualization/interactive/devtools/__main__.py):
   `bundle-from-detector --detector model.pkl --results results.nc
   --spikes spikes.npz --position position.parquet --out bundles/foo/`.
-- [ ] Devtool emits a `--run-from-dir`-compatible bundle directory
+- [x] Devtool emits a `--run-from-dir`-compatible bundle directory
   the user can then point `--run-from-dir` at, optionally followed
   by `build-viewer-cache` for the zarr acceleration.
-- [ ] Test: round-trip — generate a bundle from in-memory pieces
+- [x] Test: round-trip — generate a bundle from in-memory pieces
   via the devtool, load via `--run-from-dir`, confirm parity.
 
 ---
@@ -115,13 +117,20 @@ came before it.
 **Issue:** controls bar has 10–15 widgets in one flat row with no
 visual grouping. Heer would point to Gestalt grouping.
 
-- [ ] Insert thin vertical `QFrame` separators between three logical
+- [x] Insert thin vertical `QFrame` separators between three logical
   clusters in
   [_build_controls_bar](../../../../src/non_local_detector/visualization/interactive/viewer/qt.py#L709-L818):
   - Navigation: center slider + window slider + window label
-  - Playback: slice overlay combo + play button + speed combo
+  - Playback: per-cell rows checkbox + slice overlay combo + play
+    button + speed combo *(per-cell rows added to the playback
+    cluster — natural relative of slice-overlay; the plan's
+    three-cluster intent didn't account for it)*
   - Swap: model combo + overlay combo + visibility checkboxes
-- [ ] Tighten `addSpacing` within clusters; widen between.
+    *(only rendered, with leading separator, when at least one
+    swap widget is present; otherwise the separator would dangle
+    against the layout's trailing stretch)*
+- [x] Tighten `addSpacing` within clusters (6 px) and widen between
+  clusters (8 px around the separator).
 - [ ] **[manual]** visual smoke — separator placement and spacing
   (no automated test feasible; surface to user).
 
@@ -129,12 +138,20 @@ visual grouping. Heer would point to Gestalt grouping.
 
 ## Phase 6 done when
 
-- Notebook quickstart runs end-to-end
-- Existing bundle-form CLI/launch tests still pass
-- Devtool round-trip test passes
-- Full sweep green (verify command from
-  [README.md](README.md) §Per-phase verification)
-- `[manual]` item from 6.5 (visual gestalt smoke) surfaced to user
+- [ ] Notebook quickstart runs end-to-end **[manual]** — final
+  cell calls `launch_qt` with `block=True` (the documented public
+  default) which opens the Qt window and blocks until the user
+  closes it. The Phase 6.1 dispatch tests already cover the
+  per-component path the notebook uses; visual sanity is GUI-only.
+- [x] Existing bundle-form CLI/launch tests still pass —
+  `test_launch_qt_bundle_form_still_works` pins back-compat.
+- [x] Devtool round-trip test passes —
+  `test_bundle_from_detector_round_trips_via_run_from_dir` +
+  `test_bundle_from_detector_cli_round_trip`.
+- [x] Full sweep green — 299 passed (Phase 5 baseline 292 →
+  +7 new tests: 4 launch_qt dispatch + 3 bundle-from-detector).
+- [ ] **[manual]** visual gestalt smoke for the controls-bar
+  separators (Phase 6.5) — surface to user.
 
 **If this is the final remaining phase** (i.e. Phases 1–5 are
 also done), run the [README.md](README.md) §"Pre-merge checklist

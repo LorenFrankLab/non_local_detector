@@ -21,6 +21,9 @@ from non_local_detector.visualization.interactive.devtools.build_viewer_cache im
     DEFAULT_TIME_CHUNK,
     build_viewer_cache,
 )
+from non_local_detector.visualization.interactive.devtools.bundle_from_detector import (
+    bundle_from_detector_cli,
+)
 from non_local_detector.visualization.interactive.devtools.bundle_from_statespacecheck import (  # noqa: E501
     MODEL_NAMES,
     bundle_from_statespacecheck_cache,
@@ -116,6 +119,54 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Replace an existing results.zarr/ instead of erroring.",
     )
+
+    bfd = subparsers.add_parser(
+        "bundle-from-detector",
+        help=(
+            "Package a fitted detector + predict() outputs + session "
+            "sidecars into a --run-from-dir-compatible bundle directory. "
+            "Use this when you have all four pieces on disk (e.g. saved "
+            "from a notebook workflow)."
+        ),
+    )
+    bfd.add_argument(
+        "--detector",
+        type=Path,
+        required=True,
+        help="Pickled detector (output of detector.save_model).",
+    )
+    bfd.add_argument(
+        "--results",
+        type=Path,
+        required=True,
+        help="results.nc written via _DetectorBase.save_results.",
+    )
+    bfd.add_argument(
+        "--spikes",
+        type=Path,
+        required=True,
+        help="spikes.npz with one object-dtype array 'spike_times'.",
+    )
+    bfd.add_argument(
+        "--position",
+        type=Path,
+        required=True,
+        help=(
+            "position.parquet with a 'position' column (1D) or "
+            "'x_position' + 'y_position' (2D); optional 'speed' column."
+        ),
+    )
+    bfd.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output bundle directory (created if missing).",
+    )
+    bfd.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing files in --out instead of erroring.",
+    )
     return parser
 
 
@@ -142,6 +193,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             overwrite=args.overwrite,
         )
         print(f"Wrote viewer cache: {out}")
+        return 0
+    if args.subcommand == "bundle-from-detector":
+        out = bundle_from_detector_cli(
+            detector_path=args.detector,
+            results_nc=args.results,
+            spikes_npz=args.spikes,
+            position_parquet=args.position,
+            out=args.out,
+            overwrite=args.overwrite,
+        )
+        print(f"Wrote bundle directory: {out}")
         return 0
     parser.error(f"unknown subcommand {args.subcommand!r}")
     return 1
