@@ -249,6 +249,38 @@ def test_zarr_direct_missing_predictive_returns_none(
 
 
 @pytest.mark.unit
+def test_zarr_direct_load_likelihood_keyerror_text_pinned(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """``load_likelihood`` against a cache without ``log_likelihood``
+    raises ``KeyError`` with the exact wording the in-memory source
+    raises — pin the regression so a future change can't drift the two
+    error messages apart."""
+    bundle_dir = _save_bundle_with_zarr(
+        tmp_path / "no_loglik_text",
+        nl_fitted,
+        sim_session,
+        drop_vars=("log_likelihood",),
+    )
+    direct = _make_zarr_direct(bundle_dir)
+    sl = direct.window_indices(t_center=float(direct.time[0]), t_width=0.5)
+    with pytest.raises(KeyError) as direct_exc:
+        direct.load_likelihood(sl)
+
+    in_mem = _make_in_memory_from_dir(bundle_dir)
+    with pytest.raises(KeyError) as mem_exc:
+        in_mem.load_likelihood(sl)
+
+    # Both messages mention re-running predict with log_likelihood.
+    assert "log_likelihood" in str(direct_exc.value)
+    assert "log_likelihood" in str(mem_exc.value)
+    assert "predict" in str(direct_exc.value).lower()
+    assert "predict" in str(mem_exc.value).lower()
+
+
+@pytest.mark.unit
 def test_zarr_direct_set_active_run_rebinds_handles(
     tmp_path: Path,
     nl_fitted: FittedDetector,

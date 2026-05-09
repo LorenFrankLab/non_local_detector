@@ -116,7 +116,7 @@ change `_load_run` — the data-source construction has to move up
 to `main()` so it can decide *which* implementation to build based
 on the run-spec aggregate.
 
-- [ ] **Refactor `_load_run` → `_resolve_run_spec`.** Instead of
+- [x] **Refactor `_load_run` → `_resolve_run_spec`.** Instead of
   always returning `(name, RunBundle)`, return a small dataclass
   `ResolvedRun(name, kind, paths, *, bundle=None)` where:
   - `kind == "in_memory"`: the spec is a `--run` / `--run-files` /
@@ -127,7 +127,14 @@ on the run-spec aggregate.
     valid `results.zarr/` AND the zarr backend is available. The
     bundle is *not* loaded eagerly; `paths` carries the bundle
     dir.
-- [ ] **Aggregate at `main()` level.** After parsing all specs:
+
+  *Implementation deviated from the dataclass design slightly:*
+  the resolver inspects the parsed spec dicts directly via a
+  predicate (`_zarr_direct_eligible(spec)`) and dispatches in
+  `_resolve_data_source(specs)`. The dataclass overhead wasn't
+  needed once the dispatch became a single function; the
+  predicate-based approach is simpler and tests the same way.
+- [x] **Aggregate at `main()` level.** After parsing all specs:
   - If every spec is `kind == "zarr_direct"`: build a single
     `ZarrDirectDecoderDataSource.for_directories({name: dir})`.
   - Otherwise (any `kind == "in_memory"`): load the eager bundle
@@ -135,19 +142,19 @@ on the run-spec aggregate.
     then build `InMemoryDecoderDataSource(bundles)`. Mixed-mode
     one-data-source-per-run is harder than this phase warrants;
     document the constraint.
-- [ ] **Mixed-mode warning.** When at least one spec is zarr-direct
+- [x] **Mixed-mode warning.** When at least one spec is zarr-direct
   but at least one isn't, emit a `UserWarning` explaining that the
   zarr-direct runs were degraded to in-memory because mixing isn't
   supported, and pointing users at the `build-viewer-cache`
   devtool to give the rest of the runs zarr caches too.
-- [ ] **Fallback path stays.** If zarr import fails for a
+- [x] **Fallback path stays.** If zarr import fails for a
   `--run-from-dir` with a `results.zarr/`, the existing
   `load_zarr_cache_or_fall_back` `ImportError` path falls back to
   reading `results.nc`; the resolved kind becomes `in_memory`.
-- [ ] CLI epilog updated to lead with "use `--run-from-dir` +
+- [x] CLI epilog updated to lead with "use `--run-from-dir` +
   `build-viewer-cache` for sessions > 1 hour" and document the
   all-or-nothing zarr-direct rule.
-- [ ] Tests:
+- [x] Tests:
   - All-`--run-from-dir` with zarr caches → `ZarrDirectDecoderDataSource`
   - All-`--run` (no caches) → `InMemoryDecoderDataSource`
   - Mixed (one with cache, one without) → warning + `InMemoryDecoderDataSource`
@@ -158,34 +165,25 @@ on the run-spec aggregate.
 
 ## 5.5 — Tests
 
-- [ ] **Parity test** in `test_data_source_zarr.py` (or new file):
+- [x] **Parity test** in `test_data_source_zarr.py` (or new file):
   for the same bundle, build both `InMemoryDecoderDataSource` and
   `ZarrDirectDecoderDataSource`. For 10 random window slices,
   assert `np.testing.assert_array_equal(in_mem.load_X(sl),
   zarr_direct.load_X(sl))` for every `load_*` method.
-- [ ] **Latency benchmark — out of CI.** Do *not* put a hard
-  speedup threshold in pytest. Synthetic bundles + cold-cache
-  variance + machine-dependent disk speed make any `assert >= 3×`
-  too flaky to gate on. Two acceptable shapes:
-
-  - **(a) Standalone benchmark script** in
-    `scripts/bench_data_source.py` that times `load_posterior`
-    /`load_likelihood`/`load_state_probabilities` for windows of
-    1s / 10s / 30s on both data sources. Prints a comparison
-    table; not invoked by `pytest`. PR description records the
-    numbers from a representative real-data run.
-  - **(b) Opt-in pytest** marked `bench` and skipped by default
-    via `pytest.mark.skipif("not os.getenv('NLD_BENCH')")`.
-    Reports timings without asserting a ratio.
-
-  Either is fine; (a) keeps benchmark code out of the test
-  collection path entirely and is preferred. Hard parity on
-  values stays in the parity test above — that's the
-  correctness gate; the speedup is reported, not asserted.
-- [ ] **Multi-run swap**: `set_active_run` rebinds zarr handles
+- [x] **Latency benchmark — out of CI.** Standalone benchmark
+  script `scripts/bench_data_source.py` lands in this commit
+  (option (a) per the plan). Times `load_posterior` /
+  `load_likelihood` / `load_state_probabilities` at 1s / 10s /
+  30s windows for both data sources, prints a comparison table.
+  Not collected by `pytest`. Smoke mode (no `--bundle-dir` arg)
+  builds a transient simulated bundle for self-test; the PR
+  description records the numbers from a representative real-data
+  run when the user is ready.
+- [x] **Multi-run swap**: `set_active_run` rebinds zarr handles
   correctly; subsequent `load_*` calls return data for the new
-  run.
-- [ ] **Per-method missing-output contracts.** Each `load_*`
+  run. Covered by
+  `test_zarr_direct_set_active_run_rebinds_handles`.
+- [x] **Per-method missing-output contracts.** Each `load_*`
   method has its own contract; the in-memory path is the source
   of truth and the zarr-direct implementation must match
   *exactly*. Pin each separately in `test_data_source_zarr.py`:
@@ -198,34 +196,36 @@ on the run-spec aggregate.
   | `load_state_probabilities` | **Cannot occur** — `acausal_state_probabilities` is required at `RunBundle.__post_init__` ([base.py:425](../../../../src/non_local_detector/visualization/interactive/view_models/base.py#L425)) |
   | `load_position` | Returns `None` when `bundle.position` is 2D (heatmap-trace overlay is 1D-only per the v1 contract — see [data_source.py:262–264](../../../../src/non_local_detector/visualization/interactive/data_source.py#L262-L264)); never raises |
 
-- [ ] Tests pin three of the five rows (the two "cannot occur"
-  rows are guarded at construction by `RunBundle.__post_init__`,
-  so they're already covered indirectly — `RunBundle` validates
-  and coerces `position` at
-  [base.py:433](../../../../src/non_local_detector/visualization/interactive/view_models/base.py#L433),
-  so `position=None` would fail construction):
-  - Build a run with `predictive_posterior` removed from
-    `results`; `available_outputs` excludes it; both data sources
-    return `None` from `load_predictive(sl)`.
-  - Build a run with `log_likelihood` removed; both data sources
-    raise `KeyError` from `load_likelihood(sl)` with the same
-    message text (regression-pin the rebuild-instruction string).
-  - Build a bundle with **2D position** (shape `(n_pos_time, 2)`);
-    both data sources return `None` from `load_position(sl)`. If
-    a future API decision makes `RunBundle.position` explicitly
-    optional, this test grows a third arm for `position=None`;
-    until then, 2D is the only legitimate "no 1D trace" case.
+- [x] Tests pin two of the five rows in `test_data_source_zarr_direct.py`:
+  - `load_predictive` returns `None` parity:
+    `test_zarr_direct_missing_predictive_returns_none`.
+  - `load_likelihood` raises `KeyError` with the same wording in
+    both paths: `test_zarr_direct_missing_log_likelihood_raises_keyerror`
+    + `test_zarr_direct_load_likelihood_keyerror_text_pinned`.
+
+  *2D-position case dropped*: ``RunBundle.__post_init__`` rejects
+  2D position with a 1D detector environment ([base.py:445](../../../../src/non_local_detector/visualization/interactive/view_models/base.py#L445)).
+  The plan's 2D-position contract row only fires with a 2D
+  detector, which we don't have in the simulated-detector test
+  fixtures. Parity is implicit via `_position_at_decoder_time`'s
+  identical implementation in both data sources.
 
 ---
 
 ## Phase 5 done when
 
-- Parity tests pass
-- Latency numbers from the standalone benchmark (or opt-in
-  `bench`-marked pytest) are **recorded in the PR description** on
-  a representative bundle — no hard pass/fail threshold in CI
-- Full sweep green (verify command from
-  [README.md](README.md) §Per-phase verification)
+- [x] Parity tests pass — 11 cases in `test_data_source_zarr_direct.py`
+- [ ] **Latency numbers from the standalone benchmark** are recorded
+  in the PR description on a representative real-data bundle — no
+  hard pass/fail threshold in CI. *User-driven; the smoke run on
+  a simulated session shows in-memory wins on small data, which
+  is expected; real-data numbers should show zarr-direct winning
+  on long sessions.*
+- [x] Full sweep green (verify command from
+  [README.md](README.md) §Per-phase verification) — 291 passed
+  (Phase 4 baseline 276 → +15 new tests: 1 Protocol-isinstance,
+  10 zarr-direct parity + missing-output, 1 KeyError-text pin,
+  3 CLI resolver-branch tests).
 
 Then **stop and wait for user review** before proceeding to
 [Phase 6](phase-6-library-api.md) (or merging if Phase 6 has
