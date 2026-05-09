@@ -1241,6 +1241,79 @@ def test_backend_uses_long_debounce_for_resize_burst(
 
 
 @pytest.mark.unit
+def test_overlay_change_to_predictive_triggers_window_reload(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """Switching from ``smoothed`` to ``predictive`` reloads the buffer.
+
+    Without the reload the buffered payload still has
+    ``predictive=None`` (loaded under the narrower required-outputs
+    set for ``smoothed``) and the overlay renders blank until the
+    user separately nudges the slider or t_width. Pin: the overlay
+    change must dispatch a fresh load so newly-required outputs
+    actually land in the buffer.
+    """
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.5)
+
+    # Reset the schedule-spy after construction so we only count the
+    # loads triggered by the overlay change itself.
+    scheduled: list[ViewState] = []
+    original_schedule = viewer._backend.schedule_window_load
+
+    def _spy(state, on_done):
+        scheduled.append(state)
+        return original_schedule(state, on_done)
+
+    viewer._backend.schedule_window_load = _spy  # type: ignore[method-assign]
+
+    overlay_index = next(
+        i
+        for i in range(viewer._slice_overlay_combo.count())
+        if viewer._slice_overlay_combo.itemData(i) == "predictive"
+    )
+    viewer._slice_overlay_combo.setCurrentIndex(overlay_index)
+
+    assert scheduled, "overlay change must enqueue a fresh window load"
+    assert scheduled[-1].t_center == pytest.approx(viewer._core.t_center)
+    assert scheduled[-1].t_width == pytest.approx(viewer._core.t_width)
+
+
+@pytest.mark.unit
+def test_reset_view_round_trips_clamped_initial_t_width(
+    qapp,
+    multi_run_bundles: dict[str, RunBundle],
+) -> None:
+    """``R``-reset stores the *clamped* width, not the raw constructor arg.
+
+    Pin: launching with ``--t-width 0`` (or any sub-floor value) must
+    not blow up later when the user presses ``R``. Before the fix
+    ``QtViewer`` stored the raw ``t_width`` value and ``_reset_view``
+    fed it back into ``set_t_width``, which raises on non-positive
+    values.
+    """
+    from non_local_detector.visualization.interactive.viewer.core import (
+        MIN_T_WIDTH_SECONDS,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    ds = InMemoryDecoderDataSource(multi_run_bundles)
+    viewer = QtViewer(ds, t_width=0.0)
+    # Constructor must clamp, not raw-store.
+    assert viewer._initial_t_width == pytest.approx(MIN_T_WIDTH_SECONDS)
+    assert viewer._core.t_width == pytest.approx(MIN_T_WIDTH_SECONDS)
+
+    # Move the user away from the initial state, then reset — the
+    # reset path must not raise.
+    viewer._core.set_t_width(1.0)
+    viewer._reset_view()
+    assert viewer._core.t_width == pytest.approx(MIN_T_WIDTH_SECONDS)
+
+
+@pytest.mark.unit
 def test_backend_skips_predictive_when_slice_is_smoothed(
     qapp,
     multi_run_bundles: dict[str, RunBundle],

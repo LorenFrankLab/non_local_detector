@@ -447,9 +447,13 @@ class QtViewer(QtWidgets.QMainWindow):
 
         self._data_source = data_source
         self._backend = QtBackendAdapter(data_source)
-        self._initial_t_width = float(t_width)
         self._initial_t_center: float | None = None
         self._core = ViewerCore(data_source, self._backend, t_width=t_width)
+        # Remember the *clamped* width so ``R``-reset can round-trip
+        # through ``set_t_width`` without re-raising on a CLI-supplied
+        # zero/negative value (the core clamps silently at construction
+        # but rejects out-of-range values from ``set_t_width``).
+        self._initial_t_width = self._core.t_width
         self._initial_t_center = self._core.t_center
 
         # Auto-scroll state. Lazy-allocated timer so we don't burn a
@@ -823,6 +827,16 @@ class QtViewer(QtWidgets.QMainWindow):
             return
         self._slice_panel.set_overlay_mode(mode)
         self._sync_required_outputs_with_panels()
+        # Switching from ``"smoothed"`` to ``"predictive"`` /
+        # ``"filtered"`` widens ``_required_outputs`` to include
+        # ``predictive_posterior``, but the panel still holds the old
+        # buffered payload (where ``predictive`` is ``None``) so the
+        # overlay would render blank until the user nudged the slider
+        # or t_width. Force a same-window reload so newly-required
+        # outputs land in the buffer immediately. ``set_t_center`` /
+        # ``set_t_width`` self-no-op on unchanged values, so a direct
+        # ``request_load`` is the only way to re-fetch the same window.
+        self._core.request_load()
 
     def _sync_required_outputs_with_panels(self) -> None:
         """Tell the backend which optional outputs panels actually use.
