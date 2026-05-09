@@ -108,6 +108,82 @@ def test_bundle_from_detector_overwrites_when_flag_set(
 
 
 @pytest.mark.unit
+def test_bundle_from_detector_validates_before_writing(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """A bad-shape ``position`` raises BEFORE any sidecar is written,
+    so a failed call doesn't leave a half-built directory on disk.
+
+    Regression for the post-Phase-6 review finding: previously
+    ``results.nc`` / ``model.pkl`` / ``spikes.npz`` were written
+    eagerly and the position validator ran last, leaving a partial
+    bundle if it raised."""
+    from non_local_detector.visualization.interactive.devtools.bundle_from_detector import (
+        bundle_from_detector,
+    )
+
+    out_dir = tmp_path / "bundle_partial"
+    bad_position = np.zeros((10, 5))  # neither 1D nor (n, 2)
+    with pytest.raises(ValueError, match="position must be shape"):
+        bundle_from_detector(
+            detector=nl_fitted.detector,
+            results=nl_fitted.results,
+            spike_times=sim_session.spike_times,
+            position=bad_position,
+            position_time=np.arange(10),
+            out=out_dir,
+        )
+    # Directory may have been created (mkdir runs early to land
+    # inside it); but no sidecar files should exist.
+    if out_dir.exists():
+        assert list(out_dir.iterdir()) == [], (
+            f"bundle_from_detector left partial files behind in {out_dir}: "
+            f"{[p.name for p in out_dir.iterdir()]!r}"
+        )
+
+
+@pytest.mark.unit
+def test_bundle_from_detector_validates_speed_length_before_writing(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """``speed`` mismatched against ``position_time`` raises before
+    writing anything."""
+    from non_local_detector.visualization.interactive.devtools.bundle_from_detector import (
+        bundle_from_detector,
+    )
+
+    out_dir = tmp_path / "bundle_speed_mismatch"
+    n = sim_session.position.size
+    with pytest.raises(ValueError, match="speed length"):
+        bundle_from_detector(
+            detector=nl_fitted.detector,
+            results=nl_fitted.results,
+            spike_times=sim_session.spike_times,
+            position=sim_session.position,
+            position_time=sim_session.time,
+            speed=np.zeros(n - 1),  # wrong length
+            out=out_dir,
+        )
+    if out_dir.exists():
+        assert list(out_dir.iterdir()) == []
+
+
+@pytest.mark.unit
+def test_devtools_package_exports_bundle_from_detector() -> None:
+    """``bundle_from_detector`` is reachable from the package surface
+    so notebook callers can import it without reaching into the
+    submodule."""
+    from non_local_detector.visualization.interactive import devtools
+
+    assert hasattr(devtools, "bundle_from_detector")
+    assert "bundle_from_detector" in devtools.__all__
+
+
+@pytest.mark.unit
 def test_bundle_from_detector_cli_round_trip(
     tmp_path: Path,
     nl_fitted: FittedDetector,

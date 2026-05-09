@@ -80,26 +80,38 @@ def bundle_from_detector(
                     "--overwrite to replace it."
                 )
 
-    _DetectorBase.save_results(results, str(nc_path))
-    detector.save_model(str(model_path))
-
-    spikes_obj = np.empty(len(spike_times), dtype=object)
-    for i, st in enumerate(spike_times):
-        spikes_obj[i] = np.asarray(st, dtype=float)
-    np.savez(str(spikes_path), spike_times=spikes_obj)
-
+    # Validate + build every sidecar in memory BEFORE writing anything,
+    # so a bad-shape position or length-mismatched speed raises before
+    # any file is touched. Otherwise the function could leave a partial
+    # bundle on disk (e.g. results.nc + model.pkl + spikes.npz written,
+    # position.parquet missing or stale from a previous run when
+    # ``overwrite=True`` mixed new + old files).
     position = np.asarray(position)
+    position_time_arr = np.asarray(position_time)
     if position.ndim == 1:
+        if position.shape[0] != position_time_arr.shape[0]:
+            raise ValueError(
+                "bundle-from-detector: position length "
+                f"{position.shape[0]} != position_time length "
+                f"{position_time_arr.shape[0]}."
+            )
         pos_df = pd.DataFrame(
-            {"position": position}, index=pd.Index(position_time, name="time")
+            {"position": position},
+            index=pd.Index(position_time_arr, name="time"),
         )
     elif position.ndim == 2 and position.shape[1] == 2:
+        if position.shape[0] != position_time_arr.shape[0]:
+            raise ValueError(
+                "bundle-from-detector: position length "
+                f"{position.shape[0]} != position_time length "
+                f"{position_time_arr.shape[0]}."
+            )
         pos_df = pd.DataFrame(
             {
                 "x_position": position[:, 0],
                 "y_position": position[:, 1],
             },
-            index=pd.Index(position_time, name="time"),
+            index=pd.Index(position_time_arr, name="time"),
         )
     else:
         raise ValueError(
@@ -107,7 +119,26 @@ def bundle_from_detector(
             f"or (n_pos_time, 2); got {position.shape}."
         )
     if speed is not None:
-        pos_df["speed"] = np.asarray(speed)
+        speed_arr = np.asarray(speed)
+        if speed_arr.shape[0] != position_time_arr.shape[0]:
+            raise ValueError(
+                "bundle-from-detector: speed length "
+                f"{speed_arr.shape[0]} != position_time length "
+                f"{position_time_arr.shape[0]}."
+            )
+        pos_df["speed"] = speed_arr
+
+    spikes_obj = np.empty(len(spike_times), dtype=object)
+    for i, st in enumerate(spike_times):
+        spikes_obj[i] = np.asarray(st, dtype=float)
+
+    # All sidecars validated; write atomically (or as close as Python
+    # gets — ``to_parquet`` / ``np.savez`` go through pandas / numpy
+    # write paths, which aren't single-syscall atomic, but every per-
+    # sidecar write happens after every per-sidecar build).
+    _DetectorBase.save_results(results, str(nc_path))
+    detector.save_model(str(model_path))
+    np.savez(str(spikes_path), spike_times=spikes_obj)
     pos_df.to_parquet(str(position_path))
 
     return out

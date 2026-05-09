@@ -23,8 +23,6 @@
 # Requires the `[viewer]` extra: `uv pip install -e '.[viewer]'`.
 
 # %%
-import numpy as np
-
 from non_local_detector import NonLocalSortedSpikesDetector
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 from non_local_detector.visualization.interactive import launch_qt
@@ -53,13 +51,16 @@ detector = NonLocalSortedSpikesDetector(
     non_local_penalty_std=5.0,
     local_position_std=1.0,
 )
-detector.fit(
-    position=position[~is_event],
-    spike_times=[
-        st[~np.isin(np.searchsorted(time, st), np.flatnonzero(is_event))]
-        for st in spike_times
-    ],
-    is_track_interior=np.ones_like(position[~is_event], dtype=bool),
+# ``estimate_parameters`` is the EM-fit entry point; ``is_training``
+# is the boolean mask of training timepoints (we exclude the
+# simulated replay events from the fit).
+detector.estimate_parameters(
+    position_time=time,
+    position=position,
+    spike_times=spike_times,
+    is_training=~is_event,
+    time=time,
+    return_outputs=None,
 )
 
 # %% [markdown]
