@@ -1228,10 +1228,15 @@ class QtViewer(QtWidgets.QMainWindow):
         for bin_panel in (self._slice_panel, *self._extra_bin_panels):
             bin_panel.update_for_index(value)
 
-    def _set_t_center_from_panel_click(self, t: float) -> None:
+    def _set_t_center_from_panel_click(self, t_rel: float) -> None:
+        """Recenter on a panel-click x-coord. Panels render in relative
+        coordinates against the fixed ``[-t_width/2, +t_width/2]``
+        x-range, so the click x is added back to ``t_center`` to get
+        the absolute target time."""
         self._clear_pins()
-        self._core.set_t_center(float(t))
-        self._sync_slider_and_bin_panels_for_time(float(t))
+        t_abs = float(self._core.t_center) + float(t_rel)
+        self._core.set_t_center(t_abs)
+        self._sync_slider_and_bin_panels_for_time(t_abs)
 
     def _time_to_bin_index(self, t: float) -> int:
         """Return the left-edge-binned index containing absolute time ``t``."""

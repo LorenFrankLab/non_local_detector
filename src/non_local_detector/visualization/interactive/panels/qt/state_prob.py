@@ -11,6 +11,7 @@ from non_local_detector.visualization.interactive.panels.qt._mixins import (
     ClickRecenterMixin,
     CursorMarkersMixin,
     EventOverlayMixin,
+    RelativeTimeAxisMixin,
 )
 
 if TYPE_CHECKING:
@@ -50,7 +51,11 @@ def _legend_html(items: list[tuple[str, str]]) -> str:
 
 
 class QtStateProbabilityPanel(
-    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, CursorMarkersMixin
+    pg.PlotWidget,
+    EventOverlayMixin,
+    ClickRecenterMixin,
+    CursorMarkersMixin,
+    RelativeTimeAxisMixin,
 ):
     """One ``pg.PlotDataItem`` line per discrete state.
 
@@ -95,7 +100,8 @@ class QtStateProbabilityPanel(
                 line.setData([], [])
             return
         data = self._model.update_window(payload.state_probabilities)
-        self._set_data(payload.time, data)
+        # Render at relative coords against the panel's fixed x-range.
+        self._set_data(payload.time - payload.t_center, data)
 
     def update_for_array(
         self, time: np.ndarray, state_probabilities: np.ndarray

@@ -14,6 +14,7 @@ from non_local_detector.visualization.interactive.panels.qt._mixins import (
     ClickRecenterMixin,
     CursorMarkersMixin,
     EventOverlayMixin,
+    RelativeTimeAxisMixin,
 )
 
 if TYPE_CHECKING:
@@ -26,7 +27,11 @@ if TYPE_CHECKING:
 
 
 class QtRasterPanel(
-    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, CursorMarkersMixin
+    pg.PlotWidget,
+    EventOverlayMixin,
+    ClickRecenterMixin,
+    CursorMarkersMixin,
+    RelativeTimeAxisMixin,
 ):
     """Per-cell spike-time raster.
 
@@ -117,12 +122,14 @@ class QtRasterPanel(
             if payload.time_stop is not None
             else float(payload.time[-1])
         )
-        self._render_spikes(t_start, t_stop)
+        # Render at relative coords against the panel's fixed
+        # ``[-t_width/2, +t_width/2]`` x-range.
+        self._render_spikes(t_start, t_stop, t_offset=float(payload.t_center))
         self._render_non_local_regions(payload)
 
     def update_for_window(self, t_start: float, t_stop: float) -> None:
         """Direct entry for tests / callers without a payload."""
-        self._render_spikes(t_start, t_stop)
+        self._render_spikes(t_start, t_stop, t_offset=0.0)
 
     def rebind_after_swap(self) -> None:
         """Refresh axis label after the model rebinds.
@@ -170,13 +177,20 @@ class QtRasterPanel(
         self._pin_dot.setData([float(t)], [float(rows[0])])
         self._pin_dot.setVisible(True)
 
-    def _render_spikes(self, t_start: float, t_stop: float) -> None:
+    def _render_spikes(
+        self, t_start: float, t_stop: float, *, t_offset: float = 0.0
+    ) -> None:
+        """Lay out spike scatter at ``time - t_offset`` for the requested
+        absolute ``[t_start, t_stop]`` window. ``t_offset`` defaults to
+        zero (test entry point) and is set to the payload's
+        ``t_center`` from ``update_window`` so the relative-time x-range
+        renders correctly."""
         raster = self._model.update_window(t_start, t_stop)
         xs: list[float] = []
         ys: list[float] = []
         event_ids: list[int] = []
         for y_row, cell_spikes in enumerate(raster.spike_times_per_cell):
-            xs.extend(cell_spikes.tolist())
+            xs.extend((cell_spikes - t_offset).tolist())
             ys.extend([float(y_row)] * cell_spikes.size)
             event_ids.extend(raster.event_ids_per_cell[y_row].astype(int).tolist())
         self._scatter.setData(xs, ys, data=event_ids)
@@ -211,8 +225,9 @@ class QtRasterPanel(
         active = nl_mass > self._non_local_threshold
         if not active.any():
             return
-        # Group consecutive active bins into contiguous spans.
-        time = payload.time
+        # Group consecutive active bins into contiguous spans. Render
+        # at relative coords against the panel's fixed x-range.
+        time = payload.time - payload.t_center
         for span_start, span_stop in _contiguous_spans(active):
             t_lo = float(time[span_start])
             t_hi = float(time[span_stop - 1])

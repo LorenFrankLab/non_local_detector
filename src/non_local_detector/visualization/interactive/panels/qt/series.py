@@ -18,6 +18,7 @@ from non_local_detector.visualization.interactive.panels.qt._mixins import (
     ClickRecenterMixin,
     CursorMarkersMixin,
     EventOverlayMixin,
+    RelativeTimeAxisMixin,
 )
 
 if TYPE_CHECKING:
@@ -37,7 +38,9 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-class LineSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
+class LineSeriesPanel(
+    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, RelativeTimeAxisMixin
+):
     """Single line, optionally with fill-below shading + threshold lines."""
 
     def __init__(
@@ -79,9 +82,11 @@ class LineSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
             return
         t_start, t_stop = float(payload.time[0]), float(payload.time[-1])
         t, y = self._model.window(t_start, t_stop)
-        self._line.setData(t, y)
+        # Render at relative coords against the panel's fixed x-range.
+        t_rel = t - payload.t_center
+        self._line.setData(t_rel, y)
         if self._fill_curve is not None:
-            self._zero_curve.setData(t, [0.0] * len(t))
+            self._zero_curve.setData(t_rel, [0.0] * len(t_rel))
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +112,9 @@ def _legend_html(items: list[tuple[str, str]]) -> str:
     )
 
 
-class MultiLineSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
+class MultiLineSeriesPanel(
+    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, RelativeTimeAxisMixin
+):
     """Several lines on one panel sharing a common time axis + y-range.
 
     The legend is rendered into the plot's title bar (HTML-coloured
@@ -149,8 +156,10 @@ class MultiLineSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin)
             return
         t_start, t_stop = float(payload.time[0]), float(payload.time[-1])
         t, ys = self._model.window(t_start, t_stop)
+        # Render at relative coords against the panel's fixed x-range.
+        t_rel = t - payload.t_center
         for label, line in self._lines.items():
-            line.setData(t, ys[label])
+            line.setData(t_rel, ys[label])
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +168,11 @@ class MultiLineSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin)
 
 
 class ScatterSeriesPanel(
-    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, CursorMarkersMixin
+    pg.PlotWidget,
+    EventOverlayMixin,
+    ClickRecenterMixin,
+    CursorMarkersMixin,
+    RelativeTimeAxisMixin,
 ):
     """Scatter of ``(t, y)`` points; click-on-point recenters."""
 
@@ -192,12 +205,16 @@ class ScatterSeriesPanel(
             return
         t_start, t_stop = float(payload.time[0]), float(payload.time[-1])
         t, y = self._model.window(t_start, t_stop)
-        self._scatter.setData(t, y)
+        # Render at relative coords against the panel's fixed x-range.
+        self._scatter.setData(t - payload.t_center, y)
 
     def _on_point_clicked(self, _scatter, points) -> None:
         if not points:
             return
-        # Recenter on the first clicked point's x coordinate.
+        # Recenter on the first clicked point's x coordinate. The
+        # scatter is now drawn in relative coords, so the click x is
+        # already relative to ``t_center`` — the click handler in
+        # ``QtViewer`` adds back the absolute offset.
         point = points[0]
         x = float(point.pos().x())
         if self._click_callback is not None:
@@ -209,7 +226,9 @@ class ScatterSeriesPanel(
 # ---------------------------------------------------------------------------
 
 
-class IntervalSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
+class IntervalSeriesPanel(
+    pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin, RelativeTimeAxisMixin
+):
     """Shaded vertical bands per (t_start, t_end) pair."""
 
     def __init__(
@@ -238,9 +257,11 @@ class IntervalSeriesPanel(pg.PlotWidget, EventOverlayMixin, ClickRecenterMixin):
         starts, ends = self._model.window(t_start, t_stop)
         brush_color = QColor(self._model.color)
         brush_color.setAlphaF(self._model.alpha)
+        # Render at relative coords against the panel's fixed x-range.
+        offset = float(payload.t_center)
         for s, e in zip(starts, ends, strict=True):
             region = pg.LinearRegionItem(
-                values=(float(s), float(e)),
+                values=(float(s) - offset, float(e) - offset),
                 movable=False,
                 brush=brush_color,
             )
