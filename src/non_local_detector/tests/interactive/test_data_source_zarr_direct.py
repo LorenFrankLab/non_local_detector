@@ -39,12 +39,16 @@ def _save_bundle_with_zarr(
     session: SimulatedSession,
     *,
     drop_vars: tuple[str, ...] = (),
+    transform_results=None,
 ) -> Path:
     """Write a canonical bundle directory + a validated zarr cache.
 
     ``drop_vars`` lets a test exercise missing-output paths by
     omitting (e.g.) ``log_likelihood`` or ``predictive_posterior``
-    from both the canonical NetCDF and the cache.
+    from both the canonical NetCDF and the cache. ``transform_results``
+    is an optional callable invoked on the xarray Dataset right
+    before save so a test can mutate variables (e.g. write a 1D
+    state-prob array for the single-state contract test).
     """
     from non_local_detector.models.base import _DetectorBase
     from non_local_detector.visualization.interactive.devtools.build_viewer_cache import (
@@ -57,6 +61,8 @@ def _save_bundle_with_zarr(
     results = fitted.results
     if drop_vars:
         results = results.drop_vars([v for v in drop_vars if v in results.data_vars])
+    if transform_results is not None:
+        results = transform_results(results)
 
     nc_path = bundle_dir / "results.nc"
     _DetectorBase.save_results(results, str(nc_path))
@@ -278,6 +284,41 @@ def test_zarr_direct_load_likelihood_keyerror_text_pinned(
     assert "log_likelihood" in str(mem_exc.value)
     assert "predict" in str(direct_exc.value).lower()
     assert "predict" in str(mem_exc.value).lower()
+
+
+@pytest.mark.unit
+def test_zarr_direct_load_state_probabilities_expands_single_state_to_2d(
+    tmp_path: Path,
+    dec_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """Single-state runs are stored on disk as 1D ``(n_time,)`` arrays;
+    both data sources must expand to ``(n_visible, 1)`` so callers like
+    ``StateProbabilityModel.update_window`` (requires 2D input) work
+    on either path. Mirrors
+    ``InMemoryDecoderDataSource.test_load_state_probabilities_expands_single_state_1d_results``."""
+    import xarray as xr
+
+    def _flatten_state_probs(results):
+        return results.assign(
+            acausal_state_probabilities=xr.DataArray(
+                np.ones(results.sizes["time"]),
+                dims=("time",),
+                coords={"time": results["time"].values},
+            )
+        )
+
+    bundle_dir = _save_bundle_with_zarr(
+        tmp_path / "single_state",
+        dec_fitted,
+        sim_session,
+        transform_results=_flatten_state_probs,
+    )
+    direct = _make_zarr_direct(bundle_dir)
+    sl = slice(2, 8)
+    probs = direct.load_state_probabilities(sl)
+    assert probs.shape == (sl.stop - sl.start, 1)
+    np.testing.assert_array_equal(probs[:, 0], 1.0)
 
 
 @pytest.mark.unit

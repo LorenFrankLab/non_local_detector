@@ -391,8 +391,21 @@ class ZarrDirectDecoderDataSource:
         return np.asarray(handles.predictive[sl])
 
     def load_state_probabilities(self, sl: slice) -> np.ndarray:
-        """Window slice of ``acausal_state_probabilities``."""
-        return np.asarray(self._runs[self._active_run_name].state_probabilities[sl])
+        """Window slice of ``acausal_state_probabilities``.
+
+        Single-state runs are stored on disk as 1D ``(n_time,)``
+        arrays; expand to ``(n_visible, 1)`` so callers (e.g.
+        ``StateProbabilityModel.update_window`` which requires 2D
+        input) get the same shape the in-memory source returns.
+        Mirrors ``InMemoryDecoderDataSource.load_state_probabilities``'s
+        single-state reshape.
+        """
+        handles = self._runs[self._active_run_name]
+        probs = np.asarray(handles.state_probabilities[sl])
+        n_states = len(handles.bundle.detector.state_names)
+        if probs.ndim == 1 and n_states == 1:
+            return probs[:, np.newaxis]
+        return probs
 
     def load_position(self, sl: slice) -> np.ndarray | None:
         """1D position interpolated onto the decoder time grid, sliced.
