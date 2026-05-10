@@ -88,36 +88,58 @@ class ViewState:
 class PositionGrid:
     """Position-axis description, abstracted over 1D / 2D.
 
-    v1 ships only the 1D path (``ndim == 1``). v3+ extends to 2D
-    decoders (``ndim == 2``) by populating the second-axis fields.
-    Panels that visualize position-distributions take a
-    ``PositionGrid`` and dispatch on ``.ndim``.
+    Panels that visualize position-distributions take a ``PositionGrid``
+    and dispatch on ``.ndim``. The flat ordering matches
+    ``Environment.place_bin_centers_`` — a C-order ravel of an
+    ``ij``-indexed meshgrid — so ``flat.reshape(grid.shape)`` recovers
+    the 2D grid in the same orientation as ``place_bin_centers_``.
     """
 
     ndim: int
+    # 1D: shape ``(n_pos,)`` — bin centers on the linearized axis.
+    # 2D: shape ``(n_pos, 2)`` — flat ``(x, y)`` per bin in
+    # ``place_bin_centers_`` order.
     centers: np.ndarray
+    # Flat mask of length ``n_pos`` aligned with ``centers`` along
+    # axis 0. ``None`` when the environment lacks a fitted
+    # track-interior mask.
     is_interior: np.ndarray | None = None
-    centers_y: np.ndarray | None = None
-    is_interior_y: np.ndarray | None = None
+    # 2D-only. Grid shape ``(n_x, n_y)`` matching
+    # ``Environment.centers_shape_``.
+    shape: tuple[int, ...] | None = None
+    # 2D-only. ``(n_x, n_y)`` reshape of ``is_interior``. ``None`` when
+    # the 1D path is in use or the environment carries no mask.
+    is_interior_2d: np.ndarray | None = None
 
     @classmethod
     def from_environment(cls, environment) -> PositionGrid:
         """Build a ``PositionGrid`` from a fitted ``Environment``."""
         centers = np.asarray(environment.place_bin_centers_)
         n_pos_dims = centers.shape[1]
-        is_interior = (
+        is_interior_flat = (
             np.asarray(environment.is_track_interior_).ravel()
             if environment.is_track_interior_ is not None
             else None
         )
         if n_pos_dims == 1:
-            return cls(ndim=1, centers=centers.squeeze(-1), is_interior=is_interior)
+            return cls(
+                ndim=1,
+                centers=centers.squeeze(-1),
+                is_interior=is_interior_flat,
+            )
         if n_pos_dims == 2:
+            shape = tuple(int(s) for s in environment.centers_shape_)
+            is_interior_2d = (
+                is_interior_flat.reshape(shape)
+                if is_interior_flat is not None
+                else None
+            )
             return cls(
                 ndim=2,
-                centers=centers[:, 0],
-                centers_y=centers[:, 1],
-                is_interior=is_interior,
+                centers=centers,
+                is_interior=is_interior_flat,
+                shape=shape,
+                is_interior_2d=is_interior_2d,
             )
         raise ValueError(
             f"PositionGrid supports 1D or 2D environments, got n_pos_dims={n_pos_dims}."
