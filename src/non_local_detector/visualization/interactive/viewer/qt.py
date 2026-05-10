@@ -674,7 +674,12 @@ class QtViewer(QtWidgets.QMainWindow):
         self._extra_bin_panels: list = (
             list(extra_bin_panels) if extra_bin_panels is not None else []
         )
-        self._all_bin_panels: list = [
+        # Dispatch list for ``set_window_buffer`` + ``update_for_index``
+        # callbacks. Independent of layout: panels here may live in
+        # different splitter panes (the slice panel + ``extra_bin_panels``
+        # share the right column; the projected-2D panel sits in its
+        # own third pane).
+        self._bin_synced_panels: list = [
             self._slice_panel,
             *(
                 [self._projected_2d_panel]
@@ -1195,7 +1200,7 @@ class QtViewer(QtWidgets.QMainWindow):
         # setRange after load is no longer needed and would fight with
         # the relative anchor.
         slider_value = self._slider.value()
-        for bin_panel in self._all_bin_panels:
+        for bin_panel in self._bin_synced_panels:
             bin_panel.set_window_buffer(payload)
             # Re-render at the current cursor — the new buffer may
             # extend coverage past the cursor's previous reach.
@@ -1301,7 +1306,7 @@ class QtViewer(QtWidgets.QMainWindow):
         # off the slider so per-tick cursor updates land sub-ms (the
         # heavier window load is async and refreshes the buffer when it
         # commits).
-        for bin_panel in self._all_bin_panels:
+        for bin_panel in self._bin_synced_panels:
             bin_panel.update_for_index(value)
 
     def _set_t_center_from_panel_click(self, t_rel: float) -> None:
@@ -1328,7 +1333,7 @@ class QtViewer(QtWidgets.QMainWindow):
         with QtCore.QSignalBlocker(self._slider):
             self._slider.setValue(t_idx)
         self._sync_control_labels()
-        for bin_panel in self._all_bin_panels:
+        for bin_panel in self._bin_synced_panels:
             bin_panel.update_for_index(t_idx)
         return t_idx
 
