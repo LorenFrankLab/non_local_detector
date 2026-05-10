@@ -66,6 +66,101 @@ def test_bundle_from_detector_round_trips_via_run_from_dir(
 
 
 @pytest.mark.unit
+def test_bundle_from_detector_preserves_optional_2d_position(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """Linearized position can be bundled with raw XY coordinates for
+    the optional projected-2D panel."""
+    from non_local_detector.visualization.interactive.app import (
+        _load_run,
+        _parse_run_from_dir_arg,
+    )
+    from non_local_detector.visualization.interactive.devtools.bundle_from_detector import (
+        bundle_from_detector,
+    )
+
+    position_2d = np.column_stack([sim_session.position, sim_session.position + 10.0])
+    out = bundle_from_detector(
+        detector=nl_fitted.detector,
+        results=nl_fitted.results,
+        spike_times=sim_session.spike_times,
+        position=sim_session.position,
+        position_time=sim_session.time,
+        position_2d=position_2d,
+        position_2d_time=sim_session.time,
+        out=tmp_path / "bundle_out",
+    )
+
+    pos_df = pd.read_parquet(out / "position.parquet")
+    assert {"position", "x_position", "y_position"}.issubset(pos_df.columns)
+    # No separate sidecar when the time grids are identical.
+    assert not (out / "position_2d.parquet").exists()
+    spec = _parse_run_from_dir_arg(f"default:{out}")
+    _, bundle = _load_run(spec)
+    np.testing.assert_array_equal(bundle.position, sim_session.position)
+    assert bundle.position_2d is not None
+    np.testing.assert_array_equal(bundle.position_2d, position_2d)
+
+
+@pytest.mark.unit
+def test_bundle_from_detector_writes_separate_sidecar_for_distinct_2d_time(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """``position_2d`` on its own time grid lands in ``position_2d.parquet``.
+
+    The two time grids are routed to separate sidecar files; the
+    reader keeps them distinct so the data source can interpolate
+    each independently onto the decoder grid.
+    """
+    from non_local_detector.visualization.interactive.app import (
+        _load_run,
+        _parse_run_from_dir_arg,
+    )
+    from non_local_detector.visualization.interactive.devtools.bundle_from_detector import (
+        bundle_from_detector,
+    )
+
+    # Distinct grid: half-rate, offset by one-tenth of the position dt.
+    pos_time = np.asarray(sim_session.time)
+    dt = float(pos_time[1] - pos_time[0]) if pos_time.size > 1 else 1.0
+    pos_2d_time = pos_time[::2] + 0.1 * dt
+    n_2d = pos_2d_time.size
+    position_2d = np.column_stack(
+        [np.linspace(0.0, 100.0, n_2d), np.linspace(50.0, -50.0, n_2d)]
+    )
+
+    out = bundle_from_detector(
+        detector=nl_fitted.detector,
+        results=nl_fitted.results,
+        spike_times=sim_session.spike_times,
+        position=sim_session.position,
+        position_time=sim_session.time,
+        position_2d=position_2d,
+        position_2d_time=pos_2d_time,
+        out=tmp_path / "bundle_split",
+    )
+
+    pos_df = pd.read_parquet(out / "position.parquet")
+    assert "position" in pos_df.columns
+    # Co-mux columns are not written when the time grids differ —
+    # they would have to be padded against an inconsistent index.
+    assert "x_position" not in pos_df.columns
+    assert "y_position" not in pos_df.columns
+    assert (out / "position_2d.parquet").exists()
+
+    spec = _parse_run_from_dir_arg(f"default:{out}")
+    _, bundle = _load_run(spec)
+    assert bundle.position_2d is not None
+    assert bundle.position_2d_time is not None
+    np.testing.assert_array_equal(bundle.position_2d, position_2d)
+    np.testing.assert_array_equal(bundle.position_2d_time, pos_2d_time)
+
+
+@pytest.mark.unit
 def test_bundle_from_detector_overwrites_when_flag_set(
     tmp_path: Path,
     nl_fitted: FittedDetector,

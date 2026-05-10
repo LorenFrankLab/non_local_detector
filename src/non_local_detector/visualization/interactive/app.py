@@ -87,6 +87,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Initial window width in seconds (default: 1.0).",
     )
+    parser.add_argument(
+        "--show-projected-2d",
+        action="store_true",
+        help=(
+            "Show optional third column projecting the 1D decode onto the "
+            "track graph in 2D. Experimental; graph-track decoders only."
+        ),
+    )
     return parser
 
 
@@ -193,7 +201,11 @@ def _load_run(spec: dict[str, str]):
     - ``position.parquet``: pandas DataFrame written via
       ``df.to_parquet(...)``. Index = absolute time in seconds.
       Required column: ``position`` (1D) or ``x_position`` +
-      ``y_position`` (2D, v3+). Optional: ``speed``.
+      ``y_position`` (2D, v3+). If ``position`` and
+      ``x_position``/``y_position`` are all present, ``position`` is
+      treated as the 1D decoder coordinate and the XY columns are
+      exposed to the optional projected-2D panel. Optional:
+      ``speed``.
     """
     import numpy as np
     import pandas as pd
@@ -239,10 +251,26 @@ def _load_run(spec: dict[str, str]):
     spike_times_npz = np.load(spec["spikes"], allow_pickle=True)
     spike_times = list(spike_times_npz["spike_times"])
     position_df = pd.read_parquet(spec["position"])
+    sibling_2d = Path(spec["position"]).with_name("position_2d.parquet")
     if "position" in position_df.columns:
         position = position_df["position"].to_numpy()
+        if sibling_2d.exists():
+            # Separate parquet sidecar — used when position_2d sampled
+            # on its own time grid (camera clock vs. linearization output).
+            position_2d_df = pd.read_parquet(sibling_2d)
+            position_2d = position_2d_df[["x_position", "y_position"]].to_numpy()
+            position_2d_time = position_2d_df.index.to_numpy()
+        elif {"x_position", "y_position"}.issubset(position_df.columns):
+            # Co-muxed columns — same time grid as the linearized position.
+            position_2d = position_df[["x_position", "y_position"]].to_numpy()
+            position_2d_time = position_df.index.to_numpy()
+        else:
+            position_2d = None
+            position_2d_time = None
     elif {"x_position", "y_position"}.issubset(position_df.columns):
         position = position_df[["x_position", "y_position"]].to_numpy()
+        position_2d = None
+        position_2d_time = None
     else:
         raise ValueError(
             f"position.parquet at {spec['position']!r} must contain "
@@ -257,6 +285,8 @@ def _load_run(spec: dict[str, str]):
         spike_times=spike_times,
         position_time=position_time,
         position=position,
+        position_2d=position_2d,
+        position_2d_time=position_2d_time,
         speed=speed,
     )
 
@@ -383,7 +413,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             launch_qt_with_source,
         )
 
-        return launch_qt_with_source(data_source, t_width=args.t_width)
+        return launch_qt_with_source(
+            data_source,
+            t_width=args.t_width,
+            show_projected_2d=args.show_projected_2d,
+        )
     parser.error(f"unsupported backend {args.backend!r}")
     return 1
 
