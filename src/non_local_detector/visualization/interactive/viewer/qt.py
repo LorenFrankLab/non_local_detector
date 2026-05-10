@@ -615,6 +615,7 @@ class QtViewer(QtWidgets.QMainWindow):
         self._likelihood_panel: QtLikelihoodHeatmapPanel | None
         self._slice_panel: QtSlicePanel | None
         self._posterior_at_cursor_panel: Qt2DImagePanel | None
+        self._likelihood_at_cursor_panel: Qt2DImagePanel | None
         if grid.ndim == 1:
             self._likelihood_panel = QtLikelihoodHeatmapPanel(
                 model=self._likelihood_model, position_centers=grid.centers
@@ -627,6 +628,7 @@ class QtViewer(QtWidgets.QMainWindow):
             )
             self._slice_panel.set_row_provider(self._slice_row_at)
             self._posterior_at_cursor_panel = None
+            self._likelihood_at_cursor_panel = None
         else:
             self._likelihood_panel = None
             self._panel = None
@@ -636,6 +638,14 @@ class QtViewer(QtWidgets.QMainWindow):
                 grid=grid,
                 payload_field="posterior",
                 title="Posterior at cursor",
+                vmax=0.25,
+            )
+            self._likelihood_at_cursor_panel = Qt2DImagePanel(
+                model=self._likelihood_model,
+                grid=grid,
+                payload_field="likelihood",
+                title="Likelihood at cursor",
+                vmax=1.0,
             )
 
         # Built-in time-axis panels (left column), top to bottom.
@@ -705,11 +715,19 @@ class QtViewer(QtWidgets.QMainWindow):
         )
         # Dispatch list for ``set_window_buffer`` + ``update_for_index``
         # callbacks. Independent of layout: panels here may live in
-        # different splitter panes. ``_right_top_panel`` is the slice
-        # panel for 1D detectors or the 2D at-cursor image for 2D.
-        right_top_panel = self._slice_panel or self._posterior_at_cursor_panel
+        # different splitter panes. 1D detectors get just the slice
+        # panel in the right column; 2D detectors stack the posterior
+        # and likelihood at-cursor images.
+        right_column_panels: list = []
+        if self._slice_panel is not None:
+            right_column_panels.append(self._slice_panel)
+        if self._posterior_at_cursor_panel is not None:
+            right_column_panels.append(self._posterior_at_cursor_panel)
+        if self._likelihood_at_cursor_panel is not None:
+            right_column_panels.append(self._likelihood_at_cursor_panel)
+        self._right_column_panels = right_column_panels
         self._bin_synced_panels: list = [
-            *([right_top_panel] if right_top_panel is not None else []),
+            *right_column_panels,
             *(
                 [self._projected_2d_panel]
                 if self._projected_2d_panel is not None
@@ -764,9 +782,9 @@ class QtViewer(QtWidgets.QMainWindow):
             _COLUMN_MARGIN, _COLUMN_MARGIN, _COLUMN_MARGIN, _COLUMN_MARGIN
         )
         self._right_column_layout.setSpacing(_SLICE_COLUMN_SPACING)
-        if right_top_panel is not None:
+        for panel in self._right_column_panels:
             self._right_column_layout.addWidget(
-                right_top_panel, stretch=_RIGHT_COLUMN_SLICE_STRETCH
+                panel, stretch=_RIGHT_COLUMN_SLICE_STRETCH
             )
         for bin_panel in self._extra_bin_panels:
             self._right_column_layout.addWidget(bin_panel, stretch=0)
@@ -1488,6 +1506,8 @@ class QtViewer(QtWidgets.QMainWindow):
             self._slice_panel.rebind_after_swap()
         if self._posterior_at_cursor_panel is not None:
             self._posterior_at_cursor_panel.rebind_after_swap(grid)
+        if self._likelihood_at_cursor_panel is not None:
+            self._likelihood_at_cursor_panel.rebind_after_swap(grid)
         if self._projected_2d_model is not None:
             self._projected_2d_model.set_active_run(new_detector)
         if self._projected_2d_panel is not None:

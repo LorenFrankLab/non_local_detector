@@ -12,6 +12,7 @@ under ``CONDITIONAL_NON_LOCAL`` excludes it).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -115,3 +116,17 @@ class LikelihoodHeatmapModel:
         # Rows that started fully non-finite must end up all-zero.
         normed = np.where(any_finite[:, None], normed, 0.0)
         return normed
+
+    def collapse_at(
+        self, log_lik_window: np.ndarray, indices: Sequence[int]
+    ) -> np.ndarray:
+        """Collapse only the rows at ``indices``.
+
+        Returns ``(len(indices), n_pos)`` — same shape contract as
+        ``PosteriorHeatmapModel.collapse_at``. Empty ``indices``
+        preserves the ``n_pos`` axis.
+        """
+        idx_list = list(indices)
+        if not idx_list:
+            return np.empty((0, self._n_pos), dtype=np.float64)
+        return self.update_window(log_lik_window[idx_list])

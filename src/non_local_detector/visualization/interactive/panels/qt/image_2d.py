@@ -29,13 +29,15 @@ if TYPE_CHECKING:
 class _BinCollapse(Protocol):
     """Interface the panel needs from a view model.
 
-    ``PosteriorHeatmapModel.collapse_at`` already satisfies this. The
-    Phase 2 likelihood path will add a parallel method.
+    Both ``PosteriorHeatmapModel.collapse_at`` and
+    ``LikelihoodHeatmapModel.collapse_at`` satisfy this — they share
+    a ``(n_window, n_state_bins) + indices -> (len(indices), n_pos)``
+    shape contract even though their keyword names differ. The
+    panel always passes the window positionally so the parameter
+    name on the underlying method is irrelevant.
     """
 
-    def collapse_at(
-        self, posterior_window: np.ndarray, indices: list[int]
-    ) -> np.ndarray: ...
+    def collapse_at(self, window: np.ndarray, indices: list[int], /) -> np.ndarray: ...
 
 
 class Qt2DImagePanel(pg.PlotWidget):

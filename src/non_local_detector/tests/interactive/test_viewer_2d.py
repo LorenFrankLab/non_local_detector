@@ -96,8 +96,8 @@ def fitted_2d_bundle():
     return bundle
 
 
-def test_viewer_constructs_2d_at_cursor_panel(qapp, fitted_2d_bundle) -> None:
-    """The 2D path swaps in ``Qt2DImagePanel`` and drops the 1D panels."""
+def test_viewer_constructs_2d_at_cursor_panels(qapp, fitted_2d_bundle) -> None:
+    """The 2D path swaps in two ``Qt2DImagePanel`` instances and drops the 1D panels."""
     from non_local_detector.visualization.interactive.data_source import (
         InMemoryDecoderDataSource,
     )
@@ -117,9 +117,18 @@ def test_viewer_constructs_2d_at_cursor_panel(qapp, fitted_2d_bundle) -> None:
     assert viewer._slice_panel is None
     assert viewer._slice_overlay_combo is None
     assert viewer._per_cell_checkbox is None
-    # 2D panel built and present in the bin-synced dispatch list.
+    # 2D top images: posterior + likelihood. Both present in the
+    # bin-synced dispatch list so each cursor tick updates both.
     assert isinstance(viewer._posterior_at_cursor_panel, Qt2DImagePanel)
+    assert isinstance(viewer._likelihood_at_cursor_panel, Qt2DImagePanel)
     assert viewer._posterior_at_cursor_panel in viewer._bin_synced_panels
+    assert viewer._likelihood_at_cursor_panel in viewer._bin_synced_panels
+    # Right-column layout stacks them (posterior on top, likelihood
+    # below) in the same column-panel registry.
+    assert viewer._right_column_panels == [
+        viewer._posterior_at_cursor_panel,
+        viewer._likelihood_at_cursor_panel,
+    ]
 
 
 def test_viewer_2d_rejects_projected_2d(qapp, fitted_2d_bundle) -> None:
@@ -141,8 +150,8 @@ def test_viewer_2d_rejects_projected_2d(qapp, fitted_2d_bundle) -> None:
     assert viewer._projected_2d_model is None
 
 
-def test_viewer_2d_cursor_update_renders_image(qapp, fitted_2d_bundle) -> None:
-    """Driving a cursor tick populates the 2D ImageItem without crashing."""
+def test_viewer_2d_cursor_update_renders_images(qapp, fitted_2d_bundle) -> None:
+    """Driving a cursor tick populates both 2D ImageItems without crashing."""
     from non_local_detector.visualization.interactive.data_source import (
         InMemoryDecoderDataSource,
     )
@@ -160,14 +169,16 @@ def test_viewer_2d_cursor_update_renders_image(qapp, fitted_2d_bundle) -> None:
     # push it to the bin-synced panels.
     state = ViewState(request_id=0, t_center=4.0, t_width=0.5)
     payload = viewer._backend.build_payload(state)
-    panel = viewer._posterior_at_cursor_panel
-    assert panel is not None
-    panel.set_window_buffer(payload)
     # Pick a t_idx inside the buffered window and render.
     t_idx = (payload.indices.start + payload.indices.stop) // 2
-    panel.update_for_index(t_idx)
 
-    # The ImageItem should now hold a non-empty image (one frame's
-    # RGBA array). Nothing to assert beyond "no crash + image was set".
-    assert panel._image_item.image is not None
-    assert panel._image_item.image.shape[-1] == 4  # RGBA
+    for panel in (
+        viewer._posterior_at_cursor_panel,
+        viewer._likelihood_at_cursor_panel,
+    ):
+        assert panel is not None
+        panel.set_window_buffer(payload)
+        panel.update_for_index(t_idx)
+        # Each ImageItem should hold a populated RGBA frame.
+        assert panel._image_item.image is not None
+        assert panel._image_item.image.shape[-1] == 4

@@ -71,6 +71,37 @@ class TestLikelihoodHeatmapModel:
         )
         assert out.shape == (0, n_pos)
 
+    def test_collapse_at_matches_update_window_subset(
+        self, nl_fitted: FittedDetector
+    ) -> None:
+        """``collapse_at(window, indices)`` equals ``update_window(window[indices])``.
+
+        The 2D viewer pulls a single cursor row at a time via
+        ``collapse_at``; the parity guarantee with ``update_window``
+        means the at-cursor image stays consistent with what the
+        full-window heatmap would have shown.
+        """
+        log_lik = nl_fitted.results["log_likelihood"].values
+        start = first_finite_row_index(log_lik)
+        window = log_lik[start : start + 20]
+        model = LikelihoodHeatmapModel(nl_fitted.detector)
+
+        full = model.update_window(window)
+        indices = [0, 5, 12, 19]
+        partial = model.collapse_at(window, indices)
+
+        assert partial.shape == (len(indices), full.shape[1])
+        np.testing.assert_array_equal(partial, full[indices])
+
+    def test_collapse_at_empty_indices_preserves_n_pos_axis(
+        self, nl_fitted: FittedDetector
+    ) -> None:
+        log_lik = nl_fitted.results["log_likelihood"].values
+        start = first_finite_row_index(log_lik)
+        window = log_lik[start : start + 5]
+        out = LikelihoodHeatmapModel(nl_fitted.detector).collapse_at(window, [])
+        assert out.shape == (0, _n_pos(nl_fitted.detector))
+
 
 # ---------------------------------------------------------------------------
 # StateProbabilityModel
