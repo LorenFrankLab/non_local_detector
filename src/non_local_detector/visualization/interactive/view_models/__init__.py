@@ -23,6 +23,10 @@ from non_local_detector.visualization.interactive.view_models.likelihood import 
 from non_local_detector.visualization.interactive.view_models.posterior import (
     PosteriorHeatmapModel,
 )
+from non_local_detector.visualization.interactive.view_models.projected_2d import (
+    Projected2DModel,
+    Projected2DPayload,
+)
 from non_local_detector.visualization.interactive.view_models.raster import (
     RasterModel,
     RasterPayload,
@@ -49,6 +53,8 @@ __all__ = [
     "MultiLineSeriesModel",
     "PositionGrid",
     "PosteriorHeatmapModel",
+    "Projected2DModel",
+    "Projected2DPayload",
     "RasterModel",
     "RasterPayload",
     "RunBundle",
