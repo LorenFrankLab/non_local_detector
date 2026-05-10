@@ -96,6 +96,8 @@ class DecoderDataSource(Protocol):
 
     def load_position(self, sl: slice) -> np.ndarray | None: ...
 
+    def load_position_2d(self, sl: slice) -> np.ndarray | None: ...
+
     def slice_at_index(
         self, t_idx: int, which: SliceWhich = "posterior"
     ) -> np.ndarray | None: ...
@@ -150,6 +152,7 @@ class InMemoryDecoderDataSource:
         # Cache the per-run position interpolated onto the decoder
         # time grid, computed lazily on first ``load_position`` call.
         self._position_cache: dict[str, np.ndarray | None] = {}
+        self._position_2d_cache: dict[str, np.ndarray | None] = {}
 
     # ------------------------------------------------------------------
     # Construction validators
@@ -354,6 +357,13 @@ class InMemoryDecoderDataSource:
             return None
         return position_at_decoder_time[sl]
 
+    def load_position_2d(self, sl: slice) -> np.ndarray | None:
+        """Window slice of optional raw 2D position aligned to decoder time."""
+        position_at_decoder_time = self._position_2d_at_decoder_time()
+        if position_at_decoder_time is None:
+            return None
+        return position_at_decoder_time[sl]
+
     def _position_at_decoder_time(self) -> np.ndarray | None:
         """Return position interpolated onto the decoder time grid (cached).
 
@@ -379,6 +389,40 @@ class InMemoryDecoderDataSource:
             decoder_time, position_time.astype(float), position.astype(float)
         ).astype(np.float32)
         self._position_cache[self._active_run_name] = interpolated
+        return interpolated
+
+    def _position_2d_at_decoder_time(self) -> np.ndarray | None:
+        """Return optional raw 2D position interpolated onto decoder time."""
+        cached = self._position_2d_cache.get(self._active_run_name, ...)
+        if cached is not ...:
+            return cached
+        run = self.active_run
+        position = np.asarray(run.position_2d) if run.position_2d is not None else None
+        position_time = (
+            np.asarray(run.position_2d_time)
+            if run.position_2d_time is not None
+            else np.asarray(run.position_time)
+            if run.position_time is not None
+            else None
+        )
+        if position is None or position_time is None:
+            self._position_2d_cache[self._active_run_name] = None
+            return None
+        if position.ndim != 2 or position.shape[1] != 2:
+            self._position_2d_cache[self._active_run_name] = None
+            return None
+        decoder_time = np.asarray(run.results["time"].values)
+        interpolated = np.column_stack(
+            [
+                np.interp(
+                    decoder_time,
+                    position_time.astype(float),
+                    position[:, dim].astype(float),
+                )
+                for dim in range(2)
+            ]
+        ).astype(np.float32)
+        self._position_2d_cache[self._active_run_name] = interpolated
         return interpolated
 
     _SLICE_VAR_MAP = {

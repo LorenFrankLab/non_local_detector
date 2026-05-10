@@ -124,8 +124,14 @@ def _load_run_bundle_from_dir(
     position_df = pd.read_parquet(str(bundle_dir / "position.parquet"))
     if "position" in position_df.columns:
         position = position_df["position"].to_numpy()
+        position_2d = (
+            position_df[["x_position", "y_position"]].to_numpy()
+            if {"x_position", "y_position"}.issubset(position_df.columns)
+            else None
+        )
     elif {"x_position", "y_position"}.issubset(position_df.columns):
         position = position_df[["x_position", "y_position"]].to_numpy()
+        position_2d = None
     else:
         raise ValueError(
             f"position.parquet at {bundle_dir!s} must contain a "
@@ -139,6 +145,8 @@ def _load_run_bundle_from_dir(
         spike_times=spike_times,
         position_time=position_time,
         position=position,
+        position_2d=position_2d,
+        position_2d_time=position_time if position_2d is not None else None,
         speed=speed,
     )
     # Tag the bundle with the run name so multi-run callers can read it
@@ -211,6 +219,7 @@ class ZarrDirectDecoderDataSource:
         self._validate_overlay_alignment()
         self._active_run_name = next(iter(self._runs))
         self._position_cache: dict[str, np.ndarray | None] = {}
+        self._position_2d_cache: dict[str, np.ndarray | None] = {}
 
     @classmethod
     def for_directories(cls, dirs: dict[str, Path]) -> ZarrDirectDecoderDataSource:
@@ -419,6 +428,13 @@ class ZarrDirectDecoderDataSource:
             return None
         return position_at_decoder_time[sl]
 
+    def load_position_2d(self, sl: slice) -> np.ndarray | None:
+        """Optional raw 2D position interpolated onto decoder time, sliced."""
+        position_at_decoder_time = self._position_2d_at_decoder_time()
+        if position_at_decoder_time is None:
+            return None
+        return position_at_decoder_time[sl]
+
     def _position_at_decoder_time(self) -> np.ndarray | None:
         cached = self._position_cache.get(self._active_run_name, ...)
         if cached is not ...:
@@ -436,6 +452,38 @@ class ZarrDirectDecoderDataSource:
             decoder_time, position_time.astype(float), position.astype(float)
         )
         self._position_cache[self._active_run_name] = interp
+        return interp
+
+    def _position_2d_at_decoder_time(self) -> np.ndarray | None:
+        cached = self._position_2d_cache.get(self._active_run_name, ...)
+        if cached is not ...:
+            return cached
+        run = self.active_run
+        position = np.asarray(run.position_2d) if run.position_2d is not None else None
+        position_time = (
+            np.asarray(run.position_2d_time)
+            if run.position_2d_time is not None
+            else np.asarray(run.position_time)
+            if run.position_time is not None
+            else None
+        )
+        if position is None or position_time is None:
+            self._position_2d_cache[self._active_run_name] = None
+            return None
+        if position.ndim != 2 or position.shape[1] != 2:
+            self._position_2d_cache[self._active_run_name] = None
+            return None
+        interp = np.column_stack(
+            [
+                np.interp(
+                    self.time,
+                    position_time.astype(float),
+                    position[:, dim].astype(float),
+                )
+                for dim in range(2)
+            ]
+        ).astype(np.float32)
+        self._position_2d_cache[self._active_run_name] = interp
         return interp
 
     def slice_at_index(

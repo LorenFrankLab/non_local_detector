@@ -576,6 +576,32 @@ class TestPositionLoad:
         np.testing.assert_allclose(full[0], coarse_pos[0], rtol=0, atol=1e-3)
         np.testing.assert_allclose(full[-1], coarse_pos[-1], rtol=0, atol=1e-3)
 
+    def test_load_position_2d_aligns_to_decoder_time_grid(
+        self,
+        sim_session: SimulatedSession,
+        nl_fitted: FittedDetector,
+    ) -> None:
+        """Optional raw 2D position is interpolated independently of
+        the linear position used by heatmap traces."""
+        xy = np.column_stack([sim_session.position, sim_session.position + 10.0])
+        bundle = RunBundle(
+            results=nl_fitted.results,
+            detector=nl_fitted.detector,
+            spike_times=sim_session.spike_times,
+            position_time=sim_session.time,
+            position=sim_session.position,
+            position_2d=xy,
+            position_2d_time=sim_session.time,
+        )
+        ds = InMemoryDecoderDataSource.from_single(bundle)
+        sl = ds.window_indices(t_center=float(ds.time[ds.n_time // 2]), t_width=1.0)
+
+        position_2d = ds.load_position_2d(sl)
+
+        assert position_2d is not None
+        assert position_2d.shape == (sl.stop - sl.start, 2)
+        np.testing.assert_allclose(position_2d[:, 1], position_2d[:, 0] + 10.0)
+
     def test_load_position_caches_per_active_run(
         self,
         multi_run_bundles: dict[str, RunBundle],

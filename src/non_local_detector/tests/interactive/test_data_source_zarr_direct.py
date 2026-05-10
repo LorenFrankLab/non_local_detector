@@ -75,6 +75,8 @@ def _save_bundle_with_zarr(
     np.savez(str(bundle_dir / "spikes.npz"), spike_times=spike_times_obj)
 
     pos_df = pd.DataFrame({"position": np.asarray(session.position).squeeze()})
+    pos_df["x_position"] = np.asarray(session.position).squeeze()
+    pos_df["y_position"] = np.asarray(session.position).squeeze() + 10.0
     pos_df.index = pd.Index(session.time, name="time")
     if session.speed is not None:
         pos_df["speed"] = np.asarray(session.speed)
@@ -107,12 +109,15 @@ def _make_in_memory_from_dir(bundle_dir: Path) -> InMemoryDecoderDataSource:
     spike_times = list(spike_times_npz["spike_times"])
     position_df = pd.read_parquet(str(bundle_dir / "position.parquet"))
     position = position_df["position"].to_numpy()
+    position_2d = position_df[["x_position", "y_position"]].to_numpy()
     bundle = RunBundle(
         results=results,
         detector=detector,
         spike_times=spike_times,
         position_time=position_df.index.to_numpy(),
         position=position,
+        position_2d=position_2d,
+        position_2d_time=position_df.index.to_numpy(),
         speed=position_df["speed"].to_numpy() if "speed" in position_df else None,
     )
     return InMemoryDecoderDataSource.from_single(bundle)
@@ -208,6 +213,20 @@ def test_zarr_direct_load_position_parity(zarr_bundle_dir: Path) -> None:
     )
     a = in_mem.load_position(sl)
     b = direct.load_position(sl)
+    assert (a is None) == (b is None)
+    if a is not None:
+        np.testing.assert_allclose(a, b, atol=1e-12)
+
+
+@pytest.mark.unit
+def test_zarr_direct_load_position_2d_parity(zarr_bundle_dir: Path) -> None:
+    in_mem = _make_in_memory_from_dir(zarr_bundle_dir)
+    direct = _make_zarr_direct(zarr_bundle_dir)
+    sl = in_mem.window_indices(
+        t_center=float(in_mem.time[in_mem.n_time // 2]), t_width=1.0
+    )
+    a = in_mem.load_position_2d(sl)
+    b = direct.load_position_2d(sl)
     assert (a is None) == (b is None)
     if a is not None:
         np.testing.assert_allclose(a, b, atol=1e-12)

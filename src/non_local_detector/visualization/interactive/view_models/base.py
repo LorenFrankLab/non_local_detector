@@ -341,6 +341,9 @@ class WindowPayload:
     # heatmaps. ``None`` when the bundle has no position or when the
     # position is 2D (heatmap overlay is 1D only in v1).
     position: np.ndarray | None = None
+    # Optional raw/projected 2D animal position interpolated onto
+    # ``time``. Used only by the opt-in projected-2D panel.
+    position_2d: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -405,6 +408,12 @@ class RunBundle:
     position : np.ndarray
         Shape ``(n_position_time,)`` for 1D detectors,
         ``(n_position_time, 2)`` for 2D detectors.
+    position_2d : np.ndarray, optional
+        Optional raw 2D animal position for 1D graph-linearized
+        decoders. Shape ``(n_position_2d_time, 2)``.
+    position_2d_time : np.ndarray, optional
+        Time index aligned to ``position_2d``. If omitted and
+        ``position_2d`` is supplied, ``position_time`` is used.
     speed : np.ndarray, optional
         Shape ``(n_position_time,)``.
     events : pd.DataFrame, optional
@@ -421,6 +430,8 @@ class RunBundle:
     spike_times: list[np.ndarray]
     position_time: np.ndarray
     position: np.ndarray
+    position_2d: np.ndarray | None = None
+    position_2d_time: np.ndarray | None = None
     speed: np.ndarray | None = None
     events: pd.DataFrame | None = None
     extra_metrics: dict[str, ExtraMetricValue] = field(default_factory=dict)
@@ -460,6 +471,28 @@ class RunBundle:
             "RunBundle.position",
             "RunBundle.position_time",
         )
+        if self.position_2d is not None:
+            position_2d = np.asarray(self.position_2d)
+            if position_2d.ndim != 2 or position_2d.shape[1] != 2:
+                raise ValueError(
+                    "RunBundle.position_2d must have shape "
+                    f"(n_position_2d_time, 2); got {position_2d.shape}."
+                )
+            position_2d_time = (
+                np.asarray(self.position_2d_time)
+                if self.position_2d_time is not None
+                else position_time
+            )
+            ensure_array_1d(position_2d_time, "RunBundle.position_2d_time")
+            ensure_monotonic_increasing(
+                position_2d_time, "RunBundle.position_2d_time", strict=True
+            )
+            ensure_matching_lengths(
+                position_2d,
+                position_2d_time,
+                "RunBundle.position_2d",
+                "RunBundle.position_2d_time",
+            )
 
         # spike_times length matches encoding-model neuron count.
         n_neurons_expected = self._infer_n_neurons()
@@ -514,6 +547,8 @@ class RunBundle:
         position: np.ndarray,
         position_time: np.ndarray,
         speed: np.ndarray | None = None,
+        position_2d: np.ndarray | None = None,
+        position_2d_time: np.ndarray | None = None,
         return_outputs: str | list[str] | set[str] | None = "all",
         events: pd.DataFrame | None = None,
         extra_metrics: dict[str, ExtraMetricValue] | None = None,
@@ -539,6 +574,8 @@ class RunBundle:
             spike_times=spike_times,
             position_time=position_time,
             position=position,
+            position_2d=position_2d,
+            position_2d_time=position_2d_time,
             speed=speed,
             events=events,
             extra_metrics=extra_metrics or {},
