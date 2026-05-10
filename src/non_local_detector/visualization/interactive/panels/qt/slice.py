@@ -63,7 +63,7 @@ _LIKELIHOOD_PENS = (
 )
 _PREDICTIVE_PEN = pg.mkPen(color=(31, 119, 180), width=3)
 _PER_CELL_PEN = pg.mkPen(color="#444444", width=3)
-_TRUE_POSITION_PEN = pg.mkPen((50, 50, 50), width=2, style=QtCore.Qt.PenStyle.DashLine)
+_TRUE_POSITION_PEN = pg.mkPen((255, 0, 255), width=2, style=QtCore.Qt.PenStyle.DashLine)
 _LIKELIHOOD_Z = 1
 _OVERLAY_Z = 3
 _SLICE_Y_MIN = -0.02
@@ -336,7 +336,7 @@ class QtSlicePanel(QtWidgets.QWidget):
             f"{overlay_label} &nbsp;&nbsp; "
             "<span style='color:rgb(44,160,44);font-size:14pt'>━</span> "
             "Cell place fields &nbsp;&nbsp; "
-            "<span style='color:rgb(50,50,50);font-size:14pt'>┆</span> "
+            "<span style='color:rgb(255,0,255);font-size:14pt'>┆</span> "
             "Position"
         )
 

@@ -252,7 +252,7 @@ class PositionTraceMixin:
 
     def _install_position_trace(self) -> None:
         self._position_trace = pg.PlotDataItem(
-            pen=pg.mkPen("w", width=2),
+            pen=pg.mkPen((255, 0, 255), width=2),
             antialias=True,
         )
         self._position_trace.setZValue(_POSITION_TRACE_Z)
@@ -261,7 +261,7 @@ class PositionTraceMixin:
     def _set_position_trace(
         self, time: np.ndarray, position: np.ndarray | None
     ) -> None:
-        """Update the white trace; pass ``None`` to clear.
+        """Update the magenta position trace; pass ``None`` to clear.
 
         Position values are real-cm coordinates that may live on a
         non-uniform grid (e.g. linearised W-track). The heatmap
