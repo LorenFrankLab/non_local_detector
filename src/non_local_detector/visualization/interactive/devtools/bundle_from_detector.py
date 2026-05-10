@@ -12,6 +12,8 @@ share / re-open the session via the CLI without redoing the fit.
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -66,18 +68,15 @@ def bundle_from_detector(
         The output directory path.
     """
     out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
+    out_parent = out.parent
+    out_parent.mkdir(parents=True, exist_ok=True)
 
-    nc_path = out / "results.nc"
-    model_path = out / "model.pkl"
-    spikes_path = out / "spikes.npz"
-    position_path = out / "position.parquet"
     if not overwrite:
-        for p in (nc_path, model_path, spikes_path, position_path):
-            if p.exists():
+        for fname in ("results.nc", "model.pkl", "spikes.npz", "position.parquet"):
+            if (out / fname).exists():
                 raise FileExistsError(
-                    f"bundle-from-detector: {p!s} already exists. Pass "
-                    "--overwrite to replace it."
+                    f"bundle-from-detector: {(out / fname)!s} already exists. "
+                    "Pass --overwrite to replace it."
                 )
 
     # Validate + build every sidecar in memory BEFORE writing anything,
@@ -132,14 +131,50 @@ def bundle_from_detector(
     for i, st in enumerate(spike_times):
         spikes_obj[i] = np.asarray(st, dtype=float)
 
-    # All sidecars validated; write atomically (or as close as Python
-    # gets — ``to_parquet`` / ``np.savez`` go through pandas / numpy
-    # write paths, which aren't single-syscall atomic, but every per-
-    # sidecar write happens after every per-sidecar build).
-    _DetectorBase.save_results(results, str(nc_path))
-    detector.save_model(str(model_path))
-    np.savez(str(spikes_path), spike_times=spikes_obj)
-    pos_df.to_parquet(str(position_path))
+    # All sidecars validated. Write to a sibling staging directory so
+    # a write-time failure (disk-full mid-``to_parquet``, permission
+    # error, kill -9) leaves the user's existing ``out`` directory
+    # untouched. On success, atomically swap staging → out (a single
+    # ``Path.rename`` is atomic on POSIX when source + dest live on
+    # the same filesystem; mkdtemp's sibling placement guarantees
+    # that). Any pre-existing ``out`` is moved aside under a backup
+    # name first and removed after the swap commits.
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{out.name}.staging.", dir=str(out_parent))
+    )
+    try:
+        _DetectorBase.save_results(results, str(staging / "results.nc"))
+        detector.save_model(str(staging / "model.pkl"))
+        np.savez(str(staging / "spikes.npz"), spike_times=spikes_obj)
+        pos_df.to_parquet(str(staging / "position.parquet"))
+    except BaseException:
+        # Any write failure → drop staging and propagate so the user's
+        # existing ``out`` (if any) is bit-identical to before the
+        # call. ``BaseException`` covers KeyboardInterrupt too.
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+    if out.exists():
+        # Atomic swap via two renames: ``out → backup`` then
+        # ``staging → out``. Both renames are atomic on POSIX, and
+        # the backup is removed after the swap commits so the only
+        # observable end states are "fully old" or "fully new".
+        backup = out_parent / f".{out.name}.bak.{staging.name.rsplit('.', 1)[-1]}"
+        try:
+            out.rename(backup)
+        except OSError:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        try:
+            staging.rename(out)
+        except OSError:
+            # Restore the original; staging keeps the new artefacts
+            # for inspection.
+            backup.rename(out)
+            raise
+        shutil.rmtree(backup, ignore_errors=True)
+    else:
+        staging.rename(out)
 
     return out
 

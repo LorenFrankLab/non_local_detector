@@ -184,6 +184,95 @@ def test_devtools_package_exports_bundle_from_detector() -> None:
 
 
 @pytest.mark.unit
+def test_bundle_from_detector_atomic_on_write_failure(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure mid-write leaves the existing ``out`` directory
+    bit-identical to before the call — the staging directory is
+    cleaned up, and ``out`` is never partially overwritten.
+
+    Pins the Phase 6 review fixup: previously a failure during
+    ``np.savez`` or ``to_parquet`` could leave a half-written
+    bundle on disk under ``overwrite=True``."""
+    import sys
+
+    from non_local_detector.visualization.interactive.devtools.bundle_from_detector import (
+        bundle_from_detector,
+    )
+
+    # The package's ``__init__.py`` re-exports
+    # ``bundle_from_detector`` as a function under the package's own
+    # ``bundle_from_detector`` attribute, which shadows the submodule
+    # for ``import ... as foo``-style lookups. Pull the submodule out
+    # of ``sys.modules`` so the monkey-patch below targets the real
+    # ``pd.DataFrame.to_parquet`` reference the writer uses.
+    bfd_mod = sys.modules[
+        "non_local_detector.visualization.interactive.devtools.bundle_from_detector"
+    ]
+
+    out_dir = tmp_path / "bundle_atomic"
+
+    # First call succeeds; capture the resulting bundle's mtimes so a
+    # later partial-overwrite would surface as a changed mtime.
+    bundle_from_detector(
+        detector=nl_fitted.detector,
+        results=nl_fitted.results,
+        spike_times=sim_session.spike_times,
+        position=sim_session.position,
+        position_time=sim_session.time,
+        speed=sim_session.speed,
+        out=out_dir,
+    )
+    expected_files = {"results.nc", "model.pkl", "spikes.npz", "position.parquet"}
+    assert {p.name for p in out_dir.iterdir()} == expected_files
+    original_mtimes = {p.name: p.stat().st_mtime_ns for p in out_dir.iterdir()}
+
+    # Force the parquet write to raise mid-overwrite. ``DataFrame
+    # .to_parquet`` is the third write in the sequence so two
+    # earlier writes should have already landed in the staging dir;
+    # the failure must NOT leak into ``out``.
+    real_to_parquet = bfd_mod.pd.DataFrame.to_parquet
+
+    def _raise(self, *args, **kwargs):
+        raise OSError("simulated disk-full at parquet write time")
+
+    monkeypatch.setattr(bfd_mod.pd.DataFrame, "to_parquet", _raise)
+
+    with pytest.raises(OSError, match="simulated disk-full"):
+        bundle_from_detector(
+            detector=nl_fitted.detector,
+            results=nl_fitted.results,
+            spike_times=sim_session.spike_times,
+            position=sim_session.position,
+            position_time=sim_session.time,
+            speed=sim_session.speed,
+            out=out_dir,
+            overwrite=True,
+        )
+
+    # ``out`` must still hold the original four sidecars at their
+    # original mtimes — the failed second call is rolled back.
+    monkeypatch.setattr(bfd_mod.pd.DataFrame, "to_parquet", real_to_parquet)
+    assert {p.name for p in out_dir.iterdir()} == expected_files
+    after_mtimes = {p.name: p.stat().st_mtime_ns for p in out_dir.iterdir()}
+    assert after_mtimes == original_mtimes, (
+        "bundle was overwritten despite write-time failure: "
+        f"{original_mtimes!r} → {after_mtimes!r}"
+    )
+
+    # Staging dir must not leak: there should be no leftover
+    # ``.{name}.staging.<rand>`` siblings.
+    siblings = [p.name for p in tmp_path.iterdir() if p.name != out_dir.name]
+    leftover_staging = [s for s in siblings if s.startswith(f".{out_dir.name}.staging")]
+    leftover_backup = [s for s in siblings if s.startswith(f".{out_dir.name}.bak")]
+    assert leftover_staging == [], f"staging dir leaked: {leftover_staging!r}"
+    assert leftover_backup == [], f"backup dir leaked: {leftover_backup!r}"
+
+
+@pytest.mark.unit
 def test_bundle_from_detector_cli_round_trip(
     tmp_path: Path,
     nl_fitted: FittedDetector,
