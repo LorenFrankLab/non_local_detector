@@ -367,8 +367,9 @@ class InMemoryDecoderDataSource:
     def _position_at_decoder_time(self) -> np.ndarray | None:
         """Return position interpolated onto the decoder time grid (cached).
 
-        Returns ``None`` if the active run has no 1D position to
-        align — caller treats that as "skip the position trace".
+        Shape mirrors the bundle: ``(n_decoder_time,)`` for 1D
+        detectors, ``(n_decoder_time, 2)`` for 2D detectors. Returns
+        ``None`` when the bundle has no position aligned to time.
         """
         cached = self._position_cache.get(self._active_run_name, ...)
         if cached is not ...:
@@ -378,16 +379,31 @@ class InMemoryDecoderDataSource:
         position_time = (
             np.asarray(run.position_time) if run.position_time is not None else None
         )
-        if position is None or position_time is None or position.ndim != 1:
+        if position is None or position_time is None:
             self._position_cache[self._active_run_name] = None
             return None
         decoder_time = np.asarray(run.results["time"].values)
         # ``np.interp`` clips to the position-time bounds — the head
         # and tail of the decoder grid get the edge position values
         # rather than NaN, which matches statespacecheck-paper-viewer.
-        interpolated = np.interp(
-            decoder_time, position_time.astype(float), position.astype(float)
-        ).astype(np.float32)
+        if position.ndim == 1:
+            interpolated = np.interp(
+                decoder_time, position_time.astype(float), position.astype(float)
+            ).astype(np.float32)
+        elif position.ndim == 2 and position.shape[1] == 2:
+            interpolated = np.column_stack(
+                [
+                    np.interp(
+                        decoder_time,
+                        position_time.astype(float),
+                        position[:, dim].astype(float),
+                    )
+                    for dim in range(2)
+                ]
+            ).astype(np.float32)
+        else:
+            self._position_cache[self._active_run_name] = None
+            return None
         self._position_cache[self._active_run_name] = interpolated
         return interpolated
 

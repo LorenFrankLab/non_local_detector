@@ -523,17 +523,18 @@ class TestPositionLoad:
         sl = ds.window_indices(t_center=float(ds.time[ds.n_time // 2]), t_width=1.0)
         assert ds.load_position(sl) is None
 
-    def test_load_position_returns_none_for_2d_position(
+    def test_load_position_returns_2d_array_for_2d_position(
         self,
         sim_session: SimulatedSession,
         nl_fitted: FittedDetector,
     ) -> None:
-        """2D position → ``None``; v1 heatmap trace is 1D-only.
+        """2D position bundles surface as ``(n_visible, 2)`` arrays.
 
         ``RunBundle.__post_init__`` rejects 2D position against a 1D
         detector, so we have to mutate after construction to exercise
-        the data source's 2D guard. v3+ ships a 2D detector path that
-        will accept this directly.
+        the interpolation path. The 2D viewer dispatch in
+        ``QtViewer`` consumes the ``(n_visible, 2)`` output for the
+        animal-XY marker on the 2D image panel.
         """
         bundle = RunBundle(
             results=nl_fitted.results,
@@ -545,7 +546,10 @@ class TestPositionLoad:
         ds = InMemoryDecoderDataSource.from_single(bundle)
         bundle.position = np.column_stack([sim_session.position, sim_session.position])
         sl = ds.window_indices(t_center=float(ds.time[ds.n_time // 2]), t_width=1.0)
-        assert ds.load_position(sl) is None
+        loaded = ds.load_position(sl)
+        assert loaded is not None
+        assert loaded.ndim == 2
+        assert loaded.shape[1] == 2
 
     def test_load_position_interpolates_when_grids_differ(
         self,

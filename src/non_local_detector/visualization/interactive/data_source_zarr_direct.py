@@ -444,13 +444,28 @@ class ZarrDirectDecoderDataSource:
         position_time = (
             np.asarray(run.position_time) if run.position_time is not None else None
         )
-        if position is None or position_time is None or position.ndim != 1:
+        if position is None or position_time is None:
             self._position_cache[self._active_run_name] = None
             return None
         decoder_time = self.time
-        interp = np.interp(
-            decoder_time, position_time.astype(float), position.astype(float)
-        )
+        if position.ndim == 1:
+            interp = np.interp(
+                decoder_time, position_time.astype(float), position.astype(float)
+            )
+        elif position.ndim == 2 and position.shape[1] == 2:
+            interp = np.column_stack(
+                [
+                    np.interp(
+                        decoder_time,
+                        position_time.astype(float),
+                        position[:, dim].astype(float),
+                    )
+                    for dim in range(2)
+                ]
+            ).astype(np.float32)
+        else:
+            self._position_cache[self._active_run_name] = None
+            return None
         self._position_cache[self._active_run_name] = interp
         return interp
 
