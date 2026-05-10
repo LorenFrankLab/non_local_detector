@@ -12,9 +12,6 @@ from non_local_detector.environment import Environment
 from non_local_detector.visualization.interactive.view_models.base import (
     WindowPayload,
 )
-from non_local_detector.visualization.interactive.view_models.posterior import (
-    PosteriorHeatmapModel,
-)
 from non_local_detector.visualization.interactive.view_models.projected_2d import (
     Projected2DModel,
 )
@@ -59,8 +56,7 @@ def test_projected_2d_panel_smoke_renders_one_bin(qapp) -> None:
     )
 
     detector = _graph_detector()
-    posterior_model = PosteriorHeatmapModel(detector)
-    model = Projected2DModel(detector, posterior_model)
+    model = Projected2DModel(detector)
     panel = QtProjected2DPanel(model)
     payload = WindowPayload(
         request_id=0,

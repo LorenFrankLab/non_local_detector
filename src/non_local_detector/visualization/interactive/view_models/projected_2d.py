@@ -8,13 +8,16 @@ from typing import TYPE_CHECKING
 import numpy as np
 from track_linearization import project_1d_to_2d
 
+from non_local_detector.analysis.posterior import (
+    collapse_posterior_to_position,
+    select_reduction,
+)
+
 if TYPE_CHECKING:
+    from non_local_detector.analysis.posterior import PosteriorReduction
     from non_local_detector.models.base import _DetectorBase
     from non_local_detector.visualization.interactive.view_models.base import (
         WindowPayload,
-    )
-    from non_local_detector.visualization.interactive.view_models.posterior import (
-        PosteriorHeatmapModel,
     )
 
 
@@ -33,16 +36,13 @@ class Projected2DPayload:
 class Projected2DModel:
     """Map a collapsed 1D posterior row back onto a track graph.
 
-    The viewer's existing ``PosteriorHeatmapModel`` is reused for the
-    per-row collapse; pass the same instance here so a model swap
-    rebinds both views at once and we don't pay for two copies of
-    ``_validate_rectangular_spatial`` + selected-state caches.
+    Calls ``analysis.posterior.collapse_posterior_to_position``
+    directly so the projected view stays bit-equivalent to the
+    posterior heatmap without depending on a sibling
+    ``PosteriorHeatmapModel`` instance.
     """
 
-    def __init__(
-        self, detector: _DetectorBase, posterior_model: PosteriorHeatmapModel
-    ) -> None:
-        self._posterior_model = posterior_model
+    def __init__(self, detector: _DetectorBase) -> None:
         self._bind(detector)
 
     def set_active_run(self, detector: _DetectorBase) -> None:
@@ -55,6 +55,7 @@ class Projected2DModel:
         self._message = "Projected 2D unavailable"
         self._bin_xy: np.ndarray | None = None
         self._graph_segments: tuple[np.ndarray, ...] = ()
+        self._reduction: PosteriorReduction | None = None
 
         env = detector.environments[0]
         if getattr(env, "track_graph", None) is None:
@@ -67,6 +68,9 @@ class Projected2DModel:
         try:
             self._bin_xy = _project_bin_centers_to_2d(env, centers.squeeze(axis=1))
             self._graph_segments = _graph_segments(env.track_graph)
+            self._reduction = select_reduction(
+                detector.state_names, detector.bin_sizes_
+            )
         except Exception as exc:  # pragma: no cover - defensive message path
             self._message = f"Projected 2D setup failed: {exc}"
             return
@@ -111,9 +115,10 @@ class Projected2DModel:
                 bin_xy=self._bin_xy,
                 graph_segments=self._graph_segments,
             )
-        posterior_row = self._posterior_model.collapse_at(
-            payload.posterior, [local_idx]
-        )[0]
+        assert self._reduction is not None  # available ⇒ reduction set in _bind
+        posterior_row = collapse_posterior_to_position(
+            payload.posterior[local_idx], self._detector, self._reduction
+        )
         animal_xy = self._animal_xy(payload, local_idx)
         return Projected2DPayload(
             available=True,

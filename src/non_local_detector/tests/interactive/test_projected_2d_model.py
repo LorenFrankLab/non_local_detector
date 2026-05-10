@@ -16,9 +16,6 @@ from non_local_detector.environment import Environment
 from non_local_detector.visualization.interactive.view_models.base import (
     WindowPayload,
 )
-from non_local_detector.visualization.interactive.view_models.posterior import (
-    PosteriorHeatmapModel,
-)
 from non_local_detector.visualization.interactive.view_models.projected_2d import (
     Projected2DModel,
 )
@@ -47,8 +44,7 @@ def _graph_detector(n_pos: int = 5):
 @pytest.mark.unit
 def test_projected_2d_model_projects_bins_and_prefers_raw_position() -> None:
     detector = _graph_detector()
-    posterior_model = PosteriorHeatmapModel(detector)
-    model = Projected2DModel(detector, posterior_model)
+    model = Projected2DModel(detector)
     posterior = np.array([[0.0, 0.1, 0.8, 0.1, 0.0]], dtype=np.float64)
     payload = WindowPayload(
         request_id=0,
@@ -72,8 +68,7 @@ def test_projected_2d_model_projects_bins_and_prefers_raw_position() -> None:
 def test_projected_2d_model_falls_back_to_projected_position_without_2d() -> None:
     """Without ``position_2d``, the animal lays on the projected graph."""
     detector = _graph_detector()
-    posterior_model = PosteriorHeatmapModel(detector)
-    model = Projected2DModel(detector, posterior_model)
+    model = Projected2DModel(detector)
     payload = WindowPayload(
         request_id=0,
         time=np.array([0.0]),
@@ -100,7 +95,6 @@ def test_projected_2d_model_unavailable_for_2d_decoder() -> None:
         place_bin_centers_ = np.zeros((4, 2))
 
     detector = SimpleNamespace(environments=[_Env()])
-    posterior_model_stub = SimpleNamespace(collapse_at=lambda *_, **__: None)
-    model = Projected2DModel(detector, posterior_model_stub)  # type: ignore[arg-type]
+    model = Projected2DModel(detector)  # type: ignore[arg-type]
     assert not model.is_available
     assert "track_graph" in model.message

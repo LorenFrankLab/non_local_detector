@@ -635,9 +635,7 @@ class QtViewer(QtWidgets.QMainWindow):
         self._slice_panel.set_row_provider(self._slice_row_at)
         self._show_projected_2d = bool(show_projected_2d)
         self._projected_2d_model = (
-            Projected2DModel(detector, self._posterior_model)
-            if self._show_projected_2d
-            else None
+            Projected2DModel(detector) if self._show_projected_2d else None
         )
         self._projected_2d_panel = (
             QtProjected2DPanel(self._projected_2d_model)
