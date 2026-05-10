@@ -58,9 +58,24 @@ def bundle_from_detector(
         Optional speed array; goes into a ``speed`` column when
         present.
     overwrite
-        If ``True``, replace existing files. Default ``False`` raises
-        ``FileExistsError`` rather than clobber a directory the user
-        may already be using.
+        Controls how an existing ``out`` directory is handled.
+
+        - ``False`` (default): refuse to write if any of the four
+          bundle sidecars already exist; **preserve unrelated files**
+          in ``out`` (e.g. a ``README.md`` or ``.gitignore``). Each of
+          the four new sidecars is written via per-file atomic
+          rename out of a sibling staging directory. Aggregate
+          atomicity across the four files is not guaranteed (a crash
+          between renames could leave 1–3 new sidecars in place);
+          this trade is intentional — unrelated files in ``out`` are
+          considered the user's, not ours.
+        - ``True``: replace the entire ``out`` directory. The four
+          sidecars are written to a sibling staging directory, then
+          the whole directory is atomically swapped into place
+          (existing ``out`` moved to a backup, removed after the
+          swap commits). **All non-bundle files in ``out`` are
+          discarded** under this mode — only opt in when the
+          directory is owned by the bundle.
 
     Returns
     -------
@@ -154,27 +169,52 @@ def bundle_from_detector(
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
-    if out.exists():
-        # Atomic swap via two renames: ``out → backup`` then
-        # ``staging → out``. Both renames are atomic on POSIX, and
-        # the backup is removed after the swap commits so the only
-        # observable end states are "fully old" or "fully new".
-        backup = out_parent / f".{out.name}.bak.{staging.name.rsplit('.', 1)[-1]}"
-        try:
-            out.rename(backup)
-        except OSError:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
-        try:
+    if overwrite:
+        # Whole-directory swap: user explicitly opted in to replace
+        # ``out``. Atomic via two renames (``out → backup``, then
+        # ``staging → out``); the backup is removed after the swap
+        # commits so the only observable end states are "fully old"
+        # or "fully new". Non-bundle files in ``out`` are lost under
+        # this mode, by design.
+        if out.exists():
+            backup = out_parent / (f".{out.name}.bak.{staging.name.rsplit('.', 1)[-1]}")
+            try:
+                out.rename(backup)
+            except OSError:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise
+            try:
+                staging.rename(out)
+            except OSError:
+                # Restore the original; staging keeps the new
+                # artefacts for inspection.
+                backup.rename(out)
+                raise
+            shutil.rmtree(backup, ignore_errors=True)
+        else:
             staging.rename(out)
-        except OSError:
-            # Restore the original; staging keeps the new artefacts
-            # for inspection.
-            backup.rename(out)
-            raise
-        shutil.rmtree(backup, ignore_errors=True)
     else:
-        staging.rename(out)
+        # Per-file rename: preserve any unrelated files in ``out``.
+        # Each individual rename is atomic on POSIX; the four
+        # together are NOT aggregate-atomic, but the per-file
+        # existence check above already rejected if any sidecar
+        # collided, so the renames only land in empty positions.
+        out.mkdir(parents=True, exist_ok=True)
+        try:
+            for fname in (
+                "results.nc",
+                "model.pkl",
+                "spikes.npz",
+                "position.parquet",
+            ):
+                (staging / fname).rename(out / fname)
+        except OSError:
+            # Mid-rename failure is rare (renames within the same
+            # filesystem don't normally fail post-staging). Surface
+            # it; staging may retain unmoved sidecars for the user
+            # to inspect / move manually.
+            raise
+        shutil.rmtree(staging, ignore_errors=True)
 
     return out
 

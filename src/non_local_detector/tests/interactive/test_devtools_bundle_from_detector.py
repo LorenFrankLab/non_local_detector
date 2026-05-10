@@ -184,6 +184,79 @@ def test_devtools_package_exports_bundle_from_detector() -> None:
 
 
 @pytest.mark.unit
+def test_bundle_from_detector_no_overwrite_preserves_unrelated_files(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """``overwrite=False`` writes the four sidecars via per-file
+    rename and leaves unrelated files in ``out`` alone.
+
+    Regression for the post-Phase-6 review finding: previously the
+    whole-directory swap discarded ``out/README.txt`` even with
+    ``overwrite=False``, because the per-file existence check only
+    looked for the four bundle sidecars."""
+    from non_local_detector.visualization.interactive.devtools.bundle_from_detector import (
+        bundle_from_detector,
+    )
+
+    out_dir = tmp_path / "bundle_with_readme"
+    out_dir.mkdir()
+    readme_text = "do not delete me — i am the user's note\n"
+    (out_dir / "README.txt").write_text(readme_text)
+    nested_dir = out_dir / "nested"
+    nested_dir.mkdir()
+    (nested_dir / "extra.json").write_text("{}\n")
+
+    bundle_from_detector(
+        detector=nl_fitted.detector,
+        results=nl_fitted.results,
+        spike_times=sim_session.spike_times,
+        position=sim_session.position,
+        position_time=sim_session.time,
+        out=out_dir,
+    )
+
+    # The four sidecars landed.
+    expected_files = {"results.nc", "model.pkl", "spikes.npz", "position.parquet"}
+    actual_files = {p.name for p in out_dir.iterdir() if p.is_file()}
+    assert expected_files <= actual_files
+
+    # Unrelated files survived.
+    assert (out_dir / "README.txt").read_text() == readme_text
+    assert (out_dir / "nested" / "extra.json").read_text() == "{}\n"
+
+
+@pytest.mark.unit
+def test_bundle_from_detector_no_overwrite_rejects_existing_sidecar(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """If any of the four sidecars already exists in ``out``,
+    ``overwrite=False`` still raises ``FileExistsError`` — the
+    preserve-unrelated-files semantic only applies to non-bundle
+    files."""
+    from non_local_detector.visualization.interactive.devtools.bundle_from_detector import (
+        bundle_from_detector,
+    )
+
+    out_dir = tmp_path / "bundle_with_results"
+    out_dir.mkdir()
+    (out_dir / "results.nc").write_bytes(b"stale")
+
+    with pytest.raises(FileExistsError, match="results.nc"):
+        bundle_from_detector(
+            detector=nl_fitted.detector,
+            results=nl_fitted.results,
+            spike_times=sim_session.spike_times,
+            position=sim_session.position,
+            position_time=sim_session.time,
+            out=out_dir,
+        )
+
+
+@pytest.mark.unit
 def test_bundle_from_detector_atomic_on_write_failure(
     tmp_path: Path,
     nl_fitted: FittedDetector,
