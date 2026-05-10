@@ -782,26 +782,39 @@ class QtViewer(QtWidgets.QMainWindow):
                 viewport.installEventFilter(self)
 
     def _build_controls_bar(self) -> QtWidgets.QWidget:
+        """Two-row controls bar: navigation up top, playback + swap below.
+
+        Splitting the row gives the dominant ``Center time`` slider
+        full horizontal width on row 1 (was getting squeezed by the
+        Playback / Swap clusters in the single-row layout). Row 2
+        groups the playback + swap clusters separated by the
+        Phase-6.5 vertical-line gestalt separator.
+        """
         bar = QtWidgets.QWidget()
-        layout = QtWidgets.QHBoxLayout(bar)
-        layout.setContentsMargins(0, 0, 0, 0)
+        outer = QtWidgets.QVBoxLayout(bar)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
         overlays = self._data_source.active_run.event_overlays
         run_names = self._data_source.run_names
         multi_run = len(run_names) > 1
 
-        # ---- Navigation cluster: where in time you are + how wide ----
-        layout.addWidget(QtWidgets.QLabel("Center time:"))
+        # ===== Row 1: Navigation cluster ==========================
+        row1 = QtWidgets.QHBoxLayout()
+        row1.setContentsMargins(0, 0, 0, 0)
+        outer.addLayout(row1)
+
+        row1.addWidget(QtWidgets.QLabel("Center time:"))
         self._slider.setToolTip(
             "Center time of the visible window. Drag, click to jump, "
             "or use Left / Right keys."
         )
-        layout.addWidget(self._slider, stretch=1)
+        row1.addWidget(self._slider, stretch=1)
         self._time_label = QtWidgets.QLabel(self._format_time_label())
         self._time_label.setMinimumWidth(260)
-        layout.addWidget(self._time_label)
-        layout.addSpacing(6)
+        row1.addWidget(self._time_label)
+        row1.addSpacing(6)
 
-        layout.addWidget(QtWidgets.QLabel("Window:"))
+        row1.addWidget(QtWidgets.QLabel("Window:"))
         self._window_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self._window_slider.setRange(0, WINDOW_SLIDER_RESOLUTION)
         self._window_slider.setValue(self._window_slider_value_for(self._core.t_width))
@@ -810,14 +823,15 @@ class QtViewer(QtWidgets.QMainWindow):
             "Window width in seconds. Use [ / ] keys or scroll wheel to resize."
         )
         self._window_slider.valueChanged.connect(self._on_window_slider_changed)
-        layout.addWidget(self._window_slider)
+        row1.addWidget(self._window_slider)
         self._window_label = QtWidgets.QLabel(self._format_window_label())
         self._window_label.setMinimumWidth(70)
-        layout.addWidget(self._window_label)
+        row1.addWidget(self._window_label)
 
-        layout.addSpacing(8)
-        layout.addWidget(_make_vertical_separator())
-        layout.addSpacing(8)
+        # ===== Row 2: Playback + Swap clusters ====================
+        row2 = QtWidgets.QHBoxLayout()
+        row2.setContentsMargins(0, 0, 0, 0)
+        outer.addLayout(row2)
 
         # ---- Playback cluster: what the slice shows + autoscroll ----
         self._per_cell_checkbox = QtWidgets.QCheckBox("Per-cell rows")
@@ -826,10 +840,10 @@ class QtViewer(QtWidgets.QMainWindow):
             "Show per-cell likelihood rows under the slice plot."
         )
         self._per_cell_checkbox.toggled.connect(self._slice_panel.set_per_cell_visible)
-        layout.addWidget(self._per_cell_checkbox)
-        layout.addSpacing(6)
+        row2.addWidget(self._per_cell_checkbox)
+        row2.addSpacing(6)
 
-        layout.addWidget(QtWidgets.QLabel("Slice overlay:"))
+        row2.addWidget(QtWidgets.QLabel("Slice overlay:"))
         self._slice_overlay_combo = QtWidgets.QComboBox()
         self._slice_overlay_combo.setToolTip(
             "Which posterior to render as the blue overlay curve in the slice panel."
@@ -844,8 +858,8 @@ class QtViewer(QtWidgets.QMainWindow):
         self._slice_overlay_combo.currentIndexChanged.connect(
             self._on_slice_overlay_changed
         )
-        layout.addWidget(self._slice_overlay_combo)
-        layout.addSpacing(12)
+        row2.addWidget(self._slice_overlay_combo)
+        row2.addSpacing(12)
 
         # Play / pause + speed are always present — auto-scroll is a
         # universal affordance, not gated on overlays / multi-run. The
@@ -858,9 +872,9 @@ class QtViewer(QtWidgets.QMainWindow):
         )
         self._play_button.setCheckable(True)
         self._play_button.toggled.connect(self._on_play_toggled)
-        layout.addWidget(self._play_button)
+        row2.addWidget(self._play_button)
 
-        layout.addWidget(QtWidgets.QLabel("Speed (,/.):"))
+        row2.addWidget(QtWidgets.QLabel("Speed (,/.):"))
         self._speed_combo = QtWidgets.QComboBox()
         self._speed_combo.setToolTip(
             "Autoscroll rate × real-time. , and . cycle through options."
@@ -870,17 +884,17 @@ class QtViewer(QtWidgets.QMainWindow):
         default_idx = AUTOSCROLL_SPEED_OPTIONS.index(AUTOSCROLL_DEFAULT_SPEED)
         self._speed_combo.setCurrentIndex(default_idx)
         self._speed_combo.currentIndexChanged.connect(self._on_speed_combo_changed)
-        layout.addWidget(self._speed_combo)
+        row2.addWidget(self._speed_combo)
 
         # ---- Swap cluster: which run + which event overlay ----
         # Only render this cluster + its leading separator when at
         # least one widget would be present (multi-run swap or any
         # event overlays). Otherwise the separator dangles next to
-        # the layout's trailing stretch with nothing after it.
+        # the row's trailing stretch with nothing after it.
         if multi_run or overlays:
-            layout.addSpacing(8)
-            layout.addWidget(_make_vertical_separator())
-            layout.addSpacing(8)
+            row2.addSpacing(8)
+            row2.addWidget(_make_vertical_separator())
+            row2.addSpacing(8)
 
         # Model-selector dropdown (M-key cycles). Only present when
         # multiple runs are loaded; the M-key path goes *through* the
@@ -888,19 +902,19 @@ class QtViewer(QtWidgets.QMainWindow):
         # path (combo.currentIndexChanged → core.set_active_run).
         self._model_combo: QtWidgets.QComboBox | None = None
         if multi_run:
-            layout.addWidget(QtWidgets.QLabel("Model (M):"))
+            row2.addWidget(QtWidgets.QLabel("Model (M):"))
             self._model_combo = QtWidgets.QComboBox()
             self._model_combo.setToolTip("Active run; M cycles forward.")
             for name in run_names:
                 self._model_combo.addItem(name, userData=name)
             self._model_combo.setCurrentText(self._data_source.active_run_name)
             self._model_combo.currentIndexChanged.connect(self._on_active_run_changed)
-            layout.addWidget(self._model_combo)
-            layout.addSpacing(12)
+            row2.addWidget(self._model_combo)
+            row2.addSpacing(12)
 
         if overlays:
             # Overlay-selector dropdown picks the navigator target.
-            layout.addWidget(QtWidgets.QLabel("Overlay (N/Shift+N):"))
+            row2.addWidget(QtWidgets.QLabel("Overlay (N/Shift+N):"))
             self._overlay_combo = QtWidgets.QComboBox()
             self._overlay_combo.setToolTip(
                 "Active event-overlay set; N / Shift+N navigate events."
@@ -911,10 +925,10 @@ class QtViewer(QtWidgets.QMainWindow):
             self._overlay_combo.currentIndexChanged.connect(
                 self._on_active_overlay_changed
             )
-            layout.addWidget(self._overlay_combo)
+            row2.addWidget(self._overlay_combo)
             # Per-overlay visibility checkboxes.
-            layout.addSpacing(12)
-            layout.addWidget(QtWidgets.QLabel("Visible:"))
+            row2.addSpacing(12)
+            row2.addWidget(QtWidgets.QLabel("Visible:"))
             self._overlay_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
             for ovl in overlays:
                 cb = QtWidgets.QCheckBox(ovl.name)
@@ -925,9 +939,9 @@ class QtViewer(QtWidgets.QMainWindow):
                         name, checked
                     )
                 )
-                layout.addWidget(cb)
+                row2.addWidget(cb)
                 self._overlay_checkboxes[ovl.name] = cb
-        layout.addStretch(1)
+        row2.addStretch(1)
         return bar
 
     def _on_active_overlay_changed(self, index: int) -> None:
