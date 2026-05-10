@@ -25,6 +25,9 @@ from non_local_detector.visualization.interactive.panels.qt.likelihood import (
 from non_local_detector.visualization.interactive.panels.qt.posterior import (
     QtPosteriorHeatmapPanel,
 )
+from non_local_detector.visualization.interactive.panels.qt.projected_2d import (
+    QtProjected2DPanel,
+)
 from non_local_detector.visualization.interactive.panels.qt.raster import (
     QtRasterPanel,
 )
@@ -52,6 +55,9 @@ from non_local_detector.visualization.interactive.view_models.likelihood import 
 )
 from non_local_detector.visualization.interactive.view_models.posterior import (
     PosteriorHeatmapModel,
+)
+from non_local_detector.visualization.interactive.view_models.projected_2d import (
+    Projected2DModel,
 )
 from non_local_detector.visualization.interactive.view_models.raster import (
     RasterModel,
@@ -139,6 +145,7 @@ _RIGHT_COLUMN_TRAILING_STRETCH = 4
 # matter; pyqtgraph divides by total. 7:3 mirrors the paper viewer.
 _BODY_SPLITTER_LEFT_STRETCH = 7
 _BODY_SPLITTER_RIGHT_STRETCH = 3
+_PROJECTED_2D_COLUMN_WIDTH = 300
 
 # Tight margins/spacing so the panels read as one figure rather than
 # four separate boxes.
@@ -496,6 +503,11 @@ class QtBackendAdapter(BackendAdapter):
         position = (
             self._data_source.load_position(sl) if "position" in required else None
         )
+        position_2d = (
+            self._data_source.load_position_2d(sl)
+            if "position_2d" in required
+            else None
+        )
         return WindowPayload(
             request_id=state.request_id,
             time=np.asarray(time),
@@ -509,6 +521,7 @@ class QtBackendAdapter(BackendAdapter):
             predictive=predictive,
             state_probabilities=state_probabilities,
             position=position,
+            position_2d=position_2d,
         )
 
 
@@ -527,6 +540,7 @@ class QtViewer(QtWidgets.QMainWindow):
         t_width: float = 1.0,
         extra_panels: list | None = None,
         extra_bin_panels: list | None = None,
+        show_projected_2d: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -619,6 +633,17 @@ class QtViewer(QtWidgets.QMainWindow):
             model=self._slice_model, position_centers=grid.centers
         )
         self._slice_panel.set_row_provider(self._slice_row_at)
+        self._show_projected_2d = bool(show_projected_2d)
+        self._projected_2d_model = (
+            Projected2DModel(detector, self._posterior_model)
+            if self._show_projected_2d
+            else None
+        )
+        self._projected_2d_panel = (
+            QtProjected2DPanel(self._projected_2d_model)
+            if self._projected_2d_model is not None
+            else None
+        )
         # Tell the backend which optional outputs the visible panels
         # actually consume so it skips per-window loads we'd just throw
         # away (e.g. ``predictive_posterior`` when the slice is in the
@@ -651,6 +676,15 @@ class QtViewer(QtWidgets.QMainWindow):
         self._extra_bin_panels: list = (
             list(extra_bin_panels) if extra_bin_panels is not None else []
         )
+        self._all_bin_panels: list = [
+            self._slice_panel,
+            *(
+                [self._projected_2d_panel]
+                if self._projected_2d_panel is not None
+                else []
+            ),
+            *self._extra_bin_panels,
+        ]
 
         # Slider: integer indices into the time grid; map to t_center.
         n_time = data_source.n_time
@@ -710,19 +744,28 @@ class QtViewer(QtWidgets.QMainWindow):
         self._body_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self._body_splitter.addWidget(left_column)
         self._body_splitter.addWidget(right_column)
+        if self._projected_2d_panel is not None:
+            # ``setMinimumWidth`` (not ``setFixedWidth``) so the user
+            # can still drag the splitter handle to rebalance the
+            # third column. Initial size is set via ``setSizes`` below.
+            self._projected_2d_panel.setMinimumWidth(_PROJECTED_2D_COLUMN_WIDTH)
+            self._body_splitter.addWidget(self._projected_2d_panel)
         self._body_splitter.setStretchFactor(0, _BODY_SPLITTER_LEFT_STRETCH)
         self._body_splitter.setStretchFactor(1, _BODY_SPLITTER_RIGHT_STRETCH)
+        if self._projected_2d_panel is not None:
+            self._body_splitter.setStretchFactor(2, 0)
         # ``setStretchFactor`` only resolves the ratio when both child
         # widgets have non-trivial size policies — in practice with
         # Expanding panels we still see a near-50/50 initial split.
         # Force the desired ratio with explicit pixel-equivalent
         # ``setSizes``; the user can drag from there.
-        self._body_splitter.setSizes(
-            [
-                _BODY_SPLITTER_LEFT_STRETCH * 100,
-                _BODY_SPLITTER_RIGHT_STRETCH * 100,
-            ]
-        )
+        sizes = [
+            _BODY_SPLITTER_LEFT_STRETCH * 100,
+            _BODY_SPLITTER_RIGHT_STRETCH * 100,
+        ]
+        if self._projected_2d_panel is not None:
+            sizes.append(_PROJECTED_2D_COLUMN_WIDTH)
+        self._body_splitter.setSizes(sizes)
         # Don't allow either pane to fully collapse on drag; small
         # minimum keeps the column dragable but always visible.
         self._body_splitter.setChildrenCollapsible(False)
@@ -977,6 +1020,8 @@ class QtViewer(QtWidgets.QMainWindow):
         immediately throw away.
         """
         outputs = {"posterior", "likelihood", "state_probabilities", "position"}
+        if self._projected_2d_panel is not None:
+            outputs.add("position_2d")
         if self._slice_panel.overlay_mode in {"predictive", "filtered"}:
             outputs.add("predictive")
         # ``set_required_outputs`` is a required method on
@@ -1152,7 +1197,7 @@ class QtViewer(QtWidgets.QMainWindow):
         # setRange after load is no longer needed and would fight with
         # the relative anchor.
         slider_value = self._slider.value()
-        for bin_panel in (self._slice_panel, *self._extra_bin_panels):
+        for bin_panel in self._all_bin_panels:
             bin_panel.set_window_buffer(payload)
             # Re-render at the current cursor — the new buffer may
             # extend coverage past the cursor's previous reach.
@@ -1258,7 +1303,7 @@ class QtViewer(QtWidgets.QMainWindow):
         # off the slider so per-tick cursor updates land sub-ms (the
         # heavier window load is async and refreshes the buffer when it
         # commits).
-        for bin_panel in (self._slice_panel, *self._extra_bin_panels):
+        for bin_panel in self._all_bin_panels:
             bin_panel.update_for_index(value)
 
     def _set_t_center_from_panel_click(self, t_rel: float) -> None:
@@ -1285,7 +1330,7 @@ class QtViewer(QtWidgets.QMainWindow):
         with QtCore.QSignalBlocker(self._slider):
             self._slider.setValue(t_idx)
         self._sync_control_labels()
-        for bin_panel in (self._slice_panel, *self._extra_bin_panels):
+        for bin_panel in self._all_bin_panels:
             bin_panel.update_for_index(t_idx)
         return t_idx
 
@@ -1384,6 +1429,10 @@ class QtViewer(QtWidgets.QMainWindow):
         )
         self._slice_panel.set_position_centers(grid.centers)
         self._slice_panel.rebind_after_swap()
+        if self._projected_2d_model is not None:
+            self._projected_2d_model.set_active_run(new_detector)
+        if self._projected_2d_panel is not None:
+            self._projected_2d_panel.rebind_after_swap()
 
         # Bin-synced plugins drop run-local caches if they expose
         # ``rebind_after_swap``. The hook is optional in the protocol
@@ -1701,11 +1750,12 @@ def _panel_for_metric_spec(spec: MetricSpec):
 
 
 def launch_qt_with_source(
-    data_source: InMemoryDecoderDataSource,
+    data_source: DecoderDataSource,
     t_width: float = 1.0,
     block: bool = True,
     extra_panels: list | None = None,
     extra_bin_panels: list | None = None,
+    show_projected_2d: bool = False,
 ) -> int:
     """Open a ``QtViewer`` against a pre-built data source.
 
@@ -1725,6 +1775,7 @@ def launch_qt_with_source(
         t_width=t_width,
         extra_panels=extra_panels,
         extra_bin_panels=extra_bin_panels,
+        show_projected_2d=show_projected_2d,
     )
     _LIVE_VIEWERS.append(viewer)
     viewer.show()
@@ -1739,6 +1790,8 @@ _PER_COMPONENT_KWARGS = (
     "spike_times",
     "position",
     "position_time",
+    "position_2d",
+    "position_2d_time",
     "speed",
 )
 
@@ -1749,12 +1802,15 @@ def launch_qt(
     block: bool = True,
     extra_panels: list | None = None,
     extra_bin_panels: list | None = None,
+    show_projected_2d: bool = False,
     *,
     detector=None,
     results=None,
     spike_times=None,
     position=None,
     position_time=None,
+    position_2d=None,
+    position_2d_time=None,
     speed=None,
     name: str = "default",
 ) -> int:
@@ -1805,6 +1861,9 @@ def launch_qt(
     speed : np.ndarray | None, optional
         Optional speed array, only meaningful with the
         per-component form.
+    position_2d, position_2d_time : optional
+        Optional raw 2D animal position and its time index for the
+        projected-2D panel.
     name : str, optional
         Name for the constructed run when using the per-component
         form (default ``"default"``).
@@ -1839,6 +1898,8 @@ def launch_qt(
         "spike_times": spike_times,
         "position": position,
         "position_time": position_time,
+        "position_2d": position_2d,
+        "position_2d_time": position_2d_time,
         "speed": speed,
     }
     provided_per_component = {k: v for k, v in per_component.items() if v is not None}
@@ -1866,6 +1927,8 @@ def launch_qt(
             spike_times=spike_times,
             position_time=position_time,
             position=position,
+            position_2d=position_2d,
+            position_2d_time=position_2d_time,
             speed=speed,
         )
         bundles = {name: bundles}
@@ -1880,4 +1943,5 @@ def launch_qt(
         block=block,
         extra_panels=extra_panels,
         extra_bin_panels=extra_bin_panels,
+        show_projected_2d=show_projected_2d,
     )

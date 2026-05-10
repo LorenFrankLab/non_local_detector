@@ -609,6 +609,46 @@ def test_launch_qt_per_component_kwargs_constructs_run(
 
 
 @pytest.mark.unit
+def test_qt_viewer_optional_projected_2d_column(
+    qapp,
+    nl_fitted,
+    sim_session,
+) -> None:
+    """``show_projected_2d`` adds the experimental third column and
+    requests optional raw-2D position from the backend."""
+    from non_local_detector.visualization.interactive.data_source import (
+        InMemoryDecoderDataSource,
+    )
+    from non_local_detector.visualization.interactive.view_models.base import (
+        RunBundle,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import (
+        _PROJECTED_2D_COLUMN_WIDTH,
+        QtViewer,
+    )
+
+    bundle = RunBundle(
+        results=nl_fitted.results,
+        detector=nl_fitted.detector,
+        spike_times=sim_session.spike_times,
+        position_time=sim_session.time,
+        position=sim_session.position,
+    )
+    viewer = QtViewer(
+        InMemoryDecoderDataSource.from_single(bundle),
+        t_width=0.5,
+        show_projected_2d=True,
+    )
+
+    assert viewer._projected_2d_panel is not None
+    assert viewer._body_splitter.count() == 3
+    assert "position_2d" in viewer._backend._required_outputs
+    # Minimum (not fixed) width so the splitter handle stays drag-able.
+    assert viewer._projected_2d_panel.minimumWidth() == _PROJECTED_2D_COLUMN_WIDTH
+    assert viewer._projected_2d_panel.maximumWidth() > _PROJECTED_2D_COLUMN_WIDTH
+
+
+@pytest.mark.unit
 def test_launch_qt_rejects_mixed_bundle_and_per_component(
     qapp,
     multi_run_bundles: dict[str, RunBundle],
