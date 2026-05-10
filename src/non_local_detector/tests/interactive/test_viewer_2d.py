@@ -101,6 +101,9 @@ def test_viewer_constructs_2d_at_cursor_panels(qapp, fitted_2d_bundle) -> None:
     from non_local_detector.visualization.interactive.data_source import (
         InMemoryDecoderDataSource,
     )
+    from non_local_detector.visualization.interactive.panels.qt.cell_grid_2d import (
+        Qt2DCellGridPanel,
+    )
     from non_local_detector.visualization.interactive.panels.qt.image_2d import (
         Qt2DImagePanel,
     )
@@ -121,13 +124,18 @@ def test_viewer_constructs_2d_at_cursor_panels(qapp, fitted_2d_bundle) -> None:
     # bin-synced dispatch list so each cursor tick updates both.
     assert isinstance(viewer._posterior_at_cursor_panel, Qt2DImagePanel)
     assert isinstance(viewer._likelihood_at_cursor_panel, Qt2DImagePanel)
-    assert viewer._posterior_at_cursor_panel in viewer._bin_synced_panels
-    assert viewer._likelihood_at_cursor_panel in viewer._bin_synced_panels
-    # Right-column layout stacks them (posterior on top, likelihood
-    # below) in the same column-panel registry.
+    assert isinstance(viewer._cell_grid_2d_panel, Qt2DCellGridPanel)
+    for panel in (
+        viewer._posterior_at_cursor_panel,
+        viewer._likelihood_at_cursor_panel,
+        viewer._cell_grid_2d_panel,
+    ):
+        assert panel in viewer._bin_synced_panels
+    # Right-column layout stacks posterior → likelihood → per-cell rows.
     assert viewer._right_column_panels == [
         viewer._posterior_at_cursor_panel,
         viewer._likelihood_at_cursor_panel,
+        viewer._cell_grid_2d_panel,
     ]
 
 
@@ -182,3 +190,34 @@ def test_viewer_2d_cursor_update_renders_images(qapp, fitted_2d_bundle) -> None:
         # Each ImageItem should hold a populated RGBA frame.
         assert panel._image_item.image is not None
         assert panel._image_item.image.shape[-1] == 4
+
+    # Per-cell grid: pick a session-wide bin with active cells, build
+    # a payload around it, push it to the panel, and tick once. The
+    # specific image content depends on the fixture's noise realization;
+    # all we assert is "no crash + at least one row goes visible when
+    # the bin has spikes".
+    cell_grid = viewer._cell_grid_2d_panel
+    assert cell_grid is not None
+    event_index = viewer._data_source.event_index
+    active_t_idx = None
+    for candidate in range(viewer._data_source.n_time):
+        if event_index.event_ids_at_bin(candidate).size > 0:
+            active_t_idx = candidate
+            break
+    assert active_t_idx is not None, (
+        "fixture should contain at least one bin with an active cell"
+    )
+    active_state = ViewState(
+        request_id=1,
+        t_center=float(viewer._data_source.time[active_t_idx]),
+        t_width=0.5,
+    )
+    active_payload = viewer._backend.build_payload(active_state)
+    cell_grid.set_window_buffer(active_payload)
+    cell_grid.update_for_index(active_t_idx)
+    # ``isVisible`` depends on parent visibility and the viewer was
+    # never shown — check the per-row image state directly. A row
+    # populated by ``show_cell`` carries a non-None RGBA image.
+    populated = [row for row in cell_grid._rows if row._image_item.image is not None]
+    assert populated, "active cell bin should populate at least one per-cell row"
+    assert populated[0]._image_item.image.shape[-1] == 4  # RGBA

@@ -19,6 +19,9 @@ from non_local_detector.visualization.interactive.data_source import (
     DecoderDataSource,
     InMemoryDecoderDataSource,
 )
+from non_local_detector.visualization.interactive.panels.qt.cell_grid_2d import (
+    Qt2DCellGridPanel,
+)
 from non_local_detector.visualization.interactive.panels.qt.image_2d import (
     Qt2DImagePanel,
 )
@@ -616,6 +619,7 @@ class QtViewer(QtWidgets.QMainWindow):
         self._slice_panel: QtSlicePanel | None
         self._posterior_at_cursor_panel: Qt2DImagePanel | None
         self._likelihood_at_cursor_panel: Qt2DImagePanel | None
+        self._cell_grid_2d_panel: Qt2DCellGridPanel | None
         if grid.ndim == 1:
             self._likelihood_panel = QtLikelihoodHeatmapPanel(
                 model=self._likelihood_model, position_centers=grid.centers
@@ -629,6 +633,7 @@ class QtViewer(QtWidgets.QMainWindow):
             self._slice_panel.set_row_provider(self._slice_row_at)
             self._posterior_at_cursor_panel = None
             self._likelihood_at_cursor_panel = None
+            self._cell_grid_2d_panel = None
         else:
             self._likelihood_panel = None
             self._panel = None
@@ -646,6 +651,9 @@ class QtViewer(QtWidgets.QMainWindow):
                 payload_field="likelihood",
                 title="Likelihood at cursor",
                 vmax=1.0,
+            )
+            self._cell_grid_2d_panel = Qt2DCellGridPanel(
+                model=self._slice_model, grid=grid
             )
 
         # Built-in time-axis panels (left column), top to bottom.
@@ -725,6 +733,8 @@ class QtViewer(QtWidgets.QMainWindow):
             right_column_panels.append(self._posterior_at_cursor_panel)
         if self._likelihood_at_cursor_panel is not None:
             right_column_panels.append(self._likelihood_at_cursor_panel)
+        if self._cell_grid_2d_panel is not None:
+            right_column_panels.append(self._cell_grid_2d_panel)
         self._right_column_panels = right_column_panels
         self._bin_synced_panels: list = [
             *right_column_panels,
@@ -1508,6 +1518,8 @@ class QtViewer(QtWidgets.QMainWindow):
             self._posterior_at_cursor_panel.rebind_after_swap(grid)
         if self._likelihood_at_cursor_panel is not None:
             self._likelihood_at_cursor_panel.rebind_after_swap(grid)
+        if self._cell_grid_2d_panel is not None:
+            self._cell_grid_2d_panel.rebind_after_swap(grid)
         if self._projected_2d_model is not None:
             self._projected_2d_model.set_active_run(new_detector)
         if self._projected_2d_panel is not None:
