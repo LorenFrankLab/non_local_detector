@@ -40,8 +40,8 @@ if TYPE_CHECKING:
 # Match the 1D slice panel's per-cell row cap and styling so the
 # 2D grid uses the same visual vocabulary (truncation label, header
 # format with ``#id (×count)``).
-MAX_PER_CELL_PLOTS = 6
-_PER_CELL_IMAGE_MIN_HEIGHT = 80
+MAX_PER_CELL_PLOTS = 4
+_PER_CELL_IMAGE_MIN_HEIGHT = 60
 _PER_CELL_HEADER_STYLE = (
     "QLabel { background-color: #f4f4f4; color: #202020; "
     "padding: 2px 6px; border: 1px solid #d8d8d8; border-radius: 3px; "
@@ -81,10 +81,15 @@ class _PerCellImageRow:
         self.plot.addItem(self._image_item)
         layout.addWidget(self.label)
         layout.addWidget(self.plot)
-        # Hidden rows collapse so the cell-grid only claims space for
-        # cells that actually fired. With ``setRetainSizeWhenHidden``
-        # the grid would always reserve 6 × row-height vertically and
-        # starve the sibling 2D image panels.
+        # Reserve slot in the layout even when hidden so the cell-grid
+        # panel claims a stable vertical footprint. If hidden rows
+        # collapsed, the panel would resize per cursor tick as cells
+        # fire/unfire — and the layout's minimum-size cascade would
+        # push the QMainWindow taller, scrolling the controls bar
+        # off-screen during playback.
+        size_policy = self.container.sizePolicy()
+        size_policy.setRetainSizeWhenHidden(True)
+        self.container.setSizePolicy(size_policy)
 
     def apply_layout(self, grid: PositionGrid) -> None:
         """Rebind plot bounds for a new active run's grid geometry."""

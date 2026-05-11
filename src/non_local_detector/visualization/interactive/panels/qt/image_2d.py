@@ -27,8 +27,10 @@ if TYPE_CHECKING:
 
 
 # Minimum panel height so the viewbox doesn't collapse when this
-# panel shares a right column with the cell-grid stack.
-_TOP_IMAGE_MIN_HEIGHT = 240
+# panel shares a right column with the cell-grid stack. Sized so
+# two image panels + a 4-row cell-grid fit in the default window
+# height without forcing the QMainWindow to grow.
+_TOP_IMAGE_MIN_HEIGHT = 200
 
 
 class _BinCollapse(Protocol):
