@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 # 2D grid uses the same visual vocabulary (truncation label, header
 # format with ``#id (×count)``).
 MAX_PER_CELL_PLOTS = 6
-_PER_CELL_IMAGE_MIN_HEIGHT = 100
+_PER_CELL_IMAGE_MIN_HEIGHT = 80
 _PER_CELL_HEADER_STYLE = (
     "QLabel { background-color: #f4f4f4; color: #202020; "
     "padding: 2px 6px; border: 1px solid #d8d8d8; border-radius: 3px; "
@@ -73,17 +73,18 @@ class _PerCellImageRow:
         self.plot.setMouseEnabled(x=False, y=False)
         self.plot.hideAxis("bottom")
         self.plot.hideAxis("left")
-        self.plot.setAspectLocked(True)
+        # Stretch to fill the row — aspect-lock would clip the
+        # thumbnail in the narrow right column (same reason
+        # ``Qt2DImagePanel`` skips it).
         self._lut = lut
         self._image_item = pg.ImageItem(axisOrder="row-major")
         self.plot.addItem(self._image_item)
         layout.addWidget(self.label)
         layout.addWidget(self.plot)
-        # Keep slot in layout when hidden so the column doesn't reflow
-        # on every cursor tick.
-        size_policy = self.container.sizePolicy()
-        size_policy.setRetainSizeWhenHidden(True)
-        self.container.setSizePolicy(size_policy)
+        # Hidden rows collapse so the cell-grid only claims space for
+        # cells that actually fired. With ``setRetainSizeWhenHidden``
+        # the grid would always reserve 6 × row-height vertically and
+        # starve the sibling 2D image panels.
 
     def apply_layout(self, grid: PositionGrid) -> None:
         """Rebind plot bounds for a new active run's grid geometry."""
@@ -92,12 +93,18 @@ class _PerCellImageRow:
             QtCore.QRectF(layout.x_min, layout.y_min, layout.width, layout.height)
         )
         vb = self.plot.getViewBox()
-        # ``setRange`` only — no ``setLimits``. Aspect-lock needs room
-        # to extend the shorter visible axis when the row is non-square.
         vb.setRange(
             xRange=(layout.x_min, layout.x_max),
             yRange=(layout.y_min, layout.y_max),
             padding=0,
+        )
+        # Clamp to bin bounds so the row's hidden axes never extend
+        # past the data range under aspect-lock.
+        vb.setLimits(
+            xMin=layout.x_min,
+            xMax=layout.x_max,
+            yMin=layout.y_min,
+            yMax=layout.y_max,
         )
 
     def show_cell(

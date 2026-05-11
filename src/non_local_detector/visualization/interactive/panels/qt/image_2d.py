@@ -26,6 +26,11 @@ if TYPE_CHECKING:
     )
 
 
+# Minimum panel height so the viewbox doesn't collapse when this
+# panel shares a right column with the cell-grid stack.
+_TOP_IMAGE_MIN_HEIGHT = 240
+
+
 class _BinCollapse(Protocol):
     """Interface the panel needs from a view model.
 
@@ -89,9 +94,18 @@ class Qt2DImagePanel(pg.PlotWidget):
         self.setTitle(title)
         self.setLabel("left", "y")
         self.setLabel("bottom", "x")
-        self.setAspectLocked(True)
+        # Don't aspect-lock. Combined with ``setLimits`` clamping the
+        # axes to the data bounds, aspect-lock would crop the image
+        # whenever the panel is non-square (the common case in the
+        # right column). Letting the image stretch to fill the panel
+        # keeps axis labels honest (they always read the bin bounds)
+        # and shows the full posterior / likelihood — the small
+        # aspect distortion is acceptable for a non-square widget.
         self.setMenuEnabled(False)
         self.setMouseEnabled(x=False, y=False)
+        # Reserve enough vertical space that the panel doesn't get
+        # starved by the cell-grid sibling in the right column.
+        self.setMinimumHeight(_TOP_IMAGE_MIN_HEIGHT)
 
         self._lut = pg.colormap.get("viridis").getLookupTable(0.0, 1.0, 256)
         self._image_item = pg.ImageItem(axisOrder="row-major")
@@ -143,17 +157,23 @@ class Qt2DImagePanel(pg.PlotWidget):
             QtCore.QRectF(layout.x_min, layout.y_min, layout.width, layout.height)
         )
         vb = self.getViewBox()
-        # Set the visible range to the bin-center bounds with no
-        # padding. Don't pin via ``setLimits`` — ``setAspectLocked``
-        # needs room to extend the shorter visible axis when the
-        # widget is non-square. With ``setLimits`` matching the data
-        # bounds exactly, aspect-lock has no slack and the y-axis
-        # gets squashed when the panel is wide-and-short (the
-        # typical right-column case with three stacked panels).
+        # Clamp axes to the data bounds + lock the data aspect ratio.
+        # The panel's minimum height (``_TOP_IMAGE_MIN_HEIGHT``) gives
+        # aspect-lock room to render the image at proper proportions
+        # within the widget — non-square widgets get white margins on
+        # the longer pixel-per-unit axis rather than extending the
+        # visible data range past the bin bounds (which would
+        # mislabel the axis ticks).
         vb.setRange(
             xRange=(layout.x_min, layout.x_max),
             yRange=(layout.y_min, layout.y_max),
             padding=0,
+        )
+        vb.setLimits(
+            xMin=layout.x_min,
+            xMax=layout.x_max,
+            yMin=layout.y_min,
+            yMax=layout.y_max,
         )
 
     def _clear_image(self) -> None:
