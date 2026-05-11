@@ -75,7 +75,7 @@ class Qt2DImagePanel(pg.PlotWidget):
         *,
         payload_field: str = "posterior",
         title: str = "Posterior at cursor",
-        vmax: float = 0.25,
+        vmax: float | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent=parent, background="w")
@@ -87,7 +87,14 @@ class Qt2DImagePanel(pg.PlotWidget):
         self._model = model
         self._grid = grid
         self._payload_field = payload_field
-        self._vmax = float(vmax)
+        # ``vmax=None`` (default) → per-frame peak-normalize so the
+        # cursor row's brightest bin always lands at the LUT top
+        # regardless of its absolute magnitude. The at-cursor view
+        # spans a single time bin where peak posterior mass can be
+        # well below 0.25 (the 1D heatmap default), and a fixed vmax
+        # buries the actual peak in the LUT's dark-purple lower
+        # quartile. Pass a float to pin a fixed scale.
+        self._vmax: float | None = float(vmax) if vmax is not None else None
         self._buffered_payload: WindowPayload | None = None
         self._last_t_idx: int | None = None
 
@@ -131,10 +138,13 @@ class Qt2DImagePanel(pg.PlotWidget):
         local_idx = int(t_idx - payload.indices.start)
         if local_idx < 0 or local_idx >= window.shape[0]:
             return
-        flat = self._model.collapse_at(window, [local_idx])[0]
-        rgba = flat_to_rgba_image(
-            np.asarray(flat), self._grid.shape, self._lut, self._vmax
-        )
+        flat = np.asarray(self._model.collapse_at(window, [local_idx])[0])
+        if self._vmax is None:
+            peak = float(np.nanmax(flat)) if flat.size else 0.0
+            frame_vmax = peak if peak > 0.0 else 1.0
+        else:
+            frame_vmax = self._vmax
+        rgba = flat_to_rgba_image(flat, self._grid.shape, self._lut, frame_vmax)
         self._image_item.setImage(rgba, autoLevels=False)
         self._update_animal_marker(payload, local_idx)
 

@@ -638,19 +638,21 @@ class QtViewer(QtWidgets.QMainWindow):
             self._likelihood_panel = None
             self._panel = None
             self._slice_panel = None
+            # ``vmax=None`` default → per-frame peak-normalize. Both
+            # panels show the cursor row's relative distribution shape;
+            # the absolute magnitude differs between time bins but the
+            # peak always renders at the top of the viridis LUT.
             self._posterior_at_cursor_panel = Qt2DImagePanel(
                 model=self._posterior_model,
                 grid=grid,
                 payload_field="posterior",
                 title="Posterior at cursor",
-                vmax=0.25,
             )
             self._likelihood_at_cursor_panel = Qt2DImagePanel(
                 model=self._likelihood_model,
                 grid=grid,
                 payload_field="likelihood",
                 title="Likelihood at cursor",
-                vmax=1.0,
             )
             self._cell_grid_2d_panel = Qt2DCellGridPanel(
                 model=self._slice_model, grid=grid
