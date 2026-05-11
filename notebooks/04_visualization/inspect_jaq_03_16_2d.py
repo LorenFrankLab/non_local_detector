@@ -112,14 +112,15 @@ print(f"Cells with ≥1 spike: {active_cells} / {len(spike_times)}")
 # from awake-locomotion periods rather than from putative replay
 # bins.
 #
-# `place_bin_size=5.0` gives a ~25×23 grid over the projected
-# track. `local_position_std=1.0` gates the local state to a
-# tight neighborhood of the animal; tune up if the local prior is
-# too restrictive for your data.
+# `place_bin_size=3.5` gives ~30×28 bins over the projected track
+# (~2× finer than the 5 cm default — useful for inspecting
+# multimodal posterior structure). `local_position_std=1.0`
+# gates the local state to a tight neighborhood of the animal;
+# tune up if the local prior is too restrictive for your data.
 
 # %%
 env = Environment(
-    place_bin_size=5.0,
+    place_bin_size=3.5,
     position_range=(
         (
             float(position_df["projected_x_position"].min()) - 5,

@@ -269,11 +269,14 @@ class Qt2DImagePanel(pg.PlotWidget):
         if xy is None or xy.size != 2 or not np.all(np.isfinite(xy)):
             self._animal_marker.setData(x=[], y=[])
             return
+        # Hollow magenta ring — a filled dot covers ~5 cm of bins
+        # underneath at typical column widths, hiding multimodal
+        # posterior structure right where it's most interesting.
         self._animal_marker.setData(
             x=[float(xy[0])],
             y=[float(xy[1])],
-            size=14,
+            size=16,
             symbol="o",
-            brush=pg.mkBrush(255, 0, 255, 230),
-            pen=pg.mkPen((255, 255, 255, 230), width=2),
+            brush=pg.mkBrush(0, 0, 0, 0),
+            pen=pg.mkPen((255, 0, 255, 255), width=2.5),
         )
