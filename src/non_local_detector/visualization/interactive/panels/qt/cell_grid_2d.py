@@ -89,6 +89,9 @@ class _PerCellImageRow:
     def apply_layout(self, grid: PositionGrid) -> None:
         """Rebind plot bounds for a new active run's grid geometry."""
         layout = image_2d_layout_from_grid(grid)
+        # Cache for ``show_cell`` — ``setImage`` resets the transform
+        # on every call so we re-apply the rect after each render.
+        self._layout = layout
         self._image_item.setRect(
             QtCore.QRectF(layout.x_min, layout.y_min, layout.width, layout.height)
         )
@@ -115,6 +118,15 @@ class _PerCellImageRow:
             np.asarray(place_field_flat), shape, self._lut, vmax=1.0
         )
         self._image_item.setImage(rgba, autoLevels=False)
+        # Re-apply rect — ``setImage`` resets the ImageItem transform.
+        self._image_item.setRect(
+            QtCore.QRectF(
+                self._layout.x_min,
+                self._layout.y_min,
+                self._layout.width,
+                self._layout.height,
+            )
+        )
         self.container.setVisible(True)
 
     def hide(self) -> None:

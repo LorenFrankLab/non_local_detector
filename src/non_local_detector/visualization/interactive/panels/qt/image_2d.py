@@ -146,6 +146,19 @@ class Qt2DImagePanel(pg.PlotWidget):
             frame_vmax = self._vmax
         rgba = flat_to_rgba_image(flat, self._grid.shape, self._lut, frame_vmax)
         self._image_item.setImage(rgba, autoLevels=False)
+        # ``setImage`` resets the ImageItem's transform back to
+        # pixel coords (rect = image shape), so the rect set during
+        # construction is gone by the first cursor tick. Re-apply
+        # it here so the image is always positioned in the data's
+        # ``(x_min, y_min, width, height)`` rectangle.
+        self._image_item.setRect(
+            QtCore.QRectF(
+                self._layout.x_min,
+                self._layout.y_min,
+                self._layout.width,
+                self._layout.height,
+            )
+        )
         self._update_animal_marker(payload, local_idx)
 
     def rebind_after_swap(self, grid: PositionGrid | None = None) -> None:
@@ -163,6 +176,10 @@ class Qt2DImagePanel(pg.PlotWidget):
 
     def _apply_grid_geometry(self) -> None:
         layout = image_2d_layout_from_grid(self._grid)
+        # Cache for ``update_for_index`` — ``setImage`` resets the
+        # ImageItem transform on every call so we re-apply the rect
+        # per render.
+        self._layout = layout
         self._image_item.setRect(
             QtCore.QRectF(layout.x_min, layout.y_min, layout.width, layout.height)
         )
