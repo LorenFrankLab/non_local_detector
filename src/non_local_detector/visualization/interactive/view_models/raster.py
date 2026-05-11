@@ -51,12 +51,19 @@ class RasterModel:
 
     def _bind(self, detector: _DetectorBase) -> None:
         self._detector = detector
-        env = detector.environments[0]
         try:
             place_fields = extract_per_cell_place_fields(detector)
-            self._sort_indices = np.argsort(
-                env.place_bin_centers_[np.nanargmax(place_fields, axis=1)].squeeze()
-            )
+            # Sort cells by their place-field peak's flat bin index.
+            # For 1D bins this is equivalent to sorting by physical
+            # position (centers are monotonic). For 2D bins it gives
+            # a lex-sort by ``(x_idx, y_idx)`` under ``Environment``'s
+            # C-order ravel convention. Using the flat index directly
+            # avoids the 2D ``argsort`` shape trap where indexing
+            # ``place_bin_centers_`` by ``(n_cells,)`` returns
+            # ``(n_cells, n_pos_dims)`` and ``argsort`` produces a
+            # multi-axis index that breaks the per-cell iteration.
+            peak_flat_indices = np.nanargmax(place_fields, axis=1)
+            self._sort_indices = np.argsort(peak_flat_indices)
             self._cell_label = "Neuron"
         except (KeyError, ValueError):
             self._sort_indices = np.arange(len(self._spike_times))

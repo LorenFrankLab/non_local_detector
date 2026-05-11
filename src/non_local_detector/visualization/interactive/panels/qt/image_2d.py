@@ -143,16 +143,17 @@ class Qt2DImagePanel(pg.PlotWidget):
             QtCore.QRectF(layout.x_min, layout.y_min, layout.width, layout.height)
         )
         vb = self.getViewBox()
+        # Set the visible range to the bin-center bounds with no
+        # padding. Don't pin via ``setLimits`` — ``setAspectLocked``
+        # needs room to extend the shorter visible axis when the
+        # widget is non-square. With ``setLimits`` matching the data
+        # bounds exactly, aspect-lock has no slack and the y-axis
+        # gets squashed when the panel is wide-and-short (the
+        # typical right-column case with three stacked panels).
         vb.setRange(
             xRange=(layout.x_min, layout.x_max),
             yRange=(layout.y_min, layout.y_max),
             padding=0,
-        )
-        vb.setLimits(
-            xMin=layout.x_min,
-            xMax=layout.x_max,
-            yMin=layout.y_min,
-            yMax=layout.y_max,
         )
 
     def _clear_image(self) -> None:

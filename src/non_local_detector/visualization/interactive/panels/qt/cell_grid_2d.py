@@ -92,16 +92,12 @@ class _PerCellImageRow:
             QtCore.QRectF(layout.x_min, layout.y_min, layout.width, layout.height)
         )
         vb = self.plot.getViewBox()
+        # ``setRange`` only — no ``setLimits``. Aspect-lock needs room
+        # to extend the shorter visible axis when the row is non-square.
         vb.setRange(
             xRange=(layout.x_min, layout.x_max),
             yRange=(layout.y_min, layout.y_max),
             padding=0,
-        )
-        vb.setLimits(
-            xMin=layout.x_min,
-            xMax=layout.x_max,
-            yMin=layout.y_min,
-            yMax=layout.y_max,
         )
 
     def show_cell(
