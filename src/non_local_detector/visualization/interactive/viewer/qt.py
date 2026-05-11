@@ -648,11 +648,17 @@ class QtViewer(QtWidgets.QMainWindow):
                 payload_field="posterior",
                 title="Posterior at cursor",
             )
+            self._posterior_at_cursor_panel.set_row_provider(
+                lambda t_idx: self._image_row_at(t_idx, "posterior")
+            )
             self._likelihood_at_cursor_panel = Qt2DImagePanel(
                 model=self._likelihood_model,
                 grid=grid,
                 payload_field="likelihood",
                 title="Likelihood at cursor",
+            )
+            self._likelihood_at_cursor_panel.set_row_provider(
+                lambda t_idx: self._image_row_at(t_idx, "likelihood")
             )
             self._cell_grid_2d_panel = Qt2DCellGridPanel(
                 model=self._slice_model, grid=grid
@@ -1319,6 +1325,32 @@ class QtViewer(QtWidgets.QMainWindow):
             np.asarray(predictive_row) if predictive_row is not None else None,
             true_position,
         )
+
+    def _image_row_at(
+        self, t_idx: int, which: str
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """Single-bin fallback for the 2D image panels.
+
+        Returns ``(state_bin_row, animal_xy)`` — the row is a flat
+        ``(n_state_bins,)`` slice of ``acausal_posterior`` or
+        ``log_likelihood`` at decoder time ``t_idx``, and
+        ``animal_xy`` is the interpolated ``(x, y)`` position at
+        that bin. Used during fast playback when the cursor moves
+        past the buffered window before the async load lands.
+        """
+        if t_idx < 0 or t_idx >= self._data_source.n_time:
+            return None, None
+        row = self._data_source.slice_at_index(t_idx, which=which)
+        position_slice = self._data_source.load_position(slice(t_idx, t_idx + 1))
+        animal_xy = (
+            np.asarray(position_slice[0])
+            if position_slice is not None
+            and position_slice.ndim == 2
+            and position_slice.shape[1] == 2
+            and position_slice.shape[0] > 0
+            else None
+        )
+        return row, animal_xy
 
     def _step_window(self, direction: int) -> None:
         self._clear_pins()

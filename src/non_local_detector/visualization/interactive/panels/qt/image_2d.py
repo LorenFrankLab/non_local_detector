@@ -8,6 +8,7 @@ as a magenta dot.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
@@ -31,6 +32,15 @@ if TYPE_CHECKING:
 # two image panels + a 4-row cell-grid fit in the default window
 # height without forcing the QMainWindow to grow.
 _TOP_IMAGE_MIN_HEIGHT = 200
+
+
+# Provider returns ``(state_bin_row, animal_xy)`` for a single
+# decoder time index. ``state_bin_row`` is a flat
+# ``(n_state_bins,)`` array (what the model's ``collapse_at``
+# consumes via a 1-row window); ``animal_xy`` is the ``(2,)`` raw
+# animal position at that time bin or ``None``. Either may be
+# ``None`` to mean "no fallback data available".
+RowProvider = Callable[[int], tuple[np.ndarray | None, np.ndarray | None]]
 
 
 class _BinCollapse(Protocol):
@@ -97,6 +107,11 @@ class Qt2DImagePanel(pg.PlotWidget):
         # buries the actual peak in the LUT's dark-purple lower
         # quartile. Pass a float to pin a fixed scale.
         self._vmax: float | None = float(vmax) if vmax is not None else None
+        # Single-row fallback for cursor ticks past the buffered
+        # window — the async window-load can't keep up with fast
+        # playback, so without this the image freezes on the last
+        # in-buffer frame and visibly lags the cursor.
+        self._row_provider: RowProvider | None = None
         self._buffered_payload: WindowPayload | None = None
         self._last_t_idx: int | None = None
 
@@ -128,18 +143,45 @@ class Qt2DImagePanel(pg.PlotWidget):
     def set_window_buffer(self, payload: WindowPayload) -> None:
         self._buffered_payload = payload
 
+    def set_row_provider(self, provider: RowProvider | None) -> None:
+        """Register a single-row fallback for cursor ticks past the buffer.
+
+        Without it, ``update_for_index`` early-returns when the
+        cursor moves past the buffered window (which is common
+        during fast playback — the async window-load can't keep
+        up), leaving the image frozen on the last buffered frame
+        and visibly lagging the slider.
+        """
+        self._row_provider = provider
+
     def update_for_index(self, t_idx: int) -> None:
         self._last_t_idx = int(t_idx)
         payload = self._buffered_payload
-        if payload is None:
-            return
-        window = getattr(payload, self._payload_field, None)
-        if window is None:
-            self._clear_image()
-            return
-        local_idx = int(t_idx - payload.indices.start)
-        if local_idx < 0 or local_idx >= window.shape[0]:
-            return
+        window: np.ndarray | None = None
+        local_idx = 0
+        animal_xy: np.ndarray | None = None
+        in_buffer = False
+        if payload is not None:
+            buf_window = getattr(payload, self._payload_field, None)
+            if buf_window is not None:
+                buf_local_idx = int(t_idx - payload.indices.start)
+                if 0 <= buf_local_idx < buf_window.shape[0]:
+                    window = buf_window
+                    local_idx = buf_local_idx
+                    in_buffer = True
+                    animal_xy = self._animal_xy_from_payload(payload, local_idx)
+        if not in_buffer:
+            # Async window-load hasn't reached this cursor bin yet.
+            # Fetch the single row synchronously so the panel stays
+            # in sync with the slider during playback.
+            if self._row_provider is None:
+                return
+            row, animal_xy = self._row_provider(t_idx)
+            if row is None:
+                return
+            window = np.asarray(row)[np.newaxis, :]
+            local_idx = 0
+        assert window is not None
         flat = np.asarray(self._model.collapse_at(window, [local_idx])[0])
         if self._vmax is None:
             peak = float(np.nanmax(flat)) if flat.size else 0.0
@@ -161,7 +203,7 @@ class Qt2DImagePanel(pg.PlotWidget):
                 self._layout.height,
             )
         )
-        self._update_animal_marker(payload, local_idx)
+        self._render_animal_marker(animal_xy)
 
     def rebind_after_swap(self, grid: PositionGrid | None = None) -> None:
         self._buffered_payload = None
@@ -209,7 +251,10 @@ class Qt2DImagePanel(pg.PlotWidget):
         self._image_item.clear()
         self._animal_marker.setData(x=[], y=[])
 
-    def _update_animal_marker(self, payload: WindowPayload, local_idx: int) -> None:
+    def _animal_xy_from_payload(
+        self, payload: WindowPayload, local_idx: int
+    ) -> np.ndarray | None:
+        """Pull animal XY out of a buffered payload at ``local_idx``."""
         position = payload.position
         if (
             position is None
@@ -217,10 +262,11 @@ class Qt2DImagePanel(pg.PlotWidget):
             or position.shape[1] != 2
             or local_idx >= position.shape[0]
         ):
-            self._animal_marker.setData(x=[], y=[])
-            return
-        xy = np.asarray(position[local_idx], dtype=float)
-        if not np.all(np.isfinite(xy)):
+            return None
+        return np.asarray(position[local_idx], dtype=float)
+
+    def _render_animal_marker(self, xy: np.ndarray | None) -> None:
+        if xy is None or xy.size != 2 or not np.all(np.isfinite(xy)):
             self._animal_marker.setData(x=[], y=[])
             return
         self._animal_marker.setData(
