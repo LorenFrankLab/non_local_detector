@@ -91,26 +91,16 @@ print(
 #
 # The detector expects `list[np.ndarray]` of spike times in seconds.
 # Each cell's column holds counts per 2 ms bin; emit one timestamp
-# per spike, jittered uniformly within the bin so the raster doesn't
-# stack every spike on the bin's left edge.
+# per spike (multiple if `count > 1`).
 
 # %%
-dt = float(np.median(np.diff(time_seconds)))
-jitter_rng = np.random.default_rng(0)
 spike_times: list[np.ndarray] = []
 for col in spikes_df.columns:
     counts = spikes_df[col].to_numpy()
     nonzero = np.where(counts > 0)[0]
-    n_spikes_per_bin = counts[nonzero].astype(int)
     # Repeat the bin timestamp for cells that fired multiple times
     # in a single 2 ms bin (rare but possible).
-    bin_starts = np.repeat(time_seconds[nonzero], n_spikes_per_bin)
-    # Jitter within ``[0, dt)`` so visually the raster looks like
-    # continuous spiking instead of all dots stacking at bin edges.
-    # The decoder uses the times themselves (not just bin counts),
-    # so spreading within-bin is harmless: ``np.searchsorted`` into
-    # ``time`` lands them back in the same bin.
-    times = bin_starts + jitter_rng.uniform(0.0, dt, size=bin_starts.size)
+    times = np.repeat(time_seconds[nonzero], counts[nonzero].astype(int))
     spike_times.append(times.astype(np.float64))
 
 total_spikes = sum(len(st) for st in spike_times)
