@@ -17,14 +17,20 @@
 # # Inspect Jaq_03_16 — 2D Non-Local viewer
 #
 # Real-data smoke for the 2D viewer path. Loads the full Jaq_03_16
-# session, fits a `NonLocalSortedSpikesDetector` against the
-# projected (x, y) track using non-ripple periods as the training
-# set, predicts over the whole session, and opens the interactive
-# viewer.
+# session, fits a `NonLocalSortedSpikesDetector` against the raw
+# head position (`nose_x` / `nose_y`) using non-ripple periods as
+# the training set, predicts over the whole session, and opens the
+# interactive viewer.
+#
+# Uses raw head position rather than `projected_*_position`: the
+# projected columns are the linearization-back-to-graph XY (the
+# W-track skeleton), which produces single-bin-wide arms and a
+# very sparse interior mask. The head position fills the actual
+# 2D maze surface the animal occupied.
 #
 # Requires (all in `~/Downloads/`):
 # - `Jaq_03_16_position_info.pkl` — 500 Hz position DataFrame
-#   (`projected_x_position` / `projected_y_position`).
+#   (`nose_x` / `nose_y`).
 # - `Jaq_03_16_spikes.pkl` — 500 Hz spike-count DataFrame, one
 #   column per cell.
 # - `Jaq_03_16_is_ripple.pkl` — 500 Hz boolean DataFrame marking
@@ -36,7 +42,6 @@ import pickle
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 from non_local_detector import NonLocalSortedSpikesDetector
 from non_local_detector.environment import Environment
@@ -63,18 +68,18 @@ with open(is_ripple_pkl, "rb") as f:
 
 t0 = position_df.index[0]
 time_seconds = (position_df.index - t0).total_seconds().to_numpy()
-position_2d = position_df[
-    ["projected_x_position", "projected_y_position"]
-].to_numpy(dtype=np.float64)
+position_2d = position_df[["nose_x", "nose_y"]].to_numpy(
+    dtype=np.float64
+)
 is_ripple = is_ripple_df.iloc[:, 0].to_numpy(dtype=bool)
 
 print(f"Session duration: {time_seconds[-1]:.1f} s, n_samples: {time_seconds.size}")
 print(f"n_cells: {spikes_df.shape[1]}")
 print(
-    f"Position bounds (cm): x=[{position_df['projected_x_position'].min():.1f}, "
-    f"{position_df['projected_x_position'].max():.1f}], "
-    f"y=[{position_df['projected_y_position'].min():.1f}, "
-    f"{position_df['projected_y_position'].max():.1f}]"
+    f"Position bounds (cm): x=[{position_df['nose_x'].min():.1f}, "
+    f"{position_df['nose_x'].max():.1f}], "
+    f"y=[{position_df['nose_y'].min():.1f}, "
+    f"{position_df['nose_y'].max():.1f}]"
 )
 print(
     f"Ripple bins: {is_ripple.sum()} / {is_ripple.size} "
@@ -123,12 +128,12 @@ env = Environment(
     place_bin_size=3.5,
     position_range=(
         (
-            float(position_df["projected_x_position"].min()) - 5,
-            float(position_df["projected_x_position"].max()) + 5,
+            float(position_df["nose_x"].min()) - 5,
+            float(position_df["nose_x"].max()) + 5,
         ),
         (
-            float(position_df["projected_y_position"].min()) - 5,
-            float(position_df["projected_y_position"].max()) + 5,
+            float(position_df["nose_y"].min()) - 5,
+            float(position_df["nose_y"].max()) + 5,
         ),
     ),
 )
