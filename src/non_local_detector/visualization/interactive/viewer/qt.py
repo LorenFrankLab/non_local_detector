@@ -25,6 +25,10 @@ from non_local_detector.visualization.interactive.panels.qt.cell_grid_2d import 
 from non_local_detector.visualization.interactive.panels.qt.image_2d import (
     Qt2DImagePanel,
 )
+from non_local_detector.visualization.interactive.viewer.cursor_row_service import (
+    CursorRowService,
+    StateBinsField,
+)
 from non_local_detector.visualization.interactive.viewer.required_outputs import (
     RequiredOutput,
 )
@@ -560,6 +564,7 @@ class QtViewer(QtWidgets.QMainWindow):
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
 
         self._data_source = data_source
+        self._rows = CursorRowService(data_source)
         self._backend = QtBackendAdapter(data_source)
         self._initial_t_center: float | None = None
         self._core = ViewerCore(data_source, self._backend, t_width=t_width)
@@ -1314,91 +1319,51 @@ class QtViewer(QtWidgets.QMainWindow):
         row at render time when the filtered overlay is active, so we
         never pay the full-window exp() cost on either path.
         """
-        if t_idx < 0 or t_idx >= self._data_source.n_time:
-            return None
-        posterior_row = self._data_source.slice_at_index(t_idx, which="posterior")
+        posterior_row = self._rows.state_bins_row(t_idx, "posterior")
         if posterior_row is None:
             return None
-        log_lik_row = (
-            self._data_source.slice_at_index(t_idx, which="likelihood")
-            if "log_likelihood" in self._data_source.available_outputs
-            else None
-        )
-        predictive_row = (
-            self._data_source.slice_at_index(t_idx, which="predictive")
-            if "predictive_posterior" in self._data_source.available_outputs
-            else None
-        )
-        position = self._data_source.load_position(slice(t_idx, t_idx + 1))
-        true_position = (
-            float(position[0]) if position is not None and position.size else None
-        )
         return (
-            np.asarray(posterior_row),
-            np.asarray(log_lik_row) if log_lik_row is not None else None,
-            np.asarray(predictive_row) if predictive_row is not None else None,
-            true_position,
+            posterior_row,
+            self._rows.state_bins_row(t_idx, "likelihood"),
+            self._rows.state_bins_row(t_idx, "predictive"),
+            self._rows.position_1d(t_idx),
         )
 
     def _image_row_at(
-        self, t_idx: int, which: str
+        self, t_idx: int, which: StateBinsField
     ) -> tuple[np.ndarray | None, np.ndarray | None]:
         """Single-bin fallback for the 2D image panels.
 
-        Returns ``(state_bin_row, animal_xy)`` — the row is a flat
-        ``(n_state_bins,)`` slice of ``acausal_posterior`` or
-        ``log_likelihood`` at decoder time ``t_idx``, and
-        ``animal_xy`` is the interpolated ``(x, y)`` position at
-        that bin. Used during fast playback when the cursor moves
-        past the buffered window before the async load lands.
+        Returns ``(state_bin_row, animal_xy_2d)``. Used during fast
+        playback when the cursor moves past the buffered window
+        before the async load lands.
         """
-        if t_idx < 0 or t_idx >= self._data_source.n_time:
-            return None, None
-        row = self._data_source.slice_at_index(t_idx, which=which)
-        position_slice = self._data_source.load_position(slice(t_idx, t_idx + 1))
-        animal_xy = (
-            np.asarray(position_slice[0])
-            if position_slice is not None
-            and position_slice.ndim == 2
-            and position_slice.shape[1] == 2
-            and position_slice.shape[0] > 0
-            else None
+        return (
+            self._rows.state_bins_row(t_idx, which),
+            self._rows.position_2d(t_idx),
         )
-        return row, animal_xy
 
     def _projected_2d_row_at(
         self, t_idx: int
     ) -> tuple[np.ndarray | None, np.ndarray | None]:
-        """Single-bin fallback for ``Qt2DProjectedPanel``.
+        """Single-bin fallback for ``QtProjected2DPanel``.
 
-        Returns ``(posterior_row, animal_xy)``. ``animal_xy`` prefers
-        the raw ``position_2d`` slice; if the bundle only carries 1D
+        Returns ``(posterior_row, animal_xy)``. Prefers the raw
+        ``position_2d`` slice; if the bundle only carries 1D
         ``position``, projects it through the track graph via the
-        projected-2D model.
+        projected-2D model. Mirrors the precedence
+        :meth:`Projected2DModel._animal_xy_from_payload` uses on the
+        buffered path so the two render paths produce the same
+        marker at the same bin.
         """
-        if (
-            t_idx < 0
-            or t_idx >= self._data_source.n_time
-            or self._projected_2d_model is None
-        ):
+        if self._projected_2d_model is None:
             return None, None
-        row = self._data_source.slice_at_index(t_idx, which="posterior")
-        sl = slice(t_idx, t_idx + 1)
-        pos_2d = self._data_source.load_position_2d(sl)
-        if (
-            pos_2d is not None
-            and pos_2d.ndim == 2
-            and pos_2d.shape == (1, 2)
-        ):
-            xy: np.ndarray | None = np.asarray(pos_2d[0], dtype=float)
-            if xy is not None and not np.all(np.isfinite(xy)):
-                xy = None
-        else:
-            xy = None
+        row = self._rows.state_bins_row(t_idx, "posterior")
+        xy = self._rows.raw_position_2d(t_idx)
         if xy is None:
-            pos_1d = self._data_source.load_position(sl)
-            if pos_1d is not None and pos_1d.ndim == 1 and pos_1d.size > 0:
-                xy = self._projected_2d_model.animal_xy_from_linear(float(pos_1d[0]))
+            xy = self._projected_2d_model.animal_xy_from_linear(
+                self._rows.position_1d(t_idx)
+            )
         return row, xy
 
     def _step_window(self, direction: int) -> None:
