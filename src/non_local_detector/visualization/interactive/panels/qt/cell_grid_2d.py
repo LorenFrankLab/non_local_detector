@@ -116,12 +116,20 @@ class _PerCellImageRow:
         )
 
     def show_cell(
-        self, label: str, place_field_flat: np.ndarray, shape: tuple[int, int]
+        self,
+        label: str,
+        place_field_flat: np.ndarray,
+        shape: tuple[int, int],
+        is_interior: np.ndarray | None = None,
     ) -> None:
         self.label.setText(label)
-        rgba = flat_to_rgba_image(
-            np.asarray(place_field_flat), shape, self._lut, vmax=1.0
-        )
+        flat = np.asarray(place_field_flat, dtype=np.float64)
+        # Mask off-track bins to NaN so they render transparent.
+        # ``SliceModel._clean_place_fields`` maps NaN → 0, so without
+        # this mask off-track bins render as opaque dark pixels.
+        if is_interior is not None and is_interior.size == flat.size:
+            flat = np.where(is_interior, flat, np.nan)
+        rgba = flat_to_rgba_image(flat, shape, self._lut, vmax=1.0)
         self._image_item.setImage(rgba, autoLevels=False)
         # Re-apply rect — ``setImage`` resets the ImageItem transform.
         self._image_item.setRect(
@@ -184,27 +192,21 @@ class Qt2DCellGridPanel(QtWidgets.QWidget):
         layout.addWidget(self._truncation_label)
 
     def set_window_buffer(self, payload: WindowPayload) -> None:
+        # Stored for ``BinSyncedPanel`` Protocol parity, but unused —
+        # ``update_for_index`` derives cells from the slice model's
+        # cached event index directly, so the cell grid stays in sync
+        # with the cursor regardless of buffer state.
         self._buffered_payload = payload
 
     def update_for_index(self, t_idx: int) -> None:
         self._last_t_idx = int(t_idx)
-        payload = self._buffered_payload
-        if payload is None or payload.posterior is None:
-            self._clear_rows()
-            return
-        sl = payload.indices
-        local_idx = t_idx - sl.start
-        if local_idx < 0 or local_idx >= payload.posterior.shape[0]:
-            return
-        log_lik_row = (
-            payload.likelihood[local_idx] if payload.likelihood is not None else None
-        )
-        bin_payload = self._model.update_for_index(
-            t_idx,
-            payload.posterior[local_idx],
-            log_lik_row=log_lik_row,
-        )
-        self._render_cells(bin_payload.cells)
+        # Cells are derived from the event index + slice model's
+        # place-field cache — no posterior buffer needed. The buffered
+        # window only matters for panels that show the cursor row of
+        # a 2D field; this panel just shows which cells fired and
+        # their place fields, both available at any t_idx.
+        cells = self._model.cells_at_index(t_idx)
+        self._render_cells(tuple(cells))
 
     def rebind_after_swap(self, grid: PositionGrid | None = None) -> None:
         self._buffered_payload = None
@@ -229,6 +231,7 @@ class Qt2DCellGridPanel(QtWidgets.QWidget):
                 f"#{cell.cell_id}  (×{cell.spike_count})",
                 cell.place_field_norm,
                 self._grid.shape,
+                is_interior=self._grid.is_interior,
             )
         for i in range(n_shown, MAX_PER_CELL_PLOTS):
             self._rows[i].hide()

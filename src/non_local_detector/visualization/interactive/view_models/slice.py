@@ -270,9 +270,19 @@ class SliceModel:
         """Return ``(n_bins + 1,)`` left-edge bin boundaries (left-edge convention)."""
         return bin_edges_array(self._time)
 
-    def _cells_at_index(self, t_idx: int) -> list[CellSlice]:
-        """Return active-cell slices for bin ``t_idx`` from event ids."""
+    def cells_at_index(self, t_idx: int) -> list[CellSlice]:
+        """Return active-cell slices for bin ``t_idx`` from event ids.
+
+        Public entry point so panels that only need the per-bin cell
+        list (e.g. the 2D cell-grid) can render without a posterior
+        row — useful as a synchronous fallback when the buffered
+        window doesn't yet cover the cursor's time bin.
+        """
         return self.cell_slices_for_events(self._event_index.event_ids_at_bin(t_idx))
+
+    def _cells_at_index(self, t_idx: int) -> list[CellSlice]:
+        """Backwards-compat private alias for ``cells_at_index``."""
+        return self.cells_at_index(t_idx)
 
     def cell_slices_for_events(self, event_ids: np.ndarray) -> list[CellSlice]:
         """Return one ``CellSlice`` per unique cell in ``event_ids``."""

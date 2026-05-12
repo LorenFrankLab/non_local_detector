@@ -814,10 +814,10 @@ class QtViewer(QtWidgets.QMainWindow):
         self._body_splitter.addWidget(left_column)
         self._body_splitter.addWidget(right_column)
         if self._projected_2d_panel is not None:
-            # ``setMinimumWidth`` (not ``setFixedWidth``) so the user
-            # can still drag the splitter handle to rebalance the
-            # third column. Initial size is set via ``setSizes`` below.
-            self._projected_2d_panel.setMinimumWidth(_PROJECTED_2D_COLUMN_WIDTH)
+            # Fixed width — the third column is sized to the panel's
+            # aspect, not to be rebalanced against the left + right
+            # columns. The splitter handle stays inert here.
+            self._projected_2d_panel.setFixedWidth(_PROJECTED_2D_COLUMN_WIDTH)
             self._body_splitter.addWidget(self._projected_2d_panel)
         self._body_splitter.setStretchFactor(0, _BODY_SPLITTER_LEFT_STRETCH)
         self._body_splitter.setStretchFactor(1, _BODY_SPLITTER_RIGHT_STRETCH)

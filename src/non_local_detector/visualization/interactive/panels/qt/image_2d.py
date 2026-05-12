@@ -182,7 +182,19 @@ class Qt2DImagePanel(pg.PlotWidget):
             window = np.asarray(row)[np.newaxis, :]
             local_idx = 0
         assert window is not None
-        flat = np.asarray(self._model.collapse_at(window, [local_idx])[0])
+        flat = np.asarray(
+            self._model.collapse_at(window, [local_idx])[0], dtype=np.float64
+        )
+        # Mask off-track bins to NaN so they render transparent.
+        # ``PosteriorHeatmapModel.collapse_at`` already preserves the
+        # NaN at non-interior bins from ``_create_masked_posterior``,
+        # but ``LikelihoodHeatmapModel`` maps ``NaN → -inf → 0`` and
+        # emits a finite zero — without this mask those bins would
+        # render as solid LUT-bottom pixels, hiding the actual track
+        # geometry.
+        is_interior = self._grid.is_interior
+        if is_interior is not None and is_interior.size == flat.size:
+            flat = np.where(is_interior, flat, np.nan)
         if self._vmax is None:
             peak = float(np.nanmax(flat)) if flat.size else 0.0
             frame_vmax = peak if peak > 0.0 else 1.0
