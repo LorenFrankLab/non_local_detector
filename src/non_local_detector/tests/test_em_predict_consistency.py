@@ -73,9 +73,7 @@ class TestEstimateParametersPredictConsistency:
         # must match the marginal log-likelihood reported by predict()
         est_final_ll = est_results.attrs["marginal_log_likelihoods"][-1]
         pred_ll = pred_results.attrs["marginal_log_likelihoods"]
-        pred_ll_scalar = (
-            float(pred_ll[-1]) if np.ndim(pred_ll) > 0 else float(pred_ll)
-        )
+        pred_ll_scalar = float(pred_ll[-1]) if np.ndim(pred_ll) > 0 else float(pred_ll)
         assert np.isclose(est_final_ll, pred_ll_scalar, atol=1e-10), (
             f"Final marginal LL from estimate_parameters ({est_final_ll}) does "
             f"not match predict() LL ({pred_ll_scalar})."
