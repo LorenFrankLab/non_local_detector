@@ -68,9 +68,7 @@ with open(is_ripple_pkl, "rb") as f:
 
 t0 = position_df.index[0]
 time_seconds = (position_df.index - t0).total_seconds().to_numpy()
-position_2d = position_df[["nose_x", "nose_y"]].to_numpy(
-    dtype=np.float64
-)
+position_2d = position_df[["nose_x", "nose_y"]].to_numpy(dtype=np.float64)
 is_ripple = is_ripple_df.iloc[:, 0].to_numpy(dtype=bool)
 
 print(f"Session duration: {time_seconds[-1]:.1f} s, n_samples: {time_seconds.size}")
@@ -117,35 +115,39 @@ print(f"Cells with ≥1 spike: {active_cells} / {len(spike_times)}")
 # from awake-locomotion periods rather than from putative replay
 # bins.
 #
-# `place_bin_size=3.5` gives ~30×28 bins over the projected track
-# (~2× finer than the 5 cm default — useful for inspecting
-# multimodal posterior structure). `local_position_std=1.0`
-# gates the local state to a tight neighborhood of the animal;
-# tune up if the local prior is too restrictive for your data.
+# Geometry — `place_bin_size=3.5` on the head-position range
+# (`nose_x` / `nose_y`, ~120 × ~107 cm) gives ~40×36 bins,
+# ~455 of them inside the inferred track interior (~32%).
+# `Environment` infers `position_range` from the position passed
+# to `estimate_parameters`, so no explicit range needs to be set.
+#
+# Detector parameters tuned for this session:
+#
+# - `position_std=sqrt(12.5)` ≈ 3.54 cm — KDE bandwidth for the
+#   per-cell place fields, matched to the bin size so the field
+#   smoothing is roughly one bin wide.
+# - `non_local_position_penalty=0.0` and
+#   `non_local_penalty_std=1.0` — no spatial prior on non-local
+#   state transitions (the detector's non-local random walk is
+#   effectively uniform over the track).
+# - `local_position_std=0.0` — point-mass local state pinned
+#   exactly at the animal's current bin (no Gaussian gating
+#   around it). Tune up if the local prior is too restrictive
+#   for your data.
 
 # %%
 env = Environment(
     place_bin_size=3.5,
-    position_range=(
-        (
-            float(position_df["nose_x"].min()) - 5,
-            float(position_df["nose_x"].max()) + 5,
-        ),
-        (
-            float(position_df["nose_y"].min()) - 5,
-            float(position_df["nose_y"].max()) + 5,
-        ),
-    ),
 )
 detector = NonLocalSortedSpikesDetector(
     sorted_spikes_algorithm="sorted_spikes_kde",
     sorted_spikes_algorithm_params={
-        "position_std": 6.0,
+        "position_std": np.sqrt(12.5),
         "block_size": 4096,
     },
-    non_local_position_penalty=1.0,
-    non_local_penalty_std=5.0,
-    local_position_std=1.0,
+    non_local_position_penalty=0.0,
+    non_local_penalty_std=1.0,
+    local_position_std=0.0,
     environments=[env],
 )
 
