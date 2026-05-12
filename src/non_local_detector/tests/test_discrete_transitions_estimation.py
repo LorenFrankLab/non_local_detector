@@ -1029,8 +1029,11 @@ class TestExpandedTransitionMstepEndToEnd:
             max_iter=5,
         )
 
-        assert len(marginal_log_likelihoods) == 5
-        assert np.all(np.diff(marginal_log_likelihoods) >= -1e-6)
+        # max_iter=5 EM iterations + 1 final E-step after the loop (issue #26)
+        assert len(marginal_log_likelihoods) == 6
+        # Tolerance accommodates float32 noise on the converged tail
+        # (LL magnitude ~700, float32 epsilon ~1e-7 → ~1e-4 noise).
+        assert np.all(np.diff(marginal_log_likelihoods) >= -1e-3)
 
     def test_nonstationary_detector_recovers_covariate_direction(self):
         """Exact responses should learn a simple covariate-dependent transition."""
@@ -1055,7 +1058,8 @@ class TestExpandedTransitionMstepEndToEnd:
         assert learned_low[1, 1] > learned_high[1, 1]
         np.testing.assert_allclose(learned_low[:2], true_low[:2], atol=0.16)
         np.testing.assert_allclose(learned_high[:2], true_high[:2], atol=0.16)
-        assert len(marginal_log_likelihoods) == 1
+        # 1 EM iteration + 1 final E-step after the loop (issue #26)
+        assert len(marginal_log_likelihoods) == 2
 
     def test_nonstationary_recovery_improves_with_emission_strength(self):
         """Nonstationary recovery should improve with more informative emissions."""
