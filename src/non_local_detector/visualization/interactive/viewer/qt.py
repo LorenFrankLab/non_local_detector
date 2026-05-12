@@ -697,6 +697,8 @@ class QtViewer(QtWidgets.QMainWindow):
             if self._projected_2d_model is not None
             else None
         )
+        if self._projected_2d_panel is not None:
+            self._projected_2d_panel.set_row_provider(self._projected_2d_row_at)
         # Tell the backend which optional outputs the visible panels
         # actually consume so it skips per-window loads we'd just throw
         # away (e.g. ``predictive_posterior`` when the slice is in the
@@ -1351,6 +1353,41 @@ class QtViewer(QtWidgets.QMainWindow):
             else None
         )
         return row, animal_xy
+
+    def _projected_2d_row_at(
+        self, t_idx: int
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """Single-bin fallback for ``Qt2DProjectedPanel``.
+
+        Returns ``(posterior_row, animal_xy)``. ``animal_xy`` prefers
+        the raw ``position_2d`` slice; if the bundle only carries 1D
+        ``position``, projects it through the track graph via the
+        projected-2D model.
+        """
+        if (
+            t_idx < 0
+            or t_idx >= self._data_source.n_time
+            or self._projected_2d_model is None
+        ):
+            return None, None
+        row = self._data_source.slice_at_index(t_idx, which="posterior")
+        sl = slice(t_idx, t_idx + 1)
+        pos_2d = self._data_source.load_position_2d(sl)
+        if (
+            pos_2d is not None
+            and pos_2d.ndim == 2
+            and pos_2d.shape == (1, 2)
+        ):
+            xy: np.ndarray | None = np.asarray(pos_2d[0], dtype=float)
+            if xy is not None and not np.all(np.isfinite(xy)):
+                xy = None
+        else:
+            xy = None
+        if xy is None:
+            pos_1d = self._data_source.load_position(sl)
+            if pos_1d is not None and pos_1d.ndim == 1 and pos_1d.size > 0:
+                xy = self._projected_2d_model.animal_xy_from_linear(float(pos_1d[0]))
+        return row, xy
 
     def _step_window(self, direction: int) -> None:
         self._clear_pins()

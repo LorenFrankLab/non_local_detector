@@ -22,15 +22,34 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class Projected2DPayload:
-    """One-bin projected 2D panel payload."""
+class Projected2DGeometry:
+    """Static graph + bin geometry. Computed once per active run."""
 
     available: bool
     message: str = ""
+    # ``(n_pos, 2)`` XY for each 1D bin center, projected through the
+    # track graph. ``None`` when the model is unavailable.
     bin_xy: np.ndarray | None = None
-    posterior: np.ndarray | None = None
-    animal_xy: np.ndarray | None = None
+    # ``(2, 2)`` endpoint pairs for each graph edge.
     graph_segments: tuple[np.ndarray, ...] = ()
+
+
+@dataclass(frozen=True)
+class Projected2DFrame:
+    """Per-cursor-bin projected posterior + animal position.
+
+    The frame is intentionally separate from :class:`Projected2DGeometry`
+    so a render pipeline can apply the static graph + bin layout once
+    (on swap / setup) and only re-render the posterior + animal-XY
+    overlay on each cursor tick.
+    """
+
+    available: bool
+    message: str = ""
+    # Collapsed posterior over the 1D bin centers, shape ``(n_pos,)``.
+    posterior: np.ndarray | None = None
+    # Raw 2D XY of the animal at the cursor's time bin.
+    animal_xy: np.ndarray | None = None
 
 
 class Projected2DModel:
@@ -85,51 +104,103 @@ class Projected2DModel:
     def message(self) -> str:
         return self._message
 
-    def geometry_payload(self) -> Projected2DPayload:
-        """Return current static graph geometry for panel rebinds."""
-        return Projected2DPayload(
+    def geometry(self) -> Projected2DGeometry:
+        """Return the static graph + bin geometry.
+
+        Render-pipeline lifecycle: call this once on construction and
+        once after each ``set_active_run`` to refresh graph lines and
+        bin positions. Cursor ticks should use :meth:`frame_at_row`
+        (or :meth:`update_for_index` for the buffered convenience)
+        instead.
+        """
+        return Projected2DGeometry(
             available=self._available,
             message=self._message,
             bin_xy=self._bin_xy,
             graph_segments=self._graph_segments,
         )
 
-    def update_for_index(
-        self, payload: WindowPayload, t_idx: int
-    ) -> Projected2DPayload:
-        """Return projected posterior + animal position for one cursor bin."""
-        if not self._available or self._bin_xy is None:
-            return Projected2DPayload(available=False, message=self._message)
-        if payload.posterior is None:
-            return Projected2DPayload(
+    def frame_at_row(
+        self,
+        posterior_row: np.ndarray | None,
+        animal_xy: np.ndarray | None,
+    ) -> Projected2DFrame:
+        """Build a frame from a precomputed posterior row + animal XY.
+
+        Lets callers drive the render without owning a
+        :class:`WindowPayload` — useful for the synchronous fallback
+        path when the cursor is past the buffered window.
+
+        Parameters
+        ----------
+        posterior_row : np.ndarray, shape (n_state_bins,) or None
+            Single row of ``acausal_posterior``. ``None`` returns an
+            "unavailable" frame.
+        animal_xy : np.ndarray, shape (2,) or None
+            Pre-resolved animal XY at this bin. Callers without a
+            raw 2D source can use :meth:`animal_xy_from_linear` to
+            project a 1D linearized position back through the graph.
+        """
+        if not self._available or self._reduction is None:
+            return Projected2DFrame(available=False, message=self._message)
+        if posterior_row is None:
+            return Projected2DFrame(
                 available=False,
                 message="Projected 2D requires posterior output",
-                bin_xy=self._bin_xy,
-                graph_segments=self._graph_segments,
+            )
+        collapsed = collapse_posterior_to_position(
+            np.asarray(posterior_row), self._detector, self._reduction
+        )
+        return Projected2DFrame(
+            available=True,
+            posterior=collapsed,
+            animal_xy=animal_xy if animal_xy is not None else None,
+        )
+
+    def animal_xy_from_linear(self, linear_pos: float | None) -> np.ndarray | None:
+        """Project a 1D linearized position back onto the track graph."""
+        if linear_pos is None or not np.isfinite(float(linear_pos)):
+            return None
+        try:
+            xy = project_1d_to_2d(
+                np.asarray([float(linear_pos)], dtype=float),
+                self._detector.environments[0].track_graph,
+                self._detector.environments[0].edge_order,
+                self._detector.environments[0].edge_spacing,
+            )[0]
+        except Exception:
+            return None
+        return xy if np.all(np.isfinite(xy)) else None
+
+    def update_for_index(
+        self, payload: WindowPayload, t_idx: int
+    ) -> Projected2DFrame:
+        """Buffered-window convenience: build a frame from a payload + cursor.
+
+        Use this when the cursor is inside the buffered window;
+        out-of-buffer callers should drive :meth:`frame_at_row` directly
+        from a synchronous data-source fetch.
+        """
+        if not self._available or self._bin_xy is None:
+            return Projected2DFrame(available=False, message=self._message)
+        if payload.posterior is None:
+            return Projected2DFrame(
+                available=False,
+                message="Projected 2D requires posterior output",
             )
         local_idx = int(t_idx - payload.indices.start)
         if local_idx < 0 or local_idx >= payload.posterior.shape[0]:
-            return Projected2DPayload(
+            return Projected2DFrame(
                 available=False,
                 message="Cursor is outside the buffered window",
-                bin_xy=self._bin_xy,
-                graph_segments=self._graph_segments,
             )
-        assert self._reduction is not None  # available ⇒ reduction set in _bind
-        posterior_row = collapse_posterior_to_position(
-            payload.posterior[local_idx], self._detector, self._reduction
-        )
-        animal_xy = self._animal_xy(payload, local_idx)
-        return Projected2DPayload(
-            available=True,
-            bin_xy=self._bin_xy,
-            posterior=posterior_row,
-            animal_xy=animal_xy,
-            graph_segments=self._graph_segments,
-        )
+        animal_xy = self._animal_xy_from_payload(payload, local_idx)
+        return self.frame_at_row(payload.posterior[local_idx], animal_xy)
 
-    def _animal_xy(self, payload: WindowPayload, local_idx: int) -> np.ndarray | None:
-        """Return the animal's XY for ``local_idx``.
+    def _animal_xy_from_payload(
+        self, payload: WindowPayload, local_idx: int
+    ) -> np.ndarray | None:
+        """Resolve animal XY from a payload at ``local_idx``.
 
         Prefers ``payload.position_2d`` (raw track-space coordinates).
         Falls back to ``project_1d_to_2d(payload.position[idx], ...)`` —
@@ -144,17 +215,7 @@ class Projected2DModel:
             return xy if np.all(np.isfinite(xy)) else None
         if payload.position is None or local_idx >= payload.position.shape[0]:
             return None
-        linear_pos = np.asarray([payload.position[local_idx]], dtype=float)
-        try:
-            xy = project_1d_to_2d(
-                linear_pos,
-                self._detector.environments[0].track_graph,
-                self._detector.environments[0].edge_order,
-                self._detector.environments[0].edge_spacing,
-            )[0]
-        except Exception:
-            return None
-        return xy if np.all(np.isfinite(xy)) else None
+        return self.animal_xy_from_linear(float(payload.position[local_idx]))
 
 
 def _project_bin_centers_to_2d(env, centers_1d: np.ndarray) -> np.ndarray:

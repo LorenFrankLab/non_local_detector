@@ -50,6 +50,51 @@ def _graph_detector(n_pos: int = 5):
     )
 
 
+def test_projected_2d_panel_row_provider_fires_when_cursor_outside_buffer(
+    qapp,
+) -> None:
+    """Out-of-buffer cursor ticks fall back to the registered provider.
+
+    Before the synchronous-fallback path, the panel froze on the last
+    in-buffer frame during fast playback — same lag pattern the 2D
+    image panels had. Regression for the contract-drift review.
+    """
+    from non_local_detector.visualization.interactive.panels.qt.projected_2d import (
+        QtProjected2DPanel,
+    )
+
+    detector = _graph_detector()
+    model = Projected2DModel(detector)
+    panel = QtProjected2DPanel(model)
+
+    # Buffered window covers indices [0, 1) only. Cursor at t_idx=10
+    # is well outside, so without the provider the panel renders nothing.
+    buffer_payload = WindowPayload(
+        request_id=0,
+        time=np.array([0.0]),
+        indices=slice(0, 1),
+        posterior=np.array([[0.0, 0.0, 1.0, 0.0, 0.0]], dtype=np.float64),
+        position=np.array([5.0]),
+        position_2d=np.array([[5.0, 0.0]]),
+    )
+    panel.set_window_buffer(buffer_payload)
+
+    calls = []
+
+    def provider(t_idx: int):
+        calls.append(t_idx)
+        # Match the (n_state_bins,) shape the model's collapse expects.
+        return np.array([0.0, 0.2, 0.6, 0.2, 0.0], dtype=np.float64), np.array(
+            [3.0, 0.0]
+        )
+
+    panel.set_row_provider(provider)
+    panel.update_for_index(10)
+    assert calls == [10], "row provider should fire when cursor is outside buffer"
+    assert len(panel._posterior_scatter.points()) == 5
+    assert len(panel._animal_marker.points()) == 1
+
+
 def test_projected_2d_panel_smoke_renders_one_bin(qapp) -> None:
     from non_local_detector.visualization.interactive.panels.qt.projected_2d import (
         QtProjected2DPanel,
