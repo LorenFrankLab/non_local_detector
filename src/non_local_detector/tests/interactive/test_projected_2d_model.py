@@ -120,6 +120,37 @@ def test_projected_2d_model_frame_at_row_drives_render_without_payload() -> None
 
 
 @pytest.mark.unit
+def test_projected_2d_model_falls_through_non_finite_2d_to_linear_projection() -> None:
+    """Non-finite ``position_2d`` row falls through to ``position`` projection.
+
+    Without the fall-through, the buffered path would drop the animal
+    marker on a single non-finite raw sample while the synchronous
+    row-provider fallback (which already falls through) would render
+    it — same cursor bin, two different visuals depending on whether
+    the async buffer had landed yet. Regression for the contract-drift
+    review finding.
+    """
+    detector = _graph_detector()
+    model = Projected2DModel(detector)
+    payload = WindowPayload(
+        request_id=0,
+        time=np.array([0.0]),
+        indices=slice(0, 1),
+        posterior=np.array([[0.0, 0.1, 0.8, 0.1, 0.0]], dtype=np.float64),
+        position=np.array([5.0]),
+        # Raw 2D row is NaN — must fall through to 1D projection.
+        position_2d=np.array([[np.nan, np.nan]]),
+    )
+
+    frame = model.update_for_index(payload, 0)
+    assert frame.animal_xy is not None, (
+        "non-finite position_2d row should fall through to project_1d_to_2d, "
+        "matching the viewer's synchronous row-provider precedence"
+    )
+    np.testing.assert_allclose(frame.animal_xy, [5.0, 0.0], atol=1e-6)
+
+
+@pytest.mark.unit
 def test_projected_2d_model_unavailable_for_2d_decoder() -> None:
     """A 2D decoder (no graph linearization) reports unavailable."""
 

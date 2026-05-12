@@ -203,16 +203,20 @@ class Projected2DModel:
         """Resolve animal XY from a payload at ``local_idx``.
 
         Prefers ``payload.position_2d`` (raw track-space coordinates).
-        Falls back to ``project_1d_to_2d(payload.position[idx], ...)`` —
-        which lays the marker exactly on the linearized graph rather
-        than at the raw position. That fallback is intentional: without
-        a 2D source, the only XY we can produce is the same projection
-        the bin centers used. Callers wanting a true raw-position
-        marker must populate ``RunBundle.position_2d``.
+        Falls through to ``project_1d_to_2d(payload.position[idx], ...)``
+        when the raw 2D row is missing OR non-finite — that fallback
+        lays the marker exactly on the linearized graph rather than
+        at the raw position, but it's better than dropping the marker
+        for a single non-finite sample. Mirrors the precedence the
+        viewer's synchronous fallback uses, so the buffered path and
+        the row-provider path render the same marker at the same bin.
         """
         if payload.position_2d is not None and local_idx < payload.position_2d.shape[0]:
             xy = np.asarray(payload.position_2d[local_idx], dtype=float)
-            return xy if np.all(np.isfinite(xy)) else None
+            if np.all(np.isfinite(xy)):
+                return xy
+            # Fall through to the 1D projection below — same precedence
+            # as ``viewer/qt.py:_projected_2d_row_at``.
         if payload.position is None or local_idx >= payload.position.shape[0]:
             return None
         return self.animal_xy_from_linear(float(payload.position[local_idx]))
