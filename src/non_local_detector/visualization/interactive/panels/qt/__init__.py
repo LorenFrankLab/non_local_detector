@@ -14,6 +14,9 @@ from non_local_detector.visualization.interactive.panels.qt.likelihood import (
 from non_local_detector.visualization.interactive.panels.qt.posterior import (
     QtPosteriorHeatmapPanel,
 )
+from non_local_detector.visualization.interactive.panels.qt.projected_1d import (
+    QtProjected1DHeatmapPanel,
+)
 from non_local_detector.visualization.interactive.panels.qt.projected_2d import (
     QtProjected2DPanel,
 )
@@ -38,6 +41,7 @@ __all__ = [
     "MultiLineSeriesPanel",
     "QtLikelihoodHeatmapPanel",
     "QtPosteriorHeatmapPanel",
+    "QtProjected1DHeatmapPanel",
     "QtProjected2DPanel",
     "QtRasterPanel",
     "QtStateProbabilityPanel",

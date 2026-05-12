@@ -47,6 +47,12 @@ _PER_CELL_HEADER_STYLE = (
     "padding: 2px 6px; border: 1px solid #d8d8d8; border-radius: 3px; "
     "font-family: 'Menlo', 'Consolas', monospace; font-size: 10pt; }"
 )
+_PER_CELL_HEADER_PINNED_STYLE = (
+    "QLabel { background-color: #fff2a8; color: #4d3700; "
+    "padding: 2px 6px; border: 2px solid #d4b85a; border-radius: 3px; "
+    "font-family: 'Menlo', 'Consolas', monospace; font-size: 10pt; "
+    "font-weight: bold; }"
+)
 _TRUNCATION_LABEL_STYLE = (
     "QLabel { color: #707070; padding: 4px 6px; font-style: italic; }"
 )
@@ -121,8 +127,13 @@ class _PerCellImageRow:
         place_field_flat: np.ndarray,
         shape: tuple[int, int],
         is_interior: np.ndarray | None = None,
+        *,
+        pinned: bool = False,
     ) -> None:
         self.label.setText(label)
+        self.label.setStyleSheet(
+            _PER_CELL_HEADER_PINNED_STYLE if pinned else _PER_CELL_HEADER_STYLE
+        )
         flat = np.asarray(place_field_flat, dtype=np.float64)
         # Mask off-track bins to NaN so they render transparent.
         # ``SliceModel._clean_place_fields`` maps NaN → 0, so without
@@ -169,12 +180,14 @@ class Qt2DCellGridPanel(QtWidgets.QWidget):
         self._grid = grid
         self._buffered_payload: WindowPayload | None = None
         self._last_t_idx: int | None = None
+        self._per_cell_visible = True
+        self._pinned_cell_ids: set[int] = set()
         self._lut = pg.colormap.get("viridis").getLookupTable(0.0, 1.0, 256)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
-        self._title_label = QtWidgets.QLabel("Active cells at cursor")
+        self._title_label = QtWidgets.QLabel("Active cells at current time")
         self._title_label.setStyleSheet(_TITLE_STYLE)
         layout.addWidget(self._title_label)
 
@@ -208,9 +221,48 @@ class Qt2DCellGridPanel(QtWidgets.QWidget):
         cells = self._model.cells_at_index(t_idx)
         self._render_cells(tuple(cells))
 
+    @property
+    def pinned_cell_ids(self) -> frozenset[int]:
+        """Snapshot of currently pinned cell IDs (read-only view)."""
+        return frozenset(self._pinned_cell_ids)
+
+    def pin_cell(self, cell_id: int) -> None:
+        """Pin ``cell_id`` so it stays visible across bin scrubbing."""
+        self._model.cell_slice(cell_id)  # validates bounds
+        self._pinned_cell_ids.add(int(cell_id))
+        self._maybe_rerender()
+
+    def unpin_cell(self, cell_id: int) -> None:
+        """Remove ``cell_id`` from the pin set (no-op if not pinned)."""
+        self._pinned_cell_ids.discard(int(cell_id))
+        self._maybe_rerender()
+
+    def toggle_pin(self, cell_id: int) -> None:
+        """Flip pin state for ``cell_id``."""
+        self._model.cell_slice(cell_id)  # validate before flipping
+        cell_id = int(cell_id)
+        if cell_id in self._pinned_cell_ids:
+            self._pinned_cell_ids.discard(cell_id)
+        else:
+            self._pinned_cell_ids.add(cell_id)
+        self._maybe_rerender()
+
+    def clear_pins(self) -> None:
+        """Drop all pins."""
+        if not self._pinned_cell_ids:
+            return
+        self._pinned_cell_ids.clear()
+        self._maybe_rerender()
+
+    def set_per_cell_visible(self, visible: bool) -> None:
+        """Show/hide per-cell rows without disabling cursor images."""
+        self._per_cell_visible = bool(visible)
+        self._maybe_rerender()
+
     def rebind_after_swap(self, grid: PositionGrid | None = None) -> None:
         self._buffered_payload = None
         self._last_t_idx = None
+        self._pinned_cell_ids.clear()
         if grid is not None:
             if grid.ndim != 2 or grid.shape is None:
                 raise ValueError(
@@ -223,15 +275,21 @@ class Qt2DCellGridPanel(QtWidgets.QWidget):
         self._clear_rows()
 
     def _render_cells(self, cells: tuple) -> None:
-        n_total = len(cells)
+        merged = self._merge_pinned_and_active(cells)
+        if not self._per_cell_visible:
+            self._clear_rows()
+            return
+        n_total = len(merged)
         n_shown = min(n_total, MAX_PER_CELL_PLOTS)
         for i in range(n_shown):
-            cell = cells[i]
+            cell = merged[i]
+            pinned = cell.cell_id in self._pinned_cell_ids
             self._rows[i].show_cell(
-                f"#{cell.cell_id}  (×{cell.spike_count})",
+                f"#{cell.cell_id}{' ★' if pinned else ''}  (×{cell.spike_count})",
                 cell.place_field_norm,
                 self._grid.shape,
                 is_interior=self._grid.is_interior,
+                pinned=pinned,
             )
         for i in range(n_shown, MAX_PER_CELL_PLOTS):
             self._rows[i].hide()
@@ -245,3 +303,22 @@ class Qt2DCellGridPanel(QtWidgets.QWidget):
         for row in self._rows:
             row.hide()
         self._truncation_label.setVisible(False)
+
+    def _maybe_rerender(self) -> None:
+        if self._last_t_idx is None:
+            return
+        self.update_for_index(self._last_t_idx)
+
+    def _merge_pinned_and_active(self, active_cells: tuple) -> list:
+        active_by_id = {cell.cell_id: cell for cell in active_cells}
+        pinned_ids = sorted(self._pinned_cell_ids)
+        merged = []
+        for cell_id in pinned_ids:
+            if cell_id in active_by_id:
+                merged.append(active_by_id[cell_id])
+            else:
+                merged.append(self._model.cell_slice(cell_id))
+        for cell in active_cells:
+            if cell.cell_id not in self._pinned_cell_ids:
+                merged.append(cell)
+        return merged

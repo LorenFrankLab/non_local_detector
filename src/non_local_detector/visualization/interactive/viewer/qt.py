@@ -25,17 +25,11 @@ from non_local_detector.visualization.interactive.panels.qt.cell_grid_2d import 
 from non_local_detector.visualization.interactive.panels.qt.image_2d import (
     Qt2DImagePanel,
 )
-from non_local_detector.visualization.interactive.viewer.cursor_row_service import (
-    CursorRowService,
-    StateBinsField,
+from non_local_detector.visualization.interactive.panels.qt.image_2d import (
+    _filtered_row as _filtered_state_bins_row,
 )
-from non_local_detector.visualization.interactive.viewer.panel_builders import (
-    build_1d_panels,
-    build_2d_panels,
-    build_projected_2d_panel,
-)
-from non_local_detector.visualization.interactive.viewer.required_outputs import (
-    RequiredOutput,
+from non_local_detector.visualization.interactive.panels.qt.image_2d import (
+    _linear_likelihood_row as _linear_state_bins_likelihood_row,
 )
 from non_local_detector.visualization.interactive.panels.qt.likelihood import (
     QtLikelihoodHeatmapPanel,
@@ -43,8 +37,8 @@ from non_local_detector.visualization.interactive.panels.qt.likelihood import (
 from non_local_detector.visualization.interactive.panels.qt.posterior import (
     QtPosteriorHeatmapPanel,
 )
-from non_local_detector.visualization.interactive.panels.qt.projected_2d import (
-    QtProjected2DPanel,
+from non_local_detector.visualization.interactive.panels.qt.projected_1d import (
+    QtProjected1DHeatmapPanel,
 )
 from non_local_detector.visualization.interactive.panels.qt.raster import (
     QtRasterPanel,
@@ -74,8 +68,8 @@ from non_local_detector.visualization.interactive.view_models.likelihood import 
 from non_local_detector.visualization.interactive.view_models.posterior import (
     PosteriorHeatmapModel,
 )
-from non_local_detector.visualization.interactive.view_models.projected_2d import (
-    Projected2DModel,
+from non_local_detector.visualization.interactive.view_models.projected_1d import (
+    Projected1DModel,
 )
 from non_local_detector.visualization.interactive.view_models.raster import (
     RasterModel,
@@ -99,6 +93,18 @@ from non_local_detector.visualization.interactive.viewer.core import (
     MAX_T_WIDTH_SECONDS,
     MIN_T_WIDTH_SECONDS,
     ViewerCore,
+)
+from non_local_detector.visualization.interactive.viewer.cursor_row_service import (
+    CursorRowService,
+    StateBinsField,
+)
+from non_local_detector.visualization.interactive.viewer.panel_builders import (
+    build_1d_panels,
+    build_2d_panels,
+    build_projected_2d_panel,
+)
+from non_local_detector.visualization.interactive.viewer.required_outputs import (
+    RequiredOutput,
 )
 
 _LOAD_LOGGER = logging.getLogger(__name__)
@@ -559,6 +565,7 @@ class QtViewer(QtWidgets.QMainWindow):
         extra_panels: list | None = None,
         extra_bin_panels: list | None = None,
         show_projected_2d: bool = False,
+        show_projected_1d: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -633,6 +640,8 @@ class QtViewer(QtWidgets.QMainWindow):
         self._posterior_at_cursor_panel: Qt2DImagePanel | None
         self._likelihood_at_cursor_panel: Qt2DImagePanel | None
         self._cell_grid_2d_panel: Qt2DCellGridPanel | None
+        self._projected_1d_model: Projected1DModel | None
+        self._projected_1d_panel: QtProjected1DHeatmapPanel | None
         if grid.ndim == 1:
             panels_1d = build_1d_panels(
                 posterior_model=self._posterior_model,
@@ -647,13 +656,19 @@ class QtViewer(QtWidgets.QMainWindow):
             self._posterior_at_cursor_panel = None
             self._likelihood_at_cursor_panel = None
             self._cell_grid_2d_panel = None
+            self._projected_1d_model = None
+            self._projected_1d_panel = None
         else:
+            self._projected_1d_model = (
+                Projected1DModel(active_run) if show_projected_1d else None
+            )
             panels_2d = build_2d_panels(
                 posterior_model=self._posterior_model,
                 likelihood_model=self._likelihood_model,
                 slice_model=self._slice_model,
                 grid=grid,
                 image_row_provider=self._image_row_at,
+                projected_1d_model=self._projected_1d_model,
             )
             self._panel = None
             self._likelihood_panel = None
@@ -661,6 +676,7 @@ class QtViewer(QtWidgets.QMainWindow):
             self._posterior_at_cursor_panel = panels_2d.posterior_at_cursor
             self._likelihood_at_cursor_panel = panels_2d.likelihood_at_cursor
             self._cell_grid_2d_panel = panels_2d.cell_grid
+            self._projected_1d_panel = panels_2d.projected_1d
 
         # Built-in time-axis panels (left column), top to bottom.
         # Heatmaps dominate when present; raster + state-prob are
@@ -673,6 +689,11 @@ class QtViewer(QtWidgets.QMainWindow):
         if self._likelihood_panel is not None:
             self._builtin_panels.append(self._likelihood_panel)
             self._builtin_panel_stretch[id(self._likelihood_panel)] = (
+                _LEFT_COLUMN_HEATMAP_STRETCH
+            )
+        if self._projected_1d_panel is not None:
+            self._builtin_panels.append(self._projected_1d_panel)
+            self._builtin_panel_stretch[id(self._projected_1d_panel)] = (
                 _LEFT_COLUMN_HEATMAP_STRETCH
             )
         self._builtin_panels.append(self._raster_panel)
@@ -948,37 +969,35 @@ class QtViewer(QtWidgets.QMainWindow):
         row2.setContentsMargins(0, 0, 0, 0)
         outer.addLayout(row2)
 
-        # ---- Playback cluster: what the slice shows + autoscroll ----
-        # Slice-specific widgets only exist for 1D detectors. The 2D
-        # at-cursor panel has no overlay modes and no per-cell rows
-        # (yet — Phase 3 adds the 2D per-cell place-field rows).
+        # ---- Playback cluster: what the slice/cursor view shows + autoscroll ----
+        # 1D detectors drive the right-column ``QtSlicePanel``. 2D
+        # detectors use the posterior-at-cursor image for overlay
+        # mode and the active-cell grid for per-cell visibility.
         self._per_cell_checkbox: QtWidgets.QCheckBox | None = None
         self._slice_overlay_combo: QtWidgets.QComboBox | None = None
-        if self._slice_panel is not None:
+        per_cell_target = self._slice_panel or self._cell_grid_2d_panel
+        overlay_target = self._overlay_target_panel()
+        if per_cell_target is not None:
             self._per_cell_checkbox = QtWidgets.QCheckBox("Per-cell rows")
             self._per_cell_checkbox.setChecked(True)
             self._per_cell_checkbox.setToolTip(
-                "Show per-cell likelihood rows under the slice plot."
+                "Show per-cell likelihood rows in the detail view."
             )
-            self._per_cell_checkbox.toggled.connect(
-                self._slice_panel.set_per_cell_visible
-            )
+            self._per_cell_checkbox.toggled.connect(per_cell_target.set_per_cell_visible)
             row2.addWidget(self._per_cell_checkbox)
             row2.addSpacing(6)
 
-            row2.addWidget(QtWidgets.QLabel("Slice overlay:"))
+        if overlay_target is not None:
+            row2.addWidget(QtWidgets.QLabel("Detail overlay:"))
             self._slice_overlay_combo = QtWidgets.QComboBox()
             self._slice_overlay_combo.setToolTip(
-                "Which posterior to render as the blue overlay curve in the slice panel."
+                "Which posterior-like distribution to show in the detail view."
             )
             for mode_key, mode_label in _SLICE_OVERLAY_CHOICES:
                 self._slice_overlay_combo.addItem(mode_label, userData=mode_key)
             self._apply_overlay_availability(self._data_source.active_run)
             for i in range(self._slice_overlay_combo.count()):
-                if (
-                    self._slice_overlay_combo.itemData(i)
-                    == self._slice_panel.overlay_mode
-                ):
+                if self._slice_overlay_combo.itemData(i) == overlay_target.overlay_mode:
                     self._slice_overlay_combo.setCurrentIndex(i)
                     break
             self._slice_overlay_combo.currentIndexChanged.connect(
@@ -1074,13 +1093,18 @@ class QtViewer(QtWidgets.QMainWindow):
         name = self._overlay_combo.itemData(index)
         self._core.set_active_overlay(name)
 
+    def _overlay_target_panel(self):
+        """Panel controlled by the shared overlay-mode combo."""
+        return self._slice_panel or self._posterior_at_cursor_panel
+
     def _on_slice_overlay_changed(self, index: int) -> None:
-        if self._slice_overlay_combo is None or self._slice_panel is None:
+        target = self._overlay_target_panel()
+        if self._slice_overlay_combo is None or target is None:
             return
         mode = self._slice_overlay_combo.itemData(index)
         if mode is None:
             return
-        self._slice_panel.set_overlay_mode(mode)
+        target.set_overlay_mode(mode)
         self._sync_required_outputs_with_panels()
         # Switching from ``"smoothed"`` to ``"predictive"`` /
         # ``"filtered"`` widens ``_required_outputs`` to include
@@ -1097,7 +1121,7 @@ class QtViewer(QtWidgets.QMainWindow):
         """Tell the backend which optional outputs panels actually use.
 
         ``predictive_posterior`` is the one big array we can drop on a
-        per-window basis: only the slice panel reads it, and only in
+        per-window basis: only the slice/cursor overlay reads it, and only in
         ``"predictive"`` / ``"filtered"`` overlay modes. ``"smoothed"``
         renders the posterior row instead, so loading
         ``predictive_posterior`` is wasted work — large windows
@@ -1116,7 +1140,8 @@ class QtViewer(QtWidgets.QMainWindow):
         }
         if self._projected_2d_panel is not None:
             outputs.add(RequiredOutput.POSITION_2D)
-        if self._slice_panel is not None and self._slice_panel.overlay_mode in {
+        overlay_target = self._overlay_target_panel()
+        if overlay_target is not None and overlay_target.overlay_mode in {
             "predictive",
             "filtered",
         }:
@@ -1131,7 +1156,7 @@ class QtViewer(QtWidgets.QMainWindow):
         via ``Qt.ToolTipRole`` (combo's own ``setToolTip`` only applies
         to the widget itself, not popup-list items)."""
         if self._slice_overlay_combo is None:
-            return  # 2D detectors have no slice overlay combo
+            return
         available = _available_overlay_modes(run)
         model = self._slice_overlay_combo.model()
         for i in range(self._slice_overlay_combo.count()):
@@ -1320,7 +1345,7 @@ class QtViewer(QtWidgets.QMainWindow):
         )
 
     def _image_row_at(
-        self, t_idx: int, which: StateBinsField
+        self, t_idx: int, which: StateBinsField | str
     ) -> tuple[np.ndarray | None, np.ndarray | None]:
         """Single-bin fallback for the 2D image panels.
 
@@ -1328,10 +1353,16 @@ class QtViewer(QtWidgets.QMainWindow):
         playback when the cursor moves past the buffered window
         before the async load lands.
         """
-        return (
-            self._rows.state_bins_row(t_idx, which),
-            self._rows.position_2d(t_idx),
-        )
+        if which == "filtered":
+            row = _filtered_state_bins_row(
+                self._rows.state_bins_row(t_idx, "predictive"),
+                _linear_state_bins_likelihood_row(
+                    self._rows.state_bins_row(t_idx, "likelihood")
+                ),
+            )
+        else:
+            row = self._rows.state_bins_row(t_idx, which)  # type: ignore[arg-type]
+        return (row, self._rows.position_2d(t_idx))
 
     def _projected_2d_row_at(
         self, t_idx: int
@@ -1558,6 +1589,10 @@ class QtViewer(QtWidgets.QMainWindow):
             self._likelihood_at_cursor_panel.rebind_after_swap(grid)
         if self._cell_grid_2d_panel is not None:
             self._cell_grid_2d_panel.rebind_after_swap(grid)
+        if self._projected_1d_model is not None:
+            self._projected_1d_model.set_active_run(new_run)
+        if self._projected_1d_panel is not None:
+            self._projected_1d_panel.rebind_after_swap()
         if self._projected_2d_model is not None:
             self._projected_2d_model.set_active_run(new_detector)
         if self._projected_2d_panel is not None:
@@ -1577,14 +1612,15 @@ class QtViewer(QtWidgets.QMainWindow):
         self._pinned_event_id = None
         self._refresh_pin_markers()
 
-        # Re-evaluate slice overlay availability for the new run; fall
-        # back to "smoothed" (always present) if the active mode just
-        # became unavailable. 2D detectors skip this — no slice combo.
+        # Re-evaluate overlay availability for the new run; fall back
+        # to "smoothed" (always present) if the active mode just became
+        # unavailable.
         self._apply_overlay_availability(new_run)
+        overlay_target = self._overlay_target_panel()
         if (
-            self._slice_panel is not None
+            overlay_target is not None
             and self._slice_overlay_combo is not None
-            and self._slice_panel.overlay_mode not in _available_overlay_modes(new_run)
+            and overlay_target.overlay_mode not in _available_overlay_modes(new_run)
         ):
             target_index = next(
                 i
@@ -1648,9 +1684,10 @@ class QtViewer(QtWidgets.QMainWindow):
             self._clear_pins()
             return
         event = self._data_source.spike_event_at(event_id)
-        if self._slice_panel is not None:
-            self._slice_panel.clear_pins()
-            self._slice_panel.pin_cell(event.cell_id)
+        pin_target = self._slice_panel or self._cell_grid_2d_panel
+        if pin_target is not None:
+            pin_target.clear_pins()
+            pin_target.pin_cell(event.cell_id)
         self._pinned_event_id = event_id
         self._pinned_time = event.time
         # Recenter FIRST: ``_refresh_pin_markers`` shifts the pin x by
@@ -1687,6 +1724,8 @@ class QtViewer(QtWidgets.QMainWindow):
     def _clear_pins(self) -> None:
         if self._slice_panel is not None:
             self._slice_panel.clear_pins()
+        if self._cell_grid_2d_panel is not None:
+            self._cell_grid_2d_panel.clear_pins()
         self._pinned_time = None
         self._pinned_event_id = None
         self._refresh_pin_markers()
@@ -1891,6 +1930,7 @@ def launch_qt_with_source(
     extra_panels: list | None = None,
     extra_bin_panels: list | None = None,
     show_projected_2d: bool = False,
+    show_projected_1d: bool = False,
 ) -> int:
     """Open a ``QtViewer`` against a pre-built data source.
 
@@ -1911,6 +1951,7 @@ def launch_qt_with_source(
         extra_panels=extra_panels,
         extra_bin_panels=extra_bin_panels,
         show_projected_2d=show_projected_2d,
+        show_projected_1d=show_projected_1d,
     )
     _LIVE_VIEWERS.append(viewer)
     viewer.show()
@@ -1927,6 +1968,9 @@ _PER_COMPONENT_KWARGS = (
     "position_time",
     "position_2d",
     "position_2d_time",
+    "projection_track_graph",
+    "projection_edge_order",
+    "projection_edge_spacing",
     "speed",
 )
 
@@ -1938,6 +1982,7 @@ def launch_qt(
     extra_panels: list | None = None,
     extra_bin_panels: list | None = None,
     show_projected_2d: bool = False,
+    show_projected_1d: bool = False,
     *,
     detector=None,
     results=None,
@@ -1946,6 +1991,9 @@ def launch_qt(
     position_time=None,
     position_2d=None,
     position_2d_time=None,
+    projection_track_graph=None,
+    projection_edge_order=None,
+    projection_edge_spacing=0.0,
     speed=None,
     name: str = "default",
 ) -> int:
@@ -1999,6 +2047,9 @@ def launch_qt(
     position_2d, position_2d_time : optional
         Optional raw 2D animal position and its time index for the
         projected-2D panel.
+    projection_track_graph, projection_edge_order, projection_edge_spacing : optional
+        Optional graph-linearization geometry for the projected-1D
+        diagnostic when ``show_projected_1d=True``.
     name : str, optional
         Name for the constructed run when using the per-component
         form (default ``"default"``).
@@ -2035,6 +2086,11 @@ def launch_qt(
         "position_time": position_time,
         "position_2d": position_2d,
         "position_2d_time": position_2d_time,
+        "projection_track_graph": projection_track_graph,
+        "projection_edge_order": projection_edge_order,
+        "projection_edge_spacing": projection_edge_spacing
+        if projection_edge_spacing != 0.0
+        else None,
         "speed": speed,
     }
     provided_per_component = {k: v for k, v in per_component.items() if v is not None}
@@ -2064,6 +2120,9 @@ def launch_qt(
             position=position,
             position_2d=position_2d,
             position_2d_time=position_2d_time,
+            projection_track_graph=projection_track_graph,
+            projection_edge_order=projection_edge_order,
+            projection_edge_spacing=projection_edge_spacing,
             speed=speed,
         )
         bundles = {name: bundles}
@@ -2079,4 +2138,5 @@ def launch_qt(
         extra_panels=extra_panels,
         extra_bin_panels=extra_bin_panels,
         show_projected_2d=show_projected_2d,
+        show_projected_1d=show_projected_1d,
     )

@@ -41,6 +41,7 @@ _TOP_IMAGE_MIN_HEIGHT = 200
 # animal position at that time bin or ``None``. Either may be
 # ``None`` to mean "no fallback data available".
 RowProvider = Callable[[int], tuple[np.ndarray | None, np.ndarray | None]]
+OverlayMode = str
 
 
 class _BinCollapse(Protocol):
@@ -86,7 +87,7 @@ class Qt2DImagePanel(pg.PlotWidget):
         grid: PositionGrid,
         *,
         payload_field: str = "posterior",
-        title: str = "Posterior at cursor",
+        title: str = "Smoothed posterior at current time",
         vmax: float | None = None,
         parent=None,
     ) -> None:
@@ -114,6 +115,7 @@ class Qt2DImagePanel(pg.PlotWidget):
         self._row_provider: RowProvider | None = None
         self._buffered_payload: WindowPayload | None = None
         self._last_t_idx: int | None = None
+        self._overlay_mode: OverlayMode = "smoothed"
 
         self.setTitle(title)
         self.setLabel("left", "y")
@@ -154,22 +156,38 @@ class Qt2DImagePanel(pg.PlotWidget):
         """
         self._row_provider = provider
 
+    @property
+    def overlay_mode(self) -> OverlayMode:
+        return self._overlay_mode
+
+    def set_overlay_mode(self, mode: OverlayMode) -> None:
+        """Select the posterior-like source for 2D cursor images."""
+        if mode not in {"predictive", "filtered", "smoothed"}:
+            raise ValueError(
+                "overlay mode must be one of "
+                "['filtered', 'predictive', 'smoothed']; "
+                f"got {mode!r}"
+            )
+        if mode == self._overlay_mode:
+            return
+        self._overlay_mode = mode
+        self._refresh_title()
+        if self._last_t_idx is not None:
+            self.update_for_index(self._last_t_idx)
+
     def update_for_index(self, t_idx: int) -> None:
         self._last_t_idx = int(t_idx)
         payload = self._buffered_payload
-        window: np.ndarray | None = None
-        local_idx = 0
+        row: np.ndarray | None = None
         animal_xy: np.ndarray | None = None
         in_buffer = False
         if payload is not None:
-            buf_window = getattr(payload, self._payload_field, None)
-            if buf_window is not None:
-                buf_local_idx = int(t_idx - payload.indices.start)
-                if 0 <= buf_local_idx < buf_window.shape[0]:
-                    window = buf_window
-                    local_idx = buf_local_idx
+            buf_local_idx = int(t_idx - payload.indices.start)
+            if 0 <= buf_local_idx < payload.indices.stop - payload.indices.start:
+                row = self._row_from_payload(payload, buf_local_idx)
+                if row is not None:
                     in_buffer = True
-                    animal_xy = self._animal_xy_from_payload(payload, local_idx)
+                    animal_xy = self._animal_xy_from_payload(payload, buf_local_idx)
         if not in_buffer:
             # Async window-load hasn't reached this cursor bin yet.
             # Fetch the single row synchronously so the panel stays
@@ -179,11 +197,9 @@ class Qt2DImagePanel(pg.PlotWidget):
             row, animal_xy = self._row_provider(t_idx)
             if row is None:
                 return
-            window = np.asarray(row)[np.newaxis, :]
-            local_idx = 0
-        assert window is not None
+        window = np.asarray(row)[np.newaxis, :]
         flat = np.asarray(
-            self._model.collapse_at(window, [local_idx])[0], dtype=np.float64
+            self._model.collapse_at(window, [0])[0], dtype=np.float64
         )
         # Mask off-track bins to NaN so they render transparent.
         # ``PosteriorHeatmapModel.collapse_at`` already preserves the
@@ -216,6 +232,35 @@ class Qt2DImagePanel(pg.PlotWidget):
             )
         )
         self._render_animal_marker(animal_xy)
+
+    def _row_from_payload(
+        self, payload: WindowPayload, local_idx: int
+    ) -> np.ndarray | None:
+        if self._payload_field != "posterior":
+            window = getattr(payload, self._payload_field, None)
+            return None if window is None else window[local_idx]
+        if self._overlay_mode == "smoothed":
+            return None if payload.posterior is None else payload.posterior[local_idx]
+        if self._overlay_mode == "predictive":
+            return None if payload.predictive is None else payload.predictive[local_idx]
+        if self._overlay_mode == "filtered":
+            if payload.predictive is None or payload.likelihood is None:
+                return None
+            return _filtered_row(
+                payload.predictive[local_idx],
+                _linear_likelihood_row(payload.likelihood[local_idx]),
+            )
+        raise AssertionError(f"unhandled overlay_mode {self._overlay_mode!r}")
+
+    def _refresh_title(self) -> None:
+        if self._payload_field != "posterior":
+            return
+        labels = {
+            "smoothed": "Smoothed posterior at current time",
+            "predictive": "Predictive posterior at current time",
+            "filtered": "Filtered posterior at current time",
+        }
+        self.setTitle(labels[self._overlay_mode])
 
     def rebind_after_swap(self, grid: PositionGrid | None = None) -> None:
         self._buffered_payload = None
@@ -292,3 +337,35 @@ class Qt2DImagePanel(pg.PlotWidget):
             brush=pg.mkBrush(0, 0, 0, 0),
             pen=pg.mkPen((255, 0, 255, 255), width=2.5),
         )
+
+
+def _linear_likelihood_row(log_lik_row: np.ndarray | None) -> np.ndarray | None:
+    if log_lik_row is None:
+        return None
+    log = np.asarray(log_lik_row, dtype=np.float64)
+    if log.size == 0:
+        return log
+    finite = np.isfinite(log)
+    if not finite.any():
+        return np.zeros_like(log)
+    out = np.zeros_like(log)
+    out[finite] = np.exp(log[finite] - log[finite].max())
+    return out
+
+
+def _filtered_row(
+    predictive_row: np.ndarray | None, likelihood_row: np.ndarray | None
+) -> np.ndarray | None:
+    if predictive_row is None or likelihood_row is None:
+        return None
+    predictive = np.asarray(predictive_row, dtype=float)
+    likelihood = np.asarray(likelihood_row, dtype=float)
+    if predictive.shape != likelihood.shape:
+        return None
+    filtered = np.nan_to_num(
+        predictive, nan=0.0, posinf=0.0, neginf=0.0
+    ) * np.nan_to_num(likelihood, nan=0.0, posinf=0.0, neginf=0.0)
+    total = float(filtered.sum())
+    if total <= 0.0:
+        return None
+    return filtered / total

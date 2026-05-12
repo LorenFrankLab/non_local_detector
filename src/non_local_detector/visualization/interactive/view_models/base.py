@@ -436,6 +436,10 @@ class RunBundle:
     position_2d_time : np.ndarray, optional
         Time index aligned to ``position_2d``. If omitted and
         ``position_2d`` is supplied, ``position_time`` is used.
+    projection_track_graph, projection_edge_order, projection_edge_spacing : optional
+        Optional graph-linearization geometry for projecting a 2D
+        decoder back onto a 1D track diagnostic. Used only when the Qt
+        viewer is launched with ``show_projected_1d=True``.
     speed : np.ndarray, optional
         Shape ``(n_position_time,)``.
     events : pd.DataFrame, optional
@@ -454,6 +458,9 @@ class RunBundle:
     position: np.ndarray
     position_2d: np.ndarray | None = None
     position_2d_time: np.ndarray | None = None
+    projection_track_graph: object | None = None
+    projection_edge_order: list[tuple] | None = None
+    projection_edge_spacing: float | list[float] = 0.0
     speed: np.ndarray | None = None
     events: pd.DataFrame | None = None
     extra_metrics: dict[str, ExtraMetricValue] = field(default_factory=dict)
@@ -515,6 +522,11 @@ class RunBundle:
                 "RunBundle.position_2d",
                 "RunBundle.position_2d_time",
             )
+        if self.projection_track_graph is not None and self.projection_edge_order is None:
+            raise ValueError(
+                "RunBundle.projection_edge_order is required when "
+                "projection_track_graph is provided."
+            )
 
         # spike_times length matches encoding-model neuron count.
         n_neurons_expected = self._infer_n_neurons()
@@ -571,6 +583,9 @@ class RunBundle:
         speed: np.ndarray | None = None,
         position_2d: np.ndarray | None = None,
         position_2d_time: np.ndarray | None = None,
+        projection_track_graph: object | None = None,
+        projection_edge_order: list[tuple] | None = None,
+        projection_edge_spacing: float | list[float] = 0.0,
         return_outputs: str | list[str] | set[str] | None = "all",
         events: pd.DataFrame | None = None,
         extra_metrics: dict[str, ExtraMetricValue] | None = None,
@@ -598,6 +613,9 @@ class RunBundle:
             position=position,
             position_2d=position_2d,
             position_2d_time=position_2d_time,
+            projection_track_graph=projection_track_graph,
+            projection_edge_order=projection_edge_order,
+            projection_edge_spacing=projection_edge_spacing,
             speed=speed,
             events=events,
             extra_metrics=extra_metrics or {},

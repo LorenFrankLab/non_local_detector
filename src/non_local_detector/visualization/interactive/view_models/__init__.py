@@ -23,6 +23,9 @@ from non_local_detector.visualization.interactive.view_models.likelihood import 
 from non_local_detector.visualization.interactive.view_models.posterior import (
     PosteriorHeatmapModel,
 )
+from non_local_detector.visualization.interactive.view_models.projected_1d import (
+    Projected1DModel,
+)
 from non_local_detector.visualization.interactive.view_models.projected_2d import (
     Projected2DFrame,
     Projected2DGeometry,
@@ -54,6 +57,7 @@ __all__ = [
     "MultiLineSeriesModel",
     "PositionGrid",
     "PosteriorHeatmapModel",
+    "Projected1DModel",
     "Projected2DFrame",
     "Projected2DGeometry",
     "Projected2DModel",

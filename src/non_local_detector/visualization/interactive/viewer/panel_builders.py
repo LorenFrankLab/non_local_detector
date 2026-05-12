@@ -36,17 +36,20 @@ from non_local_detector.visualization.interactive.panels.qt.likelihood import (
 from non_local_detector.visualization.interactive.panels.qt.posterior import (
     QtPosteriorHeatmapPanel,
 )
+from non_local_detector.visualization.interactive.panels.qt.projected_1d import (
+    QtProjected1DHeatmapPanel,
+)
 from non_local_detector.visualization.interactive.panels.qt.projected_2d import (
     QtProjected2DPanel,
 )
 from non_local_detector.visualization.interactive.panels.qt.slice import (
     QtSlicePanel,
 )
+from non_local_detector.visualization.interactive.view_models.projected_1d import (
+    Projected1DModel,
+)
 from non_local_detector.visualization.interactive.view_models.projected_2d import (
     Projected2DModel,
-)
-from non_local_detector.visualization.interactive.viewer.cursor_row_service import (
-    StateBinsField,
 )
 
 if TYPE_CHECKING:
@@ -81,6 +84,7 @@ class TwoDPanels:
     posterior_at_cursor: Qt2DImagePanel
     likelihood_at_cursor: Qt2DImagePanel
     cell_grid: Qt2DCellGridPanel
+    projected_1d: QtProjected1DHeatmapPanel | None = None
 
 
 # Row-provider signature: takes a decoder time index, returns the
@@ -88,7 +92,7 @@ class TwoDPanels:
 # shape is per-panel (see ``CursorRowService`` callers in qt.py).
 SliceRowProvider = Callable[[int], tuple | None]
 ImageRowProvider = Callable[
-    [int, StateBinsField], tuple[np.ndarray | None, np.ndarray | None]
+    [int, str], tuple[np.ndarray | None, np.ndarray | None]
 ]
 ProjectedRowProvider = Callable[[int], tuple[np.ndarray | None, np.ndarray | None]]
 
@@ -130,6 +134,7 @@ def build_2d_panels(
     slice_model: SliceModel,
     grid: PositionGrid,
     image_row_provider: ImageRowProvider,
+    projected_1d_model: Projected1DModel | None = None,
 ) -> TwoDPanels:
     """Build the 2D-decoder at-cursor panel set.
 
@@ -143,25 +148,36 @@ def build_2d_panels(
         model=posterior_model,
         grid=grid,
         payload_field="posterior",
-        title="Posterior at cursor",
+        title="Smoothed posterior at current time",
     )
     posterior_at_cursor.set_row_provider(
-        lambda t_idx: image_row_provider(t_idx, "posterior")
+        lambda t_idx: image_row_provider(
+            t_idx,
+            posterior_at_cursor.overlay_mode
+            if posterior_at_cursor.overlay_mode != "smoothed"
+            else "posterior",
+        )
     )
     likelihood_at_cursor = Qt2DImagePanel(
         model=likelihood_model,
         grid=grid,
         payload_field="likelihood",
-        title="Likelihood at cursor",
+        title="Likelihood at current time",
     )
     likelihood_at_cursor.set_row_provider(
         lambda t_idx: image_row_provider(t_idx, "likelihood")
     )
     cell_grid = Qt2DCellGridPanel(model=slice_model, grid=grid)
+    projected_1d = (
+        QtProjected1DHeatmapPanel(projected_1d_model)
+        if projected_1d_model is not None
+        else None
+    )
     return TwoDPanels(
         posterior_at_cursor=posterior_at_cursor,
         likelihood_at_cursor=likelihood_at_cursor,
         cell_grid=cell_grid,
+        projected_1d=projected_1d,
     )
 
 

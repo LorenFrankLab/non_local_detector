@@ -38,14 +38,26 @@
 # - `[viewer]` extra installed.
 
 # %%
+import os
 import pickle
 from pathlib import Path
 
+import networkx as nx
 import numpy as np
 
 from non_local_detector import NonLocalSortedSpikesDetector
 from non_local_detector.environment import Environment
 from non_local_detector.visualization.interactive import launch_qt
+
+
+def running_in_notebook() -> bool:
+    """Return True when executing inside a Jupyter/IPython kernel."""
+    try:
+        from IPython import get_ipython
+    except ImportError:
+        return False
+    shell = get_ipython()
+    return shell is not None and shell.__class__.__name__ == "ZMQInteractiveShell"
 
 # %% [markdown]
 # ## 1. Load Jaq_03_16
@@ -82,6 +94,90 @@ print(
 print(
     f"Ripple bins: {is_ripple.sum()} / {is_ripple.size} "
     f"({100 * is_ripple.mean():.2f}%)"
+)
+
+# %% [markdown]
+# ## 1.1. Infer projected-track geometry for the optional 2D→1D view
+#
+# The detector is fit in raw 2D head-position coordinates, but this
+# session also ships `projected_*_position`, `track_segment_id`, and
+# `linear_position`. Use those columns to reconstruct the W-track
+# graph-linearization geometry needed by the optional projected-1D
+# viewer column.
+
+# %%
+def infer_projection_graph_from_position_df(position_df):
+    """Infer linearization geometry from projected Jaq position columns."""
+    required = {
+        "linear_position",
+        "track_segment_id",
+        "projected_x_position",
+        "projected_y_position",
+    }
+    missing = sorted(required - set(position_df.columns))
+    if missing:
+        raise ValueError(f"position_df is missing projected-track columns: {missing!r}")
+
+    graph = nx.Graph()
+    edge_rows = []
+    for segment_id in sorted(position_df["track_segment_id"].dropna().unique()):
+        segment = position_df.loc[
+            position_df["track_segment_id"] == segment_id,
+            ["linear_position", "projected_x_position", "projected_y_position"],
+        ].dropna()
+        if segment.empty:
+            continue
+
+        start = segment.loc[segment["linear_position"].idxmin()]
+        stop = segment.loc[segment["linear_position"].idxmax()]
+        start_node = f"{int(segment_id)}_start"
+        stop_node = f"{int(segment_id)}_stop"
+        start_xy = (
+            float(start["projected_x_position"]),
+            float(start["projected_y_position"]),
+        )
+        stop_xy = (
+            float(stop["projected_x_position"]),
+            float(stop["projected_y_position"]),
+        )
+        min_linear = float(start["linear_position"])
+        max_linear = float(stop["linear_position"])
+        distance = max(
+            max_linear - min_linear,
+            float(np.linalg.norm(np.subtract(stop_xy, start_xy))),
+        )
+
+        graph.add_node(start_node, pos=start_xy)
+        graph.add_node(stop_node, pos=stop_xy)
+        graph.add_edge(
+            start_node,
+            stop_node,
+            distance=distance,
+            edge_id=int(segment_id),
+        )
+        edge_rows.append((min_linear, max_linear, (start_node, stop_node)))
+
+    if not edge_rows:
+        raise ValueError("No finite projected-track segments found.")
+
+    edge_rows.sort(key=lambda item: item[0])
+    edge_order = [edge for _, _, edge in edge_rows]
+    edge_spacing = [
+        max(0.0, next_min - previous_max)
+        for (_, previous_max, _), (next_min, _, _) in zip(
+            edge_rows[:-1], edge_rows[1:], strict=False
+        )
+    ]
+    return graph, edge_order, edge_spacing
+
+
+projection_track_graph, projection_edge_order, projection_edge_spacing = (
+    infer_projection_graph_from_position_df(position_df)
+)
+print(
+    "Projection graph: "
+    f"{projection_track_graph.number_of_edges()} edges, "
+    f"edge spacing={np.round(projection_edge_spacing, 3).tolist()}"
 )
 
 # %% [markdown]
@@ -199,13 +295,36 @@ print(
 # Continuous / Non-Local Fragmented) appear in the left column
 # under the raster. Scrub the time slider or use `Left` / `Right`
 # arrows to walk the session; `[` / `]` resizes the visible window.
+#
+# The launch mode depends on how this file is executed. In a notebook,
+# `block=False` lets the cell return while the Jupyter Qt integration
+# keeps processing GUI events. As a plain script (`uv run python ...`),
+# `block=True` is required so Qt has an event loop; the process will
+# intentionally stay alive until the viewer window is closed.
+# Set `NLD_JAQ_2D_SHOW_VIEWER=0` to run the fit/predict smoke path
+# without opening Qt.
 
 # %%
-launch_qt(
-    detector=detector,
-    results=results,
-    spike_times=spike_times,
-    position=position_2d,
-    position_time=time_seconds,
-    t_width=0.5,
+launch_blocks = not running_in_notebook()
+show_viewer = os.environ.get("NLD_JAQ_2D_SHOW_VIEWER", "1") != "0"
+print(
+    "Qt viewer launch mode: "
+    f"{'blocking script mode' if launch_blocks else 'non-blocking notebook mode'}.",
+    flush=True,
 )
+if show_viewer:
+    launch_qt(
+        detector=detector,
+        results=results,
+        spike_times=spike_times,
+        position=position_2d,
+        position_time=time_seconds,
+        t_width=0.5,
+        show_projected_1d=True,
+        projection_track_graph=projection_track_graph,
+        projection_edge_order=projection_edge_order,
+        projection_edge_spacing=projection_edge_spacing,
+        block=launch_blocks,
+    )
+else:
+    print("Skipping Qt viewer launch because NLD_JAQ_2D_SHOW_VIEWER=0.", flush=True)

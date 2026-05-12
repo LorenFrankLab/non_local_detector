@@ -118,8 +118,8 @@ def test_viewer_constructs_2d_at_cursor_panels(qapp, fitted_2d_bundle) -> None:
     assert viewer._panel is None
     assert viewer._likelihood_panel is None
     assert viewer._slice_panel is None
-    assert viewer._slice_overlay_combo is None
-    assert viewer._per_cell_checkbox is None
+    assert viewer._slice_overlay_combo is not None
+    assert viewer._per_cell_checkbox is not None
     # 2D top images: posterior + likelihood. Both present in the
     # bin-synced dispatch list so each cursor tick updates both.
     assert isinstance(viewer._posterior_at_cursor_panel, Qt2DImagePanel)
@@ -139,6 +139,55 @@ def test_viewer_constructs_2d_at_cursor_panels(qapp, fitted_2d_bundle) -> None:
     ]
 
 
+def test_viewer_2d_overlay_combo_drives_cursor_panel(qapp, fitted_2d_bundle) -> None:
+    """The shared overlay combo controls the 2D posterior-at-cursor image."""
+    from non_local_detector.visualization.interactive.data_source import (
+        InMemoryDecoderDataSource,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    viewer = QtViewer(
+        InMemoryDecoderDataSource.from_single(fitted_2d_bundle),
+        t_width=0.5,
+    )
+
+    combo = viewer._slice_overlay_combo
+    panel = viewer._posterior_at_cursor_panel
+    assert combo is not None
+    assert panel is not None
+
+    filtered_index = next(
+        i for i in range(combo.count()) if combo.itemData(i) == "filtered"
+    )
+    combo.setCurrentIndex(filtered_index)
+
+    assert panel.overlay_mode == "filtered"
+    assert "predictive" in viewer._backend._required_outputs
+
+
+def test_viewer_2d_raster_event_pins_cell_grid(qapp, fitted_2d_bundle) -> None:
+    """Raster event clicks pin cells in the 2D active-cell grid."""
+    from non_local_detector.visualization.interactive.data_source import (
+        InMemoryDecoderDataSource,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    viewer = QtViewer(
+        InMemoryDecoderDataSource.from_single(fitted_2d_bundle),
+        t_width=0.5,
+    )
+    cell_grid = viewer._cell_grid_2d_panel
+    assert cell_grid is not None
+    assert viewer._data_source.event_index.n_events > 0
+
+    event = viewer._data_source.spike_event_at(0)
+    viewer._on_event_clicked(0)
+
+    assert cell_grid.pinned_cell_ids == frozenset({event.cell_id})
+    viewer._clear_pins()
+    assert cell_grid.pinned_cell_ids == frozenset()
+
+
 def test_viewer_2d_rejects_projected_2d(qapp, fitted_2d_bundle) -> None:
     """``show_projected_2d=True`` is no-op for true 2D detectors."""
     from non_local_detector.visualization.interactive.data_source import (
@@ -156,6 +205,46 @@ def test_viewer_2d_rejects_projected_2d(qapp, fitted_2d_bundle) -> None:
     # 1D graph-linearized decoders only.
     assert viewer._projected_2d_panel is None
     assert viewer._projected_2d_model is None
+
+
+def test_viewer_2d_optional_projected_1d_panel(qapp, fitted_2d_bundle) -> None:
+    """``show_projected_1d`` adds a left-column projected track heatmap."""
+    import networkx as nx
+
+    from non_local_detector.visualization.interactive.data_source import (
+        InMemoryDecoderDataSource,
+    )
+    from non_local_detector.visualization.interactive.panels.qt.projected_1d import (
+        QtProjected1DHeatmapPanel,
+    )
+    from non_local_detector.visualization.interactive.view_models.base import (
+        ViewState,
+    )
+    from non_local_detector.visualization.interactive.viewer.qt import QtViewer
+
+    graph = nx.Graph()
+    graph.add_node(0, pos=(0.0, 25.0))
+    graph.add_node(1, pos=(50.0, 25.0))
+    graph.add_edge(0, 1, distance=50.0, edge_id=0)
+    fitted_2d_bundle.projection_track_graph = graph
+    fitted_2d_bundle.projection_edge_order = [(0, 1)]
+    fitted_2d_bundle.projection_edge_spacing = 0.0
+
+    viewer = QtViewer(
+        InMemoryDecoderDataSource.from_single(fitted_2d_bundle),
+        t_width=0.5,
+        show_projected_1d=True,
+    )
+
+    assert isinstance(viewer._projected_1d_panel, QtProjected1DHeatmapPanel)
+    assert viewer._projected_1d_panel in viewer._builtin_panels
+    assert viewer._projected_1d_model is not None
+    assert viewer._projected_1d_model.is_available
+
+    state = ViewState(request_id=0, t_center=4.0, t_width=0.5)
+    payload = viewer._backend.build_payload(state)
+    viewer._projected_1d_panel.update_window(payload)
+    assert viewer._projected_1d_panel._image_item.image is not None
 
 
 def test_viewer_2d_cursor_update_renders_images(qapp, fitted_2d_bundle) -> None:
