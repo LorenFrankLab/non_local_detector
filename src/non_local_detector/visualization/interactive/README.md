@@ -95,9 +95,7 @@ For panels that render the cursor's single time bin. The viewer
 drives bin-synced plugins on the same buffered low-latency path the
 built-in `QtSlicePanel` uses: each new `WindowPayload` is handed to
 every bin plugin via `set_window_buffer`, then per-tick cursor
-moves dispatch `update_for_index(t_idx)` synchronously so the
-render reads from the cached arrays instead of re-fetching from the
-data source.
+moves dispatch `update_for_index(t_idx)` synchronously.
 
 ```python
 class BinSyncedPanel(Protocol):
@@ -107,8 +105,8 @@ class BinSyncedPanel(Protocol):
 
 | Method | Contract |
 |---|---|
-| `set_window_buffer(payload)` | Cache the latest `WindowPayload` for per-tick row reads. Called by the viewer once per committed window load. |
-| `update_for_index(t_idx)` | Render the cursor's bin from the cached buffer. Out-of-buffer `t_idx` should be a no-op — the next window load will refresh the buffer and the viewer will re-issue the cursor update. Called per slider tick (synchronously) and once after each window-load commit. |
+| `set_window_buffer(payload)` | Cache the latest `WindowPayload`. Called by the viewer once per committed window load. May be a no-op if your panel doesn't need the buffered window. |
+| `update_for_index(t_idx)` | Render the cursor's bin. **Must stay cursor-synchronous** even when `t_idx` falls outside the buffered window (the async window-load can lag behind fast playback). Three reasonable strategies — pick one and document it: (a) read from the buffered payload when `t_idx` is covered AND fall back to a single-row synchronous fetch otherwise (built-in `QtSlicePanel`, `Qt2DImagePanel`); (b) derive the render from a per-session cache that doesn't depend on the buffer at all (`Qt2DCellGridPanel` reads the active-cell list from `SliceModel.cells_at_index(t_idx)`); (c) explicitly clear the render when out-of-buffer rather than freezing on the last frame. A bare no-op for out-of-buffer ticks would visibly lag the cursor during playback — don't do that. Called per slider tick (synchronously) and once after each window-load commit. |
 
 `rebind_after_swap()` is **optional**: implement it if your plugin
 caches run-local state (e.g. a per-cell place-field map keyed by

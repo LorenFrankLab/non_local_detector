@@ -233,6 +233,67 @@ def test_zarr_direct_load_position_2d_parity(zarr_bundle_dir: Path) -> None:
 
 
 @pytest.mark.unit
+def test_zarr_direct_reads_position_2d_sidecar(
+    tmp_path: Path,
+    nl_fitted: FittedDetector,
+    sim_session: SimulatedSession,
+) -> None:
+    """The zarr-direct loader honors ``position_2d.parquet`` siblings.
+
+    ``bundle_from_detector`` writes a separate ``position_2d.parquet``
+    when the 2D position has its own time grid (camera clock vs.
+    linearization output). The in-memory loader reads it; previously
+    the zarr-direct loader only read the co-muxed ``x_position`` /
+    ``y_position`` columns inside ``position.parquet`` and silently
+    dropped the sibling. Regression for the static-review finding.
+    """
+    from non_local_detector.visualization.interactive.devtools.bundle_from_detector import (
+        bundle_from_detector,
+    )
+
+    # 2D position on a half-rate, offset grid → forces the separate
+    # ``position_2d.parquet`` sidecar.
+    pos_time = np.asarray(sim_session.time)
+    dt = float(pos_time[1] - pos_time[0]) if pos_time.size > 1 else 1.0
+    pos_2d_time = pos_time[::2] + 0.1 * dt
+    n_2d = pos_2d_time.size
+    position_2d = np.column_stack(
+        [np.linspace(0.0, 100.0, n_2d), np.linspace(50.0, -50.0, n_2d)]
+    )
+
+    bundle_dir = tmp_path / "sidecar_bundle"
+    bundle_from_detector(
+        detector=nl_fitted.detector,
+        results=nl_fitted.results,
+        spike_times=sim_session.spike_times,
+        position=sim_session.position,
+        position_time=sim_session.time,
+        position_2d=position_2d,
+        position_2d_time=pos_2d_time,
+        out=bundle_dir,
+    )
+    assert (bundle_dir / "position_2d.parquet").exists()
+
+    # Force a zarr cache build so the zarr-direct path is exercisable.
+    from non_local_detector.visualization.interactive.devtools.build_viewer_cache import (
+        build_viewer_cache,
+    )
+
+    build_viewer_cache(bundle_dir, overwrite=True)
+    direct = _make_zarr_direct(bundle_dir)
+    run = direct.active_run
+    assert run.position_2d is not None
+    np.testing.assert_array_equal(run.position_2d, position_2d)
+    assert run.position_2d_time is not None
+    np.testing.assert_array_equal(run.position_2d_time, pos_2d_time)
+    # And the load_position_2d interpolation lands a non-None slice.
+    sl = direct.window_indices(t_center=float(direct.time[0]), t_width=0.5)
+    loaded = direct.load_position_2d(sl)
+    assert loaded is not None
+    assert loaded.shape[1] == 2
+
+
+@pytest.mark.unit
 def test_zarr_direct_missing_log_likelihood_raises_keyerror(
     tmp_path: Path,
     nl_fitted: FittedDetector,

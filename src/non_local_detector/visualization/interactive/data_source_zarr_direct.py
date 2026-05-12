@@ -122,16 +122,26 @@ def _load_run_bundle_from_dir(
     spike_times_npz = np.load(str(bundle_dir / "spikes.npz"), allow_pickle=True)
     spike_times = list(spike_times_npz["spike_times"])
     position_df = pd.read_parquet(str(bundle_dir / "position.parquet"))
+    sibling_2d = bundle_dir / "position_2d.parquet"
     if "position" in position_df.columns:
         position = position_df["position"].to_numpy()
-        position_2d = (
-            position_df[["x_position", "y_position"]].to_numpy()
-            if {"x_position", "y_position"}.issubset(position_df.columns)
-            else None
-        )
+        if sibling_2d.exists():
+            # Separate parquet sidecar — 2D position sampled on its own
+            # time grid (camera clock vs. linearization output).
+            position_2d_df = pd.read_parquet(str(sibling_2d))
+            position_2d = position_2d_df[["x_position", "y_position"]].to_numpy()
+            position_2d_time = position_2d_df.index.to_numpy()
+        elif {"x_position", "y_position"}.issubset(position_df.columns):
+            # Co-muxed columns — same time grid as the linearized position.
+            position_2d = position_df[["x_position", "y_position"]].to_numpy()
+            position_2d_time = position_df.index.to_numpy()
+        else:
+            position_2d = None
+            position_2d_time = None
     elif {"x_position", "y_position"}.issubset(position_df.columns):
         position = position_df[["x_position", "y_position"]].to_numpy()
         position_2d = None
+        position_2d_time = None
     else:
         raise ValueError(
             f"position.parquet at {bundle_dir!s} must contain a "
@@ -146,7 +156,7 @@ def _load_run_bundle_from_dir(
         position_time=position_time,
         position=position,
         position_2d=position_2d,
-        position_2d_time=position_time if position_2d is not None else None,
+        position_2d_time=position_2d_time,
         speed=speed,
     )
     # Tag the bundle with the run name so multi-run callers can read it

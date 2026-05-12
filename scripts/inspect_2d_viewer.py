@@ -3,10 +3,11 @@
 Run:
     uv run python scripts/inspect_2d_viewer.py
 
-A tiny open-field session (50×50 box, ~8 s, 3 place cells at distinct
-``(x, y)`` centers) is fit with ``SortedSpikesDecoder`` on a 5 cm
-grid, ``predict`` is called for the full session, and the result is
-piped into the Qt viewer's 2D path:
+A synthetic open-field session (50×50 box, 100 s at 100 Hz, 3
+place cells at distinct ``(x, y)`` centers) is fit with
+``SortedSpikesDecoder`` on a 5 cm grid, ``predict`` is called for
+the full session, and the result is piped into the Qt viewer's
+2D path:
 
 - Left column: raster + state-probability.
 - Right column: posterior at cursor, likelihood at cursor, per-cell
@@ -28,7 +29,7 @@ from non_local_detector.visualization.interactive import launch_qt
 def main() -> int:
     rng = np.random.default_rng(0)
     sampling_frequency = 100
-    n_time = 800
+    n_time = 10_000
     time = np.arange(n_time) / sampling_frequency
 
     # Animal traces a back-and-forth path across a 50 x 50 cm box.
