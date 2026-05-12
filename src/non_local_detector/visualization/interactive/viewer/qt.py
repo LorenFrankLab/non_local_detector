@@ -25,6 +25,9 @@ from non_local_detector.visualization.interactive.panels.qt.cell_grid_2d import 
 from non_local_detector.visualization.interactive.panels.qt.image_2d import (
     Qt2DImagePanel,
 )
+from non_local_detector.visualization.interactive.viewer.required_outputs import (
+    RequiredOutput,
+)
 from non_local_detector.visualization.interactive.panels.qt.likelihood import (
     QtLikelihoodHeatmapPanel,
 )
@@ -1105,15 +1108,24 @@ class QtViewer(QtWidgets.QMainWindow):
         ``predictive_posterior`` is wasted work — large windows
         materialise a ``(n_visible, n_state_bins)`` array we'd
         immediately throw away.
+
+        Keys come from :class:`RequiredOutput` (string-enum) so a
+        new panel-registration site can't drift from a typo'd literal
+        — the backend keys live in one authoritative module.
         """
-        outputs = {"posterior", "likelihood", "state_probabilities", "position"}
+        outputs: set[str] = {
+            RequiredOutput.POSTERIOR,
+            RequiredOutput.LIKELIHOOD,
+            RequiredOutput.STATE_PROBABILITIES,
+            RequiredOutput.POSITION,
+        }
         if self._projected_2d_panel is not None:
-            outputs.add("position_2d")
+            outputs.add(RequiredOutput.POSITION_2D)
         if self._slice_panel is not None and self._slice_panel.overlay_mode in {
             "predictive",
             "filtered",
         }:
-            outputs.add("predictive")
+            outputs.add(RequiredOutput.PREDICTIVE)
         # ``set_required_outputs`` is a required method on
         # ``BackendAdapter`` (Phase 4.3) — no isinstance guard.
         self._backend.set_required_outputs(outputs)
