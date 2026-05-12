@@ -29,6 +29,11 @@ from non_local_detector.visualization.interactive.viewer.cursor_row_service impo
     CursorRowService,
     StateBinsField,
 )
+from non_local_detector.visualization.interactive.viewer.panel_builders import (
+    build_1d_panels,
+    build_2d_panels,
+    build_projected_2d_panel,
+)
 from non_local_detector.visualization.interactive.viewer.required_outputs import (
     RequiredOutput,
 )
@@ -616,12 +621,12 @@ class QtViewer(QtWidgets.QMainWindow):
             event_index=data_source.event_index,
         )
 
-        # Dimension-specific panels.
-        # 1D path: ``(time, position)`` heatmaps on the left + slice
-        # readout on the right (the existing v1 layout).
-        # 2D path: drop the ``(time, position)`` heatmaps (meaningless
-        # for 2D bins) and put a 2D ``(x, y)`` image at-cursor in the
-        # right column.
+        # Dimension-specific panels — built by helpers in
+        # ``panel_builders`` so the viewer's __init__ stays focused
+        # on assembly + interaction wiring. 1D path: ``(time,
+        # position)`` heatmaps on the left + slice readout on the
+        # right. 2D path: at-cursor ``(x, y)`` images in the right
+        # column (heatmap layout is meaningless for 2D bins).
         self._panel: QtPosteriorHeatmapPanel | None
         self._likelihood_panel: QtLikelihoodHeatmapPanel | None
         self._slice_panel: QtSlicePanel | None
@@ -629,48 +634,33 @@ class QtViewer(QtWidgets.QMainWindow):
         self._likelihood_at_cursor_panel: Qt2DImagePanel | None
         self._cell_grid_2d_panel: Qt2DCellGridPanel | None
         if grid.ndim == 1:
-            self._likelihood_panel = QtLikelihoodHeatmapPanel(
-                model=self._likelihood_model, position_centers=grid.centers
+            panels_1d = build_1d_panels(
+                posterior_model=self._posterior_model,
+                likelihood_model=self._likelihood_model,
+                slice_model=self._slice_model,
+                grid=grid,
+                slice_row_provider=self._slice_row_at,
             )
-            self._panel = QtPosteriorHeatmapPanel(
-                model=self._posterior_model, position_centers=grid.centers
-            )
-            self._slice_panel = QtSlicePanel(
-                model=self._slice_model, position_centers=grid.centers
-            )
-            self._slice_panel.set_row_provider(self._slice_row_at)
+            self._panel = panels_1d.posterior
+            self._likelihood_panel = panels_1d.likelihood
+            self._slice_panel = panels_1d.slice
             self._posterior_at_cursor_panel = None
             self._likelihood_at_cursor_panel = None
             self._cell_grid_2d_panel = None
         else:
-            self._likelihood_panel = None
+            panels_2d = build_2d_panels(
+                posterior_model=self._posterior_model,
+                likelihood_model=self._likelihood_model,
+                slice_model=self._slice_model,
+                grid=grid,
+                image_row_provider=self._image_row_at,
+            )
             self._panel = None
+            self._likelihood_panel = None
             self._slice_panel = None
-            # ``vmax=None`` default → per-frame peak-normalize. Both
-            # panels show the cursor row's relative distribution shape;
-            # the absolute magnitude differs between time bins but the
-            # peak always renders at the top of the viridis LUT.
-            self._posterior_at_cursor_panel = Qt2DImagePanel(
-                model=self._posterior_model,
-                grid=grid,
-                payload_field="posterior",
-                title="Posterior at cursor",
-            )
-            self._posterior_at_cursor_panel.set_row_provider(
-                lambda t_idx: self._image_row_at(t_idx, "posterior")
-            )
-            self._likelihood_at_cursor_panel = Qt2DImagePanel(
-                model=self._likelihood_model,
-                grid=grid,
-                payload_field="likelihood",
-                title="Likelihood at cursor",
-            )
-            self._likelihood_at_cursor_panel.set_row_provider(
-                lambda t_idx: self._image_row_at(t_idx, "likelihood")
-            )
-            self._cell_grid_2d_panel = Qt2DCellGridPanel(
-                model=self._slice_model, grid=grid
-            )
+            self._posterior_at_cursor_panel = panels_2d.posterior_at_cursor
+            self._likelihood_at_cursor_panel = panels_2d.likelihood_at_cursor
+            self._cell_grid_2d_panel = panels_2d.cell_grid
 
         # Built-in time-axis panels (left column), top to bottom.
         # Heatmaps dominate when present; raster + state-prob are
@@ -697,16 +687,16 @@ class QtViewer(QtWidgets.QMainWindow):
         # ``projected_2d`` is for 1D-graph-linearized decoders only;
         # not meaningful for true 2D decoders.
         self._show_projected_2d = bool(show_projected_2d) and grid.ndim == 1
-        self._projected_2d_model = (
-            Projected2DModel(detector) if self._show_projected_2d else None
-        )
-        self._projected_2d_panel = (
-            QtProjected2DPanel(self._projected_2d_model)
-            if self._projected_2d_model is not None
-            else None
-        )
-        if self._projected_2d_panel is not None:
-            self._projected_2d_panel.set_row_provider(self._projected_2d_row_at)
+        if self._show_projected_2d:
+            (
+                self._projected_2d_model,
+                self._projected_2d_panel,
+            ) = build_projected_2d_panel(
+                detector, row_provider=self._projected_2d_row_at
+            )
+        else:
+            self._projected_2d_model = None
+            self._projected_2d_panel = None
         # Tell the backend which optional outputs the visible panels
         # actually consume so it skips per-window loads we'd just throw
         # away (e.g. ``predictive_posterior`` when the slice is in the

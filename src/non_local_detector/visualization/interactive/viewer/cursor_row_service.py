@@ -50,9 +50,7 @@ class CursorRowService:
     def n_time(self) -> int:
         return self._data_source.n_time
 
-    def state_bins_row(
-        self, t_idx: int, which: StateBinsField
-    ) -> np.ndarray | None:
+    def state_bins_row(self, t_idx: int, which: StateBinsField) -> np.ndarray | None:
         """Return a single ``(n_state_bins,)`` row from ``results[which]``.
 
         ``None`` for out-of-range ``t_idx`` or when the optional
@@ -65,8 +63,7 @@ class CursorRowService:
         var_present = {
             "posterior": True,  # required
             "likelihood": "log_likelihood" in self._data_source.available_outputs,
-            "predictive": "predictive_posterior"
-            in self._data_source.available_outputs,
+            "predictive": "predictive_posterior" in self._data_source.available_outputs,
         }.get(which, False)
         if not var_present:
             return None
