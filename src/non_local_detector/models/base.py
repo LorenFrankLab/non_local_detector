@@ -2017,6 +2017,30 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     f"iteration {n_iter}, likelihood: {marginal_log_likelihoods[-1]}"
                 )
 
+        # Final E-step after the last M-step so the returned posterior reflects
+        # the final fitted parameters. Without this, the returned arrays are
+        # the E-step computed *before* the last M-step and disagree with
+        # predict() on the same data (issue #26).
+        logger.info("Final E-step after EM...")
+        (
+            acausal_posterior,
+            acausal_state_probabilities,
+            marginal_log_likelihood,
+            causal_state_probabilities,
+            predictive_state_probabilities,
+            log_likelihood,
+            causal_posterior,
+            predictive_posterior,
+        ) = self._predict(
+            time=time,
+            log_likelihood_args=log_likelihood_args,
+            is_missing=is_missing,
+            cache_likelihood=cache_likelihood,
+            log_likelihoods=getattr(self, "log_likelihood_", None),
+            n_chunks=n_chunks,
+        )
+        marginal_log_likelihoods.append(marginal_log_likelihood)
+
         if store_log_likelihood:
             self.log_likelihood_ = log_likelihood
 
