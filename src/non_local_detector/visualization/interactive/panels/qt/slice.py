@@ -35,6 +35,13 @@ if TYPE_CHECKING:
 # fall under the "(+K more)" truncation indicator.
 MAX_PER_CELL_PLOTS = 6
 _TOP_SLICE_MIN_HEIGHT = 140
+# Pinned width for the left ``AxisItem`` on every slice plot. Without
+# this, the top plot reserves space for the "Probability / Likelihood"
+# tick labels but the per-cell rows (which hide their axes) start at
+# the widget's left edge — same x-data coordinate then renders at
+# different horizontal pixel positions on the two plot kinds, so the
+# population curve and per-cell place fields visibly misalign.
+_SLICE_LEFT_AXIS_WIDTH = 56
 _PER_CELL_SLICE_MIN_HEIGHT = 70
 
 OverlayMode = Literal["predictive", "filtered", "smoothed"]
@@ -123,6 +130,35 @@ def _pin_slice_axes(plot: pg.PlotWidget, position_centers: np.ndarray) -> None:
     )
 
 
+def _pin_left_axis_width(plot: pg.PlotWidget, width: int) -> None:
+    """Force the left ``AxisItem`` to a fixed pixel width.
+
+    The top plot ships with a "Probability / Likelihood" label whose
+    natural width grows with the font; per-cell rows hide their axis
+    entirely (no width reserved). Pinning both ends to the same width
+    makes the plot content rects line up horizontally so the same
+    x-data coordinate renders at the same pixel column across plots.
+    """
+    axis = plot.getPlotItem().getAxis("left")
+    axis.setWidth(width)
+
+
+def _hide_left_axis_keep_width(plot: pg.PlotWidget) -> None:
+    """Visually empty the left axis while keeping its reserved width.
+
+    Calling ``plot.hideAxis("left")`` removes the axis from the layout
+    entirely, dropping the left margin to zero. This helper instead
+    suppresses tick labels + axis label and pins the axis to a fixed
+    width matching the population plot's left axis.
+    """
+    axis = plot.getPlotItem().getAxis("left")
+    axis.setStyle(showValues=False, tickLength=0)
+    axis.setLabel("")
+    axis.setPen(pg.mkPen(0, 0, 0, 0))  # transparent axis line
+    axis.setTextPen(pg.mkPen(0, 0, 0, 0))
+    axis.setWidth(_SLICE_LEFT_AXIS_WIDTH)
+
+
 def _display_position_axis(layout: PositionGridLayout) -> np.ndarray:
     """Return slice x-coordinates aligned to heatmap pixel-y rows.
 
@@ -155,7 +191,12 @@ class _PerCellRow:
         self.plot.setMaximumHeight(_PER_CELL_SLICE_MIN_HEIGHT + 10)
         self.plot.setMouseEnabled(x=False, y=False)
         self.plot.hideAxis("bottom")
-        self.plot.hideAxis("left")
+        # Keep the left axis in the layout (so its width still reserves
+        # space matching the top plot) but suppress tick labels and the
+        # axis line — the per-cell rows otherwise lose the left margin
+        # and their curves render at different horizontal pixel x's than
+        # the top curve's, even though both use the same x-data array.
+        _hide_left_axis_keep_width(self.plot)
         _pin_slice_axes(self.plot, self._position_x)
         _empty = np.empty(0, dtype=float)
         self.curve = self.plot.plot(_empty, _empty, pen=_PER_CELL_PEN)
@@ -267,6 +308,10 @@ class QtSlicePanel(QtWidgets.QWidget):
         self._top_plot.setLabel("left", "Probability / Likelihood")
         self._top_plot.setLabel("bottom", "Position [cm]")
         self._top_plot.setMouseEnabled(x=False, y=False)
+        # Match the per-cell rows' left axis width so the plot content
+        # rects line up horizontally and the population curve aligns
+        # with the per-cell place fields at the same x-coordinate.
+        _pin_left_axis_width(self._top_plot, _SLICE_LEFT_AXIS_WIDTH)
         _pin_slice_axes(self._top_plot, self._position_x)
         # Pre-init with explicit empty arrays so ``getData()`` always
         # returns ndarrays (pyqtgraph returns ``(None, None)`` when
