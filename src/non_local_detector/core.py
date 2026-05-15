@@ -584,10 +584,29 @@ def most_likely_sequence(
 
 
 ## Covariate dependent filtering and smoothing ##
+def _index_discrete_transition(
+    discrete_transition_matrix_t: ArrayLike,
+    state_ind: ArrayLike,
+) -> jnp.ndarray:
+    """Expand a discrete transition to the joint state-bin space.
+
+    Parameters
+    ----------
+    discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
+
+    Returns
+    -------
+    discrete_indexed : jnp.ndarray, shape (n_state_bins, n_state_bins)
+    """
+    return discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
+
+
 def _get_transition_matrix(
     discrete_transition_matrix_t: ArrayLike,
     continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike | None = None,
+    state_ind: ArrayLike,
 ) -> jnp.ndarray:
     """Get the transition matrix for the current time point.
 
@@ -595,25 +614,18 @@ def _get_transition_matrix(
 
     Parameters
     ----------
-    discrete_transition_matrix_t : jnp.ndarray, shape (n_state_bins, n_state_bins) or (n_states, n_states)
-        If state_ind is provided, expected shape is (n_states, n_states) and will be indexed.
-        If state_ind is None, expected shape is (n_state_bins, n_state_bins) (pre-indexed).
+    discrete_transition_matrix_t : jnp.ndarray, shape (n_states, n_states)
     continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
-    state_ind : jnp.ndarray, shape (n_state_bins,), optional
-        If provided, used to index discrete_transition_matrix_t.
-        If None, assumes discrete_transition_matrix_t is already indexed.
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
 
     Returns
     -------
     transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
     """
-    if state_ind is not None:
-        # Index (n_states, n_states) up to (n_state_bins, n_state_bins).
-        discrete_indexed = discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
-    else:
-        # Already a (n_state_bins, n_state_bins) matrix.
-        discrete_indexed = discrete_transition_matrix_t
-
+    discrete_indexed = _index_discrete_transition(
+        discrete_transition_matrix_t, state_ind
+    )
     return continuous_transition_matrix * discrete_indexed
 
 
@@ -681,7 +693,7 @@ _filter_covariate_dependent_internal = jax.jit(
 def smoother_covariate_dependent(
     discrete_transition_matrix: ArrayLike,
     continuous_transition_matrix: ArrayLike,
-    state_ind: ArrayLike | None,
+    state_ind: ArrayLike,
     filtered_probs: ArrayLike,
     initial: ArrayLike | None = None,
     ind: ArrayLike | None = None,
@@ -691,10 +703,10 @@ def smoother_covariate_dependent(
 
     Parameters
     ----------
-    discrete_transition_matrix : jnp.ndarray, shape (n_time, n_states, n_states) or (n_time, n_state_bins, n_state_bins)
+    discrete_transition_matrix : jnp.ndarray, shape (n_time, n_states, n_states)
     continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
-    state_ind : jnp.ndarray, shape (n_state_bins,), optional
-        If None, discrete_transition_matrix is assumed pre-indexed
+    state_ind : jnp.ndarray, shape (n_state_bins,)
+        Maps each state bin to its discrete state.
     filtered_probs : jnp.ndarray, shape (n_time, n_state_bins)
     initial : jnp.ndarray, shape (n_state_bins,), optional
     ind : jnp.ndarray, shape (n_time,), optional
@@ -1020,7 +1032,9 @@ def viterbi_covariate_dependent(
     def _backward_pass(best_next_score, args):
         t, discrete_transition_matrix_t = args
         # Index states and compute log per-step (avoids T×N×N materialization)
-        discrete_t_indexed = discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
+        discrete_t_indexed = _index_discrete_transition(
+            discrete_transition_matrix_t, state_ind
+        )
         log_discrete_t = _safe_log(discrete_t_indexed)
 
         # Build log-space transition matrix: log(A * B) = log(A) + log(B)
