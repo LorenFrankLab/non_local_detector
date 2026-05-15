@@ -608,10 +608,11 @@ def _get_transition_matrix(
     transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
     """
     if state_ind is not None:
-        # Need to index - used by public API functions
+        # Index (n_states, n_states) -> (n_state_bins, n_state_bins) per step.
+        # Used by the public API and the chunked covariate-dependent driver.
         discrete_indexed = discrete_transition_matrix_t[jnp.ix_(state_ind, state_ind)]
     else:
-        # Already indexed - used by optimized chunked functions
+        # Caller passed an already-indexed (n_state_bins, n_state_bins) matrix.
         discrete_indexed = discrete_transition_matrix_t
 
     return continuous_transition_matrix * discrete_indexed
@@ -786,7 +787,11 @@ def chunked_filter_smoother_covariate_dependent(
     log_likelihood_args : tuple
     is_missing : np.ndarray, shape (n_time,), optional
     n_chunks : int, optional
-        Number of chunks to split the data into, by default 1
+        Number of chunks to split the data into, by default 1.
+        The discrete transition is expanded to the joint
+        (n_state_bins, n_state_bins) transition one time step at a time inside
+        the scan, so the (n_time, n_state_bins, n_state_bins) joint transition
+        is never materialized; ``n_chunks=1`` is feasible even on long sessions.
     log_likelihoods : np.ndarray, optional
     cache_log_likelihoods : bool, optional
         If True, log likelihoods are cached instead of recomputed for each chunk, by default True
@@ -889,12 +894,13 @@ def chunked_filter_smoother_covariate_dependent(
                 "log_likelihoods", log_likelihood_chunk
             )
 
-        # Chunk discrete transitions: index time first, then states
-        # This avoids materializing the full T×N×N array (important for large T)
+        # Chunk discrete transitions by time only, keeping shape
+        # (chunk, n_states, n_states). The scan body indexes states per step,
+        # so the full (chunk, n_state_bins, n_state_bins) joint transition is
+        # never materialized (it would be ~T×n_B² and dominate memory).
         dtm_chunk = discrete_transition_matrix_jax[time_inds]
-        dtm_chunk_indexed = dtm_chunk[:, state_ind_jax[:, None], state_ind_jax]
 
-        # Donated: log_likelihood_chunk, dtm_chunk_indexed, initial_distribution
+        # Donated: log_likelihood_chunk, dtm_chunk, initial_distribution
         # All are single-use per iteration - safe to donate
         # Note: Small arrays may trigger benign donation warnings in tests
         (
@@ -904,9 +910,9 @@ def chunked_filter_smoother_covariate_dependent(
             initial_distribution=(
                 initial_distribution_jax if chunk_id == 0 else predicted_probs_next
             ),
-            discrete_transition_matrix=dtm_chunk_indexed,
+            discrete_transition_matrix=dtm_chunk,
             continuous_transition_matrix=continuous_transition_matrix_jax,
-            state_ind=None,  # Already indexed, don't index again
+            state_ind=state_ind_jax,  # Index states per step inside the scan
             log_likelihoods=log_likelihood_chunk,
         )
 
@@ -933,17 +939,17 @@ def chunked_filter_smoother_covariate_dependent(
     for chunk_id, time_inds_np in enumerate(reversed(time_chunks)):
         time_inds = jnp.asarray(time_inds_np)
 
-        # Chunk discrete transitions for backward pass too
+        # Chunk discrete transitions for backward pass too; keep shape
+        # (chunk, n_states, n_states) and index states per step in the scan.
         dtm_chunk = discrete_transition_matrix_jax[time_inds_np]
-        dtm_chunk_indexed = dtm_chunk[:, state_ind_jax[:, None], state_ind_jax]
 
-        # Donated: dtm_chunk_indexed, filtered_probs slice, initial boundary
+        # Donated: dtm_chunk, filtered_probs slice, initial boundary
         # All are single-use per iteration
         # Note: Small arrays may trigger benign donation warnings in tests
         acausal_posterior_chunk = _smoother_covariate_dependent_internal(
-            discrete_transition_matrix=dtm_chunk_indexed,
+            discrete_transition_matrix=dtm_chunk,
             continuous_transition_matrix=continuous_transition_matrix_jax,
-            state_ind=None,  # Already indexed
+            state_ind=state_ind_jax,  # Index states per step inside the scan
             filtered_probs=causal_posterior_jax[time_inds],
             initial=(
                 causal_posterior_jax[-1]
