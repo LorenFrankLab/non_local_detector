@@ -1,7 +1,9 @@
 import networkx as nx
 import numpy as np
+import pytest
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
@@ -305,3 +307,23 @@ def test_get_distances_to_interior_bins_gap_position_snaps_to_nearest_interior()
     assert np.any(distances[0] == 0.0), (
         f"Expected a zero self-distance from the snapped bin. Got: {distances[0]}"
     )
+
+
+def test_place_bin_size_tuple_rejected():
+    """Track-graph environments must reject tuple ``place_bin_size``.
+
+    The linearized track-graph path supports a single bin size along the
+    manifold. Passing a tuple should raise a clear ``ValidationError``
+    instead of crashing later inside ``np.linspace`` in
+    ``make_track_graph_with_bin_centers_edges``.
+    """
+    g, edge_order, edge_spacing = make_line_graph(10.0)
+    env = Environment(
+        environment_name="line-graph",
+        place_bin_size=(2.0, 2.0),
+        track_graph=g,
+        edge_order=edge_order,
+        edge_spacing=edge_spacing,
+    )
+    with pytest.raises(ValidationError, match="scalar"):
+        env.fit_place_grid()

@@ -120,6 +120,45 @@ class TestGetHPDSpatialCoverage:
 
         assert np.all(coverage >= 0)
 
+    def test_hpd_spatial_coverage_2d(self):
+        """2D posterior coverage equals (bins-in-HPD) * x_width * y_width.
+
+        Constructs a 5x5 grid with bin widths ``(0.1, 0.2)`` (bin area
+        ``0.02``). Each frame has a single bin with all the mass, so the
+        HPD region contains exactly one bin and the spatial coverage equals
+        the bin area.
+        """
+        n_time = 3
+        x_positions = np.arange(0.0, 0.5, 0.1)  # 5 bins, width 0.1
+        y_positions = np.arange(0.0, 1.0, 0.2)  # 5 bins, width 0.2
+        bin_area = 0.1 * 0.2
+
+        probs = np.zeros((n_time, len(x_positions), len(y_positions)))
+        # Deterministically pick a single peak bin per frame.
+        peak_indices = [(0, 0), (2, 3), (4, 4)]
+        for t, (ix, iy) in enumerate(peak_indices):
+            probs[t, ix, iy] = 1.0
+
+        posterior = xr.DataArray(
+            probs,
+            dims=["time", "x_position", "y_position"],
+            coords={"x_position": x_positions, "y_position": y_positions},
+        )
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
+
+        coverage = get_HPD_spatial_coverage(posterior, threshold)
+
+        assert coverage.shape == (n_time,)
+        np.testing.assert_allclose(coverage, bin_area, atol=1e-12)
+
+    def test_hpd_spatial_coverage_rejects_unknown_dims(self):
+        """Posteriors lacking ``position`` or ``x_position``/``y_position`` dims raise."""
+        probs = np.zeros((1, 4))
+        probs[0, 1] = 1.0
+        posterior = xr.DataArray(probs, dims=["time", "unsupported"])
+        with pytest.raises(ValueError, match="x_position"):
+            get_HPD_spatial_coverage(posterior, np.array([0.5]))
+
 
 # ---------------------------------------------------------------------------
 # KL divergence tests

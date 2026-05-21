@@ -7,6 +7,9 @@ Simulator return contract (decoder-ready):
 - position_time / position: used for local decoding & encoding interpolation
 All times are in SECONDS. No NaNs in marks. Empty electrodes: (0,), (0, n_features).
 
+``MARK_SPACING`` is the canonical mark-center spacing; do not introduce
+per-function overrides.
+
 See tests._sim_contract.ClusterlessSimOutput for the full contract definition.
 """
 
@@ -111,7 +114,7 @@ def make_simulated_run_data(
                 simulate_multiunit_with_place_fields(
                     place_means,
                     position_1d,
-                    mark_spacing=10,
+                    mark_spacing=MARK_SPACING,
                     n_mark_dims=4,
                     place_variance=place_field_variance,
                     sampling_frequency=sampling_frequency,
@@ -127,7 +130,7 @@ def make_simulated_run_data(
                     simulate_multiunit_with_place_fields(
                         place_means,
                         position_1d,
-                        mark_spacing=10,
+                        mark_spacing=MARK_SPACING,
                         n_mark_dims=4,
                         sampling_frequency=sampling_frequency,
                         place_variance=place_field_variance,

@@ -8,6 +8,7 @@ from scipy.stats import multivariate_normal  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ConfigurationError
 
 
 def _normalize_row_probability(x: np.ndarray) -> np.ndarray:
@@ -224,6 +225,23 @@ class RandomWalk:
                 )
 
             if self.direction is not None:
+                if self.environment.track_graphDD is None or not isinstance(
+                    self.environment.distance_between_nodes_, np.ndarray
+                ):
+                    raise ConfigurationError(
+                        (
+                            "direction-aware RandomWalk requires an N-D track graph "
+                            "and an array-valued distance_between_nodes_; got "
+                            f"track_graphDD={self.environment.track_graphDD!r}, "
+                            "distance_between_nodes_="
+                            f"{type(self.environment.distance_between_nodes_).__name__}."
+                        ),
+                        hint=(
+                            "Either remove direction= argument or construct the "
+                            "environment with use_manifold_distance and a fitted "
+                            "N-D grid."
+                        ),
+                    )
                 direction_funcs = {
                     "inward": np.greater_equal,
                     "outward": np.less_equal,

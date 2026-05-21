@@ -251,6 +251,15 @@ try:
             y_min,
             y_width,
         ) = get_base_track_information(posterior)
+        n_position_bins = x_count * y_count
+        if n_position_bins > np.iinfo(np.uint16).max:
+            raise ValueError(
+                f"figurl_2D decoded-position rendering currently supports grids up to "
+                f"{np.iinfo(np.uint16).max} bins; got {n_position_bins} "
+                f"(x_count={x_count}, y_count={y_count}). The sortingview "
+                f"DecodedPositionData schema receives 'locations' as uint16; verify "
+                f"the schema before widening the dtype here."
+            )
         location_fn = generate_linearization_function(
             location_lookup, x_count, x_min, x_width, y_min, y_width
         )

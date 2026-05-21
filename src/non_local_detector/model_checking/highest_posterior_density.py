@@ -73,10 +73,9 @@ def get_HPD_spatial_coverage(
 
     Parameters
     ----------
-    posterior : xarray.DataArray, shape (n_time, n_position_bins) or
-        shape (n_time, n_x_bins, n_y_bins)
-        Posterior probability distributions over spatial position at each
-        time point. Must have a 'position' coordinate for spatial integration.
+    posterior : xarray.DataArray
+        Either ``(n_time, n_position_bins)`` with a ``position`` dim, or
+        ``(n_time, n_x_bins, n_y_bins)`` with ``x_position``/``y_position`` dims.
     hpd_threshold : np.ndarray, shape (n_time,)
         HPD threshold values for each time point, typically obtained from
         `get_highest_posterior_threshold`.
@@ -86,15 +85,27 @@ def get_HPD_spatial_coverage(
     spatial_coverage : np.ndarray, shape (n_time,)
         Total spatial area covered by the highest posterior density regions
         at each time point. Units depend on the spatial coordinate system
-        of the posterior (e.g., cm², m²).
+        of the posterior (e.g., cm for 1D, cm² for 2D).
 
     Notes
     -----
     The function assumes uniform spatial bin spacing and uses the first
-    difference of the position coordinate to determine bin width for
-    area calculation.
+    difference of the position coordinate(s) to determine the bin width
+    (1D) or bin area (2D) for the integral.
     """
-    isin_hpd = posterior >= hpd_threshold[:, np.newaxis]
-    return np.asarray(
-        (isin_hpd * np.diff(posterior.position)[0]).sum("position").values
+    if "position" in posterior.dims:
+        isin_hpd = posterior >= hpd_threshold[:, np.newaxis]
+        bin_width = float(np.diff(posterior.position)[0])
+        return np.asarray((isin_hpd * bin_width).sum("position").values)
+    if {"x_position", "y_position"}.issubset(posterior.dims):
+        isin_hpd = posterior >= hpd_threshold[:, np.newaxis, np.newaxis]
+        bin_area = float(np.diff(posterior.x_position)[0]) * float(
+            np.diff(posterior.y_position)[0]
+        )
+        return np.asarray(
+            (isin_hpd * bin_area).sum(["x_position", "y_position"]).values
+        )
+    raise ValueError(
+        "posterior must have 'position' or ('x_position', 'y_position') dims, "
+        f"got {tuple(posterior.dims)}"
     )

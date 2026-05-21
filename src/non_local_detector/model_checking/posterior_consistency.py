@@ -85,6 +85,13 @@ def posterior_consistency_hpd_overlap(
     The overlap is computed as the intersection of the HPD regions divided
     by the minimum of the two HPD region sizes to normalize for different
     region sizes.
+
+    This is the containment coefficient ``|A∩B| / min(|A|, |B|)``, bounded in
+    ``[0, 1]`` but asymmetric in a specific sense: if ``A ⊆ B``, the coefficient
+    is ``1.0`` even when ``B`` is much larger than ``A``. Use this when you want
+    to detect "is one HPD region fully contained in the other"; use
+    Sørensen-Dice (``|A∩B| / (|A| + |B|)``) or Jaccard (``|A∩B| / |A∪B|``) when
+    you want a symmetric overlap proportion.
     """
     posterior = np.asarray(posterior)
     likelihood = np.asarray(likelihood)
