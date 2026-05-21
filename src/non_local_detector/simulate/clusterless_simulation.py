@@ -119,7 +119,7 @@ def make_simulated_run_data(
                 )
             )
     else:
-        trajectory_direction = get_trajectory_direction(position_1d)
+        trajectory_direction, _ = get_trajectory_direction(position_1d)
         for direction in np.unique(trajectory_direction):
             is_condition = trajectory_direction == direction
             for place_means in place_field_means.reshape((n_tetrodes, -1)):
