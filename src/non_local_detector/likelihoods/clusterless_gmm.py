@@ -4,8 +4,6 @@ Clusterless decoding using Gaussian Mixture Models (GMM)
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -137,55 +135,6 @@ def _fit_gmm_density(
 
 
 # ---------------------------------------------------------------------
-# Encoded model container (DEPRECATED: Use dictionary for now)
-# ---------------------------------------------------------------------
-# NOTE: EncodingModel dataclass is kept for future migration but not currently used.
-# All functions now use dictionary-based encoding models for compatibility with
-# existing architecture. Eventually, all likelihood models should transition to
-# using dataclasses for better type safety and IDE support.
-
-
-@dataclass
-class EncodingModel:
-    """
-    Container for everything the decoder needs (precomputed & cached).
-
-    Attributes
-    ----------
-    environment : Environment
-    occupancy_model : GaussianMixtureModel
-        GMM over position for occupancy.
-    interior_place_bin_centers : jnp.ndarray, shape (n_bins, n_pos_dims)
-        Interior bin centers.
-    occupancy_bins : jnp.ndarray, shape (n_bins,)
-        Occupancy density at interior bin centers.
-    log_occupancy_bins : jnp.ndarray, shape (n_bins,)
-        Log occupancy density at interior bin centers.
-    gpi_models : list[GaussianMixtureModel]
-        Per-electrode GMMs over position (spike ground process intensity).
-    joint_models : list[GaussianMixtureModel]
-        Per-electrode GMMs over [position, waveform].
-    mean_rates : jnp.ndarray, shape (n_electrodes,)
-        Mean firing rate per electrode during encoding.
-    summed_ground_process_intensity : jnp.ndarray, shape (n_bins,)
-        Sum over electrodes of mean_rate * (gpi / occupancy) at interior bins.
-    position_time : jnp.ndarray, shape (n_time_position,)
-        Position timestamps used in encoding (needed for interpolation in local decoding).
-    """
-
-    environment: Environment
-    occupancy_model: GaussianMixtureModel
-    interior_place_bin_centers: jnp.ndarray
-    occupancy_bins: jnp.ndarray
-    log_occupancy_bins: jnp.ndarray
-    gpi_models: list[GaussianMixtureModel]
-    joint_models: list[GaussianMixtureModel]
-    mean_rates: jnp.ndarray
-    summed_ground_process_intensity: jnp.ndarray
-    position_time: jnp.ndarray
-
-
-# ---------------------------------------------------------------------
 # Encoding (fit) — GMM
 # ---------------------------------------------------------------------
 
@@ -208,7 +157,7 @@ def fit_clusterless_gmm_encoding_model(
     gmm_random_state: int | None = 0,
     disable_progress_bar: bool = False,
     **kwargs,  # Accept but ignore KDE-specific parameters for API compatibility
-) -> EncodingModel:
+) -> dict:
     """
     Fit the clusterless encoding model using GMMs.
 
