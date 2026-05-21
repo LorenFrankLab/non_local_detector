@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `_DetectorBase.estimate_parameters` (and all detector subclasses that inherit it) now sets three new attributes when EM finishes: `converged_` (`bool` — True if EM met its tolerance before `max_iter`), `n_iter_` (`int` — number of EM iterations actually performed), and `em_monotonicity_violations_` (`list[int]` — 1-based iteration indices where the marginal log-likelihood decreased, empty when EM is well-behaved).
+- `likelihoods.gmm.GaussianMixtureModel.converged_` now reflects the actual EM lower-bound convergence flag from `_em_fit_while_loop`, replacing the prior heuristic `n_iter < max_iter`. A `UserWarning` is emitted at the end of `fit` when the model did not converge.
+- `likelihoods.sorted_spikes_glm.fit_poisson_regression` now emits a `UserWarning` when SciPy's BFGS optimizer reports `success=False`, including the BFGS message, iteration count, and final loss. Place-field coefficients may be unreliable in that case.
+- `core._condition_on` now falls back to the predicted distribution at degenerate timesteps where every state has `-inf` log-likelihood (previously emitted an invalid all-zero posterior). `log_norm` is set to `-inf` for those steps so the marginal log-likelihood reflects the impossible-data step. The host-side `filter`, `filter_covariate_dependent`, `chunked_filter_smoother`, and `chunked_filter_smoother_covariate_dependent` functions now log a single `logger.warning` summarizing the count of degenerate timesteps when any are found.
+
 ### Fixed
 
 - `analysis.distance1D.get_map_speed`: the trailing boundary speed was inserted before the last array element instead of appended; for every chunk with three or more time bins, the final two speed samples were misordered.
@@ -20,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- EM iterations where the marginal log-likelihood decreased (previously silent) now log a `logger.warning` describing the iteration index, before/after log-likelihoods, and change magnitude. The iteration index is also appended to `em_monotonicity_violations_`.
+- EM that exits via `max_iter` without converging (previously silent) now emits a `UserWarning` describing the final log-likelihood change, the tolerance, and that fitted parameters may be biased.
+- The final E-step now checks that the post-M-step log-likelihood did not decrease by more than `tolerance`; a `UserWarning` flags inconsistencies between the E-step and the M-step output.
+- **Note on previously-silent issues now surfaced:** several pre-existing tests of the sorted-spikes GLM encoding path emit the new `UserWarning` for non-convergent BFGS exits. The fitted coefficients still satisfy the existing test assertions, but the warning indicates these tests have been silently fitting non-converged models. The `test_sorted_spikes_glm_encoding_runs_end_to_end` integration test additionally trips the new max-iter and final-E-step warnings under default parameters. None are regressions from these changes; they are previously-silent issues now made visible. Investigation of GLM EM convergence behavior is tracked as a follow-up.
 - `model_checking.posterior_consistency.posterior_consistency_hpd_overlap`: docstring expanded with a Notes block explaining that the metric is the containment coefficient (`|A∩B| / min(|A|, |B|)`) — asymmetric — rather than Sørensen-Dice or Jaccard. The implementation is unchanged.
 
 ### Removed

@@ -12,11 +12,14 @@ Testing philosophy:
 4. Test scaling to different problem sizes
 """
 
+import logging
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from non_local_detector.core import filter, smoother, viterbi
+from non_local_detector import core as core_module
+from non_local_detector.core import _condition_on, filter, smoother, viterbi
 
 
 @pytest.mark.unit
@@ -467,3 +470,131 @@ class TestViterbi:
         # Assert
         assert jnp.all((states >= 0) & (states < 3))
         assert len(jnp.unique(states)) > 1  # Path should visit multiple states
+
+
+@pytest.mark.unit
+class TestConditionOnDegenerateLikelihoods:
+    """Behaviour of ``_condition_on`` when every state has -inf log-likelihood.
+
+    A degenerate timestep means no state has any finite evidence; rather than
+    return an all-zero (unnormalized) posterior, the predicted distribution is
+    returned unchanged and ``log_norm`` is set to -inf so callers can detect
+    the situation on the host.
+    """
+
+    def test_condition_on_all_inf_falls_back_to_predicted(self):
+        """All -inf log-likelihoods leave predicted probabilities unchanged."""
+        # Arrange
+        probs = jnp.array([0.3, 0.7])
+        ll = jnp.array([-jnp.inf, -jnp.inf])
+
+        # Act
+        new_probs, log_norm = _condition_on(probs, ll)
+
+        # Assert
+        assert jnp.allclose(new_probs, probs, atol=1e-7)
+        assert jnp.isneginf(log_norm)
+        # The predicted distribution is preserved (it already sums to 1).
+        assert jnp.allclose(new_probs.sum(), 1.0, atol=1e-7)
+
+    def test_condition_on_partial_inf_still_normalizes(self):
+        """A single finite state still yields a valid normalized posterior."""
+        # Arrange: state 0 is impossible, state 1 has finite log-likelihood.
+        probs = jnp.array([0.4, 0.6])
+        ll = jnp.array([-jnp.inf, -0.5])
+
+        # Act
+        new_probs, log_norm = _condition_on(probs, ll)
+
+        # Assert
+        assert jnp.all(new_probs >= 0)
+        assert jnp.allclose(new_probs.sum(), 1.0, atol=1e-7)
+        # The -inf state must receive zero posterior mass.
+        assert float(new_probs[0]) == 0.0
+        assert float(new_probs[1]) == pytest.approx(1.0, abs=1e-7)
+        assert jnp.isfinite(log_norm)
+
+    def test_condition_on_all_finite_matches_legacy_normalization(self):
+        """Well-behaved input is unchanged from the pre-fallback path."""
+        # Arrange
+        probs = jnp.array([0.4, 0.6])
+        ll = jnp.array([-1.0, -2.0])
+
+        # Act
+        new_probs, log_norm = _condition_on(probs, ll)
+
+        # Assert: reproduce the math by hand.
+        weights = probs * jnp.exp(ll - ll.max())
+        expected_probs = weights / weights.sum()
+        expected_log_norm = jnp.log(weights.sum()) + ll.max()
+        assert jnp.allclose(new_probs, expected_probs, atol=1e-7)
+        assert jnp.isclose(log_norm, expected_log_norm, atol=1e-7)
+
+
+@pytest.mark.unit
+class TestFilterDegenerateTimestepWarning:
+    """Host-side warning when the filter encounters all-impossible likelihoods."""
+
+    def test_filter_degenerate_step_warns(self, caplog):
+        """A time step with all -inf log-likelihoods triggers a logger.warning.
+
+        The posterior at that step should fall back to the predicted
+        distribution, and the remainder of the filter should complete normally.
+        """
+        # Arrange
+        init = jnp.array([0.5, 0.5])
+        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
+        # Three timesteps: middle one has all -inf log-likelihoods.
+        log_likes = jnp.array(
+            [
+                [0.0, -1.0],
+                [-jnp.inf, -jnp.inf],
+                [0.0, -1.0],
+            ]
+        )
+
+        # Act
+        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+            (_, (filtered, predicted)) = filter(init, trans, log_likes)
+
+        # Assert: warning records present and mention all-impossible likelihoods.
+        warning_records = [
+            r
+            for r in caplog.records
+            if "all-impossible" in r.getMessage() and r.levelno == logging.WARNING
+        ]
+        assert warning_records, (
+            "Expected a logger.warning about degenerate timesteps; "
+            f"got records: {[r.getMessage() for r in caplog.records]}"
+        )
+
+        # The posterior at the degenerate step equals the predicted distribution.
+        assert jnp.allclose(filtered[1], predicted[1], atol=1e-7)
+        assert jnp.allclose(filtered[1].sum(), 1.0, atol=1e-7)
+
+        # The first and third timesteps complete normally.
+        assert jnp.all(jnp.isfinite(filtered[0]))
+        assert jnp.all(jnp.isfinite(filtered[2]))
+        assert jnp.allclose(filtered[0].sum(), 1.0, atol=1e-6)
+        assert jnp.allclose(filtered[2].sum(), 1.0, atol=1e-6)
+
+    def test_filter_well_behaved_input_emits_no_warning(self, caplog):
+        """A finite-everywhere filter run should not emit the degenerate warning."""
+        # Arrange
+        init = jnp.array([0.5, 0.5])
+        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
+        rng = np.random.default_rng(7)
+        log_likes = jnp.array(rng.standard_normal((10, 2)))
+
+        # Act
+        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+            filter(init, trans, log_likes)
+
+        # Assert: no degenerate-step warnings.
+        warning_records = [
+            r for r in caplog.records if "all-impossible" in r.getMessage()
+        ]
+        assert not warning_records, (
+            f"Did not expect degenerate-step warnings; got: "
+            f"{[r.getMessage() for r in warning_records]}"
+        )
