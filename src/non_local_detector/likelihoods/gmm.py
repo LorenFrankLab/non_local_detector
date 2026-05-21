@@ -11,6 +11,7 @@ leveraging JAX for efficient computation on both CPU and GPU.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Literal
@@ -743,11 +744,24 @@ class GaussianMixtureModel:
             None if sample_weight is None else jnp.asarray(sample_weight, dtype=X.dtype)
         )
 
+        # Default state before any init is evaluated. If every init returns
+        # final_lb == -inf the `if final_lb > best_lower_bound` block below
+        # never fires; the `weights_ is None` guard then raises, but having
+        # these set keeps downstream code (the converged_ warning) robust to
+        # future changes in init semantics.
+        self.converged_ = False
+        self.n_iter_ = 0
+
         for i in range(self.n_init):
             params = self._initialize_parameters(X, init_keys[i], sample_weight=sw)
-            final_w, final_m, final_S, final_lb, n_iter = self._fit_single(
-                X, params, sample_weight=sw
-            )
+            (
+                final_w,
+                final_m,
+                final_S,
+                final_lb,
+                n_iter,
+                final_converged,
+            ) = self._fit_single(X, params, sample_weight=sw)
 
             if final_lb > best_lower_bound:
                 best_lower_bound = final_lb
@@ -758,11 +772,20 @@ class GaussianMixtureModel:
                     self.covariances_, self.covariance_type
                 )
                 self.n_iter_ = n_iter
-                self.converged_ = n_iter < self.max_iter
+                self.converged_ = bool(final_converged)
 
         self.lower_bound_ = float(best_lower_bound)
         if self.weights_ is None:
             raise RuntimeError("Fitting failed.")
+
+        if not self.converged_:
+            warnings.warn(
+                f"GaussianMixture did not converge after {self.max_iter} iterations. "
+                f"Final lower-bound delta exceeded tol={self.tol:.3e}.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         return self
 
     def predict(self, X: Array) -> Array:
@@ -954,7 +977,7 @@ class GaussianMixtureModel:
         X: Array,
         params: Params,
         sample_weight: Array | None = None,
-    ) -> tuple[Array, Array, Array, float, int]:
+    ) -> tuple[Array, Array, Array, float, int, bool]:
         """
         Run a single EM fit from given initial parameters.
 
@@ -974,8 +997,11 @@ class GaussianMixtureModel:
             Final average lower bound.
         n_iter : int
             Number of EM iterations performed.
+        converged : bool
+            True if the EM lower-bound delta dropped below ``tol`` before
+            hitting ``max_iter``.
         """
-        final_params, final_lb, n_iter, _ = _em_fit_while_loop(
+        final_params, final_lb, n_iter, final_converged = _em_fit_while_loop(
             X=X,
             init_params=params,
             tol=self.tol,
@@ -991,4 +1017,5 @@ class GaussianMixtureModel:
             final_covariances,
             float(final_lb),
             int(n_iter),
+            bool(final_converged),
         )

@@ -49,6 +49,8 @@ context and uses common helper functions for spike counting and position
 interpolation.
 """
 
+import warnings
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -191,6 +193,15 @@ def fit_poisson_regression(
         jac=dlike,
         tol=1e-5,  # Added tolerance for potentially better convergence
     )
+
+    if not res.success:
+        warnings.warn(
+            f"GLM Poisson regression did not converge: {res.message}. "
+            f"Place-field coefficients may be unreliable. "
+            f"(n_iter={res.nit}, final loss={res.fun:.6f})",
+            UserWarning,
+            stacklevel=2,
+        )
 
     return jnp.asarray(res.x)
 

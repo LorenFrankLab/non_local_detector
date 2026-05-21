@@ -14,6 +14,8 @@ Key mathematical relationships:
 As K→∞, GMM → KDE (in the limit).
 """
 
+import warnings
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -29,6 +31,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 
 
 @pytest.fixture
@@ -348,3 +351,38 @@ def test_visualize_convergence(convergence_test_data):
     plt.tight_layout()
     plt.savefig("gmm_kde_convergence.png", dpi=150, bbox_inches="tight")
     print("\nSaved visualization to gmm_kde_convergence.png")
+
+
+def test_gmm_max_iter_warning():
+    """``GaussianMixtureModel.fit`` should warn and set ``converged_=False``
+    when EM hits ``max_iter`` before the lower-bound delta drops below ``tol``.
+    """
+    rng = np.random.default_rng(0)
+    # Two well-separated Gaussians: a reasonable EM target that still needs
+    # more than one iteration to drive the lower-bound delta below 1e-20.
+    X = jnp.asarray(
+        np.vstack(
+            [
+                rng.normal(loc=[0.0, 0.0], size=(100, 2)),
+                rng.normal(loc=[5.0, 5.0], size=(100, 2)),
+            ]
+        ).astype(np.float32)
+    )
+    key = jax.random.PRNGKey(0)
+
+    model = GaussianMixtureModel(n_components=3, max_iter=1, tol=1e-20)
+
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        model.fit(X, key)
+
+    assert model.converged_ is False
+    user_warnings = [
+        w
+        for w in recorded
+        if issubclass(w.category, UserWarning) and "did not converge" in str(w.message)
+    ]
+    assert user_warnings, (
+        f"Expected a UserWarning about non-convergence, got: "
+        f"{[str(w.message) for w in recorded]}"
+    )
