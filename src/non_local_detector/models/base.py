@@ -249,7 +249,21 @@ def _normalize_return_outputs(
 
 
 class _DetectorBase(BaseEstimator, abc.ABC):
-    """Base class for detector objects."""
+    """Base class for detector objects.
+
+    Attributes
+    ----------
+    converged_ : bool
+        True if EM converged within max_iter iterations. Set by
+        ``estimate_parameters``.
+    n_iter_ : int
+        Number of EM iterations actually performed. Set by
+        ``estimate_parameters``.
+    em_monotonicity_violations_ : list[int]
+        Iteration indices (1-based) where marginal log-likelihood
+        decreased. Empty list when EM is well-behaved. Set by
+        ``estimate_parameters``.
+    """
 
     # Type annotations for attributes assigned during fit
     discrete_state_transitions_: np.ndarray
@@ -1794,6 +1808,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         marginal_log_likelihoods = []
         n_iter = 0
         converged = False
+        log_likelihood_change = np.inf
+        self.em_monotonicity_violations_ = []
 
         # Validate required parameters
         if time is None:
@@ -2001,11 +2017,24 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 log_likelihood_change = (
                     marginal_log_likelihoods[-1] - marginal_log_likelihoods[-2]
                 )
-                converged, _ = check_converged(
+                converged, is_increasing = check_converged(
                     marginal_log_likelihoods[-1],
                     marginal_log_likelihoods[-2],
                     tolerance,
                 )
+
+                if not is_increasing:
+                    logger.warning(
+                        "EM iteration %d: marginal log-likelihood decreased "
+                        "from %.6f to %.6f (change=%.6e). This usually indicates "
+                        "a bug in the M-step, an aggressive convergence tolerance, "
+                        "or a numerical instability.",
+                        n_iter,
+                        marginal_log_likelihoods[-2],
+                        marginal_log_likelihoods[-1],
+                        log_likelihood_change,
+                    )
+                    self.em_monotonicity_violations_.append(n_iter)
 
                 logger.info(
                     f"iteration {n_iter}, "
@@ -2016,6 +2045,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 logger.info(
                     f"iteration {n_iter}, likelihood: {marginal_log_likelihoods[-1]}"
                 )
+
+        self.converged_ = bool(converged)
+        self.n_iter_ = int(n_iter)
+
+        if not self.converged_:
+            warnings.warn(
+                f"EM did not converge after max_iter={max_iter} iterations "
+                f"(final log-likelihood change={log_likelihood_change:.3e}, "
+                f"tolerance={tolerance:.3e}). Fitted parameters may be biased. "
+                f"Consider increasing max_iter or relaxing tolerance.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Final E-step after the last M-step so the returned posterior reflects
         # the final fitted parameters. Without this, the returned arrays are
@@ -2040,6 +2082,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             n_chunks=n_chunks,
         )
         marginal_log_likelihoods.append(marginal_log_likelihood)
+
+        if len(marginal_log_likelihoods) >= 2:
+            final_change = marginal_log_likelihoods[-1] - marginal_log_likelihoods[-2]
+            if final_change < -tolerance:
+                warnings.warn(
+                    f"Final E-step log-likelihood decreased by {-final_change:.3e} "
+                    f"(tolerance={tolerance:.3e}). This indicates an inconsistency "
+                    f"between the E-step and the M-step output and is unusual; the "
+                    f"returned posterior may not reflect the fitted parameters.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         if store_log_likelihood:
             self.log_likelihood_ = log_likelihood
