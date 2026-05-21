@@ -146,7 +146,9 @@ class ContFragSortedSpikesClassifier(SortedSpikesDetector):
 
         This method extracts and sums the posterior probabilities across all
         position bins to get the overall probability of each state (continuous
-        vs fragmented) at each time point.
+        vs fragmented) at each time point. All position-dimension names
+        (``position`` for 1D, ``x_position``/``y_position`` for 2D, and
+        ``dim{i}_position`` for higher-dimensional environments) are collapsed.
 
         Parameters
         ----------
@@ -160,7 +162,9 @@ class ContFragSortedSpikesClassifier(SortedSpikesDetector):
         xr.DataArray, shape (n_time, n_states)
             Posterior probabilities for each state at each time point,
             with dimensions (time, state) where states are
-            [Continuous, Fragmented].
+            [Continuous, Fragmented]. The state dim is named ``state``
+            (singular), matching the MultiIndex level name on
+            ``acausal_posterior``.
 
         Examples
         --------
@@ -168,8 +172,11 @@ class ContFragSortedSpikesClassifier(SortedSpikesDetector):
         >>> state_probs = classifier.get_posterior(results)
         >>> continuous_prob = state_probs.sel(state='Continuous')
         """
-        result = results.acausal_posterior.unstack("state_bins").sum("position")
-        return xr.DataArray(result)
+        unstacked = results.acausal_posterior.unstack("state_bins")
+        position_dims = [
+            d for d in unstacked.dims if d == "position" or d.endswith("_position")
+        ]
+        return unstacked.sum(position_dims)
 
 
 class ContFragClusterlessClassifier(ClusterlessDetector):
@@ -297,7 +304,9 @@ class ContFragClusterlessClassifier(ClusterlessDetector):
 
         This method extracts and sums the posterior probabilities across all
         position bins to get the overall probability of each state (continuous
-        vs fragmented) at each time point.
+        vs fragmented) at each time point. All position-dimension names
+        (``position`` for 1D, ``x_position``/``y_position`` for 2D, and
+        ``dim{i}_position`` for higher-dimensional environments) are collapsed.
 
         Parameters
         ----------
@@ -311,7 +320,9 @@ class ContFragClusterlessClassifier(ClusterlessDetector):
         xr.DataArray, shape (n_time, n_states)
             Posterior probabilities for each state at each time point,
             with dimensions (time, state) where states are
-            [Continuous, Fragmented].
+            [Continuous, Fragmented]. The state dim is named ``state``
+            (singular), matching the MultiIndex level name on
+            ``acausal_posterior``.
 
         Examples
         --------
@@ -319,5 +330,8 @@ class ContFragClusterlessClassifier(ClusterlessDetector):
         >>> state_probs = classifier.get_posterior(results)
         >>> continuous_prob = state_probs.sel(state='Continuous')
         """
-        result = results.acausal_posterior.unstack("state_bins").sum("position")
-        return xr.DataArray(result)
+        unstacked = results.acausal_posterior.unstack("state_bins")
+        position_dims = [
+            d for d in unstacked.dims if d == "position" or d.endswith("_position")
+        ]
+        return unstacked.sum(position_dims)

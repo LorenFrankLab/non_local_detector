@@ -78,3 +78,12 @@ class TestEstimateParametersPredictConsistency:
             f"Final marginal LL from estimate_parameters ({est_final_ll}) does "
             f"not match predict() LL ({pred_ll_scalar})."
         )
+
+        # After EM completes the cached encoding-model data (spike times,
+        # waveform features, position) must be cleaned up. Earlier code used
+        # the wrong attribute name and silently retained these arrays for the
+        # lifetime of the model.
+        assert not hasattr(decoder, "_encoding_model_data"), (
+            "estimate_parameters must clean up the cached _encoding_model_data "
+            "attribute when EM completes; it is still present on the model."
+        )

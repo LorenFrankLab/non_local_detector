@@ -2044,8 +2044,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         if store_log_likelihood:
             self.log_likelihood_ = log_likelihood
 
-        if hasattr(self, "encoding_model_data_"):
-            del self.encoding_model_data_
+        if hasattr(self, "_encoding_model_data"):
+            del self._encoding_model_data
 
         return self._convert_results_to_xarray(
             time,
