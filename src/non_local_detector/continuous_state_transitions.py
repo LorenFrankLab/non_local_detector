@@ -7,7 +7,7 @@ import numpy as np
 from scipy.stats import multivariate_normal  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ConfigurationError
 
 
@@ -181,7 +181,7 @@ class RandomWalk:
             raise ValueError(
                 f"direction must be 'inward' or 'outward', got '{self.direction}'"
             )
-        self.environment = environments[environments.index(self.environment_name)]
+        self.environment = find_environment_by_name(environments, self.environment_name)
         if self.environment.track_graph is None:
             transition_matrix = self._handle_no_track_graph()
         else:
@@ -330,7 +330,9 @@ class Uniform:
         state_transition_matrix : np.ndarray, shape (n_bins1, n_bins2)
             Row-normalized uniform transition probability matrix.
         """
-        self.environment1 = environments[environments.index(self.environment_name)]
+        self.environment1 = find_environment_by_name(
+            environments, self.environment_name
+        )
         if self.environment1.place_bin_centers_ is not None:
             n_bins1 = self.environment1.place_bin_centers_.shape[0]
         else:
@@ -345,7 +347,9 @@ class Uniform:
             n_bins2 = n_bins1
             is_track_interior2 = is_track_interior1.copy()
         else:
-            self.environment2 = environments[environments.index(self.environment2_name)]
+            self.environment2 = find_environment_by_name(
+                environments, self.environment2_name
+            )
             if self.environment2.place_bin_centers_ is not None:
                 n_bins2 = self.environment2.place_bin_centers_.shape[0]
             else:
@@ -391,7 +395,7 @@ class Identity:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Identity matrix where invalid bins have zero probability.
         """
-        self.environment = environments[environments.index(self.environment_name)]
+        self.environment = find_environment_by_name(environments, self.environment_name)
         if self.environment.place_bin_centers_ is not None:
             n_bins = self.environment.place_bin_centers_.shape[0]
         else:
@@ -460,7 +464,7 @@ class EmpiricalMovement:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized transition probability matrix, potentially powered by `speedup`.
         """
-        self.environment = environments[environments.index(self.environment_name)]
+        self.environment = find_environment_by_name(environments, self.environment_name)
 
         n_time = position.shape[0]
         if is_training is None:
@@ -547,7 +551,7 @@ class RandomWalkDirection1:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized upper triangular transition matrix.
         """
-        self.environment = environments[environments.index(self.environment_name)]
+        self.environment = find_environment_by_name(environments, self.environment_name)
         random = RandomWalk(
             self.environment_name, self.movement_var
         ).make_state_transition(environments)
@@ -587,7 +591,7 @@ class RandomWalkDirection2:
         state_transition_matrix : np.ndarray, shape (n_position_bins, n_position_bins)
             Row-normalized lower triangular transition matrix.
         """
-        self.environment = environments[environments.index(self.environment_name)]
+        self.environment = find_environment_by_name(environments, self.environment_name)
         random = RandomWalk(
             self.environment_name, self.movement_var
         ).make_state_transition(environments)

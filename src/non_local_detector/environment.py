@@ -80,6 +80,37 @@ def get_centers(bin_edges: np.ndarray) -> np.ndarray:
     return bin_edges[:-1] + np.diff(bin_edges) / 2
 
 
+def find_environment_by_name(
+    environments: Sequence["Environment"],
+    name: str,
+) -> "Environment":
+    """Look up an environment in a sequence by its ``environment_name``.
+
+    Parameters
+    ----------
+    environments : sequence of Environment
+    name : str
+        The ``environment_name`` to match.
+
+    Returns
+    -------
+    Environment
+
+    Raises
+    ------
+    KeyError
+        If no environment with the given name is present.
+    """
+    for env in environments:
+        if env.environment_name == name:
+            return env
+    raise KeyError(
+        f"No environment with name {name!r} in environments list of "
+        f"length {len(environments)}; available names: "
+        f"{[e.environment_name for e in environments]}"
+    )
+
+
 @dataclass
 class Environment:
     """Represent the spatial environment with a discrete grid.
@@ -178,6 +209,13 @@ class Environment:
     nodes_df_: pd.DataFrame | None = None
     # Internal flag
     _is_fitted: bool = False
+
+    # ``@dataclass(eq=True)`` (the default) sets ``__hash__`` to ``None`` on
+    # the class, making instances unhashable. ``Environment`` carries
+    # post-fit numpy/networkx attributes that have no meaningful value-hash,
+    # so we restore identity-based hashing — instances can be used as dict
+    # keys or in sets, but equal-but-distinct instances are not collapsed.
+    __hash__ = object.__hash__
 
     def __post_init__(self) -> None:
         """Validate Environment parameters after initialization."""
@@ -376,9 +414,6 @@ class Environment:
                     hint="The minimum value must be less than the maximum value",
                     example=f"    position_range[{i}] = ({min_val}, {max_val + 1.0})",
                 )
-
-    def __eq__(self, other: str) -> bool:
-        return self.environment_name == other
 
     def fit_place_grid(
         self, position: np.ndarray | None = None, infer_track_interior: bool = True

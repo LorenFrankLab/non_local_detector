@@ -5,6 +5,7 @@ import numpy as np
 import xarray as xr
 from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
+from non_local_detector.environment import find_environment_by_name
 from non_local_detector.models.base import _DetectorBase
 
 
@@ -82,7 +83,7 @@ def _get_MAP_estimate_2d_position_edges(
     """
     try:
         environments = decoder.environments
-        env = environments[environments.index(environment_name)]
+        env = find_environment_by_name(environments, environment_name)
     except AttributeError:
         try:
             env = decoder.environment

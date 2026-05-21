@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.observation_models import ObservationModel
 
 
@@ -58,9 +58,9 @@ class UniformInitialConditions:
         if observation_model.is_local or observation_model.is_no_spike:
             initial_conditions = np.ones((1,), dtype=np.float32)
         else:
-            environment = environments[
-                environments.index(observation_model.environment_name)
-            ]
+            environment = find_environment_by_name(
+                environments, observation_model.environment_name
+            )
             if environment.is_track_interior_ is not None:
                 initial_conditions = environment.is_track_interior_.ravel().astype(
                     np.float32
