@@ -2,7 +2,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
@@ -327,3 +327,64 @@ def test_place_bin_size_tuple_rejected():
     )
     with pytest.raises(ValidationError, match="scalar"):
         env.fit_place_grid()
+
+
+# =============================================================================
+# Equality, hashing, and lookup helper
+# =============================================================================
+
+
+def test_environment_is_hashable():
+    """Environment instances are hashable and use dataclass-default equality.
+
+    Hashing is identity-based (the dataclass holds post-fit numpy / graph
+    attributes that have no meaningful value-hash), so a single instance
+    can be stored in a set, but equality is value-based via the dataclass
+    auto-generated ``__eq__``.
+    """
+    env_a = Environment(environment_name="track1", place_bin_size=2.0)
+
+    # hash() succeeds
+    hash(env_a)
+
+    # The same instance dedupes in a set
+    assert len({env_a, env_a}) == 1
+
+    # Self-equality
+    assert env_a == env_a
+
+    # Two distinct instances with identical spec fields compare equal
+    # (consequence of dataclass auto-eq).
+    env_a_copy = Environment(environment_name="track1", place_bin_size=2.0)
+    assert env_a == env_a_copy
+
+    # Distinct environments are not equal
+    env_b = Environment(environment_name="track2", place_bin_size=2.0)
+    assert env_a != env_b
+
+
+def test_two_environments_with_same_name_not_eq():
+    """Two Environments with the same name but different fields are NOT equal.
+
+    Before the ``__eq__(self, other: str)`` override was removed, these would
+    compare equal because the override compared one instance's
+    ``environment_name`` against the second operand (treating it as a string).
+    With the dataclass-generated ``__eq__``, all fields are compared.
+    """
+    env_a = Environment(environment_name="track1", place_bin_size=2.0)
+    env_b = Environment(environment_name="track1", place_bin_size=4.0)
+
+    assert env_a != env_b
+
+
+def test_find_environment_by_name():
+    """find_environment_by_name returns the matching env or raises KeyError."""
+    env_a = Environment(environment_name="track1", place_bin_size=2.0)
+    env_b = Environment(environment_name="track2", place_bin_size=2.0)
+    envs = (env_a, env_b)
+
+    assert find_environment_by_name(envs, "track1") is env_a
+    assert find_environment_by_name(envs, "track2") is env_b
+
+    with pytest.raises(KeyError, match="missing"):
+        find_environment_by_name(envs, "missing")
