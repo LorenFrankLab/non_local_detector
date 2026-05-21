@@ -1,77 +1,62 @@
 import numpy as np
-from scipy.stats import multivariate_normal, norm  # type: ignore[import-untyped]
+from scipy.stats import norm  # type: ignore[import-untyped]
+
+from non_local_detector.simulate._common import (
+    get_trajectory_direction,
+    simulate_neuron_with_place_field,
+    simulate_place_field_firing_rate,
+    simulate_poisson_spikes,
+    simulate_time,
+)
+
+__all__ = [
+    "create_place_field",
+    "estimate_position_density",
+    "estimate_position_distance",
+    "gaussian_pdf",
+    "get_firing_rate",
+    "get_trajectory_direction",
+    "make_continuous_replay",
+    "make_fragmented_replay",
+    "make_simulated_data",
+    "simulate_linear_distance_with_pauses",
+    "simulate_neuron_with_place_field",
+    "simulate_place_field_firing_rate",
+    "simulate_poisson_spikes",
+    "simulate_time",
+    "simulate_two_state_inhomogenous_poisson",
+]
 
 TRACK_HEIGHT = 170
 SAMPLING_FREQUENCY = 1500
 
 
-def simulate_poisson_spikes(
-    rate: np.ndarray,
-    sampling_frequency: float,
-    seed: int | None = None,
-    rng: np.random.Generator | None = None,
+def _simulate_sinusoidal_position_by_period(
+    time: np.ndarray, track_height: float, period: float = 10.0
 ) -> np.ndarray:
-    """Given a rate, returns a time series of spikes.
-    Parameters
-    ----------
-    rate : np.ndarray, shape (n_time,)
-    sampling_frequency : float
-    seed : int | None, optional
-        Random seed for reproducibility. Ignored if rng is provided.
-    rng : np.random.Generator or None, optional
-        Random number generator. If None, creates one from seed.
-    Returns
-    -------
-    spikes : np.ndarray, shape (n_time,)
-    """
-    if rng is None:
-        rng = np.random.default_rng(seed)
-    return rng.poisson(rate / sampling_frequency)
+    """Simulate a sinusoidal back-and-forth trajectory parameterized by period.
 
-
-def simulate_time(n_samples: int, sampling_frequency: float) -> np.ndarray:
-    """Generate a time vector given the number of samples and sampling frequency.
-
-    Parameters
-    ----------
-    n_samples : int
-    sampling_frequency : float
-        Samples per second.
-
-    Returns
-    -------
-    time : np.ndarray, shape (n_samples,)
-    """
-    return np.arange(n_samples) / sampling_frequency
-
-
-def simulate_position(
-    time: np.ndarray, track_height: float, running_speed: float = 10.0
-) -> np.ndarray:
-    """Simulate sinusoidal position trajectory for a linear track.
-
-    Generates a sinusoidal position trajectory that oscillates between
-    0 and track_height, simulating an animal running back and forth
-    on a linear track.
+    Unlike the velocity-parameterized ``simulate_position`` in
+    ``non_local_detector.simulate.simulate``, this helper takes ``period``
+    (seconds per full back-and-forth cycle) directly. Used internally by
+    the sorted-spikes simulator workflows.
 
     Parameters
     ----------
     time : np.ndarray, shape (n_time,)
         Time points for simulation.
     track_height : float
-        Total height/length of the linear track.
-    running_speed : float, optional
-        Period of the sinusoidal motion, by default 10.0.
+        Total length of the linear track.
+    period : float, optional
+        Period of the sinusoidal motion in seconds (default 10.0).
 
     Returns
     -------
     position : np.ndarray, shape (n_time,)
-        Simulated position values ranging from 0 to track_height.
+        Simulated position ranging from 0 to ``track_height``.
     """
     half_height = track_height / 2
-    return (
-        half_height * np.sin(2 * np.pi * time / running_speed - np.pi / 2) + half_height
-    )
+    return half_height * np.sin(2 * np.pi * time / period - np.pi / 2) + half_height
 
 
 def create_place_field(
@@ -117,85 +102,6 @@ def create_place_field(
     field_firing_rate /= np.nanmax(field_firing_rate)
     field_firing_rate[~is_condition] = 0
     return baseline_firing_rate + max_firing_rate * field_firing_rate
-
-
-def simulate_place_field_firing_rate(
-    means: np.ndarray,
-    position: np.ndarray,
-    max_rate: float = 15.0,
-    variance: float = 12.5,
-    is_condition: np.ndarray | None = None,
-) -> np.ndarray:
-    """Simulates the firing rate of a neuron with a place field at `means`.
-
-    Parameters
-    ----------
-    means : ndarray, shape (n_position_dims,)
-    position : ndarray, shape (n_time, n_position_dims)
-    max_rate : float, optional
-    variance : float, optional
-    is_condition : None or ndarray, (n_time,)
-
-    Returns
-    -------
-    firing_rate : ndarray, shape (n_time,)
-    """
-    if is_condition is None:
-        is_condition = np.ones(position.shape[0], dtype=bool)
-    firing_rate = multivariate_normal(means, variance).pdf(position)
-    firing_rate /= firing_rate.max()
-    firing_rate *= max_rate
-    firing_rate[~is_condition] = 0.0
-
-    return firing_rate
-
-
-def simulate_neuron_with_place_field(
-    means: np.ndarray,
-    position: np.ndarray,
-    max_rate: float = 15.0,
-    variance: float = 12.5,
-    sampling_frequency: float = 500.0,
-    is_condition: np.ndarray | None = None,
-    rng: np.random.Generator | None = None,
-):
-    """Simulates the spiking of a neuron with a place field at `means`.
-
-    Parameters
-    ----------
-    means : ndarray, shape (n_position_dims,)
-    position : ndarray, shape (n_time, n_position_dims)
-    max_rate : float, optional
-    variance : float, optional
-    sampling_frequency : float, optional
-    is_condition : None or ndarray, (n_time,)
-    rng : np.random.Generator or None, optional
-
-    Returns
-    -------
-    spikes : ndarray, shape (n_time,)
-
-    """
-    firing_rate = simulate_place_field_firing_rate(
-        means, position, max_rate, variance, is_condition
-    )
-    return simulate_poisson_spikes(firing_rate, sampling_frequency, rng=rng)
-
-
-def get_trajectory_direction(position: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Get the direction of the trajectory.
-
-    Parameters
-    ----------
-    position : np.ndarray, shape (n_time, n_position_dims)
-
-    Returns
-    -------
-    direction : np.ndarray, shape (n_time,)
-    is_inbound : np.ndarray, shape (n_time,)
-    """
-    is_inbound = np.insert(np.diff(position) < 0, 0, False)
-    return np.where(is_inbound, "Inbound", "Outbound"), is_inbound
 
 
 def gaussian_pdf(x: np.ndarray, mean: np.ndarray | float, sigma: float) -> np.ndarray:
@@ -362,7 +268,9 @@ def simulate_two_state_inhomogenous_poisson(
     n_samples = sampling_frequency * 240
 
     time = simulate_time(n_samples, sampling_frequency)
-    position = simulate_position(time, track_height)[:, np.newaxis]
+    position = _simulate_sinusoidal_position_by_period(time, track_height)[
+        :, np.newaxis
+    ]
 
     _, is_inbound = get_trajectory_direction(position.squeeze())
     spikes = simulate_neuron_with_place_field(
@@ -407,7 +315,9 @@ def simulate_linear_distance_with_pauses(
     -------
     linear_distance : np.ndarray, shape (n_time,)
     """
-    linear_distance = simulate_position(time, track_height, running_speed)
+    linear_distance = _simulate_sinusoidal_position_by_period(
+        time, track_height, running_speed
+    )
     peaks = np.nonzero(linear_distance == track_height)[0]
     n_pause_samples = int(pause * sampling_frequency)
     pause_linear_distance = np.zeros((time.size + n_pause_samples * peaks.size,))
