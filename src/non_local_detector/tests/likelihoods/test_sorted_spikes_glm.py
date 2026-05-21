@@ -255,6 +255,47 @@ class TestPoissonRegression:
         # Assert - coefficients should differ
         assert not jnp.allclose(coef_uniform, coef_skewed, rtol=0.1)
 
+    def test_glm_failure_warned(self, monkeypatch):
+        """Non-convergent BFGS run should emit a ``UserWarning``.
+
+        Real BFGS non-convergence on a small synthetic design depends on
+        precise interactions between conditioning, regularization, and SciPy
+        version, so constructing a reliably-failing input is brittle. The
+        broader test suite already exercises the real BFGS failure path
+        abundantly (small-sample spline-encoded designs in
+        ``fit_sorted_spikes_glm_encoding_model`` trip the warning naturally),
+        so this targeted test instead monkeypatches ``minimize`` to return
+        ``success=False`` — verifying only that the warning-emission glue in
+        ``fit_poisson_regression`` is wired correctly.
+        """
+        # Arrange - a small, well-conditioned regression input.
+        rng = np.random.default_rng(0)
+        n_time = 50
+        n_basis = 5
+        design_matrix = rng.standard_normal((n_time, n_basis))
+        design_matrix[:, 0] = 1.0
+        spikes = rng.poisson(3, size=n_time)
+        weights = np.ones(n_time)
+
+        from scipy.optimize import OptimizeResult  # type: ignore[import-untyped]
+
+        import non_local_detector.likelihoods.sorted_spikes_glm as glm_module
+
+        def fake_minimize(fun, x0, **kwargs):
+            return OptimizeResult(
+                x=np.asarray(x0),
+                success=False,
+                message="forced non-convergence for test",
+                nit=7,
+                fun=1.234567,
+            )
+
+        monkeypatch.setattr(glm_module, "minimize", fake_minimize)
+
+        # Act / Assert
+        with pytest.warns(UserWarning, match="did not converge"):
+            fit_poisson_regression(design_matrix, spikes, weights, l2_penalty=1e-3)
+
 
 @pytest.mark.unit
 class TestFitGLMEncodingModel:
