@@ -70,60 +70,6 @@ def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
     return np.log(y_safe[..., :-1]) - np.log(y_safe[..., [-1]])
 
 
-def estimate_joint_distribution(
-    causal_posterior: np.ndarray,
-    predictive_distribution: np.ndarray,
-    transition_matrix: np.ndarray,
-    acausal_posterior: np.ndarray,
-) -> np.ndarray:
-    """Estimate the joint_distribution of latents given the observations
-
-    p(x_t, x_{t+1} | O_{1:T})
-
-    Parameters
-    ----------
-    causal_posterior : np.ndarray, shape (n_time, n_states)
-        Causal posterior distribution P(z_t | x_{1:t})
-    predictive_distribution : np.ndarray, shape (n_time, n_states)
-        One step predictive distribution P(z_{t+1} | x_{1:t})
-    transition_matrix : np.ndarray, shape (n_time, n_states, n_states) or shape (n_states, n_states)
-        Current estimate of the transition matrix P(z_{t+1} | z_t)
-    acausal_posterior : np.ndarray, shape (n_time, n_states)
-        Acausal posterior distribution P(z_{t+1} | x_{1:T})
-
-    Returns
-    -------
-    joint_distribution : np.ndarray, shape (n_time - 1, n_states, n_states)
-
-    """
-    pred = predictive_distribution[1:]
-    safe_pred = np.where(np.isclose(pred, 0.0), 1.0, pred)
-    relative_distribution = np.where(
-        np.isclose(pred, 0.0),
-        0.0,
-        acausal_posterior[1:] / safe_pred,
-    )[:, np.newaxis]
-
-    if transition_matrix.ndim == 2:
-        # Add a singleton dimension for the time axis
-        # if the transition matrix is stationary
-        # shape (1, n_states, n_states)
-        joint_distribution = (
-            transition_matrix[np.newaxis]
-            * causal_posterior[:-1, :, np.newaxis]
-            * relative_distribution
-        )
-    else:
-        # shape (n_time - 1, n_states, n_states)
-        joint_distribution = (
-            transition_matrix[:-1]
-            * causal_posterior[:-1, :, np.newaxis]
-            * relative_distribution
-        )
-
-    return joint_distribution
-
-
 def _state_aggregation_matrix(state_ind: np.ndarray) -> np.ndarray:
     """Return a bin-to-discrete-state aggregation matrix."""
     state_ind = np.asarray(state_ind, dtype=int)
@@ -770,54 +716,6 @@ def jax_centered_log_softmax_forward(y: jnp.ndarray) -> jnp.ndarray:
     return log_softmax(y, axis=-1)
 
 
-@jax.jit
-def multinomial_neg_log_likelihood(
-    coefficients: jnp.ndarray,
-    design_matrix: jnp.ndarray,
-    response: jnp.ndarray,
-    l2_penalty: float = 1e-10,
-) -> float:
-    """Negative expected complete log likelihood of the transition model.
-
-    Parameters
-    ----------
-    coefficients : jnp.ndarray, shape (n_coefficients * n_states - 1)
-        Flattened coefficients.
-    design_matrix : jnp.ndarray, shape (n_samples, n_coefficients)
-    response : jnp.ndarray, shape (n_samples, n_states)
-        Expected counts or probabilities for each state transition.
-
-    Returns
-    -------
-    negative_expected_complete_log_likelihood : float
-
-    """
-    # Reshape flattened coefficients to shape (n_coefficients, n_states - 1)
-    n_coefficients = design_matrix.shape[1]
-    coefficients = coefficients.reshape((n_coefficients, -1))
-
-    # The last state probability can be inferred from the other state probabilities
-    # since the probabilities must sum to 1
-    # shape (n_samples, n_states)
-    log_probs = jax_centered_log_softmax_forward(design_matrix @ coefficients)
-
-    # Average cross entropy over samples
-    # Average is used instead of sum to make the negative log likelihood
-    # invariant to the number of samples
-    n_samples = response.shape[0]
-    neg_log_likelihood = -1.0 * jnp.sum(response * log_probs) / n_samples
-
-    # Penalize the size (squared magnitude) of the coefficients
-    # Don't penalize the intercept for identifiability
-    l2_penalty_term = l2_penalty * jnp.sum(coefficients[1:] ** 2)
-
-    return neg_log_likelihood + l2_penalty_term
-
-
-multinomial_gradient = jax.grad(multinomial_neg_log_likelihood)
-multinomial_hessian = jax.hessian(multinomial_neg_log_likelihood)
-
-
 def get_transition_prior(
     concentration: float, stickiness: float | np.ndarray, n_states: int
 ) -> np.ndarray:
@@ -1153,88 +1051,6 @@ def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
     )
 
     return transition_matrix
-
-
-def set_initial_discrete_transition(
-    speed: np.ndarray,
-    speed_knots: np.ndarray | None = None,
-    is_stationary: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Set the initial discrete transition matrix for the local/non-local model
-
-    Parameters
-    ----------
-    speed : np.ndarray, shape (n_time,), optional
-        Required if `is_stationary` is False.
-    speed_knots : np.ndarray, optional
-        Used if `is_stationary` is False and `formula` includes knots.
-    is_stationary : bool, optional
-        If True, return a stationary matrix. If False, return non-stationary.
-    diag : np.ndarray, optional
-        Diagonal values for the initial stationary matrix.
-        Defaults to [0.90, 0.90, 0.90, 0.98].
-    formula : str, optional
-        Patsy formula for non-stationary transitions.
-        Defaults to "1 + bs(speed, knots=[1.0, 4.0, 16.0, 32.0, 64.0])".
-
-    Returns
-    -------
-    discrete_transition : np.ndarray, shape (n_states, n_states) or (n_time, n_states, n_states)
-        The initial transition matrix.
-    discrete_transition_coefficients : np.ndarray | None, shape (n_coefficients, n_states, n_states - 1)
-        Initial coefficients (only if non-stationary).
-    discrete_transition_design_matrix : patsy.DesignMatrix | None
-        Design matrix (only if non-stationary).
-
-    Raises
-    ------
-    ValueError
-        If `is_stationary` is False but `speed` is None.
-    """
-    state_names = [
-        "local",
-        "no_spike",
-        "non-local continuous",
-        "non-local fragmented",
-    ]
-    n_states = len(state_names)
-
-    if is_stationary:
-        diag = np.array([0.90, 0.90, 0.90, 0.98])
-
-        discrete_transition = make_transition_from_diag(diag)
-
-        discrete_transition_coefficients = None
-        discrete_transition_design_matrix = None
-    else:
-        diag = np.array([0.90, 0.90, 0.90, 0.98])
-        discrete_transition = make_transition_from_diag(diag)
-
-        if speed_knots is None:
-            speed_knots = [1.0, 4.0, 16.0, 32.0, 64.0]
-
-        formula = f"1 + bs(speed, knots={speed_knots})"
-        data = {"speed": np.concatenate(([0.0], speed[:-1]))}  # lagged speed
-        discrete_transition_design_matrix = dmatrix(formula, data)
-
-        n_time, n_coefficients = discrete_transition_design_matrix.shape
-
-        discrete_transition_coefficients = np.zeros(
-            (n_coefficients, n_states, n_states - 1)
-        )
-        discrete_transition_coefficients[0] = centered_softmax_inverse(
-            discrete_transition
-        )
-
-        discrete_transition = discrete_transition[np.newaxis] * np.ones(
-            (n_time, n_states, n_states)
-        )
-
-    return (
-        discrete_transition,
-        discrete_transition_coefficients,
-        discrete_transition_design_matrix,
-    )
 
 
 def _estimate_discrete_transition(

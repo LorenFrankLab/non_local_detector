@@ -14,11 +14,9 @@ from non_local_detector.discrete_state_transitions import (
     centered_softmax_forward,
     centered_softmax_inverse,
     dirichlet_neg_log_likelihood,
-    estimate_joint_distribution,
     get_transition_prior,
     jax_centered_log_softmax_forward,
     make_transition_from_diag,
-    multinomial_neg_log_likelihood,
     predict_discrete_state_transitions,
 )
 from non_local_detector.tests.conftest import assert_stochastic_matrix
@@ -186,85 +184,6 @@ class TestTransitionMatrixConstruction:
         assert np.allclose(trans[1, 1], 1.0)
 
 
-@pytest.mark.unit
-class TestEstimateJointDistribution:
-    """Test joint distribution estimation for EM algorithm."""
-
-    def test_estimate_joint_distribution_shape(self):
-        """Joint distribution should have correct shape."""
-        # Arrange
-        rng = np.random.default_rng(0)
-        n_time = 10
-        n_states = 3
-        causal_posterior = rng.random((n_time, n_states))
-        causal_posterior = causal_posterior / causal_posterior.sum(
-            axis=1, keepdims=True
-        )
-
-        predictive = rng.random((n_time, n_states))
-        predictive = predictive / predictive.sum(axis=1, keepdims=True)
-
-        trans = np.eye(n_states) * 0.8 + 0.2 / n_states
-
-        acausal_posterior = rng.random((n_time, n_states))
-        acausal_posterior = acausal_posterior / acausal_posterior.sum(
-            axis=1, keepdims=True
-        )
-
-        # Act
-        joint = estimate_joint_distribution(
-            causal_posterior, predictive, trans, acausal_posterior
-        )
-
-        # Assert
-        assert joint.shape == (n_time - 1, n_states, n_states)
-
-    def test_estimate_joint_distribution_stationary_transition(self):
-        """Test with stationary transition matrix."""
-        # Arrange
-        n_time = 5
-        n_states = 2
-
-        # Simple uniform distributions
-        causal = np.ones((n_time, n_states)) / n_states
-        predictive = np.ones((n_time, n_states)) / n_states
-        acausal = np.ones((n_time, n_states)) / n_states
-        trans = np.ones((n_states, n_states)) / n_states
-
-        # Act
-        joint = estimate_joint_distribution(causal, predictive, trans, acausal)
-
-        # Assert
-        # Each joint distribution should sum to 1
-        for t in range(n_time - 1):
-            assert np.allclose(joint[t].sum(), 1.0)
-
-    def test_estimate_joint_distribution_nonstationary_transition(self):
-        """Test with non-stationary transition matrix."""
-        # Arrange
-        n_time = 5
-        n_states = 2
-
-        causal = np.ones((n_time, n_states)) / n_states
-        predictive = np.ones((n_time, n_states)) / n_states
-        acausal = np.ones((n_time, n_states)) / n_states
-
-        # Time-varying transition matrix
-        trans = np.zeros((n_time, n_states, n_states))
-        for t in range(n_time):
-            trans[t] = np.eye(n_states) * (0.5 + 0.1 * t) + 0.1
-
-        # Normalize
-        trans = trans / trans.sum(axis=-1, keepdims=True)
-
-        # Act
-        joint = estimate_joint_distribution(causal, predictive, trans, acausal)
-
-        # Assert
-        for t in range(n_time - 1):
-            assert np.allclose(joint[t].sum(), 1.0)
-
-
 # Tests for jax_centered_log_softmax_forward with 2D input
 class TestJaxCenteredLogSoftmax2D:
     def test_jax_centered_log_softmax_forward_2d_input(self):
@@ -277,50 +196,6 @@ class TestJaxCenteredLogSoftmax2D:
         # Each row should sum to 1 in probability space
         probs = jnp.exp(result)
         assert jnp.allclose(probs.sum(axis=1), 1.0)
-
-
-# Tests for multinomial_neg_log_likelihood
-class TestMultinomialNegLogLikelihood:
-    def test_multinomial_neg_log_likelihood_basic(self):
-        """Test basic multinomial negative log likelihood computation."""
-        # Arrange
-        n_samples, n_coefficients, n_states = 10, 3, 4
-        rng = np.random.default_rng(42)
-
-        # Coefficients for n_states-1 outcomes
-        coefficients = jnp.array(rng.normal(size=n_coefficients * (n_states - 1)))
-        design_matrix = jnp.array(rng.normal(size=(n_samples, n_coefficients)))
-
-        # Response: expected counts/probabilities
-        response = jnp.array(rng.dirichlet(np.ones(n_states), size=n_samples))
-
-        # Act
-        nll = multinomial_neg_log_likelihood(
-            coefficients, design_matrix, response, l2_penalty=1e-3
-        )
-
-        # Assert
-        assert isinstance(nll, float | jnp.ndarray)
-        assert nll > 0  # Negative log likelihood should be positive
-
-    def test_multinomial_neg_log_likelihood_with_penalty(self):
-        """Test that L2 penalty increases the loss."""
-        n_samples, n_coefficients, n_states = 10, 3, 3
-        rng = np.random.default_rng(43)
-
-        coefficients = jnp.array(rng.normal(size=n_coefficients * (n_states - 1)))
-        design_matrix = jnp.array(rng.normal(size=(n_samples, n_coefficients)))
-        response = jnp.array(rng.dirichlet(np.ones(n_states), size=n_samples))
-
-        nll_no_penalty = multinomial_neg_log_likelihood(
-            coefficients, design_matrix, response, l2_penalty=0.0
-        )
-        nll_with_penalty = multinomial_neg_log_likelihood(
-            coefficients, design_matrix, response, l2_penalty=1.0
-        )
-
-        # With penalty should be larger
-        assert nll_with_penalty > nll_no_penalty
 
 
 # Tests for get_transition_prior
