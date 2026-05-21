@@ -1317,7 +1317,12 @@ def check_converged(
     Returns
     -------
     is_converged : bool
+        True if the relative change in log-likelihood is below ``tolerance``.
     is_increasing : bool
+        True if the log-likelihood did not decrease by more than ``tolerance``.
+        A decrease smaller than ``tolerance`` is treated as noise rather than a
+        true monotonicity violation, matching the slack used by the final-E-step
+        consistency check.
 
     """
     delta_log_likelihood = abs(log_likelihood - previous_log_likelihood)
@@ -1325,7 +1330,7 @@ def check_converged(
         abs(log_likelihood) + abs(previous_log_likelihood) + np.spacing(1)
     ) / 2
 
-    is_increasing = log_likelihood - previous_log_likelihood >= -1e-3
+    is_increasing = log_likelihood - previous_log_likelihood >= -tolerance
     is_converged = (delta_log_likelihood / avg_log_likelihood) < tolerance
 
     return is_converged, is_increasing
