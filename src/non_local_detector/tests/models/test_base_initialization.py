@@ -14,8 +14,18 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.models import SortedSpikesDecoder
-from non_local_detector.models.base import ObservationModel
+from non_local_detector.models import (
+    ClusterlessDecoder,
+    ContFragClusterlessClassifier,
+    MultiEnvironmentClusterlessClassifier,
+    NonLocalClusterlessDetector,
+    SortedSpikesDecoder,
+)
+from non_local_detector.models.base import (
+    _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
+    _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
+    ObservationModel,
+)
 
 
 @pytest.mark.unit
@@ -515,3 +525,121 @@ class TestInitializeStateIndex:
         assert hasattr(decoder, "is_track_interior_state_bins_")
         assert decoder.is_track_interior_state_bins_.dtype == bool
         assert len(decoder.is_track_interior_state_bins_) == decoder.n_state_bins_
+
+
+@pytest.mark.unit
+class TestAlgorithmParamsResolution:
+    """Algorithm-params dicts must be sklearn-clone-safe and never share state.
+
+    The constructor stores the user's argument as-is (including ``None``)
+    to preserve sklearn's clone-roundtrip contract. The
+    ``_resolve_*_algorithm_params`` helpers return a fresh dict copy at
+    each call so default-derived params and use-site dicts are never
+    aliased across instances.
+    """
+
+    def test_default_constructor_stores_none(self):
+        """Defaults stay as ``None`` after construction (sklearn convention).
+
+        sklearn's ``clone()`` round-trip requires ``self.param == param``
+        after ``__init__``; the dict-copy/default-resolution happens
+        lazily.
+        """
+        d_cls = ClusterlessDecoder()
+        d_sorted = SortedSpikesDecoder()
+        assert d_cls.clusterless_algorithm_params is None
+        assert d_sorted.sorted_spikes_algorithm_params is None
+
+    def test_resolver_returns_default_copy_for_none(self):
+        """The resolver returns a fresh dict equal to the module default."""
+        d = ClusterlessDecoder()
+        resolved = d._resolve_clusterless_algorithm_params()
+        assert resolved == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
+        # Fresh copy, not a reference to the module-level constant
+        assert resolved is not _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
+
+    def test_resolver_returns_distinct_dicts_across_instances(self):
+        """Two ClusterlessDecoder instances' resolvers return distinct dicts."""
+        d1 = ClusterlessDecoder()
+        d2 = ClusterlessDecoder()
+        r1 = d1._resolve_clusterless_algorithm_params()
+        r2 = d2._resolve_clusterless_algorithm_params()
+        assert r1 is not r2
+        assert r1 == r2 == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
+
+    def test_resolver_copies_user_dict(self):
+        """A user-supplied dict is copied by the resolver, not aliased."""
+        params = {"position_std": 5.0, "waveform_std": 24.0, "block_size": 10_000}
+        d = ClusterlessDecoder(clusterless_algorithm_params=params)
+        # Constructor stores the user's dict as-is (sklearn convention)
+        assert d.clusterless_algorithm_params is params
+        # But the resolver returns a fresh copy
+        resolved = d._resolve_clusterless_algorithm_params()
+        assert resolved is not params
+        assert resolved == params
+
+    def test_mutating_default_constant_does_not_leak(self):
+        """Mutating the module-level constant must not poison resolvers.
+
+        This is the actual bug Group 4b fixed: the original mutable
+        default kwarg caused every detector to share one dict instance
+        with the module-level constant. The resolver copy prevents that.
+        """
+        # Capture pristine state
+        original = dict(_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS)
+        d = ClusterlessDecoder()
+        resolved = d._resolve_clusterless_algorithm_params()
+        # Mutating the resolver's return value
+        resolved["block_size"] = 5
+        # ... does not poison the module-level constant
+        assert _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS == original
+        # ... and a fresh resolver call sees the pristine default
+        assert d._resolve_clusterless_algorithm_params()["block_size"] == 10_000
+
+    def test_sorted_spikes_resolver_returns_default_copy_for_none(self):
+        """Same resolver contract for sorted-spikes params."""
+        d = SortedSpikesDecoder()
+        resolved = d._resolve_sorted_spikes_algorithm_params()
+        assert resolved == _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS
+        assert resolved is not _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS
+
+    def test_cont_frag_clusterless_default_stores_none(self):
+        """ContFragClusterlessClassifier inherits the same contract."""
+        d = ContFragClusterlessClassifier()
+        assert d.clusterless_algorithm_params is None
+        resolved = d._resolve_clusterless_algorithm_params()
+        assert resolved == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
+
+    def test_multienvironment_clusterless_default_stores_none(self):
+        """MultiEnvironmentClusterlessClassifier inherits the same contract."""
+        d = MultiEnvironmentClusterlessClassifier()
+        assert d.clusterless_algorithm_params is None
+        resolved = d._resolve_clusterless_algorithm_params()
+        assert resolved == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
+
+    def test_non_local_clusterless_default_stores_none(self):
+        """NonLocalClusterlessDetector inherits the same contract."""
+        d = NonLocalClusterlessDetector()
+        assert d.clusterless_algorithm_params is None
+        resolved = d._resolve_clusterless_algorithm_params()
+        assert resolved == _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS
+
+    def test_sklearn_clone_roundtrips(self):
+        """sklearn.clone() must round-trip without raising.
+
+        This is the sklearn-canonical contract: ``__init__`` must store
+        params as-is (no transformation), so clone's constructor-output
+        round-trip check succeeds.
+        """
+        from sklearn.base import clone
+
+        d = ClusterlessDecoder()
+        cloned = clone(d)
+        # The cloned instance is a fresh detector with the same
+        # constructor-level state.
+        assert cloned.clusterless_algorithm_params is None
+        # Same for an explicit-dict caller
+        params = {"position_std": 7.0, "waveform_std": 24.0, "block_size": 10_000}
+        d2 = ClusterlessDecoder(clusterless_algorithm_params=params)
+        cloned2 = clone(d2)
+        assert cloned2.clusterless_algorithm_params == params
