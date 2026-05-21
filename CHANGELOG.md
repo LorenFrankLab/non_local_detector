@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `_DetectorBase.estimate_parameters` (and all detector subclasses that inherit it) now sets three new attributes when EM finishes: `converged_` (`bool` — True if EM met its tolerance before `max_iter`), `n_iter_` (`int` — number of EM iterations actually performed), and `em_monotonicity_violations_` (`list[int]` — 1-based iteration indices where the marginal log-likelihood decreased, empty when EM is well-behaved).
+- `likelihoods.gmm.GaussianMixtureModel.converged_` now reflects the actual EM lower-bound convergence flag from `_em_fit_while_loop`, replacing the prior heuristic `n_iter < max_iter`. A `UserWarning` is emitted at the end of `fit` when the model did not converge.
+- `likelihoods.sorted_spikes_glm.fit_poisson_regression` now emits a `UserWarning` when SciPy's BFGS optimizer reports `success=False`, including the BFGS message, iteration count, and final loss. Place-field coefficients may be unreliable in that case.
+- `core._condition_on` now falls back to the predicted distribution at degenerate timesteps where every state has `-inf` log-likelihood (previously emitted an invalid all-zero posterior). `log_norm` is set to `-inf` for those steps so the marginal log-likelihood reflects the impossible-data step. The host-side `filter`, `filter_covariate_dependent`, `chunked_filter_smoother`, and `chunked_filter_smoother_covariate_dependent` functions now log a single `logger.warning` summarizing the count of degenerate timesteps when any are found.
+- `model_checking.highest_posterior_density.get_HPD_spatial_coverage`: optional `bin_width` parameter for non-uniformly-spaced 1D (linearized track-graph) grids. Multi-segment tracks with unequal arm lengths produce on-track bins of different widths (plus `edge_spacing` gap bins); the default uniform path used the first bin's width for every bin, biasing coverage. Pass per-bin widths — e.g. `np.diff(environment.edges_[0])` — to integrate the exact bin measure. The default (no `bin_width`) is unchanged and remains exact for open-field grids and single-segment tracks (which `Environment` builds with equal-width bins); non-uniform widths cannot be recovered from bin centers alone.
+
 ### Fixed
 
 - `analysis.distance1D.get_map_speed`: the trailing boundary speed was inserted before the last array element instead of appended; for every chunk with three or more time bins, the final two speed samples were misordered.
@@ -22,14 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `analysis.distance2D.get_map_estimate_direction_from_track_graph` with `precomputed_distance=True`: on a disconnected track graph, an unreachable head-position/MAP pair silently indexed `node_positions[-1]` (the `-1` path sentinel) and produced a plausible but wrong heading. Unreachable pairs now emit a warning and return `NaN`, mirroring `get_2D_distance` (which warns and stores `inf`).
 - `continuous_state_transitions.RandomWalk`: a `direction=` argument was silently ignored unless the environment was a fitted N-D grid with `use_manifold_distance=True` — under the default `use_manifold_distance=False`, or when a `track_graph` was present, the directional constraint was dropped and a plain random walk returned. `make_state_transition` now raises a `ConfigurationError` for these configurations instead of silently ignoring `direction`.
 
-### Added
-
-- `model_checking.highest_posterior_density.get_HPD_spatial_coverage`: optional `bin_width` parameter for non-uniformly-spaced 1D (linearized track-graph) grids. Multi-segment tracks with unequal arm lengths produce on-track bins of different widths (plus `edge_spacing` gap bins); the default uniform path used the first bin's width for every bin, biasing coverage. Pass per-bin widths — e.g. `np.diff(environment.edges_[0])` — to integrate the exact bin measure. The default (no `bin_width`) is unchanged and remains exact for open-field grids and single-segment tracks (which `Environment` builds with equal-width bins); non-uniform widths cannot be recovered from bin centers alone.
-
 ### Changed
 
 - `analysis.distance2D.head_direction_simliarity` and `get_ahead_behind_distance2D`: docstrings described `head_direction` as shape `(n_time, 2)`, but the implementation requires a 1-D array of heading angles in radians `(n_time,)` (consistent with the 1-D sibling `get_ahead_behind_distance`). Passing the documented 2-D vector raised a broadcasting `ValueError`. Docstrings now document the angle contract; the implementation is unchanged. (#41)
-
+- EM iterations where the marginal log-likelihood decreased (previously silent) now log a `logger.warning` describing the iteration index, before/after log-likelihoods, and change magnitude. The iteration index is also appended to `em_monotonicity_violations_`.
+- EM that exits via `max_iter` without converging (previously silent) now emits a `UserWarning` describing the final log-likelihood change, the tolerance, and that fitted parameters may be biased.
+- The final E-step now checks that the post-M-step log-likelihood did not decrease by more than `tolerance`; a `UserWarning` flags inconsistencies between the E-step and the M-step output.
+- **Note on previously-silent issues now surfaced:** several pre-existing tests of the sorted-spikes GLM encoding path emit the new `UserWarning` for non-convergent BFGS exits. The fitted coefficients still satisfy the existing test assertions, but the warning indicates these tests have been silently fitting non-converged models. The `test_sorted_spikes_glm_encoding_runs_end_to_end` integration test additionally trips the new max-iter and final-E-step warnings under default parameters. None are regressions from these changes; they are previously-silent issues now made visible. Investigation of GLM EM convergence behavior is tracked as a follow-up.
 - `model_checking.posterior_consistency.posterior_consistency_hpd_overlap`: docstring expanded with a Notes block explaining that the metric is the containment coefficient (`|A∩B| / min(|A|, |B|)`) — asymmetric — rather than Sørensen-Dice or Jaccard. The implementation is unchanged.
 - `model_checking.posterior_consistency` (`posterior_consistency_kl_divergence` and `posterior_consistency_hpd_overlap`): corrected the input-shape docstrings — both require flattened `(n_time, n_position_bins)` input, not the previously-documented `(n_time, n_x_bins, n_y_bins)` (which raises), and the Sørensen-Dice formula in the Notes block now includes the factor of 2 (`2|A∩B| / (|A| + |B|)`). Docstrings only.
 
