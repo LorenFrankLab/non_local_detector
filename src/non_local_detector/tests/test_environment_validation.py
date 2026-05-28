@@ -4,7 +4,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector import Environment
+from non_local_detector import Environment, FittedEnvironment
 from non_local_detector.exceptions import ConfigurationError, ValidationError
 
 
@@ -354,16 +354,16 @@ class TestFitPlaceGridValidation:
         # Need to reshape to 2D for fit_place_grid or provide 2D from the start
         position = np.array([[0], [1], [2], [3], [4]])
         result = env.fit_place_grid(position=position)
-        assert result is env
-        assert env.place_bin_centers_ is not None
+        assert isinstance(result, FittedEnvironment)
+        assert result.place_bin_centers_ is not None
 
     def test_valid_position_2d(self):
         """Test that valid 2D position works."""
         env = Environment()
         position = np.array([[0, 0], [1, 1], [2, 2], [3, 3]])
         result = env.fit_place_grid(position=position)
-        assert result is env
-        assert env.place_bin_centers_ is not None
+        assert isinstance(result, FittedEnvironment)
+        assert result.place_bin_centers_ is not None
 
 
 @pytest.mark.unit

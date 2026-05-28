@@ -116,7 +116,7 @@ def _euclidean_random_walk(
     transition : np.ndarray, shape (n_position_bins, n_position_bins)
 
     """
-    if environment.place_bin_centers_ is not None:
+    if getattr(environment, "place_bin_centers_", None) is not None:
         place_bin_centers = environment.place_bin_centers_
     else:
         raise ValueError("Environment must have defined place bin centers")
@@ -190,7 +190,7 @@ class RandomWalk:
         if self.environment.is_track_interior_ is not None:
             is_track_interior = self.environment.is_track_interior_.ravel()
         else:
-            if self.environment.place_bin_centers_ is None:
+            if getattr(self.environment, "place_bin_centers_", None) is None:
                 raise ValueError(
                     "place_bin_centers_ is required when is_track_interior_ is None"
                 )
@@ -267,7 +267,7 @@ class RandomWalk:
 
     def _handle_with_track_graph(self) -> np.ndarray:
         """Calculate transition for environments with a defined track graph (typically 1D)."""
-        if self.environment.place_bin_centers_ is not None:
+        if getattr(self.environment, "place_bin_centers_", None) is not None:
             n_position_dims = self.environment.place_bin_centers_.shape[1]
         else:
             raise ValueError("Environment must have defined place bin centers")
@@ -333,7 +333,7 @@ class Uniform:
         self.environment1 = find_environment_by_name(
             environments, self.environment_name
         )
-        if self.environment1.place_bin_centers_ is not None:
+        if getattr(self.environment1, "place_bin_centers_", None) is not None:
             n_bins1 = self.environment1.place_bin_centers_.shape[0]
         else:
             raise ValueError("Environment must have defined place bin centers")
@@ -350,7 +350,7 @@ class Uniform:
             self.environment2 = find_environment_by_name(
                 environments, self.environment2_name
             )
-            if self.environment2.place_bin_centers_ is not None:
+            if getattr(self.environment2, "place_bin_centers_", None) is not None:
                 n_bins2 = self.environment2.place_bin_centers_.shape[0]
             else:
                 raise ValueError("Environment must have defined place bin centers")
@@ -396,7 +396,7 @@ class Identity:
             Identity matrix where invalid bins have zero probability.
         """
         self.environment = find_environment_by_name(environments, self.environment_name)
-        if self.environment.place_bin_centers_ is not None:
+        if getattr(self.environment, "place_bin_centers_", None) is not None:
             n_bins = self.environment.place_bin_centers_.shape[0]
         else:
             raise ValueError("Environment must have defined place bin centers")

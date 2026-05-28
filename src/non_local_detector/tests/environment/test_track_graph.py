@@ -196,17 +196,17 @@ def test_get_distances_to_interior_bins_caches_matrix():
     assert env._bin_distance_matrix_.shape == (n_total_bins, n_total_bins)
 
 
-def test_fit_place_grid_invalidates_distance_cache():
-    """Re-calling fit_place_grid removes the cached distance matrix."""
+def test_fit_place_grid_returns_fresh_uncached_environment():
+    """Re-fitting yields a fresh FittedEnvironment without the distance cache."""
     env = make_env_graph(place_bin_size=1.0)
     env.get_distances_to_interior_bins(np.array([[5.0]]))
     assert hasattr(env, "_bin_distance_matrix_")
 
-    env.fit_place_grid()
+    # fit_place_grid returns a NEW fitted environment from the original spec;
+    # the fresh object starts without a cached distance matrix.
+    refit = env.spec.fit_place_grid()
 
-    assert not hasattr(env, "_bin_distance_matrix_"), (
-        "fit_place_grid should invalidate the distance matrix cache"
-    )
+    assert not hasattr(refit, "_bin_distance_matrix_")
 
 
 def test_get_distances_to_interior_bins_nd_array_path():

@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -131,8 +133,13 @@ def test_uniform_transition_between_envs(make_env_1d):
 def test_empirical_movement_row_stochastic_and_locality(make_env_1d):
     # Create a simple path that marches right
     env = make_env_1d(n_bins=11)
-    # Ensure histogram range set for 2D (pre- and post- positions)
-    env.position_range = ((0.0, 10.0), (0.0, 10.0))
+    # EmpiricalMovement builds a 2D (current, next) position histogram, so it
+    # needs a 2-entry position_range. The 1D grid is already fit; swap in a
+    # spec carrying the 2D range without refitting.
+    env = dataclasses.replace(
+        env,
+        spec=dataclasses.replace(env.spec, position_range=((0.0, 10.0), (0.0, 10.0))),
+    )
     envs = (env,)
     pos = np.linspace(0.0, 10.0, 51)[:, None]
     # Use empirical transition with provided positions
@@ -145,6 +152,19 @@ def test_empirical_movement_row_stochastic_and_locality(make_env_1d):
     nearer = np.mean(np.diag(tm))
     farther = np.mean(tm[:, 0] + tm[:, -1])
     assert nearer >= farther
+
+
+def test_unfitted_spec_raises_helpful_error():
+    """Passing an unfitted Environment spec yields a clear ValueError.
+
+    The spec has no ``place_bin_centers_`` attribute at all, so the guards use
+    ``getattr(env, "place_bin_centers_", None)`` to surface the helpful
+    "must have defined place bin centers" message instead of an AttributeError.
+    """
+    spec = Environment(environment_name="line", place_bin_size=1.0)
+    rw = RandomWalk(environment_name="line", movement_var=1.0)
+    with pytest.raises(ValueError, match="must have defined place bin centers"):
+        rw.make_state_transition((spec,))
 
 
 def test_discrete_transition_is_ones():
@@ -163,9 +183,7 @@ def test_random_walk_inward_no_trackgraphDD_raises(make_env_1d):
     env = make_env_1d(n_bins=11)
     # Simulate an environment whose direction-aware path has nothing to
     # operate on: no N-D track graph and no array-valued distance lookup.
-    env.track_graph = None
-    env.track_graphDD = None
-    env.distance_between_nodes_ = None
+    env = dataclasses.replace(env, track_graphDD=None, distance_between_nodes_=None)
 
     rw = RandomWalk(
         environment_name=env.environment_name,

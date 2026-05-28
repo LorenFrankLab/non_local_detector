@@ -13,7 +13,10 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
 )
-from non_local_detector.environment import Environment  # noqa
+from non_local_detector.environment import (  # noqa
+    Environment,
+    FittedEnvironment,
+)
 from non_local_detector.exceptions import (  # noqa
     ConfigurationError,
     ConvergenceError,

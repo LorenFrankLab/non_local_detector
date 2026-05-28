@@ -24,15 +24,20 @@ from non_local_detector.discrete_state_transitions import (
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
 )
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, FittedEnvironment
 from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.observation_models import ObservationModel
 
-Environments = Environment | list[Environment] | None
+Environments = (
+    Environment | FittedEnvironment | list[Environment | FittedEnvironment] | None
+)
 """Type alias for environment specifications.
 
-Can be a single Environment instance, list of environments for multi-environment
-models, or None for cases where no specific environment is needed.
+Can be a single ``Environment`` (input spec) or ``FittedEnvironment`` instance,
+a list of either for multi-environment models, or None for cases where no
+specific environment is needed. Detectors accept the input ``Environment`` and
+produce ``FittedEnvironment`` internally; a pre-fitted ``FittedEnvironment`` may
+also be passed directly.
 """
 
 ContinuousTransitions = list[

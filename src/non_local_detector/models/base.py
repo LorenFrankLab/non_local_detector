@@ -37,7 +37,7 @@ from non_local_detector.discrete_state_transitions import (
     centered_softmax_forward,
     predict_discrete_state_transitions,
 )
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, FittedEnvironment
 from non_local_detector.exceptions import ConfigurationError, ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
@@ -997,25 +997,37 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         environment_labels : np.ndarray, optional, shape (n_time,)
             Labels for each time points about which environment it corresponds to, by default None
         """
+        fitted_environments = []
         for environment in self.environments:
+            # ``fit_place_grid`` lives on the input spec and returns a new
+            # FittedEnvironment. Re-fitting an already-fitted detector reuses
+            # the original spec rather than the previous fit's result.
+            spec = (
+                environment.spec
+                if isinstance(environment, FittedEnvironment)
+                else environment
+            )
             if environment_labels is None:
                 is_environment = np.ones((position.shape[0],), dtype=bool)
             else:
-                is_environment = environment_labels == environment.environment_name
+                is_environment = environment_labels == spec.environment_name
 
             env_position = position[is_environment]
-            if environment.track_graph is not None:
+            if spec.track_graph is not None:
                 # convert to 1D
                 env_position = get_linearized_position(
                     env_position,
-                    environment.track_graph,
-                    edge_order=environment.edge_order,
-                    edge_spacing=environment.edge_spacing,
+                    spec.track_graph,
+                    edge_order=spec.edge_order,
+                    edge_spacing=spec.edge_spacing,
                 ).linear_position.to_numpy()
 
-            environment.fit_place_grid(
-                env_position, infer_track_interior=self.infer_track_interior
+            fitted_environments.append(
+                spec.fit_place_grid(
+                    env_position, infer_track_interior=self.infer_track_interior
+                )
             )
+        self.environments = tuple(fitted_environments)
 
     def initialize_state_index(self) -> None:
         """Initialize indices and parameters related to the combined state space.

@@ -1210,7 +1210,7 @@ def fit_clusterless_kde_encoding_model(
     -------
     encoding_model : dict
     """
-    if environment.place_bin_centers_ is None:
+    if getattr(environment, "place_bin_centers_", None) is None:
         raise ValueError(
             "Environment must be fitted with place_bin_centers_. "
             "Call environment.fit_place_grid() first."
