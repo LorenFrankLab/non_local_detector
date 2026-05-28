@@ -4,11 +4,10 @@ Covers the three implemented public functions (``interval_rescaling_transform``,
 ``empirical_cdf``, ``rosenblatt_transform``) and captures the status of the
 seven goodness-of-fit functions that currently raise ``NotImplementedError``.
 
-A genuine bug is documented in
-``test_interval_rescaling_transform_shape_mismatch_is_a_bug``: the mark-rescaling
-step divides ``joint_mark_intensity`` (``n_spikes, n_features``) by
-``ground_process_intensity`` (``n_time,``), which only broadcasts in the
-degenerate ``n_features == n_time`` case.
+``interval_rescaling_transform`` is tested with realistic shapes
+(``n_time`` much larger than ``n_features``): the mark-rescaling step
+evaluates the ``(n_time,)`` ground intensity at the spike times before
+dividing the ``(n_spikes, n_features)`` joint mark intensity by it.
 """
 
 import numpy as np
@@ -102,23 +101,22 @@ class TestRosenblattTransform:
 
 @pytest.mark.unit
 class TestIntervalRescalingTransform:
-    def test_happy_path_degenerate_shapes(self):
-        """End-to-end run in the only shape combination that broadcasts.
+    def test_realistic_shapes_run(self):
+        """Runs with realistic shapes (n_time much larger than n_features).
 
-        Because of the broadcasting bug documented below, the function only
-        runs when ``n_features == n_time``. We use that degenerate case to
-        exercise the full code path (ISI rescaling + Rosenblatt transform) and
-        check the outputs are valid uniform-transformed quantities.
+        Exercises the full code path (ISI rescaling + Rosenblatt transform)
+        and checks the outputs are valid uniform-transformed quantities. This
+        is the shape regime the docstring describes and that previously
+        raised a broadcasting ValueError.
         """
         rng = np.random.default_rng(3)
-        n_time = 6  # also serves as n_features (degenerate)
-        time = np.linspace(0.0, 1.0, n_time)
+        n_time = 100
+        n_features = 3
+        time = np.linspace(0.0, 5.0, n_time)
         ground_process_intensity = np.full(n_time, 2.0)
-        # Two spikes, on the time grid so np.interp is exact.
-        electrode_spike_times = time[[1, 4]]
-        n_features = n_time
-        features = rng.standard_normal((2, n_features))
-        joint_mark_intensity = rng.random((2, n_features)) + 1.0
+        electrode_spike_times = time[[10, 50, 90]]
+        features = rng.standard_normal((3, n_features))
+        joint_mark_intensity = rng.random((3, n_features)) + 1.0
 
         u_isi, u_mark = interval_rescaling_transform(
             time,
@@ -128,20 +126,60 @@ class TestIntervalRescalingTransform:
             joint_mark_intensity,
         )
 
-        assert u_isi.shape == (2,)
-        assert u_mark.shape == (2, n_features)
+        assert u_isi.shape == (3,)
+        assert u_mark.shape == (3, n_features)
         assert np.all((u_isi >= 0.0) & (u_isi <= 1.0))
         assert np.all((u_mark >= 0.0) & (u_mark <= 1.0))
+
+    def test_conditional_mark_uses_ground_intensity_at_spike_times(self):
+        """The mark intensity is divided by the ground intensity at the spikes.
+
+        With a time-varying ground intensity, the conditional mark intensity
+        fed to the Rosenblatt transform must use the ground intensity
+        interpolated at the spike times (shape ``(n_spikes,)``), not the raw
+        ``(n_time,)`` array. We verify by reproducing the pre-Rosenblatt
+        quotient: since ``rosenblatt_transform`` applies a per-column
+        empirical CDF (rank transform), feeding ``joint / ground_at_spikes``
+        and the hand-computed equivalent must yield identical uniform output.
+        """
+        n_time = 50
+        n_features = 2
+        time = np.linspace(0.0, 1.0, n_time)
+        # Time-varying ground intensity so spike-time evaluation matters.
+        ground_process_intensity = np.linspace(1.0, 3.0, n_time)
+        electrode_spike_times = time[[5, 20, 40]]
+        features = np.zeros((3, n_features))
+        joint_mark_intensity = np.array(
+            [[2.0, 4.0], [6.0, 8.0], [10.0, 12.0]], dtype=float
+        )
+
+        _, u_mark = interval_rescaling_transform(
+            time,
+            electrode_spike_times,
+            features,
+            ground_process_intensity,
+            joint_mark_intensity,
+        )
+
+        # Reproduce the expected pre-Rosenblatt quotient and rank-transform it.
+        ground_at_spikes = np.interp(
+            electrode_spike_times, time, ground_process_intensity
+        )
+        expected_quotient = joint_mark_intensity / ground_at_spikes[:, None]
+        expected_u_mark = rosenblatt_transform(expected_quotient)
+
+        np.testing.assert_allclose(u_mark, expected_u_mark)
 
     def test_permute_waveform_features_runs(self):
         """The optional feature permutation path executes without error."""
         rng = np.random.default_rng(4)
-        n_time = 5
+        n_time = 60
+        n_features = 4
         time = np.linspace(0.0, 1.0, n_time)
         ground_process_intensity = np.full(n_time, 1.5)
-        electrode_spike_times = time[[0, 2, 4]]
-        joint_mark_intensity = rng.random((3, n_time)) + 1.0
-        features = rng.standard_normal((3, n_time))
+        electrode_spike_times = time[[0, 25, 55]]
+        joint_mark_intensity = rng.random((3, n_features)) + 1.0
+        features = rng.standard_normal((3, n_features))
 
         u_isi, u_mark = interval_rescaling_transform(
             time,
@@ -152,35 +190,7 @@ class TestIntervalRescalingTransform:
             permute_waveform_features=True,
         )
         assert u_isi.shape == (3,)
-        assert u_mark.shape == (3, n_time)
-
-    def test_shape_mismatch_is_a_bug(self):
-        """Documented bug: realistic shapes (n_features != n_time) cannot run.
-
-        ``clusterless.py`` line 67 divides ``joint_mark_intensity``
-        ``(n_spikes, n_features)`` by ``ground_process_intensity`` ``(n_time,)``.
-        These broadcast only when ``n_features == n_time``. With the docstring's
-        intended shapes (n_time much larger than n_features) the division
-        raises ``ValueError``. This test pins that broken behavior so a future
-        source fix is forced to update the test.
-        """
-        rng = np.random.default_rng(5)
-        n_time = 100
-        n_features = 3
-        time = np.linspace(0.0, 5.0, n_time)
-        ground_process_intensity = np.full(n_time, 2.0)
-        electrode_spike_times = time[[10, 50, 90]]
-        features = rng.standard_normal((3, n_features))
-        joint_mark_intensity = rng.random((3, n_features)) + 1.0
-
-        with pytest.raises(ValueError, match="broadcast"):
-            interval_rescaling_transform(
-                time,
-                electrode_spike_times,
-                features,
-                ground_process_intensity,
-                joint_mark_intensity,
-            )
+        assert u_mark.shape == (3, n_features)
 
 
 # ---------------------------------------------------------------------------

@@ -63,8 +63,18 @@ def interval_rescaling_transform(
     )
 
     # Rescale each mark dimension sequentially using a Rosenblatt transformation
-    # based on the conditional mark distribution given the spike time
-    conditional_mark_intensity = joint_mark_intensity / ground_process_intensity
+    # based on the conditional mark distribution given the spike time.
+    # The conditional mark intensity is joint_mark_intensity (evaluated at the
+    # spikes) divided by the ground intensity AT THOSE SAME SPIKE TIMES, so the
+    # (n_time,) ground intensity must first be evaluated at the spike times to
+    # align with joint_mark_intensity's rows (same np.interp idiom used by
+    # _compute_rescaled_isi above).
+    ground_process_intensity_at_spikes = np.interp(
+        electrode_spike_times, time, ground_process_intensity
+    )
+    conditional_mark_intensity = (
+        joint_mark_intensity / ground_process_intensity_at_spikes[:, np.newaxis]
+    )
     n_features = joint_mark_intensity.shape[1]
     feature_indices = (
         np.random.permutation(n_features)
