@@ -290,6 +290,38 @@ class TestInitializeEnvironmentsFitting:
         assert decoder.environments[0].place_bin_centers_ is not None
         assert decoder.environments[0].place_bin_centers_.shape[0] > 0
 
+    def test_initialize_environments_refits_from_original_spec(self):
+        """Re-fitting reuses the original spec, not the previous fit result.
+
+        After the first fit ``self.environments`` holds ``FittedEnvironment``
+        instances. A second fit must re-fit from the original ``Environment``
+        spec (via ``env.spec``) rather than the prior ``FittedEnvironment``,
+        producing a fresh, equal grid that still references the same spec.
+        """
+        spec = Environment(environment_name="line", place_bin_size=2.0)
+        decoder = SortedSpikesDecoder(
+            discrete_initial_conditions=np.array([1.0]),
+            continuous_initial_conditions_types=["uniform_on_track"],
+            continuous_transition_types=["random_walk"],
+            discrete_transition_stickiness=0.0,
+            environments=spec,
+        )
+        position = np.linspace(0, 100, 50)[:, np.newaxis]
+
+        decoder.initialize_environments(position)
+        first = decoder.environments[0]
+        assert isinstance(first, FittedEnvironment)
+        assert first.spec is spec
+
+        decoder.initialize_environments(position)
+        second = decoder.environments[0]
+        assert isinstance(second, FittedEnvironment)
+        assert second is not first
+        assert second.spec is spec
+        np.testing.assert_array_equal(
+            second.place_bin_centers_, first.place_bin_centers_
+        )
+
     def test_initialize_environments_with_multiple_environments(
         self, simple_1d_environment
     ):

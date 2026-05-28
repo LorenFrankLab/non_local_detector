@@ -68,9 +68,14 @@ class TestFitPlaceGrid:
         spec = Environment(place_bin_size=2.0)
         spec_before = copy.deepcopy(spec)
         spec.fit_place_grid(position_2d)
+        # Declared input fields are unchanged (catches e.g. an infer_track_interior
+        # write-back).
         assert spec == spec_before
-        # And still carries no fitted attributes afterward.
-        assert not hasattr(spec, "place_bin_centers_")
+        # No fitted attribute leaked onto the spec as a new instance attribute
+        # (dataclass __eq__ above only compares declared fields, so check each).
+        assert not hasattr(spec, "_is_fitted")
+        for attr in FITTED_ATTRS:
+            assert not hasattr(spec, attr), f"spec leaked fitted attr {attr}"
 
     def test_fitted_forwards_spec_parameters(self, position_2d):
         """Spec parameters are readable on the fitted object (read-only)."""

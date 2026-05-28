@@ -154,6 +154,19 @@ def test_empirical_movement_row_stochastic_and_locality(make_env_1d):
     assert nearer >= farther
 
 
+def test_unfitted_spec_raises_helpful_error():
+    """Passing an unfitted Environment spec yields a clear ValueError.
+
+    The spec has no ``place_bin_centers_`` attribute at all, so the guards use
+    ``getattr(env, "place_bin_centers_", None)`` to surface the helpful
+    "must have defined place bin centers" message instead of an AttributeError.
+    """
+    spec = Environment(environment_name="line", place_bin_size=1.0)
+    rw = RandomWalk(environment_name="line", movement_var=1.0)
+    with pytest.raises(ValueError, match="must have defined place bin centers"):
+        rw.make_state_transition((spec,))
+
+
 def test_discrete_transition_is_ones():
     tm = Discrete().make_state_transition()
     assert tm.shape == (1, 1) and np.isclose(tm[0, 0], 1.0)

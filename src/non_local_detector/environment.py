@@ -878,8 +878,6 @@ class FittedEnvironment:
 
         Raises
         ------
-        RuntimeError
-            If the environment has not been fitted.
         ValueError
             If input shapes mismatch or required attributes are missing.
         """
@@ -954,11 +952,6 @@ class FittedEnvironment:
         distances : np.ndarray, shape (n_positions, n_interior_bins)
             Distance from each position to each interior bin. Rows for
             off-track positions are NaN; unreachable bin pairs are inf.
-
-        Raises
-        ------
-        RuntimeError
-            If the environment has not been fitted.
         """
         is_interior = self.is_track_interior_.ravel()
         interior_bin_indices = np.where(is_interior)[0]
@@ -1051,7 +1044,8 @@ class FittedEnvironment:
         Raises
         ------
         RuntimeError
-            If the environment has not been fitted or lacks the N-D track graph.
+            If the environment lacks the N-D track graph required for direction
+            finding (i.e. it is a 1D linearized environment).
         ValueError
             If sampling frequency cannot be determined.
         """
@@ -1692,6 +1686,9 @@ def make_nD_track_graph_from_environment(
     track_graph : nx.Graph
 
     """
+    if is_track_interior is None:
+        raise ValueError("is_track_interior_ is required for edge construction")
+
     track_graph = nx.Graph()
     axis_offsets = [-1, 0, 1]
 
