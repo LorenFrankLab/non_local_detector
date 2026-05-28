@@ -247,7 +247,9 @@ class TestProbabilityProperties:
         # float32 (JAX default): scale-then-normalize vs normalize differ by
         # benign last-bit rounding for wide-dynamic-range inputs; rtol=1e-6
         # was below float32 precision and flaked under Hypothesis exploration.
-        assert jnp.allclose(normalized_original, normalized_scaled, rtol=1e-4, atol=1e-7)
+        assert jnp.allclose(
+            normalized_original, normalized_scaled, rtol=1e-4, atol=1e-7
+        )
 
     # The three decoder invariant checks below used to be three separate
     # Hypothesis tests, each running a full decoder fit+predict for every
