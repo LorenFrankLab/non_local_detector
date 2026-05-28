@@ -432,7 +432,7 @@ class EmpiricalMovement:
     """
 
     environment_name: str = ""
-    encoding_group: str = 0
+    encoding_group: str | int = 0
     speedup: int = 1
     is_time_reversed: bool = False
 

@@ -2,7 +2,7 @@
 
 After EM finishes (convergence or max_iter), the returned posterior must
 reflect the final fitted parameters — i.e., it must match what predict()
-would compute on the same data with the saved model. See issue #26.
+would compute on the same data with the saved model.
 """
 
 import numpy as np

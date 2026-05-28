@@ -1,5 +1,6 @@
 try:
     from collections.abc import Callable
+    from typing import Any
 
     import numpy as np
     import sortingview.views as vv
@@ -313,7 +314,7 @@ try:
         }
 
     def create_track_animation_object(
-        *, static_track_animation: any
+        *, static_track_animation: Any
     ) -> vvf.TrackPositionAnimationV1:
         if "decodedData" in static_track_animation:
             decoded_data = static_track_animation["decodedData"]

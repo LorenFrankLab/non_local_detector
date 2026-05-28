@@ -787,7 +787,7 @@ def filter_covariate_dependent(
     discrete_transition_matrix : jnp.ndarray, shape (n_time, n_states, n_states)
     continuous_transition_matrix : jnp.ndarray, shape (n_state_bins, n_state_bins)
     state_ind : jnp.ndarray, shape (n_state_bins,)
-    log_likelihoods : jnp.ndarray, shape (n_time, n_states)
+    log_likelihoods : jnp.ndarray, shape (n_time, n_state_bins)
 
     Returns
     -------

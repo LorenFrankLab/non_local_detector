@@ -32,12 +32,12 @@ def predict_no_spike_log_likelihood(
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time + 1,)
-        Time bin edges for likelihood computation. The number of bins
-        is len(time) - 1.
-    spike_times : list[list[float]]
-        Nested list where each inner list contains spike times for one neuron.
-        Length equals number of neurons in the population.
+    time : np.ndarray, shape (n_time,)
+        Per-bin time axis. The output has one row per element of ``time``;
+        the bin duration used in the Poisson rate is ``np.median(np.diff(time))``.
+    spike_times : list[np.ndarray]
+        Nested sequence where each inner array contains spike times for one
+        neuron. Length equals the number of neurons in the population.
     no_spike_rate : float, default=1e-10
         Expected firing rate during no-spike periods in Hz. Should be very
         small to represent baseline/quiescent activity levels.
@@ -64,17 +64,17 @@ def predict_no_spike_log_likelihood(
     Examples
     --------
     >>> import numpy as np
-    >>> time = np.linspace(0, 10, 100)  # 99 time bins
-    >>> spike_times = [[] for _ in range(5)]  # 5 neurons, no spikes
+    >>> time = np.linspace(0, 10, 100)  # 100 time bins
+    >>> spike_times = [np.array([]) for _ in range(5)]  # 5 neurons, no spikes
     >>> log_lik = predict_no_spike_log_likelihood(time, spike_times)
     >>> log_lik.shape
-    (99, 1)
+    (100, 1)
 
     >>> # With some sparse spikes
-    >>> spike_times = [[1.0, 5.0], [], [8.5], [], []]
+    >>> spike_times = [np.array([1.0, 5.0]), np.array([]), np.array([8.5])]
     >>> log_lik = predict_no_spike_log_likelihood(time, spike_times, no_spike_rate=1e-8)
     >>> log_lik.shape
-    (99, 1)
+    (100, 1)
     """
     no_spike_rates = no_spike_rate * np.median(np.diff(time))
     no_spike_log_likelihood = jnp.zeros((time.shape[0],))

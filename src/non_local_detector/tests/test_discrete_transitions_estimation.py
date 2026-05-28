@@ -891,7 +891,7 @@ class TestExpandedTransitionMstepEndToEnd:
             max_iter=5,
         )
 
-        # max_iter=5 EM iterations + 1 final E-step after the loop (issue #26)
+        # max_iter=5 EM iterations + 1 final E-step after the loop
         assert len(marginal_log_likelihoods) == 6
         # Tolerance accommodates float32 noise on the converged tail
         # (LL magnitude ~700, float32 epsilon ~1e-7 → ~1e-4 noise).
@@ -920,7 +920,7 @@ class TestExpandedTransitionMstepEndToEnd:
         assert learned_low[1, 1] > learned_high[1, 1]
         np.testing.assert_allclose(learned_low[:2], true_low[:2], atol=0.16)
         np.testing.assert_allclose(learned_high[:2], true_high[:2], atol=0.16)
-        # 1 EM iteration + 1 final E-step after the loop (issue #26)
+        # 1 EM iteration + 1 final E-step after the loop
         assert len(marginal_log_likelihoods) == 2
 
     def test_nonstationary_recovery_improves_with_emission_strength(self):
