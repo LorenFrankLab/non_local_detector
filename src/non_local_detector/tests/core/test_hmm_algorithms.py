@@ -598,3 +598,61 @@ class TestFilterDegenerateTimestepWarning:
             f"Did not expect degenerate-step warnings; got: "
             f"{[r.getMessage() for r in warning_records]}"
         )
+
+
+@pytest.mark.unit
+class TestViterbiGlobalOptimum:
+    """Viterbi must honor transition structure over greedy per-step likelihood."""
+
+    def test_viterbi_follows_forced_transitions_against_greedy_likelihood(self):
+        """A deterministic transition chain forces a path the likelihood disfavors.
+
+        Per-timestep argmax of the log-likelihoods would pick state 0 at every
+        step, but the transition matrix forms a forced chain 0 -> 1 -> 2 from
+        the initial state. A correct Viterbi decode returns [0, 1, 2]; a greedy
+        decode that ignored the global path constraint would return [0, 0, 0].
+        """
+        initial = jnp.array([1.0, 0.0, 0.0])
+        transition = jnp.array(
+            [
+                [0.0, 1.0, 0.0],  # state 0 -> 1
+                [0.0, 0.0, 1.0],  # state 1 -> 2
+                [0.0, 0.0, 1.0],  # state 2 -> 2 (absorbing)
+            ]
+        )
+        # Likelihood prefers state 0 at every timestep.
+        log_likelihoods = jnp.array(
+            [
+                [0.0, -20.0, -20.0],
+                [0.0, -20.0, -20.0],
+                [0.0, -20.0, -20.0],
+            ]
+        )
+        path = viterbi(initial, transition, log_likelihoods)
+        assert tuple(int(s) for s in path) == (0, 1, 2)
+        # Greedy per-step argmax would have been (0, 0, 0).
+        greedy = tuple(int(s) for s in jnp.argmax(log_likelihoods, axis=1))
+        assert greedy == (0, 0, 0)
+        assert tuple(int(s) for s in path) != greedy
+
+
+@pytest.mark.unit
+class TestSingleStateHMM:
+    """Degenerate n_states=1 case: filtering is trivial but must be exact."""
+
+    def test_filter_single_state_is_certain_and_marginal_is_sum(self):
+        """With one state, filtered prob is 1.0 everywhere and the marginal
+        log-likelihood equals the sum of the per-timestep log-likelihoods."""
+        n_time = 5
+        initial = jnp.array([1.0])
+        transition = jnp.array([[1.0]])
+        log_likelihoods = (jnp.arange(n_time, dtype=jnp.float32) * -0.1).reshape(
+            n_time, 1
+        )
+
+        (marginal, _), (filtered, _) = filter(initial, transition, log_likelihoods)
+
+        np.testing.assert_allclose(np.asarray(filtered), 1.0, atol=1e-6)
+        np.testing.assert_allclose(
+            float(marginal), float(log_likelihoods.sum()), atol=1e-5
+        )
