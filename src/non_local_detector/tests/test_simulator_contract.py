@@ -404,3 +404,13 @@ def test_seeded_simulate_no_warning():
     reproducibility_warnings = [w for w in caught if "reproducible" in str(w.message)]
     assert not reproducibility_warnings
     np.testing.assert_array_equal(out1, out2)
+
+
+def test_unseeded_multiunit_simulate_warns():
+    """simulate_multiunit_with_place_fields warns when called unseeded."""
+    from non_local_detector.simulate import simulate_multiunit_with_place_fields
+
+    place_means = np.array([10.0, 30.0, 50.0])
+    position = np.linspace(0.0, 60.0, 200)[:, None]
+    with pytest.warns(UserWarning, match="reproducible"):
+        simulate_multiunit_with_place_fields(place_means, position)

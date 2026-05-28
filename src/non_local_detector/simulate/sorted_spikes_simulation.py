@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 from scipy.stats import norm  # type: ignore[import-untyped]
 
@@ -393,6 +395,14 @@ def make_fragmented_replay(
     spikes : np.ndarray, shape (n_time, n_neurons)
     """
     if rng is None:
+        if seed is None:
+            warnings.warn(
+                "make_fragmented_replay called with neither `seed` nor `rng`; "
+                "using OS entropy. The result will not be reproducible. Pass "
+                "seed=0 (or any int) or rng=... to control reproducibility.",
+                UserWarning,
+                stacklevel=2,
+            )
         rng = np.random.default_rng(seed)
 
     n_neurons = len(place_field_means)

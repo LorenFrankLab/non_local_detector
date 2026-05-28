@@ -259,3 +259,20 @@ class TestGetBinIndSnapWarning:
             env.get_bin_ind(np.array([[arm_end_edge]]))
         snap_warnings = [w for w in caught if "snap distance" in str(w.message)]
         assert not snap_warnings
+
+    def test_snap_threshold_uses_max_bin_size_for_2d(self):
+        """For a 2D env with anisotropic place_bin_size, threshold = 2 x max(bin sizes)."""
+        env = Environment(
+            environment_name="open-2d-aniso",
+            place_bin_size=(1.0, 4.0),
+        )
+        # Open field; force an interior hole so the snap path can run.
+        xs = np.concatenate(
+            [np.linspace(0.0, 8.0, 60), np.full(60, 0.5), np.full(60, 8.0)]
+        )
+        ys = np.concatenate(
+            [np.full(60, 0.5), np.linspace(0.0, 8.0, 60), np.linspace(0.0, 8.0, 60)]
+        )
+        env = env.fit_place_grid(np.stack([xs, ys], axis=-1), infer_track_interior=True)
+        # Threshold must be 2 * max(1.0, 4.0) = 8.0, not 2 * min = 2.0.
+        assert env._snap_warn_threshold() == 8.0

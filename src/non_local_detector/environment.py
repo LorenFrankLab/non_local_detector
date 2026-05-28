@@ -655,6 +655,16 @@ class Environment:
             Flat index of the bin for each data point in `sample`. When
             ``is_track_interior_`` is set, the returned index is always an
             interior bin.
+
+        Notes
+        -----
+        The large-snap ``UserWarning`` only covers positions that land in a
+        non-interior (gap) bin and are then snapped. In an all-interior
+        environment (e.g. ``infer_track_interior=False``) an out-of-bounds
+        position is clamped to the nearest edge bin by the histogram outlier
+        logic without entering the snap path, so it is not warned about.
+        Detecting out-of-bounds positions in that case would require a
+        distance check on every call and is left as a follow-up.
         """
         if not self._is_fitted:
             raise ConfigurationError(
@@ -737,10 +747,11 @@ class Environment:
                         warnings.warn(
                             f"{int(needs_snap.sum())} position(s) snapped to the "
                             f"nearest interior bin; max snap distance "
-                            f"{max_snap:.3f} exceeds threshold {threshold:.3f} "
-                            f"(2x place_bin_size). This often indicates tracking "
-                            f"glitches or positions outside the environment "
-                            f"bounds.",
+                            f"{max_snap:.3f} exceeds {threshold:.3f} "
+                            f"(2x place_bin_size). On a multi-arm track a large "
+                            f"inter-arm gap can produce this routinely; a value "
+                            f"much larger than the gap usually indicates a "
+                            f"tracking glitch or an out-of-bounds position.",
                             UserWarning,
                             stacklevel=2,
                         )
@@ -753,7 +764,7 @@ class Environment:
         Two bin-widths: positions farther than this from any interior bin
         are more likely tracking glitches than legitimate edge effects.
         """
-        if isinstance(self.place_bin_size, tuple):
+        if isinstance(self.place_bin_size, (tuple, list)):
             return 2.0 * max(self.place_bin_size)
         return 2.0 * float(self.place_bin_size)
 

@@ -318,6 +318,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             position_time, position, time, environment
         )
         occupancy = occupancy_model.predict(interpolated_position)
+        n_nan_density_bins = 0
 
         for neuron_spike_times, neuron_marginal_model, neuron_mean_rate in zip(
             tqdm(
@@ -340,9 +341,9 @@ def predict_sorted_spikes_kde_log_likelihood(
                 neuron_spike_times, time
             )
             marginal_density = neuron_marginal_model.predict(interpolated_position)
-            marginal_density = jnp.where(
-                jnp.isnan(marginal_density), 0.0, marginal_density
-            )
+            nan_mask = jnp.isnan(marginal_density)
+            n_nan_density_bins += int(jnp.sum(nan_mask))
+            marginal_density = jnp.where(nan_mask, 0.0, marginal_density)
             local_rate = neuron_mean_rate * jnp.where(
                 occupancy > 0.0,
                 marginal_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
@@ -352,6 +353,17 @@ def predict_sorted_spikes_kde_log_likelihood(
             log_likelihood += (
                 jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
                 - local_rate
+            )
+
+        if n_nan_density_bins > 0:
+            warnings.warn(
+                f"KDE marginal density was NaN at {n_nan_density_bins} "
+                f"(neuron, time) location(s) during local-likelihood "
+                f"decoding; these were set to zero. NaN density usually "
+                f"indicates a degenerate KDE (zero-variance or identical "
+                f"spike features, or position_std=0).",
+                UserWarning,
+                stacklevel=2,
             )
 
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
