@@ -424,3 +424,86 @@ class TestGetMapSpeedBoundaryHandling:
         # forward/backward differences equal the interior central differences.
         np.testing.assert_allclose(speed[0], interior[0], atol=1e-10)
         np.testing.assert_allclose(speed[-1], interior[0], atol=1e-10)
+
+
+def _make_positioned_track(n_nodes: int, edge_length: float = 1.0) -> nx.Graph:
+    """Linear chain track graph with 2D node positions along the x-axis.
+
+    Adds both ``distance`` edge attributes and ``pos`` node attributes so
+    ``_setup_track_graph`` (which projects positions and computes
+    node-to-node distances) can operate on it.
+    """
+    graph = nx.path_graph(n_nodes)
+    for node in graph.nodes():
+        graph.nodes[node]["pos"] = np.array([float(node) * edge_length, 0.0])
+    for u, v in graph.edges():
+        graph[u][v]["distance"] = edge_length
+    return graph
+
+
+@pytest.mark.unit
+class TestSetupTrackGraphIsolation:
+    """``_setup_track_graph`` must not mutate its input graph.
+
+    The same-edge branch adds a node_ahead<->node_behind shortcut whose
+    endpoints are real track nodes that the caller never removes. If the
+    function mutates the passed-in graph, that shortcut persists across
+    time steps and distorts later shortest-path distances.
+    """
+
+    def test_setup_track_graph_does_not_mutate_input(self):
+        """The input graph's nodes and edges are unchanged after the call."""
+        from non_local_detector.analysis.distance1D import _setup_track_graph
+
+        track_graph = _make_positioned_track(3, edge_length=1.0)
+        nodes_before = set(track_graph.nodes())
+        edges_before = {frozenset(e) for e in track_graph.edges()}
+
+        # Same-edge case (actual_edge == mental_edge) triggers the shortcut.
+        _setup_track_graph(
+            track_graph,
+            actual_pos=np.array([0.5, 0.0]),
+            actual_edge=np.array([0, 1]),
+            head_direction=0.0,  # points toward node 1 (+x)
+            mental_pos=np.array([0.7, 0.0]),
+            mental_edge=np.array([0, 1]),
+        )
+
+        assert set(track_graph.nodes()) == nodes_before
+        assert {frozenset(e) for e in track_graph.edges()} == edges_before
+
+    def test_setup_track_graph_no_cross_call_leak(self):
+        """Repeated calls on the same input give identical mental-position distance.
+
+        A first call on a different edge pair must not leave a shortcut that
+        shortens the path computed by a later call on the original graph.
+        """
+        from non_local_detector.analysis.distance1D import (
+            _calculate_distance,
+            _setup_track_graph,
+        )
+
+        track_graph = _make_positioned_track(4, edge_length=1.0)
+
+        def distance_for(actual_edge, mental_edge, mental_pos):
+            g = _setup_track_graph(
+                track_graph,
+                actual_pos=np.array([actual_edge[0] + 0.5, 0.0]),
+                actual_edge=np.array(actual_edge),
+                head_direction=0.0,
+                mental_pos=np.array(mental_pos),
+                mental_edge=np.array(mental_edge),
+            )
+            return _calculate_distance(
+                g, source="actual_position", target="mental_position"
+            )
+
+        # Reference distance computed in isolation.
+        ref = distance_for([0, 1], [0, 1], [0.7, 0.0])
+
+        # Run a different edge pair first (would add a persistent shortcut
+        # pre-fix), then recompute the reference case.
+        _ = distance_for([2, 3], [2, 3], [2.7, 0.0])
+        after = distance_for([0, 1], [0, 1], [0.7, 0.0])
+
+        np.testing.assert_allclose(after, ref, atol=1e-12)

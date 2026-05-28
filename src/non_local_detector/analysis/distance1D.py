@@ -209,9 +209,16 @@ def _setup_track_graph(
     Returns
     -------
     track_graph : nx.Graph
-        Modified graph with temporary nodes and connecting edges added.
+        A fresh copy of the input graph with temporary nodes and
+        connecting edges added. The input graph is not modified.
 
     """
+    # Work on a fresh copy per call. Otherwise edges added in one call
+    # (notably the node_ahead<->node_behind shortcut in the same-edge
+    # branch, whose endpoints are real track nodes that are never removed)
+    # persist into subsequent calls and distort shortest-path distances.
+    track_graph = track_graph.copy()
+
     track_graph.add_node("actual_position", pos=actual_pos)
     track_graph.add_node("head", pos=actual_pos)
     track_graph.add_node("mental_position", pos=mental_pos)
@@ -439,11 +446,10 @@ def get_ahead_behind_distance(
 
     Notes
     -----
-    This function iteratively modifies a copy of the input `track_graph`
-    by adding temporary nodes for the actual and mental positions for each
-    time step.
+    For each time step this calls ``_setup_track_graph``, which returns a
+    fresh copy of ``track_graph`` with temporary nodes/edges added, so no
+    state leaks between time steps.
     """
-    copy_graph = track_graph.copy()
     ahead_behind_distance = []
 
     for actual_pos, actual_edge, orientation, map_pos, map_edge in zip(
@@ -454,24 +460,18 @@ def get_ahead_behind_distance(
         mental_position_edges,
         strict=False,
     ):
-        # Insert nodes for actual position, mental position, head
-        copy_graph = _setup_track_graph(
-            copy_graph, actual_pos, actual_edge, orientation, map_pos, map_edge
+        # Each call returns an isolated fresh copy with the temporary nodes.
+        step_graph = _setup_track_graph(
+            track_graph, actual_pos, actual_edge, orientation, map_pos, map_edge
         )
 
-        # Get metrics
         distance = _calculate_distance(
-            copy_graph, source=source, target="mental_position"
+            step_graph, source=source, target="mental_position"
         )
         ahead_behind = _calculate_ahead_behind(
-            copy_graph, source=source, target="mental_position"
+            step_graph, source=source, target="mental_position"
         )
         ahead_behind_distance.append(ahead_behind * distance)
-
-        # Cleanup: remove inserted nodes
-        copy_graph.remove_node("actual_position")
-        copy_graph.remove_node("head")
-        copy_graph.remove_node("mental_position")
 
     return np.asarray(ahead_behind_distance)
 
