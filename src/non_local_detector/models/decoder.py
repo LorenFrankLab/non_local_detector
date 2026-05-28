@@ -63,13 +63,12 @@ class SortedSpikesDecoder(SortedSpikesDetector):
     no_spike_rate : float, optional
         Rate for no-spike observations, by default 1e-10.
     discrete_transition_prior_weight : float or np.ndarray, optional
-        Strength of the Dirichlet prior on the discrete transition matrix
-        estimated during EM, by default 0.0. 0.0 gives maximum-likelihood
-        updates; positive values pull the estimate toward the initial
-        transition matrix. No effect when EM is not run.
+        Dimensionless weight for data-adaptive Dirichlet prior scaling
+        during EM re-estimation of the discrete transition matrix, by
+        default 0.0 (fixed-count prior; no extra pull on the estimate).
     frozen_discrete_transition_rows : list[int] or np.ndarray or None, optional
-        State indices whose transition-matrix rows are held fixed at their
-        initial values during EM, by default None (all rows estimated).
+        Discrete transition-matrix rows to hold fixed during EM
+        re-estimation, by default None (all rows estimated).
 
     Examples
     --------
@@ -177,13 +176,12 @@ class ClusterlessDecoder(ClusterlessDetector):
     no_spike_rate : float, optional
         Rate for no-spike observations, by default 1e-10.
     discrete_transition_prior_weight : float or np.ndarray, optional
-        Strength of the Dirichlet prior on the discrete transition matrix
-        estimated during EM, by default 0.0. 0.0 gives maximum-likelihood
-        updates; positive values pull the estimate toward the initial
-        transition matrix. No effect when EM is not run.
+        Dimensionless weight for data-adaptive Dirichlet prior scaling
+        during EM re-estimation of the discrete transition matrix, by
+        default 0.0 (fixed-count prior; no extra pull on the estimate).
     frozen_discrete_transition_rows : list[int] or np.ndarray or None, optional
-        State indices whose transition-matrix rows are held fixed at their
-        initial values during EM, by default None (all rows estimated).
+        Discrete transition-matrix rows to hold fixed during EM
+        re-estimation, by default None (all rows estimated).
 
     Examples
     --------

@@ -21,7 +21,7 @@ from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
 
 def predict_no_spike_log_likelihood(
     time: np.ndarray,
-    spike_times: list[list[float]],
+    spike_times: list[np.ndarray],
     no_spike_rate: float = 1e-10,
 ) -> jnp.ndarray:
     """Return the log likelihood of low spike rate for each time bin.

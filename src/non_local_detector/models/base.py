@@ -1548,7 +1548,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 example="    detector.fit(position=position_train, spikes=spikes_train, time=time_train)",
             )
 
-        # Validate array dtypes and finiteness.
+        # Validate that inputs are arrays and finite.
         val.ensure_ndarray(position, "position")
         val.ensure_all_finite(position, "position")
 
@@ -1826,7 +1826,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 example="    results = detector.predict(spikes=spikes_test, time=time_test)",
             )
 
-        # Validate the time vector (1D, monotonically increasing, finite).
+        # Validate the time vector (array, finite, monotonically increasing).
         val.ensure_ndarray(time, "time")
         val.ensure_all_finite(time, "time")
         val.ensure_monotonic_increasing(time, "time", strict=False)
