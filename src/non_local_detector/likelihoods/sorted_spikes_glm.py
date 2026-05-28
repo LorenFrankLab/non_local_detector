@@ -273,10 +273,10 @@ def fit_sorted_spikes_glm_encoding_model(
     # weights all share the same time grid.
     time = np.asarray(position_time)
 
-    if environment.is_track_interior_ is not None:
+    if getattr(environment, "is_track_interior_", None) is not None:
         is_track_interior = environment.is_track_interior_.ravel()
     else:
-        if environment.place_bin_centers_ is None:
+        if getattr(environment, "place_bin_centers_", None) is None:
             raise ValueError(
                 "place_bin_centers_ is required when is_track_interior_ is None"
             )

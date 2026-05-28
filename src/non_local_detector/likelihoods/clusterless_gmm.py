@@ -223,10 +223,10 @@ def fit_clusterless_gmm_encoding_model(
     weights = None
 
     # Interior bins (cached)
-    if environment.is_track_interior_ is not None:
+    if getattr(environment, "is_track_interior_", None) is not None:
         is_track_interior = environment.is_track_interior_.ravel()
     else:
-        if environment.place_bin_centers_ is None:
+        if getattr(environment, "place_bin_centers_", None) is None:
             raise ValueError(
                 "place_bin_centers_ is required when is_track_interior_ is None"
             )

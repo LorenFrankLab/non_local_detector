@@ -169,8 +169,7 @@ def make_simulated_run_data(
     bin_widths = np.diff(edges)
 
     # Create environment
-    environment = Environment(place_bin_size=1.0)
-    environment.fit_place_grid(position)
+    environment = Environment(place_bin_size=1.0).fit_place_grid(position)
 
     return ClusterlessSimOutput(
         position_time=position_time.astype(np.float64),

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from non_local_detector.environment import Environment
+from non_local_detector.environment import FittedEnvironment
 
 
 @dataclass
@@ -35,8 +35,8 @@ class ClusterlessSimOutput:
     spike_waveform_features : list of np.ndarray, length n_electrodes
         Per-electrode spike waveform features. Each array has shape
         (n_spikes_e, n_features). Empty electrodes have shape (0, n_features).
-    environment : Environment
-        Environment object defining spatial layout and place fields.
+    environment : FittedEnvironment
+        Fitted environment defining the spatial grid and place-field layout.
     bin_widths : np.ndarray | None, shape (n_time_bins,), optional
         Bin widths in seconds, computed as np.diff(edges). Provided for
         convenience; can be None if not pre-computed.
@@ -56,5 +56,5 @@ class ClusterlessSimOutput:
     edges: np.ndarray
     spike_times: list[np.ndarray]
     spike_waveform_features: list[np.ndarray]
-    environment: Environment
+    environment: FittedEnvironment
     bin_widths: np.ndarray | None = None

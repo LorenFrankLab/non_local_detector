@@ -53,7 +53,7 @@ def sample_data():
         edge_spacing=None,
     )
     position_2d = position if position.ndim > 1 else position[:, np.newaxis]
-    environment.fit_place_grid(position_2d)
+    environment = environment.fit_place_grid(position_2d)
 
     return {
         "position_time": position_time,

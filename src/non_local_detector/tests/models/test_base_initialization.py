@@ -12,7 +12,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, FittedEnvironment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.models import (
     ClusterlessDecoder,
@@ -62,7 +62,9 @@ class TestInitializeEnvironments:
 
         # Assert
         assert len(decoder.environments) == 1
-        assert isinstance(decoder.environments[0], Environment)
+        # The fixture is a pre-fitted environment; whatever is passed is stored
+        # as-is (the constructor only wraps a bare environment in a tuple).
+        assert isinstance(decoder.environments[0], (Environment, FittedEnvironment))
         assert decoder.environments[0] is simple_1d_environment
 
     def test_initialize_environments_with_tuple(self, simple_1d_environment):
