@@ -1,5 +1,7 @@
 """Main code for simulating position and sorted spikes or clusterless spikes and waveforms."""
 
+import warnings
+
 import numpy as np
 from scipy.stats import multivariate_normal  # type: ignore[import-untyped]
 
@@ -125,6 +127,15 @@ def simulate_multiunit_with_place_fields(
     multiunit : np.ndarray, shape (n_time, n_mark_dims)
     """
     if rng is None:
+        if seed is None:
+            warnings.warn(
+                "simulate_multiunit_with_place_fields called with neither "
+                "`seed` nor `rng`; using OS entropy. The result will not be "
+                "reproducible. Pass seed=0 (or any int) or rng=... to control "
+                "reproducibility.",
+                UserWarning,
+                stacklevel=2,
+            )
         rng = np.random.default_rng(seed)
     n_neurons = place_means.shape[0]
     mark_centers = np.arange(0, n_neurons * mark_spacing, mark_spacing)

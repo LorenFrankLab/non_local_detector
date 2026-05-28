@@ -16,6 +16,8 @@ Conventions
   tuple unpacking.
 """
 
+import warnings
+
 import numpy as np
 from scipy.stats import multivariate_normal  # type: ignore[import-untyped]
 
@@ -64,6 +66,14 @@ def simulate_poisson_spikes(
         obtain a boolean spike indicator if needed.
     """
     if rng is None:
+        if seed is None:
+            warnings.warn(
+                "simulate_poisson_spikes called with neither `seed` nor `rng`; "
+                "using OS entropy. The result will not be reproducible. Pass "
+                "seed=0 (or any int) or rng=... to control reproducibility.",
+                UserWarning,
+                stacklevel=2,
+            )
         rng = np.random.default_rng(seed)
     return rng.poisson(rate / sampling_frequency)
 

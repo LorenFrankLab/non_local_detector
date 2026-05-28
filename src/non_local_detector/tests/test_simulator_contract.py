@@ -370,3 +370,37 @@ def test_mark_spacing_consistent_between_encoding_and_replay():
         f"MARK_SPACING; got max {all_features.max():.3f} — expected behavior under "
         f"MARK_SPACING={MARK_SPACING} (top center at {expected_max_center})"
     )
+
+
+def test_unseeded_simulate_warns():
+    """Simulators called without seed or rng must warn about reproducibility."""
+    import warnings as _warnings
+
+    from non_local_detector.simulate import simulate_poisson_spikes
+
+    rate = np.full(100, 5.0)
+    with pytest.warns(UserWarning, match="reproducible"):
+        simulate_poisson_spikes(rate, sampling_frequency=500)
+
+    # An explicit rng also satisfies reproducibility and must not warn.
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error", UserWarning)
+        simulate_poisson_spikes(
+            rate, sampling_frequency=500, rng=np.random.default_rng(0)
+        )
+
+
+def test_seeded_simulate_no_warning():
+    """A seeded simulator call is reproducible and emits no warning."""
+    import warnings as _warnings
+
+    from non_local_detector.simulate import simulate_poisson_spikes
+
+    rate = np.full(100, 5.0)
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        out1 = simulate_poisson_spikes(rate, sampling_frequency=500, seed=0)
+        out2 = simulate_poisson_spikes(rate, sampling_frequency=500, seed=0)
+    reproducibility_warnings = [w for w in caught if "reproducible" in str(w.message)]
+    assert not reproducibility_warnings
+    np.testing.assert_array_equal(out1, out2)

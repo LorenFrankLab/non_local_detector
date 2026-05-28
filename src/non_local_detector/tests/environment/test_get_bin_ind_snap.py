@@ -182,3 +182,80 @@ class TestGetBinIndSnap:
             assert b in interior_bin_indices, (
                 f"Row {i}: bin {b} for position {positions[i]} is not interior"
             )
+
+
+@pytest.mark.unit
+class TestGetBinIndSnapWarning:
+    """Large off-grid snaps emit a UserWarning; small snaps stay quiet."""
+
+    def test_off_grid_far_snap_warns(self):
+        """A position far outside the track warns about the large snap distance."""
+        env = Environment(environment_name="open-1d", place_bin_size=1.0)
+        position_1d = np.linspace(0.0, 10.0, 100)
+        env = env.fit_place_grid(position_1d, infer_track_interior=False)
+
+        # All-interior env: snap only fires for genuinely-out-of-range points.
+        # Force a non-interior assignment by querying ~100 bin-widths off-grid.
+        # With infer=False every bin is interior, so emulate a glitch via a 2D
+        # two-arm-style track where off-track points must snap.
+        g = nx.Graph()
+        g.add_node(0, pos=(0.0, 0.0))
+        g.add_node(1, pos=(50.0, 0.0))
+        g.add_node(2, pos=(60.0, 0.0))
+        g.add_node(3, pos=(110.0, 0.0))
+        g.add_edge(0, 1, distance=50.0, edge_id=0)
+        g.add_edge(2, 3, distance=50.0, edge_id=1)
+        track = Environment(
+            environment_name="two-arm",
+            place_bin_size=1.0,
+            track_graph=g,
+            edge_order=[(0, 1), (2, 3)],
+            edge_spacing=10.0,
+        )
+        position_1d = np.concatenate(
+            [np.linspace(0.0, 50.0, 60), np.linspace(60.0, 110.0, 60)]
+        )
+        track = track.fit_place_grid(position_1d, infer_track_interior=True)
+
+        is_interior = track.is_track_interior_.ravel()
+        gap_center = track.place_bin_centers_[np.where(~is_interior)[0][0], 0]
+        # The gap center is ~5 linear units from the nearest interior bin
+        # (gap is 10 wide, bin size 1) -> exceeds 2 x place_bin_size = 2.0.
+        with pytest.warns(UserWarning, match="snap distance"):
+            track.get_bin_ind(np.array([[gap_center]]))
+
+    def test_close_snap_no_warning(self):
+        """A position landing just on an arm-boundary edge snaps without warning."""
+        import warnings as _warnings
+
+        g = nx.Graph()
+        g.add_node(0, pos=(0.0, 0.0))
+        g.add_node(1, pos=(50.0, 0.0))
+        g.add_node(2, pos=(52.0, 0.0))
+        g.add_node(3, pos=(102.0, 0.0))
+        g.add_edge(0, 1, distance=50.0, edge_id=0)
+        g.add_edge(2, 3, distance=50.0, edge_id=1)
+        # Small gap (edge_spacing=2) with large bins (place_bin_size=5) so any
+        # snap distance stays under the 2 x 5 = 10 threshold.
+        env = Environment(
+            environment_name="small-gap",
+            place_bin_size=5.0,
+            track_graph=g,
+            edge_order=[(0, 1), (2, 3)],
+            edge_spacing=2.0,
+        )
+        position_1d = np.concatenate(
+            [np.linspace(0.0, 50.0, 30), np.linspace(52.0, 102.0, 30)]
+        )
+        env = env.fit_place_grid(position_1d, infer_track_interior=True)
+
+        edges = env.edges_[0]
+        is_interior = env.is_track_interior_.ravel()
+        first_gap = int(np.where(~is_interior)[0][0])
+        arm_end_edge = edges[first_gap]
+
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            env.get_bin_ind(np.array([[arm_end_edge]]))
+        snap_warnings = [w for w in caught if "snap distance" in str(w.message)]
+        assert not snap_warnings

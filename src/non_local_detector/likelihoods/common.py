@@ -349,7 +349,9 @@ def get_spikecount_per_time_bin(
     )
 
 
-def safe_divide(numerator, denominator, eps=EPS, condition=None):
+def safe_divide(
+    numerator, denominator, eps=EPS, condition=None, return_clamp_count=False
+):
     """Safely divide two arrays, avoiding division by zero.
 
     Parameters
@@ -359,17 +361,23 @@ def safe_divide(numerator, denominator, eps=EPS, condition=None):
     denominator : jnp.ndarray
         Denominator array, must be broadcastable with numerator.
     eps : float, optional
-        Small value to avoid division by zero, by default 1e-8.
+        Floor value substituted where the denominator is ~zero, by default
+        ``EPS`` (1e-15).
     condition : jnp.ndarray, optional
         Boolean condition array to apply the division, by default None.
         If None, condition is computed as abs(denominator) < eps.
         Useful if pre-computing the condition is more efficient.
+    return_clamp_count : bool, optional, default False
+        If True, also return the number of entries that hit the eps floor
+        as a JAX scalar. Lets callers surface how often the safe path fired.
 
     Returns
     -------
     result : jnp.ndarray
         Result of safe division with same shape as broadcast of inputs.
         Where condition is True, returns eps instead of dividing.
+    n_clamped : jnp.ndarray, scalar int
+        Only returned when ``return_clamp_count=True``.
     """
     if condition is None:
         condition = jnp.abs(denominator) < eps
@@ -377,10 +385,13 @@ def safe_divide(numerator, denominator, eps=EPS, condition=None):
     # Double-where: substitute safe denominator first, then select result.
     # This avoids NaN in both forward pass and gradients.
     safe_denominator = jnp.where(condition, 1.0, denominator)
-    return jnp.where(condition, eps, numerator / safe_denominator)
+    result = jnp.where(condition, eps, numerator / safe_denominator)
+    if return_clamp_count:
+        return result, jnp.sum(condition)
+    return result
 
 
-def safe_log(x, eps=EPS, condition=None):
+def safe_log(x, eps=EPS, condition=None, return_clamp_count=False):
     """Safely compute the logarithm of an array, avoiding log(0).
 
     Parameters
@@ -388,19 +399,28 @@ def safe_log(x, eps=EPS, condition=None):
     x : jnp.ndarray
         Input array of any shape.
     eps : float, optional
-        Small value to avoid log(0), by default 1e-8.
+        Floor value substituted where ``abs(x) < eps``, by default ``EPS``
+        (1e-15). Entries below this floor return ``log(eps)``.
     condition : jnp.ndarray, optional
         Boolean condition array to apply the logarithm, by default None.
         If None, condition is computed as abs(x) < eps.
         Useful if pre-computing the condition is more efficient.
+    return_clamp_count : bool, optional, default False
+        If True, also return the number of entries that hit the eps floor
+        as a JAX scalar. Lets callers surface how often the safe path fired.
 
     Returns
     -------
     result : jnp.ndarray
         Logarithm of input array with same shape as x.
         Where condition is True, returns log(eps) instead of log(0).
+    n_clamped : jnp.ndarray, scalar int
+        Only returned when ``return_clamp_count=True``.
     """
     if condition is None:
         condition = jnp.abs(x) < eps
 
-    return jnp.log(jnp.where(condition, eps, x))
+    result = jnp.log(jnp.where(condition, eps, x))
+    if return_clamp_count:
+        return result, jnp.sum(condition)
+    return result

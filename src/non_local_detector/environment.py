@@ -50,6 +50,7 @@ environment definitions using `pickle`.
 """
 
 import pickle
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -722,11 +723,39 @@ class Environment:
                         - interior_centers[np.newaxis, :, :],
                         axis=-1,
                     )
+                    snap_distances = np.min(dists, axis=1)
                     bin_inds[needs_snap] = interior_bin_indices[
                         np.argmin(dists, axis=1)
                     ]
 
+                    # A small snap is expected (boundary tie-breaking, gap
+                    # bins). A large snap usually means a tracking glitch or
+                    # a position outside the environment bounds — surface it.
+                    max_snap = float(np.max(snap_distances))
+                    threshold = self._snap_warn_threshold()
+                    if max_snap > threshold:
+                        warnings.warn(
+                            f"{int(needs_snap.sum())} position(s) snapped to the "
+                            f"nearest interior bin; max snap distance "
+                            f"{max_snap:.3f} exceeds threshold {threshold:.3f} "
+                            f"(2x place_bin_size). This often indicates tracking "
+                            f"glitches or positions outside the environment "
+                            f"bounds.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+
         return bin_inds
+
+    def _snap_warn_threshold(self) -> float:
+        """Snap distance beyond which ``get_bin_ind`` warns.
+
+        Two bin-widths: positions farther than this from any interior bin
+        are more likely tracking glitches than legitimate edge effects.
+        """
+        if isinstance(self.place_bin_size, tuple):
+            return 2.0 * max(self.place_bin_size)
+        return 2.0 * float(self.place_bin_size)
 
     def get_manifold_distances(
         self, position1: np.ndarray, position2: np.ndarray

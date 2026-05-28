@@ -46,6 +46,8 @@ sorted spikes, relying on density estimation rather than fitted coefficients.
 It utilizes JAX and SciPy for efficient computation and interpolation.
 """
 
+import warnings
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -162,6 +164,7 @@ def fit_sorted_spikes_kde_encoding_model(
     mean_rates = []
     place_fields = []
     marginal_models = []
+    n_nan_density_bins = 0
 
     for neuron_spike_times in tqdm(
         spike_times,
@@ -200,7 +203,12 @@ def fit_sorted_spikes_kde_encoding_model(
         )
         marginal_models.append(neuron_marginal_model)
         marginal_density = neuron_marginal_model.predict(interior_place_bin_centers)
-        marginal_density = jnp.where(jnp.isnan(marginal_density), 0.0, marginal_density)
+        # NaN here means a degenerate KDE (e.g., zero-variance spike
+        # features), not "no density" — track the count so it can be
+        # surfaced rather than silently zeroed.
+        nan_mask = jnp.isnan(marginal_density)
+        n_nan_density_bins += int(jnp.sum(nan_mask))
+        marginal_density = jnp.where(nan_mask, 0.0, marginal_density)
         place_fields.append(
             jnp.zeros((is_track_interior.shape[0],))
             .at[is_track_interior]
@@ -220,6 +228,17 @@ def fit_sorted_spikes_kde_encoding_model(
 
     place_fields = jnp.stack(place_fields, axis=0)
     no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
+
+    if n_nan_density_bins > 0:
+        warnings.warn(
+            f"KDE marginal density was NaN at {n_nan_density_bins} "
+            f"(neuron, bin) location(s); these were set to zero. NaN density "
+            f"usually indicates a degenerate KDE (zero-variance or identical "
+            f"spike features, or position_std=0). Inspect the encoding-spike "
+            f"feature distribution.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     return {
         "environment": environment,

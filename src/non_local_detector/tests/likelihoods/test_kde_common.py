@@ -253,3 +253,28 @@ def test_get_position_at_time_linear_interpolation():
     # Expected equals spike_times in a column
     assert out.shape == (spike_times.shape[0], 1)
     assert jnp.allclose(out.squeeze(), spike_times, rtol=1e-6, atol=1e-9)
+
+
+def test_safe_log_clamp_counter_returns_count():
+    """safe_log(return_clamp_count=True) reports how many entries hit the floor."""
+    x = jnp.array([1.0, 1e-20, 1e-20, 2.0])
+    result, n_clamped = safe_log(x, return_clamp_count=True)
+    assert int(n_clamped) == 2
+    # Clamped entries return log(eps); finite entries return their true log.
+    assert np.isfinite(np.asarray(result)).all()
+
+
+def test_safe_log_default_signature_unchanged():
+    """safe_log without the flag still returns a single array (back-compat)."""
+    out = safe_log(jnp.array([1.0, 1e-20]))
+    assert not isinstance(out, tuple)
+    assert out.shape == (2,)
+
+
+def test_safe_divide_clamp_counter_returns_count():
+    """safe_divide(return_clamp_count=True) reports near-zero-denominator hits."""
+    num = jnp.array([1.0, 1.0, 1.0])
+    den = jnp.array([2.0, 1e-20, 0.0])
+    result, n_clamped = safe_divide(num, den, return_clamp_count=True)
+    assert int(n_clamped) == 2
+    assert not isinstance(safe_divide(num, den), tuple)
