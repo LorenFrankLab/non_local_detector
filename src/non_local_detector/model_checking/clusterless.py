@@ -72,6 +72,18 @@ def interval_rescaling_transform(
     ground_process_intensity_at_spikes = np.interp(
         electrode_spike_times, time, ground_process_intensity
     )
+    # A non-positive ground intensity makes the conditional mark intensity
+    # (joint / ground) inf or nan. The downstream Rosenblatt rank transform
+    # would launder that into a plausible-looking value in [0, 1], silently
+    # corrupting the goodness-of-fit result, so reject it loudly here.
+    if np.any(ground_process_intensity_at_spikes <= 0):
+        raise ValueError(
+            "ground_process_intensity is <= 0 at one or more spike times "
+            f"(min={ground_process_intensity_at_spikes.min():.3e}); the "
+            "conditional mark intensity (joint / ground) is undefined there. "
+            "Clip the ground intensity to a small positive floor or restrict "
+            "to visited regions before calling this function."
+        )
     conditional_mark_intensity = (
         joint_mark_intensity / ground_process_intensity_at_spikes[:, np.newaxis]
     )

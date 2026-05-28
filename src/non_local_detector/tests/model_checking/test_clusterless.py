@@ -192,6 +192,66 @@ class TestIntervalRescalingTransform:
         assert u_isi.shape == (3,)
         assert u_mark.shape == (3, n_features)
 
+    def test_n_features_equals_n_time_does_not_silently_broadcast(self):
+        """``n_features == n_time`` is the case the old broadcast bug hid.
+
+        The previous implementation divided ``(n_spikes, n_features)`` by the
+        raw ``(n_time,)`` ground intensity. That raised for the common
+        ``n_features != n_time`` shapes, but silently *succeeded* with a wrong
+        per-feature divisor when ``n_features == n_time``. With the spike-time
+        interpolation the divisor is per-spike, so this shape produces the same
+        correct quotient as the hand-computed reference.
+        """
+        n_time = 3
+        n_features = 3  # deliberately equal to n_time
+        time = np.linspace(0.0, 1.0, n_time)
+        ground_process_intensity = np.array([1.0, 2.0, 4.0])
+        electrode_spike_times = time[[0, 1, 2]]
+        features = np.zeros((3, n_features))
+        joint_mark_intensity = np.array(
+            [[2.0, 4.0, 6.0], [8.0, 10.0, 12.0], [14.0, 16.0, 18.0]], dtype=float
+        )
+
+        _, u_mark = interval_rescaling_transform(
+            time,
+            electrode_spike_times,
+            features,
+            ground_process_intensity,
+            joint_mark_intensity,
+        )
+
+        ground_at_spikes = np.interp(
+            electrode_spike_times, time, ground_process_intensity
+        )
+        expected = rosenblatt_transform(
+            joint_mark_intensity / ground_at_spikes[:, None]
+        )
+        np.testing.assert_allclose(u_mark, expected)
+
+    def test_nonpositive_ground_intensity_raises(self):
+        """A ground intensity that hits zero at a spike raises, not silently inf.
+
+        Dividing by a zero ground intensity yields ``inf``/``nan``; the
+        Rosenblatt rank transform would launder that into a plausible value in
+        ``[0, 1]``, corrupting the goodness-of-fit result. The function rejects
+        it instead.
+        """
+        n_time = 10
+        time = np.linspace(0.0, 1.0, n_time)
+        ground_process_intensity = np.linspace(0.0, 2.0, n_time)  # 0 at t=0
+        electrode_spike_times = time[[0, 5]]  # first spike sits on the zero
+        features = np.zeros((2, 2))
+        joint_mark_intensity = np.ones((2, 2))
+
+        with pytest.raises(ValueError, match="ground_process_intensity is <= 0"):
+            interval_rescaling_transform(
+                time,
+                electrode_spike_times,
+                features,
+                ground_process_intensity,
+                joint_mark_intensity,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Unimplemented goodness-of-fit functions (status capture)

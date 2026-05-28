@@ -635,6 +635,32 @@ class TestViterbiGlobalOptimum:
         assert greedy == (0, 0, 0)
         assert tuple(int(s) for s in path) != greedy
 
+    def test_viterbi_smooths_over_likelihood_blip_with_soft_transitions(self):
+        """All transitions are feasible; backtracking must discriminate.
+
+        Unlike the forced-chain test above (where only one path has nonzero
+        probability), here every transition is strictly positive, so multiple
+        paths are feasible and the backward pass must compare finite scores to
+        pick the optimal predecessor at each step. The likelihood flip-flops --
+        it prefers state 1 only at the middle step -- so a greedy per-step
+        decode returns [0, 1, 0]. Sticky transitions make the two flips
+        (0->1->0) cost far more than the middle-step likelihood gain, so the
+        global Viterbi optimum is the smooth path [0, 0, 0].
+        """
+        initial = jnp.array([0.5, 0.5])
+        transition = jnp.array([[0.95, 0.05], [0.05, 0.95]])  # all entries > 0
+        log_likelihoods = jnp.array(
+            [
+                [0.0, -1.0],  # prefer 0
+                [0.0, 0.5],  # blip: prefer 1
+                [0.0, -1.0],  # prefer 0
+            ]
+        )
+        path = viterbi(initial, transition, log_likelihoods)
+        greedy = tuple(int(s) for s in jnp.argmax(log_likelihoods, axis=1))
+        assert greedy == (0, 1, 0)
+        assert tuple(int(s) for s in path) == (0, 0, 0)
+
 
 @pytest.mark.unit
 class TestSingleStateHMM:
