@@ -358,12 +358,12 @@ def test_zero_encoding_spike_electrode_is_finite_and_matches_prob_space(
     assert len(enc_spike_times[2]) == 0  # electrode 2 has no encoding spikes
     enc_mask = position_time < enc_cutoff
 
-    common_kwargs = dict(
-        position_std=6.0,
-        waveform_std=24.0,
-        block_size=64,
-        disable_progress_bar=True,
-    )
+    common_kwargs = {
+        "position_std": 6.0,
+        "waveform_std": 24.0,
+        "block_size": 64,
+        "disable_progress_bar": True,
+    }
     enc_log = fit_clusterless_kde_encoding_model(
         position_time=position_time[enc_mask],
         position=position[enc_mask],
@@ -382,16 +382,16 @@ def test_zero_encoding_spike_electrode_is_finite_and_matches_prob_space(
     )
 
     time = np.linspace(enc_cutoff + 1e-6, position_time[-1], 30)
-    call_kwargs = dict(
-        time=time,
-        position_time=position_time,
-        position=position,
-        spike_times=spike_times,
-        spike_waveform_features=spike_waveform_features,
-        environment=env,
-        block_size=64,
-        disable_progress_bar=True,
-    )
+    call_kwargs = {
+        "time": time,
+        "position_time": position_time,
+        "position": position,
+        "spike_times": spike_times,
+        "spike_waveform_features": spike_waveform_features,
+        "environment": env,
+        "block_size": 64,
+        "disable_progress_bar": True,
+    }
     ll_log = np.asarray(
         compute_local_log_likelihood(
             occupancy_model=enc_log["occupancy_model"],
