@@ -188,6 +188,27 @@ def test_empty_eval_points_returns_empty():
     assert out.shape == (0,)
 
 
+def test_block_log_kde_empty_samples_returns_log_eps_floor():
+    """An empty sample set yields the LOG_EPS floor, not NaN.
+
+    ``log_kde`` on zero samples computes ``logsumexp(empty) - logsumexp(empty)``
+    = ``-inf - -inf`` = NaN. ``block_log_kde`` must instead return its LOG_EPS
+    floor (density ~ 0), which protects ``KDEModel.predict_log`` and the
+    zero-encoding-spike electrode path in ``compute_local_log_likelihood``.
+    """
+    from non_local_detector.likelihoods.common import LOG_EPS
+
+    eval_points = rng(3).normal(size=(5, 2))
+    samples = np.zeros((0, 2))
+    std = jnp.array([1.0, 1.0])
+    out = block_log_kde(
+        jnp.asarray(eval_points), jnp.asarray(samples), std, block_size=4
+    )
+    assert out.shape == (5,)
+    assert np.all(np.isfinite(out))
+    np.testing.assert_allclose(np.asarray(out), np.full(5, LOG_EPS), rtol=1e-6)
+
+
 def test_empty_eval_points_kde_model_default_block_size():
     """KDEModel with block_size=None derives block_size from eval_points length.
 

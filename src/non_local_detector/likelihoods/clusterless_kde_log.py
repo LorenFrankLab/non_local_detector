@@ -1671,7 +1671,9 @@ def compute_local_log_likelihood(
         # ``safe_log(mean_rate * density / occupancy) = safe_log(0) = LOG_EPS``
         # per decoding spike; the additive log decomposition above does not (it
         # floors only ``log_mean_rate``). Match the probability-space floor so
-        # the two paths agree and no NaN reaches the posterior.
+        # the two paths agree and no NaN reaches the posterior. Forward-pass
+        # only: this likelihood is not differentiated, so the unused
+        # ``mean_rate > 0`` branch's NaN gradient at mean_rate == 0 is moot.
         spike_contribution = jnp.where(
             electrode_mean_rate > 0.0, spike_contribution, LOG_EPS
         )
