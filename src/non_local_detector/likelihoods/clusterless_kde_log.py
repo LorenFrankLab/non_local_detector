@@ -1666,6 +1666,16 @@ def compute_local_log_likelihood(
         # Spike contribution: sum over spikes in each time bin
         spike_contribution = log_mean_rate + log_marginal_density - log_occupancy
 
+        # An electrode with no encoding spikes (mean_rate == 0) has an empty
+        # mark-density KDE. The probability-space path computes
+        # ``safe_log(mean_rate * density / occupancy) = safe_log(0) = LOG_EPS``
+        # per decoding spike; the additive log decomposition above does not (it
+        # floors only ``log_mean_rate``). Match the probability-space floor so
+        # the two paths agree and no NaN reaches the posterior.
+        spike_contribution = jnp.where(
+            electrode_mean_rate > 0.0, spike_contribution, LOG_EPS
+        )
+
         log_likelihood += jax.ops.segment_sum(
             spike_contribution,
             get_spike_time_bin_ind(electrode_spike_times, time),

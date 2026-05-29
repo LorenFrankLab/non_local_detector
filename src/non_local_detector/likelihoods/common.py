@@ -245,6 +245,12 @@ def block_log_kde(
     if n_eval == 0:
         return out
 
+    # An empty sample set has no density information. ``log_kde`` would compute
+    # ``logsumexp(empty) - logsumexp(empty) = -inf - -inf = nan`` here, so floor
+    # to ``LOG_EPS`` (density ~ 0), consistent with the ``out`` initialization.
+    if samples.shape[0] == 0:
+        return out
+
     if weights is None:
         weights = jnp.ones((samples.shape[0],))
 

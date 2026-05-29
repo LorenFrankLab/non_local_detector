@@ -293,3 +293,137 @@ def test_block_log_kde_vs_log_block_kde():
         f"Expected large difference (< -1000) between log-space and clamped linear-space, "
         f"but got min_diff={min_diff:.2f}"
     )
+
+
+def _zero_encoding_spike_inputs():
+    """Inputs where one electrode has zero ENCODING spikes but decoding spikes.
+
+    A neuron that never spiked during encoding has an empty mark-density KDE,
+    yet may still fire during decoding (model misspecification). This is the
+    structural trigger for the local-likelihood NaN: evaluating an empty-sample
+    KDE produces ``logsumexp(empty) - logsumexp(empty) = -inf - -inf = nan``.
+    """
+    rng = np.random.default_rng(7)
+    n_time_pos = 400
+    position_time = np.linspace(0.0, 4.0, n_time_pos)
+    position = np.linspace(0.0, 50.0, n_time_pos)[:, None]
+
+    # Encoding window is the first 60% of time; decoding window the remainder.
+    enc_cutoff = position_time[int(0.6 * n_time_pos)]
+
+    spike_times = []
+    spike_waveform_features = []
+    # Electrode 0 and 1: normal (spikes during encoding and decoding).
+    for _ in range(2):
+        st = np.sort(rng.uniform(position_time[0], position_time[-1], 50))
+        feats = rng.standard_normal((len(st), 4)) * 5.0
+        spike_times.append(st)
+        spike_waveform_features.append(feats)
+    # Electrode 2: spikes ONLY during decoding (zero encoding spikes).
+    st = np.sort(rng.uniform(enc_cutoff + 1e-6, position_time[-1], 12))
+    feats = rng.standard_normal((len(st), 4)) * 5.0
+    spike_times.append(st)
+    spike_waveform_features.append(feats)
+
+    return position_time, position, spike_times, spike_waveform_features, enc_cutoff
+
+
+def test_zero_encoding_spike_electrode_is_finite_and_matches_prob_space(
+    simple_1d_environment,
+):
+    """A zero-encoding-spike electrode must not produce NaN, and the log-space
+    local likelihood must match the probability-space path (issue #32)."""
+    from non_local_detector.likelihoods.clusterless_kde import (
+        compute_local_log_likelihood as compute_local_prob,
+    )
+    from non_local_detector.likelihoods.clusterless_kde import (
+        fit_clusterless_kde_encoding_model as fit_prob,
+    )
+
+    env = simple_1d_environment
+    (
+        position_time,
+        position,
+        spike_times,
+        spike_waveform_features,
+        enc_cutoff,
+    ) = _zero_encoding_spike_inputs()
+
+    # Encode on spikes before the cutoff so electrode 2 has zero encoding spikes.
+    enc_spike_times = [st[st < enc_cutoff] for st in spike_times]
+    enc_spike_features = [
+        wf[st < enc_cutoff]
+        for st, wf in zip(spike_times, spike_waveform_features, strict=True)
+    ]
+    assert len(enc_spike_times[2]) == 0  # electrode 2 has no encoding spikes
+    enc_mask = position_time < enc_cutoff
+
+    common_kwargs = dict(
+        position_std=6.0,
+        waveform_std=24.0,
+        block_size=64,
+        disable_progress_bar=True,
+    )
+    enc_log = fit_clusterless_kde_encoding_model(
+        position_time=position_time[enc_mask],
+        position=position[enc_mask],
+        spike_times=enc_spike_times,
+        spike_waveform_features=enc_spike_features,
+        environment=env,
+        **common_kwargs,
+    )
+    enc_prob = fit_prob(
+        position_time=position_time[enc_mask],
+        position=position[enc_mask],
+        spike_times=enc_spike_times,
+        spike_waveform_features=enc_spike_features,
+        environment=env,
+        **common_kwargs,
+    )
+
+    time = np.linspace(enc_cutoff + 1e-6, position_time[-1], 30)
+    call_kwargs = dict(
+        time=time,
+        position_time=position_time,
+        position=position,
+        spike_times=spike_times,
+        spike_waveform_features=spike_waveform_features,
+        environment=env,
+        block_size=64,
+        disable_progress_bar=True,
+    )
+    ll_log = np.asarray(
+        compute_local_log_likelihood(
+            occupancy_model=enc_log["occupancy_model"],
+            gpi_models=enc_log["gpi_models"],
+            encoding_spike_waveform_features=enc_log[
+                "encoding_spike_waveform_features"
+            ],
+            encoding_positions=enc_log["encoding_positions"],
+            mean_rates=jnp.array(enc_log["mean_rates"]),
+            position_std=enc_log["position_std"],
+            waveform_std=enc_log["waveform_std"],
+            **call_kwargs,
+        )
+    )
+    ll_prob = np.asarray(
+        compute_local_prob(
+            occupancy_model=enc_prob["occupancy_model"],
+            gpi_models=enc_prob["gpi_models"],
+            encoding_spike_waveform_features=enc_prob[
+                "encoding_spike_waveform_features"
+            ],
+            encoding_positions=enc_prob["encoding_positions"],
+            mean_rates=jnp.array(enc_prob["mean_rates"]),
+            position_std=enc_prob["position_std"],
+            waveform_std=enc_prob["waveform_std"],
+            **call_kwargs,
+        )
+    )
+
+    assert np.all(np.isfinite(ll_log)), (
+        f"log-space local likelihood has non-finite values: "
+        f"n_nan={int(np.isnan(ll_log).sum())}, n_inf={int(np.isinf(ll_log).sum())}"
+    )
+    # Log-space must agree with the probability-space path it consolidates with.
+    np.testing.assert_allclose(ll_log, ll_prob, rtol=1e-4, atol=1e-4)
