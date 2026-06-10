@@ -10,9 +10,15 @@ import pytest
 
 from non_local_detector.simulate.clusterless_simulation import (
     MARK_SPACING,
+    N_TETRODES,
+    PLACE_FIELD_MEANS,
     make_continuous_replay,
     make_simulated_run_data,
 )
+
+# The historical (pre-fix) hardcoded mark spacing in ``make_simulated_run_data``.
+# Kept here purely to express the regression boundary; the source no longer uses it.
+_PRE_FIX_MARK_SPACING = 10
 
 
 def test_shapes_and_lengths_per_electrode() -> None:
@@ -360,13 +366,17 @@ def test_mark_spacing_consistent_between_encoding_and_replay():
     all_features = np.concatenate(
         [f.ravel() for f in sim.spike_waveform_features if f.size > 0]
     )
-    # PLACE_FIELD_MEANS (200 / 10 = 20 neurons total) split across N_TETRODES=5
-    # gives 4 neurons per tetrode → mark centers at {0, 1, 2, 3} × MARK_SPACING.
-    n_neurons_per_tetrode = 4
-    expected_max_center = (n_neurons_per_tetrode - 1) * MARK_SPACING  # 3 * 5 = 15
-    pre_fix_max_center = (n_neurons_per_tetrode - 1) * 10  # 3 * 10 = 30
+    # Mark centers per tetrode are np.arange(0, n * spacing, spacing), so the
+    # top center is (n_neurons_per_tetrode - 1) * spacing. Derive the neuron
+    # count from the module defaults rather than hardcoding it, so the boundary
+    # tracks PLACE_FIELD_MEANS / N_TETRODES if those change.
+    n_neurons_per_tetrode = len(PLACE_FIELD_MEANS) // N_TETRODES
+    expected_max_center = (n_neurons_per_tetrode - 1) * MARK_SPACING
+    pre_fix_max_center = (n_neurons_per_tetrode - 1) * _PRE_FIX_MARK_SPACING
+    # The fix only matters if the two spacings actually disagree.
+    assert MARK_SPACING < _PRE_FIX_MARK_SPACING
     assert all_features.max() < pre_fix_max_center, (
-        f"Encoding marks extend above {pre_fix_max_center} only if mark centers exceed "
-        f"MARK_SPACING; got max {all_features.max():.3f} — expected behavior under "
-        f"MARK_SPACING={MARK_SPACING} (top center at {expected_max_center})"
+        f"Encoding marks extend above {pre_fix_max_center}, which only happens if "
+        f"mark centers use a spacing larger than MARK_SPACING={MARK_SPACING}; got "
+        f"max {all_features.max():.3f} — expected top center near {expected_max_center}"
     )

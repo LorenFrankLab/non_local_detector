@@ -151,6 +151,44 @@ class TestGetHPDSpatialCoverage:
         assert coverage.shape == (n_time,)
         np.testing.assert_allclose(coverage, bin_area, atol=1e-12)
 
+    def test_hpd_spatial_coverage_2d_multibin(self):
+        """Coverage scales with the number of bins in the 2D HPD region.
+
+        ``test_hpd_spatial_coverage_2d`` puts all mass on a single bin, so it
+        cannot distinguish ``.sum(["x_position", "y_position"])`` from summing
+        only one axis. Here each frame spreads its mass uniformly over a known
+        number of distinct cells ``k``; with uniform mass the HPD region is all
+        ``k`` cells, so coverage must equal ``k * bin_area``.
+        """
+        x_positions = np.arange(0.0, 0.5, 0.1)  # 5 bins, width 0.1
+        y_positions = np.arange(0.0, 1.0, 0.2)  # 5 bins, width 0.2
+        bin_area = 0.1 * 0.2
+
+        # Per-frame number of equally-weighted cells and their (ix, iy) coords.
+        frames = [
+            [(0, 0), (4, 4)],  # k = 2
+            [(0, 1), (2, 2), (4, 0)],  # k = 3
+            [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)],  # k = 5
+        ]
+        n_time = len(frames)
+        probs = np.zeros((n_time, len(x_positions), len(y_positions)))
+        for t, cells in enumerate(frames):
+            for ix, iy in cells:
+                probs[t, ix, iy] = 1.0 / len(cells)
+
+        posterior = xr.DataArray(
+            probs,
+            dims=["time", "x_position", "y_position"],
+            coords={"x_position": x_positions, "y_position": y_positions},
+        )
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
+
+        coverage = get_HPD_spatial_coverage(posterior, threshold)
+
+        expected = np.array([len(cells) for cells in frames]) * bin_area
+        assert coverage.shape == (n_time,)
+        np.testing.assert_allclose(coverage, expected, atol=1e-12)
+
     def test_hpd_spatial_coverage_rejects_unknown_dims(self):
         """Posteriors lacking ``position`` or ``x_position``/``y_position`` dims raise."""
         probs = np.zeros((1, 4))
