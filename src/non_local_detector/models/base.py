@@ -370,13 +370,17 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.discrete_transition_regularization = discrete_transition_regularization
         self.discrete_transition_type = discrete_transition_type
         self.discrete_transition_prior_weight = discrete_transition_prior_weight
-        # Normalize and validate frozen rows against n_states up front
         self.frozen_discrete_transition_rows = frozen_discrete_transition_rows
-        self._frozen_discrete_transition_rows_mask_ = (
-            _normalize_frozen_discrete_transition_rows(
-                frozen_discrete_transition_rows,
-                n_states=len(discrete_initial_conditions),
-            )
+        # Validate the frozen-row spec against n_states up front (raises on bad
+        # input). The normalized boolean mask itself is derived lazily via the
+        # ``_frozen_discrete_transition_rows_mask_`` property rather than stored
+        # as an instance attribute, so it stays out of ``vars()`` /
+        # ``get_params()`` and does not break serialization round-trips that
+        # reconstruct the model from its public parameters (e.g. Spyglass's
+        # DecodingParameters).
+        _normalize_frozen_discrete_transition_rows(
+            frozen_discrete_transition_rows,
+            n_states=len(discrete_initial_conditions),
         )
 
         # Continuous state transition parameters
@@ -413,6 +417,27 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 ),
             )
         self.local_position_std = local_position_std
+
+    @property
+    def _frozen_discrete_transition_rows_mask_(self) -> np.ndarray | None:
+        """Boolean mask of frozen discrete-transition rows (derived, lazy).
+
+        Recomputed from ``frozen_discrete_transition_rows`` on each access
+        rather than stored as an instance attribute, so it does not appear in
+        ``vars()`` / ``get_params()``. This keeps serialization round-trips that
+        reconstruct the model from its public parameters (e.g. Spyglass's
+        ``DecodingParameters``) from passing this derived attribute back into
+        ``__init__`` as an unexpected keyword argument.
+
+        Returns
+        -------
+        np.ndarray of bool, shape (n_states,), or None
+            ``None`` when no rows are frozen.
+        """
+        return _normalize_frozen_discrete_transition_rows(
+            self.frozen_discrete_transition_rows,
+            n_states=len(self.discrete_initial_conditions),
+        )
 
     def _validate_position_dimensionality(
         self, position: np.ndarray, context: str = "fit"
