@@ -1,6 +1,8 @@
 import numpy as np
 import xarray as xr
 
+from non_local_detector._position_dims import get_position_dims
+
 
 def get_highest_posterior_threshold(
     posterior: xr.DataArray, coverage: float = 0.95
@@ -74,8 +76,11 @@ def get_HPD_spatial_coverage(
     Parameters
     ----------
     posterior : xarray.DataArray
-        Either ``(n_time, n_position_bins)`` with a ``position`` dim, or
-        ``(n_time, n_x_bins, n_y_bins)`` with ``x_position``/``y_position`` dims.
+        Shape ``(n_time, *n_position_bins)`` with time as the leading axis and
+        the position dimensions trailing. Position dims follow the canonical
+        naming: ``position`` (1D) or names ending in ``_position``
+        (``x_position``/``y_position`` for 2D, ``z_position`` and so on for
+        higher dimensions).
     hpd_threshold : np.ndarray, shape (n_time,)
         HPD threshold values for each time point, typically obtained from
         `get_highest_posterior_threshold`.
@@ -83,29 +88,29 @@ def get_HPD_spatial_coverage(
     Returns
     -------
     spatial_coverage : np.ndarray, shape (n_time,)
-        Total spatial area covered by the highest posterior density regions
-        at each time point. Units depend on the spatial coordinate system
-        of the posterior (e.g., cm for 1D, cm² for 2D).
+        Total spatial measure covered by the highest posterior density regions
+        at each time point. Units depend on the spatial coordinate system and
+        the dimensionality of the posterior (e.g., cm for 1D, cm² for 2D,
+        cm³ for 3D).
 
     Notes
     -----
-    The function assumes uniform spatial bin spacing and uses the first
-    difference of the position coordinate(s) to determine the bin width
-    (1D) or bin area (2D) for the integral.
+    The function assumes uniform spatial bin spacing along each axis and uses
+    the first difference of each position coordinate; the bin measure is the
+    product of the per-dimension bin widths (a length in 1D, an area in 2D, a
+    volume in 3D, and so on).
     """
-    if "position" in posterior.dims:
-        isin_hpd = posterior >= hpd_threshold[:, np.newaxis]
-        bin_width = float(np.diff(posterior.position)[0])
-        return np.asarray((isin_hpd * bin_width).sum("position").values)
-    if {"x_position", "y_position"}.issubset(posterior.dims):
-        isin_hpd = posterior >= hpd_threshold[:, np.newaxis, np.newaxis]
-        bin_area = float(np.diff(posterior.x_position)[0]) * float(
-            np.diff(posterior.y_position)[0]
+    position_dims = get_position_dims(posterior)
+    if not position_dims:
+        raise ValueError(
+            "posterior must have a 'position' dim or dims ending in "
+            f"'_position'; got {tuple(posterior.dims)}"
         )
-        return np.asarray(
-            (isin_hpd * bin_area).sum(["x_position", "y_position"]).values
-        )
-    raise ValueError(
-        "posterior must have 'position' or ('x_position', 'y_position') dims, "
-        f"got {tuple(posterior.dims)}"
-    )
+    # Bin measure = product of per-dimension bin widths.
+    bin_measure = 1.0
+    for dim in position_dims:
+        bin_measure *= float(np.diff(posterior[dim])[0])
+    # Broadcast the per-time threshold over the trailing position axes.
+    threshold = hpd_threshold[(slice(None), *([np.newaxis] * len(position_dims)))]
+    isin_hpd = posterior >= threshold
+    return np.asarray((isin_hpd * bin_measure).sum(position_dims).values)

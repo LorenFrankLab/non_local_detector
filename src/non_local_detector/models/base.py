@@ -20,6 +20,7 @@ from sklearn.base import BaseEstimator  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector import _validation as val
+from non_local_detector._position_dims import get_position_dim_names
 from non_local_detector.continuous_state_transitions import (
     Discrete,
     EmpiricalMovement,
@@ -2366,19 +2367,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         states = np.asarray(self.state_names)
 
-        # Generate position dimension names
-        if n_position_dims == 1:
-            position_names = ["position"]
-        else:
-            # Support arbitrary number of dimensions
-            dim_labels = ["x", "y", "z", "w", "v", "u"]  # Up to 6 dimensions
-            if n_position_dims <= len(dim_labels):
-                position_names = [
-                    f"{dim_labels[i]}_position" for i in range(n_position_dims)
-                ]
-            else:
-                # Fall back to numbered dimensions if > 6
-                position_names = [f"dim{i}_position" for i in range(n_position_dims)]
+        # Generate position dimension names (canonical convention)
+        position_names = get_position_dim_names(n_position_dims)
         # Create MultiIndex for state_bins coordinate
         state_bins_mindex = pd.MultiIndex.from_arrays(
             ((states[self.state_ind_], *position.T)),
@@ -2510,13 +2500,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         encoding_group_names = np.concatenate(encoding_group_names, axis=0)
 
         states = np.asarray(self.state_names)
-        if n_position_dims == 1:
-            position_names = ["position"]
-        else:
-            position_names = [
-                f"{name}_position"
-                for name, _ in zip(["x", "y", "z", "w"], position.T, strict=False)
-            ]
+        position_names = get_position_dim_names(n_position_dims)
         state_bins = pd.DataFrame(
             {
                 "state": states[self.state_ind_],

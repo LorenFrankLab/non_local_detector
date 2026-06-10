@@ -1,6 +1,7 @@
 import numpy as np
 import xarray as xr
 
+from non_local_detector._position_dims import get_position_dims
 from non_local_detector.models._defaults import (
     _initialize_params,
     _ModelDefaults,
@@ -38,9 +39,7 @@ def _state_probabilities_from_results(results: xr.Dataset) -> xr.DataArray:
         otherwise silently return the full per-bin array).
     """
     unstacked = results.acausal_posterior.unstack("state_bins")
-    position_dims = [
-        d for d in unstacked.dims if d == "position" or d.endswith("_position")
-    ]
+    position_dims = get_position_dims(unstacked)
     if not position_dims:
         raise ValueError(
             "get_posterior found no position dimension to marginalize over; "

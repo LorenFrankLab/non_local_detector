@@ -189,12 +189,45 @@ class TestGetHPDSpatialCoverage:
         assert coverage.shape == (n_time,)
         np.testing.assert_allclose(coverage, expected, atol=1e-12)
 
+    def test_hpd_spatial_coverage_3d(self):
+        """3D coverage uses the bin *volume* dx*dy*dz over x/y/z_position dims.
+
+        Exercises the N-D generalization: position dims are detected by name and
+        the bin measure is the product of per-axis widths (a volume in 3D).
+        """
+        x_positions = np.arange(0.0, 0.3, 0.1)  # 3 bins, width 0.1
+        y_positions = np.arange(0.0, 0.6, 0.2)  # 3 bins, width 0.2
+        z_positions = np.arange(0.0, 0.9, 0.3)  # 3 bins, width 0.3
+        bin_volume = 0.1 * 0.2 * 0.3
+
+        n_time = 2
+        probs = np.zeros((n_time, len(x_positions), len(y_positions), len(z_positions)))
+        peak_indices = [(0, 0, 0), (2, 2, 2)]  # single bin per frame
+        for t, (ix, iy, iz) in enumerate(peak_indices):
+            probs[t, ix, iy, iz] = 1.0
+
+        posterior = xr.DataArray(
+            probs,
+            dims=["time", "x_position", "y_position", "z_position"],
+            coords={
+                "x_position": x_positions,
+                "y_position": y_positions,
+                "z_position": z_positions,
+            },
+        )
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
+
+        coverage = get_HPD_spatial_coverage(posterior, threshold)
+
+        assert coverage.shape == (n_time,)
+        np.testing.assert_allclose(coverage, bin_volume, atol=1e-12)
+
     def test_hpd_spatial_coverage_rejects_unknown_dims(self):
         """Posteriors lacking ``position`` or ``x_position``/``y_position`` dims raise."""
         probs = np.zeros((1, 4))
         probs[0, 1] = 1.0
         posterior = xr.DataArray(probs, dims=["time", "unsupported"])
-        with pytest.raises(ValueError, match="x_position"):
+        with pytest.raises(ValueError, match="_position"):
             get_HPD_spatial_coverage(posterior, np.array([0.5]))
 
 
