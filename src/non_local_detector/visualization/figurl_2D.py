@@ -1,3 +1,49 @@
+import numpy as np
+
+_UINT16_MAX = int(np.iinfo(np.uint16).max)
+
+
+def validate_grid_within_uint16(x_count: int, y_count: int) -> int:
+    """Validate that an ``x_count`` x ``y_count`` grid's bin indices fit in uint16.
+
+    ``figurl_2D`` stores linearized 2D position bin indices as ``uint16`` to match
+    the downstream sortingview ``DecodedPositionData`` schema. The linearization
+    (see ``generate_linearization_function``) maps the grid to indices
+    ``0 .. x_count*y_count - 1``, so the largest index that must be stored is
+    ``n_position_bins - 1``. The grid is representable iff that maximum index fits
+    in ``uint16`` (i.e. ``n_position_bins <= np.iinfo(np.uint16).max + 1``).
+
+    Parameters
+    ----------
+    x_count, y_count : int
+        Number of position bins along each axis.
+
+    Returns
+    -------
+    n_position_bins : int
+        ``x_count * y_count``.
+
+    Raises
+    ------
+    ValueError
+        If the largest linear bin index (``n_position_bins - 1``) would exceed
+        ``np.iinfo(np.uint16).max``.
+    """
+    n_position_bins = x_count * y_count
+    max_linear_index = n_position_bins - 1
+    if max_linear_index > _UINT16_MAX:
+        raise ValueError(
+            f"figurl_2D decoded-position rendering currently supports grids whose "
+            f"largest linear bin index fits in uint16 (up to {_UINT16_MAX + 1} "
+            f"bins); got {n_position_bins} bins "
+            f"(x_count={x_count}, y_count={y_count}), whose largest linear index "
+            f"{max_linear_index} exceeds {_UINT16_MAX}. The sortingview "
+            f"DecodedPositionData schema receives 'locations' as uint16; verify "
+            f"the schema before widening the dtype here."
+        )
+    return n_position_bins
+
+
 try:
     from collections.abc import Callable
 
@@ -251,15 +297,7 @@ try:
             y_min,
             y_width,
         ) = get_base_track_information(posterior)
-        n_position_bins = x_count * y_count
-        if n_position_bins > np.iinfo(np.uint16).max:
-            raise ValueError(
-                f"figurl_2D decoded-position rendering currently supports grids up to "
-                f"{np.iinfo(np.uint16).max} bins; got {n_position_bins} "
-                f"(x_count={x_count}, y_count={y_count}). The sortingview "
-                f"DecodedPositionData schema receives 'locations' as uint16; verify "
-                f"the schema before widening the dtype here."
-            )
+        validate_grid_within_uint16(x_count, y_count)
         location_fn = generate_linearization_function(
             location_lookup, x_count, x_min, x_width, y_min, y_width
         )
