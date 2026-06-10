@@ -178,12 +178,12 @@ def get_map_estimate_direction_from_track_graph(
         bin_ind2 = get_bin_ind(map_estimate, bin_edges)
 
         first_node_on_path = np.full((n_nodes, n_nodes), -1, dtype=int)
-        # The all-pairs form of nx.shortest_path yields (source, {target: path})
-        # pairs (a generator in networkx >= 3, which this package requires);
-        # iterate it directly rather than materializing the full O(n_nodes^2) dict.
-        for from_node_id, to_node_data in nx.shortest_path(
-            track_graph, weight="distance"
-        ):
+        # The all-pairs form of nx.shortest_path returns {source: {target: path}}
+        # as a dict in networkx 3.0-3.4 but a generator of (source, {target:
+        # path}) pairs in networkx >= 3.5. dict(...) normalizes both (the
+        # package pins networkx >= 3.0), so .items() works on either.
+        all_pairs_paths = dict(nx.shortest_path(track_graph, weight="distance"))
+        for from_node_id, to_node_data in all_pairs_paths.items():
             for to_node_id, path in to_node_data.items():
                 try:
                     first_node_on_path[from_node_id, to_node_id] = path[1]
