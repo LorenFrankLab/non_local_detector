@@ -65,7 +65,9 @@ def get_highest_posterior_threshold(
 
 
 def get_HPD_spatial_coverage(
-    posterior: xr.DataArray, hpd_threshold: np.ndarray
+    posterior: xr.DataArray,
+    hpd_threshold: np.ndarray,
+    bin_width: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute total spatial area covered by highest posterior density regions.
 
@@ -84,6 +86,15 @@ def get_HPD_spatial_coverage(
     hpd_threshold : np.ndarray, shape (n_time,)
         HPD threshold values for each time point, typically obtained from
         `get_highest_posterior_threshold`.
+    bin_width : np.ndarray, shape (n_position_bins,), optional
+        Exact width of each position bin, used when the bins are *not*
+        uniformly spaced — e.g. ``np.diff(environment.edges_[0])`` for a
+        linearized track-graph environment whose segments have different
+        lengths (different per-arm bin widths) or ``edge_spacing`` gap bins.
+        Only valid when the posterior has a single position dimension. When
+        omitted, uniform spacing is assumed (see Notes); this is exact for
+        open-field grids and single-segment tracks, which the
+        ``Environment`` builds with equal-width bins.
 
     Returns
     -------
@@ -95,10 +106,12 @@ def get_HPD_spatial_coverage(
 
     Notes
     -----
-    The function assumes uniform spatial bin spacing along each axis and uses
-    the first difference of each position coordinate; the bin measure is the
-    product of the per-dimension bin widths (a length in 1D, an area in 2D, a
-    volume in 3D, and so on).
+    With ``bin_width=None`` the function assumes uniform spatial bin spacing
+    along each axis and uses the first difference of each position coordinate;
+    the bin measure is the product of the per-dimension bin widths (a length in
+    1D, an area in 2D, a volume in 3D, and so on). Pass ``bin_width`` to
+    integrate exact per-bin widths instead (1D only); the widths cannot be
+    recovered from the bin centers alone when the spacing is non-uniform.
     """
     position_dims = get_position_dims(posterior)
     if not position_dims:
@@ -106,11 +119,30 @@ def get_HPD_spatial_coverage(
             "posterior must have a 'position' dim or dims ending in "
             f"'_position'; got {tuple(posterior.dims)}"
         )
-    # Bin measure = product of per-dimension bin widths.
-    bin_measure = 1.0
-    for dim in position_dims:
-        bin_measure *= float(np.diff(posterior[dim])[0])
     # Broadcast the per-time threshold over the trailing position axes.
     threshold = hpd_threshold[(slice(None), *([np.newaxis] * len(position_dims)))]
     isin_hpd = posterior >= threshold
+
+    if bin_width is not None:
+        if len(position_dims) != 1:
+            raise ValueError(
+                "bin_width is only supported for a single (linearized) position "
+                f"dimension; the posterior has {len(position_dims)} position "
+                f"dims {tuple(position_dims)}. Multidimensional grids are "
+                "uniformly spaced, so omit bin_width."
+            )
+        (dim,) = position_dims
+        bin_width = np.asarray(bin_width, dtype=float)
+        if bin_width.shape != (posterior.sizes[dim],):
+            raise ValueError(
+                f"bin_width must have shape ({posterior.sizes[dim]},) to match "
+                f"the posterior's '{dim}' dimension; got {bin_width.shape}."
+            )
+        # Position is the trailing axis (time leads), so weight per bin and sum.
+        return np.asarray((np.asarray(isin_hpd.values) * bin_width).sum(axis=-1))
+
+    # Uniform spacing: bin measure is the product of per-dimension bin widths.
+    bin_measure = 1.0
+    for dim in position_dims:
+        bin_measure *= float(np.diff(posterior[dim])[0])
     return np.asarray((isin_hpd * bin_measure).sum(position_dims).values)

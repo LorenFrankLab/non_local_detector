@@ -230,6 +230,72 @@ class TestGetHPDSpatialCoverage:
         with pytest.raises(ValueError, match="_position"):
             get_HPD_spatial_coverage(posterior, np.array([0.5]))
 
+    def test_hpd_spatial_coverage_nonuniform_bin_width(self):
+        """``bin_width`` integrates exact per-bin widths on a non-uniform 1D grid.
+
+        A linearized track-graph environment with unequal segments has on-track
+        bins of two different widths. The uniform default uses the first bin
+        width for all bins (biased when the HPD region spans bins of different
+        widths); passing the true per-bin widths (``np.diff(edges)``) gives the
+        exact sum of the in-HPD bin widths.
+        """
+        import networkx as nx
+
+        from non_local_detector.environment import Environment
+
+        track_graph = nx.Graph()
+        track_graph.add_node(0, pos=(0.0, 0.0))
+        track_graph.add_node(1, pos=(50.0, 0.0))
+        track_graph.add_node(2, pos=(60.0, 0.0))
+        track_graph.add_node(3, pos=(90.0, 0.0))
+        track_graph.add_edge(0, 1, distance=50.0, edge_id=0)
+        track_graph.add_edge(2, 3, distance=30.0, edge_id=1)
+        env = Environment(
+            place_bin_size=8.0,
+            track_graph=track_graph,
+            edge_order=[(0, 1), (2, 3)],
+            edge_spacing=15.0,
+        ).fit_place_grid()
+
+        centers = np.asarray(env.place_bin_centers_).ravel()
+        bin_width = np.diff(np.asarray(env.edges_[0]).ravel())
+        is_interior = np.asarray(env.is_track_interior_).ravel()
+        n_bins = centers.size
+        # Sanity: the on-track bins are genuinely non-uniform (two arm widths).
+        assert len(np.unique(np.round(bin_width[is_interior], 6))) > 1
+
+        # HPD region = two on-track bins from each arm (different widths).
+        hpd_bins = np.array([0, 1, n_bins - 2, n_bins - 1])
+        assert is_interior[hpd_bins].all()
+        probs = np.zeros((1, n_bins))
+        probs[0, hpd_bins] = 1.0 / len(hpd_bins)
+        posterior = xr.DataArray(
+            probs, dims=["time", "position"], coords={"position": centers}
+        )
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
+
+        exact = get_HPD_spatial_coverage(posterior, threshold, bin_width=bin_width)
+        np.testing.assert_allclose(exact, bin_width[hpd_bins].sum(), atol=1e-9)
+
+        # The uniform default differs because the HPD spans two bin widths.
+        uniform = get_HPD_spatial_coverage(posterior, threshold)
+        assert not np.isclose(exact[0], uniform[0])
+
+    def test_hpd_spatial_coverage_bin_width_rejects_multidim(self):
+        """``bin_width`` is only valid for a single position dim."""
+        probs = np.zeros((1, 2, 2))
+        probs[0, 0, 0] = 1.0
+        posterior = xr.DataArray(
+            probs,
+            dims=["time", "x_position", "y_position"],
+            coords={"x_position": [0.0, 1.0], "y_position": [0.0, 2.0]},
+        )
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
+        with pytest.raises(ValueError, match="single"):
+            get_HPD_spatial_coverage(
+                posterior, threshold, bin_width=np.array([1.0, 1.0])
+            )
+
 
 # ---------------------------------------------------------------------------
 # KL divergence tests

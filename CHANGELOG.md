@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `analysis.distance2D.get_map_estimate_direction_from_track_graph` with `precomputed_distance=True`: on a disconnected track graph, an unreachable head-position/MAP pair silently indexed `node_positions[-1]` (the `-1` path sentinel) and produced a plausible but wrong heading. Unreachable pairs now emit a warning and return `NaN`, mirroring `get_2D_distance` (which warns and stores `inf`).
 - `continuous_state_transitions.RandomWalk`: a `direction=` argument was silently ignored unless the environment was a fitted N-D grid with `use_manifold_distance=True` — under the default `use_manifold_distance=False`, or when a `track_graph` was present, the directional constraint was dropped and a plain random walk returned. `make_state_transition` now raises a `ConfigurationError` for these configurations instead of silently ignoring `direction`.
 
+### Added
+
+- `model_checking.highest_posterior_density.get_HPD_spatial_coverage`: optional `bin_width` parameter for non-uniformly-spaced 1D (linearized track-graph) grids. Multi-segment tracks with unequal arm lengths produce on-track bins of different widths (plus `edge_spacing` gap bins); the default uniform path used the first bin's width for every bin, biasing coverage. Pass per-bin widths — e.g. `np.diff(environment.edges_[0])` — to integrate the exact bin measure. The default (no `bin_width`) is unchanged and remains exact for open-field grids and single-segment tracks (which `Environment` builds with equal-width bins); non-uniform widths cannot be recovered from bin centers alone.
+
 ### Changed
 
 - `analysis.distance2D.head_direction_simliarity` and `get_ahead_behind_distance2D`: docstrings described `head_direction` as shape `(n_time, 2)`, but the implementation requires a 1-D array of heading angles in radians `(n_time,)` (consistent with the 1-D sibling `get_ahead_behind_distance`). Passing the documented 2-D vector raised a broadcasting `ValueError`. Docstrings now document the angle contract; the implementation is unchanged. (#41)
