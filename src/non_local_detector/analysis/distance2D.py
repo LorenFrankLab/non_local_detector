@@ -178,10 +178,12 @@ def get_map_estimate_direction_from_track_graph(
         bin_ind2 = get_bin_ind(map_estimate, bin_edges)
 
         first_node_on_path = np.full((n_nodes, n_nodes), -1, dtype=int)
+        # The all-pairs form of nx.shortest_path yields (source, {target: path})
+        # pairs (a generator in networkx >= 3, which this package requires);
+        # iterate it directly rather than materializing the full O(n_nodes^2) dict.
         for from_node_id, to_node_data in nx.shortest_path(
-            track_graph,
-            weight="distance",
-        ).items():
+            track_graph, weight="distance"
+        ):
             for to_node_id, path in to_node_data.items():
                 try:
                     first_node_on_path[from_node_id, to_node_id] = path[1]
@@ -312,7 +314,9 @@ def head_direction_simliarity(
     Parameters
     ----------
     head_position : np.ndarray, shape (n_time, 2)
-    head_direction : np.ndarray, shape (n_time, 2)
+    head_direction : np.ndarray, shape (n_time,)
+        Heading angle in radians (e.g. ``np.arctan2(v[:, 1], v[:, 0])`` for a
+        heading vector ``v``), not a 2-D vector.
     map_estimate : np.ndarray, shape (n_time, 2)
     track_graph : nx.Graph or None
     edges : list or None
@@ -364,7 +368,9 @@ def get_ahead_behind_distance2D(
     Parameters
     ----------
     head_position : np.ndarray, shape (n_time, 2)
-    head_direction : np.ndarray, shape (n_time, 2)
+    head_direction : np.ndarray, shape (n_time,)
+        Heading angle in radians (e.g. ``np.arctan2(v[:, 1], v[:, 0])`` for a
+        heading vector ``v``), not a 2-D vector.
     map_position : np.ndarray, shape (n_time, 2)
     track_graph : nx.Graph or None
     edges : list or None

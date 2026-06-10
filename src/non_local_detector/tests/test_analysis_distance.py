@@ -15,8 +15,10 @@ from non_local_detector.analysis.distance2D import (
 )
 
 
-def _make_linear_track(n_nodes: int, edge_length: float = 1.0) -> nx.Graph:
-    """Build a linear chain track graph with uniform edge distances.
+def _make_linear_track(
+    n_nodes: int, edge_length: float = 1.0, last_edge_length: float | None = None
+) -> nx.Graph:
+    """Build a linear chain track graph with per-edge distances.
 
     Parameters
     ----------
@@ -24,6 +26,11 @@ def _make_linear_track(n_nodes: int, edge_length: float = 1.0) -> nx.Graph:
         Number of nodes (>= 2). Nodes are integer-labeled 0..n_nodes-1.
     edge_length : float, optional
         Distance attribute placed on every edge, by default 1.0.
+    last_edge_length : float or None, optional
+        If given, overrides the distance on the final edge
+        ``(n_nodes - 2, n_nodes - 1)``. Use this to make the trailing backward
+        difference distinguishable from the interior central differences so a
+        misordered trailing speed sample is observable, by default None.
 
     Returns
     -------
@@ -33,6 +40,8 @@ def _make_linear_track(n_nodes: int, edge_length: float = 1.0) -> nx.Graph:
     graph = nx.path_graph(n_nodes)
     for u, v in graph.edges():
         graph[u][v]["distance"] = edge_length
+    if last_edge_length is not None:
+        graph[n_nodes - 2][n_nodes - 1]["distance"] = last_edge_length
     return graph
 
 
@@ -282,14 +291,25 @@ class TestGetMapSpeedBoundaryHandling:
     def test_get_map_speed_boundary_appends_trailing(
         self, n_time, _identity_gaussian_smooth
     ):
-        """Trailing speed is the backward difference between the last two nodes."""
+        """Trailing speed is the backward difference between the last two nodes.
+
+        The final edge is given a distinct weight so the trailing backward
+        difference differs from the interior central differences. Without this,
+        a uniform-spacing track hides the pre-fix ``np.insert(speed, -1, ...)``
+        swap (the two misordered samples would be equal), so the asymmetric
+        edge makes the regression observable at every ``n_time``.
+        """
         n_nodes = max(n_time, 3)
-        track_graph = _make_linear_track(n_nodes, edge_length=1.0)
+        last_edge_length = 7.0
+        track_graph = _make_linear_track(
+            n_nodes, edge_length=1.0, last_edge_length=last_edge_length
+        )
         place_bin_center_ind_to_node = np.arange(n_nodes)
         sampling_frequency = 500.0
         dt = 1.0 / sampling_frequency
 
-        node_ids = np.arange(n_time) % n_nodes
+        # Walk along every node so the final (heavy) edge is traversed.
+        node_ids = np.arange(n_time)
         posterior = _posterior_from_node_sequence(
             node_ids, place_bin_center_ind_to_node
         )
@@ -314,7 +334,8 @@ class TestGetMapSpeedBoundaryHandling:
         )
         np.testing.assert_allclose(speed[0], expected_first, atol=1e-10)
 
-        # Last sample: backward difference (node[-2] -> node[-1]).
+        # Last sample: backward difference (node[-2] -> node[-1]) — the heavy
+        # edge, so this equals last_edge_length / dt.
         expected_last = (
             nx.shortest_path_length(
                 track_graph,
@@ -325,6 +346,21 @@ class TestGetMapSpeedBoundaryHandling:
             / dt
         )
         np.testing.assert_allclose(speed[-1], expected_last, atol=1e-10)
+        np.testing.assert_allclose(speed[-1], last_edge_length / dt, atol=1e-10)
+
+        # The pre-fix np.insert(speed, -1, ...) put the *interior* central
+        # difference at node[-2] into the final slot instead. Assert the
+        # trailing sample is NOT that swapped value.
+        buggy_last = nx.shortest_path_length(
+            track_graph,
+            source=node_ids[-3],
+            target=node_ids[-1],
+            weight="distance",
+        ) / (2.0 * dt)
+        assert not np.isclose(speed[-1], buggy_last, atol=1e-10), (
+            "Trailing speed matches the pre-fix np.insert(-1) swapped value; "
+            "the trailing sample must be appended, not inserted before the last."
+        )
 
         # Interior samples: central difference (node[t-1] -> node[t+1]) / (2*dt).
         for t in range(1, n_time - 1):
@@ -335,57 +371,6 @@ class TestGetMapSpeedBoundaryHandling:
                 weight="distance",
             ) / (2.0 * dt)
             np.testing.assert_allclose(speed[t], expected_interior, atol=1e-10)
-
-    def test_get_map_speed_demonstrates_pre_fix_misordering(
-        self, _identity_gaussian_smooth
-    ):
-        """The trailing sample matches an append, not an insert-before-last.
-
-        The earlier implementation produced ``speed[-2]`` = trailing boundary
-        speed and ``speed[-1]`` = the central difference at the original last
-        position. This test constructs a sequence in which the central
-        difference at the original final position differs from the trailing
-        backward difference by a known amount, and asserts the trailing
-        sample equals the backward difference (the correct value).
-        """
-        # Use unequal edge distances so the boundary and the original final
-        # central difference disagree.
-        track_graph = nx.Graph()
-        edges = [(0, 1, 1.0), (1, 2, 1.0), (2, 3, 1.0), (3, 4, 7.0)]
-        for u, v, d in edges:
-            track_graph.add_edge(u, v, distance=d)
-
-        place_bin_center_ind_to_node = np.array([0, 1, 2, 3, 4])
-        node_ids = np.array([0, 1, 2, 3, 4])
-        sampling_frequency = 500.0
-        dt = 1.0 / sampling_frequency
-
-        posterior = _posterior_from_node_sequence(
-            node_ids, place_bin_center_ind_to_node
-        )
-
-        speed = get_map_speed(
-            posterior=posterior,
-            track_graph_with_bin_centers_edges=track_graph,
-            place_bin_center_ind_to_node=place_bin_center_ind_to_node,
-            sampling_frequency=sampling_frequency,
-            smooth_sigma=0.0,
-        )
-
-        # Correct trailing value: backward difference between nodes 3 and 4.
-        expected_correct_last = 7.0 / dt
-        # Buggy trailing value would have been the central difference at the
-        # original last position (between nodes 3 and 4 via central diff on
-        # the pre-padded array); concretely, with the old np.insert the final
-        # entry was the central diff at position -2, which here is
-        # shortest_path_length(2, 4) / (2*dt) = (1 + 7) / (2*dt).
-        buggy_last = (1.0 + 7.0) / (2.0 * dt)
-
-        np.testing.assert_allclose(speed[-1], expected_correct_last, atol=1e-10)
-        assert not np.isclose(speed[-1], buggy_last, atol=1e-10), (
-            "Trailing speed matches the pre-fix np.insert(-1) value; "
-            "the trailing sample must be appended, not inserted before the last."
-        )
 
     def test_get_map_speed_monotone_on_constant_velocity(
         self, _identity_gaussian_smooth
@@ -424,3 +409,84 @@ class TestGetMapSpeedBoundaryHandling:
         # forward/backward differences equal the interior central differences.
         np.testing.assert_allclose(speed[0], interior[0], atol=1e-10)
         np.testing.assert_allclose(speed[-1], interior[0], atol=1e-10)
+
+
+@pytest.mark.unit
+class TestAheadBehindDistance2DTrackGraph:
+    """The 2D track-graph path of ahead/behind distance and head-direction.
+
+    Exercises the ``track_graph`` branch that depends on networkx all-pairs
+    shortest paths, including ``precomputed_distance=True`` (issue #40), and
+    the 1-D heading-angle ``head_direction`` contract (issue #41).
+    """
+
+    @pytest.fixture(scope="class")
+    def env_2d(self):
+        """A fitted 2D environment with a connected bin grid (built once)."""
+        from non_local_detector.environment import Environment
+
+        rng = np.random.default_rng(0)
+        env = Environment(place_bin_size=10.0)
+        # Dense, fully-covered square so the bin grid is connected.
+        env.fit_place_grid(rng.random((1500, 2)) * 100.0)
+        return env
+
+    def test_precomputed_distance_does_not_crash_and_matches_per_point(self, env_2d):
+        """``precomputed_distance=True`` crashed under networkx>=3 because the
+        all-pairs ``nx.shortest_path`` result is a generator, not a dict
+        (issue #40). It must now run and agree in magnitude with the
+        per-time-point path.
+        """
+        env = env_2d
+        rng = np.random.default_rng(1)
+        n_time = 15
+        head_position = rng.random((n_time, 2)) * 100.0
+        map_position = rng.random((n_time, 2)) * 100.0
+        # head_direction is a 1-D array of heading angles in radians (issue #41).
+        head_direction = rng.uniform(-np.pi, np.pi, size=n_time)
+
+        precomputed = get_ahead_behind_distance2D(
+            head_position,
+            head_direction,
+            map_position,
+            track_graph=env.track_graphDD,
+            edges=env.edges_,
+            precomputed_distance=True,
+        )
+        per_point = get_ahead_behind_distance2D(
+            head_position,
+            head_direction,
+            map_position,
+            track_graph=env.track_graphDD,
+            edges=env.edges_,
+            precomputed_distance=False,
+        )
+
+        assert precomputed.shape == (n_time,)
+        assert np.all(np.isfinite(precomputed))
+        # |ahead_behind| is the graph distance regardless of the sign, so the
+        # two code paths must agree in magnitude (sign can differ only on
+        # shortest-path ties).
+        np.testing.assert_allclose(np.abs(precomputed), np.abs(per_point), atol=1e-8)
+
+    def test_head_direction_angle_contract(self, env_2d):
+        """``head_direction`` is a 1-D angle array; a heading toward the MAP
+        position yields a positive (ahead) signed distance (issue #41).
+        """
+        env = env_2d
+        n_time = 8
+        head_position = np.full((n_time, 2), 50.0)
+        # MAP is to the +x side of the head; heading 0 rad points +x -> ahead.
+        map_position = head_position + np.array([20.0, 0.0])
+        head_direction = np.zeros(n_time)  # radians, pointing +x
+
+        ahead_behind = get_ahead_behind_distance2D(
+            head_position,
+            head_direction,
+            map_position,
+            track_graph=env.track_graphDD,
+            edges=env.edges_,
+            precomputed_distance=True,
+        )
+        assert ahead_behind.shape == (n_time,)
+        assert np.all(ahead_behind > 0)

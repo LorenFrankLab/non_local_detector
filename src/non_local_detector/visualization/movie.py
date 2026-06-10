@@ -276,8 +276,14 @@ def _render_single_env_frame(fig, axes, frame_idx, data):
             data["rate"][frame_idx + (window_size // 2) + window_ind],
         )
 
-        # Set y-limit on first frame
-        if frame_idx == 0:
+        # Set the bottom-axis limits once per worker. create_parallel_video
+        # renders contiguous frame chunks in separate processes, each of which
+        # calls the setup function once and then renders its own (global) frame
+        # range. Only the worker owning the first chunk ever sees frame_idx == 0,
+        # so gating on that left every later chunk's ax1 at default limits and
+        # the firing-rate line drawn off-screen. Mirror the mesh pattern and
+        # initialize on the first frame each worker renders instead.
+        if not axes.get("_ax1_init", False):
             axes["ax1"].set_ylim((0.0, data["rate"].max()))
             axes["ax1"].set_xlim(
                 (
@@ -285,5 +291,6 @@ def _render_single_env_frame(fig, axes, frame_idx, data):
                     window_ind[-1] / sampling_frequency,
                 )
             )
+            axes["_ax1_init"] = True
     except IndexError:
         pass
