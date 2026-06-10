@@ -237,9 +237,10 @@ class RandomWalk:
                             f"{type(self.environment.distance_between_nodes_).__name__}."
                         ),
                         hint=(
-                            "Either remove direction= argument or construct the "
-                            "environment with use_manifold_distance and a fitted "
-                            "N-D grid."
+                            "Either remove the direction= argument, or fit the "
+                            "environment as an N-D grid (do not pass a track_graph) "
+                            "so it has a track_graphDD and an array-valued "
+                            "distance_between_nodes_."
                         ),
                     )
                 direction_funcs = {

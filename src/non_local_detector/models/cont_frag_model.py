@@ -22,6 +22,34 @@ from non_local_detector.types import (
 )
 
 
+def _state_probabilities_from_results(results: xr.Dataset) -> xr.DataArray:
+    """Marginalize the acausal posterior over position to per-state probabilities.
+
+    Unstacks the ``state_bins`` MultiIndex and sums over every position
+    dimension, leaving ``(time, state)``. Position dims are those named
+    ``position`` (1D) or ending in ``_position`` (``x_position``/``y_position``
+    for 2D, ``z_position`` and beyond, or ``dim{i}_position`` past six
+    dimensions), matching the names ``_convert_results_to_xarray`` assigns.
+
+    Raises
+    ------
+    ValueError
+        If no position dimension is present (``unstacked.sum([])`` would
+        otherwise silently return the full per-bin array).
+    """
+    unstacked = results.acausal_posterior.unstack("state_bins")
+    position_dims = [
+        d for d in unstacked.dims if d == "position" or d.endswith("_position")
+    ]
+    if not position_dims:
+        raise ValueError(
+            "get_posterior found no position dimension to marginalize over; "
+            f"acausal_posterior unstacked to dims {tuple(unstacked.dims)}. "
+            "Expected a dim named 'position' or ending in '_position'."
+        )
+    return unstacked.sum(position_dims)
+
+
 class ContFragSortedSpikesClassifier(SortedSpikesDetector):
     """Classifier for continuous vs fragmented non-local activity using sorted spike data.
 
@@ -146,9 +174,10 @@ class ContFragSortedSpikesClassifier(SortedSpikesDetector):
 
         This method extracts and sums the posterior probabilities across all
         position bins to get the overall probability of each state (continuous
-        vs fragmented) at each time point. All position-dimension names
-        (``position`` for 1D, ``x_position``/``y_position`` for 2D, and
-        ``dim{i}_position`` for higher-dimensional environments) are collapsed.
+        vs fragmented) at each time point. Every position dimension is
+        collapsed: the dim named ``position`` (1D) plus any dim whose name ends
+        in ``_position`` (``x_position``/``y_position`` for 2D, ``z_position``
+        and beyond for 3-6D, or ``dim{i}_position`` past six dimensions).
 
         Parameters
         ----------
@@ -172,11 +201,7 @@ class ContFragSortedSpikesClassifier(SortedSpikesDetector):
         >>> state_probs = classifier.get_posterior(results)
         >>> continuous_prob = state_probs.sel(state='Continuous')
         """
-        unstacked = results.acausal_posterior.unstack("state_bins")
-        position_dims = [
-            d for d in unstacked.dims if d == "position" or d.endswith("_position")
-        ]
-        return unstacked.sum(position_dims)
+        return _state_probabilities_from_results(results)
 
 
 class ContFragClusterlessClassifier(ClusterlessDetector):
@@ -304,9 +329,10 @@ class ContFragClusterlessClassifier(ClusterlessDetector):
 
         This method extracts and sums the posterior probabilities across all
         position bins to get the overall probability of each state (continuous
-        vs fragmented) at each time point. All position-dimension names
-        (``position`` for 1D, ``x_position``/``y_position`` for 2D, and
-        ``dim{i}_position`` for higher-dimensional environments) are collapsed.
+        vs fragmented) at each time point. Every position dimension is
+        collapsed: the dim named ``position`` (1D) plus any dim whose name ends
+        in ``_position`` (``x_position``/``y_position`` for 2D, ``z_position``
+        and beyond for 3-6D, or ``dim{i}_position`` past six dimensions).
 
         Parameters
         ----------
@@ -330,8 +356,4 @@ class ContFragClusterlessClassifier(ClusterlessDetector):
         >>> state_probs = classifier.get_posterior(results)
         >>> continuous_prob = state_probs.sel(state='Continuous')
         """
-        unstacked = results.acausal_posterior.unstack("state_bins")
-        position_dims = [
-            d for d in unstacked.dims if d == "position" or d.endswith("_position")
-        ]
-        return unstacked.sum(position_dims)
+        return _state_probabilities_from_results(results)

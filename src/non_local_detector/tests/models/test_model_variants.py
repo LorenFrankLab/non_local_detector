@@ -164,20 +164,35 @@ class TestNoSpikeContFragDefaults:
 class TestContFragGetPosterior:
     """``get_posterior`` must marginalize all position dims across env shapes."""
 
-    def test_cont_frag_get_posterior_2d(self):
-        """A 2D environment uses ``x_position``/``y_position`` dim names; the
-        static method must collapse both, returning shape (n_time, n_states)
-        with the state dim named ``state``.
+    @pytest.mark.parametrize(
+        "position_grid",
+        [
+            pytest.param({"position": np.linspace(0.0, 100.0, 20)}, id="1d"),
+            pytest.param(
+                {
+                    "x_position": np.linspace(0.0, 50.0, 10),
+                    "y_position": np.linspace(0.0, 50.0, 10),
+                },
+                id="2d",
+            ),
+            pytest.param(
+                {f"dim{i}_position": np.linspace(0.0, 10.0, 4) for i in range(3)},
+                id="nd",
+            ),
+        ],
+    )
+    def test_cont_frag_get_posterior_collapses_all_position_dims(self, position_grid):
+        """``get_posterior`` marginalizes every position dim regardless of name.
+
+        Covers 1D (``position``), 2D (``x_position``/``y_position``), and the
+        >6D fallback (``dim{i}_position``), returning ``(time, state)`` with the
+        state dim named ``state`` so the documented ``sel(state=...)`` keeps
+        working.
         """
-        x_centers = np.linspace(0.0, 50.0, 10)
-        y_centers = np.linspace(0.0, 50.0, 10)
         n_time = 7
         state_names = ("Continuous", "Fragmented")
-
         results = _make_cont_frag_results(
-            n_time=n_time,
-            state_names=state_names,
-            position_grid={"x_position": x_centers, "y_position": y_centers},
+            n_time=n_time, state_names=state_names, position_grid=position_grid
         )
 
         for cls in (ContFragSortedSpikesClassifier, ContFragClusterlessClassifier):
@@ -186,39 +201,38 @@ class TestContFragGetPosterior:
                 f"{cls.__name__}.get_posterior returned shape {state_probs.shape}, "
                 f"expected (n_time, n_states) = ({n_time}, {len(state_names)})"
             )
-            assert "state" in state_probs.dims, (
-                f"{cls.__name__}.get_posterior should expose a 'state' dim; got "
-                f"dims {state_probs.dims}"
+            assert "state" in state_probs.dims
+            # Every position dim must be collapsed (none left in the output).
+            assert not any(
+                d == "position" or d.endswith("_position") for d in state_probs.dims
             )
-            # Position dims must be fully collapsed.
-            assert "x_position" not in state_probs.dims
-            assert "y_position" not in state_probs.dims
-            # Each time row must sum to ~1 (probabilities marginalized over space).
+            # Each time row sums to ~1 (probability marginalized over space).
             np.testing.assert_allclose(state_probs.sum("state").values, 1.0, atol=1e-10)
-            # Selection by state label works and returns a per-time series.
-            continuous_prob = state_probs.sel(state="Continuous")
-            assert continuous_prob.shape == (n_time,)
+            # The documented selection API keeps working.
+            assert state_probs.sel(state="Continuous").shape == (n_time,)
 
-    def test_cont_frag_get_posterior_1d_dim_name_unchanged(self):
-        """The 1D environment uses dim name ``position``; the static method
-        must still produce a state-named output dim so ``sel(state=...)`` keeps
-        working as documented.
+    def test_cont_frag_get_posterior_raises_without_position_dim(self):
+        """If no dim names a position, the marginalization target is empty;
+        ``unstacked.sum([])`` would silently return the full per-bin array, so
+        the method must instead raise rather than produce a wrong-shaped result.
         """
-        position_centers = np.linspace(0.0, 100.0, 20)
-        n_time = 6
-        state_names = ("Continuous", "Fragmented")
-
-        results = _make_cont_frag_results(
-            n_time=n_time,
-            state_names=state_names,
-            position_grid={"position": position_centers},
+        n_time = 4
+        # A MultiIndex over ("state", "foo") — "foo" is not a position dim.
+        mindex = pd.MultiIndex.from_arrays(
+            [
+                np.array(["Continuous", "Continuous", "Fragmented", "Fragmented"]),
+                np.array([0.0, 1.0, 0.0, 1.0]),
+            ],
+            names=("state", "foo"),
+        )
+        raw = np.random.default_rng(0).random((n_time, len(mindex)))
+        posterior = raw / raw.sum(axis=1, keepdims=True)
+        mindex_coords = xr.Coordinates.from_pandas_multiindex(mindex, "state_bins")
+        results = xr.Dataset(
+            data_vars={"acausal_posterior": (("time", "state_bins"), posterior)},
+            coords={"time": np.arange(n_time), **mindex_coords},
         )
 
         for cls in (ContFragSortedSpikesClassifier, ContFragClusterlessClassifier):
-            state_probs = cls.get_posterior(results)
-            assert state_probs.shape == (n_time, len(state_names))
-            assert "state" in state_probs.dims
-            assert "position" not in state_probs.dims
-            np.testing.assert_allclose(state_probs.sum("state").values, 1.0, atol=1e-10)
-            # The docstring example must keep working.
-            assert state_probs.sel(state="Continuous").shape == (n_time,)
+            with pytest.raises(ValueError, match="no position dimension"):
+                cls.get_posterior(results)
