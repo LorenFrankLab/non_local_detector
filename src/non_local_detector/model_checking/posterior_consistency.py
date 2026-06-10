@@ -25,13 +25,12 @@ def posterior_consistency_kl_divergence(
 
     Parameters
     ----------
-    posterior : np.ndarray, shape (n_time, n_position_bins) or
-        shape (n_time, n_x_bins, n_y_bins)
+    posterior : np.ndarray, shape (n_time, n_position_bins)
         Posterior probability distributions over position at each time point.
-        Must be properly normalized probability distributions.
-    likelihood : np.ndarray, shape (n_time, n_position_bins) or
-        shape (n_time, n_x_bins, n_y_bins)
-        Likelihood distributions at each time point. Must have same shape
+        Must be properly normalized probability distributions. Multidimensional
+        environments must be flattened to a single position axis first.
+    likelihood : np.ndarray, shape (n_time, n_position_bins)
+        Likelihood distributions at each time point. Must have the same shape
         as posterior and be properly normalized.
 
     Returns
@@ -61,13 +60,12 @@ def posterior_consistency_hpd_overlap(
 
     Parameters
     ----------
-    posterior : np.ndarray, shape (n_time, n_position_bins) or
-        shape (n_time, n_x_bins, n_y_bins)
+    posterior : np.ndarray, shape (n_time, n_position_bins)
         Posterior probability distributions over position at each time point.
-        Must be properly normalized probability distributions.
-    likelihood : np.ndarray, shape (n_time, n_position_bins) or
-        shape (n_time, n_x_bins, n_y_bins)
-        Likelihood distributions at each time point. Must have same shape
+        Must be properly normalized probability distributions. Multidimensional
+        environments must be flattened to a single position axis first.
+    likelihood : np.ndarray, shape (n_time, n_position_bins)
+        Likelihood distributions at each time point. Must have the same shape
         as posterior and be properly normalized.
     coverage : float, optional
         Coverage probability for the HPD regions. Must be between 0 and 1.
@@ -90,8 +88,8 @@ def posterior_consistency_hpd_overlap(
     ``[0, 1]`` but asymmetric in a specific sense: if ``A ⊆ B``, the coefficient
     is ``1.0`` even when ``B`` is much larger than ``A``. Use this when you want
     to detect "is one HPD region fully contained in the other"; use
-    Sørensen-Dice (``|A∩B| / (|A| + |B|)``) or Jaccard (``|A∩B| / |A∪B|``) when
-    you want a symmetric overlap proportion.
+    Sørensen-Dice (``2|A∩B| / (|A| + |B|)``) or Jaccard (``|A∩B| / |A∪B|``)
+    when you want a symmetric overlap proportion.
     """
     posterior = np.asarray(posterior)
     likelihood = np.asarray(likelihood)
