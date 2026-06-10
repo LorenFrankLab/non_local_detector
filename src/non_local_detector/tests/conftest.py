@@ -14,9 +14,72 @@ Usage:
 
 import jax.numpy as jnp
 import numpy as np
+import pandas as pd
 import pytest
+import xarray as xr
 
 from non_local_detector.environment import Environment
+
+# ==============================================================================
+# SYNTHETIC RESULTS BUILDERS
+# ==============================================================================
+
+
+def make_state_bins_results(
+    state_names,
+    position_columns,
+    n_time=10,
+    seed=0,
+):
+    """Build a synthetic results ``xr.Dataset`` matching ``predict()`` output.
+
+    ``acausal_posterior`` has dims ``(time, state_bins)`` where ``state_bins`` is
+    a MultiIndex over ``("state", *position_columns)`` — the same layout the
+    detector classes produce. Each state is given the same per-state position
+    grid, and the posterior mass is random but normalized over ``state_bins`` at
+    each time step.
+
+    Parameters
+    ----------
+    state_names : sequence of str
+        Discrete state labels, one block of position bins per state.
+    position_columns : dict[str, np.ndarray]
+        Mapping from position-dim name (e.g. ``"position"`` for 1D or
+        ``"x_position"``/``"y_position"`` for 2D) to the 1-D array of position
+        values for a single state. All arrays must have the same length
+        (the number of position bins per state); they are interpreted as
+        paired columns, not a Cartesian grid.
+    n_time : int, optional
+        Number of time steps, by default 10.
+    seed : int, optional
+        RNG seed for reproducibility, by default 0.
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with ``acausal_posterior`` (time, state_bins).
+    """
+    rng = np.random.default_rng(seed)
+    state_names = np.asarray(state_names)
+    n_states = len(state_names)
+    n_bins = len(next(iter(position_columns.values())))
+
+    arrays = [np.repeat(state_names, n_bins)]
+    names = ["state"]
+    for name, values in position_columns.items():
+        arrays.append(np.tile(np.asarray(values, dtype=float), n_states))
+        names.append(name)
+    mindex = pd.MultiIndex.from_arrays(arrays, names=names)
+
+    raw = rng.random((n_time, len(mindex)))
+    raw = raw / raw.sum(axis=1, keepdims=True)
+
+    coords = xr.Coordinates.from_pandas_multiindex(mindex, "state_bins")
+    return xr.Dataset(
+        {"acausal_posterior": (("time", "state_bins"), raw)},
+        coords={**coords, "time": np.arange(n_time, dtype=float)},
+    )
+
 
 # ==============================================================================
 # ENVIRONMENT FIXTURES

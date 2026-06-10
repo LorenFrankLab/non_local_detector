@@ -11,63 +11,35 @@ Bug 3: predict() does not validate position_time when position is provided,
 """
 
 import numpy as np
-import pandas as pd
 import pytest
-import xarray as xr
 
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.models.non_local_model import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.tests.conftest import make_state_bins_results
 
 
 def _make_results_dataset_1d(state_names, n_time=10, n_bins_per_state=5):
-    """Build a minimal results xr.Dataset that mimics predict() output for 1D."""
-    rng = np.random.default_rng(0)
-    n_states = len(state_names)
-    # Build state_bins MultiIndex (state, position)
-    states_expanded = np.repeat(state_names, n_bins_per_state)
-    positions = np.tile(np.arange(n_bins_per_state, dtype=float), n_states)
-    mindex = pd.MultiIndex.from_arrays(
-        [states_expanded, positions], names=["state", "position"]
+    """Minimal 1D results xr.Dataset mimicking predict() output."""
+    return make_state_bins_results(
+        state_names,
+        {"position": np.arange(n_bins_per_state, dtype=float)},
+        n_time=n_time,
     )
-    total_bins = len(mindex)
-
-    # Random positive posterior, normalised over state_bins
-    raw = rng.random((n_time, total_bins))
-    raw /= raw.sum(axis=1, keepdims=True)
-
-    coords = xr.Coordinates.from_pandas_multiindex(mindex, "state_bins")
-    ds = xr.Dataset(
-        {"acausal_posterior": (("time", "state_bins"), raw)},
-        coords={**coords, "time": np.arange(n_time, dtype=float)},
-    )
-    return ds
 
 
 def _make_results_dataset_2d(state_names, n_time=10, n_bins_per_state=4):
-    """Build a minimal results xr.Dataset that mimics predict() output for 2D."""
-    rng = np.random.default_rng(0)
-    n_states = len(state_names)
-    states_expanded = np.repeat(state_names, n_bins_per_state)
-    x_pos = np.tile(np.arange(n_bins_per_state, dtype=float), n_states)
-    y_pos = np.tile(np.arange(n_bins_per_state, dtype=float) * 10, n_states)
-    mindex = pd.MultiIndex.from_arrays(
-        [states_expanded, x_pos, y_pos],
-        names=["state", "x_position", "y_position"],
+    """Minimal 2D results xr.Dataset mimicking predict() output."""
+    return make_state_bins_results(
+        state_names,
+        {
+            "x_position": np.arange(n_bins_per_state, dtype=float),
+            "y_position": np.arange(n_bins_per_state, dtype=float) * 10,
+        },
+        n_time=n_time,
     )
-    total_bins = len(mindex)
-
-    raw = rng.random((n_time, total_bins))
-    raw /= raw.sum(axis=1, keepdims=True)
-
-    coords = xr.Coordinates.from_pandas_multiindex(mindex, "state_bins")
-    ds = xr.Dataset(
-        {"acausal_posterior": (("time", "state_bins"), raw)},
-        coords={**coords, "time": np.arange(n_time, dtype=float)},
-    )
-    return ds
 
 
 # ============================================================

@@ -22,6 +22,7 @@ from non_local_detector.models.nospike_cont_frag_model import (
     NoSpikeContFragClusterlessClassifier,
     NoSpikeContFragSortedSpikesClassifier,
 )
+from non_local_detector.tests.conftest import make_state_bins_results
 
 
 def _make_cont_frag_results(
@@ -31,11 +32,11 @@ def _make_cont_frag_results(
     position_grid: dict[str, np.ndarray],
     seed: int = 0,
 ) -> xr.Dataset:
-    """Build a synthetic results dataset matching ``_convert_results_to_xarray``.
+    """Build a synthetic ContFrag results dataset over a full position grid.
 
-    The acausal_posterior has dim ``state_bins`` indexed by a MultiIndex over
-    ``("state", *position_dim_names)`` — the same layout produced by the
-    detector classes. Mass is normalized per time step.
+    Unlike the paired-column ``make_state_bins_results`` factory, this takes a
+    per-axis ``position_grid`` and forms the full Cartesian product (one bin per
+    grid cell), matching the layout ``_convert_results_to_xarray`` produces.
 
     Parameters
     ----------
@@ -45,7 +46,8 @@ def _make_cont_frag_results(
         Discrete state labels, one per state.
     position_grid : dict[str, np.ndarray]
         Mapping from position-dim name (e.g., ``"position"`` for 1D or
-        ``"x_position"``/``"y_position"`` for 2D) to coordinate values.
+        ``"x_position"``/``"y_position"`` for 2D) to that axis's coordinate
+        values. The full meshgrid of these axes becomes the position bins.
     seed : int, optional
         RNG seed for reproducibility.
 
@@ -54,40 +56,13 @@ def _make_cont_frag_results(
     xr.Dataset
         Dataset with ``acausal_posterior`` (time, state_bins).
     """
-    rng = np.random.default_rng(seed)
-    position_dim_names = list(position_grid.keys())
-    grid_arrays = [position_grid[name] for name in position_dim_names]
-    mesh = np.meshgrid(*grid_arrays, indexing="ij")
-    flat_positions = [m.ravel() for m in mesh]
-    n_pos_bins = flat_positions[0].size
-
-    state_col: list[str] = []
-    position_cols: list[list[float]] = [[] for _ in position_dim_names]
-    for s in state_names:
-        state_col.extend([s] * n_pos_bins)
-        for i, fp in enumerate(flat_positions):
-            position_cols[i].extend(fp.tolist())
-
-    mindex = pd.MultiIndex.from_arrays(
-        [np.asarray(state_col), *(np.asarray(c) for c in position_cols)],
-        names=("state", *position_dim_names),
+    mesh = np.meshgrid(*position_grid.values(), indexing="ij")
+    position_columns = {
+        name: grid.ravel() for name, grid in zip(position_grid, mesh, strict=False)
+    }
+    return make_state_bins_results(
+        state_names, position_columns, n_time=n_time, seed=seed
     )
-
-    raw = rng.random((n_time, len(mindex)))
-    posterior = raw / raw.sum(axis=1, keepdims=True)
-
-    if hasattr(xr.Coordinates, "from_pandas_multiindex"):
-        mindex_coords = xr.Coordinates.from_pandas_multiindex(mindex, "state_bins")
-        ds = xr.Dataset(
-            data_vars={"acausal_posterior": (("time", "state_bins"), posterior)},
-            coords={"time": np.arange(n_time), **mindex_coords},
-        )
-    else:  # pragma: no cover - older xarray fallback
-        ds = xr.Dataset(
-            data_vars={"acausal_posterior": (("time", "state_bins"), posterior)},
-            coords={"time": np.arange(n_time), "state_bins": mindex},
-        )
-    return ds
 
 
 @pytest.mark.unit
