@@ -190,11 +190,25 @@ def get_map_estimate_direction_from_track_graph(
                 except IndexError:
                     first_node_on_path[from_node_id, to_node_id] = path[0]
         head_position_node_pos = node_positions[bin_ind1]
-        first_node_on_path_pos = node_positions[first_node_on_path[bin_ind1, bin_ind2]]
+        first_node_ind = first_node_on_path[bin_ind1, bin_ind2]
+        # Pairs with no path keep the -1 sentinel; indexing node_positions[-1]
+        # would silently pick the last node and emit a wrong heading, so flag
+        # them and set their direction to NaN (mirrors get_2D_distance, which
+        # warns and stores inf for unreachable pairs).
+        unreachable = first_node_ind < 0
+        if np.any(unreachable):
+            logger.warning(
+                "%d time point(s) have no path between the head-position bin "
+                "and the MAP bin (disconnected track graph); their "
+                "map-estimate direction is set to NaN.",
+                int(np.sum(unreachable)),
+            )
+        first_node_on_path_pos = node_positions[first_node_ind]
         map_estimate_direction = np.arctan2(
             first_node_on_path_pos[:, 1] - head_position_node_pos[:, 1],
             first_node_on_path_pos[:, 0] - head_position_node_pos[:, 0],
         )
+        map_estimate_direction[unreachable] = np.nan
     else:
         node_ids = np.asarray(list(node_positions.keys()))
         head_position_nodes = node_ids[get_bin_ind(head_position, bin_edges)]

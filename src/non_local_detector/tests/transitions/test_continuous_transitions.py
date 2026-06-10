@@ -175,3 +175,22 @@ def test_random_walk_inward_no_trackgraphDD_raises(make_env_1d):
     )
     with pytest.raises(ConfigurationError, match="direction-aware RandomWalk"):
         rw.make_state_transition((env,))
+
+
+def test_random_walk_direction_without_manifold_distance_raises(make_env_1d):
+    """``direction`` is honored only with ``use_manifold_distance=True`` on an
+    N-D grid. With the default ``use_manifold_distance=False`` the directional
+    constraint would be silently dropped (a plain random walk), so it must raise
+    instead of quietly ignoring the request.
+    """
+    env = make_env_1d(n_bins=11)
+    env.track_graph = None
+
+    rw = RandomWalk(
+        environment_name=env.environment_name,
+        movement_var=3.0,
+        direction="inward",
+        use_manifold_distance=False,  # default -> direction would be ignored
+    )
+    with pytest.raises(ConfigurationError, match="use_manifold_distance"):
+        rw.make_state_transition((env,))

@@ -182,6 +182,26 @@ class RandomWalk:
                 f"direction must be 'inward' or 'outward', got '{self.direction}'"
             )
         self.environment = environments[environments.index(self.environment_name)]
+        # ``direction`` is only consulted on the N-D-grid manifold-distance path
+        # (no track_graph + use_manifold_distance=True). On every other path it
+        # would be silently ignored, so surface the misconfiguration loudly.
+        if self.direction is not None and not (
+            self.environment.track_graph is None and self.use_manifold_distance
+        ):
+            raise ConfigurationError(
+                (
+                    "direction-aware RandomWalk is only applied on an N-D grid "
+                    "environment with use_manifold_distance=True; got "
+                    f"track_graph={'set' if self.environment.track_graph is not None else 'None'}"
+                    f", use_manifold_distance={self.use_manifold_distance}. The "
+                    "direction= argument would otherwise be silently ignored."
+                ),
+                hint=(
+                    "Set use_manifold_distance=True on an environment without a "
+                    "track_graph (a fitted N-D grid), or remove the direction= "
+                    "argument."
+                ),
+            )
         if self.environment.track_graph is None:
             transition_matrix = self._handle_no_track_graph()
         else:

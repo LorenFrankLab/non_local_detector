@@ -9,6 +9,7 @@ from non_local_detector.analysis.distance2D import (
     get_2D_distance,
     get_ahead_behind_distance2D,
     get_bin_ind,
+    get_map_estimate_direction_from_track_graph,
     get_speed,
     get_velocity,
     head_direction_simliarity,
@@ -490,3 +491,40 @@ class TestAheadBehindDistance2DTrackGraph:
         )
         assert ahead_behind.shape == (n_time,)
         assert np.all(ahead_behind > 0)
+
+    def test_precomputed_direction_disconnected_graph_is_nan(self):
+        """An unreachable head/MAP pair on a disconnected track graph must give
+        NaN, not a silently-wrong heading.
+
+        The precomputed path initializes ``first_node_on_path`` to ``-1`` and
+        only fills reachable pairs, so an unreachable pair previously indexed
+        ``node_positions[-1]`` (the last node) and produced a plausible but
+        wrong ``arctan2`` direction. It must now be NaN.
+        """
+        rng = np.random.default_rng(0)
+        # Two dense clusters separated by a wide empty gap -> the bins between
+        # them are off-track, so the manifold grid is disconnected.
+        cluster_a = rng.random((400, 2)) * 20.0
+        cluster_b = rng.random((400, 2)) * 20.0 + 200.0
+        from non_local_detector.environment import Environment
+
+        env = Environment(place_bin_size=10.0)
+        env.fit_place_grid(np.vstack([cluster_a, cluster_b]))
+        assert nx.number_connected_components(env.track_graphDD) > 1, (
+            "test setup requires a disconnected track graph"
+        )
+
+        head_position = np.array([[10.0, 10.0]])  # in cluster A
+        map_estimate = np.array([[210.0, 210.0]])  # in cluster B (unreachable)
+
+        direction = get_map_estimate_direction_from_track_graph(
+            head_position,
+            map_estimate,
+            env.track_graphDD,
+            env.edges_,
+            precomputed_distance=True,
+        )
+        assert np.isnan(direction).all(), (
+            "unreachable head/MAP pair must yield NaN direction, not a "
+            f"node_positions[-1] sentinel heading; got {direction}"
+        )
