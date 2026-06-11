@@ -335,12 +335,13 @@ def test_place_bin_size_tuple_rejected():
 
 
 def test_environment_is_hashable():
-    """Environment instances are hashable and use dataclass-default equality.
+    """Environment uses identity-based equality and hashing, consistently.
 
-    Hashing is identity-based (the dataclass holds post-fit numpy / graph
-    attributes that have no meaningful value-hash), so a single instance
-    can be stored in a set, but equality is value-based via the dataclass
-    auto-generated ``__eq__``.
+    Both ``__eq__`` and ``__hash__`` are inherited from ``object`` (the
+    dataclass is declared ``eq=False``) because the post-fit numpy / graph
+    attributes are not value-comparable and have no meaningful value-hash.
+    Identity semantics keep Python's ``a == b implies hash(a) == hash(b)``
+    invariant intact, so instances are safe as set members / dict keys.
     """
     env_a = Environment(environment_name="track1", place_bin_size=2.0)
 
@@ -350,31 +351,56 @@ def test_environment_is_hashable():
     # The same instance dedupes in a set
     assert len({env_a, env_a}) == 1
 
-    # Self-equality
+    # Self-equality (identity)
     assert env_a == env_a
 
-    # Two distinct instances with identical spec fields compare equal
-    # (consequence of dataclass auto-eq).
+    # Two distinct instances with identical spec fields are NOT equal
+    # (identity equality), and the eq/hash invariant holds: unequal
+    # instances do not collapse in a set.
     env_a_copy = Environment(environment_name="track1", place_bin_size=2.0)
-    assert env_a == env_a_copy
+    assert env_a != env_a_copy
+    assert len({env_a, env_a_copy}) == 2
 
     # Distinct environments are not equal
     env_b = Environment(environment_name="track2", place_bin_size=2.0)
     assert env_a != env_b
 
 
-def test_two_environments_with_same_name_not_eq():
-    """Two Environments with the same name but different fields are NOT equal.
+def test_environment_value_eq_does_not_raise_on_fitted_arrays():
+    """Comparing two fitted Environments returns False instead of raising.
 
-    Before the ``__eq__(self, other: str)`` override was removed, these would
-    compare equal because the override compared one instance's
-    ``environment_name`` against the second operand (treating it as a string).
-    With the dataclass-generated ``__eq__``, all fields are compared.
+    The removed dataclass value-``__eq__`` would have done ``bool()`` on the
+    multi-element numpy array fields (e.g. ``is_track_interior_``), raising
+    ``ValueError: truth value of an array ... is ambiguous``. Identity
+    equality sidesteps that entirely.
+    """
+    env_a = Environment(
+        environment_name="track1",
+        is_track_interior=np.array([True, False, True]),
+    )
+    env_b = Environment(
+        environment_name="track1",
+        is_track_interior=np.array([True, False, True]),
+    )
+
+    # Does not raise; distinct instances are unequal under identity equality.
+    assert (env_a == env_b) is False
+    assert env_a == env_a
+
+
+def test_two_environments_with_same_name_not_eq():
+    """Two Environments with the same name are NOT equal.
+
+    Before the ``__eq__(self, other: str)`` override was removed, an
+    ``Environment`` compared equal to a bare name string. Equality is now
+    identity-based, so two distinct instances are never equal regardless of
+    their fields, and ``env == "name"`` is ``False``.
     """
     env_a = Environment(environment_name="track1", place_bin_size=2.0)
     env_b = Environment(environment_name="track1", place_bin_size=4.0)
 
     assert env_a != env_b
+    assert env_a != "track1"
 
 
 def test_find_environment_by_name():

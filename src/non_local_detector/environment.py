@@ -111,7 +111,7 @@ def find_environment_by_name(
     )
 
 
-@dataclass
+@dataclass(eq=False)
 class Environment:
     """Represent the spatial environment with a discrete grid.
 
@@ -210,11 +210,15 @@ class Environment:
     # Internal flag
     _is_fitted: bool = False
 
-    # ``@dataclass(eq=True)`` (the default) sets ``__hash__`` to ``None`` on
-    # the class, making instances unhashable. ``Environment`` carries
-    # post-fit numpy/networkx attributes that have no meaningful value-hash,
-    # so we restore identity-based hashing — instances can be used as dict
-    # keys or in sets, but equal-but-distinct instances are not collapsed.
+    # ``Environment`` uses identity-based equality and hashing (``eq=False``
+    # leaves both inherited from ``object``). Value-based equality is not
+    # viable: the post-fit numpy / networkx attributes are not value-comparable
+    # (a dataclass ``__eq__`` would raise ``ValueError`` when comparing two
+    # fitted environments' array fields) and have no meaningful value-hash.
+    # Identity equality keeps ``__eq__`` / ``__hash__`` consistent (Python's
+    # ``a == b implies hash(a) == hash(b)`` invariant holds), so instances are
+    # safe as dict keys / set members. Environments are addressed by name via
+    # ``find_environment_by_name``, never by value-equality.
     __hash__ = object.__hash__
 
     def __post_init__(self) -> None:

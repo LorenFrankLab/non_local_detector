@@ -176,6 +176,53 @@ class TestEncodingModelDataCleanup:
         assert fitted_ic.shape == original_constructor_arg.shape
         assert np.all(np.isfinite(fitted_ic))
 
+    def test_discrete_initial_conditions_fitted_when_estimate_disabled(self):
+        """With ``estimate_initial_conditions=False`` the fitted attribute is
+        set to the user's value, not left unset.
+
+        ``discrete_initial_conditions_`` is initialized in the unified
+        post-validation block to ``np.asarray(self.discrete_initial_conditions)``
+        and only overwritten with the fitted distribution when
+        ``estimate_initial_conditions=True``. The disabled branch is a distinct
+        code path: a refactor that set the attribute only inside the estimate
+        branch would leave it unset here. This test pins the False path.
+        """
+        sim = make_simulated_run_data(
+            n_tetrodes=2,
+            place_field_means=np.arange(0, 80, 20),
+            n_runs=3,
+            seed=42,
+        )
+
+        user_spec = np.array([1.0])
+        decoder = ClusterlessDecoder(discrete_initial_conditions=user_spec.copy())
+
+        decoder.estimate_parameters(
+            position_time=sim.position_time,
+            position=sim.position,
+            spike_times=sim.spike_times,
+            spike_waveform_features=sim.spike_waveform_features,
+            time=sim.position_time,
+            max_iter=1,
+            estimate_encoding_model=False,
+            estimate_initial_conditions=False,
+        )
+
+        assert hasattr(decoder, "discrete_initial_conditions_"), (
+            "discrete_initial_conditions_ must be set even when "
+            "estimate_initial_conditions=False."
+        )
+        fitted_ic = np.asarray(decoder.discrete_initial_conditions_)
+        # Not re-estimated: equals the user's constructor spec.
+        assert np.array_equal(fitted_ic, user_spec), (
+            "With estimation disabled, discrete_initial_conditions_ must equal "
+            f"the user's spec {user_spec.tolist()}; got {fitted_ic.tolist()}."
+        )
+        # Constructor attribute is still untouched.
+        assert np.array_equal(
+            np.asarray(decoder.discrete_initial_conditions), user_spec
+        )
+
     def test_sklearn_clone_works_after_fit(self):
         """``sklearn.clone(fitted_model)`` must return an unfitted estimator
         whose constructor spec equals the original constructor arguments.
