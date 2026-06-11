@@ -173,7 +173,10 @@ def test_random_walk_inward_no_trackgraphDD_raises(make_env_1d):
         direction="inward",
         use_manifold_distance=True,
     )
-    with pytest.raises(ConfigurationError, match="direction-aware RandomWalk"):
+    # Match a phrase unique to the deep ``_handle_no_track_graph`` guard (not the
+    # up-front ``make_state_transition`` guard, which also contains
+    # "direction-aware RandomWalk"), so the test pins which guard fired.
+    with pytest.raises(ConfigurationError, match="requires an N-D track graph"):
         rw.make_state_transition((env,))
 
 
