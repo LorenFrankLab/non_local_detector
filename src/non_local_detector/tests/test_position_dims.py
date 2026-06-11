@@ -62,6 +62,17 @@ class TestGetPositionDimNames:
         for n in range(1, 10):
             assert len(get_position_dim_names(n)) == n
 
+    @pytest.mark.parametrize("n", [0, -1, -3])
+    def test_rejects_non_positive_dimension(self, n):
+        """``n_position_dims < 1`` raises rather than silently returning ``[]``.
+
+        A 0/negative count previously produced an empty name list, which would
+        build a degenerate empty MultiIndex level set downstream — exactly the
+        silent failure the convention is meant to prevent.
+        """
+        with pytest.raises(ValueError, match=">= 1"):
+            get_position_dim_names(n)
+
 
 @pytest.mark.unit
 class TestGetPositionDims:
@@ -88,3 +99,18 @@ class TestGetPositionDims:
         """A dim ending in 'position' but not '_position' must not match."""
         da = xr.DataArray(np.zeros((2, 3)), dims=["time", "composition"])
         assert get_position_dims(da) == []
+
+    @pytest.mark.parametrize(
+        "stray_dim", ["head_position", "map_position", "linear_position"]
+    )
+    def test_no_false_positive_on_underscore_position_suffix(self, stray_dim):
+        """A non-canonical ``*_position`` dim must not be treated as a position axis.
+
+        Detection matches only the closed vocabulary emitted by
+        ``get_position_dim_names`` (``position``, ``x``..``u``\\ ``_position``,
+        ``dim{i}_position``). A stray dim like ``head_position`` ends in
+        ``_position`` but is not a decoder position axis; matching it would
+        wrongly marginalize over it.
+        """
+        da = xr.DataArray(np.zeros((2, 3, 3)), dims=["time", "x_position", stray_dim])
+        assert get_position_dims(da) == ["x_position"]
