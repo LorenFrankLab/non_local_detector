@@ -14,6 +14,29 @@ from non_local_detector.model_checking.highest_posterior_density import (
 )
 
 
+def _validate_consistency_inputs(posterior: np.ndarray, likelihood: np.ndarray) -> None:
+    """Validate the shared ``(n_time, n_position_bins)`` input contract.
+
+    Both consistency metrics operate on a single flattened position axis
+    (``axis=-1`` / ``axis=1``). A 3-D ``(n_time, n_x_bins, n_y_bins)`` array
+    would either reduce over only the last axis (silently wrong shape) or
+    broadcast-fail with an opaque message, so reject anything that is not a
+    2-D array of matching shape up front.
+    """
+    if posterior.ndim != 2 or likelihood.ndim != 2:
+        raise ValueError(
+            "posterior and likelihood must be 2-D arrays of shape "
+            "(n_time, n_position_bins); flatten multidimensional environments to "
+            f"a single position axis first. Got posterior.ndim={posterior.ndim}, "
+            f"likelihood.ndim={likelihood.ndim}."
+        )
+    if posterior.shape != likelihood.shape:
+        raise ValueError(
+            "posterior and likelihood must have the same shape; got "
+            f"{posterior.shape} and {likelihood.shape}."
+        )
+
+
 def posterior_consistency_kl_divergence(
     posterior: np.ndarray, likelihood: np.ndarray
 ) -> np.ndarray:
@@ -46,6 +69,9 @@ def posterior_consistency_kl_divergence(
     D_KL(P || Q) = sum(P * log(P / Q))
     where P is the posterior and Q is the likelihood.
     """
+    posterior = np.asarray(posterior)
+    likelihood = np.asarray(likelihood)
+    _validate_consistency_inputs(posterior, likelihood)
     return entropy(posterior, likelihood, axis=-1)
 
 
@@ -93,6 +119,7 @@ def posterior_consistency_hpd_overlap(
     """
     posterior = np.asarray(posterior)
     likelihood = np.asarray(likelihood)
+    _validate_consistency_inputs(posterior, likelihood)
 
     posterior_threshold = get_highest_posterior_threshold(posterior, coverage=coverage)
     likelihood_threshold = get_highest_posterior_threshold(

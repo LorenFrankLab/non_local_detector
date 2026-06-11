@@ -296,6 +296,49 @@ class TestGetHPDSpatialCoverage:
                 posterior, threshold, bin_width=np.array([1.0, 1.0])
             )
 
+    def test_hpd_spatial_coverage_rejects_length_one_dim(self):
+        """A degenerate single-bin position axis raises a descriptive error.
+
+        ``np.diff`` of a length-1 coordinate is empty, so inferring the bin
+        width from coordinates is impossible; the function must raise a clear
+        ``ValueError`` rather than a bare numpy ``IndexError``.
+        """
+        probs = np.ones((2, 1))
+        posterior = xr.DataArray(
+            probs, dims=["time", "position"], coords={"position": [0.0]}
+        )
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
+        with pytest.raises(ValueError, match="at least 2"):
+            get_HPD_spatial_coverage(posterior, threshold)
+
+    def test_hpd_spatial_coverage_rejects_descending_coords(self):
+        """Descending (or unsorted) position coordinates raise instead of
+        silently returning a negative/wrong measure from ``np.diff(...)[0]``.
+        """
+        positions = np.array([4.0, 3.0, 2.0, 1.0, 0.0])  # descending
+        probs = np.zeros((1, positions.size))
+        probs[0, 2] = 1.0
+        posterior = xr.DataArray(
+            probs, dims=["time", "position"], coords={"position": positions}
+        )
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
+        with pytest.raises(ValueError, match="strictly increasing"):
+            get_HPD_spatial_coverage(posterior, threshold)
+
+    def test_hpd_spatial_coverage_bin_width_shape_mismatch(self):
+        """A ``bin_width`` whose length does not match the position dim raises."""
+        positions = np.arange(0.0, 5.0, 1.0)  # 5 bins
+        probs = np.zeros((1, positions.size))
+        probs[0, 1] = 1.0
+        posterior = xr.DataArray(
+            probs, dims=["time", "position"], coords={"position": positions}
+        )
+        threshold = get_highest_posterior_threshold(posterior, coverage=0.95)
+        with pytest.raises(ValueError, match="shape"):
+            get_HPD_spatial_coverage(
+                posterior, threshold, bin_width=np.array([1.0, 1.0, 1.0])
+            )
+
 
 # ---------------------------------------------------------------------------
 # KL divergence tests
@@ -344,6 +387,24 @@ class TestPosteriorConsistencyKLDivergence:
         kl = posterior_consistency_kl_divergence(p, q)
 
         assert kl.shape == (3,)
+
+    def test_rejects_3d_input(self):
+        """Un-flattened (n_time, n_x, n_y) input must raise, not silently reduce.
+
+        ``entropy(..., axis=-1)`` would reduce only the last axis and return a
+        wrong-shaped ``(n_time, n_x)`` array; the docstring promises a flattened
+        ``(n_time, n_position_bins)`` contract, so 3-D input must raise.
+        """
+        p = np.ones((2, 3, 3)) / 9.0
+        with pytest.raises(ValueError, match="2-D"):
+            posterior_consistency_kl_divergence(p, p)
+
+    def test_rejects_shape_mismatch(self):
+        """posterior and likelihood must share a shape."""
+        p = np.full((2, 3), 1.0 / 3.0)
+        q = np.full((2, 4), 1.0 / 4.0)
+        with pytest.raises(ValueError, match="same shape"):
+            posterior_consistency_kl_divergence(p, q)
 
 
 # ---------------------------------------------------------------------------
@@ -396,3 +457,11 @@ class TestPosteriorConsistencyHPDOverlap:
         overlap = posterior_consistency_hpd_overlap(p, q, coverage=0.95)
 
         assert overlap.shape == (4,)
+
+    def test_rejects_3d_input(self):
+        """Un-flattened (n_time, n_x, n_y) input must raise rather than run on
+        ``axis=1`` and return a wrong-shaped or silently-incorrect result.
+        """
+        p = np.ones((2, 3, 3)) / 9.0
+        with pytest.raises(ValueError, match="2-D"):
+            posterior_consistency_hpd_overlap(p, p, coverage=0.95)
