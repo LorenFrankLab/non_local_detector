@@ -49,6 +49,8 @@ context and uses common helper functions for spike counting and position
 interpolation.
 """
 
+import warnings
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -132,6 +134,13 @@ def make_spline_predict_matrix(
     return jnp.asarray(design_matrix)
 
 
+# Gradient inf-norm above which a BFGS fit is treated as genuinely
+# non-converged. Set well above the optimizer's own gtol (1e-5) so that the
+# common benign "precision loss" exit (success=False with a near-zero
+# gradient) does not warn.
+GLM_CONVERGENCE_GRAD_TOL = 1e-3
+
+
 def fit_poisson_regression(
     design_matrix: np.ndarray,
     spikes: np.ndarray,
@@ -191,6 +200,22 @@ def fit_poisson_regression(
         jac=dlike,
         tol=1e-5,  # Added tolerance for potentially better convergence
     )
+
+    # Judge convergence by the actual gradient inf-norm rather than SciPy's
+    # boolean ``success`` flag: BFGS frequently reports ``success=False``
+    # ("Desired error not necessarily achieved due to precision loss") even at
+    # a good minimum, so warning on ``not res.success`` is routinely spurious.
+    # Warn only when the gradient is meaningfully far from zero.
+    grad_norm = float(np.max(np.abs(res.jac))) if res.jac is not None else float("inf")
+    if grad_norm > GLM_CONVERGENCE_GRAD_TOL:
+        warnings.warn(
+            f"GLM Poisson regression may not have converged: final gradient "
+            f"inf-norm {grad_norm:.3e} exceeds {GLM_CONVERGENCE_GRAD_TOL:.1e} "
+            f"(scipy message: {res.message}). Place-field coefficients may be "
+            f"unreliable. (n_iter={res.nit}, final loss={res.fun:.6f})",
+            UserWarning,
+            stacklevel=2,
+        )
 
     return jnp.asarray(res.x)
 

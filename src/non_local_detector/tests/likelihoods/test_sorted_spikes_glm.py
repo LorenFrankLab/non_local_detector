@@ -4,6 +4,8 @@ Tests the Poisson GLM implementation for sorted spike data, including spline
 basis generation, model fitting, and likelihood prediction.
 """
 
+import warnings
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -254,6 +256,86 @@ class TestPoissonRegression:
 
         # Assert - coefficients should differ
         assert not jnp.allclose(coef_uniform, coef_skewed, rtol=0.1)
+
+    def test_glm_large_gradient_warned(self, monkeypatch):
+        """A fit that leaves a large final gradient emits a ``UserWarning``.
+
+        Convergence is judged by the actual gradient norm rather than SciPy's
+        ``success`` flag, because BFGS frequently reports ``success=False``
+        ("precision loss") even at a perfectly good minimum. Here we force a
+        result whose gradient is far from zero, which is genuine
+        non-convergence and must warn.
+        """
+        # Arrange - a small, well-conditioned regression input.
+        rng = np.random.default_rng(0)
+        n_time = 50
+        n_basis = 5
+        design_matrix = rng.standard_normal((n_time, n_basis))
+        design_matrix[:, 0] = 1.0
+        spikes = rng.poisson(3, size=n_time)
+        weights = np.ones(n_time)
+
+        from scipy.optimize import OptimizeResult  # type: ignore[import-untyped]
+
+        import non_local_detector.likelihoods.sorted_spikes_glm as glm_module
+
+        def fake_minimize(fun, x0, **kwargs):
+            return OptimizeResult(
+                x=np.asarray(x0),
+                jac=np.full(n_basis, 0.5),  # large gradient -> not converged
+                success=False,
+                message="forced non-convergence for test",
+                nit=7,
+                fun=1.234567,
+            )
+
+        monkeypatch.setattr(glm_module, "minimize", fake_minimize)
+
+        # Act / Assert
+        with pytest.warns(UserWarning, match="may not have converged"):
+            fit_poisson_regression(design_matrix, spikes, weights, l2_penalty=1e-3)
+
+    def test_glm_benign_precision_loss_does_not_warn(self, monkeypatch):
+        """``success=False`` with a near-zero gradient is benign precision loss
+        and must NOT warn (this is the dominant noise source in practice)."""
+        rng = np.random.default_rng(0)
+        n_time = 50
+        n_basis = 5
+        design_matrix = rng.standard_normal((n_time, n_basis))
+        design_matrix[:, 0] = 1.0
+        spikes = rng.poisson(3, size=n_time)
+        weights = np.ones(n_time)
+
+        from scipy.optimize import OptimizeResult  # type: ignore[import-untyped]
+
+        import non_local_detector.likelihoods.sorted_spikes_glm as glm_module
+
+        def fake_minimize(fun, x0, **kwargs):
+            return OptimizeResult(
+                x=np.asarray(x0),
+                jac=np.full(n_basis, 1e-8),  # effectively zero gradient
+                success=False,
+                message="Desired error not necessarily achieved due to precision loss.",
+                nit=42,
+                fun=1.234567,
+            )
+
+        monkeypatch.setattr(glm_module, "minimize", fake_minimize)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            fit_poisson_regression(design_matrix, spikes, weights, l2_penalty=1e-3)
+
+        convergence_warnings = [
+            w
+            for w in caught
+            if issubclass(w.category, UserWarning)
+            and "converge" in str(w.message).lower()
+        ]
+        assert convergence_warnings == [], (
+            "Benign precision-loss exit with a near-zero gradient should not "
+            f"warn; got: {[str(w.message) for w in convergence_warnings]}"
+        )
 
 
 @pytest.mark.unit

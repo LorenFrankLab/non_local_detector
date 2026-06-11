@@ -250,12 +250,37 @@ def _normalize_return_outputs(
 
 
 class _DetectorBase(BaseEstimator, abc.ABC):
-    """Base class for detector objects."""
+    """Base class for detector objects.
+
+    Attributes
+    ----------
+    converged_ : bool
+        True if EM converged within max_iter iterations. Set by
+        ``estimate_parameters``.
+    n_iter_ : int
+        Number of EM iterations actually performed. Set by
+        ``estimate_parameters``.
+    em_monotonicity_violations_ : list[int]
+        Iteration indices (1-based) where marginal log-likelihood
+        decreased. Empty list when EM is well-behaved. Set by
+        ``estimate_parameters``.
+    degenerate_timesteps_ : np.ndarray
+        Time indices (0-based) where the final E-step had all-``-inf``
+        log-likelihoods (every state impossible) and the posterior fell back
+        to the predicted distribution. Empty array when none occur. Set by
+        ``estimate_parameters`` (reflects the training data); ``predict`` does
+        not refresh it, though it still logs a degenerate-timestep warning for
+        the data it is given.
+    """
 
     # Type annotations for attributes assigned during fit
     discrete_state_transitions_: np.ndarray
     discrete_transition_coefficients_: np.ndarray | None
     discrete_transition_design_matrix_: DesignMatrix | None
+    converged_: bool
+    n_iter_: int
+    em_monotonicity_violations_: list[int]
+    degenerate_timesteps_: np.ndarray
 
     def __init__(
         self,
@@ -1647,8 +1672,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             else self.discrete_state_transitions_
         )
 
+        # Collect degenerate (all-impossible) timestep indices during the
+        # forward pass. This is reliable regardless of n_chunks/caching,
+        # unlike the returned log-likelihoods (which are None when uncached,
+        # e.g. for n_chunks > 1). Stored transiently for estimate_parameters
+        # to copy into the public degenerate_timesteps_ attribute.
+        degenerate_out: list[int] = []
         if discrete_transitions.ndim == 2:
-            return chunked_filter_smoother(
+            result = chunked_filter_smoother(
                 time=time,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
@@ -1662,9 +1693,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 n_chunks=n_chunks,
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
+                degenerate_indices_out=degenerate_out,
             )
         else:
-            return chunked_filter_smoother_covariate_dependent(
+            result = chunked_filter_smoother_covariate_dependent(
                 time=time,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
@@ -1678,7 +1710,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 n_chunks=n_chunks,
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
+                degenerate_indices_out=degenerate_out,
             )
+        self._degenerate_timesteps_ = np.asarray(sorted(degenerate_out), dtype=int)
+        return result
 
     def fit_predict(self) -> xr.Dataset:
         """Fit the model and predict the posterior probabilities. To be implemented by inheriting class."""
@@ -1795,6 +1830,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         marginal_log_likelihoods = []
         n_iter = 0
         converged = False
+        log_likelihood_change = np.inf
 
         # Validate required parameters
         if time is None:
@@ -1858,6 +1894,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             interior_continuous_transition = self.continuous_state_transitions_[
                 np.ix_(interior_state_bins, interior_state_bins)
             ]
+
+        # Initialize the EM-result attributes together, after validation, so a
+        # validation failure above leaves NONE of them set (all-or-nothing).
+        # converged_/n_iter_ are updated to their final values after the loop;
+        # degenerate_timesteps_ is filled from the final E-step's likelihoods.
+        self.converged_ = False
+        self.n_iter_ = 0
+        self.em_monotonicity_violations_ = []
+        self.degenerate_timesteps_ = np.array([], dtype=int)
 
         while not converged and (n_iter < max_iter):
             # Expectation step
@@ -1927,7 +1972,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                             else None
                         )
 
-                        # Re-fit the encoding model using the posterior weights
+                        # Re-fit the encoding model using the posterior weights.
+                        # Known limitation (issue #31): the encoding model (the
+                        # emission) is shared across states but is re-fit here
+                        # using only the Local-state marginal as weights, so this
+                        # M-step does not strictly maximize the full-model
+                        # expected complete-data log-likelihood and can break the
+                        # EM monotonicity guarantee. The monotonicity-violation /
+                        # final-E-step warnings now surface this when it occurs.
                         self.fit_encoding_model(
                             **self._encoding_model_data,
                             weights=local_state_weights,
@@ -2002,11 +2054,28 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 log_likelihood_change = (
                     marginal_log_likelihoods[-1] - marginal_log_likelihoods[-2]
                 )
-                converged, _ = check_converged(
+                converged, is_increasing = check_converged(
                     marginal_log_likelihoods[-1],
                     marginal_log_likelihoods[-2],
                     tolerance,
                 )
+
+                if not is_increasing:
+                    # Surfaced via warnings.warn(UserWarning) to match the
+                    # other EM/GMM/GLM fit-quality diagnostics (decode-time
+                    # degenerate-timestep warnings use logger.warning instead;
+                    # see core._warn_degenerate_and_nan_timesteps).
+                    warnings.warn(
+                        f"EM iteration {n_iter}: marginal log-likelihood "
+                        f"decreased from {marginal_log_likelihoods[-2]:.6f} to "
+                        f"{marginal_log_likelihoods[-1]:.6f} "
+                        f"(change={log_likelihood_change:.6e}). This usually "
+                        f"indicates a bug in the M-step, an aggressive "
+                        f"convergence tolerance, or a numerical instability.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    self.em_monotonicity_violations_.append(n_iter)
 
                 logger.info(
                     f"iteration {n_iter}, "
@@ -2017,6 +2086,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 logger.info(
                     f"iteration {n_iter}, likelihood: {marginal_log_likelihoods[-1]}"
                 )
+
+        self.converged_ = bool(converged)
+        self.n_iter_ = int(n_iter)
+
+        if not self.converged_:
+            warnings.warn(
+                f"EM did not converge after max_iter={max_iter} iterations "
+                f"(final log-likelihood change={log_likelihood_change:.3e}, "
+                f"tolerance={tolerance:.3e}). Fitted parameters may be biased. "
+                f"Consider increasing max_iter or relaxing tolerance.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Final E-step after the last M-step so the returned posterior reflects
         # the final fitted parameters. Without this, the returned arrays are
@@ -2041,6 +2123,34 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             n_chunks=n_chunks,
         )
         marginal_log_likelihoods.append(marginal_log_likelihood)
+
+        # The preceding final E-step's _predict recorded the degenerate
+        # (all-impossible) timesteps during its forward pass; expose them as a
+        # fitted attribute. Sourced from the forward-pass collector rather than
+        # the returned log-likelihoods, so it is reliable even when caching is
+        # disabled (n_chunks > 1), where the returned log-likelihoods are None.
+        self.degenerate_timesteps_ = self._degenerate_timesteps_
+
+        if len(marginal_log_likelihoods) >= 2:
+            # Use the same relative monotonicity slack as the in-loop check
+            # (check_converged's is_increasing) so the two stay consistent; a
+            # bare absolute threshold against a sum-over-time log-likelihood
+            # would fire spuriously.
+            _, final_is_increasing = check_converged(
+                marginal_log_likelihoods[-1],
+                marginal_log_likelihoods[-2],
+                tolerance,
+            )
+            if not final_is_increasing:
+                decrease = marginal_log_likelihoods[-2] - marginal_log_likelihoods[-1]
+                warnings.warn(
+                    f"Final E-step log-likelihood decreased by {decrease:.3e} "
+                    f"(tolerance={tolerance:.3e}). This indicates an inconsistency "
+                    f"between the E-step and the M-step output and is unusual; the "
+                    f"returned posterior may not reflect the fitted parameters.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         if store_log_likelihood:
             self.log_likelihood_ = log_likelihood

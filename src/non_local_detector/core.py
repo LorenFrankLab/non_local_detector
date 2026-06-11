@@ -1,7 +1,11 @@
+import logging
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.typing import ArrayLike
+
+logger = logging.getLogger(__name__)
 
 
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
@@ -42,22 +46,152 @@ def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jnp.ndarray, float]:
     Parameters
     ----------
     probs : jnp.ndarray
-        Current state probabilities
+        Predicted state probabilities (sum to 1).
     ll : jnp.ndarray
-        Log likelihoods for each state
+        Log-likelihood at this time step. Same shape as ``probs``.
 
     Returns
     -------
     new_probs : jnp.ndarray
-        Updated state probabilities
+        Updated state probabilities. If every entry of ``ll`` is ``-inf``
+        (all states impossible — most likely a data issue), the predicted
+        probabilities are returned unchanged and ``log_norm`` is set to
+        ``-inf`` to mark the degenerate step in the marginal likelihood. A
+        ``NaN`` in ``ll`` (a likelihood-computation bug, not impossible data)
+        is NOT masked: it propagates into ``new_probs`` so the problem stays
+        visible to the caller.
     log_norm : float
-        Log normalization constant
+        Log normalization constant, or ``-inf`` if every state is ``-inf``.
     """
     ll_max = ll.max()
-    ll_max = jnp.where(jnp.isfinite(ll_max), ll_max, 0.0)
-    new_probs, norm = _normalize(probs * jnp.exp(ll - ll_max))
-    log_norm = jnp.log(norm) + ll_max
+    # The degenerate fallback fires ONLY when every state is -inf (the max is
+    # exactly -inf). A NaN propagates to ll_max as NaN, so `ll_max == -inf` is
+    # False and we deliberately do NOT fall back: the NaN flows through the
+    # normal branch into new_probs, keeping the upstream bug visible rather
+    # than laundering it into the predicted prior.
+    is_degenerate = ll_max == -jnp.inf
+    # Shift by the max for numerical stability. When the max is non-finite
+    # (all -inf, or a NaN present) use 0.0 so any finite states are not
+    # corrupted by an inf - inf subtraction.
+    ll_max_safe = jnp.where(jnp.isfinite(ll_max), ll_max, 0.0)
+    new_probs_normal, norm = _normalize(probs * jnp.exp(ll - ll_max_safe))
+    log_norm = jnp.log(norm) + ll_max_safe
+
+    # Degenerate fallback: every state has -inf log-likelihood. Return the
+    # predicted distribution unchanged and mark log_norm as -inf so the
+    # host-side wrapper can detect and warn about the degenerate step.
+    new_probs = jnp.where(is_degenerate, probs, new_probs_normal)
+    log_norm = jnp.where(is_degenerate, -jnp.inf, log_norm)
     return new_probs, log_norm
+
+
+def _degenerate_and_nan_masks(
+    log_likelihoods: ArrayLike,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-timestep boolean masks for degenerate and NaN log-likelihoods.
+
+    Computes both masks here (a ``max(axis=-1)`` reduction and an ``isnan``
+    reduction) and pulls them to the host in one place, so callers derive
+    counts *and* indices from a single host sync point per call instead of the
+    previous three separate helper calls (each with its own reduction and
+    transfer).
+
+    Parameters
+    ----------
+    log_likelihoods : array-like
+        Log-likelihood array. The last axis is the state axis; all leading
+        axes are treated as time-step axes.
+
+    Returns
+    -------
+    degenerate_mask : np.ndarray of bool
+        True where every state is ``-inf`` (impossible data). Uses
+        ``max(axis=-1) == -inf`` rather than ``~isfinite`` so NaN steps are
+        excluded (NaN propagates to the max, and ``NaN == -inf`` is False).
+    nan_mask : np.ndarray of bool
+        True where any state is ``NaN`` — a likelihood-computation bug, distinct
+        from impossible data. ``_condition_on`` lets the NaN reach the posterior
+        so it stays visible.
+    """
+    ll_array = jnp.asarray(log_likelihoods)
+    degenerate_mask = np.asarray(ll_array.max(axis=-1) == -jnp.inf)
+    nan_mask = np.asarray(jnp.any(jnp.isnan(ll_array), axis=-1))
+    return degenerate_mask, nan_mask
+
+
+def _accumulate_chunk_degeneracy(
+    log_likelihood_chunk: ArrayLike,
+    time_inds: np.ndarray,
+    degenerate_indices_out: list | None,
+) -> tuple[int, int]:
+    """Tally a chunk's degenerate/NaN steps at one host sync point.
+
+    Returns ``(n_degenerate, n_nan)`` for the chunk and, when
+    ``degenerate_indices_out`` is provided, appends the *global* indices of the
+    chunk's all-``-inf`` steps (``time_inds`` maps chunk positions to global
+    time indices).
+    """
+    degenerate_mask, nan_mask = _degenerate_and_nan_masks(log_likelihood_chunk)
+    if degenerate_indices_out is not None:
+        degenerate_indices_out.extend(np.asarray(time_inds)[degenerate_mask].tolist())
+    return int(degenerate_mask.sum()), int(nan_mask.sum())
+
+
+def _warn_degenerate_and_nan_timesteps(
+    n_degenerate: int, n_nan: int, n_total: int
+) -> None:
+    """Emit host-side warnings summarizing degenerate and NaN time steps.
+
+    These diagnostics use ``logger.warning`` (not ``warnings.warn``) because
+    they are per-invocation decoding diagnostics — they should fire on every
+    affected filter call rather than be deduplicated by the warnings filter.
+    The fit-time convergence diagnostics use ``warnings.warn(UserWarning)``
+    instead (see ``models.base`` / the likelihood models).
+    """
+    if n_degenerate > 0:
+        logger.warning(
+            "HMM filter encountered %d/%d time step(s) with all-impossible "
+            "(-inf) log-likelihoods; the posterior at those steps fell back to "
+            "the predicted distribution.",
+            n_degenerate,
+            n_total,
+        )
+    if n_nan > 0:
+        logger.warning(
+            "HMM filter encountered %d/%d time step(s) with NaN log-likelihoods; "
+            "the posterior at those steps is NaN. This indicates a bug in the "
+            "likelihood computation (e.g. a non-converged or degenerate encoding "
+            "model), not impossible data. Check the log-likelihood inputs.",
+            n_nan,
+            n_total,
+        )
+
+
+def _warn_if_degenerate_timesteps(log_likelihoods: ArrayLike) -> None:
+    """Emit host-side warnings if any time step is all-``-inf`` or has a NaN.
+
+    Parameters
+    ----------
+    log_likelihoods : array-like
+        Log-likelihood array. The last axis is the state axis.
+
+    Notes
+    -----
+    Skipped when ``log_likelihoods`` is a JAX tracer (i.e. ``filter`` /
+    ``filter_covariate_dependent`` are being run inside ``jit``/``vmap``/
+    ``scan``). The diagnostics need concrete values (``int(jnp.sum(...))``)
+    and warnings cannot be emitted during tracing, so skipping keeps the
+    public filter wrappers JAX-transformable; the pure filtering computation
+    still runs.
+    """
+    ll_array = jnp.asarray(log_likelihoods)
+    if isinstance(ll_array, jax.core.Tracer):
+        return
+    n_total = int(np.prod(ll_array.shape[:-1])) if ll_array.ndim > 1 else 1
+    degenerate_mask, nan_mask = _degenerate_and_nan_masks(ll_array)
+    _warn_degenerate_and_nan_timesteps(
+        int(degenerate_mask.sum()), int(nan_mask.sum()), n_total
+    )
 
 
 def _assert_finite(name: str, x: ArrayLike) -> jnp.ndarray:
@@ -125,6 +259,40 @@ def _divide_safe(numerator: ArrayLike, denominator: ArrayLike) -> jnp.ndarray:
     return jnp.where(denominator != 0.0, numerator / safe_denominator, 0.0)
 
 
+def _filter_impl(
+    initial_distribution: ArrayLike,
+    transition_matrix: ArrayLike,
+    log_likelihoods: ArrayLike,
+) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
+    """JIT-compiled forward pass of the forward-backward algorithm.
+
+    See :func:`filter` for the user-facing wrapper that adds host-side
+    diagnostics. This raw implementation runs ``jax.lax.scan`` and is wrapped
+    by both the non-donating ``_filter_jit`` (used by the public ``filter``)
+    and the donating ``_filter_internal`` (used by the chunked drivers).
+    """
+
+    def _step(carry, ll):
+        log_normalizer, predicted_probs = carry
+
+        filtered_probs, log_norm = _condition_on(predicted_probs, ll)
+        log_normalizer += log_norm
+        predicted_probs_next = filtered_probs @ transition_matrix
+
+        return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
+
+    return jax.lax.scan(_step, (0.0, initial_distribution), log_likelihoods)
+
+
+# JIT-compiled non-donating implementation (safe to reuse inputs across calls)
+_filter_jit = jax.jit(_filter_impl)
+
+
+# Internal version with buffer donation for use in chunked drivers
+# This is safe because chunked drivers control the data flow and don't reuse donated arrays
+_filter_internal = jax.jit(_filter_impl, donate_argnums=(0, 2))
+
+
 def filter(
     initial_distribution: ArrayLike,
     transition_matrix: ArrayLike,
@@ -161,27 +329,19 @@ def filter(
                 One-step-ahead predicted state probabilities P(z_t | x_{1:t-1})
                 for t=1...T. Note that `predicted_probs[0]` is equivalent
                 to `initial_distribution`.
+
+    Notes
+    -----
+    If any time step has all-``-inf`` log-likelihoods, ``_condition_on``
+    falls back to the predicted distribution at that step. A ``NaN`` at a
+    timestep is left to propagate into the posterior (it signals a
+    likelihood-computation bug, not impossible data). A host-side
+    ``logger.warning`` summarizing the count of degenerate and/or NaN steps is
+    emitted when any are found.
     """
-
-    def _step(carry, ll):
-        log_normalizer, predicted_probs = carry
-
-        filtered_probs, log_norm = _condition_on(predicted_probs, ll)
-        log_normalizer += log_norm
-        predicted_probs_next = filtered_probs @ transition_matrix
-
-        return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
-
-    return jax.lax.scan(_step, (0.0, initial_distribution), log_likelihoods)
-
-
-# Apply JIT without donation - tests reuse inputs
-filter = jax.jit(filter)
-
-
-# Internal version with buffer donation for use in chunked drivers
-# This is safe because chunked drivers control the data flow and don't reuse donated arrays
-_filter_internal = jax.jit(filter.__wrapped__, donate_argnums=(0, 2))
+    result = _filter_jit(initial_distribution, transition_matrix, log_likelihoods)
+    _warn_if_degenerate_timesteps(log_likelihoods)
+    return result
 
 
 def smoother(
@@ -262,6 +422,7 @@ def chunked_filter_smoother(
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
     dtype: jnp.dtype = jnp.float32,
+    degenerate_indices_out: list | None = None,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -293,6 +454,11 @@ def chunked_filter_smoother(
         Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
         Use float64 for numerically challenging problems.
         Note: Requires JAX_ENABLE_X64=1 environment variable for float64.
+    degenerate_indices_out : list | None, optional
+        If provided, the global time indices of all-``-inf`` (degenerate)
+        timesteps are appended to this list during the forward pass. This is
+        the only way to recover those indices when likelihoods are not cached
+        (the returned ``log_likelihoods`` is then ``None``). By default None.
 
     Returns
     -------
@@ -319,6 +485,8 @@ def chunked_filter_smoother(
     acausal_posterior = []
     acausal_state_probabilities = []
     marginal_likelihood = 0.0
+    n_degenerate_total = 0
+    n_nan_total = 0
 
     n_time = len(time)
     # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
@@ -381,6 +549,15 @@ def chunked_filter_smoother(
                 "log_likelihoods", log_likelihood_chunk
             )
 
+        # Tally degenerate (all -inf) and NaN timesteps at one host sync point
+        # before the array is donated to the JIT call. Accumulated across chunks
+        # and reported once after the forward pass.
+        n_degen, n_nan = _accumulate_chunk_degeneracy(
+            log_likelihood_chunk, time_inds_np, degenerate_indices_out
+        )
+        n_degenerate_total += n_degen
+        n_nan_total += n_nan
+
         # Donated: log_likelihood_chunk (created fresh), initial_distribution
         # Do not read these after the call - they are consumed by the JIT function
         # Note: On first iteration, initial_distribution_jax may trigger a donation warning
@@ -410,6 +587,8 @@ def chunked_filter_smoother(
         )
 
         marginal_likelihood += marginal_likelihood_chunk
+
+    _warn_degenerate_and_nan_timesteps(n_degenerate_total, n_nan_total, n_time)
 
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
@@ -629,6 +808,52 @@ def _get_transition_matrix(
     return continuous_transition_matrix * discrete_indexed
 
 
+def _filter_covariate_dependent_impl(
+    initial_distribution: ArrayLike,
+    discrete_transition_matrix: ArrayLike,
+    continuous_transition_matrix: ArrayLike,
+    state_ind: ArrayLike,
+    log_likelihoods: ArrayLike,
+) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
+    """JIT-compiled covariate-dependent forward pass.
+
+    See :func:`filter_covariate_dependent` for the user-facing wrapper that
+    adds host-side diagnostics.
+    """
+
+    def _step(
+        carry: tuple[float, jnp.ndarray], args: tuple[jnp.ndarray, jnp.ndarray]
+    ) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
+        log_normalizer, predicted_probs = carry
+        ll, discrete_transition_matrix_t = args
+
+        filtered_probs, log_norm = _condition_on(predicted_probs, ll)
+        log_normalizer += log_norm
+        predicted_probs_next = filtered_probs @ _get_transition_matrix(
+            discrete_transition_matrix_t, continuous_transition_matrix, state_ind
+        )
+
+        return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
+
+    return jax.lax.scan(
+        _step,
+        (0.0, initial_distribution),
+        (log_likelihoods, discrete_transition_matrix),
+    )
+
+
+# JIT-compiled non-donating implementation (safe to reuse inputs across calls)
+_filter_covariate_dependent_jit = jax.jit(_filter_covariate_dependent_impl)
+
+
+# Internal version with buffer donation for use in chunked drivers
+# Donates: initial_distribution (arg 0), discrete_transition_matrix (arg 1), log_likelihoods (arg 4)
+# dtm is chunked per-iteration so safe to donate
+_filter_covariate_dependent_internal = jax.jit(
+    _filter_covariate_dependent_impl, donate_argnums=(0, 1, 4)
+)
+
+
 def filter_covariate_dependent(
     initial_distribution: ArrayLike,
     discrete_transition_matrix: ArrayLike,
@@ -655,39 +880,25 @@ def filter_covariate_dependent(
         Filtered state probabilities
     predicted_probs : jnp.ndarray, shape (n_time, n_state_bins)
         One-step-ahead predicted state probabilities
+
+    Notes
+    -----
+    If any time step has all-``-inf`` log-likelihoods, ``_condition_on``
+    falls back to the predicted distribution at that step. A ``NaN`` at a
+    timestep is left to propagate into the posterior (it signals a
+    likelihood-computation bug, not impossible data). A host-side
+    ``logger.warning`` summarizing the count of degenerate and/or NaN steps is
+    emitted when any are found.
     """
-
-    def _step(
-        carry: tuple[float, jnp.ndarray], args: tuple[jnp.ndarray, jnp.ndarray]
-    ) -> tuple[tuple[float, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
-        log_normalizer, predicted_probs = carry
-        ll, discrete_transition_matrix_t = args
-
-        filtered_probs, log_norm = _condition_on(predicted_probs, ll)
-        log_normalizer += log_norm
-        predicted_probs_next = filtered_probs @ _get_transition_matrix(
-            discrete_transition_matrix_t, continuous_transition_matrix, state_ind
-        )
-
-        return (log_normalizer, predicted_probs_next), (filtered_probs, predicted_probs)
-
-    return jax.lax.scan(
-        _step,
-        (0.0, initial_distribution),
-        (log_likelihoods, discrete_transition_matrix),
+    result = _filter_covariate_dependent_jit(
+        initial_distribution,
+        discrete_transition_matrix,
+        continuous_transition_matrix,
+        state_ind,
+        log_likelihoods,
     )
-
-
-# Apply JIT without donation - tests reuse inputs
-filter_covariate_dependent = jax.jit(filter_covariate_dependent)
-
-
-# Internal version with buffer donation for use in chunked drivers
-# Donates: initial_distribution (arg 0), discrete_transition_matrix (arg 1), log_likelihoods (arg 4)
-# dtm is chunked per-iteration so safe to donate
-_filter_covariate_dependent_internal = jax.jit(
-    filter_covariate_dependent.__wrapped__, donate_argnums=(0, 1, 4)
-)
+    _warn_if_degenerate_timesteps(log_likelihoods)
+    return result
 
 
 def smoother_covariate_dependent(
@@ -775,6 +986,7 @@ def chunked_filter_smoother_covariate_dependent(
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
     dtype: jnp.dtype = jnp.float32,
+    degenerate_indices_out: list | None = None,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -810,6 +1022,11 @@ def chunked_filter_smoother_covariate_dependent(
         Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
         Use float64 for numerically challenging problems.
         Note: Requires JAX_ENABLE_X64=1 environment variable for float64.
+    degenerate_indices_out : list | None, optional
+        If provided, the global time indices of all-``-inf`` (degenerate)
+        timesteps are appended to this list during the forward pass. This is
+        the only way to recover those indices when likelihoods are not cached
+        (the returned ``log_likelihoods`` is then ``None``). By default None.
 
     Returns
     -------
@@ -836,6 +1053,8 @@ def chunked_filter_smoother_covariate_dependent(
     acausal_posterior = []
     acausal_state_probabilities = []
     marginal_likelihood = 0.0
+    n_degenerate_total = 0
+    n_nan_total = 0
 
     n_time = len(time)
     # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
@@ -905,6 +1124,15 @@ def chunked_filter_smoother_covariate_dependent(
                 "log_likelihoods", log_likelihood_chunk
             )
 
+        # Tally degenerate (all -inf) and NaN timesteps at one host sync point
+        # before the array is donated to the JIT call. Accumulated across chunks
+        # and reported once after the forward pass.
+        n_degen, n_nan = _accumulate_chunk_degeneracy(
+            log_likelihood_chunk, time_inds_np, degenerate_indices_out
+        )
+        n_degenerate_total += n_degen
+        n_nan_total += n_nan
+
         # Time-slice only: the scan body indexes states per step, so the joint
         # (chunk, n_state_bins, n_state_bins) transition is never materialized.
         dtm_chunk = discrete_transition_matrix_jax[time_inds]
@@ -937,6 +1165,8 @@ def chunked_filter_smoother_covariate_dependent(
         )
 
         marginal_likelihood += marginal_likelihood_chunk
+
+    _warn_degenerate_and_nan_timesteps(n_degenerate_total, n_nan_total, n_time)
 
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
@@ -1175,7 +1405,12 @@ def check_converged(
     Returns
     -------
     is_converged : bool
+        True if the relative change in log-likelihood is below ``tolerance``.
     is_increasing : bool
+        True if the log-likelihood did not decrease by more than ``tolerance``.
+        A decrease smaller than ``tolerance`` is treated as noise rather than a
+        true monotonicity violation, matching the slack used by the final-E-step
+        consistency check.
 
     """
     delta_log_likelihood = abs(log_likelihood - previous_log_likelihood)
@@ -1183,7 +1418,13 @@ def check_converged(
         abs(log_likelihood) + abs(previous_log_likelihood) + np.spacing(1)
     ) / 2
 
-    is_increasing = log_likelihood - previous_log_likelihood >= -1e-3
+    # Compare the *relative* change against the tolerance (matching
+    # ``is_converged`` below), not an absolute difference. The marginal
+    # log-likelihood is a sum over timesteps, so its magnitude scales with
+    # dataset size; an absolute slack would spuriously flag negligible
+    # floating-point decreases on large datasets as monotonicity violations.
+    relative_change = (log_likelihood - previous_log_likelihood) / avg_log_likelihood
+    is_increasing = relative_change >= -tolerance
     is_converged = (delta_log_likelihood / avg_log_likelihood) < tolerance
 
     return is_converged, is_increasing
