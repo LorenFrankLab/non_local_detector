@@ -460,8 +460,14 @@ class TestPosteriorConsistencyHPDOverlap:
 
     def test_rejects_3d_input(self):
         """Un-flattened (n_time, n_x, n_y) input must raise rather than run on
-        ``axis=1`` and return a wrong-shaped or silently-incorrect result.
+        ``axis=1`` and return a wrong-shaped result.
+
+        Uses ``n_time == n_x`` (3, 3, 3): with this shape the pre-fix code's
+        ``posterior >= threshold[:, None]`` broadcast *succeeds* and the
+        function silently returns a wrong-shaped ``(3, 3)`` array — the
+        genuinely silent failure the guard prevents (a shape like (2, 3, 3)
+        would only trip an incidental broadcast error, not the silent path).
         """
-        p = np.ones((2, 3, 3)) / 9.0
+        p = np.ones((3, 3, 3)) / 9.0
         with pytest.raises(ValueError, match="2-D"):
             posterior_consistency_hpd_overlap(p, p, coverage=0.95)
