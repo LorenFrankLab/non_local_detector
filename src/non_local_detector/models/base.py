@@ -268,7 +268,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Time indices (0-based) where the final E-step had all-``-inf``
         log-likelihoods (every state impossible) and the posterior fell back
         to the predicted distribution. Empty array when none occur. Set by
-        ``estimate_parameters``.
+        ``estimate_parameters`` (reflects the training data); ``predict`` does
+        not refresh it, though it still logs a degenerate-timestep warning for
+        the data it is given.
     """
 
     # Type annotations for attributes assigned during fit

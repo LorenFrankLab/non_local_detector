@@ -119,6 +119,10 @@ class TestEncodingUpdateGuards:
         assert decoder.converged_ is True
         assert decoder.em_monotonicity_violations_ == []
         assert decoder.n_iter_ >= 1
+        # The forward-pass degenerate-step collector is wired through _predict
+        # into the fitted attribute; a well-behaved fit yields an empty array.
+        assert isinstance(decoder.degenerate_timesteps_, np.ndarray)
+        assert decoder.degenerate_timesteps_.size == 0
         unexpected = [
             w
             for w in caught

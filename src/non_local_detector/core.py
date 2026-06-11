@@ -90,9 +90,11 @@ def _degenerate_and_nan_masks(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-timestep boolean masks for degenerate and NaN log-likelihoods.
 
-    Computes both masks from a single ``max(axis=-1)`` / ``isnan`` pass and
-    pulls them to the host once, so callers can derive counts *and* indices
-    from one device→host transfer instead of several.
+    Computes both masks here (a ``max(axis=-1)`` reduction and an ``isnan``
+    reduction) and pulls them to the host in one place, so callers derive
+    counts *and* indices from a single host sync point per call instead of the
+    previous three separate helper calls (each with its own reduction and
+    transfer).
 
     Parameters
     ----------
@@ -122,7 +124,7 @@ def _accumulate_chunk_degeneracy(
     time_inds: np.ndarray,
     degenerate_indices_out: list | None,
 ) -> tuple[int, int]:
-    """Tally a chunk's degenerate/NaN steps in a single host transfer.
+    """Tally a chunk's degenerate/NaN steps at one host sync point.
 
     Returns ``(n_degenerate, n_nan)`` for the chunk and, when
     ``degenerate_indices_out`` is provided, appends the *global* indices of the
@@ -547,9 +549,9 @@ def chunked_filter_smoother(
                 "log_likelihoods", log_likelihood_chunk
             )
 
-        # Tally degenerate (all -inf) and NaN timesteps in a single host
-        # transfer before the array is donated to the JIT call. Accumulated
-        # across chunks and reported once after the forward pass.
+        # Tally degenerate (all -inf) and NaN timesteps at one host sync point
+        # before the array is donated to the JIT call. Accumulated across chunks
+        # and reported once after the forward pass.
         n_degen, n_nan = _accumulate_chunk_degeneracy(
             log_likelihood_chunk, time_inds_np, degenerate_indices_out
         )
@@ -1122,9 +1124,9 @@ def chunked_filter_smoother_covariate_dependent(
                 "log_likelihoods", log_likelihood_chunk
             )
 
-        # Tally degenerate (all -inf) and NaN timesteps in a single host
-        # transfer before the array is donated to the JIT call. Accumulated
-        # across chunks and reported once after the forward pass.
+        # Tally degenerate (all -inf) and NaN timesteps at one host sync point
+        # before the array is donated to the JIT call. Accumulated across chunks
+        # and reported once after the forward pass.
         n_degen, n_nan = _accumulate_chunk_degeneracy(
             log_likelihood_chunk, time_inds_np, degenerate_indices_out
         )
