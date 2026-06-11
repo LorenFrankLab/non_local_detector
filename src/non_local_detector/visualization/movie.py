@@ -1,3 +1,5 @@
+import logging
+
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,6 +11,8 @@ from non_local_detector.visualization._parallel_video_writer import (
     create_parallel_video,
 )
 from non_local_detector.visualization.static import get_multiunit_firing_rate
+
+logger = logging.getLogger(__name__)
 
 
 def make_single_environment_movie(
@@ -271,18 +275,18 @@ def _render_single_env_frame(fig, axes, frame_idx, data):
         window_size = data["window_size"]
         sampling_frequency = data["sampling_frequency"]
 
-        axes["multiunit_line"].set_data(
-            window_ind / sampling_frequency,
-            data["rate"][frame_idx + (window_size // 2) + window_ind],
-        )
-
-        # Set the bottom-axis limits once per worker. create_parallel_video
-        # renders contiguous frame chunks in separate processes, each of which
-        # calls the setup function once and then renders its own (global) frame
-        # range. Only the worker owning the first chunk ever sees frame_idx == 0,
-        # so gating on that left every later chunk's ax1 at default limits and
-        # the firing-rate line drawn off-screen. Mirror the mesh pattern and
-        # initialize on the first frame each worker renders instead.
+        # Set the bottom-axis limits once per worker, *before* the boundary-
+        # sensitive rate indexing below. create_parallel_video renders
+        # contiguous frame chunks in separate processes, each of which calls the
+        # setup function once and then renders its own (global) frame range. Only
+        # the worker owning the first chunk ever sees frame_idx == 0, so gating
+        # on that left every later chunk's ax1 at default limits and the
+        # firing-rate line drawn off-screen. Mirror the mesh pattern and
+        # initialize on the first frame each worker renders. Doing it ahead of
+        # set_data means a worker whose opening frames land in the recording's
+        # edge region (where the rate window index can overflow and raise
+        # IndexError below) still gets correct axis limits — the limits depend
+        # only on window_ind and rate.max(), not on the current frame.
         if not axes.get("_ax1_init", False):
             axes["ax1"].set_ylim((0.0, data["rate"].max()))
             axes["ax1"].set_xlim(
@@ -292,5 +296,17 @@ def _render_single_env_frame(fig, axes, frame_idx, data):
                 )
             )
             axes["_ax1_init"] = True
+
+        axes["multiunit_line"].set_data(
+            window_ind / sampling_frequency,
+            data["rate"][frame_idx + (window_size // 2) + window_ind],
+        )
     except IndexError:
-        pass
+        # Near the recording boundary the rate window index can run past the
+        # rate array; skip updating the firing-rate line for this frame rather
+        # than crashing the render. Axis limits are already set above.
+        logger.debug(
+            "Skipping multiunit firing-rate update for frame %d: rate window "
+            "index out of bounds (recording boundary).",
+            frame_idx,
+        )

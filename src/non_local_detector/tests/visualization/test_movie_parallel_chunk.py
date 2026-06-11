@@ -87,3 +87,64 @@ def test_bottom_axis_limits_set_on_worker_first_frame_not_global_frame_zero():
         assert axes["_ax1_init"] is True
     finally:
         plt.close(fig)
+
+
+@pytest.mark.unit
+def test_ax1_limits_initialized_even_when_rate_update_raises():
+    """A boundary chunk whose first frame overruns the rate array still sets limits.
+
+    The firing-rate ``set_data`` indexes ``rate[frame_idx + window/2 + window_ind]``,
+    which can run past the rate array near the recording boundary and raise
+    ``IndexError`` (swallowed on purpose). The axis-limit init must happen
+    *before* that indexing so a worker whose opening frame lands in the edge
+    region does not keep default ``ax1`` limits — otherwise the off-screen-rate
+    bug reappears for boundary chunks.
+    """
+    fig, axes = _setup_single_env_figure()
+    try:
+        n_time = 40
+        data = _make_frame_data(n_time=n_time)
+        # Shorten the rate array so the window indexing overruns it.
+        data["rate"] = np.linspace(0.0, 600.0, n_time)
+        sf = data["sampling_frequency"]
+        window_ind = data["window_ind"]
+        frame_idx = n_time - 5  # near the end: rate[frame_idx+10+10] is OOB
+
+        assert not axes.get("_ax1_init", False)
+
+        # Must not raise (IndexError is caught) and must still set the limits.
+        _render_single_env_frame(fig, axes, frame_idx, data)
+
+        expected_xlim = (window_ind[0] / sf, window_ind[-1] / sf)
+        np.testing.assert_allclose(axes["ax1"].get_xlim(), expected_xlim, atol=1e-12)
+        np.testing.assert_allclose(
+            axes["ax1"].get_ylim()[1], data["rate"].max(), atol=1e-9
+        )
+        assert axes["_ax1_init"] is True
+    finally:
+        plt.close(fig)
+
+
+@pytest.mark.unit
+def test_ax1_limits_set_once_per_worker():
+    """Limits are initialized once; later frames in the same worker do not reset them.
+
+    The fix replaces ``frame_idx == 0`` with a per-worker ``_ax1_init`` flag.
+    The flag must latch: a second frame must leave the (possibly user-adjusted)
+    limits untouched, mirroring the mesh's lazy one-time init.
+    """
+    fig, axes = _setup_single_env_figure()
+    try:
+        data = _make_frame_data()
+        _render_single_env_frame(fig, axes, 10, data)
+        assert axes["_ax1_init"] is True
+
+        # Perturb the limits, then render another frame in the same worker.
+        sentinel = (123.0, 456.0)
+        axes["ax1"].set_ylim(sentinel)
+        _render_single_env_frame(fig, axes, 11, data)
+
+        # The second render must not have re-initialized (overwritten) the limits.
+        np.testing.assert_allclose(axes["ax1"].get_ylim(), sentinel, atol=1e-9)
+    finally:
+        plt.close(fig)
