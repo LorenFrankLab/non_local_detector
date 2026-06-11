@@ -528,3 +528,84 @@ class TestAheadBehindDistance2DTrackGraph:
             "unreachable head/MAP pair must yield NaN direction, not a "
             f"node_positions[-1] sentinel heading; got {direction}"
         )
+
+    def test_nonprecomputed_direction_disconnected_graph_is_nan(self):
+        """The non-precomputed branch must also NaN unreachable pairs, not crash.
+
+        ``precomputed_distance=False`` calls ``nx.shortest_path(source, target)``,
+        which raises ``nx.NetworkXNoPath`` for a disconnected head/MAP pair. Pre-
+        fix only ``IndexError`` was caught, so it crashed; it must now warn and
+        return NaN, matching the precomputed branch and ``get_2D_distance``.
+        """
+        rng = np.random.default_rng(0)
+        cluster_a = rng.random((400, 2)) * 20.0
+        cluster_b = rng.random((400, 2)) * 20.0 + 200.0
+        from non_local_detector.environment import Environment
+
+        env = Environment(place_bin_size=10.0)
+        env.fit_place_grid(np.vstack([cluster_a, cluster_b]))
+        assert nx.number_connected_components(env.track_graphDD) > 1, (
+            "test setup requires a disconnected track graph"
+        )
+
+        head_position = np.array([[10.0, 10.0]])  # in cluster A
+        map_estimate = np.array([[210.0, 210.0]])  # in cluster B (unreachable)
+
+        direction = get_map_estimate_direction_from_track_graph(
+            head_position,
+            map_estimate,
+            env.track_graphDD,
+            env.edges_,
+            precomputed_distance=False,
+        )
+        assert np.isnan(direction).all(), (
+            "unreachable head/MAP pair on the non-precomputed path must yield "
+            f"NaN, not raise or emit a wrong heading; got {direction}"
+        )
+
+    def test_precomputed_distance_dict_branch_matches_generator(
+        self, env_2d, monkeypatch
+    ):
+        """The networkx<3.5 dict return shape is handled identically to the
+        >=3.5 generator (issue #40 fallback).
+
+        The local networkx is typically >= 3.5 (all-pairs ``nx.shortest_path``
+        returns a generator), so the ``.items()`` dict branch is otherwise only
+        exercised on the one CI job pinned to networkx < 3.5. Force the dict
+        shape here and assert the result is identical to the generator path.
+        """
+        env = env_2d
+        rng = np.random.default_rng(2)
+        n_time = 12
+        head_position = rng.random((n_time, 2)) * 100.0
+        map_estimate = rng.random((n_time, 2)) * 100.0
+
+        # Reference: real all-pairs form (generator on networkx >= 3.5).
+        reference = get_map_estimate_direction_from_track_graph(
+            head_position,
+            map_estimate,
+            env.track_graphDD,
+            env.edges_,
+            precomputed_distance=True,
+        )
+
+        # Force the networkx 3.0-3.4 dict return shape to exercise .items().
+        from non_local_detector.analysis import distance2D
+
+        real_shortest_path = distance2D.nx.shortest_path
+
+        def dict_all_pairs_shortest_path(graph, weight=None):
+            return dict(real_shortest_path(graph, weight=weight))
+
+        monkeypatch.setattr(
+            distance2D.nx, "shortest_path", dict_all_pairs_shortest_path
+        )
+
+        dict_branch = get_map_estimate_direction_from_track_graph(
+            head_position,
+            map_estimate,
+            env.track_graphDD,
+            env.edges_,
+            precomputed_distance=True,
+        )
+        np.testing.assert_allclose(dict_branch, reference, atol=1e-12)

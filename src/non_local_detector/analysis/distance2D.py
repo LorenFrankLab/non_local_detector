@@ -230,6 +230,19 @@ def get_map_estimate_direction_from_track_graph(
             except IndexError:
                 # head_position_node and map_estimate_node are the same
                 first_node_on_path = map_estimate_node
+            except nx.NetworkXNoPath:
+                # Disconnected track graph: no path between the head-position
+                # bin and the MAP bin. Mirror the precomputed branch (and
+                # get_2D_distance) by warning and leaving this time point's
+                # direction as NaN instead of crashing.
+                logger.warning(
+                    "Time point %d has no path between the head-position bin "
+                    "and the MAP bin (disconnected track graph); its "
+                    "map-estimate direction is set to NaN.",
+                    i,
+                )
+                map_estimate_direction[i] = np.nan
+                continue
 
             head_position_node_pos = node_positions[head_position_node]
             first_node_on_path_pos = node_positions[first_node_on_path]
