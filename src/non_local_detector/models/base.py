@@ -264,12 +264,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         Iteration indices (1-based) where marginal log-likelihood
         decreased. Empty list when EM is well-behaved. Set by
         ``estimate_parameters``.
+    degenerate_timesteps_ : np.ndarray
+        Time indices (0-based) where the final E-step had all-``-inf``
+        log-likelihoods (every state impossible) and the posterior fell back
+        to the predicted distribution. Empty array when none occur. Set by
+        ``estimate_parameters``.
     """
 
     # Type annotations for attributes assigned during fit
     discrete_state_transitions_: np.ndarray
     discrete_transition_coefficients_: np.ndarray | None
     discrete_transition_design_matrix_: DesignMatrix | None
+    converged_: bool
+    n_iter_: int
+    em_monotonicity_violations_: list[int]
+    degenerate_timesteps_: np.ndarray
 
     def __init__(
         self,
@@ -1810,7 +1819,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         n_iter = 0
         converged = False
         log_likelihood_change = np.inf
-        self.em_monotonicity_violations_ = []
 
         # Validate required parameters
         if time is None:
@@ -1874,6 +1882,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             interior_continuous_transition = self.continuous_state_transitions_[
                 np.ix_(interior_state_bins, interior_state_bins)
             ]
+
+        # Initialize the EM-result attributes together, after validation, so a
+        # validation failure above leaves NONE of them set (all-or-nothing).
+        # converged_/n_iter_ are updated to their final values after the loop;
+        # degenerate_timesteps_ is filled from the final E-step's likelihoods.
+        self.converged_ = False
+        self.n_iter_ = 0
+        self.em_monotonicity_violations_ = []
+        self.degenerate_timesteps_ = np.array([], dtype=int)
 
         while not converged and (n_iter < max_iter):
             # Expectation step
@@ -1943,7 +1960,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                             else None
                         )
 
-                        # Re-fit the encoding model using the posterior weights
+                        # Re-fit the encoding model using the posterior weights.
+                        # Known limitation (issue #31): the encoding model (the
+                        # emission) is shared across states but is re-fit here
+                        # using only the Local-state marginal as weights, so this
+                        # M-step does not strictly maximize the full-model
+                        # expected complete-data log-likelihood and can break the
+                        # EM monotonicity guarantee. The monotonicity-violation /
+                        # final-E-step warnings now surface this when it occurs.
                         self.fit_encoding_model(
                             **self._encoding_model_data,
                             weights=local_state_weights,
@@ -2025,15 +2049,19 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 )
 
                 if not is_increasing:
-                    logger.warning(
-                        "EM iteration %d: marginal log-likelihood decreased "
-                        "from %.6f to %.6f (change=%.6e). This usually indicates "
-                        "a bug in the M-step, an aggressive convergence tolerance, "
-                        "or a numerical instability.",
-                        n_iter,
-                        marginal_log_likelihoods[-2],
-                        marginal_log_likelihoods[-1],
-                        log_likelihood_change,
+                    # Surfaced via warnings.warn(UserWarning) to match the
+                    # other EM/GMM/GLM fit-quality diagnostics (decode-time
+                    # degenerate-timestep warnings use logger.warning instead;
+                    # see core._warn_degenerate_and_nan_timesteps).
+                    warnings.warn(
+                        f"EM iteration {n_iter}: marginal log-likelihood "
+                        f"decreased from {marginal_log_likelihoods[-2]:.6f} to "
+                        f"{marginal_log_likelihoods[-1]:.6f} "
+                        f"(change={log_likelihood_change:.6e}). This usually "
+                        f"indicates a bug in the M-step, an aggressive "
+                        f"convergence tolerance, or a numerical instability.",
+                        UserWarning,
+                        stacklevel=2,
                     )
                     self.em_monotonicity_violations_.append(n_iter)
 
@@ -2084,9 +2112,26 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         )
         marginal_log_likelihoods.append(marginal_log_likelihood)
 
+        # Record degenerate (all -inf) timesteps from the final E-step so the
+        # condition is programmatically inspectable, not only emitted to the log.
+        if log_likelihood is not None:
+            final_ll = np.asarray(log_likelihood)
+            if final_ll.ndim >= 2:
+                degenerate_mask = np.all(final_ll == -np.inf, axis=-1)
+                self.degenerate_timesteps_ = np.where(degenerate_mask)[0]
+
         if len(marginal_log_likelihoods) >= 2:
             final_change = marginal_log_likelihoods[-1] - marginal_log_likelihoods[-2]
-            if final_change < -tolerance:
+            # Use the same relative monotonicity slack as the in-loop check
+            # (check_converged's is_increasing) so the two stay consistent; a
+            # bare `final_change < -tolerance` would be an absolute threshold
+            # against a sum-over-time log-likelihood and fire spuriously.
+            _, final_is_increasing = check_converged(
+                marginal_log_likelihoods[-1],
+                marginal_log_likelihoods[-2],
+                tolerance,
+            )
+            if not final_is_increasing:
                 warnings.warn(
                     f"Final E-step log-likelihood decreased by {-final_change:.3e} "
                     f"(tolerance={tolerance:.3e}). This indicates an inconsistency "
