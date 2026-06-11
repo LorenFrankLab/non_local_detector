@@ -2122,29 +2122,27 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         )
         marginal_log_likelihoods.append(marginal_log_likelihood)
 
-        # The final E-step's _predict recorded the degenerate (all-impossible)
-        # timesteps during its forward pass; expose them as a fitted attribute.
-        # Sourced from the forward-pass collector rather than the returned
-        # log-likelihoods, so it is reliable even when caching is disabled
-        # (n_chunks > 1), where the returned log-likelihoods are None.
-        self.degenerate_timesteps_ = getattr(
-            self, "_degenerate_timesteps_", np.array([], dtype=int)
-        )
+        # The preceding final E-step's _predict recorded the degenerate
+        # (all-impossible) timesteps during its forward pass; expose them as a
+        # fitted attribute. Sourced from the forward-pass collector rather than
+        # the returned log-likelihoods, so it is reliable even when caching is
+        # disabled (n_chunks > 1), where the returned log-likelihoods are None.
+        self.degenerate_timesteps_ = self._degenerate_timesteps_
 
         if len(marginal_log_likelihoods) >= 2:
-            final_change = marginal_log_likelihoods[-1] - marginal_log_likelihoods[-2]
             # Use the same relative monotonicity slack as the in-loop check
             # (check_converged's is_increasing) so the two stay consistent; a
-            # bare `final_change < -tolerance` would be an absolute threshold
-            # against a sum-over-time log-likelihood and fire spuriously.
+            # bare absolute threshold against a sum-over-time log-likelihood
+            # would fire spuriously.
             _, final_is_increasing = check_converged(
                 marginal_log_likelihoods[-1],
                 marginal_log_likelihoods[-2],
                 tolerance,
             )
             if not final_is_increasing:
+                decrease = marginal_log_likelihoods[-2] - marginal_log_likelihoods[-1]
                 warnings.warn(
-                    f"Final E-step log-likelihood decreased by {-final_change:.3e} "
+                    f"Final E-step log-likelihood decreased by {decrease:.3e} "
                     f"(tolerance={tolerance:.3e}). This indicates an inconsistency "
                     f"between the E-step and the M-step output and is unusual; the "
                     f"returned posterior may not reflect the fitted parameters.",

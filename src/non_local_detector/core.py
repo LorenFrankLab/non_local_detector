@@ -85,17 +85,14 @@ def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jnp.ndarray, float]:
     return new_probs, log_norm
 
 
-def _count_degenerate_timesteps(log_likelihoods: ArrayLike) -> int:
-    """Count time steps where every state has ``-inf`` log-likelihood.
+def _degenerate_and_nan_masks(
+    log_likelihoods: ArrayLike,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-timestep boolean masks for degenerate and NaN log-likelihoods.
 
-    Such timesteps are degenerate: the conditioning step has no finite
-    evidence and falls back to the predicted distribution (see
-    :func:`_condition_on`). The count is computed on the host so it can
-    drive a Python-side warning after the JAX scan completes.
-
-    A timestep containing a ``NaN`` is NOT counted here — a NaN is a
-    likelihood-computation bug rather than impossible data, and is reported
-    separately by :func:`_count_nan_timesteps`.
+    Computes both masks from a single ``max(axis=-1)`` / ``isnan`` pass and
+    pulls them to the host once, so callers can derive counts *and* indices
+    from one device→host transfer instead of several.
 
     Parameters
     ----------
@@ -105,58 +102,37 @@ def _count_degenerate_timesteps(log_likelihoods: ArrayLike) -> int:
 
     Returns
     -------
-    n_degenerate : int
-        Number of timesteps where every state is ``-inf``.
+    degenerate_mask : np.ndarray of bool
+        True where every state is ``-inf`` (impossible data). Uses
+        ``max(axis=-1) == -inf`` rather than ``~isfinite`` so NaN steps are
+        excluded (NaN propagates to the max, and ``NaN == -inf`` is False).
+    nan_mask : np.ndarray of bool
+        True where any state is ``NaN`` — a likelihood-computation bug, distinct
+        from impossible data. ``_condition_on`` lets the NaN reach the posterior
+        so it stays visible.
     """
     ll_array = jnp.asarray(log_likelihoods)
-    per_step_max = ll_array.max(axis=-1)
-    # `== -inf` (not `~isfinite`) so NaN steps are excluded; NaN propagates
-    # to per_step_max as NaN, and `NaN == -inf` is False.
-    return int(jnp.sum(per_step_max == -jnp.inf))
+    degenerate_mask = np.asarray(ll_array.max(axis=-1) == -jnp.inf)
+    nan_mask = np.asarray(jnp.any(jnp.isnan(ll_array), axis=-1))
+    return degenerate_mask, nan_mask
 
 
-def _degenerate_timestep_indices(log_likelihoods: ArrayLike) -> np.ndarray:
-    """Return the indices of time steps where every state is ``-inf``.
+def _accumulate_chunk_degeneracy(
+    log_likelihood_chunk: ArrayLike,
+    time_inds: np.ndarray,
+    degenerate_indices_out: list | None,
+) -> tuple[int, int]:
+    """Tally a chunk's degenerate/NaN steps in a single host transfer.
 
-    Companion to :func:`_count_degenerate_timesteps` for callers that need the
-    positions (not just the count) of the degenerate steps — e.g. to expose
-    them as a fitted attribute. Computed on the host.
-
-    Parameters
-    ----------
-    log_likelihoods : array-like
-        Log-likelihood array. The last axis is the state axis.
-
-    Returns
-    -------
-    indices : np.ndarray
-        Integer indices (along the leading time axis) of all-``-inf`` steps.
+    Returns ``(n_degenerate, n_nan)`` for the chunk and, when
+    ``degenerate_indices_out`` is provided, appends the *global* indices of the
+    chunk's all-``-inf`` steps (``time_inds`` maps chunk positions to global
+    time indices).
     """
-    ll_array = jnp.asarray(log_likelihoods)
-    per_step_max = ll_array.max(axis=-1)
-    return np.asarray(jnp.where(per_step_max == -jnp.inf)[0])
-
-
-def _count_nan_timesteps(log_likelihoods: ArrayLike) -> int:
-    """Count time steps where any state has a ``NaN`` log-likelihood.
-
-    A NaN signals a bug in the likelihood computation (e.g. a non-converged
-    or degenerate encoding model), distinct from a legitimately impossible
-    (all ``-inf``) timestep. ``_condition_on`` lets the NaN propagate into the
-    posterior so it stays visible.
-
-    Parameters
-    ----------
-    log_likelihoods : array-like
-        Log-likelihood array. The last axis is the state axis.
-
-    Returns
-    -------
-    n_nan : int
-        Number of timesteps with at least one ``NaN`` log-likelihood.
-    """
-    ll_array = jnp.asarray(log_likelihoods)
-    return int(jnp.sum(jnp.any(jnp.isnan(ll_array), axis=-1)))
+    degenerate_mask, nan_mask = _degenerate_and_nan_masks(log_likelihood_chunk)
+    if degenerate_indices_out is not None:
+        degenerate_indices_out.extend(np.asarray(time_inds)[degenerate_mask].tolist())
+    return int(degenerate_mask.sum()), int(nan_mask.sum())
 
 
 def _warn_degenerate_and_nan_timesteps(
@@ -210,10 +186,9 @@ def _warn_if_degenerate_timesteps(log_likelihoods: ArrayLike) -> None:
     if isinstance(ll_array, jax.core.Tracer):
         return
     n_total = int(np.prod(ll_array.shape[:-1])) if ll_array.ndim > 1 else 1
+    degenerate_mask, nan_mask = _degenerate_and_nan_masks(ll_array)
     _warn_degenerate_and_nan_timesteps(
-        _count_degenerate_timesteps(ll_array),
-        _count_nan_timesteps(ll_array),
-        n_total,
+        int(degenerate_mask.sum()), int(nan_mask.sum()), n_total
     )
 
 
@@ -572,16 +547,14 @@ def chunked_filter_smoother(
                 "log_likelihoods", log_likelihood_chunk
             )
 
-        # Tally degenerate (all -inf) and NaN timesteps before the array is
-        # donated to the JIT call. Accumulated across chunks and reported once
-        # after the forward pass.
-        n_degenerate_total += _count_degenerate_timesteps(log_likelihood_chunk)
-        n_nan_total += _count_nan_timesteps(log_likelihood_chunk)
-        if degenerate_indices_out is not None:
-            local = _degenerate_timestep_indices(log_likelihood_chunk)
-            degenerate_indices_out.extend(
-                int(i) for i in np.asarray(time_inds_np)[local]
-            )
+        # Tally degenerate (all -inf) and NaN timesteps in a single host
+        # transfer before the array is donated to the JIT call. Accumulated
+        # across chunks and reported once after the forward pass.
+        n_degen, n_nan = _accumulate_chunk_degeneracy(
+            log_likelihood_chunk, time_inds_np, degenerate_indices_out
+        )
+        n_degenerate_total += n_degen
+        n_nan_total += n_nan
 
         # Donated: log_likelihood_chunk (created fresh), initial_distribution
         # Do not read these after the call - they are consumed by the JIT function
@@ -1149,16 +1122,14 @@ def chunked_filter_smoother_covariate_dependent(
                 "log_likelihoods", log_likelihood_chunk
             )
 
-        # Tally degenerate (all -inf) and NaN timesteps before the array is
-        # donated to the JIT call. Accumulated across chunks and reported once
-        # after the forward pass.
-        n_degenerate_total += _count_degenerate_timesteps(log_likelihood_chunk)
-        n_nan_total += _count_nan_timesteps(log_likelihood_chunk)
-        if degenerate_indices_out is not None:
-            local = _degenerate_timestep_indices(log_likelihood_chunk)
-            degenerate_indices_out.extend(
-                int(i) for i in np.asarray(time_inds_np)[local]
-            )
+        # Tally degenerate (all -inf) and NaN timesteps in a single host
+        # transfer before the array is donated to the JIT call. Accumulated
+        # across chunks and reported once after the forward pass.
+        n_degen, n_nan = _accumulate_chunk_degeneracy(
+            log_likelihood_chunk, time_inds_np, degenerate_indices_out
+        )
+        n_degenerate_total += n_degen
+        n_nan_total += n_nan
 
         # Time-slice only: the scan body indexes states per step, so the joint
         # (chunk, n_state_bins, n_state_bins) transition is never materialized.

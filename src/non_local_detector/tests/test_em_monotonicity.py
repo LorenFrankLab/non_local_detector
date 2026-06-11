@@ -23,6 +23,17 @@ from non_local_detector.simulate.clusterless_simulation import make_simulated_ru
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 
+@pytest.fixture
+def sim():
+    """Small 2-tetrode clusterless run dataset shared across the EM tests."""
+    return make_simulated_run_data(
+        n_tetrodes=2,
+        place_field_means=np.arange(0, 80, 20),
+        n_runs=3,
+        seed=42,
+    )
+
+
 def _assert_monotonic(lls, label=""):
     """Assert that log-likelihoods are non-decreasing (with float tolerance)."""
     assert len(lls) >= 2, f"{label}: Expected at least 2 EM iterations, got {len(lls)}"
@@ -39,15 +50,9 @@ def _assert_monotonic(lls, label=""):
 class TestEMMonotonicity:
     """EM marginal log-likelihood must be non-decreasing across iterations."""
 
-    def test_clusterless_decoder_em_monotonicity(self):
+    def test_clusterless_decoder_em_monotonicity(self, sim):
         """Fit a ClusterlessDecoder with multiple EM iterations and verify
         that marginal_log_likelihoods is non-decreasing."""
-        sim = make_simulated_run_data(
-            n_tetrodes=2,
-            place_field_means=np.arange(0, 80, 20),
-            n_runs=3,
-            seed=42,
-        )
 
         decoder = ClusterlessDecoder()
         results = decoder.estimate_parameters(
@@ -94,15 +99,9 @@ class TestEncodingUpdateGuards:
         assert "acausal_posterior" in results
         assert "acausal_state_probabilities" in results
 
-    def test_well_behaved_em_no_warnings(self):
+    def test_well_behaved_em_no_warnings(self, sim):
         """A standard converging fit sets ``converged_`` to True, records
         no monotonicity violations, and emits no ``UserWarning``."""
-        sim = make_simulated_run_data(
-            n_tetrodes=2,
-            place_field_means=np.arange(0, 80, 20),
-            n_runs=3,
-            seed=42,
-        )
 
         decoder = ClusterlessDecoder()
         with warnings.catch_warnings(record=True) as caught:
@@ -194,7 +193,7 @@ class TestEMAttributeInitialization:
 class TestEMConvergenceSurfacing:
     """Surfacing of EM monotonicity violations and max-iter exits."""
 
-    def test_em_violation_warned_for_buggy_mstep(self, monkeypatch):
+    def test_em_violation_warned_for_buggy_mstep(self, monkeypatch, sim):
         """Force ``check_converged`` to report a monotonicity violation
         on iteration 2 and verify a ``UserWarning`` is emitted and the
         iteration index is recorded in ``em_monotonicity_violations_``.
@@ -217,13 +216,6 @@ class TestEMConvergenceSurfacing:
             return is_converged, is_increasing
 
         monkeypatch.setattr(base_module, "check_converged", fake_check_converged)
-
-        sim = make_simulated_run_data(
-            n_tetrodes=2,
-            place_field_means=np.arange(0, 80, 20),
-            n_runs=3,
-            seed=42,
-        )
 
         decoder = ClusterlessDecoder()
         with warnings.catch_warnings(record=True) as caught:
@@ -250,16 +242,10 @@ class TestEMConvergenceSurfacing:
             f"got: {[str(w.message) for w in caught]}"
         )
 
-    def test_final_e_step_inconsistency_warns(self, monkeypatch):
+    def test_final_e_step_inconsistency_warns(self, monkeypatch, sim):
         """If the post-EM final E-step produces a marginal log-likelihood far
         below the last in-loop value, a ``UserWarning`` flags the E-step/M-step
         inconsistency."""
-        sim = make_simulated_run_data(
-            n_tetrodes=2,
-            place_field_means=np.arange(0, 80, 20),
-            n_runs=3,
-            seed=42,
-        )
 
         decoder = ClusterlessDecoder()
         original_predict = decoder._predict
@@ -302,17 +288,11 @@ class TestEMConvergenceSurfacing:
             f"got: {[str(w.message) for w in caught]}"
         )
 
-    def test_max_iter_warning_emitted(self):
+    def test_max_iter_warning_emitted(self, sim):
         """A fit that exits because ``max_iter`` was reached (with an
         unreachable tolerance) sets ``converged_=False``, ``n_iter_==max_iter``,
         and emits a ``UserWarning`` mentioning "did not converge".
         """
-        sim = make_simulated_run_data(
-            n_tetrodes=2,
-            place_field_means=np.arange(0, 80, 20),
-            n_runs=3,
-            seed=42,
-        )
 
         decoder = ClusterlessDecoder()
         with pytest.warns(UserWarning, match="did not converge"):
