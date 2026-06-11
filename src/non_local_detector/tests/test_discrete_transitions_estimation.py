@@ -20,7 +20,6 @@ from non_local_detector.discrete_state_transitions import (
     estimate_discrete_transition_counts_from_factorized_posteriors,
     estimate_discrete_transition_responses_from_expanded_posteriors,
     estimate_discrete_transition_responses_from_factorized_posteriors,
-    estimate_joint_distribution,
     estimate_non_stationary_state_transition_from_responses,
     estimate_stationary_state_transition_from_counts,
     jax_centered_log_softmax_forward,
@@ -409,6 +408,30 @@ def _low_high_covariate_transition_error(
     )
 
 
+def _joint_sum_from_post(post):
+    """Return stationary joint counts via the exact singleton-bin helper."""
+    n_states = post["n_states"]
+    return estimate_discrete_transition_counts_from_expanded_posteriors(
+        causal_posterior=post["causal_posterior"],
+        predictive_posterior=post["predictive_distribution"],
+        acausal_posterior=post["acausal_posterior"],
+        transition_matrix=post["transition_matrix"],
+        state_ind=np.arange(n_states),
+    )
+
+
+def _response_from_post(post):
+    """Return per-time response tensor via the exact singleton-bin helper."""
+    n_states = post["n_states"]
+    return estimate_discrete_transition_responses_from_expanded_posteriors(
+        causal_posterior=post["causal_posterior"],
+        predictive_posterior=post["predictive_distribution"],
+        acausal_posterior=post["acausal_posterior"],
+        transition_matrix=post["transition_matrix"],
+        state_ind=np.arange(n_states),
+    )
+
+
 @pytest.mark.unit
 class TestExpandedDiscreteTransitionCounts:
     """Test exact discrete transition counts from expanded-bin posteriors."""
@@ -630,136 +653,6 @@ class TestExpandedDiscreteTransitionCounts:
                 state_ind,
             )
 
-    def test_pure_discrete_hmm_matches_legacy_joint_sum(self, posterior_data):
-        """One expanded bin per state should match the existing discrete formula."""
-        post = posterior_data
-        state_ind = np.arange(post["n_states"])
-
-        exact_counts = estimate_discrete_transition_counts_from_expanded_posteriors(
-            causal_posterior=post["causal_posterior"],
-            predictive_posterior=post["predictive_distribution"],
-            acausal_posterior=post["acausal_posterior"],
-            transition_matrix=post["transition_matrix"],
-            state_ind=state_ind,
-        )
-        legacy_counts = estimate_joint_distribution(
-            post["causal_posterior"],
-            post["predictive_distribution"],
-            post["transition_matrix"],
-            post["acausal_posterior"],
-        ).sum(axis=0)
-
-        np.testing.assert_allclose(exact_counts, legacy_counts, atol=1e-5)
-
-    def test_uniform_continuous_transitions_match_aggregated_counts(self):
-        """Source-independent target-bin predictions reduce to the aggregate path."""
-        state_ind = np.array([0, 1, 1])
-        discrete_transition = np.array(
-            [
-                [0.4, 0.6],
-                [0.3, 0.7],
-            ]
-        )
-        continuous_transition = np.array(
-            [
-                [1.0, 0.5, 0.5],
-                [1.0, 0.5, 0.5],
-                [1.0, 0.5, 0.5],
-            ]
-        )
-        full_transition = (
-            continuous_transition * discrete_transition[np.ix_(state_ind, state_ind)]
-        )
-        causal = np.array(
-            [
-                [0.2, 0.5, 0.3],
-                [0.3, 0.4, 0.3],
-                [0.6, 0.2, 0.2],
-            ]
-        )
-        predictive = causal @ full_transition
-        acausal = np.array(
-            [
-                [0.2, 0.5, 0.3],
-                [0.4, 0.3, 0.3],
-                [0.5, 0.25, 0.25],
-            ]
-        )
-
-        exact_counts = estimate_discrete_transition_counts_from_expanded_posteriors(
-            causal, predictive, acausal, full_transition, state_ind
-        )
-
-        causal_state = np.column_stack((causal[:, 0], causal[:, 1:].sum(axis=1)))
-        predictive_state = np.column_stack(
-            (predictive[:, 0], predictive[:, 1:].sum(axis=1))
-        )
-        acausal_state = np.column_stack((acausal[:, 0], acausal[:, 1:].sum(axis=1)))
-        legacy_counts = estimate_joint_distribution(
-            causal_state,
-            predictive_state,
-            discrete_transition,
-            acausal_state,
-        ).sum(axis=0)
-
-        np.testing.assert_allclose(exact_counts, legacy_counts, atol=1e-5)
-
-    def test_source_specific_spatial_prediction_changes_transition_credit(self):
-        """Exact counts credit the source that predicts the supported target bin."""
-        state_ind = np.array([0, 1, 2, 2])
-        full_transition = np.array(
-            [
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        )
-        causal = np.array(
-            [
-                [0.8, 0.2, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        )
-        predictive = np.array(
-            [
-                [0.8, 0.2, 0.0, 0.0],
-                [0.0, 0.0, 0.8, 0.2],
-            ]
-        )
-        acausal = np.array(
-            [
-                [0.8, 0.2, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        )
-
-        exact_counts = estimate_discrete_transition_counts_from_expanded_posteriors(
-            causal, predictive, acausal, full_transition, state_ind
-        )
-
-        discrete_transition = np.array(
-            [
-                [0.0, 0.0, 1.0],
-                [0.0, 0.0, 1.0],
-                [0.0, 0.0, 1.0],
-            ]
-        )
-        causal_state = np.column_stack((causal[:, :2], causal[:, 2:].sum(axis=1)))
-        predictive_state = np.column_stack(
-            (predictive[:, :2], predictive[:, 2:].sum(axis=1))
-        )
-        acausal_state = np.column_stack((acausal[:, :2], acausal[:, 2:].sum(axis=1)))
-        legacy_counts = estimate_joint_distribution(
-            causal_state,
-            predictive_state,
-            discrete_transition,
-            acausal_state,
-        ).sum(axis=0)
-
-        assert exact_counts[1, 2] > exact_counts[0, 2]
-        assert legacy_counts[0, 2] > legacy_counts[1, 2]
-
     def test_zero_predictive_bins_are_finite(self):
         """Zero predictive bins should not create NaN or inf counts."""
         state_ind = np.array([0, 1])
@@ -932,37 +825,13 @@ class TestExpandedTransitionMstepEndToEnd:
 
         assert learned_transition[1, 2] > learned_transition[0, 2]
         assert learned_transition[1, 2] > 0.99
-        assert_stochastic_matrix(learned_transition)
-
-    def test_exact_update_beats_aggregated_negative_control(self):
-        """The detector update should avoid aggregate-state source credit."""
-        log_likelihoods = np.full((2, 6), -1000.0)
-        log_likelihoods[0, 0:4] = 0.0
-        log_likelihoods[1, 5] = 0.0
-
-        detector = _FixedLikelihoodDetector(log_likelihoods)
-        detector._fit(position=np.array([[0.25], [1.25]]))
-        initial_discrete_transition = detector.discrete_state_transitions_.copy()
-        results = detector.estimate_parameters(
-            time=np.array([0.0, 1.0]),
-            estimate_initial_conditions=False,
-            estimate_discrete_transition=True,
-            estimate_encoding_model=False,
-            max_iter=1,
-            return_outputs="all",
-        )
-
-        aggregate_counts = estimate_joint_distribution(
-            results.causal_state_probabilities.values,
-            results.predictive_state_probabilities.values,
-            initial_discrete_transition,
-            results.acausal_state_probabilities.values,
-        ).sum(axis=0)
-        learned_transition = detector.discrete_state_transitions_
-
-        assert aggregate_counts[0, 2] > aggregate_counts[1, 2]
-        assert learned_transition[1, 2] > learned_transition[0, 2]
-        assert learned_transition[1, 2] > 0.99
+        # Source 0 must be actively *not* credited for target bin 2, not merely
+        # credited less than source 1. This magnitude guard fails for a
+        # source-blind kernel that splits transition credit evenly across
+        # sources (the exact failure mode the deleted aggregate-path negative
+        # control used to catch), whereas the inequality above can hold weakly
+        # even under partial credit bleed.
+        assert learned_transition[0, 2] < 0.5
         assert_stochastic_matrix(learned_transition)
 
     def test_simulated_hmm_recovers_stationary_discrete_transition(self):
@@ -1118,12 +987,7 @@ class TestEstimateNonStationaryStateTransition:
         """Verify coefficient and transition matrix shapes are correct."""
         post = posterior_data
         dm = design_matrix_data
-        response = estimate_joint_distribution(
-            post["causal_posterior"],
-            post["predictive_distribution"],
-            post["transition_matrix"],
-            post["acausal_posterior"],
-        )
+        response = _response_from_post(post)
 
         coeffs, trans_matrix = estimate_non_stationary_state_transition_from_responses(
             transition_coefficients=dm["transition_coefficients"],
@@ -1143,12 +1007,7 @@ class TestEstimateNonStationaryStateTransition:
         """Check all transition matrices are valid stochastic matrices."""
         post = posterior_data
         dm = design_matrix_data
-        response = estimate_joint_distribution(
-            post["causal_posterior"],
-            post["predictive_distribution"],
-            post["transition_matrix"],
-            post["acausal_posterior"],
-        )
+        response = _response_from_post(post)
 
         _, trans_matrix = estimate_non_stationary_state_transition_from_responses(
             transition_coefficients=dm["transition_coefficients"],
@@ -1167,12 +1026,7 @@ class TestEstimateNonStationaryStateTransition:
         """The nonstationary MAP update rejects negative pseudo-counts."""
         post = posterior_data
         dm = design_matrix_data
-        response = estimate_joint_distribution(
-            post["causal_posterior"],
-            post["predictive_distribution"],
-            post["transition_matrix"],
-            post["acausal_posterior"],
-        )
+        response = _response_from_post(post)
 
         with pytest.raises(ValueError, match="prior parameters >= 1.0"):
             estimate_non_stationary_state_transition_from_responses(
@@ -1235,12 +1089,7 @@ class TestEstimateNonStationaryStateTransition:
         """Test with different concentration (prior strength) values."""
         post = posterior_data
         dm = design_matrix_data
-        response = estimate_joint_distribution(
-            post["causal_posterior"],
-            post["predictive_distribution"],
-            post["transition_matrix"],
-            post["acausal_posterior"],
-        )
+        response = _response_from_post(post)
 
         _, trans_weak = estimate_non_stationary_state_transition_from_responses(
             transition_coefficients=dm["transition_coefficients"],
@@ -1270,12 +1119,7 @@ class TestEstimateNonStationaryStateTransition:
         """Test with diagonal stickiness prior."""
         post = posterior_data
         dm = design_matrix_data
-        response = estimate_joint_distribution(
-            post["causal_posterior"],
-            post["predictive_distribution"],
-            post["transition_matrix"],
-            post["acausal_posterior"],
-        )
+        response = _response_from_post(post)
 
         _, trans_matrix = estimate_non_stationary_state_transition_from_responses(
             transition_coefficients=dm["transition_coefficients"],
@@ -1320,12 +1164,7 @@ class TestEstimateNonStationaryStateTransition:
 
         rng = np.random.default_rng(99)
         initial_coeffs = rng.standard_normal((n_coeffs, n_states, n_states - 1)) * 0.1
-        response = estimate_joint_distribution(
-            post["causal_posterior"],
-            post["predictive_distribution"],
-            post["transition_matrix"],
-            post["acausal_posterior"],
-        )
+        response = _response_from_post(post)
 
         class FakeResult:
             success = False
@@ -1394,12 +1233,7 @@ class TestEstimateStationaryStateTransition:
     def test_returns_stochastic_matrix(self, posterior_data):
         """Verify output is a valid stochastic matrix."""
         post = posterior_data
-        joint_sum = estimate_joint_distribution(
-            post["causal_posterior"],
-            post["predictive_distribution"],
-            post["transition_matrix"],
-            post["acausal_posterior"],
-        ).sum(axis=0)
+        joint_sum = _joint_sum_from_post(post)
 
         trans_matrix = estimate_stationary_state_transition_from_counts(
             joint_sum,
@@ -1413,12 +1247,7 @@ class TestEstimateStationaryStateTransition:
     def test_respects_uniform_prior(self, posterior_data):
         """Test with uniform prior (concentration=1.0)."""
         post = posterior_data
-        joint_sum = estimate_joint_distribution(
-            post["causal_posterior"],
-            post["predictive_distribution"],
-            post["transition_matrix"],
-            post["acausal_posterior"],
-        ).sum(axis=0)
+        joint_sum = _joint_sum_from_post(post)
 
         trans_matrix = estimate_stationary_state_transition_from_counts(
             joint_sum,
@@ -1434,12 +1263,7 @@ class TestEstimateStationaryStateTransition:
     def test_respects_diagonal_prior(self, posterior_data):
         """Test with diagonal stickiness prior."""
         post = posterior_data
-        joint_sum = estimate_joint_distribution(
-            post["causal_posterior"],
-            post["predictive_distribution"],
-            post["transition_matrix"],
-            post["acausal_posterior"],
-        ).sum(axis=0)
+        joint_sum = _joint_sum_from_post(post)
 
         trans_matrix = estimate_stationary_state_transition_from_counts(
             joint_sum,
@@ -1463,12 +1287,13 @@ class TestEstimateStationaryStateTransition:
         predictive_distribution = np.zeros((n_time, n_states))
         for t in range(n_time):
             predictive_distribution[t] = causal_posterior[t] @ transition_matrix
-        joint_sum = estimate_joint_distribution(
-            causal_posterior,
-            predictive_distribution,
-            transition_matrix,
-            acausal_posterior,
-        ).sum(axis=0)
+        joint_sum = estimate_discrete_transition_counts_from_expanded_posteriors(
+            causal_posterior=causal_posterior,
+            predictive_posterior=predictive_distribution,
+            acausal_posterior=acausal_posterior,
+            transition_matrix=transition_matrix,
+            state_ind=np.arange(n_states),
+        )
 
         trans_matrix = estimate_stationary_state_transition_from_counts(
             joint_sum,
@@ -1482,12 +1307,7 @@ class TestEstimateStationaryStateTransition:
     def test_concentration_below_one_raises(self, posterior_data):
         """The MAP pseudo-count update rejects sparse Dirichlet parameters."""
         post = posterior_data
-        joint_sum = estimate_joint_distribution(
-            post["causal_posterior"],
-            post["predictive_distribution"],
-            post["transition_matrix"],
-            post["acausal_posterior"],
-        ).sum(axis=0)
+        joint_sum = _joint_sum_from_post(post)
 
         with pytest.raises(ValueError, match="prior parameters >= 1.0"):
             estimate_stationary_state_transition_from_counts(
@@ -1495,15 +1315,6 @@ class TestEstimateStationaryStateTransition:
                 concentration=0.5,
                 stickiness=0.0,
             )
-
-
-def _joint_sum_from_post(post):
-    return estimate_joint_distribution(
-        post["causal_posterior"],
-        post["predictive_distribution"],
-        post["transition_matrix"],
-        post["acausal_posterior"],
-    ).sum(axis=0)
 
 
 @pytest.mark.unit
@@ -1608,12 +1419,13 @@ class TestPriorWeightScaling:
         predictive_distribution = np.zeros((n_time, n_states))
         for t in range(n_time):
             predictive_distribution[t] = causal_posterior[t] @ transition_matrix
-        joint_sum = estimate_joint_distribution(
-            causal_posterior,
-            predictive_distribution,
-            transition_matrix,
-            acausal_posterior,
-        ).sum(axis=0)
+        joint_sum = estimate_discrete_transition_counts_from_expanded_posteriors(
+            causal_posterior=causal_posterior,
+            predictive_posterior=predictive_distribution,
+            acausal_posterior=acausal_posterior,
+            transition_matrix=transition_matrix,
+            state_ind=np.arange(n_states),
+        )
 
         result = estimate_stationary_state_transition_from_counts(
             joint_sum,
