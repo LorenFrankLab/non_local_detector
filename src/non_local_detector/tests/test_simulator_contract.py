@@ -8,6 +8,7 @@ invariants to catch regressions early.
 import numpy as np
 import pytest
 
+from non_local_detector.simulate import simulate_poisson_spikes
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
 
@@ -317,3 +318,30 @@ def test_position_is_2d():
     assert sim.position.shape[1] == 1, (
         "position must have 1 spatial dimension for 1D track"
     )
+
+
+def test_simulate_poisson_spikes_returns_counts() -> None:
+    """``simulate_poisson_spikes`` returns integer Poisson counts, not a 0/1 mask.
+
+    The package unified two historically conflicting definitions (binary
+    indicator vs. raw counts) onto counts. This pins that contract so a future
+    re-binarization is caught directly rather than only transitively (every
+    in-repo consumer currently masks the result with ``> 0``). Callers that need
+    a boolean indicator recover it via ``counts > 0``, per the docstring.
+    """
+    # Rate high enough that some bins receive more than one spike.
+    rate = np.full(2000, 200.0)
+    counts = simulate_poisson_spikes(rate, sampling_frequency=100, seed=0)
+
+    assert counts.shape == rate.shape, "counts must match the input rate shape"
+    assert np.issubdtype(counts.dtype, np.integer), "counts must be integer-valued"
+    assert np.all(counts >= 0), "Poisson counts are non-negative"
+    assert counts.max() > 1, (
+        "counts semantics must allow more than one spike per bin; a value of 1 "
+        "everywhere would indicate the old binary-indicator behavior"
+    )
+
+    # The boolean spike indicator is recoverable via the documented `> 0` step.
+    indicator = counts > 0
+    assert indicator.dtype == np.bool_
+    assert indicator.sum() <= counts.sum()

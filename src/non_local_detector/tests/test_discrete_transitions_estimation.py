@@ -825,6 +825,13 @@ class TestExpandedTransitionMstepEndToEnd:
 
         assert learned_transition[1, 2] > learned_transition[0, 2]
         assert learned_transition[1, 2] > 0.99
+        # Source 0 must be actively *not* credited for target bin 2, not merely
+        # credited less than source 1. This magnitude guard fails for a
+        # source-blind kernel that splits transition credit evenly across
+        # sources (the exact failure mode the deleted aggregate-path negative
+        # control used to catch), whereas the inequality above can hold weakly
+        # even under partial credit bleed.
+        assert learned_transition[0, 2] < 0.5
         assert_stochastic_matrix(learned_transition)
 
     def test_simulated_hmm_recovers_stationary_discrete_transition(self):

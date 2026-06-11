@@ -197,20 +197,11 @@ def fit_clusterless_gmm_encoding_model(
         - environment
         - occupancy_model
         - interior_place_bin_centers
-        - occupancy_bins
-        - log_occupancy_bins
+        - log_occupancy
         - gpi_models
         - joint_models
         - mean_rates
         - summed_ground_process_intensity
-        - position_time
-        - gmm_components_occupancy
-        - gmm_components_gpi
-        - gmm_components_joint
-        - gmm_covariance_type_occupancy
-        - gmm_covariance_type_gpi
-        - gmm_covariance_type_joint
-        - gmm_random_state
         - disable_progress_bar
     """
     position = _as_jnp(position if position.ndim > 1 else position[:, None])

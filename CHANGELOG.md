@@ -50,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `environment.order_boundary` and `environment.get_track_boundary_points`: both called `nx.from_scipy_sparse_matrix`, which was removed in NetworkX 3.0. Neither was used anywhere outside their own module. The now-unused `from sklearn.neighbors import NearestNeighbors` import was removed alongside them.
 - `discrete_state_transitions.estimate_joint_distribution`, `multinomial_neg_log_likelihood`, `multinomial_gradient`, `multinomial_hessian`, `set_initial_discrete_transition`: orphaned v1 M-step paths superseded by `_aggregate_xi_by_state_jax` / `_transition_pair_stats_jax` in c339fa9 (#24) and a19deb1. No remaining production callers.
-- `likelihoods.clusterless_gmm.EncodingModel` dataclass: declared but never returned; comment marked it deprecated. The return-type annotation on `fit_clusterless_gmm_encoding_model` is updated to `dict` to match the documented and actual return shape.
+- `likelihoods.clusterless_gmm.EncodingModel` dataclass: declared but never returned; comment marked it deprecated. The return-type annotation on `fit_clusterless_gmm_encoding_model` is updated to `dict` to match the actual return shape, and its Returns docstring is corrected to list the nine keys the function actually returns (the previous list named keys such as `occupancy_bins`, `log_occupancy_bins`, `position_time`, and the `gmm_*` config arguments that are never returned).
 - Duplicate `simulate_time`, `simulate_place_field_firing_rate`, and `simulate_neuron_with_place_field` definitions in `simulate/sorted_spikes_simulation.py` (bit-identical to the versions in `simulate/simulate.py`). All hoisted into `simulate/_common.py` as the single source of truth.
 
 ### Deferred
