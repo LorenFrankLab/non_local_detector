@@ -19,7 +19,13 @@ import numpy as np
 import pytest
 
 from non_local_detector import core as core_module
-from non_local_detector.core import _condition_on, filter, smoother, viterbi
+from non_local_detector.core import (
+    _condition_on,
+    chunked_filter_smoother,
+    filter,
+    smoother,
+    viterbi,
+)
 
 
 @pytest.mark.unit
@@ -530,6 +536,41 @@ class TestConditionOnDegenerateLikelihoods:
         assert jnp.allclose(new_probs, expected_probs, atol=1e-7)
         assert jnp.isclose(log_norm, expected_log_norm, atol=1e-7)
 
+    def test_condition_on_partial_nan_propagates_not_masked(self):
+        """A NaN in one state must NOT be silently replaced by the prior.
+
+        The degenerate fallback is for *all-impossible* (every state ``-inf``)
+        timesteps only. A NaN log-likelihood signals a bug in the likelihood
+        computation (e.g. a non-converged encoding model), so it must remain
+        visible in the posterior rather than being laundered into the
+        predicted distribution.
+        """
+        # Arrange: state 0 has valid finite evidence, state 1 is NaN.
+        probs = jnp.array([0.4, 0.6])
+        ll = jnp.array([-0.5, jnp.nan])
+
+        # Act
+        new_probs, log_norm = _condition_on(probs, ll)
+
+        # Assert: NaN propagates (not the prior), so the bug stays visible.
+        assert jnp.any(jnp.isnan(new_probs)), (
+            "NaN log-likelihood was silently masked by the predicted prior; "
+            f"got new_probs={new_probs}"
+        )
+        assert not jnp.allclose(new_probs, probs, equal_nan=False)
+
+    def test_condition_on_all_inf_with_nan_elsewhere_is_not_treated_as_degenerate(self):
+        """A mix of ``-inf`` and ``NaN`` is a NaN case, not an all-impossible one."""
+        # Arrange
+        probs = jnp.array([0.5, 0.5])
+        ll = jnp.array([-jnp.inf, jnp.nan])
+
+        # Act
+        new_probs, _ = _condition_on(probs, ll)
+
+        # Assert: NaN dominates -> not the clean prior fallback.
+        assert jnp.any(jnp.isnan(new_probs))
+
 
 @pytest.mark.unit
 class TestFilterDegenerateTimestepWarning:
@@ -598,3 +639,115 @@ class TestFilterDegenerateTimestepWarning:
             f"Did not expect degenerate-step warnings; got: "
             f"{[r.getMessage() for r in warning_records]}"
         )
+
+    def test_filter_nan_step_warns_distinctly_from_all_impossible(self, caplog):
+        """A NaN log-likelihood step warns about NaN, not 'all-impossible'.
+
+        A NaN signals a likelihood-computation bug, which must be reported
+        differently from a legitimately impossible (all ``-inf``) timestep so
+        the user is not misdirected.
+        """
+        # Arrange: middle step has a NaN (state 0 is otherwise finite).
+        init = jnp.array([0.5, 0.5])
+        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
+        log_likes = jnp.array(
+            [
+                [0.0, -1.0],
+                [0.0, jnp.nan],
+                [0.0, -1.0],
+            ]
+        )
+
+        # Act
+        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+            filter(init, trans, log_likes)
+
+        # Assert: a NaN-specific warning fired...
+        nan_records = [r for r in caplog.records if "NaN" in r.getMessage()]
+        assert nan_records, (
+            "Expected a NaN-specific warning; "
+            f"got: {[r.getMessage() for r in caplog.records]}"
+        )
+        # ...and the step was NOT mislabeled as all-impossible.
+        impossible_records = [
+            r for r in caplog.records if "all-impossible" in r.getMessage()
+        ]
+        assert not impossible_records, (
+            "A NaN step was misreported as all-impossible: "
+            f"{[r.getMessage() for r in impossible_records]}"
+        )
+
+
+@pytest.mark.unit
+class TestChunkedFilterDegenerateWarning:
+    """Degenerate-step tally across chunks in ``chunked_filter_smoother``."""
+
+    def test_chunked_filter_counts_degenerate_across_chunks(self, caplog):
+        """Degenerate steps in different chunks are summed into one warning."""
+        # Arrange: 4 timesteps, 2 chunks -> [0, 1] and [2, 3]. Put one
+        # all-impossible step in each chunk (index 1 and index 2).
+        time = np.arange(4.0)
+        state_ind = np.array([0, 1])
+        initial_distribution = np.array([0.5, 0.5])
+        transition_matrix = np.array([[0.9, 0.1], [0.1, 0.9]])
+        log_likelihoods = np.array(
+            [
+                [0.0, -1.0],
+                [-np.inf, -np.inf],
+                [-np.inf, -np.inf],
+                [0.0, -1.0],
+            ],
+            dtype=np.float64,
+        )
+
+        # Act
+        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+            chunked_filter_smoother(
+                time=time,
+                state_ind=state_ind,
+                initial_distribution=initial_distribution,
+                transition_matrix=transition_matrix,
+                log_likelihood_func=lambda *a, **k: None,
+                log_likelihood_args=(),
+                n_chunks=2,
+                log_likelihoods=log_likelihoods,
+                cache_log_likelihoods=False,
+                dtype=jnp.float64,
+            )
+
+        # Assert: a single warning reporting 2 of 4 degenerate steps.
+        records = [r for r in caplog.records if "all-impossible" in r.getMessage()]
+        assert len(records) == 1, (
+            f"Expected exactly one degenerate-step warning; "
+            f"got: {[r.getMessage() for r in caplog.records]}"
+        )
+        assert "2/4" in records[0].getMessage(), records[0].getMessage()
+
+
+@pytest.mark.unit
+class TestDegenerateMarginalLikelihoodPropagation:
+    """End-to-end behaviour of the marginal LL and smoother at a degenerate step."""
+
+    def test_marginal_likelihood_is_neg_inf_and_smoother_stays_valid(self):
+        """A degenerate step drives the marginal LL to -inf but the smoother
+        still returns finite, normalized posteriors at every step."""
+        # Arrange
+        init = jnp.array([0.5, 0.5])
+        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
+        log_likes = jnp.array(
+            [
+                [0.0, -1.0],
+                [-jnp.inf, -jnp.inf],
+                [0.0, -1.0],
+            ]
+        )
+
+        # Act
+        (marginal, _), (filtered, _) = filter(init, trans, log_likes)
+        smoothed = smoother(trans, filtered)
+
+        # Assert: the impossible step makes the total marginal LL -inf.
+        assert jnp.isneginf(marginal)
+        # The smoother output is finite and normalized everywhere.
+        assert jnp.all(jnp.isfinite(smoothed))
+        assert jnp.allclose(smoothed.sum(axis=-1), 1.0, atol=1e-6)

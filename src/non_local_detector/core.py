@@ -56,31 +56,46 @@ def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jnp.ndarray, float]:
         Updated state probabilities. If every entry of ``ll`` is ``-inf``
         (all states impossible — most likely a data issue), the predicted
         probabilities are returned unchanged and ``log_norm`` is set to
-        ``-inf`` to mark the degenerate step in the marginal likelihood.
+        ``-inf`` to mark the degenerate step in the marginal likelihood. A
+        ``NaN`` in ``ll`` (a likelihood-computation bug, not impossible data)
+        is NOT masked: it propagates into ``new_probs`` so the problem stays
+        visible to the caller.
     log_norm : float
-        Log normalization constant, or ``-inf`` if no state has finite likelihood.
+        Log normalization constant, or ``-inf`` if every state is ``-inf``.
     """
     ll_max = ll.max()
-    ll_is_finite = jnp.isfinite(ll_max)
-    ll_max_safe = jnp.where(ll_is_finite, ll_max, 0.0)
+    # The degenerate fallback fires ONLY when every state is -inf (the max is
+    # exactly -inf). A NaN propagates to ll_max as NaN, so `ll_max == -inf` is
+    # False and we deliberately do NOT fall back: the NaN flows through the
+    # normal branch into new_probs, keeping the upstream bug visible rather
+    # than laundering it into the predicted prior.
+    is_degenerate = ll_max == -jnp.inf
+    # Shift by the max for numerical stability. When the max is non-finite
+    # (all -inf, or a NaN present) use 0.0 so any finite states are not
+    # corrupted by an inf - inf subtraction.
+    ll_max_safe = jnp.where(jnp.isfinite(ll_max), ll_max, 0.0)
     new_probs_normal, norm = _normalize(probs * jnp.exp(ll - ll_max_safe))
     log_norm = jnp.log(norm) + ll_max_safe
 
     # Degenerate fallback: every state has -inf log-likelihood. Return the
     # predicted distribution unchanged and mark log_norm as -inf so the
     # host-side wrapper can detect and warn about the degenerate step.
-    new_probs = jnp.where(ll_is_finite, new_probs_normal, probs)
-    log_norm = jnp.where(ll_is_finite, log_norm, -jnp.inf)
+    new_probs = jnp.where(is_degenerate, probs, new_probs_normal)
+    log_norm = jnp.where(is_degenerate, -jnp.inf, log_norm)
     return new_probs, log_norm
 
 
 def _count_degenerate_timesteps(log_likelihoods: ArrayLike) -> int:
-    """Count time steps where every state has a non-finite log-likelihood.
+    """Count time steps where every state has ``-inf`` log-likelihood.
 
     Such timesteps are degenerate: the conditioning step has no finite
     evidence and falls back to the predicted distribution (see
     :func:`_condition_on`). The count is computed on the host so it can
     drive a Python-side warning after the JAX scan completes.
+
+    A timestep containing a ``NaN`` is NOT counted here — a NaN is a
+    likelihood-computation bug rather than impossible data, and is reported
+    separately by :func:`_count_nan_timesteps`.
 
     Parameters
     ----------
@@ -91,15 +106,69 @@ def _count_degenerate_timesteps(log_likelihoods: ArrayLike) -> int:
     Returns
     -------
     n_degenerate : int
-        Number of timesteps with no finite log-likelihood entry.
+        Number of timesteps where every state is ``-inf``.
     """
     ll_array = jnp.asarray(log_likelihoods)
     per_step_max = ll_array.max(axis=-1)
-    return int(jnp.sum(~jnp.isfinite(per_step_max)))
+    # `== -inf` (not `~isfinite`) so NaN steps are excluded; NaN propagates
+    # to per_step_max as NaN, and `NaN == -inf` is False.
+    return int(jnp.sum(per_step_max == -jnp.inf))
+
+
+def _count_nan_timesteps(log_likelihoods: ArrayLike) -> int:
+    """Count time steps where any state has a ``NaN`` log-likelihood.
+
+    A NaN signals a bug in the likelihood computation (e.g. a non-converged
+    or degenerate encoding model), distinct from a legitimately impossible
+    (all ``-inf``) timestep. ``_condition_on`` lets the NaN propagate into the
+    posterior so it stays visible.
+
+    Parameters
+    ----------
+    log_likelihoods : array-like
+        Log-likelihood array. The last axis is the state axis.
+
+    Returns
+    -------
+    n_nan : int
+        Number of timesteps with at least one ``NaN`` log-likelihood.
+    """
+    ll_array = jnp.asarray(log_likelihoods)
+    return int(jnp.sum(jnp.any(jnp.isnan(ll_array), axis=-1)))
+
+
+def _warn_degenerate_and_nan_timesteps(
+    n_degenerate: int, n_nan: int, n_total: int
+) -> None:
+    """Emit host-side warnings summarizing degenerate and NaN time steps.
+
+    These diagnostics use ``logger.warning`` (not ``warnings.warn``) because
+    they are per-invocation decoding diagnostics — they should fire on every
+    affected filter call rather than be deduplicated by the warnings filter.
+    The fit-time convergence diagnostics use ``warnings.warn(UserWarning)``
+    instead (see ``models.base`` / the likelihood models).
+    """
+    if n_degenerate > 0:
+        logger.warning(
+            "HMM filter encountered %d/%d time step(s) with all-impossible "
+            "(-inf) log-likelihoods; the posterior at those steps fell back to "
+            "the predicted distribution.",
+            n_degenerate,
+            n_total,
+        )
+    if n_nan > 0:
+        logger.warning(
+            "HMM filter encountered %d/%d time step(s) with NaN log-likelihoods; "
+            "the posterior at those steps is NaN. This indicates a bug in the "
+            "likelihood computation (e.g. a non-converged or degenerate encoding "
+            "model), not impossible data. Check the log-likelihood inputs.",
+            n_nan,
+            n_total,
+        )
 
 
 def _warn_if_degenerate_timesteps(log_likelihoods: ArrayLike) -> None:
-    """Emit a host-side warning if any time step has all-impossible likelihoods.
+    """Emit host-side warnings if any time step is all-``-inf`` or has a NaN.
 
     Parameters
     ----------
@@ -108,15 +177,11 @@ def _warn_if_degenerate_timesteps(log_likelihoods: ArrayLike) -> None:
     """
     ll_array = jnp.asarray(log_likelihoods)
     n_total = int(np.prod(ll_array.shape[:-1])) if ll_array.ndim > 1 else 1
-    n_degenerate = _count_degenerate_timesteps(ll_array)
-    if n_degenerate > 0:
-        logger.warning(
-            "HMM filter encountered %d/%d time step(s) with all-impossible "
-            "log-likelihoods; the posterior at those steps fell back to the "
-            "predicted distribution. Check log-likelihood inputs for NaN/-inf.",
-            n_degenerate,
-            n_total,
-        )
+    _warn_degenerate_and_nan_timesteps(
+        _count_degenerate_timesteps(ll_array),
+        _count_nan_timesteps(ll_array),
+        n_total,
+    )
 
 
 def _assert_finite(name: str, x: ArrayLike) -> jnp.ndarray:
@@ -192,8 +257,9 @@ def _filter_impl(
     """JIT-compiled forward pass of the forward-backward algorithm.
 
     See :func:`filter` for the user-facing wrapper that adds host-side
-    diagnostics. This raw implementation runs ``jax.lax.scan`` and is reused
-    by the donating internal driver.
+    diagnostics. This raw implementation runs ``jax.lax.scan`` and is wrapped
+    by both the non-donating ``_filter_jit`` (used by the public ``filter``)
+    and the donating ``_filter_internal`` (used by the chunked drivers).
     """
 
     def _step(carry, ll):
@@ -257,9 +323,11 @@ def filter(
     Notes
     -----
     If any time step has all-``-inf`` log-likelihoods, ``_condition_on``
-    falls back to the predicted distribution at that step. A host-side
-    warning summarizing the count of degenerate steps is emitted via
-    ``logger.warning``.
+    falls back to the predicted distribution at that step. A ``NaN`` at a
+    timestep is left to propagate into the posterior (it signals a
+    likelihood-computation bug, not impossible data). A host-side
+    ``logger.warning`` summarizing the count of degenerate and/or NaN steps is
+    emitted when any are found.
     """
     result = _filter_jit(initial_distribution, transition_matrix, log_likelihoods)
     _warn_if_degenerate_timesteps(log_likelihoods)
@@ -402,6 +470,7 @@ def chunked_filter_smoother(
     acausal_state_probabilities = []
     marginal_likelihood = 0.0
     n_degenerate_total = 0
+    n_nan_total = 0
 
     n_time = len(time)
     # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
@@ -464,10 +533,11 @@ def chunked_filter_smoother(
                 "log_likelihoods", log_likelihood_chunk
             )
 
-        # Tally degenerate timesteps (all-impossible log-likelihoods) before the
-        # array is donated to the JIT call. Accumulated across chunks and reported
-        # once after the forward pass.
+        # Tally degenerate (all -inf) and NaN timesteps before the array is
+        # donated to the JIT call. Accumulated across chunks and reported once
+        # after the forward pass.
         n_degenerate_total += _count_degenerate_timesteps(log_likelihood_chunk)
+        n_nan_total += _count_nan_timesteps(log_likelihood_chunk)
 
         # Donated: log_likelihood_chunk (created fresh), initial_distribution
         # Do not read these after the call - they are consumed by the JIT function
@@ -499,14 +569,7 @@ def chunked_filter_smoother(
 
         marginal_likelihood += marginal_likelihood_chunk
 
-    if n_degenerate_total > 0:
-        logger.warning(
-            "HMM filter encountered %d/%d time step(s) with all-impossible "
-            "log-likelihoods; the posterior at those steps fell back to the "
-            "predicted distribution. Check log-likelihood inputs for NaN/-inf.",
-            n_degenerate_total,
-            n_time,
-        )
+    _warn_degenerate_and_nan_timesteps(n_degenerate_total, n_nan_total, n_time)
 
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
@@ -802,9 +865,11 @@ def filter_covariate_dependent(
     Notes
     -----
     If any time step has all-``-inf`` log-likelihoods, ``_condition_on``
-    falls back to the predicted distribution at that step. A host-side
-    warning summarizing the count of degenerate steps is emitted via
-    ``logger.warning``.
+    falls back to the predicted distribution at that step. A ``NaN`` at a
+    timestep is left to propagate into the posterior (it signals a
+    likelihood-computation bug, not impossible data). A host-side
+    ``logger.warning`` summarizing the count of degenerate and/or NaN steps is
+    emitted when any are found.
     """
     result = _filter_covariate_dependent_jit(
         initial_distribution,
@@ -964,6 +1029,7 @@ def chunked_filter_smoother_covariate_dependent(
     acausal_state_probabilities = []
     marginal_likelihood = 0.0
     n_degenerate_total = 0
+    n_nan_total = 0
 
     n_time = len(time)
     # Validate n_chunks: ensure it doesn't exceed n_time to avoid empty chunks
@@ -1033,10 +1099,11 @@ def chunked_filter_smoother_covariate_dependent(
                 "log_likelihoods", log_likelihood_chunk
             )
 
-        # Tally degenerate timesteps (all-impossible log-likelihoods) before the
-        # array is donated to the JIT call. Accumulated across chunks and reported
-        # once after the forward pass.
+        # Tally degenerate (all -inf) and NaN timesteps before the array is
+        # donated to the JIT call. Accumulated across chunks and reported once
+        # after the forward pass.
         n_degenerate_total += _count_degenerate_timesteps(log_likelihood_chunk)
+        n_nan_total += _count_nan_timesteps(log_likelihood_chunk)
 
         # Time-slice only: the scan body indexes states per step, so the joint
         # (chunk, n_state_bins, n_state_bins) transition is never materialized.
@@ -1071,14 +1138,7 @@ def chunked_filter_smoother_covariate_dependent(
 
         marginal_likelihood += marginal_likelihood_chunk
 
-    if n_degenerate_total > 0:
-        logger.warning(
-            "HMM filter encountered %d/%d time step(s) with all-impossible "
-            "log-likelihoods; the posterior at those steps fell back to the "
-            "predicted distribution. Check log-likelihood inputs for NaN/-inf.",
-            n_degenerate_total,
-            n_time,
-        )
+    _warn_degenerate_and_nan_timesteps(n_degenerate_total, n_nan_total, n_time)
 
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
@@ -1330,7 +1390,13 @@ def check_converged(
         abs(log_likelihood) + abs(previous_log_likelihood) + np.spacing(1)
     ) / 2
 
-    is_increasing = log_likelihood - previous_log_likelihood >= -tolerance
+    # Compare the *relative* change against the tolerance (matching
+    # ``is_converged`` below), not an absolute difference. The marginal
+    # log-likelihood is a sum over timesteps, so its magnitude scales with
+    # dataset size; an absolute slack would spuriously flag negligible
+    # floating-point decreases on large datasets as monotonicity violations.
+    relative_change = (log_likelihood - previous_log_likelihood) / avg_log_likelihood
+    is_increasing = relative_change >= -tolerance
     is_converged = (delta_log_likelihood / avg_log_likelihood) < tolerance
 
     return is_converged, is_increasing

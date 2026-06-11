@@ -16,6 +16,7 @@ from non_local_detector.core import (
     _divide_safe,
     _normalize,
     _safe_log,
+    check_converged,
 )
 
 
@@ -552,5 +553,58 @@ class TestConditionOn:
         assert jnp.allclose(jnp.exp(log_marginal), marginal)
 
 
-# Note: _assert_finite and check_converged tests removed as these functions
-# either don't exist or have different signatures than expected
+# Note: _assert_finite tests removed as that function does not exist or has a
+# different signature than expected.
+
+
+@pytest.mark.unit
+class TestCheckConverged:
+    """``check_converged`` returns (is_converged, is_increasing).
+
+    Both flags must be scale-invariant: they are defined relative to the
+    magnitude of the log-likelihood, not as an absolute difference. This
+    matters because the marginal log-likelihood is a sum over timesteps whose
+    magnitude scales with dataset size.
+    """
+
+    def test_tiny_relative_decrease_on_large_ll_is_not_flagged(self):
+        """A decrease that is large in absolute terms but negligible relative
+        to a large log-likelihood must NOT be flagged as a monotonicity
+        violation."""
+        # |LL| ~ 50000; an absolute drop of 0.01 is a ~2e-7 relative change,
+        # far inside the default 1e-4 tolerance.
+        is_converged, is_increasing = check_converged(
+            jnp.asarray(-50000.01), jnp.asarray(-50000.0), tolerance=1e-4
+        )
+        assert is_increasing, (
+            "A negligible relative decrease on a large log-likelihood was "
+            "incorrectly flagged as a monotonicity violation"
+        )
+        assert is_converged
+
+    def test_large_relative_decrease_is_flagged(self):
+        """A decrease that exceeds the tolerance fraction of the magnitude is
+        flagged as non-increasing."""
+        # avg magnitude ~50; a drop of 10 is a 0.2 relative change >> 1e-4.
+        _, is_increasing = check_converged(
+            jnp.asarray(-60.0), jnp.asarray(-50.0), tolerance=1e-4
+        )
+        assert not is_increasing
+
+    def test_increase_is_never_a_violation(self):
+        """An increasing log-likelihood is always monotonic."""
+        _, is_increasing = check_converged(
+            jnp.asarray(-49000.0), jnp.asarray(-50000.0), tolerance=1e-4
+        )
+        assert is_increasing
+
+    def test_slack_scales_with_tolerance(self):
+        """The monotonicity slack tracks ``tolerance`` (relative), so the same
+        decrease can be a violation at a tight tolerance and noise at a loose
+        one."""
+        # Relative change = -0.02 / ~100 = -2e-4.
+        curr, prev = jnp.asarray(-100.02), jnp.asarray(-100.0)
+        _, tight = check_converged(curr, prev, tolerance=1e-5)
+        _, loose = check_converged(curr, prev, tolerance=1e-3)
+        assert not tight, "Expected a violation at the tight tolerance"
+        assert loose, "Expected no violation at the loose tolerance"
