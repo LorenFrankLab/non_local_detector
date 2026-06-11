@@ -23,6 +23,7 @@ from non_local_detector.core import (
     _condition_on,
     chunked_filter_smoother,
     filter,
+    filter_covariate_dependent,
     smoother,
     viterbi,
 )
@@ -722,6 +723,102 @@ class TestChunkedFilterDegenerateWarning:
             f"got: {[r.getMessage() for r in caplog.records]}"
         )
         assert "2/4" in records[0].getMessage(), records[0].getMessage()
+
+    def test_chunked_filter_collects_global_degenerate_indices(self):
+        """``degenerate_indices_out`` receives the GLOBAL indices of all-impossible
+        steps, even when likelihoods are uncached (so they cannot be recovered
+        from the returned ``log_likelihoods``, which is then ``None``)."""
+        # Arrange: degenerate steps at global indices 1 and 2, across 2 chunks.
+        time = np.arange(4.0)
+        state_ind = np.array([0, 1])
+        initial_distribution = np.array([0.5, 0.5])
+        transition_matrix = np.array([[0.9, 0.1], [0.1, 0.9]])
+        all_ll = np.array(
+            [
+                [0.0, -1.0],
+                [-np.inf, -np.inf],
+                [-np.inf, -np.inf],
+                [0.0, -1.0],
+            ],
+            dtype=np.float64,
+        )
+
+        # Compute likelihoods per chunk (uncached) so the driver returns None
+        # for log_likelihoods -- the indices then survive only via the collector.
+        def ll_func(time_chunk, *args, is_missing=None):
+            return all_ll[np.asarray(time_chunk).astype(int)]
+
+        collected: list[int] = []
+
+        # Act
+        result = chunked_filter_smoother(
+            time=time,
+            state_ind=state_ind,
+            initial_distribution=initial_distribution,
+            transition_matrix=transition_matrix,
+            log_likelihood_func=ll_func,
+            log_likelihood_args=(),
+            n_chunks=2,
+            log_likelihoods=None,
+            cache_log_likelihoods=False,
+            dtype=jnp.float64,
+            degenerate_indices_out=collected,
+        )
+
+        # Assert: global indices collected; the returned log_likelihoods is None
+        # (uncached), so this is the only place those indices survive.
+        assert sorted(collected) == [1, 2]
+        assert result[5] is None
+
+
+@pytest.mark.unit
+class TestFilterJitComposable:
+    """``filter`` and ``filter_covariate_dependent`` stay JAX-transformable.
+
+    The host-side degenerate/NaN diagnostics must be skipped under tracing so a
+    caller can still do ``jax.jit(filter)(...)`` (or call the filter inside an
+    outer transformation) without a ConcretizationTypeError.
+    """
+
+    def test_filter_composes_under_jit(self):
+        import jax
+
+        init = jnp.array([0.5, 0.5])
+        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
+        rng = np.random.default_rng(0)
+        log_likes = jnp.array(rng.standard_normal((8, 2)))
+
+        # Act: jit-compose the public wrapper (raised ConcretizationTypeError
+        # before the tracer guard).
+        (_, (filtered_jit, _)) = jax.jit(filter)(init, trans, log_likes)
+        (_, (filtered_ref, _)) = filter(init, trans, log_likes)
+
+        # Assert: identical result to the un-jitted call.
+        assert jnp.allclose(filtered_jit, filtered_ref, atol=1e-6)
+        assert jnp.allclose(filtered_jit.sum(axis=-1), 1.0, atol=1e-6)
+
+    def test_filter_covariate_dependent_composes_under_jit(self):
+        import jax
+
+        n_time, n_states = 6, 2
+        init = jnp.ones(n_states) / n_states
+        state_ind = jnp.arange(n_states)
+        c_tm = jnp.eye(n_states)
+        d_tm = jnp.broadcast_to(
+            jnp.array([[0.9, 0.1], [0.1, 0.9]]), (n_time, n_states, n_states)
+        )
+        rng = np.random.default_rng(1)
+        ll = jnp.array(rng.standard_normal((n_time, n_states)))
+
+        (_, (filtered_jit, _)) = jax.jit(filter_covariate_dependent)(
+            init, d_tm, c_tm, state_ind, ll
+        )
+        (_, (filtered_ref, _)) = filter_covariate_dependent(
+            init, d_tm, c_tm, state_ind, ll
+        )
+
+        assert jnp.allclose(filtered_jit, filtered_ref, atol=1e-6)
+        assert jnp.allclose(filtered_jit.sum(axis=-1), 1.0, atol=1e-6)
 
 
 @pytest.mark.unit

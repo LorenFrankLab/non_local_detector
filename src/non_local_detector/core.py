@@ -115,6 +115,28 @@ def _count_degenerate_timesteps(log_likelihoods: ArrayLike) -> int:
     return int(jnp.sum(per_step_max == -jnp.inf))
 
 
+def _degenerate_timestep_indices(log_likelihoods: ArrayLike) -> np.ndarray:
+    """Return the indices of time steps where every state is ``-inf``.
+
+    Companion to :func:`_count_degenerate_timesteps` for callers that need the
+    positions (not just the count) of the degenerate steps — e.g. to expose
+    them as a fitted attribute. Computed on the host.
+
+    Parameters
+    ----------
+    log_likelihoods : array-like
+        Log-likelihood array. The last axis is the state axis.
+
+    Returns
+    -------
+    indices : np.ndarray
+        Integer indices (along the leading time axis) of all-``-inf`` steps.
+    """
+    ll_array = jnp.asarray(log_likelihoods)
+    per_step_max = ll_array.max(axis=-1)
+    return np.asarray(jnp.where(per_step_max == -jnp.inf)[0])
+
+
 def _count_nan_timesteps(log_likelihoods: ArrayLike) -> int:
     """Count time steps where any state has a ``NaN`` log-likelihood.
 
@@ -174,8 +196,19 @@ def _warn_if_degenerate_timesteps(log_likelihoods: ArrayLike) -> None:
     ----------
     log_likelihoods : array-like
         Log-likelihood array. The last axis is the state axis.
+
+    Notes
+    -----
+    Skipped when ``log_likelihoods`` is a JAX tracer (i.e. ``filter`` /
+    ``filter_covariate_dependent`` are being run inside ``jit``/``vmap``/
+    ``scan``). The diagnostics need concrete values (``int(jnp.sum(...))``)
+    and warnings cannot be emitted during tracing, so skipping keeps the
+    public filter wrappers JAX-transformable; the pure filtering computation
+    still runs.
     """
     ll_array = jnp.asarray(log_likelihoods)
+    if isinstance(ll_array, jax.core.Tracer):
+        return
     n_total = int(np.prod(ll_array.shape[:-1])) if ll_array.ndim > 1 else 1
     _warn_degenerate_and_nan_timesteps(
         _count_degenerate_timesteps(ll_array),
@@ -412,6 +445,7 @@ def chunked_filter_smoother(
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
     dtype: jnp.dtype = jnp.float32,
+    degenerate_indices_out: list | None = None,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -443,6 +477,11 @@ def chunked_filter_smoother(
         Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
         Use float64 for numerically challenging problems.
         Note: Requires JAX_ENABLE_X64=1 environment variable for float64.
+    degenerate_indices_out : list | None, optional
+        If provided, the global time indices of all-``-inf`` (degenerate)
+        timesteps are appended to this list during the forward pass. This is
+        the only way to recover those indices when likelihoods are not cached
+        (the returned ``log_likelihoods`` is then ``None``). By default None.
 
     Returns
     -------
@@ -538,6 +577,11 @@ def chunked_filter_smoother(
         # after the forward pass.
         n_degenerate_total += _count_degenerate_timesteps(log_likelihood_chunk)
         n_nan_total += _count_nan_timesteps(log_likelihood_chunk)
+        if degenerate_indices_out is not None:
+            local = _degenerate_timestep_indices(log_likelihood_chunk)
+            degenerate_indices_out.extend(
+                int(i) for i in np.asarray(time_inds_np)[local]
+            )
 
         # Donated: log_likelihood_chunk (created fresh), initial_distribution
         # Do not read these after the call - they are consumed by the JIT function
@@ -967,6 +1011,7 @@ def chunked_filter_smoother_covariate_dependent(
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
     dtype: jnp.dtype = jnp.float32,
+    degenerate_indices_out: list | None = None,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -1002,6 +1047,11 @@ def chunked_filter_smoother_covariate_dependent(
         Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
         Use float64 for numerically challenging problems.
         Note: Requires JAX_ENABLE_X64=1 environment variable for float64.
+    degenerate_indices_out : list | None, optional
+        If provided, the global time indices of all-``-inf`` (degenerate)
+        timesteps are appended to this list during the forward pass. This is
+        the only way to recover those indices when likelihoods are not cached
+        (the returned ``log_likelihoods`` is then ``None``). By default None.
 
     Returns
     -------
@@ -1104,6 +1154,11 @@ def chunked_filter_smoother_covariate_dependent(
         # after the forward pass.
         n_degenerate_total += _count_degenerate_timesteps(log_likelihood_chunk)
         n_nan_total += _count_nan_timesteps(log_likelihood_chunk)
+        if degenerate_indices_out is not None:
+            local = _degenerate_timestep_indices(log_likelihood_chunk)
+            degenerate_indices_out.extend(
+                int(i) for i in np.asarray(time_inds_np)[local]
+            )
 
         # Time-slice only: the scan body indexes states per step, so the joint
         # (chunk, n_state_bins, n_state_bins) transition is never materialized.

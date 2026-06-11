@@ -1670,8 +1670,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             else self.discrete_state_transitions_
         )
 
+        # Collect degenerate (all-impossible) timestep indices during the
+        # forward pass. This is reliable regardless of n_chunks/caching,
+        # unlike the returned log-likelihoods (which are None when uncached,
+        # e.g. for n_chunks > 1). Stored transiently for estimate_parameters
+        # to copy into the public degenerate_timesteps_ attribute.
+        degenerate_out: list[int] = []
         if discrete_transitions.ndim == 2:
-            return chunked_filter_smoother(
+            result = chunked_filter_smoother(
                 time=time,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
@@ -1685,9 +1691,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 n_chunks=n_chunks,
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
+                degenerate_indices_out=degenerate_out,
             )
         else:
-            return chunked_filter_smoother_covariate_dependent(
+            result = chunked_filter_smoother_covariate_dependent(
                 time=time,
                 state_ind=state_ind,
                 initial_distribution=self.initial_conditions_[is_track_interior],
@@ -1701,7 +1708,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 n_chunks=n_chunks,
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
+                degenerate_indices_out=degenerate_out,
             )
+        self._degenerate_timesteps_ = np.asarray(sorted(degenerate_out), dtype=int)
+        return result
 
     def fit_predict(self) -> xr.Dataset:
         """Fit the model and predict the posterior probabilities. To be implemented by inheriting class."""
@@ -2112,13 +2122,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         )
         marginal_log_likelihoods.append(marginal_log_likelihood)
 
-        # Record degenerate (all -inf) timesteps from the final E-step so the
-        # condition is programmatically inspectable, not only emitted to the log.
-        if log_likelihood is not None:
-            final_ll = np.asarray(log_likelihood)
-            if final_ll.ndim >= 2:
-                degenerate_mask = np.all(final_ll == -np.inf, axis=-1)
-                self.degenerate_timesteps_ = np.where(degenerate_mask)[0]
+        # The final E-step's _predict recorded the degenerate (all-impossible)
+        # timesteps during its forward pass; expose them as a fitted attribute.
+        # Sourced from the forward-pass collector rather than the returned
+        # log-likelihoods, so it is reliable even when caching is disabled
+        # (n_chunks > 1), where the returned log-likelihoods are None.
+        self.degenerate_timesteps_ = getattr(
+            self, "_degenerate_timesteps_", np.array([], dtype=int)
+        )
 
         if len(marginal_log_likelihoods) >= 2:
             final_change = marginal_log_likelihoods[-1] - marginal_log_likelihoods[-2]
