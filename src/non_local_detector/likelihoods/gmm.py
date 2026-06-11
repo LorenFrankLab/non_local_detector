@@ -567,7 +567,12 @@ def _em_fit_while_loop(
     final_params, final_lb, final_delta, final_i = jax.lax.while_loop(
         cond_fun, body_fun, state0
     )
-    converged = jnp.logical_and(final_i < max_iter, final_delta <= tol)
+    # The loop exits only when delta <= tol (converged) or i >= max_iter
+    # (exhausted). Basing `converged` on the delta condition alone correctly
+    # reports convergence even when it is reached on the final allowed
+    # iteration (final_i == max_iter); the prior `final_i < max_iter` test
+    # mislabeled that boundary case as non-converged.
+    converged = final_delta <= tol
     return final_params, final_lb, final_i, converged
 
 
@@ -780,8 +785,9 @@ class GaussianMixtureModel:
 
         if not self.converged_:
             warnings.warn(
-                f"GaussianMixture did not converge after {self.max_iter} iterations. "
-                f"Final lower-bound delta exceeded tol={self.tol:.3e}.",
+                f"GaussianMixture did not converge within max_iter={self.max_iter} "
+                f"iterations (best restart ran {self.n_iter_}). Final lower-bound "
+                f"delta exceeded tol={self.tol:.3e}.",
                 UserWarning,
                 stacklevel=2,
             )
