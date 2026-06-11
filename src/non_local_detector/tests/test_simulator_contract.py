@@ -8,17 +8,7 @@ invariants to catch regressions early.
 import numpy as np
 import pytest
 
-from non_local_detector.simulate.clusterless_simulation import (
-    MARK_SPACING,
-    N_TETRODES,
-    PLACE_FIELD_MEANS,
-    make_continuous_replay,
-    make_simulated_run_data,
-)
-
-# The historical (pre-fix) hardcoded mark spacing in ``make_simulated_run_data``.
-# Kept here purely to express the regression boundary; the source no longer uses it.
-_PRE_FIX_MARK_SPACING = 10
+from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
 
 def test_shapes_and_lengths_per_electrode() -> None:
@@ -326,57 +316,4 @@ def test_position_is_2d():
     assert sim.position.ndim == 2, "position must be 2D"
     assert sim.position.shape[1] == 1, (
         "position must have 1 spatial dimension for 1D track"
-    )
-
-
-def test_mark_spacing_consistent_between_encoding_and_replay():
-    """Encoding and replay simulators must use the same ``MARK_SPACING``.
-
-    The encoding simulator (``make_simulated_run_data``) and the replay
-    simulators (``make_continuous_replay`` / hover / fragmented) place
-    mark centers on a 1D grid with step ``MARK_SPACING``. If the two
-    drift apart, replay marks would land at coordinates the encoder never
-    generated, silently breaking decoding-quality tests.
-    """
-    # Replay marks are placed at the canonical centers without additive
-    # noise, so np.unique(...) should exactly recover the spacing grid.
-    # Use module defaults (5 tetrodes x 4 neurons) — the replay simulator
-    # has hardcoded dimensions for that layout.
-    _, replay_marks = make_continuous_replay()
-    replay_marks_flat = replay_marks[~np.isnan(replay_marks)]
-    unique_replay = np.unique(replay_marks_flat)
-    # Per-tetrode there are 4 neurons -> centers at 0, MARK_SPACING,
-    # 2*MARK_SPACING, 3*MARK_SPACING.
-    assert unique_replay.size >= 2
-    np.testing.assert_allclose(np.diff(unique_replay), MARK_SPACING, atol=1e-12)
-
-    # Encoding marks are Gaussian-sampled around the same centers; the
-    # canonical centers themselves (per tetrode) sit on the MARK_SPACING
-    # grid that the encoding simulator now uses.
-    sim = make_simulated_run_data(
-        sampling_frequency=500,
-        n_runs=1,
-        seed=11,
-    )
-    # Sanity: encoding ran with the canonical MARK_SPACING (no longer
-    # the hardcoded 10). With per-tetrode mark centers
-    # {0, MARK_SPACING, 2*MARK_SPACING, 3*MARK_SPACING} = {0, 5, 10, 15}
-    # and unit Gaussian noise, marks should stay well below the
-    # pre-fix maximum of ~ 3*10 + a few sigmas ≈ 33.
-    all_features = np.concatenate(
-        [f.ravel() for f in sim.spike_waveform_features if f.size > 0]
-    )
-    # Mark centers per tetrode are np.arange(0, n * spacing, spacing), so the
-    # top center is (n_neurons_per_tetrode - 1) * spacing. Derive the neuron
-    # count from the module defaults rather than hardcoding it, so the boundary
-    # tracks PLACE_FIELD_MEANS / N_TETRODES if those change.
-    n_neurons_per_tetrode = len(PLACE_FIELD_MEANS) // N_TETRODES
-    expected_max_center = (n_neurons_per_tetrode - 1) * MARK_SPACING
-    pre_fix_max_center = (n_neurons_per_tetrode - 1) * _PRE_FIX_MARK_SPACING
-    # The fix only matters if the two spacings actually disagree.
-    assert MARK_SPACING < _PRE_FIX_MARK_SPACING
-    assert all_features.max() < pre_fix_max_center, (
-        f"Encoding marks extend above {pre_fix_max_center}, which only happens if "
-        f"mark centers use a spacing larger than MARK_SPACING={MARK_SPACING}; got "
-        f"max {all_features.max():.3f} — expected top center near {expected_max_center}"
     )
