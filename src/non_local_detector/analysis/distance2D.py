@@ -178,21 +178,40 @@ def get_map_estimate_direction_from_track_graph(
         bin_ind2 = get_bin_ind(map_estimate, bin_edges)
 
         first_node_on_path = np.full((n_nodes, n_nodes), -1, dtype=int)
-        for from_node_id, to_node_data in nx.shortest_path(
-            track_graph,
-            weight="distance",
-        ).items():
+        # The all-pairs nx.shortest_path is a dict {source: {target: path}} in
+        # networkx 3.0-3.4 but a generator of (source, {target: path}) pairs in
+        # >= 3.5 (the package pins networkx >= 3.0). Iterate the generator
+        # lazily when available — processing one source at a time avoids holding
+        # all O(n_nodes^2) paths at once — and fall back to .items() for the dict.
+        all_pairs_paths = nx.shortest_path(track_graph, weight="distance")
+        if isinstance(all_pairs_paths, dict):
+            all_pairs_paths = all_pairs_paths.items()
+        for from_node_id, to_node_data in all_pairs_paths:
             for to_node_id, path in to_node_data.items():
                 try:
                     first_node_on_path[from_node_id, to_node_id] = path[1]
                 except IndexError:
                     first_node_on_path[from_node_id, to_node_id] = path[0]
         head_position_node_pos = node_positions[bin_ind1]
-        first_node_on_path_pos = node_positions[first_node_on_path[bin_ind1, bin_ind2]]
+        first_node_ind = first_node_on_path[bin_ind1, bin_ind2]
+        # Pairs with no path keep the -1 sentinel; indexing node_positions[-1]
+        # would silently pick the last node and emit a wrong heading, so flag
+        # them and set their direction to NaN (mirrors get_2D_distance, which
+        # warns and stores inf for unreachable pairs).
+        unreachable = first_node_ind < 0
+        if np.any(unreachable):
+            logger.warning(
+                "%d time point(s) have no path between the head-position bin "
+                "and the MAP bin (disconnected track graph); their "
+                "map-estimate direction is set to NaN.",
+                int(np.sum(unreachable)),
+            )
+        first_node_on_path_pos = node_positions[first_node_ind]
         map_estimate_direction = np.arctan2(
             first_node_on_path_pos[:, 1] - head_position_node_pos[:, 1],
             first_node_on_path_pos[:, 0] - head_position_node_pos[:, 0],
         )
+        map_estimate_direction[unreachable] = np.nan
     else:
         node_ids = np.asarray(list(node_positions.keys()))
         head_position_nodes = node_ids[get_bin_ind(head_position, bin_edges)]
@@ -211,6 +230,19 @@ def get_map_estimate_direction_from_track_graph(
             except IndexError:
                 # head_position_node and map_estimate_node are the same
                 first_node_on_path = map_estimate_node
+            except nx.NetworkXNoPath:
+                # Disconnected track graph: no path between the head-position
+                # bin and the MAP bin. Mirror the precomputed branch (and
+                # get_2D_distance) by warning and leaving this time point's
+                # direction as NaN instead of crashing.
+                logger.warning(
+                    "Time point %d has no path between the head-position bin "
+                    "and the MAP bin (disconnected track graph); its "
+                    "map-estimate direction is set to NaN.",
+                    i,
+                )
+                map_estimate_direction[i] = np.nan
+                continue
 
             head_position_node_pos = node_positions[head_position_node]
             first_node_on_path_pos = node_positions[first_node_on_path]
@@ -312,7 +344,9 @@ def head_direction_simliarity(
     Parameters
     ----------
     head_position : np.ndarray, shape (n_time, 2)
-    head_direction : np.ndarray, shape (n_time, 2)
+    head_direction : np.ndarray, shape (n_time,)
+        Heading angle in radians (e.g. ``np.arctan2(v[:, 1], v[:, 0])`` for a
+        heading vector ``v``), not a 2-D vector.
     map_estimate : np.ndarray, shape (n_time, 2)
     track_graph : nx.Graph or None
     edges : list or None
@@ -364,7 +398,9 @@ def get_ahead_behind_distance2D(
     Parameters
     ----------
     head_position : np.ndarray, shape (n_time, 2)
-    head_direction : np.ndarray, shape (n_time, 2)
+    head_direction : np.ndarray, shape (n_time,)
+        Heading angle in radians (e.g. ``np.arctan2(v[:, 1], v[:, 0])`` for a
+        heading vector ``v``), not a 2-D vector.
     map_position : np.ndarray, shape (n_time, 2)
     track_graph : nx.Graph or None
     edges : list or None

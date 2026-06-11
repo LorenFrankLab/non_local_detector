@@ -78,3 +78,49 @@ class TestEstimateParametersPredictConsistency:
             f"Final marginal LL from estimate_parameters ({est_final_ll}) does "
             f"not match predict() LL ({pred_ll_scalar})."
         )
+
+
+@pytest.mark.unit
+class TestEncodingModelDataCleanup:
+    """estimate_parameters must delete the cached _encoding_model_data attribute.
+
+    The subclass ``estimate_parameters`` unconditionally sets
+    ``self._encoding_model_data`` (spike times, waveform features, position)
+    before delegating to the base EM loop, which deletes it on completion.
+    Earlier code used the wrong attribute name in the ``hasattr``/``del``
+    cleanup, so these (potentially large) arrays were silently retained for the
+    lifetime of every fitted model. This is a fast, isolated regression test so
+    the cleanup contract is checked even when slow/integration tests are
+    deselected.
+    """
+
+    def test_estimate_parameters_deletes_encoding_model_data(self):
+        sim = make_simulated_run_data(
+            n_tetrodes=1,
+            place_field_means=np.arange(0, 40, 20),  # 2 neurons on 1 tetrode
+            n_runs=1,
+            seed=0,
+        )
+
+        decoder = ClusterlessDecoder()
+
+        # A freshly-constructed decoder has not cached anything yet.
+        assert not hasattr(decoder, "_encoding_model_data")
+
+        decoder.estimate_parameters(
+            position_time=sim.position_time,
+            position=sim.position,
+            spike_times=sim.spike_times,
+            spike_waveform_features=sim.spike_waveform_features,
+            time=sim.position_time,
+            max_iter=1,
+            estimate_encoding_model=False,
+        )
+
+        # The attribute is always created during estimate_parameters, so its
+        # absence afterward is a genuine, non-vacuous check: pre-fix the
+        # mismatched cleanup name left it attached to the model.
+        assert not hasattr(decoder, "_encoding_model_data"), (
+            "estimate_parameters must clean up the cached _encoding_model_data "
+            "attribute when EM completes; it is still present on the model."
+        )

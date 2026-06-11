@@ -68,8 +68,12 @@ def _get_conditional_non_local_posterior(results: xr.Dataset) -> xr.DataArray:
         state=non_local_continuous
     ) + results.acausal_posterior.sel(state=non_local_fragmented)
 
-    # Sum over all position dimensions (works for 1D "position" and
-    # 2D "x_position"/"y_position" alike)
+    # Marginalize over position. After .sel(state=...), the position bins stay
+    # stacked under the single "state_bins" dim (2D+) or appear as the unstacked
+    # "position" dim (1D), so summing every non-"time" dim handles both. NB: this
+    # is the stacked layout, not the named-position-dim convention used
+    # elsewhere -- do not substitute _position_dims.get_position_dims here; it
+    # would return [] for the stacked "state_bins" case and break normalization.
     position_dims = [d for d in acausal_posterior.dims if d != "time"]
     return acausal_posterior / acausal_posterior.sum(position_dims)
 

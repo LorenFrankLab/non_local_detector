@@ -60,7 +60,6 @@ import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 from scipy import ndimage  # type: ignore[import-untyped]
 from scipy.interpolate import interp1d  # type: ignore[import-untyped]
-from sklearn.neighbors import NearestNeighbors  # type: ignore[import-untyped]
 from track_linearization import plot_graph_as_1D  # type: ignore[import-untyped]
 
 from non_local_detector.exceptions import ConfigurationError, ValidationError
@@ -492,12 +491,18 @@ class Environment:
 
         else:
             # Note: track_graph validation is done in __post_init__
-            # Handle place_bin_size conversion for get_track_grid
-            bin_size = self.place_bin_size
-            if isinstance(bin_size, tuple):
-                # For multi-dimensional, take the first value or convert appropriately
-                bin_size = bin_size[0]
-
+            # Track-graph path requires scalar place_bin_size.
+            if isinstance(self.place_bin_size, tuple):
+                raise ValidationError(
+                    "place_bin_size must be a scalar when track_graph is provided",
+                    expected="float",
+                    got=f"tuple {self.place_bin_size}",
+                    hint=(
+                        "Linearized track-graph environments use a single bin size "
+                        "along the manifold."
+                    ),
+                    example="place_bin_size=2.0",
+                )
             (
                 self.place_bin_centers_,
                 self.place_bin_edges_,
@@ -1521,66 +1526,6 @@ def get_track_boundary(
         ndimage.binary_dilation(is_track_interior, structure=structure)
         ^ is_track_interior
     )
-
-
-def order_boundary(boundary: np.ndarray) -> np.ndarray:
-    """Given boundary bin centers, orders them in a way to make a continuous line.
-
-    https://stackoverflow.com/questions/37742358/sorting-points-to-form-a-continuous-line
-
-    Parameters
-    ----------
-    boundary : np.ndarray, shape (n_boundary_points, n_position_dims)
-
-    Returns
-    -------
-    ordered_boundary : np.ndarray, shape (n_boundary_points, n_position_dims)
-
-    """
-    n_points = boundary.shape[0]
-    clf = NearestNeighbors(n_neighbors=2).fit(boundary)
-    G = clf.kneighbors_graph()
-    T = nx.from_scipy_sparse_matrix(G)
-
-    paths = [list(nx.dfs_preorder_nodes(T, i)) for i in range(n_points)]
-    min_idx, min_dist = 0, np.inf
-
-    for idx, path in enumerate(paths):
-        ordered = boundary[path]  # ordered nodes
-        cost = np.sum(np.diff(ordered) ** 2)
-        if cost < min_dist:
-            min_idx, min_dist = idx, cost
-
-    opt_order = paths[min_idx]
-    return boundary[opt_order][:-1]
-
-
-def get_track_boundary_points(
-    is_track_interior: np.ndarray, edges: list[np.ndarray], connectivity: int = 1
-) -> np.ndarray:
-    """
-
-    Parameters
-    ----------
-    is_track_interior : np.ndarray, shape (n_x_bins, n_y_bins)
-    edges : list of ndarray
-
-    Returns
-    -------
-    boundary_points : np.ndarray, shape (n_boundary_points, n_position_dims)
-
-    """
-    n_position_dims = len(edges)
-    boundary = get_track_boundary(
-        is_track_interior, n_position_dims=n_position_dims, connectivity=connectivity
-    )
-
-    inds = np.nonzero(boundary)
-    centers = [get_centers(x) for x in edges]
-    boundary = np.stack(
-        [center[ind] for center, ind in zip(centers, inds, strict=False)], axis=1
-    )
-    return order_boundary(boundary)
 
 
 def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:

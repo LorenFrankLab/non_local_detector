@@ -8,6 +8,7 @@ from scipy.stats import multivariate_normal  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ConfigurationError
 
 
 def _normalize_row_probability(x: np.ndarray) -> np.ndarray:
@@ -181,6 +182,26 @@ class RandomWalk:
                 f"direction must be 'inward' or 'outward', got '{self.direction}'"
             )
         self.environment = environments[environments.index(self.environment_name)]
+        # ``direction`` is only consulted on the N-D-grid manifold-distance path
+        # (no track_graph + use_manifold_distance=True). On every other path it
+        # would be silently ignored, so surface the misconfiguration loudly.
+        if self.direction is not None and not (
+            self.environment.track_graph is None and self.use_manifold_distance
+        ):
+            raise ConfigurationError(
+                (
+                    "direction-aware RandomWalk is only applied on an N-D grid "
+                    "environment with use_manifold_distance=True; got "
+                    f"track_graph={'set' if self.environment.track_graph is not None else 'None'}"
+                    f", use_manifold_distance={self.use_manifold_distance}. The "
+                    "direction= argument would otherwise be silently ignored."
+                ),
+                hint=(
+                    "Set use_manifold_distance=True on an environment without a "
+                    "track_graph (a fitted N-D grid), or remove the direction= "
+                    "argument."
+                ),
+            )
         if self.environment.track_graph is None:
             transition_matrix = self._handle_no_track_graph()
         else:
@@ -224,6 +245,24 @@ class RandomWalk:
                 )
 
             if self.direction is not None:
+                if self.environment.track_graphDD is None or not isinstance(
+                    self.environment.distance_between_nodes_, np.ndarray
+                ):
+                    raise ConfigurationError(
+                        (
+                            "direction-aware RandomWalk requires an N-D track graph "
+                            "and an array-valued distance_between_nodes_; got "
+                            f"track_graphDD={self.environment.track_graphDD!r}, "
+                            "distance_between_nodes_="
+                            f"{type(self.environment.distance_between_nodes_).__name__}."
+                        ),
+                        hint=(
+                            "Either remove the direction= argument, or fit the "
+                            "environment as an N-D grid (do not pass a track_graph) "
+                            "so it has a track_graphDD and an array-valued "
+                            "distance_between_nodes_."
+                        ),
+                    )
                 direction_funcs = {
                     "inward": np.greater_equal,
                     "outward": np.less_equal,

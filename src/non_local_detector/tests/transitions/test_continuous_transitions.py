@@ -11,6 +11,7 @@ from non_local_detector.continuous_state_transitions import (
     Uniform,
 )
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ConfigurationError
 
 
 @pytest.fixture
@@ -149,3 +150,50 @@ def test_empirical_movement_row_stochastic_and_locality(make_env_1d):
 def test_discrete_transition_is_ones():
     tm = Discrete().make_state_transition()
     assert tm.shape == (1, 1) and np.isclose(tm[0, 0], 1.0)
+
+
+def test_random_walk_inward_no_trackgraphDD_raises(make_env_1d):
+    """Direction-aware RandomWalk needs an N-D track graph and array distances.
+
+    ``_handle_no_track_graph`` previously dereferenced
+    ``self.environment.track_graphDD`` and ``distance_between_nodes_`` without
+    checking they were available, raising a confusing ``AttributeError`` /
+    ``TypeError``. The precondition is now surfaced as ``ConfigurationError``.
+    """
+    env = make_env_1d(n_bins=11)
+    # Simulate an environment whose direction-aware path has nothing to
+    # operate on: no N-D track graph and no array-valued distance lookup.
+    env.track_graph = None
+    env.track_graphDD = None
+    env.distance_between_nodes_ = None
+
+    rw = RandomWalk(
+        environment_name=env.environment_name,
+        movement_var=3.0,
+        direction="inward",
+        use_manifold_distance=True,
+    )
+    # Match a phrase unique to the deep ``_handle_no_track_graph`` guard (not the
+    # up-front ``make_state_transition`` guard, which also contains
+    # "direction-aware RandomWalk"), so the test pins which guard fired.
+    with pytest.raises(ConfigurationError, match="requires an N-D track graph"):
+        rw.make_state_transition((env,))
+
+
+def test_random_walk_direction_without_manifold_distance_raises(make_env_1d):
+    """``direction`` is honored only with ``use_manifold_distance=True`` on an
+    N-D grid. With the default ``use_manifold_distance=False`` the directional
+    constraint would be silently dropped (a plain random walk), so it must raise
+    instead of quietly ignoring the request.
+    """
+    env = make_env_1d(n_bins=11)
+    env.track_graph = None
+
+    rw = RandomWalk(
+        environment_name=env.environment_name,
+        movement_var=3.0,
+        direction="inward",
+        use_manifold_distance=False,  # default -> direction would be ignored
+    )
+    with pytest.raises(ConfigurationError, match="use_manifold_distance"):
+        rw.make_state_transition((env,))
