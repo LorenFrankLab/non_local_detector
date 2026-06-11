@@ -396,8 +396,10 @@ def test_two_environments_with_same_name_not_eq():
     identity-based, so two distinct instances are never equal regardless of
     their fields, and ``env == "name"`` is ``False``.
     """
+    # Identical specs: the inequality is due to identity alone, not any field
+    # difference, so this genuinely exercises identity equality.
     env_a = Environment(environment_name="track1", place_bin_size=2.0)
-    env_b = Environment(environment_name="track1", place_bin_size=4.0)
+    env_b = Environment(environment_name="track1", place_bin_size=2.0)
 
     assert env_a != env_b
     assert env_a != "track1"

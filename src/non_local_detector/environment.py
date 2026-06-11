@@ -210,16 +210,20 @@ class Environment:
     # Internal flag
     _is_fitted: bool = False
 
-    # ``Environment`` uses identity-based equality and hashing (``eq=False``
-    # leaves both inherited from ``object``). Value-based equality is not
-    # viable: the post-fit numpy / networkx attributes are not value-comparable
-    # (a dataclass ``__eq__`` would raise ``ValueError`` when comparing two
-    # fitted environments' array fields) and have no meaningful value-hash.
-    # Identity equality keeps ``__eq__`` / ``__hash__`` consistent (Python's
-    # ``a == b implies hash(a) == hash(b)`` invariant holds), so instances are
-    # safe as dict keys / set members. Environments are addressed by name via
-    # ``find_environment_by_name``, never by value-equality.
-    __hash__ = object.__hash__
+    # ``Environment`` uses identity-based equality and hashing: the dataclass is
+    # declared ``eq=False`` (above), so both ``__eq__`` and ``__hash__`` stay
+    # inherited from ``object`` and no explicit ``__hash__`` is set here.
+    # Value-based equality is not viable — the post-fit numpy / networkx
+    # attributes are not value-comparable (a dataclass ``__eq__`` would raise
+    # ``ValueError`` on two fitted environments' array fields) and have no
+    # meaningful value-hash. Identity semantics keep ``__eq__`` / ``__hash__``
+    # consistent (Python's ``a == b implies hash(a) == hash(b)`` holds), so
+    # instances are safe as dict keys / set members; environments are addressed
+    # by name via ``find_environment_by_name``, never by value-equality. Do not
+    # switch to ``eq=True`` without also defining ``__hash__`` explicitly —
+    # leaving it unset under ``eq=True`` makes instances unhashable (a loud
+    # failure), which is preferable to silently re-introducing a value-equality
+    # / identity-hash mismatch.
 
     def __post_init__(self) -> None:
         """Validate Environment parameters after initialization."""

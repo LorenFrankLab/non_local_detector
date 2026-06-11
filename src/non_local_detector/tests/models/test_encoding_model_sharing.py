@@ -15,9 +15,11 @@ import numpy as np
 import pytest
 
 from non_local_detector import (
+    ClusterlessDecoder,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.observation_models import ObservationModel
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
@@ -76,6 +78,58 @@ def test_nonlocal_clusterless_fits_one_encoding_model_per_env_group():
     expected_keys = _distinct_encoding_keys(detector.observation_models)
     assert len(detector.encoding_model_) == len(expected_keys)
     assert set(detector.encoding_model_) == expected_keys
+
+
+@pytest.mark.unit
+def test_distinct_encoding_groups_fit_separate_models():
+    """Two distinct encoding groups produce two separate encoding models.
+
+    This is the adversarial guard for the dedup *key*: the loops skip repeated
+    ``(environment_name, encoding_group)`` pairs but must keep genuinely
+    distinct keys. A dedup that collapsed on ``environment_name`` alone (or any
+    key dropping ``encoding_group``) would silently drop the second group and
+    leave a single encoding model — caught here. The count-only tests above do
+    not catch this because the default config has a single encoding key.
+    """
+    sim = make_simulated_run_data(
+        n_tetrodes=2,
+        place_field_means=np.arange(0, 80, 20),
+        n_runs=2,
+        seed=0,
+    )
+
+    detector = ClusterlessDecoder()
+    # Fit once to initialize the environment grid (and the default single-group
+    # encoding model).
+    detector.fit(
+        position_time=sim.position_time,
+        position=sim.position,
+        spike_times=sim.spike_times,
+        spike_waveform_features=sim.spike_waveform_features,
+    )
+
+    # Reconfigure for two encoding groups on the same environment and split the
+    # position timeline between them, then refit only the encoding models.
+    detector.observation_models = [
+        ObservationModel(encoding_group=0),
+        ObservationModel(encoding_group=1),
+    ]
+    n = sim.position_time.shape[0]
+    encoding_group_labels = np.zeros(n, dtype=int)
+    encoding_group_labels[n // 2 :] = 1
+
+    detector.fit_encoding_model(
+        position_time=sim.position_time,
+        position=sim.position,
+        spike_times=sim.spike_times,
+        spike_waveform_features=sim.spike_waveform_features,
+        encoding_group_labels=encoding_group_labels,
+    )
+
+    # Both distinct keys survive the dedup; neither is dropped or merged.
+    assert set(detector.encoding_model_) == {("", 0), ("", 1)}
+    assert detector.encoding_model_[("", 0)] is not None
+    assert detector.encoding_model_[("", 1)] is not None
 
 
 @pytest.mark.unit
