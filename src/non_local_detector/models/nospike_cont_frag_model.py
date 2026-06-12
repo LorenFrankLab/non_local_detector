@@ -5,8 +5,6 @@ from non_local_detector.models._defaults import (
     _ModelDefaults,
 )
 from non_local_detector.models.base import (
-    _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
-    _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
     ClusterlessDetector,
     SortedSpikesDetector,
 )
@@ -66,8 +64,12 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         Environment specifications, by default empty Environment.
     sorted_spikes_algorithm : str, optional
         Algorithm for sorted spikes likelihood, by default 'sorted_spikes_kde'.
-    sorted_spikes_algorithm_params : dict, optional
-        Parameters for the sorted spikes algorithm, by default uses package defaults.
+    sorted_spikes_algorithm_params : dict or None, optional
+        Parameters for the sorted spikes algorithm. If ``None`` (the
+        default), the module-level
+        ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are copied
+        into a fresh dict at fit time. User-supplied dicts are stored
+        as-is for sklearn ``clone()`` compatibility and copied on use.
     infer_track_interior : bool, optional
         Whether to infer track interior during decoding, by default True.
     state_names : StateNames, optional
@@ -103,7 +105,7 @@ class NoSpikeContFragSortedSpikesClassifier(SortedSpikesDetector):
         observation_models: Observations | None = None,
         environments: Environments | None = None,
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
-        sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
+        sorted_spikes_algorithm_params: dict | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,
@@ -191,8 +193,12 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         Environment specifications, by default empty Environment.
     clusterless_algorithm : str, optional
         Algorithm for clusterless data likelihood, by default 'clusterless_kde'.
-    clusterless_algorithm_params : dict, optional
-        Parameters for the clusterless algorithm, by default uses package defaults.
+    clusterless_algorithm_params : dict or None, optional
+        Parameters for the clusterless algorithm. If ``None`` (the
+        default), the module-level
+        ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are copied
+        into a fresh dict at fit time. User-supplied dicts are stored
+        as-is for sklearn ``clone()`` compatibility and copied on use.
     infer_track_interior : bool, optional
         Whether to infer track interior during decoding, by default True.
     state_names : StateNames, optional
@@ -228,7 +234,7 @@ class NoSpikeContFragClusterlessClassifier(ClusterlessDetector):
         observation_models: Observations | None = None,
         environments: Environments | None = None,
         clusterless_algorithm: str = "clusterless_kde",
-        clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
+        clusterless_algorithm_params: dict | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames | None = None,
         sampling_frequency: float = 500.0,

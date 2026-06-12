@@ -271,6 +271,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         ``estimate_parameters`` (reflects the training data); ``predict`` does
         not refresh it, though it still logs a degenerate-timestep warning for
         the data it is given.
+    discrete_initial_conditions_ : np.ndarray, shape (n_states,)
+        Fitted initial-condition distribution over discrete states. Set by
+        ``estimate_parameters``; initially equal to the user-supplied
+        ``discrete_initial_conditions`` constructor argument.
     """
 
     # Type annotations for attributes assigned during fit
@@ -1903,6 +1907,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.n_iter_ = 0
         self.em_monotonicity_violations_ = []
         self.degenerate_timesteps_ = np.array([], dtype=int)
+        # Fitted initial-condition distribution starts at the user-supplied
+        # constructor argument; overwritten with the fitted distribution below
+        # when ``estimate_initial_conditions`` is True.
+        self.discrete_initial_conditions_ = np.asarray(self.discrete_initial_conditions)
 
         while not converged and (n_iter < max_iter):
             # Expectation step
@@ -2034,7 +2042,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 self.initial_conditions_[self.is_track_interior_state_bins_] = (
                     acausal_posterior[0]
                 )
-                self.discrete_initial_conditions = acausal_state_probabilities[0]
+                self.discrete_initial_conditions_ = np.asarray(
+                    acausal_state_probabilities[0]
+                )
 
                 expanded_discrete_ic = acausal_state_probabilities[0][self.state_ind_]
                 is_zero = np.isclose(expanded_discrete_ic, 0.0)
@@ -2640,7 +2650,7 @@ class ClusterlessDetector(_DetectorBase):
         observation_models: Observations,
         environments: Environments,
         clusterless_algorithm: str = "clusterless_kde",
-        clusterless_algorithm_params: dict = _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS,
+        clusterless_algorithm_params: dict | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
@@ -2676,8 +2686,15 @@ class ClusterlessDetector(_DetectorBase):
             Environments in which the detector operates.
         clusterless_algorithm : str, optional
             Algorithm for clusterless spikes, by default "clusterless_kde".
-        clusterless_algorithm_params : dict, optional
-            Parameters for the clusterless algorithm, by default _DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS.
+        clusterless_algorithm_params : dict or None, optional
+            Parameters for the clusterless algorithm. Stored as-is (``None``
+            stays ``None``) to keep sklearn's ``clone()`` contract intact. If
+            ``None`` (the default), the module-level
+            ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS`` values are copied into a
+            fresh dict **at fit time**; a user-supplied dict is **stored by
+            reference** and copied on use. Mutations the caller makes to their
+            own dict between construction and fit are therefore observed by the
+            fit — pass ``dict(my_params)`` for an isolated copy.
         infer_track_interior : bool, optional
             Whether to infer track interior, by default True.
         state_names : StateNames, optional
@@ -2716,7 +2733,23 @@ class ClusterlessDetector(_DetectorBase):
             local_position_std=local_position_std,
         )
         self.clusterless_algorithm = clusterless_algorithm
+        # Stored as-is to keep sklearn's clone() contract intact; the dict
+        # copy + default resolution happens lazily in
+        # ``_resolve_clusterless_algorithm_params`` at fit time.
         self.clusterless_algorithm_params = clusterless_algorithm_params
+
+    def _resolve_clusterless_algorithm_params(self) -> dict:
+        """Return a fresh copy of the clusterless algorithm params.
+
+        Resolves a ``None`` user spec to a copy of
+        ``_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS``; otherwise returns a copy
+        of the user's dict. Always returns a fresh dict, so mutating the
+        returned value does not leak into the default or into the user's
+        original dict.
+        """
+        if self.clusterless_algorithm_params is None:
+            return dict(_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS)
+        return dict(self.clusterless_algorithm_params)
 
     def _get_group_spike_data(
         self,
@@ -2859,18 +2892,26 @@ class ClusterlessDetector(_DetectorBase):
         if weights is not None:
             weights = weights[~is_nan]
 
-        kwargs = self.clusterless_algorithm_params
-        if kwargs is None:
-            kwargs = {}
+        kwargs = self._resolve_clusterless_algorithm_params()
 
         self.encoding_model_ = {}
 
+        # An encoding model is shared by ``(environment_name, encoding_group)``;
+        # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
+        # ``ObservationModel`` equality now distinguishes those flags,
+        # ``np.unique`` can return several entries that map to the same
+        # ``likelihood_name`` — fit each key once to avoid redundant work.
+        fitted_likelihood_names: set = set()
         for obs in np.unique(self.observation_models):
+            likelihood_name = (obs.environment_name, obs.encoding_group)
+            if likelihood_name in fitted_likelihood_names:
+                continue
+            fitted_likelihood_names.add(likelihood_name)
+
             environment = self._get_environment_by_name(obs.environment_name)
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
-            likelihood_name = (obs.environment_name, obs.encoding_group)
 
             encoding_algorithm, _ = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
             is_group = is_training & is_encoding & is_environment
@@ -3579,7 +3620,7 @@ class SortedSpikesDetector(_DetectorBase):
         observation_models: Observations,
         environments: Environments,
         sorted_spikes_algorithm: str = "sorted_spikes_kde",
-        sorted_spikes_algorithm_params: dict = _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS,
+        sorted_spikes_algorithm_params: dict | None = None,
         infer_track_interior: bool = True,
         state_names: StateNames = None,
         sampling_frequency: float = 500.0,
@@ -3615,8 +3656,15 @@ class SortedSpikesDetector(_DetectorBase):
             Environments in which the detector operates.
         sorted_spikes_algorithm : str, optional
             Algorithm for sorted spikes, by default "sorted_spikes_kde".
-        sorted_spikes_algorithm_params : dict, optional
-            Parameters for the sorted spikes algorithm, by default _DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS.
+        sorted_spikes_algorithm_params : dict or None, optional
+            Parameters for the sorted spikes algorithm. Stored as-is (``None``
+            stays ``None``) to keep sklearn's ``clone()`` contract intact. If
+            ``None`` (the default), the module-level
+            ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS`` values are copied into
+            a fresh dict **at fit time**; a user-supplied dict is **stored by
+            reference** and copied on use. Mutations the caller makes to their
+            own dict between construction and fit are therefore observed by the
+            fit — pass ``dict(my_params)`` for an isolated copy.
         infer_track_interior : bool, optional
             Whether to infer track interior, by default True.
         state_names : StateNames, optional
@@ -3655,7 +3703,23 @@ class SortedSpikesDetector(_DetectorBase):
             local_position_std=local_position_std,
         )
         self.sorted_spikes_algorithm = sorted_spikes_algorithm
+        # Stored as-is to keep sklearn's clone() contract intact; the dict
+        # copy + default resolution happens lazily in
+        # ``_resolve_sorted_spikes_algorithm_params`` at fit time.
         self.sorted_spikes_algorithm_params = sorted_spikes_algorithm_params
+
+    def _resolve_sorted_spikes_algorithm_params(self) -> dict:
+        """Return a fresh copy of the sorted-spikes algorithm params.
+
+        Resolves a ``None`` user spec to a copy of
+        ``_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS``; otherwise returns a
+        copy of the user's dict. Always returns a fresh dict, so mutating
+        the returned value does not leak into the default or into the
+        user's original dict.
+        """
+        if self.sorted_spikes_algorithm_params is None:
+            return dict(_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS)
+        return dict(self.sorted_spikes_algorithm_params)
 
     @staticmethod
     def _get_group_spikes(
@@ -3774,18 +3838,26 @@ class SortedSpikesDetector(_DetectorBase):
         if weights is not None:
             weights = weights[~is_nan]
 
-        kwargs = self.sorted_spikes_algorithm_params
-        if kwargs is None:
-            kwargs = {}
+        kwargs = self._resolve_sorted_spikes_algorithm_params()
 
         self.encoding_model_ = {}
 
+        # An encoding model is shared by ``(environment_name, encoding_group)``;
+        # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
+        # ``ObservationModel`` equality now distinguishes those flags,
+        # ``np.unique`` can return several entries that map to the same
+        # ``likelihood_name`` — fit each key once to avoid redundant work.
+        fitted_likelihood_names: set = set()
         for obs in np.unique(self.observation_models):
+            likelihood_name = (obs.environment_name, obs.encoding_group)
+            if likelihood_name in fitted_likelihood_names:
+                continue
+            fitted_likelihood_names.add(likelihood_name)
+
             environment = self._get_environment_by_name(obs.environment_name)
 
             is_encoding = np.isin(encoding_group_labels, obs.encoding_group)
             is_environment = environment_labels == obs.environment_name
-            likelihood_name = (obs.environment_name, obs.encoding_group)
             encoding_algorithm, _ = _SORTED_SPIKES_ALGORITHMS[
                 self.sorted_spikes_algorithm
             ]

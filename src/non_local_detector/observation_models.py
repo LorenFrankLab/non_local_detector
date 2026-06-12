@@ -9,7 +9,7 @@ be used for particular data segments.
 from dataclasses import dataclass
 
 
-@dataclass(order=True)
+@dataclass(order=True, unsafe_hash=True)
 class ObservationModel:
     """Determines which environment and data points data correspond to.
 
@@ -50,28 +50,3 @@ class ObservationModel:
     encoding_group: str | int = 0
     is_local: bool = False
     is_no_spike: bool = False
-
-    def __eq__(self, other: object) -> bool:
-        """Check equality based on environment name and encoding group.
-
-        Two ObservationModel instances are considered equal if they have
-        the same environment_name and encoding_group, regardless of the
-        values of is_local and is_no_spike flags.
-
-        Parameters
-        ----------
-        other : object
-            Another object to compare with.
-
-        Returns
-        -------
-        bool
-            True if both objects have the same environment_name and encoding_group.
-        """
-        if other.__class__ is not self.__class__:
-            return NotImplemented
-        assert isinstance(other, ObservationModel)
-        return (self.environment_name, self.encoding_group) == (
-            other.environment_name,
-            other.encoding_group,
-        )

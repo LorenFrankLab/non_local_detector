@@ -80,7 +80,38 @@ def get_centers(bin_edges: np.ndarray) -> np.ndarray:
     return bin_edges[:-1] + np.diff(bin_edges) / 2
 
 
-@dataclass
+def find_environment_by_name(
+    environments: Sequence["Environment"],
+    name: str,
+) -> "Environment":
+    """Look up an environment in a sequence by its ``environment_name``.
+
+    Parameters
+    ----------
+    environments : sequence of Environment
+    name : str
+        The ``environment_name`` to match.
+
+    Returns
+    -------
+    Environment
+
+    Raises
+    ------
+    KeyError
+        If no environment with the given name is present.
+    """
+    for env in environments:
+        if env.environment_name == name:
+            return env
+    raise KeyError(
+        f"No environment with name {name!r} in environments list of "
+        f"length {len(environments)}; available names: "
+        f"{[e.environment_name for e in environments]}"
+    )
+
+
+@dataclass(eq=False)
 class Environment:
     """Represent the spatial environment with a discrete grid.
 
@@ -178,6 +209,21 @@ class Environment:
     nodes_df_: pd.DataFrame | None = None
     # Internal flag
     _is_fitted: bool = False
+
+    # ``Environment`` uses identity-based equality and hashing: the dataclass is
+    # declared ``eq=False`` (above), so both ``__eq__`` and ``__hash__`` stay
+    # inherited from ``object`` and no explicit ``__hash__`` is set here.
+    # Value-based equality is not viable — the post-fit numpy / networkx
+    # attributes are not value-comparable (a dataclass ``__eq__`` would raise
+    # ``ValueError`` on two fitted environments' array fields) and have no
+    # meaningful value-hash. Identity semantics keep ``__eq__`` / ``__hash__``
+    # consistent (Python's ``a == b implies hash(a) == hash(b)`` holds), so
+    # instances are safe as dict keys / set members; environments are addressed
+    # by name via ``find_environment_by_name``, never by value-equality. Do not
+    # switch to ``eq=True`` without also defining ``__hash__`` explicitly —
+    # leaving it unset under ``eq=True`` makes instances unhashable (a loud
+    # failure), which is preferable to silently re-introducing a value-equality
+    # / identity-hash mismatch.
 
     def __post_init__(self) -> None:
         """Validate Environment parameters after initialization."""
@@ -376,9 +422,6 @@ class Environment:
                     hint="The minimum value must be less than the maximum value",
                     example=f"    position_range[{i}] = ({min_val}, {max_val + 1.0})",
                 )
-
-    def __eq__(self, other: str) -> bool:
-        return self.environment_name == other
 
     def fit_place_grid(
         self, position: np.ndarray | None = None, infer_track_interior: bool = True

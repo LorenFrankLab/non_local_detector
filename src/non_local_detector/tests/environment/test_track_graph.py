@@ -2,7 +2,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, find_environment_by_name
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
@@ -327,3 +327,92 @@ def test_place_bin_size_tuple_rejected():
     )
     with pytest.raises(ValidationError, match="scalar"):
         env.fit_place_grid()
+
+
+# =============================================================================
+# Equality, hashing, and lookup helper
+# =============================================================================
+
+
+def test_environment_is_hashable():
+    """Environment uses identity-based equality and hashing, consistently.
+
+    Both ``__eq__`` and ``__hash__`` are inherited from ``object`` (the
+    dataclass is declared ``eq=False``) because the post-fit numpy / graph
+    attributes are not value-comparable and have no meaningful value-hash.
+    Identity semantics keep Python's ``a == b implies hash(a) == hash(b)``
+    invariant intact, so instances are safe as set members / dict keys.
+    """
+    env_a = Environment(environment_name="track1", place_bin_size=2.0)
+
+    # hash() succeeds
+    hash(env_a)
+
+    # The same instance dedupes in a set
+    assert len({env_a, env_a}) == 1
+
+    # Self-equality (identity)
+    assert env_a == env_a
+
+    # Two distinct instances with identical spec fields are NOT equal
+    # (identity equality), and the eq/hash invariant holds: unequal
+    # instances do not collapse in a set.
+    env_a_copy = Environment(environment_name="track1", place_bin_size=2.0)
+    assert env_a != env_a_copy
+    assert len({env_a, env_a_copy}) == 2
+
+    # Distinct environments are not equal
+    env_b = Environment(environment_name="track2", place_bin_size=2.0)
+    assert env_a != env_b
+
+
+def test_environment_value_eq_does_not_raise_on_fitted_arrays():
+    """Comparing two fitted Environments returns False instead of raising.
+
+    The removed dataclass value-``__eq__`` would have done ``bool()`` on the
+    multi-element numpy array fields (e.g. ``is_track_interior_``), raising
+    ``ValueError: truth value of an array ... is ambiguous``. Identity
+    equality sidesteps that entirely.
+    """
+    env_a = Environment(
+        environment_name="track1",
+        is_track_interior=np.array([True, False, True]),
+    )
+    env_b = Environment(
+        environment_name="track1",
+        is_track_interior=np.array([True, False, True]),
+    )
+
+    # Does not raise; distinct instances are unequal under identity equality.
+    assert (env_a == env_b) is False
+    assert env_a == env_a
+
+
+def test_two_environments_with_same_name_not_eq():
+    """Two Environments with the same name are NOT equal.
+
+    Before the ``__eq__(self, other: str)`` override was removed, an
+    ``Environment`` compared equal to a bare name string. Equality is now
+    identity-based, so two distinct instances are never equal regardless of
+    their fields, and ``env == "name"`` is ``False``.
+    """
+    # Identical specs: the inequality is due to identity alone, not any field
+    # difference, so this genuinely exercises identity equality.
+    env_a = Environment(environment_name="track1", place_bin_size=2.0)
+    env_b = Environment(environment_name="track1", place_bin_size=2.0)
+
+    assert env_a != env_b
+    assert env_a != "track1"
+
+
+def test_find_environment_by_name():
+    """find_environment_by_name returns the matching env or raises KeyError."""
+    env_a = Environment(environment_name="track1", place_bin_size=2.0)
+    env_b = Environment(environment_name="track2", place_bin_size=2.0)
+    envs = (env_a, env_b)
+
+    assert find_environment_by_name(envs, "track1") is env_a
+    assert find_environment_by_name(envs, "track2") is env_b
+
+    with pytest.raises(KeyError, match="missing"):
+        find_environment_by_name(envs, "missing")
