@@ -6,8 +6,10 @@ Tests cover the core public functions that can be tested in isolation.
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from patsy import PatsyError
 
 from non_local_detector.discrete_state_transitions import (
+    DiscreteNonStationaryCustom,
     DiscreteNonStationaryDiagonal,
     DiscreteStationaryCustom,
     DiscreteStationaryDiagonal,
@@ -371,3 +373,40 @@ class TestPredictDiscreteStateTransitions:
             design_matrix, coefficients, new_covariate_data
         )
         assert np.all(np.isfinite(np.array(result)))
+
+    def test_predict_returns_numpy_array(self, fitted_nonstationary_model):
+        """Prediction should convert to NumPy at the module boundary."""
+        _, coefficients, design_matrix = fitted_nonstationary_model
+
+        result = predict_discrete_state_transitions(
+            design_matrix, coefficients, {"speed": np.array([1.0, 5.0])}
+        )
+        assert isinstance(result, np.ndarray)
+
+
+@pytest.mark.unit
+class TestNonStationaryNaNCovariates:
+    """Non-stationary transition construction must reject NaN covariates."""
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            DiscreteNonStationaryDiagonal(
+                diagonal_values=np.array([0.9, 0.8]), formula="1 + speed"
+            ),
+            DiscreteNonStationaryCustom(
+                values=np.array([[0.9, 0.1], [0.2, 0.8]]), formula="1 + speed"
+            ),
+        ],
+        ids=["diagonal", "custom"],
+    )
+    def test_nan_covariate_raises_instead_of_silently_dropping(self, model):
+        """NaN covariate rows must raise, not silently shorten the design matrix.
+
+        patsy's default NA_action="drop" would drop the NaN row, leaving a
+        design matrix shorter than the posteriors and misaligning the M-step.
+        """
+        covariate_data = {"speed": np.array([1.0, np.nan, 3.0, 4.0])}
+
+        with pytest.raises(PatsyError):
+            model.make_state_transition(covariate_data)

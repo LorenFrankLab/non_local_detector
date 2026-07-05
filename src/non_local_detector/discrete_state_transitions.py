@@ -1272,11 +1272,14 @@ class DiscreteNonStationaryDiagonal:
         n_states = len(self.diagonal_values)
         discrete_transition = make_transition_from_diag(self.diagonal_values)
 
-        discrete_transition_design_matrix = dmatrix(self.formula, covariate_data)
+        # NA_action="raise" prevents patsy from silently dropping rows with NaN
+        # covariates, which would misalign the design matrix (n_time) against the
+        # full-length posteriors/responses in the M-step.
+        discrete_transition_design_matrix = dmatrix(
+            self.formula, covariate_data, NA_action="raise"
+        )
         if discrete_transition_design_matrix.shape[0] == 0:
-            raise ValueError(
-                "No covariate data provided for transition matrix or NaNs are present in the covariate data."
-            )
+            raise ValueError("No covariate data provided for the transition matrix.")
 
         n_time, n_coefficients = discrete_transition_design_matrix.shape
 
@@ -1341,11 +1344,14 @@ class DiscreteNonStationaryCustom:
         n_states = len(self.values)
         discrete_transition = self.values
 
-        discrete_transition_design_matrix = dmatrix(self.formula, covariate_data)
+        # NA_action="raise" prevents patsy from silently dropping rows with NaN
+        # covariates, which would misalign the design matrix (n_time) against the
+        # full-length posteriors/responses in the M-step.
+        discrete_transition_design_matrix = dmatrix(
+            self.formula, covariate_data, NA_action="raise"
+        )
         if discrete_transition_design_matrix.shape[0] == 0:
-            raise ValueError(
-                "No covariate data provided for transition matrix or NaNs are present in the covariate data."
-            )
+            raise ValueError("No covariate data provided for the transition matrix.")
 
         n_time, n_coefficients = discrete_transition_design_matrix.shape
 
@@ -1405,4 +1411,4 @@ def predict_discrete_state_transitions(
             )
         )
     # rows[i] has shape (n_time, n_states), stack along axis=1 to get (n_time, n_states, n_states)
-    return jnp.stack(rows, axis=1)
+    return np.asarray(jnp.stack(rows, axis=1))
