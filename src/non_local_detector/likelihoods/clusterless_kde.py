@@ -266,16 +266,17 @@ def fit_clusterless_kde_encoding_model(
         gpi_models.append(gpi_model)
 
         gpi_density = gpi_model.predict(interior_place_bin_centers)
-        summed_ground_process_intensity += jnp.clip(
-            mean_rates[-1]
-            * jnp.where(
-                occupancy > 0.0,
-                gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
-                EPS,
-            ),
-            min=EPS,
-            max=None,
+        summed_ground_process_intensity += mean_rates[-1] * jnp.where(
+            occupancy > 0.0,
+            gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
+            EPS,
         )
+
+    # Clip the summed intensity once (not per electrode) so an empty bin gets a
+    # single EPS floor rather than accumulating n_electrodes * EPS.
+    summed_ground_process_intensity = jnp.clip(
+        summed_ground_process_intensity, min=EPS, max=None
+    )
 
     return {
         "occupancy": occupancy,
@@ -508,6 +509,7 @@ def compute_local_log_likelihood(
 
     n_time = len(time)
     log_likelihood = jnp.zeros((n_time,))
+    summed_expected_counts = jnp.zeros((n_time,))
     for (
         electrode_encoding_spike_waveform_features,
         electrode_encoding_positions,
@@ -588,10 +590,15 @@ def compute_local_log_likelihood(
             num_segments=n_time,
         )
 
-        log_likelihood -= electrode_mean_rate * jnp.where(
+        summed_expected_counts += electrode_mean_rate * jnp.where(
             occupancy > 0.0,
             electrode_gpi_model.predict(interpolated_position)
             / jnp.where(occupancy > 0.0, occupancy, 1.0),
             0.0,
         )
+
+    # Subtract the summed ground-process intensity once, floored at EPS to
+    # mirror fit_clusterless_kde_encoding_model's summed_ground_process_intensity
+    # (a single EPS floor, not n_electrodes * EPS).
+    log_likelihood -= jnp.clip(summed_expected_counts, min=EPS)
     return log_likelihood[:, jnp.newaxis]

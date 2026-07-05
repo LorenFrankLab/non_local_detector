@@ -306,16 +306,17 @@ def fit_clusterless_gmm_encoding_model(
 
         # Expected-counts term at bins: mean_rate * (gpi / occupancy)
         gpi_density = _gmm_density(gpi_gmm, interior_place_bin_centers)
-        summed_ground_process_intensity += jnp.clip(
-            mean_rate
-            * jnp.where(
-                occupancy > 0.0,
-                gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
-                EPS,
-            ),
-            min=EPS,
-            max=None,
+        summed_ground_process_intensity += mean_rate * jnp.where(
+            occupancy > 0.0,
+            gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
+            EPS,
         )
+
+    # Clip the summed intensity once (not per electrode) so an empty bin gets a
+    # single EPS floor rather than accumulating n_electrodes * EPS.
+    summed_ground_process_intensity = jnp.clip(
+        summed_ground_process_intensity, min=EPS, max=None
+    )
 
     return {
         "environment": environment,
@@ -619,6 +620,7 @@ def compute_local_log_likelihood(
     log_occ_at_pos = _gmm_logp(occupancy_model, interp_pos)  # (n_time,)
 
     log_likelihood = jnp.zeros((n_time,), dtype=position.dtype)
+    summed_expected_counts = jnp.zeros((n_time,), dtype=position.dtype)
 
     for elect_feats, elect_times, joint_gmm, gpi_gmm, mean_rate in tqdm(
         zip(
@@ -670,12 +672,17 @@ def compute_local_log_likelihood(
                 ).ravel()
             )
 
-        # Subtract expected counts term at the animal's position (linear space)
-        # mean_rate * (gpi / occupancy) evaluated at interpolated positions
+        # Expected counts term at the animal's position (linear space):
+        # mean_rate * (gpi / occupancy) evaluated at interpolated positions.
         gpi_logp_at_pos = _gmm_logp(gpi_gmm, interp_pos)
         expected_counts = mean_rate * jnp.exp(
             gpi_logp_at_pos - log_occ_at_pos
         )  # (n_time,)
-        log_likelihood = log_likelihood - expected_counts
+        summed_expected_counts = summed_expected_counts + expected_counts
+
+    # Subtract the summed ground-process intensity once, floored at EPS to
+    # mirror fit_clusterless_gmm_encoding_model's summed_ground_process_intensity
+    # (a single EPS floor, not n_electrodes * EPS).
+    log_likelihood = log_likelihood - jnp.clip(summed_expected_counts, min=EPS)
 
     return log_likelihood[:, None]
