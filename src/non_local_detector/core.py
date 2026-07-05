@@ -726,6 +726,12 @@ def most_likely_sequence(
             is_missing=is_missing,
         )
 
+    # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
+    # Viterbi-only workflow gets the same diagnostics as the filter/smoother
+    # drivers. Note ``argmax`` over an all-``-inf`` column silently returns
+    # state 0, which this warning surfaces.
+    _warn_if_degenerate_timesteps(log_likelihoods)
+
     # Cast to desired dtype for precision control
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
     transition_matrix_jax = jnp.asarray(transition_matrix, dtype=dtype)
@@ -1333,6 +1339,12 @@ def most_likely_sequence_covariate_dependent(
             *log_likelihood_args,
             is_missing=is_missing,
         )
+
+    # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
+    # Viterbi-only workflow gets the same diagnostics as the filter/smoother
+    # drivers. Note ``argmax`` over an all-``-inf`` column silently returns
+    # state 0, which this warning surfaces.
+    _warn_if_degenerate_timesteps(log_likelihoods)
 
     # Cast to desired dtype for precision control
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
