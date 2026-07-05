@@ -53,23 +53,20 @@ def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jnp.ndarray, float]:
     Returns
     -------
     new_probs : jnp.ndarray
-        Updated state probabilities. If every entry of ``ll`` is ``-inf``
-        (all states impossible — most likely a data issue), the predicted
+        Updated state probabilities. When the Bayes normalizer is exactly zero
+        — either every entry of ``ll`` is ``-inf`` (all states impossible) or
+        the predicted ``probs`` place zero mass on every state with finite
+        likelihood (a prediction/likelihood support mismatch) — the predicted
         probabilities are returned unchanged and ``log_norm`` is set to
-        ``-inf`` to mark the degenerate step in the marginal likelihood. A
-        ``NaN`` in ``ll`` (a likelihood-computation bug, not impossible data)
-        is NOT masked: it propagates into ``new_probs`` so the problem stays
-        visible to the caller.
+        ``-inf`` to mark the step in the marginal likelihood, rather than
+        propagating an all-zero (invalid) posterior forward. A ``NaN`` in
+        ``ll`` (a likelihood-computation bug, not impossible data) is NOT
+        masked: it makes the normalizer ``NaN`` (not zero), so it propagates
+        into ``new_probs`` and stays visible to the caller.
     log_norm : float
-        Log normalization constant, or ``-inf`` if every state is ``-inf``.
+        Log normalization constant, or ``-inf`` when the normalizer is zero.
     """
     ll_max = ll.max()
-    # The degenerate fallback fires ONLY when every state is -inf (the max is
-    # exactly -inf). A NaN propagates to ll_max as NaN, so `ll_max == -inf` is
-    # False and we deliberately do NOT fall back: the NaN flows through the
-    # normal branch into new_probs, keeping the upstream bug visible rather
-    # than laundering it into the predicted prior.
-    is_degenerate = ll_max == -jnp.inf
     # Shift by the max for numerical stability. When the max is non-finite
     # (all -inf, or a NaN present) use 0.0 so any finite states are not
     # corrupted by an inf - inf subtraction.
@@ -77,11 +74,20 @@ def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jnp.ndarray, float]:
     new_probs_normal, norm = _normalize(probs * jnp.exp(ll - ll_max_safe))
     log_norm = jnp.log(norm) + ll_max_safe
 
-    # Degenerate fallback: every state has -inf log-likelihood. Return the
-    # predicted distribution unchanged and mark log_norm as -inf so the
-    # host-side wrapper can detect and warn about the degenerate step.
-    new_probs = jnp.where(is_degenerate, probs, new_probs_normal)
-    log_norm = jnp.where(is_degenerate, -jnp.inf, log_norm)
+    # Fallback when the normalizer is exactly zero. Two distinct situations
+    # produce a 0/0 Bayes update:
+    #   1. every state is -inf (all-impossible data), or
+    #   2. the predicted distribution places zero mass on every state with
+    #      finite likelihood (a prediction/likelihood support mismatch).
+    # In both, return the predicted distribution unchanged and mark log_norm as
+    # -inf so the step is recorded in the marginal likelihood instead of
+    # silently propagating an all-zero (invalid) posterior. A NaN in ``ll``
+    # makes ``norm`` NaN (not 0), so ``norm == 0`` is False and the NaN flows
+    # through the normal branch into new_probs, keeping the upstream bug visible
+    # rather than laundering it into the predicted prior.
+    is_zero_norm = norm == 0.0
+    new_probs = jnp.where(is_zero_norm, probs, new_probs_normal)
+    log_norm = jnp.where(is_zero_norm, -jnp.inf, log_norm)
     return new_probs, log_norm
 
 

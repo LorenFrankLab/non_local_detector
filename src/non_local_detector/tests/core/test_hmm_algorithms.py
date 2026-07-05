@@ -572,6 +572,32 @@ class TestConditionOnDegenerateLikelihoods:
         # Assert: NaN dominates -> not the clean prior fallback.
         assert jnp.any(jnp.isnan(new_probs))
 
+    def test_condition_on_zero_normalizer_from_support_mismatch_falls_back(self):
+        """A zero normalizer with finite evidence must not yield all-zero posterior.
+
+        If the predicted distribution places zero probability on every state
+        that has *finite* log-likelihood, the Bayes update is 0/0. This is not
+        an all-``-inf`` (impossible-data) step -- the likelihood is finite -- so
+        an ``ll_max == -inf`` guard does not fire. Without a normalizer check the
+        posterior silently becomes all zeros and propagates forward as an
+        invalid (non-summing-to-one) distribution. The fallback must instead
+        return the predicted distribution and mark ``log_norm`` as ``-inf``.
+        """
+        # Arrange: all predicted mass on state 0, but only state 1 is possible.
+        probs = jnp.array([1.0, 0.0])
+        ll = jnp.array([-jnp.inf, 0.0])
+
+        # Act
+        new_probs, log_norm = _condition_on(probs, ll)
+
+        # Assert: still a valid distribution, equal to the prediction, and the
+        # step is marked via log_norm = -inf.
+        assert jnp.allclose(new_probs.sum(), 1.0, atol=1e-7), (
+            f"posterior must remain a valid distribution; got {new_probs}"
+        )
+        assert jnp.allclose(new_probs, probs, atol=1e-7)
+        assert jnp.isneginf(log_norm)
+
 
 @pytest.mark.unit
 class TestFilterDegenerateTimestepWarning:
