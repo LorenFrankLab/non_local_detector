@@ -237,10 +237,13 @@ def _aggregate_factorized_xi_by_state_jax(
 
 
 def _safe_ratio_jax(numerator: jnp.ndarray, denominator: jnp.ndarray) -> jnp.ndarray:
-    """Return numerator / denominator with zero output near zero denominators."""
-    is_zero = jnp.isclose(denominator, 0.0)
-    safe_denominator = jnp.where(is_zero, 1.0, denominator)
-    return jnp.where(is_zero, 0.0, numerator / safe_denominator)
+    """Return numerator / denominator with zero output at exactly zero denominators."""
+    # Match core._divide_safe: only exact zeros are treated as unreachable bins.
+    # An `isclose` threshold would zero legitimately small predictive
+    # probabilities whose acausal/predictive ratio (the smoother backward
+    # message) is O(1), silently dropping real transitions from the M-step.
+    safe_denominator = jnp.where(denominator != 0.0, denominator, 1.0)
+    return jnp.where(denominator != 0.0, numerator / safe_denominator, 0.0)
 
 
 def _assert_map_compatible_alpha(alpha: np.ndarray) -> None:

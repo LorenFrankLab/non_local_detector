@@ -228,7 +228,7 @@ def _expanded_responses_numpy_reference(
             acausal_posterior[t + 1],
             predictive_posterior[t + 1],
             out=np.zeros_like(acausal_posterior[t + 1]),
-            where=~np.isclose(predictive_posterior[t + 1], 0.0),
+            where=predictive_posterior[t + 1] != 0.0,
         )
         transition_t = (
             transition_matrix if transition_matrix.ndim == 2 else transition_matrix[t]
@@ -667,6 +667,35 @@ class TestExpandedDiscreteTransitionCounts:
 
         assert np.all(np.isfinite(counts))
         np.testing.assert_array_equal(counts, np.zeros((2, 2)))
+
+    def test_tiny_nonzero_predictive_bin_is_not_dropped(self):
+        """A tiny but nonzero predictive bin must keep its transition count.
+
+        Regression guard for `_safe_ratio_jax`: an `isclose(., 0)` threshold
+        would zero the acausal/predictive ratio for predictive mass below
+        ~1e-8, silently dropping a real transition when the smoother strongly
+        revises a low-probability prediction. Only exact zeros should be
+        treated as unreachable.
+        """
+        eps = 1e-10
+        state_ind = np.array([0, 1])
+        transition_matrix = np.array([[1.0 - eps, eps], [0.5, 0.5]])
+        causal = np.array([[1.0, 0.0], [0.0, 1.0]])
+        # predictive[1] = causal[0] @ transition_matrix; the second bin has mass
+        # eps << 1e-8 but is genuinely reachable.
+        predictive = np.array([[1.0, 0.0], [1.0 - eps, eps]])
+        # Smoother says the second bin was actually visited: ratio = 1 / eps.
+        acausal = np.array([[1.0, 0.0], [0.0, 1.0]])
+
+        counts = estimate_discrete_transition_counts_from_expanded_posteriors(
+            causal, predictive, acausal, transition_matrix, state_ind
+        )
+
+        # The eps in the transition cancels the 1/eps ratio, leaving a full
+        # unit transition 0 -> 1. An isclose threshold would zero this to 0.
+        np.testing.assert_allclose(
+            counts, np.array([[0.0, 1.0], [0.0, 0.0]]), atol=1e-6
+        )
 
     def test_nonstationary_responses_sum_to_stationary_counts(self, posterior_data):
         """The response helper should reduce to the count helper when summed."""
