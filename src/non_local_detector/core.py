@@ -194,29 +194,6 @@ def _warn_if_degenerate_timesteps(log_likelihoods: ArrayLike) -> None:
     )
 
 
-def _assert_finite(name: str, x: ArrayLike) -> jnp.ndarray:
-    """Assert array contains only finite values (when JAX debug NaNs is enabled).
-
-    This is a no-op in production but helps catch numerical issues during development.
-
-    Parameters
-    ----------
-    name : str
-        Name of the array for error messages
-    x : ArrayLike
-        Array to check
-
-    Returns
-    -------
-    x : jnp.ndarray
-        The input array (unchanged)
-    """
-    # Only check when jax_debug_nans is enabled (no runtime cost otherwise)
-    if jax.config.jax_debug_nans:  # type: ignore
-        jax.debug.check_nans(x, name=name)
-    return jnp.asarray(x)
-
-
 def _safe_log(p: ArrayLike) -> jnp.ndarray:
     """Compute log of probabilities safely, handling zeros.
 
@@ -544,10 +521,6 @@ def chunked_filter_smoother(
                 is_missing=is_missing_chunk,
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
-            # Guard against NaNs in user-provided log-likelihoods (only when debug enabled)
-            log_likelihood_chunk = _assert_finite(
-                "log_likelihoods", log_likelihood_chunk
-            )
 
         # Tally degenerate (all -inf) and NaN timesteps at one host sync point
         # before the array is donated to the JIT call. Accumulated across chunks
@@ -1119,10 +1092,6 @@ def chunked_filter_smoother_covariate_dependent(
                 is_missing=is_missing_chunk,
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
-            # Guard against NaNs in user-provided log-likelihoods (only when debug enabled)
-            log_likelihood_chunk = _assert_finite(
-                "log_likelihoods", log_likelihood_chunk
-            )
 
         # Tally degenerate (all -inf) and NaN timesteps at one host sync point
         # before the array is donated to the JIT call. Accumulated across chunks

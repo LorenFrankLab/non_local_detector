@@ -23,13 +23,13 @@ def centered_softmax_forward(y: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-    y : np.ndarray, shape (..., n_states)
-        The input values. Can have leading dimensions.
-        The last dimension is the state dimension.
+    y : np.ndarray, shape (n_states,) or (n_samples, n_states)
+        The input values. Only 1-D and 2-D inputs are supported;
+        the last dimension is the state dimension.
 
     Returns
     -------
-    softmax : np.ndarray, shape (..., n_states + 1)
+    softmax : np.ndarray, shape (n_states + 1,) or (n_samples, n_states + 1)
         The softmax of the input values
 
     Example
@@ -703,15 +703,16 @@ def jax_centered_log_softmax_forward(y: jnp.ndarray) -> jnp.ndarray:
     """`softmax(x) = exp(x-c) / sum(exp(x-c))` where c is the last coordinate
 
     The 1D and 2D input branches compile as separate JAX specializations.
+    Only 1-D and 2-D inputs are supported.
 
     Parameters
     ----------
-    y : jnp.ndarray, shape (..., n_states)
+    y : jnp.ndarray, shape (n_states,) or (n_samples, n_states)
         The input values
 
     Returns
     -------
-    log_softmax : jnp.ndarray, shape (..., n_states + 1)
+    log_softmax : jnp.ndarray, shape (n_states + 1,) or (n_samples, n_states + 1)
         The log softmax of the input values
 
     Example
@@ -959,6 +960,19 @@ def estimate_stationary_state_transition_from_counts(
 
         # Use adaptive prior for rows where prior_weight > 0, legacy otherwise
         use_adaptive = prior_weight_arr > 0  # (n_states,)
+
+        # Warn when an adaptive row has a uniform prior direction (alpha - 1 == 0,
+        # e.g. concentration=1.0 and stickiness=0.0): prior_weight then has no
+        # effect because there is nothing to scale.
+        no_op_rows = use_adaptive & (row_sums[:, 0] == 0)
+        if np.any(no_op_rows):
+            logger.warning(
+                "prior_weight > 0 has no effect for states %s because the prior "
+                "direction is uniform (alpha - 1 == 0). Increase concentration or "
+                "stickiness to regularize these rows.",
+                np.flatnonzero(no_op_rows).tolist(),
+            )
+
         effective_prior = np.where(
             use_adaptive[:, np.newaxis],
             adaptive_prior,
@@ -1013,7 +1027,10 @@ def dirichlet_neg_log_likelihood(
         distribution.
     l2_penalty : float, optional
         L2 regularization penalty on coefficients (excluding intercept).
-        Defaults to 1e-5.
+        Defaults to 1e-5. The intercept is assumed to be the first coefficient
+        row (``coefficients[0]``), as produced by patsy ``"1 + ..."`` formulas.
+        A ``"0 + ..."`` formula or hand-built design matrix without a leading
+        intercept column would penalize the wrong rows.
 
     Returns
     -------
@@ -1085,7 +1102,7 @@ def _estimate_discrete_transition(
     transition_stickiness: float | np.ndarray,
     transition_regularization: float,
     transition_prior_weight: float | np.ndarray = 0.0,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray | None]:
     """Estimate the discrete transition matrix (stationary or non-stationary).
 
     Always uses the exact expanded-state M-step that aggregates bin-level

@@ -553,10 +553,6 @@ class TestConditionOn:
         assert jnp.allclose(jnp.exp(log_marginal), marginal)
 
 
-# Note: _assert_finite tests removed as that function does not exist or has a
-# different signature than expected.
-
-
 @pytest.mark.unit
 class TestCheckConverged:
     """``check_converged`` returns (is_converged, is_increasing).
