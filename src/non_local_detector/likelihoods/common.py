@@ -13,6 +13,32 @@ EPS = 1e-15
 LOG_EPS = np.log(EPS)
 
 
+def as_std_array(std: "jnp.ndarray | float | int", n_dims: int) -> jnp.ndarray:
+    """Broadcast a scalar kernel bandwidth to a per-dimension array.
+
+    A single ``jnp.ndim`` check covers Python ``int``/``float``, NumPy scalars
+    (including ``np.float32``), 0-d arrays, and JAX scalars uniformly, avoiding
+    the ``isinstance(std, int | float)`` pattern that silently misses
+    ``np.float32`` and 0-d arrays. Array-valued ``std`` (``ndim >= 1``) is
+    returned unchanged.
+
+    Parameters
+    ----------
+    std : jnp.ndarray or float or int
+        Scalar (broadcast to ``n_dims``) or per-dimension standard deviation(s).
+    n_dims : int
+        Number of dimensions to broadcast a scalar to.
+
+    Returns
+    -------
+    std_array : jnp.ndarray
+        Shape ``(n_dims,)`` for scalar input; the original array otherwise.
+    """
+    if jnp.ndim(std) == 0:
+        return jnp.full((n_dims,), std)
+    return jnp.asarray(std)
+
+
 def get_position_at_time(
     time: jnp.ndarray,
     position: jnp.ndarray,
@@ -298,11 +324,7 @@ class KDEModel:
         """
         if eval_points.ndim == 1:
             eval_points = jnp.expand_dims(eval_points, axis=1)
-        std = (
-            jnp.array([self.std] * eval_points.shape[1])
-            if isinstance(self.std, int | float)
-            else self.std
-        )
+        std = as_std_array(self.std, eval_points.shape[1])
         block_size = (
             eval_points.shape[0] if self.block_size is None else self.block_size
         )
@@ -315,11 +337,7 @@ class KDEModel:
         """
         if eval_points.ndim == 1:
             eval_points = jnp.expand_dims(eval_points, axis=1)
-        std = (
-            jnp.array([self.std] * eval_points.shape[1])
-            if isinstance(self.std, int | float)
-            else self.std
-        )
+        std = as_std_array(self.std, eval_points.shape[1])
         block_size = (
             eval_points.shape[0] if self.block_size is None else self.block_size
         )
