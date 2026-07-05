@@ -9,6 +9,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     LOG_EPS,
     KDEModel,
+    as_std_array,
     block_kde,
     get_position_at_time,
     get_spike_time_bin_ind,
@@ -197,11 +198,14 @@ def fit_clusterless_kde_encoding_model(
         )
 
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
-    if isinstance(position_std, int | float):
-        if environment.track_graph is not None and position.shape[1] > 1:
-            position_std = jnp.array([position_std])
-        else:
-            position_std = jnp.array([position_std] * position.shape[1])
+    # A track graph with multi-dim position linearizes occupancy to 1D, so the
+    # bandwidth is a single dimension there; otherwise one per position column.
+    n_std_dims = (
+        1
+        if (environment.track_graph is not None and position.shape[1] > 1)
+        else position.shape[1]
+    )
+    position_std = as_std_array(position_std, n_std_dims)
     # Keep waveform_std as-is (scalar or array) - will be expanded per-electrode at predict time
 
     is_track_interior = environment.is_track_interior_.ravel()
@@ -420,12 +424,7 @@ def predict_clusterless_kde_log_likelihood(
             )
             # Expand waveform_std to match this electrode's feature count if scalar
             n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
-            if isinstance(waveform_std, (int, float)) or (
-                hasattr(waveform_std, "ndim") and waveform_std.ndim == 0
-            ):
-                electrode_waveform_std = jnp.full(n_waveform_features, waveform_std)
-            else:
-                electrode_waveform_std = waveform_std
+            electrode_waveform_std = as_std_array(waveform_std, n_waveform_features)
             log_likelihood += jax.ops.segment_sum(
                 block_estimate_log_joint_mark_intensity(
                     electrode_decoding_spike_waveform_features,
@@ -546,12 +545,7 @@ def compute_local_log_likelihood(
 
         # Expand waveform_std to match this electrode's feature count if scalar
         n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
-        if isinstance(waveform_std, (int, float)) or (
-            hasattr(waveform_std, "ndim") and waveform_std.ndim == 0
-        ):
-            electrode_waveform_std = jnp.full(n_waveform_features, waveform_std)
-        else:
-            electrode_waveform_std = waveform_std
+        electrode_waveform_std = as_std_array(waveform_std, n_waveform_features)
 
         marginal_density = block_kde(
             eval_points=jnp.concatenate(
