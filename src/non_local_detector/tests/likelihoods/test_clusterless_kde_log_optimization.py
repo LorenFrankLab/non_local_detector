@@ -18,6 +18,7 @@ from non_local_detector.likelihoods.clusterless_kde_log import (
 )
 from non_local_detector.likelihoods.common import (
     EPS,
+    LOG_EPS,
     gaussian_pdf,
     log_gaussian_pdf,
     safe_log,
@@ -476,8 +477,16 @@ class TestCompensatedLinearMarginal:
         # All occupancy is non-zero, so all outputs should be finite (no -inf mask)
         assert jnp.all(jnp.isfinite(result))
 
-    def test_zero_occupancy_produces_neg_inf(self):
-        """Zero-occupancy bins produce -inf in output."""
+    def test_zero_occupancy_produces_log_eps_floor(self):
+        """Zero-occupancy bins collapse to the LOG_EPS floor, not -inf.
+
+        Every joint-intensity path funnels through _log_joint_from_log_marginal,
+        which maps degenerate bins (zero occupancy or fully underflowed
+        marginal) to the finite LOG_EPS floor. This is the unified contract: a
+        finite floor cannot poison the HMM posterior the way -inf would, and it
+        matches what block_estimate_log_joint_mark_intensity has always clipped
+        the output to.
+        """
         rng = np.random.default_rng(42)
         n_enc, n_dec, n_pos, n_wf = 100, 10, 20, 4
 
@@ -498,8 +507,9 @@ class TestCompensatedLinearMarginal:
             logK_mark, logK_pos, log_w, occupancy, mean_rate=5.0
         )
 
-        # Zero-occupancy bins should be -inf (from the occupancy mask)
-        assert jnp.all(jnp.isinf(result[:, 5]) & (result[:, 5] < 0))
-        assert jnp.all(jnp.isinf(result[:, 15]) & (result[:, 15] < 0))
+        # Zero-occupancy bins are floored to LOG_EPS (finite), not -inf.
+        assert jnp.all(jnp.isfinite(result))
+        assert jnp.allclose(result[:, 5], LOG_EPS)
+        assert jnp.allclose(result[:, 15], LOG_EPS)
         # Non-zero occupancy bins should be finite
         assert jnp.all(jnp.isfinite(result[:, 0]))

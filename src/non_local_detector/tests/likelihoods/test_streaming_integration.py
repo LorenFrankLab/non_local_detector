@@ -14,6 +14,7 @@ from non_local_detector.likelihoods.clusterless_kde_log import (
     estimate_log_joint_mark_intensity,
     log_kde_distance,
 )
+from non_local_detector.likelihoods.common import LOG_EPS
 
 
 class TestStreamingIntegrationBasic:
@@ -254,8 +255,15 @@ class TestStreamingIntegrationEdgeCases:
                 # Missing position parameters!
             )
 
-    def test_streaming_enc_tile_size_equals_n_enc(self):
-        """Streaming raises error when enc_tile_size >= n_enc (no actual chunking)."""
+    def test_streaming_enc_tile_size_ge_n_enc_falls_back(self):
+        """When enc_tile_size >= n_enc, streaming degrades gracefully.
+
+        A group with fewer encoding spikes than the tile size cannot be
+        chunked, but streaming must not raise — otherwise a single small
+        electrode would abort the whole prediction. It falls back to the
+        non-chunked path (materializing the position kernel) and matches the
+        precomputed result.
+        """
         rng = np.random.default_rng(789)
 
         n_enc = 30
@@ -269,11 +277,58 @@ class TestStreamingIntegrationEdgeCases:
         pos_eval_points = jnp.array(rng.standard_normal((12, 2)))
         position_std = jnp.array([1.0, 1.0])
 
-        # Streaming with enc_tile_size = n_enc should raise error
-        with pytest.raises(
-            ValueError,
-            match="use_streaming=True requires enc_tile_size < n_encoding_spikes",
-        ):
+        log_position_distance = log_kde_distance(
+            pos_eval_points, enc_positions, position_std
+        )
+        result_precomputed = estimate_log_joint_mark_intensity(
+            dec_features,
+            enc_features,
+            waveform_stds,
+            occupancy,
+            mean_rate,
+            log_position_distance,
+            use_gemm=True,
+            use_streaming=False,
+        )
+
+        # enc_tile_size == n_enc (no chunking possible): must not raise.
+        result_streaming = estimate_log_joint_mark_intensity(
+            dec_features,
+            enc_features,
+            waveform_stds,
+            occupancy,
+            mean_rate,
+            log_position_distance=None,
+            use_gemm=True,
+            enc_tile_size=n_enc,  # >= n_enc -> graceful fallback, not an error
+            use_streaming=True,
+            encoding_positions=enc_positions,
+            position_eval_points=pos_eval_points,
+            position_std=position_std,
+        )
+
+        assert jnp.all(jnp.isfinite(result_streaming))
+        assert jnp.allclose(result_streaming, result_precomputed, rtol=1e-5, atol=1e-6)
+
+    def test_streaming_with_use_gemm_false_raises_clear_error(self):
+        """use_streaming=True with use_gemm=False raises a clear ValueError.
+
+        The linear-space (use_gemm=False) reference path does not support
+        streaming; the combination must be rejected up front rather than
+        failing later with a confusing exp(None) TypeError.
+        """
+        rng = np.random.default_rng(2024)
+
+        dec_features = jnp.array(rng.standard_normal((5, 2)))
+        enc_features = jnp.array(rng.standard_normal((10, 2)))
+        waveform_stds = jnp.array([1.0, 1.0])
+        occupancy = jnp.array(rng.random(8) * 0.6 + 0.2)
+        mean_rate = 1.5
+        enc_positions = jnp.array(rng.standard_normal((10, 1)))
+        pos_eval_points = jnp.array(rng.standard_normal((8, 1)))
+        position_std = jnp.array([1.0])
+
+        with pytest.raises(ValueError, match="use_gemm"):
             estimate_log_joint_mark_intensity(
                 dec_features,
                 enc_features,
@@ -281,8 +336,8 @@ class TestStreamingIntegrationEdgeCases:
                 occupancy,
                 mean_rate,
                 log_position_distance=None,
-                use_gemm=True,
-                enc_tile_size=n_enc,  # Equal to n_enc - should fail
+                use_gemm=False,
+                enc_tile_size=5,
                 use_streaming=True,
                 encoding_positions=enc_positions,
                 position_eval_points=pos_eval_points,
@@ -557,10 +612,13 @@ class TestStreamingNumericalStability:
             position_std=position_std,
         )
 
-        # Both should have -inf at zero occupancy positions
+        # Both floor zero-occupancy positions to LOG_EPS (unified contract),
+        # not -inf, and consistently across the precomputed and streaming paths.
         zero_occ_mask = occupancy == 0.0
-        assert jnp.all(jnp.isneginf(result_precomputed[:, zero_occ_mask]))
-        assert jnp.all(jnp.isneginf(result_streaming[:, zero_occ_mask]))
+        assert jnp.all(jnp.isfinite(result_precomputed))
+        assert jnp.all(jnp.isfinite(result_streaming))
+        assert jnp.allclose(result_precomputed[:, zero_occ_mask], LOG_EPS)
+        assert jnp.allclose(result_streaming[:, zero_occ_mask], LOG_EPS)
 
         # Non-zero positions should match
         non_zero_mask = ~zero_occ_mask

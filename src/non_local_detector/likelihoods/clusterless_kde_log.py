@@ -9,6 +9,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     LOG_EPS,
     KDEModel,
+    as_std_array,
     block_log_kde,
     get_position_at_time,
     get_spike_time_bin_ind,
@@ -20,7 +21,55 @@ from non_local_detector.likelihoods.common import (
 # Above this threshold, mark kernel underflow causes accuracy degradation
 # and the logsumexp path is used instead. Empirically validated: ≤8 dims
 # gives <8e-6 max absolute error vs logsumexp across 10 random seeds.
+#
+# Caveat: the threshold bounds only the *mark* kernel's dynamic range. After
+# the sqrt-scale split both stabilized factors can underflow independently, so
+# the *position* kernel (many bins far from an encoding spike, small
+# position_std, or long linearized tracks) also contributes to underflow. In
+# float32 each factor floors near 1e-38, so joint terms far below the row max
+# are dropped regardless of mark dimensionality. The empirical validation above
+# was run with realistic position kernels; if you rely on a much wider position
+# dynamic range (or disable jax_enable_x64), prefer the logsumexp path.
 _COMPENSATED_LINEAR_MAX_FEATURES = 8
+
+
+def _log_joint_from_log_marginal(
+    log_marginal: jnp.ndarray, mean_rate: float, occupancy: jnp.ndarray
+) -> jnp.ndarray:
+    """Combine a log marginal density with mean rate and occupancy.
+
+    Computes ``log(mean_rate * marginal / occupancy)`` in log-space and applies
+    a single degeneracy contract shared by every joint-intensity path: a bin
+    with zero occupancy or a fully underflowed marginal (``-inf``) collapses to
+    ``LOG_EPS`` ("no support here"). Routing the compensated-linear and
+    logsumexp branches through this one function makes them produce identical
+    results instead of path-dependent ``-inf`` vs ``LOG_EPS`` values, and lets
+    ``block_estimate_log_joint_mark_intensity``'s ``LOG_EPS`` clamp be a
+    redundant safety net rather than the thing that reconciles the paths.
+
+    Parameters
+    ----------
+    log_marginal : jnp.ndarray, shape (n_decoding_spikes, n_position_bins)
+        Log marginal mark/position density. Degenerate (zero-mass) bins must be
+        encoded as ``-inf`` so they are floored consistently; legitimate small
+        values below ``LOG_EPS`` are preserved.
+    mean_rate : float
+        Mean firing rate for this electrode.
+    occupancy : jnp.ndarray, shape (n_position_bins,)
+        Occupancy density at position bins.
+
+    Returns
+    -------
+    log_joint : jnp.ndarray, shape (n_decoding_spikes, n_position_bins)
+    """
+    log_mean_rate = safe_log(mean_rate, eps=EPS)
+    log_occ = safe_log(occupancy, eps=EPS)
+    supported = jnp.isfinite(log_marginal) & (occupancy[None, :] > 0.0)
+    return jnp.where(
+        supported,
+        log_mean_rate + log_marginal - log_occ[None, :],
+        LOG_EPS,
+    )
 
 
 @jax.jit
@@ -82,9 +131,12 @@ def log_kde_distance(
 
     Notes
     -----
-    This function assumes inputs are valid (same dimensionality, positive std).
-    No validation is performed here to maintain JIT compatibility.
+    ``std`` is clamped to ``[EPS, inf)`` so a zero bandwidth yields a finite
+    (heavily peaked) kernel instead of NaN, matching
+    ``log_kde_distance_streaming`` at the edges.
     """
+    # Clamp std to avoid division by zero (mirrors log_kde_distance_streaming).
+    std = jnp.clip(std, EPS, jnp.inf)
 
     def log_gaussian_per_dim(eval_dim, sample_dim, sigma):
         return log_gaussian_pdf(
@@ -499,17 +551,9 @@ def _estimate_with_enc_chunking(
     # Use lax.fori_loop instead of Python for-loop for JIT compilation
     log_marginal = jax.lax.fori_loop(0, n_enc_chunks, process_enc_chunk, log_marginal)
 
-    # Add mean rate and subtract occupancy (in log)
-    log_mean_rate = safe_log(mean_rate, eps=EPS)
-    log_occ = safe_log(occupancy, eps=EPS)
-
-    log_joint = jnp.where(
-        occupancy[None, :] > 0.0,
-        log_mean_rate + log_marginal - log_occ[None, :],
-        jnp.log(0.0),  # -inf for zero occupancy (intentional masking)
-    )
-
-    return log_joint
+    # Fully masked positions accumulate to -inf; the shared combiner floors
+    # those (and zero-occupancy bins) to LOG_EPS.
+    return _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
 
 
 def _compensated_linear_marginal(
@@ -574,25 +618,17 @@ def _compensated_linear_marginal(
     # Single BLAS matmul: (n_dec, n_enc) @ (n_enc, n_pos) -> (n_dec, n_pos)
     marginal_scaled = W.T @ P
 
-    # Back to log space.  Use double-where to produce LOG_EPS (not NaN)
-    # when the matmul result is zero, matching the logsumexp path's
-    # contract via block_estimate_log_joint_mark_intensity's LOG_EPS clamp.
+    # Back to log space.  Use double-where (safe_marginal avoids log(0) in the
+    # untaken branch) and encode a zero matmul result as -inf so the shared
+    # combiner floors it to LOG_EPS, identically to the logsumexp path.
     safe_marginal = jnp.where(marginal_scaled > 0.0, marginal_scaled, 1.0)
     log_marginal = jnp.where(
         marginal_scaled > 0.0,
         jnp.log(safe_marginal) + global_max,
-        LOG_EPS,
+        -jnp.inf,
     )
 
-    # Add mean rate and subtract occupancy (in log)
-    log_mean_rate = safe_log(mean_rate, eps=EPS)
-    log_occ = safe_log(occupancy, eps=EPS)
-
-    return jnp.where(
-        occupancy[None, :] > 0.0,
-        log_mean_rate + log_marginal - log_occ[None, :],
-        jnp.log(0.0),  # -inf for zero occupancy
-    )
+    return _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
 
 
 def _compensated_linear_marginal_chunked(
@@ -614,6 +650,14 @@ def _compensated_linear_marginal_chunked(
     Single-pass algorithm that accumulates matmul results across encoding
     chunks while maintaining numerical stability via online max rescaling.
     Analogous to online logsumexp but uses BLAS matmul for the reduction.
+
+    Here "compensated" refers to the running-max compensation that keeps the
+    accumulator in a stable range (as in ``_compensated_linear_marginal``); it
+    is *not* Kahan/compensated summation. The cross-chunk accumulation is a
+    plain ``running_sum + W.T @ P``, so with a very large number of chunks in
+    float32 the low-order bits of early chunks can be lost. This is acceptable
+    for KDE densities at the tolerances used here; add a compensation term to
+    the scan carry if chunk counts ever grow large enough to matter.
 
     Memory: O(enc_tile_size × max(n_dec, n_pos)) per chunk — independent
     of total n_enc.  Supports both precomputed and streaming position kernels.
@@ -764,23 +808,16 @@ def _compensated_linear_marginal_chunked(
         jnp.arange(n_chunks),
     )
 
-    # Back to log space (double-where for -inf contract)
+    # Back to log space (double-where; zero mass -> -inf so the shared combiner
+    # floors it to LOG_EPS, matching the logsumexp path).
     safe_sum = jnp.where(final_sum > 0.0, final_sum, 1.0)
     log_marginal = jnp.where(
         final_sum > 0.0,
         jnp.log(safe_sum) + final_max,
-        LOG_EPS,
+        -jnp.inf,
     )
 
-    # Add mean rate and subtract occupancy
-    log_mean_rate = safe_log(mean_rate, eps=EPS)
-    log_occ = safe_log(occupancy, eps=EPS)
-
-    return jnp.where(
-        occupancy[None, :] > 0.0,
-        log_mean_rate + log_marginal - log_occ[None, :],
-        jnp.log(0.0),
-    )
+    return _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
 
 
 def estimate_log_joint_mark_intensity(
@@ -837,18 +874,23 @@ def estimate_log_joint_mark_intensity(
 
     Notes
     -----
-    This function is JIT-compiled automatically when called from higher-level functions.
-    For manual JIT compilation with custom settings, use:
-
-        jitted_fn = jax.jit(
-            estimate_log_joint_mark_intensity,
-            static_argnames=('use_gemm', 'pos_tile_size', 'enc_tile_size', 'use_streaming')
-        )
-
-    Buffer donation can further reduce memory usage for the _update_block helper (already applied).
-
+    The module-level ``estimate_log_joint_mark_intensity`` name is rebound just
+    below its definition to a jitted version with
+    ``static_argnames=('use_gemm', 'pos_tile_size', 'enc_tile_size',
+    'use_streaming')`` — so callers get JIT automatically and do not need to
+    wrap it themselves. The undecorated function object remains accessible via
+    ``estimate_log_joint_mark_intensity.__wrapped__`` if an un-jitted version is
+    needed.
     """
     n_encoding_spikes = encoding_spike_waveform_features.shape[0]
+
+    # Reject unsupported combinations before any array work so the failure is a
+    # clear message rather than a downstream exp(None) TypeError.
+    if use_streaming and not use_gemm:
+        raise ValueError(
+            "use_streaming=True is not supported with use_gemm=False "
+            "(the linear-space reference path). Use use_gemm=True for streaming."
+        )
 
     if not use_gemm:
         # Linear-space computation (matches reference exactly)
@@ -879,17 +921,11 @@ def estimate_log_joint_mark_intensity(
             eps=EPS,
         )
 
-    # Validation: streaming requires chunking and streaming parameters
+    # Validation: streaming requires chunking configuration and inputs.
     if use_streaming:
         if enc_tile_size is None:
             raise ValueError(
                 "use_streaming=True requires enc_tile_size to be specified"
-            )
-        if enc_tile_size >= n_encoding_spikes:
-            raise ValueError(
-                f"use_streaming=True requires enc_tile_size < n_encoding_spikes "
-                f"(got enc_tile_size={enc_tile_size}, n_encoding_spikes={n_encoding_spikes}). "
-                f"Streaming is only beneficial when chunking encoding spikes."
             )
         if (
             encoding_positions is None
@@ -900,6 +936,16 @@ def estimate_log_joint_mark_intensity(
                 "use_streaming=True requires encoding_positions, position_eval_points, "
                 "and position_std to be specified"
             )
+        if enc_tile_size >= n_encoding_spikes:
+            # This group has fewer encoding spikes than the tile, so there is
+            # nothing to chunk and streaming's memory savings are moot at this
+            # size. Materialize the (small) position kernel and fall back to the
+            # non-chunked path instead of raising — a single small group must
+            # not be able to abort a whole prediction over heterogeneous groups.
+            log_position_distance = log_kde_distance(
+                position_eval_points, encoding_positions, position_std
+            )
+            use_streaming = False
 
     # Log-space computation with GEMM optimization
     if use_streaming:
@@ -1061,20 +1107,9 @@ def estimate_log_joint_mark_intensity(
         # Trim back to original size
         log_marginal = log_marginal[:, :n_pos]
 
-    # Add mean rate and subtract occupancy (in log)
-    # safe_log clamps to LOG_EPS instead of producing -inf for zero values
-    log_mean_rate = safe_log(mean_rate, eps=EPS)
-    log_occ = safe_log(occupancy, eps=EPS)
-
-    # Result: log(mean_rate * marginal / occupancy)
-    # Use where to handle occupancy = 0 cases (still set to -inf explicitly)
-    log_joint = jnp.where(
-        occupancy[None, :] > 0.0,
-        log_mean_rate + log_marginal - log_occ[None, :],
-        jnp.log(0.0),  # -inf for zero occupancy (intentional masking)
-    )
-
-    return log_joint
+    # Result: log(mean_rate * marginal / occupancy). Fully masked positions are
+    # -inf; the shared combiner floors those and zero-occupancy bins to LOG_EPS.
+    return _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
 
 
 # JIT-compile with static arguments for performance
@@ -1142,11 +1177,20 @@ def block_estimate_log_joint_mark_intensity(
     if n_decoding_spikes == 0:
         return jnp.full((0, n_position_bins), LOG_EPS)
 
-    out = jnp.zeros((n_decoding_spikes, n_position_bins))
+    # Process decoding spikes in fixed-size blocks. Each decoding spike is
+    # computed independently, so the final partial block is padded up to
+    # block_size (and its extra rows sliced off) to keep every call to the
+    # jitted estimator at the same shape — avoiding a recompile for the
+    # leftover block. Results are collected and concatenated once instead of
+    # O(n_blocks) full-array dynamic_update_slice copies.
+    block_results = []
     for start_ind in range(0, n_decoding_spikes, block_size):
-        block_inds = slice(start_ind, start_ind + block_size)
+        block = decoding_spike_waveform_features[start_ind : start_ind + block_size]
+        actual_len = block.shape[0]
+        if actual_len < block_size:
+            block = jnp.pad(block, ((0, block_size - actual_len), (0, 0)))
         block_result = estimate_log_joint_mark_intensity(
-            decoding_spike_waveform_features[block_inds],
+            block,
             encoding_spike_waveform_features,
             waveform_stds,
             occupancy,
@@ -1160,9 +1204,11 @@ def block_estimate_log_joint_mark_intensity(
             position_eval_points=position_eval_points,
             position_std=position_std,
         )
-        out = jax.lax.dynamic_update_slice(out, block_result, (start_ind, 0))
+        block_results.append(block_result[:actual_len])
 
-    return jnp.clip(out, min=LOG_EPS, max=None)
+    # The LOG_EPS clip is now a redundant safety net (every estimate path
+    # funnels through _log_joint_from_log_marginal); kept for defense in depth.
+    return jnp.clip(jnp.concatenate(block_results, axis=0), min=LOG_EPS, max=None)
 
 
 def fit_clusterless_kde_encoding_model(
@@ -1196,7 +1242,12 @@ def fit_clusterless_kde_encoding_model(
     environment : Environment
         The spatial environment.
     sampling_frequency : int, optional
-        Samples per second, by default 500
+        Samples per second, by default 500. Accepted for the uniform encoding-
+        algorithm interface (all algorithms receive it) but **not used** by this
+        KDE estimator — see Notes on the rate convention.
+    weights : jnp.ndarray | None, optional
+        Per-sample weights, by default None. Accepted for interface parity;
+        **not yet threaded** into the KDE fit. Reserved for future use.
     position_std : float, optional
         Gaussian smoothing standard deviation for position, by default sqrt(12.5)
     waveform_std : float, optional
@@ -1209,6 +1260,19 @@ def fit_clusterless_kde_encoding_model(
     Returns
     -------
     encoding_model : dict
+
+    Notes
+    -----
+    ``mean_rate`` is computed as ``n_spikes / n_position_samples`` — a rate in
+    units of *expected spikes per position sample*, not Hz. This is intentional:
+    the decoder builds its decoding time bins at the same ``sampling_frequency``
+    used to sample position, so a per-sample rate is
+    the correct Poisson intensity per decoding bin and both the ground-process
+    term and the joint intensity stay self-consistent. The assumption is that
+    the decoding bin width equals the position sampling interval; if you ever
+    decode at a different bin width, ``mean_rate`` (and thus both terms) would
+    need a ``decode_dt / position_dt`` correction. Because the rate is already
+    per-sample, ``sampling_frequency`` is not needed here.
     """
     if environment.place_bin_centers_ is None:
         raise ValueError(
@@ -1217,11 +1281,14 @@ def fit_clusterless_kde_encoding_model(
         )
 
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
-    if isinstance(position_std, int | float):
-        if environment.track_graph is not None and position.shape[1] > 1:
-            position_std = jnp.array([position_std])
-        else:
-            position_std = jnp.array([position_std] * position.shape[1])
+    # A track graph with multi-dim position linearizes occupancy to 1D, so the
+    # bandwidth is a single dimension there; otherwise one per position column.
+    n_std_dims = (
+        1
+        if (environment.track_graph is not None and position.shape[1] > 1)
+        else position.shape[1]
+    )
+    position_std = as_std_array(position_std, n_std_dims)
     # Keep waveform_std as-is (scalar or array) - will be expanded per-electrode at predict time
 
     is_track_interior = environment.is_track_interior_.ravel()
@@ -1326,7 +1393,7 @@ def predict_clusterless_kde_log_likelihood(
     occupancy_model: KDEModel,
     gpi_models: list[KDEModel],
     encoding_spike_waveform_features: list[jnp.ndarray],
-    encoding_positions: jnp.ndarray,
+    encoding_positions: list[jnp.ndarray],
     environment: Environment,
     mean_rates: jnp.ndarray,
     summed_ground_process_intensity: jnp.ndarray,
@@ -1361,8 +1428,9 @@ def predict_clusterless_kde_log_likelihood(
         KDE models for the ground process intensity.
     encoding_spike_waveform_features : list[jnp.ndarray]
         Spike waveform features for each electrode used for encoding.
-    encoding_positions : jnp.ndarray, shape (n_encoding_spikes, n_position_dims)
-        Position samples used for encoding.
+    encoding_positions : list[jnp.ndarray]
+        Per-electrode encoding positions, each of shape
+        (n_encoding_spikes, n_position_dims).
     environment : Environment
         The spatial environment
     mean_rates : jnp.ndarray, shape (n_electrodes,)
@@ -1463,12 +1531,7 @@ def predict_clusterless_kde_log_likelihood(
 
             # Expand waveform_std to match this electrode's feature count if scalar
             n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
-            if isinstance(waveform_std, (int, float)) or (
-                hasattr(waveform_std, "ndim") and waveform_std.ndim == 0
-            ):
-                electrode_waveform_std = jnp.full(n_waveform_features, waveform_std)
-            else:
-                electrode_waveform_std = waveform_std
+            electrode_waveform_std = as_std_array(waveform_std, n_waveform_features)
 
             log_likelihood += jax.ops.segment_sum(
                 block_estimate_log_joint_mark_intensity(
@@ -1507,7 +1570,7 @@ def compute_local_log_likelihood(
     occupancy_model: KDEModel,
     gpi_models: list[KDEModel],
     encoding_spike_waveform_features: list[jnp.ndarray],
-    encoding_positions: jnp.ndarray,
+    encoding_positions: list[jnp.ndarray],
     environment: Environment,
     mean_rates: jnp.ndarray,
     position_std: jnp.ndarray,
@@ -1535,8 +1598,9 @@ def compute_local_log_likelihood(
         List of KDE models for the ground process intensity.
     encoding_spike_waveform_features : list[jnp.ndarray]
         List of spike waveform features for each electrode used for encoding.
-    encoding_positions : jnp.ndarray
-        Position samples used for encoding.
+    encoding_positions : list[jnp.ndarray]
+        Per-electrode encoding positions, each of shape
+        (n_encoding_spikes, n_position_dims).
     environment : Environment
         The spatial environment.
     mean_rates : jnp.ndarray
@@ -1631,12 +1695,7 @@ def compute_local_log_likelihood(
 
         # Expand waveform_std to match this electrode's feature count if scalar
         n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
-        if isinstance(waveform_std, (int, float)) or (
-            hasattr(waveform_std, "ndim") and waveform_std.ndim == 0
-        ):
-            electrode_waveform_std = jnp.full(n_waveform_features, waveform_std)
-        else:
-            electrode_waveform_std = waveform_std
+        electrode_waveform_std = as_std_array(waveform_std, n_waveform_features)
 
         # Compute marginal density in log-space for numerical stability
         log_marginal_density = block_log_kde(
