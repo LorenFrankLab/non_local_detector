@@ -4,6 +4,7 @@ import pytest
 
 from non_local_detector.likelihoods.common import (
     KDEModel,
+    as_std_array,
     block_kde,
     block_log_kde,
     get_position_at_time,
@@ -17,6 +18,45 @@ from non_local_detector.likelihoods.common import (
 
 def rng(seed=0):
     return np.random.default_rng(seed)
+
+
+@pytest.mark.parametrize(
+    "std",
+    [
+        2.0,  # Python float
+        2,  # Python int
+        np.float32(2.0),  # NumPy 32-bit scalar (missed by isinstance(int|float))
+        np.float64(2.0),  # NumPy 64-bit scalar
+        np.array(2.0),  # 0-d NumPy array (missed by isinstance(int|float))
+        jnp.array(2.0),  # 0-d JAX scalar
+    ],
+)
+def test_as_std_array_broadcasts_scalar_like_to_n_dims(std):
+    """Every scalar-like std (including np.float32 / 0-d, which the old
+    isinstance(std, int|float) check silently missed) broadcasts to (n_dims,)."""
+    out = as_std_array(std, 3)
+    assert out.shape == (3,)
+    assert jnp.all(out == 2.0)
+
+
+def test_as_std_array_passes_arrays_through():
+    """A per-dimension array (ndim >= 1) is returned as-is (as a JAX array)."""
+    std = jnp.array([1.0, 2.0, 3.0])
+    out = as_std_array(std, 3)
+    assert out.shape == (3,)
+    assert jnp.allclose(out, std)
+
+
+def test_as_std_array_np_float32_matches_array_in_kde_model():
+    """Behavioral guard: a NumPy-scalar std must broadcast per-dimension in
+    KDEModel.predict, not stay 0-d and mis-broadcast against 2-D eval points."""
+    samples = jnp.asarray(rng().standard_normal((40, 2)))
+    eval_points = jnp.asarray(rng(1).standard_normal((7, 2)))
+    scalar = KDEModel(std=np.float32(1.5)).fit(samples).predict(eval_points)
+    array = KDEModel(std=jnp.array([1.5, 1.5])).fit(samples).predict(eval_points)
+    assert scalar.shape == (7,)
+    assert jnp.all(jnp.isfinite(scalar))
+    assert jnp.allclose(scalar, array, rtol=1e-5, atol=1e-6)
 
 
 def test_kde_and_block_kde_match_1d():

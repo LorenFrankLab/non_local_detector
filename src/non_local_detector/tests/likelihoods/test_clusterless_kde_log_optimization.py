@@ -13,6 +13,7 @@ import numpy as np
 from non_local_detector.likelihoods.clusterless_kde_log import (
     _compensated_linear_marginal,
     _compute_log_mark_kernel_gemm,
+    _log_joint_from_log_marginal,
     kde_distance,
     log_kde_distance,
 )
@@ -513,3 +514,43 @@ class TestCompensatedLinearMarginal:
         assert jnp.allclose(result[:, 15], LOG_EPS)
         # Non-zero occupancy bins should be finite
         assert jnp.all(jnp.isfinite(result[:, 0]))
+
+
+class TestLogJointFromLogMarginal:
+    """The shared degeneracy combiner: floor -inf / zero-occupancy to LOG_EPS,
+    but let NaN (a broken computation) propagate."""
+
+    def test_finite_marginal_matches_formula(self):
+        """A supported bin returns log(mean_rate) + log_marginal - log(occ)."""
+        log_marginal = jnp.array([[-2.0]])
+        occupancy = jnp.array([0.5])
+        out = _log_joint_from_log_marginal(log_marginal, 2.5, occupancy)
+        expected = safe_log(2.5, eps=EPS) + (-2.0) - safe_log(0.5, eps=EPS)
+        assert jnp.allclose(out[0, 0], expected)
+
+    def test_neg_inf_marginal_at_occupied_bin_floors_to_log_eps(self):
+        """A fully underflowed marginal (-inf, true zero mass) at an occupied
+        bin floors to LOG_EPS -- this is what makes the compensated and
+        logsumexp paths agree at degenerate bins."""
+        log_marginal = jnp.array([[-2.0, -jnp.inf]])
+        occupancy = jnp.array([0.5, 0.5])
+        out = _log_joint_from_log_marginal(log_marginal, 2.5, occupancy)
+        assert jnp.isfinite(out[0, 0])
+        assert jnp.allclose(out[0, 1], LOG_EPS)
+
+    def test_zero_occupancy_floors_to_log_eps(self):
+        """Zero-occupancy bins have no support and floor to LOG_EPS."""
+        log_marginal = jnp.array([[-2.0, -1.0]])
+        occupancy = jnp.array([0.5, 0.0])
+        out = _log_joint_from_log_marginal(log_marginal, 2.5, occupancy)
+        assert jnp.allclose(out[0, 1], LOG_EPS)
+
+    def test_nan_marginal_propagates(self):
+        """A NaN marginal signals a broken computation (e.g. bad spike-waveform
+        data or underflow with x64 disabled) and must NOT be laundered into a
+        finite LOG_EPS floor -- it has to reach the HMM's NaN diagnostics."""
+        log_marginal = jnp.array([[-2.0, jnp.nan]])
+        occupancy = jnp.array([0.5, 0.5])
+        out = _log_joint_from_log_marginal(log_marginal, 2.5, occupancy)
+        assert jnp.isfinite(out[0, 0])
+        assert jnp.isnan(out[0, 1])

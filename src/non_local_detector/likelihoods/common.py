@@ -20,7 +20,8 @@ def as_std_array(std: "jnp.ndarray | float | int", n_dims: int) -> jnp.ndarray:
     (including ``np.float32``), 0-d arrays, and JAX scalars uniformly, avoiding
     the ``isinstance(std, int | float)`` pattern that silently misses
     ``np.float32`` and 0-d arrays. Array-valued ``std`` (``ndim >= 1``) is
-    returned unchanged.
+    returned via ``jnp.asarray`` (a no-op for JAX arrays; lists/NumPy arrays are
+    converted to a JAX array).
 
     Parameters
     ----------

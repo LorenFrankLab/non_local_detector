@@ -27,9 +27,10 @@ from non_local_detector.likelihoods.common import (
 # the *position* kernel (many bins far from an encoding spike, small
 # position_std, or long linearized tracks) also contributes to underflow. In
 # float32 each factor floors near 1e-38, so joint terms far below the row max
-# are dropped regardless of mark dimensionality. The empirical validation above
-# was run with realistic position kernels; if you rely on a much wider position
-# dynamic range (or disable jax_enable_x64), prefer the logsumexp path.
+# are dropped regardless of mark dimensionality. Note x64 is not enabled
+# anywhere in this package, so float32 is the normal regime. The empirical
+# validation above was run with realistic position kernels; if you rely on a
+# much wider position dynamic range, prefer the logsumexp path.
 _COMPENSATED_LINEAR_MAX_FEATURES = 8
 
 
@@ -39,20 +40,28 @@ def _log_joint_from_log_marginal(
     """Combine a log marginal density with mean rate and occupancy.
 
     Computes ``log(mean_rate * marginal / occupancy)`` in log-space and applies
-    a single degeneracy contract shared by every joint-intensity path: a bin
-    with zero occupancy or a fully underflowed marginal (``-inf``) collapses to
-    ``LOG_EPS`` ("no support here"). Routing the compensated-linear and
-    logsumexp branches through this one function makes them produce identical
-    results instead of path-dependent ``-inf`` vs ``LOG_EPS`` values, and lets
-    ``block_estimate_log_joint_mark_intensity``'s ``LOG_EPS`` clamp be a
-    redundant safety net rather than the thing that reconciles the paths.
+    a single degeneracy contract shared by the GEMM joint-intensity paths
+    (compensated-linear and logsumexp; the ``use_gemm=False`` reference path
+    floors independently via ``safe_log``): a bin with zero occupancy or a fully
+    underflowed marginal (``-inf``, true zero mass) collapses to ``LOG_EPS``
+    ("no support here"). A ``NaN`` marginal is deliberately *not* floored — it
+    signals a broken computation and must propagate so the HMM's NaN diagnostics
+    in ``core.py`` can surface it rather than have it laundered into a finite
+    value. Routing the compensated-linear and logsumexp branches through this
+    one function makes them agree at degenerate bins instead of returning
+    path-dependent ``-inf`` vs ``LOG_EPS``.
+
+    ``block_estimate_log_joint_mark_intensity``'s ``LOG_EPS`` clamp is no longer
+    what reconciles the paths at degenerate bins, but it is *not* redundant: a
+    supported bin with a legitimately tiny marginal comes back below ``LOG_EPS``
+    and is floored there.
 
     Parameters
     ----------
     log_marginal : jnp.ndarray, shape (n_decoding_spikes, n_position_bins)
-        Log marginal mark/position density. Degenerate (zero-mass) bins must be
-        encoded as ``-inf`` so they are floored consistently; legitimate small
-        values below ``LOG_EPS`` are preserved.
+        Log marginal mark/position density. True zero-mass bins must be encoded
+        as ``-inf`` so they floor consistently; legitimate small values below
+        ``LOG_EPS`` are preserved here (and floored later by the block clamp).
     mean_rate : float
         Mean firing rate for this electrode.
     occupancy : jnp.ndarray, shape (n_position_bins,)
@@ -64,12 +73,13 @@ def _log_joint_from_log_marginal(
     """
     log_mean_rate = safe_log(mean_rate, eps=EPS)
     log_occ = safe_log(occupancy, eps=EPS)
-    supported = jnp.isfinite(log_marginal) & (occupancy[None, :] > 0.0)
-    return jnp.where(
-        supported,
-        log_mean_rate + log_marginal - log_occ[None, :],
-        LOG_EPS,
-    )
+    log_joint = log_mean_rate + log_marginal - log_occ[None, :]
+    # Zero-occupancy bins have no support -> LOG_EPS floor.
+    log_joint = jnp.where(occupancy[None, :] > 0.0, log_joint, LOG_EPS)
+    # Floor true zero-mass marginals (-inf) to LOG_EPS, but let a NaN through:
+    # isneginf is True only for -inf, so NaN survives and reaches core.py's
+    # NaN diagnostics instead of being masked to a finite value.
+    return jnp.where(jnp.isneginf(log_joint), LOG_EPS, log_joint)
 
 
 @jax.jit
@@ -98,8 +108,10 @@ def kde_distance(
 
     Notes
     -----
-    This function assumes inputs are valid (same dimensionality, positive std).
-    No validation is performed here to maintain JIT compatibility.
+    Inputs are assumed to have matching dimensionality (not validated, to keep
+    JIT compatibility). ``std`` is clamped to ``[EPS, inf)`` inside the delegated
+    ``log_kde_distance`` call, so a zero bandwidth yields a heavily peaked kernel
+    rather than NaN.
     """
     return jnp.exp(log_kde_distance(eval_points, samples, std))
 
@@ -1183,12 +1195,18 @@ def block_estimate_log_joint_mark_intensity(
     # jitted estimator at the same shape — avoiding a recompile for the
     # leftover block. Results are collected and concatenated once instead of
     # O(n_blocks) full-array dynamic_update_slice copies.
+    #
+    # Pad by repeating the last real row (mode="edge"), not with zeros: the
+    # compensated-linear path takes a max over the decoding axis, so a zero row
+    # could perturb that max (and thus the shared stabilization) for real rows.
+    # A duplicated real row is already accounted for in the max, so padding is
+    # provably inert and the kept rows are bit-identical to the unpadded result.
     block_results = []
     for start_ind in range(0, n_decoding_spikes, block_size):
         block = decoding_spike_waveform_features[start_ind : start_ind + block_size]
         actual_len = block.shape[0]
         if actual_len < block_size:
-            block = jnp.pad(block, ((0, block_size - actual_len), (0, 0)))
+            block = jnp.pad(block, ((0, block_size - actual_len), (0, 0)), mode="edge")
         block_result = estimate_log_joint_mark_intensity(
             block,
             encoding_spike_waveform_features,
@@ -1206,8 +1224,12 @@ def block_estimate_log_joint_mark_intensity(
         )
         block_results.append(block_result[:actual_len])
 
-    # The LOG_EPS clip is now a redundant safety net (every estimate path
-    # funnels through _log_joint_from_log_marginal); kept for defense in depth.
+    # Floor the assembled result at LOG_EPS. _log_joint_from_log_marginal
+    # already reconciles the *degenerate* (-inf / zero-occupancy) bins across
+    # paths, so this clip no longer has to do that -- but it is still
+    # load-bearing: a supported bin with a legitimately tiny marginal comes back
+    # below LOG_EPS and is floored here. (NaN, if any, is preserved by clip and
+    # surfaces downstream.)
     return jnp.clip(jnp.concatenate(block_results, axis=0), min=LOG_EPS, max=None)
 
 

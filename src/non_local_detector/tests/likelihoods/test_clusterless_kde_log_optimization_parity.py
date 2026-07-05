@@ -1,12 +1,59 @@
 """Test that optimized log-space version uses all optimizations correctly."""
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from non_local_detector.likelihoods.clusterless_kde_log import (
     block_estimate_log_joint_mark_intensity,
     fit_clusterless_kde_encoding_model,
+    log_kde_distance,
 )
+
+
+def _synthetic_block_inputs(n_dec, seed=7):
+    rng = np.random.default_rng(seed)
+    n_enc, n_pos, n_features = 30, 25, 4
+    dec = jnp.asarray(rng.standard_normal((n_dec, n_features)) * 10 + 50)
+    enc = jnp.asarray(rng.standard_normal((n_enc, n_features)) * 10 + 50)
+    wf_std = jnp.array([5.0] * n_features)
+    occ = jnp.asarray(rng.random(n_pos) * 0.6 + 0.2)
+    enc_pos = jnp.asarray(rng.standard_normal((n_enc, 2)))
+    pos_eval = jnp.asarray(rng.standard_normal((n_pos, 2)))
+    log_pos = log_kde_distance(pos_eval, enc_pos, jnp.array([1.0, 1.0]))
+    return dec, enc, wf_std, occ, log_pos
+
+
+def test_final_block_padding_is_inert():
+    """A single block with an edge-padded tail (block_size > n_dec) must give
+    bit-identical results to a single unpadded block (block_size == n_dec).
+    Guards the pad/slice logic: padded rows must not leak into the kept rows."""
+    dec, enc, wf_std, occ, log_pos = _synthetic_block_inputs(n_dec=10)
+    unpadded = block_estimate_log_joint_mark_intensity(
+        dec, enc, wf_std, occ, 2.5, log_pos, block_size=10
+    )
+    padded = block_estimate_log_joint_mark_intensity(
+        dec, enc, wf_std, occ, 2.5, log_pos, block_size=16
+    )
+    assert padded.shape == (10, occ.shape[0])
+    assert jnp.allclose(unpadded, padded, rtol=1e-6, atol=1e-7)
+
+
+def test_multi_block_matches_single_block():
+    """Splitting decoding spikes across multiple blocks (with a padded final
+    block) must match a single-block computation. n_dec=10 with block_size=4
+    forces blocks of 4+4+2 (padded tail); the tolerance still catches a
+    scrambled concat order or a wrong [:actual_len] slice (order-1 errors),
+    while allowing the inherent per-block float32 stabilization noise."""
+    dec, enc, wf_std, occ, log_pos = _synthetic_block_inputs(n_dec=10)
+    single = block_estimate_log_joint_mark_intensity(
+        dec, enc, wf_std, occ, 2.5, log_pos, block_size=100
+    )
+    multi = block_estimate_log_joint_mark_intensity(
+        dec, enc, wf_std, occ, 2.5, log_pos, block_size=4
+    )
+    assert single.shape == (10, occ.shape[0]) and multi.shape == (10, occ.shape[0])
+    assert jnp.allclose(single, multi, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parametrize("pos_tile_size", [None, 10, 50])
