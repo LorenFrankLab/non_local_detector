@@ -51,13 +51,19 @@ def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-    y : np.ndarray, shape (..., n_states + 1)
-        The softmax values. Can have leading dimensions.
+    y : np.ndarray, shape (n_states + 1,) or (n_samples, n_states + 1)
+        The softmax values.
 
     Returns
     -------
-    inverse : np.ndarray, shape (..., n_states)
+    inverse : np.ndarray, shape (n_states,) or (n_samples, n_states)
         The inverse of the softmax values
+
+    Notes
+    -----
+    The last state is the reference category of the centered parameterization.
+    If it has (near) zero probability, ``log(tiny) ≈ -708`` produces intercepts
+    near +708 that can stall an L-BFGS warm start; keep nonzero mass there.
 
     Example
     -------
@@ -65,6 +71,10 @@ def centered_softmax_inverse(y: np.ndarray) -> np.ndarray:
     >>> np.allclose(np.exp(centered_softmax_inverse(y)), np.asarray([2,3,4]))
     True
     """
+    y = np.asarray(y)
+    if not np.issubdtype(y.dtype, np.floating):
+        # np.finfo requires a floating dtype; promote integer/other inputs.
+        y = y.astype(float)
     EPS = np.finfo(y.dtype).tiny
     y_safe = np.clip(y, EPS, None)
     return np.log(y_safe[..., :-1]) - np.log(y_safe[..., [-1]])
@@ -742,8 +752,9 @@ def get_transition_prior(
     prior_params : np.ndarray, shape (n_states, n_states)
         Dirichlet prior parameters for each transition matrix row.
     """
-    if isinstance(stickiness, int | float):
-        stickiness_arr = stickiness * np.eye(n_states)
+    if np.ndim(stickiness) == 0:
+        # Scalar (Python or NumPy, including 0-d arrays): same value all states.
+        stickiness_arr = float(stickiness) * np.eye(n_states)
     else:
         # Assume stickiness provided per state
         stickiness_arr = np.diag(stickiness)
@@ -812,7 +823,11 @@ def estimate_non_stationary_state_transition_from_responses(
             row_alpha,
             transition_regularization,
         )
-        options = {"maxiter": maxiter}
+        options: dict = {}
+        if maxiter is not None:
+            options["maxiter"] = maxiter
+        # scipy deprecated `disp`/`iprint` for L-BFGS-B (removal in 1.18), so
+        # only forward `disp` to methods that still accept it.
         if optimization_method != "L-BFGS-B":
             options["disp"] = disp
         minimize_kwargs = {
@@ -1044,11 +1059,12 @@ def make_transition_from_diag(diag: np.ndarray) -> np.ndarray:
         The constructed transition matrix.
     """
     n_states = len(diag)
-    transition_matrix = diag * np.eye(n_states)
     if n_states == 1:
-        off_diag = 1.0
-    else:
-        off_diag = ((1.0 - diag) / (n_states - 1.0))[:, np.newaxis]
+        # A single state has nowhere else to go; the only stochastic matrix is
+        # [[1.0]] regardless of the requested diagonal value.
+        return np.ones((1, 1))
+    transition_matrix = diag * np.eye(n_states)
+    off_diag = ((1.0 - diag) / (n_states - 1.0))[:, np.newaxis]
     transition_matrix += np.ones((n_states, n_states)) * off_diag - off_diag * np.eye(
         n_states
     )

@@ -108,6 +108,20 @@ class TestCenteredSoftmax:
             assert np.all(np.isfinite(result))
             assert result.dtype == dtype
 
+    def test_centered_softmax_inverse_accepts_integer_input(self):
+        """Integer-typed input should not raise from np.finfo."""
+        # Arrange - an integer identity-like matrix (e.g. from a list of ints)
+        y = np.array([[1, 0], [0, 1]])
+        assert not np.issubdtype(y.dtype, np.floating)
+
+        # Act - previously raised "ValueError: data type <int> not inexact"
+        result = centered_softmax_inverse(y)
+
+        # Assert - finite and matches the float computation
+        assert np.all(np.isfinite(result))
+        expected = centered_softmax_inverse(y.astype(float))
+        assert np.allclose(result, expected)
+
     def test_centered_softmax_roundtrip(self):
         """Forward then inverse should be identity."""
         # Arrange
@@ -185,6 +199,19 @@ class TestTransitionMatrixConstruction:
         assert np.allclose(trans[0, 0], 0.0)
         assert np.allclose(trans[1, 1], 1.0)
 
+    @pytest.mark.parametrize("diag_value", [1.0, 0.9, 0.0])
+    def test_make_transition_from_diag_single_state(self, diag_value):
+        """A single state has only the [[1.0]] stochastic matrix.
+
+        Regression guard: the old special case set off_diag = 1.0, yielding
+        [[diag]] whose row sums to `diag` rather than 1 for diag != 1.
+        """
+        trans = make_transition_from_diag(np.array([diag_value]))
+
+        assert trans.shape == (1, 1)
+        assert_stochastic_matrix(trans)
+        assert np.allclose(trans, np.ones((1, 1)))
+
 
 # Tests for jax_centered_log_softmax_forward with 2D input
 class TestJaxCenteredLogSoftmax2D:
@@ -228,6 +255,27 @@ class TestGetTransitionPrior:
         # Each diagonal element should have its own stickiness
         expected_diag = np.array([1.5, 2.5, 3.5])  # concentration + stickiness
         assert np.allclose(np.diag(prior), expected_diag)
+
+    @pytest.mark.parametrize(
+        "stickiness",
+        [np.float32(2.0), np.float64(2.0), np.int64(2), np.array(2.0)],
+        ids=["float32", "float64", "int64", "zero_d_array"],
+    )
+    def test_get_transition_prior_numpy_scalar_stickiness(self, stickiness):
+        """NumPy scalars and 0-d arrays are treated as scalar stickiness.
+
+        Regression guard: `isinstance(stickiness, int | float)` missed
+        np.float32/np.int64/0-d arrays, which then hit `np.diag(scalar)` and
+        raised.
+        """
+        n_states = 3
+        prior = get_transition_prior(
+            concentration=1.0, stickiness=stickiness, n_states=n_states
+        )
+
+        assert prior.shape == (n_states, n_states)
+        assert np.allclose(np.diag(prior), np.ones(n_states) + 2.0)
+        assert np.allclose(prior[0, 1], 1.0)
 
 
 # Tests for dirichlet_neg_log_likelihood
