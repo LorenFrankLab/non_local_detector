@@ -101,6 +101,17 @@ def test_laplacian_disconnected_components_two_zero_modes():
     assert np.count_nonzero(np.abs(eigvals) < 1e-9) == 2
 
 
+@pytest.mark.parametrize("bad_distance", [0.0, -1.0])
+def test_laplacian_rejects_nonpositive_distance(bad_distance):
+    """A zero/negative edge distance fails loudly (not ZeroDivisionError / silent)."""
+    graph = nx.Graph()
+    graph.add_nodes_from([0, 1, 2])
+    graph.add_edge(0, 1, distance=1.0)
+    graph.add_edge(1, 2, distance=bad_distance)
+    with pytest.raises(ValidationError):
+        build_laplacian(graph)
+
+
 # ==============================================================================
 # diffusion_eigenbasis
 # ==============================================================================
@@ -239,6 +250,24 @@ def test_diffuse_conserves_mass():
     assert smoothed.shape == fields.shape
     np.testing.assert_allclose(smoothed.sum(0), fields.sum(0), atol=1e-10)
     assert np.all(smoothed >= 0.0)  # clipped
+
+
+def test_diffuse_truncated_point_source_conserves_mass():
+    """A low-rank point-source kernel has negative lobes; clipping must not add mass.
+
+    The constant/null mode is always retained, so total mass is a conserved
+    quantity; ``diffuse`` renormalizes after clipping so a truncated basis cannot
+    inflate the field sum.
+    """
+    L = build_laplacian(path_graph(60))
+    eigvals, eigvecs = diffusion_eigenbasis(L, rank=8)  # aggressive truncation
+    source = np.zeros((60, 1))
+    source[30] = 1.0
+
+    smoothed = diffuse(eigvals, eigvecs, sigma=3.0, fields=source)
+
+    assert np.all(smoothed >= 0.0)
+    np.testing.assert_allclose(smoothed.sum(), 1.0, atol=1e-10)  # mass preserved
 
 
 def test_diffuse_bandwidth_independent_of_bin_size_2d():
@@ -661,6 +690,14 @@ def test_cached_eigenbasis_reuse_and_rank_keying():
     assert 5 in env._diffusion_eigenbasis_
 
 
+def test_cached_eigenbasis_rank_below_components_raises_even_when_full_cached():
+    """Slicing a cached full basis must not bypass the rank >= n_components guard."""
+    env = make_2d_split_env()  # two interior components -> two null modes required
+    cached_eigenbasis(env, rank=None)  # cache the full basis first
+    with pytest.raises(ValidationError):
+        cached_eigenbasis(env, rank=1)  # would slice to a single null mode
+
+
 def test_cached_objects_are_read_only():
     """Cached graph/arrays are frozen so a stray mutation can't corrupt the basis."""
     env = make_2d_env()
@@ -680,6 +717,20 @@ def test_cached_objects_are_read_only():
     trunc_vals, trunc_vecs = cached_eigenbasis(env, rank=4)
     assert not trunc_vals.flags.writeable
     assert not trunc_vecs.flags.writeable
+
+
+def test_cached_eigenbasis_immune_to_graph_edge_attribute_mutation():
+    """nx.freeze allows edge-attribute writes; the Laplacian snapshot must still
+    protect the cached eigenbasis from a mutated edge distance."""
+    reference, _ = cached_eigenbasis(make_2d_env(), rank=8)
+
+    env = make_2d_env()  # identical grid (same seed)
+    graph, _, _ = environment_graph(env)  # snapshots L before the mutation below
+    an_edge = next(iter(graph.edges))
+    graph.edges[an_edge]["distance"] = 999.0  # freeze does NOT block this
+
+    got, _ = cached_eigenbasis(env, rank=8)  # built from the pristine snapshot
+    np.testing.assert_allclose(got, reference, atol=1e-8)
 
 
 def test_eig_cache_invalidated_on_refit():

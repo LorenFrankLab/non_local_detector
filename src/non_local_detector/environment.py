@@ -184,6 +184,10 @@ class Environment:
         sorted-spikes diffusion likelihood, populated by
         ``likelihoods.diffusion.environment_graph`` and invalidated by
         :meth:`fit_place_grid`.
+    _diffusion_laplacian_ : scipy.sparse matrix, optional
+        Snapshot of the interior-bin graph Laplacian taken when ``_diffusion_graph_``
+        is built, so the cached eigenbasis is immune to later edge-attribute
+        mutations of the returned graph. Invalidated by :meth:`fit_place_grid`.
     _diffusion_eigenbasis_ : dict, optional
         Lazily-built cache of graph-Laplacian eigenbases keyed by ``rank`` for the
         sorted-spikes diffusion likelihood, populated by
@@ -490,11 +494,13 @@ class Environment:
         if hasattr(self, "_bin_distance_matrix_"):
             del self._bin_distance_matrix_
 
-        # Invalidate the cached diffusion interior-bin graph and Laplacian
+        # Invalidate the cached diffusion interior-bin graph, Laplacian, and
         # eigenbasis (used by the sorted-spikes diffusion likelihood); the grid
         # is about to be rebuilt, so any cached basis is stale.
         if hasattr(self, "_diffusion_graph_"):
             del self._diffusion_graph_
+        if hasattr(self, "_diffusion_laplacian_"):
+            del self._diffusion_laplacian_
         if hasattr(self, "_diffusion_eigenbasis_"):
             del self._diffusion_eigenbasis_
 

@@ -64,7 +64,15 @@ def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
     cols: list[int] = []
     vals: list[float] = []
     for u, v, data in graph.edges(data=True):
-        w = 1.0 / (data["distance"] ** 2)  # finite-difference weight
+        distance = data["distance"]
+        if not distance > 0:  # also catches NaN
+            raise ValidationError(
+                "graph edge has a non-positive 'distance'",
+                expected="every edge 'distance' > 0",
+                got=f"distance = {distance} on edge ({u}, {v})",
+                hint="Interior-bin edges must carry a positive Euclidean distance.",
+            )
+        w = 1.0 / distance**2  # finite-difference weight
         rows += [u, v]
         cols += [v, u]
         vals += [w, w]
@@ -72,6 +80,21 @@ def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
     weights = scipy.sparse.csr_matrix((vals, (rows, cols)), shape=(n_nodes, n_nodes))
     degree = np.asarray(weights.sum(axis=1)).ravel()
     return (scipy.sparse.diags(degree) - weights).tocsr()
+
+
+def _require_rank_covers_components(rank: int, n_components: int) -> None:
+    """Raise if a truncated ``rank`` would drop a connected component's null mode."""
+    if rank < n_components:
+        raise ValidationError(
+            "rank is too small to retain every connected component's null mode",
+            expected=f"rank >= n_components = {n_components}",
+            got=f"rank = {rank}",
+            hint=(
+                "Each connected component contributes one zero mode that must be "
+                "kept for mass conservation; raise rank to at least the number of "
+                "connected components (or use rank=None for the full basis)."
+            ),
+        )
 
 
 def diffusion_eigenbasis(
@@ -116,17 +139,7 @@ def diffusion_eigenbasis(
     n_components = scipy.sparse.csgraph.connected_components(
         L, directed=False, return_labels=False
     )
-    if rank < n_components:
-        raise ValidationError(
-            "rank is too small to retain every connected component's null mode",
-            expected=f"rank >= n_components = {n_components}",
-            got=f"rank = {rank}",
-            hint=(
-                "Each connected component contributes one zero mode that must be "
-                "kept for mass conservation; raise rank to at least the number of "
-                "connected components (or use rank=None for the full basis)."
-            ),
-        )
+    _require_rank_covers_components(rank, n_components)
 
     try:
         eigvals, eigvecs = scipy.sparse.linalg.eigsh(L, k=rank, sigma=-1e-8, which="LM")
@@ -168,14 +181,32 @@ def diffuse(
     Returns
     -------
     smoothed : np.ndarray, shape (n_bins, n_fields)
-        Diffused fields, with tiny negative values (from truncation / round-off)
-        clipped to zero.
+        Diffused fields, clipped to be non-negative and renormalized so each
+        column's total mass equals the input field's total (mass-conserving).
+
+    Notes
+    -----
+    The heat kernel conserves each field's total mass because the constant (null)
+    mode is always retained. At full rank the kernel is already non-negative, so
+    clipping only removes round-off. A truncated basis, however, can produce
+    non-tiny negative lobes (e.g. for a point source); clipping those alone would
+    inflate the total, so each column is renormalized back to its input sum.
     """
     t = sigma**2 / 2.0
     coeff = np.exp(-t * eigvals)  # (m,)
     proj = eigvecs.T @ fields  # (m, n_fields)
     smoothed = eigvecs @ (coeff[:, None] * proj)  # (n_bins, n_fields)
-    return np.clip(smoothed, 0.0, None)
+
+    clipped = np.clip(smoothed, 0.0, None)
+    input_mass = fields.sum(axis=0)  # conserved quantity
+    clipped_mass = clipped.sum(axis=0)
+    scale = np.divide(
+        input_mass,
+        clipped_mass,
+        out=np.zeros_like(input_mass, dtype=float),
+        where=clipped_mass > 0,
+    )
+    return clipped * scale
 
 
 def to_density(smoothed: np.ndarray, bin_sizes: np.ndarray) -> np.ndarray:
@@ -275,13 +306,17 @@ def environment_graph(
             )
         result = _linearized_graph(environment)
 
-    # The cached graph/arrays are shared across all neurons and every EM refit, so
-    # freeze them: a stray in-place mutation anywhere would silently corrupt the
-    # basis for every later caller.
+    # The cached graph/arrays are shared across all neurons and every EM refit.
+    # Freeze the graph topology and mark the arrays read-only so a stray mutation
+    # cannot corrupt later callers. `nx.freeze` does NOT block edge-attribute
+    # writes, so snapshot the Laplacian here — before the graph is handed out — and
+    # derive the eigenbasis from that snapshot (see `cached_eigenbasis`); a later
+    # `graph.edges[e]["distance"] = ...` then cannot change the cached basis.
     graph, node_order, bin_sizes = result
     nx.freeze(graph)
     node_order.setflags(write=False)
     bin_sizes.setflags(write=False)
+    environment._diffusion_laplacian_ = build_laplacian(graph)
     environment._diffusion_graph_ = result
     return result
 
@@ -371,16 +406,27 @@ def cached_eigenbasis(
     if rank in cache:
         return cache[rank]
 
+    # Build (and cache) the Laplacian snapshot; environment_graph runs first so a
+    # later mutation of the returned graph cannot reach this L.
+    environment_graph(environment)
+    laplacian = environment._diffusion_laplacian_
+
     if rank is not None and None in cache:
         eigvals, eigvecs = cache[None]
         if rank <= eigvals.shape[0]:
+            # Validate before slicing: the full basis has no idea about `rank`, so
+            # this path would otherwise bypass diffusion_eigenbasis's guard and
+            # silently drop a component's null mode.
+            n_components = scipy.sparse.csgraph.connected_components(
+                laplacian, directed=False, return_labels=False
+            )
+            _require_rank_covers_components(rank, n_components)
             # Slices of the read-only full-rank basis are themselves read-only.
             sliced = (eigvals[:rank], eigvecs[:, :rank])
             cache[rank] = sliced
             return sliced
 
-    graph, _, _ = environment_graph(environment)
-    eigvals, eigvecs = diffusion_eigenbasis(build_laplacian(graph), rank)
+    eigvals, eigvecs = diffusion_eigenbasis(laplacian, rank)
     # Freeze the cached basis: it is reused across neurons and EM refits.
     eigvals.setflags(write=False)
     eigvecs.setflags(write=False)
