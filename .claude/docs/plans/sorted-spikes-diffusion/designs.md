@@ -82,8 +82,12 @@ def to_density(smoothed, bin_sizes):          # smoothed (n_bins, n_fields)
 ```
 
 Place field mirrors `sorted_spikes_kde.py:204-219` exactly (so units match; pinned by the
-KDE drop-in test). `occupancy` and `marginal_k` are `to_density` outputs on interior bins;
-`mean_rate_k` = weighted spike count / weight sum (KDE convention, default `weights` = ones).
+KDE drop-in test). `occupancy` is the `to_density` of the position field weighted by
+`weights`; `marginal_k` is the `to_density` of neuron `k`'s spike field **weighted by
+`weights_at_spike_times`** (the `weights` interpolated to each spike time,
+`sorted_spikes_kde.py:178`) — not unweighted spike counts. `mean_rate_k =
+weights_at_spike_times.sum() / weight_sum` (KDE convention, default `weights` = ones). EM
+passes non-uniform posterior `weights` (`base.py:1991`), so this weighting is load-bearing.
 The rate is computed on interior bins then **scattered into a full-grid array** exactly like
 KDE (non-interior bins stay 0), so `place_fields` is `(n_neurons, n_total_bins)`:
 

@@ -30,12 +30,17 @@ model-level drop-in for `sorted_spikes_kde`.
     environment, weights=None, sampling_frequency=500, position_std=sqrt(12.5),
     block_size=100, disable_progress_bar=False)` — parameter names must match
     `_encoding_model_data` keys (filtered by `inspect.signature`, base.py:3886). Call the
-    engine (`environment_graph` → cached `diffusion_eigenbasis`); apply the σ-guard; pixellate
-    occupancy (weights = KDE convention, default ones) + per-neuron spike-count fields onto
-    interior bins in `node_order`; batch-`diffuse`; `to_density`; compute
-    `mean_rate·marginal/occupancy` with the KDE guard + `EPS` floor ([designs.md](designs.md#density)).
-    Return the [encoding-dict keys](shared-contracts.md#encoding-dict) + `node_order`,
-    `bin_sizes`, engine handle.
+    engine (`cached_eigenbasis(environment, rank)`); apply the σ-guard; pixellate the
+    occupancy field weighted by `weights` (KDE convention, default ones) **and each neuron's
+    spike field weighted by `weights_at_spike_times`** — the `weights` interpolated to each
+    spike time (`sorted_spikes_kde.py:178`), NOT unweighted counts; `mean_rate_k =
+    weights_at_spike_times.sum() / weight_sum`. (EM refits pass posterior `weights`,
+    `base.py:1991`, so spike fields must be weighted.) Fields go onto interior bins in
+    `node_order`; batch-`diffuse`; `to_density`; compute `mean_rate·marginal/occupancy` with
+    the KDE guard + `EPS` floor, then **scatter interior rates into full-grid
+    `place_fields`** ([designs.md](designs.md#density)). Return the
+    [encoding-dict keys](shared-contracts.md#encoding-dict) + `node_order`, `bin_sizes`,
+    engine handle.
   - `predict_sorted_spikes_diffusion_log_likelihood(...)` — **dedicated** function; params ==
     encoding-dict keys (do not call the KDE predict). Non-local branch = copy of KDE's
     non-local body ([sorted_spikes_kde.py:339-366](../../../../src/non_local_detector/likelihoods/sorted_spikes_kde.py#L339-L366));
@@ -66,6 +71,7 @@ model-level drop-in for `sorted_spikes_kde`.
 | --- | --- |
 | `test_fit_encoding_dict_keys_and_shapes` | dict has all [contract keys](shared-contracts.md#encoding-dict); `place_fields` is FULL-GRID `(n_neurons, n_total_bins)` (interior bins > 0, non-interior = 0), finite; `no_spike_part_log_likelihood` shape `(n_total_bins,)`. Include a gap/barrier env (some non-interior bins) so interior-only storage would fail. |
 | `test_kde_dropin_equivalence` | wall-less `simple_2d_environment`, well-sampled trajectory: diffusion vs KDE `place_fields` agree ≤ 5% at interior bins away from the boundary (pins units). |
+| `test_nonuniform_weights_parity` | non-uniform `weights` (e.g. posterior-like): diffusion `mean_rates` and `place_fields` track KDE's weighted result (spike fields are weighted by `weights_at_spike_times`, not unweighted counts). |
 | `test_predict_shapes_local_nonlocal` | non-local `(n_time, n_interior)`, local `(n_time, 1)`; finite; mirrors `test_sorted_spikes_kde.py`. |
 | `test_predict_signature_matches_dict` | `set(inspect.signature(predict).parameters) ⊇ set(encoding_dict) ∪ {time,is_local}` (guards the splat contract). |
 | `test_invariants` (`property`) | place fields ≥ 0 & finite; per-time posteriors from the LL sum to 1; no NaN/Inf. |

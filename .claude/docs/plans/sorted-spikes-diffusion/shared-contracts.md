@@ -33,6 +33,16 @@ def diffusion_eigenbasis(
     (one per connected component, multiplicity = number of components), so require
     rank >= n_components; omitting any breaks component-wise mass conservation."""
 
+def cached_eigenbasis(
+    environment: "Environment", rank: int | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Cache-owning wrapper. On a miss, build the interior-bin graph (environment_graph),
+    L (build_laplacian), and the eigenbasis (diffusion_eigenbasis), storing it in
+    environment._diffusion_eigenbasis_[rank]; on a hit, return the cached basis (a cached
+    full-rank entry may be sliced to a smaller rank). diffusion_eigenbasis(L, rank) alone
+    cannot touch the environment cache — it takes L — so callers use THIS to get a cached
+    basis. Returns (eigvals, eigvecs)."""
+
 def diffuse(
     eigvals: np.ndarray, eigvecs: np.ndarray, sigma: float, fields: np.ndarray
 ) -> np.ndarray:

@@ -32,9 +32,13 @@ place.
     `N (n_bins, n_neurons)` and occupancy `o`; fit the population penalized-Poisson GAM with
     occupancy as a shared log-offset and generalized-ridge penalty `λ·diag(d)`, vectorized
     over neurons in JAX (`vmap`) — the NeMoS trick ([designs.md](designs.md#mrf)); select `λ`
-    by REML (default a single shared `λ`, Open Question 3). Return `place_fields = exp(η)`
-    and the same [encoding-dict keys](shared-contracts.md#encoding-dict) as Phase 2 (+ any
-    MRF-specific handles), so predict/HMM are unchanged.
+    by REML (default a single shared `λ`, Open Question 3). Compute `exp(η)` on interior bins,
+    then **scatter into FULL-GRID `place_fields` `(n_neurons, n_total_bins)`** (interior set,
+    non-interior 0) and full-grid `no_spike_part_log_likelihood`, exactly as Phase 2 /
+    [shared-contracts.md](shared-contracts.md#encoding-dict) require — NOT interior-only
+    (`get_bin_ind` local indexing is full-grid). Return the same
+    [encoding-dict keys](shared-contracts.md#encoding-dict) as Phase 2 (+ any MRF-specific
+    handles), so predict/HMM are unchanged.
   - `predict_sorted_spikes_mrf_log_likelihood(...)` — reuse the Phase-2 predict body
     (place-field-based non-local; bin-indexed local); factor the shared body into a small
     helper if it avoids duplication.

@@ -52,19 +52,26 @@ smoothness (REML), and uncertainty (SE).
 
 ### Finite-difference Laplacian `L`
 
-Given the interior-bin graph (below) with Euclidean edge `distance` `d`:
-edge weight `w = 1/d²`; `L = D - W` (sparse, **symmetric**, σ-independent). On a regular
-grid `L ≈ -∂²`, so `exp(-tL)` with `t = σ²/2` is a Gaussian of std σ **independent of bin
-size** (verified: effective std/σ = 1.000 at bin sizes 0.5/1/2/4). `1/d²` down-weights
-longer (diagonal) edges, mitigating connect-8 anisotropy.
+Given the interior-bin graph (below) with Euclidean edge `distance` `d`, on a
+**face-adjacent** graph: edge weight `w = 1/d²`; `L = D - W` (sparse, **symmetric**,
+σ-independent). On a regular grid `L ≈ -∂²`, so `exp(-tL)` with `t = σ²/2` is a Gaussian of
+std σ **independent of bin size** (verified: std/σ = 1.000 at bin sizes 0.5/1/2/4 in 1D and
+on a 2D face-adjacent grid). The N-D adapter **drops Moore/diagonal edges**: with `1/d²`
+weighting the diagonals inflate the small-wavenumber diffusion coefficient, oversmoothing by
+≈√2 in 2D (verified: 8-connected std/σ = 1.413 vs face-only 1.000).
 
 ### Eigendecomposition (built once, cached)
 
-`L = QΛQᵀ` via dense `scipy.linalg.eigh` (default), or truncated `scipy.sparse.linalg.eigsh`
-for the `rank` smallest eigenpairs when `n_bins` is large (the null `λ=0` mode is always
-kept, preserving mass). Cached on the `Environment` keyed by identity — reused across all
-neurons and across EM refits (`fit_encoding_model` is called every EM M-step,
-`base.py:1991`, with the graph and σ constant, so the eig is invariant).
+`L = QΛQᵀ` via dense `scipy.linalg.eigh` (default), or truncated `scipy.sparse.linalg.eigsh(...,
+sigma=-1e-8, which="LM")` for the `rank` smallest eigenpairs when `n_bins` is large — a
+**negative** shift, because `sigma=0` factorizes the singular Laplacian and is unreliable
+(`which="SM"` is the no-shift-invert fallback). Truncation keeps **all** zero modes (one per
+connected component, `rank ≥ n_components`), preserving component-wise mass. A cached wrapper
+`cached_eigenbasis(environment, rank)` owns the cache: a dict on the `Environment` **keyed by
+`rank`** (`_diffusion_eigenbasis_[rank]`), invalidated in `fit_place_grid` like
+`_bin_distance_matrix_`. Reused across all neurons and across EM refits
+(`fit_encoding_model` is called every EM M-step, `base.py:1991`, with the graph and σ
+constant, so the eig is invariant).
 
 ### Diffusion application (all neurons at once)
 
@@ -86,12 +93,25 @@ mode and no `M⁻¹L` — the volume correction lives entirely in this normaliza
 
 ### Place field and contract
 
-Mirrors `sorted_spikes_kde.py`: smooth occupancy (weighted by `weights`, **KDE's
-convention — default ones**) and each neuron's spike-count field; normalize to densities;
-`place_field_k = mean_rate_k · marginal_k / occupancy` with KDE's zero-occupancy guard
-(`where(occ>0, marginal/occ, EPS)`) and `EPS` floor. Returns the same dict keys as
-`sorted_spikes_kde` **plus** the cached spectral engine handle, `node_order`, `bin_sizes`
-(the base class splats the whole dict into predict — every key must be a predict param).
+Mirrors `sorted_spikes_kde.py` exactly (so units match; pinned by the KDE drop-in test):
+
+- Smooth an **occupancy** count field weighted by `weights` (KDE convention — default ones)
+  and, per neuron, a **spike** count field weighted by `weights_at_spike_times` — the
+  posterior `weights` interpolated to each spike time (`sorted_spikes_kde.py:178`), **not**
+  unweighted spike counts. `mean_rate_k` = `weights_at_spike_times.sum() / weight_sum`. This
+  matters: EM refits pass posterior `weights` (`base.py:1991`), so the spike fields must be
+  weighted (parity test with non-uniform weights).
+- Normalize each smoothed field to an ∫=1 density; `place_field_k =
+  mean_rate_k · marginal_k / occupancy` with KDE's zero-occupancy guard
+  (`where(occ>0, marginal/occ, EPS)`) and `EPS` floor.
+- **Scatter the interior-bin rate into a FULL-GRID array** (`jnp.zeros((n_total_bins,)).at[
+  is_track_interior].set(...)`), so `place_fields` is `(n_neurons, n_total_bins)` and
+  `no_spike_part_log_likelihood` is `(n_total_bins,)` — exactly like KDE
+  (`sorted_spikes_kde.py:204-219`). Interior-only storage silently breaks gap/barrier envs
+  because `get_bin_ind` (local predict) returns full-grid indices.
+- Returns the same dict keys as `sorted_spikes_kde` **plus** the cached spectral engine
+  handle, `node_order`, `bin_sizes` (the base class splats the whole dict into predict —
+  every key must be a predict param).
 
 `position_std` is the bandwidth in coordinate units (verified grid-independent). σ-guard
 warns when `position_std` < ~1 bin width.
@@ -117,10 +137,12 @@ designed so it drops on without rework.
 
 ## Performance
 
-- **eig cached on the `Environment`** (keyed by identity), reused across neurons and EM
-  refits — the largest win, since EM refits encoding each M-step with `L` unchanged.
+- **eig cached on the `Environment`** (dict keyed by `rank`, via `cached_eigenbasis`),
+  reused across neurons and EM refits — the largest win, since EM refits encoding each
+  M-step with `L` unchanged.
 - **All neurons in one batched matmul** (diffusion) / one population fit (MRF-GAM).
-- **Truncated eigsh** for large `n_bins` (low-pass approximation; keep the null mode).
+- **Truncated eigsh** (`sigma=-1e-8`) for large `n_bins` (low-pass approximation; keep all
+  per-component null modes).
 - **Skip zero-spike neurons** (empty field → `EPS` floor).
 - **Optional `float32`** for large problems (adequate for smoothed densities).
 - One-time `eig` is `O(n³)` dense (or truncated) with `O(n²)` `Q`; amortized across neurons
@@ -164,12 +186,18 @@ src/non_local_detector/tests/likelihoods/
 ### `diffusion.py`
 
 - `build_laplacian(graph) -> sparse L` — finite-difference (`w=1/d²`) symmetric Laplacian
-  from edge `distance` attributes; σ-independent.
+  from edge `distance` attributes; σ-independent. Caller passes a **face-adjacent** graph.
 - `diffusion_eigenbasis(L, rank=None) -> (eigvals, eigvecs)` — dense `eigh` (full) or
-  truncated `eigsh` (`rank` smallest, incl. null mode). Cached on the `Environment`.
+  truncated `eigsh(sigma=-1e-8)` (`rank` smallest, all per-component null modes).
+- `cached_eigenbasis(environment, rank=None) -> (eigvals, eigvecs)` — the cache-owning
+  wrapper: builds the graph + `L` + eigenbasis on a miss and stores it in
+  `environment._diffusion_eigenbasis_[rank]`; returns the cached basis on a hit (or slices a
+  cached full-rank entry). This is what `diffusion_eigenbasis(L, rank)` alone cannot do —
+  it takes `L`, not the environment.
 - `diffuse(eigvals, eigvecs, sigma, fields) -> (n_bins, n_fields)` — `Q(exp(-tΛ)⊙(QᵀF))`.
 - `to_density(smoothed, bin_sizes)` — normalize a smoothed field to ∫=1.
-- `environment_graph(environment) -> (graph, node_order, bin_sizes)` — the adapter.
+- `environment_graph(environment) -> (graph, node_order, bin_sizes)` — the adapter (N-D
+  branch drops diagonal edges → face-adjacent).
 
 ### Environment → interior-bin graph adapter
 

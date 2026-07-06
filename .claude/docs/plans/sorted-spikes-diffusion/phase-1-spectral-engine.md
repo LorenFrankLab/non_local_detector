@@ -31,7 +31,9 @@ mass-conservation invariants.
 ## Tasks
 
 - Create `src/non_local_detector/likelihoods/diffusion.py` with `build_laplacian`,
-  `diffusion_eigenbasis`, `diffuse`, `to_density`, `environment_graph` per
+  `diffusion_eigenbasis`, `cached_eigenbasis` (the Environment-cache-owning wrapper —
+  `diffusion_eigenbasis` takes `L` and cannot touch the cache), `diffuse`, `to_density`,
+  `environment_graph` per
   [shared-contracts.md](shared-contracts.md#engine-api). Implement the math from
   [designs.md](designs.md) verbatim. Load-bearing details the review caught:
   - `build_laplacian` uses **finite-difference `1/d²`** on a **face-adjacent** graph.
