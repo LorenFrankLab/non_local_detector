@@ -78,10 +78,16 @@ mode with no explicit renormalization (a clip of tiny negative Krylov noise is r
 
 ### Modes
 
-- **`transition` (default):** mass-conserving; correct for count fields (occupancy,
-  spike counts) on a uniform grid, where all `bin_sizes` are equal.
-- **`density`:** volume-corrected; used only when bin areas vary (e.g. linearized tracks
-  with uneven bins). Requires `bin_sizes`; area-weighted normalization.
+- **`density` (default):** volume-corrected; the principled choice for estimating a
+  density / firing rate, and `neurospatial`'s own default. Columns integrate to 1 over
+  bin volumes (`Σ_i K[i,j]·bin_sizes[i] = 1`), so the area-integral is preserved. Requires
+  per-bin `bin_sizes`, which the adapter derives from the environment (below). Correct
+  even when bins vary in size (e.g. linearized tracks with uneven bins); for a uniform
+  grid the constant volume factor cancels in the `spikes/occupancy` ratio, so it reduces
+  to the same rate map as `transition`.
+- **`transition`:** mass-conserving in the counting sense (columns sum to 1, so
+  `Σ smoothed = Σ field`). Available for pure count-preserving use; identical rate map to
+  `density` on a uniform grid.
 
 ### Where this runs (NumPy at fit time; JAX inherits the result)
 
@@ -129,13 +135,14 @@ src/non_local_detector/tests/likelihoods/
 
 ### `diffusion.py` (the well-bounded numerical unit)
 
-- `build_diffusion_operator(graph, sigma, *, bin_sizes=None, mode="transition") -> sparse L`
+- `build_diffusion_operator(graph, sigma, *, bin_sizes=None, mode="density") -> sparse L`
   — port of neurospatial's Gaussian-weighted Laplacian + volume correction. Keeps `L`
   sparse (does **not** exponentiate).
-- `diffuse(L, sigma, fields, *, mode, bin_sizes=None) -> ndarray (n_bins, n_fields)`
+- `diffuse(L, sigma, fields, *, mode="density", bin_sizes=None) -> ndarray (n_bins, n_fields)`
   — `expm_multiply(-t·L, fields)`, `t=σ²/2`; clip tiny negatives; apply density-mode
   area normalization when requested.
-- `interior_subgraph(environment) -> (graph, node_order)` — the adapter (below).
+- `interior_subgraph(environment) -> (graph, node_order, bin_sizes)` — the adapter
+  (below); also returns per-interior-bin `bin_sizes` for density mode.
 
 ### Environment → interior-bin graph adapter
 
@@ -148,6 +155,10 @@ order). We build `L` on exactly those bins in that order:
 - **1D:** use the linearized graph / `distance_between_nodes_`, restricted to interior
   bins in the same order.
 
+The adapter also computes per-interior-bin `bin_sizes` (area/length) from the
+environment's `edges_` / `place_bin_edges_` — the bin volume per dimension — which
+`density` mode requires. For a uniform grid these are constant.
+
 No pixel grid, no transpose — just a node relabeling. Correctness is pinned by a
 round-trip test (a unit field at interior bin `k` diffuses to a bump centered on `k`).
 
@@ -156,7 +167,7 @@ round-trip test (a unit field at interior bin `k` diffuses to a bump centered on
 Mirrors `sorted_spikes_kde.py`:
 - `fit_sorted_spikes_diffusion_encoding_model(position_time, position, spike_times,
   environment, weights=None, sampling_frequency=500, position_std=sqrt(12.5),
-  mode="transition", block_size=100, disable_progress_bar=False) -> dict`
+  mode="density", block_size=100, disable_progress_bar=False) -> dict`
   - build & cache the diffusion operator on the interior-bin graph;
   - pixellate occupancy (weighted by dt) and each neuron's spike positions to count
     fields on interior bins;
@@ -212,8 +223,10 @@ suite than we would write from scratch.
    on `k`; interior-node relabeling matches `place_bin_centers_[is_track_interior]` order.
 2. **Analytic-Gaussian equivalence** — single binned point far from boundaries ≈ exact
    Gaussian with bandwidth σ (`<2%`), in 1D and N-D (spatstat test 2).
-3. **Mass conservation** — `Σ (smoothed) = Σ (field)` in `transition` mode to ~1e-10;
-   `Σ intensity·bin_size = N` for the intensity form (spatstat test 1).
+3. **Mass conservation** — `density` mode (default): the area-integral is preserved,
+   `Σ (smoothed)·bin_sizes = Σ (field)·bin_sizes` to ~1e-10, and equals `N` for the
+   intensity form (spatstat test 1); `transition` mode: `Σ (smoothed) = Σ (field)`.
+   On a uniform grid both give the identical rate map.
 4. **No cross-wall leakage** — barrier / two-arm environment: zero mass crosses the gap;
    a layout Euclidean KDE smears across stays separated under diffusion.
 5. **1D correctness** — linear track ≈ 1D analytic Gaussian; W-track respects arm gaps.
