@@ -193,7 +193,8 @@ src/non_local_detector/tests/likelihoods/
   wrapper: builds the graph + `L` + eigenbasis on a miss and stores it in
   `environment._diffusion_eigenbasis_[rank]`; returns the cached basis on a hit (or slices a
   cached full-rank entry). This is what `diffusion_eigenbasis(L, rank)` alone cannot do —
-  it takes `L`, not the environment.
+  it takes `L`, not the environment. Returns `(eigvals, eigvecs)` **only**; callers get
+  `node_order`/`bin_sizes` from `environment_graph` (also cached, so the graph is built once).
 - `diffuse(eigvals, eigvecs, sigma, fields) -> (n_bins, n_fields)` — `Q(exp(-tΛ)⊙(QᵀF))`.
 - `to_density(smoothed, bin_sizes)` — normalize a smoothed field to ∫=1.
 - `environment_graph(environment) -> (graph, node_order, bin_sizes)` — the adapter (N-D
@@ -226,11 +227,15 @@ Round-trip tested for **both** branches (unit field at interior bin `k` → bump
 ### `sorted_spikes_diffusion.py`
 
 - `fit_sorted_spikes_diffusion_encoding_model(position_time, position, spike_times,
-  environment, weights=None, sampling_frequency=500, position_std=sqrt(12.5),
-  block_size=100, disable_progress_bar=False) -> dict` — get the cached engine + adapter
-  outputs; pixellate occupancy + neuron count-fields; batch-`diffuse`; `to_density`;
-  `mean_rate_k · marginal_k / occupancy` (guard + EPS); return KDE dict keys + engine
-  handle / `node_order` / `bin_sizes`.
+  environment, weights=None, sampling_frequency=500, position_std=sqrt(12.5), rank=None,
+  block_size=100, disable_progress_bar=False) -> dict` — `rank` must be an explicit
+  parameter or `sorted_spikes_algorithm_params={"rank": …}` is dropped by the signature
+  filter (`base.py:3886`). Call `environment_graph(environment)` for
+  `(graph, node_order, bin_sizes)` and `cached_eigenbasis(environment, rank)` for the basis
+  (`cached_eigenbasis` returns the eigenbasis only); pixellate weighted occupancy + weighted
+  neuron spike fields; batch-`diffuse`; `to_density`; `mean_rate_k · marginal_k / occupancy`
+  (guard + EPS); scatter to full-grid; return KDE dict keys + engine handle / `node_order` /
+  `bin_sizes`.
 - `predict_sorted_spikes_diffusion_log_likelihood(...)` — **dedicated** function (the base
   class splats the encoding dict as kwargs, so it can't call the KDE predict whose
   signature requires `marginal_models`/`occupancy_model`). Non-local branch copies KDE's

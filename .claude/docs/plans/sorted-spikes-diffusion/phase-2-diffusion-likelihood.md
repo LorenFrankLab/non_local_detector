@@ -28,9 +28,13 @@ model-level drop-in for `sorted_spikes_kde`.
 - Create `src/non_local_detector/likelihoods/sorted_spikes_diffusion.py`:
   - `fit_sorted_spikes_diffusion_encoding_model(position_time, position, spike_times,
     environment, weights=None, sampling_frequency=500, position_std=sqrt(12.5),
-    block_size=100, disable_progress_bar=False)` — parameter names must match
-    `_encoding_model_data` keys (filtered by `inspect.signature`, base.py:3886). Call the
-    engine (`cached_eigenbasis(environment, rank)`); apply the σ-guard; pixellate the
+    rank=None, block_size=100, disable_progress_bar=False)` — parameter names must match
+    `_encoding_model_data` keys (filtered by `inspect.signature`, base.py:3886). **`rank`
+    MUST be an explicit fit parameter** or a user-supplied
+    `sorted_spikes_algorithm_params={"rank": …}` is silently dropped by the signature filter.
+    Call `environment_graph(environment)` for `(graph, node_order, bin_sizes)` and
+    `cached_eigenbasis(environment, rank)` for `(eigvals, eigvecs)`; apply the σ-guard;
+    pixellate the
     occupancy field weighted by `weights` (KDE convention, default ones) **and each neuron's
     spike field weighted by `weights_at_spike_times`** — the `weights` interpolated to each
     spike time (`sorted_spikes_kde.py:178`), NOT unweighted counts; `mean_rate_k =

@@ -41,7 +41,9 @@ def cached_eigenbasis(
     environment._diffusion_eigenbasis_[rank]; on a hit, return the cached basis (a cached
     full-rank entry may be sliced to a smaller rank). diffusion_eigenbasis(L, rank) alone
     cannot touch the environment cache — it takes L — so callers use THIS to get a cached
-    basis. Returns (eigvals, eigvecs)."""
+    basis. Returns (eigvals, eigvecs) ONLY — callers that also need node_order/bin_sizes call
+    environment_graph(environment) separately (it should likewise be cached on the
+    environment so the graph is built once, not once here and once there)."""
 
 def diffuse(
     eigvals: np.ndarray, eigvecs: np.ndarray, sigma: float, fields: np.ndarray
