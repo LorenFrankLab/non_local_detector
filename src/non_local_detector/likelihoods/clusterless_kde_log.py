@@ -1313,6 +1313,15 @@ def fit_clusterless_kde_encoding_model(
     position_std = as_std_array(position_std, n_std_dims)
     # Keep waveform_std as-is (scalar or array) - will be expanded per-electrode at predict time
 
+    # Validate bandwidths once, host-side, at fit time. A zero/negative std is a
+    # config error; catching it here (a clear ValueError, cannot break JIT) is
+    # better than the near-delta kernel the downstream EPS clamp would silently
+    # produce.
+    if not np.all(np.asarray(position_std) > 0.0):
+        raise ValueError(f"position_std must be positive, got {position_std}")
+    if not np.all(np.asarray(waveform_std) > 0.0):
+        raise ValueError(f"waveform_std must be positive, got {waveform_std}")
+
     is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 

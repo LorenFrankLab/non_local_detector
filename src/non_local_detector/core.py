@@ -144,61 +144,134 @@ def _accumulate_chunk_degeneracy(
     return int(degenerate_mask.sum()), int(nan_mask.sum())
 
 
+# Per-algorithm phrasing for the degeneracy diagnostics. Filtering and Viterbi
+# react differently to the same degenerate log-likelihoods, so the consequence
+# clause is selected by ``context`` (a filter-worded message is misleading for a
+# Viterbi decode, which has no posterior and no predicted-distribution fallback).
+_ALGO_LABEL = {"filter": "filtering", "viterbi": "Viterbi decoding"}
+_DEGENERATE_CONSEQUENCE = {
+    "filter": "the posterior at those steps fell back to the predicted distribution",
+    "viterbi": (
+        "the most likely state there is arbitrary (argmax over an all-(-inf) "
+        "column returns state 0)"
+    ),
+}
+_NAN_CONSEQUENCE = {
+    "filter": "the posterior is NaN at those steps and propagates to every later step",
+    "viterbi": "the most likely sequence is undefined from those steps onward",
+}
+
+
 def _warn_degenerate_and_nan_timesteps(
-    n_degenerate: int, n_nan: int, n_total: int
+    n_degenerate: int,
+    n_nan: int,
+    n_total: int,
+    *,
+    marginal_log_likelihood: float | None = None,
+    context: str = "filter",
 ) -> None:
     """Emit host-side warnings summarizing degenerate and NaN time steps.
 
     These diagnostics use ``logger.warning`` (not ``warnings.warn``) because
     they are per-invocation decoding diagnostics — they should fire on every
-    affected filter call rather than be deduplicated by the warnings filter.
-    The fit-time convergence diagnostics use ``warnings.warn(UserWarning)``
-    instead (see ``models.base`` / the likelihood models).
+    affected call rather than be deduplicated by the warnings filter. The
+    fit-time convergence diagnostics use ``warnings.warn(UserWarning)`` instead
+    (see ``models.base`` / the likelihood models).
+
+    Parameters
+    ----------
+    n_degenerate, n_nan, n_total : int
+        Counts of all-``-inf`` steps, NaN steps, and total steps.
+    marginal_log_likelihood : float, optional
+        The marginal log-likelihood, for filtering paths only. When it is
+        ``-inf`` yet no step was all-``-inf`` (``n_degenerate == 0``), a zero
+        Bayes normalizer arose from a prediction/likelihood *support mismatch*
+        or underflow (finite log-likelihoods, but the predicted state
+        distribution placed ~no mass on the supported states). ``_condition_on``
+        marks such steps ``-inf`` in the marginal but they are not all-``-inf``,
+        so this is the only place they are surfaced. Viterbi has no marginal and
+        passes ``None``.
+    context : {"filter", "viterbi"}, optional
+        Selects algorithm-appropriate consequence wording.
     """
+    label = _ALGO_LABEL[context]
     if n_degenerate > 0:
         logger.warning(
-            "HMM filter encountered %d/%d time step(s) with all-impossible "
-            "(-inf) log-likelihoods; the posterior at those steps fell back to "
-            "the predicted distribution.",
+            "HMM %s encountered %d/%d time step(s) with all-impossible (-inf) "
+            "log-likelihoods; %s.",
+            label,
             n_degenerate,
             n_total,
+            _DEGENERATE_CONSEQUENCE[context],
         )
     if n_nan > 0:
         logger.warning(
-            "HMM filter encountered %d/%d time step(s) with NaN log-likelihoods; "
-            "the posterior is NaN at those steps and propagates to every later "
-            "step. This indicates a bug in the likelihood computation (e.g. a "
+            "HMM %s encountered %d/%d time step(s) with NaN log-likelihoods; %s. "
+            "This indicates a bug in the likelihood computation (e.g. a "
             "non-converged or degenerate encoding model), not impossible data. "
             "Check the log-likelihood inputs.",
+            label,
             n_nan,
             n_total,
+            _NAN_CONSEQUENCE[context],
+        )
+    if (
+        marginal_log_likelihood is not None
+        and n_degenerate == 0
+        and np.isneginf(marginal_log_likelihood)
+    ):
+        logger.warning(
+            "HMM %s produced a -inf marginal log-likelihood with no all-(-inf) "
+            "time step: a zero Bayes normalizer arose from a prediction/likelihood "
+            "support mismatch or underflow (finite log-likelihoods, but the "
+            "predicted state distribution placed ~no mass on the supported "
+            "states). The affected step(s) are marked -inf in the marginal "
+            "likelihood.",
+            label,
         )
 
 
-def _warn_if_degenerate_timesteps(log_likelihoods: ArrayLike) -> None:
+def _warn_if_degenerate_timesteps(
+    log_likelihoods: ArrayLike,
+    *,
+    marginal_log_likelihood: ArrayLike | None = None,
+    context: str = "filter",
+) -> None:
     """Emit host-side warnings if any time step is all-``-inf`` or has a NaN.
 
     Parameters
     ----------
     log_likelihoods : array-like
         Log-likelihood array. The last axis is the state axis.
+    marginal_log_likelihood : array-like, optional
+        Marginal log-likelihood (filtering paths only); forwarded to
+        ``_warn_degenerate_and_nan_timesteps`` to surface support-mismatch /
+        underflow steps. Viterbi drivers omit it.
+    context : {"filter", "viterbi"}, optional
+        Selects algorithm-appropriate consequence wording.
 
     Notes
     -----
-    Skipped when ``log_likelihoods`` is a JAX tracer (i.e. ``filter`` /
-    ``filter_covariate_dependent`` are being run inside ``jit``/``vmap``/
-    ``scan``). The diagnostics need concrete values (``int(jnp.sum(...))``)
-    and warnings cannot be emitted during tracing, so skipping keeps the
-    public filter wrappers JAX-transformable; the pure filtering computation
-    still runs.
+    Skipped when ``log_likelihoods`` is a JAX tracer (i.e. the wrappers are
+    being run inside ``jit``/``vmap``/``scan``). The diagnostics need concrete
+    values (``int(jnp.sum(...))``) and warnings cannot be emitted during
+    tracing, so skipping keeps the public wrappers JAX-transformable; the pure
+    computation still runs.
     """
     ll_array = jnp.asarray(log_likelihoods)
     if isinstance(ll_array, jax.core.Tracer):
         return
     n_total = int(np.prod(ll_array.shape[:-1])) if ll_array.ndim > 1 else 1
     degenerate_mask, nan_mask = _degenerate_and_nan_masks(ll_array)
+    marginal = (
+        None if marginal_log_likelihood is None else float(marginal_log_likelihood)
+    )
     _warn_degenerate_and_nan_timesteps(
-        int(degenerate_mask.sum()), int(nan_mask.sum()), n_total
+        int(degenerate_mask.sum()),
+        int(nan_mask.sum()),
+        n_total,
+        marginal_log_likelihood=marginal,
+        context=context,
     )
 
 
@@ -329,9 +402,19 @@ def filter(
     contaminates the posterior at that step and every step after it. A
     host-side ``logger.warning`` summarizing the count of degenerate and/or NaN
     steps is emitted when any are found.
+
+    ``_condition_on`` also falls back (and marks the step ``-inf`` in the
+    marginal) when the Bayes normalizer is zero for a *finite*-likelihood step —
+    a prediction/likelihood support mismatch or an underflow. Such a step is not
+    all-``-inf``, so it is surfaced separately: when the returned marginal
+    log-likelihood is ``-inf`` but no step was all-``-inf``, an additional
+    ``logger.warning`` is emitted.
     """
     result = _filter_jit(initial_distribution, transition_matrix, log_likelihoods)
-    _warn_if_degenerate_timesteps(log_likelihoods)
+    # result[0][0] is the marginal log-likelihood; forwarding it surfaces
+    # support-mismatch / underflow steps (a -inf marginal with no all-(-inf)
+    # step) that the per-step degeneracy check alone cannot see.
+    _warn_if_degenerate_timesteps(log_likelihoods, marginal_log_likelihood=result[0][0])
     return result
 
 
@@ -578,7 +661,12 @@ def chunked_filter_smoother(
 
         marginal_likelihood += marginal_likelihood_chunk
 
-    _warn_degenerate_and_nan_timesteps(n_degenerate_total, n_nan_total, n_time)
+    _warn_degenerate_and_nan_timesteps(
+        n_degenerate_total,
+        n_nan_total,
+        n_time,
+        marginal_log_likelihood=float(marginal_likelihood),
+    )
 
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
@@ -742,8 +830,9 @@ def most_likely_sequence(
     # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
     # Viterbi-only workflow gets the same diagnostics as the filter/smoother
     # drivers. Note ``argmax`` over an all-``-inf`` column silently returns
-    # state 0, which this warning surfaces.
-    _warn_if_degenerate_timesteps(log_likelihoods)
+    # state 0, which this warning surfaces. context="viterbi" selects
+    # Viterbi-appropriate wording (no posterior / marginal here).
+    _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
 
     # Cast to desired dtype for precision control
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)
@@ -894,6 +983,13 @@ def filter_covariate_dependent(
     contaminates the posterior at that step and every step after it. A
     host-side ``logger.warning`` summarizing the count of degenerate and/or NaN
     steps is emitted when any are found.
+
+    ``_condition_on`` also falls back (and marks the step ``-inf`` in the
+    marginal) when the Bayes normalizer is zero for a *finite*-likelihood step —
+    a prediction/likelihood support mismatch or an underflow. Such a step is not
+    all-``-inf``, so it is surfaced separately: when the returned marginal
+    log-likelihood is ``-inf`` but no step was all-``-inf``, an additional
+    ``logger.warning`` is emitted.
     """
     result = _filter_covariate_dependent_jit(
         initial_distribution,
@@ -902,7 +998,9 @@ def filter_covariate_dependent(
         state_ind,
         log_likelihoods,
     )
-    _warn_if_degenerate_timesteps(log_likelihoods)
+    # result[0][0] is the marginal log-likelihood (see Returns); forwarding it
+    # surfaces support-mismatch / underflow steps that are not all-(-inf).
+    _warn_if_degenerate_timesteps(log_likelihoods, marginal_log_likelihood=result[0][0])
     return result
 
 
@@ -1169,7 +1267,12 @@ def chunked_filter_smoother_covariate_dependent(
 
         marginal_likelihood += marginal_likelihood_chunk
 
-    _warn_degenerate_and_nan_timesteps(n_degenerate_total, n_nan_total, n_time)
+    _warn_degenerate_and_nan_timesteps(
+        n_degenerate_total,
+        n_nan_total,
+        n_time,
+        marginal_log_likelihood=float(marginal_likelihood),
+    )
 
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
@@ -1365,8 +1468,9 @@ def most_likely_sequence_covariate_dependent(
     # Warn if any time step is all-impossible (-inf) or contains a NaN, so a
     # Viterbi-only workflow gets the same diagnostics as the filter/smoother
     # drivers. Note ``argmax`` over an all-``-inf`` column silently returns
-    # state 0, which this warning surfaces.
-    _warn_if_degenerate_timesteps(log_likelihoods)
+    # state 0, which this warning surfaces. context="viterbi" selects
+    # Viterbi-appropriate wording (no posterior / marginal here).
+    _warn_if_degenerate_timesteps(log_likelihoods, context="viterbi")
 
     # Cast to desired dtype for precision control
     initial_distribution_jax = jnp.asarray(initial_distribution, dtype=dtype)

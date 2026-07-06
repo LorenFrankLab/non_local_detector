@@ -24,6 +24,7 @@ from non_local_detector.core import (
     chunked_filter_smoother,
     filter,
     filter_covariate_dependent,
+    most_likely_sequence,
     smoother,
     viterbi,
 )
@@ -874,3 +875,102 @@ class TestDegenerateMarginalLikelihoodPropagation:
         # The smoother output is finite and normalized everywhere.
         assert jnp.all(jnp.isfinite(smoothed))
         assert jnp.allclose(smoothed.sum(axis=-1), 1.0, atol=1e-6)
+
+
+class TestViterbiDegenerateTimestepWarning:
+    """The Viterbi drivers emit degeneracy warnings with Viterbi-appropriate
+    wording (no posterior / predicted-distribution fallback)."""
+
+    @staticmethod
+    def _run(log_likes, caplog):
+        init = jnp.array([0.5, 0.5])
+        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
+        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+            states, _ = most_likely_sequence(
+                time=np.arange(log_likes.shape[0]),
+                initial_distribution=init,
+                transition_matrix=trans,
+                log_likelihood_func=None,
+                log_likelihood_args=(),
+                log_likelihoods=log_likes,
+            )
+        return states
+
+    def test_viterbi_degenerate_step_warns_with_viterbi_wording(self, caplog):
+        """An all-(-inf) step warns, and the message describes Viterbi behavior
+        (argmax over an all-(-inf) column), NOT the filter's posterior fallback."""
+        log_likes = jnp.array([[0.0, -1.0], [-jnp.inf, -jnp.inf], [0.0, -1.0]])
+        self._run(log_likes, caplog)
+        msgs = [
+            r.getMessage() for r in caplog.records if "all-impossible" in r.getMessage()
+        ]
+        assert msgs, (
+            f"expected a degenerate warning; got {[r.getMessage() for r in caplog.records]}"
+        )
+        joined = " ".join(msgs)
+        assert "Viterbi decoding" in joined
+        assert "arbitrary" in joined
+        # Must not use the filter-only phrasing.
+        assert "posterior" not in joined
+        assert "predicted distribution" not in joined
+
+    def test_viterbi_nan_step_warns(self, caplog):
+        """A NaN step warns distinctly, with Viterbi wording."""
+        log_likes = jnp.array([[0.0, -1.0], [jnp.nan, 0.0], [0.0, -1.0]])
+        self._run(log_likes, caplog)
+        nan_msgs = [r.getMessage() for r in caplog.records if "NaN" in r.getMessage()]
+        assert nan_msgs, (
+            f"expected a NaN warning; got {[r.getMessage() for r in caplog.records]}"
+        )
+        assert "Viterbi decoding" in " ".join(nan_msgs)
+
+    def test_viterbi_well_behaved_input_emits_no_warning(self, caplog):
+        """A finite-everywhere Viterbi run emits no degeneracy warning."""
+        rng = np.random.default_rng(3)
+        log_likes = jnp.array(rng.standard_normal((10, 2)))
+        self._run(log_likes, caplog)
+        assert not [r for r in caplog.records if "all-impossible" in r.getMessage()]
+
+
+class TestFilterMarginalUnderflowWarning:
+    """A -inf marginal with no all-(-inf) step (support mismatch / underflow)
+    is surfaced by its own warning."""
+
+    def test_support_mismatch_warns_marginal_underflow(self, caplog):
+        """With an identity transition pinned to state 0, a step whose only
+        finite likelihood is on state 1 has a zero Bayes normalizer despite
+        having a finite likelihood -- not an all-(-inf) step. The marginal is
+        -inf and the dedicated support-mismatch/underflow warning fires."""
+        init = jnp.array([1.0, 0.0])
+        trans = jnp.array([[1.0, 0.0], [0.0, 1.0]])  # identity: mass stays on state 0
+        log_likes = jnp.array([[0.0, -1.0], [-jnp.inf, 0.0], [0.0, -1.0]])
+
+        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+            (marginal, _), _ = filter(init, trans, log_likes)
+
+        assert jnp.isneginf(marginal)
+        underflow_msgs = [
+            r.getMessage()
+            for r in caplog.records
+            if "support mismatch or underflow" in r.getMessage()
+        ]
+        assert underflow_msgs, (
+            "expected a marginal-underflow warning; got "
+            f"{[r.getMessage() for r in caplog.records]}"
+        )
+        # No step is all-(-inf), so the all-impossible warning must NOT fire.
+        assert not [r for r in caplog.records if "all-impossible" in r.getMessage()]
+
+    def test_normal_filter_emits_no_marginal_underflow_warning(self, caplog):
+        """A finite marginal must not trigger the underflow warning."""
+        init = jnp.array([0.5, 0.5])
+        trans = jnp.array([[0.9, 0.1], [0.1, 0.9]])
+        rng = np.random.default_rng(11)
+        log_likes = jnp.array(rng.standard_normal((10, 2)))
+        with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
+            filter(init, trans, log_likes)
+        assert not [
+            r
+            for r in caplog.records
+            if "support mismatch or underflow" in r.getMessage()
+        ]

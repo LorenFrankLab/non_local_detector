@@ -56,6 +56,42 @@ def test_multi_block_matches_single_block():
     assert jnp.allclose(single, multi, rtol=1e-4, atol=1e-4)
 
 
+def _fit_kwargs(env, **overrides):
+    kwargs = {
+        "position_time": np.linspace(0.0, 10.0, 101),
+        "position": np.linspace(0.0, 10.0, 101)[:, None],
+        "spike_times": [np.array([2.0, 5.0, 7.5])],
+        "spike_waveform_features": [
+            np.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.5]], dtype=float)
+        ],
+        "environment": env,
+        "position_std": np.sqrt(1.0),
+        "waveform_std": 1.0,
+        "block_size": 8,
+        "disable_progress_bar": True,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+@pytest.mark.parametrize("bad_std", [0.0, -1.0])
+def test_fit_rejects_nonpositive_position_std(simple_1d_environment, bad_std):
+    """A zero/negative bandwidth is a config error and must raise at fit time
+    (loudly), not be silently clamped to a near-delta kernel inside the kernel."""
+    with pytest.raises(ValueError, match="position_std"):
+        fit_clusterless_kde_encoding_model(
+            **_fit_kwargs(simple_1d_environment, position_std=bad_std)
+        )
+
+
+@pytest.mark.parametrize("bad_std", [0.0, -1.0])
+def test_fit_rejects_nonpositive_waveform_std(simple_1d_environment, bad_std):
+    with pytest.raises(ValueError, match="waveform_std"):
+        fit_clusterless_kde_encoding_model(
+            **_fit_kwargs(simple_1d_environment, waveform_std=bad_std)
+        )
+
+
 @pytest.mark.parametrize("pos_tile_size", [None, 10, 50])
 def test_pos_tiling_matches_no_tiling(simple_1d_environment, pos_tile_size):
     """Test that position tiling produces same results as no tiling."""
