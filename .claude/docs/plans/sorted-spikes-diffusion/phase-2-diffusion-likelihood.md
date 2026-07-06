@@ -12,7 +12,7 @@ model-level drop-in for `sorted_spikes_kde`.
   predict ([:237](../../../../src/non_local_detector/likelihoods/sorted_spikes_kde.py#L237)),
   place-field formula + guard ([:203-219](../../../../src/non_local_detector/likelihoods/sorted_spikes_kde.py#L203-L219)),
   non-local predict body ([:339-366](../../../../src/non_local_detector/likelihoods/sorted_spikes_kde.py#L339-L366)).
-- [src/non_local_detector/likelihoods/__init__.py:39-52](../../../../src/non_local_detector/likelihoods/__init__.py#L39-L52)
+- [src/non_local_detector/likelihoods/__init__.py:29-38](../../../../src/non_local_detector/likelihoods/__init__.py#L29-L38)
   — `_SORTED_SPIKES_ALGORITHMS`.
 - [shared-contracts.md](shared-contracts.md#encoding-dict) — the splat contract (every dict
   key is a predict param) and the exact key list.
@@ -41,7 +41,7 @@ model-level drop-in for `sorted_spikes_kde`.
     non-local body ([sorted_spikes_kde.py:339-366](../../../../src/non_local_detector/likelihoods/sorted_spikes_kde.py#L339-L366));
     local branch indexes `place_fields` by the animal's interpolated bin
     (`environment.get_bin_ind`), returning `(n_time, 1)`.
-- Register in [likelihoods/__init__.py:39-52](../../../../src/non_local_detector/likelihoods/__init__.py#L39-L52):
+- Register in [likelihoods/__init__.py:29-38](../../../../src/non_local_detector/likelihoods/__init__.py#L29-L38):
   import the two functions and add
   `"sorted_spikes_diffusion": (fit_…, predict_…)` to `_SORTED_SPIKES_ALGORITHMS`. Existing
   entries untouched.
@@ -64,7 +64,7 @@ model-level drop-in for `sorted_spikes_kde`.
 
 | Test | Asserts |
 | --- | --- |
-| `test_fit_encoding_dict_keys_and_shapes` | dict has all [contract keys](shared-contracts.md#encoding-dict); `place_fields` shape `(n_neurons, n_interior)`, all > 0, finite. |
+| `test_fit_encoding_dict_keys_and_shapes` | dict has all [contract keys](shared-contracts.md#encoding-dict); `place_fields` is FULL-GRID `(n_neurons, n_total_bins)` (interior bins > 0, non-interior = 0), finite; `no_spike_part_log_likelihood` shape `(n_total_bins,)`. Include a gap/barrier env (some non-interior bins) so interior-only storage would fail. |
 | `test_kde_dropin_equivalence` | wall-less `simple_2d_environment`, well-sampled trajectory: diffusion vs KDE `place_fields` agree ≤ 5% at interior bins away from the boundary (pins units). |
 | `test_predict_shapes_local_nonlocal` | non-local `(n_time, n_interior)`, local `(n_time, 1)`; finite; mirrors `test_sorted_spikes_kde.py`. |
 | `test_predict_signature_matches_dict` | `set(inspect.signature(predict).parameters) ⊇ set(encoding_dict) ∪ {time,is_local}` (guards the splat contract). |

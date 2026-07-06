@@ -6,7 +6,7 @@ Source of truth for the design: `docs/superpowers/specs/2026-07-06-sorted-spikes
 
 ## Current codebase integration points
 
-- `src/non_local_detector/likelihoods/__init__.py:39-52` — `_SORTED_SPIKES_ALGORITHMS`
+- `src/non_local_detector/likelihoods/__init__.py:29-38` — `_SORTED_SPIKES_ALGORITHMS` (39-52 is `_CLUSTERLESS_ALGORITHMS`)
   registry. **Add** a `"sorted_spikes_diffusion"` entry (Phase 2) and later
   `"sorted_spikes_mrf"` (Phase 3), each `(fit_fn, predict_fn)`. Existing entries untouched.
 - `src/non_local_detector/models/base.py:3861` — `encoding_algorithm, _ =
@@ -67,7 +67,8 @@ Phase-3 decision recorded there — default is to implement directly (no new dep
 ## Metrics
 
 - **Bandwidth invariance:** recovered smoothing std = `position_std` within 5% across bin
-  sizes {0.5, 1, 2, 4}× (the B1 regression guard; see [appendix.md](appendix.md)).
+  sizes {0.5, 1, 2, 4}× **in 2D** (face-adjacency; the B1 + Moore-oversmoothing guard; see
+  [appendix.md](appendix.md)).
 - **Analytic-Gaussian:** single interior point ≈ exact Gaussian, max rel. error < 2% away
   from boundaries.
 - **Mass conservation:** `Σ smoothed = Σ field` to ≤ 1e-10; density normalization ∫=1.
@@ -87,6 +88,11 @@ Phase-3 decision recorded there — default is to implement directly (no new dep
 | Linearized `track_graph` adapter (junctions/gaps) — highest risk | Isolated in its own Phase-1 task with junction + gap tests; a fallback construction is documented in [designs.md](designs.md#adapter-1d). |
 | Predict signature mismatch (base.py splats the dict) | Dedicated predict whose params == encoding-dict keys; enforced by an end-to-end model test. |
 | Truncated-eig approximation error at scale | Default dense `eigh`; truncation only above a bin-count threshold, validated by the mode-reconstruction test at moderate size. |
+| Interior-only `place_fields` breaks gap/barrier envs (`get_bin_ind` is full-grid) | Store FULL-GRID `place_fields`/`no_spike_part_log_likelihood` like KDE (scatter into zeros); test on a gap/barrier env. |
+| 2D Moore-diagonal edges oversmooth ≈√2 with `1/d²` | N-D adapter keeps only face-adjacent edges; bandwidth-invariance test runs in 2D. |
+| `eigsh(sigma=0)` singular/unreliable | Truncated solver uses `sigma=-1e-8` (or `which="SM"`); robustness test. |
+| eig cache under-keyed by `rank` (first-caller-wins) | Cache is a dict keyed by `rank`; full-rank entry slices for smaller ranks. |
+| Disconnected interior loses a component's null mode | Truncation requires `rank ≥ n_components` and keeps all zero modes; per-component mass test. |
 
 ## Rollout Strategy
 

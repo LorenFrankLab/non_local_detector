@@ -25,8 +25,13 @@ def diffusion_eigenbasis(
     L: scipy.sparse.spmatrix, rank: int | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
     """Eigendecomposition of L. Returns (eigvals (m,), eigvecs (n_bins, m)) ascending.
-    rank None -> dense scipy.linalg.eigh (all n modes). rank < n -> truncated
-    scipy.sparse.linalg.eigsh smallest-`rank` modes (the null λ=0 mode always included)."""
+    rank None -> dense scipy.linalg.eigh (all n modes). rank < n -> truncated smallest-`rank`
+    modes via scipy.sparse.linalg.eigsh **with sigma=-1e-8, which='LM'** (shift-invert at a
+    small NEGATIVE shift — sigma=0 factorizes the singular L and is unreliable: it raises
+    'Factor is exactly singular' in some environments and silently returns garbage in others;
+    `which='SM'` is the no-shift-invert fallback). Truncation MUST include **all** zero modes
+    (one per connected component, multiplicity = number of components), so require
+    rank >= n_components; omitting any breaks component-wise mass conservation."""
 
 def diffuse(
     eigvals: np.ndarray, eigvecs: np.ndarray, sigma: float, fields: np.ndarray
@@ -60,12 +65,16 @@ The eigenbasis depends only on the graph (not σ, not weights), so it is compute
 cached on the `Environment`, mirroring the `_bin_distance_matrix_` pattern
 (`environment.py:480`).
 
-- Attribute: `environment._diffusion_eigenbasis_` (tuple `(eigvals, eigvecs)`), lazily
-  populated by the engine on first use.
-- **Invalidation:** add a `del`/reset of `_diffusion_eigenbasis_` alongside the existing
+- Attribute: `environment._diffusion_eigenbasis_` is a **dict keyed by `rank`**
+  (`None` = full) → `(eigvals, eigvecs)`, lazily populated per rank. A single tuple is wrong:
+  `diffusion_eigenbasis` takes `rank`, so first-caller-wins would let a truncated Phase-2 fit
+  poison a later full-rank MRF fit (or a dense first call defeat truncation). A cached
+  full-rank (`None`) entry may serve any `rank` request by slicing its first `rank` columns
+  (valid — `eigh` returns modes ascending); a truncated entry serves only that rank.
+- **Invalidation:** clear `_diffusion_eigenbasis_` alongside the existing
   `_bin_distance_matrix_` invalidation in `fit_place_grid` (`environment.py:480-481`).
-- Keyed by the environment instance identity (the graph is fixed once fitted); the engine
-  reuses it across all neurons and all EM refits.
+- Keyed by environment identity + rank (the graph is fixed once fitted); reused across all
+  neurons and all EM refits.
 
 ## <a id="encoding-dict"></a>Sorted-spikes encoding-dict + predict contract
 
@@ -85,3 +94,13 @@ function: `likelihood_func(time, position_time, position, spike_times,
 dedicated `predict_sorted_spikes_diffusion_log_likelihood` must list **all** of these as
 parameters. It does **not** reuse `predict_sorted_spikes_kde_log_likelihood` (whose
 signature requires `marginal_models`/`occupancy_model`, which the diffusion dict omits).
+
+**`place_fields` and `no_spike_part_log_likelihood` are FULL-GRID, exactly like KDE**
+(shapes `(n_neurons, n_total_bins)` and `(n_total_bins,)`), **not** interior-only. The
+engine returns interior-bin densities; the fit scatters them into full-grid zeros via
+`jnp.zeros((n_total_bins,)).at[is_track_interior].set(...)` (mirroring
+`sorted_spikes_kde.py:204-219`). This is load-bearing: the non-local predict slices
+`place_field[is_track_interior]` (`sorted_spikes_kde.py:361`), and the local predict indexes
+by `environment.get_bin_ind(...)`, which returns **full-grid flat indices**
+(`environment.py:707`). Interior-only storage silently breaks any environment with
+non-interior (gap/barrier) bins.

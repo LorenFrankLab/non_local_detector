@@ -17,9 +17,17 @@ Per-component algorithms. Phases reference these by anchor.
 
 Rationale: neurospatial weights edges `exp(-d²/2σ²)`, which makes the effective bandwidth
 ≈ σ·bin_size (grid-dependent — the B1 blocker; numbers in [appendix.md](appendix.md)). The
-finite-difference weight `1/d²` gives `L ≈ -∂²` on a regular grid, so `exp(-tL)`,
+finite-difference weight `1/d²` on a **face-adjacent** grid gives `L ≈ -∂²`, so `exp(-tL)`,
 `t=σ²/2`, is a Gaussian of std σ **independent of bin size** (verified: std/σ = 1.000 at
-bin sizes 0.5/1/2/4). `L` is σ-independent → built once.
+bin sizes 0.5/1/2/4 in 1D, and = 1.000 on a 2D face-adjacent grid). `L` is σ-independent →
+built once.
+
+**Face-adjacency only.** `build_laplacian` must receive a face-adjacent graph. Do **not**
+include Moore/diagonal edges: with `1/d²` weighting the diagonals inflate the small-wavenumber
+diffusion coefficient, oversmoothing by ≈√2 in 2D (verified: 8-connected std/σ = 1.413 vs
+face-only 1.000). The N-D adapter drops diagonal edges (see [adapter-nd](#adapter-nd)); the
+linearized branch is already a chain+junction graph with no grid diagonals. (A calibrated
+isotropic 9-point stencil is a possible future refinement; face-only is the first-cut choice.)
 
 ```python
 def build_laplacian(graph):
@@ -39,9 +47,14 @@ Symmetric, `1ᵀL = 0`. On disconnected components each component has its own nu
 ## <a id="eig"></a>Eigendecomposition + diffuse
 
 `L = QΛQᵀ`. Dense `scipy.linalg.eigh(L.toarray())` for `n_bins ≤ threshold`; truncated
-`scipy.sparse.linalg.eigsh(L, k=rank, sigma=0, which="LM")` (shift-invert → smallest
-eigenpairs) for large `n_bins`, **always keeping the λ=0 null mode** (preserves mass).
-Clip eigenvalues at 0.
+smallest-`rank` modes for large `n_bins` via
+`scipy.sparse.linalg.eigsh(L, k=rank, sigma=-1e-8, which="LM")` — **negative shift**, because
+`sigma=0` factorizes the singular Laplacian and is unreliable (raises "Factor is exactly
+singular" in some environments, silently returns garbage in others; verified). `which="SM"`
+without shift-invert is the fallback. **Keep all zero modes** — one per connected component
+(multiplicity = number of components), so require `rank ≥ n_components`; omitting any breaks
+component-wise mass conservation and can corrupt an isolated arm. Truncating from a cached
+full-rank `eigh` is equivalent to slicing its first `rank` columns. Clip eigenvalues at 0.
 
 ```python
 def diffuse(eigvals, eigvecs, sigma, fields):
@@ -69,18 +82,23 @@ def to_density(smoothed, bin_sizes):          # smoothed (n_bins, n_fields)
 ```
 
 Place field mirrors `sorted_spikes_kde.py:204-219` exactly (so units match; pinned by the
-KDE drop-in test). `occupancy` and `marginal_k` are `to_density` outputs; `mean_rate_k` =
-weighted spike count / weight sum (KDE convention, default `weights` = ones):
+KDE drop-in test). `occupancy` and `marginal_k` are `to_density` outputs on interior bins;
+`mean_rate_k` = weighted spike count / weight sum (KDE convention, default `weights` = ones).
+The rate is computed on interior bins then **scattered into a full-grid array** exactly like
+KDE (non-interior bins stay 0), so `place_fields` is `(n_neurons, n_total_bins)`:
 
 ```python
-place_field_k = mean_rate_k * np.where(occupancy > 0.0,
+rate_interior = mean_rate_k * np.where(occupancy > 0.0,
                                        marginal_k / np.where(occupancy > 0.0, occupancy, 1.0),
                                        EPS)
-place_field_k = np.clip(place_field_k, EPS, None)
+place_field_k = (jnp.zeros((n_total_bins,))
+                 .at[is_track_interior].set(jnp.clip(rate_interior, EPS, None)))
 ```
 
-On a uniform grid the `bin_sizes` factor cancels in the ratio; on uneven bins it is
-required (test 6).
+`no_spike_part_log_likelihood = place_fields.sum(0)` is likewise full-grid; predict slices
+`[is_track_interior]` (non-local) and indexes by `get_bin_ind` (local, full-grid). On a
+uniform grid the `bin_sizes` factor cancels in the ratio; on uneven bins it is required
+(test 6).
 
 ## <a id="adapter-nd"></a>Adapter — N-D / 1D-grid branch (`track_graph is None`)
 
@@ -91,9 +109,15 @@ isolated.
 
 ```python
 interior = np.where(environment.is_track_interior_.ravel())[0]   # node_order
-sub = environment.track_graphDD.subgraph(interior)
+sub = environment.track_graphDD.subgraph(interior).copy()
+# Drop Moore/diagonal edges — keep only face-adjacent pairs (centers differ in exactly one
+# dimension). Diagonals with 1/d² weights oversmooth ≈√2 in 2D (see #laplacian).
+pos = nx.get_node_attributes(sub, "pos")
+face_edges = [(u, v, d) for u, v, d in sub.edges(data=True)
+              if np.count_nonzero(np.asarray(pos[u]) - np.asarray(pos[v])) == 1]
+face = nx.Graph(); face.add_nodes_from(sub.nodes(data=True)); face.add_edges_from(face_edges)
 relabel = {old: new for new, old in enumerate(interior)}          # → 0..n_interior-1
-graph = nx.relabel_nodes(sub, relabel, copy=True)                 # edges keep 'distance'
+graph = nx.relabel_nodes(face, relabel, copy=True)                # edges keep 'distance'
 ```
 
 `bin_sizes`: product of per-dim `np.diff(edges_[d])` widths, meshed `'ij'`, raveled, then

@@ -43,6 +43,16 @@ weighting → ≈ σ·bin_size. This is the B1 regression the Phase-1 bandwidth-
 guards. (neurospatial's `diffusion_kde` uses the Gaussian weighting with no bin-size
 rescaling, so it carries the same grid-dependence — worth an upstream report.)
 
+**#3 — 2D connectivity** (σ=4, h=1, `1/d²`, `expm_multiply`): face-adjacent (4-conn)
+→ effective per-axis std = 4.000 (ratio 1.000); Moore (8-conn, diagonals included)
+→ 5.653 (ratio **1.413** ≈ √2, oversmooths). The N-D adapter therefore keeps only
+face-adjacent edges.
+
+**#2 — truncated eigsh** (12×12 grid Laplacian): `eigsh(L, sigma=0, which="LM")` is
+unreliable — raises `RuntimeError: Factor is exactly singular` in some SciPy builds and
+silently returns garbage in others. `eigsh(L, sigma=-1e-8, which="LM")` and
+`eigsh(L, which="SM")` both return the correct smallest eigenpairs incl. the zero mode.
+
 **B2 — density normalization.** With `K_raw = exp(-t·M⁻¹L)`, neurospatial's column-
 normalized density kernel satisfies `K_density @ field = K_raw @ (field / bin_sizes)`
 (recoverable only by pre-dividing inputs by `bin_sizes`, not post-scaling). Our design

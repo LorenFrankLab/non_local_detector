@@ -42,7 +42,7 @@ place.
   of this phase; default is implement directly (no new dependency). If depending on NeMoS,
   add it under an optional extra and record it in the dependency policy.
 - Register `"sorted_spikes_mrf"` in
-  [likelihoods/__init__.py:39-52](../../../../src/non_local_detector/likelihoods/__init__.py#L39-L52).
+  [likelihoods/__init__.py:29-38](../../../../src/non_local_detector/likelihoods/__init__.py#L29-L38).
 - Docs: CHANGELOG `### Added` entry (new option + when to prefer it: correct low-occupancy
   handling, automatic smoothness, SE); module docstring.
 
