@@ -181,6 +181,27 @@ def test_truncated_keeps_all_zero_modes():
     assert np.count_nonzero(eigvals < 1e-9) == 2
 
 
+@pytest.mark.parametrize("rank", [3, 5, 7])
+def test_truncated_modes_are_component_local_no_leak(rank):
+    """Truncated modes stay component-local: a point source in one component of a
+    disconnected graph cannot leak mass into another.
+
+    Two identical components make every eigenvalue doubly degenerate, so a single
+    global eigsh returns cross-component rotated eigenvectors; a truncation cutting
+    through such an eigenspace previously leaked mass after diffuse's clip/renorm.
+    """
+    graph = nx.disjoint_union(path_graph(20), path_graph(20))
+    L = build_laplacian(graph)
+    eigvals, eigvecs = diffusion_eigenbasis(L, rank=rank)
+
+    source = np.zeros((40, 1))
+    source[5] = 1.0  # first component only (nodes 0..19)
+    smoothed = diffuse(eigvals, eigvecs, sigma=3.0, fields=source).ravel()
+
+    assert smoothed[20:].sum() < 1e-9  # no leak into the untouched component
+    np.testing.assert_allclose(smoothed.sum(), 1.0, atol=1e-9)  # mass conserved
+
+
 def test_truncated_rank_below_n_components_raises():
     """rank < number of connected components is rejected (would drop a null mode)."""
     graph = nx.disjoint_union(path_graph(5), path_graph(5))  # 2 components
@@ -696,6 +717,25 @@ def test_cached_eigenbasis_rank_below_components_raises_even_when_full_cached():
     cached_eigenbasis(env, rank=None)  # cache the full basis first
     with pytest.raises(ValidationError):
         cached_eigenbasis(env, rank=1)  # would slice to a single null mode
+
+
+def test_cached_eigenbasis_slice_is_leak_free_on_disconnected_env():
+    """Slicing a cached full basis on a disconnected env must not leak across
+    components (the full basis is component-local, so its leading columns are too)."""
+    env = make_2d_split_env()
+    cached_eigenbasis(env, rank=None)  # cache the full (component-local) basis
+    eigvals, eigvecs = cached_eigenbasis(env, rank=8)  # served by slicing
+
+    graph, _, _ = environment_graph(env)
+    components = list(nx.connected_components(graph))
+    comp0 = np.array(sorted(components[0]))
+    source = np.zeros((graph.number_of_nodes(), 1))
+    source[comp0[len(comp0) // 2]] = 1.0
+    smoothed = diffuse(eigvals, eigvecs, sigma=3.0, fields=source).ravel()
+
+    mask0 = np.zeros(graph.number_of_nodes(), dtype=bool)
+    mask0[comp0] = True
+    assert smoothed[~mask0].sum() < 1e-9  # no leak into the other component
 
 
 def test_cached_objects_are_read_only():

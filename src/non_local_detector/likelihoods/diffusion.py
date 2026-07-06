@@ -97,6 +97,37 @@ def _require_rank_covers_components(rank: int, n_components: int) -> None:
         )
 
 
+def _block_eigenbasis(
+    block: scipy.sparse.spmatrix, rank: int | None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Eigendecomposition of a single **connected** Laplacian block.
+
+    ``rank is None`` (or ``rank >= n``) uses dense ``scipy.linalg.eigh``; a smaller
+    ``rank`` uses truncated ``scipy.sparse.linalg.eigsh`` with a small negative
+    shift-invert, falling back to the no-shift-invert solver if the factorization
+    fails. Eigenvalues are returned ascending and clipped to be non-negative.
+    """
+    n = block.shape[0]
+    if rank is None or rank >= n:
+        eigvals, eigvecs = scipy.linalg.eigh(block.toarray())
+        return np.clip(eigvals, 0.0, None), eigvecs
+
+    try:
+        eigvals, eigvecs = scipy.sparse.linalg.eigsh(
+            block, k=rank, sigma=-1e-8, which="LM"
+        )
+    except RuntimeError:
+        # Shift-invert can fail on the (near-)singular Laplacian in some builds,
+        # raising either "Factor is exactly singular" (a plain RuntimeError from the
+        # sparse LU factorization) or an ArpackError (itself a RuntimeError
+        # subclass). Both are caught here; fall back to the no-shift-invert
+        # smallest-magnitude solver.
+        eigvals, eigvecs = scipy.sparse.linalg.eigsh(block, k=rank, which="SM")
+
+    order = np.argsort(eigvals)
+    return np.clip(eigvals[order], 0.0, None), eigvecs[:, order]
+
+
 def diffusion_eigenbasis(
     L: scipy.sparse.spmatrix, rank: int | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -129,30 +160,48 @@ def diffusion_eigenbasis(
     ValidationError
         If ``rank`` is below the number of connected components (which would drop a
         null mode and break component-wise mass conservation).
+
+    Notes
+    -----
+    On a **disconnected** graph each connected component is decomposed separately so
+    every returned eigenvector is localized to a single component (zero elsewhere),
+    then the globally smallest ``rank`` modes are kept. This matters for truncation:
+    a single global ``eigsh`` can return eigenvectors rotated *across* components
+    within a degenerate eigenspace, and a truncation that cut through such an
+    eigenspace would smear a point source across a wall (leaking mass after the
+    clip/renormalize in :func:`diffuse`). Component-local modes make truncation
+    (and slicing a cached full basis) leak-free by construction.
     """
     n_bins = L.shape[0]
+    n_components, labels = scipy.sparse.csgraph.connected_components(L, directed=False)
+    if rank is not None:
+        _require_rank_covers_components(rank, n_components)
 
-    if rank is None or rank >= n_bins:
-        eigvals, eigvecs = scipy.linalg.eigh(L.toarray())
-        return np.clip(eigvals, 0.0, None), eigvecs
+    if n_components == 1:
+        return _block_eigenbasis(L, rank)
 
-    n_components = scipy.sparse.csgraph.connected_components(
-        L, directed=False, return_labels=False
-    )
-    _require_rank_covers_components(rank, n_components)
+    # Disconnected: decompose each component so modes are component-local, then keep
+    # the globally smallest `rank` (each component contributes at most `rank`; the
+    # `n_components` zero modes are the smallest, so all are retained).
+    L = L.tocsr()
+    per_component_rank = n_bins if rank is None else rank
+    eigval_parts: list[np.ndarray] = []
+    eigvec_parts: list[np.ndarray] = []
+    for component in range(n_components):
+        idx = np.flatnonzero(labels == component)
+        block = L[idx][:, idx]
+        block_rank = None if per_component_rank >= idx.size else per_component_rank
+        block_vals, block_vecs = _block_eigenbasis(block, block_rank)
+        padded = np.zeros((n_bins, block_vecs.shape[1]))
+        padded[idx] = block_vecs
+        eigval_parts.append(block_vals)
+        eigvec_parts.append(padded)
 
-    try:
-        eigvals, eigvecs = scipy.sparse.linalg.eigsh(L, k=rank, sigma=-1e-8, which="LM")
-    except RuntimeError:
-        # Shift-invert can fail on the (near-)singular Laplacian in some builds,
-        # raising either "Factor is exactly singular" (a plain RuntimeError from the
-        # sparse LU factorization) or an ArpackError (itself a RuntimeError
-        # subclass). Both are caught here; fall back to the no-shift-invert
-        # smallest-magnitude solver.
-        eigvals, eigvecs = scipy.sparse.linalg.eigsh(L, k=rank, which="SM")
-
-    order = np.argsort(eigvals)
-    return np.clip(eigvals[order], 0.0, None), eigvecs[:, order]
+    all_eigvals = np.concatenate(eigval_parts)
+    all_eigvecs = np.concatenate(eigvec_parts, axis=1)
+    keep = all_eigvals.size if rank is None else rank
+    order = np.argsort(all_eigvals, kind="stable")[:keep]
+    return all_eigvals[order], all_eigvecs[:, order]
 
 
 def diffuse(
