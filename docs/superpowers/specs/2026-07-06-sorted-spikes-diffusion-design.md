@@ -7,238 +7,248 @@
 ## Summary
 
 Add a new, opt-in sorted-spikes likelihood algorithm, `sorted_spikes_diffusion`,
-that estimates place fields with a **heat-kernel diffusion** intensity estimator
-(the estimator behind `spatstat.explore::densityHeat.ppp`) instead of the current
-Gaussian kernel density estimate (KDE). The diffusion is run as a random walk on
-the `Environment`'s existing manifold graph, so it respects track geometry
-(walls, holes, junctions) and generalizes across 1D linearized tracks and N-D
-open fields without a separate pixel-grid representation.
+that estimates place fields with a **graph heat-kernel diffusion** smoother instead of
+the current Gaussian kernel density estimate (KDE). The diffusion runs on the
+`Environment`'s existing manifold graph, so it respects track geometry (walls, holes,
+junctions) and works uniformly across 1D linearized tracks and N-D open fields.
 
-The user brought four Downloads files as the starting point
-(`density_heat.py`, `density_heat_jax.py`, `place_field.py`, `test_density_heat.py`).
-The decision (see "Substrate", below) is to **adapt the spatstat algorithm onto our
-own graph machinery** rather than vendor its pixel-grid implementation into the
-production path. The spatstat NumPy code is vendored into the test suite only, as a
-reference oracle.
+The estimator is **ported from the author's `neurospatial` package** (MIT,
+`neurospatial.ops.smoothing`), not built from scratch and not taken as a runtime
+dependency. Specifically we port the graph-Laplacian construction and **apply it with
+batched `scipy.sparse.linalg.expm_multiply`** rather than materializing a dense kernel —
+a scalability strategy taken from the spatstat diffusion port and explicitly flagged as
+an unbuilt "deferred stretch goal" in neurospatial's own docstring.
+
+### How we got here (decisions)
+
+- Estimator = heat-kernel diffusion, not Gaussian KDE (fixes cross-wall smearing).
+- Substrate = the `Environment`'s manifold graph (`track_graphDD` for N-D, the
+  linearized graph for 1D), not a separate pixel grid — reflecting boundaries and mass
+  conservation are intrinsic to the graph; works in 1D and N-D; no transpose/ravel adapter.
+- Sourcing = **port** neurospatial's kernel construction into `non_local_detector`
+  (no new dependency, no `Environment`-bridging), applied via `expm_multiply`.
+- The spatstat NumPy port (`density_heat.py`) is at most an **optional test oracle**,
+  now largely redundant given the analytic-Gaussian equivalence test.
 
 ## Motivation
 
-Ordinary Gaussian KDE (`common.KDEModel`, used by `sorted_spikes_kde` and
-`clusterless_kde`) smooths in the coordinate metric. In 2D it smears probability
-across walls and holes (two points close in Euclidean space but far along the real
-track get spurious shared density). The package currently sidesteps this by
-linearizing to 1D via `track_graph`, which requires a hand-built graph and collapses
-to 1D.
+Ordinary Gaussian KDE (`common.KDEModel`, used by `sorted_spikes_kde`) smooths in the
+coordinate metric. In 2D it smears probability across walls and holes; the package
+currently sidesteps this by linearizing to 1D via `track_graph`. Graph diffusion fixes
+cross-wall smearing directly, in any dimension, and is a principled intensity estimator:
 
-The diffusion estimator fixes cross-wall smearing directly, in whatever dimension,
-and is a statistically principled intensity estimator:
+1. **Reflecting (Neumann) boundaries** — no probability flux across a wall (the animal
+   cannot cross it, so neither should its estimated density).
+2. **Mass conservation** — the operator is column-stochastic, so total intensity is
+   preserved; downstream Poisson rates are correctly normalized.
+3. **Intrinsic (diffusion) distance** — smoothing follows the diffusion distance on the
+   domain, correct around junctions and holes where Euclidean is wrong.
 
-1. **Reflecting (Neumann) boundaries** — no probability flux across a wall; the
-   physically correct condition for an arena the animal cannot cross.
-2. **Mass conservation** — the evolution operator is (sub)stochastic, so total
-   intensity stays exactly `N`; downstream Poisson rates are correctly normalized
-   with no geometry-dependent bias.
-3. **Intrinsic (diffusion) distance** — smoothing follows the diffusion distance on
-   the domain, correct around junctions and holes where Euclidean is wrong.
+## Estimator: what we port and how we apply it
 
-## Statistical foundation
+### Ported construction (from `neurospatial.ops.smoothing.compute_diffusion_kernels`)
 
-`densityHeat` treats the binned point pattern as the initial condition of a diffusion
-equation and evolves it for "time" `t = σ²`. The evolution operator is the heat
-kernel `exp(-tL)`, where `L` is the graph Laplacian of the adjacency graph. On flat
-unbounded space this is identical to Gaussian KDE with bandwidth `σ`. The discrete
-update `u ← u A` is the explicit-Euler discretization of `∂u/∂t = -L u`. spatstat
-runs this on a pixel-grid graph; we run the same diffusion on the `Environment`'s
-manifold graph.
+Given a graph whose edges carry a Euclidean `distance` attribute:
 
-**Why graph diffusion is the principled choice (vs the two alternatives):**
+1. **Gaussian edge weights** `w_uv = exp(-d_uv² / (2σ²))` (Belkin–Niyogi heat-kernel
+   weighting).
+2. **Graph Laplacian** `L = D - W` (sparse).
+3. **Volume correction (density mode only):** `L ← M⁻¹ L`, `M = diag(bin_sizes)`, so
+   bins of unequal size integrate correctly.
 
-- **Geodesic-distance KDE** (Gaussian of shortest-path distance, the mechanism
-  `base.py` already uses for the non-local penalty and local-position kernel) is
-  *not* a heat kernel: it is not mass-conserving, it double-counts mass at junctions,
-  and it is only the small-`σ`, flat-space asymptotic limit of the heat kernel
-  (Varadhan). It is acceptable as a soft *prior*, but biased as a *density estimator*
-  feeding a Poisson likelihood — the bias becomes decoded-rate error. **Rejected.**
-- **Pixel-grid diffusion** (vendor spatstat as-is) is equally principled as an
-  estimator but cannot represent 1D linearized tracks (the dominant use case) and
-  introduces a second discretization of the geometry (pixel grid + mask) that must be
-  reconciled with the `Environment` grid via an error-prone transpose. **Rejected for
-  production; retained as a test oracle.**
-- **Graph diffusion** *is* spatstat's estimator, run on the manifold graph we already
-  build. Reflecting boundaries and mass conservation are automatic from the graph's
-  connectivity (no edges to non-interior bins ⇒ boundary nodes keep more mass at
-  home). One source of truth for the geometry; general in 1D and N-D. **Chosen.**
+The heat kernel is `K = exp(-t L)`, `t = σ² / 2`.
+
+### Applied via batched `expm_multiply` (the spatstat lesson)
+
+We never materialize the dense `K`. The place-field pipeline only needs the operator
+applied to a handful of fields (occupancy + one count field per neuron), so we compute
+
+```text
+smoothed = expm_multiply(-t · L, fields)      # fields shape (n_bins, n_fields)
+```
+
+stacking occupancy and all neuron count-fields as columns of one `(n_bins, n_neurons+1)`
+matrix and diffusing them in a single call. This is `O(nnz)` memory instead of `O(n²)`,
+exact (adaptive Krylov; no `Nstep`/`pmax`/stability tuning), and removes neurospatial's
+dense >3000-bin blow-up — the one axis on which spatstat scaled better.
+
+**Mass conservation is automatic.** For a symmetric graph Laplacian `1ᵀL = 0`, so
+`exp(-tL)` is exactly column-stochastic; `expm_multiply` conserves mass in `transition`
+mode with no explicit renormalization (a clip of tiny negative Krylov noise is retained).
+
+### Modes
+
+- **`transition` (default):** mass-conserving; correct for count fields (occupancy,
+  spike counts) on a uniform grid, where all `bin_sizes` are equal.
+- **`density`:** volume-corrected; used only when bin areas vary (e.g. linearized tracks
+  with uneven bins). Requires `bin_sizes`; area-weighted normalization.
+
+### Where this runs (NumPy at fit time; JAX inherits the result)
+
+The diffusion is a **host-side fit-time computation** in NumPy/SciPy (`expm_multiply`),
+exactly like the existing KDE fit uses `scipy.interpolate`. Only the resulting
+`place_fields` arrays enter JAX for the HMM likelihood. No JAX diffusion kernel is
+needed, and the JAX code path is unaffected.
 
 ## Goals / non-goals
 
-**Goals**
+### Goals
+
 - New registered `sorted_spikes_diffusion` algorithm selectable via
-  `sorted_spikes_algorithm="sorted_spikes_diffusion"` in the decoder/classifier models.
+  `sorted_spikes_algorithm="sorted_spikes_diffusion"`.
 - Manifold-aware place fields in 1D (linearized `track_graph`) and N-D (`track_graphDD`).
-- Same encoding-model dict contract and Poisson log-likelihood as `sorted_spikes_kde`,
-  so it is a drop-in at the model level.
-- Rigorous numerical validation against the spatstat oracle and analytic Gaussians.
+- Same encoding-model dict contract and Poisson log-likelihood as `sorted_spikes_kde`
+  (drop-in at the model level).
+- Rigorous numerical validation (analytic Gaussian, mass conservation, no cross-wall
+  leakage) plus a scaling guard.
 
-**Non-goals (YAGNI)**
+### Non-goals (YAGNI, filed for later)
+
 - Clusterless (mark-space) diffusion — marks are not spatial; out of scope.
-- Standard errors / leave-one-out / lagged arrivals / Richardson extrapolation —
-  vendored in the oracle, not wired into the production estimator.
-- Sub-bin-resolution local decoding (local decoding indexes place fields by the
-  animal's bin; same discretization tradeoff as the grid).
-
-## Substrate decision (resolved)
-
-The manifold-aware estimator smooths on the **`Environment` graph**:
-- **N-D:** `track_graphDD` — nodes are interior bin centers, edges are Moore-neighborhood
-  adjacency between interior bins (`make_nD_track_graph_from_environment`), edge weight
-  `distance` = Euclidean distance between adjacent centers.
-- **1D:** the linearized `track_graph_with_bin_centers_edges_` / `distance_between_nodes_`.
-
-Because edges only connect interior bins, the reflecting boundary is intrinsic to the
-graph — no separate mask, no transpose/ravel adapter.
+- Leave-one-out bandwidth selection (spatstat's per-point kernels enable choosing σ by
+  LOO likelihood instead of a fixed `position_std`) — deferred.
+- Adaptive / per-bin bandwidth (spatstat's per-pixel σ) — breaks the single-`expm`
+  formulation on a graph; noted as a real capability gap, deferred.
+- Richardson extrapolation, explicit `Nstep`/`pmax` CFL machinery, connect 4/8 toggling —
+  not ported (moot under `expm_multiply`; connectivity is fixed by the environment graph).
 
 ## Architecture
 
 ### Module layout
 
-```
+```text
 src/non_local_detector/likelihoods/
-  diffusion_model.py            # DiffusionModel (KDEModel-compatible) + graph→operator build
+  diffusion.py                  # graph→L build + batched expm_multiply application
   sorted_spikes_diffusion.py    # fit_/predict_ mirroring sorted_spikes_kde.py
   __init__.py                   # register in _SORTED_SPIKES_ALGORITHMS
 
 src/non_local_detector/tests/likelihoods/
-  density_heat_oracle.py        # vendored spatstat NumPy port (test oracle ONLY)
   test_sorted_spikes_diffusion.py
+  density_heat_oracle.py        # OPTIONAL vendored spatstat NumPy port (test oracle only)
 ```
 
-### `DiffusionModel` (the well-bounded unit)
+### `diffusion.py` (the well-bounded numerical unit)
 
-Mirrors `common.KDEModel`'s interface so `sorted_spikes_diffusion.py` is
-`sorted_spikes_kde.py` with the estimator swapped:
+- `build_diffusion_operator(graph, sigma, *, bin_sizes=None, mode="transition") -> sparse L`
+  — port of neurospatial's Gaussian-weighted Laplacian + volume correction. Keeps `L`
+  sparse (does **not** exponentiate).
+- `diffuse(L, sigma, fields, *, mode, bin_sizes=None) -> ndarray (n_bins, n_fields)`
+  — `expm_multiply(-t·L, fields)`, `t=σ²/2`; clip tiny negatives; apply density-mode
+  area normalization when requested.
+- `interior_subgraph(environment) -> (graph, node_order)` — the adapter (below).
 
-- `DiffusionModel(std, environment, connect=8, symmetric=False, block_size=None)`
-- `.fit(samples, weights=None) -> self` — pixellate `samples` onto graph nodes
-  (weighted counts per interior bin), store as the diffusion initial condition.
-- `.predict(eval_points) -> density at eval_points` — diffuse the stored initial
-  condition through the cached operator `A`, then read the density at `eval_points`
-  by bin lookup (`environment.get_bin_ind`). Returns values on interior bins when
-  `eval_points` are the interior bin centers.
+### Environment → interior-bin graph adapter
 
-Because diffusion is linear, multiple initial conditions (occupancy + every neuron's
-marginal) are stacked as columns and evolved together in one `jax.lax.scan`.
+The likelihoods operate on `place_bin_centers_[is_track_interior]` (interior bins, flat
+order). We build `L` on exactly those bins in that order:
 
-### Transition operator `A` (built once, cached)
+- **N-D:** take the subgraph of `track_graphDD` induced by interior nodes and relabel
+  `0..n_interior-1` in the order `np.where(is_track_interior_.ravel())[0]`. Edges already
+  carry `distance` (`make_nD_track_graph_from_environment`).
+- **1D:** use the linearized graph / `distance_between_nodes_`, restricted to interior
+  bins in the same order.
 
-`A` depends only on `(graph, σ, connect, symmetric)` — not the samples — so it is
-built once at `fit` time and cached on the encoding-model dict, then reused for
-occupancy, every neuron's marginal, and predict.
+No pixel grid, no transpose — just a node relabeling. Correctness is pinned by a
+round-trip test (a unit field at interior bin `k` diffuses to a bump centered on `k`).
 
-Construction on the graph (nodes = interior bins, edge lengths `d_ij`):
-- off-diagonal `A[i, j]` = jump probability `i → j`, a function of `d_ij`, `σ`, `Nstep`;
-- diagonal `A[i, i] = 1 − Σ_j A[i, j]` (mass that does not jump stays);
-- boundary/low-degree nodes keep more mass at home ⇒ automatic reflecting BC;
-- **calibration:** choose per-step jump probability `p` and step count `Nstep` so that
-  `Nstep × (per-step mean-squared displacement) = σ²` (matching Gaussian variance);
-- **stability guards** ported from spatstat: enforce `Σ_j A[i,j] ≤ pmax < 1` and
-  `Nstep = max(16, ⌈σ² / (2 · pmax · minstep²)⌉)`; raise on violation rather than
-  silently producing negative/unstable probabilities.
+### `sorted_spikes_diffusion.py`
 
-`A` is stored as a JAX-friendly sparse structure (neighbor index arrays + value
-arrays), so the walk is a batched segment-sum / sparse mat-vec inside the scan.
+Mirrors `sorted_spikes_kde.py`:
+- `fit_sorted_spikes_diffusion_encoding_model(position_time, position, spike_times,
+  environment, weights=None, sampling_frequency=500, position_std=sqrt(12.5),
+  mode="transition", block_size=100, disable_progress_bar=False) -> dict`
+  - build & cache the diffusion operator on the interior-bin graph;
+  - pixellate occupancy (weighted by dt) and each neuron's spike positions to count
+    fields on interior bins;
+  - **batch** occupancy + all neuron fields through one `diffuse` call;
+  - `place_field_k(x) = mean_rate_k · marginal_k(x) / occupancy(x)`, floored at `EPS`
+    (identical formula and clipping convention to `sorted_spikes_kde`);
+  - return the same dict keys as `sorted_spikes_kde` (`environment`, `occupancy`,
+    `mean_rates`, `place_fields`, `no_spike_part_log_likelihood`, `is_track_interior`,
+    `disable_progress_bar`), plus the cached operator / ordering.
+- `predict_sorted_spikes_diffusion_log_likelihood(...)`
+  - **non-local:** reuse `sorted_spikes_kde`'s non-local path verbatim (it uses only
+    `place_fields`, `no_spike_part_log_likelihood`, `is_track_interior`);
+  - **local:** index place fields by the animal's interpolated bin (`get_bin_ind`)
+    rather than re-running a smoother (bin-resolution; consistent discretization).
+
+`position_std` keeps its meaning (equivalent-Gaussian σ in coordinate units), mapped to
+diffusion time `t=σ²/2`.
 
 ### Data flow
 
-```
+```text
 Environment (fitted, 1D or N-D)
-  └─ manifold graph (track_graphDD or linearized graph) + edge lengths
-       └─ build & cache A(σ, connect)                     [once, at fit]
-position samples ─ pixellate → occupancy initial condition ┐
-neuron k spikes  ─ pixellate → marginal_k initial condition ┤ stack columns
-                                                            ├─→ one lax.scan: U ← Aᵀ U (Nstep)
-                                                            ┘
+  └─ interior-bin graph + edge distances
+       └─ build & cache sparse L(σ, mode)                         [once, at fit]
+position samples ─ pixellate(weights=dt) → occupancy field  ┐
+neuron k spikes  ─ pixellate            → marginal_k field   ┤ stack columns
+                                                             ├→ expm_multiply(-tL, U)  [batched, NumPy]
+                                                             ┘
   occupancy, marginals on interior bins
-    └─ place_field_k(x) = mean_rate_k · marginal_k(x) / occupancy(x)   [floored at EPS]
+    └─ place_field_k(x) = mean_rate_k · marginal_k(x) / occupancy(x)   [floored EPS]
          └─ encoding-model dict (same keys as sorted_spikes_kde)
-              └─ HMM predict:  Σ_k [ count_k · log λ_k − λ_k ]   (unchanged)
+              └─ HMM predict:  Σ_k [ count_k · log λ_k − λ_k ]   (JAX, unchanged)
 ```
-
-### Interface contract (unchanged at the model level)
-
-`fit_sorted_spikes_diffusion_encoding_model(position_time, position, spike_times,
-environment, weights=None, sampling_frequency=500, position_std=sqrt(12.5),
-connect=8, symmetric=False, block_size=100, disable_progress_bar=False) -> dict`
-
-Returns the same keys `sorted_spikes_kde` returns (`environment`, `occupancy`,
-`mean_rates`, `place_fields`, `no_spike_part_log_likelihood`, `is_track_interior`,
-`disable_progress_bar`, plus the cached diffusion operator and models), so
-`predict_sorted_spikes_diffusion_log_likelihood(...)` can share the non-local path of
-`predict_sorted_spikes_kde_log_likelihood` verbatim (it uses only `place_fields`,
-`no_spike_part_log_likelihood`, `is_track_interior`). The local path indexes place
-fields by the animal's interpolated bin (`get_bin_ind`) instead of re-running a
-smoother.
-
-`position_std` keeps its current meaning (the equivalent-Gaussian standard deviation,
-in coordinate units) — the calibration maps it to diffusion time `σ²`, so users do not
-learn a new bandwidth concept.
 
 ## Error handling
 
 Reuse `_validation` / `ValidationError` conventions:
-- require a fitted `Environment` with `place_bin_centers_` and `is_track_interior_`;
-- require the manifold graph to be present (`track_graphDD` for N-D, linearized graph
-  for 1D); raise a clear error if missing;
-- reject non-positive `position_std`;
-- reject `connect` outside `{4, 8}`; raise on the spatstat stability-guard violation;
-- floor place fields at `EPS`, matching `sorted_spikes_kde` (`min=EPS`), and clip the
-  summed no-spike term once (not per neuron), matching the existing convention.
+- require a fitted `Environment` with `place_bin_centers_`, `is_track_interior_`, and the
+  manifold graph (`track_graphDD` for N-D, linearized graph for 1D); clear error if missing;
+- reject non-positive `position_std`; reject invalid `mode`;
+- **σ ≥ bin-width guard:** warn when `position_std` is below ~1 bin width, since the
+  Gaussian edge weights collapse and `K ≈ I` (silent near-no-op) — a guard implied by
+  spatstat's `Nstep` calibration;
+- floor place fields at `EPS`, and clip the summed no-spike term once (not per neuron),
+  matching `sorted_spikes_kde`.
 
 ## Testing strategy (TDD order — each RED first)
 
-The spatstat NumPy port is vendored into `tests/likelihoods/density_heat_oracle.py`
-as the reference oracle (never imported by production code).
+Invariant tests are adapted from spatstat's `test_density_heat.py`, which is a stronger
+suite than we would write from scratch.
 
-1. **Oracle port** — port `test_density_heat.py` to pytest (seeded, `property` /
-   `integration` markers): mass conservation, single-point ≈ analytic Gaussian
-   (<2%), connect 4/8 agreement, mask, weights, symmetric, varying-σ.
-2. **Operator calibration** — flat/unbounded region: graph diffusion of a single
-   binned point ≈ analytic Gaussian with bandwidth `σ` (far from boundaries), and
-   ≈ the spatstat oracle on a 2D open-field grid.
-3. **Mass conservation** — Σ (intensity × bin area) = `N` to ~1e-6, in 1D and N-D.
-4. **No cross-wall leakage** — barrier environment: zero mass crosses the gap; a two-arm
-   layout that Euclidean KDE smears across must stay separated under diffusion.
+1. **Adapter round-trip** — a unit field at interior bin `k` diffuses to a bump centered
+   on `k`; interior-node relabeling matches `place_bin_centers_[is_track_interior]` order.
+2. **Analytic-Gaussian equivalence** — single binned point far from boundaries ≈ exact
+   Gaussian with bandwidth σ (`<2%`), in 1D and N-D (spatstat test 2).
+3. **Mass conservation** — `Σ (smoothed) = Σ (field)` in `transition` mode to ~1e-10;
+   `Σ intensity·bin_size = N` for the intensity form (spatstat test 1).
+4. **No cross-wall leakage** — barrier / two-arm environment: zero mass crosses the gap;
+   a layout Euclidean KDE smears across stays separated under diffusion.
 5. **1D correctness** — linear track ≈ 1D analytic Gaussian; W-track respects arm gaps.
-6. **Graph-Laplacian consistency** — on the regular interior-bin lattice, the simple
-   edge-length weighting is a consistent discretization of the continuous Laplacian
-   (bandwidth recovered within tolerance); documents the assumption explicitly.
+6. **σ ≥ bin-width guard** — warns (does not smooth) when `position_std` < ~1 bin width.
 7. **Drop-in equivalence anchor** — wall-less open field, well-sampled trajectory:
    diffusion `place_fields` ≈ KDE `place_fields` within a few percent (also pins the
-   `mean_rate · marginal / occupancy` normalization so units match exactly).
+   `mean_rate · marginal / occupancy` normalization so units match).
 8. **Invariants** (`property`) — place fields ≥ 0 and finite; posteriors sum to 1;
-   no NaN/Inf; JAX: no unexpected recompilation, shapes as expected.
-9. **End-to-end** — fit a sorted-spikes decoder with `sorted_spikes_diffusion` on
-   simulated replay; recover the trajectory; capture a **new** syrupy snapshot (not a
-   diff of an existing one); then a smallest-real-slice smoke test.
+   no NaN/Inf.
+9. **Scaling guard** — the `expm_multiply` path stays `O(nnz)` memory (no dense
+   `n_bins × n_bins` materialization); a large-bin environment that would warn under a
+   dense kernel runs without it.
+10. **End-to-end** — fit a sorted-spikes decoder with `sorted_spikes_diffusion` on
+    simulated replay; recover the trajectory; capture a **new** syrupy snapshot; then a
+    smallest-real-slice smoke test.
 
-Numerical validation per `CLAUDE.md`: run `pytest -m property`, the golden-regression
-suite, and the new snapshot. The `jax` and `numerical-validation` skills apply during
-implementation.
+Numerical validation per `CLAUDE.md`: `pytest -m property`, the golden-regression suite,
+and the new snapshot. The `jax` and `numerical-validation` skills apply during
+implementation. Optionally cross-check `diffuse` against the vendored spatstat oracle on
+a 2D open-field grid.
 
 ## Tradeoffs
 
-**Wins:** manifold-aware, mass-conserving, statistically principled place fields in 1D
-and N-D; single geometry representation (the graph); reuses the model-level contract so
-it is a drop-in; no new hard dependencies (numpy/scipy/jax already present).
+**Wins:** manifold-aware, mass-conserving place fields in 1D and N-D; exact heat kernel
+(no time-stepping error) applied at `O(nnz)` memory via `expm_multiply`; a single
+geometry representation (the graph); drop-in at the model level; no new dependency; kernel
+math reused from the author's own MIT package rather than reinvented.
 
-**Costs:** new numerical code (graph-Laplacian diffusion + σ calibration + stability
-guards) rather than a straight vendor, so the validation burden is the crux — mitigated
-by the spatstat oracle cross-check. Bin-resolution local decoding. `Nstep` grows with
-`(σ / min-edge-length)²`, so fine bins or large σ cost more diffusion steps. New
-parameters (`connect`, `symmetric`) to document. Graph-Laplacian↔continuous-Laplacian
-correspondence is clean only for near-regular bin lattices (true here; validated in
-test 6, not assumed).
+**Costs:** a small ported numerical unit duplicated across two MIT repos (divergence
+risk); `expm_multiply` cost grows with σ (more Krylov steps) and with `nnz`; bin-resolution
+local decoding; the Gaussian graph-Laplacian↔continuous-Laplacian correspondence is clean
+only for near-regular bin lattices (true here; validated in tests 2/5) and under-smooths
+when σ < bin width (guarded).
 
 ## Out of scope
 
-1D-vs-N-D is both supported; clusterless, SE/LOO/lagged/Richardson, and sub-bin local
-decoding are out of scope for this change.
+Clusterless; LOO bandwidth selection; adaptive/per-bin bandwidth; Richardson; sub-bin
+local decoding. Both 1D and N-D grid environments are supported.
