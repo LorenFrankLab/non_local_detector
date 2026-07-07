@@ -29,6 +29,7 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
 from non_local_detector.likelihoods.sorted_spikes_mrf import (
     fit_sorted_spikes_mrf_encoding_model,
     mrf_penalized_poisson_fit,
+    mrf_reml_objective,
     predict_sorted_spikes_mrf_log_likelihood,
     select_penalty_by_reml,
 )
@@ -125,14 +126,16 @@ def test_population_fit_matches_per_neuron_reference():
     assert diagnostics["n_iter"] >= 1
     assert isinstance(diagnostics["converged"], bool)
     assert np.isfinite(diagnostics["max_step"])
+    # The JAX fit runs in float32 (package regime), so the batched fit agrees with the
+    # float64 per-neuron reference to ~float32 precision (~1e-7), not machine epsilon.
     for neuron in range(n_neurons):
         expected = reference_fit_one_neuron(
             counts[:, neuron], occupancy, basis, penalty_weights, penalty
         )
-        np.testing.assert_allclose(coeffs[:, neuron], expected, atol=1e-6)
-    # eta / mu are consistent with the fitted coefficients.
-    np.testing.assert_allclose(eta, basis @ coeffs, atol=1e-10)
-    np.testing.assert_allclose(mu, occupancy[:, None] * np.exp(eta), rtol=1e-10)
+        np.testing.assert_allclose(coeffs[:, neuron], expected, atol=1e-5)
+    # eta / mu are consistent with the fitted coefficients (float32 self-consistency).
+    np.testing.assert_allclose(eta, basis @ coeffs, atol=1e-5)
+    np.testing.assert_allclose(mu, occupancy[:, None] * np.exp(eta), rtol=1e-5)
 
 
 def test_basis_is_smoothest_modes_and_penalty_is_eigenvalue_ridge():
@@ -472,6 +475,22 @@ def test_fit_empty_spike_times_returns_empty_place_fields():
     assert encoding["mrf_penalty"] == 1.0
     assert encoding["mrf_penalty_selected_by_reml"] is False
     assert np.isnan(encoding["mrf_reml_objective"])
+
+
+def test_reml_helpers_handle_zero_neurons():
+    """The low-level REML helpers must not crash on an empty neuron axis (the JAX
+    Newton fit's max-reduction over zero neurons would otherwise raise). The empty-sum
+    REML score is 0.0, and penalty selection returns a finite (degenerate) result."""
+    penalty_weights, basis = diffusion_eigenbasis(
+        build_laplacian(path_graph(5)), rank=3
+    )
+    counts = np.zeros((5, 0))
+    occupancy = np.ones(5)
+    assert mrf_reml_objective(0.0, counts, occupancy, basis, penalty_weights) == 0.0
+    penalty, objective = select_penalty_by_reml(
+        counts, occupancy, basis, penalty_weights
+    )
+    assert np.isfinite(penalty) and np.isfinite(objective)
 
 
 def test_penalty_zero_is_respected_not_overridden():

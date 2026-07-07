@@ -17,6 +17,15 @@ chosen by REML (Wood 2011). The whole population is fit at once (the design matr
 ``B`` and offset ``o`` are shared; only the spike counts ``n_k`` and coefficients
 ``gamma_k`` differ), vectorized over neurons.
 
+Implementation. The Newton/IRLS fit and the REML score run in JAX (jit + GPU-ready):
+the whole loop compiles to batched linear algebra over the neuron axis, so the fit
+scales linearly in neurons and accelerates on a GPU. Computation is float32 (the
+package regime -- ``core.py`` is float32-explicit, so no global x64 is enabled);
+rate error versus a float64 reference is ~1e-7, negligible for a Poisson rate. The
+eigenbasis is still built once on CPU with SciPy ``eigsh`` (no JAX sparse eig).
+Cost is dominated by the reduced-rank ``rank`` (Hessian ~``rank**2``, solve
+~``rank**3``), so pass a modest ``rank`` for large populations.
+
 Relationship to mgcv (R). The REML objective and the penalized-IRLS fit (with
 step-halving) mirror mgcv's ``gam.fit3``, and the Laplacian-eigenmode penalty is
 mgcv's ``bs="mrf"`` Markov-random-field smoother. Two deliberate departures: (1) a
@@ -33,8 +42,13 @@ Place fields ``exp(eta)`` are stored FULL-GRID exactly like ``sorted_spikes_kde`
 likelihood (:func:`predict_sorted_spikes_mrf_log_likelihood` is that function).
 """
 
+from functools import partial
+
+import jax
+import jax.numpy as jnp
 import numpy as np
 import scipy.optimize
+from jax import lax
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
@@ -56,15 +70,21 @@ predict_sorted_spikes_mrf_log_likelihood = (
     predict_sorted_spikes_diffusion_log_likelihood
 )
 
+# The Newton/IRLS fit and REML score run in JAX (jit + GPU-ready), batched over
+# neurons. float32 is the package regime (core.py is float32-explicit, so no global
+# x64 is needed); rate error vs the float64 reference is ~1e-7, well within tests.
+_FIT_DTYPE = jnp.float32
 # Clip the linear predictor before exponentiating to avoid overflow during IRLS.
 _ETA_CLIP = 30.0
 # Max Newton step-halvings per iteration (mgcv gam.fit3 style monotone-descent guard).
 _MAX_STEP_HALVINGS = 30
 # Ridge added to the Hessian diagonal for numerical stability.
 _HESSIAN_JITTER = 1e-10
-# Peak-memory budget for the (neuron-block, rank, n_bins) working array in the Hessian
-# build; neurons are processed in blocks so the BLAS batched matmul stays in bounds.
-_HESSIAN_CHUNK_BYTES = 256 * 1024**2
+# float32-safe floors: the coefficient-step convergence tol and the step-halving
+# "did the objective increase" threshold must sit above float32 rounding noise
+# (~1e-7), or convergence never triggers and halving fires on noise.
+_FIT_TOL_FLOOR = 1e-6
+_DESCENT_TOL = 1e-5
 # Search bounds for log(lambda) during REML selection.
 _LOG_PENALTY_BOUNDS = (-8.0, 20.0)
 # Default cap on the reduced-rank basis when ``rank`` is None (mgcv-style): the
@@ -203,30 +223,100 @@ def _validate_mrf_problem(
     return counts, occupancy, basis, penalty_weights, penalty, max_iter, tol
 
 
-def _assemble_hessian(
-    basis: np.ndarray, mu: np.ndarray, penalty_diag: np.ndarray
-) -> np.ndarray:
+def _penalized_hessian(basis: jnp.ndarray, mu: jnp.ndarray, penalty_diag: jnp.ndarray):
     """Batched penalized Hessian ``Bᵀ diag(mu_k) B + diag(penalty_diag)`` per neuron.
 
-    Computed as a BLAS batched matmul ``(Bᵀ ⊙ mu_k) @ B`` -- the mathematically
-    identical 3-operand ``einsum`` picks a non-BLAS path that is ~80x slower on large
-    grids. Neurons are processed in blocks so the ``(block, rank, n_bins)`` working
-    array stays within ``_HESSIAN_CHUNK_BYTES``. Returns shape ``(n_neurons, rank,
-    rank)``.
+    The 3-operand einsum is compiled by XLA to an efficient batched matmul (unlike
+    NumPy's einsum path). Returns shape ``(n_neurons, rank, rank)``.
     """
-    n_bins, rank = basis.shape
-    n_neurons = mu.shape[1]
-    basis_t = basis.T  # (rank, n_bins)
-    block = max(1, _HESSIAN_CHUNK_BYTES // (rank * n_bins * basis.itemsize))
-    hessian = np.empty((n_neurons, rank, rank), dtype=basis.dtype)
-    for start in range(0, n_neurons, block):
-        stop = min(start + block, n_neurons)
-        # (b, rank, n_bins) = Bᵀ weighted by each neuron's mu; @ B -> (b, rank, rank).
-        weighted = basis_t[None] * mu[:, start:stop].T[:, None, :]
-        hessian[start:stop] = weighted @ basis
-    diag = np.arange(rank)
-    hessian[:, diag, diag] += penalty_diag + _HESSIAN_JITTER
-    return hessian
+    hessian = jnp.einsum("br,bk,bs->krs", basis, mu, basis)
+    return hessian + jnp.eye(basis.shape[1], dtype=basis.dtype) * (
+        penalty_diag + _HESSIAN_JITTER
+    )
+
+
+@partial(jax.jit, static_argnames=("max_iter",))
+def _newton_fit_jax(
+    counts: jnp.ndarray,
+    occupancy: jnp.ndarray,
+    basis: jnp.ndarray,
+    penalty_diag: jnp.ndarray,
+    max_iter: int,
+    tol: jnp.ndarray,
+):
+    """Batched penalized-Poisson Newton/IRLS with per-neuron step-halving (jit).
+
+    All inputs are ``_FIT_DTYPE`` and the whole loop compiles to batched linear
+    algebra (GPU-ready). Returns ``(coeffs, eta, mu, n_iter, max_step, converged)``.
+    """
+    n_bins = basis.shape[0]
+    n_neurons = counts.shape[1]
+    tol = jnp.maximum(tol, _FIT_TOL_FLOOR)  # float32-safe convergence floor
+
+    def penalized_neg_loglik(coeffs, eta, mu):
+        loglik = jnp.sum(counts * eta - mu, axis=0)  # (n_neurons,)
+        penalty_term = 0.5 * jnp.sum(penalty_diag[:, None] * coeffs**2, axis=0)
+        return -loglik + penalty_term
+
+    # Warm start each neuron from a constant log-rate (fast, convex problem).
+    total_occupancy = jnp.maximum(occupancy.sum(), 1e-9)
+    eta0 = jnp.log(jnp.clip(counts.sum(0) / total_occupancy, 1e-6, None))
+    basis_pinv_ones = jnp.linalg.lstsq(basis, jnp.ones(n_bins, basis.dtype))[0]
+    coeffs0 = basis_pinv_ones[:, None] * eta0[None, :]  # (rank, n_neurons)
+
+    def newton_cond(state):
+        _, iteration, max_step = state
+        return (iteration < max_iter) & (max_step >= tol)
+
+    def newton_body(state):
+        coeffs, iteration, _ = state
+        eta = basis @ coeffs
+        mu = occupancy[:, None] * jnp.exp(jnp.clip(eta, -_ETA_CLIP, _ETA_CLIP))
+        grad = basis.T @ (counts - mu) - penalty_diag[:, None] * coeffs
+        hessian = _penalized_hessian(basis, mu, penalty_diag)
+        step = jnp.linalg.solve(hessian, grad.T[..., None])[..., 0]  # (n_neurons, rank)
+
+        objective = penalized_neg_loglik(coeffs, eta, mu)
+
+        def is_worse(scale):
+            trial = coeffs + scale[None, :] * step.T
+            trial_eta = basis @ trial
+            trial_mu = occupancy[:, None] * jnp.exp(
+                jnp.clip(trial_eta, -_ETA_CLIP, _ETA_CLIP)
+            )
+            trial_objective = penalized_neg_loglik(trial, trial_eta, trial_mu)
+            # NaN or a non-noise increase (float32-safe threshold) -> halve.
+            return ~(
+                trial_objective <= objective + _DESCENT_TOL * (1.0 + jnp.abs(objective))
+            )
+
+        def halving_cond(hstate):
+            scale, halvings = hstate
+            return (halvings < _MAX_STEP_HALVINGS) & jnp.any(is_worse(scale))
+
+        def halving_body(hstate):
+            scale, halvings = hstate
+            return jnp.where(is_worse(scale), 0.5 * scale, scale), halvings + 1
+
+        scale, _ = lax.while_loop(
+            halving_cond, halving_body, (jnp.ones(n_neurons, basis.dtype), 0)
+        )
+        accepted_step = scale[None, :] * step.T
+        # initial=0.0 so an empty neuron axis (n_neurons == 0) reduces to 0 (converged)
+        # rather than raising -- keeps the public REML helpers safe on zero neurons.
+        max_step = jnp.max(jnp.abs(accepted_step), initial=0.0)
+        return coeffs + accepted_step, iteration + 1, max_step
+
+    coeffs, n_iter, max_step = lax.while_loop(
+        newton_cond,
+        newton_body,
+        (coeffs0, jnp.array(0), jnp.array(jnp.inf, basis.dtype)),
+    )
+    # Clip eta so any rate the caller derives via exp(eta) stays finite even if a
+    # low-penalty / near-zero-occupancy fit drove eta large (mirrors mgcv).
+    eta = jnp.clip(basis @ coeffs, -_ETA_CLIP, _ETA_CLIP)
+    mu = occupancy[:, None] * jnp.exp(eta)
+    return coeffs, eta, mu, n_iter, max_step, max_step < tol
 
 
 def mrf_penalized_poisson_fit(
@@ -286,79 +376,28 @@ def mrf_penalized_poisson_fit(
                 counts, occupancy, basis, penalty_weights, penalty, max_iter, tol
             )
         )
-    n_bins = basis.shape[0]
-    penalty_diag = penalty * penalty_weights  # (rank,)
+    n_bins, rank = basis.shape
+    n_neurons = counts.shape[1]
+    if n_neurons == 0:
+        # No neurons to fit: jnp reductions over the empty neuron axis are ill-defined,
+        # so short-circuit with empty arrays consistent with the batched contract.
+        empty = (np.zeros((rank, 0)), np.zeros((n_bins, 0)), np.zeros((n_bins, 0)))
+        return (*empty, {"n_iter": 0, "converged": True, "max_step": 0.0})
 
-    # Warm start each neuron from a constant log-rate (fast, convex problem):
-    # lstsq(basis, ones) finds the coefficients whose basis reconstruction is closest
-    # to a constant field, scaled per neuron by its log mean rate eta0.
-    total_occupancy = max(float(occupancy.sum()), 1e-9)
-    eta0 = np.log(np.clip(counts.sum(axis=0) / total_occupancy, 1e-6, None))
-    basis_pinv_ones = np.linalg.lstsq(basis, np.ones(n_bins), rcond=None)[0]
-    coeffs = basis_pinv_ones[:, None] * eta0[None, :]  # (rank, n_neurons)
-
-    def penalized_neg_loglik(eta: np.ndarray, mu: np.ndarray, coeffs: np.ndarray):
-        """Per-neuron minimization objective ``-loglik + 0.5 * penalty`` (= Dp/2)."""
-        loglik = np.sum(counts * eta - mu, axis=0)  # (n_neurons,)
-        penalty_term = 0.5 * np.sum(penalty_diag[:, None] * coeffs**2, axis=0)
-        return -loglik + penalty_term
-
-    # Penalized IRLS with per-neuron step-halving (mgcv gam.fit3). A full Newton step
-    # overshoots catastrophically at near-zero-exposure bins (mu -> 0 inflates the
-    # step), so each neuron's step is shrunk by halves until its penalized objective
-    # does not increase -- guaranteeing monotone descent instead of divergence into
-    # the eta clip. A well-behaved fit accepts the full step on the first try, so this
-    # is a no-op there. No convergence warning: a silent cell (all-zero counts) or a
-    # near-zero-occupancy bin legitimately drifts toward a clip boundary rather than a
-    # tol-sized step, and the eta clip below guarantees a finite result regardless.
-    n_iter = 0
-    max_step = np.inf
-    converged = False
-    for iteration in range(1, max_iter + 1):
-        eta = basis @ coeffs
-        mu = occupancy[:, None] * np.exp(np.clip(eta, -_ETA_CLIP, _ETA_CLIP))
-        grad = basis.T @ (counts - mu) - penalty_diag[:, None] * coeffs
-        hessian = _assemble_hessian(basis, mu, penalty_diag)
-        # Batched solve H_k step_k = grad_k over the neuron axis.
-        step = np.linalg.solve(hessian, grad.T[..., None])[..., 0]  # (n_neurons, rank)
-
-        objective = penalized_neg_loglik(eta, mu, coeffs)  # reuse current eta/mu
-        scale = np.ones(step.shape[0])  # per-neuron Newton-step fraction
-        for _ in range(_MAX_STEP_HALVINGS):
-            trial = coeffs + scale[None, :] * step.T
-            trial_eta = basis @ trial
-            trial_mu = occupancy[:, None] * np.exp(
-                np.clip(trial_eta, -_ETA_CLIP, _ETA_CLIP)
-            )
-            trial_objective = penalized_neg_loglik(trial_eta, trial_mu, trial)
-            # NaN or a non-trivial increase (beyond floating-point noise) -> halve.
-            worse = ~(trial_objective <= objective + 1e-8 * (1.0 + np.abs(objective)))
-            if not worse.any():
-                break
-            scale = np.where(worse, 0.5 * scale, scale)
-
-        accepted_step = scale[None, :] * step.T
-        coeffs = coeffs + accepted_step
-        # accepted_step.size == 0 covers the zero-neuron case (np.max would raise).
-        max_step = (
-            0.0 if accepted_step.size == 0 else float(np.max(np.abs(accepted_step)))
-        )
-        n_iter = iteration
-        if max_step < tol:
-            converged = True
-            break
-
-    # Clip the returned linear predictor so the mean and any rate the caller derives
-    # via exp(eta) stay finite even if a low-penalty / near-zero-occupancy fit drove
-    # eta very large (mirrors the mgcv reference, which clips at this point too).
-    eta = np.clip(basis @ coeffs, -_ETA_CLIP, _ETA_CLIP)
-    mu = occupancy[:, None] * np.exp(eta)
+    coeffs, eta, mu, n_iter, max_step, converged = _newton_fit_jax(
+        jnp.asarray(counts, _FIT_DTYPE),
+        jnp.asarray(occupancy, _FIT_DTYPE),
+        jnp.asarray(basis, _FIT_DTYPE),
+        jnp.asarray(penalty * penalty_weights, _FIT_DTYPE),  # penalty_diag
+        int(max_iter),
+        _FIT_DTYPE(tol),
+    )
     diagnostics = {
-        "n_iter": n_iter,
-        "converged": converged,
-        "max_step": max_step,
+        "n_iter": int(n_iter),
+        "converged": bool(converged),
+        "max_step": float(max_step),
     }
-    return coeffs, eta, mu, diagnostics
+    return np.asarray(coeffs), np.asarray(eta), np.asarray(mu), diagnostics
 
 
 def _penalty_rank(penalty_weights: np.ndarray) -> int:
@@ -367,6 +406,39 @@ def _penalty_rank(penalty_weights: np.ndarray) -> int:
     if largest <= 0:
         return 0
     return int(np.sum(penalty_weights > 1e-12 * largest))
+
+
+@partial(jax.jit, static_argnames=("max_iter",))
+def _reml_score_jax(
+    log_penalty: jnp.ndarray,
+    counts: jnp.ndarray,
+    occupancy: jnp.ndarray,
+    basis: jnp.ndarray,
+    penalty_weights: jnp.ndarray,
+    penalty_rank: jnp.ndarray,
+    max_iter: int,
+    tol: jnp.ndarray,
+) -> jnp.ndarray:
+    """Negative Laplace REML for ``lambda = exp(log_penalty)``, summed over neurons.
+
+    On-device scalar (the fit stays on device across REML candidates). Returns +inf
+    for any lambda whose per-neuron Hessian is not positive-definite, so the search
+    never optimizes over an invalid log-determinant.
+    """
+    penalty = jnp.exp(log_penalty)
+    penalty_diag = penalty * penalty_weights
+    coeffs, eta, mu, _, _, _ = _newton_fit_jax(
+        counts, occupancy, basis, penalty_diag, max_iter, tol
+    )
+    loglik = jnp.sum(counts * eta - mu, axis=0)
+    penalty_term = 0.5 * penalty * jnp.sum(penalty_weights[:, None] * coeffs**2, axis=0)
+    # log|H| via Cholesky: logdet = 2 * sum(log(diag(L))), more float32-stable than the
+    # LU-based slogdet (and the SPD structure is exact here). A non-positive-definite
+    # Hessian yields a NaN Cholesky, so the finiteness check both validates and rejects.
+    chol = jnp.linalg.cholesky(_penalized_hessian(basis, mu, penalty_diag))
+    logdet = 2.0 * jnp.sum(jnp.log(jnp.diagonal(chol, axis1=-2, axis2=-1)), axis=-1)
+    reml = -loglik + penalty_term - 0.5 * penalty_rank * log_penalty + 0.5 * logdet
+    return jnp.where(jnp.all(jnp.isfinite(logdet)), jnp.sum(reml), jnp.inf)
 
 
 def mrf_reml_objective(
@@ -390,42 +462,29 @@ def mrf_reml_objective(
     log_penalty = float(log_penalty)
     if not np.isfinite(log_penalty):
         return np.inf
-    penalty = np.exp(log_penalty)
     if validate:
-        counts, occupancy, basis, penalty_weights, penalty, max_iter, tol = (
+        counts, occupancy, basis, penalty_weights, _, max_iter, tol = (
             _validate_mrf_problem(
-                counts, occupancy, basis, penalty_weights, penalty, max_iter, tol
+                counts,
+                occupancy,
+                basis,
+                penalty_weights,
+                np.exp(log_penalty),
+                max_iter,
+                tol,
             )
         )
-    coeffs, eta, mu, _ = mrf_penalized_poisson_fit(
-        counts,
-        occupancy,
-        basis,
-        penalty_weights,
-        penalty,
-        max_iter=max_iter,
-        tol=tol,
-        validate=False,
+    score = _reml_score_jax(
+        _FIT_DTYPE(log_penalty),
+        jnp.asarray(counts, _FIT_DTYPE),
+        jnp.asarray(occupancy, _FIT_DTYPE),
+        jnp.asarray(basis, _FIT_DTYPE),
+        jnp.asarray(penalty_weights, _FIT_DTYPE),
+        _FIT_DTYPE(_penalty_rank(penalty_weights)),
+        int(max_iter),
+        _FIT_DTYPE(tol),
     )
-    loglik = np.sum(counts * eta - mu, axis=0)  # (n_neurons,)
-    penalty_term = 0.5 * penalty * np.sum(penalty_weights[:, None] * coeffs**2, axis=0)
-
-    hessian = _assemble_hessian(basis, mu, penalty * penalty_weights)
-    # An under-regularized (very small penalty) fit with many zero-occupancy bins can
-    # make the per-neuron Hessian rank-deficient / non-positive-definite. The LU in
-    # slogdet then warns on the tiny pivots; suppress that expected noise, and reject
-    # the candidate (return +inf) so the REML search never optimizes over an invalid
-    # log-determinant instead of silently accepting a garbage-but-finite objective.
-    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
-        sign, logdet_hessian = np.linalg.slogdet(hessian)  # (n_neurons,)
-    if np.any(sign <= 0) or not np.all(np.isfinite(logdet_hessian)):
-        return np.inf
-
-    penalty_rank = _penalty_rank(penalty_weights)
-    reml = (
-        -loglik + penalty_term - 0.5 * penalty_rank * log_penalty + 0.5 * logdet_hessian
-    )
-    return float(reml.sum())
+    return float(score)
 
 
 def select_penalty_by_reml(
