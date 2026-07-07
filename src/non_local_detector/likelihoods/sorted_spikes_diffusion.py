@@ -40,6 +40,7 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
     check_smoothing_bandwidth,
+    connected_component_labels,
     diffuse,
     environment_graph,
     to_density,
@@ -327,6 +328,35 @@ def pixellate_interior_fields(
     return occupancy_field, spike_fields, mean_rates
 
 
+def _assemble_place_fields(
+    rate_interior: np.ndarray, node_order: np.ndarray, n_total_bins: int
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Scatter per-neuron interior rates onto FULL-GRID place fields (0 off-track).
+
+    Shared by the diffusion and MRF fits so the EPS floor, node-order scatter, and
+    no-spike term are computed once.
+
+    Parameters
+    ----------
+    rate_interior : np.ndarray, shape (n_interior, n_neurons)
+        Per-interior-bin firing rate for each neuron.
+    node_order : np.ndarray, shape (n_interior,)
+        Interior flat-bin indices in graph order.
+    n_total_bins : int
+
+    Returns
+    -------
+    place_fields : jnp.ndarray, shape (n_neurons, n_total_bins)
+        EPS-floored on interior bins, exactly 0 off-track.
+    no_spike_part_log_likelihood : jnp.ndarray, shape (n_total_bins,)
+        Summed place fields.
+    """
+    place_fields = np.zeros((rate_interior.shape[1], n_total_bins))
+    place_fields[:, node_order] = np.clip(rate_interior.T, EPS, None)
+    place_fields = jnp.asarray(place_fields)
+    return place_fields, jnp.sum(place_fields, axis=0)
+
+
 def fit_sorted_spikes_diffusion_encoding_model(
     position_time: np.ndarray,
     position: np.ndarray,
@@ -419,23 +449,31 @@ def fit_sorted_spikes_diffusion_encoding_model(
     )
 
     # Diffuse occupancy + all neuron fields in a single batched matmul, then
-    # normalize each column to an integral-one density.
+    # normalize each column to an integral-one density. Per-component labels keep
+    # truncated-rank smoothing from moving mass across disconnected components.
     fields = np.column_stack([occupancy_field, *spike_fields])
-    density = to_density(diffuse(eigvals, eigvecs, position_std, fields), bin_sizes)
+    density = to_density(
+        diffuse(
+            eigvals,
+            eigvecs,
+            position_std,
+            fields,
+            component_labels=connected_component_labels(graph),
+        ),
+        bin_sizes,
+    )
     occupancy = density[:, 0]
     marginals = density[:, 1:]
 
-    place_fields = np.zeros((len(spike_fields), n_total_bins))
-    for neuron, mean_rate in enumerate(mean_rates):
-        rate_interior = mean_rate * np.where(
-            occupancy > 0.0,
-            marginals[:, neuron] / np.where(occupancy > 0.0, occupancy, 1.0),
-            EPS,
-        )
-        place_fields[neuron, node_order] = np.clip(rate_interior, EPS, None)
-
-    place_fields = jnp.asarray(place_fields)
-    no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
+    # rate(x) = mean_rate * marginal / occupancy on occupied bins, EPS elsewhere.
+    occupied = occupancy > 0.0
+    safe_occupancy = np.where(occupied, occupancy, 1.0)
+    rate_interior = np.asarray(mean_rates)[np.newaxis, :] * np.where(
+        occupied[:, np.newaxis], marginals / safe_occupancy[:, np.newaxis], EPS
+    )
+    place_fields, no_spike_part_log_likelihood = _assemble_place_fields(
+        rate_interior, node_order, n_total_bins
+    )
 
     return {
         "environment": environment,

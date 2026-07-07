@@ -18,7 +18,10 @@ from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.likelihoods.common import EPS, get_position_at_time
-from non_local_detector.likelihoods.diffusion import environment_graph
+from non_local_detector.likelihoods.diffusion import (
+    connected_component_labels,
+    environment_graph,
+)
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     fit_sorted_spikes_diffusion_encoding_model,
     predict_sorted_spikes_diffusion_log_likelihood,
@@ -701,6 +704,49 @@ def test_no_rate_leak_across_impassable_barrier():
     assert diffusion_leak < 0.01
     assert kde_leak > 0.05
     assert kde_leak > 10 * diffusion_leak
+
+
+def test_truncated_rank_conserves_per_component_occupancy_mass():
+    """A truncated-rank fit on a disconnected environment must not shift occupancy
+    mass between components: heat conserves each component's mass at any rank, so the
+    per-component occupancy density mass is rank-independent. This exercises the
+    estimator's wiring of per-component labels into ``diffuse`` -- with a single
+    global renormalization, clipped truncation lobes would bleed mass across rooms.
+    """
+    rng = np.random.default_rng(0)
+    # Two rooms with NON-uniform (clustered) occupancy so the occupancy field has
+    # structure -> truncation lobes (a uniform field is the null mode and never lobes).
+    left = rng.normal([9.0, 20.0], [2.5, 6.0], size=(9000, 2)).clip([2, 2], [16, 38])
+    right = rng.normal([31.0, 20.0], [2.5, 6.0], size=(9000, 2)).clip([24, 2], [38, 38])
+    position = np.vstack([left, right])
+    rng.shuffle(position)
+    env = Environment(
+        environment_name="two_rooms_nonuniform",
+        place_bin_size=2.0,
+        position_range=((0.0, 40.0), (0.0, 40.0)),
+    ).fit_place_grid(position, infer_track_interior=True)
+    graph, _, _ = environment_graph(env)
+    assert nx.number_connected_components(graph) == 2
+    labels = connected_component_labels(graph)  # interior / node_order order
+    time = np.arange(position.shape[0]) / 100.0
+
+    def per_component_occupancy_mass(rank):
+        encoding = fit_sorted_spikes_diffusion_encoding_model(
+            position_time=time,
+            position=position,
+            spike_times=[np.array([])],  # occupancy is spike-independent
+            environment=env,
+            position_std=6.0,
+            rank=rank,
+        )
+        integrand = np.asarray(encoding["bin_sizes"]) * np.asarray(
+            encoding["occupancy"]
+        )
+        return np.array([integrand[labels == c].sum() for c in (0, 1)])
+
+    full = per_component_occupancy_mass(None)
+    truncated = per_component_occupancy_mass(8)
+    np.testing.assert_allclose(truncated, full, atol=1e-9)
 
 
 def test_less_edge_bias_than_kde():

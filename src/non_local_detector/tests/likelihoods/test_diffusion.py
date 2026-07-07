@@ -19,6 +19,7 @@ from non_local_detector.likelihoods.diffusion import (
     build_laplacian,
     cached_eigenbasis,
     check_smoothing_bandwidth,
+    connected_component_labels,
     diffuse,
     diffusion_eigenbasis,
     environment_graph,
@@ -200,6 +201,41 @@ def test_truncated_modes_are_component_local_no_leak(rank):
 
     assert smoothed[20:].sum() < 1e-9  # no leak into the untouched component
     np.testing.assert_allclose(smoothed.sum(), 1.0, atol=1e-9)  # mass conserved
+
+
+@pytest.mark.parametrize("rank", [6, 12, 30])
+def test_diffuse_conserves_each_component_mass_under_truncation(rank):
+    """When BOTH components carry mass, a truncated basis clips truncation lobes in the
+    lobed component; per-component renormalization must restore each component's own
+    mass rather than rescaling the total (which would bleed mass from the clean
+    component into the lobed one).
+    """
+    graph = nx.disjoint_union(path_graph(60), path_graph(60))
+    for u, v in graph.edges:
+        graph.edges[u, v]["distance"] = 1.0
+    laplacian = build_laplacian(graph)
+    labels = connected_component_labels(graph)
+
+    field = np.zeros((120, 1))
+    field[30, 0] = 1.0  # a point source (produces truncation lobes) -> mass 1
+    field[60:, 0] = 3.0 / 60  # a clean uniform field in the other component -> mass 3
+
+    eigvals, eigvecs = diffusion_eigenbasis(laplacian, rank=rank)
+    smoothed = diffuse(
+        eigvals, eigvecs, sigma=3.0, fields=field, component_labels=labels
+    )[:, 0]
+
+    np.testing.assert_allclose(smoothed[:60].sum(), 1.0, atol=1e-9)
+    np.testing.assert_allclose(smoothed[60:].sum(), 3.0, atol=1e-9)
+
+
+def test_connected_component_labels_matches_graph_components():
+    """The label helper assigns one contiguous id per connected component."""
+    graph = nx.disjoint_union(path_graph(4), path_graph(6))
+    labels = connected_component_labels(graph)
+    assert labels.shape == (10,)
+    assert set(labels[:4]) == {labels[0]} and set(labels[4:]) == {labels[4]}
+    assert labels[0] != labels[4]  # different components -> different labels
 
 
 def test_truncated_rank_below_n_components_raises():

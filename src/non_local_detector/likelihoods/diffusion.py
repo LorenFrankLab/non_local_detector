@@ -213,11 +213,25 @@ def diffusion_eigenbasis(
     return all_eigvals[order], all_eigvecs[:, order]
 
 
+def connected_component_labels(graph: nx.Graph) -> np.ndarray:
+    """Per-node connected-component id (``0..n_components-1``), indexed by node.
+
+    ``graph`` has contiguous integer nodes ``0..n_nodes-1`` (as built by
+    :func:`build_laplacian` / :func:`environment_graph`), so the returned labels are
+    aligned with the rows of the eigenbasis and the diffused fields.
+    """
+    labels = np.empty(graph.number_of_nodes(), dtype=int)
+    for component_id, nodes in enumerate(nx.connected_components(graph)):
+        labels[list(nodes)] = component_id
+    return labels
+
+
 def diffuse(
     eigvals: np.ndarray,
     eigvecs: np.ndarray,
     sigma: float,
     fields: np.ndarray,
+    component_labels: np.ndarray | None = None,
 ) -> np.ndarray:
     """Apply the heat kernel ``exp(-t L)``, ``t = sigma**2 / 2``, to ``fields``.
 
@@ -235,6 +249,11 @@ def diffuse(
         Smoothing standard deviation in coordinate units (bandwidth).
     fields : np.ndarray, shape (n_bins, n_fields)
         Count fields on the interior bins, one column per field.
+    component_labels : np.ndarray, shape (n_bins,), optional
+        Connected-component id per bin (see :func:`connected_component_labels`).
+        When given, mass is renormalized within each component; when None, over the
+        whole column. Pass labels on disconnected graphs so clipping in one component
+        cannot shift mass into another.
 
     Returns
     -------
@@ -249,22 +268,38 @@ def diffuse(
     clipping only removes round-off. A truncated basis, however, can produce
     non-tiny negative lobes (e.g. for a point source); clipping those alone would
     inflate the total, so each column is renormalized back to its input sum.
+
+    On a disconnected graph the heat kernel conserves each *component's* mass
+    independently, but a single global renormalization would redistribute mass
+    between components whenever truncation lobes are clipped unevenly. Passing
+    ``component_labels`` renormalizes per component to preserve that invariant.
     """
     t = sigma**2 / 2.0
     coeff = np.exp(-t * eigvals)  # (m,)
     proj = eigvecs.T @ fields  # (m, n_fields)
     smoothed = eigvecs @ (coeff[:, None] * proj)  # (n_bins, n_fields)
-
     clipped = np.clip(smoothed, 0.0, None)
-    input_mass = fields.sum(axis=0)  # conserved quantity
-    clipped_mass = clipped.sum(axis=0)
-    scale = np.divide(
-        input_mass,
-        clipped_mass,
-        out=np.zeros_like(input_mass, dtype=float),
-        where=clipped_mass > 0,
-    )
-    return clipped * scale
+
+    def _rescale_rows_to_input_mass(rows: np.ndarray) -> np.ndarray:
+        """Scale the clipped rows so their per-field mass matches the input rows'."""
+        input_mass = fields[rows].sum(axis=0)
+        clipped_mass = clipped[rows].sum(axis=0)
+        scale = np.divide(
+            input_mass,
+            clipped_mass,
+            out=np.zeros_like(input_mass, dtype=float),
+            where=clipped_mass > 0,
+        )
+        return clipped[rows] * scale
+
+    if component_labels is None:
+        return _rescale_rows_to_input_mass(np.arange(clipped.shape[0]))
+
+    renormalized = np.empty_like(clipped, dtype=float)
+    for label in np.unique(component_labels):
+        rows = np.flatnonzero(component_labels == label)
+        renormalized[rows] = _rescale_rows_to_input_mass(rows)
+    return renormalized
 
 
 def to_density(smoothed: np.ndarray, bin_sizes: np.ndarray) -> np.ndarray:
