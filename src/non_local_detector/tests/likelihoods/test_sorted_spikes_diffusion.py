@@ -25,7 +25,8 @@ from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
 )
 
-# Encoding-dict keys the fit must return (KDE parity minus the KDE model objects).
+# Encoding-dict keys the fit must return: the KDE parity keys (minus the KDE model
+# objects) plus the diffusion additions node_order / bin_sizes (shared contract).
 ENCODING_DICT_KEYS = {
     "environment",
     "occupancy",
@@ -33,6 +34,8 @@ ENCODING_DICT_KEYS = {
     "place_fields",
     "no_spike_part_log_likelihood",
     "is_track_interior",
+    "node_order",
+    "bin_sizes",
     "disable_progress_bar",
 }
 
@@ -121,6 +124,26 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes():
     no_spike = np.asarray(encoding["no_spike_part_log_likelihood"])
     assert no_spike.shape == (n_total,)
     np.testing.assert_allclose(no_spike, place_fields.sum(axis=0), rtol=1e-6)
+
+    # node_order / bin_sizes are carried per the shared contract.
+    n_interior = int(is_interior.sum())
+    np.testing.assert_array_equal(encoding["node_order"], np.where(is_interior)[0])
+    assert np.asarray(encoding["bin_sizes"]).shape == (n_interior,)
+
+
+def test_fit_accepts_shared_sorted_spikes_params():
+    """The fit signature accepts the shared sorted-spikes params so the base class's
+    signature filter does not silently drop user/default values (e.g. block_size)."""
+    params = set(
+        inspect.signature(fit_sorted_spikes_diffusion_encoding_model).parameters
+    )
+    assert {
+        "weights",
+        "sampling_frequency",
+        "position_std",
+        "rank",
+        "block_size",
+    } <= params
 
 
 def test_predict_signature_matches_encoding_dict():

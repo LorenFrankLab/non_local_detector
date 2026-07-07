@@ -56,6 +56,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
     sampling_frequency: int = 500,
     position_std: float = float(np.sqrt(12.5)),
     rank: int | None = None,
+    block_size: int = 100,
     disable_progress_bar: bool = False,
 ) -> dict:
     """Fit a graph-diffusion encoding model for sorted spikes.
@@ -84,6 +85,10 @@ def fit_sorted_spikes_diffusion_encoding_model(
         a smaller rank is a low-pass approximation for large grids. Must be an
         explicit parameter so ``sorted_spikes_algorithm_params={"rank": ...}`` is
         not dropped by the base class's signature filter.
+    block_size : int, optional
+        Accepted for signature compatibility with the shared sorted-spikes params
+        (the default params include ``block_size``); not used by the diffusion
+        smoother.
     disable_progress_bar : bool, optional
         Turn off the progress bar, by default False.
 
@@ -96,6 +101,8 @@ def fit_sorted_spikes_diffusion_encoding_model(
         - 'place_fields': FULL-GRID place fields, shape (n_neurons, n_total_bins)
         - 'no_spike_part_log_likelihood': summed place fields, shape (n_total_bins,)
         - 'is_track_interior': interior-bin mask, shape (n_total_bins,)
+        - 'node_order': interior flat-bin indices in graph order, shape (n_interior,)
+        - 'bin_sizes': per-interior-bin volume, shape (n_interior,)
         - 'disable_progress_bar': progress-bar setting
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
@@ -196,6 +203,8 @@ def fit_sorted_spikes_diffusion_encoding_model(
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
         "is_track_interior": is_track_interior,
+        "node_order": node_order,
+        "bin_sizes": bin_sizes,
         "disable_progress_bar": disable_progress_bar,
     }
 
@@ -211,6 +220,8 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     place_fields: jnp.ndarray,
     no_spike_part_log_likelihood: jnp.ndarray,
     is_track_interior: np.ndarray,
+    node_order: np.ndarray | None = None,
+    bin_sizes: np.ndarray | None = None,
     disable_progress_bar: bool = False,
     is_local: bool = False,
 ) -> jnp.ndarray:
@@ -218,8 +229,9 @@ def predict_sorted_spikes_diffusion_log_likelihood(
 
     Dedicated function (not the KDE predict): the base class splats the whole
     encoding dict as keyword arguments, so every dict key is a parameter here.
-    ``occupancy`` and ``mean_rates`` are carried for KDE parity but the rate is
-    already baked into ``place_fields``.
+    ``occupancy``, ``mean_rates``, ``node_order``, and ``bin_sizes`` are carried in
+    the encoding dict (shared contract) but unused here — the rate is already baked
+    into ``place_fields`` and prediction indexes bins via ``environment.get_bin_ind``.
 
     Parameters
     ----------
