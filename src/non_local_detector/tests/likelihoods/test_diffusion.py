@@ -101,9 +101,9 @@ def test_laplacian_disconnected_components_two_zero_modes():
     assert np.count_nonzero(np.abs(eigvals) < 1e-9) == 2
 
 
-@pytest.mark.parametrize("bad_distance", [0.0, -1.0])
+@pytest.mark.parametrize("bad_distance", [0.0, -1.0, float("nan")])
 def test_laplacian_rejects_nonpositive_distance(bad_distance):
-    """A zero/negative edge distance fails loudly (not ZeroDivisionError / silent)."""
+    """A zero/negative/NaN edge distance fails loudly (not ZeroDivisionError / silent)."""
     graph = nx.Graph()
     graph.add_nodes_from([0, 1, 2])
     graph.add_edge(0, 1, distance=1.0)

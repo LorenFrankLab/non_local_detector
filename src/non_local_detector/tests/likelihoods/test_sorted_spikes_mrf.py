@@ -22,6 +22,9 @@ from non_local_detector.likelihoods.diffusion import (
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     predict_sorted_spikes_diffusion_log_likelihood,
 )
+from non_local_detector.likelihoods.sorted_spikes_kde import (
+    fit_sorted_spikes_kde_encoding_model,
+)
 from non_local_detector.likelihoods.sorted_spikes_mrf import (
     fit_sorted_spikes_mrf_encoding_model,
     mrf_penalized_poisson_fit,
@@ -317,7 +320,6 @@ def test_penalty_zero_is_respected_not_overridden():
     assert not np.allclose(fit(0.0), fit(1.0))
 
 
-@pytest.mark.property
 def test_invariants_place_fields_and_likelihood():
     """Place fields >= 0 & finite; likelihoods finite; softmax posterior sums to 1."""
     env = make_2d_env()
@@ -343,6 +345,54 @@ def test_invariants_place_fields_and_likelihood():
     posterior /= posterior.sum(axis=1, keepdims=True)
     # float32-safe: the likelihood is float32 when JAX x64 is off.
     np.testing.assert_allclose(posterior.sum(axis=1), 1.0, atol=1e-6)
+
+
+def test_weighted_fit_mean_rates_match_kde():
+    """Non-uniform (posterior-like) weights: MRF mean_rates match KDE's, confirming
+    the weighted occupancy/spike pixellation feeding the exposure offset is correct."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=3, n_time=6000)
+    rng = np.random.default_rng(5)
+    weights = rng.uniform(0.1, 1.0, size=time.shape[0])
+
+    mrf = fit_sorted_spikes_mrf_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        weights=weights,
+        rank=25,
+    )
+    kde = fit_sorted_spikes_kde_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        weights=weights,
+        position_std=8.0,
+    )
+    np.testing.assert_allclose(
+        np.asarray(mrf["mean_rates"]), np.asarray(kde["mean_rates"]), rtol=1e-6
+    )
+
+
+def test_fit_with_default_rank_is_valid():
+    """The out-of-the-box default (rank omitted -> reduced-rank + REML) produces a
+    valid encoding: contract keys, finite positive interior place fields."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=3)
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+    )
+    assert ENCODING_DICT_KEYS <= set(encoding)
+    is_interior = env.is_track_interior_.ravel()
+    place_fields = np.asarray(encoding["place_fields"])
+    assert np.all(np.isfinite(place_fields))
+    assert np.all(place_fields[:, is_interior] > 0.0)
+    assert np.all(place_fields[:, ~is_interior] == 0.0)
 
 
 def test_registered_and_predict_shared_with_diffusion():

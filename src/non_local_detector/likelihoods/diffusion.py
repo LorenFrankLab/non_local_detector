@@ -7,7 +7,9 @@ smoother that respects track geometry (walls, holes, junctions) in 1D and N-D.
 Unlike Gaussian KDE, which smooths in the coordinate metric and smears across
 walls, graph diffusion smooths along the diffusion distance on the domain:
 reflecting (Neumann) boundaries are intrinsic (no edges to absent bins) and the
-operator conserves mass (``1ᵀL = 0`` makes ``exp(-t L)`` column-stochastic).
+operator conserves each field's total mass (``1ᵀL = 0`` gives ``exp(-t L)`` unit
+column sums; entrywise non-negativity is a separate property of the Laplacian
+heat semigroup).
 
 The Laplacian uses the **finite-difference** edge weight ``w = 1 / distance**2`` on
 a **face-adjacent** graph, which gives ``L ≈ -∂²`` on a regular grid; the resulting
@@ -121,7 +123,14 @@ def _block_eigenbasis(
         # raising either "Factor is exactly singular" (a plain RuntimeError from the
         # sparse LU factorization) or an ArpackError (itself a RuntimeError
         # subclass). Both are caught here; fall back to the no-shift-invert
-        # smallest-magnitude solver.
+        # smallest-magnitude solver, which is less reliable, so warn.
+        warnings.warn(
+            "Shift-invert eigsh failed; falling back to the no-shift-invert "
+            "which='SM' solver, which may return a lower-quality eigenbasis. "
+            "Consider a smaller rank or the full (rank=None) decomposition.",
+            UserWarning,
+            stacklevel=2,
+        )
         eigvals, eigvecs = scipy.sparse.linalg.eigsh(block, k=rank, which="SM")
 
     order = np.argsort(eigvals)

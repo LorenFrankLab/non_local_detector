@@ -146,6 +146,66 @@ def test_fit_accepts_shared_sorted_spikes_params():
     } <= params
 
 
+def test_fit_truncated_rank_full_grid_and_predict():
+    """A truncated-rank fit still yields finite full-grid place fields and a valid
+    posterior (exercises pixellate -> truncated diffuse -> to_density through the fit)."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=3)
+    encoding = fit_sorted_spikes_diffusion_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        position_std=6.0,
+        rank=20,
+    )
+    is_interior = env.is_track_interior_.ravel()
+    n_total = env.place_bin_centers_.shape[0]
+    place_fields = np.asarray(encoding["place_fields"])
+    assert place_fields.shape == (3, n_total)
+    assert np.all(np.isfinite(place_fields))
+    assert np.all(place_fields[:, ~is_interior] == 0.0)
+    assert np.all(place_fields[:, is_interior] > 0.0)
+    ll = np.asarray(
+        predict_sorted_spikes_diffusion_log_likelihood(
+            time[:100], time, position, spike_times, is_local=False, **encoding
+        )
+    )
+    assert np.all(np.isfinite(ll))
+
+
+def test_fit_silent_cell_and_zero_neurons():
+    """A silent cell (empty spike train) yields a finite EPS-floored field; zero
+    neurons yields an empty full-grid place_fields without crashing."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=2)
+    n_total = env.place_bin_centers_.shape[0]
+    is_interior = env.is_track_interior_.ravel()
+
+    with_silent = fit_sorted_spikes_diffusion_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=[spike_times[0], np.array([])],  # one firing, one silent
+        environment=env,
+        position_std=6.0,
+    )
+    place_fields = np.asarray(with_silent["place_fields"])
+    assert place_fields.shape == (2, n_total)
+    assert np.all(np.isfinite(place_fields))
+    # The silent cell has mean_rate 0, so its interior field floors uniformly to EPS.
+    np.testing.assert_allclose(place_fields[1, is_interior], EPS)
+
+    empty = fit_sorted_spikes_diffusion_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=[],
+        environment=env,
+        position_std=6.0,
+    )
+    assert np.asarray(empty["place_fields"]).shape == (0, n_total)
+    assert np.asarray(empty["no_spike_part_log_likelihood"]).shape == (n_total,)
+
+
 def test_predict_signature_matches_encoding_dict():
     """Every encoding-dict key is a predict parameter (the base-class splat contract)."""
     env = make_2d_env()
@@ -191,7 +251,6 @@ def test_predict_shapes_local_and_nonlocal():
     assert np.all(np.isfinite(local_ll))
 
 
-@pytest.mark.property
 def test_invariants_place_fields_and_likelihood():
     """Place fields >= 0 & finite; likelihoods finite; softmax posterior sums to 1."""
     env = make_2d_env()

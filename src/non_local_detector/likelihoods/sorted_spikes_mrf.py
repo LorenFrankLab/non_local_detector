@@ -27,6 +27,7 @@ import numpy as np
 import scipy.optimize
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import EPS
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
@@ -115,7 +116,9 @@ def mrf_penalized_poisson_fit(
     n_bins = basis.shape[0]
     penalty_diag = penalty * penalty_weights  # (rank,)
 
-    # Warm start each neuron from a constant log-rate (fast, convex problem).
+    # Warm start each neuron from a constant log-rate (fast, convex problem):
+    # lstsq(basis, ones) finds the coefficients whose basis reconstruction is closest
+    # to a constant field, scaled per neuron by its log mean rate eta0.
     total_occupancy = max(float(occupancy.sum()), 1e-9)
     eta0 = np.log(np.clip(counts.sum(axis=0) / total_occupancy, 1e-6, None))
     basis_pinv_ones = np.linalg.lstsq(basis, np.ones(n_bins), rcond=None)[0]
@@ -211,6 +214,21 @@ def select_penalty_by_reml(
         method="bounded",
         options={"xatol": 1e-3},
     )
+    # The objective returns +inf for any lambda whose per-neuron Hessian is not
+    # positive-definite. If no candidate had a finite objective, minimize_scalar
+    # still returns an arbitrary point; reject it rather than fitting with a
+    # meaningless penalty.
+    if not np.isfinite(result.fun):
+        raise ValidationError(
+            "REML failed to find a valid smoothing parameter",
+            expected="a finite REML objective for some lambda in the search interval",
+            got="a non-positive-definite Hessian at every candidate lambda",
+            hint=(
+                "The reduced-rank basis is too large relative to the data, or too "
+                "many interior bins have zero occupancy. Reduce `rank`, or provide a "
+                "denser/longer training trajectory."
+            ),
+        )
     return float(np.exp(result.x))
 
 
@@ -265,6 +283,9 @@ def fit_sorted_spikes_mrf_encoding_model(
         The same keys as ``sorted_spikes_diffusion`` (``environment``, ``occupancy``,
         ``mean_rates``, ``place_fields`` [FULL-GRID], ``no_spike_part_log_likelihood``,
         ``is_track_interior``, ``node_order``, ``bin_sizes``, ``disable_progress_bar``).
+        Note ``occupancy`` here is the raw exposure field (weighted interior-bin
+        counts), NOT the integral-one density ``sorted_spikes_diffusion`` stores; it
+        is carried only for contract parity and is unused in prediction.
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     if weights is None:
