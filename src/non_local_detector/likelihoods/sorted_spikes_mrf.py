@@ -34,6 +34,7 @@ from non_local_detector.likelihoods.diffusion import (
     environment_graph,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
+    _validate_local_interpolation,
     pixellate_interior_fields,
     predict_sorted_spikes_diffusion_log_likelihood,
 )
@@ -462,6 +463,7 @@ def fit_sorted_spikes_mrf_encoding_model(
     log_penalty_bounds: tuple[float, float] = _LOG_PENALTY_BOUNDS,
     reml_xatol: float = 1e-3,
     block_size: int = 100,
+    local_interpolation: str = "linear",
     disable_progress_bar: bool = False,
 ) -> dict:
     """Fit a population MRF-GAM encoding model for sorted spikes.
@@ -507,6 +509,11 @@ def fit_sorted_spikes_mrf_encoding_model(
     block_size : int, optional
         Accepted for signature compatibility with sorted-spikes likelihood defaults;
         unused by the MRF fit.
+    local_interpolation : {"linear", "nearest"}, optional
+        How local likelihood evaluates full-grid rate maps at the animal's position.
+        ``"linear"`` interpolates within connected interior stencils and falls back
+        to nearest-bin lookup otherwise. ``"nearest"`` preserves the historical
+        bin lookup.
     disable_progress_bar : bool, optional
 
     Returns
@@ -514,8 +521,9 @@ def fit_sorted_spikes_mrf_encoding_model(
     encoding_model : dict
         The same keys as ``sorted_spikes_diffusion`` (``environment``, ``occupancy``,
         ``mean_rates``, ``place_fields`` [FULL-GRID], ``no_spike_part_log_likelihood``,
-        ``is_track_interior``, ``node_order``, ``bin_sizes``, ``disable_progress_bar``),
-        plus MRF diagnostics (``mrf_penalty``, ``mrf_rank``, ``mrf_coefficients``,
+        ``is_track_interior``, ``node_order``, ``bin_sizes``,
+        ``local_interpolation``, ``disable_progress_bar``), plus MRF diagnostics
+        (``mrf_penalty``, ``mrf_rank``, ``mrf_coefficients``,
         ``mrf_penalty_weights``, ``mrf_reml_objective``, ``mrf_n_iter``,
         ``mrf_converged``, ``mrf_max_step``, ``mrf_log_penalty_bounds``,
         ``mrf_penalty_selected_by_reml``). Note
@@ -531,6 +539,7 @@ def fit_sorted_spikes_mrf_encoding_model(
     tol = _as_positive_float("tol", tol)
     log_penalty_bounds = _validate_log_penalty_bounds(log_penalty_bounds)
     reml_xatol = _as_positive_float("reml_xatol", reml_xatol)
+    local_interpolation = _validate_local_interpolation(local_interpolation)
     if penalty is not None:
         penalty = _as_nonnegative_float("penalty", penalty)
     if rank is not None:
@@ -608,6 +617,7 @@ def fit_sorted_spikes_mrf_encoding_model(
         "is_track_interior": is_track_interior,
         "node_order": node_order,
         "bin_sizes": bin_sizes,
+        "local_interpolation": local_interpolation,
         "disable_progress_bar": disable_progress_bar,
         "mrf_penalty": fit_penalty,
         "mrf_rank": effective_rank,

@@ -163,9 +163,10 @@ designed so it drops on without rework.
 
 ### Non-goals / deferred
 
-- **MRF-GAM** (`sorted_spikes_mrf`) — designed-for fast-follow, not in the first PRs.
+- **MRF-GAM** (`sorted_spikes_mrf`) — implemented as the fast-follow population
+  penalized-Poisson estimator.
 - Clusterless (mark-space) diffusion; LOO/REML bandwidth for the diffusion smoother;
-  adaptive per-bin bandwidth; Richardson; sub-bin local decoding.
+  adaptive per-bin bandwidth; Richardson.
 
 ## Architecture
 
@@ -175,7 +176,7 @@ designed so it drops on without rework.
 src/non_local_detector/likelihoods/
   diffusion.py                  # finite-diff L, eig(L) engine, diffuse-via-modes, adapter
   sorted_spikes_diffusion.py    # fit_/predict_ mirroring sorted_spikes_kde.py
-  # sorted_spikes_mrf.py        # fast-follow: MRF-GAM population Poisson fit (later phase)
+  sorted_spikes_mrf.py          # MRF-GAM population Poisson fit on the same graph basis
   __init__.py                   # register in _SORTED_SPIKES_ALGORITHMS
 
 src/non_local_detector/tests/likelihoods/
@@ -306,5 +307,4 @@ fast-follow adds an iterative population Poisson fit (heavier, JAX/`vmap`).
 
 ## Out of scope
 
-Clusterless; adaptive/per-bin bandwidth; Richardson; sub-bin local decoding. The MRF-GAM is
-deferred to a fast-follow phase (engine designed to support it).
+Clusterless; adaptive/per-bin bandwidth; Richardson.

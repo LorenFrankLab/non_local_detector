@@ -15,6 +15,7 @@ import pytest
 from scipy.ndimage import binary_erosion
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.likelihoods.common import EPS, get_position_at_time
 from non_local_detector.likelihoods.diffusion import environment_graph
@@ -37,6 +38,7 @@ ENCODING_DICT_KEYS = {
     "is_track_interior",
     "node_order",
     "bin_sizes",
+    "local_interpolation",
     "disable_progress_bar",
 }
 
@@ -130,6 +132,7 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes():
     n_interior = int(is_interior.sum())
     np.testing.assert_array_equal(encoding["node_order"], np.where(is_interior)[0])
     assert np.asarray(encoding["bin_sizes"]).shape == (n_interior,)
+    assert encoding["local_interpolation"] == "linear"
 
 
 def test_fit_accepts_shared_sorted_spikes_params():
@@ -144,7 +147,23 @@ def test_fit_accepts_shared_sorted_spikes_params():
         "position_std",
         "rank",
         "block_size",
+        "local_interpolation",
     } <= params
+
+
+def test_fit_rejects_invalid_local_interpolation():
+    """The interpolation mode is validated at fit time before it enters the dict."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=1)
+
+    with pytest.raises(ValidationError):
+        fit_sorted_spikes_diffusion_encoding_model(
+            position_time=time,
+            position=position,
+            spike_times=spike_times,
+            environment=env,
+            local_interpolation="cubic",
+        )
 
 
 def test_fit_truncated_rank_full_grid_and_predict():
@@ -473,6 +492,7 @@ def test_local_no_spikes_equals_negative_local_rate_sum():
         spike_times=spike_times,
         environment=env,
         position_std=6.0,
+        local_interpolation="nearest",
     )
     decode_time = time[:20]
     empty_spikes = [np.array([]), np.array([]), np.array([])]
@@ -486,6 +506,132 @@ def test_local_no_spikes_equals_negative_local_rate_sum():
     place_fields = np.asarray(encoding["place_fields"])
     expected = -np.clip(place_fields[:, bin_inds], EPS, None).sum(axis=0)
     np.testing.assert_allclose(ll_local, expected[:, None], rtol=1e-5, atol=1e-6)
+
+
+def test_local_linear_interpolation_evaluates_point_rate_in_1d():
+    """Linear local mode evaluates the full-grid rate map at the continuous position."""
+    position_for_fit = np.linspace(0.1, 3.9, 100)[:, np.newaxis]
+    env = Environment(
+        environment_name="line",
+        place_bin_size=1.0,
+        position_range=((0.0, 4.0),),
+    ).fit_place_grid(position_for_fit, infer_track_interior=False)
+    is_interior = env.is_track_interior_.ravel()
+    node_order = np.where(is_interior)[0]
+    centers = env.place_bin_centers_.ravel()
+    place_fields = centers[np.newaxis, :]
+    no_spike = place_fields.sum(axis=0)
+    time = np.array([0.0, 1.0])
+    position = np.array([[1.75], [1.75]])
+
+    ll_local = np.asarray(
+        predict_sorted_spikes_diffusion_log_likelihood(
+            time,
+            time,
+            position,
+            [np.array([])],
+            environment=env,
+            occupancy=np.ones(node_order.shape[0]),
+            mean_rates=[0.0],
+            place_fields=place_fields,
+            no_spike_part_log_likelihood=no_spike,
+            is_track_interior=is_interior,
+            node_order=node_order,
+            bin_sizes=np.ones(node_order.shape[0]),
+            local_interpolation="linear",
+            disable_progress_bar=True,
+            is_local=True,
+        )
+    )
+
+    np.testing.assert_allclose(ll_local, -1.75, rtol=1e-6, atol=1e-6)
+
+
+def test_local_linear_interpolation_evaluates_point_rate_in_2d():
+    """Linear local mode bilinearly interpolates the full-grid rate map in 2D.
+
+    Pins the N-D value path (grid reshape + per-dim axis ordering), which the 1D
+    value test and the 2D fallback test do not cover: a rate map that is a pure
+    x-ramp interpolates exactly to the position's x (bilinear is exact for a linear
+    field), a value strictly between bin centers -- so it also proves interpolation
+    was used, not the nearest-bin fallback.
+    """
+    rng = np.random.default_rng(0)
+    env = Environment(
+        environment_name="of_linear",
+        place_bin_size=1.0,
+        position_range=((0.0, 10.0), (0.0, 10.0)),
+    ).fit_place_grid(rng.uniform(1.0, 9.0, size=(6000, 2)), infer_track_interior=True)
+    is_interior = env.is_track_interior_.ravel()
+    node_order = np.where(is_interior)[0]
+    # Rate map = x-coordinate of each bin center (globally linear in x).
+    place_fields = env.place_bin_centers_[:, 0][np.newaxis, :].astype(float)
+    no_spike = place_fields.sum(axis=0)
+    time = np.array([0.0, 1.0])
+    # A central interior point strictly between bin centers (nearest center x is 4.5).
+    x0 = 4.3
+    position = np.array([[x0, 5.1], [x0, 5.1]])
+
+    ll_local = np.asarray(
+        predict_sorted_spikes_diffusion_log_likelihood(
+            time,
+            time,
+            position,
+            [np.array([])],
+            environment=env,
+            occupancy=np.ones(node_order.shape[0]),
+            mean_rates=[0.0],
+            place_fields=place_fields,
+            no_spike_part_log_likelihood=no_spike,
+            is_track_interior=is_interior,
+            node_order=node_order,
+            bin_sizes=np.ones(node_order.shape[0]),
+            local_interpolation="linear",
+            disable_progress_bar=True,
+            is_local=True,
+        )
+    )
+
+    # No spikes -> local LL = -local_rate; the x-ramp interpolates exactly to x0.
+    np.testing.assert_allclose(ll_local, -x0, rtol=1e-6, atol=1e-6)
+
+
+def test_local_linear_interpolation_falls_back_to_nearest_when_unsafe():
+    """Unsafe interpolation rows fall back to the nearest-bin local likelihood."""
+    env = make_2d_env()
+    is_interior = env.is_track_interior_.ravel()
+    node_order = np.where(is_interior)[0]
+    place_fields = np.arange(env.place_bin_centers_.shape[0], dtype=float)[
+        np.newaxis, :
+    ]
+    no_spike = place_fields.sum(axis=0)
+    time = np.array([0.0, 1.0])
+    position = np.array([[-10.0, -10.0], [-10.0, -10.0]])
+    common_kwargs = {
+        "time": time,
+        "position_time": time,
+        "position": position,
+        "spike_times": [np.array([])],
+        "environment": env,
+        "occupancy": np.ones(node_order.shape[0]),
+        "mean_rates": [0.0],
+        "place_fields": place_fields,
+        "no_spike_part_log_likelihood": no_spike,
+        "is_track_interior": is_interior,
+        "node_order": node_order,
+        "bin_sizes": np.ones(node_order.shape[0]),
+        "disable_progress_bar": True,
+        "is_local": True,
+    }
+
+    linear_ll = predict_sorted_spikes_diffusion_log_likelihood(
+        **common_kwargs, local_interpolation="linear"
+    )
+    nearest_ll = predict_sorted_spikes_diffusion_log_likelihood(
+        **common_kwargs, local_interpolation="nearest"
+    )
+
+    np.testing.assert_allclose(linear_ll, nearest_ll, rtol=1e-6, atol=1e-6)
 
 
 def make_two_room_env(seed: int = 0):

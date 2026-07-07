@@ -11,8 +11,11 @@ The occupancy field and each neuron's spike field are pixellated (histogrammed,
 optionally weighted) onto the environment's interior bins, diffused in a single
 batched matmul through the cached Laplacian eigenbasis, normalized to integrate to
 one, and combined into the rate map. Place fields are stored FULL-GRID (like KDE),
-so the non-local likelihood slices interior bins and the local likelihood indexes
-the animal's bin directly.
+so the non-local likelihood slices interior bins. The local likelihood evaluates the
+rate map at the animal's continuous position: by default (``local_interpolation=
+"linear"``) it interpolates within a connected interior stencil, falling back to
+nearest-bin lookup where interpolation would cross a barrier or invalid bin;
+``"nearest"`` restores the plain bin lookup.
 
 The smoothing operator is provided by :mod:`non_local_detector.likelihoods.diffusion`
 and cached on the ``Environment``, so it is built once and reused across neurons and
@@ -21,11 +24,13 @@ EM refits.
 
 import jax
 import jax.numpy as jnp
+import networkx as nx
 import numpy as np
 import scipy.interpolate  # type: ignore[import-untyped]
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     get_position_at_time,
@@ -40,12 +45,193 @@ from non_local_detector.likelihoods.diffusion import (
     to_density,
 )
 
+_LOCAL_INTERPOLATION_MODES = {"nearest", "linear"}
+
 
 def _interior_bin_indices(
     environment: Environment, positions: np.ndarray, full_to_local: np.ndarray
 ) -> np.ndarray:
     """Map sample positions to local interior-bin indices (``node_order`` order)."""
     return full_to_local[environment.get_bin_ind(positions)]
+
+
+def _validate_local_interpolation(local_interpolation: str) -> str:
+    """Validate the local place-field lookup mode."""
+    if local_interpolation not in _LOCAL_INTERPOLATION_MODES:
+        raise ValidationError(
+            "local_interpolation must be one of "
+            f"{sorted(_LOCAL_INTERPOLATION_MODES)}, got {local_interpolation!r}"
+        )
+    return local_interpolation
+
+
+def _grid_axes(environment: Environment) -> tuple[np.ndarray, ...]:
+    """Return sorted coordinate axes for the environment's full place grid."""
+    if environment.place_bin_centers_ is None:
+        raise ValueError("environment must have place_bin_centers_ set")
+
+    place_bin_centers = np.asarray(environment.place_bin_centers_)
+    if place_bin_centers.ndim == 1:
+        place_bin_centers = place_bin_centers[:, np.newaxis]
+    return tuple(
+        np.unique(place_bin_centers[:, dimension])
+        for dimension in range(place_bin_centers.shape[1])
+    )
+
+
+def _interpolation_corner_indices(
+    position: np.ndarray,
+    axes: tuple[np.ndarray, ...],
+    centers_shape: tuple[int, ...],
+) -> np.ndarray | None:
+    """Full-grid flat indices touched by multilinear interpolation at one position."""
+    if np.any(~np.isfinite(position)):
+        return None
+
+    candidates: list[list[int]] = []
+    for value, axis in zip(position, axes, strict=True):
+        if value < axis[0] or value > axis[-1]:
+            return None
+
+        upper = int(np.searchsorted(axis, value, side="left"))
+        if upper == 0:
+            candidates.append([0])
+        elif upper == axis.size:
+            candidates.append([axis.size - 1])
+        elif np.isclose(value, axis[upper]):
+            candidates.append([upper])
+        else:
+            candidates.append([upper - 1, upper])
+
+    corners = np.array(np.meshgrid(*candidates, indexing="ij")).reshape(len(axes), -1)
+    return np.ravel_multi_index(corners, centers_shape)
+
+
+def _linear_interpolation_safe_mask(
+    environment: Environment,
+    positions: np.ndarray,
+    is_track_interior: np.ndarray,
+    node_order: np.ndarray | None,
+    axes: tuple[np.ndarray, ...],
+) -> np.ndarray:
+    """Rows where local interpolation cannot mix across invalid or disconnected bins."""
+    if environment.centers_shape_ is None:
+        return np.zeros((positions.shape[0],), dtype=bool)
+
+    centers_shape = tuple(environment.centers_shape_)
+    is_interior = np.asarray(is_track_interior, dtype=bool).ravel()
+    if int(np.prod(centers_shape)) != is_interior.shape[0]:
+        return np.zeros((positions.shape[0],), dtype=bool)
+
+    graph, graph_node_order, _ = environment_graph(environment)
+    node_order = graph_node_order if node_order is None else np.asarray(node_order)
+    full_to_local = np.full(is_interior.shape[0], -1, dtype=int)
+    full_to_local[node_order] = np.arange(node_order.shape[0])
+
+    def _stencil_is_safe(corners: np.ndarray | None) -> bool:
+        if corners is None or not np.all(is_interior[corners]):
+            return False
+        local_nodes = full_to_local[corners]
+        if np.any(local_nodes < 0):
+            return False
+        unique_nodes = np.unique(local_nodes)
+        return bool(
+            unique_nodes.size <= 1 or nx.is_connected(graph.subgraph(unique_nodes))
+        )
+
+    # The verdict depends only on which interpolation stencil a position falls in --
+    # fully determined by the per-dim upper-node index, an on-node flag, and whether
+    # the position is out of bounds (the branches in _interpolation_corner_indices).
+    # The animal dwells within a handful of cells relative to the decode length, so
+    # compute that descriptor vectorized, then evaluate the corners + O(cells)
+    # connectivity check once per distinct stencil instead of once per time point.
+    upper = np.empty(positions.shape, dtype=np.int64)
+    on_node = np.zeros(positions.shape, dtype=np.int64)
+    out_of_bounds = np.zeros(positions.shape[0], dtype=bool)
+    for dim, axis in enumerate(axes):
+        column = positions[:, dim]
+        out_of_bounds |= ~np.isfinite(column) | (column < axis[0]) | (column > axis[-1])
+        dim_upper = np.searchsorted(axis, column, side="left")
+        upper[:, dim] = dim_upper
+        clamped = np.clip(dim_upper, 0, axis.size - 1)
+        on_node[:, dim] = np.isclose(column, axis[clamped])
+
+    # Collapse every out-of-bounds row to a single descriptor (verdict is always False).
+    descriptor = np.column_stack(
+        [
+            np.where(out_of_bounds[:, None], -1, upper),
+            np.where(out_of_bounds[:, None], 0, on_node),
+            out_of_bounds.astype(np.int64)[:, None],
+        ]
+    )
+    unique_desc, first_ind, inverse = np.unique(
+        descriptor, axis=0, return_index=True, return_inverse=True
+    )
+    inverse = inverse.ravel()
+
+    verdicts = np.zeros(unique_desc.shape[0], dtype=bool)
+    for stencil_ind in range(unique_desc.shape[0]):
+        if unique_desc[stencil_ind, -1]:  # out-of-bounds group
+            continue
+        corners = _interpolation_corner_indices(
+            positions[first_ind[stencil_ind]], axes, centers_shape
+        )
+        verdicts[stencil_ind] = _stencil_is_safe(corners)
+
+    return verdicts[inverse]
+
+
+def _local_place_field_rates(
+    environment: Environment,
+    positions: np.ndarray,
+    place_fields: jnp.ndarray,
+    is_track_interior: np.ndarray,
+    node_order: np.ndarray | None,
+    local_interpolation: str,
+) -> jnp.ndarray:
+    """Evaluate full-grid place fields at local positions.
+
+    ``nearest`` is the historical bin lookup. ``linear`` uses multilinear
+    interpolation only where the interpolation stencil is interior and connected;
+    every unsafe row falls back to the nearest-bin value.
+    """
+    local_interpolation = _validate_local_interpolation(local_interpolation)
+    positions = np.asarray(positions, dtype=float)
+    if positions.ndim == 1:
+        positions = positions[:, np.newaxis]
+
+    place_fields_np = np.asarray(place_fields)
+    n_neurons = place_fields_np.shape[0]
+    if n_neurons == 0:
+        return jnp.zeros((positions.shape[0], 0))
+
+    safe_positions = np.nan_to_num(positions, nan=0.0)
+    bin_inds = environment.get_bin_ind(safe_positions)
+    nearest_rates = place_fields_np[:, bin_inds].T
+
+    if local_interpolation == "nearest":
+        return jnp.clip(jnp.asarray(nearest_rates), min=EPS, max=None)
+
+    axes = _grid_axes(environment)
+    values_grid = np.moveaxis(
+        place_fields_np.reshape((n_neurons, *[axis.size for axis in axes])),
+        0,
+        -1,
+    )
+    interpolated_rates = scipy.interpolate.interpn(
+        axes,
+        values_grid,
+        positions,
+        method="linear",
+        bounds_error=False,
+        fill_value=np.nan,
+    )
+    safe = _linear_interpolation_safe_mask(
+        environment, positions, is_track_interior, node_order, axes
+    )
+    safe = safe & np.all(np.isfinite(interpolated_rates), axis=1)
+    rates = np.where(safe[:, np.newaxis], interpolated_rates, nearest_rates)
+    return jnp.clip(jnp.asarray(rates), min=EPS, max=None)
 
 
 def pixellate_interior_fields(
@@ -151,6 +337,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
     position_std: float = float(np.sqrt(12.5)),
     rank: int | None = None,
     block_size: int = 100,
+    local_interpolation: str = "linear",
     disable_progress_bar: bool = False,
 ) -> dict:
     """Fit a graph-diffusion encoding model for sorted spikes.
@@ -183,6 +370,11 @@ def fit_sorted_spikes_diffusion_encoding_model(
         Accepted for signature compatibility with the shared sorted-spikes params
         (the default params include ``block_size``); not used by the diffusion
         smoother.
+    local_interpolation : {"linear", "nearest"}, optional
+        How local likelihood evaluates full-grid rate maps at the animal's position.
+        ``"linear"`` interpolates within connected interior stencils and falls back
+        to nearest-bin lookup otherwise. ``"nearest"`` preserves the historical
+        bin lookup.
     disable_progress_bar : bool, optional
         Turn off the progress bar, by default False.
 
@@ -197,12 +389,14 @@ def fit_sorted_spikes_diffusion_encoding_model(
         - 'is_track_interior': interior-bin mask, shape (n_total_bins,)
         - 'node_order': interior flat-bin indices in graph order, shape (n_interior,)
         - 'bin_sizes': per-interior-bin volume, shape (n_interior,)
+        - 'local_interpolation': local likelihood interpolation mode
         - 'disable_progress_bar': progress-bar setting
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     if weights is None:
         weights = np.ones((position.shape[0],))
     weights = validate_weights(weights, position.shape[0])
+    local_interpolation = _validate_local_interpolation(local_interpolation)
 
     graph, node_order, bin_sizes = environment_graph(environment)
     check_smoothing_bandwidth(position_std, graph)
@@ -252,6 +446,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
         "is_track_interior": is_track_interior,
         "node_order": node_order,
         "bin_sizes": bin_sizes,
+        "local_interpolation": local_interpolation,
         "disable_progress_bar": disable_progress_bar,
     }
 
@@ -269,6 +464,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     is_track_interior: np.ndarray,
     node_order: np.ndarray | None = None,
     bin_sizes: np.ndarray | None = None,
+    local_interpolation: str = "linear",
     mrf_penalty: float | None = None,
     mrf_rank: int | None = None,
     mrf_coefficients: np.ndarray | None = None,
@@ -287,9 +483,9 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     Dedicated function (not the KDE predict): the base class splats the whole
     encoding dict as keyword arguments, so every dict key is a parameter here.
     ``occupancy``, ``mean_rates``, ``node_order``, ``bin_sizes``, and the optional
-    ``mrf_*`` diagnostics are carried in encoding dicts (shared contract) but unused
-    here; the rate is already baked into ``place_fields`` and prediction indexes bins
-    via ``environment.get_bin_ind``.
+    ``mrf_*`` diagnostics are carried in encoding dicts (shared contract) but mostly
+    unused here; the rate is already baked into ``place_fields``. ``node_order`` is
+    used only to guard local interpolation against crossing invalid graph stencils.
 
     Parameters
     ----------
@@ -308,6 +504,8 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         FULL-GRID place fields.
     no_spike_part_log_likelihood : jnp.ndarray, shape (n_total_bins,)
     is_track_interior : np.ndarray, shape (n_total_bins,)
+    local_interpolation : {"linear", "nearest"}, optional
+        How local likelihood evaluates ``place_fields`` at the animal's position.
     mrf_* : optional
         MRF-GAM fit diagnostics accepted so the MRF encoding dict can be passed to
         prediction with ``**encoding_model``.
@@ -326,16 +524,23 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         interpolated_position = get_position_at_time(
             position_time, position, time, environment
         )
-        bin_inds = environment.get_bin_ind(interpolated_position)
+        local_rates = _local_place_field_rates(
+            environment,
+            np.asarray(interpolated_position),
+            place_fields,
+            is_track_interior,
+            node_order,
+            local_interpolation,
+        )
         log_likelihood = jnp.zeros((n_time,))
-        for neuron_spike_times, place_field in zip(
+        for neuron_spike_times, local_rate in zip(
             tqdm(
                 spike_times,
                 unit="cell",
                 desc="Local Likelihood",
                 disable=disable_progress_bar,
             ),
-            place_fields,
+            local_rates.T,
             strict=False,
         ):
             neuron_spike_times = neuron_spike_times[
@@ -347,7 +552,6 @@ def predict_sorted_spikes_diffusion_log_likelihood(
             spike_count_per_time_bin = get_spikecount_per_time_bin(
                 neuron_spike_times, time
             )
-            local_rate = jnp.clip(place_field[bin_inds], min=EPS, max=None)
             log_likelihood += (
                 jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
                 - local_rate

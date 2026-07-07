@@ -46,6 +46,7 @@ ENCODING_DICT_KEYS = {
     "is_track_interior",
     "node_order",
     "bin_sizes",
+    "local_interpolation",
     "disable_progress_bar",
     "mrf_penalty",
     "mrf_rank",
@@ -266,6 +267,7 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes():
     assert np.isfinite(encoding["mrf_max_step"])
     assert encoding["mrf_log_penalty_bounds"] == (-8.0, 20.0)
     assert encoding["mrf_penalty_selected_by_reml"] is True
+    assert encoding["local_interpolation"] == "linear"
     np.testing.assert_allclose(
         np.asarray(encoding["no_spike_part_log_likelihood"]),
         place_fields.sum(axis=0),
@@ -334,6 +336,7 @@ def test_fit_rejects_invalid_weights():
         {"log_penalty_bounds": (1.0, 1.0)},
         {"log_penalty_bounds": (0.0, np.inf)},
         {"reml_xatol": 0.0},
+        {"local_interpolation": "cubic"},
     ],
 )
 def test_fit_rejects_invalid_mrf_controls(kwargs):
