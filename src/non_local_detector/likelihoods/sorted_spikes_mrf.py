@@ -22,18 +22,18 @@ Place fields ``exp(eta)`` are stored FULL-GRID exactly like ``sorted_spikes_kde`
 likelihood (:func:`predict_sorted_spikes_mrf_log_likelihood` is that function).
 """
 
-import jax.numpy as jnp
 import numpy as np
 import scipy.optimize
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.common import EPS, validate_weights
+from non_local_detector.likelihoods.common import validate_weights
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
     environment_graph,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
+    _assemble_place_fields,
     _validate_local_interpolation,
     pixellate_interior_fields,
     predict_sorted_spikes_diffusion_log_likelihood,
@@ -208,12 +208,8 @@ def mrf_penalized_poisson_fit(
     penalty: float,
     max_iter: int = 100,
     tol: float = 1e-10,
-    return_diagnostics: bool = False,
     validate: bool = True,
-) -> (
-    tuple[np.ndarray, np.ndarray, np.ndarray]
-    | tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, int | float | bool]]
-):
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, int | float | bool]]:
     """Fit the population penalized-Poisson GAM by vectorized Newton/IRLS.
 
     Fits, for every neuron ``k`` at once,
@@ -239,8 +235,6 @@ def mrf_penalized_poisson_fit(
         Maximum Newton iterations, by default 100.
     tol : float, optional
         Convergence tolerance on the max coefficient step, by default 1e-10.
-    return_diagnostics : bool, optional
-        If True, append solver diagnostics to the returned tuple.
     validate : bool, optional
         Validate inputs via :func:`_validate_mrf_problem`, by default True. The REML
         search passes False to skip re-validation on every candidate fit (the caller
@@ -255,8 +249,7 @@ def mrf_penalized_poisson_fit(
     mu : np.ndarray, shape (n_bins, n_neurons)
         Fitted mean ``occupancy[:, None] * exp(eta)``.
     diagnostics : dict
-        Solver diagnostics with ``n_iter``, ``converged``, and ``max_step``. Returned
-        only when ``return_diagnostics`` is True.
+        Solver diagnostics with ``n_iter``, ``converged``, and ``max_step``.
     """
     if validate:
         counts, occupancy, basis, penalty_weights, penalty, max_iter, tol = (
@@ -308,9 +301,7 @@ def mrf_penalized_poisson_fit(
         "converged": converged,
         "max_step": max_step,
     }
-    if return_diagnostics:
-        return coeffs, eta, mu, diagnostics
-    return coeffs, eta, mu
+    return coeffs, eta, mu, diagnostics
 
 
 def _penalty_rank(penalty_weights: np.ndarray) -> int:
@@ -349,7 +340,7 @@ def mrf_reml_objective(
                 counts, occupancy, basis, penalty_weights, penalty, max_iter, tol
             )
         )
-    coeffs, eta, mu = mrf_penalized_poisson_fit(
+    coeffs, eta, mu, _ = mrf_penalized_poisson_fit(
         counts,
         occupancy,
         basis,
@@ -389,12 +380,11 @@ def select_penalty_by_reml(
     reml_xatol: float = 1e-3,
     max_iter: int = 100,
     tol: float = 1e-10,
-    return_objective: bool = False,
-) -> float | tuple[float, float]:
+) -> tuple[float, float]:
     """Select a single shared smoothing parameter ``lambda`` by REML.
 
     Minimizes :func:`mrf_reml_objective` over ``log(lambda)`` on a bounded interval
-    (deterministic; no random state). Returns the selected ``lambda``.
+    (deterministic; no random state). Returns ``(lambda, reml_objective)``.
     """
     log_penalty_bounds = _validate_log_penalty_bounds(log_penalty_bounds)
     reml_xatol = _as_positive_float("reml_xatol", reml_xatol)
@@ -442,11 +432,7 @@ def select_penalty_by_reml(
                 "denser/longer training trajectory."
             ),
         )
-    penalty = float(np.exp(result.x))
-    objective_value = float(result.fun)
-    if return_objective:
-        return penalty, objective_value
-    return penalty
+    return float(np.exp(result.x)), float(result.fun)
 
 
 def fit_sorted_spikes_mrf_encoding_model(
@@ -547,10 +533,13 @@ def fit_sorted_spikes_mrf_encoding_model(
 
     _, node_order, bin_sizes = environment_graph(environment)
     # Default to the mgcv-style reduced-rank regime rather than a full dense fit.
-    effective_rank = (
+    requested_rank = (
         rank if rank is not None else min(node_order.shape[0], _DEFAULT_MAX_RANK)
     )
-    penalty_weights, basis = cached_eigenbasis(environment, effective_rank)
+    penalty_weights, basis = cached_eigenbasis(environment, requested_rank)
+    # cached_eigenbasis caps at the number of available modes, so the true basis rank
+    # can be below the request; report what was actually used, not what was asked for.
+    effective_rank = basis.shape[1]
 
     assert environment.is_track_interior_ is not None
     is_track_interior = environment.is_track_interior_.ravel()
@@ -581,7 +570,6 @@ def fit_sorted_spikes_mrf_encoding_model(
             reml_xatol=reml_xatol,
             max_iter=max_iter,
             tol=tol,
-            return_objective=True,
         )
     else:
         reml_objective = np.nan
@@ -597,16 +585,11 @@ def fit_sorted_spikes_mrf_encoding_model(
         fit_penalty,
         max_iter=max_iter,
         tol=tol,
-        return_diagnostics=True,
     )
     rate_interior = np.exp(eta)  # (n_interior, n_neurons); eta is clipped in the fit
-
-    place_fields = np.zeros((counts.shape[1], n_total_bins))
-    for neuron in range(counts.shape[1]):
-        place_fields[neuron, node_order] = np.clip(rate_interior[:, neuron], EPS, None)
-
-    place_fields = jnp.asarray(place_fields)
-    no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
+    place_fields, no_spike_part_log_likelihood = _assemble_place_fields(
+        rate_interior, node_order, n_total_bins
+    )
 
     return {
         "environment": environment,

@@ -117,7 +117,6 @@ def test_population_fit_matches_per_neuron_reference():
         basis,
         penalty_weights,
         penalty,
-        return_diagnostics=True,
     )
 
     assert coeffs.shape == (rank, n_neurons)
@@ -165,10 +164,10 @@ def test_reml_recovers_smooth_field():
     occupancy = rng.uniform(8.0, 20.0, size=n_bins)  # enough dwell for a clear field
     counts = rng.poisson(occupancy * np.exp(true_log_rate)).astype(float)[:, None]
 
-    penalty = select_penalty_by_reml(counts, occupancy, basis, penalty_weights)
+    penalty, _ = select_penalty_by_reml(counts, occupancy, basis, penalty_weights)
     assert 0.0 < penalty < np.inf
 
-    _, eta, _ = mrf_penalized_poisson_fit(
+    _, eta, _, _ = mrf_penalized_poisson_fit(
         counts, occupancy, basis, penalty_weights, penalty
     )
     corr = np.corrcoef(np.exp(eta[:, 0]), np.exp(true_log_rate))[0, 1]
@@ -194,7 +193,7 @@ def test_reml_robust_to_ill_conditioned_hessian():
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
-        penalty = select_penalty_by_reml(counts, occupancy, basis, penalty_weights)
+        penalty, _ = select_penalty_by_reml(counts, occupancy, basis, penalty_weights)
     assert 0.0 < penalty < np.inf
 
 
@@ -211,7 +210,7 @@ def test_occupancy_offset_gives_finite_rate_at_zero_occupancy():
     counts = rng.poisson(1.0, size=(n_bins, 3)).astype(float)
     counts[18:22, :] = 0.0  # no spikes where there is no occupancy
 
-    _, eta, mu = mrf_penalized_poisson_fit(
+    _, eta, mu, _ = mrf_penalized_poisson_fit(
         counts, occupancy, basis, penalty_weights, penalty=1.0
     )
     rate = np.exp(eta)
@@ -230,7 +229,7 @@ def test_mrf_penalty_does_not_smooth_across_a_wall():
     counts = np.zeros((40, 1))
     counts[5, 0] = 30.0  # all spikes in the first component (nodes 0..19)
 
-    _, eta, _ = mrf_penalized_poisson_fit(
+    _, eta, _, _ = mrf_penalized_poisson_fit(
         counts, occupancy, basis, penalty_weights, penalty=1.0
     )
     rate = np.exp(eta[:, 0])
@@ -389,7 +388,7 @@ def test_fit_finite_under_near_zero_occupancy_and_low_penalty():
     counts = np.zeros((40, 1))
     counts[10, 0] = 5.0  # spikes where there is ~no occupancy -> huge saturated rate
 
-    _, eta, mu = mrf_penalized_poisson_fit(
+    _, eta, mu, _ = mrf_penalized_poisson_fit(
         counts, occupancy, basis, penalty_weights, penalty=1e-4
     )
     assert np.all(np.isfinite(eta))
@@ -410,7 +409,7 @@ def test_low_penalty_full_rank_tracks_saturated_ratio():
     true_rate = 0.5 + 0.3 * np.sin(np.arange(n_bins) / 5.0)
     counts = rng.poisson(occupancy * true_rate).astype(float)[:, None]
 
-    _, eta, _ = mrf_penalized_poisson_fit(
+    _, eta, _, _ = mrf_penalized_poisson_fit(
         counts, occupancy, basis, penalty_weights, penalty=1e-4
     )
     saturated_ratio = counts[:, 0] / occupancy
@@ -532,6 +531,27 @@ def test_fit_with_default_rank_is_valid():
     assert np.all(np.isfinite(place_fields))
     assert np.all(place_fields[:, is_interior] > 0.0)
     assert np.all(place_fields[:, ~is_interior] == 0.0)
+
+
+def test_reported_rank_is_actual_basis_rank_when_capped():
+    """A rank request larger than the number of interior bins is capped by the
+    eigenbasis; mrf_rank must report the actual rank used (== coefficient rows),
+    not the oversized request."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=2)
+    n_interior = int(env.is_track_interior_.sum())
+
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        rank=n_interior + 500,  # far more modes than exist
+        penalty=1.0,
+    )
+    coefficients = np.asarray(encoding["mrf_coefficients"])
+    assert coefficients.shape[0] == n_interior  # basis capped at the available modes
+    assert encoding["mrf_rank"] == n_interior  # reported rank matches, not the request
 
 
 def test_registered_and_predict_shared_with_diffusion():

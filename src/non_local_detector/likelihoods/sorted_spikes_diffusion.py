@@ -29,7 +29,7 @@ import numpy as np
 import scipy.interpolate  # type: ignore[import-untyped]
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
-from non_local_detector.environment import Environment
+from non_local_detector.environment import Environment, get_centers
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
@@ -67,17 +67,14 @@ def _validate_local_interpolation(local_interpolation: str) -> str:
 
 
 def _grid_axes(environment: Environment) -> tuple[np.ndarray, ...]:
-    """Return sorted coordinate axes for the environment's full place grid."""
-    if environment.place_bin_centers_ is None:
-        raise ValueError("environment must have place_bin_centers_ set")
+    """Sorted per-dimension coordinate axes of the environment's full place grid.
 
-    place_bin_centers = np.asarray(environment.place_bin_centers_)
-    if place_bin_centers.ndim == 1:
-        place_bin_centers = place_bin_centers[:, np.newaxis]
-    return tuple(
-        np.unique(place_bin_centers[:, dimension])
-        for dimension in range(place_bin_centers.shape[1])
-    )
+    ``get_centers(edge)`` gives each dimension's bin centers directly; the full grid
+    is their tensor product, so these equal ``np.unique(place_bin_centers_[:, d])``.
+    """
+    if environment.edges_ is None:
+        raise ValueError("environment must be fitted (edges_ is None)")
+    return tuple(get_centers(edge) for edge in environment.edges_)
 
 
 def _interpolation_corner_indices(
@@ -298,15 +295,9 @@ def pixellate_interior_fields(
                 neuron_spike_times <= position_time[-1],
             )
         ]
-        weights_at_spike_times = scipy.interpolate.interpn(
-            (position_time,),
-            weights,
-            neuron_spike_times,
-            bounds_error=False,
-            fill_value=None,
-        )
-        if weights_at_spike_times.ndim > 1:
-            weights_at_spike_times = weights_at_spike_times.squeeze(axis=1)
+        # Spike times are already clipped to [position_time[0], position_time[-1]],
+        # so 1-D linear np.interp matches interpn without building an interpolator.
+        weights_at_spike_times = np.interp(neuron_spike_times, position_time, weights)
 
         mean_rates.append(
             float(weights_at_spike_times.sum() / weight_sum) if weight_sum > 0 else 0.0
@@ -503,27 +494,20 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     node_order: np.ndarray | None = None,
     bin_sizes: np.ndarray | None = None,
     local_interpolation: str = "linear",
-    mrf_penalty: float | None = None,
-    mrf_rank: int | None = None,
-    mrf_coefficients: np.ndarray | None = None,
-    mrf_penalty_weights: np.ndarray | None = None,
-    mrf_reml_objective: float | None = None,
-    mrf_n_iter: int | None = None,
-    mrf_converged: bool | None = None,
-    mrf_max_step: float | None = None,
-    mrf_log_penalty_bounds: tuple[float, float] | None = None,
-    mrf_penalty_selected_by_reml: bool | None = None,
     disable_progress_bar: bool = False,
     is_local: bool = False,
+    **_encoding_extras: object,
 ) -> jnp.ndarray:
     """Predict the Poisson log-likelihood of sorted spikes under the diffusion model.
 
-    Dedicated function (not the KDE predict): the base class splats the whole
-    encoding dict as keyword arguments, so every dict key is a parameter here.
-    ``occupancy``, ``mean_rates``, ``node_order``, ``bin_sizes``, and the optional
-    ``mrf_*`` diagnostics are carried in encoding dicts (shared contract) but mostly
-    unused here; the rate is already baked into ``place_fields``. ``node_order`` is
-    used only to guard local interpolation against crossing invalid graph stencils.
+    Dedicated function (not the KDE predict): the base class splats the whole encoding
+    dict as keyword arguments. ``occupancy``, ``mean_rates``, and ``bin_sizes`` are
+    carried for encoding-dict parity but unused here (the rate is already baked into
+    ``place_fields``); ``node_order`` is used only to guard local interpolation against
+    crossing invalid graph stencils. ``**_encoding_extras`` absorbs any extra keys a
+    reusing estimator adds to its dict -- e.g. the MRF-GAM's ``mrf_*`` diagnostics,
+    since ``predict_sorted_spikes_mrf_log_likelihood`` is this same function -- so the
+    diffusion signature need not enumerate another estimator's fields.
 
     Parameters
     ----------
@@ -544,12 +528,12 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     is_track_interior : np.ndarray, shape (n_total_bins,)
     local_interpolation : {"linear", "nearest"}, optional
         How local likelihood evaluates ``place_fields`` at the animal's position.
-    mrf_* : optional
-        MRF-GAM fit diagnostics accepted so the MRF encoding dict can be passed to
-        prediction with ``**encoding_model``.
     disable_progress_bar : bool, optional
     is_local : bool, optional
         Compute the likelihood at the animal's position, by default False.
+    **_encoding_extras
+        Extra encoding-dict keys a reusing estimator carries (e.g. the MRF's
+        ``mrf_*`` diagnostics); absorbed and unused.
 
     Returns
     -------
@@ -597,15 +581,17 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         return jnp.expand_dims(log_likelihood, axis=1)
 
     n_interior_bins = int(is_track_interior.sum())
+    # Slice all neurons' fields to interior bins once, not per-neuron in the loop.
+    interior_place_fields = np.asarray(place_fields)[:, is_track_interior]
     log_likelihood = jnp.zeros((n_time, n_interior_bins))
-    for neuron_spike_times, place_field in zip(
+    for neuron_spike_times, interior_place_field in zip(
         tqdm(
             spike_times,
             unit="cell",
             desc="Non-Local Likelihood",
             disable=disable_progress_bar,
         ),
-        place_fields,
+        interior_place_fields,
         strict=False,
     ):
         neuron_spike_times = neuron_spike_times[
@@ -617,7 +603,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         spike_count_per_time_bin = get_spikecount_per_time_bin(neuron_spike_times, time)
         log_likelihood += jax.scipy.special.xlogy(
             np.expand_dims(spike_count_per_time_bin, axis=1),
-            jnp.expand_dims(place_field[is_track_interior], axis=0),
+            jnp.expand_dims(interior_place_field, axis=0),
         )
 
     log_likelihood -= no_spike_part_log_likelihood[is_track_interior]
