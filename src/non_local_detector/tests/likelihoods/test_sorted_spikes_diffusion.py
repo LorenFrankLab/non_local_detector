@@ -17,6 +17,7 @@ from scipy.ndimage import binary_erosion
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.likelihoods.common import EPS, get_position_at_time
+from non_local_detector.likelihoods.diffusion import environment_graph
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     fit_sorted_spikes_diffusion_encoding_model,
     predict_sorted_spikes_diffusion_log_likelihood,
@@ -485,6 +486,137 @@ def test_local_no_spikes_equals_negative_local_rate_sum():
     place_fields = np.asarray(encoding["place_fields"])
     expected = -np.clip(place_fields[:, bin_inds], EPS, None).sum(axis=0)
     np.testing.assert_allclose(ll_local, expected[:, None], rtol=1e-5, atol=1e-6)
+
+
+def make_two_room_env(seed: int = 0):
+    """Two rooms separated by an impassable gap -> a disconnected manifold graph.
+
+    Left room x in [2, 16], right room x in [24, 38], gap x in (16, 24): four bins
+    wide, wider than ``get_track_interior``'s ``binary_closing`` can bridge, so
+    ``environment_graph`` resolves two connected components (a genuine barrier).
+    """
+    rng = np.random.default_rng(seed)
+    left = rng.uniform([2.0, 2.0], [16.0, 38.0], size=(12000, 2))
+    right = rng.uniform([24.0, 2.0], [38.0, 38.0], size=(12000, 2))
+    position = np.vstack([left, right])
+    rng.shuffle(position)
+    env = Environment(
+        environment_name="two_rooms",
+        place_bin_size=2.0,
+        position_range=((0.0, 40.0), (0.0, 40.0)),
+    ).fit_place_grid(position, infer_track_interior=True)
+    return env, position
+
+
+def test_no_rate_leak_across_impassable_barrier():
+    """A cell that fires only in the left room has ~zero estimated rate in the right
+    room: the diffusion smoother cannot cross the disconnected graph, whereas the
+    Euclidean KDE leaks the field across the physical gap.
+
+    This is the estimator-level counterpart to the engine's component-isolation tests
+    (test_diffusion.py) -- it proves the full fit -> pixellate -> diffuse -> to_density
+    path respects an impassable barrier, not just the raw eigenbasis.
+    """
+    env, position = make_two_room_env()
+    graph, _, _ = environment_graph(env)
+    assert nx.number_connected_components(graph) == 2  # a genuine barrier
+
+    sampling_frequency = 100
+    time = np.arange(position.shape[0]) / sampling_frequency
+    # A left-room place cell: Gaussian tuning hard-masked to zero in the right room, so
+    # there are exactly zero right-room spikes (seed-robust: no stray tail spikes).
+    center = np.array([10.0, 20.0])
+    rng = np.random.default_rng(2)
+    rate = 50.0 * np.exp(-((position - center) ** 2).sum(axis=1) / (2 * 4.0**2))
+    rate[position[:, 0] > 16.0] = 0.0
+    spike_times = [time[rng.random(position.shape[0]) < rate / sampling_frequency]]
+
+    common = {
+        "position_time": time,
+        "position": position,
+        "spike_times": spike_times,
+        "environment": env,
+        "position_std": 6.0,
+    }
+    diffusion_pf = np.asarray(
+        fit_sorted_spikes_diffusion_encoding_model(**common)["place_fields"]
+    )[0]
+    kde_pf = np.asarray(fit_sorted_spikes_kde_encoding_model(**common)["place_fields"])[
+        0
+    ]
+
+    interior = env.is_track_interior_.ravel()
+    right_room = interior & (env.place_bin_centers_[:, 0] > 20.0)
+    diffusion_leak = diffusion_pf[right_room].max() / diffusion_pf.max()
+    kde_leak = kde_pf[right_room].max() / kde_pf.max()
+
+    # Diffusion assigns ~no rate across the barrier (right room has no spikes and the
+    # component is isolated, so it floors to EPS); KDE leaks a substantial fraction.
+    assert diffusion_leak < 0.01
+    assert kde_leak > 0.05
+    assert kde_leak > 10 * diffusion_leak
+
+
+def test_less_edge_bias_than_kde():
+    """The reflecting (Neumann) graph boundary preserves a flat density to the edge,
+    whereas the Euclidean KDE loses kernel mass past the wall.
+
+    On full-grid uniform coverage the true occupancy density is flat everywhere, so any
+    dip at the boundary is pure estimator edge bias. Diffusion's boundary ring stays
+    near the flat truth; KDE's dips far below it. (The place-*field* ratio cancels this
+    bias -- spike and occupancy densities drop together -- so the effect is measured on
+    the occupancy density directly, where it does not cancel.)
+    """
+    rng = np.random.default_rng(11)
+    # Full-grid uniform coverage: every interior bin (incl. the boundary ring) is fully
+    # and uniformly sampled, so the true occupancy density is genuinely flat.
+    position = rng.uniform([0.0, 0.0], [50.0, 50.0], size=(60000, 2))
+    env = Environment(
+        environment_name="of_full",
+        place_bin_size=2.0,
+        position_range=((0.0, 50.0), (0.0, 50.0)),
+    ).fit_place_grid(position, infer_track_interior=True)
+    sampling_frequency = 200
+    time = np.arange(position.shape[0]) / sampling_frequency
+    spike_times = [time[:50]]  # occupancy is spike-independent; a token cell
+    std = 6.0
+
+    common = {
+        "position_time": time,
+        "position": position,
+        "spike_times": spike_times,
+        "environment": env,
+        "position_std": std,
+    }
+    diffusion_occ = np.asarray(
+        fit_sorted_spikes_diffusion_encoding_model(**common)["occupancy"]
+    )
+    kde_occ = np.asarray(fit_sorted_spikes_kde_encoding_model(**common)["occupancy"])
+
+    interior = env.is_track_interior_.ravel()
+    centers = env.place_bin_centers_[interior]  # occupancy is interior-order
+    x, y = centers[:, 0], centers[:, 1]
+    xs = np.unique(x)
+    lo, hi = xs[0], xs[-1]
+    boundary = (
+        (np.abs(x - lo) < 1e-6)
+        | (np.abs(x - hi) < 1e-6)
+        | (np.abs(y - lo) < 1e-6)
+        | (np.abs(y - hi) < 1e-6)
+    )
+
+    def boundary_bias(occ):
+        normalized = occ / occ[~boundary].mean()  # deep interior -> ~1
+        return abs(normalized[boundary].mean() - 1.0)
+
+    diffusion_bias = boundary_bias(diffusion_occ)
+    kde_bias = boundary_bias(kde_occ)
+
+    # Diffusion's reflecting boundary keeps the boundary ring near the flat truth; KDE's
+    # boundary ring dips far below it (~40% mass loss at the wall).
+    assert diffusion_bias < 0.1
+    assert kde_bias > 0.2
+    assert diffusion_bias < 0.3 * kde_bias
 
 
 @pytest.mark.integration
