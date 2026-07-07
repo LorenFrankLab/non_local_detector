@@ -397,6 +397,42 @@ def test_fit_finite_under_near_zero_occupancy_and_low_penalty():
     assert np.abs(eta).max() <= 30.0 + 1e-9  # clipped to _ETA_CLIP
 
 
+def test_step_halving_converges_on_near_zero_exposure_overshoot():
+    """A near-zero-exposure patch that carries spikes makes a full Newton step
+    overshoot catastrophically (the penalized objective explodes by ~10 orders of
+    magnitude and then diverges). Per-neuron step-halving (mgcv gam.fit3) must instead
+    descend monotonically to a finite, converged solution -- so the returned rates are
+    a genuine fit, not clip-salvaged garbage that flows into decoding.
+    """
+    penalty_weights, basis = diffusion_eigenbasis(
+        build_laplacian(path_graph(40)), rank=None
+    )
+    rng = np.random.default_rng(0)
+    occupancy = rng.uniform(1.0, 2.0, 40)
+    occupancy[15:25] = 1e-4  # a near-zero-exposure patch
+    counts = rng.poisson(1.0, size=(40, 1)).astype(float)
+    counts[15:25, 0] = 5.0  # spikes in that patch -> full-Newton overshoot
+
+    coeffs, eta, mu, diagnostics = mrf_penalized_poisson_fit(
+        counts, occupancy, basis, penalty_weights, penalty=1e-3
+    )
+
+    def penalized_objective(c):  # -loglik + 0.5 * penalty, from clipped eta/mu
+        e = basis @ c
+        m = occupancy[:, None] * np.exp(np.clip(e, -30.0, 30.0))
+        return float(
+            -np.sum(counts * e - m)
+            + 0.5 * 1e-3 * np.sum(penalty_weights[:, None] * c**2)
+        )
+
+    # The full-step Newton diverges here (never reaches tol); step-halving converges.
+    assert diagnostics["converged"]
+    assert np.all(np.isfinite(eta)) and np.all(np.isfinite(mu))
+    # Monotone descent: the fit's objective is below the constant warm-start reference
+    # (the diverged full-step fit's objective is ~1e10 -- far above it).
+    assert penalized_objective(coeffs) < penalized_objective(np.zeros_like(coeffs))
+
+
 def test_low_penalty_full_rank_tracks_saturated_ratio():
     """At a low penalty and full rank, exp(eta) approaches the saturated MLE
     counts/occupancy -- substantiating that exp(eta) is a rate (spikes per sample)."""

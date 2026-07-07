@@ -17,6 +17,17 @@ chosen by REML (Wood 2011). The whole population is fit at once (the design matr
 ``B`` and offset ``o`` are shared; only the spike counts ``n_k`` and coefficients
 ``gamma_k`` differ), vectorized over neurons.
 
+Relationship to mgcv (R). The REML objective and the penalized-IRLS fit (with
+step-halving) mirror mgcv's ``gam.fit3``, and the Laplacian-eigenmode penalty is
+mgcv's ``bs="mrf"`` Markov-random-field smoother. Two deliberate departures: (1) a
+**single shared** ``lambda`` is selected for the whole population (pooled smoothing),
+whereas mgcv fits each response separately with its own smoothing parameter -- pooling
+regularizes sparse cells but can over/under-smooth a cell whose roughness differs from
+the population; (2) the penalty is the **weighted** finite-difference Laplacian
+(``w = 1/distance**2``, for grid-size-independent bandwidth), not mgcv's default
+unweighted neighbour Laplacian (degree on the diagonal, ``-1`` off) -- in mgcv terms
+this corresponds to a user-supplied ``xt$penalty``.
+
 Place fields ``exp(eta)`` are stored FULL-GRID exactly like ``sorted_spikes_kde`` /
 ``sorted_spikes_diffusion``, so the Poisson prediction is shared with the diffusion
 likelihood (:func:`predict_sorted_spikes_mrf_log_likelihood` is that function).
@@ -47,6 +58,8 @@ predict_sorted_spikes_mrf_log_likelihood = (
 
 # Clip the linear predictor before exponentiating to avoid overflow during IRLS.
 _ETA_CLIP = 30.0
+# Max Newton step-halvings per iteration (mgcv gam.fit3 style monotone-descent guard).
+_MAX_STEP_HALVINGS = 30
 # Ridge added to the Hessian diagonal for numerical stability.
 _HESSIAN_JITTER = 1e-10
 # Search bounds for log(lambda) during REML selection.
@@ -268,11 +281,20 @@ def mrf_penalized_poisson_fit(
     basis_pinv_ones = np.linalg.lstsq(basis, np.ones(n_bins), rcond=None)[0]
     coeffs = basis_pinv_ones[:, None] * eta0[None, :]  # (rank, n_neurons)
 
-    # Fixed penalized-IRLS iterations (like the mgcv reference). No convergence
-    # warning: for a silent cell (all-zero counts) or a near-zero-occupancy bin the
-    # linear predictor legitimately drifts toward a clip boundary rather than a
-    # tol-sized step, so a global "did not converge" signal would misfire on common
-    # data; the eta clip below guarantees a finite result regardless.
+    def penalized_neg_loglik(eta: np.ndarray, mu: np.ndarray, coeffs: np.ndarray):
+        """Per-neuron minimization objective ``-loglik + 0.5 * penalty`` (= Dp/2)."""
+        loglik = np.sum(counts * eta - mu, axis=0)  # (n_neurons,)
+        penalty_term = 0.5 * np.sum(penalty_diag[:, None] * coeffs**2, axis=0)
+        return -loglik + penalty_term
+
+    # Penalized IRLS with per-neuron step-halving (mgcv gam.fit3). A full Newton step
+    # overshoots catastrophically at near-zero-exposure bins (mu -> 0 inflates the
+    # step), so each neuron's step is shrunk by halves until its penalized objective
+    # does not increase -- guaranteeing monotone descent instead of divergence into
+    # the eta clip. A well-behaved fit accepts the full step on the first try, so this
+    # is a no-op there. No convergence warning: a silent cell (all-zero counts) or a
+    # near-zero-occupancy bin legitimately drifts toward a clip boundary rather than a
+    # tol-sized step, and the eta clip below guarantees a finite result regardless.
     n_iter = 0
     max_step = np.inf
     converged = False
@@ -283,9 +305,28 @@ def mrf_penalized_poisson_fit(
         hessian = _assemble_hessian(basis, mu, penalty_diag)
         # Batched solve H_k step_k = grad_k over the neuron axis.
         step = np.linalg.solve(hessian, grad.T[..., None])[..., 0]  # (n_neurons, rank)
-        coeffs = coeffs + step.T
-        # step.size == 0 covers the zero-neuron case (np.max would raise on it).
-        max_step = 0.0 if step.size == 0 else float(np.max(np.abs(step)))
+
+        objective = penalized_neg_loglik(eta, mu, coeffs)  # reuse current eta/mu
+        scale = np.ones(step.shape[0])  # per-neuron Newton-step fraction
+        for _ in range(_MAX_STEP_HALVINGS):
+            trial = coeffs + scale[None, :] * step.T
+            trial_eta = basis @ trial
+            trial_mu = occupancy[:, None] * np.exp(
+                np.clip(trial_eta, -_ETA_CLIP, _ETA_CLIP)
+            )
+            trial_objective = penalized_neg_loglik(trial_eta, trial_mu, trial)
+            # NaN or a non-trivial increase (beyond floating-point noise) -> halve.
+            worse = ~(trial_objective <= objective + 1e-8 * (1.0 + np.abs(objective)))
+            if not worse.any():
+                break
+            scale = np.where(worse, 0.5 * scale, scale)
+
+        accepted_step = scale[None, :] * step.T
+        coeffs = coeffs + accepted_step
+        # accepted_step.size == 0 covers the zero-neuron case (np.max would raise).
+        max_step = (
+            0.0 if accepted_step.size == 0 else float(np.max(np.abs(accepted_step)))
+        )
         n_iter = iteration
         if max_step < tol:
             converged = True
@@ -476,11 +517,14 @@ def fit_sorted_spikes_mrf_encoding_model(
     sampling_frequency : int, optional
         Accepted for signature compatibility; not used by the MRF fit.
     rank : int or None, optional
-        Number of smoothest eigenmodes used as the basis. None (default) uses the
-        mgcv-style reduced-rank regime ``min(n_interior_bins, 250)`` (REML tunes
-        smoothness within the basis); pass an explicit int to override. Must be an
-        explicit parameter so a user-supplied ``rank`` is not dropped by the base
-        class's signature filter.
+        Number of smoothest eigenmodes used as the basis. None (default) caps at
+        ``min(n_interior_bins, 250)`` -- a performance bound on the dense per-neuron
+        Hessian, with REML tuning smoothness within the basis. Note this differs from
+        mgcv's ``bs="mrf"`` default, which uses the full rank (all regions) and only
+        truncates when ``k`` is set below the region count; the 250 cap silently drops
+        the highest-frequency modes on large grids (pass an explicit ``rank`` to
+        override). Must be an explicit parameter so a user-supplied ``rank`` is not
+        dropped by the base class's signature filter.
     penalty : float or None, optional
         The smoothing parameter ``lambda``. None (default) selects it by REML. Pass
         ``0.0`` for an unpenalized (saturated) fit.
@@ -532,7 +576,8 @@ def fit_sorted_spikes_mrf_encoding_model(
         rank = _as_positive_int("rank", rank)
 
     _, node_order, bin_sizes = environment_graph(environment)
-    # Default to the mgcv-style reduced-rank regime rather than a full dense fit.
+    # Cap the default basis size to bound the dense per-neuron Hessian cost (a
+    # performance choice; mgcv's mrf default is full rank -- see the `rank` docstring).
     requested_rank = (
         rank if rank is not None else min(node_order.shape[0], _DEFAULT_MAX_RANK)
     )
