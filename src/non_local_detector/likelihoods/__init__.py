@@ -17,6 +17,10 @@ from non_local_detector.likelihoods.clusterless_kde_log import (  # noqa
 from non_local_detector.likelihoods.no_spike import (  # noqa
     predict_no_spike_log_likelihood,
 )
+from non_local_detector.likelihoods.sorted_spikes_diffusion import (
+    fit_sorted_spikes_diffusion_encoding_model,
+    predict_sorted_spikes_diffusion_log_likelihood,
+)
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_sorted_spikes_glm_encoding_model,
     predict_sorted_spikes_glm_log_likelihood,
@@ -34,6 +38,10 @@ _SORTED_SPIKES_ALGORITHMS: dict[str, tuple[Callable, Callable]] = {
     "sorted_spikes_kde": (
         fit_sorted_spikes_kde_encoding_model,
         predict_sorted_spikes_kde_log_likelihood,
+    ),
+    "sorted_spikes_diffusion": (
+        fit_sorted_spikes_diffusion_encoding_model,
+        predict_sorted_spikes_diffusion_log_likelihood,
     ),
 }
 _CLUSTERLESS_ALGORITHMS: dict[str, tuple[Callable, Callable]] = {
