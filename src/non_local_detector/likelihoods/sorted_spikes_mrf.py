@@ -28,7 +28,7 @@ import scipy.optimize
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.common import EPS
+from non_local_detector.likelihoods.common import EPS, validate_weights
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
     environment_graph,
@@ -56,6 +56,136 @@ _LOG_PENALTY_BOUNDS = (-8.0, 20.0)
 _DEFAULT_MAX_RANK = 250
 
 
+def _as_positive_int(name: str, value: int) -> int:
+    """Validate positive integer controls used by the Newton solver."""
+    if isinstance(value, bool):
+        raise ValidationError(f"{name} must be a positive integer")
+
+    try:
+        int_value = int(value)
+    except (TypeError, ValueError) as err:
+        raise ValidationError(f"{name} must be a positive integer") from err
+
+    if int_value != value or int_value < 1:
+        raise ValidationError(f"{name} must be a positive integer")
+
+    return int_value
+
+
+def _as_positive_float(name: str, value: float) -> float:
+    """Validate positive floating-point controls."""
+    try:
+        float_value = float(value)
+    except (TypeError, ValueError) as err:
+        raise ValidationError(f"{name} must be a positive finite value") from err
+
+    if not np.isfinite(float_value) or float_value <= 0:
+        raise ValidationError(f"{name} must be a positive finite value")
+
+    return float_value
+
+
+def _as_nonnegative_float(name: str, value: float) -> float:
+    """Validate non-negative scalar model parameters."""
+    try:
+        float_value = float(value)
+    except (TypeError, ValueError) as err:
+        raise ValidationError(f"{name} must be a non-negative finite value") from err
+
+    if not np.isfinite(float_value) or float_value < 0:
+        raise ValidationError(f"{name} must be a non-negative finite value")
+
+    return float_value
+
+
+def _validate_log_penalty_bounds(
+    log_penalty_bounds: tuple[float, float],
+) -> tuple[float, float]:
+    """Validate REML search bounds in log-penalty space."""
+    try:
+        lower, upper = tuple(float(bound) for bound in log_penalty_bounds)
+    except (TypeError, ValueError) as err:
+        raise ValidationError(
+            "log_penalty_bounds must contain two finite values with lower < upper"
+        ) from err
+
+    if not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper:
+        raise ValidationError(
+            "log_penalty_bounds must contain two finite values with lower < upper"
+        )
+
+    return lower, upper
+
+
+def _validate_mrf_problem(
+    counts: np.ndarray,
+    occupancy: np.ndarray,
+    basis: np.ndarray,
+    penalty_weights: np.ndarray,
+    penalty: float,
+    max_iter: int,
+    tol: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, int, float]:
+    """Validate arrays and solver controls shared by MRF fit and REML."""
+    counts = np.asarray(counts, dtype=float)
+    occupancy = np.asarray(occupancy, dtype=float)
+    basis = np.asarray(basis, dtype=float)
+    penalty_weights = np.asarray(penalty_weights, dtype=float)
+    penalty = _as_nonnegative_float("penalty", penalty)
+    max_iter = _as_positive_int("max_iter", max_iter)
+    tol = _as_positive_float("tol", tol)
+
+    if counts.ndim != 2:
+        raise ValidationError("counts must be a 2D array of shape (n_bins, n_neurons)")
+
+    if occupancy.ndim != 1:
+        raise ValidationError("occupancy must be a 1D array")
+
+    if basis.ndim != 2:
+        raise ValidationError("basis must be a 2D array")
+
+    if penalty_weights.ndim != 1:
+        raise ValidationError("penalty_weights must be a 1D array")
+
+    if occupancy.shape[0] != counts.shape[0]:
+        raise ValidationError(
+            "occupancy and counts must have the same number of spatial bins"
+        )
+
+    if basis.shape[0] != counts.shape[0]:
+        raise ValidationError(
+            "basis and counts must have the same number of spatial bins"
+        )
+
+    if penalty_weights.shape[0] != basis.shape[1]:
+        raise ValidationError(
+            "penalty_weights must have one entry for each basis vector"
+        )
+
+    if not np.all(np.isfinite(counts)):
+        raise ValidationError("counts must contain only finite values")
+
+    if not np.all(np.isfinite(occupancy)):
+        raise ValidationError("occupancy must contain only finite values")
+
+    if not np.all(np.isfinite(basis)):
+        raise ValidationError("basis must contain only finite values")
+
+    if not np.all(np.isfinite(penalty_weights)):
+        raise ValidationError("penalty_weights must contain only finite values")
+
+    if np.any(counts < 0):
+        raise ValidationError("counts must be non-negative")
+
+    if np.any(occupancy < 0):
+        raise ValidationError("occupancy must be non-negative")
+
+    if np.any(penalty_weights < 0):
+        raise ValidationError("penalty_weights must be non-negative")
+
+    return counts, occupancy, basis, penalty_weights, penalty, max_iter, tol
+
+
 def _assemble_hessian(
     basis: np.ndarray, mu: np.ndarray, penalty_diag: np.ndarray
 ) -> np.ndarray:
@@ -77,7 +207,12 @@ def mrf_penalized_poisson_fit(
     penalty: float,
     max_iter: int = 100,
     tol: float = 1e-10,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    return_diagnostics: bool = False,
+    validate: bool = True,
+) -> (
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+    | tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, int | float | bool]]
+):
     """Fit the population penalized-Poisson GAM by vectorized Newton/IRLS.
 
     Fits, for every neuron ``k`` at once,
@@ -103,6 +238,12 @@ def mrf_penalized_poisson_fit(
         Maximum Newton iterations, by default 100.
     tol : float, optional
         Convergence tolerance on the max coefficient step, by default 1e-10.
+    return_diagnostics : bool, optional
+        If True, append solver diagnostics to the returned tuple.
+    validate : bool, optional
+        Validate inputs via :func:`_validate_mrf_problem`, by default True. The REML
+        search passes False to skip re-validation on every candidate fit (the caller
+        has already validated the shared, loop-invariant arrays once).
 
     Returns
     -------
@@ -112,7 +253,16 @@ def mrf_penalized_poisson_fit(
         Linear predictor ``basis @ coeffs``.
     mu : np.ndarray, shape (n_bins, n_neurons)
         Fitted mean ``occupancy[:, None] * exp(eta)``.
+    diagnostics : dict
+        Solver diagnostics with ``n_iter``, ``converged``, and ``max_step``. Returned
+        only when ``return_diagnostics`` is True.
     """
+    if validate:
+        counts, occupancy, basis, penalty_weights, penalty, max_iter, tol = (
+            _validate_mrf_problem(
+                counts, occupancy, basis, penalty_weights, penalty, max_iter, tol
+            )
+        )
     n_bins = basis.shape[0]
     penalty_diag = penalty * penalty_weights  # (rank,)
 
@@ -129,7 +279,10 @@ def mrf_penalized_poisson_fit(
     # linear predictor legitimately drifts toward a clip boundary rather than a
     # tol-sized step, so a global "did not converge" signal would misfire on common
     # data; the eta clip below guarantees a finite result regardless.
-    for _ in range(max_iter):
+    n_iter = 0
+    max_step = np.inf
+    converged = False
+    for iteration in range(1, max_iter + 1):
         eta = basis @ coeffs
         mu = occupancy[:, None] * np.exp(np.clip(eta, -_ETA_CLIP, _ETA_CLIP))
         grad = basis.T @ (counts - mu) - penalty_diag[:, None] * coeffs
@@ -138,7 +291,10 @@ def mrf_penalized_poisson_fit(
         step = np.linalg.solve(hessian, grad.T[..., None])[..., 0]  # (n_neurons, rank)
         coeffs = coeffs + step.T
         # step.size == 0 covers the zero-neuron case (np.max would raise on it).
-        if step.size == 0 or np.max(np.abs(step)) < tol:
+        max_step = 0.0 if step.size == 0 else float(np.max(np.abs(step)))
+        n_iter = iteration
+        if max_step < tol:
+            converged = True
             break
 
     # Clip the returned linear predictor so the mean and any rate the caller derives
@@ -146,6 +302,13 @@ def mrf_penalized_poisson_fit(
     # eta very large (mirrors the mgcv reference, which clips at this point too).
     eta = np.clip(basis @ coeffs, -_ETA_CLIP, _ETA_CLIP)
     mu = occupancy[:, None] * np.exp(eta)
+    diagnostics = {
+        "n_iter": n_iter,
+        "converged": converged,
+        "max_step": max_step,
+    }
+    if return_diagnostics:
+        return coeffs, eta, mu, diagnostics
     return coeffs, eta, mu
 
 
@@ -163,17 +326,37 @@ def mrf_reml_objective(
     occupancy: np.ndarray,
     basis: np.ndarray,
     penalty_weights: np.ndarray,
+    max_iter: int = 100,
+    tol: float = 1e-10,
+    validate: bool = True,
 ) -> float:
     """Negative Laplace REML (Wood 2011) for a single shared ``lambda``, all neurons.
 
     The population shares ``lambda``, so the restricted marginal likelihood factorizes
     over neurons and the objective is the sum of the per-neuron terms
     ``-loglik + penalty - 0.5 * penalty_rank * log(lambda) + 0.5 * logdet(H)``.
-    Minimized over ``log_penalty``.
+    Minimized over ``log_penalty``. Pass ``validate=False`` to skip input validation
+    when the caller (the REML search) has already validated the shared arrays.
     """
+    log_penalty = float(log_penalty)
+    if not np.isfinite(log_penalty):
+        return np.inf
     penalty = np.exp(log_penalty)
+    if validate:
+        counts, occupancy, basis, penalty_weights, penalty, max_iter, tol = (
+            _validate_mrf_problem(
+                counts, occupancy, basis, penalty_weights, penalty, max_iter, tol
+            )
+        )
     coeffs, eta, mu = mrf_penalized_poisson_fit(
-        counts, occupancy, basis, penalty_weights, penalty
+        counts,
+        occupancy,
+        basis,
+        penalty_weights,
+        penalty,
+        max_iter=max_iter,
+        tol=tol,
+        validate=False,
     )
     loglik = np.sum(counts * eta - mu, axis=0)  # (n_neurons,)
     penalty_term = 0.5 * penalty * np.sum(penalty_weights[:, None] * coeffs**2, axis=0)
@@ -201,35 +384,68 @@ def select_penalty_by_reml(
     occupancy: np.ndarray,
     basis: np.ndarray,
     penalty_weights: np.ndarray,
-) -> float:
+    log_penalty_bounds: tuple[float, float] = _LOG_PENALTY_BOUNDS,
+    reml_xatol: float = 1e-3,
+    max_iter: int = 100,
+    tol: float = 1e-10,
+    return_objective: bool = False,
+) -> float | tuple[float, float]:
     """Select a single shared smoothing parameter ``lambda`` by REML.
 
     Minimizes :func:`mrf_reml_objective` over ``log(lambda)`` on a bounded interval
     (deterministic; no random state). Returns the selected ``lambda``.
     """
+    log_penalty_bounds = _validate_log_penalty_bounds(log_penalty_bounds)
+    reml_xatol = _as_positive_float("reml_xatol", reml_xatol)
+    # Validate the problem arrays and solver controls once here: the bounded optimizer
+    # evaluates the objective many times on the same shared, loop-invariant inputs, so
+    # re-validating inside every candidate fit is pure overhead. The placeholder
+    # penalty (1.0) is only for this validation; each candidate supplies its own
+    # penalty via exp(log_penalty).
+    counts, occupancy, basis, penalty_weights, _, max_iter, tol = _validate_mrf_problem(
+        counts, occupancy, basis, penalty_weights, 1.0, max_iter, tol
+    )
+
+    def objective(log_penalty: float) -> float:
+        return mrf_reml_objective(
+            log_penalty,
+            counts,
+            occupancy,
+            basis,
+            penalty_weights,
+            max_iter=max_iter,
+            tol=tol,
+            validate=False,
+        )
+
     result = scipy.optimize.minimize_scalar(
-        mrf_reml_objective,
-        args=(counts, occupancy, basis, penalty_weights),
-        bounds=_LOG_PENALTY_BOUNDS,
+        objective,
+        bounds=log_penalty_bounds,
         method="bounded",
-        options={"xatol": 1e-3},
+        options={"xatol": reml_xatol},
     )
     # The objective returns +inf for any lambda whose per-neuron Hessian is not
     # positive-definite. If no candidate had a finite objective, minimize_scalar
     # still returns an arbitrary point; reject it rather than fitting with a
     # meaningless penalty.
-    if not np.isfinite(result.fun):
+    if not result.success or not np.isfinite(result.fun):
         raise ValidationError(
             "REML failed to find a valid smoothing parameter",
             expected="a finite REML objective for some lambda in the search interval",
-            got="a non-positive-definite Hessian at every candidate lambda",
+            got=str(result.message)
+            if not result.success
+            else "a non-positive-definite Hessian at every candidate lambda",
             hint=(
                 "The reduced-rank basis is too large relative to the data, or too "
                 "many interior bins have zero occupancy. Reduce `rank`, or provide a "
                 "denser/longer training trajectory."
             ),
         )
-    return float(np.exp(result.x))
+    penalty = float(np.exp(result.x))
+    objective_value = float(result.fun)
+    if return_objective:
+        return penalty, objective_value
+    return penalty
 
 
 def fit_sorted_spikes_mrf_encoding_model(
@@ -241,6 +457,11 @@ def fit_sorted_spikes_mrf_encoding_model(
     sampling_frequency: int = 500,
     rank: int | None = None,
     penalty: float | None = None,
+    max_iter: int = 100,
+    tol: float = 1e-10,
+    log_penalty_bounds: tuple[float, float] = _LOG_PENALTY_BOUNDS,
+    reml_xatol: float = 1e-3,
+    block_size: int = 100,
     disable_progress_bar: bool = False,
 ) -> dict:
     """Fit a population MRF-GAM encoding model for sorted spikes.
@@ -275,6 +496,17 @@ def fit_sorted_spikes_mrf_encoding_model(
     penalty : float or None, optional
         The smoothing parameter ``lambda``. None (default) selects it by REML. Pass
         ``0.0`` for an unpenalized (saturated) fit.
+    max_iter : int, optional
+        Maximum Newton iterations for both REML candidate fits and the final fit.
+    tol : float, optional
+        Convergence tolerance on the max coefficient step.
+    log_penalty_bounds : tuple[float, float], optional
+        REML search interval for ``log(lambda)`` when ``penalty`` is None.
+    reml_xatol : float, optional
+        Scalar optimizer tolerance for REML penalty selection.
+    block_size : int, optional
+        Accepted for signature compatibility with sorted-spikes likelihood defaults;
+        unused by the MRF fit.
     disable_progress_bar : bool, optional
 
     Returns
@@ -282,15 +514,27 @@ def fit_sorted_spikes_mrf_encoding_model(
     encoding_model : dict
         The same keys as ``sorted_spikes_diffusion`` (``environment``, ``occupancy``,
         ``mean_rates``, ``place_fields`` [FULL-GRID], ``no_spike_part_log_likelihood``,
-        ``is_track_interior``, ``node_order``, ``bin_sizes``, ``disable_progress_bar``).
-        Note ``occupancy`` here is the raw exposure field (weighted interior-bin
-        counts), NOT the integral-one density ``sorted_spikes_diffusion`` stores; it
-        is carried only for contract parity and is unused in prediction.
+        ``is_track_interior``, ``node_order``, ``bin_sizes``, ``disable_progress_bar``),
+        plus MRF diagnostics (``mrf_penalty``, ``mrf_rank``, ``mrf_coefficients``,
+        ``mrf_penalty_weights``, ``mrf_reml_objective``, ``mrf_n_iter``,
+        ``mrf_converged``, ``mrf_max_step``, ``mrf_log_penalty_bounds``,
+        ``mrf_penalty_selected_by_reml``). Note
+        ``occupancy`` here is the raw exposure field (weighted interior-bin counts),
+        NOT the integral-one density ``sorted_spikes_diffusion`` stores; it is carried
+        only for contract parity and is unused in prediction.
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     if weights is None:
         weights = np.ones((position.shape[0],))
-    weights = np.asarray(weights)
+    weights = validate_weights(weights, position.shape[0])
+    max_iter = _as_positive_int("max_iter", max_iter)
+    tol = _as_positive_float("tol", tol)
+    log_penalty_bounds = _validate_log_penalty_bounds(log_penalty_bounds)
+    reml_xatol = _as_positive_float("reml_xatol", reml_xatol)
+    if penalty is not None:
+        penalty = _as_nonnegative_float("penalty", penalty)
+    if rank is not None:
+        rank = _as_positive_int("rank", rank)
 
     _, node_order, bin_sizes = environment_graph(environment)
     # Default to the mgcv-style reduced-rank regime rather than a full dense fit.
@@ -317,18 +561,34 @@ def fit_sorted_spikes_mrf_encoding_model(
     else:
         counts = np.zeros((node_order.shape[0], 0))
 
-    if penalty is None and counts.shape[1] > 0:
-        penalty = select_penalty_by_reml(
-            counts, occupancy_field, basis, penalty_weights
+    penalty_selected_by_reml = penalty is None and counts.shape[1] > 0
+    if penalty_selected_by_reml:
+        penalty, reml_objective = select_penalty_by_reml(
+            counts,
+            occupancy_field,
+            basis,
+            penalty_weights,
+            log_penalty_bounds=log_penalty_bounds,
+            reml_xatol=reml_xatol,
+            max_iter=max_iter,
+            tol=tol,
+            return_objective=True,
         )
+    else:
+        reml_objective = np.nan
+
     # `penalty is None` only survives here for the zero-neuron case; a caller's
     # explicit penalty=0.0 (unpenalized) must be respected, not treated as falsy.
-    _, eta, _ = mrf_penalized_poisson_fit(
+    fit_penalty = penalty if penalty is not None else 1.0
+    coeffs, eta, _, diagnostics = mrf_penalized_poisson_fit(
         counts,
         occupancy_field,
         basis,
         penalty_weights,
-        penalty if penalty is not None else 1.0,
+        fit_penalty,
+        max_iter=max_iter,
+        tol=tol,
+        return_diagnostics=True,
     )
     rate_interior = np.exp(eta)  # (n_interior, n_neurons); eta is clipped in the fit
 
@@ -349,4 +609,14 @@ def fit_sorted_spikes_mrf_encoding_model(
         "node_order": node_order,
         "bin_sizes": bin_sizes,
         "disable_progress_bar": disable_progress_bar,
+        "mrf_penalty": fit_penalty,
+        "mrf_rank": effective_rank,
+        "mrf_coefficients": coeffs,
+        "mrf_penalty_weights": penalty_weights,
+        "mrf_reml_objective": reml_objective,
+        "mrf_n_iter": diagnostics["n_iter"],
+        "mrf_converged": diagnostics["converged"],
+        "mrf_max_step": diagnostics["max_step"],
+        "mrf_log_penalty_bounds": log_penalty_bounds,
+        "mrf_penalty_selected_by_reml": penalty_selected_by_reml,
     }

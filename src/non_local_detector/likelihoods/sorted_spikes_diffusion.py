@@ -30,6 +30,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     get_position_at_time,
     get_spikecount_per_time_bin,
+    validate_weights,
 )
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
@@ -201,7 +202,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
     position = position if position.ndim > 1 else position[:, np.newaxis]
     if weights is None:
         weights = np.ones((position.shape[0],))
-    weights = np.asarray(weights)
+    weights = validate_weights(weights, position.shape[0])
 
     graph, node_order, bin_sizes = environment_graph(environment)
     check_smoothing_bandwidth(position_std, graph)
@@ -268,6 +269,16 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     is_track_interior: np.ndarray,
     node_order: np.ndarray | None = None,
     bin_sizes: np.ndarray | None = None,
+    mrf_penalty: float | None = None,
+    mrf_rank: int | None = None,
+    mrf_coefficients: np.ndarray | None = None,
+    mrf_penalty_weights: np.ndarray | None = None,
+    mrf_reml_objective: float | None = None,
+    mrf_n_iter: int | None = None,
+    mrf_converged: bool | None = None,
+    mrf_max_step: float | None = None,
+    mrf_log_penalty_bounds: tuple[float, float] | None = None,
+    mrf_penalty_selected_by_reml: bool | None = None,
     disable_progress_bar: bool = False,
     is_local: bool = False,
 ) -> jnp.ndarray:
@@ -275,9 +286,10 @@ def predict_sorted_spikes_diffusion_log_likelihood(
 
     Dedicated function (not the KDE predict): the base class splats the whole
     encoding dict as keyword arguments, so every dict key is a parameter here.
-    ``occupancy``, ``mean_rates``, ``node_order``, and ``bin_sizes`` are carried in
-    the encoding dict (shared contract) but unused here — the rate is already baked
-    into ``place_fields`` and prediction indexes bins via ``environment.get_bin_ind``.
+    ``occupancy``, ``mean_rates``, ``node_order``, ``bin_sizes``, and the optional
+    ``mrf_*`` diagnostics are carried in encoding dicts (shared contract) but unused
+    here; the rate is already baked into ``place_fields`` and prediction indexes bins
+    via ``environment.get_bin_ind``.
 
     Parameters
     ----------
@@ -296,6 +308,9 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         FULL-GRID place fields.
     no_spike_part_log_likelihood : jnp.ndarray, shape (n_total_bins,)
     is_track_interior : np.ndarray, shape (n_total_bins,)
+    mrf_* : optional
+        MRF-GAM fit diagnostics accepted so the MRF encoding dict can be passed to
+        prediction with ``**encoding_model``.
     disable_progress_bar : bool, optional
     is_local : bool, optional
         Compute the likelihood at the animal's position, by default False.

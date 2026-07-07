@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 import scipy.linalg
 
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.likelihoods.diffusion import (
     build_laplacian,
@@ -46,6 +47,16 @@ ENCODING_DICT_KEYS = {
     "node_order",
     "bin_sizes",
     "disable_progress_bar",
+    "mrf_penalty",
+    "mrf_rank",
+    "mrf_coefficients",
+    "mrf_penalty_weights",
+    "mrf_reml_objective",
+    "mrf_n_iter",
+    "mrf_converged",
+    "mrf_max_step",
+    "mrf_log_penalty_bounds",
+    "mrf_penalty_selected_by_reml",
 }
 
 
@@ -99,13 +110,21 @@ def test_population_fit_matches_per_neuron_reference():
     counts = rng.poisson(1.5, size=(n_bins, n_neurons)).astype(float)
     penalty = 2.0
 
-    coeffs, eta, mu = mrf_penalized_poisson_fit(
-        counts, occupancy, basis, penalty_weights, penalty
+    coeffs, eta, mu, diagnostics = mrf_penalized_poisson_fit(
+        counts,
+        occupancy,
+        basis,
+        penalty_weights,
+        penalty,
+        return_diagnostics=True,
     )
 
     assert coeffs.shape == (rank, n_neurons)
     assert eta.shape == (n_bins, n_neurons)
     assert mu.shape == (n_bins, n_neurons)
+    assert diagnostics["n_iter"] >= 1
+    assert isinstance(diagnostics["converged"], bool)
+    assert np.isfinite(diagnostics["max_step"])
     for neuron in range(n_neurons):
         expected = reference_fit_one_neuron(
             counts[:, neuron], occupancy, basis, penalty_weights, penalty
@@ -237,11 +256,123 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes():
     assert np.all(np.isfinite(place_fields))
     assert np.all(place_fields[:, ~is_interior] == 0.0)
     assert np.all(place_fields[:, is_interior] > 0.0)
+    assert encoding["mrf_rank"] == 30
+    assert 0.0 <= encoding["mrf_penalty"] < np.inf
+    assert np.asarray(encoding["mrf_coefficients"]).shape == (30, 4)
+    assert np.asarray(encoding["mrf_penalty_weights"]).shape == (30,)
+    assert np.isfinite(encoding["mrf_reml_objective"])
+    assert encoding["mrf_n_iter"] >= 1
+    assert isinstance(encoding["mrf_converged"], bool)
+    assert np.isfinite(encoding["mrf_max_step"])
+    assert encoding["mrf_log_penalty_bounds"] == (-8.0, 20.0)
+    assert encoding["mrf_penalty_selected_by_reml"] is True
     np.testing.assert_allclose(
         np.asarray(encoding["no_spike_part_log_likelihood"]),
         place_fields.sum(axis=0),
         rtol=1e-6,
     )
+
+
+def test_fixed_penalty_solver_controls_are_reported():
+    """Caller-supplied solver controls are honored and reported in the encoding."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=2)
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        rank=15,
+        penalty=0.5,
+        max_iter=1,
+        tol=1e-12,
+        log_penalty_bounds=(-4.0, 2.0),
+        reml_xatol=1e-2,
+        block_size=7,
+    )
+
+    assert encoding["mrf_penalty"] == 0.5
+    assert encoding["mrf_penalty_selected_by_reml"] is False
+    assert np.isnan(encoding["mrf_reml_objective"])
+    assert encoding["mrf_n_iter"] == 1
+    assert isinstance(encoding["mrf_converged"], bool)
+    assert np.isfinite(encoding["mrf_max_step"])
+    assert encoding["mrf_log_penalty_bounds"] == (-4.0, 2.0)
+
+
+def test_fit_rejects_invalid_weights():
+    """Weights feed both occupancy and spike counts, so invalid values fail early."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=1)
+    bad_weights = [
+        np.ones(time.shape[0] - 1),
+        np.r_[[-1.0], np.ones(time.shape[0] - 1)],
+        np.r_[[np.nan], np.ones(time.shape[0] - 1)],
+    ]
+
+    for weights in bad_weights:
+        with pytest.raises(ValidationError):
+            fit_sorted_spikes_mrf_encoding_model(
+                position_time=time,
+                position=position,
+                spike_times=spike_times,
+                environment=env,
+                weights=weights,
+                rank=10,
+                penalty=1.0,
+            )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"penalty": -1.0},
+        {"penalty": np.nan},
+        {"rank": 0},
+        {"max_iter": 0},
+        {"tol": 0.0},
+        {"log_penalty_bounds": (1.0, 1.0)},
+        {"log_penalty_bounds": (0.0, np.inf)},
+        {"reml_xatol": 0.0},
+    ],
+)
+def test_fit_rejects_invalid_mrf_controls(kwargs):
+    """MRF-specific controls have explicit validation and clear failures."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=1)
+    fit_kwargs = {"rank": 10, **kwargs}
+
+    with pytest.raises(ValidationError):
+        fit_sorted_spikes_mrf_encoding_model(
+            position_time=time,
+            position=position,
+            spike_times=spike_times,
+            environment=env,
+            **fit_kwargs,
+        )
+
+
+def test_population_fit_rejects_invalid_problem_arrays():
+    """The low-level solver rejects malformed arrays before numerical linear algebra."""
+    penalty_weights, basis = diffusion_eigenbasis(
+        build_laplacian(path_graph(10)), rank=5
+    )
+    occupancy = np.ones(10)
+    counts = np.ones((10, 2))
+
+    with pytest.raises(ValidationError):
+        mrf_penalized_poisson_fit(
+            counts[:, 0], occupancy, basis, penalty_weights, penalty=1.0
+        )
+
+    with pytest.raises(ValidationError):
+        mrf_penalized_poisson_fit(
+            counts,
+            occupancy,
+            basis,
+            np.r_[-1.0, penalty_weights[1:]],
+            penalty=1.0,
+        )
 
 
 def test_fit_finite_under_near_zero_occupancy_and_low_penalty():
@@ -296,8 +427,13 @@ def test_fit_empty_spike_times_returns_empty_place_fields():
         rank=20,
     )
     n_total = env.place_bin_centers_.shape[0]
+    assert ENCODING_DICT_KEYS <= set(encoding)
     assert np.asarray(encoding["place_fields"]).shape == (0, n_total)
     assert np.asarray(encoding["no_spike_part_log_likelihood"]).shape == (n_total,)
+    assert np.asarray(encoding["mrf_coefficients"]).shape == (20, 0)
+    assert encoding["mrf_penalty"] == 1.0
+    assert encoding["mrf_penalty_selected_by_reml"] is False
+    assert np.isnan(encoding["mrf_reml_objective"])
 
 
 def test_penalty_zero_is_respected_not_overridden():
