@@ -47,6 +47,99 @@ def _interior_bin_indices(
     return full_to_local[environment.get_bin_ind(positions)]
 
 
+def pixellate_interior_fields(
+    position_time: np.ndarray,
+    position: np.ndarray,
+    spike_times: list[np.ndarray],
+    environment: Environment,
+    node_order: np.ndarray,
+    weights: np.ndarray,
+    disable_progress_bar: bool = False,
+) -> tuple[np.ndarray, list[np.ndarray], list[float]]:
+    """Histogram weighted occupancy and per-neuron spike counts onto interior bins.
+
+    Shared by the diffusion smoother and the MRF-GAM: both need the same weighted
+    count fields (in ``node_order`` order) and per-neuron mean rates before they
+    diverge (diffusion smooths + normalizes; the MRF fits a penalized-Poisson GAM).
+
+    Parameters
+    ----------
+    position_time, position, spike_times, environment, weights, disable_progress_bar
+        As in the fit functions; ``weights`` must be a 1-D array.
+    node_order : np.ndarray, shape (n_interior,)
+        Interior flat-bin indices from :func:`environment_graph`.
+
+    Returns
+    -------
+    occupancy_field : np.ndarray, shape (n_interior,)
+        Weighted position-sample count per interior bin.
+    spike_fields : list[np.ndarray]
+        Weighted spike count per interior bin, one array per neuron.
+    mean_rates : list[float]
+        ``weights_at_spike_times.sum() / weights.sum()`` per neuron.
+    """
+    assert environment.is_track_interior_ is not None
+    n_total_bins = environment.is_track_interior_.ravel().shape[0]
+    n_interior = node_order.shape[0]
+
+    # Full-grid interior flat index -> local interior index (node_order order).
+    full_to_local = np.full(n_total_bins, -1, dtype=int)
+    full_to_local[node_order] = np.arange(n_interior)
+
+    occupancy_positions = get_position_at_time(
+        position_time, position, position_time, environment
+    )
+    occupancy_field = np.bincount(
+        _interior_bin_indices(environment, occupancy_positions, full_to_local),
+        weights=weights,
+        minlength=n_interior,
+    )
+
+    weight_sum = weights.sum()
+    mean_rates: list[float] = []
+    spike_fields: list[np.ndarray] = []
+    for neuron_spike_times in tqdm(
+        spike_times,
+        unit="cell",
+        desc="Encoding models",
+        disable=disable_progress_bar,
+    ):
+        neuron_spike_times = neuron_spike_times[
+            np.logical_and(
+                neuron_spike_times >= position_time[0],
+                neuron_spike_times <= position_time[-1],
+            )
+        ]
+        weights_at_spike_times = scipy.interpolate.interpn(
+            (position_time,),
+            weights,
+            neuron_spike_times,
+            bounds_error=False,
+            fill_value=None,
+        )
+        if weights_at_spike_times.ndim > 1:
+            weights_at_spike_times = weights_at_spike_times.squeeze(axis=1)
+
+        mean_rates.append(
+            float(weights_at_spike_times.sum() / weight_sum) if weight_sum > 0 else 0.0
+        )
+
+        if neuron_spike_times.shape[0] > 0:
+            spike_positions = get_position_at_time(
+                position_time, position, neuron_spike_times, environment
+            )
+            spike_field = np.bincount(
+                _interior_bin_indices(environment, spike_positions, full_to_local),
+                weights=weights_at_spike_times,
+                minlength=n_interior,
+            )
+        else:
+            spike_field = np.zeros((n_interior,))
+        spike_fields.append(spike_field)
+
+    return occupancy_field, spike_fields, mean_rates
+
+
 def fit_sorted_spikes_diffusion_encoding_model(
     position_time: np.ndarray,
     position: np.ndarray,
@@ -119,63 +212,16 @@ def fit_sorted_spikes_diffusion_encoding_model(
     assert environment.is_track_interior_ is not None
     is_track_interior = environment.is_track_interior_.ravel()
     n_total_bins = is_track_interior.shape[0]
-    n_interior = node_order.shape[0]
 
-    # Full-grid interior flat index -> local interior index (node_order order).
-    full_to_local = np.full(n_total_bins, -1, dtype=int)
-    full_to_local[node_order] = np.arange(n_interior)
-
-    # Weighted occupancy count field on interior bins.
-    occupancy_positions = get_position_at_time(
-        position_time, position, position_time, environment
-    )
-    occupancy_field = np.bincount(
-        _interior_bin_indices(environment, occupancy_positions, full_to_local),
-        weights=weights,
-        minlength=n_interior,
-    )
-
-    weight_sum = weights.sum()
-    mean_rates: list[float] = []
-    spike_fields: list[np.ndarray] = []
-    for neuron_spike_times in tqdm(
+    occupancy_field, spike_fields, mean_rates = pixellate_interior_fields(
+        position_time,
+        position,
         spike_times,
-        unit="cell",
-        desc="Encoding models",
-        disable=disable_progress_bar,
-    ):
-        neuron_spike_times = neuron_spike_times[
-            np.logical_and(
-                neuron_spike_times >= position_time[0],
-                neuron_spike_times <= position_time[-1],
-            )
-        ]
-        weights_at_spike_times = scipy.interpolate.interpn(
-            (position_time,),
-            weights,
-            neuron_spike_times,
-            bounds_error=False,
-            fill_value=None,
-        )
-        if weights_at_spike_times.ndim > 1:
-            weights_at_spike_times = weights_at_spike_times.squeeze(axis=1)
-
-        mean_rates.append(
-            float(weights_at_spike_times.sum() / weight_sum) if weight_sum > 0 else 0.0
-        )
-
-        if neuron_spike_times.shape[0] > 0:
-            spike_positions = get_position_at_time(
-                position_time, position, neuron_spike_times, environment
-            )
-            spike_field = np.bincount(
-                _interior_bin_indices(environment, spike_positions, full_to_local),
-                weights=weights_at_spike_times,
-                minlength=n_interior,
-            )
-        else:
-            spike_field = np.zeros((n_interior,))
-        spike_fields.append(spike_field)
+        environment,
+        node_order,
+        weights,
+        disable_progress_bar,
+    )
 
     # Diffuse occupancy + all neuron fields in a single batched matmul, then
     # normalize each column to an integral-one density.
