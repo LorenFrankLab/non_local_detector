@@ -62,6 +62,9 @@ _ETA_CLIP = 30.0
 _MAX_STEP_HALVINGS = 30
 # Ridge added to the Hessian diagonal for numerical stability.
 _HESSIAN_JITTER = 1e-10
+# Peak-memory budget for the (neuron-block, rank, n_bins) working array in the Hessian
+# build; neurons are processed in blocks so the BLAS batched matmul stays in bounds.
+_HESSIAN_CHUNK_BYTES = 256 * 1024**2
 # Search bounds for log(lambda) during REML selection.
 _LOG_PENALTY_BOUNDS = (-8.0, 20.0)
 # Default cap on the reduced-rank basis when ``rank`` is None (mgcv-style): the
@@ -205,10 +208,23 @@ def _assemble_hessian(
 ) -> np.ndarray:
     """Batched penalized Hessian ``Bᵀ diag(mu_k) B + diag(penalty_diag)`` per neuron.
 
-    Returns shape ``(n_neurons, rank, rank)``.
+    Computed as a BLAS batched matmul ``(Bᵀ ⊙ mu_k) @ B`` -- the mathematically
+    identical 3-operand ``einsum`` picks a non-BLAS path that is ~80x slower on large
+    grids. Neurons are processed in blocks so the ``(block, rank, n_bins)`` working
+    array stays within ``_HESSIAN_CHUNK_BYTES``. Returns shape ``(n_neurons, rank,
+    rank)``.
     """
-    hessian = np.einsum("ir,ik,is->krs", basis, mu, basis, optimize=True)
-    diag = np.arange(basis.shape[1])
+    n_bins, rank = basis.shape
+    n_neurons = mu.shape[1]
+    basis_t = basis.T  # (rank, n_bins)
+    block = max(1, _HESSIAN_CHUNK_BYTES // (rank * n_bins * basis.itemsize))
+    hessian = np.empty((n_neurons, rank, rank), dtype=basis.dtype)
+    for start in range(0, n_neurons, block):
+        stop = min(start + block, n_neurons)
+        # (b, rank, n_bins) = Bᵀ weighted by each neuron's mu; @ B -> (b, rank, rank).
+        weighted = basis_t[None] * mu[:, start:stop].T[:, None, :]
+        hessian[start:stop] = weighted @ basis
+    diag = np.arange(rank)
     hessian[:, diag, diag] += penalty_diag + _HESSIAN_JITTER
     return hessian
 
