@@ -176,7 +176,15 @@ def mrf_reml_objective(
     penalty_term = 0.5 * penalty * np.sum(penalty_weights[:, None] * coeffs**2, axis=0)
 
     hessian = _assemble_hessian(basis, mu, penalty * penalty_weights)
-    _, logdet_hessian = np.linalg.slogdet(hessian)  # (n_neurons,)
+    # An under-regularized (very small penalty) fit with many zero-occupancy bins can
+    # make the per-neuron Hessian rank-deficient / non-positive-definite. The LU in
+    # slogdet then warns on the tiny pivots; suppress that expected noise, and reject
+    # the candidate (return +inf) so the REML search never optimizes over an invalid
+    # log-determinant instead of silently accepting a garbage-but-finite objective.
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        sign, logdet_hessian = np.linalg.slogdet(hessian)  # (n_neurons,)
+    if np.any(sign <= 0) or not np.all(np.isfinite(logdet_hessian)):
+        return np.inf
 
     penalty_rank = _penalty_rank(penalty_weights)
     reml = (

@@ -152,6 +152,29 @@ def test_reml_recovers_smooth_field():
     assert corr > 0.95
 
 
+def test_reml_robust_to_ill_conditioned_hessian():
+    """With many zero-occupancy bins the Hessian is rank-deficient at small penalties;
+    REML must not emit slogdet RuntimeWarnings and must still return a valid lambda
+    (invalid, non-positive-definite candidates are rejected, not silently accepted)."""
+    import warnings
+
+    rng = np.random.default_rng(0)
+    n_bins = 40
+    penalty_weights, basis = diffusion_eigenbasis(
+        build_laplacian(path_graph(n_bins)),
+        rank=None,  # full rank -> ill-conditioned
+    )
+    occupancy = rng.uniform(1.0, 2.0, size=n_bins)
+    occupancy[10:30] = 0.0  # a large unvisited patch
+    counts = rng.poisson(1.0, size=(n_bins, 3)).astype(float)
+    counts[10:30, :] = 0.0
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        penalty = select_penalty_by_reml(counts, occupancy, basis, penalty_weights)
+    assert 0.0 < penalty < np.inf
+
+
 def test_occupancy_offset_gives_finite_rate_at_zero_occupancy():
     """Occupancy enters as an exposure offset, so zero-occupancy bins yield finite
     (unconstrained, smoothly-interpolated) rates — no division blow-up."""
