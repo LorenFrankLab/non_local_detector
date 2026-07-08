@@ -399,7 +399,9 @@ def fit_sorted_spikes_diffusion_encoding_model(
         not used by the diffusion smoother.
     position_std : float, optional
         Heat-kernel smoothing standard deviation in coordinate units (the physical
-        bandwidth), by default sqrt(12.5).
+        bandwidth), by default sqrt(12.5). Scalar only: the heat kernel is isotropic in
+        graph distance, so (unlike the KDE likelihood) a per-dimension ``[sx, sy]`` is
+        not supported.
     rank : int or None, optional
         Number of Laplacian eigenmodes to use. None (default) auto-selects the rank
         from ``position_std`` via ``diffusion.heat_kernel_rank`` — a
