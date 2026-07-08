@@ -446,6 +446,18 @@ def fit_sorted_spikes_diffusion_encoding_model(
         weights = np.ones((position.shape[0],))
     weights = validate_weights(weights, position.shape[0])
     local_interpolation = _validate_local_interpolation(local_interpolation)
+    # Coerce position_std to a plain float: it becomes part of the bandwidth-keyed rank
+    # cache key, so a JAX scalar/array (unhashable) would raise. The heat kernel is
+    # isotropic in graph distance, so per-dimension bandwidths are not supported.
+    position_std_arr = np.asarray(position_std, dtype=float)
+    if position_std_arr.size != 1:
+        raise ValidationError(
+            "position_std must be a scalar; the graph heat kernel is isotropic in graph "
+            "distance, so per-dimension bandwidths are not supported.",
+            expected="a scalar position_std",
+            got=f"array of shape {position_std_arr.shape}",
+        )
+    position_std = float(position_std_arr.item())
 
     graph, node_order, bin_sizes = environment_graph(environment)
     check_smoothing_bandwidth(position_std, graph)

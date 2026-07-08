@@ -202,6 +202,33 @@ def test_fit_rejects_invalid_local_interpolation():
         )
 
 
+def test_fit_coerces_scalar_position_std_and_rejects_per_dim():
+    """position_std keys the bandwidth-aware rank cache, so a JAX/NumPy scalar or array
+    (both unhashable as dict keys) must be coerced to a plain float; a per-dimension
+    bandwidth is rejected since the graph heat kernel is isotropic in graph distance."""
+    import jax.numpy as jnp
+
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=2)
+    common = {
+        "position_time": time,
+        "position": position,
+        "spike_times": spike_times,
+        "environment": env,
+    }
+    # Scalar-shaped inputs (unhashable as dict keys before coercion) are accepted.
+    for position_std in (jnp.array(6.0), jnp.array([6.0]), np.array(6.0), 6.0):
+        encoding = fit_sorted_spikes_diffusion_encoding_model(
+            **common, position_std=position_std
+        )
+        assert np.all(np.isfinite(np.asarray(encoding["place_fields"])))
+    # A per-dimension bandwidth is rejected (unlike the KDE likelihood).
+    with pytest.raises(ValidationError):
+        fit_sorted_spikes_diffusion_encoding_model(
+            **common, position_std=np.array([6.0, 7.0])
+        )
+
+
 def test_fit_truncated_rank_full_grid_and_predict():
     """A truncated-rank fit still yields finite full-grid place fields and a valid
     posterior (exercises pixellate -> truncated diffuse -> to_density through the fit)."""
