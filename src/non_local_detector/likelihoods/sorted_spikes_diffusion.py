@@ -480,6 +480,28 @@ def fit_sorted_spikes_diffusion_encoding_model(
     }
 
 
+def _spike_counts_matrix(
+    spike_times: list[np.ndarray],
+    time: np.ndarray,
+    desc: str,
+    disable_progress_bar: bool,
+) -> np.ndarray:
+    """Stack per-neuron spike counts into a ``(n_time, n_neurons)`` matrix.
+
+    ``get_spikecount_per_time_bin`` masks spikes to ``time`` internally, so no
+    explicit pre-masking is needed here.
+    """
+    counts = [
+        get_spikecount_per_time_bin(neuron_spike_times, time)
+        for neuron_spike_times in tqdm(
+            spike_times, unit="cell", desc=desc, disable=disable_progress_bar
+        )
+    ]
+    if not counts:  # zero neurons
+        return np.zeros((time.shape[0], 0))
+    return np.stack(counts, axis=1)
+
+
 def predict_sorted_spikes_diffusion_log_likelihood(
     time: np.ndarray,
     position_time: np.ndarray,
@@ -540,8 +562,6 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     log_likelihood : jnp.ndarray
         Shape (n_time, n_interior_bins) when ``is_local`` is False, else (n_time, 1).
     """
-    n_time = time.shape[0]
-
     if is_local:
         interpolated_position = get_position_at_time(
             position_time, position, time, environment
@@ -554,58 +574,33 @@ def predict_sorted_spikes_diffusion_log_likelihood(
             node_order,
             local_interpolation,
         )
-        log_likelihood = jnp.zeros((n_time,))
-        for neuron_spike_times, local_rate in zip(
-            tqdm(
-                spike_times,
-                unit="cell",
-                desc="Local Likelihood",
-                disable=disable_progress_bar,
+        # local_rates is (n_time, n_neurons). The per-neuron loop summed
+        # xlogy(count_n, rate_n) - rate_n over neurons; vectorize as one elementwise
+        # reduction. xlogy is kept (local rates are not guaranteed EPS-floored).
+        spike_counts = jnp.asarray(
+            _spike_counts_matrix(
+                spike_times, time, "Local Likelihood", disable_progress_bar
             ),
-            local_rates.T,
-            strict=False,
-        ):
-            neuron_spike_times = neuron_spike_times[
-                np.logical_and(
-                    neuron_spike_times >= time[0],
-                    neuron_spike_times <= time[-1],
-                )
-            ]
-            spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times, time
-            )
-            log_likelihood += (
-                jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
-                - local_rate
-            )
+            dtype=local_rates.dtype,
+        )
+        log_likelihood = (
+            jax.scipy.special.xlogy(spike_counts, local_rates) - local_rates
+        ).sum(axis=1)
         return jnp.expand_dims(log_likelihood, axis=1)
 
-    n_interior_bins = int(is_track_interior.sum())
-    # Slice all neurons' fields to interior bins once, not per-neuron in the loop.
-    interior_place_fields = np.asarray(place_fields)[:, is_track_interior]
-    log_likelihood = jnp.zeros((n_time, n_interior_bins))
-    for neuron_spike_times, interior_place_field in zip(
-        tqdm(
-            spike_times,
-            unit="cell",
-            desc="Non-Local Likelihood",
-            disable=disable_progress_bar,
+    # Slice all neurons' fields to interior bins once. Interior fields are EPS-floored
+    # (see _assemble_place_fields), so log is finite and xlogy(count, field) reduces to
+    # count * log(field). The per-neuron loop accumulated sum_n count_n[:, None] *
+    # log(field_n)[None, :]; vectorize it as a single (n_time, n_neurons) @
+    # (n_neurons, n_interior_bins) matmul instead of N (n_time, n_interior_bins) terms.
+    interior_place_fields = jnp.asarray(place_fields)[:, is_track_interior]
+    spike_counts = jnp.asarray(
+        _spike_counts_matrix(
+            spike_times, time, "Non-Local Likelihood", disable_progress_bar
         ),
-        interior_place_fields,
-        strict=False,
-    ):
-        neuron_spike_times = neuron_spike_times[
-            np.logical_and(
-                neuron_spike_times >= time[0],
-                neuron_spike_times <= time[-1],
-            )
-        ]
-        spike_count_per_time_bin = get_spikecount_per_time_bin(neuron_spike_times, time)
-        log_likelihood += jax.scipy.special.xlogy(
-            np.expand_dims(spike_count_per_time_bin, axis=1),
-            jnp.expand_dims(interior_place_field, axis=0),
-        )
-
+        dtype=interior_place_fields.dtype,
+    )
+    log_likelihood = spike_counts @ jnp.log(interior_place_fields)
     log_likelihood -= no_spike_part_log_likelihood[is_track_interior]
 
     return log_likelihood

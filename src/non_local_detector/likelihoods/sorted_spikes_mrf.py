@@ -514,17 +514,34 @@ def select_penalty_by_reml(
         counts, occupancy, basis, penalty_weights, 1.0, max_iter, tol
     )
 
+    # Move the loop-invariant arrays to the device once, not on every objective call:
+    # only log(lambda) varies across the bounded search, so re-sending the (n_bins, rank)
+    # basis and the count/occupancy arrays each evaluation is wasted host->device
+    # transfer (undercuts "stays on device" on GPU). The scalar objective then calls the
+    # jitted REML score directly with these device arrays.
+    counts_dev = jnp.asarray(counts, _FIT_DTYPE)
+    occupancy_dev = jnp.asarray(occupancy, _FIT_DTYPE)
+    basis_dev = jnp.asarray(basis, _FIT_DTYPE)
+    penalty_weights_dev = jnp.asarray(penalty_weights, _FIT_DTYPE)
+    penalty_rank = _FIT_DTYPE(_penalty_rank(penalty_weights))
+    tol_dev = _FIT_DTYPE(tol)
+    max_iter = int(max_iter)
+
     def objective(log_penalty: float) -> float:
-        return mrf_reml_objective(
-            log_penalty,
-            counts,
-            occupancy,
-            basis,
-            penalty_weights,
-            max_iter=max_iter,
-            tol=tol,
-            validate=False,
+        log_penalty = float(log_penalty)
+        if not np.isfinite(log_penalty):
+            return np.inf
+        score = _reml_score_jax(
+            _FIT_DTYPE(log_penalty),
+            counts_dev,
+            occupancy_dev,
+            basis_dev,
+            penalty_weights_dev,
+            penalty_rank,
+            max_iter,
+            tol_dev,
         )
+        return float(score)
 
     result = scipy.optimize.minimize_scalar(
         objective,
