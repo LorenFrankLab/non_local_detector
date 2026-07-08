@@ -139,6 +139,38 @@ def test_fit_encoding_dict_keys_and_full_grid_shapes():
     assert encoding["local_interpolation"] == "linear"
 
 
+def test_fit_caches_interior_log_place_fields_and_predict_uses_them():
+    """The fit precomputes log(interior place fields) so the non-local likelihood does not
+    recompute it per call. The cached value equals log(place_fields[:, interior]), and
+    predict reads it (zeroing it drops the spike term to -no_spike)."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=3)
+    encoding = fit_sorted_spikes_diffusion_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        position_std=6.0,
+    )
+
+    is_interior = env.is_track_interior_.ravel()
+    cached = np.asarray(encoding["interior_log_place_fields"])
+    expected = np.log(np.asarray(encoding["place_fields"])[:, is_interior])
+    assert cached.shape == (3, int(is_interior.sum()))
+    np.testing.assert_allclose(cached, expected, rtol=1e-6)
+
+    # Predict reads interior_log_place_fields: zeroing it makes the spike-count term
+    # (spike_counts @ log_fields) vanish, leaving exactly -no_spike[interior].
+    zeroed = {**encoding, "interior_log_place_fields": np.zeros_like(cached)}
+    ll = np.asarray(
+        predict_sorted_spikes_diffusion_log_likelihood(
+            time[:100], time, position, spike_times, is_local=False, **zeroed
+        )
+    )
+    no_spike = np.asarray(encoding["no_spike_part_log_likelihood"])[is_interior]
+    np.testing.assert_allclose(ll, np.broadcast_to(-no_spike, ll.shape), rtol=1e-5)
+
+
 def test_fit_accepts_shared_sorted_spikes_params():
     """The fit signature accepts the shared sorted-spikes params so the base class's
     signature filter does not silently drop user/default values (e.g. block_size)."""

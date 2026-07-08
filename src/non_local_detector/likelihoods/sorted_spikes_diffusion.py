@@ -50,6 +50,17 @@ from non_local_detector.likelihoods.diffusion import (
 _LOCAL_INTERPOLATION_MODES = {"nearest", "linear"}
 
 
+def _full_to_local(node_order: np.ndarray, n_total_bins: int) -> np.ndarray:
+    """Inverse permutation full-grid flat-bin index -> local interior index.
+
+    ``node_order`` maps local interior index -> full-grid flat index; this returns its
+    inverse, with ``-1`` for off-track (non-interior) bins.
+    """
+    full_to_local = np.full(n_total_bins, -1, dtype=int)
+    full_to_local[node_order] = np.arange(node_order.shape[0])
+    return full_to_local
+
+
 def _interior_bin_indices(
     environment: Environment, positions: np.ndarray, full_to_local: np.ndarray
 ) -> np.ndarray:
@@ -124,8 +135,7 @@ def _linear_interpolation_safe_mask(
 
     graph, graph_node_order, _ = environment_graph(environment)
     node_order = graph_node_order if node_order is None else np.asarray(node_order)
-    full_to_local = np.full(is_interior.shape[0], -1, dtype=int)
-    full_to_local[node_order] = np.arange(node_order.shape[0])
+    full_to_local = _full_to_local(node_order, is_interior.shape[0])
 
     def _stencil_is_safe(corners: np.ndarray | None) -> bool:
         if corners is None or not np.all(is_interior[corners]):
@@ -268,9 +278,7 @@ def pixellate_interior_fields(
     n_total_bins = environment.is_track_interior_.ravel().shape[0]
     n_interior = node_order.shape[0]
 
-    # Full-grid interior flat index -> local interior index (node_order order).
-    full_to_local = np.full(n_total_bins, -1, dtype=int)
-    full_to_local[node_order] = np.arange(n_interior)
+    full_to_local = _full_to_local(node_order, n_total_bins)
 
     occupancy_positions = get_position_at_time(
         position_time, position, position_time, environment
@@ -322,11 +330,11 @@ def pixellate_interior_fields(
 
 def _assemble_place_fields(
     rate_interior: np.ndarray, node_order: np.ndarray, n_total_bins: int
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Scatter per-neuron interior rates onto FULL-GRID place fields (0 off-track).
 
-    Shared by the diffusion and MRF fits so the EPS floor, node-order scatter, and
-    no-spike term are computed once.
+    Shared by the diffusion and MRF fits so the EPS floor, node-order scatter, no-spike
+    term, and interior log-fields are computed once.
 
     Parameters
     ----------
@@ -342,11 +350,20 @@ def _assemble_place_fields(
         EPS-floored on interior bins, exactly 0 off-track.
     no_spike_part_log_likelihood : jnp.ndarray, shape (n_total_bins,)
         Summed place fields.
+    interior_log_place_fields : jnp.ndarray, shape (n_neurons, n_interior)
+        ``log`` of the interior place fields, in ``node_order`` (== interior-flat-bin)
+        order -- exactly the quantity the non-local likelihood needs. Precomputed once so
+        repeated non-local decoding of the same encoding does not recompute the log.
     """
+    clipped_interior = np.clip(rate_interior.T, EPS, None)  # (n_neurons, n_interior)
     place_fields = np.zeros((rate_interior.shape[1], n_total_bins))
-    place_fields[:, node_order] = np.clip(rate_interior.T, EPS, None)
+    place_fields[:, node_order] = clipped_interior
     place_fields = jnp.asarray(place_fields)
-    return place_fields, jnp.sum(place_fields, axis=0)
+    # clipped_interior IS place_fields[:, node_order] (node_order == np.where(interior)[0],
+    # the columns the non-local predict slices), so log it directly instead of scattering
+    # to the full grid and gathering the same columns back out.
+    interior_log_place_fields = jnp.log(jnp.asarray(clipped_interior))
+    return place_fields, jnp.sum(place_fields, axis=0), interior_log_place_fields
 
 
 def fit_sorted_spikes_diffusion_encoding_model(
@@ -413,6 +430,9 @@ def fit_sorted_spikes_diffusion_encoding_model(
         - 'mean_rates': mean firing rate per neuron
         - 'place_fields': FULL-GRID place fields, shape (n_neurons, n_total_bins)
         - 'no_spike_part_log_likelihood': summed place fields, shape (n_total_bins,)
+        - 'interior_log_place_fields': log of interior place fields, shape
+          (n_neurons, n_interior) -- precomputed so repeated non-local decoding of this
+          encoding reuses it instead of recomputing the log
         - 'is_track_interior': interior-bin mask, shape (n_total_bins,)
         - 'node_order': interior flat-bin indices in graph order, shape (n_interior,)
         - 'bin_sizes': per-interior-bin volume, shape (n_interior,)
@@ -474,8 +494,8 @@ def fit_sorted_spikes_diffusion_encoding_model(
     rate_interior = np.asarray(mean_rates)[np.newaxis, :] * np.where(
         occupied[:, np.newaxis], marginals / safe_occupancy[:, np.newaxis], EPS
     )
-    place_fields, no_spike_part_log_likelihood = _assemble_place_fields(
-        rate_interior, node_order, n_total_bins
+    place_fields, no_spike_part_log_likelihood, interior_log_place_fields = (
+        _assemble_place_fields(rate_interior, node_order, n_total_bins)
     )
 
     return {
@@ -484,6 +504,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
         "mean_rates": mean_rates,
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
+        "interior_log_place_fields": interior_log_place_fields,
         "is_track_interior": is_track_interior,
         "node_order": node_order,
         "bin_sizes": bin_sizes,
@@ -530,6 +551,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     local_interpolation: str = "linear",
     disable_progress_bar: bool = False,
     is_local: bool = False,
+    interior_log_place_fields: jnp.ndarray | None = None,
     **_encoding_extras: object,
 ) -> jnp.ndarray:
     """Predict the Poisson log-likelihood of sorted spikes under the diffusion model.
@@ -565,6 +587,10 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     disable_progress_bar : bool, optional
     is_local : bool, optional
         Compute the likelihood at the animal's position, by default False.
+    interior_log_place_fields : jnp.ndarray, shape (n_neurons, n_interior)
+        Precomputed ``log`` of the interior place fields, supplied by the encoding dict
+        (both the diffusion and MRF fits produce it). The non-local likelihood uses it
+        directly as the matmul's log-fields, so the ``log`` is not recomputed per call.
     **_encoding_extras
         Extra encoding-dict keys a reusing estimator carries (e.g. the MRF's
         ``mrf_*`` diagnostics); absorbed and unused.
@@ -605,14 +631,16 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     # count * log(field). The per-neuron loop accumulated sum_n count_n[:, None] *
     # log(field_n)[None, :]; vectorize it as a single (n_time, n_neurons) @
     # (n_neurons, n_interior_bins) matmul instead of N (n_time, n_interior_bins) terms.
-    interior_place_fields = jnp.asarray(place_fields)[:, is_track_interior]
+    # The fit precomputes the interior log fields (in node_order == is_track_interior
+    # order), so the non-local likelihood is a single count-matrix @ log-fields matmul.
+    log_interior_fields = jnp.asarray(interior_log_place_fields)
     spike_counts = jnp.asarray(
         _spike_counts_matrix(
             spike_times, time, "Non-Local Likelihood", disable_progress_bar
         ),
-        dtype=interior_place_fields.dtype,
+        dtype=log_interior_fields.dtype,
     )
-    log_likelihood = spike_counts @ jnp.log(interior_place_fields)
+    log_likelihood = spike_counts @ log_interior_fields
     log_likelihood -= no_spike_part_log_likelihood[is_track_interior]
 
     return log_likelihood

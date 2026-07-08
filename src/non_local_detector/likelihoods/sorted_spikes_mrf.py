@@ -644,8 +644,9 @@ def fit_sorted_spikes_mrf_encoding_model(
     encoding_model : dict
         The same keys as ``sorted_spikes_diffusion`` (``environment``, ``occupancy``,
         ``mean_rates``, ``place_fields`` [FULL-GRID], ``no_spike_part_log_likelihood``,
-        ``is_track_interior``, ``node_order``, ``bin_sizes``,
-        ``local_interpolation``, ``disable_progress_bar``), plus MRF diagnostics
+        ``interior_log_place_fields``, ``is_track_interior``, ``node_order``,
+        ``bin_sizes``, ``local_interpolation``, ``disable_progress_bar``), plus MRF
+        diagnostics
         (``mrf_penalty``, ``mrf_rank``, ``mrf_coefficients``,
         ``mrf_penalty_weights``, ``mrf_reml_objective``, ``mrf_n_iter``,
         ``mrf_converged``, ``mrf_max_step``, ``mrf_log_penalty_bounds``,
@@ -725,8 +726,8 @@ def fit_sorted_spikes_mrf_encoding_model(
         tol=tol,
     )
     rate_interior = np.exp(eta)  # (n_interior, n_neurons); eta is clipped in the fit
-    place_fields, no_spike_part_log_likelihood = _assemble_place_fields(
-        rate_interior, node_order, n_total_bins
+    place_fields, no_spike_part_log_likelihood, interior_log_place_fields = (
+        _assemble_place_fields(rate_interior, node_order, n_total_bins)
     )
 
     return {
@@ -735,6 +736,7 @@ def fit_sorted_spikes_mrf_encoding_model(
         "mean_rates": mean_rates,
         "place_fields": place_fields,
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
+        "interior_log_place_fields": interior_log_place_fields,
         "is_track_interior": is_track_interior,
         "node_order": node_order,
         "bin_sizes": bin_sizes,
