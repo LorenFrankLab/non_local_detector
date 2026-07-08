@@ -460,6 +460,32 @@ def mrf_reml_objective(
     ``-loglik + penalty - 0.5 * penalty_rank * log(lambda) + 0.5 * logdet(H)``.
     Minimized over ``log_penalty``. Pass ``validate=False`` to skip input validation
     when the caller (the REML search) has already validated the shared arrays.
+
+    Parameters
+    ----------
+    log_penalty : float
+        Natural log of the shared smoothing parameter ``lambda``.
+    counts : np.ndarray, shape (n_bins, n_neurons)
+        Spike counts per interior bin per neuron.
+    occupancy : np.ndarray, shape (n_bins,)
+        Occupancy (exposure) per interior bin, shared across neurons.
+    basis : np.ndarray, shape (n_bins, rank)
+        Reduced-rank design matrix (the smoothest Laplacian eigenmodes).
+    penalty_weights : np.ndarray, shape (rank,)
+        Per-mode penalty weights (the Laplacian eigenvalues).
+    max_iter : int, optional
+        Maximum Newton iterations per candidate fit, by default 100.
+    tol : float, optional
+        Convergence tolerance on the max coefficient step, by default 1e-10.
+    validate : bool, optional
+        Validate inputs via :func:`_validate_mrf_problem`, by default True. The REML
+        search passes False to skip re-validation on every evaluation.
+
+    Returns
+    -------
+    score : float
+        The negative Laplace-approximate REML objective, summed over neurons
+        (``np.inf`` when ``log_penalty`` is non-finite).
     """
     log_penalty = float(log_penalty)
     if not np.isfinite(log_penalty):
@@ -502,7 +528,40 @@ def select_penalty_by_reml(
     """Select a single shared smoothing parameter ``lambda`` by REML.
 
     Minimizes :func:`mrf_reml_objective` over ``log(lambda)`` on a bounded interval
-    (deterministic; no random state). Returns ``(lambda, reml_objective)``.
+    (deterministic; no random state).
+
+    Parameters
+    ----------
+    counts : np.ndarray, shape (n_bins, n_neurons)
+        Spike counts per interior bin per neuron.
+    occupancy : np.ndarray, shape (n_bins,)
+        Occupancy (exposure) per interior bin, shared across neurons.
+    basis : np.ndarray, shape (n_bins, rank)
+        Reduced-rank design matrix (the smoothest Laplacian eigenmodes).
+    penalty_weights : np.ndarray, shape (rank,)
+        Per-mode penalty weights (the Laplacian eigenvalues).
+    log_penalty_bounds : tuple[float, float], optional
+        Search interval for ``log(lambda)``, by default (-8.0, 20.0).
+    reml_xatol : float, optional
+        Absolute tolerance on ``log(lambda)`` for the scalar optimizer, by default 1e-3.
+    max_iter : int, optional
+        Maximum Newton iterations per candidate fit, by default 100.
+    tol : float, optional
+        Convergence tolerance on the max coefficient step, by default 1e-10.
+
+    Returns
+    -------
+    lambda : float
+        The selected smoothing parameter (``exp`` of the minimizing ``log(lambda)``).
+    reml_objective : float
+        The minimized REML objective at the selected ``lambda``.
+
+    Raises
+    ------
+    ValidationError
+        If REML fails to find a finite objective anywhere in the search interval (e.g.
+        the reduced-rank basis is too large for the data, or too many interior bins have
+        zero occupancy).
     """
     log_penalty_bounds = _validate_log_penalty_bounds(log_penalty_bounds)
     reml_xatol = _as_positive_float("reml_xatol", reml_xatol)
@@ -600,16 +659,18 @@ def fit_sorted_spikes_mrf_encoding_model(
     Parameters
     ----------
     position_time : np.ndarray, shape (n_time_position,)
+        Sampling times for the position.
     position : np.ndarray, shape (n_time_position, n_position_dims)
+        Position samples.
     spike_times : list[np.ndarray]
         Spike times for each neuron.
     environment : Environment
         The spatial environment (must be fitted).
     weights : np.ndarray, shape (n_time_position,), optional
-        Per-sample weights (e.g. posterior state probabilities during EM). If None,
-        uniform weights are used.
+        Per-sample weights (e.g. posterior state probabilities during EM), by default
+        None. If None, uniform weights are used.
     sampling_frequency : int, optional
-        Accepted for signature compatibility; not used by the MRF fit.
+        Accepted for signature compatibility, by default 500; not used by the MRF fit.
     rank : int or None, optional
         Number of smoothest eigenmodes used as the basis. None (default) caps at
         ``min(n_interior_bins, 250)`` -- a performance bound on the dense per-neuron
@@ -623,38 +684,49 @@ def fit_sorted_spikes_mrf_encoding_model(
         The smoothing parameter ``lambda``. None (default) selects it by REML. Pass
         ``0.0`` for an unpenalized (saturated) fit.
     max_iter : int, optional
-        Maximum Newton iterations for both REML candidate fits and the final fit.
+        Maximum Newton iterations for both REML candidate fits and the final fit, by
+        default 100.
     tol : float, optional
-        Convergence tolerance on the max coefficient step.
+        Convergence tolerance on the max coefficient step, by default 1e-10.
     log_penalty_bounds : tuple[float, float], optional
-        REML search interval for ``log(lambda)`` when ``penalty`` is None.
+        REML search interval for ``log(lambda)`` when ``penalty`` is None, by default
+        (-8.0, 20.0).
     reml_xatol : float, optional
-        Scalar optimizer tolerance for REML penalty selection.
+        Scalar optimizer tolerance for REML penalty selection, by default 1e-3.
     block_size : int, optional
-        Accepted for signature compatibility with sorted-spikes likelihood defaults;
-        unused by the MRF fit.
+        Accepted for signature compatibility with sorted-spikes likelihood defaults, by
+        default 100; unused by the MRF fit.
     local_interpolation : {"linear", "nearest"}, optional
-        How local likelihood evaluates full-grid rate maps at the animal's position.
-        ``"linear"`` interpolates within connected interior stencils and falls back
-        to nearest-bin lookup otherwise. ``"nearest"`` preserves the historical
-        bin lookup.
+        How local likelihood evaluates full-grid rate maps at the animal's position, by
+        default "linear". ``"linear"`` interpolates within connected interior stencils
+        and falls back to nearest-bin lookup otherwise. ``"nearest"`` preserves the
+        historical bin lookup.
     disable_progress_bar : bool, optional
+        Turn off the progress bar, by default False.
 
     Returns
     -------
     encoding_model : dict
-        The same keys as ``sorted_spikes_diffusion`` (``environment``, ``occupancy``,
-        ``mean_rates``, ``place_fields`` [FULL-GRID], ``no_spike_part_log_likelihood``,
+        The same keys as ``sorted_spikes_diffusion`` -- ``environment``, ``occupancy``,
+        ``mean_rates``, ``place_fields`` (FULL-GRID), ``no_spike_part_log_likelihood``,
         ``interior_log_place_fields``, ``is_track_interior``, ``node_order``,
-        ``bin_sizes``, ``local_interpolation``, ``disable_progress_bar``), plus MRF
-        diagnostics
-        (``mrf_penalty``, ``mrf_rank``, ``mrf_coefficients``,
-        ``mrf_penalty_weights``, ``mrf_reml_objective``, ``mrf_n_iter``,
-        ``mrf_converged``, ``mrf_max_step``, ``mrf_log_penalty_bounds``,
-        ``mrf_penalty_selected_by_reml``). Note
-        ``occupancy`` here is the raw exposure field (weighted interior-bin counts),
-        NOT the integral-one density ``sorted_spikes_diffusion`` stores; it is carried
-        only for contract parity and is unused in prediction.
+        ``bin_sizes``, ``local_interpolation``, ``disable_progress_bar`` -- plus MRF
+        diagnostics:
+
+        - ``mrf_penalty``: the selected (or supplied) smoothing parameter ``lambda``
+        - ``mrf_rank``: number of eigenmodes used as the basis
+        - ``mrf_coefficients``: fitted coefficients, shape ``(rank, n_neurons)``
+        - ``mrf_penalty_weights``: per-mode penalty weights (the Laplacian eigenvalues)
+        - ``mrf_reml_objective``: the REML objective at the selected ``lambda``
+        - ``mrf_n_iter``: Newton iterations in the final fit
+        - ``mrf_converged``: whether the final fit converged
+        - ``mrf_max_step``: final max coefficient step
+        - ``mrf_log_penalty_bounds``: the REML search interval for ``log(lambda)``
+        - ``mrf_penalty_selected_by_reml``: whether ``lambda`` was chosen by REML
+
+        Note ``occupancy`` here is the raw exposure field (weighted interior-bin
+        counts), NOT the integral-one density ``sorted_spikes_diffusion`` stores; it is
+        carried only for contract parity and is unused in prediction.
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     if weights is None:

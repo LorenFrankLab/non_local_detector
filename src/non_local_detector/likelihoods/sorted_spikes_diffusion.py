@@ -260,17 +260,28 @@ def pixellate_interior_fields(
 
     Parameters
     ----------
-    position_time, position, spike_times, environment, weights, disable_progress_bar
-        As in the fit functions; ``weights`` must be a 1-D array.
+    position_time : np.ndarray, shape (n_time_position,)
+        Sampling times for the position.
+    position : np.ndarray, shape (n_time_position, n_position_dims)
+        Position samples.
+    spike_times : list[np.ndarray]
+        Spike times for each neuron.
+    environment : Environment
+        The spatial environment (must be fitted).
     node_order : np.ndarray, shape (n_interior,)
         Interior flat-bin indices from :func:`environment_graph`.
+    weights : np.ndarray, shape (n_time_position,)
+        Per-sample weights (must be a 1-D array).
+    disable_progress_bar : bool, optional
+        Turn off the progress bar, by default False.
 
     Returns
     -------
     occupancy_field : np.ndarray, shape (n_interior,)
         Weighted position-sample count per interior bin.
     spike_fields : list[np.ndarray]
-        Weighted spike count per interior bin, one array per neuron.
+        Weighted spike count per interior bin (each array shape ``(n_interior,)``), one
+        array per neuron.
     mean_rates : list[float]
         ``weights_at_spike_times.sum() / weights.sum()`` per neuron.
     """
@@ -392,8 +403,8 @@ def fit_sorted_spikes_diffusion_encoding_model(
     environment : Environment
         The spatial environment (must be fitted).
     weights : np.ndarray, shape (n_time_position,), optional
-        Per-sample weights (e.g. posterior state probabilities during EM). If None,
-        uniform weights are used.
+        Per-sample weights (e.g. posterior state probabilities during EM), by default
+        None. If None, uniform weights are used.
     sampling_frequency : int, optional
         Samples per second, by default 500. Accepted for signature compatibility;
         not used by the diffusion smoother.
@@ -414,13 +425,13 @@ def fit_sorted_spikes_diffusion_encoding_model(
         class's signature filter.
     block_size : int, optional
         Accepted for signature compatibility with the shared sorted-spikes params
-        (the default params include ``block_size``); not used by the diffusion
-        smoother.
+        (the default params include ``block_size``), by default 100; not used by the
+        diffusion smoother.
     local_interpolation : {"linear", "nearest"}, optional
-        How local likelihood evaluates full-grid rate maps at the animal's position.
-        ``"linear"`` interpolates within connected interior stencils and falls back
-        to nearest-bin lookup otherwise. ``"nearest"`` preserves the historical
-        bin lookup.
+        How local likelihood evaluates full-grid rate maps at the animal's position, by
+        default "linear". ``"linear"`` interpolates within connected interior stencils
+        and falls back to nearest-bin lookup otherwise. ``"nearest"`` preserves the
+        historical bin lookup.
     disable_progress_bar : bool, optional
         Turn off the progress bar, by default False.
 
@@ -440,6 +451,13 @@ def fit_sorted_spikes_diffusion_encoding_model(
         - 'bin_sizes': per-interior-bin volume, shape (n_interior,)
         - 'local_interpolation': local likelihood interpolation mode
         - 'disable_progress_bar': progress-bar setting
+
+    Raises
+    ------
+    ValidationError
+        If ``position_std`` is not a scalar (per-dimension bandwidths are not
+        supported), or if ``weights`` is not a 1-D array of length ``n_time_position``
+        with finite, non-negative values.
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
     if weights is None:
@@ -584,10 +602,13 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     time : np.ndarray, shape (n_time,)
         Decoding time bins.
     position_time : np.ndarray, shape (n_time_position,)
+        Sampling times for the position.
     position : np.ndarray, shape (n_time_position, n_position_dims)
+        Position samples.
     spike_times : list[np.ndarray]
         Spike times for each neuron.
     environment : Environment
+        The spatial environment (must be fitted).
     occupancy : np.ndarray, shape (n_interior_bins,)
         Occupancy density (unused; carried for KDE parity).
     mean_rates : list[float]
@@ -595,16 +616,27 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     place_fields : jnp.ndarray, shape (n_neurons, n_total_bins)
         FULL-GRID place fields.
     no_spike_part_log_likelihood : jnp.ndarray, shape (n_total_bins,)
+        Summed FULL-GRID place fields (the Poisson no-spike term).
     is_track_interior : np.ndarray, shape (n_total_bins,)
+        Interior-bin mask.
+    node_order : np.ndarray, shape (n_interior,), optional
+        Interior flat-bin indices in graph order, by default None. Used only to guard
+        local interpolation against crossing invalid graph stencils.
+    bin_sizes : np.ndarray, shape (n_interior,), optional
+        Per-interior-bin volume, by default None. Carried for encoding-dict parity;
+        unused here.
     local_interpolation : {"linear", "nearest"}, optional
-        How local likelihood evaluates ``place_fields`` at the animal's position.
+        How local likelihood evaluates ``place_fields`` at the animal's position, by
+        default "linear".
     disable_progress_bar : bool, optional
+        Turn off the progress bar, by default False.
     is_local : bool, optional
         Compute the likelihood at the animal's position, by default False.
-    interior_log_place_fields : jnp.ndarray, shape (n_neurons, n_interior)
+    interior_log_place_fields : jnp.ndarray, shape (n_neurons, n_interior), optional
         Precomputed ``log`` of the interior place fields, supplied by the encoding dict
-        (both the diffusion and MRF fits produce it). The non-local likelihood uses it
-        directly as the matmul's log-fields, so the ``log`` is not recomputed per call.
+        (both the diffusion and MRF fits produce it), by default None. The non-local
+        likelihood uses it directly as the matmul's log-fields, so the ``log`` is not
+        recomputed per call.
     **_encoding_extras
         Extra encoding-dict keys a reusing estimator carries (e.g. the MRF's
         ``mrf_*`` diagnostics); absorbed and unused.

@@ -69,6 +69,11 @@ def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
     -------
     L : scipy.sparse.csr_matrix, shape (n_nodes, n_nodes)
         The sparse symmetric graph Laplacian.
+
+    Raises
+    ------
+    ValidationError
+        If any edge's ``'distance'`` attribute is not strictly positive (or is NaN).
     """
     n_nodes = graph.number_of_nodes()
     rows: list[int] = []
@@ -345,6 +350,16 @@ def connected_component_labels(graph: nx.Graph) -> np.ndarray:
     ``graph`` has contiguous integer nodes ``0..n_nodes-1`` (as built by
     :func:`build_laplacian` / :func:`environment_graph`), so the returned labels are
     aligned with the rows of the eigenbasis and the diffused fields.
+
+    Parameters
+    ----------
+    graph : nx.Graph
+        Interior-bin graph with contiguous integer nodes ``0..n_nodes-1``.
+
+    Returns
+    -------
+    labels : np.ndarray, shape (n_nodes,)
+        Connected-component id (``0..n_components-1``) for each node, indexed by node.
     """
     labels = np.empty(graph.number_of_nodes(), dtype=int)
     for component_id, nodes in enumerate(nx.connected_components(graph)):
@@ -360,6 +375,16 @@ def n_connected_components(environment: "Environment") -> int:
     :func:`_require_rank_covers_components`). Callers that cap a default rank use this to
     ensure the cap never drops a component's null mode. Builds (and reuses) the cached
     Laplacian via :func:`environment_graph`.
+
+    Parameters
+    ----------
+    environment : Environment
+        A fitted environment.
+
+    Returns
+    -------
+    n_components : int
+        Number of connected components of the interior-bin graph.
     """
     environment_graph(environment)
     return int(
@@ -393,10 +418,10 @@ def diffuse(
     fields : np.ndarray, shape (n_bins, n_fields)
         Count fields on the interior bins, one column per field.
     component_labels : np.ndarray, shape (n_bins,), optional
-        Connected-component id per bin (see :func:`connected_component_labels`).
-        When given, mass is renormalized within each component; when None, over the
-        whole column. Pass labels on disconnected graphs so clipping in one component
-        cannot shift mass into another.
+        Connected-component id per bin (see :func:`connected_component_labels`), by
+        default None. When given, mass is renormalized within each component; when
+        None, over the whole column. Pass labels on disconnected graphs so clipping in
+        one component cannot shift mass into another.
 
     Returns
     -------
@@ -506,6 +531,13 @@ def environment_graph(
     bin_sizes : np.ndarray, shape (n_interior,)
         Per-interior-bin volume (1D width, 2D area, ...).
 
+    Raises
+    ------
+    ValidationError
+        If the environment is unfitted, or is missing the track graph required by its
+        branch (``track_graphDD`` for an N-D grid,
+        ``track_graph_with_bin_centers_edges_`` for a linearized track graph).
+
     Notes
     -----
     The result is cached on ``environment._diffusion_graph_`` (invalidated by
@@ -609,8 +641,11 @@ def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
 def _freeze_and_cache(
     cache: dict, rank: int | None, eigvals: np.ndarray, eigvecs: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Freeze a basis read-only (it is shared across neurons and EM refits), store it
-    under ``rank``, and return it. Centralizes the read-only cache contract."""
+    """Freeze a basis read-only, store it under ``rank``, and return it.
+
+    The basis is shared across neurons and EM refits; centralizing the freeze here
+    keeps the read-only cache contract in one place.
+    """
     eigvals.setflags(write=False)
     eigvecs.setflags(write=False)
     basis = (eigvals, eigvecs)
@@ -642,9 +677,10 @@ def cached_eigenbasis(
     Returns
     -------
     eigvals : np.ndarray, shape (m,)
+        Laplacian eigenvalues at the requested rank (read-only, cached).
     eigvecs : np.ndarray, shape (n_interior, m)
-        The cached eigenbasis. ``node_order`` / ``bin_sizes`` come from
-        :func:`environment_graph` (also cached), not from here.
+        Corresponding eigenvectors as columns (read-only, cached). ``node_order`` /
+        ``bin_sizes`` come from :func:`environment_graph` (also cached), not from here.
     """
     cache = getattr(environment, "_diffusion_eigenbasis_", None)
     if cache is None:
@@ -704,13 +740,14 @@ def cached_heat_kernel_eigenbasis(
     sigma : float
         Smoothing standard deviation (``position_std``) in coordinate units.
     tol, dense_fraction : float, optional
-        Forwarded to :func:`heat_kernel_rank`.
+        Forwarded to :func:`heat_kernel_rank`, by default 1e-6 and 0.5 respectively.
 
     Returns
     -------
     eigvals : np.ndarray, shape (m,)
+        Heat-kernel eigenvalues at the resolved rank (read-only, cached).
     eigvecs : np.ndarray, shape (n_interior, m)
-        The (read-only) cached eigenbasis at the resolved rank.
+        Corresponding eigenvectors as columns (read-only, cached).
     """
     rank_cache = getattr(environment, "_diffusion_heat_kernel_rank_", None)
     if rank_cache is None:
