@@ -87,9 +87,10 @@ _FIT_TOL_FLOOR = 1e-6
 _DESCENT_TOL = 1e-5
 # Search bounds for log(lambda) during REML selection.
 _LOG_PENALTY_BOUNDS = (-8.0, 20.0)
-# Default cap on the reduced-rank basis when ``rank`` is None (mgcv-style): the
-# full-rank fit forms and solves a dense per-neuron Hessian each Newton step, which
-# is impractical on large grids, and REML tunes smoothness within the basis anyway.
+# Default cap on the reduced-rank basis when ``rank`` is None: the full-rank fit
+# forms and solves a dense per-neuron Hessian each Newton step, which is impractical
+# on large grids, and REML tunes smoothness within the basis anyway. This cap is a
+# performance choice of ours, not an mgcv default (mgcv fits full-rank by default).
 _DEFAULT_MAX_RANK = 250
 
 
