@@ -81,7 +81,7 @@ _ETA_CLIP = 30.0
 _MAX_STEP_HALVINGS = 30
 # Ridge added to the Hessian diagonal for numerical stability.
 _HESSIAN_JITTER = 1e-10
-# float32-safe floors: the relative-deviance convergence tol and the step-halving
+# float32-safe floors: the relative-objective convergence tol and the step-halving
 # "did the objective increase" threshold must sit above float32 rounding noise
 # (~1e-7), or convergence never triggers and halving fires on noise.
 _FIT_TOL_FLOOR = 1e-6
@@ -255,7 +255,7 @@ def _newton_fit_jax(
     n_neurons = counts.shape[1]
     tol = jnp.maximum(
         tol, _FIT_TOL_FLOOR
-    )  # float32-safe floor on the relative deviance
+    )  # float32-safe floor on the relative-objective decrease
 
     def penalized_neg_loglik(coeffs, eta, mu):
         loglik = jnp.sum(counts * eta - mu, axis=0)  # (n_neurons,)
@@ -269,18 +269,19 @@ def _newton_fit_jax(
     coeffs0 = basis_pinv_ones[:, None] * eta0[None, :]  # (rank, n_neurons)
 
     def newton_cond(state):
-        _coeffs, iteration, _max_step, _prev_obj, rel_decrease = state
-        # Converge on the penalized deviance, not the coefficient step. A Poisson GAM in
-        # a Laplacian eigenbasis has an unpenalized null (constant) mode; when many bins
-        # are empty (an undersampled arena) that mode is unconstrained, so its
-        # coefficient drifts forever and ``max|step|`` never settles -- even though
-        # ``exp(eta)`` (the actual place field) has converged. The deviance is monotone
-        # (step-halving enforces descent) and stable under that harmless null-space
-        # drift, so it detects true convergence where a coefficient-step test cannot.
+        _coeffs, iteration, _max_step, rel_decrease = state
+        # Converge on the penalized objective (-loglik + penalty), not the coefficient
+        # step. A Poisson GAM in a Laplacian eigenbasis has an unpenalized null
+        # (constant) mode; when many bins are empty (an undersampled arena) that mode is
+        # unconstrained, so its coefficient drifts forever and ``max|step|`` never
+        # settles -- even though ``exp(eta)`` (the actual place field) has converged.
+        # The objective is monotone (step-halving enforces descent) and stable under
+        # that harmless null-space drift, so it detects true convergence where a
+        # coefficient-step test cannot.
         return (iteration < max_iter) & (rel_decrease >= tol)
 
     def newton_body(state):
-        coeffs, iteration, _max_step, prev_obj, _rel = state
+        coeffs, iteration, _max_step, _rel = state
         eta = basis @ coeffs
         mu = occupancy[:, None] * jnp.exp(jnp.clip(eta, -_ETA_CLIP, _ETA_CLIP))
         grad = basis.T @ (counts - mu) - penalty_diag[:, None] * coeffs
@@ -289,13 +290,7 @@ def _newton_fit_jax(
 
         objective = penalized_neg_loglik(
             coeffs, eta, mu
-        )  # (n_neurons,) at current coeffs
-        # Relative deviance decrease from the previous accepted step (non-negative up to
-        # the step-halving slack). initial=0.0 so an empty neuron axis (n_neurons == 0)
-        # reduces to 0 -> converged immediately, keeping the REML helpers safe.
-        rel_decrease = jnp.max(
-            (prev_obj - objective) / (1.0 + jnp.abs(objective)), initial=0.0
-        )
+        )  # (n_neurons,), current coeffs
 
         def is_worse(scale):
             trial = coeffs + scale[None, :] * step.T
@@ -324,16 +319,27 @@ def _newton_fit_jax(
         # max_step is reported as a diagnostic only (it does not gate convergence).
         # initial=0.0 so an empty neuron axis (n_neurons == 0) reduces to 0.
         max_step = jnp.max(jnp.abs(accepted_step), initial=0.0)
-        return coeffs + accepted_step, iteration + 1, max_step, objective, rel_decrease
 
-    coeffs, n_iter, max_step, _, rel_decrease = lax.while_loop(
+        # Convergence measure: the relative objective decrease of the JUST-accepted
+        # step, so the criterion and the returned coefficients refer to the same step.
+        # Non-negative up to the step-halving slack; initial=0.0 so an empty neuron axis
+        # (n_neurons == 0) reduces to 0 -> converged immediately (keeps REML safe).
+        new_coeffs = coeffs + accepted_step
+        new_eta = basis @ new_coeffs
+        new_mu = occupancy[:, None] * jnp.exp(jnp.clip(new_eta, -_ETA_CLIP, _ETA_CLIP))
+        new_objective = penalized_neg_loglik(new_coeffs, new_eta, new_mu)
+        rel_decrease = jnp.max(
+            (objective - new_objective) / (1.0 + jnp.abs(new_objective)), initial=0.0
+        )
+        return new_coeffs, iteration + 1, max_step, rel_decrease
+
+    coeffs, n_iter, max_step, rel_decrease = lax.while_loop(
         newton_cond,
         newton_body,
         (
             coeffs0,
             jnp.array(0),
             jnp.array(jnp.inf, basis.dtype),
-            jnp.full(n_neurons, jnp.inf, basis.dtype),
             jnp.array(jnp.inf, basis.dtype),
         ),
     )
@@ -378,8 +384,8 @@ def mrf_penalized_poisson_fit(
     max_iter : int, optional
         Maximum Newton iterations, by default 100.
     tol : float, optional
-        Relative tolerance on the penalized-deviance decrease; the fit stops when the
-        deviance improves by less than this, by default 1e-10.
+        Relative tolerance on the penalized-objective (-loglik + penalty) decrease; the
+        fit stops when the objective improves by less than this, by default 1e-10.
     validate : bool, optional
         Validate inputs via :func:`_validate_mrf_problem`, by default True. The REML
         search passes False to skip re-validation on every candidate fit (the caller
@@ -500,8 +506,8 @@ def mrf_reml_objective(
     max_iter : int, optional
         Maximum Newton iterations per candidate fit, by default 100.
     tol : float, optional
-        Relative tolerance on the penalized-deviance decrease; the fit stops when the
-        deviance improves by less than this, by default 1e-10.
+        Relative tolerance on the penalized-objective (-loglik + penalty) decrease; the
+        fit stops when the objective improves by less than this, by default 1e-10.
     validate : bool, optional
         Validate inputs via :func:`_validate_mrf_problem`, by default True. The REML
         search passes False to skip re-validation on every evaluation.
@@ -572,8 +578,8 @@ def select_penalty_by_reml(
     max_iter : int, optional
         Maximum Newton iterations per candidate fit, by default 100.
     tol : float, optional
-        Relative tolerance on the penalized-deviance decrease; the fit stops when the
-        deviance improves by less than this, by default 1e-10.
+        Relative tolerance on the penalized-objective (-loglik + penalty) decrease; the
+        fit stops when the objective improves by less than this, by default 1e-10.
 
     Returns
     -------
@@ -713,8 +719,8 @@ def fit_sorted_spikes_mrf_encoding_model(
         Maximum Newton iterations for both REML candidate fits and the final fit, by
         default 100.
     tol : float, optional
-        Relative tolerance on the penalized-deviance decrease; the fit stops when the
-        deviance improves by less than this, by default 1e-10.
+        Relative tolerance on the penalized-objective (-loglik + penalty) decrease; the
+        fit stops when the objective improves by less than this, by default 1e-10.
     log_penalty_bounds : tuple[float, float], optional
         REML search interval for ``log(lambda)`` when ``penalty`` is None, by default
         (-8.0, 20.0).
