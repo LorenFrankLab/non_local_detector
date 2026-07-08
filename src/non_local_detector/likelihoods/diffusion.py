@@ -589,6 +589,18 @@ def check_smoothing_bandwidth(sigma: float, graph: nx.Graph) -> None:
             )
 
 
+def _freeze_and_cache(
+    cache: dict, rank: int | None, eigvals: np.ndarray, eigvecs: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Freeze a basis read-only (it is shared across neurons and EM refits), store it
+    under ``rank``, and return it. Centralizes the read-only cache contract."""
+    eigvals.setflags(write=False)
+    eigvecs.setflags(write=False)
+    basis = (eigvals, eigvecs)
+    cache[rank] = basis
+    return basis
+
+
 def cached_eigenbasis(
     environment: "Environment", rank: int | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -646,12 +658,7 @@ def cached_eigenbasis(
             return sliced
 
     eigvals, eigvecs = diffusion_eigenbasis(laplacian, rank)
-    # Freeze the cached basis: it is reused across neurons and EM refits.
-    eigvals.setflags(write=False)
-    eigvecs.setflags(write=False)
-    basis = (eigvals, eigvecs)
-    cache[rank] = basis
-    return basis
+    return _freeze_and_cache(cache, rank, eigvals, eigvecs)
 
 
 def cached_heat_kernel_eigenbasis(
@@ -715,15 +722,11 @@ def cached_heat_kernel_eigenbasis(
         environment._diffusion_eigenbasis_ = cache
     if rank in cache:
         return cache[rank]
-    # Independent, frozen copies of the probe's final basis (sliced to the resolved
-    # rank), matching cached_eigenbasis's read-only, shared-across-refits contract.
-    eigvals = np.ascontiguousarray(eigvals)
-    eigvecs = np.ascontiguousarray(eigvecs)
-    eigvals.setflags(write=False)
-    eigvecs.setflags(write=False)
-    basis = (eigvals, eigvecs)
-    cache[rank] = basis
-    return basis
+    # Independent copies of the probe's final basis (sliced to the resolved rank) so the
+    # frozen cache entry does not alias the probe's arrays.
+    return _freeze_and_cache(
+        cache, rank, np.ascontiguousarray(eigvals), np.ascontiguousarray(eigvecs)
+    )
 
 
 def _nd_grid_graph(
