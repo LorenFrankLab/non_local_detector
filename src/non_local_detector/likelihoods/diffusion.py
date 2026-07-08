@@ -114,9 +114,16 @@ def _block_eigenbasis(
         eigvals, eigvecs = scipy.linalg.eigh(block.toarray())
         return np.clip(eigvals, 0.0, None), eigvecs
 
+    # Deterministic ARPACK start vector so the truncated basis is reproducible: eigsh
+    # otherwise draws a random v0, which rotates the returned eigenvectors within
+    # (near-)degenerate eigenspaces run-to-run. The eigenvalues and the diffusion /
+    # penalty operators are invariant to that rotation, but a fixed v0 makes the basis
+    # -- and hence fitted place fields -- reproducible. A generic (non-eigenvector)
+    # direction avoids ARPACK stagnating on v0 == the constant null mode.
+    v0 = np.random.default_rng(0).standard_normal(n)
     try:
         eigvals, eigvecs = scipy.sparse.linalg.eigsh(
-            block, k=rank, sigma=-1e-8, which="LM"
+            block, k=rank, sigma=-1e-8, which="LM", v0=v0
         )
     except RuntimeError:
         # Shift-invert can fail on the (near-)singular Laplacian in some builds,
@@ -131,7 +138,9 @@ def _block_eigenbasis(
             UserWarning,
             stacklevel=2,
         )
-        eigvals, eigvecs = scipy.sparse.linalg.eigsh(block, k=rank, which="SM")
+        eigvals, eigvecs = scipy.sparse.linalg.eigsh(
+            block, k=rank, which="SM", v0=v0
+        )
 
     order = np.argsort(eigvals)
     return np.clip(eigvals[order], 0.0, None), eigvecs[:, order]

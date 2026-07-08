@@ -174,6 +174,25 @@ def test_truncated_eigsh_matches_dense_slice():
     assert np.abs(trunc_op - dense_op).max() < 1e-8
 
 
+def test_truncated_eigsh_is_reproducible():
+    """Truncated eigsh returns a bit-identical basis run-to-run.
+
+    A square grid has a doubly-degenerate spectrum, so ARPACK with a random start
+    vector would return eigenvectors rotated within each degenerate eigenspace,
+    making the truncated basis -- and any downstream MRF fit that reads it -- differ
+    between runs. ``_block_eigenbasis`` pins a deterministic ``v0``; assert the
+    eigenpairs are byte-for-byte identical across repeated calls.
+    """
+    L = build_laplacian(grid_graph_2d(12, 12))  # degenerate spectrum
+    rank = 20
+
+    vals1, vecs1 = diffusion_eigenbasis(L, rank=rank)
+    vals2, vecs2 = diffusion_eigenbasis(L, rank=rank)
+
+    assert np.array_equal(vals1, vals2)
+    assert np.array_equal(vecs1, vecs2)
+
+
 def test_truncated_keeps_all_zero_modes():
     """On a disconnected interior both null modes appear in a truncated basis."""
     graph = nx.disjoint_union(path_graph(8), path_graph(8))
@@ -271,6 +290,35 @@ def test_truncated_eigsh_falls_back_when_shift_invert_fails(monkeypatch):
     assert trunc_vals.shape == (6,)
     assert trunc_vals[0] < 1e-9  # zero mode retained via the fallback
     np.testing.assert_allclose(trunc_vals, dense_vals[:6], atol=1e-8)
+
+
+def test_fallback_eigsh_is_reproducible(monkeypatch):
+    """The which='SM' fallback pins the same v0, so its basis is reproducible too.
+
+    The fallback is a separate eigsh call from the shift-invert path; on a
+    degenerate spectrum it would rotate eigenvectors run-to-run without a fixed
+    start vector (differs by ~0.4 otherwise). Force the fallback on a degenerate
+    square grid and assert the eigenpairs are bit-identical across repeated calls.
+    """
+    import scipy.sparse.linalg as sparse_linalg
+
+    real_eigsh = sparse_linalg.eigsh
+
+    def flaky_eigsh(*args, **kwargs):
+        if kwargs.get("sigma") is not None:  # force the shift-invert attempt to fail
+            raise RuntimeError("Factor is exactly singular")
+        return real_eigsh(*args, **kwargs)
+
+    monkeypatch.setattr(sparse_linalg, "eigsh", flaky_eigsh)
+
+    L = build_laplacian(grid_graph_2d(12, 12))  # degenerate spectrum
+    with pytest.warns(UserWarning, match="Shift-invert eigsh failed"):
+        vals1, vecs1 = diffusion_eigenbasis(L, rank=20)
+    with pytest.warns(UserWarning, match="Shift-invert eigsh failed"):
+        vals2, vecs2 = diffusion_eigenbasis(L, rank=20)
+
+    assert np.array_equal(vals1, vals2)
+    assert np.array_equal(vecs1, vecs2)
 
 
 # ==============================================================================
