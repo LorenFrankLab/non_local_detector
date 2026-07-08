@@ -569,6 +569,48 @@ def test_weighted_fit_mean_rates_match_kde():
     )
 
 
+def test_weighted_place_fields_match_subset_fit():
+    """Binary weights == subsetting: fitting with weights=1 on a contiguous block and 0
+    elsewhere gives the same place fields as fitting on just that block. This is the
+    load-bearing weighted check for the MRF fit -- it verifies the weighted occupancy
+    exposure and weighted spike counts feed the GAM correctly. mean_rates parity (the
+    test above) depends only on the weighted spike sum and so cannot catch a spatial
+    weighting bug in the pixellation or the exposure offset.
+    """
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=3, n_time=6000)
+    cut = int(0.6 * time.shape[0])
+    weights = np.zeros(time.shape[0])
+    weights[:cut] = 1.0  # keep the first 60% of samples, drop the rest
+    subset_spikes = [s[s < time[cut]] for s in spike_times]
+
+    weighted = np.asarray(
+        fit_sorted_spikes_mrf_encoding_model(
+            position_time=time, position=position, spike_times=spike_times,
+            environment=env, weights=weights, rank=25,
+        )["place_fields"]
+    )
+    subset = np.asarray(
+        fit_sorted_spikes_mrf_encoding_model(
+            position_time=time[:cut], position=position[:cut],
+            spike_times=subset_spikes, environment=env, rank=25,
+        )["place_fields"]
+    )
+
+    # Compare where each field is substantial (> 0.4 * peak); low-rate bins are
+    # EPS-floored. A tiny residual comes from spikes in the single boundary time bin
+    # getting a fractional interpolated weight, so assert a small median rather than
+    # exact equality.
+    interior = env.is_track_interior_.ravel()
+    for neuron in range(weighted.shape[0]):
+        substantial = interior & (subset[neuron] > 0.4 * subset[neuron].max())
+        rel = np.median(
+            np.abs(weighted[neuron, substantial] - subset[neuron, substantial])
+            / subset[neuron, substantial]
+        )
+        assert rel < 0.01
+
+
 def test_fit_with_default_rank_is_valid():
     """The out-of-the-box default (rank omitted -> reduced-rank + REML) produces a
     valid encoding: contract keys, finite positive interior place fields."""
