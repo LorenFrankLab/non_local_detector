@@ -267,8 +267,14 @@ def _newton_fit_jax(
     coeffs0 = basis_pinv_ones[:, None] * eta0[None, :]  # (rank, n_neurons)
 
     def newton_cond(state):
-        _, iteration, max_step = state
-        return (iteration < max_iter) & (max_step >= tol)
+        coeffs, iteration, max_step = state
+        # Stop on a step small RELATIVE to the coefficient scale. The absolute floor
+        # (_FIT_TOL_FLOOR) sits at float32's precision edge, so max_step plateaus just
+        # above it and the fit otherwise grinds to max_iter without ever meeting
+        # ``max_step < tol``. Scaling the threshold by the coefficient magnitude makes
+        # the criterion reachable in float32 -- the standard relative Newton test.
+        coeff_scale = 1.0 + jnp.max(jnp.abs(coeffs), initial=0.0)
+        return (iteration < max_iter) & (max_step >= tol * coeff_scale)
 
     def newton_body(state):
         coeffs, iteration, _ = state
@@ -318,7 +324,8 @@ def _newton_fit_jax(
     # low-penalty / near-zero-occupancy fit drove eta large (mirrors mgcv).
     eta = jnp.clip(basis @ coeffs, -_ETA_CLIP, _ETA_CLIP)
     mu = occupancy[:, None] * jnp.exp(eta)
-    return coeffs, eta, mu, n_iter, max_step, max_step < tol
+    coeff_scale = 1.0 + jnp.max(jnp.abs(coeffs), initial=0.0)
+    return coeffs, eta, mu, n_iter, max_step, max_step < tol * coeff_scale
 
 
 def mrf_penalized_poisson_fit(
@@ -355,7 +362,8 @@ def mrf_penalized_poisson_fit(
     max_iter : int, optional
         Maximum Newton iterations, by default 100.
     tol : float, optional
-        Convergence tolerance on the max coefficient step, by default 1e-10.
+        Convergence tolerance on the max coefficient step, relative to the coefficient
+        scale, by default 1e-10.
     validate : bool, optional
         Validate inputs via :func:`_validate_mrf_problem`, by default True. The REML
         search passes False to skip re-validation on every candidate fit (the caller
@@ -476,7 +484,8 @@ def mrf_reml_objective(
     max_iter : int, optional
         Maximum Newton iterations per candidate fit, by default 100.
     tol : float, optional
-        Convergence tolerance on the max coefficient step, by default 1e-10.
+        Convergence tolerance on the max coefficient step, relative to the coefficient
+        scale, by default 1e-10.
     validate : bool, optional
         Validate inputs via :func:`_validate_mrf_problem`, by default True. The REML
         search passes False to skip re-validation on every evaluation.
@@ -547,7 +556,8 @@ def select_penalty_by_reml(
     max_iter : int, optional
         Maximum Newton iterations per candidate fit, by default 100.
     tol : float, optional
-        Convergence tolerance on the max coefficient step, by default 1e-10.
+        Convergence tolerance on the max coefficient step, relative to the coefficient
+        scale, by default 1e-10.
 
     Returns
     -------
@@ -687,7 +697,8 @@ def fit_sorted_spikes_mrf_encoding_model(
         Maximum Newton iterations for both REML candidate fits and the final fit, by
         default 100.
     tol : float, optional
-        Convergence tolerance on the max coefficient step, by default 1e-10.
+        Convergence tolerance on the max coefficient step, relative to the coefficient
+        scale, by default 1e-10.
     log_penalty_bounds : tuple[float, float], optional
         REML search interval for ``log(lambda)`` when ``penalty`` is None, by default
         (-8.0, 20.0).
