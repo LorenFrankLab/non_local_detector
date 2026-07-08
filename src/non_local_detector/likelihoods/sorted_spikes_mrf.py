@@ -52,10 +52,11 @@ from jax import lax
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.common import validate_weights
+from non_local_detector.likelihoods.common import EPS, validate_weights
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
     environment_graph,
+    n_connected_components,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _assemble_place_fields,
@@ -672,9 +673,16 @@ def fit_sorted_spikes_mrf_encoding_model(
     _, node_order, bin_sizes = environment_graph(environment)
     # Cap the default basis size to bound the dense per-neuron Hessian cost (a
     # performance choice; mgcv's mrf default is full rank -- see the `rank` docstring).
-    requested_rank = (
-        rank if rank is not None else min(node_order.shape[0], _DEFAULT_MAX_RANK)
-    )
+    # Keep at least n_components modes, though: cached_eigenbasis requires
+    # rank >= n_components so every disconnected interior component retains its null mode,
+    # and a highly fragmented environment can have more components than the cap.
+    if rank is not None:
+        requested_rank = rank
+    else:
+        requested_rank = max(
+            n_connected_components(environment),
+            min(node_order.shape[0], _DEFAULT_MAX_RANK),
+        )
     penalty_weights, basis = cached_eigenbasis(environment, requested_rank)
     # cached_eigenbasis caps at the number of available modes, so the true basis rank
     # can be below the request; report what was actually used, not what was asked for.
@@ -698,34 +706,49 @@ def fit_sorted_spikes_mrf_encoding_model(
     else:
         counts = np.zeros((node_order.shape[0], 0))
 
-    penalty_selected_by_reml = penalty is None and counts.shape[1] > 0
-    if penalty_selected_by_reml:
-        penalty, reml_objective = select_penalty_by_reml(
+    if not occupancy_field.sum() > 0.0:
+        # No effective encoding weight (all-zero weights, or an encoding group /
+        # environment with zero posterior mass). Occupancy is the Poisson exposure, so
+        # with zero exposure the rate is unidentified and the penalized fit would just
+        # return its warm-started intercept (~1e-6 everywhere). Match the diffusion
+        # likelihood -- EPS-floored place fields -- and skip REML.
+        coeffs = np.zeros((basis.shape[1], counts.shape[1]))
+        rate_interior = np.full((node_order.shape[0], counts.shape[1]), EPS)
+        fit_penalty = penalty if penalty is not None else 1.0
+        reml_objective = np.nan
+        penalty_selected_by_reml = False
+        diagnostics = {"n_iter": 0, "converged": True, "max_step": 0.0}
+    else:
+        penalty_selected_by_reml = penalty is None and counts.shape[1] > 0
+        if penalty_selected_by_reml:
+            penalty, reml_objective = select_penalty_by_reml(
+                counts,
+                occupancy_field,
+                basis,
+                penalty_weights,
+                log_penalty_bounds=log_penalty_bounds,
+                reml_xatol=reml_xatol,
+                max_iter=max_iter,
+                tol=tol,
+            )
+        else:
+            reml_objective = np.nan
+
+        # `penalty is None` only survives here for the zero-neuron case; a caller's
+        # explicit penalty=0.0 (unpenalized) must be respected, not treated as falsy.
+        fit_penalty = penalty if penalty is not None else 1.0
+        coeffs, eta, _, diagnostics = mrf_penalized_poisson_fit(
             counts,
             occupancy_field,
             basis,
             penalty_weights,
-            log_penalty_bounds=log_penalty_bounds,
-            reml_xatol=reml_xatol,
+            fit_penalty,
             max_iter=max_iter,
             tol=tol,
         )
-    else:
-        reml_objective = np.nan
-
-    # `penalty is None` only survives here for the zero-neuron case; a caller's
-    # explicit penalty=0.0 (unpenalized) must be respected, not treated as falsy.
-    fit_penalty = penalty if penalty is not None else 1.0
-    coeffs, eta, _, diagnostics = mrf_penalized_poisson_fit(
-        counts,
-        occupancy_field,
-        basis,
-        penalty_weights,
-        fit_penalty,
-        max_iter=max_iter,
-        tol=tol,
-    )
-    rate_interior = np.exp(eta)  # (n_interior, n_neurons); eta is clipped in the fit
+        rate_interior = np.exp(
+            eta
+        )  # (n_interior, n_neurons); eta is clipped in the fit
     place_fields, no_spike_part_log_likelihood, interior_log_place_fields = (
         _assemble_place_fields(rate_interior, node_order, n_total_bins)
     )

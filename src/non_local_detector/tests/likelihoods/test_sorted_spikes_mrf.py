@@ -35,6 +35,7 @@ from non_local_detector.likelihoods.sorted_spikes_mrf import (
 )
 from non_local_detector.tests.likelihoods.test_sorted_spikes_diffusion import (
     make_2d_env,
+    make_two_room_env,
     simulate_place_data,
 )
 
@@ -586,14 +587,21 @@ def test_weighted_place_fields_match_subset_fit():
 
     weighted = np.asarray(
         fit_sorted_spikes_mrf_encoding_model(
-            position_time=time, position=position, spike_times=spike_times,
-            environment=env, weights=weights, rank=25,
+            position_time=time,
+            position=position,
+            spike_times=spike_times,
+            environment=env,
+            weights=weights,
+            rank=25,
         )["place_fields"]
     )
     subset = np.asarray(
         fit_sorted_spikes_mrf_encoding_model(
-            position_time=time[:cut], position=position[:cut],
-            spike_times=subset_spikes, environment=env, rank=25,
+            position_time=time[:cut],
+            position=position[:cut],
+            spike_times=subset_spikes,
+            environment=env,
+            rank=25,
         )["place_fields"]
     )
 
@@ -609,6 +617,55 @@ def test_weighted_place_fields_match_subset_fit():
             / subset[neuron, substantial]
         )
         assert rel < 0.01
+
+
+def test_zero_effective_weight_returns_eps_place_fields():
+    """All-zero weights (or an encoding group / environment with zero posterior mass)
+    give zero occupancy, so the Poisson exposure is zero and the rate is unidentified.
+    The fit must return EPS-floored place fields (matching the diffusion likelihood), not
+    the warm-started intercept (~1e-6) that an information-free penalized fit produces.
+    This is the multi-environment / EM zero-mass case flagged in review.
+    """
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=3)
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        weights=np.zeros(time.shape[0]),
+    )
+    interior = env.is_track_interior_.ravel()
+    place_fields = np.asarray(encoding["place_fields"])
+    assert np.all(np.isfinite(place_fields))
+    # EPS floor (~1e-15), not a spurious intercept rate.
+    assert np.all(place_fields[:, interior] < 1e-10)
+    assert not encoding["mrf_penalty_selected_by_reml"]
+
+
+def test_default_rank_covers_disconnected_components(monkeypatch):
+    """The default rank cap must never drop a disconnected component's null mode:
+    cached_eigenbasis requires rank >= n_components. A highly fragmented environment can
+    have more interior components than _DEFAULT_MAX_RANK, so the default rank is raised to
+    cover them rather than raising a ValidationError before the fit runs.
+    """
+    import non_local_detector.likelihoods.sorted_spikes_mrf as mrf_mod
+
+    env, position = make_two_room_env()  # two disconnected interior components
+    time = np.arange(position.shape[0]) / 100.0
+    rng = np.random.default_rng(0)
+    spike_times = [time[rng.random(position.shape[0]) < 0.01]]
+    # Force the cap below the number of components (2) to exercise the guard cheaply.
+    monkeypatch.setattr(mrf_mod, "_DEFAULT_MAX_RANK", 1)
+
+    encoding = fit_sorted_spikes_mrf_encoding_model(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+    )
+    assert np.all(np.isfinite(np.asarray(encoding["place_fields"])))
+    assert encoding["mrf_rank"] >= 2  # kept both components' null modes
 
 
 def test_fit_with_default_rank_is_valid():

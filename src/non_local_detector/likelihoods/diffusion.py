@@ -352,6 +352,23 @@ def connected_component_labels(graph: nx.Graph) -> np.ndarray:
     return labels
 
 
+def n_connected_components(environment: "Environment") -> int:
+    """Number of connected components of the environment's interior-bin graph.
+
+    Each component contributes one Laplacian null (zero-eigenvalue) mode, so a truncated
+    eigenbasis must keep **at least** this many modes (see :func:`diffusion_eigenbasis` /
+    :func:`_require_rank_covers_components`). Callers that cap a default rank use this to
+    ensure the cap never drops a component's null mode. Builds (and reuses) the cached
+    Laplacian via :func:`environment_graph`.
+    """
+    environment_graph(environment)
+    return int(
+        scipy.sparse.csgraph.connected_components(
+            environment._diffusion_laplacian_, directed=False, return_labels=False
+        )
+    )
+
+
 def diffuse(
     eigvals: np.ndarray,
     eigvecs: np.ndarray,
