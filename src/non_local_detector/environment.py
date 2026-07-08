@@ -179,6 +179,20 @@ class Environment:
         used, and invalidated by :meth:`fit_place_grid`. Off-track bins
         produce NaN rows/columns. Used to avoid the ``O(n_time * n_bins)``
         Python dict-of-dicts lookup on every ``predict`` call.
+    _diffusion_graph_ : tuple, optional
+        Lazily-built ``(graph, node_order, bin_sizes)`` interior-bin graph for the
+        sorted-spikes diffusion likelihood, populated by
+        ``likelihoods.diffusion.environment_graph`` and invalidated by
+        :meth:`fit_place_grid`.
+    _diffusion_laplacian_ : scipy.sparse matrix, optional
+        Snapshot of the interior-bin graph Laplacian taken when ``_diffusion_graph_``
+        is built, so the cached eigenbasis is immune to later edge-attribute
+        mutations of the returned graph. Invalidated by :meth:`fit_place_grid`.
+    _diffusion_eigenbasis_ : dict, optional
+        Lazily-built cache of graph-Laplacian eigenbases keyed by ``rank`` for the
+        sorted-spikes diffusion likelihood, populated by
+        ``likelihoods.diffusion.cached_eigenbasis`` and invalidated by
+        :meth:`fit_place_grid`.
     """
 
     environment_name: str = ""
@@ -479,6 +493,18 @@ class Environment:
         # get_distances_to_interior_bins for 1D track graph kernels).
         if hasattr(self, "_bin_distance_matrix_"):
             del self._bin_distance_matrix_
+
+        # Invalidate the cached diffusion interior-bin graph, Laplacian, eigenbasis,
+        # and resolved heat-kernel ranks (used by the sorted-spikes diffusion
+        # likelihood); the grid is about to be rebuilt, so any cached basis is stale.
+        if hasattr(self, "_diffusion_graph_"):
+            del self._diffusion_graph_
+        if hasattr(self, "_diffusion_laplacian_"):
+            del self._diffusion_laplacian_
+        if hasattr(self, "_diffusion_eigenbasis_"):
+            del self._diffusion_eigenbasis_
+        if hasattr(self, "_diffusion_heat_kernel_rank_"):
+            del self._diffusion_heat_kernel_rank_
 
         if self.track_graph is None:
             (

@@ -8,6 +8,7 @@ from jax.nn import logsumexp
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 
 EPS = 1e-15
 LOG_EPS = np.log(EPS)
@@ -38,6 +39,46 @@ def as_std_array(std: "jnp.ndarray | float | int", n_dims: int) -> jnp.ndarray:
     if jnp.ndim(std) == 0:
         return jnp.full((n_dims,), std)
     return jnp.asarray(std)
+
+
+def validate_weights(weights: np.ndarray, n_time: int) -> np.ndarray:
+    """Validate per-sample weights shared by the sorted-spikes encoding fits.
+
+    Weights feed both the occupancy field and the spike counts, so an invalid
+    array corrupts the whole encoding silently; validate once at the fit entry.
+
+    Parameters
+    ----------
+    weights : np.ndarray, shape (n_time,)
+        Per-sample weights (e.g. posterior state probabilities during EM).
+    n_time : int
+        Expected number of samples (``position.shape[0]``).
+
+    Returns
+    -------
+    weights : np.ndarray, shape (n_time,)
+        The weights as a float array.
+
+    Raises
+    ------
+    ValidationError
+        If ``weights`` is not 1-D of length ``n_time``, or contains non-finite or
+        negative values.
+    """
+    weights = np.asarray(weights, dtype=float)
+
+    if weights.shape != (n_time,):
+        raise ValidationError(
+            f"weights must have shape ({n_time},), got {weights.shape}"
+        )
+
+    if not np.all(np.isfinite(weights)):
+        raise ValidationError("weights must contain only finite values")
+
+    if np.any(weights < 0):
+        raise ValidationError("weights must be non-negative")
+
+    return weights
 
 
 def get_position_at_time(
