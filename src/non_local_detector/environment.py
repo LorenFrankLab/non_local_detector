@@ -494,15 +494,17 @@ class Environment:
         if hasattr(self, "_bin_distance_matrix_"):
             del self._bin_distance_matrix_
 
-        # Invalidate the cached diffusion interior-bin graph, Laplacian, and
-        # eigenbasis (used by the sorted-spikes diffusion likelihood); the grid
-        # is about to be rebuilt, so any cached basis is stale.
+        # Invalidate the cached diffusion interior-bin graph, Laplacian, eigenbasis,
+        # and resolved heat-kernel ranks (used by the sorted-spikes diffusion
+        # likelihood); the grid is about to be rebuilt, so any cached basis is stale.
         if hasattr(self, "_diffusion_graph_"):
             del self._diffusion_graph_
         if hasattr(self, "_diffusion_laplacian_"):
             del self._diffusion_laplacian_
         if hasattr(self, "_diffusion_eigenbasis_"):
             del self._diffusion_eigenbasis_
+        if hasattr(self, "_diffusion_heat_kernel_rank_"):
+            del self._diffusion_heat_kernel_rank_
 
         if self.track_graph is None:
             (

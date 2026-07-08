@@ -21,6 +21,7 @@ from non_local_detector.likelihoods.common import EPS, get_position_at_time
 from non_local_detector.likelihoods.diffusion import (
     connected_component_labels,
     environment_graph,
+    heat_kernel_rank,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     fit_sorted_spikes_diffusion_encoding_model,
@@ -195,6 +196,55 @@ def test_fit_truncated_rank_full_grid_and_predict():
         )
     )
     assert np.all(np.isfinite(ll))
+
+
+def test_fit_auto_truncation_is_near_lossless_and_reduces_rank():
+    """Default ``rank=None`` auto-truncates by heat-kernel decay: on a fine grid it
+    resolves a rank well below n_interior, yet the place fields match the exact
+    full-rank fit to ~1e-4 (near-lossless)."""
+    rng_env = np.random.default_rng(3)
+    env = Environment(
+        environment_name="fine",
+        place_bin_size=2.0,
+        position_range=((0.0, 50.0), (0.0, 50.0)),
+    ).fit_place_grid(
+        rng_env.uniform(1.0, 49.0, size=(6000, 2)), infer_track_interior=True
+    )
+    time, position, spike_times = simulate_place_data(env, n_neurons=3, seed=2)
+    std = 8.0
+    n_interior = int(env.is_track_interior_.sum())
+
+    common = {
+        "position_time": time,
+        "position": position,
+        "spike_times": spike_times,
+        "environment": env,
+        "position_std": std,
+    }
+    auto = fit_sorted_spikes_diffusion_encoding_model(**common)  # rank=None -> auto
+    full = fit_sorted_spikes_diffusion_encoding_model(**common, rank=n_interior)
+
+    # The default fit truncated, and used exactly the resolved rank.
+    resolved = heat_kernel_rank(env._diffusion_laplacian_, std)
+    assert resolved is not None and resolved < n_interior
+    assert resolved in env._diffusion_eigenbasis_
+
+    # Compare where the field is substantial: at EPS-floor bins the rate is ~0 and the
+    # relative error is meaningless (dividing by ~EPS), so restrict to bins above
+    # 10% of each neuron's peak -- the region the smoother actually estimates.
+    interior = env.is_track_interior_.ravel()
+    auto_pf = np.asarray(auto["place_fields"])
+    full_pf = np.asarray(full["place_fields"])
+    rels = []
+    for neuron in range(auto_pf.shape[0]):
+        substantial = interior & (full_pf[neuron] > 0.1 * full_pf[neuron].max())
+        rels.append(
+            np.abs(auto_pf[neuron, substantial] - full_pf[neuron, substantial])
+            / full_pf[neuron, substantial]
+        )
+    rel = np.concatenate(rels)
+    assert np.median(rel) < 1e-5
+    assert np.max(rel) < 1e-3
 
 
 def test_fit_silent_cell_and_zero_neurons():

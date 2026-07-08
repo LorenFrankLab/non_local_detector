@@ -39,6 +39,15 @@ from non_local_detector.exceptions import ValidationError
 if TYPE_CHECKING:
     from non_local_detector.environment import Environment
 
+# Defaults for heat_kernel_rank (bandwidth-aware auto-truncation): drop modes whose
+# heat-kernel weight exp(-t*lambda) is below _HEAT_KERNEL_RANK_TOL, and fall back to the
+# dense eigendecomposition once the resolved rank exceeds _HEAT_KERNEL_DENSE_FRACTION *
+# n_bins (where a truncated eigsh no longer beats a dense eigh). _HEAT_KERNEL_RANK_START
+# is the first probe size for the adaptive rank search.
+_HEAT_KERNEL_RANK_TOL = 1e-6
+_HEAT_KERNEL_DENSE_FRACTION = 0.5
+_HEAT_KERNEL_RANK_START = 32
+
 
 def build_laplacian(graph: nx.Graph) -> scipy.sparse.csr_matrix:
     """Finite-difference symmetric graph Laplacian ``L = D - W``.
@@ -138,9 +147,7 @@ def _block_eigenbasis(
             UserWarning,
             stacklevel=2,
         )
-        eigvals, eigvecs = scipy.sparse.linalg.eigsh(
-            block, k=rank, which="SM", v0=v0
-        )
+        eigvals, eigvecs = scipy.sparse.linalg.eigsh(block, k=rank, which="SM", v0=v0)
 
     order = np.argsort(eigvals)
     return np.clip(eigvals[order], 0.0, None), eigvecs[:, order]
@@ -220,6 +227,116 @@ def diffusion_eigenbasis(
     keep = all_eigvals.size if rank is None else rank
     order = np.argsort(all_eigvals, kind="stable")[:keep]
     return all_eigvals[order], all_eigvecs[:, order]
+
+
+def _adaptive_heat_kernel_basis(
+    laplacian: scipy.sparse.spmatrix,
+    sigma: float,
+    tol: float,
+    dense_fraction: float,
+) -> tuple[int | None, np.ndarray | None, np.ndarray | None]:
+    """Resolve the heat-kernel truncation rank and return the basis at that rank.
+
+    The adaptive probe's *final* eigendecomposition is the returned basis (sliced to the
+    resolved rank), so a caller building the basis does a single eigensolve rather than
+    resolving the rank and then recomputing. Returns ``(None, None, None)`` when the
+    bandwidth needs most modes (rank would exceed ``dense_fraction * n_bins``), signalling
+    the caller to use the full dense basis. See :func:`heat_kernel_rank` for the math.
+    """
+    if not sigma > 0:
+        raise ValidationError(
+            "smoothing bandwidth (sigma) must be positive",
+            expected="sigma > 0",
+            got=f"sigma = {sigma}",
+        )
+    if not 0.0 < tol < 1.0:
+        raise ValidationError(
+            "heat-kernel truncation tolerance must lie in (0, 1)",
+            expected="0 < tol < 1",
+            got=f"tol = {tol}",
+            hint="tol is a heat-kernel weight exp(-t*lambda); its cutoff -ln(tol) is "
+            "only positive for tol in (0, 1).",
+        )
+
+    n_bins = laplacian.shape[0]
+    n_components = scipy.sparse.csgraph.connected_components(
+        laplacian, directed=False, return_labels=False
+    )
+    t = sigma**2 / 2.0
+    lambda_cut = -np.log(tol) / t
+    # Beyond this rank a truncated eigsh no longer beats a dense eigh, so use dense.
+    max_trunc = int(dense_fraction * n_bins)
+    if max_trunc <= n_components:
+        return None, None, None
+
+    k = min(max(n_components + 1, _HEAT_KERNEL_RANK_START), max_trunc)
+    while True:
+        eigvals, eigvecs = diffusion_eigenbasis(laplacian, rank=k)
+        if eigvals[-1] >= lambda_cut:
+            # Bracketed the cutoff: keep every mode at or below it (all null modes are).
+            keep = max(
+                int(np.searchsorted(eigvals, lambda_cut, side="right")), n_components
+            )
+            return keep, eigvals[:keep], eigvecs[:, :keep]
+        if k >= max_trunc:
+            return None, None, None  # cutoff not reached below the dense threshold
+        # 2D Weyl: the eigenvalue-counting function grows ~linearly, so estimate the
+        # index at lambda_cut (10% margin) and jump there, at least doubling k.
+        estimated = int(np.ceil(1.1 * k * lambda_cut / max(float(eigvals[-1]), 1e-30)))
+        if estimated > max_trunc:
+            return None, None, None
+        k = min(max(estimated, 2 * k), max_trunc)
+
+
+def heat_kernel_rank(
+    laplacian: scipy.sparse.spmatrix,
+    sigma: float,
+    tol: float = _HEAT_KERNEL_RANK_TOL,
+    dense_fraction: float = _HEAT_KERNEL_DENSE_FRACTION,
+) -> int | None:
+    """Number of eigenmodes the heat kernel ``exp(-t L)`` needs at bandwidth ``sigma``.
+
+    :func:`diffuse` weights mode ``k`` by ``exp(-t λ_k)``, ``t = sigma**2 / 2``, so modes
+    with ``exp(-t λ_k) < tol`` are negligible: dropping them changes the smoothed field
+    by at most ``tol * ‖field‖`` (their combined energy is below ``tol² ‖field‖²``). This
+    returns the smallest rank that keeps every mode with weight ``>= tol`` — a
+    near-lossless truncation whose size tracks the physical smoothing scale (``~ area /
+    sigma²``), **not** the number of bins, so it stays small as the grid is refined.
+
+    The rank is found adaptively without a full eigendecomposition: compute the smallest
+    ``k`` eigenvalues; if the largest is still below the cutoff ``λ_cut = -ln(tol) / t``,
+    jump ``k`` toward the estimated cutoff index (the 2D eigenvalue-counting function is
+    ~linear, Weyl) and retry — typically one or two probes. To build the basis (not just
+    query the rank), use :func:`cached_heat_kernel_eigenbasis`, which reuses the probe's
+    final eigensolve instead of recomputing.
+
+    Parameters
+    ----------
+    laplacian : scipy.sparse.spmatrix, shape (n_bins, n_bins)
+        Symmetric graph Laplacian from :func:`build_laplacian`.
+    sigma : float
+        Smoothing standard deviation (``position_std``) in coordinate units; positive.
+    tol : float, optional
+        Heat-kernel weight below which a mode is dropped, in ``(0, 1)``. Smaller ``tol``
+        keeps more modes (more accurate, larger rank). Default ``1e-6`` (error ``~1e-7``).
+    dense_fraction : float, optional
+        Return ``None`` (use the dense solver) when the resolved rank would exceed
+        ``dense_fraction * n_bins``, where a truncated ``eigsh`` no longer beats a dense
+        ``eigh``. Default ``0.5``.
+
+    Returns
+    -------
+    rank : int or None
+        The truncation rank (``>= n_components``, so every component's null mode is kept
+        and :func:`diffuse` cannot leak mass across components), or ``None`` to signal the
+        caller should use the full dense basis — a light bandwidth needing most modes.
+
+    Raises
+    ------
+    ValidationError
+        If ``sigma <= 0`` or ``tol`` is not in ``(0, 1)``.
+    """
+    return _adaptive_heat_kernel_basis(laplacian, sigma, tol, dense_fraction)[0]
 
 
 def connected_component_labels(graph: nx.Graph) -> np.ndarray:
@@ -530,6 +647,78 @@ def cached_eigenbasis(
 
     eigvals, eigvecs = diffusion_eigenbasis(laplacian, rank)
     # Freeze the cached basis: it is reused across neurons and EM refits.
+    eigvals.setflags(write=False)
+    eigvecs.setflags(write=False)
+    basis = (eigvals, eigvecs)
+    cache[rank] = basis
+    return basis
+
+
+def cached_heat_kernel_eigenbasis(
+    environment: "Environment",
+    sigma: float,
+    tol: float = _HEAT_KERNEL_RANK_TOL,
+    dense_fraction: float = _HEAT_KERNEL_DENSE_FRACTION,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (and cache) the bandwidth-aware auto-truncated eigenbasis for ``sigma``.
+
+    Resolves the heat-kernel rank (see :func:`heat_kernel_rank`) and returns the
+    eigenbasis at that rank in a **single** eigendecomposition — the adaptive probe's
+    final eigensolve is reused as the basis, rather than resolving the rank and then
+    recomputing it. The result is stored in the same rank-keyed cache as
+    :func:`cached_eigenbasis` (on ``environment._diffusion_eigenbasis_``), and the
+    resolved rank is memoized per ``(sigma, tol, dense_fraction)`` on
+    ``environment._diffusion_heat_kernel_rank_``, so EM refits at the same bandwidth
+    reuse the basis **without re-running the adaptive probe** (zero eigensolves). When
+    the bandwidth needs most modes the resolver falls back to the full dense basis. All
+    diffusion caches are invalidated together by ``Environment.fit_place_grid``.
+
+    Parameters
+    ----------
+    environment : Environment
+        A fitted environment.
+    sigma : float
+        Smoothing standard deviation (``position_std``) in coordinate units.
+    tol, dense_fraction : float, optional
+        Forwarded to :func:`heat_kernel_rank`.
+
+    Returns
+    -------
+    eigvals : np.ndarray, shape (m,)
+    eigvecs : np.ndarray, shape (n_interior, m)
+        The (read-only) cached eigenbasis at the resolved rank.
+    """
+    rank_cache = getattr(environment, "_diffusion_heat_kernel_rank_", None)
+    if rank_cache is None:
+        rank_cache = {}
+        environment._diffusion_heat_kernel_rank_ = rank_cache
+
+    key = (sigma, tol, dense_fraction)
+    if key in rank_cache:
+        # Rank already resolved for this bandwidth; the matching basis was cached below
+        # on the first fit, so this reuses it with no adaptive probe and no eigensolve.
+        return cached_eigenbasis(environment, rank_cache[key])
+
+    environment_graph(environment)  # ensures the cached Laplacian snapshot
+    rank, eigvals, eigvecs = _adaptive_heat_kernel_basis(
+        environment._diffusion_laplacian_, sigma, tol, dense_fraction
+    )
+    rank_cache[key] = rank
+    if rank is None:
+        return cached_eigenbasis(
+            environment, None
+        )  # light bandwidth -> dense full basis
+
+    cache = getattr(environment, "_diffusion_eigenbasis_", None)
+    if cache is None:
+        cache = {}
+        environment._diffusion_eigenbasis_ = cache
+    if rank in cache:
+        return cache[rank]
+    # Independent, frozen copies of the probe's final basis (sliced to the resolved
+    # rank), matching cached_eigenbasis's read-only, shared-across-refits contract.
+    eigvals = np.ascontiguousarray(eigvals)
+    eigvecs = np.ascontiguousarray(eigvecs)
     eigvals.setflags(write=False)
     eigvecs.setflags(write=False)
     basis = (eigvals, eigvecs)

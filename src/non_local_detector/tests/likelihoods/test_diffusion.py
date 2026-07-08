@@ -18,11 +18,13 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.diffusion import (
     build_laplacian,
     cached_eigenbasis,
+    cached_heat_kernel_eigenbasis,
     check_smoothing_bandwidth,
     connected_component_labels,
     diffuse,
     diffusion_eigenbasis,
     environment_graph,
+    heat_kernel_rank,
     to_density,
 )
 
@@ -319,6 +321,127 @@ def test_fallback_eigsh_is_reproducible(monkeypatch):
 
     assert np.array_equal(vals1, vals2)
     assert np.array_equal(vecs1, vecs2)
+
+
+# ==============================================================================
+# heat_kernel_rank (bandwidth-aware auto-truncation)
+# ==============================================================================
+
+
+def test_heat_kernel_rank_tracks_bandwidth():
+    """More smoothing (larger sigma) needs fewer modes: rank is non-increasing."""
+    L = build_laplacian(grid_graph_2d(30, 30))  # 900 bins
+    n = L.shape[0]
+
+    def effective(sigma):
+        rank = heat_kernel_rank(L, sigma)
+        return n if rank is None else rank
+
+    ranks = [effective(sigma) for sigma in (2.0, 4.0, 8.0, 16.0)]
+    assert ranks == sorted(ranks, reverse=True)
+    assert ranks[-1] < n  # heavy smoothing truncates well below full rank
+
+
+def test_heat_kernel_rank_is_near_lossless():
+    """Diffusing with the auto-truncated basis matches the full basis to ~tol.
+
+    Dropped modes k have exp(-t*lambda_k) < tol, so the truncation error is bounded by
+    tol * ||field|| -- diffusion is near-lossless at the auto-selected rank.
+    """
+    rng = np.random.default_rng(0)
+    L = build_laplacian(grid_graph_2d(30, 30))
+    sigma, tol = 6.0, 1e-6
+    full_vals, full_vecs = diffusion_eigenbasis(L, rank=None)
+    rank = heat_kernel_rank(L, sigma, tol=tol)
+    assert rank is not None and rank < L.shape[0]  # this bandwidth truncates
+    trunc_vals, trunc_vecs = diffusion_eigenbasis(L, rank=rank)
+
+    fields = rng.gamma(2.0, 1.0, size=(L.shape[0], 8))
+    full = diffuse(full_vals, full_vecs, sigma, fields)
+    trunc = diffuse(trunc_vals, trunc_vecs, sigma, fields)
+    rel = np.max(np.linalg.norm(full - trunc, axis=0) / np.linalg.norm(full, axis=0))
+    assert rel < 10 * tol
+
+
+def test_heat_kernel_rank_dense_fallback_for_small_bandwidth():
+    """When smoothing barely spreads (sigma ~ bin spacing), nearly every mode matters,
+    so the resolver returns None (use the exact dense eigendecomposition)."""
+    L = build_laplacian(grid_graph_2d(30, 30, spacing=1.0))
+    assert heat_kernel_rank(L, sigma=0.5) is None
+
+
+def test_heat_kernel_rank_retains_all_zero_modes_on_disconnected_graph():
+    """On a disconnected graph a truncated rank must cover every component's null mode
+    (one per component), else diffuse would leak mass across components."""
+    graph = nx.disjoint_union(path_graph(40), path_graph(40))
+    L = build_laplacian(graph)
+    n_components = 2
+    rank = heat_kernel_rank(L, sigma=8.0)  # heavy smoothing -> aggressive truncation
+    if rank is not None:
+        assert rank >= n_components
+        eigvals, _ = diffusion_eigenbasis(L, rank=rank)
+        assert np.count_nonzero(eigvals < 1e-9) == n_components
+
+
+@pytest.mark.parametrize("bad_tol", [0.0, -1e-3, 1.0, 2.0])
+def test_heat_kernel_rank_rejects_tol_outside_unit_interval(bad_tol):
+    """tol must lie in (0, 1): the cutoff lambda = -ln(tol)/t is only defined there."""
+    L = build_laplacian(grid_graph_2d(10, 10))
+    with pytest.raises(ValidationError):
+        heat_kernel_rank(L, sigma=4.0, tol=bad_tol)
+
+
+def test_cached_heat_kernel_eigenbasis_reuses_probe_eigensolve(monkeypatch):
+    """The fused builder resolves the rank AND returns the basis in the same eigensolves
+    the rank probe uses -- it does not resolve, then recompute the basis. The
+    resolved-rank basis is cached, so cached_eigenbasis reuses it with no further solve.
+    """
+    import non_local_detector.likelihoods.diffusion as diffusion_mod
+
+    env = Environment(
+        environment_name="fine",
+        place_bin_size=2.0,
+        position_range=((0.0, 50.0), (0.0, 50.0)),
+    ).fit_place_grid(
+        np.random.default_rng(0).uniform(1.0, 49.0, size=(6000, 2)),
+        infer_track_interior=True,
+    )
+    sigma = 8.0
+    environment_graph(env)  # populate the cached Laplacian (no eigensolve)
+    laplacian = env._diffusion_laplacian_
+
+    calls = {"n": 0}
+    real = diffusion_mod.diffusion_eigenbasis
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(diffusion_mod, "diffusion_eigenbasis", counting)
+
+    # Eigensolves the pure rank probe performs (operates on the Laplacian, no caching).
+    rank = heat_kernel_rank(laplacian, sigma)
+    probe_eigensolves = calls["n"]
+    assert rank is not None and rank < laplacian.shape[0]
+
+    # The fused builder does the same number of eigensolves -- no extra recompute.
+    calls["n"] = 0
+    eigvals, eigvecs = cached_heat_kernel_eigenbasis(env, sigma)
+    assert calls["n"] == probe_eigensolves
+    assert eigvecs.shape[1] == rank
+
+    # The resolved-rank basis is cached; cached_eigenbasis returns it with no eigensolve.
+    calls["n"] = 0
+    assert cached_eigenbasis(env, rank)[0] is eigvals
+    assert calls["n"] == 0
+
+    # A refit at the same bandwidth reuses the memoized rank and cached basis: the
+    # adaptive probe does not run again (zero eigensolves), and the same object is
+    # returned.
+    calls["n"] = 0
+    eigvals2, _ = cached_heat_kernel_eigenbasis(env, sigma)
+    assert calls["n"] == 0
+    assert eigvals2 is eigvals
 
 
 # ==============================================================================
@@ -858,12 +981,14 @@ def test_cached_eigenbasis_immune_to_graph_edge_attribute_mutation():
 
 
 def test_eig_cache_invalidated_on_refit():
-    """fit_place_grid clears the eig + graph caches so they rebuild."""
+    """fit_place_grid clears the eig + graph + resolved-rank caches so they rebuild."""
     env = make_2d_env()
     basis = cached_eigenbasis(env, rank=None)
     graph = environment_graph(env)
+    cached_heat_kernel_eigenbasis(env, sigma=6.0)  # populates the resolved-rank memo
     assert hasattr(env, "_diffusion_eigenbasis_")
     assert hasattr(env, "_diffusion_graph_")
+    assert hasattr(env, "_diffusion_heat_kernel_rank_")
 
     rng = np.random.default_rng(0)
     env.fit_place_grid(
@@ -871,6 +996,7 @@ def test_eig_cache_invalidated_on_refit():
     )
     assert not hasattr(env, "_diffusion_eigenbasis_")
     assert not hasattr(env, "_diffusion_graph_")
+    assert not hasattr(env, "_diffusion_heat_kernel_rank_")
 
     rebuilt = cached_eigenbasis(env, rank=None)
     assert rebuilt[0] is not basis[0]  # recomputed after invalidation

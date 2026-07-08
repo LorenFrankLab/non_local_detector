@@ -39,6 +39,7 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
+    cached_heat_kernel_eigenbasis,
     check_smoothing_bandwidth,
     connected_component_labels,
     diffuse,
@@ -383,10 +384,15 @@ def fit_sorted_spikes_diffusion_encoding_model(
         Heat-kernel smoothing standard deviation in coordinate units (the physical
         bandwidth), by default sqrt(12.5).
     rank : int or None, optional
-        Number of Laplacian eigenmodes to use. None (default) uses the full basis;
-        a smaller rank is a low-pass approximation for large grids. Must be an
-        explicit parameter so ``sorted_spikes_algorithm_params={"rank": ...}`` is
-        not dropped by the base class's signature filter.
+        Number of Laplacian eigenmodes to use. None (default) auto-selects the rank
+        from ``position_std`` via ``diffusion.heat_kernel_rank`` — a
+        near-lossless truncation that keeps only the modes the heat kernel needs at
+        this bandwidth (``~ area / position_std**2`` modes, independent of grid
+        fineness), so large grids avoid a full dense eigendecomposition. Pass an
+        explicit integer to force a fixed rank, or a value ``>= n_interior_bins`` for
+        the exact full basis. Must be an explicit parameter so
+        ``sorted_spikes_algorithm_params={"rank": ...}`` is not dropped by the base
+        class's signature filter.
     block_size : int, optional
         Accepted for signature compatibility with the shared sorted-spikes params
         (the default params include ``block_size``); not used by the diffusion
@@ -421,7 +427,13 @@ def fit_sorted_spikes_diffusion_encoding_model(
 
     graph, node_order, bin_sizes = environment_graph(environment)
     check_smoothing_bandwidth(position_std, graph)
-    eigvals, eigvecs = cached_eigenbasis(environment, rank)
+    if rank is None:
+        # Auto-truncate: keep only the modes the heat kernel needs at this bandwidth
+        # (near-lossless), so large grids avoid a full dense eigendecomposition. Resolving
+        # the rank and building the basis share one eigensolve.
+        eigvals, eigvecs = cached_heat_kernel_eigenbasis(environment, position_std)
+    else:
+        eigvals, eigvecs = cached_eigenbasis(environment, rank)
 
     # environment_graph raises if the environment is unfitted, so is_track_interior_
     # is guaranteed set here (this also narrows the type for static checkers).
