@@ -178,6 +178,53 @@ def test_reml_recovers_smooth_field():
     assert corr > 0.95
 
 
+def test_population_recovers_distinct_place_fields():
+    """Each neuron is recovered at its OWN location in a single population fit.
+
+    Guards against the batched-over-neurons fit conflating neurons or mislocating
+    fields: fits several neurons with distinct 1D place-field centers at once and
+    checks that each fitted rate map (a) peaks at its own true center, (b) tracks its
+    simulated field, and (c) equals an independent per-neuron IRLS reference -- so the
+    neuron axis stays independent through the shared design and batched solve. The
+    existing per-neuron-reference test uses structureless counts; this one uses
+    distinct spatial tuning, which is what the population model exists to fit.
+    """
+    rng = np.random.default_rng(1)
+    n_bins = 60
+    penalty_weights, basis = diffusion_eigenbasis(
+        build_laplacian(path_graph(n_bins)), rank=25
+    )
+    x = np.arange(n_bins)
+    true_centers = [8, 24, 40, 52]  # distinct place-field locations
+    occupancy = rng.uniform(8.0, 20.0, size=n_bins)  # enough dwell for clear fields
+    true_log_rate = np.stack(
+        [2.5 * np.exp(-((x - c) ** 2) / (2 * 5.0**2)) - 0.5 for c in true_centers],
+        axis=1,
+    )
+    counts = rng.poisson(occupancy[:, None] * np.exp(true_log_rate)).astype(float)
+
+    penalty, _ = select_penalty_by_reml(counts, occupancy, basis, penalty_weights)
+    coeffs, eta, _, diagnostics = mrf_penalized_poisson_fit(
+        counts, occupancy, basis, penalty_weights, penalty
+    )
+    assert diagnostics["converged"]
+    coeffs = np.asarray(coeffs)
+    rate = np.exp(np.asarray(eta))
+
+    for neuron, center in enumerate(true_centers):
+        # Peaks at this neuron's own center (not smeared toward another's).
+        assert abs(int(np.argmax(rate[:, neuron])) - center) <= 1
+        # Tracks the simulated field.
+        corr = np.corrcoef(rate[:, neuron], np.exp(true_log_rate[:, neuron]))[0, 1]
+        assert corr > 0.95
+        # The batched column equals an independent per-neuron reference fit at the same
+        # penalty (no cross-neuron coupling from the shared design / batched solve).
+        expected = reference_fit_one_neuron(
+            counts[:, neuron], occupancy, basis, penalty_weights, penalty
+        )
+        np.testing.assert_allclose(coeffs[:, neuron], expected, atol=1e-4)
+
+
 def test_reml_robust_to_ill_conditioned_hessian():
     """With many zero-occupancy bins the Hessian is rank-deficient at small penalties;
     REML must not emit slogdet RuntimeWarnings and must still return a valid lambda
