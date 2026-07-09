@@ -18,6 +18,7 @@ from non_local_detector.likelihoods.common import (
     get_position_at_time,
     get_spike_time_bin_ind,
     safe_log,
+    validate_weights,
 )
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 
@@ -171,7 +172,9 @@ def fit_clusterless_gmm_encoding_model(
         Encoding spike waveform features per electrode.
     environment : Environment
     weights : jnp.ndarray | None, shape (n_time_position,), default=None
-        Per-position sample weights for occupancy.
+        Per-sample weights (e.g. posterior state probabilities during EM). None means
+        uniform. Weights the occupancy, per-electrode GPI and joint (position+mark)
+        GMMs (via ``sample_weight``), and the mean firing rate.
     gmm_components_occupancy : int, default=32
         Number of mixture components for occupancy GMM.
     gmm_components_gpi : int, default=32
@@ -210,8 +213,11 @@ def fit_clusterless_gmm_encoding_model(
     # Keep as numpy for interpolation (scipy.interpolate.interpn requires numpy anyway).
     position_time = np.asarray(position_time)
 
-    # Ignore weights for now
-    weights = None
+    if weights is None:
+        weights = np.ones((position.shape[0],))
+    weights = validate_weights(weights, position.shape[0])
+    # Weighted occupancy "time": sum of per-sample weights (uniform -> sample count).
+    weight_sum = float(weights.sum())
 
     # Interior bins (cached)
     if environment.is_track_interior_ is not None:
@@ -254,10 +260,6 @@ def fit_clusterless_gmm_encoding_model(
 
     occupancy = jnp.exp(log_occupancy)
     summed_ground_process_intensity = jnp.zeros_like(occupancy)
-    # Count actual training samples (not the wall-clock span) so that gaps
-    # introduced by is_training / encoding-group masks are not charged as
-    # occupancy time.
-    n_time_bins = max(len(position_time), 1)
 
     # Fit per-electrode models
     for elect_feats, elect_times in tqdm(
@@ -272,9 +274,11 @@ def fit_clusterless_gmm_encoding_model(
         )
         elect_times = elect_times[in_bounds]
         elect_feats = _as_jnp(elect_feats[in_bounds])
+        # Weight each encoding spike by the posterior weight at its spike time.
+        elect_weights = np.interp(np.asarray(elect_times), position_time, weights)
 
-        # Mean firing rate
-        mean_rate = float(len(elect_times) / n_time_bins)
+        # Weighted mean firing rate: weighted spike count / weighted occupancy time.
+        mean_rate = float(elect_weights.sum() / weight_sum) if weight_sum > 0 else 0.0
         mean_rate = jnp.clip(mean_rate, min=EPS)  # avoid 0 rate
         mean_rates.append(mean_rate)
 
@@ -286,7 +290,7 @@ def fit_clusterless_gmm_encoding_model(
         # GPI GMM (position only)
         gpi_gmm = _fit_gmm_density(
             X=enc_pos,
-            weights=None,
+            weights=elect_weights,
             n_components=gmm_components_gpi,
             random_state=gmm_random_state,
             covariance_type=gmm_covariance_type_gpi,
@@ -297,7 +301,7 @@ def fit_clusterless_gmm_encoding_model(
         joint_samples = jnp.concatenate([enc_pos, elect_feats], axis=1)
         joint_gmm = _fit_gmm_density(
             X=joint_samples,
-            weights=None,
+            weights=elect_weights,
             n_components=gmm_components_joint,
             random_state=gmm_random_state,
             covariance_type=gmm_covariance_type_joint,
