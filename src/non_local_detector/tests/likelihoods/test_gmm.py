@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 
 
@@ -188,3 +189,85 @@ def test_kmeans_first_restart_preserves_random_state(key):
     ref = np.zeros((X.shape[0], 3), dtype=resp0.dtype)
     ref[np.arange(X.shape[0]), km.labels_] = 1.0
     assert np.array_equal(resp0, ref)
+
+
+# ---------------------------------------------------------------------
+# Finding #3: validate init arrays and fit inputs
+# ---------------------------------------------------------------------
+def test_weights_init_wrong_length_raises():
+    """``weights_init`` whose length != n_components is rejected at
+    construction with a ``ValidationError`` (not a deep broadcasting error)."""
+    with pytest.raises(ValidationError):
+        GaussianMixtureModel(n_components=3, weights_init=jnp.asarray([0.5, 0.5]))
+
+
+def test_weights_init_not_summing_to_one_raises():
+    """``weights_init`` must sum to 1."""
+    with pytest.raises(ValidationError):
+        GaussianMixtureModel(n_components=3, weights_init=jnp.asarray([0.2, 0.2, 0.2]))
+
+
+def test_weights_init_negative_entry_raises():
+    """A negative ``weights_init`` entry that still sums to 1 must be rejected
+    at construction.
+
+    Otherwise ``jnp.log(weights)`` produces NaN deep in EM, which ``fit`` would
+    misreport as a singular covariance (wrong remedy for the user).
+    """
+    with pytest.raises(ValidationError):
+        GaussianMixtureModel(n_components=2, weights_init=jnp.asarray([-0.2, 1.2]))
+
+
+def test_nonfinite_X_raises_validation_error(key):
+    """Non-finite ``X`` is rejected with a clear ``ValidationError`` rather than
+    an opaque sklearn KMeans error or a misleading singular-covariance error."""
+    X = np.array(_two_clusters())  # writable copy
+    X[0, 0] = np.nan
+    model = GaussianMixtureModel(n_components=2, random_state=0)
+    with pytest.raises(ValidationError):
+        model.fit(jnp.asarray(X), key)
+
+
+def test_means_init_wrong_n_components_raises():
+    """``means_init`` with the wrong leading dimension is rejected at
+    construction."""
+    with pytest.raises(ValidationError):
+        GaussianMixtureModel(n_components=3, means_init=jnp.zeros((2, 4)))
+
+
+def test_means_init_wrong_n_features_raises(key):
+    """``means_init`` whose feature dimension disagrees with X is rejected at
+    fit time."""
+    X = _three_clusters()  # 2 features
+    model = GaussianMixtureModel(n_components=3, means_init=jnp.zeros((3, 5)))
+    with pytest.raises(ValidationError):
+        model.fit(X, key)
+
+
+def test_sample_weight_negative_raises(key):
+    """Negative ``sample_weight`` entries are rejected."""
+    X = _two_clusters()
+    sw = np.ones(X.shape[0])
+    sw[0] = -1.0
+    model = GaussianMixtureModel(n_components=2, random_state=0)
+    with pytest.raises(ValidationError):
+        model.fit(X, key, sample_weight=jnp.asarray(sw))
+
+
+def test_sample_weight_wrong_length_raises(key):
+    """``sample_weight`` whose length != n_samples is rejected."""
+    X = _two_clusters()
+    model = GaussianMixtureModel(n_components=2, random_state=0)
+    with pytest.raises(ValidationError):
+        model.fit(X, key, sample_weight=jnp.ones(X.shape[0] - 1))
+
+
+def test_covariances_init_wrong_shape_raises(key):
+    """``covariances_init`` inconsistent with ``covariance_type`` is rejected
+    at fit time (full expects (n_components, n_features, n_features))."""
+    X = _three_clusters()  # 2 features
+    model = GaussianMixtureModel(
+        n_components=3, covariance_type="full", covariances_init=jnp.zeros((3, 5, 5))
+    )
+    with pytest.raises(ValidationError):
+        model.fit(X, key)

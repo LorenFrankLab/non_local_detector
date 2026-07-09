@@ -717,12 +717,142 @@ class GaussianMixtureModel:
 
         if self.weights_init is not None:
             self.weights_init = jnp.asarray(self.weights_init)
+            if self.weights_init.shape != (self.n_components,):
+                raise ValidationError(
+                    "weights_init has the wrong shape",
+                    expected=f"shape ({self.n_components},)",
+                    got=f"shape {tuple(self.weights_init.shape)}",
+                    hint="Provide one initial mixture weight per component",
+                    example="    GaussianMixture(n_components=3, weights_init=[0.2, 0.3, 0.5])",
+                )
+            if not bool(jnp.all(jnp.isfinite(self.weights_init))) or bool(
+                jnp.any(self.weights_init < 0)
+            ):
+                # Caught here so a bad weight is diagnosed accurately: a negative
+                # or NaN weight would otherwise produce jnp.log(weights) = NaN
+                # deep in EM and be misreported as a singular covariance.
+                raise ValidationError(
+                    "weights_init must be finite and nonnegative",
+                    expected="all weights_init >= 0 and finite",
+                    got=f"weights_init = {np.asarray(self.weights_init)}",
+                    hint="Mixture weights are probabilities; they cannot be negative or NaN",
+                    example="    GaussianMixture(n_components=3, weights_init=[0.2, 0.3, 0.5])",
+                )
+            if not bool(jnp.isclose(jnp.sum(self.weights_init), 1.0, atol=1e-6)):
+                raise ValidationError(
+                    "weights_init must sum to 1",
+                    expected="sum(weights_init) == 1",
+                    got=f"sum = {float(jnp.sum(self.weights_init)):.6f}",
+                    hint="Normalize the initial weights into a probability distribution",
+                    example="    weights_init = weights_init / weights_init.sum()",
+                )
         if self.means_init is not None:
             self.means_init = jnp.asarray(self.means_init)
+            if (
+                self.means_init.ndim != 2
+                or self.means_init.shape[0] != self.n_components
+            ):
+                raise ValidationError(
+                    "means_init has the wrong shape",
+                    expected=f"shape ({self.n_components}, n_features)",
+                    got=f"shape {tuple(self.means_init.shape)}",
+                    hint="Provide one initial mean vector per component",
+                    example="    means_init = np.zeros((n_components, n_features))",
+                )
         if self.covariances_init is not None:
+            # Feature-dependent shape is validated at fit time (needs n_features).
             self.covariances_init = jnp.asarray(self.covariances_init)
 
     # ----------------- Public API -----------------
+    def _validate_fit_inputs(self, X: Array, sample_weight: Array | None) -> None:
+        """
+        Validate fit inputs whose constraints depend on ``X``.
+
+        Checks that ``X`` is 2-D and finite, ``sample_weight`` (if given) is
+        finite, nonnegative, and has one entry per sample, and any user-provided
+        init array agrees with ``X``'s number of features. Construction-time
+        constraints (component counts, ``weights_init`` sum) are enforced in
+        ``__post_init__``.
+
+        Parameters
+        ----------
+        X : Array, shape (n_samples, n_features)
+        sample_weight : Array | None, shape (n_samples,)
+
+        Raises
+        ------
+        ValidationError
+            If any input is inconsistent.
+        """
+        from non_local_detector.exceptions import ValidationError
+
+        if X.ndim != 2:
+            raise ValidationError(
+                "X must be a 2-D (n_samples, n_features) array",
+                expected="X.ndim == 2",
+                got=f"X.ndim = {X.ndim}, shape {tuple(X.shape)}",
+                hint="Reshape X so each row is one sample's feature vector",
+                example="    X = X.reshape(n_samples, n_features)",
+            )
+        if not bool(jnp.all(jnp.isfinite(X))):
+            # Caught here for a clear message; otherwise NaN/Inf surfaces either
+            # as an opaque sklearn KMeans ValueError or as a NaN lower bound
+            # misreported as a singular covariance.
+            raise ValidationError(
+                "X contains non-finite values",
+                expected="all entries of X are finite",
+                got="X has NaN or Inf entries",
+                hint="Remove or impute NaN/Inf samples before fitting",
+                example="    X = X[np.all(np.isfinite(X), axis=1)]",
+            )
+        n_samples, n_features = X.shape
+
+        if sample_weight is not None:
+            sw = jnp.asarray(sample_weight)
+            if sw.shape != (n_samples,):
+                raise ValidationError(
+                    "sample_weight has the wrong length",
+                    expected=f"shape ({n_samples},) matching X's rows",
+                    got=f"shape {tuple(sw.shape)}",
+                    hint="Provide one nonnegative weight per sample in X",
+                    example="    model.fit(X, key, sample_weight=np.ones(len(X)))",
+                )
+            if not bool(jnp.all(jnp.isfinite(sw))) or bool(jnp.any(sw < 0)):
+                raise ValidationError(
+                    "sample_weight must be finite and nonnegative",
+                    expected="all sample_weight >= 0 and finite",
+                    got=f"min = {float(jnp.min(sw)):.6g}, "
+                    f"all_finite = {bool(jnp.all(jnp.isfinite(sw)))}",
+                    hint="Remove or zero out negative/NaN weights before fitting",
+                    example="    sample_weight = np.clip(sample_weight, 0.0, None)",
+                )
+
+        if self.means_init is not None and self.means_init.shape[1] != n_features:
+            raise ValidationError(
+                "means_init feature dimension does not match X",
+                expected=f"means_init.shape == ({self.n_components}, {n_features})",
+                got=f"shape {tuple(self.means_init.shape)}",
+                hint="Each initial mean needs one entry per feature in X",
+                example=f"    means_init has shape ({self.n_components}, {n_features})",
+            )
+
+        if self.covariances_init is not None:
+            expected_shapes = {
+                "full": (self.n_components, n_features, n_features),
+                "tied": (n_features, n_features),
+                "diag": (self.n_components, n_features),
+                "spherical": (self.n_components,),
+            }
+            expected = expected_shapes[self.covariance_type]
+            if tuple(self.covariances_init.shape) != expected:
+                raise ValidationError(
+                    "covariances_init shape is inconsistent with covariance_type and X",
+                    expected=f"shape {expected} for covariance_type='{self.covariance_type}'",
+                    got=f"shape {tuple(self.covariances_init.shape)}",
+                    hint="Match covariances_init to the covariance parameterization and n_features",
+                    example=f"    covariance_type='{self.covariance_type}' expects {expected}",
+                )
+
     def fit(
         self, X: Array, key: jax.Array, sample_weight: Array | None = None
     ) -> GaussianMixtureModel:
@@ -741,7 +871,15 @@ class GaussianMixtureModel:
         Returns
         -------
         self : GaussianMixtureModel
+
+        Raises
+        ------
+        ValidationError
+            If ``X`` is not 2-D, ``sample_weight`` is negative or the wrong
+            length, or any user-provided init array is inconsistent with ``X``.
         """
+        self._validate_fit_inputs(X, sample_weight)
+
         best_lower_bound = -jnp.inf
         init_keys = jax.random.split(key, self.n_init)
 
