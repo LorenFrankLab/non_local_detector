@@ -388,6 +388,9 @@ def _estimate_log_gaussian_prob(
             # vmap here would batch (X - mu) and materialize the full (K, N, D)
             # array. This is the E-step and runs on every fit iteration and
             # every predict/score call, so the peak matters most here.
+            # Benchmarked: vmap is only faster on small data; at D=32, N=500k it is
+            # ~3x slower (the multi-GB (K, N, D) intermediate) and OOMs on GPU. Keep
+            # lax.map.
             mu, R = args
             Y = (X - mu) @ R  # (N, D)
             return jnp.sum(Y * Y, axis=1)  # (N,)
