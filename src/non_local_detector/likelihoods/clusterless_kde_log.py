@@ -79,13 +79,17 @@ def _log_joint_from_log_marginal(
     -------
     log_joint : jnp.ndarray, shape (n_rows, n_position_bins)
     """
-    # True log-rate: -inf at rate 0 (double-where avoids log(0)) forces LOG_EPS.
-    safe_mean_rate = jnp.where(mean_rate > 0.0, mean_rate, 1.0)
-    log_mean_rate = jnp.where(mean_rate > 0.0, jnp.log(safe_mean_rate), -jnp.inf)
+    # A positive rate uses safe_log (rates below EPS floor to LOG_EPS, exactly as the
+    # previous safe_log(mean_rate) did); a rate of exactly 0 forces -inf so the whole
+    # term floors to LOG_EPS (a zero rate always coincides with a -inf marginal on the
+    # non-local paths, so this is unchanged there, and it is what the local path needs).
+    log_mean_rate = jnp.where(mean_rate > 0.0, safe_log(mean_rate, eps=EPS), -jnp.inf)
     log_occ = safe_log(occupancy, eps=EPS)
     log_joint = log_mean_rate + log_marginal - log_occ[None, :]
-    # Zero-occupancy bins have no support -> LOG_EPS.
-    log_joint = jnp.where(occupancy[None, :] > 0.0, log_joint, LOG_EPS)
+    # Zero-occupancy bins have no support -> LOG_EPS, but preserve a NaN so a broken
+    # computation still reaches core.py's diagnostics instead of being masked here.
+    degenerate = (occupancy[None, :] <= 0.0) & ~jnp.isnan(log_joint)
+    log_joint = jnp.where(degenerate, LOG_EPS, log_joint)
     # Floor true zero-mass results (-inf, incl. a zero mean rate) to LOG_EPS; NaN
     # survives (isneginf is True only for -inf) and reaches core.py's diagnostics.
     return jnp.where(jnp.isneginf(log_joint), LOG_EPS, log_joint)

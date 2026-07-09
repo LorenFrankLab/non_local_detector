@@ -554,3 +554,46 @@ class TestLogJointFromLogMarginal:
         out = _log_joint_from_log_marginal(log_marginal, 2.5, occupancy)
         assert jnp.isfinite(out[0, 0])
         assert jnp.isnan(out[0, 1])
+
+    def test_nan_marginal_at_zero_occupancy_still_propagates(self):
+        """A NaN must survive even at a zero-occupancy bin: the zero-occupancy floor
+        must not launder a broken computation into a finite LOG_EPS. Occupancy can
+        underflow to exactly 0 in float32, so a NaN could co-occur with it."""
+        log_marginal = jnp.array([[jnp.nan, -1.0]])
+        occupancy = jnp.array([0.0, 0.5])  # bin 0: zero occupancy AND NaN marginal
+        out = _log_joint_from_log_marginal(log_marginal, 2.5, occupancy)
+        assert jnp.isnan(out[0, 0])
+        # A finite value at a zero-occupancy bin still floors.
+        finite = _log_joint_from_log_marginal(jnp.array([[2.0, -1.0]]), 2.5, occupancy)
+        assert jnp.allclose(finite[0, 0], LOG_EPS)
+
+    def test_subeps_mean_rate_floors_like_safe_log(self):
+        """A positive mean rate below EPS floors its contribution to LOG_EPS (as the
+        pre-refactor ``safe_log(mean_rate)`` did), not the raw ``log`` of a tiny rate.
+
+        Guards against a de-weighted electrode with a tiny-but-nonzero EM-posterior
+        rate (``mean_rate = weighted_spikes / weight_sum`` can be ``<< EPS``) diverging
+        from the old output by many nats.
+        """
+        log_marginal = jnp.array([[2.0, -1.0]])
+        occupancy = jnp.array([0.5, 0.5])
+        # Any positive rate < EPS gives the same (LOG_EPS-floored) rate contribution.
+        out_tiny = _log_joint_from_log_marginal(log_marginal, 1e-20, occupancy)
+        out_eps = _log_joint_from_log_marginal(log_marginal, EPS, occupancy)
+        assert jnp.allclose(out_tiny, out_eps)
+        # ... and it matches the explicit safe_log formula, not raw log(1e-20).
+        expected = (
+            safe_log(1e-20, eps=EPS)
+            + log_marginal
+            - safe_log(occupancy, eps=EPS)[None, :]
+        )
+        assert jnp.allclose(out_tiny, expected)
+
+    def test_zero_mean_rate_floors_to_log_eps(self):
+        """A zero mean rate (fully de-weighted electrode) forces every bin to LOG_EPS
+        via the -inf branch, even with a finite marginal -- this is what makes the
+        local path floor a de-weighted electrode to match the linear path."""
+        log_marginal = jnp.array([[2.0, -1.0]])
+        occupancy = jnp.array([0.5, 0.5])
+        out = _log_joint_from_log_marginal(log_marginal, 0.0, occupancy)
+        assert jnp.allclose(out, LOG_EPS)
