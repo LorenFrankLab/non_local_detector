@@ -12,9 +12,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.special import logsumexp
 
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.gmm import GaussianMixtureModel
+from non_local_detector.likelihoods.gmm import (
+    GaussianMixtureModel,
+    _compute_precision_cholesky,
+    _estimate_gaussian_covariances_tied,
+)
 
 
 @pytest.fixture
@@ -287,3 +292,79 @@ def test_singular_covariance_raises_actionable_error(key):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             model.fit(degenerate, key)
+
+
+# ---------------------------------------------------------------------
+# tied covariance parameterization (previously untested)
+# ---------------------------------------------------------------------
+def test_tied_covariance_fractional_weights_divide_by_sum_w():
+    """The tied covariance divides the scatter by the total weight, not by 1.0.
+
+    With fractional sample weights whose total is < 1, dividing by ``max(sum_w, 1.0)``
+    would bias the covariance down by ``1 / sum_w``; the fit floors at ``eps`` instead.
+    """
+    rng = np.random.default_rng(0)
+    n_samples, n_features, n_components = 60, 2, 2
+    X = jnp.asarray(rng.standard_normal((n_samples, n_features)))
+    resp = jnp.asarray(rng.random((n_samples, n_components)))
+    resp = resp / resp.sum() * 0.5  # total weight sum_w == 0.5 (fractional)
+    nk = resp.sum(axis=0)
+    means = (resp.T @ X) / nk[:, None]
+
+    cov = _estimate_gaussian_covariances_tied(resp, X, nk, means, reg_covar=0.0)
+
+    Xn, respn, nkn, meansn = (np.asarray(a) for a in (X, resp, nk, means))
+    w = respn.sum(axis=1)
+    scatter = Xn.T @ (Xn * w[:, None]) - (nkn * meansn.T) @ meansn
+    expected = scatter / w.sum()  # divide by sum_w == 0.5
+    assert np.allclose(np.asarray(cov), expected, rtol=1e-5, atol=1e-6)
+    # The pre-fix `/ max(sum_w, 1.0)` would halve it -- guard against a regression.
+    assert not np.allclose(np.asarray(cov), scatter / 1.0, rtol=1e-2)
+
+
+def test_tied_score_samples_matches_analytic_gaussian():
+    """A tied GMM's score_samples equals ``logsumexp_k[log w_k + log N(x|mu_k, Sigma)]``.
+
+    Exercises the ``tied`` branch of ``_estimate_log_gaussian_prob`` (the shared-
+    covariance Mahalanobis reduction), which no other test covered.
+    """
+    rng = np.random.default_rng(1)
+    n_components, n_features, n_samples = 3, 2, 40
+    means = rng.standard_normal((n_components, n_features))
+    a = rng.standard_normal((n_features, n_features))
+    cov = a @ a.T + np.eye(n_features)  # a shared SPD covariance
+    weights = rng.random(n_components)
+    weights = weights / weights.sum()
+    X = rng.standard_normal((n_samples, n_features))
+
+    gmm = GaussianMixtureModel(n_components=n_components, covariance_type="tied")
+    gmm.weights_ = jnp.asarray(weights)
+    gmm.means_ = jnp.asarray(means)
+    gmm.covariances_ = jnp.asarray(cov)
+    gmm.precisions_chol_ = _compute_precision_cholesky(jnp.asarray(cov), "tied")
+
+    actual = np.asarray(gmm.score_samples(jnp.asarray(X)))
+
+    inv = np.linalg.inv(cov)
+    _, logdet = np.linalg.slogdet(cov)
+
+    def log_mvn(x, mu):
+        diff = x - mu
+        maha = np.einsum("nd,de,ne->n", diff, inv, diff)
+        return -0.5 * (n_features * np.log(2 * np.pi) + logdet + maha)
+
+    comp = np.stack(
+        [np.log(weights[k]) + log_mvn(X, means[k]) for k in range(n_components)],
+        axis=1,
+    )
+    expected = logsumexp(comp, axis=1)
+    assert np.allclose(actual, expected, rtol=1e-4, atol=1e-4)
+
+
+def test_sample_weight_all_zero_raises(key):
+    """An all-zero sample_weight sums to 0 (no effective data) and is rejected with an
+    accurate message -- not a misleading singular-covariance / reg_covar error."""
+    model = GaussianMixtureModel(n_components=2, covariance_type="full", random_state=0)
+    X = _two_clusters()
+    with pytest.raises(ValidationError, match="sums to 0"):
+        model.fit(X, key, sample_weight=jnp.zeros(X.shape[0]))

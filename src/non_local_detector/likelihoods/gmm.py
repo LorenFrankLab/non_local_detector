@@ -29,6 +29,16 @@ Params = tuple[Array, Array, Array]  # (weights, means, covariances)
 CovType = Literal["full", "tied", "diag", "spherical"]
 
 
+def _has_negative_or_nonfinite(arr: Array) -> bool:
+    """True if ``arr`` has any NaN/Inf or negative entry (as a concrete Python bool).
+
+    Shared by the ``weights_init`` and ``sample_weight`` validators, which both reject
+    negative-or-non-finite weights (a NaN/negative weight becomes ``jnp.log(w) = NaN``
+    in EM and is otherwise misreported as a singular covariance).
+    """
+    return not bool(jnp.all(jnp.isfinite(arr))) or bool(jnp.any(arr < 0))
+
+
 # ---------------------------------------------------------------------
 # Covariance estimators
 # ---------------------------------------------------------------------
@@ -696,6 +706,7 @@ class GaussianMixtureModel:
     def __post_init__(self) -> None:
         # Import locally to avoid circular dependency:
         # gmm.py -> exceptions.py (if at top level, would create cycle through likelihoods/__init__.py)
+        from non_local_detector._validation import ensure_probability_distribution
         from non_local_detector.exceptions import ValidationError
 
         if self.n_components <= 0:
@@ -757,9 +768,7 @@ class GaussianMixtureModel:
                     hint="Provide one initial mixture weight per component",
                     example="    GaussianMixture(n_components=3, weights_init=[0.2, 0.3, 0.5])",
                 )
-            if not bool(jnp.all(jnp.isfinite(self.weights_init))) or bool(
-                jnp.any(self.weights_init < 0)
-            ):
+            if _has_negative_or_nonfinite(self.weights_init):
                 # Caught here so a bad weight is diagnosed accurately: a negative
                 # or NaN weight would otherwise produce jnp.log(weights) = NaN
                 # deep in EM and be misreported as a singular covariance.
@@ -770,14 +779,7 @@ class GaussianMixtureModel:
                     hint="Mixture weights are probabilities; they cannot be negative or NaN",
                     example="    GaussianMixture(n_components=3, weights_init=[0.2, 0.3, 0.5])",
                 )
-            if not bool(jnp.isclose(jnp.sum(self.weights_init), 1.0, atol=1e-6)):
-                raise ValidationError(
-                    "weights_init must sum to 1",
-                    expected="sum(weights_init) == 1",
-                    got=f"sum = {float(jnp.sum(self.weights_init)):.6f}",
-                    hint="Normalize the initial weights into a probability distribution",
-                    example="    weights_init = weights_init / weights_init.sum()",
-                )
+            ensure_probability_distribution(self.weights_init, "weights_init")
         if self.means_init is not None:
             self.means_init = jnp.asarray(self.means_init)
             if (
@@ -849,7 +851,7 @@ class GaussianMixtureModel:
                     hint="Provide one nonnegative weight per sample in X",
                     example="    model.fit(X, key, sample_weight=np.ones(len(X)))",
                 )
-            if not bool(jnp.all(jnp.isfinite(sw))) or bool(jnp.any(sw < 0)):
+            if _has_negative_or_nonfinite(sw):
                 raise ValidationError(
                     "sample_weight must be finite and nonnegative",
                     expected="all sample_weight >= 0 and finite",
@@ -857,6 +859,17 @@ class GaussianMixtureModel:
                     f"all_finite = {bool(jnp.all(jnp.isfinite(sw)))}",
                     hint="Remove or zero out negative/NaN weights before fitting",
                     example="    sample_weight = np.clip(sample_weight, 0.0, None)",
+                )
+            if not bool(jnp.sum(sw) > 0):
+                # An all-zero sample_weight has no effective data: total_weight = 0
+                # makes the M-step divide the covariance by 0 -> NaN, which would
+                # otherwise be misreported as a singular covariance / reg_covar issue.
+                raise ValidationError(
+                    "sample_weight sums to 0 (no effective training data)",
+                    expected="sum(sample_weight) > 0",
+                    got=f"sum = {float(jnp.sum(sw)):.6g}",
+                    hint="At least one sample must carry positive weight",
+                    example="    sample_weight = np.ones(len(X))",
                 )
 
         if self.means_init is not None and self.means_init.shape[1] != n_features:
