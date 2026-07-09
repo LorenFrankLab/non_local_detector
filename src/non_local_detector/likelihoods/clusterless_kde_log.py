@@ -43,19 +43,22 @@ def _log_joint_from_log_marginal(
     """Combine a log marginal density with mean rate and occupancy.
 
     Computes ``log(mean_rate * marginal / occupancy)`` in log space and applies one
-    degeneracy contract shared by every joint-intensity path (the GEMM
-    compensated-linear / logsumexp / chunked / streaming branches) and by the local
-    at-position likelihood: a bin with zero occupancy, a fully underflowed marginal
-    (``-inf``, true zero mass), or a zero mean rate (a fully de-weighted electrode)
-    collapses to ``LOG_EPS`` ("no support here"). A ``NaN`` marginal is deliberately
-    *not* floored (``isneginf`` catches only ``-inf``) so a broken computation reaches
-    ``core.py``'s NaN diagnostics instead of being laundered into a finite value.
-    Routing every branch through this one function makes them agree at degenerate bins.
+    degeneracy contract shared by the GEMM joint-intensity paths (compensated-linear /
+    logsumexp / chunked / streaming) and by the local at-position likelihood: a bin
+    with zero occupancy, a fully underflowed marginal (``-inf``, true zero mass), or a
+    zero mean rate (a fully de-weighted electrode) collapses to ``LOG_EPS`` ("no
+    support here"). A ``NaN`` marginal is deliberately *not* floored (``isneginf``
+    catches only ``-inf``, and the zero-occupancy mask is ``~isnan``-gated) so a broken
+    computation reaches ``core.py``'s NaN diagnostics instead of being laundered into a
+    finite value. (The ``use_gemm=False`` reference path in
+    ``estimate_log_joint_mark_intensity`` floors independently via ``safe_log`` and
+    does not route through here.)
 
-    The mean rate is folded in via the true ``log`` (``-inf`` at rate 0, not the
-    EPS-floored ``safe_log``) so a zero rate forces the whole term to ``-inf`` ->
-    ``LOG_EPS``, matching the linear path; ``safe_log(0)`` would instead leave
-    ``LOG_EPS + log_marginal`` sitting above the floor.
+    A positive mean rate is folded in via ``safe_log`` (rates below ``EPS`` floor to
+    ``LOG_EPS``, exactly as the previous ``safe_log(mean_rate)`` did); a rate of exactly
+    0 uses ``-inf`` so the whole term floors to ``LOG_EPS``. A zero rate always
+    coincides with a ``-inf`` marginal on the non-local paths (so this is unchanged
+    there) and is what the local path needs to floor a de-weighted electrode.
 
     A supported bin with a legitimately tiny (finite, below-``LOG_EPS``) marginal is
     *not* floored here; the caller applies that floor —
