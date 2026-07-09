@@ -118,8 +118,8 @@ def block_estimate_log_joint_mark_intensity(
     occupancy: jnp.ndarray,
     mean_rate: float,
     position_distance: jnp.ndarray,
-    encoding_weights: jnp.ndarray | None = None,
     block_size: int = 100,
+    encoding_weights: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Estimate the log joint mark intensity of decoding spikes and spike waveforms.
 
@@ -357,10 +357,10 @@ def predict_clusterless_kde_log_likelihood(
     summed_ground_process_intensity: jnp.ndarray,
     position_std: jnp.ndarray,
     waveform_std: jnp.ndarray,
-    encoding_weights: list[jnp.ndarray] | None = None,
     is_local: bool = False,
     block_size: int = 100,
     disable_progress_bar: bool = False,
+    encoding_weights: list[jnp.ndarray] | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of the clusterless KDE model.
 
@@ -431,9 +431,9 @@ def predict_clusterless_kde_log_likelihood(
             mean_rates,
             position_std,
             waveform_std,
-            encoding_weights,
             block_size,
             disable_progress_bar,
+            encoding_weights=encoding_weights,
         )
     else:
         is_track_interior = environment.is_track_interior_.ravel()
@@ -486,8 +486,8 @@ def predict_clusterless_kde_log_likelihood(
                     occupancy,
                     electrode_mean_rate,
                     position_distance,
-                    electrode_encoding_weights,
                     block_size,
+                    encoding_weights=electrode_encoding_weights,
                 ),
                 get_spike_time_bin_ind(electrode_spike_times, time),
                 indices_are_sorted=True,
@@ -511,9 +511,9 @@ def compute_local_log_likelihood(
     mean_rates: jnp.ndarray,
     position_std: jnp.ndarray,
     waveform_std: jnp.ndarray,
-    encoding_weights: list[jnp.ndarray] | None = None,
     block_size: int = 100,
     disable_progress_bar: bool = False,
+    encoding_weights: list[jnp.ndarray] | None = None,
 ) -> jnp.ndarray:
     """Compute the log likelihood at the animal's position.
 
