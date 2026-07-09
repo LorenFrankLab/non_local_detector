@@ -61,8 +61,18 @@ def _estimate_gaussian_covariances_full(
         Full covariance matrices for each component.
     """
     _, n_features = means.shape
-    diff = X[jnp.newaxis, :, :] - means[:, jnp.newaxis, :]  # (K, N, D)
-    covariances = jax.vmap(lambda r, d, n: ((d.T * r) @ d) / n)(resp.T, diff, nk)
+
+    # Map over components sequentially so only one (N, D) centered-data block is
+    # live at a time. A vmap here would batch the subtraction and force XLA to
+    # materialize the full (K, N, D) array; lax.map keeps the peak at (N, D).
+    # The centered form (X - mu) is retained (not the second-moment identity)
+    # to preserve numerical stability.
+    def per_component(args: tuple[Array, Array, Array]) -> Array:
+        mu, r, n = args
+        d = X - mu  # (N, D)
+        return ((d.T * r) @ d) / n
+
+    covariances = jax.lax.map(per_component, (means, resp.T, nk))
     # Symmetrize covariances for numerical stability (ensure exact symmetry)
     covariances = (covariances + jnp.swapaxes(covariances, -2, -1)) * 0.5
     covariances += jnp.eye(n_features, dtype=X.dtype) * reg_covar
@@ -108,7 +118,12 @@ def _estimate_gaussian_covariances_tied(
     # Mean term: sum_k nk_k mu_k mu_k^T == (nk * means^T) @ means
     avg_means2 = (nk * means.T) @ means  # (D, D)
 
-    covariance = (XTX_w - avg_means2) / jnp.maximum(sum_w, 1.0)
+    # Guard division by zero with a tiny floor rather than 1.0: for legitimate
+    # fractional sample weights whose total is < 1, dividing by 1.0 would bias
+    # the covariance downward; eps only intervenes when there is effectively no
+    # weight at all.
+    eps = 10 * jnp.finfo(X.dtype).eps
+    covariance = (XTX_w - avg_means2) / jnp.maximum(sum_w, eps)
     # Symmetrize covariance for numerical stability (ensure exact symmetry)
     covariance = (covariance + covariance.T) * 0.5
     covariance += jnp.eye(n_features, dtype=X.dtype) * reg_covar
@@ -358,14 +373,25 @@ def _estimate_log_gaussian_prob(
 
     if covariance_type == "full":
 
-        def comp(mu, R):
-            Y = (X - mu) @ R
-            return jnp.sum(Y * Y, axis=1)
+        def comp_full(args: tuple[Array, Array]) -> Array:
+            # Sequential over components so only one (N, D) block is live; a
+            # vmap here would batch (X - mu) and materialize the full (K, N, D)
+            # array. This is the E-step and runs on every fit iteration and
+            # every predict/score call, so the peak matters most here.
+            mu, R = args
+            Y = (X - mu) @ R  # (N, D)
+            return jnp.sum(Y * Y, axis=1)  # (N,)
 
-        maha = jax.vmap(comp)(means, precisions_chol).T
+        maha = jax.lax.map(comp_full, (means, precisions_chol)).T
     elif covariance_type == "tied":
-        Y = (X[None, :, :] - means[:, None, :]) @ precisions_chol  # (K, N, D)
-        maha = jnp.sum(Y * Y, axis=2).T
+
+        def comp_tied(mu: Array) -> Array:
+            # Sequential over components as in the 'full' branch above; a
+            # batched (X[None] - means[:, None]) would materialize (K, N, D).
+            Yk = (X - mu) @ precisions_chol  # (N, D)
+            return jnp.sum(Yk * Yk, axis=1)  # (N,)
+
+        maha = jax.lax.map(comp_tied, means).T
     elif covariance_type == "diag":
         precisions = precisions_chol**2
         maha = (
