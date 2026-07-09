@@ -42,46 +42,52 @@ def _log_joint_from_log_marginal(
 ) -> jnp.ndarray:
     """Combine a log marginal density with mean rate and occupancy.
 
-    Computes ``log(mean_rate * marginal / occupancy)`` in log-space and applies
-    a single degeneracy contract shared by the GEMM joint-intensity paths
-    (compensated-linear and logsumexp; the ``use_gemm=False`` reference path
-    floors independently via ``safe_log``): a bin with zero occupancy or a fully
-    underflowed marginal (``-inf``, true zero mass) collapses to ``LOG_EPS``
-    ("no support here"). A ``NaN`` marginal is deliberately *not* floored — it
-    signals a broken computation and must propagate so the HMM's NaN diagnostics
-    in ``core.py`` can surface it rather than have it laundered into a finite
-    value. Routing the compensated-linear and logsumexp branches through this
-    one function makes them agree at degenerate bins instead of returning
-    path-dependent ``-inf`` vs ``LOG_EPS``.
+    Computes ``log(mean_rate * marginal / occupancy)`` in log space and applies one
+    degeneracy contract shared by every joint-intensity path (the GEMM
+    compensated-linear / logsumexp / chunked / streaming branches) and by the local
+    at-position likelihood: a bin with zero occupancy, a fully underflowed marginal
+    (``-inf``, true zero mass), or a zero mean rate (a fully de-weighted electrode)
+    collapses to ``LOG_EPS`` ("no support here"). A ``NaN`` marginal is deliberately
+    *not* floored (``isneginf`` catches only ``-inf``) so a broken computation reaches
+    ``core.py``'s NaN diagnostics instead of being laundered into a finite value.
+    Routing every branch through this one function makes them agree at degenerate bins.
 
-    ``block_estimate_log_joint_mark_intensity``'s ``LOG_EPS`` clamp is no longer
-    what reconciles the paths at degenerate bins, but it is *not* redundant: a
-    supported bin with a legitimately tiny marginal comes back below ``LOG_EPS``
-    and is floored there.
+    The mean rate is folded in via the true ``log`` (``-inf`` at rate 0, not the
+    EPS-floored ``safe_log``) so a zero rate forces the whole term to ``-inf`` ->
+    ``LOG_EPS``, matching the linear path; ``safe_log(0)`` would instead leave
+    ``LOG_EPS + log_marginal`` sitting above the floor.
+
+    A supported bin with a legitimately tiny (finite, below-``LOG_EPS``) marginal is
+    *not* floored here; the caller applies that floor —
+    ``block_estimate_log_joint_mark_intensity``'s clamp for the non-local paths, an
+    explicit ``jnp.maximum`` for the local path (which does not re-clamp).
 
     Parameters
     ----------
-    log_marginal : jnp.ndarray, shape (n_decoding_spikes, n_position_bins)
-        Log marginal mark/position density. True zero-mass bins must be encoded
-        as ``-inf`` so they floor consistently; legitimate small values below
-        ``LOG_EPS`` are preserved here (and floored later by the block clamp).
+    log_marginal : jnp.ndarray, shape (n_rows, n_position_bins)
+        Log marginal mark/position density. ``n_rows`` is the number of decoding
+        spikes for the non-local paths, or ``1`` for the per-spike local path (which
+        passes its ``(n_spikes,)`` marginal as a single row so the per-bin broadcast
+        below becomes a per-spike elementwise combine).
     mean_rate : float
         Mean firing rate for this electrode.
     occupancy : jnp.ndarray, shape (n_position_bins,)
-        Occupancy density at position bins.
+        Occupancy density at the position bins (per decoding spike for the local
+        path).
 
     Returns
     -------
-    log_joint : jnp.ndarray, shape (n_decoding_spikes, n_position_bins)
+    log_joint : jnp.ndarray, shape (n_rows, n_position_bins)
     """
-    log_mean_rate = safe_log(mean_rate, eps=EPS)
+    # True log-rate: -inf at rate 0 (double-where avoids log(0)) forces LOG_EPS.
+    safe_mean_rate = jnp.where(mean_rate > 0.0, mean_rate, 1.0)
+    log_mean_rate = jnp.where(mean_rate > 0.0, jnp.log(safe_mean_rate), -jnp.inf)
     log_occ = safe_log(occupancy, eps=EPS)
     log_joint = log_mean_rate + log_marginal - log_occ[None, :]
-    # Zero-occupancy bins have no support -> LOG_EPS floor.
+    # Zero-occupancy bins have no support -> LOG_EPS.
     log_joint = jnp.where(occupancy[None, :] > 0.0, log_joint, LOG_EPS)
-    # Floor true zero-mass marginals (-inf) to LOG_EPS, but let a NaN through:
-    # isneginf is True only for -inf, so NaN survives and reaches core.py's
-    # NaN diagnostics instead of being masked to a finite value.
+    # Floor true zero-mass results (-inf, incl. a zero mean rate) to LOG_EPS; NaN
+    # survives (isneginf is True only for -inf) and reaches core.py's diagnostics.
     return jnp.where(jnp.isneginf(log_joint), LOG_EPS, log_joint)
 
 
@@ -1852,24 +1858,20 @@ def compute_local_log_likelihood(
             weights=electrode_encoding_weights,
         )
 
-        # Compute spike contribution in log-space:
-        # log(rate * density / occupancy) = log(rate) + log(density) - log(occupancy).
-        # A zero mean rate (a fully de-weighted electrode) must zero the whole
-        # product, matching the linear path's ``safe_log(rate * density / occ)``: use
-        # the true log (-inf at rate 0) rather than the EPS-floored ``safe_log`` so
-        # -inf propagates, then floor the assembled term at LOG_EPS. Without this the
-        # EPS floor on rate leaves ``LOG_EPS + log_density - log_occupancy``, which can
-        # sit well above LOG_EPS and diverge from the linear path by several nats.
-        safe_mean_rate = jnp.where(electrode_mean_rate > 0.0, electrode_mean_rate, 1.0)
-        log_mean_rate = jnp.where(
-            electrode_mean_rate > 0.0, jnp.log(safe_mean_rate), -jnp.inf
-        )
-        log_occupancy = safe_log(occupancy_at_spike_time, eps=EPS)
-
-        # Spike contribution: sum over spikes in each time bin. Floor at LOG_EPS to
-        # mirror the linear path's per-spike safe_log flooring.
+        # Spike contribution log(rate * density / occupancy), via the shared combiner
+        # so the local path uses the same degeneracy contract (rate/occupancy/zero-mass
+        # -> LOG_EPS) as the non-local paths. Pass the per-spike marginal as a single
+        # row so the combiner's per-bin broadcast becomes a per-spike combine. The
+        # combiner defers the tiny-finite floor to the caller (the non-local paths use
+        # the block clamp), so floor here to mirror the linear path's per-spike
+        # safe_log; unlike the non-local paths there is no later block clamp.
         spike_contribution = jnp.maximum(
-            log_mean_rate + log_marginal_density - log_occupancy, LOG_EPS
+            _log_joint_from_log_marginal(
+                log_marginal_density[None, :],
+                electrode_mean_rate,
+                occupancy_at_spike_time,
+            )[0],
+            LOG_EPS,
         )
 
         log_likelihood += jax.ops.segment_sum(
