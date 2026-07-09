@@ -144,6 +144,18 @@ def _fit_gmm_density(
 # ---------------------------------------------------------------------
 
 
+def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
+    """sample_weight for a GMM EM fit, or None to take the unweighted path.
+
+    Returns None when the caller passed no weights (keeps the unweighted fit
+    byte-identical) or when the weights sum to 0 (an all-zero ``sample_weight`` makes
+    the EM M-step divide by 0 and raise "Fitting failed"); otherwise the weights.
+    """
+    if weights_was_none or float(np.sum(weights)) == 0.0:
+        return None
+    return weights
+
+
 def fit_clusterless_gmm_encoding_model(
     position_time: jnp.ndarray,
     position: jnp.ndarray,
@@ -230,12 +242,7 @@ def fit_clusterless_gmm_encoding_model(
             UserWarning,
             stacklevel=2,
         )
-    # sample_weight for the GMM EM: None when the caller passed no weights (keeps the
-    # unweighted fit byte-identical) or when the total weight is 0 (an all-zero
-    # sample_weight makes the EM M-step divide by 0 and raise "Fitting failed").
-    occupancy_sample_weight = (
-        None if (weights_was_none or weight_sum == 0.0) else weights
-    )
+    occupancy_sample_weight = _gmm_sample_weight(weights, weights_was_none)
 
     # Interior bins (cached)
     if environment.is_track_interior_ is not None:
@@ -308,14 +315,7 @@ def fit_clusterless_gmm_encoding_model(
             position_time, position, elect_times, environment
         )
 
-        # sample_weight for this electrode: None when unweighted (byte-identical fit)
-        # or when the electrode's spikes carry no weight (all-zero sample_weight would
-        # make the EM M-step divide by 0 and raise "Fitting failed").
-        elect_sample_weight = (
-            None
-            if (weights_was_none or float(elect_weights.sum()) == 0.0)
-            else elect_weights
-        )
+        elect_sample_weight = _gmm_sample_weight(elect_weights, weights_was_none)
 
         # GPI GMM (position only)
         gpi_gmm = _fit_gmm_density(

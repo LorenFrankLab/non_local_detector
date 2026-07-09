@@ -292,14 +292,14 @@ def fit_clusterless_kde_encoding_model(
         )
         # Weight each encoding spike by the posterior weight at its spike time (linear
         # interpolation of the per-sample weights onto the spike times).
-        electrode_weights = jnp.asarray(
-            interpolate_weights_at_spike_times(
-                electrode_spike_times, position_time, weights
-            )
+        electrode_weights_host = interpolate_weights_at_spike_times(
+            electrode_spike_times, position_time, weights
         )
+        electrode_weights = jnp.asarray(electrode_weights_host)
         encoding_weights.append(electrode_weights)
-        # Weighted mean rate: weighted spike count / weighted occupancy time.
-        mean_rates.append(weighted_mean_rate(electrode_weights, weight_sum))
+        # Weighted mean rate: weighted spike count / weighted occupancy time. Sum on the
+        # host array (as the GMM fit does) to avoid a device->host sync per electrode.
+        mean_rates.append(weighted_mean_rate(electrode_weights_host, weight_sum))
         encoding_positions.append(
             get_position_at_time(
                 position_time, position, electrode_spike_times, environment
