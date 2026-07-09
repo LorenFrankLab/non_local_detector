@@ -300,23 +300,22 @@ def block_kde(
     :func:`block_log_kde` when the density can drop below the float32 range.
     """
     n_eval_points = eval_points.shape[0]
-    density = jnp.zeros((n_eval_points,))
 
     if n_eval_points == 0:
-        return density
+        return jnp.zeros((n_eval_points,))
 
     if weights is None:
         weights = jnp.ones((samples.shape[0],))
 
-    for start_ind in range(0, n_eval_points, block_size):
-        block_inds = slice(start_ind, start_ind + block_size)
-        density = jax.lax.dynamic_update_slice(
-            density,
-            kde(eval_points[block_inds], samples, std, weights),
-            (start_ind,),
-        )
-
-    return density
+    # Collect per-block densities and concatenate once. The blocks tile
+    # [0, n_eval_points) exactly, so this is identical to filling a preallocated
+    # array but avoids the O(n_eval * n_blocks) copies of a per-block
+    # dynamic_update_slice.
+    blocks = [
+        kde(eval_points[start : start + block_size], samples, std, weights)
+        for start in range(0, n_eval_points, block_size)
+    ]
+    return jnp.concatenate(blocks)
 
 
 @jax.jit
@@ -388,19 +387,19 @@ def block_log_kde(
     log_density_estimate : jnp.ndarray, shape (n_eval_points,)
     """
     n_eval = eval_points.shape[0]
-    out = jnp.full((n_eval,), LOG_EPS)
 
     if n_eval == 0:
-        return out
+        return jnp.full((n_eval,), LOG_EPS)
 
     if weights is None:
         weights = jnp.ones((samples.shape[0],))
 
-    for start in range(0, n_eval, block_size):
-        sl = slice(start, start + block_size)
-        block_vals = log_kde(eval_points[sl], samples, std, weights)
-        out = jax.lax.dynamic_update_slice(out, block_vals, (start,))
-    return out
+    # Collect per-block log-densities and concatenate once (see block_kde).
+    blocks = [
+        log_kde(eval_points[start : start + block_size], samples, std, weights)
+        for start in range(0, n_eval, block_size)
+    ]
+    return jnp.concatenate(blocks)
 
 
 @dataclass
