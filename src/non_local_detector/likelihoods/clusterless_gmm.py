@@ -4,6 +4,8 @@ Clusterless decoding using Gaussian Mixture Models (GMM)
 
 from __future__ import annotations
 
+import warnings
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -17,8 +19,10 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     get_position_at_time,
     get_spike_time_bin_ind,
+    interpolate_weights_at_spike_times,
     safe_log,
     validate_weights,
+    weighted_mean_rate,
 )
 from non_local_detector.likelihoods.gmm import GaussianMixtureModel
 
@@ -213,11 +217,25 @@ def fit_clusterless_gmm_encoding_model(
     # Keep as numpy for interpolation (scipy.interpolate.interpn requires numpy anyway).
     position_time = np.asarray(position_time)
 
+    weights_was_none = weights is None
     if weights is None:
         weights = np.ones((position.shape[0],))
     weights = validate_weights(weights, position.shape[0])
     # Weighted occupancy "time": sum of per-sample weights (uniform -> sample count).
     weight_sum = float(weights.sum())
+    if weight_sum == 0.0:
+        warnings.warn(
+            "clusterless GMM encoding weights sum to 0 (no effective training data "
+            "for this environment / encoding group); the fit will be degenerate.",
+            UserWarning,
+            stacklevel=2,
+        )
+    # sample_weight for the GMM EM: None when the caller passed no weights (keeps the
+    # unweighted fit byte-identical) or when the total weight is 0 (an all-zero
+    # sample_weight makes the EM M-step divide by 0 and raise "Fitting failed").
+    occupancy_sample_weight = (
+        None if (weights_was_none or weight_sum == 0.0) else weights
+    )
 
     # Interior bins (cached)
     if environment.is_track_interior_ is not None:
@@ -247,7 +265,7 @@ def fit_clusterless_gmm_encoding_model(
     # Fit occupancy GMM and precompute per-bin terms
     occupancy_model = _fit_gmm_density(
         X=pos_for_occ,
-        weights=weights,
+        weights=occupancy_sample_weight,
         n_components=gmm_components_occupancy,
         random_state=gmm_random_state,
         covariance_type=gmm_covariance_type_occupancy,
@@ -275,11 +293,14 @@ def fit_clusterless_gmm_encoding_model(
         elect_times = elect_times[in_bounds]
         elect_feats = _as_jnp(elect_feats[in_bounds])
         # Weight each encoding spike by the posterior weight at its spike time.
-        elect_weights = np.interp(np.asarray(elect_times), position_time, weights)
+        elect_weights = interpolate_weights_at_spike_times(
+            elect_times, position_time, weights
+        )
 
         # Weighted mean firing rate: weighted spike count / weighted occupancy time.
-        mean_rate = float(elect_weights.sum() / weight_sum) if weight_sum > 0 else 0.0
-        mean_rate = jnp.clip(mean_rate, min=EPS)  # avoid 0 rate
+        mean_rate = jnp.clip(
+            weighted_mean_rate(elect_weights, weight_sum), min=EPS
+        )  # avoid 0 rate
         mean_rates.append(mean_rate)
 
         # Positions at spike times
@@ -287,10 +308,19 @@ def fit_clusterless_gmm_encoding_model(
             position_time, position, elect_times, environment
         )
 
+        # sample_weight for this electrode: None when unweighted (byte-identical fit)
+        # or when the electrode's spikes carry no weight (all-zero sample_weight would
+        # make the EM M-step divide by 0 and raise "Fitting failed").
+        elect_sample_weight = (
+            None
+            if (weights_was_none or float(elect_weights.sum()) == 0.0)
+            else elect_weights
+        )
+
         # GPI GMM (position only)
         gpi_gmm = _fit_gmm_density(
             X=enc_pos,
-            weights=elect_weights,
+            weights=elect_sample_weight,
             n_components=gmm_components_gpi,
             random_state=gmm_random_state,
             covariance_type=gmm_covariance_type_gpi,
@@ -301,7 +331,7 @@ def fit_clusterless_gmm_encoding_model(
         joint_samples = jnp.concatenate([enc_pos, elect_feats], axis=1)
         joint_gmm = _fit_gmm_density(
             X=joint_samples,
-            weights=elect_weights,
+            weights=elect_sample_weight,
             n_components=gmm_components_joint,
             random_state=gmm_random_state,
             covariance_type=gmm_covariance_type_joint,

@@ -13,9 +13,11 @@ from non_local_detector.likelihoods.common import (
     block_kde,
     get_position_at_time,
     get_spike_time_bin_ind,
+    interpolate_weights_at_spike_times,
     log_gaussian_pdf,
     safe_log,
     validate_weights,
+    weighted_mean_rate,
 )
 
 
@@ -291,15 +293,13 @@ def fit_clusterless_kde_encoding_model(
         # Weight each encoding spike by the posterior weight at its spike time (linear
         # interpolation of the per-sample weights onto the spike times).
         electrode_weights = jnp.asarray(
-            np.interp(
-                np.asarray(electrode_spike_times), np.asarray(position_time), weights
+            interpolate_weights_at_spike_times(
+                electrode_spike_times, position_time, weights
             )
         )
         encoding_weights.append(electrode_weights)
         # Weighted mean rate: weighted spike count / weighted occupancy time.
-        mean_rates.append(
-            float(electrode_weights.sum() / weight_sum) if weight_sum > 0 else 0.0
-        )
+        mean_rates.append(weighted_mean_rate(electrode_weights, weight_sum))
         encoding_positions.append(
             get_position_at_time(
                 position_time, position, electrode_spike_times, environment

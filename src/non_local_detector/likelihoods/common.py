@@ -42,7 +42,7 @@ def as_std_array(std: "jnp.ndarray | float | int", n_dims: int) -> jnp.ndarray:
 
 
 def validate_weights(weights: np.ndarray, n_time: int) -> np.ndarray:
-    """Validate per-sample weights shared by the sorted-spikes encoding fits.
+    """Validate per-sample weights shared by the sorted-spikes and clusterless fits.
 
     Weights feed both the occupancy field and the spike counts, so an invalid
     array corrupts the whole encoding silently; validate once at the fit entry.
@@ -79,6 +79,50 @@ def validate_weights(weights: np.ndarray, n_time: int) -> np.ndarray:
         raise ValidationError("weights must be non-negative")
 
     return weights
+
+
+def interpolate_weights_at_spike_times(
+    spike_times: np.ndarray, position_time: np.ndarray, weights: np.ndarray
+) -> np.ndarray:
+    """Per-spike weights: the per-sample ``weights`` linearly interpolated onto times.
+
+    Spike times are assumed already clipped to ``[position_time[0], position_time[-1]]``,
+    so 1-D ``np.interp`` matches ``interpn`` without building an interpolator (and does
+    not extrapolate). Shared by the clusterless KDE and GMM encoding fits.
+
+    Parameters
+    ----------
+    spike_times : np.ndarray, shape (n_spikes,)
+    position_time : np.ndarray, shape (n_time_position,)
+    weights : np.ndarray, shape (n_time_position,)
+
+    Returns
+    -------
+    spike_weights : np.ndarray, shape (n_spikes,)
+    """
+    return np.interp(
+        np.asarray(spike_times), np.asarray(position_time), np.asarray(weights)
+    )
+
+
+def weighted_mean_rate(spike_weights: np.ndarray, weight_sum: float) -> float:
+    """Weighted mean firing rate: weighted spike count / weighted occupancy time.
+
+    Returns 0.0 when ``weight_sum`` is not positive (no effective training data), so a
+    zero-weight electrode/group contributes nothing rather than dividing by zero.
+
+    Parameters
+    ----------
+    spike_weights : np.ndarray, shape (n_spikes,)
+        Per-spike weights (see :func:`interpolate_weights_at_spike_times`).
+    weight_sum : float
+        Sum of the per-sample weights (the weighted occupancy time).
+
+    Returns
+    -------
+    mean_rate : float
+    """
+    return float(np.sum(spike_weights) / weight_sum) if weight_sum > 0 else 0.0
 
 
 def get_position_at_time(

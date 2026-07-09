@@ -7,6 +7,7 @@ posterior-weighted refit is silently uniform.
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
@@ -205,3 +206,121 @@ def test_predict_preserves_old_positional_api(simple_1d_environment):
         True,  # is_local, positional
     )
     assert np.asarray(ll).shape == (t_edges.shape[0], 1)  # local -> (n_time, 1)
+
+
+def _fit_gmm(env, t_pos, pos, spikes, feats, weights):
+    return fit_clusterless_gmm_encoding_model(
+        position_time=t_pos,
+        position=pos,
+        spike_times=spikes,
+        spike_waveform_features=feats,
+        environment=env,
+        weights=weights,
+        gmm_components_occupancy=4,
+        gmm_components_gpi=2,
+        gmm_components_joint=2,
+        gmm_random_state=0,
+        disable_progress_bar=True,
+    )
+
+
+def test_all_zero_weights_are_finite_clusterless_gmm(simple_1d_environment):
+    """All-zero weights must warn and fall back to an unweighted fit, not crash.
+
+    An all-zero ``sample_weight`` makes the GMM EM M-step divide by 0 and raise
+    ``RuntimeError: Fitting failed``. A fully-masked encoding group (e.g. a state
+    the EM posterior never assigns) must instead warn and produce a finite
+    (unweighted) encoding model so the fit degrades gracefully.
+    """
+    env = simple_1d_environment
+    t_pos = jnp.linspace(0.0, 10.0, 201)
+    pos = jnp.linspace(0.0, 10.0, 201)[:, None]
+    spikes = [jnp.array([2.0, 3.0, 5.0, 6.0, 7.5])]
+    feats = [
+        jnp.array(
+            [[0.0, 0.0], [0.2, 0.1], [1.0, -1.0], [-0.3, 0.4], [0.5, 0.5]], dtype=float
+        )
+    ]
+
+    with pytest.warns(UserWarning, match="sum to 0"):
+        enc = _fit_gmm(env, t_pos, pos, spikes, feats, weights=np.zeros(201))
+
+    assert np.all(np.isfinite(np.asarray(enc["log_occupancy"])))
+    assert np.all(np.isfinite(np.asarray(enc["mean_rates"])))
+    assert np.all(np.isfinite(np.asarray(enc["summed_ground_process_intensity"])))
+
+
+def test_per_electrode_zero_weights_are_finite_clusterless_gmm(simple_1d_environment):
+    """An electrode whose spikes all fall in the zero-weight region must not crash.
+
+    Global weight is positive (left half weighted, right half 0), so there is no
+    global warning, but the second electrode's spikes all fall in the zero-weight
+    right half -> its per-spike weights are all 0. That all-zero per-electrode
+    ``sample_weight`` previously crashed the GPI / joint GMM fit; it must fall back
+    to an unweighted per-electrode fit instead.
+    """
+    env = simple_1d_environment
+    t_pos = jnp.linspace(0.0, 10.0, 201)
+    pos = jnp.linspace(0.0, 10.0, 201)[:, None]
+    # Left electrode fires in the weighted half; right electrode fires in the zero half.
+    spikes = [jnp.array([1.0, 2.0, 3.0, 4.0]), jnp.array([6.0, 7.0, 8.0, 9.0])]
+    feats = [
+        jnp.array([[0.0, 0.0], [0.2, 0.1], [-0.1, 0.3], [0.4, -0.2]], dtype=float),
+        jnp.array([[1.0, -1.0], [0.9, -0.8], [1.1, -1.2], [0.8, -0.9]], dtype=float),
+    ]
+    w = np.where(np.asarray(t_pos) < 5.0, 1.0, 0.0)
+
+    enc = _fit_gmm(env, t_pos, pos, spikes, feats, weights=w)
+
+    mean_rates = np.asarray(enc["mean_rates"])
+    assert np.all(np.isfinite(mean_rates))
+    assert np.all(np.isfinite(np.asarray(enc["log_occupancy"])))
+    assert np.all(np.isfinite(np.asarray(enc["summed_ground_process_intensity"])))
+    # The zero-weight electrode contributes ~0 rate; the weighted one is larger.
+    assert mean_rates[1] < mean_rates[0]
+
+
+def test_all_zero_weights_are_finite_clusterless_kde(simple_1d_environment):
+    """All-zero weights: the KDE fit stays finite with zero mean rate (no NaN/crash)."""
+    env = simple_1d_environment
+    t_pos = jnp.linspace(0.0, 10.0, 101)
+    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
+    spikes = [jnp.array([2.0, 5.0, 7.5])]
+    feats = [jnp.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.5]], dtype=float)]
+
+    enc = _fit(env, t_pos, pos, spikes, feats, weights=np.zeros(101))
+
+    assert np.all(np.isfinite(np.asarray(enc["occupancy"])))
+    assert np.all(np.isfinite(np.asarray(enc["mean_rates"])))
+    assert np.allclose(np.asarray(enc["mean_rates"]), 0.0)
+    assert np.all(np.isfinite(np.asarray(enc["summed_ground_process_intensity"])))
+
+
+def test_none_weights_match_uniform_clusterless_gmm(simple_1d_environment):
+    """``weights=None`` (unweighted path) matches explicit uniform weights.
+
+    ``None`` takes the historical byte-identical unweighted GMM path; explicit
+    all-ones weights go through the weighted EM, which differs only by a float32
+    reduction-order (both express "every sample counts equally"). They must agree
+    to floating-point tolerance -- a large gap would mean ``None`` no longer
+    reproduces the pre-weights fit.
+    """
+    env = simple_1d_environment
+    t_pos = jnp.linspace(0.0, 10.0, 201)
+    pos = jnp.linspace(0.0, 10.0, 201)[:, None]
+    spikes = [jnp.array([2.0, 3.0, 5.0, 6.0, 7.5])]
+    feats = [
+        jnp.array(
+            [[0.0, 0.0], [0.2, 0.1], [1.0, -1.0], [-0.3, 0.4], [0.5, 0.5]], dtype=float
+        )
+    ]
+
+    none_enc = _fit_gmm(env, t_pos, pos, spikes, feats, weights=None)
+    ones_enc = _fit_gmm(env, t_pos, pos, spikes, feats, weights=np.ones(201))
+
+    assert np.allclose(
+        np.asarray(none_enc["log_occupancy"]),
+        np.asarray(ones_enc["log_occupancy"]),
+        atol=1e-4,
+        rtol=1e-4,
+    )
