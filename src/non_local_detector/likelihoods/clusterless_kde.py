@@ -9,12 +9,12 @@ from non_local_detector.likelihoods.common import (
     EPS,
     LOG_EPS,
     KDEModel,
+    _log_kernel_matrix,
     as_std_array,
     block_kde,
     get_position_at_time,
     get_spike_time_bin_ind,
     interpolate_weights_at_spike_times,
-    log_gaussian_pdf,
     safe_log,
     validate_weights,
     weighted_mean_rate,
@@ -43,16 +43,7 @@ def kde_distance(
     distance : jnp.ndarray, shape (n_samples, n_eval_points)
 
     """
-    log_distance = jnp.zeros((samples.shape[0], eval_points.shape[0]))
-    for dim_eval_points, dim_samples, dim_std in zip(
-        eval_points.T, samples.T, std, strict=True
-    ):
-        log_distance += log_gaussian_pdf(
-            jnp.expand_dims(dim_eval_points, axis=0),
-            jnp.expand_dims(dim_samples, axis=1),
-            dim_std,
-        )
-    return jnp.exp(log_distance)
+    return jnp.exp(_log_kernel_matrix(eval_points, samples, std))
 
 
 def estimate_log_joint_mark_intensity(
