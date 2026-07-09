@@ -35,7 +35,9 @@ from non_local_detector.likelihoods.common import (
     EPS,
     get_position_at_time,
     get_spikecount_per_time_bin,
+    interpolate_weights_at_spike_times,
     validate_weights,
+    weighted_mean_rate,
 )
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
@@ -315,13 +317,11 @@ def pixellate_interior_fields(
                 neuron_spike_times <= position_time[-1],
             )
         ]
-        # Spike times are already clipped to [position_time[0], position_time[-1]],
-        # so 1-D linear np.interp matches interpn without building an interpolator.
-        weights_at_spike_times = np.interp(neuron_spike_times, position_time, weights)
-
-        mean_rates.append(
-            float(weights_at_spike_times.sum() / weight_sum) if weight_sum > 0 else 0.0
+        # Spike times are clipped above, so the 1-D interpolation does not extrapolate.
+        weights_at_spike_times = interpolate_weights_at_spike_times(
+            neuron_spike_times, position_time, weights
         )
+        mean_rates.append(weighted_mean_rate(weights_at_spike_times, weight_sum))
 
         if neuron_spike_times.shape[0] > 0:
             spike_positions = get_position_at_time(

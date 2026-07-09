@@ -59,6 +59,7 @@ from non_local_detector.likelihoods.common import (
     KDEModel,
     get_position_at_time,
     get_spikecount_per_time_bin,
+    weighted_mean_rate,
 )
 
 
@@ -189,9 +190,7 @@ def fit_sorted_spikes_kde_encoding_model(
             pass
 
         weight_sum = weights.sum()
-        mean_rates.append(
-            weights_at_spike_times.sum() / weight_sum if weight_sum > 0 else 0.0
-        )
+        mean_rates.append(weighted_mean_rate(weights_at_spike_times, weight_sum))
         neuron_marginal_model = KDEModel(std=position_std, block_size=block_size).fit(
             get_position_at_time(
                 position_time, position, neuron_spike_times, environment

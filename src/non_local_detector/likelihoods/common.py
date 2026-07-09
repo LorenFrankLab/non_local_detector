@@ -88,7 +88,7 @@ def interpolate_weights_at_spike_times(
 
     Spike times are assumed already clipped to ``[position_time[0], position_time[-1]]``,
     so 1-D ``np.interp`` matches ``interpn`` without building an interpolator (and does
-    not extrapolate). Shared by the clusterless KDE and GMM encoding fits.
+    not extrapolate). Shared by the clusterless and sorted-spikes encoding fits.
 
     Parameters
     ----------
