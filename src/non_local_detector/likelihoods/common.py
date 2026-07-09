@@ -252,6 +252,7 @@ def _log_kernel_matrix(
     return log_kernel
 
 
+@jax.jit
 def kde(
     eval_points: jnp.ndarray,
     samples: jnp.ndarray,
