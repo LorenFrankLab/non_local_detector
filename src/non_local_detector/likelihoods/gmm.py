@@ -764,7 +764,9 @@ class GaussianMixtureModel:
         self.n_iter_ = 0
 
         for i in range(self.n_init):
-            params = self._initialize_parameters(X, init_keys[i], sample_weight=sw)
+            params = self._initialize_parameters(
+                X, init_keys[i], sample_weight=sw, init_index=i
+            )
             (
                 final_w,
                 final_m,
@@ -882,25 +884,58 @@ class GaussianMixtureModel:
         )
         return rand_resp / rand_resp.sum(axis=1, keepdims=True)
 
-    def _initialize_kmeans_resp(self, X: Array) -> Array:
+    def _initialize_kmeans_resp(
+        self, X: Array, key: jax.Array, init_index: int = 0
+    ) -> Array:
         """
         One-hot responsibilities from sklearn KMeans.
 
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
+        key : jax.Array
+            Per-restart PRNG key. Used to derive a distinct KMeans seed for
+            restarts beyond the first when ``random_state`` is set.
+        init_index : int, default=0
+            Index of the current restart within ``n_init``.
 
         Returns
         -------
         resp : Array, shape (n_samples, n_components)
+
+        Notes
+        -----
+        Seeding rules keep single-init fits reproducible and byte-compatible
+        while making multi-restart runs actually explore:
+
+        - ``random_state is None``: pass ``None`` to KMeans, which draws from
+          NumPy's global RNG and so already varies across restarts.
+        - ``random_state`` set, ``init_index == 0``: use ``random_state``
+          directly (the reproducible primary init).
+        - ``random_state`` set, ``init_index > 0``: derive a distinct,
+          reproducible seed from ``key`` so ``n_init`` restarts differ instead
+          of repeating the primary init.
         """
         n_samples, _ = X.shape
         X_np = np.asarray(X)
+        if self.random_state is None:
+            seed: int | None = None
+        elif init_index == 0:
+            seed = self.random_state
+        else:
+            seed = int(
+                jax.random.randint(
+                    jax.random.fold_in(key, self.random_state),
+                    (),
+                    0,
+                    jnp.iinfo(jnp.int32).max,
+                )
+            )
         km = KMeans(
             n_clusters=self.n_components,
             init=self.kmeans_init,
             n_init=self.kmeans_n_init,
-            random_state=self.random_state,
+            random_state=seed,
         ).fit(X_np)
         labels = km.labels_
         resp_np = np.zeros((n_samples, self.n_components), dtype=X_np.dtype)
@@ -912,6 +947,7 @@ class GaussianMixtureModel:
         X: Array,
         key: jax.Array,
         sample_weight: Array | None = None,
+        init_index: int = 0,
     ) -> Params:
         """
         Construct initial (weights, means, covariances).
@@ -930,6 +966,10 @@ class GaussianMixtureModel:
         X : Array, shape (n_samples, n_features)
         key : jax.Array
         sample_weight : Array | None, shape (n_samples,), default=None
+        init_index : int, default=0
+            Index of the current restart within ``n_init``; forwarded to
+            ``_initialize_kmeans_resp`` so restarts beyond the first get
+            distinct KMeans seeds.
 
         Returns
         -------
@@ -948,7 +988,7 @@ class GaussianMixtureModel:
             return self.weights_init, self.means_init, self.covariances_init
 
         if self.init_params == "kmeans":
-            resp = self._initialize_kmeans_resp(X)
+            resp = self._initialize_kmeans_resp(X, key, init_index)
         elif self.init_params == "random":
             resp = self._initialize_random(X, key)
         else:

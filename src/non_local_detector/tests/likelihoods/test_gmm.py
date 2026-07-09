@@ -141,3 +141,50 @@ def test_partial_user_init_only_means_are_respected(key):
         "Missing covariances were filled with identity instead of the "
         "responsibility-based cluster covariances"
     )
+
+
+# ---------------------------------------------------------------------
+# Finding #1: kmeans n_init restarts must actually differ
+# ---------------------------------------------------------------------
+def test_kmeans_restarts_differ_across_inits(key):
+    """With ``init_params='kmeans'`` and a fixed ``random_state``, restarts
+    beyond the first must use distinct KMeans seeds.
+
+    Regression: ``_initialize_kmeans_resp`` ignored the per-restart key and
+    seeded every KMeans with ``self.random_state``, so all ``n_init`` restarts
+    produced byte-identical responsibilities and ``n_init`` did nothing for the
+    default ``kmeans`` init.
+    """
+    X = _three_clusters()
+    model = GaussianMixtureModel(
+        n_components=3, init_params="kmeans", n_init=5, random_state=0
+    )
+    init_keys = jax.random.split(key, model.n_init)
+    resps = [
+        np.asarray(model._initialize_kmeans_resp(X, init_keys[i], init_index=i))
+        for i in range(model.n_init)
+    ]
+    assert any(
+        not np.array_equal(resps[0], resps[i]) for i in range(1, model.n_init)
+    ), "All kmeans restarts produced identical responsibilities"
+
+
+def test_kmeans_first_restart_preserves_random_state(key):
+    """The primary restart (index 0) with a set ``random_state`` must keep
+    using that seed directly, so single-init fits stay byte-identical to the
+    pre-fix behavior (and to a direct ``KMeans(random_state=...)``)."""
+    from sklearn.cluster import KMeans
+
+    X = _three_clusters()
+    model = GaussianMixtureModel(
+        n_components=3, init_params="kmeans", n_init=5, random_state=0
+    )
+    init_keys = jax.random.split(key, model.n_init)
+    resp0 = np.asarray(model._initialize_kmeans_resp(X, init_keys[0], init_index=0))
+
+    km = KMeans(n_clusters=3, init="k-means++", n_init=1, random_state=0).fit(
+        np.asarray(X)
+    )
+    ref = np.zeros((X.shape[0], 3), dtype=resp0.dtype)
+    ref[np.arange(X.shape[0]), km.labels_] = 1.0
+    assert np.array_equal(resp0, ref)
