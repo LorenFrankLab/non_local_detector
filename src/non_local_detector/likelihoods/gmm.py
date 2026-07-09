@@ -749,11 +749,17 @@ class GaussianMixtureModel:
             None if sample_weight is None else jnp.asarray(sample_weight, dtype=X.dtype)
         )
 
-        # Default state before any init is evaluated. If every init returns
-        # final_lb == -inf the `if final_lb > best_lower_bound` block below
-        # never fires; the `weights_ is None` guard then raises, but having
-        # these set keeps downstream code (the converged_ warning) robust to
-        # future changes in init semantics.
+        # Reset all fitted attributes so a refit cannot silently retain the
+        # previous fit's parameters. If every init returns final_lb == -inf/NaN,
+        # the `if final_lb > best_lower_bound` block below never fires; because
+        # weights_ is now None the guard raises rather than reporting the stale
+        # means/covariances from an earlier successful fit with
+        # converged_=False, n_iter_=0.
+        self.weights_ = None
+        self.means_ = None
+        self.covariances_ = None
+        self.precisions_chol_ = None
+        self.lower_bound_ = None
         self.converged_ = False
         self.n_iter_ = 0
 
