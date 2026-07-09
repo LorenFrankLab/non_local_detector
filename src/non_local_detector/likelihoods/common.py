@@ -335,10 +335,17 @@ def log_kde(
             dim_std,
         )
 
-    log_w = safe_log(weights)  # (n_samp,)
+    # True log-weight: a zero weight (log = -inf) drops the sample from both the
+    # numerator and the denominator, exactly like the linear ``kde``. ``safe_log``
+    # would floor a zero weight to LOG_EPS and leak that sample's kernel back in
+    # (visible at an eval point near a zero-weight sample but far from the rest).
+    safe_weights = jnp.where(weights > 0, weights, 1.0)
+    log_w = jnp.where(weights > 0, jnp.log(safe_weights), -jnp.inf)  # (n_samp,)
     log_num = logsumexp(log_w[:, None] + K_log, axis=0)  # (n_eval,)
-    log_den = logsumexp(log_w)  # scalar
-    return log_num - log_den
+    log_den = logsumexp(log_w)  # scalar; -inf only when every weight is 0
+    # All-zero weights -> no support anywhere. Return LOG_EPS (matching the linear
+    # kde's 0.0, which callers floor) instead of NaN from -inf - (-inf).
+    return jnp.where(jnp.isneginf(log_den), LOG_EPS, log_num - log_den)
 
 
 def block_log_kde(

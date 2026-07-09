@@ -110,6 +110,45 @@ def test_log_kde_consistent_with_kde_log():
     assert jnp.allclose(log_vals, jnp.log(lin_vals), rtol=1e-5, atol=1e-6)
 
 
+def test_log_kde_zero_weight_sample_is_dropped():
+    """A zero-weight sample must not change ``log_kde`` vs. omitting it entirely.
+
+    ``safe_log`` floors a zero weight to LOG_EPS instead of -inf, so a zero-weight
+    sample leaks an ``EPS * kernel`` contribution into the log KDE. At an eval point
+    that sits on the zero-weight sample but far from every positive-weight sample the
+    legitimate density is ~0, so the leak dominates the result. Dropping the
+    zero-weight sample (as the linear ``kde`` does exactly) must give the same value.
+    """
+    # Sample 0 (zero weight) sits at the origin; the positive-weight samples are far
+    # away, and eval point 0 is at the origin -> only the leak can reach it.
+    samples = jnp.array([[0.0, 0.0], [20.0, 20.0], [21.0, -21.0]])
+    weights = jnp.array([0.0, 2.0, 1.5])
+    eval_points = jnp.array([[0.0, 0.0], [20.0, 20.0], [5.0, 5.0]])
+    std = jnp.array([1.0, 1.0])
+
+    with_zero = log_kde(eval_points, samples, std, weights)
+    without = log_kde(eval_points, samples[1:], std, weights[1:])
+
+    assert jnp.allclose(with_zero, without, rtol=1e-5, atol=1e-6), (
+        f"zero-weight sample leaked; max|diff|={jnp.abs(with_zero - without).max():.3e}"
+    )
+
+
+def test_log_kde_all_zero_weights_is_finite():
+    """All-zero weights must not produce NaN (the -inf/-inf degenerate case)."""
+    r = rng(7)
+    samples = r.normal(size=(10, 1))
+    eval_points = r.normal(size=(5, 1))
+    std = jnp.array([1.0])
+    log_vals = log_kde(
+        jnp.asarray(eval_points),
+        jnp.asarray(samples),
+        std,
+        jnp.zeros((samples.shape[0],)),
+    )
+    assert jnp.all(jnp.isfinite(log_vals))
+
+
 def test_block_log_kde_matches_log_kde():
     r = rng(4)
     samples = r.normal(size=(80, 1))
