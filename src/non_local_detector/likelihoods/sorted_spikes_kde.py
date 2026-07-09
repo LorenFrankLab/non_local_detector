@@ -176,6 +176,9 @@ def fit_sorted_spikes_kde_encoding_model(
                 neuron_spike_times <= position_time[-1],
             )
         ]
+        # Kept as interpn rather than the shared `interpolate_weights_at_spike_times`
+        # (np.interp) helper on purpose: the two differ by ~1e-16 and this fit is
+        # pinned by golden regression, so the cosmetic dedup is not worth re-baselining.
         weights_at_spike_times = scipy.interpolate.interpn(
             (position_time,),
             weights,

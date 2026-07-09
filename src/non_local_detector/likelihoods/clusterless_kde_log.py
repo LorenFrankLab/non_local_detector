@@ -89,13 +89,13 @@ def _log_joint_from_log_marginal(
     log_mean_rate = jnp.where(mean_rate > 0.0, safe_log(mean_rate, eps=EPS), -jnp.inf)
     log_occ = safe_log(occupancy, eps=EPS)
     log_joint = log_mean_rate + log_marginal - log_occ[None, :]
-    # Zero-occupancy bins have no support -> LOG_EPS, but preserve a NaN so a broken
-    # computation still reaches core.py's diagnostics instead of being masked here.
-    degenerate = (occupancy[None, :] <= 0.0) & ~jnp.isnan(log_joint)
-    log_joint = jnp.where(degenerate, LOG_EPS, log_joint)
-    # Floor true zero-mass results (-inf, incl. a zero mean rate) to LOG_EPS; NaN
-    # survives (isneginf is True only for -inf) and reaches core.py's diagnostics.
-    return jnp.where(jnp.isneginf(log_joint), LOG_EPS, log_joint)
+    # Floor degenerate bins -- zero occupancy (no support) or a true zero-mass marginal
+    # (-inf, incl. a zero mean rate) -- to LOG_EPS, but exclude NaN (`& ~isnan`) so a
+    # broken computation still reaches core.py's diagnostics instead of being masked.
+    floor = ((occupancy[None, :] <= 0.0) | jnp.isneginf(log_joint)) & ~jnp.isnan(
+        log_joint
+    )
+    return jnp.where(floor, LOG_EPS, log_joint)
 
 
 @jax.jit

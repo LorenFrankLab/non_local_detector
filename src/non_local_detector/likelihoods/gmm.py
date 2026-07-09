@@ -992,6 +992,15 @@ class GaussianMixtureModel:
 
         return self
 
+    def _check_fitted(self) -> None:
+        """Raise if the model is not fitted (predict/score need fitted params)."""
+        if (
+            self.weights_ is None
+            or self.means_ is None
+            or self.precisions_chol_ is None
+        ):
+            raise RuntimeError("This GMM instance is not fitted yet.")
+
     def predict(self, X: Array) -> Array:
         """
         Predict labels by maximum a posteriori component.
@@ -1018,12 +1027,7 @@ class GaussianMixtureModel:
         -------
         probs : Array, shape (n_samples, n_components)
         """
-        if (
-            self.weights_ is None
-            or self.means_ is None
-            or self.precisions_chol_ is None
-        ):
-            raise RuntimeError("This GMM instance is not fitted yet.")
+        self._check_fitted()
         _, log_resp = _estimate_log_prob_resp(
             X, self.means_, self.precisions_chol_, self.covariance_type, self.weights_
         )
@@ -1041,12 +1045,7 @@ class GaussianMixtureModel:
         -------
         log_likelihoods : Array, shape (n_samples,)
         """
-        if (
-            self.weights_ is None
-            or self.means_ is None
-            or self.precisions_chol_ is None
-        ):
-            raise RuntimeError("This GMM instance is not fitted yet.")
+        self._check_fitted()
         log_likelihoods, _ = _estimate_log_prob_resp(
             X, self.means_, self.precisions_chol_, self.covariance_type, self.weights_
         )
