@@ -271,3 +271,19 @@ def test_covariances_init_wrong_shape_raises(key):
     )
     with pytest.raises(ValidationError):
         model.fit(X, key)
+
+
+# ---------------------------------------------------------------------
+# Finding #4: singular-covariance failures get an actionable error
+# ---------------------------------------------------------------------
+def test_singular_covariance_raises_actionable_error(key):
+    """When every restart collapses to a singular covariance (NaN lower
+    bound), ``fit`` raises a ``RuntimeError`` that names the cause and the
+    ``reg_covar`` remedy instead of a bare ``"Fitting failed."``.
+    """
+    degenerate = jnp.ones((60, 2), dtype=jnp.float32)
+    model = GaussianMixtureModel(n_components=2, reg_covar=0.0, random_state=0)
+    with pytest.raises(RuntimeError, match="reg_covar"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(degenerate, key)

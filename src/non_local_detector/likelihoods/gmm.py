@@ -225,8 +225,14 @@ def _compute_precision_cholesky(
     if covariance_type == "tied":
         return single_inv_chol(covariances)
     # diag / spherical
-    # Use jax.lax.cond or clipping instead of Python if to avoid tracer error
-    # Clip ensures positive values, eliminating need for runtime check in JIT
+    # Clip to a positive floor so the reciprocal-sqrt precision stays finite
+    # inside JIT (a Python `if`/raise on a traced value is not allowed here).
+    # NOTE: this deliberately diverges from sklearn, which *raises* when a
+    # variance is <= 0. Here a collapsed component (variance clipped up from
+    # <=0) yields a large-but-finite precision (~1e5) instead of an error, so
+    # the diag/spherical paths stay robust; increase reg_covar if a component
+    # is genuinely collapsing. The full/tied paths surface singular covariances
+    # as a NaN lower bound, which `fit` reports with an actionable error.
     covariances = jnp.clip(covariances, min=1e-10, max=None)
     return 1.0 / jnp.sqrt(covariances)
 
@@ -877,6 +883,10 @@ class GaussianMixtureModel:
         ValidationError
             If ``X`` is not 2-D, ``sample_weight`` is negative or the wrong
             length, or any user-provided init array is inconsistent with ``X``.
+        RuntimeError
+            If every restart fails to produce a finite lower bound (e.g. a
+            component's covariance became singular). The message names the
+            likely cause and remedy.
         """
         self._validate_fit_inputs(X, sample_weight)
 
@@ -901,6 +911,7 @@ class GaussianMixtureModel:
         self.converged_ = False
         self.n_iter_ = 0
 
+        saw_nan = False
         for i in range(self.n_init):
             params = self._initialize_parameters(
                 X, init_keys[i], sample_weight=sw, init_index=i
@@ -913,6 +924,11 @@ class GaussianMixtureModel:
                 n_iter,
                 final_converged,
             ) = self._fit_single(X, params, sample_weight=sw)
+
+            # A singular covariance makes the Cholesky (and hence the lower
+            # bound) NaN; NaN never beats best_lower_bound, so such a restart is
+            # discarded. Remember it to give an actionable error if all fail.
+            saw_nan = saw_nan or bool(np.isnan(final_lb))
 
             if final_lb > best_lower_bound:
                 best_lower_bound = final_lb
@@ -927,7 +943,17 @@ class GaussianMixtureModel:
 
         self.lower_bound_ = float(best_lower_bound)
         if self.weights_ is None:
-            raise RuntimeError("Fitting failed.")
+            if saw_nan:
+                raise RuntimeError(
+                    "GMM fitting failed: a component's covariance became "
+                    "singular, giving a non-finite log-likelihood. Increase "
+                    "reg_covar (e.g. to 1e-4), reduce n_components, or remove "
+                    "duplicate/degenerate samples, then refit."
+                )
+            raise RuntimeError(
+                "GMM fitting failed: no restart produced a finite lower bound. "
+                "Check X for NaN/Inf values or try a different initialization."
+            )
 
         if not self.converged_:
             warnings.warn(
