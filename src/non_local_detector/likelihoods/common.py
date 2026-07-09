@@ -222,6 +222,36 @@ def gaussian_pdf(x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray) -> jnp.n
     return jnp.exp(log_gaussian_pdf(x, mean, sigma))
 
 
+def _log_kernel_matrix(
+    eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
+) -> jnp.ndarray:
+    """Log Gaussian kernel matrix summed over dimensions.
+
+    Shared by :func:`kde` and :func:`log_kde` so both build the kernel the same
+    way: accumulate per-dimension log densities, defer the single ``exp`` (or
+    ``logsumexp``) to the caller.
+
+    Parameters
+    ----------
+    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+    std : jnp.ndarray, shape (n_dims,)
+
+    Returns
+    -------
+    log_kernel : jnp.ndarray, shape (n_samples, n_eval_points)
+        ``log_kernel[i, j] = sum_d log N(eval_points[j, d] | samples[i, d], std[d])``.
+    """
+    log_kernel = jnp.zeros((samples.shape[0], eval_points.shape[0]))
+    for dim_eval, dim_samp, dim_std in zip(eval_points.T, samples.T, std, strict=True):
+        log_kernel += log_gaussian_pdf(
+            jnp.expand_dims(dim_eval, axis=0),
+            jnp.expand_dims(dim_samp, axis=1),
+            dim_std,
+        )
+    return log_kernel
+
+
 def kde(
     eval_points: jnp.ndarray,
     samples: jnp.ndarray,
@@ -247,20 +277,13 @@ def kde(
 
     Notes
     -----
-    The per-dimension kernel product accumulates in linear space and underflows
-    to 0 in float32 beyond a few dimensions or with tight bandwidths. Prefer
-    :func:`log_kde` (or :meth:`KDEModel.predict_log`) when that regime matters.
+    The kernel is accumulated in log-space and exponentiated once, so per-sample
+    densities only underflow to 0 in float32 at the final value (where 0 is
+    typically the correct result). :func:`log_kde` (or
+    :meth:`KDEModel.predict_log`) remains the fully underflow-safe path when the
+    log-density itself is needed.
     """
-    distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
-
-    for dim_eval_points, dim_samples, dim_std in zip(
-        eval_points.T, samples.T, std, strict=True
-    ):
-        distance *= gaussian_pdf(
-            jnp.expand_dims(dim_eval_points, axis=0),
-            jnp.expand_dims(dim_samples, axis=1),
-            dim_std,
-        )
+    distance = jnp.exp(_log_kernel_matrix(eval_points, samples, std))
     # Double-where pattern: substitute safe denominator, then select result.
     # This avoids NaN in both forward pass and gradients.
     weight_sum = jnp.sum(weights)
@@ -296,8 +319,8 @@ def block_kde(
 
     Notes
     -----
-    Shares the linear-space underflow behaviour of :func:`kde`; prefer
-    :func:`block_log_kde` when the density can drop below the float32 range.
+    Wraps :func:`kde`, whose underflow is deferred to the final density value;
+    prefer :func:`block_log_kde` when the log-density itself is needed.
     """
     n_eval_points = eval_points.shape[0]
 
@@ -338,14 +361,8 @@ def log_kde(
     if eval_points.ndim == 1:
         eval_points = jnp.expand_dims(eval_points, axis=1)
 
-    # build log-kernel matrix K_log with shape (n_samp, n_eval)
-    K_log = jnp.zeros((samples.shape[0], eval_points.shape[0]))
-    for dim_eval, dim_samp, dim_std in zip(eval_points.T, samples.T, std, strict=True):
-        K_log += log_gaussian_pdf(
-            jnp.expand_dims(dim_eval, axis=0),
-            jnp.expand_dims(dim_samp, axis=1),
-            dim_std,
-        )
+    # log-kernel matrix K_log with shape (n_samp, n_eval)
+    K_log = _log_kernel_matrix(eval_points, samples, std)
 
     # True log-weight: a zero weight (log = -inf) drops the sample from both the
     # numerator and the denominator, exactly like the linear ``kde``. ``safe_log``
