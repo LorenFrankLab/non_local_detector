@@ -916,9 +916,14 @@ class GaussianMixtureModel:
         """
         Construct initial (weights, means, covariances).
 
-        If user-provided inits exist, they are used (with basic shape checks).
-        Otherwise, responsibilities are built by the chosen init strategy,
-        then means/weights/covariances are computed from those responsibilities.
+        Responsibilities are built by the chosen init strategy and the
+        (weights, means, covariances) estimated from them. Any user-provided
+        init array overrides the corresponding estimate; the pieces the user
+        does *not* supply keep their responsibility-based values (sklearn
+        parity). Filling missing means/covariances from the resp-based init —
+        rather than tiling the global mean / an identity — avoids a degenerate
+        symmetry trap where all components start identical and EM can never
+        separate them.
 
         Parameters
         ----------
@@ -933,41 +938,15 @@ class GaussianMixtureModel:
         covariances : Array
             Shape depends on `covariance_type`.
         """
-        _, n_features = X.shape
-
-        # Use user-provided inits if any
+        # When every piece is user-supplied there is nothing to fill, so skip
+        # the responsibility-based estimate (and the needless KMeans run).
         if (
-            (self.means_init is not None)
-            or (self.weights_init is not None)
-            or (self.covariances_init is not None)
+            self.weights_init is not None
+            and self.means_init is not None
+            and self.covariances_init is not None
         ):
-            means = (
-                self.means_init
-                if self.means_init is not None
-                else jnp.tile(jnp.mean(X, axis=0), (self.n_components, 1))
-            )
-            weights = (
-                self.weights_init
-                if self.weights_init is not None
-                else jnp.full(self.n_components, 1 / self.n_components, dtype=X.dtype)
-            )
-            if self.covariances_init is not None:
-                covariances = self.covariances_init
-            else:
-                eye = jnp.eye(n_features, dtype=X.dtype)
-                if self.covariance_type == "full":
-                    covariances = jnp.tile(eye, (self.n_components, 1, 1))
-                elif self.covariance_type == "tied":
-                    covariances = eye
-                elif self.covariance_type == "diag":
-                    covariances = jnp.ones(
-                        (self.n_components, n_features), dtype=X.dtype
-                    )
-                else:  # spherical
-                    covariances = jnp.ones((self.n_components,), dtype=X.dtype)
-            return weights, means, covariances
+            return self.weights_init, self.means_init, self.covariances_init
 
-        # Otherwise, build responsibilities from the chosen init
         if self.init_params == "kmeans":
             resp = self._initialize_kmeans_resp(X)
         elif self.init_params == "random":
@@ -975,12 +954,19 @@ class GaussianMixtureModel:
         else:
             raise ValueError(f"Unknown init_params: {self.init_params}")
 
-        # Compute initial params FROM responsibilities (sklearn parity)
-        nk, means, covariances = _estimate_gaussian_parameters(
+        nk, means_est, cov_est = _estimate_gaussian_parameters(
             X, resp, self.reg_covar, self.covariance_type, sample_weight
         )
         total_weight = X.shape[0] if sample_weight is None else jnp.sum(sample_weight)
-        weights = nk / total_weight
+        weights_est = nk / total_weight
+
+        # Override only the pieces the user supplied; the rest keep their
+        # resp-based values (sklearn parity, avoids the symmetry trap).
+        weights = self.weights_init if self.weights_init is not None else weights_est
+        means = self.means_init if self.means_init is not None else means_est
+        covariances = (
+            self.covariances_init if self.covariances_init is not None else cov_est
+        )
         return weights, means, covariances
 
     # ----------------- Single EM run -----------------
