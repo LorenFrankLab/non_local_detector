@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import jax
 import jax.numpy as jnp
@@ -130,7 +130,7 @@ def get_position_at_time(
     position: jnp.ndarray,
     spike_times: jnp.ndarray,
     env: Environment | None = None,
-) -> jnp.ndarray:
+) -> np.ndarray:
     """Get the position at the time of each spike.
 
     Parameters
@@ -143,7 +143,7 @@ def get_position_at_time(
 
     Returns
     -------
-    position_at_spike_times : jnp.ndarray, shape (n_spikes, n_dims_position)
+    position_at_spike_times : np.ndarray, shape (n_spikes, n_dims_position)
     """
     position_at_spike_times = scipy.interpolate.interpn(
         (time,), position, spike_times, bounds_error=False, fill_value=None
@@ -157,7 +157,7 @@ def get_position_at_time(
                 edge_spacing=env.edge_spacing,
             ).linear_position.to_numpy()[:, None]
         else:
-            position_at_spike_times = jnp.array([])[:, None]
+            position_at_spike_times = np.array([])[:, None]
 
     return position_at_spike_times
 
@@ -244,11 +244,17 @@ def kde(
     Returns
     -------
     density_estimate : jnp.ndarray, shape (n_eval_points,)
+
+    Notes
+    -----
+    The per-dimension kernel product accumulates in linear space and underflows
+    to 0 in float32 beyond a few dimensions or with tight bandwidths. Prefer
+    :func:`log_kde` (or :meth:`KDEModel.predict_log`) when that regime matters.
     """
     distance = jnp.ones((samples.shape[0], eval_points.shape[0]))
 
     for dim_eval_points, dim_samples, dim_std in zip(
-        eval_points.T, samples.T, std, strict=False
+        eval_points.T, samples.T, std, strict=True
     ):
         distance *= gaussian_pdf(
             jnp.expand_dims(dim_eval_points, axis=0),
@@ -281,10 +287,17 @@ def block_kde(
         Standard deviation of the Gaussian kernel.
     block_size : int, optional
         Size of blocks to do computation over, by default 100
+    weights : jnp.ndarray, shape (n_samples,), optional
+        Weights for each sample, by default None (uniform weights).
 
     Returns
     -------
     density_estimate : jnp.ndarray, shape (n_eval_points,)
+
+    Notes
+    -----
+    Shares the linear-space underflow behaviour of :func:`kde`; prefer
+    :func:`block_log_kde` when the density can drop below the float32 range.
     """
     n_eval_points = eval_points.shape[0]
     density = jnp.zeros((n_eval_points,))
@@ -328,7 +341,7 @@ def log_kde(
 
     # build log-kernel matrix K_log with shape (n_samp, n_eval)
     K_log = jnp.zeros((samples.shape[0], eval_points.shape[0]))
-    for dim_eval, dim_samp, dim_std in zip(eval_points.T, samples.T, std, strict=False):
+    for dim_eval, dim_samp, dim_std in zip(eval_points.T, samples.T, std, strict=True):
         K_log += log_gaussian_pdf(
             jnp.expand_dims(dim_eval, axis=0),
             jnp.expand_dims(dim_samp, axis=1),
@@ -355,8 +368,24 @@ def block_log_kde(
     block_size: int = 100,
     weights: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
-    """
-    Log KDE split into blocks over eval points. Returns (n_eval,)
+    """Log kernel density estimation split into blocks over eval points.
+
+    Parameters
+    ----------
+    eval_points : jnp.ndarray, shape (n_eval_points, n_dims)
+        Evaluation points.
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+        Training samples.
+    std : jnp.ndarray, shape (n_dims,)
+        Standard deviation of the Gaussian kernel.
+    block_size : int, optional
+        Size of blocks to do computation over, by default 100
+    weights : jnp.ndarray, shape (n_samples,), optional
+        Weights for each sample, by default None (uniform weights).
+
+    Returns
+    -------
+    log_density_estimate : jnp.ndarray, shape (n_eval_points,)
     """
     n_eval = eval_points.shape[0]
     out = jnp.full((n_eval,), LOG_EPS)
@@ -378,6 +407,8 @@ def block_log_kde(
 class KDEModel:
     std: jnp.ndarray
     block_size: int | None = None
+    samples_: jnp.ndarray | None = field(init=False, default=None)
+    weights_: jnp.ndarray | None = field(init=False, default=None)
 
     def fit(
         self, samples: jnp.ndarray, weights: jnp.ndarray | None = None
@@ -415,6 +446,8 @@ class KDEModel:
         -------
         density : jnp.ndarray, shape (n_eval_points,)
         """
+        if self.samples_ is None:
+            raise RuntimeError("This KDE instance is not fitted yet.")
         if eval_points.ndim == 1:
             eval_points = jnp.expand_dims(eval_points, axis=1)
         std = as_std_array(self.std, eval_points.shape[1])
@@ -428,6 +461,8 @@ class KDEModel:
         """
         Log-density version of predict(). Same inputs, returns log p(eval_points).
         """
+        if self.samples_ is None:
+            raise RuntimeError("This KDE instance is not fitted yet.")
         if eval_points.ndim == 1:
             eval_points = jnp.expand_dims(eval_points, axis=1)
         std = as_std_array(self.std, eval_points.shape[1])

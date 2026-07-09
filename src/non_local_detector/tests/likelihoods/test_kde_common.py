@@ -96,6 +96,45 @@ def test_kde_and_block_kde_match_2d_weighted():
     assert jnp.allclose(base, blk, rtol=1e-5, atol=1e-7)
 
 
+def test_kde_and_log_kde_raise_on_dimension_mismatch():
+    """kde/log_kde must error, not silently truncate, when eval points, samples,
+    and std disagree on n_dims.
+
+    A ``strict=False`` zip over ``(eval_points.T, samples.T, std)`` stops at the
+    shortest iterable, dropping trailing dimensions and returning a
+    plausible-but-wrong density instead of raising.
+    """
+    eval_points = jnp.zeros((5, 3))
+    samples = jnp.zeros((4, 2))  # 2-D samples vs 3-D eval points
+    std = jnp.array([1.0, 1.0, 1.0])
+    weights = jnp.ones((samples.shape[0],))
+
+    with pytest.raises(ValueError):
+        kde(eval_points, samples, std, weights)
+    with pytest.raises(ValueError):
+        log_kde(eval_points, samples, std, weights)
+
+
+def test_kde_model_predict_raises_on_dimension_mismatch():
+    """KDEModel fit on 2-D samples then predicting 3-D eval points must raise
+    rather than silently truncating to the shared dimensions."""
+    model = KDEModel(std=jnp.array([1.0, 1.0, 1.0])).fit(jnp.zeros((10, 2)))
+    with pytest.raises(ValueError):
+        model.predict(jnp.zeros((5, 3)))
+    with pytest.raises(ValueError):
+        model.predict_log(jnp.zeros((5, 3)))
+
+
+def test_kde_model_predict_before_fit_raises():
+    """predict/predict_log before fit raise a clear not-fitted RuntimeError
+    (matching GaussianMixtureModel) rather than a bare AttributeError."""
+    model = KDEModel(std=jnp.array([1.0, 1.0]))
+    with pytest.raises(RuntimeError, match="not fitted"):
+        model.predict(jnp.zeros((3, 2)))
+    with pytest.raises(RuntimeError, match="not fitted"):
+        model.predict_log(jnp.zeros((3, 2)))
+
+
 def test_log_kde_consistent_with_kde_log():
     r = rng(3)
     samples = r.normal(size=(120, 2))
