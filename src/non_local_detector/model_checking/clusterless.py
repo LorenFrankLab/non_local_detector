@@ -63,8 +63,38 @@ def interval_rescaling_transform(
     )
 
     # Rescale each mark dimension sequentially using a Rosenblatt transformation
-    # based on the conditional mark distribution given the spike time
-    conditional_mark_intensity = joint_mark_intensity / ground_process_intensity
+    # based on the conditional mark distribution given the spike time.
+    # The conditional mark intensity is joint_mark_intensity (evaluated at the
+    # spikes) divided by the ground intensity AT THOSE SAME SPIKE TIMES, so the
+    # (n_time,) ground intensity must first be evaluated at the spike times to
+    # align with joint_mark_intensity's rows (same np.interp idiom used by
+    # _compute_rescaled_isi above).
+    ground_process_intensity_at_spikes = np.interp(
+        electrode_spike_times, time, ground_process_intensity
+    )
+    # A non-finite (nan/inf) or non-positive ground intensity makes the
+    # conditional mark intensity (joint / ground) inf or nan. The downstream
+    # Rosenblatt rank transform would launder that into a plausible-looking
+    # value in [0, 1], silently corrupting the goodness-of-fit result, so
+    # reject it loudly here. A `<= 0` test alone misses nan and +inf (both
+    # compare False against 0), so check finiteness explicitly.
+    invalid_ground = ~np.isfinite(ground_process_intensity_at_spikes) | (
+        ground_process_intensity_at_spikes <= 0
+    )
+    if np.any(invalid_ground):
+        n_bad = int(np.count_nonzero(invalid_ground))
+        raise ValueError(
+            f"ground_process_intensity is non-finite or <= 0 at {n_bad} spike "
+            "time(s); the conditional mark intensity (joint / ground) is "
+            "undefined there, and the downstream Rosenblatt rank transform "
+            "would silently launder the resulting inf/nan into a "
+            "plausible-looking goodness-of-fit value. Clip the ground "
+            "intensity to a small positive floor or restrict to visited "
+            "regions before calling this function."
+        )
+    conditional_mark_intensity = (
+        joint_mark_intensity / ground_process_intensity_at_spikes[:, np.newaxis]
+    )
     n_features = joint_mark_intensity.shape[1]
     feature_indices = (
         np.random.permutation(n_features)
