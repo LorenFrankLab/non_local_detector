@@ -215,8 +215,6 @@ def fit_clusterless_kde_encoding_model(
     if weights is None:
         weights = np.ones((position.shape[0],))
     weights = validate_weights(weights, position.shape[0])
-    for elect_features in spike_waveform_features:
-        validate_finite(elect_features, "spike_waveform_features")
     # Weighted occupancy "time": the sum of per-sample weights (uniform weights recover
     # the training-sample count). Gaps from is_training / encoding-group masks are not
     # charged as occupancy time.
@@ -281,9 +279,12 @@ def fit_clusterless_kde_encoding_model(
             electrode_spike_times <= position_time[-1],
         )
         electrode_spike_times = electrode_spike_times[is_in_bounds]
-        bounded_spike_waveform_features.append(
-            electrode_spike_waveform_features[is_in_bounds]
-        )
+        # Validate only the in-window spikes that actually enter the fit; a
+        # non-finite feature on a spike outside the encoding interval is
+        # discarded here anyway and must not abort fitting.
+        bounded_features = electrode_spike_waveform_features[is_in_bounds]
+        validate_finite(bounded_features, "spike_waveform_features")
+        bounded_spike_waveform_features.append(bounded_features)
         # Weight each encoding spike by the posterior weight at its spike time (linear
         # interpolation of the per-sample weights onto the spike times).
         electrode_weights_host = interpolate_weights_at_spike_times(

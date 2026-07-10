@@ -310,3 +310,37 @@ def test_fit_clusterless_kde_rejects_nonfinite_features(simple_1d_environment):
             block_size=8,
             disable_progress_bar=True,
         )
+
+
+def test_fit_clusterless_kde_ignores_nonfinite_features_out_of_window(
+    simple_1d_environment,
+):
+    """A non-finite feature on an out-of-window spike must not abort the fit.
+
+    Finiteness is validated after clipping spikes to the encoding interval, so a
+    NaN feature on a spike that is discarded anyway (outside the window) does not
+    reject the otherwise-valid encoding data."""
+    env = simple_1d_environment
+    t_pos = jnp.linspace(0.0, 10.0, 101)
+    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
+    # Two in-window spikes with finite features, plus one out-of-window spike
+    # (t=20 > position_time[-1]=10) whose NaN feature is clipped out.
+    enc_spike_times = jnp.array([2.0, 7.5, 20.0])
+    enc_feats = jnp.array([[0.0, 0.0], [0.5, 0.5], [1.0, jnp.nan]], dtype=float)
+
+    encoding_model = fit_clusterless_kde_encoding_model(
+        position_time=t_pos,
+        position=pos,
+        spike_times=[enc_spike_times],
+        spike_waveform_features=[enc_feats],
+        environment=env,
+        sampling_frequency=10,
+        position_std=np.sqrt(1.0),
+        waveform_std=1.0,
+        block_size=8,
+        disable_progress_bar=True,
+    )
+    # Only the two in-window spikes survive, and they are all finite.
+    bounded = np.asarray(encoding_model["encoding_spike_waveform_features"][0])
+    assert bounded.shape[0] == 2
+    assert np.all(np.isfinite(bounded))

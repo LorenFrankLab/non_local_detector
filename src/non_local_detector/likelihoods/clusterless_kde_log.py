@@ -635,6 +635,14 @@ def _compensated_linear_marginal(
     log_joint : jnp.ndarray, shape (n_dec, n_pos)
         Log joint mark intensity.
     """
+    # Every encoding spike de-weighted (all log_w == -inf) is a genuine zero
+    # marginal -- no effective encoding data -- not a broken input. The
+    # compensation below turns the all -inf case into NaN (global_max == -inf so
+    # -inf - -inf), so detect it up front and floor to LOG_EPS via the combiner,
+    # matching the logsumexp path. (A partial de-weighting keeps global_max
+    # finite and is handled correctly by the -inf terms dropping out.)
+    all_zero_weight = jnp.all(jnp.isneginf(log_w))
+
     # Per-encoding-spike row maxima for numerical stabilization
     max_pos = jnp.max(log_position_distance, axis=1)  # (n_enc,)
     max_wf = jnp.max(logK_mark, axis=1)  # (n_enc,)
@@ -674,6 +682,9 @@ def _compensated_linear_marginal(
         jnp.log(safe_marginal) + global_max,
         jnp.where(jnp.isnan(marginal_scaled), jnp.nan, -jnp.inf),
     )
+    # Floor the fully de-weighted electrode to -inf (-> LOG_EPS) instead of the
+    # NaN the compensation produced from global_max == -inf.
+    log_marginal = jnp.where(all_zero_weight, -jnp.inf, log_marginal)
 
     return _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
 
@@ -743,6 +754,12 @@ def _compensated_linear_marginal_chunked(
         n_pos = position_eval_points.shape[0]
     else:
         n_pos = log_position_distance.shape[1]
+
+    # Every encoding spike de-weighted (all log_w == -inf) is a genuine zero
+    # marginal, but the online rescaling below turns the all -inf case into NaN
+    # (final_max stays -inf, so 0 * exp(-inf - -inf)). Detect it before padding
+    # and floor to LOG_EPS via the combiner, matching the logsumexp path.
+    all_zero_weight = jnp.all(jnp.isneginf(log_w))
 
     # Pad encoding arrays to be divisible by enc_tile_size
     n_chunks = (n_enc + enc_tile_size - 1) // enc_tile_size
@@ -870,6 +887,9 @@ def _compensated_linear_marginal_chunked(
         jnp.log(safe_sum) + final_max,
         jnp.where(jnp.isnan(final_sum), jnp.nan, -jnp.inf),
     )
+    # Floor the fully de-weighted electrode to -inf (-> LOG_EPS) instead of the
+    # NaN the online rescaling produced from final_max == -inf.
+    log_marginal = jnp.where(all_zero_weight, -jnp.inf, log_marginal)
 
     return _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
 
@@ -1389,8 +1409,6 @@ def fit_clusterless_kde_encoding_model(
     if weights is None:
         weights = np.ones((position.shape[0],))
     weights = validate_weights(weights, position.shape[0])
-    for elect_features in spike_waveform_features:
-        validate_finite(elect_features, "spike_waveform_features")
     # Weighted occupancy "time": the sum of per-sample weights (uniform weights
     # recover the training-sample count). Gaps from is_training / encoding-group
     # masks carry weight 0 and are not charged as occupancy time.
@@ -1456,9 +1474,12 @@ def fit_clusterless_kde_encoding_model(
             electrode_spike_times <= position_time[-1],
         )
         electrode_spike_times = electrode_spike_times[is_in_bounds]
-        bounded_spike_waveform_features.append(
-            electrode_spike_waveform_features[is_in_bounds]
-        )
+        # Validate only the in-window spikes that actually enter the fit; a
+        # non-finite feature on a spike outside the encoding interval is
+        # discarded here anyway and must not abort fitting.
+        bounded_features = electrode_spike_waveform_features[is_in_bounds]
+        validate_finite(bounded_features, "spike_waveform_features")
+        bounded_spike_waveform_features.append(bounded_features)
         # Weight each encoding spike by the posterior weight at its spike time.
         electrode_weights_host = interpolate_weights_at_spike_times(
             electrode_spike_times, position_time, weights

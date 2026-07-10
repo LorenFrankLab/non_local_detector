@@ -319,3 +319,108 @@ def test_compensated_linear_marginal_propagates_nan():
         "A NaN marginal must propagate to core.py's diagnostics, not be "
         "silently laundered to LOG_EPS."
     )
+
+
+def test_compensated_linear_marginal_all_zero_weights_floors_not_nan():
+    """All-zero encoding weights are a zero marginal (LOG_EPS), never NaN.
+
+    When every encoding spike is de-weighted (``log_w == -inf``) the compensation
+    computes ``-inf - -inf`` and produces NaN. That is a genuine "no effective
+    encoding data" case, not a broken input: the logsumexp reference path folds
+    the ``-inf`` weights into the kernel and returns the finite ``LOG_EPS`` floor.
+    Both compensated fast paths (untiled and chunked) must match it rather than
+    propagating NaN (which the NaN-propagation branch would otherwise do).
+    """
+    from non_local_detector.likelihoods.clusterless_kde_log import (
+        _compensated_linear_marginal,
+        _compensated_linear_marginal_chunked,
+    )
+    from non_local_detector.likelihoods.common import LOG_EPS
+
+    n_enc, n_dec, n_features, n_pos = 4, 2, 2, 3
+    rng = np.random.default_rng(0)
+    log_position_distance = jnp.asarray(-np.abs(rng.standard_normal((n_enc, n_pos))))
+    log_w = jnp.full((n_enc,), -jnp.inf)  # every encoding spike de-weighted
+    occupancy = jnp.ones((n_pos,))
+    mean_rate = 1.0
+
+    # Untiled fast path.
+    logK_mark = jnp.asarray(-np.abs(rng.standard_normal((n_enc, n_dec))))
+    out_untiled = np.asarray(
+        _compensated_linear_marginal(
+            logK_mark, log_position_distance, log_w, occupancy, mean_rate
+        )
+    )
+    assert np.all(np.isfinite(out_untiled)), (
+        "All-zero weights must floor to LOG_EPS, not NaN (untiled path)."
+    )
+    assert np.allclose(out_untiled, LOG_EPS)
+
+    # Chunked fast path (online max rescaling).
+    dec_feats = jnp.asarray(rng.standard_normal((n_dec, n_features)))
+    enc_feats = jnp.asarray(rng.standard_normal((n_enc, n_features)))
+    waveform_stds = jnp.ones((n_features,))
+    out_chunked = np.asarray(
+        _compensated_linear_marginal_chunked(
+            dec_feats,
+            enc_feats,
+            waveform_stds,
+            occupancy,
+            mean_rate,
+            log_position_distance,
+            log_w,
+            enc_tile_size=2,
+        )
+    )
+    assert np.all(np.isfinite(out_chunked)), (
+        "All-zero weights must floor to LOG_EPS, not NaN (chunked path)."
+    )
+    assert np.allclose(out_chunked, LOG_EPS)
+
+
+def test_log_fit_validates_features_after_windowing(simple_1d_environment):
+    """clusterless_kde_log fit: finiteness is checked on in-window spikes only.
+
+    A NaN feature on a spike outside the encoding interval is clipped out before
+    the fit, so it must not abort fitting; a NaN on an in-window spike still
+    raises."""
+    from non_local_detector.exceptions import ValidationError
+
+    env = simple_1d_environment
+    t_pos = jnp.linspace(0.0, 10.0, 101)
+    pos = jnp.linspace(0.0, 50.0, 101)[:, None]
+
+    # Out-of-window NaN (t=20 > position_time[-1]=10) is discarded -> fit succeeds.
+    enc_spike_times = jnp.array([2.0, 7.5, 20.0])
+    enc_feats = jnp.array([[0.0, 0.0], [0.5, 0.5], [1.0, jnp.nan]], dtype=float)
+    encoding_model = fit_clusterless_kde_encoding_model(
+        position_time=t_pos,
+        position=pos,
+        spike_times=[enc_spike_times],
+        spike_waveform_features=[enc_feats],
+        environment=env,
+        sampling_frequency=10,
+        position_std=np.sqrt(1.0),
+        waveform_std=1.0,
+        block_size=8,
+        disable_progress_bar=True,
+    )
+    bounded = np.asarray(encoding_model["encoding_spike_waveform_features"][0])
+    assert bounded.shape[0] == 2
+    assert np.all(np.isfinite(bounded))
+
+    # In-window NaN still aborts the fit.
+    bad_feats = jnp.array([[0.0, 0.0], [1.0, jnp.nan]], dtype=float)
+    with pytest.raises(ValidationError, match="finite"):
+        fit_clusterless_kde_encoding_model(
+            position_time=t_pos,
+            position=pos,
+            spike_times=[jnp.array([2.0, 7.5])],
+            spike_waveform_features=[bad_feats],
+            environment=env,
+            sampling_frequency=10,
+            position_std=np.sqrt(1.0),
+            waveform_std=1.0,
+            block_size=8,
+            disable_progress_bar=True,
+        )
