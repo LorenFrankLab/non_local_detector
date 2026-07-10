@@ -42,6 +42,7 @@ Place fields ``exp(eta)`` are stored FULL-GRID exactly like ``sorted_spikes_kde`
 likelihood (:func:`predict_sorted_spikes_mrf_log_likelihood` is that function).
 """
 
+import warnings
 from functools import partial
 
 import jax
@@ -851,6 +852,17 @@ def fit_sorted_spikes_mrf_encoding_model(
             max_iter=max_iter,
             tol=tol,
         )
+        # REML total failure raises; the softer Newton/IRLS non-convergence was
+        # previously silent (only stored in `mrf_converged`). Surface it.
+        if not diagnostics["converged"]:
+            warnings.warn(
+                f"MRF penalized-Poisson (Newton/IRLS) fit did not converge in "
+                f"{diagnostics['n_iter']} iteration(s) (max coefficient step "
+                f"{diagnostics['max_step']:.2e}); place fields may be unreliable. "
+                f"Increase max_iter or the penalty.",
+                UserWarning,
+                stacklevel=2,
+            )
         rate_interior = np.exp(
             eta
         )  # (n_interior, n_neurons); eta is clipped in the fit
