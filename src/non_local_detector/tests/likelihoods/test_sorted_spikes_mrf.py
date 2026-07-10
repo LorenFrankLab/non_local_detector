@@ -376,6 +376,29 @@ def test_mrf_nonconvergence_warns():
         )
 
 
+def test_mrf_auto_rank_cap_warns(monkeypatch):
+    """An auto-selected rank capped below the interior-bin count warns.
+
+    On a fine grid the default cap drops the highest-frequency eigenmodes; this
+    was documented only in the docstring. Monkeypatch the cap low so a small
+    environment triggers it.
+    """
+    import non_local_detector.likelihoods.sorted_spikes_mrf as mrf_module
+
+    monkeypatch.setattr(mrf_module, "_DEFAULT_MAX_RANK", 4)
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=2)
+    with pytest.warns(UserWarning, match="auto-capped"):
+        fit_sorted_spikes_mrf_encoding_model(
+            position_time=time,
+            position=position,
+            spike_times=spike_times,
+            environment=env,
+            penalty=0.5,
+            block_size=7,
+        )
+
+
 def test_fit_rejects_invalid_weights():
     """Weights feed both occupancy and spike counts, so invalid values fail early."""
     env = make_2d_env()

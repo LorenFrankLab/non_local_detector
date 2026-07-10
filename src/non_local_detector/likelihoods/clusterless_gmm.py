@@ -151,7 +151,19 @@ def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
     byte-identical) or when the weights sum to 0 (an all-zero ``sample_weight`` makes
     the EM M-step divide by 0 and raise "Fitting failed"); otherwise the weights.
     """
-    if weights_was_none or float(np.sum(weights)) == 0.0:
+    if weights_was_none:
+        return None
+    if float(np.sum(weights)) == 0.0:
+        # Weights were supplied but sum to 0 for this electrode -- no effective
+        # encoding data. Fall back to an unweighted fit, but say so (the
+        # occupancy-level zero-weight case already warns; keep them symmetric).
+        warnings.warn(
+            "Clusterless GMM: supplied weights for an electrode sum to zero; "
+            "falling back to an unweighted fit for it. The encoding interval "
+            "likely had no effective data for this electrode.",
+            UserWarning,
+            stacklevel=2,
+        )
         return None
     return weights
 

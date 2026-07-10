@@ -467,3 +467,22 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
     # Verify results are valid (no NaN/Inf)
     assert np.all(np.isfinite(result_jax)), "Non-local prediction contains NaN/Inf"
     assert np.all(np.isfinite(result_local_jax)), "Local prediction contains NaN/Inf"
+
+
+def test_gmm_sample_weight_zero_sum_warns():
+    """Supplied per-electrode weights summing to zero warn and fall back unweighted.
+
+    Symmetric with the occupancy-level zero-weight warning; the per-electrode
+    fallback was previously silent. A caller that passed no weights must stay
+    quiet.
+    """
+    import warnings
+
+    from non_local_detector.likelihoods.clusterless_gmm import _gmm_sample_weight
+
+    with pytest.warns(UserWarning, match="sum to zero"):
+        assert _gmm_sample_weight(np.zeros(5), weights_was_none=False) is None
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert _gmm_sample_weight(np.zeros(5), weights_was_none=True) is None

@@ -1006,6 +1006,22 @@ class GaussianMixtureModel:
                 stacklevel=2,
             )
 
+        # diag/spherical variances are clamped up to a 1e-10 floor for a finite
+        # precision (rather than raising like full/tied on a singular
+        # covariance). Surface it so a collapsed component is not silent.
+        if self.covariance_type in ("diag", "spherical") and (
+            self.covariances_ is not None
+            and bool(jnp.any(jnp.asarray(self.covariances_) <= 1e-10))
+        ):
+            warnings.warn(
+                "GaussianMixture: a diag/spherical component variance hit the "
+                "1e-10 floor (a collapsed/near-singular component); its precision "
+                "was clamped rather than raised. Increase reg_covar or reduce "
+                "n_components.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         return self
 
     def _check_fitted(self) -> None:
