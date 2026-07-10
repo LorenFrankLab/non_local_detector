@@ -128,6 +128,59 @@ class TestDetectorConstructorPlumbing:
             NonLocalSortedSpikesDetector(frozen_discrete_transition_rows=[7])
 
 
+@pytest.mark.unit
+class TestFrozenMaskNotSerialized:
+    """The derived row mask must stay out of ``vars()`` / ``get_params()``.
+
+    It is computed lazily via a property, so serialization round-trips that
+    rebuild a model from its public parameters (e.g. Spyglass's
+    ``DecodingParameters``, which stores ``vars(model)`` and reconstructs with
+    ``Detector(**params)``) do not pass the derived attribute back into
+    ``__init__`` as an unexpected keyword argument.
+    """
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            NonLocalSortedSpikesDetector,
+            NonLocalClusterlessDetector,
+            ContFragSortedSpikesClassifier,
+        ],
+    )
+    def test_mask_absent_from_vars_and_get_params(self, make):
+        model = make()
+        assert "_frozen_discrete_transition_rows_mask_" not in vars(model)
+        assert "_frozen_discrete_transition_rows_mask_" not in model.get_params(
+            deep=False
+        )
+
+    def test_property_still_returns_correct_mask(self):
+        # Default NonLocal model freezes the No-Spike row (index 1 of 4 states).
+        model = NonLocalSortedSpikesDetector()
+        np.testing.assert_array_equal(
+            model._frozen_discrete_transition_rows_mask_,
+            [False, True, False, False],
+        )
+        # Opt-out still yields None.
+        assert (
+            NonLocalSortedSpikesDetector(
+                frozen_discrete_transition_rows=None
+            )._frozen_discrete_transition_rows_mask_
+            is None
+        )
+
+    def test_vars_roundtrip_reconstructs_via_base_detector(self):
+        """A ContFrag model's ``vars()`` must reconstruct through the base
+        detector (the Spyglass pattern) now that the mask no longer leaks.
+        """
+        from non_local_detector.models.base import SortedSpikesDetector
+
+        model = ContFragSortedSpikesClassifier()
+        # Previously raised: unexpected kwarg _frozen_discrete_transition_rows_mask_
+        rebuilt = SortedSpikesDetector(**vars(model))
+        assert isinstance(rebuilt, SortedSpikesDetector)
+
+
 @pytest.mark.integration
 @pytest.mark.slow
 class TestFrozenRowEndToEnd:
