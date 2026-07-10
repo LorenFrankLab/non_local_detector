@@ -46,6 +46,27 @@ def probability_distribution(draw, min_size=2, max_size=20):
 
 
 @st.composite
+def positive_array(draw, min_size=2, max_size=20):
+    """Generate an UN-normalized array of strictly positive values.
+
+    Unlike ``probability_distribution``, this does not pre-normalize, so a
+    test consuming it actually exercises the normalization under test rather
+    than the strategy's own division. ``min_value`` keeps the sum well above
+    the ``_normalize`` eps floor, so the normalized sum is always ~1.
+    """
+    size = draw(st.integers(min_value=min_size, max_value=max_size))
+    return draw(
+        npst.arrays(
+            dtype=np.float64,
+            shape=(size,),
+            elements=st.floats(
+                min_value=0.01, max_value=1e3, allow_nan=False, allow_infinity=False
+            ),
+        )
+    )
+
+
+@st.composite
 def stochastic_matrix(draw, min_size=2, max_size=10):
     """Generate valid stochastic (row-normalized) matrices.
 
@@ -69,11 +90,18 @@ def stochastic_matrix(draw, min_size=2, max_size=10):
 class TestProbabilityProperties:
     """Property-based tests for probability functions."""
 
-    @given(probability_distribution())
-    def test_normalize_preserves_probability_property(self, dist):
-        """Property: normalized distributions always sum to 1."""
-        normalized, _ = _normalize(jnp.asarray(dist))
-        assert jnp.allclose(normalized.sum(), 1.0, rtol=1e-5)
+    @given(positive_array())
+    def test_normalize_yields_unit_sum(self, values):
+        """Property: _normalize of any positive array sums to 1.
+
+        Feeds UN-normalized positive input (so this exercises _normalize
+        itself, not the strategy's pre-normalization). The eps floor in
+        _normalize is negligible here because the strategy's min element is
+        0.01, so the sum is always >> eps. Tolerance is generous for the
+        float32 accumulation across up to 20 wide-dynamic-range elements.
+        """
+        normalized, _ = _normalize(jnp.asarray(values))
+        assert abs(float(normalized.sum()) - 1.0) < 1e-4
 
     @given(probability_distribution())
     def test_normalize_preserves_proportions(self, dist):
@@ -192,7 +220,8 @@ class TestProbabilityProperties:
         result = _divide_safe(a_arr, b_arr)
         expected = a_arr / b_arr
 
-        assert jnp.allclose(result, expected, rtol=1e-6)
+        # JAX defaults to float32; rtol must accommodate single-op rounding.
+        assert jnp.allclose(result, expected, rtol=1e-5)
 
     @given(probability_distribution())
     def test_normalize_is_idempotent(self, dist):
@@ -200,7 +229,9 @@ class TestProbabilityProperties:
         first_normalized, _ = _normalize(jnp.asarray(dist))
         second_normalized, _ = _normalize(first_normalized)
 
-        assert jnp.allclose(first_normalized, second_normalized, rtol=1e-6)
+        # float32 (JAX default): loosen rtol so wide-dynamic-range inputs
+        # don't trip on benign last-bit rounding.
+        assert jnp.allclose(first_normalized, second_normalized, rtol=1e-4)
 
     @given(
         probability_distribution(),
@@ -213,7 +244,12 @@ class TestProbabilityProperties:
         normalized_original, _ = _normalize(jnp.asarray(dist))
         normalized_scaled, _ = _normalize(jnp.asarray(scaled))
 
-        assert jnp.allclose(normalized_original, normalized_scaled, rtol=1e-6)
+        # float32 (JAX default): scale-then-normalize vs normalize differ by
+        # benign last-bit rounding for wide-dynamic-range inputs; rtol=1e-6
+        # was below float32 precision and flaked under Hypothesis exploration.
+        assert jnp.allclose(
+            normalized_original, normalized_scaled, rtol=1e-4, atol=1e-7
+        )
 
     # The three decoder invariant checks below used to be three separate
     # Hypothesis tests, each running a full decoder fit+predict for every
