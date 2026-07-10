@@ -662,12 +662,16 @@ def _compensated_linear_marginal(
 
     # Back to log space.  Use double-where (safe_marginal avoids log(0) in the
     # untaken branch) and encode a zero matmul result as -inf so the shared
-    # combiner floors it to LOG_EPS, identically to the logsumexp path.
+    # combiner floors it to LOG_EPS, identically to the logsumexp path. A NaN
+    # marginal (from non-finite inputs) is propagated, not turned into -inf:
+    # `NaN > 0.0` is False, so without the isnan branch a broken computation
+    # would be silently laundered to LOG_EPS instead of surfacing at core.py's
+    # NaN diagnostics (the module's contract, matched by the logsumexp path).
     safe_marginal = jnp.where(marginal_scaled > 0.0, marginal_scaled, 1.0)
     log_marginal = jnp.where(
         marginal_scaled > 0.0,
         jnp.log(safe_marginal) + global_max,
-        -jnp.inf,
+        jnp.where(jnp.isnan(marginal_scaled), jnp.nan, -jnp.inf),
     )
 
     return _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
@@ -856,12 +860,14 @@ def _compensated_linear_marginal_chunked(
     )
 
     # Back to log space (double-where; zero mass -> -inf so the shared combiner
-    # floors it to LOG_EPS, matching the logsumexp path).
+    # floors it to LOG_EPS, matching the logsumexp path). A NaN sum (from
+    # non-finite inputs) is propagated rather than laundered to -inf/LOG_EPS,
+    # since `NaN > 0.0` is False (see _compensated_linear_marginal).
     safe_sum = jnp.where(final_sum > 0.0, final_sum, 1.0)
     log_marginal = jnp.where(
         final_sum > 0.0,
         jnp.log(safe_sum) + final_max,
-        -jnp.inf,
+        jnp.where(jnp.isnan(final_sum), jnp.nan, -jnp.inf),
     )
 
     return _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)

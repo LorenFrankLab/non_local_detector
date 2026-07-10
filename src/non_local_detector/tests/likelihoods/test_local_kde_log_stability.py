@@ -293,3 +293,29 @@ def test_block_log_kde_vs_log_block_kde():
         f"Expected large difference (< -1000) between log-space and clamped linear-space, "
         f"but got min_diff={min_diff:.2f}"
     )
+
+
+def test_compensated_linear_marginal_propagates_nan():
+    """A NaN marginal on the compensated-linear fast path propagates, not floored.
+
+    The <=8-feature fast path used ``jnp.where(marginal > 0, ..., -inf)``; since
+    ``NaN > 0`` is ``False`` a NaN marginal (from non-finite inputs) was laundered
+    to ``-inf`` and then ``LOG_EPS`` by the combiner, contradicting the module's
+    propagate-NaN contract (and the logsumexp path). It must now surface as NaN.
+    """
+    from non_local_detector.likelihoods.clusterless_kde_log import (
+        _compensated_linear_marginal,
+    )
+
+    logK_mark = jnp.array([[0.0], [jnp.nan]])  # (n_enc=2, n_dec=1); a NaN row
+    log_position_distance = jnp.array([[-0.1, -0.2], [-0.3, -0.4]])  # (2, n_pos=2)
+    log_w = jnp.log(jnp.array([0.5, 0.5]))  # (2,)
+    occupancy = jnp.array([1.0, 1.0])  # (n_pos=2,)
+
+    out = _compensated_linear_marginal(
+        logK_mark, log_position_distance, log_w, occupancy, 1.0
+    )
+    assert bool(jnp.any(jnp.isnan(out))), (
+        "A NaN marginal must propagate to core.py's diagnostics, not be "
+        "silently laundered to LOG_EPS."
+    )
