@@ -284,3 +284,29 @@ def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment)
 
     assert ll_local.shape == (t_edges.shape[0], 1)
     assert jnp.all(jnp.isfinite(ll_local))
+
+
+def test_fit_clusterless_kde_rejects_nonfinite_features(simple_1d_environment):
+    """A non-finite waveform feature (a corrupt spike) is rejected at fit,
+    consistent with the GMM fit which validates its feature matrix."""
+    from non_local_detector.exceptions import ValidationError
+
+    env = simple_1d_environment
+    t_pos = jnp.linspace(0.0, 10.0, 101)
+    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
+    enc_spike_times = jnp.array([2.0, 5.0, 7.5])
+    enc_feats = jnp.array([[0.0, 0.0], [1.0, jnp.nan], [0.5, 0.5]], dtype=float)
+
+    with pytest.raises(ValidationError, match="finite"):
+        fit_clusterless_kde_encoding_model(
+            position_time=t_pos,
+            position=pos,
+            spike_times=[enc_spike_times],
+            spike_waveform_features=[enc_feats],
+            environment=env,
+            sampling_frequency=10,
+            position_std=np.sqrt(1.0),
+            waveform_std=1.0,
+            block_size=8,
+            disable_progress_bar=True,
+        )

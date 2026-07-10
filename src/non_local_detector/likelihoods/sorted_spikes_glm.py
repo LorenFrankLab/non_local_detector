@@ -64,6 +64,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     get_position_at_time,
     get_spikecount_per_time_bin,
+    validate_weights,
 )
 
 
@@ -319,6 +320,8 @@ def fit_sorted_spikes_glm_encoding_model(
     )
     if weights is None:
         weights = jnp.ones((position.shape[0],))
+    else:
+        weights = validate_weights(weights, position.shape[0])
 
     # Ensure weights is not None for type checking
     assert weights is not None

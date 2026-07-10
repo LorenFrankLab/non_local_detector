@@ -61,6 +61,7 @@ from non_local_detector.likelihoods.common import (
     KDEModel,
     get_position_at_time,
     get_spikecount_per_time_bin,
+    validate_weights,
     weighted_mean_rate,
 )
 
@@ -135,6 +136,8 @@ def fit_sorted_spikes_kde_encoding_model(
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
     if weights is None:
         weights = jnp.ones((position.shape[0],))
+    else:
+        weights = validate_weights(weights, position.shape[0])
 
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D

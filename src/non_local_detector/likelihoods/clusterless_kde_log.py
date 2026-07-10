@@ -16,6 +16,7 @@ from non_local_detector.likelihoods.common import (
     interpolate_weights_at_spike_times,
     log_gaussian_pdf,
     safe_log,
+    validate_finite,
     validate_weights,
     weighted_mean_rate,
 )
@@ -1388,6 +1389,8 @@ def fit_clusterless_kde_encoding_model(
     if weights is None:
         weights = np.ones((position.shape[0],))
     weights = validate_weights(weights, position.shape[0])
+    for elect_features in spike_waveform_features:
+        validate_finite(elect_features, "spike_waveform_features")
     # Weighted occupancy "time": the sum of per-sample weights (uniform weights
     # recover the training-sample count). Gaps from is_training / encoding-group
     # masks carry weight 0 and are not charged as occupancy time.

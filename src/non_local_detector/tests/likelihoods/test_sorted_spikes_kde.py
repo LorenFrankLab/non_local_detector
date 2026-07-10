@@ -274,3 +274,28 @@ def test_nan_marginal_density_warns(simple_1d_environment, monkeypatch):
             block_size=16,
             disable_progress_bar=True,
         )
+
+
+def test_fit_sorted_spikes_kde_rejects_nonfinite_weights(simple_1d_environment):
+    """Non-finite weights are rejected at fit (validate_weights), matching the
+    clusterless/GMM/MRF fits which all validate weights at entry."""
+    from non_local_detector.exceptions import ValidationError
+
+    env = simple_1d_environment
+    t = jnp.linspace(0.0, 10.0, 101)
+    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
+    spikes = [jnp.array([2.0, 5.0])]
+    weights = jnp.ones_like(t).at[0].set(jnp.nan)
+
+    with pytest.raises(ValidationError, match="finite"):
+        fit_sorted_spikes_kde_encoding_model(
+            position_time=t,
+            position=pos,
+            spike_times=spikes,
+            environment=env,
+            weights=weights,
+            sampling_frequency=10,
+            position_std=np.sqrt(1.0),
+            block_size=16,
+            disable_progress_bar=True,
+        )
