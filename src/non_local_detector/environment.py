@@ -50,6 +50,7 @@ environment definitions using `pickle`.
 """
 
 import pickle
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -688,6 +689,16 @@ class Environment:
             Flat index of the bin for each data point in `sample`. When
             ``is_track_interior_`` is set, the returned index is always an
             interior bin.
+
+        Notes
+        -----
+        The large-snap ``UserWarning`` only covers positions that land in a
+        non-interior (gap) bin and are then snapped. In an all-interior
+        environment (e.g. ``infer_track_interior=False``) an out-of-bounds
+        position is clamped to the nearest edge bin by the histogram outlier
+        logic without entering the snap path, so it is not warned about.
+        Detecting out-of-bounds positions in that case would require a
+        distance check on every call and is left as a follow-up.
         """
         if not self._is_fitted:
             raise ConfigurationError(
@@ -756,11 +767,70 @@ class Environment:
                         - interior_centers[np.newaxis, :, :],
                         axis=-1,
                     )
+                    snap_distances = np.min(dists, axis=1)
                     bin_inds[needs_snap] = interior_bin_indices[
                         np.argmin(dists, axis=1)
                     ]
 
+                    # A small snap is expected (boundary tie-breaking, gap
+                    # bins). The threshold already allows snaps up to two
+                    # bin-widths plus the largest inter-arm gap, so exceeding
+                    # it usually means a tracking glitch or a position outside
+                    # the environment bounds — surface it. Non-finite snap
+                    # distances (a NaN/inf position) are handled explicitly:
+                    # np.max over them returns NaN, which compares False against
+                    # the threshold and would silently suppress the warning even
+                    # when a finite position in the same batch snapped far.
+                    finite = np.isfinite(snap_distances)
+                    max_snap = (
+                        float(np.max(snap_distances[finite])) if finite.any() else 0.0
+                    )
+                    n_nonfinite = int((~finite).sum())
+                    threshold = self._snap_warn_threshold()
+                    if max_snap > threshold or n_nonfinite > 0:
+                        warnings.warn(
+                            f"{int(needs_snap.sum())} position(s) snapped to the "
+                            f"nearest interior bin; max finite snap distance "
+                            f"{max_snap:.3f} vs threshold {threshold:.3f} (2x "
+                            f"place_bin_size plus the largest inter-arm gap on a "
+                            f"linearized track), {n_nonfinite} non-finite. A snap "
+                            f"beyond the threshold or a non-finite position "
+                            f"usually indicates a tracking glitch or an "
+                            f"out-of-bounds position.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+
         return bin_inds
+
+    def _snap_warn_threshold(self) -> float:
+        """Snap distance beyond which ``get_bin_ind`` warns.
+
+        Baseline is two bin-widths (boundary tie-breaking, sub-bin snaps).
+        On a linearized track graph a position projected into an inter-arm
+        gap is legitimately snapped to the nearest on-track bin by up to
+        ~``edge_spacing``; that expected distance is added so routine
+        into-gap snaps stay quiet and only snaps well beyond the gap (true
+        tracking glitches / out-of-bounds positions) warn. Open-field grids
+        have no gaps and keep the plain two-bin-width threshold.
+        """
+        if isinstance(self.place_bin_size, (tuple, list)):
+            bin_term = 2.0 * max(self.place_bin_size)
+        else:
+            bin_term = 2.0 * float(self.place_bin_size)
+        return bin_term + self._max_inter_arm_gap()
+
+    def _max_inter_arm_gap(self) -> float:
+        """Largest inter-arm gap width, or ``0.0`` when there are no gaps.
+
+        Only linearized track-graph environments have gaps (``edge_spacing``
+        between consecutive edges). Open-field grids return ``0.0``.
+        """
+        if self.track_graph is None or self.edge_spacing is None:
+            return 0.0
+        if isinstance(self.edge_spacing, (list, tuple)):
+            return float(max(self.edge_spacing)) if len(self.edge_spacing) else 0.0
+        return float(self.edge_spacing)
 
     def get_manifold_distances(
         self, position1: np.ndarray, position2: np.ndarray

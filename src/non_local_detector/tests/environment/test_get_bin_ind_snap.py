@@ -182,3 +182,205 @@ class TestGetBinIndSnap:
             assert b in interior_bin_indices, (
                 f"Row {i}: bin {b} for position {positions[i]} is not interior"
             )
+
+
+@pytest.mark.unit
+class TestGetBinIndSnapWarning:
+    """Large off-grid snaps emit a UserWarning; small snaps stay quiet."""
+
+    def test_off_grid_far_snap_warns(self):
+        """A position far from any interior bin warns about the large snap.
+
+        Genuine tracking-glitch / out-of-bounds case: a 2D open field whose
+        occupancy is two small clusters far apart leaves a large never-visited
+        interior region. A query in the empty middle lands in a non-interior
+        bin whose nearest interior bin is many bin-widths away, so the snap
+        exceeds the threshold (here ``2 x place_bin_size`` — no track graph, so
+        no inter-arm gap term) and warns. This is distinct from a routine
+        into-gap snap, which must stay quiet (see
+        ``test_into_gap_snap_does_not_warn``).
+        """
+        env = Environment(environment_name="two-cluster-2d", place_bin_size=1.0)
+        rng = np.random.default_rng(0)
+        cluster_a = rng.random((300, 2)) * 5.0
+        cluster_b = rng.random((300, 2)) * 5.0 + 45.0
+        env = env.fit_place_grid(
+            np.vstack([cluster_a, cluster_b]), infer_track_interior=True
+        )
+
+        is_interior = env.is_track_interior_.ravel()
+        assert not np.all(is_interior), (
+            "test setup requires a large non-interior region between the clusters"
+        )
+
+        # The empty middle (~28 bin-widths from either cluster) far exceeds the
+        # 2.0 threshold, so the single queried position warns (count plumbed).
+        with pytest.warns(UserWarning, match=r"1 position\(s\) snapped"):
+            env.get_bin_ind(np.array([[25.0, 25.0]]))
+
+    def test_nonfinite_position_does_not_suppress_far_snap_warning(self):
+        """A NaN position in the batch must not hide a genuine large snap.
+
+        ``np.max`` over snap distances containing a NaN returns NaN, which
+        compares ``False`` against the threshold — so without explicit
+        non-finite handling a single NaN position would silently suppress the
+        warning for a finite position in the same batch that snapped far. The
+        max is now taken over finite distances (and non-finite positions are
+        surfaced), so the warning still fires.
+        """
+        env = Environment(environment_name="two-cluster-2d", place_bin_size=1.0)
+        rng = np.random.default_rng(0)
+        cluster_a = rng.random((300, 2)) * 5.0
+        cluster_b = rng.random((300, 2)) * 5.0 + 45.0
+        env = env.fit_place_grid(
+            np.vstack([cluster_a, cluster_b]), infer_track_interior=True
+        )
+
+        # [25, 25] alone snaps ~28 and warns; batching a NaN position with it
+        # used to suppress that warning (NaN poisons np.max). It must still warn.
+        with pytest.warns(UserWarning, match="snapped to the"):
+            env.get_bin_ind(np.array([[25.0, 25.0], [np.nan, np.nan]]))
+
+    def test_into_gap_snap_does_not_warn(self):
+        """A routine into-gap snap on a multi-arm track stays quiet.
+
+        A position projected into an inter-arm gap is snapped to the nearest
+        on-track bin by up to ~``edge_spacing``. That is expected linearized-
+        track structure, not a glitch, so the threshold includes the gap width
+        and no warning fires. This pins the false-positive fix: with
+        ``place_bin_size=1`` and ``edge_spacing=10`` the gap-center snap is ~5,
+        which exceeds the old ``2 x place_bin_size = 2`` threshold (and used to
+        warn) but is below the new ``2 + 10 = 12`` threshold.
+        """
+        import warnings as _warnings
+
+        g = nx.Graph()
+        g.add_node(0, pos=(0.0, 0.0))
+        g.add_node(1, pos=(50.0, 0.0))
+        g.add_node(2, pos=(60.0, 0.0))
+        g.add_node(3, pos=(110.0, 0.0))
+        g.add_edge(0, 1, distance=50.0, edge_id=0)
+        g.add_edge(2, 3, distance=50.0, edge_id=1)
+        env = Environment(
+            environment_name="two-arm-narrow-bins",
+            place_bin_size=1.0,
+            track_graph=g,
+            edge_order=[(0, 1), (2, 3)],
+            edge_spacing=10.0,
+        )
+        position_1d = np.concatenate(
+            [np.linspace(0.0, 50.0, 60), np.linspace(60.0, 110.0, 60)]
+        )
+        env = env.fit_place_grid(position_1d, infer_track_interior=True)
+
+        is_interior = env.is_track_interior_.ravel()
+        gap_center = env.place_bin_centers_[np.where(~is_interior)[0][0], 0]
+
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            env.get_bin_ind(np.array([[gap_center]]))
+        snap_warnings = [w for w in caught if "snap distance" in str(w.message)]
+        assert not snap_warnings, (
+            "into-gap snap (~5, below the 2 + edge_spacing threshold) should "
+            f"not warn; got {[str(w.message) for w in snap_warnings]}"
+        )
+
+    def test_close_snap_no_warning(self):
+        """A position landing just on an arm-boundary edge snaps without warning."""
+        import warnings as _warnings
+
+        g = nx.Graph()
+        g.add_node(0, pos=(0.0, 0.0))
+        g.add_node(1, pos=(50.0, 0.0))
+        g.add_node(2, pos=(52.0, 0.0))
+        g.add_node(3, pos=(102.0, 0.0))
+        g.add_edge(0, 1, distance=50.0, edge_id=0)
+        g.add_edge(2, 3, distance=50.0, edge_id=1)
+        # Small gap (edge_spacing=2) with large bins (place_bin_size=5) so any
+        # snap distance stays under the 2 x 5 = 10 threshold.
+        env = Environment(
+            environment_name="small-gap",
+            place_bin_size=5.0,
+            track_graph=g,
+            edge_order=[(0, 1), (2, 3)],
+            edge_spacing=2.0,
+        )
+        position_1d = np.concatenate(
+            [np.linspace(0.0, 50.0, 30), np.linspace(52.0, 102.0, 30)]
+        )
+        env = env.fit_place_grid(position_1d, infer_track_interior=True)
+
+        edges = env.edges_[0]
+        is_interior = env.is_track_interior_.ravel()
+        first_gap = int(np.where(~is_interior)[0][0])
+        arm_end_edge = edges[first_gap]
+
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            env.get_bin_ind(np.array([[arm_end_edge]]))
+        snap_warnings = [w for w in caught if "snap distance" in str(w.message)]
+        assert not snap_warnings
+
+    def test_snap_threshold_uses_max_bin_size_for_2d(self):
+        """For a 2D env with anisotropic place_bin_size, threshold = 2 x max(bin sizes)."""
+        env = Environment(
+            environment_name="open-2d-aniso",
+            place_bin_size=(1.0, 4.0),
+        )
+        # Open field; force an interior hole so the snap path can run.
+        xs = np.concatenate(
+            [np.linspace(0.0, 8.0, 60), np.full(60, 0.5), np.full(60, 8.0)]
+        )
+        ys = np.concatenate(
+            [np.full(60, 0.5), np.linspace(0.0, 8.0, 60), np.linspace(0.0, 8.0, 60)]
+        )
+        env = env.fit_place_grid(np.stack([xs, ys], axis=-1), infer_track_interior=True)
+        # Open field (no track graph) has no inter-arm gap, so the threshold is
+        # 2 * max(1.0, 4.0) = 8.0, not 2 * min = 2.0.
+        assert env._snap_warn_threshold() == 8.0
+
+    def test_snap_threshold_includes_edge_spacing(self):
+        """On a linearized track the threshold adds the largest inter-arm gap.
+
+        A routine snap into an inter-arm gap is up to ~``edge_spacing`` wide and
+        must not warn, so the threshold is ``2 x place_bin_size + max(edge_spacing)``.
+        No fit is required — the threshold reads only constructor arguments.
+        """
+        g = nx.Graph()
+        g.add_node(0, pos=(0.0, 0.0))
+        g.add_node(1, pos=(50.0, 0.0))
+        g.add_node(2, pos=(60.0, 0.0))
+        g.add_node(3, pos=(110.0, 0.0))
+        g.add_edge(0, 1, distance=50.0, edge_id=0)
+        g.add_edge(2, 3, distance=50.0, edge_id=1)
+        env = Environment(
+            environment_name="two-arm-threshold",
+            place_bin_size=5.0,
+            track_graph=g,
+            edge_order=[(0, 1), (2, 3)],
+            edge_spacing=10.0,
+        )
+        # 2 * 5.0 + 10.0 = 20.0, not the open-field 2 * 5.0 = 10.0.
+        assert env._snap_warn_threshold() == 20.0
+
+    def test_snap_threshold_includes_max_of_edge_spacing_list(self):
+        """A per-gap ``edge_spacing`` list contributes its maximum to the threshold."""
+        g = nx.Graph()
+        g.add_node(0, pos=(0.0, 0.0))
+        g.add_node(1, pos=(50.0, 0.0))
+        g.add_node(2, pos=(60.0, 0.0))
+        g.add_node(3, pos=(110.0, 0.0))
+        g.add_node(4, pos=(130.0, 0.0))
+        g.add_node(5, pos=(180.0, 0.0))
+        g.add_edge(0, 1, distance=50.0, edge_id=0)
+        g.add_edge(2, 3, distance=50.0, edge_id=1)
+        g.add_edge(4, 5, distance=50.0, edge_id=2)
+        env = Environment(
+            environment_name="three-arm-threshold",
+            place_bin_size=2.0,
+            track_graph=g,
+            edge_order=[(0, 1), (2, 3), (4, 5)],
+            edge_spacing=[10.0, 20.0],
+        )
+        # 2 * 2.0 + max(10.0, 20.0) = 24.0.
+        assert env._snap_warn_threshold() == 24.0

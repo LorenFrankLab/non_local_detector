@@ -46,6 +46,8 @@ sorted spikes, relying on density estimation rather than fitted coefficients.
 It utilizes JAX and SciPy for efficient computation and interpolation.
 """
 
+import warnings
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -163,6 +165,10 @@ def fit_sorted_spikes_kde_encoding_model(
     mean_rates = []
     place_fields = []
     marginal_models = []
+    # Accumulate the NaN-density count on-device (jnp) and materialize it to a
+    # Python int once after the loop; int(jnp.sum(...)) inside the loop forces a
+    # host sync per neuron and would serialize KDE fitting on GPU.
+    nan_density_count = jnp.array(0, dtype=jnp.int32)
 
     for neuron_spike_times in tqdm(
         spike_times,
@@ -202,7 +208,12 @@ def fit_sorted_spikes_kde_encoding_model(
         )
         marginal_models.append(neuron_marginal_model)
         marginal_density = neuron_marginal_model.predict(interior_place_bin_centers)
-        marginal_density = jnp.where(jnp.isnan(marginal_density), 0.0, marginal_density)
+        # NaN here means a degenerate KDE (e.g., zero-variance spike
+        # features), not "no density" — track the count so it can be
+        # surfaced rather than silently zeroed.
+        nan_mask = jnp.isnan(marginal_density)
+        nan_density_count = nan_density_count + jnp.sum(nan_mask)
+        marginal_density = jnp.where(nan_mask, 0.0, marginal_density)
         place_fields.append(
             jnp.zeros((is_track_interior.shape[0],))
             .at[is_track_interior]
@@ -222,6 +233,18 @@ def fit_sorted_spikes_kde_encoding_model(
 
     place_fields = jnp.stack(place_fields, axis=0)
     no_spike_part_log_likelihood = jnp.sum(place_fields, axis=0)
+
+    n_nan_density_bins = int(nan_density_count)
+    if n_nan_density_bins > 0:
+        warnings.warn(
+            f"KDE marginal density was NaN at {n_nan_density_bins} "
+            f"(neuron, bin) location(s); these were set to zero. NaN density "
+            f"usually indicates a degenerate KDE (zero-variance or identical "
+            f"spike features, or position_std=0). Inspect the encoding-spike "
+            f"feature distribution.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     return {
         "environment": environment,
@@ -323,6 +346,11 @@ def predict_sorted_spikes_kde_log_likelihood(
                 neuron_spike_times, time
             )
             marginal_density = neuron_marginal_model.predict(interpolated_position)
+            # A NaN marginal at decode means a NaN interpolated position
+            # (dropped tracking / out-of-bounds) -- an expected decode-time gap,
+            # not a degenerate encoding model (that is surfaced at fit time and,
+            # after input validation, cannot occur here). Zero-fill quietly; a
+            # per-timestep warning would just be noise.
             marginal_density = jnp.where(
                 jnp.isnan(marginal_density), 0.0, marginal_density
             )
