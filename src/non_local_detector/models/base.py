@@ -372,7 +372,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
               typically centimeters) on the shortest-path track-graph
               distance; models spatial uncertainty.
         """
-        # Validate all parameters early (Tier 1 & 2)
+        # Validate all parameters early
         self._validate_initial_conditions(
             discrete_initial_conditions,
             continuous_initial_conditions_types,
@@ -1616,7 +1616,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 example="    detector.fit(position=position_train, spikes=spikes_train, time=time_train)",
             )
 
-        # Tier 2: Validate data types and properties
+        # Validate data types and properties
         val.ensure_ndarray(position, "position")
         val.ensure_all_finite(position, "position")
 
@@ -1902,7 +1902,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 example="    results = detector.predict(spikes=spikes_test, time=time_test)",
             )
 
-        # Tier 2: Validate time properties
+        # Validate time properties
         val.ensure_ndarray(time, "time")
         val.ensure_all_finite(time, "time")
         val.ensure_monotonic_increasing(time, "time", strict=False)
@@ -2169,7 +2169,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # Final E-step after the last M-step so the returned posterior reflects
         # the final fitted parameters. Without this, the returned arrays are
         # the E-step computed *before* the last M-step and disagree with
-        # predict() on the same data (issue #26).
+        # predict() on the same data.
         logger.info("Final E-step after EM...")
         (
             acausal_posterior,
