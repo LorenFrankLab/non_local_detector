@@ -283,6 +283,20 @@ class Environment:
             val.ensure_ndarray(self.is_track_interior, "is_track_interior")
             # Note: We can't validate shape until we know the grid dimensions
 
+    def __getstate__(self) -> dict:
+        """Exclude the transient device-basis cache from pickling.
+
+        ``_diffusion_device_basis_`` (populated by
+        :func:`non_local_detector.likelihoods.diffusion.get_device_basis`) is keyed
+        in part by a JAX ``Device`` object and holds device-resident ``jnp``
+        arrays; neither is meaningfully picklable/restorable across processes, so
+        it is dropped here and rebuilt lazily (on the next predict call) after
+        unpickling.
+        """
+        state = self.__dict__.copy()
+        state.pop("_diffusion_device_basis_", None)  # transient JAX device cache
+        return state
+
     def _validate_track_graph(self) -> None:
         """Validate track_graph and its required parameters.
 
@@ -506,6 +520,8 @@ class Environment:
             del self._diffusion_eigenbasis_
         if hasattr(self, "_diffusion_heat_kernel_rank_"):
             del self._diffusion_heat_kernel_rank_
+        if hasattr(self, "_diffusion_device_basis_"):
+            del self._diffusion_device_basis_
 
         if self.track_graph is None:
             (

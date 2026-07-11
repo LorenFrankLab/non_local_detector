@@ -859,6 +859,70 @@ def cached_heat_kernel_eigenbasis(
     )
 
 
+def get_device_basis(
+    environment: "Environment", resolved_rank: int
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, int]:
+    """Device (jnp) eigenbasis for the clusterless_diffusion predict matmul.
+
+    Transient cache on ``environment._diffusion_device_basis_`` keyed by
+    ``(resolved_rank, device, dtype)``. On a miss, the host basis is retrieved via
+    :func:`cached_eigenbasis` and converted to device arrays once; a cache hit
+    returns the exact same device array objects, so a repeated predict-time call at
+    the same rank reuses the device-resident basis rather than re-transferring it.
+    Excluded from pickling by ``Environment.__getstate__`` and invalidated on grid
+    refit by ``Environment.fit_place_grid`` (both in ``environment.py``).
+
+    Parameters
+    ----------
+    environment : Environment
+        A fitted environment.
+    resolved_rank : int
+        Number of eigenmodes to retrieve (see :func:`cached_eigenbasis`).
+
+    Returns
+    -------
+    eigvals : jnp.ndarray, shape (resolved_rank,)
+        Laplacian eigenvalues, on ``device``.
+    eigvecs : jnp.ndarray, shape (n_interior, resolved_rank)
+        Corresponding eigenvectors as columns, on ``device``.
+    component_labels : jnp.ndarray, shape (n_interior,)
+        Connected-component id per interior bin, ``0..n_components-1``, on
+        ``device``.
+    n_components : int
+        Number of connected components (a static Python int, computed once per
+        cache entry) — pass it straight into :func:`heat_kernel_apply` to avoid a
+        per-call device->host sync of the labels.
+    """
+    # The device the arrays will actually live on. jnp.asarray follows the active
+    # default-device context, so select it explicitly and device_put onto it — the
+    # cache key must name the SAME device the cached arrays are placed on.
+    device = (
+        jax.local_devices()[0]
+        if jax.config.jax_default_device is None
+        else jax.config.jax_default_device
+    )
+    dtype = jnp.float32
+    key = (int(resolved_rank), device, dtype)
+    cache = getattr(environment, "_diffusion_device_basis_", None)
+    if cache is None:
+        cache = {}
+        environment._diffusion_device_basis_ = cache
+    if key not in cache:
+        eigvals, eigvecs = cached_eigenbasis(environment, resolved_rank)
+        # Component labels from the existing helper (indexed by interior-bin/node
+        # order) — do NOT rebuild the Laplacian from the exposed frozen graph.
+        graph, _, _ = environment_graph(environment)
+        labels_host = connected_component_labels(graph)  # np.ndarray, 0..K-1
+        n_components = int(labels_host.max()) + 1  # static, computed once
+        cache[key] = (
+            jax.device_put(np.asarray(eigvals, dtype=np.float32), device),
+            jax.device_put(np.asarray(eigvecs, dtype=np.float32), device),
+            jax.device_put(np.asarray(labels_host, dtype=np.int32), device),
+            n_components,
+        )
+    return cache[key]
+
+
 def _nd_grid_graph(
     environment: "Environment",
 ) -> tuple[nx.Graph, np.ndarray, np.ndarray]:
