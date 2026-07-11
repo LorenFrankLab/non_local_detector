@@ -315,7 +315,7 @@ def fit_clusterless_gmm_encoding_model(
         # the electrode (which would drop that negative evidence), matching the
         # KDE path. No weights supplied is a different, legitimate case ->
         # unweighted fit.
-        if not weights_was_none and float(jnp.sum(elect_weights)) == 0.0:
+        if not weights_was_none and float(np.sum(elect_weights)) == 0.0:
             warnings.warn(
                 "Clusterless GMM: supplied weights for an electrode sum to zero "
                 "(no effective encoding data); the electrode is treated as "

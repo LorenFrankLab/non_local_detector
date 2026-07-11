@@ -81,7 +81,7 @@ def validate_weights(weights: np.ndarray, n_time: int) -> np.ndarray:
     return weights
 
 
-def validate_finite(array: np.ndarray, name: str) -> None:
+def validate_finite(array: np.ndarray | jnp.ndarray, name: str) -> None:
     """Raise if ``array`` contains any non-finite (NaN/inf) value.
 
     Shared fit-input finiteness check for the encoding fits: a non-finite
@@ -92,7 +92,7 @@ def validate_finite(array: np.ndarray, name: str) -> None:
 
     Parameters
     ----------
-    array : np.ndarray
+    array : np.ndarray | jnp.ndarray
         The array to check.
     name : str
         Name used in the error message (e.g. ``"position"``).
@@ -102,7 +102,14 @@ def validate_finite(array: np.ndarray, name: str) -> None:
     ValidationError
         If ``array`` contains any non-finite value.
     """
-    if not np.all(np.isfinite(np.asarray(array))):
+    # Reduce on the array's own device: for a JAX array this keeps the full
+    # (potentially GPU-resident) array on-device and transfers only the scalar
+    # result, avoiding a full device->host copy per electrode on every refit.
+    if isinstance(array, jnp.ndarray):
+        all_finite = bool(jnp.all(jnp.isfinite(array)))
+    else:
+        all_finite = bool(np.all(np.isfinite(np.asarray(array))))
+    if not all_finite:
         raise ValidationError(f"{name} must contain only finite values")
 
 
