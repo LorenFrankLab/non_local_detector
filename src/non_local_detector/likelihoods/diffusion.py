@@ -25,8 +25,11 @@ fields being smoothed), it is computed once and cached on the ``Environment`` vi
 
 import heapq
 import warnings
+from functools import partial
 from typing import TYPE_CHECKING
 
+import jax
+import jax.numpy as jnp
 import networkx as nx
 import numpy as np
 import scipy.linalg
@@ -468,6 +471,79 @@ def diffuse(
         rows = np.flatnonzero(component_labels == label)
         renormalized[rows] = _rescale_rows_to_input_mass(rows)
     return renormalized
+
+
+@partial(jax.jit, static_argnames=("sigma", "n_components"))
+def _heat_kernel_apply_jit(eigvals, eigvecs, sigma, fields, labels, n_components):
+    """Jitted core of :func:`heat_kernel_apply` (see it for the full contract)."""
+    t = sigma**2 / 2.0
+    coeff = jnp.exp(-t * eigvals)  # (m,)
+    smoothed = eigvecs @ (coeff[:, None] * (eigvecs.T @ fields))  # (n_bins, n_fields)
+    clipped = jnp.clip(smoothed, 0.0, None)
+    # Vectorized per-component mass rescale (jittable; labels are segment ids).
+    in_mass = jax.ops.segment_sum(
+        fields, labels, num_segments=n_components
+    )  # (n_components, n_fields)
+    cl_mass = jax.ops.segment_sum(clipped, labels, num_segments=n_components)
+    scale = jnp.where(cl_mass > 0, in_mass / jnp.where(cl_mass > 0, cl_mass, 1.0), 0.0)
+    return clipped * scale[labels]  # gather back to (n_bins, n_fields)
+
+
+def heat_kernel_apply(
+    eigvals: jnp.ndarray,
+    eigvecs: jnp.ndarray,
+    sigma: float,
+    fields: jnp.ndarray,
+    component_labels: jnp.ndarray | None = None,
+    n_components: int | None = None,
+) -> jnp.ndarray:
+    """JAX port of ``diffuse``: exp(-tL) F, clipped and per-component mass-rescaled.
+
+    Mirrors :func:`diffuse` exactly (clip to >=0, then rescale each column to its
+    input mass, per connected component) so likelihood magnitude is truncation-rank
+    stable. Fully vectorized/jittable. ``component_labels`` are 0..K-1 segment ids
+    (a device/host int array; a single connected graph passes all zeros or None).
+
+    Parameters
+    ----------
+    eigvals : jnp.ndarray, shape (m,)
+        Laplacian eigenvalues from :func:`diffusion_eigenbasis`.
+    eigvecs : jnp.ndarray, shape (n_bins, m)
+        Corresponding eigenvectors as columns.
+    sigma : float
+        Smoothing standard deviation in coordinate units (bandwidth).
+    fields : jnp.ndarray, shape (n_bins, n_fields)
+        Count fields on the interior bins, one column per field.
+    component_labels : jnp.ndarray, shape (n_bins,), optional
+        Connected-component id per bin, 0..K-1, by default None (treated as a
+        single component).
+    n_components : int, optional
+        The **static** component count — pass it explicitly (the production
+        caller gets it from :func:`get_device_basis`) to avoid a per-call
+        device->host sync of the labels. If ``None``, it is derived host-side
+        once (convenience for tests / one-off calls only — NOT the hot predict
+        path).
+
+    Returns
+    -------
+    smoothed : jnp.ndarray, shape (n_bins, n_fields)
+        Diffused fields, clipped to be non-negative and renormalized so each
+        column's total mass equals the input field's total, per component
+        (mass-conserving).
+    """
+    n_bins = eigvecs.shape[0]
+    if component_labels is None:
+        labels = jnp.zeros(n_bins, dtype=jnp.int32)
+        n_components = 1
+    else:
+        labels = jnp.asarray(component_labels, dtype=jnp.int32)
+        if n_components is None:
+            n_components = (
+                int(np.asarray(component_labels).max()) + 1
+            )  # host sync — non-hot path only
+    return _heat_kernel_apply_jit(
+        eigvals, eigvecs, float(sigma), fields, labels, int(n_components)
+    )
 
 
 def to_density(smoothed: np.ndarray, bin_sizes: np.ndarray) -> np.ndarray:
