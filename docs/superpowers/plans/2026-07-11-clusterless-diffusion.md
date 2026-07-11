@@ -94,74 +94,75 @@ def _sim(seed=0, n_bins_side=10):
                 dec_t=dec_t, dec_f=dec_f, env=env)
 
 
-def _diffusion_nonlocal_spike(s, position_std=6.0, waveform_std=24.0):
-    """Minimal non-local clusterless_diffusion (no blocking/validators/device cache)."""
+def _diffusion_nonlocal_spike(s, position_std=6.0, waveform_std=24.0, low_rank=False):
+    """Minimal non-local clusterless_diffusion, split into fit (run once) + a
+    ``predict`` closure (the part goal B times).
+
+    ``low_rank=True`` uses the **bandwidth-aware truncated** basis
+    (``cached_heat_kernel_eigenbasis``) that goal B actually depends on;
+    ``low_rank=False`` uses the full-rank basis (correctness reference).
+    Returns the ``predict`` closure (call it to get a jnp ``(n_time, n_bins)``).
+    """
+    from non_local_detector.likelihoods.diffusion import cached_heat_kernel_eigenbasis
+    from non_local_detector.likelihoods.sorted_spikes_diffusion import (
+        _full_to_local, _interior_bin_indices)
+    from non_local_detector.likelihoods.common import get_position_at_time, weighted_mean_rate
     env = s["env"]
     graph, node_order, _ = environment_graph(env)
-    eigvals, eigvecs = cached_eigenbasis(env, rank=None)  # full-rank for the spike
+    if low_rank:
+        eigvals, eigvecs = cached_heat_kernel_eigenbasis(env, position_std)  # bandwidth-aware low rank
+    else:
+        eigvals, eigvecs = cached_eigenbasis(env, rank=None)                 # full rank
     eigvals = jnp.asarray(eigvals); Q = jnp.asarray(eigvecs)
     interior = env.is_track_interior_.ravel()
-    centers = np.asarray(env.place_bin_centers_)[interior]  # (n_interior, pos_dims)
-    bin_sizes = np.asarray(env.is_track_interior_.ravel(), dtype=float)  # placeholder ΔV
-    dV = 1.0  # uniform grid; exact ΔV handled in production
-    n_bins = centers.shape[0]
-    t = position_std ** 2 / 2.0
-    coeff = jnp.exp(-t * eigvals)
+    n_bins = Q.shape[0]
+    dV = 1.0  # uniform grid in the spike; exact ΔV = bin_sizes in production
+    coeff = jnp.exp(-(position_std ** 2 / 2.0) * eigvals)
 
-    def diffuse_cols(F):  # (n_bins, k) -> clip+rescale-to-input-mass (single component)
+    def diffuse_cols(F):  # single-component clip+rescale-to-input-mass
         sm = Q @ (coeff[:, None] * (Q.T @ F))
         cl = jnp.clip(sm, 0.0, None)
         scale = jnp.where(cl.sum(0) > 0, F.sum(0) / jnp.where(cl.sum(0) > 0, cl.sum(0), 1.0), 0.0)
         return cl * scale
 
-    # nearest interior bin for each encoding/decoding position (via env.get_bin_ind on interior)
-    from non_local_detector.likelihoods.sorted_spikes_diffusion import (
-        _full_to_local, _interior_bin_indices)
     f2l = _full_to_local(node_order, interior.shape[0])
+    def bins_of(p):
+        return _interior_bin_indices(env, p, f2l)
 
-    def bins_of(positions):
-        from non_local_detector.likelihoods.common import get_position_at_time
-        return _interior_bin_indices(env, positions, f2l)
-
-    # occupancy density
-    from non_local_detector.likelihoods.common import (get_position_at_time,
-                                                       weighted_mean_rate)
+    # --- fit (run once; not timed) ---
     occ_pos = get_position_at_time(s["pt"], s["pos"], s["pt"], env)
-    occ_bins = bins_of(occ_pos)
-    O = jnp.zeros(n_bins).at[jnp.asarray(occ_bins)].add(1.0)
+    O = jnp.zeros(n_bins).at[jnp.asarray(bins_of(occ_pos))].add(1.0)
     w_pos = float(len(occ_pos))
-    pi = diffuse_cols(O[:, None])[:, 0] / (w_pos * dV)
-    pi = jnp.clip(pi, 1e-15, None)
-
-    n_dec_time = s["time"].shape[0]
-    ll = jnp.zeros((n_dec_time, n_bins))
-    for e in range(3):
-        enc_pos = get_position_at_time(s["pt"], s["pos"], s["enc_t"][e], env)
-        enc_bins = jnp.asarray(bins_of(enc_pos))
-        enc_marks = jnp.asarray(s["enc_f"][e])
-        n_enc = enc_marks.shape[0]
+    pi = jnp.clip(diffuse_cols(O[:, None])[:, 0] / (w_pos * dV), 1e-15, None)
+    per_e, summed_gpi = [], jnp.zeros(n_bins)
+    for e in range(len(s["enc_t"])):
+        enc_bins = jnp.asarray(bins_of(get_position_at_time(s["pt"], s["pos"], s["enc_t"][e], env)))
+        enc_marks = jnp.asarray(s["enc_f"][e]); n_enc = enc_marks.shape[0]
         mean_rate = weighted_mean_rate(np.ones(n_enc), w_pos)
-        # ground process
         S = jnp.zeros(n_bins).at[enc_bins].add(1.0)
-        p_gpi = diffuse_cols(S[:, None])[:, 0] / (n_enc * dV)
-        summed_gpi = mean_rate * p_gpi / pi
-        # decode spikes
-        dm = jnp.asarray(s["dec_f"][e])
-        seg = get_spike_time_bin_ind(s["dec_t"][e], s["time"])
-        K = kde_distance(dm, enc_marks, jnp.full(2, waveform_std))  # (n_enc, n_dec); already exp'd — do NOT jnp.exp again
-        D = jnp.zeros((n_bins, dm.shape[0])).at[enc_bins].add(K)  # scatter (uniform w=1)
-        P = diffuse_cols(D)
-        p_e = P / (n_enc * dV)
-        lc = jnp.log(jnp.clip(mean_rate * p_e / pi[:, None], jnp.exp(LOG_EPS), None))
-        contrib = jnp.zeros((n_dec_time, n_bins)).at[jnp.asarray(seg)].add(lc.T)
-        ll = ll + contrib - summed_gpi[None, :]
-    return ll  # jnp device array (do NOT np.asarray here — callers sync explicitly)
+        summed_gpi = summed_gpi + mean_rate * diffuse_cols(S[:, None])[:, 0] / (n_enc * dV) / pi
+        per_e.append((enc_bins, enc_marks, n_enc, mean_rate,
+                      jnp.asarray(s["dec_f"][e]),
+                      jnp.asarray(get_spike_time_bin_ind(s["dec_t"][e], s["time"]))))
+    n_dec_time = s["time"].shape[0]
+
+    def predict():  # decode-only — this is what goal B times
+        ll = jnp.zeros((n_dec_time, n_bins)) - summed_gpi[None, :]
+        for (enc_bins, enc_marks, n_enc, mean_rate, dm, seg) in per_e:
+            K = kde_distance(dm, enc_marks, jnp.full(2, waveform_std))  # already exp'd — no jnp.exp
+            D = jnp.zeros((n_bins, dm.shape[0])).at[enc_bins].add(K)    # scatter (uniform w=1)
+            p_e = diffuse_cols(D) / (n_enc * dV)
+            lc = jnp.log(jnp.clip(mean_rate * p_e / pi[:, None], jnp.exp(LOG_EPS), None))
+            ll = ll + jnp.zeros((n_dec_time, n_bins)).at[seg].add(lc.T)
+        return ll  # jnp device array
+
+    return predict
 
 
 @pytest.mark.slow
 def test_spike_agreement_and_speed():
     s = _sim(seed=0)
-    ll_diff = np.asarray(_diffusion_nonlocal_spike(s))
+    ll_diff = np.asarray(_diffusion_nonlocal_spike(s)())  # full-rank correctness reference; call the closure
     # KDE reference
     enc = clusterless_kde.fit_clusterless_kde_encoding_model(
         jnp.asarray(s["pt"]), jnp.asarray(s["pos"]),
@@ -201,34 +202,36 @@ def _time(fn, iters=5):
 
 @pytest.mark.slow
 def test_spike_speed_large_grid():
-    s = _sim(seed=1, n_bins_side=40)  # ~1600 interior bins
+    # Genuinely large matched grid: place_bin_size = 20/160 = 0.125 -> ~80x48 grid.
+    s = _sim(seed=1, n_bins_side=160)
     n_bins = s["env"].place_bin_centers_.shape[0]
+    assert n_bins > 2000, f"grid too small for a meaningful perf gate: {n_bins} bins"
 
-    # KDE reference: fit ONCE, then time predict-only (returns a jnp device array).
-    enc = clusterless_kde.fit_clusterless_kde_encoding_model(
-        jnp.asarray(s["pt"]), jnp.asarray(s["pos"]),
-        [jnp.asarray(t) for t in s["enc_t"]], [jnp.asarray(f) for f in s["enc_f"]],
-        s["env"], sampling_frequency=50, position_std=6.0, waveform_std=24.0,
-        block_size=10_000, disable_progress_bar=True)
     dec_t = [jnp.asarray(t) for t in s["dec_t"]]
     dec_f = [jnp.asarray(f) for f in s["dec_f"]]
     tm, pt, po = jnp.asarray(s["time"]), jnp.asarray(s["pt"]), jnp.asarray(s["pos"])
+
+    # KDE: fit ONCE, then time PREDICT-ONLY (returns a jnp device array).
+    enc = clusterless_kde.fit_clusterless_kde_encoding_model(
+        pt, po, [jnp.asarray(t) for t in s["enc_t"]], [jnp.asarray(f) for f in s["enc_f"]],
+        s["env"], sampling_frequency=50, position_std=6.0, waveform_std=24.0,
+        block_size=10_000, disable_progress_bar=True)
     kde_predict = lambda: clusterless_kde.predict_clusterless_kde_log_likelihood(
         tm, pt, po, dec_t, dec_f, **enc, is_local=False)
     dt_kde = _time(kde_predict)
 
-    # Diffusion spike: the spike fuses fit+predict, so this is a CONSERVATIVE upper
-    # bound on diffusion cost (its fit is included; KDE's is not). If diffusion still
-    # wins here, goal B is clearly met; the true predict-only comparison is Task 11.
-    dt_diff = _time(lambda: _diffusion_nonlocal_spike(s))
+    # Diffusion: fit ONCE with the BANDWIDTH-AWARE LOW-RANK basis (goal B), then time
+    # the PREDICT-ONLY closure — apples-to-apples with KDE predict.
+    diff_predict = _diffusion_nonlocal_spike(s, low_rank=True)  # returns predict()
+    dt_diff = _time(diff_predict)
 
     print(f"[SPIKE] {n_bins} bins | KDE predict: {dt_kde*1e3:.1f} ms | "
-          f"diffusion fit+predict: {dt_diff*1e3:.1f} ms | ratio: {dt_kde/dt_diff:.2f}x")
+          f"diffusion predict (low-rank): {dt_diff*1e3:.1f} ms | speedup: {dt_kde/dt_diff:.2f}x")
     # Informational gate: record both numbers; decide goal B in review.
 ```
 
 Run: `uv run pytest src/non_local_detector/tests/likelihoods/test_clusterless_diffusion_spike.py::test_spike_speed_large_grid -v -s -m slow`
-Expected: PASS; both timings printed. **Goal-B decision (review gate):** diffusion (fit+predict, a conservative overcount) should be at least competitive with KDE predict-only at large `n_bins`; the definitive predict-vs-predict comparison is the Task 11 benchmark once the production split exists. If diffusion is not clearly better, discuss before the full build.
+Expected: PASS; both predict-only timings printed at a >2000-bin grid. **Goal-B decision (review gate):** the low-rank diffusion predict should be clearly faster than KDE predict at large `n_bins`. If not, discuss before the full build — the low-rank operator is the whole basis for goal B.
 
 - [ ] **Step 4: Commit the spike**
 
@@ -299,11 +302,14 @@ def test_heat_kernel_apply_disconnected_components_preserve_mass_independently()
     L = build_laplacian(g)
     n_comp, labels = scipy.sparse.csgraph.connected_components(L, directed=False)
     assert n_comp == 2
-    vals, vecs = diffusion_eigenbasis(L, rank=6)  # truncated -> lobes exist
-    rng = np.random.default_rng(1)
-    fields = np.abs(rng.standard_normal((vecs.shape[0], 2)))
-    # make the two components carry very different masses
-    fields[labels == 0] *= 10.0
+    vals, vecs = diffusion_eigenbasis(L, rank=6)  # truncated -> point sources produce negative lobes
+    # Point sources (one hot bin per component) with very different masses -> lobes
+    # and component-specific rescaling both guaranteed to matter.
+    comp0 = np.flatnonzero(labels == 0)
+    comp1 = np.flatnonzero(labels == 1)
+    fields = np.zeros((vecs.shape[0], 2), dtype=float)
+    fields[comp0[0], 0] = 10.0   # heavy point source in component 0
+    fields[comp1[0], 1] = 1.0    # light point source in component 1
     ref = diffuse(vals, vecs, sigma=1.5, fields=fields, component_labels=labels)
     got = np.asarray(heat_kernel_apply(
         jnp.asarray(vals), jnp.asarray(vecs), 1.5, jnp.asarray(fields), labels))
@@ -339,15 +345,19 @@ def _heat_kernel_apply_jit(eigvals, eigvecs, sigma, fields, labels, n_components
     return clipped * scale[labels]                                  # gather back to (n_bins, n_fields)
 
 
-def heat_kernel_apply(eigvals, eigvecs, sigma, fields, component_labels=None):
+def heat_kernel_apply(eigvals, eigvecs, sigma, fields, component_labels=None,
+                      n_components=None):
     """JAX port of ``diffuse``: exp(-tL) F, clipped and per-component mass-rescaled.
 
     Mirrors :func:`diffuse` exactly (clip to >=0, then rescale each column to its
     input mass, per connected component) so likelihood magnitude is truncation-rank
     stable. Fully vectorized/jittable. ``component_labels`` are 0..K-1 segment ids
-    (a static-length device/host int array); a single connected graph passes all
-    zeros. ``n_components`` is derived host-side (static) so ``segment_sum`` shapes
-    are fixed at trace time.
+    (a device/host int array; a single connected graph passes all zeros or None).
+
+    ``n_components`` is the **static** component count — pass it explicitly (the
+    production caller gets it from :func:`get_device_basis`) to avoid a per-call
+    device->host sync of the labels. If ``None``, it is derived host-side once
+    (convenience for tests / one-off calls only — NOT the hot predict path).
     """
     n_bins = eigvecs.shape[0]
     if component_labels is None:
@@ -355,16 +365,17 @@ def heat_kernel_apply(eigvals, eigvecs, sigma, fields, component_labels=None):
         n_components = 1
     else:
         labels = jnp.asarray(component_labels, dtype=jnp.int32)
-        n_components = int(np.asarray(component_labels).max()) + 1  # static
-    return _heat_kernel_apply_jit(eigvals, eigvecs, float(sigma), fields, labels, n_components)
+        if n_components is None:
+            n_components = int(np.asarray(component_labels).max()) + 1  # host sync — non-hot path only
+    return _heat_kernel_apply_jit(eigvals, eigvecs, float(sigma), fields, labels, int(n_components))
 ```
 
-> `n_components` is resolved host-side (from the concrete component-label array that lives with the cached eigenbasis) and passed as a **static** arg, so `segment_sum(num_segments=n_components)` has a fixed shape under `jit`; `labels` are ordinary traced/device ints used as segment ids and for the gather — no Python loop, no per-call `np.unique`.
+> `n_components` is a **static** arg, so `segment_sum(num_segments=n_components)` has a fixed shape under `jit`; `labels` are device ints used as segment ids + gather (no Python loop, no `np.unique`). The predict path passes `n_components` from `get_device_basis`, so no labels ever leave the device per block.
 
-- [ ] **Step 4: Run to verify pass**
+- [ ] **Step 4: Run to verify pass (BOTH tests, incl. the disconnected-component one)**
 
-Run: `uv run pytest src/non_local_detector/tests/likelihoods/test_diffusion_device_cache.py::test_heat_kernel_apply_matches_diffuse_full_and_truncated -v`
-Expected: PASS.
+Run: `uv run pytest src/non_local_detector/tests/likelihoods/test_diffusion_device_cache.py -k heat_kernel -v`
+Expected: PASS — both `test_heat_kernel_apply_matches_diffuse_full_and_truncated` **and** `test_heat_kernel_apply_disconnected_components_preserve_mass_independently` (the latter is what actually exercises per-component rescaling).
 
 - [ ] **Step 5: Lint + commit**
 
@@ -387,7 +398,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Test: `src/non_local_detector/tests/likelihoods/test_diffusion_device_cache.py`
 
 **Interfaces:**
-- Produces: `get_device_basis(environment, resolved_rank) -> tuple[jnp.ndarray, jnp.ndarray, np.ndarray]` returning device `(eigvals, eigvecs, component_labels)`, cached on `environment._diffusion_device_basis_` keyed by `(resolved_rank, device, dtype)`; miss-only host retrieval via `cached_eigenbasis`. Consumed by Tasks 4–5.
+- Produces: `get_device_basis(environment, resolved_rank) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, int]` returning device `(eigvals, eigvecs, component_labels, n_components)` — labels are a **device `jnp.ndarray`**, `n_components` a Python `int` (static, computed once). Cached on `environment._diffusion_device_basis_` keyed by `(resolved_rank, device, dtype)`; miss-only host retrieval via `cached_eigenbasis`. Consumed by Tasks 4–5, which pass `n_components` straight into `heat_kernel_apply` (no per-block label sync).
 
 - [ ] **Step 1: Write failing tests (cache hit/miss, refit invalidation, pickle exclusion)**
 
@@ -468,13 +479,16 @@ def get_device_basis(environment, resolved_rank):
         environment._diffusion_device_basis_ = cache
     if key not in cache:
         eigvals, eigvecs = cached_eigenbasis(environment, resolved_rank)
-        graph, _, _ = environment_graph(environment)  # component labels from interior-bin graph
-        L = build_laplacian(graph)
-        _n_comp, labels = scipy.sparse.csgraph.connected_components(L, directed=False)
+        # Component labels from the existing helper (indexed by interior-bin/node
+        # order) — do NOT rebuild the Laplacian from the exposed frozen graph.
+        graph, _, _ = environment_graph(environment)
+        labels_host = connected_component_labels(graph)          # np.ndarray, 0..K-1
+        n_components = int(labels_host.max()) + 1                 # static, computed once
         cache[key] = (
             jax.device_put(np.asarray(eigvals, dtype=np.float32), device),
             jax.device_put(np.asarray(eigvecs, dtype=np.float32), device),
-            jax.device_put(np.asarray(labels, dtype=np.int32), device),
+            jax.device_put(np.asarray(labels_host, dtype=np.int32), device),
+            n_components,
         )
     return cache[key]
 ```
@@ -586,10 +600,18 @@ Implements spec §3 non-local pseudocode **verbatim**: per electrode, zero-rate 
 
 ## Task 7: Tier-1 validation
 
-**Files:** module + tests.
-- [ ] `test_validation` — `heat_kernel_rank` float/bool/0/negative/`<n_components` → `ValidationError`; `memory_budget` non-finite/0/negative/non-int → `ValidationError`; `block_size` non-positive → `ValidationError`; non-positive `position_std`/`waveform_std` → `ValidationError`; non-finite in-window features → `ValidationError`.
-- [ ] Implement validators at fit/predict entry (reuse `common.validate_finite`/`validate_weights`; surface `_require_rank_covers_components`).
-- [ ] Commit `feat(clusterless_diffusion): tier-1 input validation`.
+**Files:** module + tests. Cover the **full** Tier-1 contract at **both** fit and predict (bad inputs otherwise propagate NaNs through the prob-space path, and `safe_log` will not repair them).
+
+- [ ] `test_validation_fit` — at fit, each of these raises `ValidationError`:
+  - `heat_kernel_rank` float / bool / `0` / negative / `< n_components`;
+  - `memory_budget` non-finite / `0` / negative / non-int; `block_size` non-positive;
+  - non-positive `position_std` / `waveform_std`;
+  - invalid `weights` (wrong length / non-finite / negative — via `common.validate_weights`);
+  - non-finite `position` (`common.validate_finite`);
+  - non-finite **in-window** encoding `spike_waveform_features` (validate after the `is_in_bounds` clip, as `clusterless_kde`/`clusterless_kde_log` do — a non-finite feature on an out-of-window spike must NOT raise).
+- [ ] `test_validation_predict` — at predict, non-finite **in-window** decoding `spike_waveform_features`, non-finite decoding `position`, and non-finite `time` each raise `ValidationError` (again validated post-`is_in_bounds`).
+- [ ] Implement the shared `_validate_*` helper called from both fit and predict entry (reuse `common.validate_finite` / `common.validate_weights`; surface `_require_rank_covers_components` for the rank/component constraint).
+- [ ] Commit `feat(clusterless_diffusion): tier-1 input validation (fit + predict)`.
 
 ---
 
