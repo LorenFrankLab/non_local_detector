@@ -148,20 +148,20 @@ def _diffusion_nonlocal_spike(s, position_std=6.0, waveform_std=24.0):
         # decode spikes
         dm = jnp.asarray(s["dec_f"][e])
         seg = get_spike_time_bin_ind(s["dec_t"][e], s["time"])
-        K = jnp.exp(kde_distance(dm, enc_marks, jnp.full(2, waveform_std)))  # (n_enc, n_dec)
+        K = kde_distance(dm, enc_marks, jnp.full(2, waveform_std))  # (n_enc, n_dec); already exp'd — do NOT jnp.exp again
         D = jnp.zeros((n_bins, dm.shape[0])).at[enc_bins].add(K)  # scatter (uniform w=1)
         P = diffuse_cols(D)
         p_e = P / (n_enc * dV)
         lc = jnp.log(jnp.clip(mean_rate * p_e / pi[:, None], jnp.exp(LOG_EPS), None))
         contrib = jnp.zeros((n_dec_time, n_bins)).at[jnp.asarray(seg)].add(lc.T)
         ll = ll + contrib - summed_gpi[None, :]
-    return np.asarray(ll)
+    return ll  # jnp device array (do NOT np.asarray here — callers sync explicitly)
 
 
 @pytest.mark.slow
 def test_spike_agreement_and_speed():
     s = _sim(seed=0)
-    ll_diff = _diffusion_nonlocal_spike(s)
+    ll_diff = np.asarray(_diffusion_nonlocal_spike(s))
     # KDE reference
     enc = clusterless_kde.fit_clusterless_kde_encoding_model(
         jnp.asarray(s["pt"]), jnp.asarray(s["pos"]),
@@ -191,20 +191,44 @@ Expected: PASS with a printed median Spearman > 0.6. If it fails badly (≈0 or 
 Append to the test file:
 
 ```python
+def _time(fn, iters=5):
+    jax.block_until_ready(fn())            # warm compile, not timed
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        jax.block_until_ready(fn())        # block on the DEVICE output each iter
+    return (time.perf_counter() - t0) / iters
+
+
 @pytest.mark.slow
 def test_spike_speed_large_grid():
     s = _sim(seed=1, n_bins_side=40)  # ~1600 interior bins
-    _ = _diffusion_nonlocal_spike(s)  # warm compile
-    t0 = time.perf_counter()
-    for _ in range(3):
-        jax.block_until_ready(jnp.asarray(_diffusion_nonlocal_spike(s)))
-    dt_diff = (time.perf_counter() - t0) / 3
-    print(f"[SPIKE] diffusion non-local predict: {dt_diff*1e3:.1f} ms on {s['env'].place_bin_centers_.shape[0]} bins")
-    # informational; goal B is validated by comparing to a KDE timing at the same grid in review
+    n_bins = s["env"].place_bin_centers_.shape[0]
+
+    # KDE reference: fit ONCE, then time predict-only (returns a jnp device array).
+    enc = clusterless_kde.fit_clusterless_kde_encoding_model(
+        jnp.asarray(s["pt"]), jnp.asarray(s["pos"]),
+        [jnp.asarray(t) for t in s["enc_t"]], [jnp.asarray(f) for f in s["enc_f"]],
+        s["env"], sampling_frequency=50, position_std=6.0, waveform_std=24.0,
+        block_size=10_000, disable_progress_bar=True)
+    dec_t = [jnp.asarray(t) for t in s["dec_t"]]
+    dec_f = [jnp.asarray(f) for f in s["dec_f"]]
+    tm, pt, po = jnp.asarray(s["time"]), jnp.asarray(s["pt"]), jnp.asarray(s["pos"])
+    kde_predict = lambda: clusterless_kde.predict_clusterless_kde_log_likelihood(
+        tm, pt, po, dec_t, dec_f, **enc, is_local=False)
+    dt_kde = _time(kde_predict)
+
+    # Diffusion spike: the spike fuses fit+predict, so this is a CONSERVATIVE upper
+    # bound on diffusion cost (its fit is included; KDE's is not). If diffusion still
+    # wins here, goal B is clearly met; the true predict-only comparison is Task 11.
+    dt_diff = _time(lambda: _diffusion_nonlocal_spike(s))
+
+    print(f"[SPIKE] {n_bins} bins | KDE predict: {dt_kde*1e3:.1f} ms | "
+          f"diffusion fit+predict: {dt_diff*1e3:.1f} ms | ratio: {dt_kde/dt_diff:.2f}x")
+    # Informational gate: record both numbers; decide goal B in review.
 ```
 
 Run: `uv run pytest src/non_local_detector/tests/likelihoods/test_clusterless_diffusion_spike.py::test_spike_speed_large_grid -v -s -m slow`
-Expected: PASS; record the printed timing. In review, compare against a same-grid `clusterless_kde` predict timing. **Goal-B decision:** if diffusion is not clearly faster at large `n_bins`, discuss before the full build.
+Expected: PASS; both timings printed. **Goal-B decision (review gate):** diffusion (fit+predict, a conservative overcount) should be at least competitive with KDE predict-only at large `n_bins`; the definitive predict-vs-predict comparison is the Task 11 benchmark once the production split exists. If diffusion is not clearly better, discuss before the full build.
 
 - [ ] **Step 4: Commit the spike**
 
@@ -262,6 +286,32 @@ def test_heat_kernel_apply_matches_diffuse_full_and_truncated():
         assert_allclose(got, ref, rtol=1e-5, atol=1e-6)
         # mass conservation regardless of rank
         assert_allclose(got.sum(0), np.asarray(fields).sum(0), rtol=1e-5, atol=1e-6)
+
+
+def test_heat_kernel_apply_disconnected_components_preserve_mass_independently():
+    """Two disjoint grids with UNEQUAL masses: each component's mass is preserved
+    separately (a single global rescale would leak mass between them)."""
+    import scipy.sparse.csgraph
+    g = nx.disjoint_union(nx.grid_2d_graph(4, 4), nx.grid_2d_graph(3, 3))
+    g = nx.convert_node_labels_to_integers(g)
+    for u, v in g.edges():
+        g[u][v]["distance"] = 1.0
+    L = build_laplacian(g)
+    n_comp, labels = scipy.sparse.csgraph.connected_components(L, directed=False)
+    assert n_comp == 2
+    vals, vecs = diffusion_eigenbasis(L, rank=6)  # truncated -> lobes exist
+    rng = np.random.default_rng(1)
+    fields = np.abs(rng.standard_normal((vecs.shape[0], 2)))
+    # make the two components carry very different masses
+    fields[labels == 0] *= 10.0
+    ref = diffuse(vals, vecs, sigma=1.5, fields=fields, component_labels=labels)
+    got = np.asarray(heat_kernel_apply(
+        jnp.asarray(vals), jnp.asarray(vecs), 1.5, jnp.asarray(fields), labels))
+    assert_allclose(got, ref, rtol=1e-5, atol=1e-6)
+    # per-component mass preserved independently
+    for comp in (0, 1):
+        m = labels == comp
+        assert_allclose(got[m].sum(0), fields[m].sum(0), rtol=1e-5, atol=1e-6)
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -272,40 +322,44 @@ Expected: FAIL — `heat_kernel_apply` not defined.
 - [ ] **Step 3: Implement `heat_kernel_apply`** (add to `diffusion.py`; import `jax.numpy as jnp` is already present via the engine? if not, add `import jax.numpy as jnp`)
 
 ```python
+from functools import partial
+import jax
+
+
+@partial(jax.jit, static_argnames=("sigma", "n_components"))
+def _heat_kernel_apply_jit(eigvals, eigvecs, sigma, fields, labels, n_components):
+    t = sigma ** 2 / 2.0
+    coeff = jnp.exp(-t * eigvals)                                   # (m,)
+    smoothed = eigvecs @ (coeff[:, None] * (eigvecs.T @ fields))    # (n_bins, n_fields)
+    clipped = jnp.clip(smoothed, 0.0, None)
+    # Vectorized per-component mass rescale (jittable; labels are segment ids).
+    in_mass = jax.ops.segment_sum(fields, labels, num_segments=n_components)   # (n_components, n_fields)
+    cl_mass = jax.ops.segment_sum(clipped, labels, num_segments=n_components)
+    scale = jnp.where(cl_mass > 0, in_mass / jnp.where(cl_mass > 0, cl_mass, 1.0), 0.0)
+    return clipped * scale[labels]                                  # gather back to (n_bins, n_fields)
+
+
 def heat_kernel_apply(eigvals, eigvecs, sigma, fields, component_labels=None):
     """JAX port of ``diffuse``: exp(-tL) F, clipped and per-component mass-rescaled.
 
     Mirrors :func:`diffuse` exactly (clip to >=0, then rescale each column to its
     input mass, per connected component) so likelihood magnitude is truncation-rank
-    stable. Pure JAX for use in the clusterless_diffusion predict path.
+    stable. Fully vectorized/jittable. ``component_labels`` are 0..K-1 segment ids
+    (a static-length device/host int array); a single connected graph passes all
+    zeros. ``n_components`` is derived host-side (static) so ``segment_sum`` shapes
+    are fixed at trace time.
     """
-    import jax.numpy as jnp
-    t = sigma ** 2 / 2.0
-    coeff = jnp.exp(-t * eigvals)  # (m,)
-    smoothed = eigvecs @ (coeff[:, None] * (eigvecs.T @ fields))  # (n_bins, n_fields)
-    clipped = jnp.clip(smoothed, 0.0, None)
-
-    def _rescale(mask):  # mask: (n_bins,) bool for one component
-        in_mass = jnp.where(mask[:, None], fields, 0.0).sum(0)          # (n_fields,)
-        cl_mass = jnp.where(mask[:, None], clipped, 0.0).sum(0)
-        scale = jnp.where(cl_mass > 0, in_mass / jnp.where(cl_mass > 0, cl_mass, 1.0), 0.0)
-        return jnp.where(mask[:, None], clipped * scale, 0.0)
-
+    n_bins = eigvecs.shape[0]
     if component_labels is None:
-        mask = jnp.ones(clipped.shape[0], dtype=bool)
-        return _rescale(mask)
-    labels = jnp.asarray(component_labels)
-    uniq = jnp.unique(labels, size=labels.shape[0])  # static-safe upper bound
-    # Sum per-component contributions (each _rescale zeros other components).
-    out = jnp.zeros_like(clipped)
-    # component_labels is concrete (host array) at call time -> python loop over np.unique
-    import numpy as _np
-    for lab in _np.unique(_np.asarray(component_labels)):
-        out = out + _rescale(labels == lab)
-    return out
+        labels = jnp.zeros(n_bins, dtype=jnp.int32)
+        n_components = 1
+    else:
+        labels = jnp.asarray(component_labels, dtype=jnp.int32)
+        n_components = int(np.asarray(component_labels).max()) + 1  # static
+    return _heat_kernel_apply_jit(eigvals, eigvecs, float(sigma), fields, labels, n_components)
 ```
 
-> Note: `component_labels` is a concrete host array at every call site (it comes from the cached eigenbasis, not a traced value), so the Python loop over `np.unique` is fine and keeps shapes static. Remove the unused `uniq` line if ruff flags it.
+> `n_components` is resolved host-side (from the concrete component-label array that lives with the cached eigenbasis) and passed as a **static** arg, so `segment_sum(num_segments=n_components)` has a fixed shape under `jit`; `labels` are ordinary traced/device ints used as segment ids and for the gather — no Python loop, no per-call `np.unique`.
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -401,7 +455,11 @@ def get_device_basis(environment, resolved_rank):
     """
     import jax
     import jax.numpy as jnp
-    device = jax.devices()[0]
+    # The device the arrays will actually live on. jnp.asarray follows the active
+    # default-device context, so select it explicitly and device_put onto it — the
+    # cache key must name the SAME device the cached arrays are placed on.
+    device = jax.local_devices()[0] if jax.config.jax_default_device is None \
+        else jax.config.jax_default_device
     dtype = jnp.float32
     key = (int(resolved_rank), device, dtype)
     cache = getattr(environment, "_diffusion_device_basis_", None)
@@ -410,13 +468,14 @@ def get_device_basis(environment, resolved_rank):
         environment._diffusion_device_basis_ = cache
     if key not in cache:
         eigvals, eigvecs = cached_eigenbasis(environment, resolved_rank)
-        # component labels from the interior-bin graph Laplacian
-        graph, _, _ = environment_graph(environment)
+        graph, _, _ = environment_graph(environment)  # component labels from interior-bin graph
         L = build_laplacian(graph)
-        n_comp, labels = scipy.sparse.csgraph.connected_components(L, directed=False)
-        cache[key] = (jnp.asarray(eigvals, dtype=dtype),
-                      jnp.asarray(eigvecs, dtype=dtype),
-                      np.asarray(labels))
+        _n_comp, labels = scipy.sparse.csgraph.connected_components(L, directed=False)
+        cache[key] = (
+            jax.device_put(np.asarray(eigvals, dtype=np.float32), device),
+            jax.device_put(np.asarray(eigvecs, dtype=np.float32), device),
+            jax.device_put(np.asarray(labels, dtype=np.int32), device),
+        )
     return cache[key]
 ```
 
@@ -467,11 +526,17 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 This task uses the **spec §2 contract verbatim** (weighted histograms; `π = H·O/(Σw_pos·ΔV)`; per-electrode zero-rate marking with warning; `resolved_rank = eigvecs.shape[1]`). Reuse `sorted_spikes_diffusion.pixellate_interior_fields` semantics but keep marks + per-spike bin indices. Full implementation code, the density-correctness tests that pin it, and its TDD steps are specified in the spec's §2/§4 and the tests in Task 6 (write those tests first per TDD; this task delivers the code that makes them pass). Break Task 3 into: (3a) validators + eigenbasis resolution + occupancy π; (3b) per-electrode marks/bins/weights/mean_rate + zero-rate marking; (3c) `summed_ground_process_intensity`. Commit after each sub-step's targeted test passes.
 
-> Because the fit code is long and its correctness is defined by the Task 6 density tests, implement Task 6's tests FIRST (they will fail), then write Task 3's fit + Task 4's predict until they pass. This keeps the plan honest: the numerical body is validated by executable contracts, not prose.
+> **TDD ordering (important):** the density-correctness contracts listed in Task 6 (`test_mark_marginal_recovery`, `test_absolute_log_likelihood_small_fixture`, `test_mass_invariance_across_ranks`, `test_binary_weights_match_hard_subset`, `test_zero_rate_fit_and_predict_finite_and_warn`) are the **RED tests for Tasks 3–4** — write them *before* implementing the fit/predict bodies (they fail with "module not found"), then implement 3a–3c and Task 4 until they pass, committing per sub-step. Task 6 is where they are consolidated/confirmed as a suite; they are authored here, not deferred. This keeps the numerical body validated by executable contracts, not prose.
 
 - [ ] **Step 1:** Write `test_fit_returns_finite_densities_and_keys` (fit on `_sim`-style data; assert dict has every key above; `occupancy`/`summed_ground_process_intensity` finite and non-negative; `resolved_rank` int; per-electrode list lengths equal n_electrodes).
 - [ ] **Step 2:** Run → FAIL (module missing).
-- [ ] **Step 3:** Implement 3a–3c per spec §2 (validators via `common.validate_weights`/`validate_finite`; ΔV from `np.diff(env.edges_)`-style per-bin measure or `env` bin sizes; π via `heat_kernel_apply` with `get_device_basis`; per-electrode `Σ w_e == 0` → `weight_total=0`, `mean_rate=0`, warn, add 0 gpi; all-zero `Σ w_pos == 0` → safe denominator + diffusion-specific warn).
+- [ ] **Step 3:** Implement 3a–3c per spec §2. Exact contracts:
+  - **ΔV:** `graph, node_order, bin_sizes = environment_graph(environment)`. Use `bin_sizes` (shape `(n_interior,)`, already aligned with `node_order`, correct for uniform grids **and** linearized tracks) as `ΔV`. Do **not** hand-roll `np.diff(env.edges_)`.
+  - **Occupancy (floored):** `O = weighted histogram of occupancy positions onto interior bins`; `Ohat = heat_kernel_apply(Λ, Q, position_std, O[:,None], labels)[:,0]`; then
+    `pi = clip(Ohat / (where(Σw_pos>0, Σw_pos, 1.0) * bin_sizes), EPS, None)` — the `EPS` floor is applied to `pi` before it is ever a denominator. If `Σw_pos == 0`, emit the diffusion-specific `UserWarning`.
+  - **Validators:** `common.validate_weights`, `common.validate_finite` on in-window features; positive `position_std`/`waveform_std`; `heat_kernel_rank`/`memory_budget`/`block_size` per Task 7 (Task 3 may raise-forward or Task 7 adds them — keep the checks in one `_validate_*` helper).
+  - **Per electrode:** in-window clip; `encoding_bin_indices` via `_interior_bin_indices`; `encoding_weights` via `interpolate_weights_at_spike_times`; `weight_total = float(w.sum())`; if `weight_total == 0` → store `weight_total=0`, `mean_rate=0.0`, `warn`, contribute **0** to `summed_ground_process_intensity`; else `mean_rate = weighted_mean_rate(w, weight_sum)` and add `mean_rate * (heat_kernel_apply(S_e) / (weight_total*bin_sizes)) / pi`.
+  - **Rank:** resolve the basis once (`cached_heat_kernel_eigenbasis(env, position_std)` if `heat_kernel_rank is None` else `cached_eigenbasis(env, heat_kernel_rank)`); `resolved_rank = eigvecs.shape[1]`; store it. Predict retrieves the device basis via `get_device_basis(env, resolved_rank)`.
 - [ ] **Step 4:** Run → PASS.
 - [ ] **Step 5:** Commit `feat(clusterless_diffusion): fit encoding model`.
 
@@ -528,25 +593,28 @@ Implements spec §3 non-local pseudocode **verbatim**: per electrode, zero-rate 
 
 ---
 
-## Task 8: Device-cache lifecycle at the algorithm level (refit + save/load parity)
+## Task 8: Registry integration + end-to-end smoke
 
-**Files:** `test_clusterless_diffusion_integration.py`.
-- [ ] `test_refit_requires_encoding_refit` — build cache via a predict; `env.fit_place_grid(new)`; assert device cache dropped; **re-fit encoding model**; predict works (fresh basis, right shape).
-- [ ] `test_save_load_predict_parity` — build a `NonLocalClusterlessDetector(clusterless_algorithm="clusterless_diffusion")`, fit, predict, `save_model`→`load_model` (no `Device` pickling error), predict matches within `rtol=1e-5`.
-- [ ] `test_memory_budget_override_survives_handoff` — a non-default `memory_budget` at fit is stored and changes predict's effective block vs default.
-- [ ] Commit `test(clusterless_diffusion): device-cache lifecycle + save/load parity`.
-
----
-
-## Task 9: Registry integration + end-to-end smoke
+**MUST precede Task 9** — Task 9's detector-level tests use `clusterless_algorithm="clusterless_diffusion"`, which only resolves once the registry entry exists here.
 
 **Files:** Modify `likelihoods/__init__.py`; test.
 - [ ] **Step 1:** `test_registry_and_end_to_end` — `"clusterless_diffusion"` in `_CLUSTERLESS_ALGORITHMS`; `ClusterlessDecoder`/`NonLocalClusterlessDetector` with it does fit+predict and yields a finite, normalized posterior.
 - [ ] **Step 2:** Run → FAIL (key missing).
 - [ ] **Step 3:** Add imports + registry entry `"clusterless_diffusion": (fit_..., predict_...)` and export the two functions.
 - [ ] **Step 4:** Run → PASS.
-- [ ] **Step 5:** Verify existing golden/snapshot unchanged: `uv run pytest src/non_local_detector/tests/test_golden_regression.py -q` and `uv run pytest -m snapshot -q` → all pass, no diffs.
-- [ ] **Step 6:** Commit `feat(clusterless_diffusion): register algorithm + end-to-end smoke`.
+- [ ] **Step 5:** Commit `feat(clusterless_diffusion): register algorithm + end-to-end smoke`.
+
+---
+
+## Task 9: Device-cache lifecycle at the algorithm level (refit + save/load parity)
+
+**Depends on Task 8** (constructs a detector with the registered algorithm).
+
+**Files:** `test_clusterless_diffusion_integration.py`.
+- [ ] `test_refit_requires_encoding_refit` — build cache via a predict; `env.fit_place_grid(new)`; assert device cache dropped; **re-fit encoding model**; predict works (fresh basis, right shape).
+- [ ] `test_save_load_predict_parity` — build a `NonLocalClusterlessDetector(clusterless_algorithm="clusterless_diffusion")`, fit, predict, `save_model`→`load_model` (no `Device` pickling error), predict matches within `rtol=1e-5`.
+- [ ] `test_memory_budget_override_survives_handoff` — a non-default `memory_budget` at fit is stored and changes predict's effective block vs default.
+- [ ] Commit `test(clusterless_diffusion): device-cache lifecycle + save/load parity`.
 
 ---
 
@@ -567,13 +635,25 @@ Implements spec §3 non-local pseudocode **verbatim**: per electrode, zero-rate 
 - [ ] Module docstring: describe the algorithm, goals A/B, bandwidth semantics, and that the default remains `clusterless_kde`.
 - [ ] `CHANGELOG.md` "Added": new opt-in `clusterless_diffusion` — one paragraph mirroring the `sorted_spikes_diffusion` entry's style (geometry-respecting, cached low-rank operator, prob-space, default unchanged).
 - [ ] Delete `test_clusterless_diffusion_spike.py` (its assertions now live in Tasks 6/10).
-- [ ] Full check: `uv run ruff check src/ && uv run ruff format --check src/ && uv run pytest src/non_local_detector/tests/likelihoods/test_clusterless_diffusion.py src/non_local_detector/tests/likelihoods/test_diffusion_device_cache.py src/non_local_detector/tests/likelihoods/test_clusterless_diffusion_integration.py -q`.
+- [ ] Full check: `uv run ruff check src/ && uv run ruff format --check src/`, then the **shared-surface regression suites** (this feature modified the shared `diffusion.py` engine and `Environment`, so run more than the new tests):
+  ```bash
+  uv run pytest \
+    src/non_local_detector/tests/likelihoods/test_clusterless_diffusion.py \
+    src/non_local_detector/tests/likelihoods/test_diffusion_device_cache.py \
+    src/non_local_detector/tests/likelihoods/test_clusterless_diffusion_integration.py \
+    -q
+  # shared engine / environment / serialization that these changes could regress:
+  uv run pytest -k "diffusion or sorted_spikes_diffusion or environment or save or load or pickle" -q
+  uv run pytest src/non_local_detector/tests/test_golden_regression.py -q      # must be unchanged
+  uv run pytest -m snapshot -q                                                  # must be unchanged
+  ```
+  Golden + snapshot MUST pass with no diffs (default algorithm unchanged). If either moves, stop — the additive feature leaked into an existing path.
 - [ ] Commit `feat(clusterless_diffusion): benchmark, CHANGELOG, docs; remove spike`.
 
 ---
 
 ## Self-Review notes (author)
 
-- **Spec coverage:** §1 core math → Tasks 3/4/6; §2 fit (incl. device basis, safe branches, memory_budget storage) → Tasks 2/3/7/8; §3 predict (non-local, local, memory policy) → Tasks 4/5; §4 bandwidths/normalization/degeneracy/validation → Tasks 1/3/4/7; §Testing → Tasks 6/8/10/11; sequencing (spike first) → Task 0; registry → Task 9.
+- **Spec coverage:** §1 core math → Tasks 3/4/6; §2 fit (incl. device basis, safe branches, memory_budget storage) → Tasks 2/3/7/9; §3 predict (non-local, local, memory policy) → Tasks 4/5; §4 bandwidths/normalization/degeneracy/validation → Tasks 1/3/4/7; §Testing → Tasks 6/9/10/11; sequencing (spike first) → Task 0; **registry → Task 8 (before the Task 9 detector-lifecycle tests that need it)**.
 - **TDD honesty:** the heavy numerical bodies (Tasks 3–5) are validated by the executable contracts in Task 6 (marginal recovery, absolute LL, mass-invariance, binary-weights) and Task 10 (agreement/geometry) — write those tests before/with the code.
 - **Types:** predict/fit signatures and dict keys are declared once in Tasks 3–4 Interfaces and reused verbatim in 5/8/9. `heat_kernel_apply` and `get_device_basis` signatures fixed in Tasks 1–2.
