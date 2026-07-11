@@ -81,6 +81,38 @@ def validate_weights(weights: np.ndarray, n_time: int) -> np.ndarray:
     return weights
 
 
+def validate_finite(array: np.ndarray | jnp.ndarray, name: str) -> None:
+    """Raise if ``array`` contains any non-finite (NaN/inf) value.
+
+    Shared fit-input finiteness check for the encoding fits: a non-finite
+    position or spike waveform feature is invalid encoding data that would
+    otherwise propagate into the density estimate as a silent NaN. Fail fast at
+    the fit entry, consistent with ``validate_weights`` and the GMM/MRF fits
+    (which already reject non-finite inputs).
+
+    Parameters
+    ----------
+    array : np.ndarray | jnp.ndarray
+        The array to check.
+    name : str
+        Name used in the error message (e.g. ``"position"``).
+
+    Raises
+    ------
+    ValidationError
+        If ``array`` contains any non-finite value.
+    """
+    # Reduce on the array's own device: for a JAX array this keeps the full
+    # (potentially GPU-resident) array on-device and transfers only the scalar
+    # result, avoiding a full device->host copy per electrode on every refit.
+    if isinstance(array, jnp.ndarray):
+        all_finite = bool(jnp.all(jnp.isfinite(array)))
+    else:
+        all_finite = bool(np.all(np.isfinite(np.asarray(array))))
+    if not all_finite:
+        raise ValidationError(f"{name} must contain only finite values")
+
+
 def interpolate_weights_at_spike_times(
     spike_times: np.ndarray, position_time: np.ndarray, weights: np.ndarray
 ) -> np.ndarray:

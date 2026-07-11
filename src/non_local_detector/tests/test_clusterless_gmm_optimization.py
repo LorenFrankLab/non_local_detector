@@ -467,3 +467,147 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
     # Verify results are valid (no NaN/Inf)
     assert np.all(np.isfinite(result_jax)), "Non-local prediction contains NaN/Inf"
     assert np.all(np.isfinite(result_local_jax)), "Local prediction contains NaN/Inf"
+
+
+def test_gmm_zero_weight_electrode_penalizes_decode_spikes():
+    """A per-electrode weight that sums to zero makes the electrode zero-rate.
+
+    Fitting a GMM on the de-weighted spikes would leak their spatial pattern into
+    decoding through the joint density, so the fit warns and stores ``None``
+    sentinels (and adds no ground-process intensity — the rate is zero). But the
+    electrode is *not* absent: each observed decode spike is near-impossible
+    under a zero-rate model, so it must add ``LOG_EPS`` (uniformly across bins) —
+    the marked-point-process penalty, matching the KDE path. With no decode
+    spikes the electrode does contribute nothing, matching a physically removed
+    one; skipping observed spikes would discard that negative evidence.
+    """
+    from non_local_detector.likelihoods.common import (
+        LOG_EPS,
+        get_spike_time_bin_ind,
+    )
+
+    rng = np.random.default_rng(0)
+
+    dt = 0.02
+    n_time = 60
+    time = np.arange(n_time) * dt
+    T = time[-1]
+
+    position_time = np.linspace(0, T, 120)
+    position = np.column_stack(
+        [
+            np.linspace(0, 10, len(position_time)),
+            np.sin(np.linspace(0, 2 * np.pi, len(position_time))) * 2,
+        ]
+    )
+
+    # Weights zero over the first half of the window, one over the second.
+    weights = (position_time >= 0.5 * T).astype(float)
+
+    n_features = 4
+    # Electrode 0 fires only in the weighted (second) half -> informative.
+    e0_times = np.sort(rng.uniform(0.6 * T, 0.95 * T, 30))
+    e0_feats = rng.standard_normal((e0_times.size, n_features)).astype(np.float32)
+    # Electrode 1 fires only in the zero-weight (first) half -> degenerate.
+    e1_times = np.sort(rng.uniform(0.05 * T, 0.4 * T, 30))
+    e1_feats = rng.standard_normal((e1_times.size, n_features)).astype(np.float32)
+
+    environment = Environment(position_range=[(0, 10), (-3, 3)])
+    environment = environment.fit_place_grid(
+        position=position, infer_track_interior=True
+    )
+
+    fit_kwargs = {
+        "gmm_components_occupancy": 8,
+        "gmm_components_gpi": 8,
+        "gmm_components_joint": 16,
+    }
+
+    # Fit with the degenerate electrode present -> must warn and store None.
+    with pytest.warns(UserWarning, match="zero-rate"):
+        encoding_both = fit_clusterless_gmm_encoding_model(
+            position_time,
+            position,
+            [e0_times, e1_times],
+            [e0_feats, e1_feats],
+            environment,
+            weights=weights,
+            **fit_kwargs,
+        )
+    assert encoding_both["gpi_models"][1] is None
+    assert encoding_both["joint_models"][1] is None
+    # The stored rate must be exactly zero (zero-rate semantics), not the EPS
+    # floor a normal electrode gets.
+    assert float(np.asarray(encoding_both["mean_rates"])[1]) == 0.0
+
+    # Fit with the electrode physically removed (same weights, same components).
+    encoding_absent = fit_clusterless_gmm_encoding_model(
+        position_time,
+        position,
+        [e0_times],
+        [e0_feats],
+        environment,
+        weights=weights,
+        **fit_kwargs,
+    )
+
+    decode_time = jnp.asarray(time)
+    pt = jnp.asarray(position_time)
+    pos = jnp.asarray(position)
+
+    # Expected penalty: LOG_EPS per in-window electrode-1 decode spike, per bin.
+    in_bounds = (e1_times >= time[0]) & (e1_times <= time[-1])
+    seg = np.asarray(
+        get_spike_time_bin_ind(jnp.asarray(e1_times[in_bounds]), decode_time)
+    )
+    counts = np.bincount(seg, minlength=n_time).astype(float)  # (n_time,)
+    assert counts.sum() > 0, "electrode 1 must fire in-window for a real test"
+    expected_penalty = LOG_EPS * counts[:, None]  # broadcast across bins
+
+    absent_times = [jnp.asarray(e0_times)]
+    absent_feats = [jnp.asarray(e0_feats)]
+    # Electrode 1 present with its decode spikes.
+    penalized_times = [jnp.asarray(e0_times), jnp.asarray(e1_times)]
+    penalized_feats = [jnp.asarray(e0_feats), jnp.asarray(e1_feats)]
+    # Electrode 1 present but with no decode spikes at all.
+    empty_times = [jnp.asarray(e0_times), jnp.zeros((0,))]
+    empty_feats = [jnp.asarray(e0_feats), jnp.zeros((0, n_features))]
+
+    for is_local in (False, True):
+        kind = "local" if is_local else "non-local"
+
+        def _predict(spike_times, spike_features, encoding, local=is_local):
+            return np.asarray(
+                predict_clusterless_gmm_log_likelihood(
+                    decode_time,
+                    pt,
+                    pos,
+                    spike_times,
+                    spike_features,
+                    **encoding,
+                    is_local=local,
+                )
+            )
+
+        ll_absent = _predict(absent_times, absent_feats, encoding_absent)
+
+        # Observed decode spikes on the zero-rate electrode add LOG_EPS each,
+        # uniformly across bins -- not skipped.
+        ll_penalized = _predict(penalized_times, penalized_feats, encoding_both)
+        assert_allclose(
+            ll_penalized - ll_absent,
+            np.broadcast_to(expected_penalty, ll_absent.shape),
+            rtol=1e-4,
+            atol=1e-4,
+            err_msg=f"{kind}: zero-rate electrode must penalize its decode spikes by LOG_EPS",
+        )
+
+        # No decode spikes on the zero-rate electrode -> matches an absent one.
+        ll_empty = _predict(empty_times, empty_feats, encoding_both)
+        assert_allclose(
+            ll_empty,
+            ll_absent,
+            rtol=1e-5,
+            atol=1e-6,
+            err_msg=f"{kind}: zero-rate electrode with no decode spikes must match absent",
+        )

@@ -225,12 +225,13 @@ def _fit_gmm(env, t_pos, pos, spikes, feats, weights):
 
 
 def test_all_zero_weights_are_finite_clusterless_gmm(simple_1d_environment):
-    """All-zero weights must warn and fall back to an unweighted fit, not crash.
+    """All-zero weights must warn and produce a finite zero-rate model, not crash.
 
     An all-zero ``sample_weight`` makes the GMM EM M-step divide by 0 and raise
     ``RuntimeError: Fitting failed``. A fully-masked encoding group (e.g. a state
     the EM posterior never assigns) must instead warn and produce a finite
-    (unweighted) encoding model so the fit degrades gracefully.
+    encoding model: the occupancy falls back to an unweighted fit, and the
+    electrode is marked zero-rate (mean rate 0, no fitted density).
     """
     env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 201)
@@ -247,6 +248,7 @@ def test_all_zero_weights_are_finite_clusterless_gmm(simple_1d_environment):
 
     assert np.all(np.isfinite(np.asarray(enc["log_occupancy"])))
     assert np.all(np.isfinite(np.asarray(enc["mean_rates"])))
+    assert np.allclose(np.asarray(enc["mean_rates"]), 0.0)
     assert np.all(np.isfinite(np.asarray(enc["summed_ground_process_intensity"])))
 
 
@@ -256,8 +258,8 @@ def test_per_electrode_zero_weights_are_finite_clusterless_gmm(simple_1d_environ
     Global weight is positive (left half weighted, right half 0), so there is no
     global warning, but the second electrode's spikes all fall in the zero-weight
     right half -> its per-spike weights are all 0. That all-zero per-electrode
-    ``sample_weight`` previously crashed the GPI / joint GMM fit; it must fall back
-    to an unweighted per-electrode fit instead.
+    ``sample_weight`` previously crashed the GPI / joint GMM fit; the electrode is
+    now marked zero-rate (mean rate 0, None GPI/joint sentinels) instead.
     """
     env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 201)
@@ -276,8 +278,9 @@ def test_per_electrode_zero_weights_are_finite_clusterless_gmm(simple_1d_environ
     assert np.all(np.isfinite(mean_rates))
     assert np.all(np.isfinite(np.asarray(enc["log_occupancy"])))
     assert np.all(np.isfinite(np.asarray(enc["summed_ground_process_intensity"])))
-    # The zero-weight electrode contributes ~0 rate; the weighted one is larger.
-    assert mean_rates[1] < mean_rates[0]
+    # The zero-weight electrode is zero-rate; the weighted one has a positive rate.
+    assert mean_rates[1] == 0.0
+    assert mean_rates[0] > mean_rates[1]
 
 
 def test_all_zero_weights_are_finite_clusterless_kde(simple_1d_environment):

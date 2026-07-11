@@ -42,6 +42,7 @@ Place fields ``exp(eta)`` are stored FULL-GRID exactly like ``sorted_spikes_kde`
 likelihood (:func:`predict_sorted_spikes_mrf_log_likelihood` is that function).
 """
 
+import warnings
 from functools import partial
 
 import jax
@@ -792,6 +793,16 @@ def fit_sorted_spikes_mrf_encoding_model(
     # cached_eigenbasis caps at the number of available modes, so the true basis rank
     # can be below the request; report what was actually used, not what was asked for.
     effective_rank = basis.shape[1]
+    # With an auto-selected rank the default cap can drop the highest-frequency
+    # eigenmodes on a fine grid; surface the truncation (docstring-only before).
+    if rank is None and effective_rank < node_order.shape[0]:
+        warnings.warn(
+            f"MRF basis auto-capped at {effective_rank} of "
+            f"{node_order.shape[0]} interior bins; the highest-frequency "
+            f"eigenmodes are dropped. Pass an explicit `rank` to override.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     assert environment.is_track_interior_ is not None
     is_track_interior = environment.is_track_interior_.ravel()
@@ -851,6 +862,17 @@ def fit_sorted_spikes_mrf_encoding_model(
             max_iter=max_iter,
             tol=tol,
         )
+        # REML total failure raises; the softer Newton/IRLS non-convergence was
+        # previously silent (only stored in `mrf_converged`). Surface it.
+        if not diagnostics["converged"]:
+            warnings.warn(
+                f"MRF penalized-Poisson (Newton/IRLS) fit did not converge in "
+                f"{diagnostics['n_iter']} iteration(s) (max coefficient step "
+                f"{diagnostics['max_step']:.2e}); place fields may be unreliable. "
+                f"Increase max_iter or the penalty.",
+                UserWarning,
+                stacklevel=2,
+            )
         rate_interior = np.exp(
             eta
         )  # (n_interior, n_neurons); eta is clipped in the fit

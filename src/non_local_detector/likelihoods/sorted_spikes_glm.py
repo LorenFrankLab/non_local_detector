@@ -64,6 +64,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     get_position_at_time,
     get_spikecount_per_time_bin,
+    validate_weights,
 )
 
 
@@ -205,14 +206,23 @@ def fit_poisson_regression(
     # boolean ``success`` flag: BFGS frequently reports ``success=False``
     # ("Desired error not necessarily achieved due to precision loss") even at
     # a good minimum, so warning on ``not res.success`` is routinely spurious.
-    # Warn only when the gradient is meaningfully far from zero.
+    # Warn when the gradient is meaningfully far from zero, OR when the fit
+    # diverged to a non-finite loss/gradient: for a diverged fit ``grad_norm``
+    # is ``NaN`` and ``NaN > tol`` is ``False``, so a gradient-only check would
+    # silently pass a broken fit.
     grad_norm = float(np.max(np.abs(res.jac))) if res.jac is not None else float("inf")
-    if grad_norm > GLM_CONVERGENCE_GRAD_TOL:
+    final_loss = float(res.fun)
+    if (
+        not np.isfinite(grad_norm)
+        or not np.isfinite(final_loss)
+        or grad_norm > GLM_CONVERGENCE_GRAD_TOL
+    ):
         warnings.warn(
             f"GLM Poisson regression may not have converged: final gradient "
-            f"inf-norm {grad_norm:.3e} exceeds {GLM_CONVERGENCE_GRAD_TOL:.1e} "
-            f"(scipy message: {res.message}). Place-field coefficients may be "
-            f"unreliable. (n_iter={res.nit}, final loss={res.fun:.6f})",
+            f"inf-norm {grad_norm:.3e} vs tolerance {GLM_CONVERGENCE_GRAD_TOL:.1e}, "
+            f"final loss {final_loss:.6f} (a non-finite gradient or loss means the "
+            f"fit diverged). Place-field coefficients may be unreliable. "
+            f"(scipy message: {res.message}, n_iter={res.nit})",
             UserWarning,
             stacklevel=2,
         )
@@ -310,6 +320,8 @@ def fit_sorted_spikes_glm_encoding_model(
     )
     if weights is None:
         weights = jnp.ones((position.shape[0],))
+    else:
+        weights = validate_weights(weights, position.shape[0])
 
     # Ensure weights is not None for type checking
     assert weights is not None

@@ -368,3 +368,22 @@ def test_sample_weight_all_zero_raises(key):
     X = _two_clusters()
     with pytest.raises(ValidationError, match="sums to 0"):
         model.fit(X, key, sample_weight=jnp.zeros(X.shape[0]))
+
+
+def test_gmm_diag_variance_floor_warns(key):
+    """A diag/spherical variance clamped to the 1e-10 floor warns (not silent).
+
+    Two tight clusters whose within-cluster spread (~1e-7) gives a variance below
+    the 1e-10 floor; with reg_covar=0 the precision is clamped rather than raised
+    (unlike full/tied, which surface a singular covariance as an error). The clamp
+    used to be silent.
+    """
+    model = GaussianMixtureModel(
+        n_components=2,
+        covariance_type="spherical",
+        reg_covar=0.0,
+        random_state=0,
+    )
+    X = jnp.array([[0.0], [1e-7], [2e-7], [10.0], [10.0 + 1e-7], [10.0 + 2e-7]])
+    with pytest.warns(UserWarning, match="variance hit the 1e-10 floor"):
+        model.fit(X, key)

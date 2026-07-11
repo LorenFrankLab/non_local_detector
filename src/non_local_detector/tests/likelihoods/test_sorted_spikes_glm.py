@@ -295,6 +295,39 @@ class TestPoissonRegression:
         with pytest.warns(UserWarning, match="may not have converged"):
             fit_poisson_regression(design_matrix, spikes, weights, l2_penalty=1e-3)
 
+    def test_glm_diverged_nonfinite_warned(self, monkeypatch):
+        """A fit that diverges to a non-finite loss/gradient must warn.
+
+        Regression: ``grad_norm = max(|jac|)`` is ``NaN`` for a diverged fit and
+        ``NaN > tol`` is ``False``, so the gradient-only check silently passed a
+        broken fit. The check now also fires on a non-finite loss/gradient.
+        """
+        rng = np.random.default_rng(0)
+        n_time, n_basis = 50, 5
+        design_matrix = rng.standard_normal((n_time, n_basis))
+        design_matrix[:, 0] = 1.0
+        spikes = rng.poisson(3, size=n_time)
+        weights = np.ones(n_time)
+
+        from scipy.optimize import OptimizeResult  # type: ignore[import-untyped]
+
+        import non_local_detector.likelihoods.sorted_spikes_glm as glm_module
+
+        def fake_minimize(fun, x0, **kwargs):
+            return OptimizeResult(
+                x=np.asarray(x0),
+                jac=np.full(n_basis, np.nan),  # diverged -> non-finite gradient
+                success=False,
+                message="forced divergence for test",
+                nit=7,
+                fun=np.nan,
+            )
+
+        monkeypatch.setattr(glm_module, "minimize", fake_minimize)
+
+        with pytest.warns(UserWarning, match="may not have converged"):
+            fit_poisson_regression(design_matrix, spikes, weights, l2_penalty=1e-3)
+
     def test_glm_benign_precision_loss_does_not_warn(self, monkeypatch):
         """``success=False`` with a near-zero gradient is benign precision loss
         and must NOT warn (this is the dominant noise source in practice)."""

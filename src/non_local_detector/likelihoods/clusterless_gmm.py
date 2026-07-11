@@ -279,8 +279,8 @@ def fit_clusterless_gmm_encoding_model(
     )
     log_occupancy = _gmm_logp(occupancy_model, interior_place_bin_centers)
 
-    gpi_models: list[GaussianMixtureModel] = []
-    joint_models: list[GaussianMixtureModel] = []
+    gpi_models: list[GaussianMixtureModel | None] = []
+    joint_models: list[GaussianMixtureModel | None] = []
     mean_rates: list[float] = []
 
     occupancy = jnp.exp(log_occupancy)
@@ -304,6 +304,31 @@ def fit_clusterless_gmm_encoding_model(
             elect_times, position_time, weights
         )
 
+        # An electrode whose supplied weights sum to zero has no effective
+        # encoding data, so its fitted rate is zero. Fitting a GMM on those
+        # (de-weighted) spikes would both fail (zero sample_weight) and leak
+        # their spatial pattern into decoding via the joint density. Mark it
+        # zero-rate (mean rate 0, None GPI/joint sentinels) and add no
+        # ground-process intensity (the rate is zero). Predict floors each of its
+        # observed decode spikes to LOG_EPS -- the marked-point-process
+        # likelihood of a spike under a zero-rate model -- rather than skipping
+        # the electrode (which would drop that negative evidence), matching the
+        # KDE path. No weights supplied is a different, legitimate case ->
+        # unweighted fit.
+        if not weights_was_none and float(np.sum(elect_weights)) == 0.0:
+            warnings.warn(
+                "Clusterless GMM: supplied weights for an electrode sum to zero "
+                "(no effective encoding data); the electrode is treated as "
+                "zero-rate -- its observed decode spikes are floored to LOG_EPS "
+                "rather than fit on the de-weighted spikes.",
+                UserWarning,
+                stacklevel=2,
+            )
+            mean_rates.append(0.0)  # zero rate, not the EPS floor below
+            gpi_models.append(None)
+            joint_models.append(None)
+            continue
+
         # Weighted mean firing rate: weighted spike count / weighted occupancy time.
         mean_rate = jnp.clip(
             weighted_mean_rate(elect_weights, weight_sum), min=EPS
@@ -315,7 +340,7 @@ def fit_clusterless_gmm_encoding_model(
             position_time, position, elect_times, environment
         )
 
-        elect_sample_weight = _gmm_sample_weight(elect_weights, weights_was_none)
+        elect_sample_weight = None if weights_was_none else elect_weights
 
         # GPI GMM (position only)
         gpi_gmm = _fit_gmm_density(
@@ -380,8 +405,8 @@ def predict_clusterless_gmm_log_likelihood(
     occupancy_model: GaussianMixtureModel,
     interior_place_bin_centers: jnp.ndarray,
     log_occupancy: jnp.ndarray,
-    gpi_models: list[GaussianMixtureModel],
-    joint_models: list[GaussianMixtureModel],
+    gpi_models: list[GaussianMixtureModel | None],
+    joint_models: list[GaussianMixtureModel | None],
     mean_rates: jnp.ndarray,
     summed_ground_process_intensity: jnp.ndarray,
     is_local: bool = False,
@@ -462,6 +487,23 @@ def predict_clusterless_gmm_log_likelihood(
         unit="electrode",
         disable=disable_progress_bar,
     ):
+        # A None model marks a zero-rate electrode: its encoding weights summed
+        # to zero, so no density was fit. The fitted rate is zero, so its
+        # ground-process (integral) term is zero (already omitted at fit) and
+        # every observed decoding spike is near-impossible under this model.
+        # Floor each such spike's log-intensity to LOG_EPS, added uniformly
+        # across position bins -- matching the KDE path and the marked-point-
+        # process likelihood. This is *not* the same as skipping the electrode:
+        # skipping would drop the negative evidence an observed spike carries
+        # (e.g. against a state whose encoding de-weighted this electrode). With
+        # no in-window spikes the scatter-add contributes zero.
+        if joint_gmm is None:
+            in_bounds = np.logical_and(elect_times >= time[0], elect_times <= time[-1])
+            seg_ids = get_spike_time_bin_ind(elect_times[in_bounds], time)
+            spikes_per_bin = jnp.zeros(n_time).at[seg_ids].add(1.0)  # (n_time,)
+            log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin[:, None]
+            continue
+
         # Clip to decoding window
         in_bounds = np.logical_and(elect_times >= time[0], elect_times <= time[-1])
         elect_times = elect_times[in_bounds]
@@ -606,8 +648,8 @@ def compute_local_log_likelihood(
     spike_waveform_features: list[jnp.ndarray],
     environment: Environment,
     occupancy_model: GaussianMixtureModel,
-    gpi_models: list[GaussianMixtureModel],
-    joint_models: list[GaussianMixtureModel],
+    gpi_models: list[GaussianMixtureModel | None],
+    joint_models: list[GaussianMixtureModel | None],
     mean_rates: jnp.ndarray,
     disable_progress_bar: bool = False,
 ) -> jnp.ndarray:
@@ -669,6 +711,20 @@ def compute_local_log_likelihood(
         unit="electrode",
         disable=disable_progress_bar,
     ):
+        # None marks a zero-rate electrode (its encoding weights summed to zero):
+        # no density was fit, so floor each observed decoding spike's
+        # log-intensity to LOG_EPS (added to its time bin), matching the KDE path
+        # and the marked-point-process likelihood. The integral term is zero. Do
+        # not skip -- an observed spike is negative evidence, not "no data".
+        if joint_gmm is None:
+            in_bounds = jnp.logical_and(elect_times >= time[0], elect_times <= time[-1])
+            bounded_times = elect_times[in_bounds]
+            if bounded_times.shape[0] > 0:
+                seg_ids = get_spike_time_bin_ind(bounded_times, time)
+                spikes_per_bin = jnp.zeros(n_time).at[seg_ids].add(1.0)  # (n_time,)
+                log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin
+            continue
+
         elect_feats = _as_jnp(elect_feats)
 
         # Clip to decoding window

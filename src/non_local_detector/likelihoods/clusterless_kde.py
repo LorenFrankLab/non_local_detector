@@ -16,6 +16,7 @@ from non_local_detector.likelihoods.common import (
     get_spike_time_bin_ind,
     interpolate_weights_at_spike_times,
     safe_log,
+    validate_finite,
     validate_weights,
     weighted_mean_rate,
 )
@@ -278,9 +279,12 @@ def fit_clusterless_kde_encoding_model(
             electrode_spike_times <= position_time[-1],
         )
         electrode_spike_times = electrode_spike_times[is_in_bounds]
-        bounded_spike_waveform_features.append(
-            electrode_spike_waveform_features[is_in_bounds]
-        )
+        # Validate only the in-window spikes that actually enter the fit; a
+        # non-finite feature on a spike outside the encoding interval is
+        # discarded here anyway and must not abort fitting.
+        bounded_features = electrode_spike_waveform_features[is_in_bounds]
+        validate_finite(bounded_features, "spike_waveform_features")
+        bounded_spike_waveform_features.append(bounded_features)
         # Weight each encoding spike by the posterior weight at its spike time (linear
         # interpolation of the per-sample weights onto the spike times).
         electrode_weights_host = interpolate_weights_at_spike_times(
