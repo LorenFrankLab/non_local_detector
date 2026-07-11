@@ -149,6 +149,65 @@ def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
 
 
 # =============================================================================
+# make_nD_track_graph_from_environment (N-D array path)
+# =============================================================================
+
+
+def test_nd_track_graph_handles_interior_on_grid_boundary():
+    """N-D track graph builds correctly when interior bins touch the boundary.
+
+    Regression: ``make_nD_track_graph_from_environment`` removed out-of-bounds
+    neighbor indices *per dimension independently*. At any node on the grid
+    boundary in a subset of dimensions (e.g. an edge, but not corner, node of an
+    all-interior grid) the per-axis index arrays ended up different lengths and
+    raised ``IndexError: shape mismatch``. This fits an all-interior 2-D grid —
+    where every border node triggers the old bug — and checks the graph is the
+    full king-move (8-connectivity) adjacency.
+    """
+    # infer_track_interior=False -> every grid bin is interior, so border nodes
+    # sit on the boundary and previously crashed graph construction.
+    env = Environment(position_range=[(0, 3), (0, 3)], place_bin_size=1.0)
+    pos = np.array([[0.01, 0.01], [2.99, 2.99]])
+    env = env.fit_place_grid(position=pos, infer_track_interior=False)
+
+    shape = env.centers_shape_
+    assert len(shape) == 2
+    assert int(env.is_track_interior_.sum()) == int(np.prod(shape))  # all interior
+
+    g = env.track_graphDD
+    assert g.number_of_nodes() == int(np.prod(shape))
+
+    # Independent oracle: brute-force king-move adjacency (all 3**ndim - 1
+    # neighbors that stay inside the grid), computed a different way than the
+    # meshgrid-based implementation.
+    import itertools
+
+    offsets = [o for o in itertools.product((-1, 0, 1), repeat=len(shape)) if any(o)]
+    expected = set()
+    for idx in np.ndindex(*shape):
+        nid = int(np.ravel_multi_index(idx, shape))
+        for off in offsets:
+            nb = tuple(i + o for i, o in zip(idx, off, strict=False))
+            if all(0 <= c < s for c, s in zip(nb, shape, strict=False)):
+                mid = int(np.ravel_multi_index(nb, shape))
+                expected.add((min(nid, mid), max(nid, mid)))
+    got = {(int(min(u, v)), int(max(u, v))) for u, v in g.edges()}
+    assert got == expected
+
+    # Spot-check degrees and edge geometry.
+    corner = 0  # (0, 0)
+    center = int(np.ravel_multi_index(tuple(s // 2 for s in shape), shape))
+    assert g.degree(corner) == 2 ** len(shape) - 1  # 3 orthogonal/diagonal neighbors
+    assert g.degree(center) == 3 ** len(shape) - 1  # 8 neighbors, fully interior
+    # Diagonal edge is sqrt(2) longer than an orthogonal edge (spacing-independent).
+    diag = int(np.ravel_multi_index((1, 1), shape))
+    d_orth = g.edges[(0, 1)]["distance"]
+    d_diag = g.edges[(0, diag)]["distance"]
+    assert d_orth > 0
+    assert np.isclose(d_diag / d_orth, np.sqrt(2.0))
+
+
+# =============================================================================
 # get_distances_to_interior_bins
 # =============================================================================
 

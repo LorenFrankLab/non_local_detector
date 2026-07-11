@@ -1712,29 +1712,33 @@ def make_nD_track_graph_from_environment(environment: Environment) -> nx.Graph:
     # Enumerate over nodes in the track interior
     for ind in zip(*np.nonzero(environment.is_track_interior_), strict=False):
         ind = np.array(ind)
-        # Indices of adjacent nodes
+        # Full 3**n_dims neighborhood block of grid indices (includes diagonals)
         adj_inds = np.meshgrid(*[axis_offsets + i for i in ind], indexing="ij")
-        # Remove out of bounds indices
-        adj_inds = [
-            inds[np.logical_and(inds >= 0, inds < dim_size)]
-            for inds, dim_size in zip(
-                adj_inds, environment.centers_shape_, strict=False
-            )
-        ]
+        # Joint in-bounds mask across ALL dimensions. Masking each dimension
+        # independently desynchronizes the per-axis index arrays whenever a node
+        # sits on the grid boundary in a subset of dimensions (they end up with
+        # different lengths and fail to broadcast).
+        in_bounds = np.ones(adj_inds[0].shape, dtype=bool)
+        for inds, dim_size in zip(adj_inds, environment.centers_shape_, strict=False):
+            in_bounds &= (inds >= 0) & (inds < dim_size)
+        adj_coords = [inds[in_bounds] for inds in adj_inds]
 
         # Is the adjacent node on the track?
-        adj_on_track_inds = environment.is_track_interior_[tuple(adj_inds)]
+        adj_on_track_inds = environment.is_track_interior_[tuple(adj_coords)]
 
-        # Remove the center node
-        center_idx = [n // 2 for n in adj_on_track_inds.shape]
-        adj_on_track_inds[tuple(center_idx)] = False
+        # Remove the center node (offset (0, ..., 0) from ``ind``)
+        is_center = np.all(
+            [coord == i for coord, i in zip(adj_coords, ind, strict=False)],
+            axis=0,
+        )
+        adj_on_track_inds = adj_on_track_inds & ~is_center
 
         # Get the node ids of the center node
         node_id = np.ravel_multi_index(ind, environment.centers_shape_)
 
         # Get the node ids of the adjacent nodes on the track
         adj_node_ids = np.ravel_multi_index(
-            [inds[adj_on_track_inds] for inds in adj_inds],
+            [coord[adj_on_track_inds] for coord in adj_coords],
             environment.centers_shape_,
         )
 
