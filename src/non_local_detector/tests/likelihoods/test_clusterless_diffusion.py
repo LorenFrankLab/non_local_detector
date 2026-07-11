@@ -120,7 +120,7 @@ def _fit(s, **overrides):
     )
 
 
-def _predict(s, enc, **overrides):
+def _predict(s, enc, is_local=False, **overrides):
     encoding = dict(enc)
     encoding.update(overrides)
     return predict_clusterless_diffusion_log_likelihood(
@@ -129,7 +129,7 @@ def _predict(s, enc, **overrides):
         s["position"],
         [jnp.asarray(t) for t in s["dec_t"]],
         [jnp.asarray(f) for f in s["dec_f"]],
-        is_local=False,
+        is_local=is_local,
         **encoding,
     )
 
@@ -568,6 +568,29 @@ def test_block_parity():
     )
 
 
+def test_local_block_parity():
+    """The local branch's per-decode-spike-block loop (``spike_bins[block]``,
+    ``decode_features[block]``, ``seg[block]``) must give the same output whether
+    it runs in one big block or many tiny ones. ``test_block_parity`` only
+    exercises ``is_local=False`` (``_predict`` hardcodes non-local by default), so
+    it never touches this slicing in the local branch. ``_sim``'s default 2
+    electrodes x 12 decode spikes each, combined with ``memory_budget=1`` (forces
+    ``effective_block == 1``, i.e. one spike per block), exercises many
+    single-spike blocks per electrode against one big block."""
+    s = _sim(seed=3, hi=10.0)
+    enc = _fit(s)
+
+    ll_big = np.asarray(_predict(s, enc, is_local=True))  # one block per electrode
+    ll_small = np.asarray(
+        _predict(s, enc, is_local=True, memory_budget=1)
+    )  # one decode spike per block
+
+    assert ll_big.shape == ll_small.shape == (s["time"].shape[0], 1)
+    assert np.allclose(ll_big, ll_small, rtol=1e-5, atol=1e-6), (
+        f"local block parity failed: max|diff|={np.abs(ll_big - ll_small).max():.3e}"
+    )
+
+
 def test_zero_rate_fit_and_predict_finite_and_warn():
     """All-zero weights: both the occupancy and per-electrode warnings fire; predict
     stays finite and floors every decode spike to LOG_EPS."""
@@ -622,3 +645,195 @@ def test_zero_rate_fit_and_predict_finite_and_warn():
     seg = get_spike_time_bin_ind(dec_times[0], time)
     for t_bin in seg:
         assert np.allclose(ll[t_bin], LOG_EPS - EPS, atol=1e-6)
+
+
+# ----------------------------------------------------------------------------
+# Task 5 -- local predict path
+# ----------------------------------------------------------------------------
+
+
+def test_local_equals_nonlocal_per_spike():
+    """Per-spike identity (spec sec 3, Local): local predict's contribution at a
+    single decode spike must reconstruct the non-local predict's cell at that
+    spike's ``(time_bin, animal_bin)``.
+
+    Both paths build the identical diffused column ``P = heat_kernel_apply(D_e)``
+    for a decode spike; non-local returns the whole column (all interior bins),
+    local indexes just ``bin(x_a(t_j))``. On a fixture with exactly ONE decode
+    spike (isolating one electrode's one column -- no other spike/electrode
+    contributes to the compared cell) and an animal that is stationary ONLY
+    within the single decode-time-bin window containing that spike (so the
+    animal's bin is the same at the decode spike's exact time AND at that
+    bin's grid point ``time[t_bin]``, which is all the identity needs), it
+    holds exactly::
+
+        ll_local[t_bin, 0] == ll_nonlocal[t_bin, animal_bin]
+
+    because both sides equal ``-summed_gpi[animal_bin] + lc[animal_bin]`` for the
+    same ``lc`` (same D_e, same heat_kernel_apply call, same electrode).
+
+    Position is NOT held constant for the whole session: it ramps linearly
+    across all 6 interior bins for t in [0, 2) (carrying the 3 encoding spikes
+    through 3 distinct bins), then holds at ``x_c`` (bin 3) for t in [2, 5],
+    covering both the decode spike (t=3.3) and its time bin's grid point
+    (time[3]=3.0). This matters: if position were constant for the ENTIRE
+    session, both the encoding spikes AND the occupancy samples would land in
+    a single bin ``bin0``, so every bin's diffused value in the compared row
+    would be ``H[bin, bin0] * (same per-electrode scalar)`` -- the ``H[bin,
+    bin0]`` heat-kernel column cancels identically between ``p_e(bin, j)`` and
+    ``occupancy(bin)`` in the ``lc`` ratio, making the row bin-INVARIANT by
+    construction. Such a fixture cannot tell a correct animal-bin lookup from a
+    wrong one: the assertion would pass even if the local branch indexed the
+    wrong bin. The ``np.ptp`` guard below makes that degenerate case a hard
+    failure rather than a silent false pass.
+    """
+    env = _make_1d_env(1.0, 0.0, 6.0)  # 6 interior bins, centers 0.5..5.5
+    position_time = np.linspace(0.0, 5.0, 101)
+    x_c = 3.2  # bin 3 ([3, 4))
+    # Ramp through bins 0-5 for t < 2, then stationary at x_c (bin 3) for t >= 2.
+    position = np.where(position_time <= 2.0, 0.5 + 2.5 * position_time, x_c)[:, None]
+
+    # Encoding spikes during the ramp -> land in 3 distinct interior bins (1, 2, 4).
+    enc_times = [np.array([0.3, 0.9, 1.5])]
+    enc_feats = [np.array([[0.0, 0.0], [0.4, -0.3], [-0.2, 0.5]], dtype=np.float32)]
+
+    enc = fit_clusterless_diffusion_encoding_model(
+        position_time,
+        position,
+        [jnp.asarray(t) for t in enc_times],
+        [jnp.asarray(f) for f in enc_feats],
+        env,
+        sampling_frequency=20,
+        position_std=POSITION_STD,
+        waveform_std=WAVEFORM_STD,
+        weights=None,
+        disable_progress_bar=True,
+    )
+
+    time = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+    # Single decode spike, single electrode, inside the stationary window [2, 5].
+    dec_times = [np.array([3.3])]
+    dec_feats = [np.array([[0.3, -0.2]], dtype=np.float32)]
+
+    ll_nonlocal = np.asarray(
+        predict_clusterless_diffusion_log_likelihood(
+            jnp.asarray(time),
+            position_time,
+            position,
+            [jnp.asarray(t) for t in dec_times],
+            [jnp.asarray(f) for f in dec_feats],
+            is_local=False,
+            **enc,
+        )
+    )
+    ll_local = np.asarray(
+        predict_clusterless_diffusion_log_likelihood(
+            jnp.asarray(time),
+            position_time,
+            position,
+            [jnp.asarray(t) for t in dec_times],
+            [jnp.asarray(f) for f in dec_feats],
+            is_local=True,
+            **enc,
+        )
+    )
+
+    assert ll_local.shape == (time.shape[0], 1)
+    n_bins = np.asarray(enc["node_order"]).shape[0]
+    assert ll_nonlocal.shape == (time.shape[0], n_bins)
+    assert np.all(np.isfinite(ll_local))
+
+    n_total_bins = env.is_track_interior_.ravel().shape[0]
+    full_to_local = _full_to_local(np.asarray(enc["node_order"]), n_total_bins)
+    animal_position = get_position_at_time(position_time, position, dec_times[0], env)
+    animal_bin = int(_interior_bin_indices(env, animal_position, full_to_local)[0])
+    t_bin = int(get_spike_time_bin_ind(dec_times[0], time)[0])
+    assert animal_bin == 3  # bin containing x_c = 3.2
+
+    # Regression guard: if a future fixture edit collapses this row back to
+    # (near-)flat, the identity below would pass vacuously even for a WRONG
+    # animal-bin index. Fail loudly instead of silently losing discrimination.
+    row_ptp = float(np.ptp(ll_nonlocal[t_bin]))
+    assert row_ptp > 0.5, (
+        f"non-local row at t_bin={t_bin} is nearly flat (ptp={row_ptp:.3e} bits); "
+        "fixture no longer discriminates the animal's bin"
+    )
+
+    assert np.allclose(
+        ll_local[t_bin, 0], ll_nonlocal[t_bin, animal_bin], rtol=1e-5, atol=1e-6
+    ), (
+        f"local != nonlocal at the spike's (time_bin, animal_bin) cell: "
+        f"local={ll_local[t_bin, 0]:.6f} nonlocal={ll_nonlocal[t_bin, animal_bin]:.6f}"
+    )
+
+
+def test_local_finite_and_zero_rate():
+    """Local output is finite, shape (n_time, 1); a zero-rate electrode's decode
+    spikes each contribute exactly LOG_EPS (isolated by giving only that
+    electrode decode spikes, mirroring test_nonlocal_finite_and_zero_rate)."""
+    env = _make_1d_env(1.0, 0.0, 10.0)
+    position_time = np.linspace(0.0, 10.0, 201)
+    position = np.linspace(0.0, 10.0, 201)[:, None]
+    # left electrode fires in the weighted half, right electrode in the zero half
+    enc_times = [np.array([1.0, 2.0, 3.0, 4.0]), np.array([6.0, 7.0, 8.0, 9.0])]
+    enc_feats = [
+        np.array([[0.0, 0.0], [0.2, 0.1], [-0.1, 0.3], [0.4, -0.2]], dtype=np.float32),
+        np.array(
+            [[1.0, -1.0], [0.9, -0.8], [1.1, -1.2], [0.8, -0.9]], dtype=np.float32
+        ),
+    ]
+    weights = np.where(position_time < 5.0, 1.0, 0.0)
+
+    with pytest.warns(UserWarning, match="zero total encoding weight"):
+        enc = fit_clusterless_diffusion_encoding_model(
+            position_time,
+            position,
+            [jnp.asarray(t) for t in enc_times],
+            [jnp.asarray(f) for f in enc_feats],
+            env,
+            weights=weights,
+            sampling_frequency=20,
+            position_std=POSITION_STD,
+            waveform_std=WAVEFORM_STD,
+            disable_progress_bar=True,
+        )
+
+    assert enc["weight_total"][1] == 0.0
+    assert enc["mean_rates"][1] == 0.0
+
+    # decode: only the zero-rate electrode has spikes, so its contribution is isolated
+    time = np.linspace(0.0, 10.0, 6)
+    dec_times = [np.array([]), np.array([2.5, 7.5])]
+    dec_feats = [
+        np.zeros((0, 2), dtype=np.float32),
+        np.array([[1.0, -1.0], [0.9, -0.9]], dtype=np.float32),
+    ]
+    ll = np.asarray(
+        predict_clusterless_diffusion_log_likelihood(
+            jnp.asarray(time),
+            position_time,
+            position,
+            [jnp.asarray(t) for t in dec_times],
+            [jnp.asarray(f) for f in dec_feats],
+            is_local=True,
+            **enc,
+        )
+    )
+
+    assert ll.shape == (time.shape[0], 1)
+    assert np.all(np.isfinite(ll))
+
+    n_total_bins = env.is_track_interior_.ravel().shape[0]
+    full_to_local = _full_to_local(np.asarray(enc["node_order"]), n_total_bins)
+    interpolated_position = get_position_at_time(position_time, position, time, env)
+    animal_bins = _interior_bin_indices(env, interpolated_position, full_to_local)
+    gpi = np.asarray(enc["summed_ground_process_intensity"])
+    local_gpi = gpi[animal_bins]
+
+    seg = get_spike_time_bin_ind(dec_times[1], time)
+    for t_bin in seg:
+        # only the zero-rate electrode contributed at this bin -> exactly
+        # LOG_EPS - local_gpi[t_bin]
+        assert np.allclose(ll[t_bin, 0] + local_gpi[t_bin], LOG_EPS, atol=1e-6), (
+            f"zero-rate electrode did not floor to LOG_EPS at time bin {t_bin}"
+        )

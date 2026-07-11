@@ -407,36 +407,34 @@ def predict_clusterless_diffusion_log_likelihood(
     is_local: bool = False,
     **encoding_model: object,
 ) -> jnp.ndarray:
-    """Predict the clusterless graph-diffusion log likelihood (non-local path).
+    """Predict the clusterless graph-diffusion log likelihood.
 
     Parameters
     ----------
     time : np.ndarray, shape (n_time,)
         Decoding time bins.
     position_time : np.ndarray, shape (n_time_position,)
-        Time of each position sample (accepted for signature parity; unused non-local).
+        Time of each position sample (used only by the local path; accepted for
+        signature parity when ``is_local`` is False).
     position : np.ndarray, shape (n_time_position, n_position_dims)
-        Position samples (accepted for signature parity; unused non-local).
+        Position samples (used only by the local path; accepted for signature
+        parity when ``is_local`` is False).
     spike_times : list[jnp.ndarray]
         Decode spike times for each electrode.
     spike_waveform_features : list[jnp.ndarray]
         Decode spike waveform features (marks) for each electrode.
     is_local : bool, optional
-        If True, evaluate at the animal's position. Not yet implemented for the
-        diffusion likelihood (raises ``NotImplementedError``).
+        If True, evaluate the likelihood at the animal's position (nearest interior
+        bin; the ``D_e`` construction and ``heat_kernel_apply`` call are identical to
+        the non-local path -- only the readout differs). By default False.
     **encoding_model
         The dict returned by :func:`fit_clusterless_diffusion_encoding_model`.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_time, n_interior_bins)
+    log_likelihood : jnp.ndarray, shape (n_time, n_interior_bins) if ``is_local`` is
+        False, else (n_time, 1).
     """
-    if is_local:
-        raise NotImplementedError(
-            "The local path of clusterless_diffusion is not yet implemented; "
-            "use is_local=False (non-local)."
-        )
-
     environment: Environment = encoding_model["environment"]  # type: ignore[assignment]
     occupancy = jnp.asarray(encoding_model["occupancy"])
     summed_ground_process_intensity = jnp.asarray(
@@ -448,6 +446,7 @@ def predict_clusterless_diffusion_log_likelihood(
     weight_total = encoding_model["weight_total"]
     mean_rates = encoding_model["mean_rates"]
     resolved_rank = int(encoding_model["resolved_rank"])  # type: ignore[call-overload]
+    node_order = np.asarray(encoding_model["node_order"])
     bin_sizes = jnp.asarray(encoding_model["bin_sizes"])
     position_std = float(encoding_model["position_std"])  # type: ignore[arg-type]
     waveform_std = encoding_model["waveform_std"]
@@ -460,6 +459,136 @@ def predict_clusterless_diffusion_log_likelihood(
     n_bins = occupancy.shape[0]
 
     Lam, Q, labels, n_components = get_device_basis(environment, resolved_rank)
+
+    if is_local:
+        # Reconstruct the interior-bin mapping from node_order (not stored, per
+        # spec sec 3) and evaluate the diffused column at the animal's nearest
+        # interior bin instead of returning the whole column.
+        n_total_bins = environment.is_track_interior_.ravel().shape[0]
+        full_to_local = _full_to_local(node_order, n_total_bins)
+
+        interpolated_position = get_position_at_time(
+            position_time, position, time, environment
+        )
+        animal_time_bins = _interior_bin_indices(
+            environment, interpolated_position, full_to_local
+        )
+        # Ground-process term evaluated at the animal's position per decode time
+        # bin (mirrors clusterless_kde's local summed_expected_counts).
+        local_ground_process_intensity = summed_ground_process_intensity[
+            animal_time_bins
+        ]  # (n_time,)
+        log_likelihood = -local_ground_process_intensity
+
+        for (
+            electrode_bins,
+            electrode_marks,
+            electrode_weights,
+            electrode_weight_total,
+            electrode_mean_rate,
+            electrode_decode_features,
+            electrode_spike_times,
+        ) in zip(
+            tqdm(
+                encoding_bin_indices,
+                unit="electrode",
+                desc="Local Likelihood",
+                disable=disable_progress_bar,
+            ),
+            encoding_marks,
+            encoding_weights,
+            weight_total,
+            mean_rates,
+            spike_waveform_features,
+            spike_times,
+            strict=True,
+        ):
+            electrode_spike_times = np.asarray(electrode_spike_times)
+            is_in_bounds = np.logical_and(
+                electrode_spike_times >= time[0],
+                electrode_spike_times <= time[-1],
+            )
+            electrode_spike_times = electrode_spike_times[is_in_bounds]
+            n_decode = electrode_spike_times.shape[0]
+            if n_decode == 0:
+                continue
+            seg = jnp.asarray(get_spike_time_bin_ind(electrode_spike_times, time))
+
+            # Zero-rate electrode: floor every observed decode spike to LOG_EPS,
+            # identical contract to the non-local zero-rate guard.
+            if electrode_weight_total == 0:
+                log_likelihood += jax.ops.segment_sum(
+                    jnp.full((n_decode,), LOG_EPS),
+                    seg,
+                    indices_are_sorted=True,
+                    num_segments=n_time,
+                )
+                continue
+
+            decode_features = jnp.asarray(electrode_decode_features)[
+                jnp.asarray(is_in_bounds)
+            ]
+            enc_bins = jnp.asarray(electrode_bins)
+            enc_marks = jnp.asarray(electrode_marks)
+            enc_weights = jnp.asarray(electrode_weights)
+            n_enc = enc_marks.shape[0]
+            n_features = enc_marks.shape[1]
+            electrode_waveform_std = as_std_array(waveform_std, n_features)
+            safe_weight_total = (
+                electrode_weight_total if electrode_weight_total > 0 else 1.0
+            )
+
+            # The animal's interior bin at each decode spike's own time (nearest-bin
+            # interpolation; linear is a documented follow-up, not this task).
+            position_at_spike_time = get_position_at_time(
+                position_time, position, electrode_spike_times, environment
+            )
+            spike_bins = jnp.asarray(
+                _interior_bin_indices(
+                    environment, position_at_spike_time, full_to_local
+                )
+            )
+
+            effective_block = _effective_block(
+                memory_budget, n_enc, resolved_rank, n_bins, block_size
+            )
+
+            for start in range(0, n_decode, effective_block):
+                block = slice(start, start + effective_block)
+                decode_block = decode_features[block]
+                seg_block = seg[block]
+                spike_bins_block = spike_bins[block]
+                # Same D_e / heat_kernel_apply as non-local -- the clip+mass-rescale
+                # is a per-column nonlinearity, so the local value must come from
+                # the SAME diffused column, just indexed at the animal's bin.
+                mark_kernel = kde_distance(
+                    decode_block, enc_marks, electrode_waveform_std
+                )
+                weighted_kernel = enc_weights[:, None] * mark_kernel
+                D = (
+                    jnp.zeros((n_bins, decode_block.shape[0]))
+                    .at[enc_bins]
+                    .add(weighted_kernel)
+                )
+                P = heat_kernel_apply(
+                    Lam, Q, position_std, D, labels, n_components=n_components
+                )
+                column_ind = jnp.arange(decode_block.shape[0])
+                p_e_at_animal = P[spike_bins_block, column_ind] / (
+                    safe_weight_total * bin_sizes[spike_bins_block]
+                )
+                lc = safe_log(
+                    electrode_mean_rate * p_e_at_animal / occupancy[spike_bins_block]
+                )  # (n_block,)
+                log_likelihood += jax.ops.segment_sum(
+                    lc,
+                    seg_block,
+                    indices_are_sorted=True,
+                    num_segments=n_time,
+                )
+
+        return log_likelihood[:, None]
+
     occupancy_col = occupancy[:, None]
 
     log_likelihood = -summed_ground_process_intensity[None, :] * jnp.ones((n_time, 1))
