@@ -27,10 +27,12 @@ import jax
 jax.config.update("jax_platform_name", "cpu")
 
 import jax.numpy as jnp  # noqa: E402
+import networkx as nx  # noqa: E402
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
 from non_local_detector.environment import Environment  # noqa: E402
+from non_local_detector.exceptions import ValidationError  # noqa: E402
 from non_local_detector.likelihoods.clusterless_diffusion import (  # noqa: E402
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
@@ -50,6 +52,7 @@ from non_local_detector.likelihoods.diffusion import (  # noqa: E402
     environment_graph,
     get_device_basis,
     heat_kernel_apply,
+    n_connected_components,
 )
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (  # noqa: E402
     _full_to_local,
@@ -67,6 +70,34 @@ def _make_1d_env(bin_size=1.0, lo=0.0, hi=8.0):
     )
     dummy = np.linspace(lo, hi, 41)[:, None]
     return env.fit_place_grid(position=dummy, infer_track_interior=False)
+
+
+def _disconnected_env():
+    """Two-segment linearized track (edge_spacing > 0) -> a >= 2-component interior
+    graph, so a truncated heat_kernel_rank can drop a component's null mode.
+
+    Mirrors ``test_get_distances_to_interior_bins_gap_position_snaps_to_nearest_interior``
+    in ``tests/environment/test_track_graph.py``.
+    """
+    g = nx.Graph()
+    g.add_node(0, pos=(0.0, 0.0))
+    g.add_node(1, pos=(50.0, 0.0))
+    g.add_node(2, pos=(60.0, 0.0))
+    g.add_node(3, pos=(110.0, 0.0))
+    g.add_edge(0, 1, distance=50.0, edge_id=0)
+    g.add_edge(2, 3, distance=50.0, edge_id=1)
+
+    env = Environment(
+        environment_name="two-segment",
+        place_bin_size=5.0,
+        track_graph=g,
+        edge_order=[(0, 1), (2, 3)],
+        edge_spacing=10.0,
+    )
+    position_1d = np.concatenate(
+        [np.linspace(0.0, 50.0, 25), np.linspace(60.0, 110.0, 25)]
+    )
+    return env.fit_place_grid(position_1d, infer_track_interior=True)
 
 
 def _sim(seed=0, hi=8.0, n_pos=200, n_elec=2, n_features=2, weights=None):
@@ -836,4 +867,250 @@ def test_local_finite_and_zero_rate():
         # LOG_EPS - local_gpi[t_bin]
         assert np.allclose(ll[t_bin, 0] + local_gpi[t_bin], LOG_EPS, atol=1e-6), (
             f"zero-rate electrode did not floor to LOG_EPS at time bin {t_bin}"
+        )
+
+
+# ----------------------------------------------------------------------------
+# Task 7 -- Tier-1 input validation (fit + predict)
+# ----------------------------------------------------------------------------
+
+
+def test_validation_fit():
+    """Every Tier-1 fit-time contract (spec sec 4) raises ValidationError, and the
+    in-window / out-of-window encoding-feature split matches clusterless_kde."""
+    s = _sim(seed=10)
+
+    # heat_kernel_rank: float, bool, zero, negative.
+    for bad_rank in (3.0, True, 0, -1):
+        with pytest.raises(ValidationError):
+            _fit(s, heat_kernel_rank=bad_rank)
+
+    # heat_kernel_rank < n_components: a disconnected (>= 2 component) environment,
+    # rank below that count must raise (surfaced via cached_eigenbasis ->
+    # _require_rank_covers_components; not re-implemented here, just exercised).
+    disconnected_env = _disconnected_env()
+    n_components = n_connected_components(disconnected_env)
+    assert n_components >= 2, "fixture must be graph-disconnected to test this path"
+    with pytest.raises(ValidationError):
+        fit_clusterless_diffusion_encoding_model(
+            np.linspace(0.0, 1.0, 10),
+            np.zeros((10, 1)),
+            [],
+            [],
+            disconnected_env,
+            heat_kernel_rank=1,
+            disable_progress_bar=True,
+        )
+
+    # memory_budget: non-finite, zero, negative, non-int.
+    for bad_budget in (float("inf"), 0, -1, 1.5):
+        with pytest.raises(ValidationError):
+            _fit(s, memory_budget=bad_budget)
+
+    # block_size: non-positive.
+    with pytest.raises(ValidationError):
+        _fit(s, block_size=0)
+
+    # position_std / waveform_std: non-positive.
+    for bad_std in (0.0, -1.0):
+        with pytest.raises(ValidationError):
+            _fit(s, position_std=bad_std)
+    with pytest.raises(ValidationError):
+        _fit(s, waveform_std=0.0)
+
+    # weights (via common.validate_weights): wrong length, non-finite, negative.
+    n_pos = s["position"].shape[0]
+    with pytest.raises(ValidationError):
+        _fit(s, weights=np.ones(n_pos + 1))
+    bad_weights = np.ones(n_pos)
+    bad_weights[0] = np.nan
+    with pytest.raises(ValidationError):
+        _fit(s, weights=bad_weights)
+    bad_weights = np.ones(n_pos)
+    bad_weights[0] = -1.0
+    with pytest.raises(ValidationError):
+        _fit(s, weights=bad_weights)
+
+    # non-finite position.
+    bad_position = np.array(s["position"], copy=True)
+    bad_position[0, 0] = np.nan
+    s_bad_position = dict(s)
+    s_bad_position["position"] = bad_position
+    with pytest.raises(ValidationError):
+        _fit(s_bad_position)
+
+    # Non-finite IN-window encoding spike_waveform_features raises; a non-finite
+    # feature on an OUT-of-window encoding spike does NOT raise.
+    env = _make_1d_env(1.0, 0.0, 8.0)
+    position_time = np.linspace(0.0, 4.0, 101)
+    position = np.linspace(0.0, 8.0, 101)[:, None]
+
+    with pytest.raises(ValidationError):
+        fit_clusterless_diffusion_encoding_model(
+            position_time,
+            position,
+            [jnp.asarray([2.0])],  # in-window: [position_time[0], position_time[-1]]
+            [jnp.asarray([[np.nan, 0.0]], dtype=np.float32)],
+            env,
+            position_std=POSITION_STD,
+            waveform_std=WAVEFORM_STD,
+            disable_progress_bar=True,
+        )
+
+    # One in-window (finite) spike keeps the electrode non-zero-rate; the second
+    # spike, with a non-finite feature, is clipped out by is_in_bounds and must not
+    # be validated.
+    enc_out_of_window = fit_clusterless_diffusion_encoding_model(
+        position_time,
+        position,
+        [jnp.asarray([2.0, 10.0])],
+        [jnp.asarray([[0.1, 0.2], [np.nan, 0.0]], dtype=np.float32)],
+        env,
+        position_std=POSITION_STD,
+        waveform_std=WAVEFORM_STD,
+        disable_progress_bar=True,
+    )
+    assert np.all(np.isfinite(np.asarray(enc_out_of_window["occupancy"])))
+    assert np.all(
+        np.isfinite(np.asarray(enc_out_of_window["summed_ground_process_intensity"]))
+    )
+
+
+def test_validation_predict():
+    """Every Tier-1 predict-time contract (spec sec 4) raises ValidationError, and
+    a non-finite feature on an out-of-window decode spike does NOT raise."""
+    s = _sim(seed=11)
+    enc = _fit(s)
+
+    # non-finite time.
+    bad_time = np.array(s["time"], copy=True)
+    bad_time[0] = np.nan
+    with pytest.raises(ValidationError):
+        _predict(dict(s, time=bad_time), enc)
+
+    # non-finite decoding position.
+    bad_position = np.array(s["position"], copy=True)
+    bad_position[0, 0] = np.nan
+    with pytest.raises(ValidationError):
+        _predict(dict(s, position=bad_position), enc)
+
+    # non-finite IN-window decode spike_waveform_features on a valid (non-zero-rate)
+    # electrode raises.
+    bad_feats = [np.array(f, copy=True) for f in s["dec_f"]]
+    bad_feats[0][0, 0] = np.nan  # s["dec_t"][0][0] lies within [time[0], time[-1]]
+    with pytest.raises(ValidationError):
+        _predict(dict(s, dec_f=bad_feats), enc)
+
+    # A non-finite feature on an OUT-of-window decode spike must not raise.
+    time = s["time"]
+    out_of_window_dec_t = [
+        np.array([time[-1] + 10.0, time[-1] + 20.0]),
+        s["dec_t"][1],
+    ]
+    out_of_window_dec_f = [
+        np.array([[np.nan, 0.0], [0.0, np.nan]], dtype=np.float32),
+        s["dec_f"][1],
+    ]
+    ll = _predict(dict(s, dec_t=out_of_window_dec_t, dec_f=out_of_window_dec_f), enc)
+    assert np.all(np.isfinite(np.asarray(ll)))
+
+
+def test_validation_predict_local():
+    """LOCAL-branch mirror of ``test_validation_predict``'s decode-feature checks.
+
+    The local path (``clusterless_diffusion.py`` ~523) duplicates the same
+    in-window ``validate_finite(decode_features, ...)`` Tier-1 call as the
+    non-local path (~640) by hand, rather than sharing it. Nothing in the
+    committed suite calls ``predict_clusterless_diffusion_log_likelihood`` with
+    ``is_local=True`` and a non-finite decode feature, so the local branch's
+    copy of the check is unverified without this test.
+    """
+    s = _sim(seed=11)
+    enc = _fit(s)
+
+    # non-finite IN-window decode spike_waveform_features on a valid (non-zero-rate)
+    # electrode raises.
+    bad_feats = [np.array(f, copy=True) for f in s["dec_f"]]
+    bad_feats[0][0, 0] = np.nan  # s["dec_t"][0][0] lies within [time[0], time[-1]]
+    with pytest.raises(ValidationError):
+        _predict(dict(s, dec_f=bad_feats), enc, is_local=True)
+
+    # A non-finite feature on an OUT-of-window decode spike must not raise.
+    time = s["time"]
+    out_of_window_dec_t = [
+        np.array([time[-1] + 10.0, time[-1] + 20.0]),
+        s["dec_t"][1],
+    ]
+    out_of_window_dec_f = [
+        np.array([[np.nan, 0.0], [0.0, np.nan]], dtype=np.float32),
+        s["dec_f"][1],
+    ]
+    ll = _predict(
+        dict(s, dec_t=out_of_window_dec_t, dec_f=out_of_window_dec_f),
+        enc,
+        is_local=True,
+    )
+    assert np.all(np.isfinite(np.asarray(ll)))
+
+
+@pytest.mark.parametrize("is_local", [False, True])
+def test_validation_predict_zero_rate_precedence(is_local):
+    """Tier-1 decode-feature validation must run BEFORE the zero-rate ``continue``
+    guard, in both predict branches.
+
+    ``clusterless_diffusion.py`` slices ``decode_features`` and calls
+    ``validate_finite`` on it, THEN checks ``if electrode_weight_total == 0:
+    ... continue`` (local ~517-538, non-local ~634-655). If that order were
+    ever reversed, a zero-rate electrode's non-finite in-window decode feature
+    would be silently skipped (the ``continue`` fires before validation) and
+    the spike would floor to ``LOG_EPS`` instead of raising. This test pins the
+    current (correct) ordering: a zero-rate electrode with a non-finite
+    in-window decode feature must raise ``ValidationError``, not floor.
+    """
+    env = _make_1d_env(1.0, 0.0, 10.0)
+    position_time = np.linspace(0.0, 10.0, 201)
+    position = np.linspace(0.0, 10.0, 201)[:, None]
+    # left electrode fires in the weighted half, right electrode in the zero half
+    enc_times = [np.array([1.0, 2.0, 3.0, 4.0]), np.array([6.0, 7.0, 8.0, 9.0])]
+    enc_feats = [
+        np.array([[0.0, 0.0], [0.2, 0.1], [-0.1, 0.3], [0.4, -0.2]], dtype=np.float32),
+        np.array(
+            [[1.0, -1.0], [0.9, -0.8], [1.1, -1.2], [0.8, -0.9]], dtype=np.float32
+        ),
+    ]
+    weights = np.where(position_time < 5.0, 1.0, 0.0)
+
+    with pytest.warns(UserWarning, match="zero total encoding weight"):
+        enc = fit_clusterless_diffusion_encoding_model(
+            position_time,
+            position,
+            [jnp.asarray(t) for t in enc_times],
+            [jnp.asarray(f) for f in enc_feats],
+            env,
+            weights=weights,
+            sampling_frequency=20,
+            position_std=POSITION_STD,
+            waveform_std=WAVEFORM_STD,
+            disable_progress_bar=True,
+        )
+    assert enc["weight_total"][1] == 0.0  # electrode 1 is the zero-rate electrode
+
+    time = np.linspace(0.0, 10.0, 6)
+    # Only the zero-rate electrode (1) gets a decode spike, and it is IN-window
+    # ([time[0], time[-1]] = [0, 10]) so it reaches validate_finite before the
+    # zero-rate `continue`.
+    dec_times = [np.array([]), np.array([7.5])]
+    dec_feats = [
+        np.zeros((0, 2), dtype=np.float32),
+        np.array([[np.nan, -1.0]], dtype=np.float32),
+    ]
+    with pytest.raises(ValidationError):
+        predict_clusterless_diffusion_log_likelihood(
+            jnp.asarray(time),
+            position_time,
+            position,
+            [jnp.asarray(t) for t in dec_times],
+            [jnp.asarray(f) for f in dec_feats],
+            is_local=is_local,
+            **enc,
         )
