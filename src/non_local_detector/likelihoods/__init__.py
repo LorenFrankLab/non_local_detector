@@ -1,5 +1,9 @@
 from collections.abc import Callable
 
+from non_local_detector.likelihoods.clusterless_diffusion import (
+    fit_clusterless_diffusion_encoding_model,
+    predict_clusterless_diffusion_log_likelihood,
+)
 from non_local_detector.likelihoods.clusterless_gmm import (  # noqa
     fit_clusterless_gmm_encoding_model,
     predict_clusterless_gmm_log_likelihood,
@@ -64,5 +68,9 @@ _CLUSTERLESS_ALGORITHMS: dict[str, tuple[Callable, Callable]] = {
     "clusterless_gmm": (
         fit_clusterless_gmm_encoding_model,
         predict_clusterless_gmm_log_likelihood,
+    ),
+    "clusterless_diffusion": (
+        fit_clusterless_diffusion_encoding_model,
+        predict_clusterless_diffusion_log_likelihood,
     ),
 }
