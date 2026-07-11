@@ -73,7 +73,7 @@ from non_local_detector.likelihoods.common import LOG_EPS, get_spike_time_bin_in
 from non_local_detector.likelihoods.diffusion import cached_eigenbasis, environment_graph
 
 
-def _sim(seed=0, n_bins_side=10):
+def _sim(seed=0, n_bins_side=10, infer_track_interior=True):
     rng = np.random.default_rng(seed)
     dt = 0.02
     n_time = 60
@@ -89,7 +89,9 @@ def _sim(seed=0, n_bins_side=10):
     dec_f = [rng.standard_normal((t.size, n_features)).astype(np.float32) for t in dec_t]
     env = Environment(position_range=[(0, 10), (-3, 3)],
                       place_bin_size=20.0 / n_bins_side)
-    env = env.fit_place_grid(position=pos, infer_track_interior=True)
+    # infer_track_interior=False makes ALL grid bins interior, so the diffusion
+    # operator Q actually has n_grid rows (the timing test needs a large *interior*).
+    env = env.fit_place_grid(position=pos, infer_track_interior=infer_track_interior)
     return dict(time=time, pt=pt, pos=pos, enc_t=enc_t, enc_f=enc_f,
                 dec_t=dec_t, dec_f=dec_f, env=env)
 
@@ -202,11 +204,15 @@ def _time(fn, iters=5):
 
 @pytest.mark.slow
 def test_spike_speed_large_grid():
-    # Genuinely large matched grid: place_bin_size = 20/160 = 0.125 -> ~80x48 grid.
-    s = _sim(seed=1, n_bins_side=160)
-    n_bins = s["env"].place_bin_centers_.shape[0]
-    assert n_bins > 2000, f"grid too small for a meaningful perf gate: {n_bins} bins"
+    # infer_track_interior=False -> every grid bin is interior, so Q genuinely has
+    # ~n_grid rows. place_bin_size = 20/160 = 0.125 -> 80x48 = 3840 interior bins.
+    s = _sim(seed=1, n_bins_side=160, infer_track_interior=False)
+    n_interior = int(s["env"].is_track_interior_.sum())   # the ACTUAL Q size / diffusion domain
+    assert n_interior > 2000, f"interior too small for a meaningful perf gate: {n_interior}"
 
+    # Realistic domain-to-bandwidth ratio: domain is 10x6, so use position_std=2.0
+    # (NOT 6.0, which over-smooths and makes the auto rank degenerate -> fake speedup).
+    POSITION_STD = 2.0
     dec_t = [jnp.asarray(t) for t in s["dec_t"]]
     dec_f = [jnp.asarray(f) for f in s["dec_f"]]
     tm, pt, po = jnp.asarray(s["time"]), jnp.asarray(s["pt"]), jnp.asarray(s["pos"])
@@ -214,24 +220,27 @@ def test_spike_speed_large_grid():
     # KDE: fit ONCE, then time PREDICT-ONLY (returns a jnp device array).
     enc = clusterless_kde.fit_clusterless_kde_encoding_model(
         pt, po, [jnp.asarray(t) for t in s["enc_t"]], [jnp.asarray(f) for f in s["enc_f"]],
-        s["env"], sampling_frequency=50, position_std=6.0, waveform_std=24.0,
+        s["env"], sampling_frequency=50, position_std=POSITION_STD, waveform_std=24.0,
         block_size=10_000, disable_progress_bar=True)
     kde_predict = lambda: clusterless_kde.predict_clusterless_kde_log_likelihood(
         tm, pt, po, dec_t, dec_f, **enc, is_local=False)
     dt_kde = _time(kde_predict)
 
-    # Diffusion: fit ONCE with the BANDWIDTH-AWARE LOW-RANK basis (goal B), then time
-    # the PREDICT-ONLY closure — apples-to-apples with KDE predict.
-    diff_predict = _diffusion_nonlocal_spike(s, low_rank=True)  # returns predict()
+    # Diffusion: fit ONCE with the BANDWIDTH-AWARE LOW-RANK basis (goal B) at the SAME
+    # bandwidth, then time the PREDICT-ONLY closure — apples-to-apples with KDE predict.
+    diff_predict = _diffusion_nonlocal_spike(s, position_std=POSITION_STD, low_rank=True)
+    from non_local_detector.likelihoods.diffusion import cached_heat_kernel_eigenbasis
+    _, Qk = cached_heat_kernel_eigenbasis(s["env"], POSITION_STD)
     dt_diff = _time(diff_predict)
 
-    print(f"[SPIKE] {n_bins} bins | KDE predict: {dt_kde*1e3:.1f} ms | "
-          f"diffusion predict (low-rank): {dt_diff*1e3:.1f} ms | speedup: {dt_kde/dt_diff:.2f}x")
-    # Informational gate: record both numbers; decide goal B in review.
+    print(f"[SPIKE] {n_interior} interior bins | auto rank={Qk.shape[1]} | "
+          f"KDE predict: {dt_kde*1e3:.1f} ms | diffusion predict (low-rank): "
+          f"{dt_diff*1e3:.1f} ms | speedup: {dt_kde/dt_diff:.2f}x")
+    # Informational gate: record all four numbers; decide goal B in review.
 ```
 
 Run: `uv run pytest src/non_local_detector/tests/likelihoods/test_clusterless_diffusion_spike.py::test_spike_speed_large_grid -v -s -m slow`
-Expected: PASS; both predict-only timings printed at a >2000-bin grid. **Goal-B decision (review gate):** the low-rank diffusion predict should be clearly faster than KDE predict at large `n_bins`. If not, discuss before the full build — the low-rank operator is the whole basis for goal B.
+Expected: PASS; printed at a >2000-**interior**-bin grid with a non-degenerate auto rank. **Goal-B decision (review gate):** the low-rank diffusion predict should be clearly faster than KDE predict. If the auto rank is tiny or the speedup marginal, discuss before the full build — the low-rank operator is the whole basis for goal B.
 
 - [ ] **Step 4: Commit the spike**
 
@@ -253,7 +262,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Test: `src/non_local_detector/tests/likelihoods/test_diffusion_device_cache.py`
 
 **Interfaces:**
-- Produces: `heat_kernel_apply(eigvals: jnp.ndarray, eigvecs: jnp.ndarray, sigma: float, fields: jnp.ndarray, component_labels: jnp.ndarray | None) -> jnp.ndarray` — same shapes/semantics as `diffuse` but pure JAX (clip + per-component rescale-to-input-mass). Consumed by Tasks 3–5.
+- Produces: `heat_kernel_apply(eigvals: jnp.ndarray, eigvecs: jnp.ndarray, sigma: float, fields: jnp.ndarray, component_labels: jnp.ndarray | None = None, n_components: int | None = None) -> jnp.ndarray` — same shapes/semantics as `diffuse` but pure JAX (clip + per-component rescale-to-input-mass). Production callers pass `n_components` (static, from `get_device_basis`); `None` derives it host-side once (tests/one-offs only). Consumed by Tasks 3–5.
 
 - [ ] **Step 1: Write the failing test (parity with `diffuse` incl. truncation lobes)**
 
@@ -303,13 +312,16 @@ def test_heat_kernel_apply_disconnected_components_preserve_mass_independently()
     n_comp, labels = scipy.sparse.csgraph.connected_components(L, directed=False)
     assert n_comp == 2
     vals, vecs = diffusion_eigenbasis(L, rank=6)  # truncated -> point sources produce negative lobes
-    # Point sources (one hot bin per component) with very different masses -> lobes
-    # and component-specific rescaling both guaranteed to matter.
     comp0 = np.flatnonzero(labels == 0)
     comp1 = np.flatnonzero(labels == 1)
     fields = np.zeros((vecs.shape[0], 2), dtype=float)
-    fields[comp0[0], 0] = 10.0   # heavy point source in component 0
-    fields[comp1[0], 1] = 1.0    # light point source in component 1
+    # BOTH components carry mass in EACH column, with DIFFERENT ratios — so a single
+    # global (whole-array) rescale would shift mass between components; only a
+    # per-component rescale preserves each component's mass. (If each column's mass
+    # lived in one component, global and per-component rescale would be identical and
+    # the test could not tell them apart.)
+    fields[comp0[0], 0] = 10.0; fields[comp1[0], 0] = 1.0   # column 0: 10:1 across components
+    fields[comp0[1], 1] = 2.0;  fields[comp1[1], 1] = 7.0   # column 1: 2:7 across components
     ref = diffuse(vals, vecs, sigma=1.5, fields=fields, component_labels=labels)
     got = np.asarray(heat_kernel_apply(
         jnp.asarray(vals), jnp.asarray(vecs), 1.5, jnp.asarray(fields), labels))
@@ -545,11 +557,12 @@ This task uses the **spec §2 contract verbatim** (weighted histograms; `π = H�
 - [ ] **Step 1:** Write `test_fit_returns_finite_densities_and_keys` (fit on `_sim`-style data; assert dict has every key above; `occupancy`/`summed_ground_process_intensity` finite and non-negative; `resolved_rank` int; per-electrode list lengths equal n_electrodes).
 - [ ] **Step 2:** Run → FAIL (module missing).
 - [ ] **Step 3:** Implement 3a–3c per spec §2. Exact contracts:
+  - **Device basis + `heat_kernel_apply` call contract (applies to EVERY production call, fit and predict):** unpack `Lam, Q, labels, n_components = get_device_basis(environment, resolved_rank)` and call `heat_kernel_apply(Lam, Q, position_std, F, labels, n_components=n_components)`. **Always pass `n_components=n_components`** — omitting it triggers the host-side fallback that copies `labels` device→host to compute their max (defeats goal B). The bare-`labels` form is for tests/one-offs only.
   - **ΔV:** `graph, node_order, bin_sizes = environment_graph(environment)`. Use `bin_sizes` (shape `(n_interior,)`, already aligned with `node_order`, correct for uniform grids **and** linearized tracks) as `ΔV`. Do **not** hand-roll `np.diff(env.edges_)`.
-  - **Occupancy (floored):** `O = weighted histogram of occupancy positions onto interior bins`; `Ohat = heat_kernel_apply(Λ, Q, position_std, O[:,None], labels)[:,0]`; then
+  - **Occupancy (floored):** `O = weighted histogram of occupancy positions onto interior bins`; `Ohat = heat_kernel_apply(Lam, Q, position_std, O[:,None], labels, n_components=n_components)[:,0]`; then
     `pi = clip(Ohat / (where(Σw_pos>0, Σw_pos, 1.0) * bin_sizes), EPS, None)` — the `EPS` floor is applied to `pi` before it is ever a denominator. If `Σw_pos == 0`, emit the diffusion-specific `UserWarning`.
   - **Validators:** `common.validate_weights`, `common.validate_finite` on in-window features; positive `position_std`/`waveform_std`; `heat_kernel_rank`/`memory_budget`/`block_size` per Task 7 (Task 3 may raise-forward or Task 7 adds them — keep the checks in one `_validate_*` helper).
-  - **Per electrode:** in-window clip; `encoding_bin_indices` via `_interior_bin_indices`; `encoding_weights` via `interpolate_weights_at_spike_times`; `weight_total = float(w.sum())`; if `weight_total == 0` → store `weight_total=0`, `mean_rate=0.0`, `warn`, contribute **0** to `summed_ground_process_intensity`; else `mean_rate = weighted_mean_rate(w, weight_sum)` and add `mean_rate * (heat_kernel_apply(S_e) / (weight_total*bin_sizes)) / pi`.
+  - **Per electrode:** in-window clip; `encoding_bin_indices` via `_interior_bin_indices`; `encoding_weights` via `interpolate_weights_at_spike_times`; `weight_total = float(w.sum())`; if `weight_total == 0` → store `weight_total=0`, `mean_rate=0.0`, `warn`, contribute **0** to `summed_ground_process_intensity`; else `mean_rate = weighted_mean_rate(w, weight_sum)` and add `mean_rate * (heat_kernel_apply(Lam, Q, position_std, S_e[:,None], labels, n_components=n_components)[:,0] / (weight_total*bin_sizes)) / pi`.
   - **Rank:** resolve the basis once (`cached_heat_kernel_eigenbasis(env, position_std)` if `heat_kernel_rank is None` else `cached_eigenbasis(env, heat_kernel_rank)`); `resolved_rank = eigvecs.shape[1]`; store it. Predict retrieves the device basis via `get_device_basis(env, resolved_rank)`.
 - [ ] **Step 4:** Run → PASS.
 - [ ] **Step 5:** Commit `feat(clusterless_diffusion): fit encoding model`.
@@ -565,7 +578,7 @@ This task uses the **spec §2 contract verbatim** (weighted histograms; `π = H�
 **Interfaces:**
 - Produces `predict_clusterless_diffusion_log_likelihood(time, position_time, position, spike_times, spike_waveform_features, *, is_local=False, **encoding_model) -> jnp.ndarray` shape `(n_time, n_bins)` (non-local). Consumes Task 1 `heat_kernel_apply`, Task 2 `get_device_basis`, Task 3 dict.
 
-Implements spec §3 non-local pseudocode **verbatim**: per electrode, zero-rate guard first (`weight_total_e == 0` → `LOG_EPS` per in-window decode spike via scatter-add, `continue`); else weighted `D_e` (`scatter (w_i·K)`), `heat_kernel_apply`, `p_e = P_e/(weight_total_e·ΔV)`, `safe_log(μ_e·p_e/π)`, `segment_sum`. Memory policy: `effective_block = clip(floor(memory_budget/(itemsize·(n_enc+rank+4·n_bins)·2)), 1, block_size)`, block over decode spikes, log the effective block.
+Implements spec §3 non-local pseudocode **verbatim**, with the Task 3 device-basis call contract: unpack `Lam, Q, labels, n_components = get_device_basis(env, resolved_rank)` **once** and pass `n_components=n_components` into `heat_kernel_apply` (the spec pseudocode's `heat_kernel_apply(Q, Λ, σ, D_e)` shorthand omits it; here it is mandatory to avoid the per-block label host-sync). Per electrode: zero-rate guard first (`weight_total_e == 0` → `LOG_EPS` per in-window decode spike via scatter-add, `continue`); else weighted `D_e` (`scatter (w_i·K)`), `heat_kernel_apply(Lam, Q, σ, D_e, labels, n_components=n_components)`, `p_e = P_e/(weight_total_e·ΔV)`, `safe_log(μ_e·p_e/π)`, `segment_sum`. Memory policy: `effective_block = clip(floor(memory_budget/(itemsize·(n_enc+rank+4·n_bins)·2)), 1, block_size)`, block over decode spikes, log the effective block.
 
 - [ ] **Step 1:** Write `test_nonlocal_finite_and_zero_rate` (finite output; a `Σ w_e==0` electrode contributes `LOG_EPS` per decode spike, no NaN) + `test_block_parity` (`effective_block` small vs one large block → identical to `rtol=1e-5`).
 - [ ] **Step 2:** Run → FAIL.
