@@ -433,19 +433,50 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.sampling_frequency = sampling_frequency
         self.no_spike_rate = no_spike_rate
 
-        # Local position uncertainty parameter
-        if local_position_std is not None and local_position_std < 0:
-            raise ValidationError(
-                "local_position_std must be non-negative",
-                expected="float >= 0 or None",
-                got=str(local_position_std),
-                hint=(
-                    "Use None for legacy single-bin local (likelihood at "
-                    "the animal's exact interpolated position), 0.0 for "
-                    "multi-bin local with a delta kernel at the animal's "
-                    "bin, or > 0 for a Gaussian kernel."
-                ),
-            )
+        # Local position uncertainty parameter. Reject invalid widths up front:
+        # non-finite (NaN/Inf slip past a bare ``< 0`` check), negative, or a
+        # positive value whose float32 square underflows to 0 -- the kernel
+        # evaluates ``-0.5 * d**2 / sigma**2`` in float32 and JAX FTZ flushes
+        # subnormals to 0, a silent divide-by-zero.
+        if local_position_std is not None:
+            if not np.isfinite(local_position_std):
+                raise ValidationError(
+                    "local_position_std must be finite",
+                    expected="finite float >= 0 or None",
+                    got=str(local_position_std),
+                    hint=(
+                        "Use None for legacy single-bin local, 0.0 for a delta "
+                        "kernel at the animal's bin, or a finite positive value "
+                        "for the Gaussian anchor-kernel width."
+                    ),
+                )
+            if local_position_std < 0:
+                raise ValidationError(
+                    "local_position_std must be non-negative",
+                    expected="float >= 0 or None",
+                    got=str(local_position_std),
+                    hint=(
+                        "Use None for legacy single-bin local (likelihood at "
+                        "the animal's exact interpolated position), 0.0 for "
+                        "multi-bin local with a delta kernel at the animal's "
+                        "bin, or > 0 for a Gaussian kernel."
+                    ),
+                )
+            f32_min_sigma = float(np.sqrt(np.finfo(np.float32).tiny))
+            if 0 < float(local_position_std) < f32_min_sigma:
+                raise ValidationError(
+                    "local_position_std**2 underflows to 0 in float32",
+                    expected=(
+                        "0.0, or a positive value with a representable float32 "
+                        f"square (>= sqrt(float32 tiny) ~{f32_min_sigma:.3e})"
+                    ),
+                    got=str(local_position_std),
+                    hint=(
+                        "Pass 0.0 explicitly for the delta kernel, or use a "
+                        f"value >= {f32_min_sigma:.3e} so sigma**2 is "
+                        "representable as a normal float32."
+                    ),
+                )
         self.local_position_std = local_position_std
 
     @property

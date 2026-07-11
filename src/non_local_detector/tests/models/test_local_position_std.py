@@ -51,6 +51,34 @@ class TestLocalPositionStdValidation:
         ):
             NonLocalSortedSpikesDetector(local_position_std=-1.0)
 
+    @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+    def test_nonfinite_rejected(self, bad):
+        """NaN/Inf local_position_std is rejected.
+
+        A bare ``< 0`` check silently accepts these (``nan < 0`` and
+        ``inf < 0`` are both ``False``); a non-finite width would then divide
+        the kernel by ``nan``/``inf``.
+        """
+        with pytest.raises(ValidationError, match="must be finite"):
+            NonLocalSortedSpikesDetector(local_position_std=bad)
+
+    def test_float32_square_underflow_rejected(self):
+        """A positive width whose float32 square underflows to 0 is rejected.
+
+        The kernel evaluates ``-0.5 * d**2 / sigma**2`` in float32; below
+        ``sqrt(float32 tiny)`` (~1.085e-19) ``sigma**2`` flushes to 0 under JAX
+        FTZ, a silent divide-by-zero. Callers wanting a delta pass ``0.0``.
+        """
+        f32_min_sigma = float(np.sqrt(np.finfo(np.float32).tiny))
+        with pytest.raises(ValidationError, match="underflow"):
+            NonLocalSortedSpikesDetector(local_position_std=f32_min_sigma / 10)
+
+    def test_smallest_representable_width_accepted(self):
+        """A width at the float32-square threshold is accepted (boundary)."""
+        f32_min_sigma = float(np.sqrt(np.finfo(np.float32).tiny))
+        detector = NonLocalSortedSpikesDetector(local_position_std=f32_min_sigma)
+        assert detector.local_position_std == f32_min_sigma
+
     def test_clusterless_default_is_none(self):
         """Default local_position_std is None on clusterless detector."""
         detector = NonLocalClusterlessDetector()
