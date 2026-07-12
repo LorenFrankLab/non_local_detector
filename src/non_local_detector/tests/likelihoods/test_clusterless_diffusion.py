@@ -20,6 +20,7 @@ spatially-constant likelihood error that rank/argmax posterior tests cannot catc
 the absolute-value and mark-marginal tests below pin them.
 """
 
+import time
 import warnings
 
 import jax
@@ -1610,4 +1611,138 @@ def test_nonuniform_dv_density_correctness():
     print(
         f"[NONUNIF] mark-marginal max|lhs-rhs|={np.abs(lhs - rhs).max():.3e} "
         f"| uniform-measure control max|diff|={np.abs(lhs_uniform - rhs).max():.3e}"
+    )
+
+
+# ----------------------------------------------------------------------------
+# Task 11 -- non-gating speed benchmark (goal B). Folds in the Task 0 spike's
+# large-grid perf probe, but drives the PRODUCTION fit/predict entry points
+# instead of the spike's hand-rolled reimplementation.
+# ----------------------------------------------------------------------------
+
+
+def _time_predict_only(predict_fn, iters=5):
+    """Warm up JIT (compile + device transfer, not timed), then time
+    ``predict_fn`` over ``iters`` iterations, blocking on the device output
+    each call so async dispatch doesn't hide work outside the timer."""
+    jax.block_until_ready(predict_fn())
+    start = time.perf_counter()
+    for _ in range(iters):
+        jax.block_until_ready(predict_fn())
+    return (time.perf_counter() - start) / iters
+
+
+@pytest.mark.slow
+def test_benchmark_diffusion_vs_kde_large_grid():
+    """Non-gating goal-B speed benchmark: production predict-only wall time,
+    ``clusterless_diffusion`` vs ``clusterless_kde``, on a large 2D grid with
+    many encoding/decode spikes.
+
+    This is NOT a regression gate: JAX's lazy device-memory preallocation and
+    kernel warm-up make wall-clock timing flaky run-to-run (see the module's
+    Goal B docs -- the win grows with spike count but the constant factor is
+    hardware/allocator dependent). The only assertion is that both outputs are
+    finite; the measured times and speedup are printed on the ``[BENCH]`` line
+    for manual inspection.
+    """
+    rng = np.random.default_rng(0)
+    # Dense uniform 2D coverage + infer_track_interior=True fills the grid
+    # interior (place_bin_size = 20/160 -> ~80x48 grid -> several thousand
+    # filled interior bins), mirroring the retired Task 0 spike's perf fixture.
+    n_bins_side = 160
+    place_bin_size = 20.0 / n_bins_side
+    n_pos = 20_000
+    n_elec = 8
+    n_features = 2
+    n_enc = 8_000
+    n_dec = 300
+    n_time = 60
+
+    dt = 0.02
+    time_bins = np.arange(n_time) * dt
+    t_end = float(time_bins[-1])
+    position_time = np.linspace(0.0, t_end, n_pos)
+    position = np.column_stack([rng.uniform(0, 10, n_pos), rng.uniform(-3, 3, n_pos)])
+    env = Environment(
+        environment_name="bench_grid",
+        position_range=[(0, 10), (-3, 3)],
+        place_bin_size=place_bin_size,
+    ).fit_place_grid(position=position, infer_track_interior=True)
+    n_interior = int(env.is_track_interior_.sum())
+    assert n_interior > 2000, f"grid too small for a meaningful benchmark: {n_interior}"
+
+    enc_t = [np.sort(rng.uniform(0.0, t_end, n_enc)) for _ in range(n_elec)]
+    enc_f = [
+        rng.standard_normal((t.size, n_features)).astype(np.float32) for t in enc_t
+    ]
+    dec_t = [np.sort(rng.uniform(0.0, t_end, n_dec)) for _ in range(n_elec)]
+    dec_f = [
+        rng.standard_normal((t.size, n_features)).astype(np.float32) for t in dec_t
+    ]
+
+    # Realistic domain-to-bandwidth ratio (domain is 10x6) -- a wide bandwidth
+    # over-smooths and degenerates the auto-selected rank, producing a fake speedup.
+    position_std = 2.0
+    waveform_std = 24.0
+
+    tm = jnp.asarray(time_bins)
+    pt = jnp.asarray(position_time)
+    po = jnp.asarray(position)
+    dec_t_j = [jnp.asarray(t) for t in dec_t]
+    dec_f_j = [jnp.asarray(f) for f in dec_f]
+
+    # ---- KDE: fit ONCE, then time PREDICT-ONLY ----
+    enc_kde = clusterless_kde.fit_clusterless_kde_encoding_model(
+        pt,
+        po,
+        [jnp.asarray(t) for t in enc_t],
+        [jnp.asarray(f) for f in enc_f],
+        env,
+        sampling_frequency=50,
+        position_std=position_std,
+        waveform_std=waveform_std,
+        block_size=10_000,
+        disable_progress_bar=True,
+    )
+
+    def kde_predict():
+        return clusterless_kde.predict_clusterless_kde_log_likelihood(
+            tm, pt, po, dec_t_j, dec_f_j, is_local=False, **enc_kde
+        )
+
+    ll_kde = np.asarray(kde_predict())
+    dt_kde = _time_predict_only(kde_predict)
+
+    # ---- diffusion: fit ONCE (builds + caches the bandwidth-aware low-rank
+    # basis), then time PREDICT-ONLY -- apples-to-apples with the KDE timing above.
+    enc_diff = fit_clusterless_diffusion_encoding_model(
+        position_time,
+        position,
+        [jnp.asarray(t) for t in enc_t],
+        [jnp.asarray(f) for f in enc_f],
+        env,
+        sampling_frequency=50,
+        position_std=position_std,
+        waveform_std=waveform_std,
+        block_size=10_000,
+        disable_progress_bar=True,
+    )
+
+    def diffusion_predict():
+        return predict_clusterless_diffusion_log_likelihood(
+            tm, pt, po, dec_t_j, dec_f_j, is_local=False, **enc_diff
+        )
+
+    ll_diff = np.asarray(diffusion_predict())
+    dt_diff = _time_predict_only(diffusion_predict)
+
+    assert np.all(np.isfinite(ll_kde))
+    assert np.all(np.isfinite(ll_diff))
+
+    speedup = dt_kde / dt_diff if dt_diff > 0 else float("inf")
+    print(
+        f"[BENCH] {n_interior} interior bins | KDE predict: {dt_kde * 1e3:.1f} ms | "
+        f"diffusion predict: {dt_diff * 1e3:.1f} ms | speedup: {speedup:.2f}x "
+        f"(resolved_rank={enc_diff['resolved_rank']}, n_enc/elec={n_enc}, "
+        f"n_dec/elec={n_dec}, n_elec={n_elec})"
     )

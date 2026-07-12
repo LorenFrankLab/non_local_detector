@@ -1,10 +1,28 @@
 """Graph-diffusion clusterless (marked-point-process) likelihood.
 
-An opt-in clusterless likelihood that estimates the same mark intensity as
-:mod:`clusterless_kde` but replaces the Gaussian *position* kernel with the
-environment's graph heat kernel ``exp(-t L)`` (``t = position_std**2 / 2``). The
-*mark* kernel stays a Gaussian over waveform features (via ``kde_distance``). This
-is the clusterless analog of :mod:`sorted_spikes_diffusion`.
+An opt-in clusterless likelihood, selected via
+``clusterless_algorithm="clusterless_diffusion"`` on
+:class:`~non_local_detector.models.base.ClusterlessDetector` and its subclasses. It
+estimates the same mark intensity as :mod:`clusterless_kde` but replaces the Gaussian
+*position* kernel with the environment's graph heat kernel ``exp(-t L)`` (``t =
+position_std**2 / 2``). The *mark* kernel stays a Gaussian over waveform features
+(via ``kde_distance``): ``position_std`` is the physical heat-kernel bandwidth (in
+coordinate units) and ``waveform_std`` is the mark bandwidth, exactly as in
+``clusterless_kde``. This is the clusterless analog of :mod:`sorted_spikes_diffusion`.
+
+Two goals motivate it over KDE:
+
+- **Goal A -- geometry-respecting spatial smoothing.** The heat kernel follows the
+  environment's track topology (diffusion distance on the graph), not Euclidean
+  distance, so it does not leak across walls, holes, or junctions the way a Gaussian
+  KDE smoothed in coordinate space can.
+- **Goal B -- speed.** Occupancy and each electrode's ground-process field are
+  diffused once at fit; predict applies one cached low-rank heat-kernel matmul per
+  decode-spike block instead of KDE's pairwise ``O(n_bins * n_enc * n_decode)``
+  position kernel. The win grows with encoding/decode-spike count.
+
+This is purely additive: the default clusterless likelihood remains
+``clusterless_kde``.
 
 For electrode ``e`` the joint mark density on interior bins is
 
