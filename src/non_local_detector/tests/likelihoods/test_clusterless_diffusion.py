@@ -30,9 +30,12 @@ import jax.numpy as jnp  # noqa: E402
 import networkx as nx  # noqa: E402
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
+from scipy import stats  # noqa: E402
+from scipy.spatial import cKDTree  # noqa: E402
 
 from non_local_detector.environment import Environment  # noqa: E402
 from non_local_detector.exceptions import ValidationError  # noqa: E402
+from non_local_detector.likelihoods import clusterless_kde  # noqa: E402
 from non_local_detector.likelihoods.clusterless_diffusion import (  # noqa: E402
     fit_clusterless_diffusion_encoding_model,
     predict_clusterless_diffusion_log_likelihood,
@@ -1114,3 +1117,497 @@ def test_validation_predict_zero_rate_precedence(is_local):
             is_local=is_local,
             **enc,
         )
+
+
+# ----------------------------------------------------------------------------
+# Task 10 -- scientific validation: KDE agreement, geometry win (goal A),
+# grid-independence, and non-uniform-dV density correctness.
+#
+# These validate the *feature*, not the constants: that clusterless_diffusion
+# tracks clusterless_kde on barrier-free geometry (agreement), that its heat
+# kernel refuses to cross an impassable barrier where the Euclidean KDE leaks
+# (the whole point of the feature), that a physical position_std makes the
+# decoded posterior grid-independent, and that the non-uniform-dV code path
+# (which every uniform-grid test misses) integrates to a proper density.
+# ----------------------------------------------------------------------------
+
+# clusterless_kde's default waveform bandwidth; agreement/geometry match it so the
+# two algorithms differ *only* in the position smoother (heat kernel vs Gaussian).
+GEOM_WAVEFORM_STD = 24.0
+
+
+def _fit_diffusion(
+    position_time, position, enc_t, enc_f, env, position_std, sampling_frequency=100
+):
+    return fit_clusterless_diffusion_encoding_model(
+        jnp.asarray(position_time),
+        jnp.asarray(position),
+        [jnp.asarray(t) for t in enc_t],
+        [jnp.asarray(f) for f in enc_f],
+        env,
+        sampling_frequency=sampling_frequency,
+        position_std=position_std,
+        waveform_std=GEOM_WAVEFORM_STD,
+        disable_progress_bar=True,
+    )
+
+
+def _fit_kde(
+    position_time, position, enc_t, enc_f, env, position_std, sampling_frequency=100
+):
+    return clusterless_kde.fit_clusterless_kde_encoding_model(
+        jnp.asarray(position_time),
+        jnp.asarray(position),
+        [jnp.asarray(t) for t in enc_t],
+        [jnp.asarray(f) for f in enc_f],
+        env,
+        sampling_frequency=sampling_frequency,
+        position_std=position_std,
+        waveform_std=GEOM_WAVEFORM_STD,
+        disable_progress_bar=True,
+    )
+
+
+def _predict_diffusion_nonlocal(time, position_time, position, dec_t, dec_f, enc):
+    return np.asarray(
+        predict_clusterless_diffusion_log_likelihood(
+            jnp.asarray(time),
+            jnp.asarray(position_time),
+            jnp.asarray(position),
+            [jnp.asarray(t) for t in dec_t],
+            [jnp.asarray(f) for f in dec_f],
+            is_local=False,
+            **enc,
+        )
+    )
+
+
+def _predict_kde_nonlocal(time, position_time, position, dec_t, dec_f, enc):
+    return np.asarray(
+        clusterless_kde.predict_clusterless_kde_log_likelihood(
+            jnp.asarray(time),
+            jnp.asarray(position_time),
+            jnp.asarray(position),
+            [jnp.asarray(t) for t in dec_t],
+            [jnp.asarray(f) for f in dec_f],
+            is_local=False,
+            **enc,
+        )
+    )
+
+
+def _clusterless_sim(
+    position, n_time=40, n_elec=2, n_features=2, n_enc=40, n_dec=15, seed=0
+):
+    """Random clusterless encoding/decoding spikes over a given trajectory.
+
+    Diffusion and KDE both consume the SAME spikes; only their position smoother
+    differs, so per-time-bin rank agreement isolates the smoother.
+    """
+    rng = np.random.default_rng(seed)
+    dt = 0.02
+    time = np.arange(n_time) * dt
+    t_end = float(time[-1])
+    position_time = np.linspace(0.0, t_end, position.shape[0])
+    enc_t = [np.sort(rng.uniform(0.0, t_end, n_enc)) for _ in range(n_elec)]
+    enc_f = [
+        rng.standard_normal((t.size, n_features)).astype(np.float32) for t in enc_t
+    ]
+    dec_t = [np.sort(rng.uniform(0.0, t_end, n_dec)) for _ in range(n_elec)]
+    dec_f = [
+        rng.standard_normal((t.size, n_features)).astype(np.float32) for t in dec_t
+    ]
+    return time, position_time, enc_t, enc_f, dec_t, dec_f
+
+
+def _median_per_timebin_spearman(ll_a, ll_b):
+    """Median over time bins of Spearman(ll_a[t], ll_b[t]); skips flat KDE rows."""
+    rhos = [
+        stats.spearmanr(ll_a[t], ll_b[t]).statistic
+        for t in range(ll_a.shape[0])
+        if np.ptp(ll_b[t]) > 0
+    ]
+    return float(np.nanmedian(rhos)), len(rhos)
+
+
+def test_agreement_with_kde_simple_geometry():
+    """On barrier-free geometry the decoded non-local posterior of
+    clusterless_diffusion tracks clusterless_kde by per-time-bin rank correlation.
+
+    Anchor for goal A (spec sec Testing, "Agreement"): with a matched waveform
+    bandwidth the two algorithms share every input and differ only in the position
+    smoother (graph heat kernel vs Euclidean Gaussian), so on a wall-less 1D track
+    and a wall-less 2D open field the posteriors must rank-agree. Threshold is the
+    documented floor (median per-time-bin Spearman > 0.6; the Task-0 spike measured
+    ~1.000). Both diffusion and KDE non-local predict return interior bins in the
+    same natural (``np.where(is_track_interior)``) order, so the rows compare
+    bin-for-bin.
+    """
+    # --- 1D linear track (every bin interior) ---
+    env_1d = Environment(
+        environment_name="agree_line",
+        place_bin_size=1.0,
+        position_range=((0.0, 15.0),),
+    ).fit_place_grid(np.linspace(0.0, 15.0, 61)[:, None], infer_track_interior=False)
+    pos_1d = np.clip(
+        (np.sin(np.linspace(0.0, 3.0 * np.pi, 250)) * 0.5 + 0.5) * 15.0, 0.1, 14.9
+    )[:, None]
+    time, pt, et, ef, dt_, df = _clusterless_sim(pos_1d, seed=0)
+    enc_d = _fit_diffusion(pt, pos_1d, et, ef, env_1d, position_std=3.0)
+    enc_k = _fit_kde(pt, pos_1d, et, ef, env_1d, position_std=3.0)
+    ll_d = _predict_diffusion_nonlocal(time, pt, pos_1d, dt_, df, enc_d)
+    ll_k = _predict_kde_nonlocal(time, pt, pos_1d, dt_, df, enc_k)
+    assert ll_d.shape == ll_k.shape
+    median_1d, n_1d = _median_per_timebin_spearman(ll_d, ll_k)
+    print(
+        f"[AGREE 1D] median per-timebin Spearman(diffusion, kde)={median_1d:.3f} "
+        f"(n_timebins={n_1d}, n_bins={ll_d.shape[1]})"
+    )
+    assert median_1d > 0.6, (
+        f"1D diffusion posterior does not track KDE: median Spearman={median_1d:.3f}"
+    )
+
+    # --- 2D open field (inferred interior, no barriers) ---
+    rng = np.random.default_rng(1)
+    env_2d = Environment(
+        environment_name="agree_of",
+        place_bin_size=2.0,
+        position_range=((0.0, 20.0), (0.0, 20.0)),
+    ).fit_place_grid(rng.uniform(1.0, 19.0, size=(4000, 2)), infer_track_interior=True)
+    pos_2d = np.column_stack(
+        [
+            (np.sin(np.linspace(0.0, 3.0 * np.pi, 300)) * 0.5 + 0.5) * 18.0 + 1.0,
+            (np.cos(np.linspace(0.0, 2.0 * np.pi, 300)) * 0.5 + 0.5) * 18.0 + 1.0,
+        ]
+    )
+    time, pt, et, ef, dt_, df = _clusterless_sim(pos_2d, seed=2)
+    enc_d = _fit_diffusion(pt, pos_2d, et, ef, env_2d, position_std=4.0)
+    enc_k = _fit_kde(pt, pos_2d, et, ef, env_2d, position_std=4.0)
+    ll_d = _predict_diffusion_nonlocal(time, pt, pos_2d, dt_, df, enc_d)
+    ll_k = _predict_kde_nonlocal(time, pt, pos_2d, dt_, df, enc_k)
+    assert ll_d.shape == ll_k.shape
+    median_2d, n_2d = _median_per_timebin_spearman(ll_d, ll_k)
+    print(
+        f"[AGREE 2D] median per-timebin Spearman(diffusion, kde)={median_2d:.3f} "
+        f"(n_timebins={n_2d}, n_bins={ll_d.shape[1]})"
+    )
+    assert median_2d > 0.6, (
+        f"2D diffusion posterior does not track KDE: median Spearman={median_2d:.3f}"
+    )
+
+
+def _make_two_room_env(seed=0):
+    """Two rooms x in [2, 16] and x in [24, 38], gap x in (16, 24) four bins wide:
+    a disconnected (2-component) manifold graph -- a genuine impassable barrier.
+
+    Mirrors ``make_two_room_env`` in ``test_sorted_spikes_diffusion.py``.
+    """
+    rng = np.random.default_rng(seed)
+    left = rng.uniform([2.0, 2.0], [16.0, 38.0], size=(12000, 2))
+    right = rng.uniform([24.0, 2.0], [38.0, 38.0], size=(12000, 2))
+    position = np.vstack([left, right])
+    rng.shuffle(position)
+    env = Environment(
+        environment_name="two_rooms",
+        place_bin_size=2.0,
+        position_range=((0.0, 40.0), (0.0, 40.0)),
+    ).fit_place_grid(position, infer_track_interior=True)
+    return env, position
+
+
+def test_geometry_no_barrier_leak():
+    """THE headline test (goal A): a decode spike's mark evidence must not cross an
+    impassable barrier.
+
+    Two disconnected rooms; ALL encoding spikes are in the LEFT room (a place cell
+    near the barrier, hard-masked to zero for x > 16 so there are exactly zero
+    right-room encoding spikes). For one decode spike whose mark matches the
+    left-room encoding marks, the non-local posterior ``softmax(ll_row)`` over
+    interior bins is measured for leaked mass in the RIGHT room.
+
+    Diffusion's right room is a disconnected graph component with zero encoding
+    spikes, so its joint mark density floors there (LOG_EPS) and the posterior
+    assigns it ~no mass. The Euclidean KDE smooths across the physical gap, leaking
+    a material fraction. This is the estimator-level proof that fit -> pixellate ->
+    diffuse -> predict respects the barrier where KDE cannot.
+    """
+    env, position = _make_two_room_env()
+    graph, _, _ = environment_graph(env)
+    assert nx.number_connected_components(graph) == 2  # a genuine barrier
+
+    sampling_frequency = 100
+    time = np.arange(position.shape[0]) / sampling_frequency
+    # Left-room place cell near the barrier (center x=14): Gaussian tuning hard-masked
+    # to zero for x > 16, so there are exactly zero right-room encoding spikes.
+    center = np.array([14.0, 20.0])
+    rng = np.random.default_rng(2)
+    rate = 50.0 * np.exp(-((position - center) ** 2).sum(axis=1) / (2 * 4.0**2))
+    rate[position[:, 0] > 16.0] = 0.0
+    spike_mask = rng.random(position.shape[0]) < rate / sampling_frequency
+    assert (position[spike_mask][:, 0] > 16.0).sum() == 0  # zero right-room spikes
+    enc_t = [time[spike_mask]]
+    # Encoding marks centered at the origin; the decode spike's mark matches.
+    enc_f = [rng.normal(0.0, 1.0, size=(int(spike_mask.sum()), 2)).astype(np.float32)]
+
+    position_std = 8.0
+    enc_d = _fit_diffusion(
+        time, position, enc_t, enc_f, env, position_std, sampling_frequency
+    )
+    enc_k = _fit_kde(
+        time, position, enc_t, enc_f, env, position_std, sampling_frequency
+    )
+
+    # One decode spike, mark = [0, 0] (matches the left-room encoding marks), in a
+    # single usable time bin.
+    decode_time = np.array([0.0, time[-1]])
+    dec_t = [np.array([time[position.shape[0] // 2]])]
+    dec_f = [np.array([[0.0, 0.0]], dtype=np.float32)]
+    ll_d = _predict_diffusion_nonlocal(decode_time, time, position, dec_t, dec_f, enc_d)
+    ll_k = _predict_kde_nonlocal(decode_time, time, position, dec_t, dec_f, enc_k)
+
+    interior = env.is_track_interior_.ravel()
+    interior_centers = env.place_bin_centers_[interior]
+    right_room = interior_centers[:, 0] > 20.0
+    seg = int(get_spike_time_bin_ind(dec_t[0], decode_time)[0])
+
+    def _posterior_right_room_mass(ll_row):
+        post = np.exp(ll_row - ll_row.max())
+        post /= post.sum()
+        return float(post[right_room].sum())
+
+    diffusion_leak = _posterior_right_room_mass(ll_d[seg])
+    kde_leak = _posterior_right_room_mass(ll_k[seg])
+    print(
+        f"[LEAK] diffusion_leak={diffusion_leak:.3e} kde_leak={kde_leak:.4f} "
+        f"ratio={kde_leak / max(diffusion_leak, 1e-30):.2e} "
+        f"(right_bins={int(right_room.sum())}/{int(interior.sum())}, "
+        f"n_enc_spikes={int(spike_mask.sum())})"
+    )
+
+    # Diffusion cannot cross the disconnected component; KDE leaks a material fraction.
+    assert diffusion_leak < 0.01, (
+        f"diffusion leaked across barrier: {diffusion_leak:.3e}"
+    )
+    assert kde_leak > 0.05, (
+        f"KDE did not leak enough to be discriminating: {kde_leak:.3e}"
+    )
+    assert kde_leak > 10 * diffusion_leak, (
+        f"KDE must leak materially more than diffusion: "
+        f"kde={kde_leak:.3e} diffusion={diffusion_leak:.3e}"
+    )
+
+
+def _make_open_field_env(name, place_bin_size, seed=99):
+    rng = np.random.default_rng(seed)
+    return Environment(
+        environment_name=name,
+        place_bin_size=place_bin_size,
+        position_range=((0.0, 20.0), (0.0, 20.0)),
+    ).fit_place_grid(rng.uniform(1.0, 19.0, size=(4000, 2)), infer_track_interior=True)
+
+
+def _decode_diffusion_posterior(env, position, position_std, seed=5):
+    time, pt, et, ef, dt_, df = _clusterless_sim(
+        position, n_time=30, n_elec=3, n_enc=60, n_dec=25, seed=seed
+    )
+    enc = _fit_diffusion(pt, position, et, ef, env, position_std=position_std)
+    ll = _predict_diffusion_nonlocal(time, pt, position, dt_, df, enc)
+    interior = env.is_track_interior_.ravel()
+    centers = env.place_bin_centers_[interior]
+    post = np.exp(ll - ll.max(axis=1, keepdims=True))
+    post /= post.sum(axis=1, keepdims=True)
+    return post, centers
+
+
+def test_grid_independence():
+    """A physical ``position_std`` makes the decoded posterior stable across bin sizes.
+
+    The SAME open-field data is decoded on a coarse (bin 4.0) and a fine (bin 2.0)
+    grid at the SAME physical ``position_std``. Because the heat-kernel time
+    ``t = position_std**2 / 2`` is in coordinate units (not bins), the decoded
+    posterior as a function of PHYSICAL position must agree: the per-time-bin
+    expected (center-of-mass) position tracks within a fraction of the coarse bin,
+    and the coarse posterior resampled onto the fine grid rank-correlates with the
+    fine posterior. (argmax is intentionally NOT used -- the weakly-informative
+    per-spike posterior is multimodal, so argmax jumps between near-equal peaks; the
+    center-of-mass and rank-correlation metrics are the robust physical comparisons.)
+    If ``position_std`` were grid-relative, the coarse grid would smooth over 2x the
+    physical distance of the fine grid and these would diverge.
+    """
+    position = np.column_stack(
+        [
+            (np.sin(np.linspace(0.0, 3.0 * np.pi, 300)) * 0.5 + 0.5) * 18.0 + 1.0,
+            (np.cos(np.linspace(0.0, 2.0 * np.pi, 300)) * 0.5 + 0.5) * 18.0 + 1.0,
+        ]
+    )
+    position_std = 6.0
+    env_coarse = _make_open_field_env("grid_coarse", 4.0)
+    env_fine = _make_open_field_env("grid_fine", 2.0)
+    post_c, cen_c = _decode_diffusion_posterior(env_coarse, position, position_std)
+    post_f, cen_f = _decode_diffusion_posterior(env_fine, position, position_std)
+
+    # Decoded physical expected position per time bin agrees across grids.
+    exp_c = post_c @ cen_c
+    exp_f = post_f @ cen_f
+    dist = np.linalg.norm(exp_c - exp_f, axis=1)
+
+    # Resample the coarse posterior onto the fine centers (nearest coarse bin) and
+    # rank-correlate the two posteriors per time bin (posterior SHAPE in physical space).
+    nn = cKDTree(cen_c).query(cen_f)[1]
+    rhos = [
+        stats.spearmanr(post_c[t][nn], post_f[t]).statistic
+        for t in range(post_f.shape[0])
+        if np.ptp(post_c[t][nn]) > 0 and np.ptp(post_f[t]) > 0
+    ]
+    median_rho = float(np.nanmedian(rhos))
+    print(
+        f"[GRID] expected-pos dist median={np.median(dist):.3f} max={dist.max():.3f} "
+        f"(coarse bin=4.0) | resampled per-timebin Spearman median={median_rho:.3f}"
+    )
+
+    # Sanity: the expected position genuinely moves, so the agreement is non-vacuous.
+    assert np.ptp(exp_f[:, 0]) > 1.0 or np.ptp(exp_f[:, 1]) > 1.0
+
+    assert np.median(dist) < 1.0, (  # a small fraction of the coarse bin size (4.0)
+        f"expected position not grid-stable: median dist={np.median(dist):.3f}"
+    )
+    assert dist.max() < 2.0, f"worst-case grid drift too large: {dist.max():.3f}"
+    assert median_rho > 0.85, (
+        f"posterior shape not grid-stable: median Spearman={median_rho:.3f}"
+    )
+
+
+def _make_nonuniform_dv_env():
+    """Linearized two-segment track with ``edge_spacing > 0`` -> gap bins (a
+    2-component graph) AND genuinely non-uniform interior ``bin_sizes``: edge 0
+    (length 20) splits into 4 bins of 5.0, edge 1 (length 22) into 5 bins of 4.4,
+    so ``ptp(bin_sizes) = 0.6``. Every uniform-grid test in this file has
+    ``bin_sizes == 1.0`` and so never exercises the ``dV`` path.
+    """
+    g = nx.Graph()
+    g.add_node(0, pos=(0.0, 0.0))
+    g.add_node(1, pos=(20.0, 0.0))
+    g.add_node(2, pos=(23.0, 0.0))
+    g.add_node(3, pos=(45.0, 0.0))
+    g.add_edge(0, 1, distance=20.0, edge_id=0)
+    g.add_edge(2, 3, distance=22.0, edge_id=1)
+    env = Environment(
+        environment_name="nonuniform_dv",
+        place_bin_size=5.0,
+        track_graph=g,
+        edge_order=[(0, 1), (2, 3)],
+        edge_spacing=10.0,
+    )
+    position_1d = np.concatenate(
+        [np.linspace(0.0, 20.0, 60), np.linspace(23.0, 45.0, 60)]
+    )
+    return env.fit_place_grid(position_1d, infer_track_interior=True)
+
+
+def test_nonuniform_dv_density_correctness():
+    """Density correctness on a NON-UNIFORM ``dV`` grid (closes a coverage gap).
+
+    The mark-marginal recovery ``Sum_x p_e(x, m_j) * dV(x) == Sum_i w_i K / Sum_i w_i``
+    is the property that pins the ``dV`` normalization, but on a uniform grid
+    (``dV == 1.0``) it is a no-op that would pass even if the code dropped ``dV``.
+    Here ``dV`` is genuinely non-uniform (4.4 vs 5.0), so:
+
+    * ``bin_sizes`` must be non-uniform (``ptp > 0``) AND equal the true geometric bin
+      widths recomputed independently from ``place_bin_edges_`` -- a regression that
+      dropped ``dV`` to 1.0 breaks this directly.
+    * The reconstructed density integrated against the INDEPENDENT widths recovers
+      the weighted mark marginal (heat-kernel mass conservation, per-component on
+      this disconnected env). Integrating the density against those independent
+      widths (not the ``dV`` used to build it) is what makes a dropped-``dV``
+      regression fail rather than cancel.
+    * Positive control: integrating against a uniform 1.0 measure does NOT recover
+      the marginal, proving the non-uniform ``dV`` is load-bearing.
+    """
+    env = _make_nonuniform_dv_env()
+    graph, node_order, bin_sizes = environment_graph(env)
+    bin_sizes = np.asarray(bin_sizes)
+    is_interior = env.is_track_interior_.ravel()
+    # Independent geometric bin widths straight from the environment grid.
+    independent_widths = np.diff(env.place_bin_edges_.ravel())[is_interior]
+
+    assert np.ptp(bin_sizes) > 0.0, "fixture must have non-uniform dV"
+    assert np.allclose(bin_sizes, independent_widths), (
+        "bin_sizes must carry the true non-uniform geometry, not a dropped-to-1.0 dV"
+    )
+    print(
+        f"[NONUNIF] bin_sizes ptp={np.ptp(bin_sizes):.3f} "
+        f"min={bin_sizes.min():.3f} max={bin_sizes.max():.3f} "
+        f"n_components={nx.number_connected_components(graph)}"
+    )
+
+    # Weighted encoding on the track (2D position on y = 0).
+    n_pos = 200
+    position_time = np.linspace(0.0, 1.0, n_pos)
+    x = np.concatenate(
+        [
+            np.linspace(0.5, 19.5, n_pos // 2),
+            np.linspace(23.5, 44.5, n_pos - n_pos // 2),
+        ]
+    )
+    position = np.column_stack([x, np.zeros_like(x)])
+    rng = np.random.default_rng(11)
+    weights = 0.5 + np.linspace(
+        0.0, 1.0, n_pos
+    )  # smooth, strictly positive, non-uniform
+    enc_t = np.sort(rng.uniform(0.0, 1.0, 40))
+    enc_f = rng.standard_normal((enc_t.size, 2)).astype(np.float32)
+    waveform_std = 6.0
+    enc = fit_clusterless_diffusion_encoding_model(
+        jnp.asarray(position_time),
+        jnp.asarray(position),
+        [jnp.asarray(enc_t)],
+        [jnp.asarray(enc_f)],
+        env,
+        sampling_frequency=100,
+        position_std=6.0,
+        waveform_std=waveform_std,
+        weights=weights,
+        disable_progress_bar=True,
+    )
+
+    enc_bins = jnp.asarray(enc["encoding_bin_indices"][0])
+    enc_marks = jnp.asarray(enc["encoding_marks"][0])
+    w = np.asarray(enc["encoding_weights"][0])
+    w_total = float(enc["weight_total"][0])
+    dV = np.asarray(enc["bin_sizes"])
+    n_bins = dV.shape[0]
+
+    dec_marks = jnp.asarray(
+        rng.standard_normal((5, enc_marks.shape[1])).astype(np.float32)
+    )
+    K = kde_distance(dec_marks, enc_marks, jnp.full(enc_marks.shape[1], waveform_std))
+    D = (
+        jnp.zeros((n_bins, dec_marks.shape[0]))
+        .at[enc_bins]
+        .add(jnp.asarray(w)[:, None] * K)
+    )
+    Lam, Q, labels, n_components = get_device_basis(env, enc["resolved_rank"])
+    P = np.asarray(
+        heat_kernel_apply(
+            Lam, Q, enc["position_std"], D, labels, n_components=n_components
+        )
+    )
+    p_e = P / (w_total * dV[:, None])
+    rhs = (w[:, None] * np.asarray(K)).sum(axis=0) / w_total  # weighted mark marginal
+
+    # Integrate the density against the INDEPENDENT widths. With correct dV this
+    # recovers rhs; had dV regressed to 1.0, p_e would be ~4.7x larger and this fails.
+    lhs = (p_e * independent_widths[:, None]).sum(axis=0)
+    assert np.allclose(lhs, rhs, rtol=1e-3, atol=1e-6), (
+        f"non-uniform-dV mark-marginal mismatch: max|diff|={np.abs(lhs - rhs).max():.3e}"
+    )
+
+    # Positive control: a uniform 1.0 measure must NOT recover the marginal here.
+    lhs_uniform = p_e.sum(axis=0)
+    assert not np.allclose(lhs_uniform, rhs, rtol=1e-3, atol=1e-6), (
+        "uniform-measure integral spuriously matched: fixture is not exercising dV"
+    )
+    print(
+        f"[NONUNIF] mark-marginal max|lhs-rhs|={np.abs(lhs - rhs).max():.3e} "
+        f"| uniform-measure control max|diff|={np.abs(lhs_uniform - rhs).max():.3e}"
+    )
