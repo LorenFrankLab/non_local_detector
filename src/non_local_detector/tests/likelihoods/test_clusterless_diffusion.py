@@ -1341,7 +1341,7 @@ def _make_two_room_env(seed=0):
 
 
 def test_geometry_no_barrier_leak():
-    """THE headline test (goal A): a decode spike's mark evidence must not cross an
+    """THE headline geometry test: a decode spike's mark evidence must not cross an
     impassable barrier.
 
     Two disconnected rooms; ALL encoding spikes are in the LEFT room (a place cell
@@ -1658,13 +1658,13 @@ def _time_predict_only(predict_fn, iters=5):
 
 @pytest.mark.slow
 def test_benchmark_diffusion_vs_kde_large_grid():
-    """Non-gating goal-B speed benchmark: production predict-only wall time,
+    """Non-gating speed benchmark: production predict-only wall time,
     ``clusterless_diffusion`` vs ``clusterless_kde``, on a large 2D grid with
     many encoding/decode spikes.
 
     This is NOT a regression gate: JAX's lazy device-memory preallocation and
     kernel warm-up make wall-clock timing flaky run-to-run (see the module's
-    Goal B docs -- the win grows with spike count but the constant factor is
+    the module docstring -- the win grows with spike count but the constant factor is
     hardware/allocator dependent). The only assertion is that both outputs are
     finite; the measured times and speedup are printed on the ``[BENCH]`` line
     for manual inspection.

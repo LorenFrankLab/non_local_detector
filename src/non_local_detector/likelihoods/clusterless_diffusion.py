@@ -10,17 +10,16 @@ position_std**2 / 2``). The *mark* kernel stays a Gaussian over waveform feature
 coordinate units) and ``waveform_std`` is the mark bandwidth, exactly as in
 ``clusterless_kde``. This is the clusterless analog of :mod:`sorted_spikes_diffusion`.
 
-Two goals motivate it over KDE:
+Two properties motivate it over KDE:
 
-- **Goal A -- geometry-respecting spatial smoothing.** The heat kernel follows the
+- **Geometry-respecting spatial smoothing.** The heat kernel follows the
   environment's track topology (diffusion distance on the graph), not Euclidean
   distance, so it does not leak across walls, holes, or junctions the way a Gaussian
   KDE smoothed in coordinate space can.
-- **Goal B -- speed.** Occupancy and each electrode's ground-process field are
-  diffused once at fit; predict applies one cached low-rank heat-kernel matmul per
-  decode-spike block instead of KDE's pairwise ``O(n_bins * n_enc * n_decode)``
-  position kernel. The speedup grows with the encoding-spike count (relative to
-  the heat-kernel rank).
+- **Speed.** Occupancy and each electrode's ground-process field are diffused once
+  at fit; predict applies one cached low-rank heat-kernel matmul per decode-spike
+  block instead of KDE's pairwise ``O(n_bins * n_enc * n_decode)`` position kernel.
+  The speedup grows with the encoding-spike count (relative to the heat-kernel rank).
 
 This is purely additive: the default clusterless likelihood remains
 ``clusterless_kde``.
@@ -212,6 +211,31 @@ def _effective_block(
     return int(np.clip(raw, 1, block_size))
 
 
+def _diffuse_field(
+    field: np.ndarray,
+    Lam: jnp.ndarray,
+    Q: jnp.ndarray,
+    position_std: float,
+    labels: jnp.ndarray,
+    n_components: int,
+) -> np.ndarray:
+    """Diffuse a single ``(n_interior,)`` count field, returned as a host array.
+
+    Shared by the occupancy and per-electrode ground-process fields at fit time:
+    both promote to a single-column field, diffuse via :func:`heat_kernel_apply`,
+    then squeeze back to ``(n_interior,)`` on host.
+    """
+    field_hat = heat_kernel_apply(
+        Lam,
+        Q,
+        position_std,
+        jnp.asarray(field[:, None], dtype=jnp.float32),
+        labels,
+        n_components=n_components,
+    )
+    return np.asarray(field_hat)[:, 0]
+
+
 def fit_clusterless_diffusion_encoding_model(
     position_time: np.ndarray,
     position: np.ndarray,
@@ -325,16 +349,9 @@ def fit_clusterless_diffusion_encoding_model(
         weights=weights,
         minlength=n_interior,
     )
-    occupancy_hat = np.asarray(
-        heat_kernel_apply(
-            Lam,
-            Q,
-            position_std,
-            jnp.asarray(occupancy_field[:, None], dtype=jnp.float32),
-            labels,
-            n_components=n_components,
-        )
-    )[:, 0]
+    occupancy_hat = _diffuse_field(
+        occupancy_field, Lam, Q, position_std, labels, n_components
+    )
     safe_weight_sum = weight_sum if weight_sum > 0 else 1.0
     occupancy = np.clip(occupancy_hat / (safe_weight_sum * bin_sizes), EPS, None)
     if weight_sum == 0:
@@ -406,16 +423,9 @@ def fit_clusterless_diffusion_encoding_model(
         mean_rate = weighted_mean_rate(spike_weights, weight_sum)
         mean_rates.append(mean_rate)
         spike_field = np.bincount(bins, weights=spike_weights, minlength=n_interior)
-        spike_field_hat = np.asarray(
-            heat_kernel_apply(
-                Lam,
-                Q,
-                position_std,
-                jnp.asarray(spike_field[:, None], dtype=jnp.float32),
-                labels,
-                n_components=n_components,
-            )
-        )[:, 0]
+        spike_field_hat = _diffuse_field(
+            spike_field, Lam, Q, position_std, labels, n_components
+        )
         p_gpi = spike_field_hat / (w_total * bin_sizes)
         summed_ground_process_intensity += mean_rate * p_gpi / occupancy
 
