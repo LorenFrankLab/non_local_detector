@@ -170,6 +170,27 @@ def _validate_diffusion_params(
     return position_std
 
 
+def _validate_waveform_std_shape(waveform_std, n_features: int, electrode: int) -> None:
+    """Reject a ``waveform_std`` that cannot broadcast to this electrode's marks.
+
+    ``waveform_std`` must be a scalar (broadcast to every feature) or a 1-D array
+    of length ``n_features``. Fit never evaluates the mark kernel, so an ill-shaped
+    ``waveform_std`` (empty, or a length mismatching the waveform-feature dimension)
+    would otherwise pass fit silently and fail later inside ``kde_distance`` at
+    predict. Caught here per electrode instead.
+    """
+    waveform_std_arr = np.asarray(waveform_std, dtype=float)
+    if waveform_std_arr.ndim == 0:
+        return  # a scalar bandwidth broadcasts to any feature dimension
+    if waveform_std_arr.ndim != 1 or waveform_std_arr.shape[0] != n_features:
+        raise ValidationError(
+            "waveform_std must be a scalar or a 1-D array of length n_features "
+            "(matching each electrode's waveform-feature dimension)",
+            expected=f"scalar or shape ({n_features},) for electrode {electrode}",
+            got=f"waveform_std of shape {waveform_std_arr.shape}",
+        )
+
+
 def _effective_block(
     memory_budget: int,
     n_enc: int,
@@ -349,6 +370,7 @@ def fit_clusterless_diffusion_encoding_model(
         # Validate only the in-window features that actually enter the fit.
         bounded_features = np.asarray(electrode_features)[is_in_bounds]
         validate_finite(bounded_features, "spike_waveform_features")
+        _validate_waveform_std_shape(waveform_std, bounded_features.shape[1], electrode)
 
         spike_weights = interpolate_weights_at_spike_times(
             electrode_spike_times, position_time, weights

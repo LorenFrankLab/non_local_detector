@@ -924,6 +924,16 @@ def test_validation_fit():
         with pytest.raises(ValidationError):
             _fit(s, waveform_std=bad_std)
 
+    # waveform_std dimensionality: fit never evaluates the mark kernel, so an
+    # ill-shaped bandwidth must be caught here (not later in kde_distance). The
+    # fixture has 2-feature marks; an empty array and a length-3 vector are wrong.
+    for bad_std in ([], [1.0, 2.0, 3.0]):
+        with pytest.raises(ValidationError):
+            _fit(s, waveform_std=bad_std)
+    # A matching (n_features,) vector and a scalar are both accepted.
+    _fit(s, waveform_std=[24.0, 24.0])
+    _fit(s, waveform_std=24.0)
+
     # weights (via common.validate_weights): wrong length, non-finite, negative.
     n_pos = s["position"].shape[0]
     with pytest.raises(ValidationError):
