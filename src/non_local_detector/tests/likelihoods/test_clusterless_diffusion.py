@@ -915,12 +915,14 @@ def test_validation_fit():
     with pytest.raises(ValidationError):
         _fit(s, block_size=0)
 
-    # position_std / waveform_std: non-positive.
-    for bad_std in (0.0, -1.0):
+    # position_std / waveform_std: non-positive OR non-finite (inf position_std makes
+    # exp(-t*lambda) hit inf*0 = NaN on the null mode -> a non-finite model).
+    for bad_std in (0.0, -1.0, np.inf):
         with pytest.raises(ValidationError):
             _fit(s, position_std=bad_std)
-    with pytest.raises(ValidationError):
-        _fit(s, waveform_std=0.0)
+    for bad_std in (0.0, np.inf):
+        with pytest.raises(ValidationError):
+            _fit(s, waveform_std=bad_std)
 
     # weights (via common.validate_weights): wrong length, non-finite, negative.
     n_pos = s["position"].shape[0]
@@ -992,11 +994,17 @@ def test_validation_predict():
     with pytest.raises(ValidationError):
         _predict(dict(s, time=bad_time), enc)
 
-    # non-finite decoding position.
+    # non-finite decoding position raises for the LOCAL path (which reads position);
+    # the non-local path never reads position (see the positionless case below).
     bad_position = np.array(s["position"], copy=True)
     bad_position[0, 0] = np.nan
     with pytest.raises(ValidationError):
-        _predict(dict(s, position=bad_position), enc)
+        _predict(dict(s, position=bad_position), enc, is_local=True)
+
+    # Non-local decoding accepts position/position_time = None (the documented
+    # positionless API, matching clusterless_kde): it must not raise or require them.
+    ll_positionless = _predict(dict(s, position=None, position_time=None), enc)
+    assert np.all(np.isfinite(np.asarray(ll_positionless)))
 
     # non-finite IN-window decode spike_waveform_features on a valid (non-zero-rate)
     # electrode raises.

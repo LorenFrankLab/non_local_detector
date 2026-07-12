@@ -114,16 +114,17 @@ def _validate_diffusion_params(
             got=f"array of shape {position_std_arr.shape}",
         )
     position_std = float(position_std_arr.item())
-    if not position_std > 0.0:
+    if not (position_std > 0.0 and np.isfinite(position_std)):
         raise ValidationError(
-            "position_std must be positive",
-            expected="position_std > 0",
+            "position_std must be a finite positive number",
+            expected="0 < position_std < inf",
             got=f"position_std = {position_std}",
         )
-    if not np.all(np.asarray(waveform_std) > 0.0):
+    waveform_std_arr = np.asarray(waveform_std, dtype=float)
+    if not (np.all(waveform_std_arr > 0.0) and np.all(np.isfinite(waveform_std_arr))):
         raise ValidationError(
-            "waveform_std must be positive",
-            expected="waveform_std > 0",
+            "waveform_std must be finite and positive",
+            expected="0 < waveform_std < inf",
             got=f"waveform_std = {waveform_std}",
         )
 
@@ -475,15 +476,16 @@ def predict_clusterless_diffusion_log_likelihood(
 
     time = np.asarray(time)
     validate_finite(time, "time")
-    # Validated even though the non-local path never reads `position` -- the local
-    # path does, and Tier 1 applies to both (defense-in-depth; spec sec 4).
-    validate_finite(position, "position")
     n_time = len(time)
     n_bins = occupancy.shape[0]
 
     Lam, Q, labels, n_components = get_device_basis(environment, resolved_rank)
 
     if is_local:
+        # The local path reads the animal's position; non-local ignores it and the
+        # base API permits position=None (as clusterless_kde does), so position is
+        # only required and validated here (Tier 1, spec sec 4).
+        validate_finite(position, "position")
         # Reconstruct the interior-bin mapping from node_order (not stored, per
         # spec sec 3) and evaluate the diffused column at the animal's nearest
         # interior bin instead of returning the whole column.
@@ -662,14 +664,18 @@ def predict_clusterless_diffusion_log_likelihood(
         seg = jnp.asarray(get_spike_time_bin_ind(electrode_spike_times, time))
 
         # Zero-rate electrode: floor every observed decode spike to LOG_EPS BEFORE any
-        # division (D_e == 0 and P_e / weight_total_e is 0/0). Not skipped.
+        # division (D_e == 0 and P_e / weight_total_e is 0/0). Not skipped. Each
+        # time bin's contribution is (spikes in that bin) * LOG_EPS, identical across
+        # bins -- accumulate it from per-time-bin counts rather than materializing an
+        # (n_decode, n_bins) array (which would be gigabytes at millions of spikes).
         if electrode_weight_total == 0:
-            log_likelihood += jax.ops.segment_sum(
-                jnp.full((n_decode, n_bins), LOG_EPS),
+            spike_counts = jax.ops.segment_sum(
+                jnp.ones(n_decode),
                 seg,
                 indices_are_sorted=True,
                 num_segments=n_time,
-            )
+            )  # (n_time,)
+            log_likelihood += spike_counts[:, None] * LOG_EPS
             continue
 
         enc_bins = jnp.asarray(electrode_bins)
