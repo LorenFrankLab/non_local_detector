@@ -501,6 +501,28 @@ def predict_clusterless_diffusion_log_likelihood(
     n_time = len(time)
     n_bins = occupancy.shape[0]
 
+    # The encoding model is grid-bound: its occupancy, node_order, per-spike bin
+    # indices, and ground-process field all describe the interior-bin layout at fit
+    # time. If the shared Environment was refit (fit_place_grid) to a different grid
+    # afterwards, those stale arrays no longer match the environment's current graph
+    # -- and when the interior-bin count happens to be unchanged, the shape checks in
+    # the diffusion matmul do not catch it, silently misattributing the likelihood to
+    # the wrong bins. Compare the fit-time node_order against the environment's
+    # current one and fail loudly instead. Re-fit the encoding model after any refit.
+    current_node_order = environment_graph(environment)[1]
+    if not np.array_equal(np.asarray(node_order), np.asarray(current_node_order)):
+        raise ValidationError(
+            "encoding model is stale: the environment's grid was refit after this "
+            "encoding model was fit, so its interior-bin layout no longer matches.",
+            expected="an encoding model fit against the environment's current grid",
+            got=(
+                f"fit-time interior-bin count {np.asarray(node_order).shape[0]} vs "
+                f"current {np.asarray(current_node_order).shape[0]}"
+            ),
+            hint="Re-fit the encoding model (fit_clusterless_diffusion_encoding_model) "
+            "against the refit environment before predicting.",
+        )
+
     Lam, Q, labels, n_components = get_device_basis(environment, resolved_rank)
 
     if is_local:

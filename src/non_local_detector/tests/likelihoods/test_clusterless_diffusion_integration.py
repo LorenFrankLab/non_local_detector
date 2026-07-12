@@ -9,8 +9,10 @@ simulated grid and spike counts are kept deliberately small.
 """
 
 import numpy as np
+import pytest
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
 from non_local_detector.likelihoods.clusterless_diffusion import (
     _effective_block,
@@ -253,6 +255,56 @@ def test_refit_requires_encoding_refit() -> None:
     # n_interior_original), not 20. This assertion would then fail instead of
     # passing vacuously.
     assert new_log_likelihood.shape == (len(new_decode_time), n_interior_new)
+
+
+def test_stale_encoding_model_after_refit_raises() -> None:
+    """Predicting with an encoding model whose environment was refit to a
+    DIFFERENT grid of the SAME interior-bin count must raise, not silently
+    misattribute the likelihood to the old bins.
+
+    This is the dangerous case the shape checks in the diffusion matmul cannot
+    catch: fitting on interior bins 8..18 (11 bins) then refitting the same env to
+    bins 9..19 (also 11 bins, different physical bins) leaves the stale encoding
+    model's node_order/occupancy/bin-indices bound to the old layout while the
+    device basis is rebuilt from the new graph -- finite output, wrong bins. The
+    node_order staleness guard turns that into a clear ValidationError.
+    """
+    env = Environment(position_range=[(0.0, 20.0)], place_bin_size=1.0)
+    env = env.fit_place_grid(
+        np.linspace(8.0, 18.0, 200)[:, None], infer_track_interior=True
+    )
+    n_before = int(env.is_track_interior_.ravel().sum())
+
+    position_time = np.linspace(0.0, 1.0, 200)
+    position = np.linspace(8.0, 18.0, 200)[:, None]
+    spike_times = [np.array([0.3, 0.6, 0.9])]
+    spike_waveform_features = [
+        np.array([[0.0, 0.0], [1.0, -1.0], [0.5, 0.3]], dtype=np.float32)
+    ]
+    encoding_model = fit_clusterless_diffusion_encoding_model(
+        position_time,
+        position,
+        spike_times,
+        spike_waveform_features,
+        environment=env,
+        position_std=3.0,
+        disable_progress_bar=True,
+    )
+
+    # Refit the SAME env object to a shifted interior with the same bin count.
+    env.fit_place_grid(np.linspace(9.0, 19.0, 200)[:, None], infer_track_interior=True)
+    assert int(env.is_track_interior_.ravel().sum()) == n_before  # same count
+
+    decode_time = np.linspace(0.0, 1.0, 6)
+    with pytest.raises(ValidationError, match="stale"):
+        predict_clusterless_diffusion_log_likelihood(
+            decode_time,
+            position_time,
+            position,
+            [np.array([0.4, 0.7])],
+            [np.array([[0.1, 0.0], [0.2, -0.5]], dtype=np.float32)],
+            **encoding_model,
+        )
 
 
 def test_save_load_predict_parity(tmp_path) -> None:
