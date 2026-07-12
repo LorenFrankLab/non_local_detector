@@ -194,6 +194,14 @@ class Environment:
         sorted-spikes diffusion likelihood, populated by
         ``likelihoods.diffusion.cached_eigenbasis`` and invalidated by
         :meth:`fit_place_grid`.
+    _diffusion_device_basis_ : dict, optional
+        Transient cache of the device-resident (JAX) eigenbasis for the
+        ``clusterless_diffusion`` predict matmul, keyed by
+        ``(resolved_rank, device, dtype)``, populated by
+        ``likelihoods.diffusion.get_device_basis``. Invalidated by
+        :meth:`fit_place_grid` and excluded from pickling via
+        :meth:`__getstate__` (its JAX ``Device`` key is unpicklable; it is
+        lazily rebuilt from the host basis after load).
     """
 
     environment_name: str = ""

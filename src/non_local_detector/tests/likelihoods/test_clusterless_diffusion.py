@@ -7,7 +7,7 @@ marked-point-process intensity as ``clusterless_kde`` but replaces the Gaussian
 (``t = position_std**2 / 2``); the *mark* kernel stays a Gaussian over waveform
 features (via ``kde_distance``).
 
-The joint mark density (spec sec 1/4) is
+The joint mark density is
 
     p_e(x, m_j) = (H_t D_e)[x, j] / ( (sum_i w_i) * dV(x) )
     D_e[:, j]   = sum_i w_i * K_mark(m_j, m_i) * onehot(bin(x_i))
@@ -170,7 +170,7 @@ def _predict(s, enc, is_local=False, **overrides):
 
 
 # ----------------------------------------------------------------------------
-# Task 3 — fit
+# fit encoding model
 # ----------------------------------------------------------------------------
 
 FIT_KEYS = {
@@ -226,7 +226,7 @@ def test_fit_returns_finite_densities_and_keys():
 
 
 # ----------------------------------------------------------------------------
-# Task 6 — density correctness
+# density correctness
 # ----------------------------------------------------------------------------
 
 
@@ -236,7 +236,7 @@ def test_mark_marginal_recovery():
     sum_x p_e(x, m_j) * dV(x) == sum_i w_i K(m_j, m_i) / sum_i w_i, because the
     heat kernel conserves mass (sum_x (H D_e)[:, j] == sum_i w_i K) and
     p_e = (H D_e) / (sum_i w_i * dV). Guards the sum_i w_i / dV normalization
-    (spec sec 1/4).
+    the density normalization.
     """
     weights = 0.5 + np.linspace(0.0, 1.0, 200)  # smooth, strictly positive, non-uniform
     s = _sim(seed=1, weights=weights)
@@ -296,7 +296,7 @@ def test_absolute_log_likelihood_small_fixture():
         p_e[:, j]   = P[:, j] / (w_total * dV)
         p_gpi       = Shat / (w_total * dV)
         mean_rate   = w_total / sum_w_pos
-      intensity and ground process (spec sec 3):
+      intensity and ground process:
         lc[:, j]    = log(clip(mean_rate * p_e[:, j] / pi, EPS))
         summed_gpi  = clip(mean_rate * p_gpi / pi, EPS)
         ll[t, x]    = -summed_gpi[x] + sum_{j in bin t} lc[x, j]
@@ -450,7 +450,7 @@ def test_mass_invariance_across_ranks():
 
 
 # ----------------------------------------------------------------------------
-# Task 6 — weighted EM + degeneracy
+# weighted EM + degeneracy
 # ----------------------------------------------------------------------------
 
 
@@ -683,12 +683,12 @@ def test_zero_rate_fit_and_predict_finite_and_warn():
 
 
 # ----------------------------------------------------------------------------
-# Task 5 -- local predict path
+# local predict path
 # ----------------------------------------------------------------------------
 
 
 def test_local_equals_nonlocal_per_spike():
-    """Per-spike identity (spec sec 3, Local): local predict's contribution at a
+    """Per-spike identity (local path): local predict's contribution at a
     single decode spike must reconstruct the non-local predict's cell at that
     spike's ``(time_bin, animal_bin)``.
 
@@ -875,12 +875,12 @@ def test_local_finite_and_zero_rate():
 
 
 # ----------------------------------------------------------------------------
-# Task 7 -- Tier-1 input validation (fit + predict)
+# Tier-1 input validation (fit + predict)
 # ----------------------------------------------------------------------------
 
 
 def test_validation_fit():
-    """Every Tier-1 fit-time contract (spec sec 4) raises ValidationError, and the
+    """Every Tier-1 fit-time contract raises ValidationError, and the
     in-window / out-of-window encoding-feature split matches clusterless_kde."""
     s = _sim(seed=10)
 
@@ -911,15 +911,21 @@ def test_validation_fit():
         with pytest.raises(ValidationError):
             _fit(s, memory_budget=bad_budget)
 
-    # block_size: non-positive.
-    with pytest.raises(ValidationError):
-        _fit(s, block_size=0)
+    # block_size: non-positive, non-int, bool.
+    for bad_block in (0, -1, 1.5, True):
+        with pytest.raises(ValidationError):
+            _fit(s, block_size=bad_block)
 
     # position_std / waveform_std: non-positive OR non-finite (inf position_std makes
     # exp(-t*lambda) hit inf*0 = NaN on the null mode -> a non-finite model).
     for bad_std in (0.0, -1.0, np.inf):
         with pytest.raises(ValidationError):
             _fit(s, position_std=bad_std)
+    # position_std must be a scalar: the graph heat kernel is isotropic in graph
+    # distance, so a per-dimension array (which clusterless_kde accepts) is rejected
+    # rather than silently mis-broadcast -- a realistic port-from-kde mistake.
+    with pytest.raises(ValidationError):
+        _fit(s, position_std=[POSITION_STD, POSITION_STD])
     for bad_std in (0.0, np.inf):
         with pytest.raises(ValidationError):
             _fit(s, waveform_std=bad_std)
@@ -993,7 +999,7 @@ def test_validation_fit():
 
 
 def test_validation_predict():
-    """Every Tier-1 predict-time contract (spec sec 4) raises ValidationError, and
+    """Every Tier-1 predict-time contract raises ValidationError, and
     a non-finite feature on an out-of-window decode spike does NOT raise."""
     s = _sim(seed=11)
     enc = _fit(s)
@@ -1139,7 +1145,7 @@ def test_validation_predict_zero_rate_precedence(is_local):
 
 
 # ----------------------------------------------------------------------------
-# Task 10 -- scientific validation: KDE agreement, geometry win (goal A),
+# scientific validation: KDE agreement, geometry win (no barrier leak),
 # grid-independence, and non-uniform-dV density correctness.
 #
 # These validate the *feature*, not the constants: that clusterless_diffusion
@@ -1253,7 +1259,7 @@ def test_agreement_with_kde_simple_geometry():
     """On barrier-free geometry the decoded non-local posterior of
     clusterless_diffusion tracks clusterless_kde by per-time-bin rank correlation.
 
-    Anchor for goal A (spec sec Testing, "Agreement"): with a matched waveform
+    Geometry-agreement anchor: with a matched waveform
     bandwidth the two algorithms share every input and differ only in the position
     smoother (graph heat kernel vs Euclidean Gaussian), so on a wall-less 1D track
     and a wall-less 2D open field the posteriors must rank-agree. Threshold is the
@@ -1633,7 +1639,7 @@ def test_nonuniform_dv_density_correctness():
 
 
 # ----------------------------------------------------------------------------
-# Task 11 -- non-gating speed benchmark (goal B). Folds in the Task 0 spike's
+# non-gating speed benchmark (predict time vs clusterless_kde). Uses the
 # large-grid perf probe, but drives the PRODUCTION fit/predict entry points
 # instead of the spike's hand-rolled reimplementation.
 # ----------------------------------------------------------------------------
@@ -1666,7 +1672,7 @@ def test_benchmark_diffusion_vs_kde_large_grid():
     rng = np.random.default_rng(0)
     # Dense uniform 2D coverage + infer_track_interior=True fills the grid
     # interior (place_bin_size = 20/160 -> ~80x48 grid -> several thousand
-    # filled interior bins), mirroring the retired Task 0 spike's perf fixture.
+    # filled interior bins).
     n_bins_side = 160
     place_bin_size = 20.0 / n_bins_side
     n_pos = 20_000

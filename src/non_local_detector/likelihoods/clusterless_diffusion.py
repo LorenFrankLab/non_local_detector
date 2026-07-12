@@ -19,7 +19,8 @@ Two goals motivate it over KDE:
 - **Goal B -- speed.** Occupancy and each electrode's ground-process field are
   diffused once at fit; predict applies one cached low-rank heat-kernel matmul per
   decode-spike block instead of KDE's pairwise ``O(n_bins * n_enc * n_decode)``
-  position kernel. The win grows with encoding/decode-spike count.
+  position kernel. The speedup grows with the encoding-spike count (relative to
+  the heat-kernel rank).
 
 This is purely additive: the default clusterless likelihood remains
 ``clusterless_kde``.
@@ -75,6 +76,7 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
     cached_heat_kernel_eigenbasis,
+    check_smoothing_bandwidth,
     environment_graph,
     get_device_basis,
     heat_kernel_apply,
@@ -87,7 +89,7 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
 logger = logging.getLogger(__name__)
 
 # float32 working dtype for the diffusion matmul; its item size drives the memory
-# policy (spec sec 3) -- do not hardcode 4 elsewhere.
+# policy -- do not hardcode 4 elsewhere.
 _WORKING_ITEMSIZE = np.dtype(np.float32).itemsize
 
 
@@ -98,7 +100,7 @@ def _validate_diffusion_params(
     memory_budget: int,
     block_size: int,
 ) -> float:
-    """Tier-1 validation for the diffusion-specific parameters (spec sec 4).
+    """Tier-1 (raise-on-invalid) validation for the diffusion-specific parameters.
 
     Returns ``position_std`` coerced to a plain float (it becomes part of the
     bandwidth-keyed eigenbasis cache key, so a JAX scalar/array would be
@@ -203,7 +205,7 @@ def _effective_block(
     Per decode-spike column the live set is dominated by ``K`` (``n_enc``), the
     spectral projection (``rank``), and ~4 ``n_bins``-scaled arrays (``D``, ``P``,
     ``lc`` and the clip/rescale temporaries), all in the float32 working dtype. A
-    safety factor of 2 leaves headroom for XLA workspace (spec sec 3).
+    safety factor of 2 leaves headroom for XLA workspace.
     """
     bytes_per_col = _WORKING_ITEMSIZE * (n_enc + rank + 4 * n_bins)
     raw = memory_budget // (bytes_per_col * 2)
@@ -225,7 +227,6 @@ def fit_clusterless_diffusion_encoding_model(
     block_size: int = 10_000,
     memory_budget: int = 536_870_912,
     disable_progress_bar: bool = False,
-    **kwargs: object,
 ) -> dict:
     """Fit the clusterless graph-diffusion encoding model.
 
@@ -257,7 +258,7 @@ def fit_clusterless_diffusion_encoding_model(
         Eigenbasis truncation rank, by default None (bandwidth-aware auto-selection).
     block_size : int, optional
         Requested cap on the decode-spike block size, by default 10_000. The
-        effective block is the memory-budget-resolved value (spec sec 3).
+        effective block is the memory-budget-resolved value.
     memory_budget : int, optional
         Per-block byte budget driving the effective block size, by default
         536_870_912 (512 MiB).
@@ -294,7 +295,10 @@ def fit_clusterless_diffusion_encoding_model(
 
     # dV = per-interior-bin measure (uniform grid -> constant; linearized track ->
     # per-bin width), aligned with node_order.
-    _, node_order, bin_sizes = environment_graph(environment)
+    graph, node_order, bin_sizes = environment_graph(environment)
+    # Warn if position_std under-smooths relative to the grid spacing (the smoother
+    # barely spreads past one bin -> near-raw histograms), matching sorted_spikes_diffusion.
+    check_smoothing_bandwidth(position_std, graph)
     bin_sizes = np.asarray(bin_sizes)
     n_interior = node_order.shape[0]
     n_total_bins = environment.is_track_interior_.ravel().shape[0]
@@ -528,10 +532,10 @@ def predict_clusterless_diffusion_log_likelihood(
     if is_local:
         # The local path reads the animal's position; non-local ignores it and the
         # base API permits position=None (as clusterless_kde does), so position is
-        # only required and validated here (Tier 1, spec sec 4).
+        # only required and validated here.
         validate_finite(position, "position")
-        # Reconstruct the interior-bin mapping from node_order (not stored, per
-        # spec sec 3) and evaluate the diffused column at the animal's nearest
+        # Reconstruct the interior-bin mapping from node_order (derived here at
+        # predict, not stored) and evaluate the diffused column at the animal's nearest
         # interior bin instead of returning the whole column.
         n_total_bins = environment.is_track_interior_.ravel().shape[0]
         full_to_local = _full_to_local(node_order, n_total_bins)
@@ -765,8 +769,10 @@ def predict_clusterless_diffusion_log_likelihood(
                 Lam, Q, position_std, D, labels, n_components=n_components
             )
             # bin_sizes (dV) makes p_e a proper joint density (recovers the mark
-            # marginal, guarded by test_mark_marginal_recovery); it cancels in the
-            # p_e / occupancy ratio below, so it does not change the likelihood.
+            # marginal, guarded by test_mark_marginal_recovery). It cancels in the
+            # p_e / occupancy ratio below wherever occupancy carries the same dV
+            # factor -- i.e. every bin except those where occupancy hit its EPS floor,
+            # which carry unreliable near-zero evidence anyway.
             p_e = P / (safe_weight_total * bin_sizes[:, None])
             log_intensity = safe_log(
                 electrode_mean_rate * p_e / occupancy_col
