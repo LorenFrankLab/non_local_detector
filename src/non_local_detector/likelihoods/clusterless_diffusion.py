@@ -272,7 +272,7 @@ def fit_clusterless_diffusion_encoding_model(
 
     # dV = per-interior-bin measure (uniform grid -> constant; linearized track ->
     # per-bin width), aligned with node_order.
-    graph, node_order, bin_sizes = environment_graph(environment)
+    _, node_order, bin_sizes = environment_graph(environment)
     bin_sizes = np.asarray(bin_sizes)
     n_interior = node_order.shape[0]
     n_total_bins = environment.is_track_interior_.ravel().shape[0]
@@ -281,9 +281,9 @@ def fit_clusterless_diffusion_encoding_model(
     # Resolve the eigenbasis ONCE and record its rank; predict retrieves the device
     # basis via get_device_basis(environment, resolved_rank).
     if heat_kernel_rank is None:
-        eigvals, eigvecs = cached_heat_kernel_eigenbasis(environment, position_std)
+        _, eigvecs = cached_heat_kernel_eigenbasis(environment, position_std)
     else:
-        eigvals, eigvecs = cached_eigenbasis(environment, heat_kernel_rank)
+        _, eigvecs = cached_eigenbasis(environment, heat_kernel_rank)
     resolved_rank = int(eigvecs.shape[1])
 
     Lam, Q, labels, n_components = get_device_basis(environment, resolved_rank)
@@ -714,6 +714,9 @@ def predict_clusterless_diffusion_log_likelihood(
             P = heat_kernel_apply(
                 Lam, Q, position_std, D, labels, n_components=n_components
             )
+            # bin_sizes (dV) makes p_e a proper joint density (recovers the mark
+            # marginal, guarded by test_mark_marginal_recovery); it cancels in the
+            # p_e / occupancy ratio below, so it does not change the likelihood.
             p_e = P / (safe_weight_total * bin_sizes[:, None])
             log_intensity = safe_log(
                 electrode_mean_rate * p_e / occupancy_col
