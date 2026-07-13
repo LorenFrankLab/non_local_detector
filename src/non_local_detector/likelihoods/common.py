@@ -1,3 +1,4 @@
+from collections.abc import Sized
 from dataclasses import dataclass, field
 
 import jax
@@ -111,6 +112,50 @@ def validate_finite(array: np.ndarray | jnp.ndarray, name: str) -> None:
         all_finite = bool(np.all(np.isfinite(np.asarray(array))))
     if not all_finite:
         raise ValidationError(f"{name} must contain only finite values")
+
+
+def validate_population_lengths(unit_name: str, **populations: Sized) -> int:
+    """Require parallel population collections to contain the same number of units.
+
+    Likelihood predictors combine observed spike trains with fitted per-unit models.
+    Plain ``zip`` silently truncates when one collection is shorter, producing a
+    plausible likelihood from only part of the recorded population. Validate the
+    collections once at the entry point and return the common length.
+
+    Parameters
+    ----------
+    unit_name : str
+        Human-readable population unit, such as ``"electrode"`` or ``"neuron"``.
+    **populations
+        Named sized collections that should be parallel.
+
+    Returns
+    -------
+    n_units : int
+        Shared collection length, or 0 when no collections are supplied.
+
+    Raises
+    ------
+    ValidationError
+        If the collection lengths differ.
+    """
+    if not populations:
+        return 0
+
+    lengths = {name: len(values) for name, values in populations.items()}
+    expected = next(iter(lengths.values()))
+    if any(length != expected for length in lengths.values()):
+        details = ", ".join(f"{name}={length}" for name, length in lengths.items())
+        raise ValidationError(
+            f"{unit_name} population lengths do not match",
+            expected=f"all per-{unit_name} collections to have length {expected}",
+            got=details,
+            hint=(
+                f"Provide one entry in every collection for each {unit_name}; do not "
+                "drop empty units."
+            ),
+        )
+    return expected
 
 
 def interpolate_weights_at_spike_times(

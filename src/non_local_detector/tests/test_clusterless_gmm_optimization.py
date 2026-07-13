@@ -13,7 +13,9 @@ import pytest
 from numpy.testing import assert_allclose
 
 from non_local_detector import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_gmm import (
+    _fit_gmm_density,
     fit_clusterless_gmm_encoding_model,
     predict_clusterless_gmm_log_likelihood,
 )
@@ -167,6 +169,8 @@ def test_gmm_bin_tiling_parity(gmm_simulation_data):
     )
 
     # Predict with bin tiling
+    bin_tile_size = 3
+    assert encoding_model["interior_place_bin_centers"].shape[0] > bin_tile_size
     result_tiled = predict_clusterless_gmm_log_likelihood(
         time,
         position_time,
@@ -175,7 +179,7 @@ def test_gmm_bin_tiling_parity(gmm_simulation_data):
         spike_features,
         **encoding_model,
         is_local=False,
-        bin_tile_size=50,  # Tile with small chunks
+        bin_tile_size=bin_tile_size,
     )
 
     # Results should be identical (within numerical precision)
@@ -227,6 +231,8 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
     )
 
     # Predict with both optimizations
+    bin_tile_size = 3
+    assert encoding_model["interior_place_bin_centers"].shape[0] > bin_tile_size
     result_optimized = predict_clusterless_gmm_log_likelihood(
         time,
         position_time,
@@ -236,7 +242,7 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
         **encoding_model,
         is_local=False,
         spike_block_size=10,  # Small spike blocks
-        bin_tile_size=50,  # Small bin tiles
+        bin_tile_size=bin_tile_size,
     )
 
     # Results should be identical (within numerical precision)
@@ -250,12 +256,13 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
 
 
 def test_gmm_memory_scaling():
-    """Verify the memory scaling formula.
+    """Verify the transient memory scaling formula.
 
     This is a mathematical verification (not runtime profiling) that
-    the expected memory reduction is achieved based on array sizes.
+    spike/bin tiling does not allocate a recording-length block accumulator.
     """
     # Problem configuration
+    n_time = 60 * 60 * 500  # One hour decoded in 2 ms bins
     n_spikes = 5000
     n_bins = 2000
     spike_block_size = 1000
@@ -271,6 +278,12 @@ def test_gmm_memory_scaling():
     # Memory with both optimizations
     mem_both = spike_block_size * bin_tile_size * 4 / 1e6  # MB
 
+    # The persistent likelihood necessarily scales with recording length. A
+    # segment_sum(num_segments=n_time) would create this additional temporary for
+    # every block/tile; direct scatter accumulation must not.
+    mem_output = n_time * n_bins * 4 / 1e6
+    mem_dense_tile_accumulator = n_time * bin_tile_size * 4 / 1e6
+
     # Expected reductions
     reduction_spike_block = mem_full / mem_spike_block
     reduction_both = mem_full / mem_both
@@ -285,6 +298,8 @@ def test_gmm_memory_scaling():
     assert mem_full == 40.0  # 40 MB
     assert mem_spike_block == 8.0  # 8 MB
     assert mem_both == pytest.approx(1.024, abs=0.01)  # ~1 MB
+    assert mem_output == 14_400.0  # persistent result, 14.4 GB
+    assert mem_dense_tile_accumulator == 1_843.2  # avoided per-block temporary
 
     # Print for documentation
     print("\nMemory scaling verification:")
@@ -467,6 +482,254 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
     # Verify results are valid (no NaN/Inf)
     assert np.all(np.isfinite(result_jax)), "Non-local prediction contains NaN/Inf"
     assert np.all(np.isfinite(result_local_jax)), "Local prediction contains NaN/Inf"
+
+
+def test_gmm_empty_and_sparse_electrodes_are_supported(gmm_simulation_data):
+    """Empty electrodes become zero-rate and sparse electrodes reduce component count."""
+    sparse_times = np.asarray(gmm_simulation_data["spike_times"][0][:3])
+    sparse_features = np.asarray(gmm_simulation_data["spike_features"][0][:3])
+
+    with pytest.warns(UserWarning) as record:
+        encoding = fit_clusterless_gmm_encoding_model(
+            gmm_simulation_data["position_time"],
+            gmm_simulation_data["position"],
+            [np.zeros((0,)), sparse_times],
+            [np.zeros((0, sparse_features.shape[1])), sparse_features],
+            gmm_simulation_data["environment"],
+            gmm_components_occupancy=4,
+            gmm_components_gpi=8,
+            gmm_components_joint=16,
+            disable_progress_bar=True,
+        )
+
+    messages = [str(item.message) for item in record]
+    assert any("no effective encoding spikes" in message for message in messages)
+    assert any("reduced GPI components 8->3" in message for message in messages)
+    assert encoding["gpi_models"][0] is None
+    assert encoding["joint_models"][0] is None
+    assert float(encoding["mean_rates"][0]) == 0.0
+    assert encoding["gmm_effective_components"] == {
+        "occupancy": 4,
+        "gpi": [0, 3],
+        "joint": [0, 3],
+    }
+    assert encoding["gpi_models"][1].n_components == 3
+    assert encoding["joint_models"][1].n_components == 3
+
+    # Decoding a mixed empty + non-empty population must stay finite: the empty
+    # electrode contributes its zero-rate (None) sentinel, the sparse one its fit.
+    n_features = sparse_features.shape[1]
+    log_likelihood = predict_clusterless_gmm_log_likelihood(
+        gmm_simulation_data["time"],
+        gmm_simulation_data["position_time"],
+        gmm_simulation_data["position"],
+        [np.zeros((0,)), sparse_times],
+        [np.zeros((0, n_features)), sparse_features],
+        **encoding,
+    )
+    assert np.all(np.isfinite(log_likelihood))
+
+
+def test_gmm_single_effective_spike_electrode(gmm_simulation_data):
+    """An electrode with one effective spike fits a 1-component GMM and decodes."""
+    data = gmm_simulation_data
+    one_time = np.asarray(data["spike_times"][0][:1])
+    one_feature = np.asarray(data["spike_features"][0][:1])
+
+    with pytest.warns(UserWarning, match=r"reduced GPI components \d+->1"):
+        encoding = fit_clusterless_gmm_encoding_model(
+            data["position_time"],
+            data["position"],
+            [one_time],
+            [one_feature],
+            data["environment"],
+            gmm_components_gpi=4,
+            gmm_components_joint=4,
+            disable_progress_bar=True,
+        )
+
+    assert encoding["gpi_models"][0].n_components == 1
+    assert encoding["joint_models"][0].n_components == 1
+    assert encoding["gmm_effective_components"]["gpi"] == [1]
+    assert encoding["gmm_effective_components"]["joint"] == [1]
+
+    log_likelihood = predict_clusterless_gmm_log_likelihood(
+        data["time"],
+        data["position_time"],
+        data["position"],
+        [one_time],
+        [one_feature],
+        **encoding,
+    )
+    assert np.all(np.isfinite(log_likelihood))
+
+
+def test_gmm_occupancy_components_reduced_to_position_samples(gmm_simulation_data):
+    """Occupancy components are capped at the effective position-sample count."""
+    data = gmm_simulation_data
+    n_position_samples = data["position"].shape[0]
+    requested_occupancy = n_position_samples + 5
+
+    with pytest.warns(UserWarning, match="reduced occupancy components"):
+        encoding = fit_clusterless_gmm_encoding_model(
+            data["position_time"],
+            data["position"],
+            data["spike_times"],
+            data["spike_features"],
+            data["environment"],
+            gmm_components_occupancy=requested_occupancy,
+            gmm_components_gpi=2,
+            gmm_components_joint=2,
+            disable_progress_bar=True,
+        )
+
+    assert encoding["gmm_requested_components"]["occupancy"] == requested_occupancy
+    assert encoding["gmm_effective_components"]["occupancy"] == n_position_samples
+    assert encoding["occupancy_model"].n_components == n_position_samples
+
+
+def test_gmm_empty_position_raises(gmm_simulation_data):
+    """Fitting with no position samples raises a clear error, not a KMeans crash."""
+    data = gmm_simulation_data
+    with pytest.raises(ValidationError, match="no position samples"):
+        fit_clusterless_gmm_encoding_model(
+            np.zeros((0,)),
+            np.zeros((0, data["position"].shape[1])),
+            data["spike_times"],
+            data["spike_features"],
+            data["environment"],
+            disable_progress_bar=True,
+        )
+
+
+def test_gmm_solver_controls_reach_all_density_models(gmm_simulation_data):
+    """Public solver controls configure occupancy, GPI, and joint models uniformly."""
+    encoding = fit_clusterless_gmm_encoding_model(
+        gmm_simulation_data["position_time"],
+        gmm_simulation_data["position"],
+        gmm_simulation_data["spike_times"],
+        gmm_simulation_data["spike_features"],
+        gmm_simulation_data["environment"],
+        gmm_components_occupancy=2,
+        gmm_components_gpi=2,
+        gmm_components_joint=2,
+        gmm_reg_covar=2e-4,
+        gmm_max_iter=7,
+        gmm_tol=2e-2,
+        disable_progress_bar=True,
+    )
+
+    models = [
+        encoding["occupancy_model"],
+        *encoding["gpi_models"],
+        *encoding["joint_models"],
+    ]
+    for model in models:
+        assert model.reg_covar == pytest.approx(2e-4)
+        assert model.max_iter == 7
+        assert model.tol == pytest.approx(2e-2)
+        # max_iter is not merely stored: EM actually stops at or below the cap.
+        assert 1 <= model.n_iter_ <= 7
+
+
+def test_gmm_rejects_mismatched_electrode_inputs(gmm_simulation_data):
+    """Fit and predict fail before silently dropping an electrode or mark column."""
+    data = gmm_simulation_data
+    with pytest.raises(ValidationError, match="population lengths do not match"):
+        fit_clusterless_gmm_encoding_model(
+            data["position_time"],
+            data["position"],
+            data["spike_times"],
+            data["spike_features"][:-1],
+            data["environment"],
+            disable_progress_bar=True,
+        )
+
+    bad_row_count = list(data["spike_features"])
+    bad_row_count[0] = bad_row_count[0][:-1]
+    with pytest.raises(ValidationError, match="waveform features disagree"):
+        fit_clusterless_gmm_encoding_model(
+            data["position_time"],
+            data["position"],
+            data["spike_times"],
+            bad_row_count,
+            data["environment"],
+            disable_progress_bar=True,
+        )
+
+    encoding = fit_clusterless_gmm_encoding_model(
+        data["position_time"],
+        data["position"],
+        data["spike_times"],
+        data["spike_features"],
+        data["environment"],
+        gmm_components_occupancy=2,
+        gmm_components_gpi=2,
+        gmm_components_joint=2,
+        disable_progress_bar=True,
+    )
+
+    with pytest.raises(ValidationError, match="population lengths do not match"):
+        predict_clusterless_gmm_log_likelihood(
+            data["time"],
+            data["position_time"],
+            data["position"],
+            data["spike_times"][:-1],
+            data["spike_features"][:-1],
+            **encoding,
+        )
+
+    wrong_dimension = list(data["spike_features"])
+    wrong_dimension[0] = np.pad(wrong_dimension[0], ((0, 0), (0, 1)))
+    with pytest.raises(ValidationError, match="feature dimension changed"):
+        predict_clusterless_gmm_log_likelihood(
+            data["time"],
+            data["position_time"],
+            data["position"],
+            data["spike_times"],
+            wrong_dimension,
+            **encoding,
+        )
+
+
+def test_zero_weight_samples_match_hard_subset_at_gmm_initialization():
+    """Zero-weight samples are excluded before KMeans, not only during EM."""
+    rng = np.random.default_rng(11)
+    kept = np.concatenate(
+        [rng.normal(-2.0, 0.2, (20, 2)), rng.normal(2.0, 0.2, (20, 2))]
+    ).astype(np.float32)
+    excluded = rng.normal(100.0, 0.2, (10, 2)).astype(np.float32)
+    samples = np.concatenate([kept, excluded])
+    weights = np.concatenate([np.ones(kept.shape[0]), np.zeros(excluded.shape[0])])
+
+    weighted = _fit_gmm_density(samples, weights, 2, 0)
+    subset = _fit_gmm_density(kept, None, 2, 0)
+
+    assert_allclose(weighted.weights_, subset.weights_, rtol=1e-5, atol=1e-6)
+    assert_allclose(weighted.means_, subset.means_, rtol=1e-5, atol=1e-6)
+    assert_allclose(weighted.covariances_, subset.covariances_, rtol=1e-5, atol=1e-6)
+
+
+def test_all_positive_weights_do_not_copy_gmm_samples(monkeypatch):
+    """The common EM path reuses device-resident samples when no rows are excluded."""
+    samples = jnp.arange(20, dtype=jnp.float32).reshape(10, 2)
+    weights = np.linspace(0.1, 1.0, samples.shape[0])
+    captured = {}
+
+    def capture_fit(model, X, key, sample_weight=None):
+        captured["samples"] = X
+        captured["weights"] = sample_weight
+        return model
+
+    monkeypatch.setattr(
+        "non_local_detector.likelihoods.clusterless_gmm.GaussianMixtureModel.fit",
+        capture_fit,
+    )
+
+    _fit_gmm_density(samples, weights, n_components=1, random_state=0)
+
+    assert captured["samples"] is samples
+    assert_allclose(captured["weights"], weights)
 
 
 def test_gmm_zero_weight_electrode_penalizes_decode_spikes():

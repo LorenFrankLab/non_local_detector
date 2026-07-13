@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_poisson_regression,
     fit_sorted_spikes_glm_encoding_model,
@@ -529,6 +530,22 @@ class TestPredictGLMLogLikelihood:
         n_place_bins = np.sum(env.is_track_interior_)
         assert log_likelihood.shape == (len(time), n_place_bins)
         assert jnp.all(jnp.isfinite(log_likelihood))
+
+        with pytest.raises(ValidationError, match="population lengths do not match"):
+            predict_sorted_spikes_glm_log_likelihood(
+                time=jnp.asarray(time),
+                position_time=jnp.asarray(data["position_time"]),
+                position=jnp.asarray(data["position"]),
+                spike_times=data["spike_times"][:-1],
+                environment=env,
+                coefficients=encoding["coefficients"],
+                emission_design_info=encoding["emission_design_info"],
+                place_fields=encoding["place_fields"],
+                no_spike_part_log_likelihood=encoding["no_spike_part_log_likelihood"],
+                is_track_interior=encoding["is_track_interior"],
+                is_local=False,
+                disable_progress_bar=True,
+            )
 
     def test_predict_glm_log_likelihood_local_returns_correct_shape(
         self, simple_1d_environment, simple_spike_data

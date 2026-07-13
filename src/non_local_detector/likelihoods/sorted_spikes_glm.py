@@ -64,6 +64,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     get_position_at_time,
     get_spikecount_per_time_bin,
+    validate_population_lengths,
     validate_weights,
 )
 
@@ -426,6 +427,12 @@ def predict_sorted_spikes_glm_log_likelihood(
     -------
     log_likelihood : jnp.ndarray, shape (n_time, n_bins)
     """
+    validate_population_lengths(
+        "neuron",
+        spike_times=spike_times,
+        coefficients=coefficients,
+        place_fields=place_fields,
+    )
     n_time = time.shape[0]
 
     if is_local:
@@ -446,7 +453,7 @@ def predict_sorted_spikes_glm_log_likelihood(
                 disable=disable_progress_bar,
             ),
             coefficients,
-            strict=False,
+            strict=True,
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
                 neuron_spike_times, time
@@ -470,7 +477,7 @@ def predict_sorted_spikes_glm_log_likelihood(
                 disable=disable_progress_bar,
             ),
             place_fields,
-            strict=False,
+            strict=True,
         ):
             neuron_spike_times = neuron_spike_times[
                 np.logical_and(

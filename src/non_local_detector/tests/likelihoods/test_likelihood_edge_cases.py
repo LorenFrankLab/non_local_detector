@@ -211,6 +211,7 @@ def _predict_clusterless_gmm(
         joint_models=enc["joint_models"],
         mean_rates=enc["mean_rates"],
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
+        mark_dimensions=enc["mark_dimensions"],
         is_local=is_local,
         disable_progress_bar=True,
     )
@@ -259,22 +260,19 @@ def test_clusterless_kde_zero_spikes_all_electrodes():
     assert not jnp.any(jnp.isnan(ll))
 
 
-@pytest.mark.xfail(
-    reason="GMM fit crashes with KMeans error on empty spike arrays",
-    strict=True,
-)
 def test_clusterless_gmm_zero_spikes_all_electrodes():
     """GMM should handle zero spikes without crash."""
     env = _make_env_1d()
-    # Need at least some spikes on at least one electrode for GMM fit
-    # (GMM fitting fails on empty arrays), so test with 1 electrode empty
-    # and 1 electrode with few spikes
-    spike_times = [jnp.array([]), jnp.array([3.0, 5.0, 7.0])]
-    spike_features = [
-        jnp.zeros((0, 2)),
-        jnp.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]),
-    ]
-    enc, t, pos = _fit_clusterless_gmm(env, spike_times, spike_features, n_components=1)
+    spike_times = [jnp.array([]), jnp.array([])]
+    spike_features = [jnp.zeros((0, 2)), jnp.zeros((0, 2))]
+    with pytest.warns(UserWarning, match="no effective encoding spikes"):
+        enc, t, pos = _fit_clusterless_gmm(
+            env, spike_times, spike_features, n_components=1
+        )
+
+    assert enc["gpi_models"] == [None, None]
+    assert enc["joint_models"] == [None, None]
+    assert np.all(np.asarray(enc["mean_rates"]) == 0.0)
 
     # Decode with zero spikes
     dec_spikes = [jnp.array([]), jnp.array([])]

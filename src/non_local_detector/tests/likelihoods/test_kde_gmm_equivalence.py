@@ -301,6 +301,7 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data):
         "mean_rates": jnp.asarray([mean_rate]),
         "summed_ground_process_intensity": summed_gpi,
         "disable_progress_bar": True,
+        "mark_dimensions": [int(spike_features_jnp[0].shape[1])],
     }
 
     ll_gmm = predict_clusterless_gmm_log_likelihood(

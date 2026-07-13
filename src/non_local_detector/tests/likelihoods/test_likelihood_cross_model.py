@@ -236,6 +236,7 @@ def _predict_clusterless_gmm(enc, env, data, is_local=False):
         joint_models=enc["joint_models"],
         mean_rates=enc["mean_rates"],
         summed_ground_process_intensity=enc["summed_ground_process_intensity"],
+        mark_dimensions=enc["mark_dimensions"],
         is_local=is_local,
         disable_progress_bar=True,
     )

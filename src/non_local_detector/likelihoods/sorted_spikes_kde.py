@@ -61,6 +61,7 @@ from non_local_detector.likelihoods.common import (
     KDEModel,
     get_position_at_time,
     get_spikecount_per_time_bin,
+    validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
 )
@@ -318,6 +319,13 @@ def predict_sorted_spikes_kde_log_likelihood(
         if is_local is False, otherwise the shape is (n_time, 1).
 
     """
+    validate_population_lengths(
+        "neuron",
+        spike_times=spike_times,
+        marginal_models=marginal_models,
+        mean_rates=mean_rates,
+        place_fields=place_fields,
+    )
     n_time = time.shape[0]
     if is_local:
         log_likelihood = jnp.zeros((n_time,))
@@ -337,7 +345,7 @@ def predict_sorted_spikes_kde_log_likelihood(
             ),
             marginal_models,
             mean_rates,
-            strict=False,
+            strict=True,
         ):
             neuron_spike_times = neuron_spike_times[
                 np.logical_and(
@@ -380,7 +388,7 @@ def predict_sorted_spikes_kde_log_likelihood(
                 disable=disable_progress_bar,
             ),
             place_fields,
-            strict=False,
+            strict=True,
         ):
             neuron_spike_times = neuron_spike_times[
                 np.logical_and(

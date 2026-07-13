@@ -2,6 +2,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     KDEModel,
     as_std_array,
@@ -13,6 +14,7 @@ from non_local_detector.likelihoods.common import (
     log_kde,
     safe_divide,
     safe_log,
+    validate_population_lengths,
 )
 
 
@@ -371,3 +373,33 @@ def test_get_position_at_time_linear_interpolation():
     # Expected equals spike_times in a column
     assert out.shape == (spike_times.shape[0], 1)
     assert jnp.allclose(out.squeeze(), spike_times, rtol=1e-6, atol=1e-9)
+
+
+def test_validate_population_lengths_returns_common_length():
+    """Matching parallel collections return their shared unit count."""
+    n = validate_population_lengths(
+        "neuron",
+        spike_times=[np.zeros(3), np.zeros(0), np.zeros(5)],
+        place_fields=np.zeros((3, 8)),
+        mean_rates=jnp.zeros((3,)),
+    )
+    assert n == 3
+
+
+def test_validate_population_lengths_no_populations_returns_zero():
+    """No collections is a benign no-op that reports zero units."""
+    assert validate_population_lengths("neuron") == 0
+
+
+def test_validate_population_lengths_detects_short_non_first_collection():
+    """A mismatch in a collection other than the first is still caught."""
+    with pytest.raises(ValidationError, match="population lengths do not match") as exc:
+        validate_population_lengths(
+            "electrode",
+            spike_times=[np.zeros(1), np.zeros(1), np.zeros(1)],
+            joint_models=[None, None, None],
+            mean_rates=jnp.zeros((2,)),  # short by one
+        )
+    message = str(exc.value)
+    assert "mean_rates=2" in message
+    assert "spike_times=3" in message

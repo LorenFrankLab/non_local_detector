@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import EPS, get_position_at_time
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
@@ -114,6 +115,24 @@ def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(
     )
     assert ll_local.shape == (t_edges.shape[0], 1)
     assert jnp.all(jnp.isfinite(ll_local))
+
+    with pytest.raises(ValidationError, match="population lengths do not match"):
+        predict_sorted_spikes_kde_log_likelihood(
+            time=t_edges,
+            position_time=t_pos,
+            position=pos,
+            spike_times=spikes[:-1],
+            environment=env,
+            marginal_models=enc["marginal_models"],
+            occupancy_model=enc["occupancy_model"],
+            occupancy=enc["occupancy"],
+            mean_rates=jnp.asarray(enc["mean_rates"]),
+            place_fields=enc["place_fields"],
+            no_spike_part_log_likelihood=enc["no_spike_part_log_likelihood"],
+            is_track_interior=enc["is_track_interior"],
+            disable_progress_bar=True,
+            is_local=False,
+        )
 
 
 def test_local_likelihood_zero_spikes_equals_negative_rate_sum(simple_1d_environment):
