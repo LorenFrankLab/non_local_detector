@@ -66,7 +66,7 @@ Before writing new tests, understand current state:
 pytest --collect-only -q | grep <relevant_term>
 
 # Run specific test file
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest src/non_local_detector/tests/<test_file>.py -v
+uv run pytest src/non_local_detector/tests/<test_file>.py -v
 ```
 
 ### Step 2: Write Failing Test (RED)
@@ -104,7 +104,7 @@ def test_descriptive_name_of_behavior():
 **CRITICAL:** Test MUST fail before implementing:
 
 ```bash
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest src/non_local_detector/tests/<test_file>.py::test_name -v
+uv run pytest src/non_local_detector/tests/<test_file>.py::test_name -v
 ```
 
 **Expected output:** Test fails with clear error (function not defined, wrong output, etc.)
@@ -129,7 +129,7 @@ Write simplest code that makes test pass:
 ### Step 5: Run Test - Confirm GREEN
 
 ```bash
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest src/non_local_detector/tests/<test_file>.py::test_name -v
+uv run pytest src/non_local_detector/tests/<test_file>.py::test_name -v
 ```
 
 **Expected output:** Test passes
@@ -141,7 +141,7 @@ Write simplest code that makes test pass:
 Check for regressions:
 
 ```bash
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -v
+uv run pytest -v
 ```
 
 **Expected:** All tests pass (same count as before)
@@ -176,7 +176,7 @@ If code can be improved while keeping tests green:
 **After each refactor:**
 
 ```bash
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -v
+uv run pytest -v
 ```
 
 ### Step 9: Commit

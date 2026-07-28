@@ -58,16 +58,16 @@ Before making any changes:
 
 ```bash
 # Run tests and capture output
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest \
+uv run pytest \
   src/non_local_detector/tests/test_golden_regression.py \
   -v > /tmp/baseline_output.txt 2>&1
 
 # Run property tests
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest \
+uv run pytest \
   -m property -v > /tmp/baseline_property.txt 2>&1
 
 # Run snapshot tests
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest \
+uv run pytest \
   -m snapshot -v > /tmp/baseline_snapshot.txt 2>&1
 ```
 
@@ -83,14 +83,14 @@ After making changes:
 
 ```bash
 # Run same tests
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest \
+uv run pytest \
   src/non_local_detector/tests/test_golden_regression.py \
   -v > /tmp/new_output.txt 2>&1
 
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest \
+uv run pytest \
   -m property -v > /tmp/new_property.txt 2>&1
 
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest \
+uv run pytest \
   -m snapshot -v > /tmp/new_snapshot.txt 2>&1
 ```
 
@@ -157,7 +157,7 @@ diff /tmp/baseline_output.txt /tmp/new_output.txt
 ### Step 6: Run Property-Based Tests
 
 ```bash
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -m property -v
+uv run pytest -m property -v
 ```
 
 **Expected:** All property tests pass
@@ -173,7 +173,7 @@ diff /tmp/baseline_output.txt /tmp/new_output.txt
 ### Step 7: Run Golden Regression Tests
 
 ```bash
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest \
+uv run pytest \
   src/non_local_detector/tests/test_golden_regression.py -v
 ```
 
@@ -268,7 +268,7 @@ new_result = [0.342156023, 0.657843977]  # Posterior at time 10
 4. If approved: User will set approval flag, then run:
 
    ```bash
-   /Users/edeno/miniconda3/envs/non_local_detector/bin/pytest --snapshot-update
+   uv run pytest --snapshot-update
    ```
 
 ## Integration with Other Skills

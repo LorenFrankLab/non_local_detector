@@ -63,7 +63,7 @@ Safe Refactoring Progress:
 ### Step 1: Run Full Test Suite (Baseline)
 
 ```bash
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -v 2>&1 | tee /tmp/baseline_tests.txt
+uv run pytest -v 2>&1 | tee /tmp/baseline_tests.txt
 ```
 
 **Record:**
@@ -76,7 +76,7 @@ Safe Refactoring Progress:
 ### Step 2: Run Snapshot Tests (Baseline)
 
 ```bash
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -m snapshot -v 2>&1 | tee /tmp/baseline_snapshots.txt
+uv run pytest -m snapshot -v 2>&1 | tee /tmp/baseline_snapshots.txt
 ```
 
 **CRITICAL:** Snapshots must match exactly after refactoring.
@@ -86,7 +86,7 @@ Safe Refactoring Progress:
 ### Step 3: Capture Coverage Report
 
 ```bash
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest --cov=non_local_detector --cov-report=term --cov-report=json:coverage_baseline.json
+uv run pytest --cov=non_local_detector --cov-report=term --cov-report=json:coverage_baseline.json
 ```
 
 **Record:** Coverage percentage for files being refactored
@@ -157,7 +157,7 @@ Safe Refactoring Progress:
 ### Step 5: Run Full Test Suite (Verify Match)
 
 ```bash
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -v 2>&1 | tee /tmp/refactored_tests.txt
+uv run pytest -v 2>&1 | tee /tmp/refactored_tests.txt
 ```
 
 **Compare to baseline:**
@@ -179,7 +179,7 @@ diff /tmp/baseline_tests.txt /tmp/refactored_tests.txt
 ### Step 6: Run Snapshot Tests (Verify Match)
 
 ```bash
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest -m snapshot -v 2>&1 | tee /tmp/refactored_snapshots.txt
+uv run pytest -m snapshot -v 2>&1 | tee /tmp/refactored_snapshots.txt
 ```
 
 **CRITICAL:** Must match baseline EXACTLY.
@@ -195,7 +195,7 @@ diff /tmp/baseline_tests.txt /tmp/refactored_tests.txt
 ### Step 7: Compare Coverage
 
 ```bash
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest --cov=non_local_detector --cov-report=term --cov-report=json:coverage_refactored.json
+uv run pytest --cov=non_local_detector --cov-report=term --cov-report=json:coverage_refactored.json
 ```
 
 **Compare:**
@@ -216,9 +216,8 @@ jq '.totals.percent_covered' coverage_refactored.json
 ### Step 8: Run Quality Checks
 
 ```bash
-/Users/edeno/miniconda3/envs/spectral_connectivity/bin/ruff check src/
-/Users/edeno/miniconda3/envs/spectral_connectivity/bin/ruff format src/
-/Users/edeno/miniconda3/envs/non_local_detector/bin/black src/
+uv run ruff check src/
+uv run ruff format src/
 ```
 
 **Expected:** All checks pass
@@ -231,7 +230,7 @@ For mathematical code, verify numerical equivalence:
 
 ```bash
 # Run golden regression
-/Users/edeno/miniconda3/envs/non_local_detector/bin/pytest \
+uv run pytest \
   src/non_local_detector/tests/test_golden_regression.py -v
 ```
 
