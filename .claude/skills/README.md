@@ -94,7 +94,6 @@ These skills are specific to the `non_local_detector` project and its scientific
 ## Related Documentation
 
 - **CLAUDE.md**: Project-wide guidance and operational rules
-- **Hooks** (`.claude/hooks/`): Technical enforcement of environment and testing
 - **Testing Plan** (`TESTING_PLAN.md`): Coverage improvement roadmap
 
 ## Maintenance

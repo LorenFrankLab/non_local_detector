@@ -6,12 +6,11 @@ This guide explains how to work with Claude Code on the `non_local_detector` pro
 
 ### For Users
 
-When you ask Claude to make changes, the system automatically:
+When you ask Claude to make changes, the system guides Claude to:
 
-1. **Enforces correct conda environment** (hooks check this)
-2. **Follows appropriate workflow** (skills guide Claude)
-3. **Validates numerical accuracy** (for mathematical code)
-4. **Requires your approval** for critical actions
+1. **Follows appropriate workflow** (skills guide Claude)
+2. **Validates numerical accuracy** (for mathematical code)
+3. **Requires your approval** for critical actions
 
 You don't need to remember all the rules - the system guides both you and Claude.
 
@@ -20,32 +19,19 @@ You don't need to remember all the rules - the system guides both you and Claude
 Read CLAUDE.md at session start. The system will:
 
 - Tell you which skill to use
-- Enforce environment requirements via hooks
-- Block dangerous operations
+- State the environment requirements you must follow
+- Stop at approval gates before dangerous operations
 - Guide you through validation steps
 
 ---
 
-## The Three-Layer System
+## The Two-Layer System
 
-### Layer 1: Hooks (Automatic Enforcement)
+Enforcement is by convention, not automation: CLAUDE.md states the rules and the skills
+walk through them. Nothing blocks a wrong command mechanically, so the approval gates
+depend on Claude following CLAUDE.md and on your review at each gate.
 
-**What they do:**
-
-- Check conda environment before Python commands
-- Warn before commits without tests
-- Block snapshot updates without approval
-
-**You'll see:**
-
-- Warnings like "⚠️ Wrong conda environment"
-- Errors like "❌ Snapshot update requires approval"
-
-**User action:** Usually none - hooks guide Claude automatically
-
----
-
-### Layer 2: Skills (Workflow Guidance)
+### Layer 1: Skills (Workflow Guidance)
 
 **What they do:**
 
@@ -62,7 +48,7 @@ Read CLAUDE.md at session start. The system will:
 
 ---
 
-### Layer 3: Documentation (Context & Rules)
+### Layer 2: Documentation (Context & Rules)
 
 **What it does:**
 
@@ -263,23 +249,24 @@ Understanding when to approve numerical changes:
 
 ## Troubleshooting
 
-### "❌ Wrong conda environment detected"
+### "Claude ran Python outside the project environment"
 
-**Cause:** Claude trying to run Python without conda activated
+**Cause:** A command was run directly instead of through `uv run`
 
-**Solution:** Hook auto-prepends activation, no action needed
-
-**Alternative:** Tell Claude: "Activate the conda environment first"
+**Solution:** Tell Claude: "Use `uv run` for Python commands" — CLAUDE.md requires it, but
+nothing enforces it mechanically
 
 ---
 
-### "❌ Snapshot update requires approval"
+### "Claude updated snapshots without showing analysis"
 
-**Cause:** Claude tried `--snapshot-update` without showing analysis
+**Cause:** `--snapshot-update` was run before presenting the 4-part analysis
 
-**Solution:** Ask Claude: "Show me the full snapshot analysis first"
+**Solution:** Revert the snapshot change and ask Claude: "Show me the full snapshot
+analysis first"
 
-**Claude should then provide the 4-part analysis**
+**Claude should then provide the 4-part analysis** (see
+`.claude/skills/numerical-validation/SKILL.md`)
 
 ---
 
@@ -293,7 +280,7 @@ Understanding when to approve numerical changes:
 2. Review the failures
 3. Decide: Fix the bug OR revert the change
 
-**Safety:** Hooks remind to run tests before commits
+**Safety:** CLAUDE.md requires Claude to ask before committing — run tests at that gate
 
 ---
 
@@ -340,20 +327,12 @@ Claude will follow updated tolerances.
 
 If you develop new workflow patterns:
 
-1. Create `.claude/skills/your-skill/skill.md`
+1. Create `.claude/skills/your-skill/SKILL.md` (uppercase — lowercase `skill.md` fails to
+   load on case-sensitive filesystems)
 2. Follow existing skill format
-3. Add to CLAUDE.md "Workflow Selection Guide"
+3. Add to CLAUDE.md "Mandatory Skills Usage"
 4. Update `.claude/skills/README.md`
-
----
-
-### Modifying Hooks
-
-If environment changes (e.g., new conda env name):
-
-1. Edit `.claude/hooks/lib/env_check.sh`
-2. Update `required_env` variable
-3. Test with `tests/test_safe_dev_system.sh`
+5. Verify with `bash tests/test_safe_dev_system.sh`
 
 ---
 
@@ -380,14 +359,14 @@ If environment changes (e.g., new conda env name):
 **Q: Can I skip the workflow for small changes?**
 A: Skills are designed to be fast. Even "small" changes benefit from the safety checks. But for truly trivial changes (typos in comments), Claude can skip TDD.
 
-**Q: What if hooks block something that should be allowed?**
-A: Check `.claude/hooks/README.md` for debugging. You can temporarily disable hooks by making them non-executable, but this defeats the safety system.
+**Q: What actually stops Claude from doing something dangerous?**
+A: Nothing mechanical — this project has no enforcement hooks. The gates are the rules in CLAUDE.md plus your review at each approval point. If Claude skips a gate, say so; that's a bug worth correcting in CLAUDE.md.
 
 **Q: How do I know if Claude is following the skills?**
 A: Claude should announce skill usage and create TodoWrite todos. Check the chat for these indicators.
 
 **Q: Can I use this system with other projects?**
-A: Yes! Copy the `.claude/` directory and adapt CLAUDE.md for your project's needs. Adjust conda environment names and tolerance values.
+A: Yes! Copy the `.claude/` directory and adapt CLAUDE.md for your project's needs. Adjust the package-manager commands and tolerance values.
 
 **Q: What if I disagree with a numerical validation result?**
 A: You're the domain expert. If Claude says "differences are acceptable" but you disagree, reject the change and ask Claude to investigate further or revert.
@@ -398,25 +377,25 @@ A: You're the domain expert. If Claude says "differences are acceptable" but you
 
 **System not working?**
 
-1. Run `./tests/test_safe_dev_system.sh` to verify installation
-2. Check hook permissions: `ls -l .claude/hooks/*.sh`
-3. Review recent changes to CLAUDE.md
+1. Run `bash tests/test_safe_dev_system.sh` to verify installation
+2. Review recent changes to CLAUDE.md
 
 **Need help?**
 
 - Check `.claude/skills/README.md` for skill details
-- Check `.claude/hooks/README.md` for hook troubleshooting
 - Review this guide's troubleshooting section
 
 ---
 
 ## Summary
 
-The safe scientific development system provides three layers of protection:
+The safe scientific development system provides two layers of protection:
 
-1. **Hooks** prevent catastrophic failures automatically
-2. **Skills** guide Claude through validated workflows
-3. **Documentation** provides context and decision criteria
+1. **Skills** guide Claude through validated workflows
+2. **Documentation** provides context and decision criteria
+
+Neither is automatic — both depend on Claude following CLAUDE.md and on your review at
+the approval gates.
 
 **Your role:**
 
