@@ -3918,12 +3918,18 @@ class SortedSpikesDetector(_DetectorBase):
                 self.sorted_spikes_algorithm
             ]
             is_group = is_training & is_encoding & is_environment
-            if weights is not None:
-                # Zero out weights for non-group data so position array
-                # stays aligned with weights (required by KDE)
-                group_weights = np.where(is_group, weights, 0.0)
-            else:
-                group_weights = None
+            # The mask is this model's exposure: a sample outside the selection
+            # must contribute no occupancy, because only in-group spikes are
+            # counted. Passing ``weights=None`` means "uniform over every
+            # supplied sample", which is only true when the mask selects
+            # everything -- otherwise occupancy accumulates over held-out
+            # samples and other environments / encoding groups while the spike
+            # count does not, biasing every place field low. The position array
+            # stays full-length so it remains aligned with the weights and with
+            # the grid used to interpolate per-spike weights.
+            group_weights = (
+                is_group.astype(float) if weights is None else weights * is_group
+            )
 
             # GLM requires environment geometry that KDE derives internally
             glm_kwargs = {}

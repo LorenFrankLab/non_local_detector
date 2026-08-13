@@ -188,6 +188,21 @@ def fit_poisson_regression(
 
     dlike = jax.grad(neglogp)
 
+    # Zero total exposure means this group has no training coverage at all, so
+    # the rate is unidentified and ``jnp.average`` would return 0/0 = NaN. Return
+    # an intercept-only model at the EPS floor, which is exactly what a unit with
+    # real exposure but no spikes already gets from the ``maximum(avg_rate, EPS)``
+    # guard below -- the two zero-rate cases agree. A group with small-but-
+    # positive exposure (a low-mass EM update) is a different case and still
+    # fits normally.
+    if float(jnp.sum(weights)) <= 0.0:
+        return jnp.concatenate(
+            [
+                jnp.asarray([jnp.log(EPS)]),
+                jnp.zeros(design_matrix.shape[1] - 1),
+            ]
+        )
+
     avg_rate = jnp.average(spikes, weights=weights)
     # Guard against zero spikes: use EPS to avoid log(0) = -inf
     initial_condition = jnp.asarray([jnp.log(jnp.maximum(avg_rate, EPS))])
