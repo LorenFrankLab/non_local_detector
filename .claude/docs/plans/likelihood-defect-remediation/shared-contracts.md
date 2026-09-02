@@ -1,0 +1,261 @@
+# Shared Contracts
+
+Three contracts must be settled before any code changes, because several phases
+encode them. Alternatives are recorded so a later reader does not reopen a closed
+decision by accident.
+
+**State: C2 is settled (with measured evidence). C1 and C3 are not.** C1's policy
+was withdrawn after it was shown to be non-monotonic; C3's exposure helper
+undercounts and needs redesign. No phase depending on C1 or C3 can be executed.
+
+- [C1 — Degeneracy policy for log intensities](#c1--degeneracy-policy-for-log-intensities)
+- [C2 — Exposure ownership and spike weights](#c2--exposure-ownership-and-spike-weights)
+- [C3 — Time vocabulary](#c3--time-vocabulary)
+
+---
+
+## C1 — Degeneracy policy for log intensities
+
+> **UNRESOLVED — do not implement against this section.** The "floor only `-inf`"
+> rule recorded here was found to be non-monotonic and is withdrawn pending a
+> decision. The *problem* it addresses is real and verified; the *policy* is not
+> settled.
+
+### The problem (settled)
+
+Flooring the **numerator** before forming `log_rate + log_marginal −
+log_occupancy` destroys tail information. For `log_joint = −60`,
+`log_occupancy = −8` the true intensity is `−52`; clamping `log_joint` at
+`LOG_EPS = log(1e-15) ≈ −34.54` first yields `−26.54`, an error of 25.5 log units
+(~1e11 in likelihood). Every clusterless GMM site does this. That much is not in
+dispute.
+
+### Why "floor only `-inf`" fails
+
+Flooring exact zero but not tiny finite values **inverts the likelihood ordering
+at the boundary** — verified:
+
+| observation | true log-intensity | policy returns |
+|---|---|---|
+| impossible (zero mass) | `-inf` | **−34.54** |
+| possible, 1e-44 | −101.31 | −101.31 |
+| possible, 1e-20 | −46.05 | −46.05 |
+| possible, 1e-10 | −23.03 | −23.03 |
+
+An **impossible** observation scores −34.54 while a merely very unlikely one
+scores −101.31. Impossibility is rewarded over near-impossibility, which
+contradicts the Poisson rationale the policy was justified by. Any rule that
+floors `-inf` but not values below the floor has this inversion; monotonicity
+requires flooring **both** or **neither**.
+
+### Scope is wider than first recorded
+
+"Package-wide" reaches more than the two `clusterless_kde_log` caller clamps:
+`clusterless_kde.py:98` and `clusterless_diffusion.py:667` both floor finite
+values via `safe_log` in probability space. Whichever policy is chosen must name
+every site explicitly.
+
+### Options
+
+1. **Floor neither — keep true `-inf`.** Monotone and mathematically correct: an
+   impossible observation *should* have zero likelihood. Requires the all-`-inf`
+   row case to be handled downstream; `core.py`'s `_accumulate_chunk_degeneracy`
+   already tallies degenerate timesteps, so the machinery exists.
+2. **Floor both — clamp the finished intensity at `LOG_EPS`.** Monotone and
+   bounded; caps how much evidence one spike can carry, losing discrimination
+   below 1e-15. Closest to today's behaviour, and fixes only the ordering bug.
+3. **Narrow the scope** — fix only the numerator-before-ratio ordering in the GMM
+   and leave every existing floor as-is. Smallest change; leaves the two
+   clusterless paths numerically divergent.
+
+### Downstream requirements, whichever is chosen
+
+- **Do not floor per electrode.** Verified: 8 degenerate electrodes each floored
+  to `LOG_EPS` then combined by `logsumexp` give `8 × EPS`, not `EPS`. Keep
+  per-electrode degeneracy as `-inf` through the combination.
+- **Zero-occupancy *and* zero-marginal is a distinct case.** `log_rate + (-inf) −
+  (-inf)` is `NaN`, so an `& ~isnan(...)` guard declines to floor it — verified.
+  Detect zero-mass operands *before* the subtraction so a genuine `NaN` from a
+  broken computation still reaches `core.py`'s diagnostics.
+
+### Required before choosing: a floor inventory
+
+The scope question cannot be answered without knowing every site. The partial
+list recorded earlier was incomplete. Build a **backend × {local, non-local} ×
+{spike term, ground process}** matrix covering at least:
+
+| Site | What it floors |
+|---|---|
+| `clusterless_gmm.py:722`, `:754`, `:876` | joint log density, before the ratio (the defect) |
+| `clusterless_kde.py:98` | finished intensity, via `safe_log` in probability space |
+| `clusterless_kde.py:158` | assembled block result, `jnp.clip(..., min=LOG_EPS)` |
+| `clusterless_kde_log.py:90-92` | occupancy inside the shared helper, via `safe_log` |
+| `clusterless_kde_log.py:1328` | assembled non-local result |
+| `clusterless_kde_log.py:1905-1912` | local per-spike contribution |
+| `clusterless_diffusion.py:667`, `:787` | intensity via `safe_log` |
+| sorted backends | interior place fields EPS-floored at fit (`sorted_spikes_kde.py:225-234`, `sorted_spikes_glm.py:351-354`) |
+
+The sorted row matters: if "package-wide" includes sorted likelihoods, then
+phase 1's EPS zero-rate model and phase 7's floored-field precondition both
+depend on C1, and neither is independent any more.
+
+Three sub-decisions must be made explicitly alongside the main one:
+
+1. **Does the scope include sorted likelihoods?** (Determines whether phases 1
+   and 7 acquire a C1 dependency.)
+2. **What does zero-numerator-over-zero-occupancy mean?** `0/0` is *unsupported*,
+   not "true zero" — the distinction changes whether it floors or propagates.
+3. **Is an all-degenerate ground-process aggregate zero, or floored once?**
+
+Two downstream requirements are verified regardless of which option wins:
+
+- **Do not floor per electrode.** 8 degenerate electrodes each floored to
+  `LOG_EPS` then combined by `logsumexp` give `8 × EPS`, not `EPS`.
+- **Zero-occupancy *and* zero-marginal needs its own branch.** `log_rate +
+  (-inf) − (-inf)` is `NaN`, so an `& ~isnan(...)` guard declines to floor it.
+  Zero-mass operands must be detected *before* the subtraction so a genuine
+  `NaN` still reaches `core.py`'s diagnostics.
+
+---
+
+## C2 — Exposure ownership and spike weights
+
+Two mechanisms currently assign a spike to an encoding model, and they disagree.
+
+1. **Hard windows** — `_get_group_spikes` / `_get_group_spike_data`
+   (`models/base.py:3804-3826`, `:2838-2860`) select spikes by interval.
+2. **Interpolated weights** — `common.interpolate_weights_at_spike_times`
+   (`common.py:161-182`) gives each spike `np.interp(t, position_time, weights)`,
+   which is fractional near a mask transition.
+
+**Decision: interpolated weights are canonical and sufficient. Delete the hard
+windows.**
+
+An earlier draft required windows that both (a) retain every spike with non-zero
+interpolated weight and (b) never overlap. Those are mutually unsatisfiable —
+verified: for mask `[1,1,0,1,1]` at times `0…4`, a spike at `t=1.75` has weight
+`0.25` in that group and `0.75` in its complement, so any window keeping it for
+one group must overlap the other's.
+
+The requirement was solving a problem that does not exist. **Interpolated group
+weights are a partition of unity**, verified exactly for 2, 3, and 5 groups:
+
+```
+2 groups: per-spike weight sum  min=1.000000000000  max=1.000000000000
+3 groups: per-spike weight sum  min=1.000000000000  max=1.000000000000
+5 groups: per-spike weight sum  min=1.000000000000  max=1.000000000000
+```
+
+This is exact by construction, not numerically lucky: `np.interp` is linear and
+the per-group one-hot masks sum to the all-ones vector, so
+`Σ_g interp(mask_g) ≡ interp(Σ_g mask_g) ≡ 1`. A boundary spike is *apportioned*
+between groups, never duplicated. Overlap is therefore harmless, and the
+non-overlap rule can go.
+
+**The rule:** select a group's spikes by `interpolated_weight > 0`. No hard
+windows, no `time_delta` arithmetic, no run-boundary special cases.
+
+### How much does this change results?
+
+Measured on a 200 s / 100 Hz fixture with one place cell (289 spikes), comparing
+interpolated ownership against stepwise cell assignment:
+
+| encoding-group block | transitions | spikes with differing weight | \|Δ mean_rate\| | max \|Δ place field\| / peak |
+|---|---|---|---|---|
+| 100 s | 1 | 0 / 289 | 0.00% | 0.00% |
+| 20 s | 9 | 0 / 289 | 0.00% | 0.00% |
+| 5 s | 39 | 0 / 289 | 0.00% | 0.00% |
+| 1 s | 199 | 3 / 289 | 0.40% | 0.96% |
+| 0.2 s | 999 | 14 / 289 | 0.33% | 1.86% |
+| 0.05 s | 3999 | 48 / 289 | 0.29% | 5.75% |
+| 0.02 s | 9999 | 164 / 289 | 2.17% | 6.50% |
+
+For block-structured encoding groups — the normal case — the two policies are
+**identical**. They diverge only when the mask alternates on a timescale
+approaching the position sampling interval. Continuous EM posterior weights are
+not a 0/1 mask at all, and interpolation is unambiguously right there.
+
+(A first attempt at this measurement drew spike times *on* the position grid and
+found zero difference everywhere. Spikes land at continuous times within a sample
+interval; the fixture must jitter them, or the comparison is vacuous.)
+
+**Invariant (corrected).** Fitting the full arrays with `weights=m.astype(float)`
+equals fitting the subset arrays `position[m]`, `position_time[m]` with
+`weights=None` **exactly, provided no spike falls within one sample interval of a
+mask transition.** Near a transition the two differ by construction: `np.interp`
+gives a boundary spike a fractional weight, while the subset fit gives it 0 or 1.
+
+An earlier draft asserted this invariant unconditionally on the strength of a test
+whose mask boundary happened to have no nearby spikes. Tests asserting it must
+either place spikes away from transitions (exact form) or allow a residual —
+existing MRF tests already do the latter.
+
+---
+
+## C3 — Time vocabulary
+
+**Split. The decode half is settled; the encoding-exposure half is not.**
+
+### C3a — Decode vocabulary (settled)
+
+Name the three quantities separately and never reuse one array for two roles.
+
+| Name | Shape | Meaning |
+|---|---|---|
+| `time_edges` | `(n_bins + 1,)` | Decode bin boundaries. **Only** used to bin events. |
+| `time_centers` | `(n_bins,)` | `0.5 * (edges[:-1] + edges[1:])`. Drives position interpolation, local-position kernels, non-local penalties, HMM row coordinates, and the xarray `time` coordinate. |
+| `bin_durations` | `(n_bins,)` | `np.diff(edges)`. Scales Poisson intensities. |
+| `n_bins` | scalar | `len(time_edges) - 1`. The number of likelihood rows and HMM observations. |
+
+Bin `i` covers `[edges[i], edges[i+1])`, except bin `n_bins - 1` which is
+right-closed so a spike at `edges[-1]` is counted.
+
+### C3b — Encoding exposure (UNRESOLVED)
+
+> **Do not implement against this section.** The helper drafted here undercounts;
+> the replacement needs a decision this document cannot make.
+
+`position_time` is an array of sample **centers**, not decode edges, so encoding
+exposure needs its own per-sample cell widths — `weight_sum × median(diff(...))`
+is wrong for jittered or gapped timestamps.
+
+The drafted helper clamped the outer edges to the first and last sample centers.
+That **undercounts** — verified:
+
+| N uniform centers, dt=1 | total exposure | should be |
+|---|---|---|
+| 2 | 1.00 | 2.00 |
+| 5 | 4.00 | 5.00 |
+| 100 | 99.00 | 100.00 |
+| 1 | 0.00 | 1.00 |
+
+Hz rates would be inflated by `N/(N−1)`, and a single sample gets zero exposure.
+It also breaks the "equal encoding/decode interval preserves the old arithmetic"
+invariant that phase 6b's approval gate depends on.
+
+Two decisions are required before this can be written:
+
+1. **Endpoint policy** — extrapolate half-cells at the ends (`t[0] − dt₀/2`,
+   `t[-1] + dt_{N-1}/2`), require explicit acquisition bounds from the caller, or
+   reject input too short to define a cell.
+2. **Gap policy** — is a long jump in `position_time` exposure (the animal was
+   tracked, sampling was sparse) or missing data (tracking dropped)? The current
+   code has no policy, and `base.py:2942-2949` already drops NaN position rows
+   *before* this point, so interpolation silently bridges dropped-tracking gaps.
+
+Whatever is chosen, encoding exposure is `sum(weights × sample_cell_width)`.
+
+**Do not pass `position_time` to a decode-edge binning helper.** The sorted GLM
+currently does exactly that (`sorted_spikes_glm.py:299`, `:339`), which is why
+rewriting the shared helper in place would break GLM fitting: N samples would
+yield N-1 counts against an N-row design matrix. Phase 6a gives encoding its own
+helper.
+
+**Uniform-bin restriction.** `core.py` applies one transition matrix per row
+regardless of that row's duration (`_filter_internal` call at `core.py:643`), so
+nonuniform bins produce a time-miscalibrated posterior even when the likelihood
+is correct. Detector-level `predict` therefore **requires uniform edges** and
+raises otherwise. Nonuniform edges remain valid on the direct
+`predict_*_log_likelihood` API, where no transition model is involved. See
+[overview.md](overview.md#deferred-with-triggers) for the duration-calibrated
+follow-up.
