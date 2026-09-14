@@ -1,8 +1,9 @@
 # Shared Contracts
 
-Three contracts must be settled before any code changes, because several phases
-encode them. Alternatives are recorded so a later reader does not reopen a closed
-decision by accident.
+These contracts must be settled before changes in the phases that depend on
+them. Alternatives are recorded so a later reader does not reopen a closed
+decision by accident. [Phase 0](phase-0-core-hmm.md) fixes core HMM conditioning
+independently of these likelihood and time/exposure decisions.
 
 **State: C2 is settled (with measured evidence). C1 and C3 are not.** C1's policy
 was withdrawn after it was shown to be non-monotonic; C3's exposure helper
@@ -70,6 +71,14 @@ every site explicitly.
 
 ### Downstream requirements, whichever is chosen
 
+- **Core conditioning has its own correctness requirement.** Phase 0 reproduces
+  probability-mass loss from `_normalize` and avoidable underflow in
+  `_condition_on`. C1's floor inventory does not cover either defect. Fix them
+  independently and validate the selected C1 policy against the corrected core.
+  Positive prior mass on at least one finite log-likelihood state must yield a
+  normalized posterior and finite one-step evidence for the phase-0 fixtures.
+  True zero support retains the existing prior fallback with `-inf` evidence;
+  NaNs must remain visible. No likelihood-flooring choice is made by phase 0.
 - **Do not floor per electrode.** Verified: 8 degenerate electrodes each floored
   to `LOG_EPS` then combined by `logsumexp` give `8 × EPS`, not `EPS`. Keep
   per-electrode degeneracy as `-inf` through the combination.

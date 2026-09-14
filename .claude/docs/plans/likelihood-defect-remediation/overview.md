@@ -2,7 +2,9 @@
 
 ## Goals
 
-1. Stop the four defects that change a decoded posterior with no test failing.
+1. Fix the two core HMM defects in [phase 0](phase-0-core-hmm.md), then the four
+   likelihood/integration defects that change decoded posteriors without being
+   caught by the existing tests.
 2. Remove numerical failure modes producing NaN or impossible values (negative
    squared distances, mixture weights summing to 24, means collapsing to 0 under
    a global weight rescale).
@@ -42,11 +44,17 @@ would have let a test suite exercise one path twice and miss the other. Any phas
 touching `core.py` must cover both, and both detector types route through
 whichever path their transition model selects.
 
+Both filters call `_condition_on`, which uses `_normalize`; both smoothers also
+call `_normalize` directly. Phase 0 must validate all these callers. It can be
+prototyped independently of the unresolved C1 and C3 decisions, preserving the
+existing fallback for genuinely zero-probability observations and NaN visibility.
+
 ## Cross-cutting risks
 
 | Risk | Mitigation |
 |---|---|
-| Phase 6a/6b re-baseline every golden, masking a regression from an earlier phase. | Phases 1–5 ship first, each with its own parity test. |
+| Phase 6a/6b re-baseline every golden, masking a regression from an earlier phase. | Phases 0–5 ship first, each with its own correctness and well-conditioned parity tests. |
+| Treating every small normalizer as impossible hides a valid Bayesian update; requiring every evidence value to be finite erases true impossibility. | Phase 0 tests positive-support observations, true zero support, and NaN inputs separately against an independent reference. |
 | Phase 1 exposes all-zero-exposure groups whose guards used to live in phase 4. | Zero-exposure handling moved **into** phase 1, so it is independently shippable. |
 | Phases 2 and 4 both move GMM outputs; a combined diff is unattributable. | Separate PRs. Phase 2's diff must be confined to bins where the pre-fix code clamped. |
 | Fixing float32 cancellation changes well-conditioned results too, via summation order. | Assert invariants (Mahalanobis ≥ 0) plus `rtol=1e-5` parity on well-conditioned fixtures, not bit-exactness. |
@@ -75,6 +83,15 @@ uv run mypy src/non_local_detector/likelihoods/        # 190 errors in 11 files
 ```
 
 The first two must not regress. The mypy count is a ceiling, not a target.
+
+Follow-up core audit (2026-09-14, CPU, JAX 0.9.0, NumPy 2.4.1, Python 3.13):
+116 existing tests passed across `core/test_core_utilities.py`,
+`core/test_hmm_algorithms.py`, `core/test_chunked_parity.py`, and
+`integration/test_core_kde_integration.py`. Both phase-0 reproductions still
+failed the independent mathematical reference. The run emitted 26 warnings,
+including requested float64 arrays being truncated to float32; phase 0 requires
+a separate run that actually enables and verifies float64. These results are a
+targeted audit baseline, not evidence that a fix has been implemented.
 
 ## Open questions
 

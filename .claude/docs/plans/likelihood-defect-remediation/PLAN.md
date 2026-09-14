@@ -1,14 +1,18 @@
 # Likelihood Defect Remediation
 
-Status: Not started.
+Status: Phase 1 implemented and validated; remaining phases have the readiness
+states recorded below.
 
 ## Summary
 
 An audit of `src/non_local_detector/likelihoods/` and its integration with
 `models/base.py` and `core.py` found four defects that silently change decoded
-posteriors, plus numerical, validation, and calibration gaps. Every finding was
-reproduced with a runnable script before being written down; the reproduction is
-quoted in the phase that fixes it.
+posteriors, plus numerical, validation, and calibration gaps. A follow-up audit
+reproduced two additional core HMM defects: normalization loses almost all
+probability mass for small positive normalizers, and a maximum likelihood in an
+unreachable state causes avoidable underflow and false `-inf` evidence. Every
+finding was reproduced with a runnable script before being written down; the
+reproduction is quoted in the phase that fixes it.
 
 Headline defects: sorted-spike encoding discards its training / environment /
 encoding-group mask (place fields 40–45% low); the clusterless GMM floors a
@@ -22,6 +26,11 @@ the phases assume, only **C2 is settled** (with measured evidence). **C1 is
 withdrawn** — its policy was shown to be non-monotonic — and **C3 is split**: its
 decode vocabulary is settled, its encoding-exposure half is not. No phase
 depending on C1 or on encoding exposure can be executed.
+
+**Immediate priority: [phase 0](phase-0-core-hmm.md), core HMM correctness.**
+Its defects are reproduced; its fix still needs prototyping. It is independent
+of C1's likelihood-flooring decision and C3's time/exposure decisions. Keep the
+existing phase numbers so links and work on phases 1–8 remain valid.
 
 ## Status of this plan — read before executing
 
@@ -47,7 +56,8 @@ below now carry measured evidence rather than reasoning.
 
 | Phase | State |
 |---|---|
-| 1 | **Prototyped, passing, uncommitted** on `fix/sorted-spikes-exposure-mask`. Spy test fails on `main`, passes after; 1262 passed / 3 skipped, goldens unchanged |
+| 0 | **Defects reproduced; fix not prototyped.** Invalid posterior mass and unreachable-state underflow verified through `core.filter` on CPU. Independent of C1/C3; prioritize before likelihood-flooring changes and optimization. |
+| 1 | **Implemented and reviewed** on `fix/sorted-spikes-exposure-mask` (`8c8765f` plus regression coverage). Mask and zero-exposure regressions fail against the relevant pre-fix behavior. Post-review full suite: **1266 passed / 3 skipped**, goldens unchanged; ruff and format pass. |
 | 2 | Needs prototyping: aggregate flooring, zero-mass detection, and the newly in-scope log-KDE clamps |
 | 3 | Needs redesign: the clusterless path must filter spikes before density evaluation, not slice a full-time reduction; no-spike states bypass both registries (`base.py:3163`); the >4× memory target is unachievable while full posteriors are retained (`core.py:671`, `:700`) |
 | 4 | Nearly ready: weight normalizer overflows on large float32 weights; the GLM objective fix promised in the index below is missing |
@@ -61,12 +71,14 @@ below now carry measured evidence rather than reasoning.
 1. [shared-contracts.md](shared-contracts.md) — C1 degeneracy policy, C2 exposure
    ownership, C3 time vocabulary.
 2. [overview.md](overview.md) — goals, non-goals, architecture map, deferred items.
-3. Phase files in order.
+3. [phase-0-core-hmm.md](phase-0-core-hmm.md), then the remaining phase files in
+   order. A later phase's readiness does not resolve an earlier phase's blockers.
 
 ## Phase index
 
 | Phase | File | Ships | Goldens |
 |---|---|---|---|
+| 0 | [phase-0-core-hmm.md](phase-0-core-hmm.md) | Stable Bayesian conditioning and posterior normalization in both core paths | Measure; defect cases must change, well-conditioned cases retain existing tolerances |
 | 1 | [phase-1-exposure-mask.md](phase-1-exposure-mask.md) | Sorted fits honour the training/group/environment mask; zero-exposure is defined | None expected |
 | 2 | [phase-2-gmm-log-intensity.md](phase-2-gmm-log-intensity.md) | One GMM log-intensity policy (C1) across local, non-local, ground-process | GMM goldens move |
 | 3 | [phase-3-chunk-boundary.md](phase-3-chunk-boundary.md) | Backends bin globally and allocate only requested rows | None |
@@ -83,7 +95,8 @@ below now carry measured evidence rather than reasoning.
 
 Per `CLAUDE.md`, stop and request explicit approval before updating any snapshot
 (`--snapshot-update`) or modifying golden regression data. Reached in phases 2, 4,
-6a, and 6b. Phase 6b additionally changes a documented numerical bound (C1 is
+6a, and 6b, and in phase 0 if measured regression outputs require updates.
+Phase 6b additionally changes a documented numerical bound (C1 is
 changed in phase 2) — include both in the numerical-validation analysis.
 
 The user has confirmed **no backwards-compatibility window is required**

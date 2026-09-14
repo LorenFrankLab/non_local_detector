@@ -10,6 +10,10 @@
 Three defect clusters. GLM zero-exposure moved to phase 1 (it is reachable as
 soon as the mask fix lands).
 
+Core HMM normalization and unreachable-state underflow are tracked separately
+in [phase 0](phase-0-core-hmm.md). The weight-normalization work below concerns
+GMM fitting and does not fix `_normalize` or `_condition_on` in `core.py`.
+
 ---
 
 ## Defect 1 — Compensated log-KDE NaN when the first tile is fully de-weighted
