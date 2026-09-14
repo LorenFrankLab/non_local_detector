@@ -12,6 +12,7 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods.common import EPS
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_poisson_regression,
     fit_sorted_spikes_glm_encoding_model,
@@ -215,6 +216,40 @@ class TestPoissonRegression:
         # With no spikes, predicted rate should be very low
         predicted_rate = jnp.exp(design_matrix @ coefficients)
         assert jnp.mean(predicted_rate) < 1.0
+
+    def test_fit_poisson_regression_with_zero_exposure(self):
+        """No exposure yields finite EPS-floor rates even if counts are nonzero."""
+        position = np.linspace(-1.0, 1.0, 20)
+        design_matrix = np.column_stack([np.ones(position.size), position, position**2])
+
+        coefficients = fit_poisson_regression(
+            design_matrix,
+            spikes=np.full(position.size, 2.0),
+            weights=np.zeros(position.size),
+        )
+
+        assert coefficients.shape == (design_matrix.shape[1],)
+        assert np.all(np.isfinite(coefficients))
+        predicted_rate = np.exp(design_matrix @ np.asarray(coefficients))
+        np.testing.assert_allclose(predicted_rate, EPS, rtol=1e-5, atol=0.0)
+
+    @pytest.mark.parametrize("weight_scale", [1.0, 1e-8])
+    def test_fit_poisson_regression_preserves_small_positive_exposure(
+        self, weight_scale
+    ):
+        """Small positive weights still recover the known constant Poisson rate."""
+        position = np.linspace(-1.0, 1.0, 20)
+        design_matrix = np.column_stack([np.ones(position.size), position])
+
+        coefficients = fit_poisson_regression(
+            design_matrix,
+            spikes=np.full(position.size, 2.0),
+            weights=np.full(position.size, weight_scale),
+        )
+
+        assert np.all(np.isfinite(coefficients))
+        predicted_rate = np.exp(design_matrix @ np.asarray(coefficients))
+        np.testing.assert_allclose(predicted_rate, 2.0, rtol=1e-5, atol=0.0)
 
     def test_fit_poisson_regression_with_uniform_spikes(self):
         """Should handle uniform spike distribution."""

@@ -19,9 +19,11 @@ import pytest
 from non_local_detector import SortedSpikesDecoder
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
+from non_local_detector.likelihoods.common import EPS
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
 )
+from non_local_detector.observation_models import ObservationModel
 
 SAMPLING_FREQUENCY = 100.0
 DURATION = 40.0
@@ -75,6 +77,44 @@ def test_detector_passes_exposure_mask_as_weights(monkeypatch, run_data):
     weights = captured["weights"]
     assert weights is not None, "the detector dropped the exposure mask"
     np.testing.assert_allclose(weights, is_training.astype(float))
+
+
+@pytest.mark.integration
+def test_glm_group_without_training_coverage_returns_eps_model():
+    """A group observed only outside training fits defined rates and can decode."""
+    time = np.arange(400, dtype=float) / SAMPLING_FREQUENCY
+    position = (50.0 + 40.0 * np.sin(2.0 * np.pi * time / 2.0))[:, None]
+    is_training = time < 2.0
+    encoding_groups = (~is_training).astype(int)
+    # Group 1 has real spikes and position samples, but none belong to training.
+    spike_times = [time[210:390:10] + 0.002]
+    detector = SortedSpikesDecoder(
+        environments=Environment(place_bin_size=10.0),
+        observation_models=[ObservationModel(encoding_group=1)],
+        sorted_spikes_algorithm="sorted_spikes_glm",
+        sorted_spikes_algorithm_params={"disable_progress_bar": True},
+        sampling_frequency=SAMPLING_FREQUENCY,
+        infer_track_interior=False,
+    )
+
+    detector.fit(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        is_training=is_training,
+        encoding_group_labels=encoding_groups,
+    )
+
+    encoding_model = detector.encoding_model_[("", 1)]
+    assert np.all(np.isfinite(encoding_model["coefficients"]))
+    interior = np.asarray(encoding_model["is_track_interior"])
+    place_fields = np.asarray(encoding_model["place_fields"])
+    np.testing.assert_allclose(place_fields[:, interior], EPS, rtol=1e-5, atol=0.0)
+
+    results = detector.predict(spike_times=spike_times, time=time[200:])
+    posterior = results.acausal_posterior.values
+    assert np.all(np.isfinite(posterior))
+    np.testing.assert_allclose(posterior.sum(axis=-1), 1.0, rtol=1e-5, atol=0.0)
 
 
 @pytest.mark.unit

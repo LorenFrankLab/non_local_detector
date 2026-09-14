@@ -1,10 +1,22 @@
 # Phase 1 — Sorted fits honour the exposure mask
 
-> **PROTOTYPED AND PASSING** on branch `fix/sorted-spikes-exposure-mask`.
+> **IMPLEMENTED AND REVIEWED** on branch `fix/sorted-spikes-exposure-mask`
+> (implementation commit `8c8765f`).
 > The spy test fails on `main` (`assert None is not None` — "the detector dropped
 > the exposure mask") and passes after the two-file change below. Full suite:
 > **1262 passed, 3 skipped**; golden regressions **4 passed** unchanged; ruff and
-> format clean. Not committed — awaiting review.
+> format clean at the original implementation baseline.
+>
+> The follow-up review added permanent GLM regressions for zero total exposure,
+> an encoding group with no training coverage through `fit`/`predict`, and small
+> positive exposure. The direct zero-exposure test fails against the original
+> `main` implementation. The detector test fails with the mask fix retained but
+> the GLM guard removed. Both failures contain NaN coefficients, confirming that
+> the tests exercise the guard rather than only the mask plumbing.
+>
+> Post-review validation (2026-09-14, CPU): **1266 passed, 3 skipped** in the full
+> suite; golden files unchanged; repository-wide ruff and format checks pass.
+> The new tests received an independent read-only review with no findings.
 >
 > Corrections made during prototyping, versus what this file originally said:
 > - The fractional-boundary-weight test is **KDE-only**. The GLM bins whole spikes
@@ -153,7 +165,8 @@ coverage returned NaN coefficients and now returns an explicit zero-rate model.
 
 | Test | Asserts |
 |---|---|
-| `test_detector_passes_mask_as_weights` | Monkeypatch the registered fit function in `_SORTED_SPIKES_ALGORITHMS` with a spy; assert the detector calls it with `weights` equal to `is_group.astype(float)`, not `None`. Fails on `main`. |
+| `test_detector_passes_exposure_mask_as_weights` | Monkeypatch the registered fit function in `_SORTED_SPIKES_ALGORITHMS` with a spy; assert the detector calls it with `weights` equal to `is_group.astype(float)`, not `None`. Fails on `main`. |
+| `test_glm_group_without_training_coverage_returns_eps_model` | Group samples and spikes exist only outside training. The fitted GLM has finite coefficients and EPS-floor interior place fields, and prediction yields a finite, normalized posterior. |
 | `test_two_encoding_groups_do_not_contaminate` (slow) | Two encoding groups over disjoint position ranges: each group's place field peak is within its own range, and the ratio of peak-in-range to peak-out-of-range exceeds 10. **Not** "occupancy is exactly 0 outside" — Gaussian KDE occupancy and EPS-floored fields are never exactly zero. |
 | `test_partial_training_mask_rate` (slow) | With `is_training` selecting half the samples, `mean_rates[0]` equals in-group spikes / in-group samples within `rtol=1e-6`. |
 
@@ -164,7 +177,8 @@ coverage returned NaN coefficients and now returns an explicit zero-rate model.
 |---|---|
 | `test_mask_weights_match_subset_fit` | Full arrays with `weights=mask` equals subset arrays with `weights=None`, `rtol=1e-5`. **Spikes must be placed at least one sample interval away from every mask transition** — the invariant is exact only there ([C2](shared-contracts.md#c2--exposure-ownership-and-spike-weights)). |
 | `test_boundary_spike_weight_is_fractional` | A spike within one sample of a transition receives a weight strictly between 0 and 1, documenting why the invariant is conditional. |
-| `test_glm_zero_exposure_returns_eps_model` | All-zero weights give finite coefficients and an EPS-floor place field; no NaN. |
+| `test_fit_poisson_regression_with_zero_exposure` | All-zero weights give finite coefficients and EPS-floor predictions, even with nonzero supplied counts; no NaN. |
+| `test_fit_poisson_regression_preserves_small_positive_exposure` | Uniform weights of `1.0` and `1e-8` both recover the known constant Poisson rate of 2; small positive exposure must not take the zero-exposure fallback. |
 
 ```bash
 uv run pytest src/non_local_detector/tests/likelihoods src/non_local_detector/tests/models -q
