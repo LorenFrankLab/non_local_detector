@@ -1,16 +1,18 @@
-# Phase 2 — Consistent log-intensity and ground-process policy
+# Phase 2 — Clusterless GMM log intensity and ground process in log space
 
-> **BLOCKED ON C1 — NEEDS PROTOTYPING.** The ratio defect is reproduced below.
-> The former floor-only-`-inf` policy and its implementation snippets are
-> withdrawn. This file does not choose among the options in
-> [C1](shared-contracts.md#c1--degeneracy-policy-for-log-intensities).
+> **IMPLEMENTED (narrowed scope)** on `fix/gmm-log-intensity-ordering`
+> (2026-09-14). Two numerical defects in `likelihoods/clusterless_gmm.py` are
+> fixed as pure arithmetic corrections; no floor is added or removed elsewhere,
+> and no package-wide degeneracy policy is chosen. That policy — a background
+> firing model making impossible and very-unlikely spikes commensurate, uniform
+> handling across backends, and No-Spike behaviour — is **deferred to a
+> separate modelling proposal** (see [C1](shared-contracts.md#c1--degeneracy-policy-for-log-intensities)).
 
 ## Problem and recorded evidence
 
 The clusterless GMM log intensity is `log(rate) + log p(pos, mark) − log p(pos)`.
-The non-local, bin-tiled non-local, and local paths clamp the joint numerator
-before subtraction. The original audit located these in `clusterless_gmm.py`
-near lines 722, 754, and 876; re-inventory the named computations before editing.
+The non-local, bin-tiled non-local, and local paths clamped the joint numerator
+at `LOG_EPS ≈ −34.5` before the subtraction:
 
 ```text
 log_rate = 0, log_joint = -60, log_occupancy = -8
@@ -18,75 +20,114 @@ raw log ratio:              -52.00
 numerator-clamped result:   -26.54
 ```
 
-The approximately 25.5-log-unit error inflates the intensity by about 1e11.
-Ground-process paths also exponentiate separately small densities before dividing,
-which can lose a finite ratio through underflow.
+The ~25.5-log-unit error inflates the intensity by ~1e11. Worse, at bins whose
+occupancy log density is very negative (an overfit 2-D fixture reached −504),
+the clamped numerator made every observed spike score **+150 to +2341** — the
+spike was reported as overwhelmingly *more* likely at the bins the fitted
+occupancy model considered least plausible. The existing fixture
+(`test_kde_gmm_comparison`) asserted only finiteness and never noticed.
 
-A finished-intensity floor would intentionally change the raw result from -52
-according to the selected bound. That is a policy choice, distinct from the
-numerator-ordering defect. The earlier requirement to preserve every finite
-value while flooring only exact `-inf` was non-monotonic and must not be restored.
+The fit-time ground process `rate · p_gpi(x) / p_occ(x)` was formed from the two
+exponentiated densities, so two densities that each underflow float32 gave
+`0 / 0`, which an `occupancy > 0` guard replaced with `rate · EPS`; the correct
+ratio for `log p_gpi = −800`, `log p_occ = −790`, `rate = 2` is `9.08e-5`. The
+local path already used the log difference but multiplied by the rate outside
+the exponential, so `1e-15 · exp(95)` overflowed where `exp(log 1e-15 + 95)` is
+representable.
 
-## Decisions required before implementation
+## What shipped
 
-Complete C1's backend × local/non-local × spike/ground-process floor inventory.
-Record whether the chosen scope includes sorted likelihoods, probability-space
-KDE clamps, and log-KDE caller clamps. Resolve zero numerator with zero occupancy,
-all-degenerate ground-process aggregates, and genuinely invalid NaN inputs.
+1. **Spike intensity.** The three `jnp.clip(joint_logp, min=LOG_EPS)` calls
+   (untiled, tiled, local) are removed; the contribution is the raw
+   `log(rate) + (log_joint − log_occupancy)`, difference first — review found
+   that `(log_rate + joint) − occ` rounds the rate term away once the log
+   densities reach ~`1e10` in float32 (event term `0` instead of `−34.54` for
+   `rate = 1e-15`). Both operands come from
+   `score_samples` (log-space mixture evaluation), so the arithmetic preserves
+   finite log densities; no fallback is introduced for unexpected non-finite
+   scores, which stay visible.
+2. **Ground process.** One helper, `_ground_process_intensity`, computes
+   `exp(log(rate) + (gpi_logp − log_occupancy))` — difference first so nearly
+   equal large log densities subtract exactly — and is used by both the
+   fit-time bin intensities and the local expected counts. The `occupancy > 0`
+   guard is gone: float32 underflow is precision loss, not absent support, and
+   an unvisited bin is not a true `0/0` under a nonsingular GMM (both
+   densities stay positive; their ratio is merely poorly constrained). NaN
+   propagates. When the complete intensity — rate included, aggregated over
+   electrodes — exceeds the working dtype's range it overflows to `inf` and
+   that bin's log likelihood is `−inf`, replacing the previous `EPS`
+   substitution. This affects poorly sampled regions and sharply fitted
+   models; it is not an exposure-based support criterion, and zero posterior
+   mass there is conditional on another candidate keeping a finite likelihood
+   (an all-`−inf` row follows phase 0's fallback).
+3. **Preserved.** The zero-rate electrode fallback (`LOG_EPS` per observed
+   decode spike), the `EPS` floor on the fitted mean rate, and the single `EPS`
+   clip on the summed ground-process intensity.
 
-Distinguish four stages explicitly: raw log ratio, per-electrode ground-process
-term, aggregate ground-process intensity, and finished likelihood. If an
-aggregate floor is selected, applying it per electrode before summation gives
-`n_electrodes × EPS` instead of one floor and is not equivalent. An all-empty
-population also needs a declared result.
+**Known open policy question (not resolved here):** an empty electrode's spike
+scores `LOG_EPS` while a fitted electrode's tail spike can score far below it.
+Do not remove the zero-rate fallback until a background model replaces it.
 
-Phase 1's existing EPS fallback remains its completed baseline. Any change to it
-caused by expanding C1 to sorted backends belongs to this phase and must be
-identified in the numerical-change analysis. Phase 0 conditioning is preserved.
+## Validation
 
-## Falsification and prototype requirements
+`tests/likelihoods/test_clusterless_gmm_log_intensity.py` — 16 tests, all
+against closed-form float64 references on hand-built single-Gaussian models
+(or the fitted models' own log densities), never another call into the code
+under test; event terms are isolated by subtracting a matched no-spike
+baseline from the same public path:
 
-1. Freeze the relevant pre-fix revision and reproduce numerator clipping and
-   separately-underflowing ground-process ratios through the actual paths.
-2. Define expected outputs from the selected C1 policy. Test the raw arithmetic
-   separately from any finished floor; a -52 raw ratio alone does not determine
-   the final policy-dependent intensity.
-3. Test monotonicity through tiny positive and exact-zero mass, zero occupancy,
-   zero-over-zero, empty populations, and raw NaN inputs. Do not infer support
-   from a NaN created by subtracting two `-inf` values; inspect operands.
-4. Prototype shared arithmetic/policy boundaries across the audited sites.
-   Existing helpers, including `_log_joint_from_log_marginal`, are subjects of
-   the audit rather than automatically correct references.
-5. Compare local/non-local and tiled/untiled evaluation on matched positions,
-   marks, rates, and occupancy. Preserve shapes and apply ground-process
-   aggregation in log space where needed for finite ratios.
+| Case | `main` | branch |
+|---|---|---|
+| Tail spike event term, untiled / tiled / local (`−59…−69` vs clamped `−31`) | fail | pass |
+| Deep-tail rate term (`log p ≈ −1e10`, `rate = 1e-15`), accumulator / untiled / tiled / local | large positive (clamp)† | `−34.54` |
+| Local expected counts, `1e-15 · exp(95)` | `−inf` | `−2.7e26` |
+| Helper, `(2, −800, −790)` and `(2, −120, −60)` | n/a | `9.08e-5`, `2e^-60` |
+| Fit far bins, identical GPI/occupancy models (both densities underflow) | `EPS` | `rate` |
+| Local no-spike term at a 150-nat-far position, identical models | `−rate`* | `−rate` |
+| NaN occupancy / NaN decode position | NaN* | NaN |
+| Fit vs local expected counts at bin centres | disagree at underflow bins | agree |
+| Accumulator scatter is the raw sum | pass | pass |
 
-No helper signature or executable implementation is prescribed until these
-choices have been exercised against the real backends.
+\* `main`'s local path had no guard, so these two already held there; an
+intermediate draft of this branch broke both and was corrected in review.
+† On `main` the numerator clamp dominates through the public paths; the
+ulp-quantized `0`, `−64`, `−32` values were produced by the intermediate
+unclamped draft with the old `(log_rate + joint) − occ` ordering, which is
+what the ordering swap corrected.
+Passes identically with `JAX_ENABLE_X64=1` (dtype-aware preconditions).
 
-## Acceptance
+Regression surface (all of `tests/likelihoods/`, GMM optimization and
+agreement files, `test_golden_regression`, `tests/integration/`): recorded in
+the CHANGELOG entry and the commit message. Existing tests that asserted the
+defect were changed: `test_likelihood_edge_cases::test_clusterless_gmm_extreme_waveform`
+required a 100-σ outlier to score above `−50` (now `≈ −6.3e5`, its raw log
+density); the three GMM non-local finiteness checks in
+`test_kde_gmm_comparison` relied on the underflow guard masking an overfit
+model's overflow (now `−inf` at those bins; the assertions became "no NaN");
+`test_kde_gmm_numerical_comparison` fitted 16/16/32 components to ~100 spikes
+per electrode (on `main` that gave positive log likelihoods up to `+5260` and
+a KDE↔GMM Spearman of 0.08) — the ordinary comparisons now use 4/4/8 (Spearman
+0.37 on `main`, 0.36 here) and the 16/16/32 fit is kept as a stress
+regression whose overflow locations are checked against a float64 aggregate
+of the fitted models' own log densities, with finite bins matching that
+reference and every time bin keeping a finite candidate; and
+`test_clusterless_gmm_optimization::test_gmm_jax_array_inputs` (a thin
+trajectory on a 2-D grid, so off-trajectory bins overflow) now feeds the
+JAX and NumPy paths identical float32 values and requires bit-identical
+predictions including the `−inf` mask. The stress test derives its overflow
+cutoff from the working dtype (one bin exceeds even float64). Changes are
+attributed to numerator-clamp removal and guard removal respectively; no
+existing tolerance was relaxed and no golden changed.
 
-| Coverage | Required evidence |
-|---|---|
-| Ratio arithmetic | Independent log-space reference for the recorded tail and underflow cases, before applying the selected finished policy. |
-| Policy consistency | Finite tails, exact zeros, unsupported ratios, and aggregate behavior match the documented C1 decision at every in-scope site. |
-| Diagnostics | Genuine invalid inputs remain visible; genuine impossibility follows the chosen likelihood policy and Phase 0 core contract. |
-| Aggregation | Multiple degenerate electrodes do not accidentally multiply an aggregate floor; empty-population behavior is explicit. |
-| Integration | Local/non-local, tiled/untiled, stationary/covariate, and affected detector paths agree with their independent references at existing applicable tolerances. |
+## Archived — superseded by the narrowed decision
 
-Run affected backend, cross-model, integration, and golden regressions. Preserve
-existing numerical tolerances. Pin before/after inputs and record primitive
-changes from ratio ordering, zero-mass handling, floor scope, and aggregation.
-
-## Numerical-change review
-
-Golden changes are possible, not guaranteed for every fixture. Attribute changes
-first at the likelihood/ground-process layer. HMM normalization and temporal
-propagation can change posterior bins whose own likelihood did not change; a
-requirement that posterior differences stay only in numerator-clamped bins is
-incorrect. Unaffected primitive calculations must retain parity.
-
-Describe the selected policy and its scientific effects in the release note.
-Provide the repository's numerical-change analysis before requesting any actual
-snapshot/golden or numerical-bound change. Review the completed floor inventory,
-operand handling, aggregation order, and shared-helper consumers independently.
+The original phase text required, before implementation, a package-wide floor
+inventory (backend × local/non-local × spike/ground-process), a choice among the
+C1 options, resolution of zero-numerator-over-zero-occupancy and
+all-degenerate-aggregate semantics, and a numerical-change analysis for
+possible golden updates. None of that gates this phase any more: the shipped
+change adds no floor and no aggregate policy, no GMM golden or snapshot fixture
+exists, and the KDE goldens are unaffected. Those questions move to the
+background-model proposal recorded under C1. The withdrawn "floor only `-inf`"
+rule must not be restored (it is non-monotonic: an impossible observation
+would score `−34.54` while a `1e-44` one scores `−101.31`).

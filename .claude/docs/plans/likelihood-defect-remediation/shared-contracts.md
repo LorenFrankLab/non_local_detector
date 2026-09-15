@@ -20,10 +20,21 @@ or depending only on the settled contracts can be prototyped independently. See 
 
 ## C1 — Degeneracy policy for log intensities
 
-> **UNRESOLVED — do not implement against this section.** The "floor only `-inf`"
-> rule recorded here was found to be non-monotonic and is withdrawn pending a
-> decision. The *problem* it addresses is real and verified; the *policy* is not
-> settled.
+> **PARTIALLY RESOLVED.** The "floor only `-inf`" rule recorded here was found
+> to be non-monotonic and is withdrawn. **Settled (2026-09-14):** the GMM
+> numerator-ordering defect and ground-process underflow/overflow are fixed as
+> pure arithmetic corrections in phase 2 (raw log ratios, log-space ground
+> process, no new floors). The zero-rate fallback, mean-rate floor, and
+> summed-intensity clip are preserved; the fit-time `occupancy > 0` guard is
+> removed because it turned float32 underflow into an `EPS` substitute
+> (precision loss, not a support policy). The resulting inconsistency is
+> recorded in the phase document. **Deferred:**
+> a package-wide degeneracy policy. The recommended direction is a background
+> firing model (explicit background rate and mark distribution added to every
+> electrode's intensity and expected-count terms) rather than any of options
+> 1–3 below; it is a statistical-model change and needs its own proposal,
+> including what "unsupported" (zero occupancy, `0/0`) means. Do not remove
+> the zero-rate fallback until that replacement exists and is validated.
 
 ### The problem (settled)
 
