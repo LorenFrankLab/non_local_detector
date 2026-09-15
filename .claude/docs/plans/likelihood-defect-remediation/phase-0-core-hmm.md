@@ -257,5 +257,7 @@ filtered, predicted, and smoothed probabilities and total evidence.
 
 Full-suite validation: **1329 passed / 4 skipped**, in 21m 41s on the busy CPU.
 The separate x64 reference run passed all **64** cases. Golden files and existing
-tolerances are unchanged; ruff and format checks pass. Changes remain uncommitted
-on `fix/core-hmm-conditioning`.
+tolerances are unchanged; ruff and format checks pass. The implementation was
+subsequently committed as `c1f7e33`, with benchmark script `e79501a`, on
+`fix/core-hmm-conditioning`. The production-workload expansion in Phase 7 does
+not change this phase's completion criteria.

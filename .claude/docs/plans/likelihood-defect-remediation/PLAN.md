@@ -28,7 +28,7 @@ withdrawn** — its policy was shown to be non-monotonic — and **C3 is split**
 decode vocabulary is settled, its encoding-exposure half is not. No phase
 depending on C1 or on encoding exposure can be executed.
 
-**Immediate priority: [phase 0](phase-0-core-hmm.md), core HMM correctness.**
+**Completed foundation: [phase 0](phase-0-core-hmm.md), core HMM correctness.**
 Its correctness fixes and performance revision are implemented on
 `fix/core-hmm-conditioning`, with reference tests and measured numerical and
 runtime comparisons recorded in the phase document. Full-suite validation:
@@ -36,6 +36,29 @@ runtime comparisons recorded in the phase document. Full-suite validation:
 It is independent of C1's likelihood-flooring decision and C3's time/exposure
 decisions. Keep the existing phase numbers so links and work on phases 1–8
 remain valid.
+
+## Production workload and scope
+
+The remaining performance work targets the user's **180 cm × 180 cm arena,
+1 cm or 2 cm spatial bins, and one hour at 2 ms decoding intervals**. This is
+1.8 million observations and approximately 16,202 or 64,802 combined hidden-state
+bins for the default four-state non-local model. See
+[overview.md](overview.md#representative-workload) for assumptions, storage
+estimates, and acceptance criteria.
+
+Phase 3 owns correct global event binning and likelihood allocation limited to
+the requested rows. Phase 7 now includes checkpointed smoothing, incremental
+output storage, structured transition operations, and the existing measured
+kernel optimizations. It must demonstrate both numerical parity and feasible
+memory use at the representative dimensions; small conditioning benchmarks
+alone cannot establish full-session feasibility.
+
+This expansion leaves **Phase 0 and Phase 1 completion criteria unchanged**.
+The outstanding likelihood corrections and C1/C3 decisions retain their
+dependencies and priority. Production integration of Phase 7 follows the
+corrected likelihood and time contracts; independent prototypes can establish
+feasibility earlier. Proposed designs are not implementation-ready until their
+acceptance criteria have been exercised against the real code.
 
 ## Status of this plan — read before executing
 
@@ -61,14 +84,14 @@ below now carry measured evidence rather than reasoning.
 
 | Phase | State |
 |---|---|
-| 0 | **Implemented, optimized, and validated** in the uncommitted `fix/core-hmm-conditioning` work. Full suite: **1329 passed / 4 skipped**; reference tests: **63 passed / 1 skipped** in default float32 and **64 passed** with x64 enabled. Golden files and existing tolerances unchanged; ruff and format pass. Numerical comparisons are bit-identical to the pre-optimization fix; stationary kernels take 6.5–14.3% less time in the measured CPU benchmark. See [phase 0](phase-0-core-hmm.md). Independent of C1/C3. |
+| 0 | **Implemented, optimized, and validated** on `fix/core-hmm-conditioning` (`c1f7e33`; benchmark script `e79501a`). Full suite: **1329 passed / 4 skipped**; reference tests: **63 passed / 1 skipped** in default float32 and **64 passed** with x64 enabled. Golden files and existing tolerances unchanged; ruff and format pass. Numerical comparisons are bit-identical to the pre-optimization fix; stationary kernels take 6.5–14.3% less time in the measured CPU benchmark. See [phase 0](phase-0-core-hmm.md). Independent of C1/C3. |
 | 1 | **Implemented and reviewed** on `fix/sorted-spikes-exposure-mask` (`8c8765f` plus regression coverage). Mask and zero-exposure regressions fail against the relevant pre-fix behavior. Post-review full suite: **1266 passed / 3 skipped**, goldens unchanged; ruff and format pass. |
 | 2 | Needs prototyping: aggregate flooring, zero-mass detection, and the newly in-scope log-KDE clamps |
-| 3 | Needs redesign: the clusterless path must filter spikes before density evaluation, not slice a full-time reduction; no-spike states bypass both registries (`base.py:3163`); the >4× memory target is unachievable while full posteriors are retained (`core.py:671`, `:700`) |
+| 3 | **Revised requirements; needs prototyping.** Bin events globally and restrict decoding spikes before density evaluation; cover no-spike states, masks, and position-dependent terms. Validate likelihood-specific memory bounds. Full posterior retention is assigned to Phase 7a; the former >4× total-memory target is withdrawn. |
 | 4 | Nearly ready: weight normalizer overflows on large float32 weights; the GLM objective fix promised in the index below is missing |
 | 5 | Rewrite against the corrected C2 — the hard-window machinery is deleted, not repaired |
 | 6a–6d | Needs prototyping: exposure endpoints, a central edge validator, ULP-aware uniformity, rate-vs-expected-count test semantics, and 6b/6d must be atomic |
-| 7 | Reasonable after minor test hardening |
+| 7 | **Expanded scope; needs prototyping.** 7a: bounded memory smoothing and incremental/compact outputs. 7b: structured forward/backward transitions. 7c: measured likelihood and compilation optimizations. Validate the representative workload, existing numerical tolerances, host/device peak memory, and end-to-end runtime before claiming production support. |
 | 8 | Mostly ready; 9 call sites in `likelihoods/` source, not 13; reconsider whether to drop `indices_are_sorted` rather than reject previously-accepted input |
 
 ## Reading order
@@ -93,7 +116,7 @@ below now carry measured evidence rather than reasoning.
 | 6b | [phase-6b-rate-units.md](phase-6b-rate-units.md) | Backend-by-backend conversion to Hz | All move |
 | 6c | [phase-6c-uniform-bins.md](phase-6c-uniform-bins.md) | Detector requires uniform bins; nonuniform stays on the direct API | None |
 | 6d | [phase-6d-model-compat.md](phase-6d-model-compat.md) | Saved models with per-sample rates are detected and rejected | None |
-| 7 | [phase-7-performance.md](phase-7-performance.md) | Matmul, JIT bucketing, block copies — with measured evidence | None (parity) |
+| 7 | [phase-7-performance.md](phase-7-performance.md) | Checkpointed smoothing, incremental/compact outputs, structured transitions, and measured kernel optimizations | None (parity against the corrected baseline) |
 | 8 | [phase-8-remaining-findings.md](phase-8-remaining-findings.md) | `to_density` volume, MRF disconnected components, sorted-index contract | None expected |
 
 ## Approval gates

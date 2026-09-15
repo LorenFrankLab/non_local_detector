@@ -1,158 +1,310 @@
-> **Snippets unverified.** The code below has not been executed. Per the process
-> rule in [PLAN.md](PLAN.md), treat it as intent to be re-derived by prototyping,
-> not as code to paste. The problem statements and measurements are verified.
+# Phase 7 — Measured performance at production scale
 
-# Phase 7 — Measured performance work
+> **EXPANDED SCOPE — NEEDS PROTOTYPING.** The production workload and memory
+> arithmetic are established in [overview.md](overview.md#representative-workload).
+> Checkpointed smoothing, output interfaces, and structured transitions below are
+> requirements and design candidates, not a validated implementation. The earlier
+> unexecuted code snippets are removed. Phase 0/1 completion criteria are unchanged.
 
-Last, because correctness comes first and because 6a/6b change the shapes these
-touch. Write against post-6b code.
+## Scope, order, and dependencies
 
-## Measurement protocol (applies to every task)
+Target decoding with fitted encoding and transition parameters for a 180 cm ×
+180 cm arena, 1 cm or 2 cm bins, and one hour at 2 ms resolution. This gives
+1.8 million observations and approximately 16,202 or 64,802 combined hidden bins
+in the default four-state non-local model. Use actual fitted/padded dimensions
+in every benchmark report.
 
-An earlier draft of this phase asserted a speedup from a single unsynchronized
-timing loop. That is not evidence. Every task must produce:
+Production integration follows the corrected likelihood/time contracts from
+Phases 0–6, including Phase 3's global event ownership and bounded likelihood
+chunks, the settled C1 policy, and Phase 6's intensity units. Separate pure-core
+prototypes can run earlier against an identified corrected reference. They must
+not delay the outstanding likelihood fixes or introduce competing C1/C3 policies.
 
-1. **Output parity first.** Record baseline outputs to a pickle in the scratchpad
-   *before* editing; after, assert parity at the stated tolerance. A speedup
-   without a paired output check does not count.
-2. **Synchronized timings.** `block_until_ready()` on every result; JAX is async
-   and unsynchronized timings measure dispatch, not compute.
-3. **Compile time excluded.** One warm-up call outside the timed region, and
-   report compile time separately — a 100× "speedup" that moves work into
-   compilation is not a win for a single-shot fit.
-4. **Repeated trials.** ≥5 runs; report median and spread, not a single number.
-5. **Peak memory.** `memory_analysis().temp_size_in_bytes` for jitted regions, or
-   `jax.live_arrays()` sampling. A faster path that raises peak memory may be a
-   regression on GPU.
-6. **dtype parity.** Confirm the rewrite did not silently promote or demote.
+Implement and review these as independently measurable changes:
 
-Report all six per task in the PR description. If a task fails (1) or regresses
-(5) beyond a stated budget, drop it rather than shipping it.
-
----
-
-## Task 1 — Matmul instead of the per-neuron loop
-
-`sorted_spikes_kde.py:399-405` and `sorted_spikes_glm.py:492-495` accumulate a
-full `(n_time, n_interior_bins)` array once per neuron.
-`sorted_spikes_diffusion.py:682-689` already does the right thing.
-
-Measured (`n_time=20000, n_neurons=120, n_bins=900`, unsynchronized — **re-measure
-under the protocol above**):
-
-```
-   per-neuron loop:  248.6 ms
-     single matmul:    2.3 ms       ~108x
-max abs diff 1.9e-06, max rel diff 2.1e-07
-```
-
-**Precondition the rewrite depends on:** interior fields are EPS-floored
-(`sorted_spikes_kde.py:225-234`, `sorted_spikes_glm.py:351-354`), so `log(field)`
-is finite and `xlogy(k, field) ≡ k·log(field)`. This fails if a field can be
-exactly 0 — `xlogy(0,0) = 0` but `0·log(0) = NaN`. Assert the floor at fit time
-rather than assuming it.
-
-Move `_spike_counts_matrix` (`sorted_spikes_diffusion.py:548-567`) into
-`common.py` rather than importing across siblings or copying; update the
-diffusion module to import the shared version. The rewrite also removes the
-inlined `np.bincount(np.digitize(...))` at `sorted_spikes_glm.py:488-491`.
-
-Carry the `dt` terms from phase 6b — the matmul form there is the target shape.
-
----
-
-## Task 2 — Bound `kde` JIT recompilation
-
-`common.kde` (`common.py:332-338`) is jitted with `n_samples` in its shape
-signature, and every unit has a different spike count. Verified: cache grows one
-entry per distinct count.
-
-Bucket sample counts and pad, carrying zero weights for padded rows so they drop
-out of numerator and denominator. `log_kde` (`common.py:422-455`) already maps
-zero weights to `-inf` and drops them from both sums; confirm linear `kde`
-(`common.py:364-369`) does the same via its `jnp.sum(weights)` denominator.
-
-**Bucket policy is not delegated — measure it.** Power-of-two buckets can nearly
-double memory for a unit just above a boundary (a 513-spike unit padding to 1024).
-Compare at least:
-
-- powers of two,
-- multiples of 256 above a floor of 256,
-- powers of `sqrt(2)` rounded up.
-
-on a realistic spike-count distribution (take one from a golden fixture rather
-than inventing it). Choose by measured compile count **and** peak memory together,
-and record the comparison in the PR. If no policy improves total wall-clock for a
-realistic fit, drop this task — the compilation cost may be amortized already.
-
----
-
-## Task 3 — Remove the per-block full-array copy in `clusterless_kde`
-
-`block_estimate_log_joint_mark_intensity` (`clusterless_kde.py:137-158`) writes
-each block with `dynamic_update_slice` into a full-size array, copying the whole
-`(n_decoding_spikes, n_position_bins)` array per block. `common.block_kde` was
-already migrated away from this, with the rationale at `common.py:411-414`.
-
-```python
-    blocks = [
-        estimate_log_joint_mark_intensity(
-            decoding_spike_waveform_features[start : start + block_size],
-            encoding_spike_waveform_features,
-            waveform_stds,
-            occupancy,
-            mean_rate,
-            position_distance,
-            encoding_weights,
-        )
-        for start in range(0, n_decoding_spikes, block_size)
-    ]
-    if not blocks:
-        return jnp.zeros((0, n_position_bins))
-    return jnp.clip(jnp.concatenate(blocks, axis=0), min=LOG_EPS, max=None)
-```
-
-**Caveat to measure, not assume:** the list holds every block alive until
-`concatenate`, so peak is blocks + output ≈ 2× output, whereas
-`dynamic_update_slice` peaks at output + one block. Whether this is a win depends
-on whether XLA elides the copy. Measure peak memory both ways at
-`n_decoding_spikes=5000, n_position_bins=900`; if the list form regresses peak,
-keep `dynamic_update_slice` and instead donate the buffer, or drop the task.
-
-The single final clip is existing behaviour (one floor, not per block) — preserve
-it.
-
----
-
-## Validation
-
-| Test | Asserts | File |
+| Work | Purpose | Dependencies |
 |---|---|---|
-| `test_matmul_matches_per_neuron_loop` | New non-local likelihood equals a reference per-neuron `xlogy` loop written in the test, `rtol=1e-5`. | `test_sorted_spikes_kde.py` |
-| `test_interior_fields_are_floored` | Every interior field ≥ EPS at fit time, KDE and GLM — the matmul's precondition. | same + `test_sorted_spikes_glm.py` |
-| `test_kde_bucketing_parity` | Padded and unpadded `kde`/`log_kde` agree, `rtol=1e-6`, for counts spanning two buckets. | `test_kde_common.py` |
-| `test_kde_compile_count_bounded` | 32 units with 32 distinct counts produce ≤ 6 distinct `kde._cache_size()` entries. | same |
-| `test_kde_padding_weights_are_zero` | Padded rows carry zero weight and do not shift the density. | same |
-| `test_block_joint_intensity_parity` | Blocked equals unblocked exactly; a ragged final block is exercised. | `test_clusterless_kde.py` |
+| 7a | Bound filtering/smoothing working memory and write requested outputs incrementally. | Correct likelihood chunks from Phase 3; final integration uses Phase 6 time/units. |
+| 7b | Apply structured forward and backward transitions without a combined dense matrix where supported. | Phase 0 numerical contracts and an explicit transition-capability inventory; integrate with 7a for the large workload. |
+| 7c | Improve likelihood kernels, compilation, and remaining allocation hotspots. | Profile the corrected backends; preserve the settled floor and duration policies. |
 
-```bash
-uv run pytest src/non_local_detector/tests/likelihoods -q
-uv run pytest src/non_local_detector/tests/test_golden_regression.py -q
-```
+7a and 7b can be prototyped independently on small references. End-to-end
+production acceptance requires their integrated behavior plus any 7c work needed
+to meet the declared resource budget. Keep the existing generic dense path for
+reference and unsupported models, with explicit resource limits before fallback.
 
-Goldens must be **unchanged** — every task is parity-preserving. A golden diff
-means the rewrite is wrong, not that the baseline needs updating. Do not request
-a snapshot-update approval for this phase.
+This phase preserves the statistical model. Reducing resolution, truncating
+Gaussian tails, approximate smoothing, and backend substitution across the
+known log-vs-probability parity gap are outside its scope. It does not establish
+bounded memory for EM estimation or Viterbi. Audit shared callers for regressions,
+but report those APIs separately from decoding support.
 
-## Review
+## Measurement protocol
 
-Dispatch `code-reviewer` with the six measurement artefacts per task. Ask whether
-task 2's padding can leak into any consumer reading `samples_`/`weights_` off a
-`KDEModel` (`common.py:500-505`), and whether task 1 left the diffusion module
-importing the shared `_spike_counts_matrix` rather than keeping a copy.
+Every task must supply numerical, timing, and memory evidence:
 
-## Deliberately not in this phase
+1. **Reference and parity first.** Freeze the corrected baseline revision,
+   configuration, inputs, and tractable reference outputs before edits. Check
+   posteriors, evidence, and marginals at existing applicable tolerances. Phase
+   7 must not change golden data or relax tolerances. A new output mode must
+   agree with the corresponding selection/reduction of the full reference.
+2. **Synchronization and repetition.** Synchronize every JAX result. Warm each
+   variant before timing; use randomized/interleaved comparisons with at least
+   five measured repetitions for bounded workloads. Report median and spread,
+   including paired runtime ratios when comparing implementations.
+3. **Compilation and end-to-end work.** Report compilation separately from warm
+   execution. Also measure the user-visible run, including likelihoods,
+   checkpoint replay, host/device transfers, output conversion, and disk I/O.
+   Short kernel timings alone cannot establish full-session throughput.
+4. **Host/device peaks.** Record peak host RAM, device allocation, and output/
+   checkpoint disk usage. Include resident inputs and model arrays, transient
+   workspace, allocator reservation where relevant, and conversion buffers.
+   Compiler `memory_analysis()` and live-array snapshots explain components;
+   they are not sufficient evidence of a complete transient process peak.
+   State the measurement method, sampling limitations, and background load.
+5. **Dimensions, precision, and hardware.** Record `T`, spatial/interior/padded
+   bins, combined `N`, discrete-state configuration, neuron/tetrode counts,
+   spike counts/rates, encoding duration, chunk size, dtype, and hardware. Assert
+   the dtype actually used. CPU results do not establish GPU results.
+6. **Resource budget before scale-up.** Record host/device memory limits, disk
+   capacity, and requested outputs. Establish safe allocation bounds before
+   launching the full hour. Choose chunk/cache limits against that budget;
+   do not attempt a full-size dense reference that exceeds it.
 
-- Streaming the linear `clusterless_kde` position kernel — see
-  [overview.md](overview.md#deferred-with-triggers).
-- `GaussianMixture.score_samples` discarding responsibilities (`gmm.py:1068`).
+Use a staged benchmark ladder: small dense parity fixtures; realistic spatial
+sizes with shortened recordings; duration scaling at fixed chunk/cache limits;
+then full-hour runs on identified hardware. Exercise stationary/covariate paths
+and supported sorted/clusterless backends. Routine CI uses bounded parity and
+allocation regressions; full-hour runs are explicit release/performance checks.
+For each claimed production configuration, complete a measured full-hour run;
+label projections and untested combinations. A speedup factor cannot compensate
+for failed parity or exceeding the declared memory budget.
+
+## 7a: Bounded memory smoothing and outputs
+
+### Problem and falsification
+
+The current chunked drivers accumulate filtered and predicted arrays, concatenate
+them, then accumulate and concatenate smoothed arrays. Model output selection
+occurs afterward, and xarray conversion creates padded spatial arrays. Thus
+`n_chunks` and `return_outputs` do not currently bound spatial working memory.
+
+Before implementation, profile those allocations on a tractable run with fixed
+chunk length and increasing duration. Exercise the default result as well as
+explicit additional outputs. Record which arrays are retained and where peak
+memory grows; do not allocate the full-hour dense target to demonstrate this.
+
+### Output requirements
+
+Prototype output selection and an incremental result writer together:
+
+- A compact mode retains requested discrete-state probabilities and diagnostics
+  without retaining a full-session spatial posterior. Inference still uses the
+  full spatial distribution; it does not collapse the HMM to four hidden bins.
+- A full spatial mode writes chunks to a disk-backed result or another bounded
+  consumer. The writer must not collect all chunks in a list, concatenate them,
+  or trigger eager full-array loading during xarray/result conversion.
+- Support requested time selections with the same whole-recording conditioning
+  as the full result. Decoding each requested interval independently is not
+  equivalent. If intervals are selected after a compact run, preserve/recompute
+  the required forward and backward boundary information and compatible model
+  inputs so selected posteriors can be reconstructed with full context.
+- Preserve timestamps, state/bin coordinates, missing rows, and padding masks.
+  Apply output masking and coordinate assembly in bounded pieces. Return
+  diagnostics in global time coordinates.
+- Keep an explicit in-memory result option for feasible runs. Honor output
+  selection during inference and allocation; do not quietly fall back from an
+  incremental mode to full `T × N` storage. Define writer failures and cleanup
+  so an incomplete result cannot be mistaken for a completed recording.
+
+Select API names, storage format, chunk layout, and metadata conventions by
+prototyping. No particular library or resume protocol is mandated here.
+
+### Checkpointing candidate and its trade-offs
+
+Prototype an exact forward/backward schedule: run forward while storing boundary
+messages; visit chunks in reverse; restore each forward boundary and recompute
+its internal forward distributions; smooth using the message from the following
+chunk; emit the requested outputs and release the chunk workspace. Preserve the
+current transition indexing, initial/final conditions, and Phase 0 fallback and
+NaN semantics. Replayed forward calculations must not double-count evidence or
+diagnostics. Time-varying transitions and likelihoods must use the same global
+rows and fitted parameters as the original pass.
+
+This trades additional forward work for reduced storage. Measure recomputing
+likelihoods versus a bounded disk cache; retaining all likelihoods in RAM defeats
+the target. Compare checkpoint intervals using both runtime and peak memory.
+Checkpoints themselves require `O((T/L)N)` storage for chunk length `L`: keep them
+on disk with a bounded cache for duration-independent spatial working RAM.
+An optional all-checkpoints-in-RAM strategy must be budgeted and identified as
+having duration-dependent memory. Account separately for recording inputs,
+compact outputs, and index metadata.
+
+Illustration for `N = 64,802`, `T = 1,800,000`, float32, and `L = 2,000`:
+
+| Component | Calculated size |
+|---|---:|
+| Chunk duration | 4 seconds |
+| One chunk of spatial probabilities | 518.4 MB |
+| Approximately 900 forward checkpoints | 233.3 MB |
+| Four discrete-state probabilities for the hour | 28.8 MB |
+| One full spatial output written to disk | 466.6 GB |
+
+These are component sizes, not a peak-memory guarantee or a chosen default.
+Several working arrays, model/likelihood data, padded bins, and I/O buffers add
+cost. Disk capacity and write/read throughput remain relevant even with bounded
+RAM. The budget must include transitions; 7a alone does not remove their `N²`
+storage.
+
+### Acceptance
+
+- Match full-reference filtered/smoothed posteriors, requested marginals, and
+  evidence across chunk sizes, including singleton/ragged chunks, exact
+  boundary events, missing rows, impossible observations, and NaN inputs.
+- Cover both core transition paths and both detector families through public
+  APIs. Verify output selections against the full conditioned reference.
+- Demonstrate no retained full `T × N` spatial arrays in compact/incremental
+  modes, including during final result conversion. Verify duration scaling at
+  fixed chunk/cache limits and account for checkpoint disk growth separately.
+- Test numerical output and ordering after writing/reading an incremental result,
+  writer error handling, and release of consumed buffers. Validate production
+  dimensions under the declared budget before claiming bounded-memory support.
+
+## 7b: Structured forward and backward transitions
+
+### Problem and falsification
+
+The model currently builds a dense combined transition matrix. Stationary
+filtering multiplies by it at every step; smoothing applies both forward and
+backward products. The covariate path combines continuous/discrete transitions
+in the expanded bin space per step. Inspect construction, combination, and
+application: optimizing multiplication after allocating the same dense matrix
+cannot satisfy the memory target.
+
+Record dense reference products and resource use before prototyping. Inventory
+which transition types and configurations permit an exact structured operation
+and which require a generic fallback.
+
+### Candidates to prototype
+
+- For uniform blocks, sum source mass and distribute it over eligible destination
+  bins. For identity and single-bin blocks, use the corresponding direct
+  operations. Preserve rectangular cross-state blocks and all masks/weights.
+- Preserve the model's discrete-state structure instead of expanding every
+  discrete weight over a combined `N × N` array. In the default four-state model,
+  only Non-Local Continuous → Non-Local Continuous uses a random walk; the other
+  blocks use uniform or single-bin transitions.
+- For Euclidean Gaussian movement with separable covariance on a Cartesian grid,
+  prototype applying movement along each axis with the original row normalization
+  and source/destination masks. Derive both forward and backward applications;
+  applying a generic image blur is not sufficient evidence of HMM equivalence.
+- For graph/manifold distances, nonseparable covariance, directional constraints,
+  custom transitions, or incompatible grid structure, dispatch only to a proven
+  operator. Retain a tested dense fallback with a feasibility check. Never
+  silently replace such a model with a Euclidean or truncated approximation.
+
+An exploratory float64 check on a 5 × 7 grid with excluded bins, scalar movement
+variance 6.0, and movement mean 0.25 compared separable forward/backward products
+with the current dense Euclidean implementation. Maximum absolute errors were
+`1.39e-17` and `1.67e-16`. This supports the candidate algebra; it does not
+validate a production operator, float32 behavior, derivatives, or every mask.
+Reproduce and extend it in the implementation tests before relying on it.
+
+For a complete 180 × 180 grid, the random-walk block has approximately 1.05 billion
+pairwise terms; two full axis operations use approximately 11.7 million terms.
+This is operation-count arithmetic, not a measured 90× decoding speedup. Actual
+performance depends on compilation, memory traffic, hardware, masking, and the
+likelihood workload.
+
+### Acceptance
+
+- Match dense forward and backward products, row-stochastic behavior, and full
+  filter/smoother outputs at existing applicable tolerances. Cover nonuniform
+  priors, boundary bins, interior holes, identity/uniform blocks, zero discrete
+  transition probabilities, and initial/terminal conditions.
+- Test stationary and time-varying discrete weights, supported grid/covariance
+  configurations, generic fallbacks, and both detector families. Verify supported
+  gradients through priors, likelihoods, and transition parameters, including
+  zero-support cases covered by Phase 0.
+- Demonstrate that supported structured paths avoid a combined `N × N` allocation
+  in model setup, device transfer, filtering, and smoothing. A fallback must not
+  be labelled as satisfying that structured-memory guarantee.
+- Measure both nominal grid sizes, compilation, execution, and host/device peak
+  memory. Integrate with 7a and compare the same requested outputs and precision.
+
+## 7c: Measured likelihood and compilation optimizations
+
+Retain the earlier candidates and prioritize them from profiles after the major
+allocation/transition costs are understood. A backend allocation that prevents
+the production run is a prerequisite, not an optional late speed improvement.
+
+### 1. Matrix accumulation for sorted-spike likelihoods
+
+Prototype shared per-chunk spike-count construction and matrix accumulation in
+`sorted_spikes_kde` and `sorted_spikes_glm`, using the diffusion implementation as
+an existing reference pattern. Preserve Phase 3 global event ownership and Phase
+6 duration factors. Compare against an independent per-neuron `xlogy` reference.
+
+The former ~108× timing was unsynchronized and is not accepted performance
+evidence. Re-measure under this phase's protocol. The algebraic replacement
+requires finite log fields: if settled C1 permits exact zero intensities,
+`xlogy(0, 0)` cannot be replaced by `0 * log(0)`. Test that case explicitly and
+preserve the policy rather than adding a new floor for performance.
+
+### 2. Bound KDE recompilation
+
+Prototype sample-count buckets with masked/zero-weight padding, verifying that
+padded samples do not enter either normalization or downstream consumers.
+Compare powers of two, multiples of 256 above a floor, and powers of `sqrt(2)`
+on recorded spike-count distributions. Measure compilation count/time, total
+runtime, and memory together. Ragged/empty inputs and padded `samples_`/`weights_`
+consumers need parity tests. Select the bucket policy from evidence; there is no
+fixed cache-count promise before measurement.
+
+### 3. Avoid unnecessary clusterless block copies
+
+Profile `block_estimate_log_joint_mark_intensity` in `clusterless_kde` and compare
+compiler buffer reuse/donation with bounded block consumption. Do not substitute
+a list of every block followed by concatenation without measuring its peak: it
+can keep both all blocks and the final output alive. Preserve the settled
+finished-intensity flooring semantics and ragged/empty-block results.
+
+### 4. Encoding-kernel memory if required by the budget
+
+Profile the linear `clusterless_kde` encoding-spike × position kernel at the
+recorded encoding duration and spike counts. If it prevents the declared memory
+budget from being met, prototype tiling/streaming that same backend with numerical
+parity. This work need not wait for retiring the duplicate linear/log paths;
+substitution across their known parity gap remains out of scope. Also account
+for waveform dimensions, density workspaces, and cache reuse in real backends.
+
+### Acceptance
+
+Keep per-neuron/matrix, padded/unpadded, and blocked/unblocked reference tests,
+including empty and ragged cases, at existing applicable tolerances. Verify
+shared-helper callers and both local/non-local consumers. Report component and
+end-to-end improvements under the same output, precision, and resource settings;
+revisit profiling after each accepted change rather than assuming the next
+candidate remains the bottleneck.
+
+## Integration and release evidence
+
+Before claiming production support, provide the following for each declared
+configuration:
+
+- Corrected baseline and optimized revisions, small/reference parity results,
+  existing golden results, float32 and actual enabled-float64 checks, and tests
+  for the supported differentiation paths touched by the change.
+- The representative-workload configuration, actual fitted dimensions, hardware,
+  requested outputs, chunk/cache choices, and recorded resource budgets.
+- Host/device peak memory, checkpoint/output sizes, compilation, warm execution,
+  and full-hour end-to-end runtime with the likelihood and I/O costs included.
+- Supported structured configurations and fallback limits; untested devices,
+  backends, EM, and Viterbi must not inherit the decoding claim implicitly.
+
+Review each subtask and the integrated pipeline with its numerical and resource
+artifacts. Run the full suite for implementation changes, plus relevant core,
+backend, integration, and golden regressions. A Phase 7 golden discrepancy is
+investigated as a regression; the response is not to update goldens or widen
+existing tolerances. Record measured trade-offs and limitations in the release
+note rather than a projected universal speedup.
