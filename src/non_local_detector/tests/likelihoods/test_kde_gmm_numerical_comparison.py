@@ -105,7 +105,20 @@ def comparison_data():
     }
 
 
-def fit_both_models(data, kde_position_std=2.0, kde_waveform_std=1.5):
+# Ordinary comparisons use a modest GMM. With 16/16/32 components on ~100
+# spikes per electrode the fitted occupancy density reaches log p ~ -364
+# *inside* the track and the GPI/occupancy ratio overflows float32; that
+# configuration is kept as a stress regression below, not as the baseline.
+GMM_COMPONENTS = (4, 4, 8)
+GMM_COMPONENTS_STRESS = (16, 16, 32)
+
+
+def fit_both_models(
+    data,
+    kde_position_std=2.0,
+    kde_waveform_std=1.5,
+    gmm_components=GMM_COMPONENTS,
+):
     """Fit both KDE and GMM models on the same data.
 
     Parameters
@@ -154,9 +167,9 @@ def fit_both_models(data, kde_position_std=2.0, kde_waveform_std=1.5):
         spike_waveform_features=encoding_spike_features,
         environment=data["environment"],
         sampling_frequency=50,
-        gmm_components_occupancy=16,
-        gmm_components_gpi=16,
-        gmm_components_joint=32,
+        gmm_components_occupancy=gmm_components[0],
+        gmm_components_gpi=gmm_components[1],
+        gmm_components_joint=gmm_components[2],
         gmm_random_state=42,
         disable_progress_bar=True,
     )
@@ -511,6 +524,70 @@ def test_parameter_sensitivity_kde(
     # Correlation should vary with bandwidth
     assert max(correlations) - min(correlations) > 0.1, (
         "Bandwidth should affect correlation"
+    )
+
+
+def test_overparameterized_gmm_overflow_locations(comparison_data):
+    """Stress regression: an over-fitted GMM overflows only where predicted.
+
+    With 16/16/32 components on ~100 spikes per electrode the fitted ratio
+    ``rate * p_gpi / p_occ`` exceeds the float32 range at several bins (and
+    the float64 range at one). The reference is the complete
+    summed intensity accumulated in float64 from the fitted models' own log
+    densities (rate included, aggregated over electrodes): the log likelihood
+    must be ``-inf`` exactly where that sum exceeds the working dtype's
+    maximum, finite and equal to the reference elsewhere, and never NaN or
+    ``+inf``. At least one candidate per time bin must stay finite.
+    """
+    _, gmm_enc = fit_both_models(comparison_data, gmm_components=GMM_COMPONENTS_STRESS)
+    bins = gmm_enc["interior_place_bin_centers"]
+    log_occ = np.asarray(gmm_enc["log_occupancy"], dtype=np.float64)
+    log_terms = np.stack(
+        [
+            np.log(np.float64(rate))
+            + np.asarray(gpi.score_samples(bins), np.float64)
+            - log_occ
+            for gpi, rate in zip(
+                gmm_enc["gpi_models"], gmm_enc["mean_rates"], strict=True
+            )
+            if gpi is not None
+        ]
+    )
+    expected_intensity = np.exp(log_terms).sum(axis=0)  # (n_bins,) float64
+    summed = np.asarray(gmm_enc["summed_ground_process_intensity"])
+    working_max = np.finfo(summed.dtype).max
+    overflow = expected_intensity > working_max
+    clearly_finite = expected_intensity < 0.5 * working_max
+    assert (overflow | clearly_finite).all(), "no bin may sit at the rounding boundary"
+    if summed.dtype == np.float32:
+        assert overflow.any(), "stress configuration must overflow float32 somewhere"
+
+    summed = summed.astype(np.float64)
+    assert np.all(np.isposinf(summed[overflow]))
+    np.testing.assert_allclose(
+        summed[clearly_finite], expected_intensity[clearly_finite], rtol=1e-4
+    )
+
+    data = comparison_data
+    ll_gmm = np.asarray(
+        predict_clusterless_gmm_log_likelihood(
+            time=jnp.asarray(data["time"]),
+            position_time=jnp.asarray(data["position_time"]),
+            position=jnp.asarray(data["position"]),
+            spike_times=[jnp.asarray(st) for st in data["decoding_spike_times"]],
+            spike_waveform_features=[
+                jnp.asarray(sf) for sf in data["decoding_spike_features"]
+            ],
+            **gmm_enc,
+            is_local=False,
+        )
+    )
+    assert not np.any(np.isnan(ll_gmm))
+    assert not np.any(np.isposinf(ll_gmm))
+    assert np.all(np.isneginf(ll_gmm[:, overflow]))
+    assert np.all(np.isfinite(ll_gmm[:, clearly_finite]))
+    assert np.all(np.isfinite(ll_gmm).any(axis=1)), (
+        "every time bin needs a finite candidate"
     )
 
 

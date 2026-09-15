@@ -479,8 +479,31 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
         is_local=True,
     )
 
-    # Verify results are valid (no NaN/Inf)
-    assert np.all(np.isfinite(result_jax)), "Non-local prediction contains NaN/Inf"
+    # NumPy inputs carrying the same float32 values must give bit-identical
+    # predictions, including which bins overflowed to -inf: the fitted
+    # GPI/occupancy ratio is very large off this fixture's thin trajectory and
+    # exceeds float32 there, which is the model's value (not a NaN and not a
+    # substituted one). Every time bin must keep at least one finite candidate.
+    def as_np32(x):
+        return np.asarray(x, dtype=np.float32)
+
+    result_numpy = predict_clusterless_gmm_log_likelihood(
+        as_np32(time),
+        as_np32(position_time),
+        as_np32(position),
+        [as_np32(st) for st in spike_times],
+        [as_np32(sf) for sf in spike_features],
+        **encoding_model,
+        is_local=False,
+    )
+    result_jax = np.asarray(result_jax)
+    result_numpy = np.asarray(result_numpy)
+    assert not np.any(np.isnan(result_jax)), "Non-local prediction contains NaN"
+    assert not np.any(np.isposinf(result_jax)), "Non-local prediction contains +inf"
+    assert np.all(np.isfinite(result_jax).any(axis=1)), (
+        "a time bin has no finite candidate"
+    )
+    np.testing.assert_array_equal(result_jax, result_numpy)
     assert np.all(np.isfinite(result_local_jax)), "Local prediction contains NaN/Inf"
 
 

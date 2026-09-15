@@ -18,6 +18,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.common import LOG_EPS
 from non_local_detector.likelihoods.sorted_spikes_glm import (
     fit_sorted_spikes_glm_encoding_model,
     predict_sorted_spikes_glm_log_likelihood,
@@ -652,7 +653,13 @@ def test_clusterless_kde_extreme_waveform():
 
 
 def test_clusterless_gmm_extreme_waveform():
-    """Extreme waveform outliers should be floored, not produce -1e10 values."""
+    """Extreme waveform outliers give a finite, very negative log likelihood.
+
+    A 100-sigma outlier is genuinely ~1e4 nats down the mark tail, and the log
+    intensity is the raw ``log(rate) + log_joint - log_occupancy`` (the former
+    ``LOG_EPS`` clamp on ``log_joint`` inflated such spikes by orders of
+    magnitude). The contract is finiteness and no NaN, not a bound.
+    """
     env = _make_env_1d()
     enc_spikes = [jnp.array([2.0, 4.0, 5.0, 6.0, 8.0])]
     enc_feats = [
@@ -665,9 +672,8 @@ def test_clusterless_gmm_extreme_waveform():
     dec_feats = [jnp.array([[100.0, 100.0]])]
     ll = _predict_clusterless_gmm(enc, env, dec_spikes, dec_feats, t, pos)
 
-    assert not jnp.any(jnp.isnan(ll))
-    # After LOG_EPS floor (~-34.5), values should be bounded (not -1e8 or worse)
-    assert jnp.all(ll > -50), f"GMM LL too extreme: min={float(jnp.min(ll)):.1f}"
+    assert jnp.all(jnp.isfinite(ll))
+    assert jnp.min(ll) < LOG_EPS, "a 100-sigma outlier must not be floored"
 
 
 # ---------------------------------------------------------------------------

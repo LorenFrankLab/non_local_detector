@@ -191,11 +191,12 @@ record rather than treating the audit failure as current readiness.
 
 **Blocking.**
 
-- **C1's degeneracy policy is withdrawn.** "Floor only `-inf`" is non-monotonic:
-  an impossible observation scores −34.54 while a 1e-44 one scores −101.31.
-  Monotonicity requires flooring both or neither. See
-  [shared-contracts.md](shared-contracts.md#c1--degeneracy-policy-for-log-intensities)
-  for the three options. Phase 2 cannot proceed until this is chosen.
+- **C1's package-wide degeneracy policy is deferred**, not chosen. "Floor only
+  `-inf`" is non-monotonic (an impossible observation scores −34.54 while a
+  1e-44 one scores −101.31). Phase 2 shipped the GMM arithmetic corrections
+  under the existing floors; the recommended replacement is a background
+  firing model, which needs a separate modelling proposal. See
+  [shared-contracts.md](shared-contracts.md#c1--degeneracy-policy-for-log-intensities).
 - **C3b's draft `sample_cell_durations` disagrees with full-cell exposure**:
   it returns `(N-1)/N` of that reference and gives a single sample zero exposure.
   Choose acquisition endpoints, single-sample requirements, and a policy for
