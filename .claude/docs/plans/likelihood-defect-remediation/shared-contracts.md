@@ -5,9 +5,12 @@ them. Alternatives are recorded so a later reader does not reopen a closed
 decision by accident. [Phase 0](phase-0-core-hmm.md) fixes core HMM conditioning
 independently of these likelihood and time/exposure decisions.
 
-**State: C2 is settled (with measured evidence). C1 and C3 are not.** C1's policy
-was withdrawn after it was shown to be non-monotonic; C3's exposure helper
-undercounts and needs redesign. No phase depending on C1 or C3 can be executed.
+**State: C2 and C3a are settled; C1 and C3b are unresolved.** C1's former policy
+was withdrawn after it was shown to be non-monotonic. C3b's draft exposure helper
+undercounts the full-cell reference and needs redesign. Implementation that
+selects either unresolved policy is blocked; work preserving current semantics
+or depending only on the settled contracts can be prototyped independently. See the execution order in
+[PLAN.md](PLAN.md#execution-order-and-baselines).
 
 - [C1 — Degeneracy policy for log intensities](#c1--degeneracy-policy-for-log-intensities)
 - [C2 — Exposure ownership and spike weights](#c2--exposure-ownership-and-spike-weights)
@@ -27,9 +30,9 @@ undercounts and needs redesign. No phase depending on C1 or C3 can be executed.
 Flooring the **numerator** before forming `log_rate + log_marginal −
 log_occupancy` destroys tail information. For `log_joint = −60`,
 `log_occupancy = −8` the true intensity is `−52`; clamping `log_joint` at
-`LOG_EPS = log(1e-15) ≈ −34.54` first yields `−26.54`, an error of 25.5 log units
-(~1e11 in likelihood). Every clusterless GMM site does this. That much is not in
-dispute.
+`LOG_EPS = log(1e-15) ≈ −34.54` first yields `−26.54` when `log_rate = 0`, an error
+of 25.5 log units (~1e11 in intensity). The audited clusterless GMM intensity
+paths do this; the ordering defect is settled.
 
 ### Why "floor only `-inf`" fails
 
@@ -79,9 +82,11 @@ every site explicitly.
   normalized posterior and finite one-step evidence for the phase-0 fixtures.
   True zero support retains the existing prior fallback with `-inf` evidence;
   NaNs must remain visible. No likelihood-flooring choice is made by phase 0.
-- **Do not floor per electrode.** Verified: 8 degenerate electrodes each floored
-  to `LOG_EPS` then combined by `logsumexp` give `8 × EPS`, not `EPS`. Keep
-  per-electrode degeneracy as `-inf` through the combination.
+- **An aggregate ground-process floor applies after aggregation.** Verified:
+  8 degenerate electrodes each floored to `LOG_EPS` then combined by `logsumexp`
+  give `8 × EPS`, not `EPS`. If the selected policy floors the aggregate once,
+  keep per-electrode degeneracy as `-inf` through that combination. This does
+  not choose the policy for a finished per-spike intensity.
 - **Zero-occupancy *and* zero-marginal is a distinct case.** `log_rate + (-inf) −
   (-inf)` is `NaN`, so an `& ~isnan(...)` guard declines to floor it — verified.
   Detect zero-mass operands *before* the subtraction so a genuine `NaN` from a
@@ -104,26 +109,25 @@ list recorded earlier was incomplete. Build a **backend × {local, non-local} ×
 | `clusterless_diffusion.py:667`, `:787` | intensity via `safe_log` |
 | sorted backends | interior place fields EPS-floored at fit (`sorted_spikes_kde.py:225-234`, `sorted_spikes_glm.py:351-354`) |
 
-The sorted row matters: if "package-wide" includes sorted likelihoods, then
-phase 1's EPS zero-rate model and phase 7's floored-field precondition both
-depend on C1, and neither is independent any more.
+The sorted row matters: including sorted likelihoods would require Phase 2 to
+reconcile the existing EPS zero-exposure fallback and field floors explicitly.
+Phase 1 is already complete under the existing policy; this future decision
+does not retroactively block or reopen it. Phase 7c must use the policy selected
+for its baseline and cannot assume every log field is finite.
 
 Three sub-decisions must be made explicitly alongside the main one:
 
-1. **Does the scope include sorted likelihoods?** (Determines whether phases 1
-   and 7 acquire a C1 dependency.)
+1. **Does the scope include sorted likelihoods?** Any resulting changes to the
+   completed Phase 1 fallback belong to Phase 2, with their own validation.
 2. **What does zero-numerator-over-zero-occupancy mean?** `0/0` is *unsupported*,
    not "true zero" — the distinction changes whether it floors or propagates.
 3. **Is an all-degenerate ground-process aggregate zero, or floored once?**
 
-Two downstream requirements are verified regardless of which option wins:
-
-- **Do not floor per electrode.** 8 degenerate electrodes each floored to
-  `LOG_EPS` then combined by `logsumexp` give `8 × EPS`, not `EPS`.
-- **Zero-occupancy *and* zero-marginal needs its own branch.** `log_rate +
-  (-inf) − (-inf)` is `NaN`, so an `& ~isnan(...)` guard declines to floor it.
-  Zero-mass operands must be detected *before* the subtraction so a genuine
-  `NaN` still reaches `core.py`'s diagnostics.
+Apply these requirements at the sites covered by the selected scope; identify
+any existing out-of-scope behavior explicitly rather than claiming package-wide
+parity.
+Phase 2 must distinguish raw log ratios, per-electrode ground-process terms,
+their aggregate, and finished likelihoods when specifying where a floor applies.
 
 ---
 
@@ -164,6 +168,13 @@ non-overlap rule can go.
 **The rule:** select a group's spikes by `interpolated_weight > 0`. No hard
 windows, no `time_delta` arithmetic, no run-boundary special cases.
 
+This rule applies within the supported recording domain; it does not choose the
+acquisition endpoints or tracking-gap exposure policy deferred to C3b. Phase 5
+must preserve event/feature alignment and apply each event weight once. For the
+GLM, fractional event ownership requires weighted count sufficient statistics;
+weighting ordinary sample counts a second time is not equivalent. Phase 6a's
+encoding-cell migration must preserve that Phase 5 ownership contract.
+
 ### How much does this change results?
 
 Measured on a 200 s / 100 Hz fixture with one place cell (289 spikes), comparing
@@ -179,20 +190,24 @@ interpolated ownership against stepwise cell assignment:
 | 0.05 s | 3999 | 48 / 289 | 0.29% | 5.75% |
 | 0.02 s | 9999 | 164 / 289 | 2.17% | 6.50% |
 
-For block-structured encoding groups — the normal case — the two policies are
-**identical**. They diverge only when the mask alternates on a timescale
-approaching the position sampling interval. Continuous EM posterior weights are
-not a 0/1 mask at all, and interpolation is unambiguously right there.
+The longer blocks in this fixture produced identical results because no spikes
+fell near their transitions. Block structure alone does not guarantee equality:
+any event near a transition can receive a fractional weight. Shorter blocks made
+those events more frequent here. Continuous EM weights are also covered by the
+chosen interpolation contract.
 
 (A first attempt at this measurement drew spike times *on* the position grid and
 found zero difference everywhere. Spikes land at continuous times within a sample
 interval; the fixture must jitter them, or the comparison is vacuous.)
 
-**Invariant (corrected).** Fitting the full arrays with `weights=m.astype(float)`
-equals fitting the subset arrays `position[m]`, `position_time[m]` with
-`weights=None` **exactly, provided no spike falls within one sample interval of a
-mask transition.** Near a transition the two differ by construction: `np.interp`
-gives a boundary spike a fractional weight, while the subset fit gives it 0 or 1.
+**Invariant (scoped to the Phase 1 fixtures).** For the tested KDE exposure
+calculation, fitting full arrays with `weights=m.astype(float)` agrees with a
+subset fit when spikes are away from mask transitions and encoding coordinates
+and exposure conventions are otherwise identical. This is not a universal
+equivalence for refitted GLM bases or for a subset time grid that bridges gaps or
+redefines sample-cell exposure. Near a mask transition the event weights differ
+by construction. Phase 5 tests canonical weighted-event ownership directly;
+Phase 6 compares physical exposure on the original acquisition timeline.
 
 An earlier draft asserted this invariant unconditionally on the strength of a test
 whose mask boundary happened to have no nearby spikes. Tests asserting it must
@@ -211,13 +226,16 @@ Name the three quantities separately and never reuse one array for two roles.
 
 | Name | Shape | Meaning |
 |---|---|---|
-| `time_edges` | `(n_bins + 1,)` | Decode bin boundaries. **Only** used to bin events. |
+| `time_edges` | `(n_bins + 1,)` | Decode bin boundaries used for event assignment and deriving centers/durations; not observation coordinates. |
 | `time_centers` | `(n_bins,)` | `0.5 * (edges[:-1] + edges[1:])`. Drives position interpolation, local-position kernels, non-local penalties, HMM row coordinates, and the xarray `time` coordinate. |
 | `bin_durations` | `(n_bins,)` | `np.diff(edges)`. Scales Poisson intensities. |
 | `n_bins` | scalar | `len(time_edges) - 1`. The number of likelihood rows and HMM observations. |
 
 Bin `i` covers `[edges[i], edges[i+1])`, except bin `n_bins - 1` which is
-right-closed so a spike at `edges[-1]` is counted.
+right-closed so a spike at `edges[-1]` is counted. This is the target contract
+implemented by Phase 6a; Phase 3 preserves the current unchunked convention
+until that migration. Phase 6c's detector guard ships with 6a. Full nonuniform
+likelihood support, including duration scaling, is established by 6b/6d.
 
 ### C3b — Encoding exposure (UNRESOLVED)
 
@@ -229,18 +247,22 @@ exposure needs its own per-sample cell widths — `weight_sum × median(diff(...
 is wrong for jittered or gapped timestamps.
 
 The drafted helper clamped the outer edges to the first and last sample centers.
-That **undercounts** — verified:
+Compared with an acquisition containing one complete 1 s cell per sample, it
+undercounts — verified under that reference convention:
 
-| N uniform centers, dt=1 | total exposure | should be |
+| N uniform centers, dt=1 | clamped helper exposure | full-cell reference exposure |
 |---|---|---|
 | 2 | 1.00 | 2.00 |
 | 5 | 4.00 | 5.00 |
 | 100 | 99.00 | 100.00 |
 | 1 | 0.00 | 1.00 |
 
-Hz rates would be inflated by `N/(N−1)`, and a single sample gets zero exposure.
-It also breaks the "equal encoding/decode interval preserves the old arithmetic"
-invariant that phase 6b's approval gate depends on.
+Relative to that reference, Hz rates would be inflated by `N/(N−1)` for N > 1,
+and a single sample gets zero exposure. A single center alone cannot determine
+the 1 s width assumed in the table. Clamping can describe a different acquisition
+domain, but it cannot silently replace full-cell exposure while claiming equal
+encoding/decode intervals preserve the old arithmetic. Phase 6b's preservation
+check requires matched physical exposure under the chosen endpoint convention.
 
 Two decisions are required before this can be written:
 
@@ -263,8 +285,10 @@ helper.
 **Uniform-bin restriction.** `core.py` applies one transition matrix per row
 regardless of that row's duration (`_filter_internal` call at `core.py:643`), so
 nonuniform bins produce a time-miscalibrated posterior even when the likelihood
-is correct. Detector-level `predict` therefore **requires uniform edges** and
-raises otherwise. Nonuniform edges remain valid on the direct
-`predict_*_log_likelihood` API, where no transition model is involved. See
+is correct. The target detector contract therefore **requires uniform edges**
+and raises otherwise. Phase 6c implements that guard with 6a; it is not a claim
+that the current code already enforces it. After 6b/6d, nonuniform edges are
+supported by the direct `predict_*_log_likelihood` API, where no transition
+model is involved. See
 [overview.md](overview.md#deferred-with-triggers) for the duration-calibrated
 follow-up.

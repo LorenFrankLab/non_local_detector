@@ -10,13 +10,13 @@ logger = logging.getLogger(__name__)
 
 
 ## NOTE: adapted from dynamax: https://github.com/probml/dynamax/ with modifications ##
-def _normalize(
-    u: ArrayLike, axis: int = 0, eps: float = 1e-15
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+def _normalize(u: ArrayLike, axis: int = 0) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Normalizes the values within the axis in a way that they sum up to 1.
 
-    Avoids clipping to preserve probability mass. Adds eps to denominator
-    for numerical stability instead of clipping the input.
+    Divides by the exact sum so any positive total mass — down to the smallest
+    normal value of the dtype — normalizes to one. A slice whose sum is exactly
+    zero is returned unchanged (all zeros stay all zeros) rather than producing
+    NaN; a NaN sum propagates.
 
     Parameters
     ----------
@@ -24,8 +24,6 @@ def _normalize(
         Array to normalize
     axis : int, optional
         Axis to normalize, by default 0
-    eps : float, optional
-        Small value to avoid division by zero, by default 1e-15
 
     Returns
     -------
@@ -35,11 +33,69 @@ def _normalize(
         Normalization constant (squeezed along normalized axis)
     """
     c = u.sum(axis=axis, keepdims=True)
-    u = u / (c + eps)  # Add eps to denominator, don't clip input
+    u = u / jnp.where(c == 0.0, 1.0, c)
     return u, c.squeeze(axis)
 
 
 # Helper functions for the two key filtering steps
+def _condition_on_primal(
+    probs: ArrayLike, ll: ArrayLike
+) -> tuple[
+    tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
+]:
+    """Stable Bayes update plus the shifts its derivative rule reuses.
+
+    This is the forward pass of :func:`_condition_on`. Do not differentiate it
+    directly: its ``probs > 0`` masks make plain autodiff wrong at zero prior
+    mass. ``_condition_on_jvp`` supplies the derivatives and calls this only
+    for the auxiliary values, which share the forward calculation so ordinary
+    filtering never evaluates the derivative rule.
+
+    Parameters
+    ----------
+    probs : jnp.ndarray, shape (n_states,)
+        Predicted state probabilities (sum to 1).
+    ll : jnp.ndarray, shape (n_states,)
+        Log-likelihood at this time step.
+
+    Returns
+    -------
+    result : tuple[jnp.ndarray, jnp.ndarray]
+        ``(new_probs, log_norm)`` exactly as :func:`_condition_on` returns them.
+    auxiliaries : tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
+        ``(ll_shift, centered_log_norm, is_zero_norm)``: the reachable-state
+        log-likelihood shift, ``log_norm - ll_shift`` (kept separate so the
+        derivative rule can form ``ll - log Z`` without cancellation at large
+        likelihood offsets), and the scalar zero-normalizer flag.
+    """
+    reachable = probs > 0
+    ll_max = jnp.where(reachable, ll, -jnp.inf).max()
+    ll_shift = jnp.where(jnp.isfinite(ll_max), ll_max, 0.0)
+    ll_shifted = ll - ll_shift
+    log_joint_max = jnp.where(reachable, _safe_log(probs) + ll_shifted, -jnp.inf).max()
+    joint_shift = jnp.where(jnp.isfinite(log_joint_max), log_joint_max, 0.0)
+    # Floor the second shift so exp(-joint_shift) <= 1 / tiny cannot overflow
+    # when the dominant prior mass is itself subnormal. (XLA CPU flushes
+    # subnormals to zero, so there they are simply unreachable; the floor
+    # matters on backends that preserve them.)
+    joint_shift = jnp.maximum(joint_shift, jnp.log(jnp.finfo(probs.dtype).tiny))
+
+    # The first shift excludes unreachable maxima; the second rescales tiny
+    # prior mass before exponentiation. Multiply the prior in probability
+    # space to retain accuracy when its logarithm would lose significant bits.
+    # Finite unreachable likelihoods cannot affect the forward result. Mask
+    # them before exp, testing the ORIGINAL likelihood so subtraction overflow
+    # is not mistaken for invalid input. Actual NaN/+inf inputs stay visible.
+    exponent = jnp.where(reachable | ~jnp.isfinite(ll), ll_shifted - joint_shift, 0.0)
+    posterior, norm = _normalize(probs * jnp.exp(exponent))
+    centered_log_norm = jnp.log(norm) + joint_shift
+    is_zero_norm = norm == 0.0
+    new_probs = jnp.where(is_zero_norm, probs, posterior)
+    log_norm = jnp.where(is_zero_norm, -jnp.inf, centered_log_norm + ll_shift)
+    return (new_probs, log_norm), (ll_shift, centered_log_norm, is_zero_norm)
+
+
+@jax.custom_jvp
 def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jnp.ndarray, float]:
     """Condition on new emissions, given in the form of log likelihoods
     for each discrete state, while avoiding numerical underflow.
@@ -63,33 +119,102 @@ def _condition_on(probs: ArrayLike, ll: ArrayLike) -> tuple[jnp.ndarray, float]:
         propagating an all-zero (invalid) posterior forward. A ``NaN`` in
         ``ll`` (a likelihood-computation bug, not impossible data) is NOT
         masked: it makes the normalizer ``NaN`` (not zero), so it propagates
-        into ``new_probs`` and stays visible to the caller.
+        into ``new_probs`` and stays visible to the caller. A ``+inf`` in
+        ``ll`` (also invalid) likewise yields non-finite output.
     log_norm : float
         Log normalization constant, or ``-inf`` when the normalizer is zero.
-    """
-    ll_max = ll.max()
-    # Shift by the max for numerical stability. When the max is non-finite
-    # (all -inf, or a NaN present) use 0.0 so any finite states are not
-    # corrupted by an inf - inf subtraction.
-    ll_max_safe = jnp.where(jnp.isfinite(ll_max), ll_max, 0.0)
-    new_probs_normal, norm = _normalize(probs * jnp.exp(ll - ll_max_safe))
-    log_norm = jnp.log(norm) + ll_max_safe
 
-    # Fallback when the normalizer is exactly zero. Two distinct situations
-    # produce a 0/0 Bayes update:
-    #   1. every state is -inf (all-impossible data), or
-    #   2. the predicted distribution places zero mass on every state with
-    #      finite likelihood (a prediction/likelihood support mismatch).
-    # In both, return the predicted distribution unchanged and mark log_norm as
-    # -inf so the step is recorded in the marginal likelihood instead of
-    # silently propagating an all-zero (invalid) posterior. A NaN in ``ll``
-    # makes ``norm`` NaN (not 0), so ``norm == 0`` is False and the NaN flows
-    # through the normal branch into new_probs, keeping the upstream bug visible
-    # rather than laundering it into the predicted prior.
-    is_zero_norm = norm == 0.0
-    new_probs = jnp.where(is_zero_norm, probs, new_probs_normal)
-    log_norm = jnp.where(is_zero_norm, -jnp.inf, log_norm)
-    return new_probs, log_norm
+    Notes
+    -----
+    Derivatives come from the explicit rule in ``_condition_on_jvp`` (this is
+    a :func:`jax.custom_jvp`), so they are exact at zero prior mass, at exactly
+    tied likelihoods, and under large common likelihood offsets; the plain
+    autodiff of the forward pass is not.
+
+    A subnormal predicted probability counts as zero on backends that flush
+    subnormals (XLA CPU does), so the same inputs can differ across devices at
+    the smallest-normal boundary.
+    """
+    return _condition_on_primal(probs, ll)[0]
+
+
+@_condition_on.defjvp
+def _condition_on_jvp(
+    primals: tuple[jnp.ndarray, jnp.ndarray],
+    tangents: tuple[jnp.ndarray, jnp.ndarray],
+) -> tuple[tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
+    """Derivative rule for :func:`_condition_on`.
+
+    With ``r = exp(ll) / Z`` and posterior ``q``, the tangent of the normalized
+    weight ``w / Z`` (``Z`` held fixed) is ``r * d(probs) + q * d(ll)``. Its
+    sum is ``d(log Z)``; subtracting ``q * d(log Z)`` gives ``d(q)``. This
+    holds at zero prior mass and at exactly tied likelihoods, where the plain
+    autodiff of the masked forward pass does not.
+
+    Parameters
+    ----------
+    primals : tuple[jnp.ndarray, jnp.ndarray]
+        ``(probs, ll)``, each of shape ``(n_states,)``.
+    tangents : tuple[jnp.ndarray, jnp.ndarray]
+        ``(d(probs), d(ll))``; ``d(ll)`` may be a ``float0`` zero for integer
+        likelihoods.
+
+    Returns
+    -------
+    primal_out : tuple[jnp.ndarray, jnp.ndarray]
+        ``(new_probs, log_norm)``.
+    tangent_out : tuple[jnp.ndarray, jnp.ndarray]
+        ``(d(new_probs), d(log_norm))``. At the zero-normalizer fallback the
+        forward output is ``(probs, -inf)``, so the tangent is ``(d(probs),
+        0)``; as with any selected branch, a NaN in the unselected ``d(ll)``
+        is dropped there. A derivative ``r_i`` too large for the dtype is
+        saturated at the dtype maximum per state, so a zero tangent stays zero
+        instead of ``0 * inf``; a nonzero tangent along such a state is then
+        finite but understated, and two saturated states in one tangent
+        direction can still sum past the dtype's range.
+    """
+    probs, ll = primals
+    probs_dot, ll_dot = tangents
+    if ll_dot.dtype == jax.dtypes.float0:
+        ll_dot = jnp.zeros_like(ll, dtype=probs.dtype)
+    # Call the decorated function, not ``_condition_on_primal``: under
+    # higher-order differentiation this recursion is what routes d(log Z)
+    # through the rule again, so second derivatives at zero prior mass stay
+    # correct. Reusing the primal's result here silently corrupts them.
+    posterior, log_norm = _condition_on(probs, ll)
+    _, (ll_shift, centered_value, is_zero_norm) = _condition_on_primal(probs, ll)
+
+    # Keep the centered value to avoid cancellation in ll - log Z at large
+    # likelihood offsets. The zero-valued term carries the derivative of the
+    # decorated evidence output, so higher derivatives also include zero-prior
+    # states. Numerical shifts are constants for differentiation.
+    finite_log_norm = jnp.where(jnp.isfinite(log_norm), log_norm, 0.0)
+    centered_log_norm = jax.lax.stop_gradient(centered_value) + (
+        finite_log_norm - jax.lax.stop_gradient(finite_log_norm)
+    )
+    exponent = (ll - jax.lax.stop_gradient(ll_shift)) - centered_log_norm
+    # At a genuine zero normalizer, -inf - (-inf) can be NaN. Make the unused
+    # exponential finite before selecting the fallback tangent, including in
+    # reverse mode, where a zero cotangent times NaN would still be NaN.
+    exponent = jnp.where(is_zero_norm, 0.0, exponent)
+    # Saturate a normalized derivative that cannot fit the dtype so zero
+    # tangents stay finite (see the docstring for what this costs nonzero
+    # ones). An invalid +inf/NaN input already made ``exponent`` NaN above and
+    # is never repaired here. A strict ``where`` rather than ``jnp.minimum``:
+    # at an exact tie ``minimum`` splits its derivative between operands and
+    # would halve second derivatives of a derivative that sits on the bound.
+    finfo = jnp.finfo(probs.dtype)
+    max_exponent = jnp.nextafter(jnp.log(finfo.max), jnp.asarray(0.0, probs.dtype))
+    exponent = jnp.where(exponent > max_exponent, max_exponent, exponent)
+    weight_dot = jnp.exp(exponent) * probs_dot + posterior * ll_dot
+    log_norm_dot = weight_dot.sum()
+    posterior_dot = weight_dot - posterior * log_norm_dot
+
+    # The selected operational fallback returns the prior and constant -inf.
+    return (posterior, log_norm), (
+        jnp.where(is_zero_norm, probs_dot, posterior_dot),
+        jnp.where(is_zero_norm, 0.0, log_norm_dot),
+    )
 
 
 def _degenerate_and_nan_masks(

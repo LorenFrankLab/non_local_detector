@@ -1,192 +1,162 @@
-> **SUPERSEDED — DO NOT EXECUTE.**
-> The implementation snippets below were written without being run and are known
-> to be defective; see the readiness table in [PLAN.md](PLAN.md). The *problem
-> statements and reproductions* in this file remain valid and are the reason the
-> phase exists. Everything under "Tasks" must be re-derived by prototyping
-> against the real code before this phase can ship.
-
 # Phase 3 — Backends bin globally, allocate only requested rows
+
+> **REVISED REQUIREMENTS — NEEDS PROTOTYPING.** The boundary-spike defect is
+> reproduced below. The former unexecuted implementation snippets and >4× total
+> decoding-memory target are withdrawn. This phase owns correct event ownership
+> and likelihood-specific allocation bounds. Full-session posterior storage and
+> checkpointed smoothing belong to [Phase 7a](phase-7-performance.md).
 
 ## Problem
 
-With `n_chunks > 1`, likelihood caching is disabled
-(`models/base.py:1719-1721`), so each chunk recomputes from the **full** spike
-arrays against a **sliced** time array (`core.py:618-622` stationary,
-`core.py:1221-1225` covariate-dependent). Each predictor clips spikes to its own
-`[time[0], time[-1]]`, so a spike between adjacent chunks is outside both.
+With `n_chunks > 1`, likelihood caching is disabled in `models/base.py`.
+The core calls the likelihood function with the full spike arrays and a sliced
+time array. Each predictor clips spikes to its own `[time[0], time[-1]]`, so a
+spike between adjacent chunks is outside both.
 
-Reproduced:
+Reproduced under the current timestamp convention:
 
-```
+```text
 time = [0..5], spikes = [0.5,1.5,2.5,3.5,4.5], chunks = [0:3], [3:6]
-  full    : [1 1 1 1 1 0]   total 5
-  chunked : [1 1 0 1 1 0]   total 4     -> 1 spike lost per boundary
+full    : [1 1 1 1 1 0]   total 5
+chunked : [1 1 0 1 1 0]   total 4     -> 1 spike lost per boundary
 ```
 
-The existing integration test avoids this path by precomputing likelihoods
-(`tests/integration/test_core_kde_integration.py:81`).
+The existing `tests/integration/test_core_kde_integration.py` test precomputes
+likelihoods and therefore avoids this defect. Regression coverage must exercise
+the public path with likelihood caching disabled.
 
-## Design decision
+## Scope and dependencies
 
-`n_chunks` exists to bound **likelihood** peak memory, not only the HMM pass
-(user-confirmed). So "compute the full likelihood inside each chunk and slice the
-result" is not acceptable: it has full-likelihood peak memory *and* ~`n_chunks`×
-the work, which is strictly worse than simply caching once.
+`n_chunks` is intended to bound likelihood memory, including density evaluation
+and reductions. Computing a full-time likelihood and then slicing it does not
+meet that requirement. Restricting the final reduction alone also leaves the
+clusterless density evaluation over all decoding spikes in memory.
 
-An earlier draft proposed exactly that. It was also broken in detail: it passed a
-chunk-sized `is_missing` alongside a full-length `time`, and both detectors apply
-that mask before any slice would occur (`models/base.py:3237`, `:4198`), so normal
-chunks raise on broadcast and singleton masks silently broadcast.
+The [representative workload](overview.md#representative-workload) has 1.8 million
+time rows and approximately 16,202–64,802 combined hidden bins. Phase 3 must
+produce correct likelihood chunks for that future pipeline, but its completion
+does not establish bounded memory for the complete HMM or returned posteriors.
 
-**This phase instead pushes global binning into the backends.** A backend receives
-all edges and a row range; it bins events against the full edge array and
-allocates only `(stop − start, n_bins)`.
-
-## Contracts referenced
-
-- [C3 — Time vocabulary](shared-contracts.md#c3--time-vocabulary) — this phase
-  introduces `row_slice` but does **not** change edge semantics; it must work
-  under the current convention and survive phase 6a unchanged.
+Preserve current unchunked event ownership in this phase. Use the settled decode
+vocabulary in [C3](shared-contracts.md#c3--time-vocabulary) when naming concepts;
+do not independently change the endpoint convention, intensity units, encoding
+exposure, C1 floors, or Phase 0 conditioning. Phase 6a migrates the time API, and
+6b/6d calibrate intensities and model units. Revalidate chunk ownership against
+those contracts before Phase 7 integration.
 
 ## Falsification
 
-Before implementing, write `test_no_spikes_lost_across_chunks` so it drives the
-**public predict path** with `n_chunks>1`, not `get_spikecount_per_time_bin` over
-slices. A helper-level test cannot pass while the helper is unchanged, and this
-phase does not change it — an earlier draft made that mistake. The test must fail
-on `main` for the right reason: a spike present in the unchunked posterior and
-absent in the chunked one.
+Before implementation, reproduce the defect through public `predict` with
+spikes strictly between adjacent chunk timestamps and caching disabled. Verify
+that the unchunked path includes their contributions and the current chunked
+path loses them. A helper-only test or cached-likelihood test cannot establish
+that the integration defect is fixed.
+
+For memory, profile a single requested likelihood chunk while increasing the
+recording length and holding chunk length and fitted model fixed. Identify
+full-time spatial arrays or density evaluations over decoding spikes outside
+the requested range. Record the failing allocation behavior before rewriting
+each affected backend.
 
 ## Tasks
 
-### 1. Add `row_slice` to the backend signature
+### 1. Prototype global event ownership with bounded evaluation
 
-Every predictor in both registries gains a keyword-only
-`row_slice: tuple[int, int] | None = None`. Semantics: bin against all of `time`;
-return only rows `[start, stop)`.
+- Prototype an interface that identifies a row range in the full decoding
+  timeline. `row_slice` is a candidate API, not a settled signature.
+- Assign each decoding spike to its global observation bin consistently, then
+  select the spikes belonging to the requested rows **before** expensive density
+  evaluation. Slice waveform features using exactly the same selection.
+- For clusterless reductions, translate selected global bin IDs into local
+  chunk indices and allocate only the chunk's output rows. A full-time
+  `segment_sum` followed by slicing is insufficient.
+- For sorted backends, form the counts and likelihood arrays needed for the
+  requested rows. Avoid repeatedly binning the full recording for every chunk;
+  prototype reusable event indices or indexed range lookup.
+- Coordinate ordering assumptions with Phase 8's sorted-index contract. A range
+  lookup must establish its required order and preserve spike/feature alignment;
+  it cannot silently assume inputs are sorted.
+- Inventory the fixed encoding-model allocations separately from decoding
+  workspace. Large encoding-spike × position kernels are a Phase 7c profiling
+  target; limiting time rows does not by itself remove them.
 
-For the sorted backends this is mechanical — `get_spikecount_per_time_bin` already
-produces a full-length count vector, so the change is to slice the count matrix
-before the matmul rather than after:
+No implementation snippet becomes prescriptive until this behavior has been
+run against the real backends and compared with the unchunked reference.
 
-```python
-    counts = _spike_counts_matrix(spike_times, time, ...)   # global binning
-    if row_slice is not None:
-        counts = counts[row_slice[0] : row_slice[1]]
-    log_likelihood = counts @ log_interior_fields
-```
+### 2. Cover the entire model assembly path
 
-For the clusterless backends the segment reduction already targets global bins;
-slice `num_segments` output rather than the inputs:
+Thread the row range through both sorted and clusterless detector assembly,
+including all registered backends and the no-spike model, which bypasses both
+registries. Allocate the assembled likelihood as chunk rows × hidden bins.
+Align missing-data masks, local-position likelihoods, non-local penalties,
+position interpolation, and time-varying transition inputs with those same
+global rows. Define ownership of slicing at each layer so arrays are neither
+left unsliced nor sliced twice.
 
-```python
-    contribution = jax.ops.segment_sum(..., num_segments=n_time)  # global
-    if row_slice is not None:
-        contribution = contribution[row_slice[0] : row_slice[1]]
-```
+### 3. Integrate both core transition paths
 
-Slicing after a global `segment_sum` does not reduce that reduction's peak. If
-profiling in task 4 shows the reduction dominates, the follow-up is to restrict
-`segment_ids` to the range and offset them — record that as a note, do not
-speculatively implement it.
+Exercise stationary and covariate-dependent transitions independently; both
+detector families can use either core path. Preserve the generic likelihood
+callback contract: bind the new backend-specific information at the model layer
+or provide an explicit adapter, rather than injecting an unsupported keyword
+into arbitrary user callables. A legacy callback must not be presented as a
+bounded/global-binning implementation without evidence that it satisfies those
+contracts. Choose and test the compatibility behavior in the prototype.
 
-### 2. Thread it through the model layer
+### 4. Preserve requested likelihood outputs
 
-Both `compute_log_likelihood` implementations (`models/base.py:3047`, `:4011`)
-gain `row_slice`. They must:
+When the caller explicitly requests likelihoods, return the correct rows in
+global order for cached and uncached prediction. During Phase 3 an explicitly
+requested full likelihood result may still consume `T × N` memory; record that
+exception. Unrequested likelihood chunks should be released after use. The
+incremental output mechanism and full-session memory guarantee are Phase 7a
+work, not prerequisites for shipping the boundary-spike correction.
 
-- pass it to the backend;
-- allocate the assembly array as `(stop − start, n_state_bins)`, not `(n_time, …)`;
-- slice `is_missing` **themselves** — the caller passes the full mask, and the
-  model layer applies `is_missing[start:stop]` at `:3237` / `:4198`. This is what
-  the earlier draft got wrong.
-- slice anything else indexed by time: the non-local position penalty
-  (`_compute_non_local_position_penalty`) and the local-position kernel
-  (`_compute_local_position_kernel`), both of which return per-time arrays.
+### 5. Release note
 
-### 3. Use it from both core paths
-
-At `core.py:618-622` and `core.py:1221-1225`, pass the full `time` and the row
-range. Do **not** invent a new kwarg on the generic `log_likelihood_func`
-parameter — `core` accepts arbitrary callables, and adding a required kwarg breaks
-them. Instead have `models/base.py` bind it before handing the callable to core:
-
-```python
-        # base.py, where log_likelihood_func is constructed for core
-        log_likelihood_func = functools.partial(
-            self.compute_log_likelihood, ...
-        )
-        # core calls: log_likelihood_func(time, *args, is_missing=..., row_slice=...)
-```
-
-and give core a capability check so a user-supplied callable without `row_slice`
-still works:
-
-```python
-    supports_row_slice = "row_slice" in inspect.signature(log_likelihood_func).parameters
-```
-
-falling back to the current sliced-time behaviour with a `logger.warning` naming
-the boundary-spike limitation.
-
-Assert chunks are contiguous once at the top of the loop
-(`np.array_equal(time_inds_np, np.arange(start, stop))`) rather than assuming it.
-
-### 4. Restore `return_outputs="log_likelihood"` for chunked runs
-
-With caching disabled, multi-chunk prediction returns no likelihood. Accumulate
-the per-chunk arrays and assign `self.log_likelihood_` after the forward pass,
-guarded by whether the caller asked for it — do not always retain it, that would
-defeat the memory purpose.
-
-Update the comment at `models/base.py:1719-1721` to say the disable is a memory
-trade-off, not a behavioural one. (The earlier draft titled this task "remove the
-caching special case" and then said to keep it; it stays, with an accurate
-comment.)
-
-### 5. CHANGELOG
-
-`Fixed`: prediction with `n_chunks > 1` dropped spikes falling between adjacent
-chunks — one per boundary per unit — so chunked and unchunked results differed.
-`return_outputs="log_likelihood"` now works with `n_chunks > 1`.
+Describe which chunk-boundary spikes were lost, the corrected event ownership,
+and the behavior of requested likelihood outputs. Report measured likelihood
+memory changes separately from total HMM/output memory.
 
 ## Validation
 
-New `tests/integration/test_chunk_parity.py`. **Both core paths must be covered**
-— they are stationary (`core.py:490`) vs. covariate-dependent (`core.py:1081`),
-*not* sorted vs. clusterless, so parametrize over transition model as well as
-detector type:
+Use existing applicable tolerances; numerical contracts and golden data are not
+changed to accommodate chunking. Test proposed APIs only after their signatures
+have been selected by prototyping.
 
-| Test | Asserts |
+| Coverage | Required observation |
 |---|---|
-| `test_chunked_matches_unchunked[stationary-sorted]` (slow) | `n_chunks=1` vs `4` acausal posteriors equal, `rtol=1e-5`. Fixture places ≥1 spike strictly between `time[k-1]` and `time[k]` for every boundary `k`, else the test is vacuous. |
-| `test_chunked_matches_unchunked[stationary-clusterless]` (slow) | Same. |
-| `test_chunked_matches_unchunked[covariate-sorted]` (slow) | Same, routing through `chunked_filter_smoother_covariate_dependent`. |
-| `test_chunked_matches_unchunked[covariate-clusterless]` (slow) | Same. |
-| `test_chunked_log_likelihood_returned` | `return_outputs="log_likelihood"` with `n_chunks=4` returns an `(n_time, n_state_bins)` array equal to the unchunked one. |
-| `test_row_slice_is_a_slice_of_full` | For each registry backend, `predict(..., row_slice=(a,b))` equals `predict(...)[a:b]` exactly. Parametrized over both registries. |
-| `test_callable_without_row_slice_still_runs` | A user-supplied likelihood callable lacking `row_slice` runs and warns. |
+| Public prediction, cached vs. uncached | Corrected chunked outputs and evidence agree with the unchunked reference for sorted/clusterless detectors and stationary/covariate transitions. |
+| Event ownership | Every in-range spike contributes once across chunk boundaries; cover exact boundaries, recording endpoints under the active contract, chunks with no spikes, singleton row ranges, and a ragged final chunk. Validate empty row requests according to the chosen interface. |
+| Backend row ranges | Each supported backend's requested rows equal the corresponding full-reference rows; clusterless waveform selection stays aligned with selected spikes. |
+| Assembly branches | No-spike states, missing rows, local-position kernels, and non-local penalties use the same global row indices. |
+| Generic callbacks | Existing callback arguments remain valid; adapters and any unsupported capability handling are explicit and tested. |
+| Requested outputs | Likelihood rows are ordered and complete when requested; unrequested chunk arrays are not accumulated. |
 
-### Memory evidence (required)
+### Memory evidence
 
-This phase exists to preserve a memory property, so assert it:
+Measure likelihood production separately from the HMM and result assembly.
+With fitted inputs and chunk length fixed, increasing total duration must not
+introduce a full-time spatial likelihood array or density evaluation for all
+decoding spikes on each call. Vary chunk length to show which workspaces scale
+with requested rows and selected spikes. Declare recording-sized input/index
+metadata and resident encoding allocations separately.
 
-| Test | Asserts |
-|---|---|
-| `test_chunking_bounds_peak_memory` (slow) | Peak device allocation during a `n_chunks=8` predict is below that of `n_chunks=1` by a factor > 4 on a fixture sized so the full likelihood is ~8× a chunk. Measure with `jax.live_arrays()` sampling or `memory_analysis()`; state the method in the test docstring. |
+Use allocation/shape checks plus measured host/device peaks on representative
+backends. Compiler temporary-memory estimates and live-array snapshots are
+supporting evidence; neither alone measures the complete transient process
+peak. Report the method and its limitations.
 
-If this test cannot be made to pass, the design has not achieved its purpose —
-stop and report rather than shipping.
+The old **>4× reduction in total predict memory** is not an acceptance criterion:
+full posterior retention makes it inappropriate for this phase. End-to-end
+bounded-memory acceptance is specified in Phase 7a.
 
-```bash
-uv run pytest src/non_local_detector/tests/integration src/non_local_detector/tests/core -q
-```
-
-Goldens unaffected (they use the cached path).
+Run core/integration tests and the affected backend tests, including golden
+regressions. Cached-path goldens are expected to remain unchanged; investigate
+unexpected numerical changes under the existing numerical-validation process.
 
 ## Review
 
-Dispatch `code-reviewer`. Ask specifically whether `row_slice` is honoured on
-every return path of both `compute_log_likelihood` implementations — including
-`is_missing`, the non-local penalty, and the local-position kernel — and whether
-any backend slices before binning rather than after.
+Have the implementation reviewed for event ownership before density evaluation,
+every model assembly return path, generic callback compatibility, and both core
+transition paths. Include the parity and likelihood-specific memory evidence.

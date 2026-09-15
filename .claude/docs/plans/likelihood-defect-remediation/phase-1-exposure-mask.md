@@ -2,7 +2,7 @@
 
 > **IMPLEMENTED AND REVIEWED** on branch `fix/sorted-spikes-exposure-mask`
 > (implementation commit `8c8765f`).
-> The spy test fails on `main` (`assert None is not None` — "the detector dropped
+> The spy test failed on the pre-`8c8765f` implementation (`assert None is not None` — "the detector dropped
 > the exposure mask") and passes after the two-file change below. Full suite:
 > **1262 passed, 3 skipped**; golden regressions **4 passed** unchanged; ruff and
 > format clean at the original implementation baseline.
@@ -34,6 +34,11 @@
 Zero-exposure handling is included here (not deferred to phase 4) because this
 phase is what first makes all-zero-exposure groups reachable. Without it, phase 1
 is not independently shippable.
+
+This is a completed implementation record. Problem snippets and imperative task
+wording below describe the historical pre-fix work, not a request to implement it
+again. References to the original `main` mean that pre-fix baseline; current
+branches containing Phase 1 should pass these regressions.
 
 ## Problem
 
@@ -77,10 +82,11 @@ with OVERLAPPING coverage, place fields do not cancel:
   **only** the settled part: `weights[i]` is the exposure of position sample `i`,
   and the detector must never pass `weights=None` when it has computed a mask.
 
-This phase does **not** depend on C1 (withdrawn) or C3 (unsettled), and does not
-touch the hard-window machinery C2 now says to delete — that is phase 5. It
-changes one expression in `models/base.py` plus a zero-exposure guard, and is
-executable while the rest of the plan is blocked.
+This phase did **not** depend on a new C1 or C3b policy, and does not touch the
+hard-window machinery C2 now says to delete — that is phase 5. It changed the
+mask expression in `models/base.py` and added a zero-exposure guard. Any future
+C1 change to the existing EPS fallback belongs to Phase 2 and does not reopen
+this phase.
 
 Scoped out of this phase deliberately: fractional event ownership for the GLM.
 The GLM bins whole spikes and weights *sample rows*, so it cannot express a
@@ -91,7 +97,7 @@ phase-5 concern and may need weighted sufficient statistics there.
 ## Falsification
 
 Before implementing, write and run the detector-level test from the validation
-table. It must **fail** against current `main`. If it passes, the test is not
+table. It must **fail** against the pre-`8c8765f` implementation. If it passes, the test is not
 reaching the defect — most likely it constructs weights by hand and passes them
 to a backend that already handles them correctly, rather than exercising the
 detector's `weights=None` path. Fix the test before touching the fix.
@@ -156,7 +162,7 @@ samples and other environments / encoding groups whenever `weights` was not
 supplied explicitly, biasing place fields low (measured 40–45% on overlapping
 coverage). Fits with one environment, one encoding group, and `is_training`
 all-`True` are unaffected. Also: a sorted GLM fit for a group with no training
-coverage returned NaN coefficients and now returns an explicit zero-rate model.
+coverage returned NaN coefficients and now returns an explicit EPS-floor model.
 
 ## Validation
 
@@ -165,7 +171,7 @@ coverage returned NaN coefficients and now returns an explicit zero-rate model.
 
 | Test | Asserts |
 |---|---|
-| `test_detector_passes_exposure_mask_as_weights` | Monkeypatch the registered fit function in `_SORTED_SPIKES_ALGORITHMS` with a spy; assert the detector calls it with `weights` equal to `is_group.astype(float)`, not `None`. Fails on `main`. |
+| `test_detector_passes_exposure_mask_as_weights` | Monkeypatch the registered fit function in `_SORTED_SPIKES_ALGORITHMS` with a spy; assert the detector calls it with `weights` equal to `is_group.astype(float)`, not `None`. Failed on the pre-`8c8765f` implementation. |
 | `test_glm_group_without_training_coverage_returns_eps_model` | Group samples and spikes exist only outside training. The fitted GLM has finite coefficients and EPS-floor interior place fields, and prediction yields a finite, normalized posterior. |
 | `test_two_encoding_groups_do_not_contaminate` (slow) | Two encoding groups over disjoint position ranges: each group's place field peak is within its own range, and the ratio of peak-in-range to peak-out-of-range exceeds 10. **Not** "occupancy is exactly 0 outside" — Gaussian KDE occupancy and EPS-floored fields are never exactly zero. |
 | `test_partial_training_mask_rate` (slow) | With `is_training` selecting half the samples, `mean_rates[0]` equals in-group spikes / in-group samples within `rtol=1e-6`. |
@@ -175,8 +181,8 @@ coverage returned NaN coefficients and now returns an explicit zero-rate model.
 
 | Test | Asserts |
 |---|---|
-| `test_mask_weights_match_subset_fit` | Full arrays with `weights=mask` equals subset arrays with `weights=None`, `rtol=1e-5`. **Spikes must be placed at least one sample interval away from every mask transition** — the invariant is exact only there ([C2](shared-contracts.md#c2--exposure-ownership-and-spike-weights)). |
-| `test_boundary_spike_weight_is_fractional` | A spike within one sample of a transition receives a weight strictly between 0 and 1, documenting why the invariant is conditional. |
+| `test_mask_weights_match_subset_fit` (KDE fixture) | Full arrays with `weights=mask` equals subset arrays with `weights=None`, `rtol=1e-5`, with matched encoding coordinates/exposure. **Spikes must be placed at least one sample interval away from every mask transition**. This does not assert universal subset equivalence for GLM bases or changed exposure grids ([C2](shared-contracts.md#c2--exposure-ownership-and-spike-weights)). |
+| `test_boundary_spike_weight_is_fractional` (KDE fixture) | A spike within one sample of a transition receives a weight strictly between 0 and 1, documenting why the invariant is conditional. |
 | `test_fit_poisson_regression_with_zero_exposure` | All-zero weights give finite coefficients and EPS-floor predictions, even with nonzero supplied counts; no NaN. |
 | `test_fit_poisson_regression_preserves_small_positive_exposure` | Uniform weights of `1.0` and `1e-8` both recover the known constant Poisson rate of 2; small positive exposure must not take the zero-exposure fallback. |
 
@@ -188,11 +194,11 @@ uvx ruff check src/non_local_detector/likelihoods/ src/non_local_detector/models
 
 Goldens are expected to **pass unchanged** — they fit a single group with full
 training coverage, where `is_group` is all-`True` and `is_group.astype(float)` is
-exactly the previous uniform weighting. If one moves, that fixture has a
-non-trivial mask; attribute the diff before requesting approval.
+exactly the previous uniform weighting. If one moves, investigate its mask and
+numerical path and attribute the diff before requesting approval.
 
 ## Review
 
 Dispatch `code-reviewer`. Ask specifically whether the spy test genuinely fails
-on `main` (run it there), and whether any sorted backend treats `weights` as
+on the pinned pre-fix implementation, and whether any sorted backend treats `weights` as
 decoration rather than exposure.

@@ -1,180 +1,102 @@
-> **SUPERSEDED — DO NOT EXECUTE.**
-> The implementation snippets below were written without being run and are known
-> to be defective; see the readiness table in [PLAN.md](PLAN.md). The *problem
-> statements and reproductions* in this file remain valid and are the reason the
-> phase exists. Everything under "Tasks" must be re-derived by prototyping
-> against the real code before this phase can ship.
+# Phase 6a — Time vocabulary, coordinates, and encoding-cell migration
 
-# Phase 6a — Time vocabulary migration
+> **BLOCKED ON C3b FOR ENCODING CELLS — NEEDS PROTOTYPING.** C3a decode vocabulary
+> is settled. The former unexecuted helpers and shape-only parity claims are
+> withdrawn. This phase changes row alignment and evaluation coordinates but
+> does not perform the Hz conversion assigned to 6b.
 
-Shape migration only. **No rate-unit change** — that is phase 6b. Keeping them
-separate means a golden diff in 6a is explicable purely by "one more real row",
-and a diff in 6b purely by unit conversion.
+## Dependencies and rollout
 
-## Contracts referenced
+Use [C3](shared-contracts.md#c3--time-vocabulary) as the contract authority and
+[PLAN.md](PLAN.md#execution-order-and-baselines) for release order. Ship 6a with
+6c's detector uniformity guard. Then ship Hz conversion and model-unit rejection
+as the atomic 6b/6d change. Coordinate tests with Phase 3 global decoding-bin
+ownership and Phase 5 fractional encoding-event ownership.
 
-- [C3 — Time vocabulary](shared-contracts.md#c3--time-vocabulary)
+## Recorded problem
 
-## Problem
+Decode helpers currently digitize into `len(time)-1` possible bins while callers
+allocate `len(time)` rows. The final row cannot receive a spike:
 
-`get_spike_time_bin_ind` (`common.py:242-255`) digitizes against `time[1:-1]`,
-returning indices `0 … len(time)-2`, while `get_spikecount_per_time_bin`
-(`common.py:569-589`) allocates `len(time)` rows and every predictor returns
-`len(time)` rows. The final row can never hold a spike:
-
-```
+```text
 time = [0..5], spikes = [0.5,1.5,2.5,3.5,4.5]
-counts = [1,1,1,1,1,0]      # 5 spikes, 6 rows
+counts = [1,1,1,1,1,0]
 ```
 
-`no_spike.py:35` documents N+1 edges → N bins while `no_spike.py:80,92` returns
-`len(time)` rows, and its docstring example raises `TypeError` (annotated
-`list[list[float]]`, implementation needs arrays).
+The no-spike documentation describes N+1 edges but returns `len(time)` rows.
+The sorted GLM also sends position sample centers to the decode count helper;
+changing that helper in isolation would produce N-1 counts against an N-row
+encoding design matrix.
 
 ## Falsification
 
-Rewriting `get_spikecount_per_time_bin` in place **immediately breaks GLM
-fitting**. `sorted_spikes_glm.py:299` sets `time = np.asarray(position_time)` —
-sample centers — and `:339` feeds it to the helper. Under the new contract N
-samples yield N−1 counts against an N-row design matrix and N-row weights.
+Pin the pre-migration revision. Reproduce unreachable final output rows and the
+GLM shape mismatch caused by treating sample centers as decode edges. Preservation
+checks must use matched physical intervals and observation coordinates; merely
+comparing the first rows of two differently defined time arrays is insufficient.
 
-Before implementing, run the sorted-GLM encoding tests against a scratch branch
-containing only the helper rewrite. They must fail. If they pass, the encoding
-path is not exercised and the phase's task 2 is untested.
+## Tasks to prototype
 
-## Tasks
+1. **Central edge validation and derived arrays.** Validate one-dimensional,
+   finite, strictly increasing edges with at least two entries at all applicable
+   public boundaries, before indexing or expensive work. Derive `N = len(edges)-1`,
+   centers, and durations once and preserve timestamp precision. Exclude events
+   outside the decoding interval before indexing; do not clip them silently into
+   endpoint bins. Internal bins are left-closed/right-open
+   and the recording's final bin includes the final edge.
+2. **Encoding cells have their own contract.** Resolve C3b's acquisition endpoints,
+   single-sample input, gaps, and missing-tracking behavior before implementing
+   sample cells. A helper clamped to the first/last sample centers undercounts
+   exposure under the extrapolated-cell reference and is not accepted. Keep
+   encoding counts aligned with the design matrix and exposure rows, preserving
+   Phase 5 fractional event weights exactly once. Do not independently invent
+   an encoding endpoint policy through the decode helper.
+3. **Propagate rows and coordinates explicitly.** Predictors, no-spike outputs,
+   missing masks, transition covariates, local-position kernels, non-local
+   penalties, result coordinates, and Viterbi coordinates use N rows. Interpolate
+   position at centers. Core HMM arrays index observations, not edges; chunk
+   drivers must carry the global observation range without an extra time row.
+   Preserve Phase 3 event ownership at chunk boundaries.
+4. **Generated grids and callers.** Prototype `calculate_time_bins` and migration
+   examples with an explicit policy for requested intervals not divisible by the
+   nominal bin width; generated detector grids must satisfy 6c. Audit every
+   `len(time)`/shape use and classify it as an edge count or observation count.
+   Include cached, chunked, stationary/covariate, EM, and Viterbi callers.
+5. **No-spike and public documentation.** Fix no-spike input examples, annotations,
+   row counts, and coordinate descriptions. Duration-calibrated intensity changes
+   belong to 6b; no-spike is already documented in Hz. Describe the 6a interim
+   unit convention explicitly, and advertise complete nonuniform likelihood
+   support only after 6b/6d.
 
-### 1. Decode-side helpers take edges
+Helper names and signatures are prototype decisions. Record the old-to-new time
+mapping in examples; reusing an old center array as new edges changes the decoded
+interval and is not a compatibility transformation.
 
-```python
-def get_spike_time_bin_ind(spike_times: np.ndarray, time_edges: np.ndarray) -> np.ndarray:
-    """Index of the bin containing each spike time.
+## Acceptance
 
-    Parameters
-    ----------
-    spike_times : np.ndarray, shape (n_spikes,)
-        Assumed already restricted to ``[time_edges[0], time_edges[-1]]``.
-    time_edges : np.ndarray, shape (n_bins + 1,)
-        Monotonically increasing bin edges.
-
-    Returns
-    -------
-    ind : np.ndarray, shape (n_spikes,)
-        Values in ``[0, n_bins - 1]``. Bin ``i`` covers ``[edges[i], edges[i+1])``
-        except the last, which is right-closed.
-    """
-    n_bins = time_edges.shape[0] - 1
-    return np.clip(np.digitize(spike_times, time_edges[1:-1]), 0, n_bins - 1)
-
-
-def get_spikecount_per_time_bin(spike_times: np.ndarray, time_edges: np.ndarray) -> np.ndarray:
-    """Number of spikes per bin, shape (n_bins,)."""
-    n_bins = time_edges.shape[0] - 1
-    spike_times = np.asarray(spike_times)
-    in_range = (spike_times >= time_edges[0]) & (spike_times <= time_edges[-1])
-    return np.bincount(
-        get_spike_time_bin_ind(spike_times[in_range], time_edges), minlength=n_bins
-    )
-```
-
-Add `bin_durations(time_edges)` and `bin_centers(time_edges)` to `common.py` as
-the single sources of those quantities.
-
-### 2. Give encoding its own sample-cell helper
-
-Add `sample_cell_durations(position_time)` and `sample_cell_edges(position_time)`
-to `common.py`, per [C3](shared-contracts.md#c3--time-vocabulary). Then in
-`sorted_spikes_glm.py`, replace `time = np.asarray(position_time)` (`:299`) and
-the `:339` call:
-
-```python
-    # Encoding bins are the position samples' own midpoint cells, not decode
-    # edges: the design matrix and weights have one row per position sample.
-    encoding_edges = sample_cell_edges(np.asarray(position_time))
-    ...
-        spike_count_per_time_bin = get_spikecount_per_time_bin(
-            neuron_spike_times, encoding_edges
-        )
-```
-
-`sample_cell_edges` returns `n_samples + 1` edges, so the counts are
-`n_samples`-long and align with the design matrix. Audit every other
-`get_spikecount_per_time_bin` call for which of the two roles it is in — grep
-rather than assuming this is the only one.
-
-### 3. Propagate N+1 edges through every caller
-
-This is the bulk of the phase. Each must be changed, not just the predictors:
-
-| Site | Change |
+| Coverage | Required evidence |
 |---|---|
-| `models/base.py:2308-2325` `calculate_time_bins` | Emit `n_bins + 1` edges: `time_range[0] + np.arange(n_bins + 1) / self.sampling_frequency`. |
-| `models/base.py:3133` and sorted counterpart | `n_time = len(time_edges) - 1`. |
-| `core.py:568`, `core.py:1164` | `n_time = len(time) - 1` — both chunked entry points. Cached likelihoods have N rows; edge indices would over-index by one. |
-| `models/base.py:3379` | `is_missing` must have N values, not `len(time)`. |
-| `models/base.py:174` `_validate_covariate_time_length` | Transition covariates must have N rows. |
-| `sorted_spikes_kde.py:333` and every other local path | Position is interpolated at **centers**, not edges — `get_position_at_time(position_time, position, bin_centers(time_edges), env)`. Currently produces N+1 values. |
-| `_compute_local_position_kernel`, `_compute_non_local_position_penalty` | Same: evaluate at centers, return N rows. |
-| xarray assembly / `_convert_seq_to_df` | `time` coordinate is `bin_centers(time_edges)`. |
+| Edge validation | Empty/single-edge, nonfinite, repeated, decreasing, and malformed arrays fail before indexing; valid single-bin input works. |
+| Event assignment | Every in-range event is counted once, including exact boundaries and the final edge; out-of-range events never leak into endpoint bins. |
+| Encoding alignment | Counts/weighted sufficient statistics, design rows, and exposure have matching lengths; endpoint/gap expectations follow resolved C3b. |
+| All likelihood paths | Both registries and no-spike return N rows; matched positions are evaluated at centers, including local kernels and penalties. |
+| All callers | Missing masks, covariates, cached/chunked arrays, EM, Viterbi, and output coordinates agree on N observation rows. |
+| Detector guard | 6c ships with the new edge API and validates generated grids and user-supplied edges. |
 
-Grep for `len(time)`, `time.shape[0]`, and `n_time` across `likelihoods/`,
-`models/`, and `core.py` and classify each occurrence as edges-count or
-rows-count. Leaving one unconverted produces an off-by-one that tests may not
-catch if fixtures are uniform.
+Use independent reference values and existing applicable tolerances. A final
+observation need not contain a spike; it must be capable of receiving one and
+have the correct likelihood for its data.
 
-### 4. Fix `no_spike`
+## Numerical-change attribution
 
-`no_spike.py:22-92`: annotate `spike_times: list[np.ndarray]`, describe `time` as
-N+1 edges, return `(n_bins, 1)`, and correct the example so it runs. Replace the
-median-interval scaling at `:79` with per-bin durations — but keep the rate in
-its current units for this phase; 6b converts it.
+This is not purely a shape change: center-based position interpolation and
+encoding-cell assignment can alter likelihood values. Removing a dummy terminal
+observation can also change earlier smoothed posteriors through the backward
+pass. Therefore an unchanged prefix of the old posterior is not an acceptance
+requirement.
 
-### 5. Documentation
-
-CHANGELOG `Changed` (breaking): `time` is N+1 bin edges; all predictors return N
-rows; the xarray `time` coordinate is bin centers. Include a before/after snippet
-for `predict(time=...)`. Update README/getting-started examples and both
-`predict` docstrings.
-
-Callers previously passing N sample centers must now pass N+1 edges. State
-explicitly that re-running old code unchanged will decode a *different interval*
-as well as a different length.
-
-## Validation
-
-| Test | Asserts | File |
-|---|---|---|
-| `test_all_spikes_counted` | For random edges and spikes, `sum(counts)` equals spikes in `[edges[0], edges[-1]]`. | `test_kde_common.py` |
-| `test_last_bin_reachable` | A spike in `[edges[-2], edges[-1]]` lands in bin `N-1`. | same |
-| `test_spike_at_final_edge_counted` | A spike exactly at `edges[-1]` lands in bin `N-1`. | same |
-| `test_sample_cell_edges_roundtrip` | `sample_cell_edges(t)` has `len(t)+1` entries; durations sum to the covered span; jittered timestamps give unequal cells. | same |
-| `test_predictors_return_n_bins_rows` | Every registry entry returns `len(edges)-1` rows. Parametrized over both registries. | `test_likelihood_cross_model.py` |
-| `test_glm_encoding_counts_align_with_design` | GLM spike counts have exactly `n_position_samples` entries. | `test_sorted_spikes_glm.py` |
-| `test_local_interpolation_returns_n_rows` | Local paths return N rows, and the interpolated position equals interpolation at centers. | `test_likelihood_properties.py` |
-| `test_is_missing_length_validated` | `is_missing` of length N+1 raises. | `tests/models/` |
-| `test_covariate_length_validated` | Covariates of length N+1 raise. | same |
-| `test_no_spike_example_runs` | The corrected docstring example executes and returns its claimed shape. | `test_likelihood_edge_cases.py` |
-
-Coverage must include EM, Viterbi, cached, chunked, and covariate-dependent
-paths — each indexes time independently.
-
-```bash
-uv run pytest src/non_local_detector/tests -q
-uv run pytest -m snapshot -q
-```
-
-**Approval gate.** Every golden and snapshot moves. Beyond the four-part
-analysis, show:
-
-1. For a fixture where the previous last row held no spikes, the first N−1 rows
-   are unchanged within `rtol=1e-6`. This is the strongest evidence the migration
-   is purely a shape change.
-2. The new final row is non-degenerate — it holds the spikes it should.
-
-If (1) fails, something numerical changed in a shape-only phase.
-
-## Review
-
-Dispatch `code-reviewer`. Ask for an independent sweep of every remaining
-`len(time)` / `time.shape[0]` in `likelihoods/`, `models/`, and `core.py`,
-classified as edges or rows.
+Separate row/coordinate changes, altered observation likelihoods, and propagated
+HMM effects in the numerical analysis. Preserve rate units in this phase so 6b's
+conversion remains attributable. Run the full suite, affected snapshot/golden
+checks, and a complete caller audit. Measure which references actually change;
+request approval only for an observed reference or numerical-contract update.

@@ -51,7 +51,7 @@ class TestNormalize:
         assert jnp.allclose(const, 6.0)
 
     def test_normalize_handles_zero_array_without_nan(self):
-        """Zero arrays should not produce NaN with eps protection."""
+        """Zero arrays should not produce NaN (zero sum leaves the input unchanged)."""
         # Arrange
         arr = jnp.zeros(5)
 
