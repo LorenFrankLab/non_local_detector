@@ -1,8 +1,23 @@
 # Phase 0 — Core HMM conditioning and normalization
 
+> **IMPLEMENTED** on `fix/core-hmm-conditioning` (2026-09-14; CPU,
+> JAX 0.9.0, NumPy 2.4.1, Python 3.13).
+> `_normalize` divides by the exact sum and preserves the zero-input contract.
+> `_condition_on_primal` uses reachable-likelihood and log-joint shifts, then
+> multiplies by the prior in probability space. Invalid NaN/+inf inputs remain
+> visible, including on zero-prior states when all reachable states are impossible.
+> An explicit `jax.custom_jvp` computes normalized derivatives only when
+> differentiation is requested. It preserves zero-prior and tied-likelihood
+> gradients, batches, large common offsets, and mixed second derivatives.
+> Ordinary filtering uses one exponential and three reductions per step,
+> versus two exponentials and four reductions in the preceding implementation.
+> Reference tests: **63 passed / 1 skipped** in default float32 and **64 passed**
+> with `JAX_ENABLE_X64=1` and actual dtype assertions. The performance and
+> numerical comparisons are recorded below. Full suite: **1329 passed / 4 skipped**;
+> golden files and existing tolerances unchanged. Ruff and format checks pass.
+
 **Priority: immediate correctness work, before likelihood-flooring changes and
-performance optimization. Status: both defects reproduced; fix not prototyped
-or implemented.** This phase adds the missing HMM findings without renumbering
+performance optimization.** This phase adds the missing HMM findings without renumbering
 phases 1–8. It is independent of the unresolved C1 likelihood-flooring and C3
 time/exposure decisions. The runnable code below reproduces the defects; no
 unexecuted implementation patch is prescribed.
@@ -173,3 +188,74 @@ constants could yield posteriors whose mass was far below one; a highest
 likelihood in a zero-prior state could yield an incorrect prior fallback and
 `-inf` evidence for possible observations. Keep the phase-3 chunk-boundary and
 phase-6 exposure corrections separate so each numerical change is attributable.
+
+## Performance revision — 2026-09-14
+
+Gradient-only work is now in `_condition_on_jvp`. The ordinary forward pass
+keeps both stabilizing shifts and exact normalization, while avoiding the
+second exponential, the sum of unreachable mass, and `log1p`. The custom rule
+uses centered log evidence so large likelihood offsets do not lose derivative
+precision. It also provides the identity/zero tangents of the selected prior
+fallback, handles nondifferentiable integer likelihood inputs, and saturates
+only normalized derivatives that exceed the dtype's range.
+
+The added tests cover simultaneous prior/likelihood JVPs, batched prior
+gradients, prior and mixed Hessians at zero prior mass, offsets through `-1e6`,
+and both differentiation directions at the impossible-data fallback. The three
+new fallback/integer-input regressions failed on the initial custom-JVP
+prototype and passed after its operand guards were added. Independent code
+review found no remaining actionable issues.
+
+### Measured execution time
+
+CPU/float32, 3000 time steps, fixed dense transitions and precomputed synthetic
+likelihoods. Each kernel was compiled separately and warmed up four times;
+25 repetitions alternated the implementations in random order and synchronized
+every result. The before column uses a source snapshot saved immediately before
+this optimization; `main` predates the Phase 0 correctness fixes. Compilation
+and host-side diagnostics are excluded. These are kernel timings, so the
+end-to-end effect also depends on likelihood computation and smoothing.
+
+| Kernel | `main` (ms) | Before (ms) | After (ms) | Less time vs. before (the intermediate draft, *not* `main`) |
+|---|---:|---:|---:|---:|
+| Stationary, 32 bins | 2.561 | 3.125 | 2.677 | 14.3% |
+| Stationary, 200 bins | 14.530 | 17.570 | 16.424 | 6.5% |
+| Stationary, 1000 bins | 185.852 | 217.948 | 195.423 | 10.3% |
+| Covariate-dependent, 200 bins | 193.681 | 215.334 | 207.083 | 3.8% |
+| Smoother, 200 bins | 24.428 | 25.046 | 24.161 | 3.5% |
+
+Background CPU load was high; interpret the exact percentages with that
+limitation. The percentages compare against the intermediate draft, not
+`main`; the `main` column shows the true cost of stabilized conditioning
+(~+13 % at 200 bins, confirmed by a separate paired run at low load: 42–43 ms
+vs 47–49 ms for a 20000-step, 200-state stationary filter). The structural reduction in forward work is also confirmed by the
+JAXpr (two exponentials to one; four reductions to three). The optimization
+removes part of Phase 0's overhead; stable conditioning still has a cost relative
+to `main`.
+
+Use the reproducible [benchmark script](../../../../scripts/benchmark_hmm_conditioning.py):
+
+```bash
+uv run python scripts/benchmark_hmm_conditioning.py \
+  --time-steps 3000 --repetitions 25 --output /tmp/hmm-benchmark.json
+```
+
+An optional `--baseline-core /path/to/core_before.py` adds a saved implementation
+to the comparison. The JSON includes compilation times, execution samples,
+quartiles, device/dtype, source hashes, and background load.
+
+### Numerical equivalence
+
+The optimized and saved pre-optimization versions returned **bit-identical
+posteriors and evidence** for 20,000 deterministic float32 one-step cases,
+including zero priors, tiny positive priors, and likelihoods between `-1e4` and
+`1e4`. Against the independent float64 reference, maximum posterior error was
+`7.68e-8`; evidence error was `4.92e-4` at likelihood magnitudes up to `1e4`
+(float32 rounding scale). Maximum probability-mass error was `5.96e-8`, with no
+nonfinite outputs. A 1000-step, 200-state model also returned bit-identical
+filtered, predicted, and smoothed probabilities and total evidence.
+
+Full-suite validation: **1329 passed / 4 skipped**, in 21m 41s on the busy CPU.
+The separate x64 reference run passed all **64** cases. Golden files and existing
+tolerances are unchanged; ruff and format checks pass. Changes remain uncommitted
+on `fix/core-hmm-conditioning`.

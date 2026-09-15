@@ -1,7 +1,8 @@
 # Likelihood Defect Remediation
 
-Status: Phase 1 implemented and validated; remaining phases have the readiness
-states recorded below.
+Status: Phase 1 implemented and validated. Phase 0 is implemented, optimized,
+and validated in the working branch. Remaining phases have the readiness states
+recorded below.
 
 ## Summary
 
@@ -28,9 +29,13 @@ decode vocabulary is settled, its encoding-exposure half is not. No phase
 depending on C1 or on encoding exposure can be executed.
 
 **Immediate priority: [phase 0](phase-0-core-hmm.md), core HMM correctness.**
-Its defects are reproduced; its fix still needs prototyping. It is independent
-of C1's likelihood-flooring decision and C3's time/exposure decisions. Keep the
-existing phase numbers so links and work on phases 1–8 remain valid.
+Its correctness fixes and performance revision are implemented on
+`fix/core-hmm-conditioning`, with reference tests and measured numerical and
+runtime comparisons recorded in the phase document. Full-suite validation:
+**1329 passed / 4 skipped**, with golden files and existing tolerances unchanged.
+It is independent of C1's likelihood-flooring decision and C3's time/exposure
+decisions. Keep the existing phase numbers so links and work on phases 1–8
+remain valid.
 
 ## Status of this plan — read before executing
 
@@ -56,7 +61,7 @@ below now carry measured evidence rather than reasoning.
 
 | Phase | State |
 |---|---|
-| 0 | **Defects reproduced; fix not prototyped.** Invalid posterior mass and unreachable-state underflow verified through `core.filter` on CPU. Independent of C1/C3; prioritize before likelihood-flooring changes and optimization. |
+| 0 | **Implemented, optimized, and validated** in the uncommitted `fix/core-hmm-conditioning` work. Full suite: **1329 passed / 4 skipped**; reference tests: **63 passed / 1 skipped** in default float32 and **64 passed** with x64 enabled. Golden files and existing tolerances unchanged; ruff and format pass. Numerical comparisons are bit-identical to the pre-optimization fix; stationary kernels take 6.5–14.3% less time in the measured CPU benchmark. See [phase 0](phase-0-core-hmm.md). Independent of C1/C3. |
 | 1 | **Implemented and reviewed** on `fix/sorted-spikes-exposure-mask` (`8c8765f` plus regression coverage). Mask and zero-exposure regressions fail against the relevant pre-fix behavior. Post-review full suite: **1266 passed / 3 skipped**, goldens unchanged; ruff and format pass. |
 | 2 | Needs prototyping: aggregate flooring, zero-mass detection, and the newly in-scope log-KDE clamps |
 | 3 | Needs redesign: the clusterless path must filter spikes before density evaluation, not slice a full-time reduction; no-spike states bypass both registries (`base.py:3163`); the >4× memory target is unachievable while full posteriors are retained (`core.py:671`, `:700`) |
