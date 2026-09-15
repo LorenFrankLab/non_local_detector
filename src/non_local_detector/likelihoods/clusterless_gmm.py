@@ -1,5 +1,9 @@
 """
 Clusterless decoding using Gaussian Mixture Models (GMM)
+
+Spike log intensities are the raw ``log(rate) + log p(pos, mark) - log
+p(pos)`` and the ground process is ``exp(log(rate) + log p_gpi(pos) - log
+p(pos))``, both formed in log space.
 """
 
 from __future__ import annotations
@@ -95,11 +99,47 @@ def _accumulate_log_likelihood_block(
     log_rate: jnp.ndarray,
     log_occupancy: jnp.ndarray,
 ) -> jnp.ndarray:
-    """Scatter one spike block into its observed time rows and spatial columns."""
-    log_contribution = log_rate + joint_logp - log_occupancy
+    """Scatter one spike block into its observed time rows and spatial columns.
+
+    The density difference is formed first: adding ``log_rate`` to a huge log
+    density before subtracting the other would round the rate term away.
+    """
+    log_contribution = log_rate + (joint_logp - log_occupancy)
     return log_likelihood.at[segment_ids[:, None], bin_ids[None, :]].add(
         log_contribution
     )
+
+
+def _ground_process_intensity(
+    mean_rate: jnp.ndarray, gpi_logp: jnp.ndarray, log_occupancy: jnp.ndarray
+) -> jnp.ndarray:
+    """Expected spike intensity ``rate * p_gpi(x) / p_occ(x)``, formed in log space.
+
+    Parameters
+    ----------
+    mean_rate : jnp.ndarray, scalar
+        Fitted mean firing rate of the electrode (positive).
+    gpi_logp : jnp.ndarray, shape (n_points,)
+        Log density of the electrode's spike positions at the evaluation points.
+    log_occupancy : jnp.ndarray, shape (n_points,)
+        Log occupancy density at the same points.
+
+    Returns
+    -------
+    intensity : jnp.ndarray, shape (n_points,)
+        ``exp(log(rate) + gpi_logp - log_occupancy)``. Keeping every factor in
+        the exponent preserves a finite ratio of two densities that each
+        underflow (``exp(-800) / exp(-790)`` is ``0 / 0`` in float32; the
+        ratio is ``e^-10``), and a representable product such as
+        ``1e-15 * exp(95)`` whose separate ``exp`` overflows. A NaN in either
+        density propagates; a ratio beyond the dtype's range overflows to
+        ``inf`` (a ``-inf`` log likelihood) rather than being substituted.
+        Both the fit-time bin intensities and the local expected counts use
+        this function.
+    """
+    # Difference first: two nearly equal large log densities subtract exactly,
+    # whereas adding log(rate) to one of them first rounds at their magnitude.
+    return jnp.exp(jnp.log(mean_rate) + (gpi_logp - log_occupancy))
 
 
 def _fit_gmm_density(
@@ -396,8 +436,7 @@ def fit_clusterless_gmm_encoding_model(
     effective_joint_components: list[int] = []
     mark_dimensions: list[int] = []
 
-    occupancy = jnp.exp(log_occupancy)
-    summed_ground_process_intensity = jnp.zeros_like(occupancy)
+    summed_ground_process_intensity = jnp.zeros_like(log_occupancy)
 
     # Fit per-electrode models
     for electrode, (elect_feats, elect_times) in enumerate(
@@ -508,12 +547,11 @@ def fit_clusterless_gmm_encoding_model(
         )
         joint_models.append(joint_gmm)
 
-        # Expected-counts term at bins: mean_rate * (gpi / occupancy)
-        gpi_density = _gmm_density(gpi_gmm, interior_place_bin_centers)
-        summed_ground_process_intensity += mean_rate * jnp.where(
-            occupancy > 0.0,
-            gpi_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
-            EPS,
+        # Expected-counts term at bins: mean_rate * (gpi / occupancy), in log space
+        summed_ground_process_intensity += _ground_process_intensity(
+            mean_rate,
+            _gmm_logp(gpi_gmm, interior_place_bin_centers),
+            log_occupancy,
         )
 
     # Clip the summed intensity once (not per electrode) so an empty bin gets a
@@ -718,9 +756,8 @@ def predict_clusterless_gmm_log_likelihood(
                 eval_points = jnp.concatenate([tiled_bins, repeated_feats], axis=1)
 
                 # GMM evaluation (not JIT-able)
-                joint_logp_flat = _gmm_logp(joint_gmm, eval_points)
-                joint_logp_block = jnp.clip(
-                    joint_logp_flat.reshape(block_size, n_bins), min=LOG_EPS
+                joint_logp_block = _gmm_logp(joint_gmm, eval_points).reshape(
+                    block_size, n_bins
                 )
 
                 # Scatter only the block's observed time rows. A segment_sum with
@@ -751,11 +788,8 @@ def predict_clusterless_gmm_log_likelihood(
                     )
 
                     # GMM evaluation (not JIT-able)
-                    joint_logp_tile = jnp.clip(
-                        _gmm_logp(joint_gmm, eval_points_tile).reshape(
-                            block_size, n_tile
-                        ),
-                        min=LOG_EPS,
+                    joint_logp_tile = _gmm_logp(joint_gmm, eval_points_tile).reshape(
+                        block_size, n_tile
                     )
 
                     # Scatter this block directly into the tile columns. The
@@ -873,15 +907,14 @@ def compute_local_log_likelihood(
             eval_points = jnp.concatenate(
                 [pos_at_spike_time, elect_feats], axis=1
             )  # (n_spikes, P+M)
-            joint_logp = jnp.clip(
-                _gmm_logp(joint_gmm, eval_points), min=LOG_EPS
-            )  # (n_spikes,)
+            joint_logp = _gmm_logp(joint_gmm, eval_points)  # (n_spikes,)
             # log term: log(mean_rate) + log p(pos_t, mark_t) - log occupancy(pos_t)
             log_occ_at_spike_pos = _gmm_logp(
                 occupancy_model, pos_at_spike_time
             )  # (n_spikes,)
-            terms = (
-                safe_log(mean_rate, eps=EPS) + joint_logp - log_occ_at_spike_pos
+            # Density difference first (see _accumulate_log_likelihood_block).
+            terms = safe_log(mean_rate, eps=EPS) + (
+                joint_logp - log_occ_at_spike_pos
             )  # (n_spikes,)
 
             seg_ids = get_spike_time_bin_ind(elect_times, time)  # (n_spikes,)
@@ -895,13 +928,11 @@ def compute_local_log_likelihood(
                 ).ravel()
             )
 
-        # Expected counts term at the animal's position (linear space):
+        # Expected counts term at the animal's position, in log space:
         # mean_rate * (gpi / occupancy) evaluated at interpolated positions.
-        gpi_logp_at_pos = _gmm_logp(gpi_gmm, interp_pos)
-        expected_counts = mean_rate * jnp.exp(
-            gpi_logp_at_pos - log_occ_at_pos
+        summed_expected_counts = summed_expected_counts + _ground_process_intensity(
+            mean_rate, _gmm_logp(gpi_gmm, interp_pos), log_occ_at_pos
         )  # (n_time,)
-        summed_expected_counts = summed_expected_counts + expected_counts
 
     # Subtract the summed ground-process intensity once, floored at EPS to
     # mirror fit_clusterless_gmm_encoding_model's summed_ground_process_intensity
