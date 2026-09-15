@@ -1,12 +1,15 @@
 """Reference-value tests for HMM conditioning and normalization in ``core``.
 
-Every assertion here compares against an *independent* float64 calculation
-(NumPy/SciPy log-sum-exp, or explicit enumeration of state paths), never
-against another caller of the same JAX implementation. Two historical
-defects motivate the one-step cases:
+Every value assertion here compares against an *independent* float64
+calculation (NumPy/SciPy log-sum-exp, explicit enumeration of state paths, or a
+closed-form derivative); the few metamorphic tests (permutation, common
+offset, constant-covariate expansion) check invariances between calls rather
+than values and are labelled as such. Two historical defects motivate the
+one-step cases:
 
 1. ``_normalize`` added a fixed ``1e-15`` to the normalizer, so a positive
-   total mass far below that epsilon produced a posterior summing to ~0.
+   total mass far below that epsilon produced a posterior summing to
+   ``mass / 1e-15`` ≪ 1 (about ``1e-5`` for the case below).
 2. ``_condition_on`` shifted the log-likelihoods by their global maximum, which
    may sit on a zero-prior state; the reachable states then underflowed and a
    possible observation was reported as impossible (prior returned, ``-inf``
@@ -41,9 +44,14 @@ ATOL = 1e-6
 # (prior, log-likelihood) pairs reproducing the two historical defects.
 CASE_SMALL_NORMALIZER = ([1e-20, 1.0], [0.0, -100.0])
 CASE_UNREACHABLE_MAXIMUM = ([0.5, 0.5, 0.0], [-1000.0, -1001.0, 0.0])
+# The best-likelihood state has the smallest normal float32 prior. Without the
+# log-joint shift, the competing state's weight flushes to zero and the
+# posterior collapses to [1, 0]; the reference is [0.909, 0.091].
+CASE_TINY_PRIOR = ([1e-37, 1.0], [0.0, -87.5])
 ONE_STEP_CASES = {
     "small_normalizer": CASE_SMALL_NORMALIZER,
     "unreachable_maximum": CASE_UNREACHABLE_MAXIMUM,
+    "tiny_prior": CASE_TINY_PRIOR,
 }
 
 
@@ -72,6 +80,22 @@ def bayes_reference(prior, log_likelihood) -> tuple[np.ndarray, float]:
     return np.exp(log_joint - log_evidence), float(log_evidence)
 
 
+def prior_gradient_reference(prior, log_likelihood) -> np.ndarray:
+    """``d log_evidence / d prior_i = exp(log_likelihood_i) / Z`` in float64.
+
+    Parameters
+    ----------
+    prior : array-like, shape (n_states,)
+    log_likelihood : array-like, shape (n_states,)
+
+    Returns
+    -------
+    gradient : np.ndarray, shape (n_states,)
+    """
+    _, log_evidence = bayes_reference(prior, log_likelihood)
+    return np.exp(np.asarray(log_likelihood, dtype=np.float64) - log_evidence)
+
+
 def enumerate_reference(
     initial: np.ndarray, transitions: np.ndarray, log_likelihoods: np.ndarray
 ) -> dict[str, np.ndarray | float]:
@@ -80,9 +104,10 @@ def enumerate_reference(
     Parameters
     ----------
     initial : np.ndarray, shape (n_states,)
-    transitions : np.ndarray, shape (n_time, n_states, n_states)
+    transitions : np.ndarray, shape (n_time, n_states, n_states) or (n_states, n_states)
         ``transitions[t]`` moves ``s_t -> s_{t+1}``; the last entry is unused,
-        matching the indexing convention of ``core.filter``.
+        matching the indexing convention of ``core.filter``. A single matrix
+        is applied at every step.
     log_likelihoods : np.ndarray, shape (n_time, n_states)
 
     Returns
@@ -94,6 +119,8 @@ def enumerate_reference(
     transitions = np.asarray(transitions, dtype=np.float64)
     log_likelihoods = np.asarray(log_likelihoods, dtype=np.float64)
     n_time, n_states = log_likelihoods.shape
+    if transitions.ndim == 2:
+        transitions = np.broadcast_to(transitions, (n_time, n_states, n_states))
     with np.errstate(divide="ignore"):
         log_initial = np.log(initial)
         log_transitions = np.log(transitions)
@@ -136,12 +163,15 @@ def enumerate_reference(
 
 
 def _tiny_model(seed: int = 0, n_time: int = 5, n_states: int = 3):
-    """Random tiny HMM with well-conditioned rows; float64 NumPy arrays."""
+    """Random tiny HMM with well-conditioned rows; float64 NumPy arrays.
+
+    Returns ``(initial, transitions, log_likelihoods)`` with ``transitions`` of
+    shape ``(n_time, n_states, n_states)``; the stationary tests use
+    ``transitions[0]``.
+    """
     rng = np.random.default_rng(seed)
     initial = rng.dirichlet(np.ones(n_states))
-    transitions = np.stack(
-        [rng.dirichlet(np.ones(n_states), size=n_states) for _ in range(n_time)]
-    )
+    transitions = rng.dirichlet(np.ones(n_states), size=(n_time, n_states))
     log_likelihoods = rng.standard_normal((n_time, n_states)) * 2.0
     return initial, transitions, log_likelihoods
 
@@ -157,16 +187,14 @@ def _covariate_model(
     rng = np.random.default_rng(seed)
     n_state_bins = n_discrete * n_bins
     state_ind = np.repeat(np.arange(n_discrete), n_bins)
-    discrete = np.stack(
-        [rng.dirichlet(np.ones(n_discrete), size=n_discrete) for _ in range(n_time)]
+    discrete = rng.dirichlet(np.ones(n_discrete), size=(n_time, n_discrete))
+    # One row-stochastic (n_bins, n_bins) block per (from, to) discrete pair.
+    continuous = np.block(
+        [
+            [rng.dirichlet(np.ones(n_bins), size=n_bins) for _ in range(n_discrete)]
+            for _ in range(n_discrete)
+        ]
     )
-    continuous = np.zeros((n_state_bins, n_state_bins))
-    for d in range(n_discrete):
-        for e in range(n_discrete):
-            block = rng.dirichlet(np.ones(n_bins), size=n_bins)
-            continuous[d * n_bins : (d + 1) * n_bins, e * n_bins : (e + 1) * n_bins] = (
-                block
-            )
     initial = rng.dirichlet(np.ones(n_state_bins))
     log_likelihoods = rng.standard_normal((n_time, n_state_bins)) * 2.0
     expanded = np.stack(
@@ -212,7 +240,7 @@ class TestConditionOnReference:
 
     @pytest.mark.parametrize("case", ONE_STEP_CASES, ids=list(ONE_STEP_CASES))
     def test_direct_conditioning_matches_reference(self, case):
-        prior, ll = (_as_f32(v) for v in ONE_STEP_CASES[case])
+        prior, ll = map(_as_f32, ONE_STEP_CASES[case])
         expected_posterior, expected_evidence = bayes_reference(prior, ll)
 
         posterior, log_norm = _condition_on(jnp.asarray(prior), jnp.asarray(ll))
@@ -225,7 +253,7 @@ class TestConditionOnReference:
 
     @pytest.mark.parametrize("case", ONE_STEP_CASES, ids=list(ONE_STEP_CASES))
     def test_filter_matches_reference_without_false_warning(self, case, caplog):
-        prior, ll = (_as_f32(v) for v in ONE_STEP_CASES[case])
+        prior, ll = map(_as_f32, ONE_STEP_CASES[case])
         expected_posterior, expected_evidence = bayes_reference(prior, ll)
 
         with caplog.at_level(logging.WARNING, logger=core_module.logger.name):
@@ -243,7 +271,7 @@ class TestConditionOnReference:
 
     @pytest.mark.parametrize("case", ONE_STEP_CASES, ids=list(ONE_STEP_CASES))
     def test_filter_covariate_dependent_matches_reference(self, case, caplog):
-        prior, ll = (_as_f32(v) for v in ONE_STEP_CASES[case])
+        prior, ll = map(_as_f32, ONE_STEP_CASES[case])
         n_states = len(prior)
         expected_posterior, expected_evidence = bayes_reference(prior, ll)
 
@@ -269,7 +297,7 @@ class TestConditionOnInvariants:
 
     @pytest.mark.parametrize("case", ONE_STEP_CASES, ids=list(ONE_STEP_CASES))
     def test_permuting_states_permutes_posterior(self, case):
-        prior, ll = (_as_f32(v) for v in ONE_STEP_CASES[case])
+        prior, ll = map(_as_f32, ONE_STEP_CASES[case])
         perm = np.arange(len(prior))[::-1]
 
         posterior, log_norm = _condition_on(jnp.asarray(prior), jnp.asarray(ll))
@@ -287,7 +315,7 @@ class TestConditionOnInvariants:
 
     @pytest.mark.parametrize("case", ONE_STEP_CASES, ids=list(ONE_STEP_CASES))
     def test_common_offset_shifts_evidence_only(self, case):
-        prior, ll = (_as_f32(v) for v in ONE_STEP_CASES[case])
+        prior, ll = map(_as_f32, ONE_STEP_CASES[case])
         offset = np.float32(37.5)
 
         posterior, log_norm = _condition_on(jnp.asarray(prior), jnp.asarray(ll))
@@ -320,7 +348,7 @@ class TestConditionOnInvariants:
 
     @pytest.mark.parametrize("unreachable_ll", [0.0, 500.0, -3000.0, 3e38, -3e38])
     def test_unreachable_state_likelihood_has_no_effect(self, unreachable_ll):
-        prior, ll = (_as_f32(v) for v in CASE_UNREACHABLE_MAXIMUM)
+        prior, ll = map(_as_f32, CASE_UNREACHABLE_MAXIMUM)
         ll_variant = ll.copy()
         ll_variant[2] = unreachable_ll
         expected_posterior, expected_evidence = bayes_reference(prior, ll)
@@ -364,12 +392,18 @@ class TestGenuineImpossibilityAndNaN:
             # the reachable normalizer is 0, so the NaN must not be hidden by
             # the zero-support fallback.
             ([1.0, 0.0], [-np.inf, np.nan]),
+            # NaN in the prior itself is routed through the "unreachable"
+            # branch (NaN > 0 is False) and must still surface.
+            ([np.nan, 1.0], [0.0, 0.0]),
+            ([np.nan, 1.0], [-np.inf, 0.0]),
         ],
         ids=[
             "nan_reachable",
             "nan_zero_prior",
             "inf_and_nan",
             "nan_zero_prior_zero_norm",
+            "nan_prior",
+            "nan_prior_with_inf_ll",
         ],
     )
     def test_nan_propagates(self, prior, ll):
@@ -450,14 +484,18 @@ class TestConditionOnGradients:
             ([0.3, 0.7], [-1.0, -2.0]),
             ([1.0, 0.0], [0.0, -2.0]),  # zero-prior state: d log Z / d p_1 = e^-2 / Z
             ([0.5, 0.5, 0.0], [-1000.0, -1001.0, 0.0]),  # unreachable maximum
-            # exp(exponent) overflows float32 but exp(exponent) / Z = e^88.5 does not
+            # The primal's shifted exponent on state 2 is 89.2 (exp overflows
+            # float32), but the normalized derivative exp(ll_2 - log Z) = e^88.5
+            # = 2.7e38 fits and must not be saturated.
             ([0.5, 0.5, 0.0], [-88.5, -88.5, 0.0]),
+            CASE_TINY_PRIOR,
         ],
         ids=[
             "distinct",
             "zero_prior",
             "unreachable_maximum",
             "representable_after_norm",
+            "tiny_prior",
         ],
     )
     def test_evidence_gradient_wrt_prior_matches_closed_form(self, prior, ll):
@@ -467,8 +505,7 @@ class TestConditionOnGradients:
         predicted probabilities, so this must hold at zero entries too.
         """
         prior, ll = _as_f32(prior), _as_f32(ll)
-        _, log_evidence = bayes_reference(prior, ll)
-        expected = np.exp(ll.astype(np.float64) - log_evidence)
+        expected = prior_gradient_reference(prior, ll)
 
         prior_grad = np.asarray(
             jax.grad(lambda p: _condition_on(p, jnp.asarray(ll))[1])(jnp.asarray(prior))
@@ -510,8 +547,8 @@ class TestConditionOnGradients:
         ll = _as_f32([0.0, -1.0, 1.0]) + np.float32(offset)
         prior_dot = _as_f32([-0.3, 0.1, 0.2])
         ll_dot = _as_f32([0.7, -0.4, 0.3])
-        posterior, evidence = bayes_reference(prior, ll)
-        ratio = np.exp(ll.astype(np.float64) - evidence)
+        posterior, _ = bayes_reference(prior, ll)
+        ratio = prior_gradient_reference(prior, ll)
         weighted_dot = ratio * prior_dot + posterior * ll_dot
         expected_evidence_dot = weighted_dot.sum()
         expected_posterior_dot = weighted_dot - posterior * expected_evidence_dot
@@ -535,10 +572,7 @@ class TestConditionOnGradients:
         likelihoods = (
             _as_f32([0.0, -1.0, 1.0]) + _as_f32([0.0, 10000.0, -10000.0])[:, None]
         )
-        expected = []
-        for ll in likelihoods:
-            _, evidence = bayes_reference(prior, ll)
-            expected.append(np.exp(ll.astype(np.float64) - evidence))
+        expected = [prior_gradient_reference(prior, ll) for ll in likelihoods]
 
         gradient = jax.grad(lambda p, ll: _condition_on(p, ll)[1])
         actual = jax.jit(jax.vmap(gradient, in_axes=(None, 0)))(
@@ -554,8 +588,8 @@ class TestConditionOnGradients:
         """Differentiating the derivative rule preserves prior/likelihood terms."""
         prior = _as_f32([0.2, 0.8, 0.0])
         ll = _as_f32([0.0, -1.0, 1.0]) + np.float32(offset)
-        posterior, evidence = bayes_reference(prior, ll)
-        ratio = np.exp(ll.astype(np.float64) - evidence)
+        posterior, _ = bayes_reference(prior, ll)
+        ratio = prior_gradient_reference(prior, ll)
         gradient = jax.grad(
             lambda p, likelihood: _condition_on(p, likelihood)[1], argnums=0
         )
@@ -573,6 +607,29 @@ class TestConditionOnGradients:
             rtol=RTOL,
             atol=ATOL,
         )
+
+    def test_mixed_second_derivative_at_the_saturation_boundary(self):
+        """A derivative exactly at the saturation threshold is not clipped.
+
+        With ``prior = [1, 0]`` and ``ll = [0, max_exponent]``, the normalized
+        derivative of the zero-prior state is ``exp(max_exponent)`` — the
+        largest representable value, sitting exactly on the threshold. The
+        mixed second derivative ``d²logZ / (dp_1 dll_1) = r_1 (1 - q_1)`` must
+        equal it; a tie-splitting clip (``jnp.minimum``) halves it.
+        """
+        finfo = jnp.finfo(jnp.float32)
+        max_exponent = float(jnp.nextafter(jnp.log(finfo.max), jnp.float32(0.0)))
+        prior = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+        ll = jnp.asarray([0.0, max_exponent], dtype=jnp.float32)
+        expected = np.exp(np.float64(max_exponent))
+        assert np.isfinite(np.float32(expected))
+
+        mixed_hessian = jax.jacfwd(
+            jax.grad(lambda p, likelihood: _condition_on(p, likelihood)[1], argnums=0),
+            argnums=1,
+        )(prior, ll)
+
+        assert float(mixed_hessian[1, 1]) == pytest.approx(expected, rel=RTOL)
 
     @pytest.mark.parametrize("ll", [[-np.inf, -np.inf], [-np.inf, 0.0]])
     def test_zero_support_fallback_has_identity_prior_derivative(self, ll):
@@ -594,8 +651,7 @@ class TestConditionOnGradients:
         """Nondifferentiable likelihood inputs contribute a zero tangent."""
         prior = jnp.asarray([0.3, 0.7])
         ll = jnp.asarray([0, -2], dtype=jnp.int32)
-        _, evidence = bayes_reference(np.asarray(prior), np.asarray(ll))
-        expected = np.exp(np.asarray(ll, dtype=np.float64) - evidence)
+        expected = prior_gradient_reference(np.asarray(prior), np.asarray(ll))
 
         actual = jax.jit(jax.grad(lambda p: _condition_on(p, ll)[1]))(prior)
 
@@ -608,9 +664,7 @@ class TestMultiStepEnumerationReference:
 
     def test_stationary_filter_and_smoother(self):
         initial, transitions, ll = _tiny_model()
-        ref = enumerate_reference(
-            initial, np.broadcast_to(transitions[0], transitions.shape), ll
-        )
+        ref = enumerate_reference(initial, transitions[0], ll)
 
         (evidence, _), (filtered, predicted) = filter(
             jnp.asarray(initial), jnp.asarray(transitions[0]), jnp.asarray(ll)
@@ -621,6 +675,24 @@ class TestMultiStepEnumerationReference:
         np.testing.assert_allclose(np.asarray(predicted), ref["predicted"], atol=1e-5)
         np.testing.assert_allclose(np.asarray(smoothed), ref["smoothed"], atol=1e-5)
         assert float(evidence) == pytest.approx(ref["log_evidence"], abs=1e-4)
+
+    def test_reverse_mode_evidence_gradient_equals_smoothed_marginals(self):
+        """``d log Z / d ll[t, s] == p(s_t = s | y_{1:T})`` through ``lax.scan``.
+
+        Reverse-mode differentiation of the whole filter transposes the
+        custom derivative rule at every step; the smoothed marginals from path
+        enumeration are the independent reference.
+        """
+        initial, transitions, ll = _tiny_model()
+        ref = enumerate_reference(initial, transitions[0], ll)
+
+        grad = jax.grad(
+            lambda log_likes: core_module._filter_jit(
+                jnp.asarray(initial), jnp.asarray(transitions[0]), log_likes
+            )[0][0]
+        )(jnp.asarray(ll, dtype=jnp.float32))
+
+        np.testing.assert_allclose(np.asarray(grad), ref["smoothed"], atol=1e-5)
 
     def test_covariate_dependent_filter_and_smoother(self):
         initial, discrete, continuous, state_ind, ll, expanded = _covariate_model()
@@ -686,7 +758,7 @@ class TestMultiStepEnumerationReference:
         if path == "stationary":
             initial, transitions, ll = _tiny_model(n_time=n_time)
             state_ind = np.arange(ll.shape[1])
-            expanded = np.broadcast_to(transitions[0], transitions.shape)
+            expanded = transitions[0]
         else:
             initial, discrete, continuous, state_ind, ll, expanded = _covariate_model(
                 n_time=n_time
