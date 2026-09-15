@@ -11,22 +11,23 @@ An audit of `src/non_local_detector/likelihoods/` and its integration with
 posteriors, plus numerical, validation, and calibration gaps. A follow-up audit
 reproduced two additional core HMM defects: normalization loses almost all
 probability mass for small positive normalizers, and a maximum likelihood in an
-unreachable state causes avoidable underflow and false `-inf` evidence. Every
-finding was reproduced with a runnable script before being written down; the
-reproduction is quoted in the phase that fixes it.
+unreachable state causes avoidable underflow and false `-inf` evidence. The
+historical findings have recorded reproductions or contract-violation evidence
+in their phase files. Later design candidates and production requirements still
+need prototyping; they are not validated fixes.
 
-Headline defects: sorted-spike encoding discards its training / environment /
+Historical headline defects: sorted-spike encoding discarded its training / environment /
 encoding-group mask (place fields 40–45% low); the clusterless GMM floors a
-log-density before forming a ratio (~10^11 likelihood distortion in a realistic
+log-density before forming a ratio (~10^11 intensity distortion in a realistic
 tail); chunked prediction drops every spike falling between two chunks; and
 `time` is read inconsistently as bin edges vs. timestamps, leaving a final row
 that can never contain a spike and rates calibrated to an unstated assumption.
 
-**Read [shared-contracts.md](shared-contracts.md) first.** Of the three contracts
-the phases assume, only **C2 is settled** (with measured evidence). **C1 is
-withdrawn** — its policy was shown to be non-monotonic — and **C3 is split**: its
-decode vocabulary is settled, its encoding-exposure half is not. No phase
-depending on C1 or on encoding exposure can be executed.
+**Read [shared-contracts.md](shared-contracts.md) first. C2 and C3a are settled;
+C1 and C3b are unresolved.** C1's former policy was withdrawn as non-monotonic.
+Implementation selecting an unresolved floor or encoding-exposure policy is
+blocked. This does not block independent prototypes or changes preserving the
+current policy, as specified below.
 
 **Completed foundation: [phase 0](phase-0-core-hmm.md), core HMM correctness.**
 Its correctness fixes and performance revision are implemented on
@@ -72,27 +73,54 @@ uniformity tolerance that rejects every recording timestamped in Unix seconds.
 The `Falsification` sections added in draft 2 helped reviewers catch this; they
 did not prevent it, because the author still did not run the snippets.
 
-**Process for the remainder of this work: prototype, then write.** No phase file
-should contain an implementation snippet that has not been executed. A phase is
-ready when its fix has been prototyped against the real code and its acceptance
-criteria have been run and observed to fail on `main`.
+**Process for the remainder of this work: prototype, then prescribe code.**
+Requirements and explicit design options may be recorded before implementation;
+unexecuted implementation snippets must not be presented as a solution. Readiness
+requires resolved dependencies, a working prototype, and passing acceptance
+checks. Defect regressions must demonstrate the relevant pre-fix failure (or a
+documented contract violation); preservation/parity checks may already pass on
+the baseline. Performance work needs measured baseline costs, not an invented
+failing correctness test. Pin revisions rather than relying on a moving `main`.
 
-Contract sections are exempt only where the claim is itself verified — C1 and C2
-below now carry measured evidence rather than reasoning.
+Shared-contract measurements establish the stated problem or decision only;
+they do not establish that an unresolved policy or implementation is ready.
+
+## Execution order and baselines
+
+Phase numbers identify scope and reading order. These dependencies determine
+release order; implementation details remain subject to prototyping.
+
+| Work | Required contract or predecessor | Release constraint |
+|---|---|---|
+| 0 and 1 | Existing likelihood/time semantics | Complete; preserve their regression coverage. Future policy changes belong to the phase introducing them. |
+| 2 | Resolve C1 scope, unsupported ratios, and aggregate policy | Validate on the corrected Phase 0 core. |
+| 3 | Current unchunked event ownership | May proceed without choosing C1/C3b; retain corrected behavior through 6a. |
+| 4 | Existing or selected baseline floor policy, recorded explicitly | Numerical kernels can be prototyped independently; coordinate overlapping sites with Phase 2. |
+| 5 | Settled C2 weighted-event ownership | Remove hard windows; do not independently settle acquisition endpoints/gaps from C3b. |
+| 6a + 6c | Settled C3a and resolved C3b for encoding-cell migration | Ship the edge/coordinate migration and detector uniformity guard together. |
+| 6b + 6d | 6a/6c, resolved C3b, and applicable C1 decisions | Ship Hz conversion, metadata plumbing, and legacy-model rejection atomically. |
+| 8 | Corrected exposure/rate units for density and MRF work; applicable C1 decisions | Can ship before Phase 7; sorted-index contract work can be prototyped independently and shared with Phase 3. |
+| 7 | Corrected likelihood/time baseline and relevant Phase 8 fixes | Pure-core prototypes may run earlier; production claims require the integrated corrected baseline. |
+
+Phases 0–5 remain the correctness priority before the Phase 6 migration. Review
+Phase 6a/6c separately from 6b/6d so time/coordinate effects and rate-unit effects
+remain attributable. No ordering here selects C1 or C3b. Record actual golden
+changes at each step; approval requirements apply to changes observed, not to
+an assumption that every golden must change.
 
 ### Readiness
 
 | Phase | State |
 |---|---|
-| 0 | **Implemented, optimized, and validated** on `fix/core-hmm-conditioning` (`c1f7e33`; benchmark script `e79501a`). Full suite: **1329 passed / 4 skipped**; reference tests: **63 passed / 1 skipped** in default float32 and **64 passed** with x64 enabled. Golden files and existing tolerances unchanged; ruff and format pass. Numerical comparisons are bit-identical to the pre-optimization fix; stationary kernels take 6.5–14.3% less time in the measured CPU benchmark. See [phase 0](phase-0-core-hmm.md). Independent of C1/C3. |
+| 0 | **Implemented, optimized, and validated** on `fix/core-hmm-conditioning` (`c1f7e33`; benchmark script `e79501a`). Full suite: **1329 passed / 4 skipped**; reference tests: **63 passed / 1 skipped** in default float32 and **64 passed** with x64 enabled. Golden files and existing tolerances unchanged; ruff and format pass. Numerical comparisons are bit-identical to the pre-optimization fix; stationary kernels take 6.5–14.3% less time than that intermediate draft. The corrected 200-bin filter remains approximately 13% slower than the pre-Phase-0 `main` baseline in the recorded CPU runs. See [phase 0](phase-0-core-hmm.md). Independent of C1/C3. |
 | 1 | **Implemented and reviewed** on `fix/sorted-spikes-exposure-mask` (`8c8765f` plus regression coverage). Mask and zero-exposure regressions fail against the relevant pre-fix behavior. Post-review full suite: **1266 passed / 3 skipped**, goldens unchanged; ruff and format pass. |
-| 2 | Needs prototyping: aggregate flooring, zero-mass detection, and the newly in-scope log-KDE clamps |
+| 2 | **Blocked on C1; needs prototyping.** Inventory floors, resolve scope/unsupported ratios/aggregation, then prototype the chosen policy. The former floor-only-`-inf` rule is withdrawn. |
 | 3 | **Revised requirements; needs prototyping.** Bin events globally and restrict decoding spikes before density evaluation; cover no-spike states, masks, and position-dependent terms. Validate likelihood-specific memory bounds. Full posterior retention is assigned to Phase 7a; the former >4× total-memory target is withdrawn. |
-| 4 | Nearly ready: weight normalizer overflows on large float32 weights; the GLM objective fix promised in the index below is missing |
-| 5 | Rewrite against the corrected C2 — the hard-window machinery is deleted, not repaired |
-| 6a–6d | Needs prototyping: exposure endpoints, a central edge validator, ULP-aware uniformity, rate-vs-expected-count test semantics, and 6b/6d must be atomic |
+| 4 | **Needs prototyping.** Guard all empty-tile operands, stabilize Gaussian distances, and make weighted GMM fitting/objectives scale-invariant without overflowing weight normalization. The GLM weighted-objective normalization already exists; preserve it. |
+| 5 | **Needs prototyping against settled C2.** Remove hard windows, implement fractional event ownership consistently (including GLM sufficient statistics), reject unsupported damping before mutation, and close validation gaps. |
+| 6a–6d | **C3b unresolved; needs prototyping.** Central edge validation and encoding-cell alignment; 6a/6c ship together and 6b/6d ship atomically. Uniformity checks must account for timestamp representability. |
 | 7 | **Expanded scope; needs prototyping.** 7a: bounded memory smoothing and incremental/compact outputs. 7b: structured forward/backward transitions. 7c: measured likelihood and compilation optimizations. Validate the representative workload, existing numerical tolerances, host/device peak memory, and end-to-end runtime before claiming production support. |
-| 8 | Mostly ready; 9 call sites in `likelihoods/` source, not 13; reconsider whether to drop `indices_are_sorted` rather than reject previously-accepted input |
+| 8 | **Needs prototyping.** Distinguish mass from density on variable-volume bins, define unoccupied-component behavior consistently with the selected policy, and select a tested sorted-index strategy. The historical inventory found nine reduction sites; re-inventory before editing. |
 
 ## Reading order
 
@@ -106,26 +134,27 @@ below now carry measured evidence rather than reasoning.
 
 | Phase | File | Ships | Goldens |
 |---|---|---|---|
-| 0 | [phase-0-core-hmm.md](phase-0-core-hmm.md) | Stable Bayesian conditioning and posterior normalization in both core paths | Measure; defect cases must change, well-conditioned cases retain existing tolerances |
-| 1 | [phase-1-exposure-mask.md](phase-1-exposure-mask.md) | Sorted fits honour the training/group/environment mask; zero-exposure is defined | None expected |
-| 2 | [phase-2-gmm-log-intensity.md](phase-2-gmm-log-intensity.md) | One GMM log-intensity policy (C1) across local, non-local, ground-process | GMM goldens move |
-| 3 | [phase-3-chunk-boundary.md](phase-3-chunk-boundary.md) | Backends bin globally and allocate only requested rows | None |
-| 4 | [phase-4-numerical-hardening.md](phase-4-numerical-hardening.md) | KDE reducer NaN, scale-invariant weighted GMM, GLM objective | Small drift possible |
-| 5 | [phase-5-windows-and-validation.md](phase-5-windows-and-validation.md) | Window ownership (C2), damping rejection, validators | None |
-| 6a | [phase-6a-time-vocabulary.md](phase-6a-time-vocabulary.md) | `time_edges`/`time_centers`/`bin_durations` through every caller | All move |
-| 6b | [phase-6b-rate-units.md](phase-6b-rate-units.md) | Backend-by-backend conversion to Hz | All move |
+| 0 | [phase-0-core-hmm.md](phase-0-core-hmm.md) | Stable Bayesian conditioning and posterior normalization in both core paths | Validated unchanged; defect regressions now match the mathematical reference |
+| 1 | [phase-1-exposure-mask.md](phase-1-exposure-mask.md) | Sorted fits honour the training/group/environment mask; zero-exposure is defined | Validated unchanged |
+| 2 | [phase-2-gmm-log-intensity.md](phase-2-gmm-log-intensity.md) | C1-scoped log-intensity/ground-process corrections across local and non-local paths | Changes depend on policy and affected fixtures; measure |
+| 3 | [phase-3-chunk-boundary.md](phase-3-chunk-boundary.md) | Backends bin globally and allocate only requested rows | Existing cached-path goldens unchanged; corrected chunks match the unchunked reference |
+| 4 | [phase-4-numerical-hardening.md](phase-4-numerical-hardening.md) | KDE reducer NaN, stable Gaussian distances, scale-invariant weighted GMM and objective | Changes possible; measure |
+| 5 | [phase-5-windows-and-validation.md](phase-5-windows-and-validation.md) | Canonical event weights and hard-window removal (C2), damping rejection, validators | Measure ownership changes; unaffected fixtures retain parity |
+| 6a | [phase-6a-time-vocabulary.md](phase-6a-time-vocabulary.md) | Edges, centers, encoding cells, and row alignment; ships with 6c | Shape, coordinate, and numerical changes possible; measure |
+| 6b | [phase-6b-rate-units.md](phase-6b-rate-units.md) | Backend-by-backend conversion to Hz; ships with 6d | Stored units change; likelihood/posterior effects require derivation |
 | 6c | [phase-6c-uniform-bins.md](phase-6c-uniform-bins.md) | Detector requires uniform bins; nonuniform stays on the direct API | None |
 | 6d | [phase-6d-model-compat.md](phase-6d-model-compat.md) | Saved models with per-sample rates are detected and rejected | None |
 | 7 | [phase-7-performance.md](phase-7-performance.md) | Checkpointed smoothing, incremental/compact outputs, structured transitions, and measured kernel optimizations | None (parity against the corrected baseline) |
-| 8 | [phase-8-remaining-findings.md](phase-8-remaining-findings.md) | `to_density` volume, MRF disconnected components, sorted-index contract | None expected |
+| 8 | [phase-8-remaining-findings.md](phase-8-remaining-findings.md) | `to_density` volume, MRF disconnected components, sorted-index contract | Changes possible on affected fixtures; measure |
 
 ## Approval gates
 
-Per `CLAUDE.md`, stop and request explicit approval before updating any snapshot
-(`--snapshot-update`) or modifying golden regression data. Reached in phases 2, 4,
-6a, and 6b, and in phase 0 if measured regression outputs require updates.
-Phase 6b additionally changes a documented numerical bound (C1 is
-changed in phase 2) — include both in the numerical-validation analysis.
+Per `CLAUDE.md`, provide the required numerical-change analysis before requesting
+approval for an observed snapshot/golden update or a numerical-tolerance or
+convergence-criterion change. Phases 2, 4, 5, 6a/6b, and 8 may produce legitimate
+numerical changes; none is permission to update reference files automatically.
+Phase 7 preserves its corrected baseline. Phase 0/1 completed without golden
+updates. Commit/push permissions remain those in `CLAUDE.md` and the session.
 
 The user has confirmed **no backwards-compatibility window is required**
 (`CLAUDE.md` default). Phase 6d therefore rejects incompatible saved models with a

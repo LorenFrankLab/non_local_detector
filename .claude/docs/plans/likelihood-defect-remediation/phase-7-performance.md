@@ -19,6 +19,9 @@ Phases 0–6, including Phase 3's global event ownership and bounded likelihood
 chunks, the settled C1 policy, and Phase 6's intensity units. Separate pure-core
 prototypes can run earlier against an identified corrected reference. They must
 not delay the outstanding likelihood fixes or introduce competing C1/C3 policies.
+Use the release groups in [PLAN.md](PLAN.md#execution-order-and-baselines):
+6a/6c together, then atomic 6b/6d. Applicable Phase 8 correctness fixes can ship
+before Phase 7 and must be included in the baseline for affected configurations.
 
 Implement and review these as independently measurable changes:
 

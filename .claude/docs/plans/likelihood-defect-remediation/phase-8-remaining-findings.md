@@ -1,167 +1,108 @@
-> **Snippets unverified.** The code below has not been executed. Per the process
-> rule in [PLAN.md](PLAN.md), treat it as intent to be re-derived by prototyping,
-> not as code to paste. The problem statements and measurements are verified.
-
 # Phase 8 — Remaining audit findings
 
-Three confirmed findings that were neither scheduled nor deferred in the first
-draft. Each is small; grouped because none warrants its own PR.
+> **NEEDS PROTOTYPING.** These are separate correctness/contract tasks with the
+> recorded evidence below. Unexecuted implementation snippets are removed. The
+> density/exposure work uses the corrected Phase 6 units and applicable C1
+> decisions; sorted-index contract work can be prototyped independently.
 
----
+Phase numbering does not require delaying these fixes behind Phase 7. Relevant
+Phase 8 corrections must be included in the baseline used to claim production
+support for affected Phase 7 backends/configurations. Separate changes when their
+numerical effects need independent attribution.
 
-## Finding 1 — `to_density` normalizes counts, not mass per volume
+## 1. Distinguish per-bin mass from density
 
-`diffusion.to_density` (`diffusion.py:549-571`) divides each column by
-`bin_sizes @ smoothed`. Its docstring calls the input "count fields", so a density
-should be `count_i / volume_i / total`, not `count_i / total`.
+`diffusion.to_density` receives smoothed count fields and currently divides each
+column by `bin_sizes @ smoothed`. That produces an integral-one field but does
+not implement conversion of per-bin mass `m_i` to density
+`(m_i / volume_i) / sum(m)` on unequal-volume bins.
 
-**Impact is smaller than it looks — verified.** `sorted_spikes_diffusion` divides
-two outputs of the *same* `to_density` call (`sorted_spikes_diffusion.py:510-527`),
-and the volume factor cancels:
+Establish the caller's quantity and units before changing it: the diffusion
+operator, occupancy, and spike-marginal fields must agree on whether values are
+mass or density. Phase 6b changes exposure units but does not by itself settle
+this spatial-volume conversion.
 
-```
-per-bin ratio (current) : [0.4035 0.9282 1.8107 3.4473 0.4218 0.0468]
-per-bin ratio (proposed): [0.7490 1.7229 3.3608 6.3987 0.7828 0.0868]
-ratios proportional (shape identical)? True
-global scale factor difference: 0.5387
-equal volumes -> identical: True
-```
+The original audit compared downstream spike-marginal/occupancy ratios:
 
-So the error is a **per-neuron global scale factor** on the rate, not a per-bin
-shape distortion, and it is exactly 1.0 on equal-volume grids (i.e. every regular
-grid). It bites only on linearized track graphs with variable edge spacing.
-
-Because the scale multiplies the rate, it does affect the posterior through the
-`−λ` term of `xlogy(k, λ) − λ`, which is bin-dependent. Real, second-order.
-
-### Fix
-
-Divide by each cell's own volume, and rename so the semantics are unambiguous:
-
-```python
-def to_density(mass: np.ndarray, bin_sizes: np.ndarray) -> np.ndarray:
-    """Convert per-bin mass to a density integrating to one.
-
-    ``density_i = (mass_i / bin_sizes_i) / sum_j mass_j``, so
-    ``bin_sizes @ density == 1``. On equal-volume grids this equals the previous
-    ``mass / (bin_sizes @ mass)`` up to a global constant; on variable-volume
-    grids (linearized track graphs with uneven edge spacing) it differs by a
-    per-column scale factor.
-    """
-    total = mass.sum(axis=0)
-    safe = np.where(total > 0, total, 1.0)
-    return np.where(total > 0, (mass / bin_sizes[:, None]) / safe, 0.0)
+```text
+current:  [0.4035 0.9282 1.8107 3.4473 0.4218 0.0468]
+proposed: [0.7490 1.7229 3.3608 6.3987 0.7828 0.0868]
+ratio shapes proportional: True; global scale factor: 0.5387
+equal-volume results identical: True
 ```
 
-Verify the caller still gets the units it expects — `occupancy` and `marginals`
-both come from this call, and phase 6b may have changed what "mass" means for the
-diffusion exposure field. Sequence this **after** 6b.
+The spatial volume factors cancel between numerator and denominator, leaving a
+per-neuron scale difference in this fixture. Individual density arrays on
+unequal volumes do not differ merely by a column constant. Downstream posteriors
+also need not change by a constant: rates enter state-dependent expected-count
+terms and the HMM normalizes and propagates the resulting evidence.
 
----
+### Prototype and acceptance
 
-## Finding 2 — MRF invents rates on unoccupied disconnected components
+- Compare against an independent count/volume reference with unequal volumes;
+  integral-one normalization alone is insufficient because both formulas can
+  satisfy it. Check nonnegative/zero-mass columns and valid positive volumes.
+- Verify occupancy and spike-marginal caller units and the induced rate ratio.
+  Preserve equal-volume behavior at the existing `rtol=1e-6` target.
+- Attribute variable-volume field/rate changes before examining likelihoods and
+  posteriors. Do not require a per-neuron-constant posterior or golden diff.
 
-`fit_sorted_spikes_mrf_encoding_model` checks only *total* exposure
-(`sorted_spikes_mrf.py:825`, `if not occupancy_field.sum() > 0.0`). A graph with
-several connected components can have zero occupancy on one of them while the
-total is positive. That component's unpenalized null mode then retains the global
-warm-start rate (`sorted_spikes_mrf.py:266`), producing a finite, confident rate
-in a region the animal never visited.
+## 2. Unoccupied disconnected MRF components
 
-`diffusion.connected_component_labels` (`diffusion.py:350-372`) already computes
-the labels needed.
+The original audit found only a total-exposure check. A disconnected component
+with no exposure can retain a global warm-start rate through its unpenalized
+null mode even when another component is occupied.
 
-### Fix
+Prototype exposure accounting per connected component using the original
+recording's corrected exposure units. An unoccupied component is unidentified;
+apply the backend's declared zero-exposure behavior consistently with applicable
+C1 decisions. If that policy remains the EPS fallback, test EPS explicitly;
+this file does not independently choose a new floor. Emit a diagnostic identifying
+the unoccupied component count.
 
-Check exposure per component and floor unoccupied components to the EPS rate:
+Test two-component and connected controls, all-zero exposure, supported fitted
+outputs/caches, and prediction. A connected control and unaffected occupied
+components should retain the reference behavior; investigate any change rather
+than masking it with regularization or a relaxed tolerance.
 
-```python
-    labels = connected_component_labels(graph)
-    component_exposure = np.zeros(labels.max() + 1)
-    np.add.at(component_exposure, labels, occupancy_field)
-    unoccupied = component_exposure[labels] <= 0.0
-    # A component the animal never entered has no exposure, so its rate is
-    # unidentified: the penalized fit's null mode would otherwise keep the global
-    # warm-start rate and assert a confident rate where there is no data.
-    rate_interior = np.where(unoccupied[:, None], EPS, rate_interior)
-```
+## 3. Sorted-index assertions on unvalidated spike times
 
-Warn once naming the component count, so a disconnected environment is not a
-silent surprise.
+The historical audit found nine likelihood `segment_sum` sites specifying
+`indices_are_sorted=True` without checking the corresponding spike ordering.
+CPU/XLA examples produced matching results with/without the assertion; GPU
+behavior was not tested. This is a contract/portability issue, not evidence of an
+observed GPU failure.
 
----
+Re-inventory actual call sites, including paths rewritten by Phase 3. Select a
+strategy through tests and profiling: remove the unsupported assertion, or
+establish ordered indices with explicit input handling that preserves
+spike/feature/weight alignment. Rejecting previously accepted unsorted input is
+a separate public behavior choice and needs clear documentation. Do not require
+rejection in the acceptance tests before that strategy has been chosen.
 
-## Finding 3 — `indices_are_sorted=True` on unvalidated spike times
+### Acceptance
 
-Nine production `segment_sum` call sites in `likelihoods/` pass `indices_are_sorted=True`
-(e.g. `clusterless_kde.py:476`), which is only valid if each unit's spike times
-are sorted. Nothing validates that: `ensure_monotonic_increasing` is applied to
-`time` only (`models/base.py:1908`).
+- Sorted, unsorted, and duplicate-time inputs are handled according to the chosen
+  public contract and compared with an independent reduction reference.
+- If inputs are reordered, aligned features/weights are reordered identically;
+  if rejected, errors identify the affected unit before evaluation.
+- Exercise actual reduction consumers in both core transition configurations,
+  not only the bin-index helper. Test GPU behavior when available and report
+  untested devices explicitly. A CPU test need not fail before the fix to
+  establish that an unproved compiler assertion was a contract violation.
 
-Verified: CPU/XLA currently tolerates unsorted indices — identical results with
-and without the hint. **GPU behaviour unverified**, and the hint is a contract, so
-this is a latent portability defect rather than a live bug.
+## Validation and release
 
-`tests/likelihoods/test_clusterless_kde.py:152` tests unsorted input to
-`get_spike_time_bin_ind` but never reaches the `segment_sum`.
+Run affected likelihood/model, integration, and golden tests. Re-inventory the
+current code before applying historical line references or site counts. Preserve
+existing test tolerances and use independent references for changed primitives.
 
-### Fix
+Golden changes are possible for variable-volume or disconnected fixtures;
+unchanged regular-grid/sorted-input controls remain useful. Analyze actual
+likelihood and posterior consequences rather than guaranteeing that all goldens
+stay fixed or that their differences are constant. Follow the existing approval
+process for observed reference changes.
 
-Validate once per unit at the predict entry, where the spike arrays are already
-being filtered:
-
-```python
-def validate_sorted_spike_times(spike_times: list[np.ndarray], unit_name: str) -> None:
-    """Require each unit's spike times to be non-decreasing.
-
-    The segment reductions pass ``indices_are_sorted=True`` to XLA, which is a
-    contract rather than a hint: unsorted indices are undefined behaviour even
-    where a given backend currently tolerates them.
-    """
-    for unit, times in enumerate(spike_times):
-        times = np.asarray(times)
-        if times.size > 1 and np.any(np.diff(times) < 0):
-            raise ValidationError(
-                f"{unit_name} {unit} has unsorted spike times",
-                expected="non-decreasing spike times",
-                got=f"{int(np.sum(np.diff(times) < 0))} out-of-order entries",
-                hint="Sort each unit's spike times before fitting or predicting.",
-            )
-```
-
-in `common.py`, called from each clusterless predictor.
-
-**Consider the cheaper alternative first:** simply drop `indices_are_sorted=True`.
-It is an optimization hint, and removing it costs nothing measurable unless
-profiling shows otherwise — whereas validating turns previously-accepted unsorted
-input into an error, which is a breaking public-API change that needs its own
-CHANGELOG entry. Measure before choosing the breaking option.
-
----
-
-## Validation
-
-| Test | Asserts | File |
-|---|---|---|
-| `test_to_density_integrates_to_one` | `bin_sizes @ density == 1` per column, for equal and variable volumes. | `test_diffusion.py` |
-| `test_to_density_equal_volumes_unchanged` | On an equal-volume grid the place-field output is unchanged from pre-fix, `rtol=1e-6`. | `test_sorted_spikes_diffusion.py` |
-| `test_to_density_variable_volume_rate_scale` | On a variable-volume grid the rate changes by the predicted scale factor and the per-bin shape is unchanged. | same |
-| `test_mrf_unoccupied_component_floors` | Two-component graph, occupancy on one only: rates on the unoccupied component are EPS, and a warning names the component count. | `test_sorted_spikes_mrf.py` |
-| `test_mrf_single_component_unchanged` | A connected graph gives identical results to pre-fix. | same |
-| `test_unsorted_spike_times_raise` | Unsorted times raise `ValidationError` naming the unit. Parametrized over the clusterless predictors. | `test_clusterless_kde.py` |
-| `test_sorted_spike_times_accepted` | Sorted input still runs. | same |
-
-```bash
-uv run pytest src/non_local_detector/tests/likelihoods -q
-uv run pytest src/non_local_detector/tests/test_golden_regression.py -q
-```
-
-Goldens: findings 2 and 3 should not move them (single-component fixtures, sorted
-inputs). Finding 1 moves them **only** if a fixture uses a variable-volume grid —
-check before assuming, and if one does, the diff must be a per-neuron constant.
-
-## Review
-
-Dispatch `code-reviewer`. Ask whether finding 1's rename left any caller reading
-`to_density` output as counts, and whether the sorted-spike-times validator is
-reached by every `segment_sum` call site or only some.
+Review mass/density semantics and caller units, component-exposure handling, and
+the chosen sorted-index strategy. Phase 7 must preserve these corrected numerical
+contracts while changing storage or transition representation.

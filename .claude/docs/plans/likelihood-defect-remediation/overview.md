@@ -23,7 +23,8 @@
   implementations — blocked on the known ~3e-2 log-vs-prob golden parity gap.
 - A typed/versioned encoding-model schema replacing the `dict` +
   `**encoding_model` splat. Phase 6d adds a single unit marker, not a schema.
-- Clearing the 190 mypy errors. Phases must not add errors; a sweep is separate.
+- Clearing the historical mypy backlog (190 errors at the original audit).
+  Phases must not add errors relative to their pinned baseline; a sweep is separate.
 - A backend-owned EM damping rebuild protocol. Phase 5 rejects damping where it
   cannot be supported.
 - Changing spatial/temporal resolution, truncating Gaussian tails, or using
@@ -104,7 +105,8 @@ These targets add work to [Phase 7](phase-7-performance.md). They do not reopen
 Phase 0/1 or require architectural work before shipping the remaining correctness
 fixes. [Phase 3](phase-3-chunk-boundary.md) establishes correct likelihood chunks;
 the integration baseline for Phase 7 incorporates the settled likelihood and
-time/exposure contracts from the preceding phases.
+time/exposure contracts and relevant Phase 8 fixes. Follow the release dependencies
+in [PLAN.md](PLAN.md#execution-order-and-baselines), rather than numeric order alone.
 
 ## Architecture map
 
@@ -116,10 +118,11 @@ detector.fit()
      └─ registry fit fn            likelihoods/__init__.py:41 (sorted), :59 (clusterless)
 
 detector.predict()
-  └─ compute_log_likelihood()      models/base.py:3047 (clusterless), :4011 (sorted)
-     └─ core chunked HMM
-        ├─ chunked_filter_smoother                      core.py:490
-        └─ chunked_filter_smoother_covariate_dependent   core.py:1081
+  └─ _predict()                   models/base.py
+     ├─ bind compute_log_likelihood callback (clusterless or sorted)
+     └─ core chunked HMM          consumes cached likelihoods or calls the callback
+        ├─ chunked_filter_smoother
+        └─ chunked_filter_smoother_covariate_dependent
 ```
 
 **The two core paths are stationary vs. covariate-dependent transitions — not
@@ -129,20 +132,20 @@ touching `core.py` must cover both, and both detector types route through
 whichever path their transition model selects.
 
 Both filters call `_condition_on`, which uses `_normalize`; both smoothers also
-call `_normalize` directly. Phase 0 must validate all these callers. It can be
-prototyped independently of the unresolved C1 and C3 decisions, preserving the
-existing fallback for genuinely zero-probability observations and NaN visibility.
+call `_normalize` directly. Phase 0 validated these callers independently of C1
+and C3b. Its completed coverage includes the genuine-zero-support fallback and
+NaN visibility; later phases preserve those contracts.
 
 ## Cross-cutting risks
 
 | Risk | Mitigation |
 |---|---|
-| Phase 6a/6b re-baseline every golden, masking a regression from an earlier phase. | Phases 0–5 ship first, each with its own correctness and well-conditioned parity tests. |
+| Broad Phase 6 reference updates mask a regression from an earlier phase. | Phases 0–5 ship first; review 6a/6c separately from 6b/6d and attribute only observed reference changes. |
 | Treating every small normalizer as impossible hides a valid Bayesian update; requiring every evidence value to be finite erases true impossibility. | Phase 0 tests positive-support observations, true zero support, and NaN inputs separately against an independent reference. |
 | Phase 1 exposes all-zero-exposure groups whose guards used to live in phase 4. | Zero-exposure handling moved **into** phase 1, so it is independently shippable. |
-| Phases 2 and 4 both move GMM outputs; a combined diff is unattributable. | Separate PRs. Phase 2's diff must be confined to bins where the pre-fix code clamped. |
+| Phases 2 and 4 both move GMM outputs; a combined diff is unattributable. | Separate changes and trace changed primitives. Posterior normalization and temporal propagation can change bins whose own likelihood was unchanged. |
 | Fixing float32 cancellation changes well-conditioned results too, via summation order. | Assert invariants (Mahalanobis ≥ 0) plus `rtol=1e-5` parity on well-conditioned fixtures, not bit-exactness. |
-| A phase's acceptance criteria are never run against its own proposed fix. | Every phase carries a **Falsification** line to execute before implementing. |
+| A phase's acceptance criteria are never run against its own proposed fix. | Reproduce the defect or contract violation, then exercise the phase's prototype and acceptance checks before calling it ready. Performance work also needs a measured baseline. |
 | Small CPU kernels appear fast while full-session decoding exhausts memory. | Use the representative dimensions, account for model/output storage, and measure host/device peaks and end-to-end throughput. |
 | Chunked smoothing resets context or drops spikes at boundaries. | Phase 3 preserves global event ownership; Phase 7a carries both forward and backward boundary messages and tests parity across chunk sizes. |
 | An apparently exact transition optimization changes boundaries or silently approximates a different movement model. | Phase 7b requires row normalization, forward and backward operator parity, explicit capability checks, and a tested fallback. |
@@ -169,7 +172,9 @@ uvx ruff check src/non_local_detector/likelihoods/     # All checks passed
 uv run mypy src/non_local_detector/likelihoods/        # 190 errors in 11 files
 ```
 
-The first two must not regress. The mypy count is a ceiling, not a target.
+These are historical baseline results, not current test counts. Preserve the
+covered tests and lint cleanliness; remeasure the mypy baseline on the pinned
+implementation revision rather than assuming the old count still applies.
 
 Follow-up core audit (2026-09-14, CPU, JAX 0.9.0, NumPy 2.4.1, Python 3.13):
 116 existing tests passed across `core/test_core_utilities.py`,
@@ -178,7 +183,9 @@ Follow-up core audit (2026-09-14, CPU, JAX 0.9.0, NumPy 2.4.1, Python 3.13):
 failed the independent mathematical reference. The run emitted 26 warnings,
 including requested float64 arrays being truncated to float32; phase 0 requires
 a separate run that actually enables and verifies float64. These results are a
-targeted audit baseline, not evidence that a fix has been implemented.
+pre-fix audit baseline. Phase 0 subsequently passed 1329 full-suite tests with
+4 skipped and all 64 reference cases with x64 enabled; see its implementation
+record rather than treating the audit failure as current readiness.
 
 ## Open questions
 
@@ -189,19 +196,21 @@ targeted audit baseline, not evidence that a fix has been implemented.
   Monotonicity requires flooring both or neither. See
   [shared-contracts.md](shared-contracts.md#c1--degeneracy-policy-for-log-intensities)
   for the three options. Phase 2 cannot proceed until this is chosen.
-- **C3's `sample_cell_durations` undercounts exposure** by `(N-1)/N` and gives a
-  single sample zero exposure. Endpoint half-cells must be extrapolated,
-  acquisition bounds supplied, or short input rejected. A policy for long
-  timestamp gaps (exposure vs. missing data) is also undefined. Phases 6a and 6b
-  cannot proceed until this is settled.
+- **C3b's draft `sample_cell_durations` disagrees with full-cell exposure**:
+  it returns `(N-1)/N` of that reference and gives a single sample zero exposure.
+  Choose acquisition endpoints, single-sample requirements, and a policy for
+  long timestamp gaps (exposure vs. missing data). The encoding-cell migration
+  in 6a and rate calibration in 6b require this decision; independent decode
+  vocabulary and validator prototypes can proceed.
 
 **Delegated judgement calls.**
 
-- Phase 4: if a fixture starts warning about collapsed components after the
-  centred-difference rewrite, raise the fixture's `reg_covar` rather than
-  lowering the floor.
-- Phase 5: whether *any* backend supports EM damping is an audit result, not an
-  assumption — the phase may legitimately conclude the supported set is empty.
+- Phase 4: diagnose new collapse warnings against the frozen reference. Neither
+  increasing fixture regularization nor lowering a floor is an automatic fix;
+  numerical-criterion changes follow the repository review process.
+- Phase 5: the recorded damping audit found no coherent supported backend for
+  the existing blend. Recheck that inventory at implementation time and reject
+  unsupported damping before mutation; a general rebuild protocol is out of scope.
 
 ## Found during review, not yet scheduled
 

@@ -73,6 +73,9 @@ each affected backend.
 - For sorted backends, form the counts and likelihood arrays needed for the
   requested rows. Avoid repeatedly binning the full recording for every chunk;
   prototype reusable event indices or indexed range lookup.
+- Coordinate ordering assumptions with Phase 8's sorted-index contract. A range
+  lookup must establish its required order and preserve spike/feature alignment;
+  it cannot silently assume inputs are sorted.
 - Inventory the fixed encoding-model allocations separately from decoding
   workspace. Large encoding-spike × position kernels are a Phase 7c profiling
   target; limiting time rows does not by itself remove them.

@@ -16,11 +16,11 @@
 > numerical comparisons are recorded below. Full suite: **1329 passed / 4 skipped**;
 > golden files and existing tolerances unchanged. Ruff and format checks pass.
 
-**Priority: immediate correctness work, before likelihood-flooring changes and
-performance optimization.** This phase adds the missing HMM findings without renumbering
-phases 1–8. It is independent of the unresolved C1 likelihood-flooring and C3
-time/exposure decisions. The runnable code below reproduces the defects; no
-unexecuted implementation patch is prescribed.
+**Completed correctness foundation.** The problem statements and original
+acceptance specification below describe the pre-fix audit; the implementation
+and validation results above and in the performance section supersede any
+historical instructions to prototype this phase. Completion criteria remain
+unchanged. C1 likelihood-flooring and C3b exposure decisions are independent.
 
 ## Problem 1 — Positive normalizers lose probability mass
 
@@ -66,9 +66,9 @@ not make its posterior or evidence correct.
 ## Runnable reproduction
 
 Run from the repository root. This uses the installed checkout and an independent
-SciPy log-sum-exp reference. It prints both failures without modifying source,
-snapshots, or fitted models. The snippet was executed against the unmodified
-package; it is a reproducer, not a proposed fix.
+SciPy log-sum-exp reference. The recorded failures were observed against the
+pre-Phase-0 baseline (`9d2a2a6`); the corrected checkout should pass. The snippet
+does not modify source, snapshots, or fitted models.
 
 ```bash
 uv run python - <<'PY'
@@ -102,8 +102,8 @@ PY
 ```
 
 Before the fix, both cases print `posterior matches: False`; the second also
-prints `evidence finite: False`. Turn these into failing regression tests before
-prototyping the fix. The comparison tolerances here distinguish order-one errors
+prints `evidence finite: False`. These cases are now permanent regression tests.
+The comparison tolerances here distinguish order-one errors
 from rounding; they do not authorize changing existing test tolerances.
 
 ## Scope and mathematical requirements
@@ -131,9 +131,9 @@ from rounding; they do not authorize changing existing test tolerances.
 
 ## Validation required before shipping
 
-The table is an acceptance specification; only the two one-step reproductions
-above have been run for this phase. Prototype and execute the remaining checks
-before claiming readiness.
+The table preserves the acceptance specification exercised by the completed
+reference and full-suite runs. See the implementation summary and numerical
+equivalence results for observed validation; it is not a remaining-work list.
 
 | Check | Required evidence |
 |---|---|
@@ -151,7 +151,7 @@ before claiming readiness.
 
 Tests must check values against the independent reference, not merely finiteness,
 agreement between two callers of the same implementation, or normalized output.
-Case 2 is normalized today and is still wrong.
+The pre-fix case 2 was normalized despite being wrong.
 
 ## Existing test baseline and its limits
 
@@ -169,7 +169,7 @@ Result: **116 passed, 26 warnings** on CPU while both reproductions above failed
 their mathematical reference. Warnings included float64 requests being truncated
 to float32; this baseline does not validate true float64 execution.
 
-`test_normalize_with_very_small_values` currently uses values around `1e-10`, well
+At the pre-fix audit, `test_normalize_with_very_small_values` used values around `1e-10`, well
 above the `1e-15` epsilon, so it does not cover case 1. Existing zero-support
 fallback tests remain useful but do not distinguish case 2's possible observation
 from a genuinely impossible one. Preserve those tests and add the missing cases.
@@ -212,7 +212,7 @@ CPU/float32, 3000 time steps, fixed dense transitions and precomputed synthetic
 likelihoods. Each kernel was compiled separately and warmed up four times;
 25 repetitions alternated the implementations in random order and synchronized
 every result. The before column uses a source snapshot saved immediately before
-this optimization; `main` predates the Phase 0 correctness fixes. Compilation
+this optimization; the `main` baseline is `9d2a2a6`, before the Phase 0 correctness fixes. Compilation
 and host-side diagnostics are excluded. These are kernel timings, so the
 end-to-end effect also depends on likelihood computation and smoothing.
 
@@ -237,7 +237,8 @@ Use the reproducible [benchmark script](../../../../scripts/benchmark_hmm_condit
 
 ```bash
 uv run python scripts/benchmark_hmm_conditioning.py \
-  --time-steps 3000 --repetitions 25 --output /tmp/hmm-benchmark.json
+  --baseline-ref 9d2a2a6 --time-steps 3000 --repetitions 25 \
+  --output /tmp/hmm-benchmark.json
 ```
 
 An optional `--baseline-core /path/to/core_before.py` adds a saved implementation

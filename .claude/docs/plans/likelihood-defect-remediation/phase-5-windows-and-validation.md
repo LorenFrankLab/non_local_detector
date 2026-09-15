@@ -1,234 +1,119 @@
-> **SUPERSEDED — DO NOT EXECUTE.**
-> The implementation snippets below were written without being run and are known
-> to be defective; see the readiness table in [PLAN.md](PLAN.md). The *problem
-> statements and reproductions* in this file remain valid and are the reason the
-> phase exists. Everything under "Tasks" must be re-derived by prototyping
-> against the real code before this phase can ship.
+# Phase 5 — Canonical event ownership and validation gaps
 
-# Phase 5 — Window ownership and validation gaps
+> **NEEDS PROTOTYPING AGAINST SETTLED C2.** Hard group windows are removed, not
+> repaired. The former half-interval window implementation and disjoint-window
+> tests contradicted C2 and are withdrawn. Other validation changes retain the
+> scopes below; no backend damping-rebuild architecture is added.
 
-## Contracts referenced
+## Contracts and scope
 
-- [C2 — Exposure ownership and spike weights](shared-contracts.md#c2--exposure-ownership-and-spike-weights)
+[C2](shared-contracts.md#c2--exposure-ownership-and-spike-weights) assigns encoding
+spikes by interpolated sample weights. Phase 1 passed the exposure mask correctly
+and remains complete. This phase makes event ownership consistent with those
+weights. It does not choose C1 floors or C3b acquisition endpoints/gap exposure.
+Any case requiring an unresolved C3b choice must be identified rather than
+settled through an implicit window rule.
 
----
+## 1. Remove hard group windows
 
-## Defect 1 — Group windows overlap and contradict their own comment
+The old helpers widened each contiguous run by a global first time difference.
+The recorded mask `[T,T,F,T,T]` at times 0…4 put the spike at t=2 into both
+windows. Its canonical weight is zero, so it should contribute nothing.
 
-Both helpers widen each contiguous run by a whole `time_delta` while the comment
-says half (`models/base.py:3812-3815` sorted, `:2851-2854` clusterless), and
-`time_delta` is a single global first difference (`:3804`, `:2838`), wrong for
-non-uniform timestamps.
+Overlap alone is not the mathematical defect: at t=1.75 the same mask gives
+weight 0.25 and its complement gives 0.75. Both groups legitimately receive
+fractional contributions whose total is one. No disjoint-window construction
+can preserve every nonzero interpolated weight.
 
-Reproduced — mask `[T,T,F,T,T]` at times 0…4, spike at t=2:
+### Requirements and falsification
 
-```
-run 1: window [-1.0, 2.0] contains spike@2.0 -> True
-run 2: window [ 2.0, 5.0] contains spike@2.0 -> True
-```
+- Delete run-window filtering and select events with positive canonical weight
+  within the supported recording domain. Preserve spike/feature alignment and
+  retain the fractional weight itself for fitting; selecting a spike does not
+  make its weight one.
+- Apply each event weight once. Where a backend already interpolates event
+  weights, avoid applying them again at the detector layer. Preserve weighted
+  exposure on the original position timeline.
+- Prototype GLM weighted sufficient statistics explicitly. Ordinary integer
+  spike counts multiplied by sample-row weights cannot in general reproduce
+  interpolated per-event weights. Prevent double-weighting weighted counts and
+  distinguish the event term from the exposure term. Carry this contract into
+  Phase 6a's encoding cells and Phase 6b's duration offsets.
+- Inventory equivalent ownership in KDE, diffusion, MRF, and clusterless fits.
+  Do not equate their representations without testing the same weighted-event
+  reference. Subsetting the time grid must not redefine interpolation or exposure.
 
-### Ownership rule
+Before editing, reproduce a nonzero-weight event discarded by a hard window and
+an excluded event with zero canonical weight. Test complementary/multiple groups
+against explicit interpolated weights, including fractional/EM weights and
+jittered times. Restrict endpoint/gap reference cases to the declared recording
+contract; retain unresolved C3b cases as blockers for that part of the work.
 
-Per [C2](shared-contracts.md#c2--exposure-ownership-and-spike-weights), the
-interpolated weight is canonical and the window is a coarse pre-filter that must
-(a) never discard a spike carrying non-zero weight and (b) never let two runs
-claim the same spike.
+### Validate before pairing populations
 
-For the example above the correct outcome is **zero runs** own the spike at
-`t=2`: sample 2 is excluded, contributes no exposure, and a spike attributed to
-it would have no denominator. An earlier draft's acceptance test demanded
-"exactly one", which contradicts the contract — the test was wrong, not the code.
+Group helpers can truncate spike/feature collections before backend validation.
+Validate population lengths and each electrode's spike/feature row alignment
+before any pairing or indexing, using package `ValidationError` diagnostics.
+A bare strict zip is insufficient. Prototype a shared validator where appropriate
+and exercise the public detector path, not only the backend validator.
 
-### Fix
+## 2. Reject unsupported encoding damping before mutation
 
-Half a *local* interval on each side, from the run's own boundary, with the start
-inclusive and the stop exclusive so abutting runs cannot both claim a boundary:
+The current blend updates place fields and a derived no-spike term without
+rebuilding other fitted state. Recorded consumers include KDE marginal models
+and mean rates, diffusion/MRF interior log fields, GLM coefficients, and
+clusterless models without place fields.
 
-```python
-                run_inds = np.flatnonzero(group_labels == group)
-                start_ind, stop_ind = run_inds[0], run_inds[-1]
-                start_time = position_time[start_ind]
-                stop_time = position_time[stop_ind]
-                # Half a sample interval on each side, measured at this run's own
-                # boundary so non-uniform timestamps stay correct. Half (not a
-                # full delta) keeps adjacent runs from overlapping; the window is
-                # only a pre-filter, the interpolated weight does the real work.
-                if start_ind > 0:
-                    start_time -= 0.5 * (start_time - position_time[start_ind - 1])
-                if stop_ind < position_time.size - 1:
-                    stop_time += 0.5 * (position_time[stop_ind + 1] - stop_time)
-                is_valid_spike_time = (
-                    (neuron_spike_times >= start_time)
-                    & (neuron_spike_times < stop_time)
-                )
-```
+The recorded audit found **no registered backend with a coherent implementation
+of this place-field-only blend**. Recheck the inventory at the implementation
+revision and reject nonzero damping for that unsupported set before either
+concrete wrapper's first fit/refit or other detector mutation. Zero damping
+retains current behavior. Do not invent support or rebuild all encoding models
+inside this phase; any newly supported case needs explicit local/non-local
+consistency evidence.
 
-The final run of the array uses `<=` for its `stop_time` so the last spike is not
-lost — mirror the right-closed final cell in
-[C3](shared-contracts.md#c3--time-vocabulary). A single-sample run at an array end
-gets a zero-width window, which is correct: there is no interval to attribute.
+Test rejection from both public estimation wrappers and verify fitted state is
+unchanged after the error. The release note must identify the unsupported
+parameter value and its reason, rather than describing damping as a silent no-op.
 
-Exact-midpoint ties now resolve to the earlier run only, because `stop` is
-exclusive.
+## 3. Optional position in non-local clusterless prediction
 
-### Also — `strict=False` hides population mismatches
+The recorded GMM non-local path accepts `position=None` at the detector boundary
+but dereferences `.ndim` in its predictor, raising `AttributeError`. Prototype a
+position-independent non-local path and explicit validation when position is
+required by a local observation or configured position-dependent term.
 
-`models/base.py:2842-2843` zips spike times against waveform features with
-`strict=False`, truncating silently *before* the backend validators run. Do not
-merely flip it to `strict=True` — that raises a bare `ValueError` and still misses
-per-electrode spike-count/feature-row mismatches. Call the package validators
-first:
+Audit KDE/log-KDE/diffusion paths against the same requirements. Test public and
+direct calls, with local-position kernels and non-local penalties accounted for;
+`is_local=False` alone does not prove every configured model is position-free.
 
-```python
-        validate_population_lengths(
-            "electrode",
-            spike_times=spike_times,
-            spike_waveform_features=spike_waveform_features,
-        )
-        for electrode, (times, feats) in enumerate(
-            zip(spike_times, spike_waveform_features, strict=True)
-        ):
-            _validate_spike_feature_pair(times, feats, electrode)
-```
+## 4. Population validation in sorted diffusion and MRF
 
-`_validate_spike_feature_pair` lives in `clusterless_gmm.py:196-223`; move it to
-`common.py` rather than importing across sibling modules.
+Validate the number of spike trains against fitted place fields and any interior
+log fields before count construction or matrix multiplication. Cover local and
+non-local paths and both public backend names, including shared implementations.
+Re-inventory current validators before adding duplicates.
 
----
+## Acceptance
 
-## Defect 2 — EM damping silently no-ops for most backends
+| Coverage | Required evidence |
+|---|---|
+| Canonical ownership | Explicit per-event weights match interpolated sample weights; zero-weight events contribute nothing and no positive-weight event is discarded by a group window. |
+| Partition of unity | Complementary/multiple group contributions sum to the original event weight, including fractional boundary events. Disjoint windows are not required. |
+| Backend sufficient statistics | KDE/GLM/diffusion/MRF/clusterless paths apply event weights once and use the corresponding exposure; GLM weighted counts have an independent reference. |
+| Population alignment | Collection and per-electrode row mismatches raise package diagnostics before truncation or indexing. |
+| Damping | Unsupported nonzero damping fails before mutation; zero damping and unaffected fits retain their behavior. |
+| Optional position | Supported position-free prediction works; configurations needing position reject its absence explicitly. |
+| Diffusion/MRF validation | Mismatches fail through both entry points and both local/non-local branches. |
 
-`_apply_encoding_damping` (`models/base.py:1787-1810`) blends only `place_fields`
-and recomputes `no_spike_part_log_likelihood`. So:
+Use existing applicable numerical tolerances and preserve Phase 1 regressions.
+Run affected model/backend tests and the full suite for implementation changes.
+Boundary-ownership changes may alter fitted models and posteriors; unchanged
+full-coverage fixtures alone cannot prove the absence of such effects. Attribute
+any golden difference under the existing numerical-validation process rather
+than guaranteeing that every fixture remains unchanged.
 
-- clusterless dicts have no `place_fields` — damping does nothing;
-- diffusion and MRF keep a stale `interior_log_place_fields`, which the predictor
-  uses directly as the matmul operand
-  (`sorted_spikes_diffusion.py:682-689`), so the damped fields never reach decode;
-- GLM `coefficients` are not blended, so its local path (recomputed from
-  `coefficients`, `sorted_spikes_glm.py:461`) and non-local path (from
-  `place_fields`) come from different fits.
-
-### Fix — reject where unsupported, and reject *before* refitting
-
-Validation currently sits at `models/base.py:1938-1941`, but `estimate_parameters`
-has already refit and mutated the detector by the time damping is applied. Move
-the check ahead of the first `fit` call in the EM loop.
-
-**Audit result (decided):** no registered backend can safely use the current
-place-field-only blend. `sorted_spikes_kde`'s local branch reads `marginal_models`
-and `mean_rates`, diffusion/MRF read `interior_log_place_fields`, GLM reads
-`coefficients`, and clusterless dicts have no `place_fields` at all. Reject
-unconditionally, before the concrete wrappers' first `fit` call
-(`base.py:3581`, `base.py:4470`) rather than mid-EM. Original reasoning: `sorted_spikes_kde`'s local branch uses
-`marginal_models` and `mean_rates` (`sorted_spikes_kde.py:337-377`), not
-`place_fields` — so a place-field-only blend leaves its local path inconsistent
-too. The default observation model includes a local state, so the honest
-conclusion may be that **no backend supports damping**, in which case reject it
-unconditionally and say so:
-
-```python
-        if encoding_update_damping > 0.0:
-            raise ValidationError(
-                "encoding_update_damping is not supported",
-                expected="encoding_update_damping=0.0",
-                got=f"{encoding_update_damping}",
-                hint=(
-                    "Encoding models carry state derived from the fit "
-                    "(KDE marginal models, diffusion/MRF interior log fields, GLM "
-                    "coefficients) that a place-field blend would leave "
-                    "inconsistent with the damped fields."
-                ),
-            )
-```
-
-Do not assume the set is non-empty to keep a feature alive. Record the audit
-result in the PR description.
-
-CHANGELOG `Changed`: `encoding_update_damping` now raises for backends that
-cannot support it, rather than silently having no effect (clusterless) or
-producing an inconsistent model (diffusion, MRF, GLM).
-
----
-
-## Defect 3 — `position=None` crashes the clusterless GMM predictor
-
-`models/base.py:3110-3129` permits `position=None`; the GMM predictor
-dereferences it unconditionally at `clusterless_gmm.py:639`. Reproduced:
-`AttributeError: 'NoneType' object has no attribute 'ndim'`.
-
-```python
-    # position is only needed for the local path; the detector permits None when
-    # no observation model is local.
-    if position is not None:
-        position = _as_jnp(position if position.ndim > 1 else position[:, None])
-    elif is_local:
-        raise ValidationError(
-            "position is required for local clusterless GMM decoding",
-            expected="array with shape (n_time_position, n_position_dims)",
-            got="None",
-        )
-```
-
-`clusterless_diffusion` already handles this correctly — it touches `position`
-only under `is_local` and validates there (`clusterless_diffusion.py:542-547`).
-Use it as the reference. Audit `clusterless_kde` and `clusterless_kde_log` for
-the same pattern; add the guard only where the non-local path actually
-dereferences `position`.
-
----
-
-## Defect 4 — sorted diffusion and MRF skip population validation
-
-Neither module imports `validate_population_lengths` (confirmed by grep), yet the
-predictor builds a count matrix from `spike_times`
-(`sorted_spikes_diffusion.py:559-567`) and matmuls it against
-`interior_log_place_fields` (`:689`). Add at the top of
-`predict_sorted_spikes_diffusion_log_likelihood` (`:649`, before the `is_local`
-branch):
-
-```python
-    validate_population_lengths(
-        "neuron",
-        spike_times=spike_times,
-        place_fields=place_fields,
-    )
-```
-
-including `interior_log_place_fields` when not `None`.
-`predict_sorted_spikes_mrf_log_likelihood` *is* this same function (see
-`sorted_spikes_diffusion.py:591-598`), so one edit covers both.
-
----
-
-## Validation
-
-| Test | Asserts | File |
-|---|---|---|
-| `test_excluded_sample_spike_owned_by_no_run` | Mask `[T,T,F,T,T]`, spike at t=2 → claimed by **zero** runs, per C2. | `tests/models/test_group_spikes.py` |
-| `test_adjacent_runs_do_not_overlap` | For any mask, the windows are pairwise disjoint. | same |
-| `test_window_covers_nonzero_weight_spikes` | Every spike whose interpolated weight is > 0 falls inside some window — the pre-filter never discards real exposure. | same |
-| `test_group_windows_nonuniform_timestamps` | With jittered `position_time`, each run extends by half its own boundary interval. | same |
-| `test_group_population_mismatch_raises_validation_error` | 3 spike lists vs 2 feature lists raises `ValidationError` (not bare `ValueError`), before any indexing. | same |
-| `test_per_electrode_row_mismatch_raises` | Matching list lengths but mismatched rows within one electrode still raises. | same |
-| `test_damping_rejected` | `encoding_update_damping=0.5` raises `ValidationError` naming the reason. | `tests/models/test_em.py` |
-| `test_damping_rejection_leaves_state_unchanged` | After the raise, the detector's `encoding_model_` is identical to before — the check runs before any refit. | same |
-| `test_gmm_predict_without_position` | Non-local GMM with `position=None` returns a finite `(n_time, n_bins)` array. | `tests/likelihoods/test_gmm.py` |
-| `test_gmm_local_without_position_raises` | `is_local=True, position=None` raises `ValidationError`. | same |
-| `test_diffusion_population_mismatch_raises` | Fewer spike lists than fitted neurons raises rather than broadcasting. | `test_sorted_spikes_diffusion.py` |
-| `test_mrf_population_mismatch_raises` | Same via the MRF entry point. | `test_sorted_spikes_mrf.py` |
-
-```bash
-uv run pytest src/non_local_detector/tests -q
-uvx ruff check src/non_local_detector/
-```
-
-Goldens should be unchanged — defect 1 changes which spikes a *fragmented* mask
-claims, and golden fixtures use contiguous full coverage. If one moves, that
-fixture has a fragmented mask; investigate before assuming the new value is right.
-
-## Review
-
-Dispatch `code-reviewer`. Ask for an independent judgement on the damping support
-set — specifically whether `sorted_spikes_kde`'s local decode path is consistent
-after a place-field-only blend, since that determines whether the set is empty.
+Review removal of all window-dependent paths, event weighting exactly once,
+GLM sufficient-statistic/exposure alignment, validation before mutation, and the
+recorded damping-support inventory. This phase fixes ownership; Phase 3 separately
+fixes decoding-bin ownership, and Phase 7 later changes storage/evaluation strategy.

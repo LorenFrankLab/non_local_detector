@@ -1,164 +1,92 @@
-> **SUPERSEDED — DO NOT EXECUTE.**
-> The implementation snippets below were written without being run and are known
-> to be defective; see the readiness table in [PLAN.md](PLAN.md). The *problem
-> statements and reproductions* in this file remain valid and are the reason the
-> phase exists. Everything under "Tasks" must be re-derived by prototyping
-> against the real code before this phase can ship.
+# Phase 2 — Consistent log-intensity and ground-process policy
 
-# Phase 2 — One GMM log-intensity policy
+> **BLOCKED ON C1 — NEEDS PROTOTYPING.** The ratio defect is reproduced below.
+> The former floor-only-`-inf` policy and its implementation snippets are
+> withdrawn. This file does not choose among the options in
+> [C1](shared-contracts.md#c1--degeneracy-policy-for-log-intensities).
 
-## Problem
+## Problem and recorded evidence
 
 The clusterless GMM log intensity is `log(rate) + log p(pos, mark) − log p(pos)`.
-All three sites clamp the **numerator** to `LOG_EPS` before subtracting, which
-destroys the cancellation that makes a tail ratio finite:
+The non-local, bin-tiled non-local, and local paths clamp the joint numerator
+before subtraction. The original audit located these in `clusterless_gmm.py`
+near lines 722, 754, and 876; re-inventory the named computations before editing.
 
-- `clusterless_gmm.py:722-724` — non-local, consumed by the combiner at `:99`
-- `clusterless_gmm.py:754-759` — bin-tiled non-local
-- `clusterless_gmm.py:876-878` — local, subtraction inline at `:883-885`
-
-`LOG_EPS = log(1e-15) ≈ −34.54`. A joint density below that is routine for a
-joint over position plus 4–6 mark dimensions at an atypical mark.
-
-Reproduced:
-
-```
-realistic 6-D tail: log_joint=-60, log_occupancy=-8
-  correct     : -52.00
-  implemented : -26.54     -> 25.5 log units, ~1e11 likelihood ratio
+```text
+log_rate = 0, log_joint = -60, log_occupancy = -8
+raw log ratio:              -52.00
+numerator-clamped result:   -26.54
 ```
 
-The ground-process term has the same problem in probability space: it
-exponentiates two separately-small densities and divides, non-local at
-`clusterless_gmm.py:512-516` and local at `clusterless_gmm.py:898-900`.
+The approximately 25.5-log-unit error inflates the intensity by about 1e11.
+Ground-process paths also exponentiate separately small densities before dividing,
+which can lose a finite ratio through underflow.
 
-**Note for the executor:** an earlier draft proposed
-`maximum(log_rate + log_joint − log_occ, LOG_EPS)`. That is *also* wrong — for
-the case above it returns `−34.54`, not `−52`. Flooring the ratio loses the
-information just as flooring the numerator does. [C1](shared-contracts.md#c1--degeneracy-policy-for-log-intensities)
-settles this: floor only `-inf`.
+A finished-intensity floor would intentionally change the raw result from -52
+according to the selected bound. That is a policy choice, distinct from the
+numerator-ordering defect. The earlier requirement to preserve every finite
+value while flooring only exact `-inf` was non-monotonic and must not be restored.
 
-## Contracts referenced
+## Decisions required before implementation
 
-- [C1 — Degeneracy policy](shared-contracts.md#c1--degeneracy-policy-for-log-intensities)
+Complete C1's backend × local/non-local × spike/ground-process floor inventory.
+Record whether the chosen scope includes sorted likelihoods, probability-space
+KDE clamps, and log-KDE caller clamps. Resolve zero numerator with zero occupancy,
+all-degenerate ground-process aggregates, and genuinely invalid NaN inputs.
 
-## Falsification
+Distinguish four stages explicitly: raw log ratio, per-electrode ground-process
+term, aggregate ground-process intensity, and finished likelihood. If an
+aggregate floor is selected, applying it per electrode before summation gives
+`n_electrodes × EPS` instead of one floor and is not equivalent. An all-empty
+population also needs a declared result.
 
-Before implementing, run this against your intended combiner:
+Phase 1's existing EPS fallback remains its completed baseline. Any change to it
+caused by expanding C1 to sorted backends belongs to this phase and must be
+identified in the numerical-change analysis. Phase 0 conditioning is preserved.
 
-```python
-assert combiner(log_rate=0.0, log_joint=-60.0, log_occ=-8.0) == pytest.approx(-52.0)
-assert jnp.isneginf(combiner(log_rate=0.0, log_joint=-jnp.inf, log_occ=-8.0)) is False
-```
+## Falsification and prototype requirements
 
-If the first fails, the policy is still a floor on a finite value. If the second
-returns `-inf` rather than `LOG_EPS`, the degeneracy branch is missing.
+1. Freeze the relevant pre-fix revision and reproduce numerator clipping and
+   separately-underflowing ground-process ratios through the actual paths.
+2. Define expected outputs from the selected C1 policy. Test the raw arithmetic
+   separately from any finished floor; a -52 raw ratio alone does not determine
+   the final policy-dependent intensity.
+3. Test monotonicity through tiny positive and exact-zero mass, zero occupancy,
+   zero-over-zero, empty populations, and raw NaN inputs. Do not infer support
+   from a NaN created by subtracting two `-inf` values; inspect operands.
+4. Prototype shared arithmetic/policy boundaries across the audited sites.
+   Existing helpers, including `_log_joint_from_log_marginal`, are subjects of
+   the audit rather than automatically correct references.
+5. Compare local/non-local and tiled/untiled evaluation on matched positions,
+   marks, rates, and occupancy. Preserve shapes and apply ground-process
+   aggregation in log space where needed for finite ratios.
 
-## Tasks
+No helper signature or executable implementation is prescribed until these
+choices have been exercised against the real backends.
 
-### 1. Adopt the reference combiner
+## Acceptance
 
-`clusterless_kde_log._log_joint_from_log_marginal`
-(`clusterless_kde_log.py:41-99`) already implements [C1](shared-contracts.md#c1--degeneracy-policy-for-log-intensities)
-correctly: it floors zero-occupancy bins and `-inf` marginals to `LOG_EPS`, and
-deliberately excludes `NaN` so a broken computation reaches `core.py`'s
-diagnostics. Read its docstring before writing anything.
-
-Give `clusterless_gmm` the same policy in a shared helper, used by local and
-non-local alike:
-
-```python
-def _log_intensity(
-    log_rate: jnp.ndarray, log_joint: jnp.ndarray, log_occupancy: jnp.ndarray
-) -> jnp.ndarray:
-    """log(rate * p(pos, mark) / p(pos)), flooring only true zero mass.
-
-    A finite value is preserved however small: flooring the finished ratio at
-    LOG_EPS destroys a tail exactly as flooring log_joint did (log_joint=-60,
-    log_occupancy=-8 gives -52, which max(-52, LOG_EPS) turns into -34.54).
-    NaN is left untouched so it reaches core.py's diagnostics.
-    """
-    log_intensity = log_rate + log_joint - log_occupancy
-    degenerate = (jnp.isneginf(log_intensity) | jnp.isneginf(log_occupancy)) & ~jnp.isnan(
-        log_intensity
-    )
-    return jnp.where(degenerate, LOG_EPS, log_intensity)
-```
-
-Rewrite `_accumulate_log_likelihood_block` (`clusterless_gmm.py:89-102`) to call
-it, and delete the three numerator clamps, keeping their reshapes:
-
-- `:722-724` → `joint_logp_block = joint_logp_flat.reshape(block_size, n_bins)`
-- `:754-759` → drop the `jnp.clip`, keep `.reshape(block_size, n_tile)`
-- `:876-878` → `joint_logp = _gmm_logp(joint_gmm, eval_points)`, and at `:883-885`
-  replace the inline expression with `_log_intensity(...)`
-
-### 2. Ground-process term in log space, floored once
-
-Both sites exponentiate small densities and divide. Replace with a log-space form
-and — critically — **do not floor per electrode before summing**. Accumulate each
-electrode's log intensity, combine across electrodes with `logsumexp`, then apply
-the policy once.
-
-Non-local, `clusterless_gmm.py:511-517`:
-
-```python
-        # Expected-counts term at bins, formed in log space so a bin where both
-        # densities underflow keeps its finite ratio. Collected per electrode and
-        # combined once below rather than floored here: a per-electrode floor
-        # would add n_electrodes * EPS to an empty bin.
-        log_gpi = _gmm_logp(gpi_gmm, interior_place_bin_centers)
-        per_electrode_log_intensity.append(
-            _log_intensity(safe_log(mean_rate, eps=EPS), log_gpi, log_occupancy)
-        )
-```
-
-then after the electrode loop:
-
-```python
-    summed_ground_process_intensity = jnp.exp(
-        jax.nn.logsumexp(jnp.stack(per_electrode_log_intensity, axis=0), axis=0)
-    ) if per_electrode_log_intensity else jnp.zeros_like(log_occupancy)
-```
-
-Apply the analogous change to the local site at `clusterless_gmm.py:898-900`,
-where `interp_pos` replaces `interior_place_bin_centers`.
-
-### 3. CHANGELOG
-
-`Changed` (numerical bound): clusterless GMM log intensities are no longer
-floored at `LOG_EPS`; only true zero mass is floored. `Fixed`: the joint mark
-density was clamped before dividing by occupancy, inflating the log intensity in
-low-density bins by tens of log units. GMM decoding results change, most visibly
-where the observed mark is atypical.
-
-## Validation
-
-New `src/non_local_detector/tests/likelihoods/test_clusterless_gmm_log_intensity.py`:
-
-| Test | Asserts |
+| Coverage | Required evidence |
 |---|---|
-| `test_tail_ratio_preserved` | `_log_intensity(0, −60, −8)` is `−52` ± 1e-4. |
-| `test_zero_mass_floors` | `log_joint = −inf` → `LOG_EPS`. |
-| `test_zero_occupancy_floors` | `log_occupancy = −inf` → `LOG_EPS`. |
-| `test_nan_propagates` | A NaN input yields NaN, not `LOG_EPS`, preserving the diagnostics contract. |
-| `test_local_and_nonlocal_agree` (slow) | For a fixture with a deliberately atypical decode mark, local and non-local give the same per-spike log intensity at the animal's bin, ± 1e-4. |
-| `test_ground_process_not_floored_per_electrode` | With N electrodes each contributing a degenerate bin, the summed intensity at that bin equals a single floor, not `N × EPS`. |
+| Ratio arithmetic | Independent log-space reference for the recorded tail and underflow cases, before applying the selected finished policy. |
+| Policy consistency | Finite tails, exact zeros, unsupported ratios, and aggregate behavior match the documented C1 decision at every in-scope site. |
+| Diagnostics | Genuine invalid inputs remain visible; genuine impossibility follows the chosen likelihood policy and Phase 0 core contract. |
+| Aggregation | Multiple degenerate electrodes do not accidentally multiply an aggregate floor; empty-population behavior is explicit. |
+| Integration | Local/non-local, tiled/untiled, stationary/covariate, and affected detector paths agree with their independent references at existing applicable tolerances. |
 
-```bash
-uv run pytest src/non_local_detector/tests/likelihoods -q
-uv run pytest src/non_local_detector/tests/test_clusterless_likelihood_agreement.py -q
-uv run pytest src/non_local_detector/tests/test_golden_regression.py -q
-```
+Run affected backend, cross-model, integration, and golden regressions. Preserve
+existing numerical tolerances. Pin before/after inputs and record primitive
+changes from ratio ordering, zero-mass handling, floor scope, and aggregation.
 
-**Approval gate.** GMM goldens and snapshots move. Produce the four-part analysis
-required by `.claude/skills/numerical-validation/SKILL.md`. The explanation must
-show the diff is confined to bins where the pre-fix code clamped
-(`log_joint < LOG_EPS`); if well-supported bins move, the change is wrong.
+## Numerical-change review
 
-## Review
+Golden changes are possible, not guaranteed for every fixture. Attribute changes
+first at the likelihood/ground-process layer. HMM normalization and temporal
+propagation can change posterior bins whose own likelihood did not change; a
+requirement that posterior differences stay only in numerator-clamped bins is
+incorrect. Unaffected primitive calculations must retain parity.
 
-Dispatch `code-reviewer`. Ask whether any other module floors before forming a
-ratio, and whether `_log_intensity` and
-`clusterless_kde_log._log_joint_from_log_marginal` should now be one shared
-function in `common.py` rather than two implementations of one policy.
+Describe the selected policy and its scientific effects in the release note.
+Provide the repository's numerical-change analysis before requesting any actual
+snapshot/golden or numerical-bound change. Review the completed floor inventory,
+operand handling, aggregation order, and shared-helper consumers independently.
