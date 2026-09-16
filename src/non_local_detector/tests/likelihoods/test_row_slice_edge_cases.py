@@ -19,6 +19,7 @@ spike is in range iff ``time[0] <= t <= time[-1]``, it lands in row
 row ``n_time - 2`` and the final row of a multi-row timeline is always empty.
 """
 
+import os
 import subprocess
 import sys
 import tracemalloc
@@ -1069,6 +1070,36 @@ def test_sharded_jax_inputs_do_not_materialize_the_recording(axis_type):
     assert result.returncode == CHECK_EXIT_OK, (
         f"exit code {result.returncode}\n{result.stdout}\n{result.stderr[-2000:]}"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("inject", "expected"),
+    [("setup", CHECK_EXIT_ENVIRONMENT), ("run", 1)],
+    ids=["setup-error-is-a-skip", "run-error-is-a-failure"],
+)
+def test_sharded_check_maps_only_setup_errors_to_a_skip(inject, expected):
+    """Only a setup problem may become an environment skip.
+
+    A ``RuntimeError`` raised while fitting, predicting or asserting must reach
+    the parent as a non-skip, non-zero exit (the uncaught exception's 1), so a
+    broken backend cannot hide behind ``pytest.skip``. Uses the child's
+    ``NLD_SHARDED_CHECK_INJECT`` hook so no real fit or predict runs.
+    """
+    script = Path(__file__).with_name("_sharded_jax_input_check.py")
+    result = subprocess.run(
+        [sys.executable, str(script), "2", "Auto"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env={**os.environ, "NLD_SHARDED_CHECK_INJECT": inject},
+    )
+    assert result.returncode == expected, (
+        f"exit code {result.returncode}\n{result.stdout}\n{result.stderr[-2000:]}"
+    )
+    assert "injected" in (result.stdout + result.stderr)
+    if inject == "run":
+        assert "SKIP" not in result.stdout
 
 
 @pytest.mark.unit

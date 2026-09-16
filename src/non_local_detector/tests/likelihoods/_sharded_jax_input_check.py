@@ -18,10 +18,17 @@ exact and deterministic, so it carries the assertion. The figure comes from
 the package's own dependencies.
 
 Prints one ``OK``/``FAIL`` line per case. Exit codes are distinct so the parent
-test can tell a skip from a failure: 0 all cases passed, 1 a case failed,
-2 this environment cannot run the check (too few devices, or a setup error).
+test can tell a skip from a failure: 0 all cases passed, 1 a case failed or
+raised, 2 this environment cannot run the check. Only the SETUP phase (device
+count, mesh construction) can produce 2; an exception raised while fitting,
+predicting or asserting propagates as a failure, so a broken backend can never
+be reported as an environment skip.
 
 Usage: ``python _sharded_jax_input_check.py <n_devices> <axis_type>``
+
+``NLD_SHARDED_CHECK_INJECT`` (test hook, never set in normal use) forces a
+``RuntimeError`` in the named phase -- ``setup`` or ``run`` -- so the parent test
+can pin the exit-code mapping without a real failure.
 """
 
 import os
@@ -89,13 +96,29 @@ def shard(array: np.ndarray, mesh) -> jnp.ndarray:
     return jax.device_put(jnp.asarray(array), NamedSharding(mesh, spec))
 
 
-def main() -> int:
-    if len(jax.devices()) < N_DEVICES:
-        print(f"SKIP only {len(jax.devices())} device(s) available")
-        return EXIT_ENVIRONMENT
+class EnvironmentUnavailable(Exception):
+    """This process cannot run the check (not a failed check)."""
 
+
+def setup():
+    """Everything that can legitimately be unavailable: devices and the mesh.
+
+    Raises ``EnvironmentUnavailable`` (or any exception, which ``__main__`` maps
+    to the environment exit code) only from here; nothing in ``run`` is allowed
+    to be reported as a skip.
+    """
+    if os.environ.get("NLD_SHARDED_CHECK_INJECT") == "setup":
+        raise RuntimeError("injected setup failure")
+    if len(jax.devices()) < N_DEVICES:
+        raise EnvironmentUnavailable(f"only {len(jax.devices())} device(s) available")
     axis_types = (getattr(jax.sharding.AxisType, AXIS_TYPE),)
-    mesh = jax.make_mesh((N_DEVICES,), ("d",), axis_types=axis_types)
+    return jax.make_mesh((N_DEVICES,), ("d",), axis_types=axis_types)
+
+
+def run(mesh) -> int:
+    """Fit, predict and assert. Any exception here is a FAILURE, not a skip."""
+    if os.environ.get("NLD_SHARDED_CHECK_INJECT") == "run":
+        raise RuntimeError("injected run failure")
 
     rng = np.random.default_rng(7)
     position_time = np.linspace(0.0, DURATION, 2_000)
@@ -182,8 +205,10 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        code = main()
-    except Exception as exc:  # a setup problem, not a failed assertion
+        mesh = setup()
+    except Exception as exc:  # only setup may turn into an environment skip
         print(f"SKIP {type(exc).__name__}: {exc}")
-        code = EXIT_ENVIRONMENT
-    raise SystemExit(code)
+        raise SystemExit(EXIT_ENVIRONMENT) from None
+    # ``run`` is deliberately NOT wrapped: an exception while fitting, predicting
+    # or asserting prints its traceback and exits 1, which the parent test fails.
+    raise SystemExit(run(mesh))
