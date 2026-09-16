@@ -3,6 +3,7 @@ import copy
 import inspect
 import pickle
 import warnings
+from collections.abc import Callable
 from functools import partial
 from logging import getLogger
 
@@ -89,6 +90,32 @@ OUTPUT_INCLUDES: dict[str, set[str]] = {
     "log_likelihood": {"log_likelihood"},
     "all": {"filter", "predictive", "predictive_posterior", "log_likelihood"},
 }
+
+
+def _prepare_likelihood_callback(
+    callback: Callable, time: np.ndarray, *, has_no_spike: bool
+) -> Callable:
+    """Bind prediction-local work without changing custom callback signatures.
+
+    Callback capabilities have two explicit opt-ins:
+
+    * ``@row_slice_aware`` lets core pass full ``time``, a global ``row_slice``,
+      and an already sliced ``is_missing`` mask. The callback returns only the
+      requested rows. Unmarked callbacks retain the legacy chunk-time call.
+    * Declaring ``_spike_time_order`` or ``_no_spike_time_bin_size`` lets this
+      adapter bind shared preparation. Each call creates fresh preparation;
+      nothing is stored on the detector or reused by a later prediction.
+
+    ``partial`` preserves the row-slice marker through core's callback lookup.
+    Callers with a precomputed likelihood bypass this adapter entirely.
+    """
+    parameters = inspect.signature(callback).parameters
+    prepared: dict[str, object] = {}
+    if "_spike_time_order" in parameters:
+        prepared["_spike_time_order"] = _SpikeTimeOrder()
+    if has_no_spike and "_no_spike_time_bin_size" in parameters:
+        prepared["_no_spike_time_bin_size"] = np.median(np.diff(time))
+    return partial(callback, **prepared) if prepared else callback
 
 
 def _snapshot_encoding_model(encoding_model: dict | None) -> dict | None:
@@ -1712,8 +1739,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             self.discrete_state_transitions_. When None, falls back to the
             fitted attribute. By default None.
         accumulate_log_likelihoods : bool, optional
-            If True, the chunked (uncached) path concatenates the per-chunk
-            likelihood rows so the returned log likelihoods cover every row in
+            If True, the chunked (uncached) path copies into one preallocated
+            host array so the returned log likelihoods cover every row in
             global order. This allocates the full (n_time, n_state_bins) array
             and is intended only for a caller that explicitly requested the log
             likelihood; when the likelihood is not requested the chunk arrays
@@ -1749,21 +1776,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         log_likelihood_func = self.compute_log_likelihood
         if log_likelihoods is None:
-            parameters = inspect.signature(log_likelihood_func).parameters
-            prepared: dict[str, object] = {}
-            if "_spike_time_order" in parameters:
-                # Lazy, shared by every state/chunk, and discarded after this
-                # prediction. A later call rechecks even the same input object.
-                prepared["_spike_time_order"] = _SpikeTimeOrder()
-            if (
-                any(obs.is_no_spike for obs in self.observation_models)
-                and "_no_spike_time_bin_size" in parameters
-            ):
-                prepared["_no_spike_time_bin_size"] = np.median(np.diff(time))
-            # Only opted-in keywords reach custom overrides. Keep preparation
-            # on the callback, never on the detector or in a global cache.
-            if prepared:
-                log_likelihood_func = partial(log_likelihood_func, **prepared)
+            log_likelihood_func = _prepare_likelihood_callback(
+                log_likelihood_func,
+                time,
+                has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
+            )
 
         # Collect degenerate (all-impossible) timestep indices during the
         # forward pass. This is reliable regardless of n_chunks/caching,

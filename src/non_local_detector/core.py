@@ -628,8 +628,12 @@ def row_slice_aware(log_likelihood_func: Callable[..., ArrayLike]):
     Parameters
     ----------
     log_likelihood_func : callable
-        Function (or unbound method) whose signature ends with
-        ``is_missing=None, row_slice=None``.
+        Function (or unbound method) accepting ``is_missing=None`` and
+        ``row_slice=None``. When a row range is requested, ``time`` has shape
+        ``(n_time,)`` but ``is_missing`` is already sliced to ``(n_rows,)``;
+        the callback must not slice the missing-data mask again. It returns
+        ``(n_rows, n_state_bins)``. With ``row_slice=None``, both inputs and
+        the result cover the full timeline.
 
     Returns
     -------
@@ -768,7 +772,7 @@ def chunked_filter_smoother(
         (the returned ``log_likelihoods`` is then ``None``). By default None.
     accumulate_log_likelihoods : bool, optional, keyword-only
         If True and the log likelihoods are not cached, each chunk's rows are
-        copied to host memory and concatenated so the returned
+        copied into a single preallocated host array so the returned
         ``log_likelihoods`` covers every row in global order instead of being
         ``None``. This allocates the full (n_time, n_state_bins) array, so set
         it only when the caller explicitly asked for the log likelihoods.
@@ -841,7 +845,7 @@ def chunked_filter_smoother(
         if log_likelihoods is not None
         else None
     )
-    accumulated_log_likelihoods: list[np.ndarray] = []
+    accumulated_log_likelihoods: np.ndarray | None = None
 
     # Forward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(time_chunks):
@@ -863,12 +867,17 @@ def chunked_filter_smoother(
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
             if accumulate_log_likelihoods:
-                # Copy to host NOW and explicitly: the chunk is donated to the
-                # jitted filter below, whose output has the same shape and dtype,
-                # so a zero-copy view (what np.asarray returns on CPU) would be
-                # left aliasing whatever the donated buffer is reused for.
-                accumulated_log_likelihoods.append(
-                    np.array(log_likelihood_chunk, copy=True)
+                if accumulated_log_likelihoods is None:
+                    accumulated_log_likelihoods = np.empty(
+                        (n_time, log_likelihood_chunk.shape[1]),
+                        dtype=log_likelihood_chunk.dtype,
+                    )
+                # Assignment copies into the final host buffer before donation.
+                # Retaining a NumPy view would alias the donated buffer on CPU;
+                # retaining separate chunk copies would double host storage.
+                row_start, row_stop = int(time_inds_np[0]), int(time_inds_np[-1]) + 1
+                accumulated_log_likelihoods[row_start:row_stop] = np.asarray(
+                    log_likelihood_chunk
                 )
 
         # Tally degenerate (all -inf) and NaN timesteps at one host sync point
@@ -917,8 +926,8 @@ def chunked_filter_smoother(
         marginal_log_likelihood=float(marginal_likelihood),
     )
 
-    if accumulated_log_likelihoods:
-        log_likelihoods = np.concatenate(accumulated_log_likelihoods)
+    if accumulated_log_likelihoods is not None:
+        log_likelihoods = accumulated_log_likelihoods
 
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
@@ -1397,7 +1406,7 @@ def chunked_filter_smoother_covariate_dependent(
         (the returned ``log_likelihoods`` is then ``None``). By default None.
     accumulate_log_likelihoods : bool, optional, keyword-only
         If True and the log likelihoods are not cached, each chunk's rows are
-        copied to host memory and concatenated so the returned
+        copied into a single preallocated host array so the returned
         ``log_likelihoods`` covers every row in global order instead of being
         ``None``. This allocates the full (n_time, n_state_bins) array, so set
         it only when the caller explicitly asked for the log likelihoods.
@@ -1477,7 +1486,7 @@ def chunked_filter_smoother_covariate_dependent(
         if log_likelihoods is not None
         else None
     )
-    accumulated_log_likelihoods: list[np.ndarray] = []
+    accumulated_log_likelihoods: np.ndarray | None = None
 
     # Forward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(time_chunks):
@@ -1499,12 +1508,17 @@ def chunked_filter_smoother_covariate_dependent(
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
             if accumulate_log_likelihoods:
-                # Copy to host NOW and explicitly: the chunk is donated to the
-                # jitted filter below, whose output has the same shape and dtype,
-                # so a zero-copy view (what np.asarray returns on CPU) would be
-                # left aliasing whatever the donated buffer is reused for.
-                accumulated_log_likelihoods.append(
-                    np.array(log_likelihood_chunk, copy=True)
+                if accumulated_log_likelihoods is None:
+                    accumulated_log_likelihoods = np.empty(
+                        (n_time, log_likelihood_chunk.shape[1]),
+                        dtype=log_likelihood_chunk.dtype,
+                    )
+                # Assignment copies into the final host buffer before donation.
+                # Retaining a NumPy view would alias the donated buffer on CPU;
+                # retaining separate chunk copies would double host storage.
+                row_start, row_stop = int(time_inds_np[0]), int(time_inds_np[-1]) + 1
+                accumulated_log_likelihoods[row_start:row_stop] = np.asarray(
+                    log_likelihood_chunk
                 )
 
         # Tally degenerate (all -inf) and NaN timesteps at one host sync point
@@ -1556,8 +1570,8 @@ def chunked_filter_smoother_covariate_dependent(
         marginal_log_likelihood=float(marginal_likelihood),
     )
 
-    if accumulated_log_likelihoods:
-        log_likelihoods = np.concatenate(accumulated_log_likelihoods)
+    if accumulated_log_likelihoods is not None:
+        log_likelihoods = accumulated_log_likelihoods
 
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)

@@ -10,6 +10,7 @@ requested log likelihood available when caching is off.
 """
 
 import functools
+import tracemalloc
 
 import jax
 import jax.numpy as jnp
@@ -17,6 +18,7 @@ import jax.scipy
 import numpy as np
 import pytest
 
+from non_local_detector import core
 from non_local_detector.core import (
     accepts_row_slice,
     chunked_filter_smoother,
@@ -204,6 +206,67 @@ def test_accumulated_log_likelihoods_cover_every_row(driver, problem):
 
     assert accumulated[5].shape == expected.shape
     np.testing.assert_allclose(accumulated[5], expected, **PARITY_KWARGS)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("driver", DRIVERS, ids=DRIVER_IDS)
+def test_requested_likelihood_retains_one_host_array(driver, monkeypatch):
+    """Host storage at smoothing must not retain both chunks and their copy.
+
+    Stub the numerical kernels to isolate driver-owned storage. Warm up JAX
+    slicing and aggregation before measuring; the budget allows half an output
+    array for Python bookkeeping, but not a second recording-sized likelihood.
+    Real filtering/donation correctness is covered by the accumulation test.
+    """
+    n_time, n_bins, n_chunks = 1024, 256, 4
+    expected = np.arange(n_time * n_bins, dtype=np.float32).reshape(n_time, n_bins)
+    device_values = jnp.asarray(expected)
+    retained = []
+    measuring = False
+
+    @row_slice_aware
+    def callback(time, is_missing=None, row_slice=None):
+        if measuring and not tracemalloc.is_tracing():
+            tracemalloc.start()
+        return device_values[row_slice]
+
+    def filter_stub(initial_distribution, log_likelihoods, **kwargs):
+        return (0.0, initial_distribution), (log_likelihoods, log_likelihoods)
+
+    def smoother_stub(filtered_probs, **kwargs):
+        if tracemalloc.is_tracing():
+            retained.append(tracemalloc.get_traced_memory()[0])
+            tracemalloc.stop()
+        return filtered_probs
+
+    monkeypatch.setattr(core, "_filter_internal", filter_stub)
+    monkeypatch.setattr(core, "_filter_covariate_dependent_internal", filter_stub)
+    monkeypatch.setattr(core, "_smoother_internal", smoother_stub)
+    monkeypatch.setattr(core, "_smoother_covariate_dependent_internal", smoother_stub)
+    kwargs = {
+        "time": np.arange(n_time, dtype=float),
+        "state_ind": np.zeros(n_bins, dtype=int),
+        "initial_distribution": np.full(n_bins, 1 / n_bins),
+        "log_likelihood_func": callback,
+        "log_likelihood_args": (),
+        "cache_log_likelihoods": False,
+        "accumulate_log_likelihoods": True,
+        "n_chunks": n_chunks,
+    }
+    if driver is chunked_filter_smoother:
+        kwargs["transition_matrix"] = np.eye(n_bins)
+    else:
+        kwargs["discrete_transition_matrix"] = np.ones((n_time, 1, 1))
+        kwargs["continuous_transition_matrix"] = np.eye(n_bins)
+    driver(**kwargs)
+    measuring = True
+    try:
+        result = driver(**kwargs)
+    finally:
+        tracemalloc.stop()
+    np.testing.assert_array_equal(result[5], expected)
+    assert len(retained) == 1
+    assert retained[0] < 1.5 * expected.nbytes
 
 
 @pytest.mark.unit
