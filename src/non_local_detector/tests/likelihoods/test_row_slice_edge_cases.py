@@ -1085,14 +1085,23 @@ def test_sharded_check_maps_only_setup_errors_to_a_skip(inject, expected):
     the parent as a non-skip, non-zero exit (the uncaught exception's 1), so a
     broken backend cannot hide behind ``pytest.skip``. Uses the child's
     ``NLD_SHARDED_CHECK_INJECT`` hook so no real fit or predict runs.
+
+    Independent of device availability: the child is asked for a ONE-device
+    mesh on the CPU platform, so its device-count check passes on any machine
+    (a single GPU, ``JAX_NUM_CPU_DEVICES=1``) and the injected error is what
+    decides the exit code. The two-device behaviour is the other test's job.
     """
     script = Path(__file__).with_name("_sharded_jax_input_check.py")
     result = subprocess.run(
-        [sys.executable, str(script), "2", "Auto"],
+        [sys.executable, str(script), "1", "Auto"],
         capture_output=True,
         text=True,
         timeout=300,
-        env={**os.environ, "NLD_SHARDED_CHECK_INJECT": inject},
+        env={
+            **os.environ,
+            "NLD_SHARDED_CHECK_INJECT": inject,
+            "JAX_PLATFORMS": "cpu",
+        },
     )
     assert result.returncode == expected, (
         f"exit code {result.returncode}\n{result.stdout}\n{result.stderr[-2000:]}"
