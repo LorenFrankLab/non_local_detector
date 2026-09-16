@@ -358,6 +358,12 @@ is retained.
   raised `ShardingTypeError` on explicitly-sharded inputs. The one remaining
   recording-length read is `select_spikes_in_rows`' own pass over the 1-D spike
   times, which its ascending-order check requires (Phase 8's trigger).
+  The fallback now catches only JAX's `ShardingTypeError`: unrelated indexing,
+  device and memory failures propagate without materializing a full host copy.
+  The private exception import is guarded for older supported JAX releases
+  lacking that type; those releases catch no exceptions here. Eight regression
+  cases verify original exception identity and no host copy for slice and mask
+  selection. Both Auto and Explicit two-device checks still pass.
 - **`clusterless_gmm`'s local branch no longer converts the recording-length
   `position` at all** (`clusterless_gmm.py:865-875`). It was device-copied on
   every chunk call purely to read `.dtype` (every consumer took
@@ -553,12 +559,12 @@ benchmark or a production-arena scaling claim. No golden or tolerance changed.
 
 ### Test coverage and validation results
 
-213 tests in six modules, including the runtime follow-up:
+221 tests in six modules, including the runtime and exception-handling follow-ups:
 
 | module | tests | covers |
 | --- | --- | --- |
 | `tests/likelihoods/test_row_slice_parity.py` | 36 | every registered backend × both `is_local`, plus `no_spike`: a row range equals the full-time slice, and every row partition tiles the full result; zero-rate sentinels asserted per backend in the fixture; `resolve_row_slice` normalization and non-unit-step rejection |
-| `tests/likelihoods/test_row_slice_edge_cases.py` | 115 | helper- and backend-level edge cases: endpoint convention, spikes on timestamps / between timestamps / duplicates, irregular and ragged partitions, empty and singleton row requests, spike-free chunks and all-units-empty, spike/feature alignment under shuffled input, NumPy/JAX feature-selection allocation checks, plus guard-the-guard assertions that the legacy chunk-local call really does differ |
+| `tests/likelihoods/test_row_slice_edge_cases.py` | 123 | helper- and backend-level edge cases: endpoint convention, spikes on timestamps / between timestamps / duplicates, irregular and ragged partitions, empty and singleton row requests, spike-free chunks and all-units-empty, spike/feature alignment under shuffled input, NumPy/JAX feature-selection allocation checks, propagation of unexpected selection errors without host copies, plus guard-the-guard assertions that the legacy chunk-local call really does differ |
 | `tests/integration/test_chunk_boundary_spikes.py` | 7 | public `predict(n_chunks=5, cache_likelihood=False)` vs `n_chunks=1` for both detector families, the covariate-dependent core path, `is_missing` straddling every boundary, and requested `log_likelihood` from `predict` and from `estimate_parameters` |
 | `tests/integration/test_chunk_boundary_edge_cases.py` | 26 | the same public path over ragged chunk counts (5/6/7 with `n_time % n_chunks != 0`), singleton chunks (`n_chunks == n_time`), spike-free chunks, unsorted spike input, `is_missing`, and preservation of a legitimate `-inf` mask (delta local-position kernel), comparing acausal + causal posteriors, both state-probability sets, evidence and the full `log_likelihood` |
 | `tests/core/test_row_slice_callback.py` | 11 | both chunked drivers: a marked callback receives the full time and tiling global rows, a legacy callback receives the sliced time and no `row_slice` (and yields a different answer), the marker survives bound methods / `partial` / `__wrapped__`, accumulated rows cover every row, and positional dtype compatibility is preserved (two tests require x64) |
@@ -566,6 +572,10 @@ benchmark or a production-arena scaling claim. No golden or tolerance changed.
 
 | Command | Result |
 | --- | --- |
+| Exception-handling regressions, before tightening the fallback | **8 failed**: injected `RuntimeError`, `ValueError`, `TypeError` and `MemoryError` were swallowed for both mask and slice selection |
+| Selection and sharding tests after tightening the fallback (`-k 'select_spike_rows or sharded'`) | **18 passed**, including both two-device sharding modes; an isolated compatibility check also confirmed module import and ordinary selection when the private JAX exception type is unavailable |
+| `uv run --no-sync python -m doctest src/non_local_detector/likelihoods/no_spike.py` | All **8 examples passed** after correcting the output shape; the two shape assertions failed before the documentation fix |
+| `uv run --no-sync pytest -q` after tightening the selection fallback | **1580 passed, 6 skipped** in 731.62 s, including property, integration, EM, snapshot and golden tests; skip reasons unchanged from the performance-fix run below |
 | Runtime regression tests, before the performance fix (16 cases at that point) | **10 failed, 6 passed**: digitization scanned 999 boundaries for a 20-row request; No-Spike computed three full medians for three chunks, in both detector families and both drivers |
 | `JAX_ENABLE_X64=1 uv run pytest` on `test_chunk_likelihood_preparation.py`, `test_row_slice_parity.py`, `test_row_slice_edge_cases.py`, `test_row_slice_callback.py` after the performance fix | **180 passed** in 66.16 s, including the two positional dtype compatibility tests skipped without x64 |
 | `uv run python scripts/benchmark_chunk_likelihood_runtime.py /tmp/phase3-runtime` after the performance fix | All **18** saved likelihood arrays bit-identical to pre-fix PR `a04c4da`; runtime table above |

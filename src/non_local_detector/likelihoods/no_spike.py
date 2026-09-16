@@ -38,9 +38,9 @@ def predict_no_spike_log_likelihood(
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time + 1,)
-        Time bin edges for likelihood computation. The number of bins
-        is len(time) - 1.
+    time : np.ndarray, shape (n_time,)
+        Full decoding timeline. The output has one row per timestamp before
+        applying ``row_slice``.
     spike_times : list[list[float]]
         Nested list where each inner list contains spike times for one neuron.
         Length equals number of neurons in the population.
@@ -77,20 +77,24 @@ def predict_no_spike_log_likelihood(
 
     where n is the spike count, λ is the firing rate, and Δt is the bin duration.
 
+    For a timeline with at least two timestamps, a spike at ``time[-1]`` belongs
+    to the penultimate row under the current binning convention. The final row
+    has zero spike count but still includes the no-spike term.
+
     Examples
     --------
     >>> import numpy as np
-    >>> time = np.linspace(0, 10, 100)  # 99 time bins
+    >>> time = np.linspace(0, 10, 100)  # 100 output rows
     >>> spike_times = [[] for _ in range(5)]  # 5 neurons, no spikes
     >>> log_lik = predict_no_spike_log_likelihood(time, spike_times)
     >>> log_lik.shape
-    (99, 1)
+    (100, 1)
 
     >>> # With some sparse spikes
     >>> spike_times = [[1.0, 5.0], [], [8.5], [], []]
     >>> log_lik = predict_no_spike_log_likelihood(time, spike_times, no_spike_rate=1e-8)
     >>> log_lik.shape
-    (99, 1)
+    (100, 1)
     """
     # Bin duration comes from the full timeline so a row request cannot change
     # the rate scaling.
