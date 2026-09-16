@@ -32,6 +32,7 @@ from non_local_detector.core import (
     chunked_filter_smoother_covariate_dependent,
     most_likely_sequence,
     most_likely_sequence_covariate_dependent,
+    row_slice_aware,
 )
 from non_local_detector.discrete_state_transitions import (
     _estimate_discrete_transition,
@@ -45,6 +46,7 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
     predict_no_spike_log_likelihood,
 )
+from non_local_detector.likelihoods.common import resolve_row_slice
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
     ContinuousInitialConditions,
@@ -1672,6 +1674,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         cache_likelihood: bool = True,
         n_chunks: int = 1,
         discrete_state_transitions: np.ndarray | None = None,
+        accumulate_log_likelihood: bool = False,
     ) -> tuple[
         np.ndarray,
         np.ndarray,
@@ -1703,6 +1706,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Covariate-driven transition matrices to use instead of
             self.discrete_state_transitions_. When None, falls back to the
             fitted attribute. By default None.
+        accumulate_log_likelihood : bool, optional
+            If True, the chunked (uncached) path concatenates the per-chunk
+            likelihood rows so the returned log likelihoods cover every row in
+            global order. This allocates the full (n_time, n_state_bins) array
+            and is intended only for a caller that explicitly requested the log
+            likelihood; when the likelihood is not requested the chunk arrays
+            are not retained. By default False.
 
         Returns
         -------
@@ -1753,6 +1763,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 n_chunks=n_chunks,
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
+                accumulate_log_likelihoods=accumulate_log_likelihood,
                 degenerate_indices_out=degenerate_out,
             )
         else:
@@ -1770,6 +1781,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 n_chunks=n_chunks,
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
+                accumulate_log_likelihoods=accumulate_log_likelihood,
                 degenerate_indices_out=degenerate_out,
             )
         self._degenerate_timesteps_ = np.asarray(sorted(degenerate_out), dtype=int)
@@ -1850,6 +1862,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Convergence tolerance for the EM algorithm, by default 1e-4.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
+            Caching is disabled automatically when ``n_chunks > 1``; asking to
+            keep the likelihood there (``store_log_likelihood=True`` or
+            ``return_outputs='log_likelihood'``) makes the FINAL E-step
+            accumulate the per-chunk rows into the full (n_time, n_state_bins)
+            array instead. In-loop E-steps never retain a chunk array.
         store_log_likelihood : bool, optional
             Whether to store the log likelihoods in self.log_likelihoods_, by default False.
         n_chunks : int, optional
@@ -1930,8 +1947,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
 
-        # Automatically enable caching if log_likelihood is requested
-        if "log_likelihood" in requested_outputs and not cache_likelihood:
+        # A requested log likelihood has to be materialized. Unchunked that
+        # means caching the full-time evaluation; with n_chunks > 1 caching is
+        # disabled by _predict and the final E-step accumulates the per-chunk
+        # rows instead (see below).
+        if (
+            "log_likelihood" in requested_outputs
+            and not cache_likelihood
+            and n_chunks == 1
+        ):
             cache_likelihood = True
 
         # Validate encoding update parameters
@@ -2187,6 +2211,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             cache_likelihood=cache_likelihood,
             log_likelihoods=getattr(self, "log_likelihood_", None),
             n_chunks=n_chunks,
+            # Final E-step only: this is the likelihood the caller can ask to
+            # keep. With n_chunks > 1 caching is unavailable, so the chunked
+            # path accumulates the per-chunk rows (the documented T x N
+            # exception) instead of returning None. The in-loop E-steps never
+            # need the array, so they keep the per-chunk allocation.
+            accumulate_log_likelihood=(
+                store_log_likelihood or "log_likelihood" in requested_outputs
+            ),
         )
         marginal_log_likelihoods.append(marginal_log_likelihood)
 
@@ -3044,6 +3076,7 @@ class ClusterlessDetector(_DetectorBase):
         )
         return self
 
+    @row_slice_aware
     def compute_log_likelihood(
         self,
         time: np.ndarray,
@@ -3052,6 +3085,7 @@ class ClusterlessDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         is_missing: np.ndarray | None = None,
+        row_slice: slice | None = None,
     ) -> jnp.ndarray:
         """
         Compute the log likelihood for the given data.
@@ -3098,12 +3132,20 @@ class ClusterlessDetector(_DetectorBase):
             Spike times for each neuron.
         spike_waveform_features : list of np.ndarray
             Spike waveform features for each neuron.
-        is_missing : np.ndarray, shape (n_time,), optional
-            Boolean array indicating missing data, by default None.
+        is_missing : np.ndarray, shape (n_rows,), optional
+            Boolean array indicating missing data for the requested rows, by
+            default None.
+        row_slice : slice | None, optional
+            Contiguous range of rows of the full-time likelihood to compute, by
+            default None (all rows). ``time`` stays the FULL decoding timeline,
+            so a decoding spike is owned by its global row no matter how the
+            rows were chunked, and the result equals the full-time likelihood
+            sliced by ``row_slice``.
 
         Returns
         -------
-        log_likelihood : jnp.ndarray, shape (n_time, n_state_bins)
+        log_likelihood : jnp.ndarray, shape (n_rows, n_state_bins)
+            ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
         logger.info("Computing log likelihood...")
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
@@ -3130,9 +3172,14 @@ class ClusterlessDetector(_DetectorBase):
         if position is not None:
             self._validate_position_dimensionality(position, context="predict")
 
-        n_time = len(time)
+        row_start, row_stop = resolve_row_slice(row_slice, len(time))
+        n_rows = row_stop - row_start
+        # Position interpolation, local kernels and the non-local penalty are
+        # pointwise in the decoding time, so they are evaluated at the requested
+        # rows; the spike likelihoods bin against the full ``time``.
+        row_time = time[row_start:row_stop]
         if is_missing is None:
-            is_missing = jnp.zeros((n_time,), dtype=bool)
+            is_missing = jnp.zeros((n_rows,), dtype=bool)
 
         _, likelihood_func = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
 
@@ -3162,7 +3209,7 @@ class ClusterlessDetector(_DetectorBase):
 
             if obs.is_no_spike:
                 likelihood_results[state_id] = predict_no_spike_log_likelihood(
-                    time, spike_times, self.no_spike_rate
+                    time, spike_times, self.no_spike_rate, row_slice=row_slice
                 )
             elif likelihood_name not in computed_likelihoods:
                 likelihood_results[state_id] = likelihood_func(
@@ -3173,6 +3220,7 @@ class ClusterlessDetector(_DetectorBase):
                     spike_waveform_features,
                     **self.encoding_model_[likelihood_name[:2]],
                     is_local=effective_is_local,
+                    row_slice=row_slice,
                 )
                 computed_likelihoods[likelihood_name] = state_id
             else:
@@ -3181,7 +3229,7 @@ class ClusterlessDetector(_DetectorBase):
 
         # Assemble final array (single pass, stays in JAX)
         log_likelihood = jnp.zeros(
-            (n_time, self.is_track_interior_state_bins_.sum()), dtype=jnp.float32
+            (n_rows, self.is_track_interior_state_bins_.sum()), dtype=jnp.float32
         )
 
         for state_id in range(len(self.observation_models)):
@@ -3209,7 +3257,7 @@ class ClusterlessDetector(_DetectorBase):
                         env = self._get_environment_by_name(env_name)
                         env_penalties[env_name] = (
                             self._compute_non_local_position_penalty(
-                                time, position_time, position, env
+                                row_time, position_time, position, env
                             )
                         )
                     is_state_bin = state_bin_masks[state_id]
@@ -3226,7 +3274,7 @@ class ClusterlessDetector(_DetectorBase):
                     if env_name not in env_kernels:
                         env = self._get_environment_by_name(env_name)
                         env_kernels[env_name] = self._compute_local_position_kernel(
-                            time, position_time, position, env
+                            row_time, position_time, position, env
                         )
                     is_state_bin = state_bin_masks[state_id]
                     log_likelihood = log_likelihood.at[:, is_state_bin].add(
@@ -3272,6 +3320,12 @@ class ClusterlessDetector(_DetectorBase):
             Covariate data for covariate-dependent discrete transition, by default None.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
+            Caching is disabled automatically when ``n_chunks > 1``. Requesting
+            ``return_outputs='log_likelihood'`` with ``n_chunks > 1`` instead
+            accumulates the per-chunk rows into the full
+            (n_time, n_state_bins) array -- the documented exception to this
+            phase's per-chunk allocation; when the log likelihood is not
+            requested, no chunk array is retained.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
         return_outputs : str, list of str, set of str, or None, optional
@@ -3410,8 +3464,14 @@ class ClusterlessDetector(_DetectorBase):
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
 
-        # Automatically enable caching if log_likelihood is requested
-        if "log_likelihood" in requested_outputs and not cache_likelihood:
+        # The log likelihood has to be materialized when the caller asks for it.
+        # Unchunked, that means caching the single full-time evaluation. Chunked,
+        # caching is not available (``_predict`` disables it), so the chunked
+        # path accumulates the per-chunk rows instead -- which allocates the
+        # same full (n_time, n_state_bins) array, the documented exception to
+        # per-chunk allocation.
+        return_log_likelihood = "log_likelihood" in requested_outputs
+        if return_log_likelihood and not cache_likelihood and n_chunks == 1:
             cache_likelihood = True
 
         predicted_transitions = None
@@ -3447,6 +3507,7 @@ class ClusterlessDetector(_DetectorBase):
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
             discrete_state_transitions=predicted_transitions,
+            accumulate_log_likelihood=return_log_likelihood,
         )
 
         return self._convert_results_to_xarray(
@@ -4014,6 +4075,7 @@ class SortedSpikesDetector(_DetectorBase):
         )
         return self
 
+    @row_slice_aware
     def compute_log_likelihood(
         self,
         time: np.ndarray,
@@ -4021,6 +4083,7 @@ class SortedSpikesDetector(_DetectorBase):
         position: np.ndarray | None,
         spike_times: list[np.ndarray],
         is_missing: np.ndarray | None = None,
+        row_slice: slice | None = None,
     ) -> jnp.ndarray:
         """
         Compute the log likelihood for the given data.
@@ -4065,15 +4128,28 @@ class SortedSpikesDetector(_DetectorBase):
             Position data.
         spike_times : list of np.ndarray
             Spike times for each neuron.
-        is_missing : np.ndarray, shape (n_time,), optional
-            Boolean array indicating missing data, by default None.
+        is_missing : np.ndarray, shape (n_rows,), optional
+            Boolean array indicating missing data for the requested rows, by
+            default None.
+        row_slice : slice | None, optional
+            Contiguous range of rows of the full-time likelihood to compute, by
+            default None (all rows). ``time`` stays the FULL decoding timeline,
+            so a decoding spike is owned by its global row no matter how the
+            rows were chunked, and the result equals the full-time likelihood
+            sliced by ``row_slice``.
 
         Returns
         -------
-        log_likelihood : jnp.ndarray, shape (n_time, n_state_bins)
+        log_likelihood : jnp.ndarray, shape (n_rows, n_state_bins)
+            ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
         logger.info("Computing log likelihood...")
-        n_time = len(time)
+        row_start, row_stop = resolve_row_slice(row_slice, len(time))
+        n_rows = row_stop - row_start
+        # Position interpolation, local kernels and the non-local penalty are
+        # pointwise in the decoding time, so they are evaluated at the requested
+        # rows; the spike likelihoods bin against the full ``time``.
+        row_time = time[row_start:row_stop]
 
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
         needs_position = (
@@ -4100,7 +4176,7 @@ class SortedSpikesDetector(_DetectorBase):
             self._validate_position_dimensionality(position, context="predict")
 
         if is_missing is None:
-            is_missing = np.zeros((n_time,), dtype=bool)
+            is_missing = np.zeros((n_rows,), dtype=bool)
 
         _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
 
@@ -4130,7 +4206,7 @@ class SortedSpikesDetector(_DetectorBase):
 
             if obs.is_no_spike:
                 likelihood_results[state_id] = predict_no_spike_log_likelihood(
-                    time, spike_times, self.no_spike_rate
+                    time, spike_times, self.no_spike_rate, row_slice=row_slice
                 )
             elif likelihood_name not in computed_likelihoods:
                 likelihood_results[state_id] = likelihood_func(
@@ -4140,6 +4216,7 @@ class SortedSpikesDetector(_DetectorBase):
                     spike_times,
                     **self.encoding_model_[likelihood_name[:2]],
                     is_local=effective_is_local,
+                    row_slice=row_slice,
                 )
                 computed_likelihoods[likelihood_name] = state_id
             else:
@@ -4148,7 +4225,7 @@ class SortedSpikesDetector(_DetectorBase):
 
         # Assemble final array (single pass, stays in JAX)
         log_likelihood = jnp.zeros(
-            (n_time, self.is_track_interior_state_bins_.sum()), dtype=jnp.float32
+            (n_rows, self.is_track_interior_state_bins_.sum()), dtype=jnp.float32
         )
 
         for state_id in range(len(self.observation_models)):
@@ -4176,7 +4253,7 @@ class SortedSpikesDetector(_DetectorBase):
                         env = self._get_environment_by_name(env_name)
                         env_penalties[env_name] = (
                             self._compute_non_local_position_penalty(
-                                time, position_time, position, env
+                                row_time, position_time, position, env
                             )
                         )
                     is_state_bin = state_bin_masks[state_id]
@@ -4193,7 +4270,7 @@ class SortedSpikesDetector(_DetectorBase):
                     if env_name not in env_kernels:
                         env = self._get_environment_by_name(env_name)
                         env_kernels[env_name] = self._compute_local_position_kernel(
-                            time, position_time, position, env
+                            row_time, position_time, position, env
                         )
                     is_state_bin = state_bin_masks[state_id]
                     log_likelihood = log_likelihood.at[:, is_state_bin].add(
@@ -4237,6 +4314,12 @@ class SortedSpikesDetector(_DetectorBase):
             Covariate data for covariate-dependent discrete transition, by default None.
         cache_likelihood : bool, optional
             Whether to cache the log likelihoods, by default False.
+            Caching is disabled automatically when ``n_chunks > 1``. Requesting
+            ``return_outputs='log_likelihood'`` with ``n_chunks > 1`` instead
+            accumulates the per-chunk rows into the full
+            (n_time, n_state_bins) array -- the documented exception to this
+            phase's per-chunk allocation; when the log likelihood is not
+            requested, no chunk array is retained.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
         return_outputs : str, list of str, set of str, or None, optional
@@ -4306,8 +4389,14 @@ class SortedSpikesDetector(_DetectorBase):
         # Normalize return_outputs to canonical set
         requested_outputs = _normalize_return_outputs(return_outputs)
 
-        # Automatically enable caching if log_likelihood is requested
-        if "log_likelihood" in requested_outputs and not cache_likelihood:
+        # The log likelihood has to be materialized when the caller asks for it.
+        # Unchunked, that means caching the single full-time evaluation. Chunked,
+        # caching is not available (``_predict`` disables it), so the chunked
+        # path accumulates the per-chunk rows instead -- which allocates the
+        # same full (n_time, n_state_bins) array, the documented exception to
+        # per-chunk allocation.
+        return_log_likelihood = "log_likelihood" in requested_outputs
+        if return_log_likelihood and not cache_likelihood and n_chunks == 1:
             cache_likelihood = True
 
         predicted_transitions = None
@@ -4343,6 +4432,7 @@ class SortedSpikesDetector(_DetectorBase):
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
             discrete_state_transitions=predicted_transitions,
+            accumulate_log_likelihood=return_log_likelihood,
         )
 
         return self._convert_results_to_xarray(

@@ -255,6 +255,119 @@ def get_spike_time_bin_ind(spike_times: np.ndarray, time: np.ndarray) -> np.ndar
     return np.digitize(spike_times, time[1:-1])
 
 
+def resolve_row_slice(row_slice: slice | None, n_time: int) -> tuple[int, int]:
+    """Normalize a likelihood row request against the full decoding timeline.
+
+    A backend's ``row_slice`` selects which rows of the FULL-time likelihood to
+    return; ``time`` always stays the full decoding timeline so that spike-to-row
+    ownership is independent of how the rows were chunked.
+
+    Parameters
+    ----------
+    row_slice : slice | None
+        Contiguous (unit-step) range of output rows, or None for all rows.
+    n_time : int
+        Length of the full decoding ``time`` array.
+
+    Returns
+    -------
+    row_start : int
+    row_stop : int
+        Half-open row range with ``0 <= row_start <= row_stop <= n_time``.
+    """
+    if row_slice is None:
+        return 0, n_time
+    if row_slice.step not in (None, 1):
+        raise ValidationError(
+            "row_slice must select a contiguous range of rows",
+            expected="a slice with step None or 1",
+            got=f"step={row_slice.step}",
+            hint="Chunked prediction only requests contiguous row ranges.",
+            example="    predict_..._log_likelihood(time, ..., row_slice=slice(0, 100))",
+        )
+    row_start, row_stop, _ = row_slice.indices(n_time)
+    return row_start, max(row_start, row_stop)
+
+
+def select_spikes_in_rows(
+    spike_times: np.ndarray,
+    time: np.ndarray,
+    row_start: int,
+    row_stop: int,
+) -> tuple[slice | np.ndarray, np.ndarray]:
+    """Select the spikes owned by the global rows ``[row_start, row_stop)``.
+
+    Row ownership is the unchunked convention evaluated on the full timeline: a
+    spike is in range iff ``time[0] <= t <= time[-1]`` and it belongs to row
+    ``np.digitize(t, time[1:-1])``. Only rows ``0 .. max(n_time - 2, 0)`` can own
+    a spike, so the final row of a multi-row timeline always stays empty.
+
+    Because ``np.digitize(t, time[1:-1])`` is ``searchsorted(time[1:-1], t,
+    "right")``, owning row ``>= row_start`` is exactly ``t >= time[row_start]``
+    and owning row ``< row_stop`` is exactly ``t < time[row_stop]`` (inclusive of
+    ``time[-1]`` when the range reaches the last owning row). The selection is
+    therefore a contiguous range in time, found with ``np.searchsorted`` when the
+    spike times are ascending; only the selected subset is digitized, so no spike
+    is re-binned for every chunk.
+
+    Parameters
+    ----------
+    spike_times : np.ndarray, shape (n_spikes,)
+        Decoding spike times for one neuron/electrode.
+    time : np.ndarray, shape (n_time,)
+        FULL decoding timeline (not the chunk's rows).
+    row_start : int
+    row_stop : int
+        Half-open range of requested rows, as returned by ``resolve_row_slice``.
+
+    Returns
+    -------
+    indexer : slice | np.ndarray
+        Index into ``spike_times`` -- and, by the identical index, into any
+        per-spike array such as waveform features -- selecting the owned spikes
+        in their original order. A ``slice`` when the spike times are verified
+        ascending, otherwise a boolean mask.
+    bin_ind : np.ndarray, shape (n_selected,)
+        Row of each selected spike, LOCAL to the requested range
+        (``global_row - row_start``), for ``num_segments = row_stop - row_start``.
+    """
+    time = np.asarray(time)
+    spike_times = np.asarray(spike_times)
+    n_time = time.shape[0]
+    # Rows that can own a spike. A length-1 timeline owns only t == time[0].
+    n_owning_rows = max(n_time - 1, 1)
+
+    if spike_times.size == 0 or row_start >= min(row_stop, n_owning_rows):
+        return slice(0, 0), np.zeros((0,), dtype=int)
+
+    lower = time[row_start]
+    # Reaching the last owning row extends the range to time[-1] inclusive,
+    # matching the unchunked ``spike_times <= time[-1]`` clip.
+    upper_is_inclusive = row_stop >= n_owning_rows
+    upper = time[n_time - 1] if upper_is_inclusive else time[row_stop]
+
+    # Establish, never assume, the ordering the range lookup needs.
+    is_ascending = spike_times.size < 2 or bool(
+        np.all(spike_times[1:] >= spike_times[:-1])
+    )
+    if is_ascending:
+        start = int(np.searchsorted(spike_times, lower, side="left"))
+        stop = int(
+            np.searchsorted(
+                spike_times, upper, side="right" if upper_is_inclusive else "left"
+            )
+        )
+        indexer: slice | np.ndarray = slice(start, max(start, stop))
+        selected = spike_times[indexer]
+    else:
+        in_rows = spike_times >= lower
+        in_rows &= spike_times <= upper if upper_is_inclusive else spike_times < upper
+        indexer = in_rows
+        selected = spike_times[in_rows]
+
+    return indexer, np.digitize(selected, time[1:-1]) - row_start
+
+
 @jax.jit
 def log_gaussian_pdf(
     x: jnp.ndarray, mean: jnp.ndarray, sigma: jnp.ndarray
@@ -567,26 +680,31 @@ class KDEModel:
 
 
 def get_spikecount_per_time_bin(
-    spike_times: np.ndarray, time: np.ndarray
+    spike_times: np.ndarray,
+    time: np.ndarray,
+    row_slice: slice | None = None,
 ) -> np.ndarray:
-    """Get the number of spikes in each time bin.
+    """Get the number of spikes in each requested time bin.
 
     Parameters
     ----------
     spike_times : np.ndarray, shape (n_spikes,)
     time : np.ndarray, shape (n_time,)
+        FULL decoding timeline, which defines the bins a spike belongs to.
+    row_slice : slice | None, optional
+        Contiguous range of rows to count, by default None (all rows). Counting
+        rows ``[a, b)`` of the full timeline gives the same values as counting
+        all rows and slicing ``[a:b]``, so concatenating the chunks of a row
+        partition reproduces the full-time counts exactly.
 
     Returns
     -------
-    count : np.ndarray, shape (n_time,)
+    count : np.ndarray, shape (n_rows,)
+        ``n_rows`` is ``n_time`` by default, else the length of ``row_slice``.
     """
-    spike_times = spike_times[
-        np.logical_and(spike_times >= time[0], spike_times <= time[-1])
-    ]
-    return np.bincount(
-        np.digitize(spike_times, time[1:-1]),
-        minlength=time.shape[0],
-    )
+    row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
+    _, bin_ind = select_spikes_in_rows(spike_times, time, row_start, row_stop)
+    return np.bincount(bin_ind, minlength=row_stop - row_start)
 
 
 def safe_divide(numerator, denominator, eps=EPS, condition=None):

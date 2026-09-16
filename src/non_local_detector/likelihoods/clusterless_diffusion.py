@@ -65,9 +65,10 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     as_std_array,
     get_position_at_time,
-    get_spike_time_bin_ind,
     interpolate_weights_at_spike_times,
+    resolve_row_slice,
     safe_log,
+    select_spikes_in_rows,
     validate_finite,
     validate_weights,
     weighted_mean_rate,
@@ -461,6 +462,7 @@ def predict_clusterless_diffusion_log_likelihood(
     spike_waveform_features: list[jnp.ndarray],
     *,
     is_local: bool = False,
+    row_slice: slice | None = None,
     **encoding_model: object,
 ) -> jnp.ndarray:
     """Predict the clusterless graph-diffusion log likelihood.
@@ -483,13 +485,20 @@ def predict_clusterless_diffusion_log_likelihood(
         If True, evaluate the likelihood at the animal's position (nearest interior
         bin; the ``D_e`` construction and ``heat_kernel_apply`` call are identical to
         the non-local path -- only the readout differs). By default False.
+    row_slice : slice | None, optional
+        Contiguous range of output rows to compute, by default None (all rows).
+        ``time`` always stays the FULL decoding timeline: spikes are binned
+        against it and only those owned by the requested rows are evaluated, so
+        the result equals the full-time result sliced by ``row_slice`` while the
+        spatial workspaces scale with the requested rows and selected spikes.
     **encoding_model
         The dict returned by :func:`fit_clusterless_diffusion_encoding_model`.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_time, n_interior_bins) if ``is_local`` is
-        False, else (n_time, 1).
+    log_likelihood : jnp.ndarray, shape (n_rows, n_interior_bins) if ``is_local`` is
+        False, else (n_rows, 1). ``n_rows`` is ``n_time`` unless ``row_slice``
+        is given.
     """
     environment: Environment = encoding_model["environment"]  # type: ignore[assignment]
     occupancy = jnp.asarray(encoding_model["occupancy"])
@@ -512,7 +521,8 @@ def predict_clusterless_diffusion_log_likelihood(
 
     time = np.asarray(time)
     validate_finite(time, "time")
-    n_time = len(time)
+    row_start, row_stop = resolve_row_slice(row_slice, len(time))
+    n_rows = row_stop - row_start
     n_bins = occupancy.shape[0]
 
     # The encoding model is grid-bound: its occupancy, node_order, per-spike bin
@@ -551,7 +561,7 @@ def predict_clusterless_diffusion_log_likelihood(
         full_to_local = _full_to_local(node_order, n_total_bins)
 
         interpolated_position = get_position_at_time(
-            position_time, position, time, environment
+            position_time, position, time[row_start:row_stop], environment
         )
         animal_time_bins = _interior_bin_indices(
             environment, interpolated_position, full_to_local
@@ -586,23 +596,19 @@ def predict_clusterless_diffusion_log_likelihood(
             spike_times,
             strict=True,
         ):
-            electrode_spike_times = np.asarray(electrode_spike_times)
-            is_in_bounds = np.logical_and(
-                electrode_spike_times >= time[0],
-                electrode_spike_times <= time[-1],
+            spike_indexer, spike_bin_ind = select_spikes_in_rows(
+                electrode_spike_times, time, row_start, row_stop
             )
-            electrode_spike_times = electrode_spike_times[is_in_bounds]
+            electrode_spike_times = np.asarray(electrode_spike_times)[spike_indexer]
             # Validate only the in-window decode features that actually enter the
             # likelihood (mirrors fit's post-clip validation); an out-of-window
             # spike's feature must not raise.
-            decode_features = jnp.asarray(electrode_decode_features)[
-                jnp.asarray(is_in_bounds)
-            ]
+            decode_features = jnp.asarray(electrode_decode_features)[spike_indexer]
             validate_finite(decode_features, "spike_waveform_features")
             n_decode = electrode_spike_times.shape[0]
             if n_decode == 0:
                 continue
-            seg = jnp.asarray(get_spike_time_bin_ind(electrode_spike_times, time))
+            seg = jnp.asarray(spike_bin_ind)
 
             # Zero-rate electrode: floor every observed decode spike to LOG_EPS,
             # identical contract to the non-local zero-rate guard.
@@ -611,7 +617,7 @@ def predict_clusterless_diffusion_log_likelihood(
                     jnp.full((n_decode,), LOG_EPS),
                     seg,
                     indices_are_sorted=True,
-                    num_segments=n_time,
+                    num_segments=n_rows,
                 )
                 continue
 
@@ -671,14 +677,14 @@ def predict_clusterless_diffusion_log_likelihood(
                     lc,
                     seg_block,
                     indices_are_sorted=True,
-                    num_segments=n_time,
+                    num_segments=n_rows,
                 )
 
         return log_likelihood[:, None]
 
     occupancy_col = occupancy[:, None]
 
-    log_likelihood = -summed_ground_process_intensity[None, :] * jnp.ones((n_time, 1))
+    log_likelihood = -summed_ground_process_intensity[None, :] * jnp.ones((n_rows, 1))
 
     for (
         electrode_bins,
@@ -703,23 +709,18 @@ def predict_clusterless_diffusion_log_likelihood(
         spike_times,
         strict=True,
     ):
-        electrode_spike_times = np.asarray(electrode_spike_times)
-        is_in_bounds = np.logical_and(
-            electrode_spike_times >= time[0],
-            electrode_spike_times <= time[-1],
+        spike_indexer, spike_bin_ind = select_spikes_in_rows(
+            electrode_spike_times, time, row_start, row_stop
         )
-        electrode_spike_times = electrode_spike_times[is_in_bounds]
         # Validate only the in-window decode features that actually enter the
         # likelihood (mirrors fit's post-clip validation); an out-of-window spike's
         # feature must not raise.
-        decode_features = jnp.asarray(electrode_decode_features)[
-            jnp.asarray(is_in_bounds)
-        ]
+        decode_features = jnp.asarray(electrode_decode_features)[spike_indexer]
         validate_finite(decode_features, "spike_waveform_features")
-        n_decode = electrode_spike_times.shape[0]
+        n_decode = decode_features.shape[0]
         if n_decode == 0:
             continue
-        seg = jnp.asarray(get_spike_time_bin_ind(electrode_spike_times, time))
+        seg = jnp.asarray(spike_bin_ind)
 
         # Zero-rate electrode: floor every observed decode spike to LOG_EPS BEFORE any
         # division (D_e == 0 and P_e / weight_total_e is 0/0). Not skipped. Each
@@ -731,8 +732,8 @@ def predict_clusterless_diffusion_log_likelihood(
                 jnp.ones(n_decode),
                 seg,
                 indices_are_sorted=True,
-                num_segments=n_time,
-            )  # (n_time,)
+                num_segments=n_rows,
+            )  # (n_rows,)
             log_likelihood += spike_counts[:, None] * LOG_EPS
             continue
 
@@ -791,7 +792,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 log_intensity.T,
                 seg_block,
                 indices_are_sorted=True,
-                num_segments=n_time,
+                num_segments=n_rows,
             )
 
     return log_likelihood

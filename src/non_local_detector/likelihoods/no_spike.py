@@ -16,13 +16,17 @@ import jax.scipy
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
-from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
+from non_local_detector.likelihoods.common import (
+    get_spikecount_per_time_bin,
+    resolve_row_slice,
+)
 
 
 def predict_no_spike_log_likelihood(
     time: np.ndarray,
     spike_times: list[list[float]],
     no_spike_rate: float = 1e-10,
+    row_slice: slice | None = None,
 ) -> jnp.ndarray:
     """Return the log likelihood of low spike rate for each time bin.
 
@@ -41,11 +45,17 @@ def predict_no_spike_log_likelihood(
     no_spike_rate : float, default=1e-10
         Expected firing rate during no-spike periods in Hz. Should be very
         small to represent baseline/quiescent activity levels.
+    row_slice : slice | None, optional
+        Contiguous range of output rows to compute, by default None (all rows).
+        ``time`` always stays the FULL decoding timeline: the bin duration and
+        the spike-to-row assignment are both taken from it, so the result equals
+        the full-time result sliced by ``row_slice``.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_time, 1)
-        Log-likelihood values for each time bin under the no-spike model.
+    log_likelihood : jnp.ndarray, shape (n_rows, 1)
+        Log-likelihood values for each requested time bin under the no-spike
+        model. ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
 
     Notes
     -----
@@ -76,15 +86,21 @@ def predict_no_spike_log_likelihood(
     >>> log_lik.shape
     (99, 1)
     """
+    # Bin duration comes from the full timeline so a row request cannot change
+    # the rate scaling.
     no_spike_rates = no_spike_rate * np.median(np.diff(time))
-    no_spike_log_likelihood = jnp.zeros((time.shape[0],))
+    row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
+    no_spike_log_likelihood = jnp.zeros((row_stop - row_start,))
 
     for neuron_spike_times in tqdm(
         spike_times, unit="cell", desc="No Spike Likelihood"
     ):
         no_spike_log_likelihood += (
             jax.scipy.special.xlogy(
-                get_spikecount_per_time_bin(neuron_spike_times, time), no_spike_rates
+                get_spikecount_per_time_bin(
+                    neuron_spike_times, time, row_slice=row_slice
+                ),
+                no_spike_rates,
             )
             - no_spike_rates
         )

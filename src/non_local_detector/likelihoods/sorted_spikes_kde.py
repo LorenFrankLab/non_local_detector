@@ -61,6 +61,7 @@ from non_local_detector.likelihoods.common import (
     KDEModel,
     get_position_at_time,
     get_spikecount_per_time_bin,
+    resolve_row_slice,
     validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
@@ -278,6 +279,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     is_track_interior: jnp.ndarray,
     disable_progress_bar: bool = False,
     is_local: bool = False,
+    row_slice: slice | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of sorted spikes using KDE encoding models.
 
@@ -311,12 +313,18 @@ def predict_sorted_spikes_kde_log_likelihood(
         Turn off progress bar, by default False
     is_local : bool, optional
         Compute the log likelihood at the animal's position, by default False
+    row_slice : slice | None, optional
+        Contiguous range of output rows to compute, by default None (all rows).
+        ``time`` always stays the FULL decoding timeline, so spikes are binned
+        against it and only those owned by the requested rows are counted; the
+        result equals the full-time result sliced by ``row_slice``.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_time, n_place_bins) or (n_time, 1)
-        The log likelihood of the spikes at each time bin. The shape is (n_time, n_place_bins)
-        if is_local is False, otherwise the shape is (n_time, 1).
+    log_likelihood : jnp.ndarray, shape (n_rows, n_place_bins) or (n_rows, 1)
+        The log likelihood of the spikes at each requested time bin. ``n_rows``
+        is ``n_time`` unless ``row_slice`` is given. The shape is
+        (n_rows, n_place_bins) if is_local is False, otherwise (n_rows, 1).
 
     """
     validate_population_lengths(
@@ -326,13 +334,15 @@ def predict_sorted_spikes_kde_log_likelihood(
         mean_rates=mean_rates,
         place_fields=place_fields,
     )
-    n_time = time.shape[0]
+    row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
+    n_rows = row_stop - row_start
+    row_time = time[row_start:row_stop]
     if is_local:
-        log_likelihood = jnp.zeros((n_time,))
+        log_likelihood = jnp.zeros((n_rows,))
 
         # Need to interpolate position
         interpolated_position = get_position_at_time(
-            position_time, position, time, environment
+            position_time, position, row_time, environment
         )
         occupancy = occupancy_model.predict(interpolated_position)
 
@@ -347,14 +357,8 @@ def predict_sorted_spikes_kde_log_likelihood(
             mean_rates,
             strict=True,
         ):
-            neuron_spike_times = neuron_spike_times[
-                np.logical_and(
-                    neuron_spike_times >= time[0],
-                    neuron_spike_times <= time[-1],
-                )
-            ]
             spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times, time
+                neuron_spike_times, time, row_slice=row_slice
             )
             marginal_density = neuron_marginal_model.predict(interpolated_position)
             # A NaN marginal at decode means a NaN interpolated position
@@ -379,7 +383,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
         n_interior_bins = is_track_interior.sum()
-        log_likelihood = jnp.zeros((n_time, n_interior_bins))
+        log_likelihood = jnp.zeros((n_rows, n_interior_bins))
         for neuron_spike_times, place_field in zip(
             tqdm(
                 spike_times,
@@ -390,14 +394,8 @@ def predict_sorted_spikes_kde_log_likelihood(
             place_fields,
             strict=True,
         ):
-            neuron_spike_times = neuron_spike_times[
-                np.logical_and(
-                    neuron_spike_times >= time[0],
-                    neuron_spike_times <= time[-1],
-                )
-            ]
             spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times, time
+                neuron_spike_times, time, row_slice=row_slice
             )
             log_likelihood += jax.scipy.special.xlogy(
                 np.expand_dims(spike_count_per_time_bin, axis=1),

@@ -64,6 +64,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     get_position_at_time,
     get_spikecount_per_time_bin,
+    resolve_row_slice,
     validate_population_lengths,
     validate_weights,
 )
@@ -397,6 +398,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     is_track_interior: jnp.ndarray,
     disable_progress_bar: bool = False,
     is_local: bool = False,
+    row_slice: slice | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of spikes given a fitted GLM encoding model.
 
@@ -437,10 +439,16 @@ def predict_sorted_spikes_glm_log_likelihood(
         interpolated position (local decoding). If False, compute the log
         likelihood across all position bins (non-local decoding).
         By default False.
+    row_slice : slice | None, optional
+        Contiguous range of output rows to compute, by default None (all rows).
+        ``time`` always stays the FULL decoding timeline, so spikes are binned
+        against it and only those owned by the requested rows are counted; the
+        result equals the full-time result sliced by ``row_slice``.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_time, n_bins)
+    log_likelihood : jnp.ndarray, shape (n_rows, n_bins)
+        ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
     """
     validate_population_lengths(
         "neuron",
@@ -448,14 +456,16 @@ def predict_sorted_spikes_glm_log_likelihood(
         coefficients=coefficients,
         place_fields=place_fields,
     )
-    n_time = time.shape[0]
+    row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
+    n_rows = row_stop - row_start
+    row_time = time[row_start:row_stop]
 
     if is_local:
-        log_likelihood = jnp.zeros((n_time,))
+        log_likelihood = jnp.zeros((n_rows,))
 
         # Need to interpolate position
         interpolated_position = get_position_at_time(
-            position_time, position, time, environment
+            position_time, position, row_time, environment
         )
         emission_predict_matrix = make_spline_predict_matrix(
             emission_design_info, interpolated_position
@@ -471,7 +481,7 @@ def predict_sorted_spikes_glm_log_likelihood(
             strict=True,
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times, time
+                neuron_spike_times, time, row_slice=row_slice
             )
             local_rate = jnp.exp(emission_predict_matrix @ coef)
             local_rate = jnp.clip(local_rate, min=EPS, max=None)
@@ -483,7 +493,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
         n_interior_bins = is_track_interior.sum()
-        log_likelihood = jnp.zeros((n_time, n_interior_bins))
+        log_likelihood = jnp.zeros((n_rows, n_interior_bins))
         for neuron_spike_times, place_field in zip(
             tqdm(
                 spike_times,
@@ -494,15 +504,8 @@ def predict_sorted_spikes_glm_log_likelihood(
             place_fields,
             strict=True,
         ):
-            neuron_spike_times = neuron_spike_times[
-                np.logical_and(
-                    neuron_spike_times >= time[0],
-                    neuron_spike_times <= time[-1],
-                )
-            ]
-            spike_count_per_time_bin = np.bincount(
-                np.digitize(neuron_spike_times, time[1:-1]),
-                minlength=time.shape[0],
+            spike_count_per_time_bin = get_spikecount_per_time_bin(
+                neuron_spike_times, time, row_slice=row_slice
             )
             log_likelihood += jax.scipy.special.xlogy(
                 np.expand_dims(spike_count_per_time_bin, axis=1),
