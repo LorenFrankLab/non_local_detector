@@ -717,9 +717,10 @@ def chunked_filter_smoother(
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
-    accumulate_log_likelihoods: bool = False,
     dtype: jnp.dtype = jnp.float32,
     degenerate_indices_out: list | None = None,
+    *,
+    accumulate_log_likelihoods: bool = False,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -756,13 +757,6 @@ def chunked_filter_smoother(
     log_likelihoods : np.ndarray | None, optional
     cache_log_likelihoods : bool, optional
         If True, log likelihoods are cached, by default True
-    accumulate_log_likelihoods : bool, optional
-        If True and the log likelihoods are not cached, each chunk's rows are
-        copied to host memory and concatenated so the returned
-        ``log_likelihoods`` covers every row in global order instead of being
-        ``None``. This allocates the full (n_time, n_state_bins) array, so set
-        it only when the caller explicitly asked for the log likelihoods.
-        By default False.
     dtype : jnp.dtype, optional
         Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
         Use float64 for numerically challenging problems.
@@ -772,6 +766,14 @@ def chunked_filter_smoother(
         timesteps are appended to this list during the forward pass. This is
         the only way to recover those indices when likelihoods are not cached
         (the returned ``log_likelihoods`` is then ``None``). By default None.
+    accumulate_log_likelihoods : bool, optional, keyword-only
+        If True and the log likelihoods are not cached, each chunk's rows are
+        copied to host memory and concatenated so the returned
+        ``log_likelihoods`` covers every row in global order instead of being
+        ``None``. This allocates the full (n_time, n_state_bins) array, so set
+        it only when the caller explicitly asked for the log likelihoods.
+        Keyword-only, and last, so that it cannot capture a positional argument
+        aimed at a parameter that predates it (``dtype``). By default False.
 
     Returns
     -------
@@ -1340,9 +1342,10 @@ def chunked_filter_smoother_covariate_dependent(
     n_chunks: int = 1,
     log_likelihoods: np.ndarray | None = None,
     cache_log_likelihoods: bool = True,
-    accumulate_log_likelihoods: bool = False,
     dtype: jnp.dtype = jnp.float32,
     degenerate_indices_out: list | None = None,
+    *,
+    accumulate_log_likelihoods: bool = False,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -1383,13 +1386,6 @@ def chunked_filter_smoother_covariate_dependent(
     log_likelihoods : np.ndarray, optional
     cache_log_likelihoods : bool, optional
         If True, log likelihoods are cached instead of recomputed for each chunk, by default True
-    accumulate_log_likelihoods : bool, optional
-        If True and the log likelihoods are not cached, each chunk's rows are
-        copied to host memory and concatenated so the returned
-        ``log_likelihoods`` covers every row in global order instead of being
-        ``None``. This allocates the full (n_time, n_state_bins) array, so set
-        it only when the caller explicitly asked for the log likelihoods.
-        By default False.
     dtype : jnp.dtype, optional
         Data type for computations (jnp.float32 or jnp.float64), by default jnp.float32.
         Use float64 for numerically challenging problems.
@@ -1399,6 +1395,14 @@ def chunked_filter_smoother_covariate_dependent(
         timesteps are appended to this list during the forward pass. This is
         the only way to recover those indices when likelihoods are not cached
         (the returned ``log_likelihoods`` is then ``None``). By default None.
+    accumulate_log_likelihoods : bool, optional, keyword-only
+        If True and the log likelihoods are not cached, each chunk's rows are
+        copied to host memory and concatenated so the returned
+        ``log_likelihoods`` covers every row in global order instead of being
+        ``None``. This allocates the full (n_time, n_state_bins) array, so set
+        it only when the caller explicitly asked for the log likelihoods.
+        Keyword-only, and last, so that it cannot capture a positional argument
+        aimed at a parameter that predates it (``dtype``). By default False.
 
     Returns
     -------

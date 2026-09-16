@@ -11,6 +11,7 @@ requested log likelihood available when caching is off.
 
 import functools
 
+import jax
 import jax.numpy as jnp
 import jax.scipy
 import numpy as np
@@ -203,3 +204,46 @@ def test_accumulated_log_likelihoods_cover_every_row(driver, problem):
 
     assert accumulated[5].shape == expected.shape
     np.testing.assert_allclose(accumulated[5], expected, **PARITY_KWARGS)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("driver", DRIVERS, ids=DRIVER_IDS)
+def test_positional_dtype_still_selects_the_dtype(driver, problem):
+    """A pre-existing positional ``dtype`` must not land on the new flag.
+
+    ``accumulate_log_likelihoods`` was added to drivers whose parameter order
+    was already public. A caller passing ``dtype`` positionally in its original
+    slot would otherwise set the accumulation flag instead and silently keep the
+    computation in float32, so the flag is keyword-only and comes last.
+    """
+    if not jax.config.jax_enable_x64:
+        pytest.skip("float64 requires JAX_ENABLE_X64=1")
+
+    args = [
+        problem["time"],
+        problem["state_ind"],
+        problem["initial_distribution"],
+    ]
+    if driver is chunked_filter_smoother:
+        args.append(problem["transition_matrix"])
+    else:
+        args.append(
+            np.broadcast_to(
+                problem["transition_matrix"], (N_TIME, N_STATES, N_STATES)
+            ).copy()
+        )
+        args.append(np.eye(N_STATES))
+    args += [
+        row_aware_callback,  # log_likelihood_func
+        (problem["spike_times"], []),  # log_likelihood_args
+        None,  # is_missing
+        N_CHUNKS,  # n_chunks
+        None,  # log_likelihoods
+        False,  # cache_log_likelihoods
+        jnp.float64,  # dtype, in its pre-existing positional slot
+    ]
+    result = driver(*args)
+
+    assert result[0].dtype == np.float64  # acausal_posterior
+    assert result[6].dtype == np.float64  # causal_posterior
+    assert result[5] is None  # log_likelihoods: accumulation stayed off
