@@ -74,9 +74,10 @@ behavior was not tested. This is a contract/portability issue, not evidence of a
 observed GPU failure.
 
 **Addressed in the Phase 3 JAX follow-up:** all nine consumers now enable the
-hint only when `select_spikes_in_rows` returns a slice, which establishes sorted
-IDs (or an empty selection). The mask fallback passes `False` and keeps original
-spike/feature order. Tests check the actual compiler promise in both prediction
+hint from `SpikeSelection.indices_are_sorted`, established by the ordering check
+(or an early empty selection), independently of the indexer's representation.
+The unsorted fallback passes `False` and keeps original spike/feature order.
+Tests check the actual compiler promise in both prediction
 paths, including zero-rate electrodes, and CPU likelihoods remain bit-identical.
 See [Phase 3's audit](phase-3-chunk-boundary.md#jax-audit-follow-up).
 

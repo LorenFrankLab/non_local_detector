@@ -211,17 +211,20 @@ Two shared helpers in `likelihoods/common.py` decide ownership once:
 
 ```python
 resolve_row_slice(row_slice, n_time) -> (row_start, row_stop)
-select_spikes_in_rows(spike_times, time, row_start, row_stop) -> (indexer, bin_ind)
+select_spikes_in_rows(spike_times, time, row_start, row_stop) -> SpikeSelection
+select_spike_rows(array, selection) -> selected_rows
 ```
 
 `select_spikes_in_rows` derives its bounds *from* the existing
 `np.digitize(t, time[1:-1])` rule rather than approximating it: owning row
 `>= row_start` ⇔ `t >= time[row_start]`; owning row `< row_stop` ⇔
 `t < time[row_stop]`, extended to `t <= time[-1]` inclusive when the request
-reaches the last owning row. It returns one `indexer` — applied identically to
-spike times and to waveform features — plus `bin_ind` already made local
-(`global_row - row_start`), so every `segment_sum`/scatter uses
-`num_segments = n_rows`.
+reaches the last owning row. The `SpikeSelection` result holds the `indexer`,
+local `bin_ind` (`global_row - row_start`), an explicit `indices_are_sorted`
+guarantee, and the original `n_spikes`. `select_spike_rows` checks the original
+row count before selecting a paired array, including mismatches outside the
+requested chunk. This shape-only validation does not read array values. Every
+`segment_sum`/scatter uses `num_segments = n_rows`.
 
 Core gained a marker protocol (`core.py`) instead of keyword injection:
 
@@ -266,10 +269,11 @@ chunk instead of scanning the full timeline per unit. If not ascending (NaNs
 fail the test too), it falls back to a boolean mask, i.e. exactly the baseline
 selection, **in input order**.
 
-The JAX follow-up corrects all nine `indices_are_sorted=` arguments to use
-`isinstance(spike_indexer, slice)`. A slice establishes non-decreasing local
-`bin_ind` (including empty selections); a boolean mask preserves arbitrary input
-order and therefore passes `False`. This removes the pre-existing unsupported
+All nine `indices_are_sorted=` arguments use the selection's explicit
+`indices_are_sorted` field. The helper establishes this guarantee from the
+ordering check, independently of the representation of its indexer. Arbitrary
+input order is preserved and passes `False`; verified ascending inputs and
+early empty selections pass `True`. This removes the pre-existing unsupported
 compiler promise without sorting or changing spike/feature alignment. Sorted
 inputs keep the fast path. The ordering-preparation follow-up implements the
 once-per-prediction work originally deferred to [Phase 8](phase-8-remaining-findings.md).
@@ -278,6 +282,14 @@ No `astype`/float32 downcast happens on the selection path (`np.asarray` only),
 so timestamp precision is preserved.
 
 ### Compatibility behaviour of the chunked drivers
+
+`models.base._prepare_likelihood_callback` owns prediction-local preparation.
+The row-slice decorator opts a callback into full `time` plus a global row range
+and an already sliced `is_missing` mask. Declaring the private preparation
+keywords separately opts it into shared ordering and No-Spike duration work.
+The helper binds only declared keywords using `partial`, which preserves core's
+marker lookup. Precomputed likelihoods bypass preparation; custom callbacks
+without these keywords retain their existing interface.
 
 Per chunk, `_call_log_likelihood_chunk` dispatches:
 
@@ -303,17 +315,17 @@ Previously `predict(return_outputs='log_likelihood', n_chunks>1)` returned a
 dataset with **no** `log_likelihood` variable (`predict` forced
 `cache_likelihood=True`; `_predict` immediately re-disabled it for `n_chunks>1`,
 so the driver returned `None`). Now both chunked drivers take
-`accumulate_log_likelihoods`; when set, each chunk's rows are copied to host
-memory — explicitly, with `np.array(..., copy=True)`, because the chunk is then
-donated to the jitted filter whose output has the same shape and dtype, so a
-zero-copy view would be left aliasing the reused buffer — **before** that
-donation, and concatenated after the forward pass, so the returned likelihood
-covers every row in global order. `_predict` takes `accumulate_log_likelihoods`; both `predict` methods pass
+`accumulate_log_likelihoods`; when set, the first chunk determines the dtype and
+column count of a single preallocated host output. Each chunk is copied into its
+global row slice **before** donation to the jitted filter. Assignment owns the
+copied values, so CPU views cannot alias a donated buffer. No list of chunk
+copies or final concatenation is retained alongside the output. The returned
+likelihood covers every row in global order. `_predict` takes `accumulate_log_likelihoods`; both `predict` methods pass
 `accumulate_log_likelihoods=("log_likelihood" in requested_outputs)` and force
 caching only when `n_chunks == 1`. `_DetectorBase._estimate_parameters` passes
 `accumulate_log_likelihoods=(store_log_likelihood or "log_likelihood" in
-requested_outputs)` on the **final E-step only**; in-loop E-steps are byte-identical
-to baseline and retain no chunk array.
+requested_outputs)` on the **final E-step only**; in-loop E-steps retain no
+likelihood chunk array.
 
 This `T × N` allocation is the documented exception recorded by task 4 of this
 phase. It is called out in the `cache_likelihood` docstring of both public
@@ -400,8 +412,8 @@ is retained.
   split.
 - `clusterless_gmm` no longer converts the full-recording `position` /
   `position_time` before the `is_local` dispatch (the non-local branch never
-  read them; `compute_local_log_likelihood` performs the identical conversion
-  itself, so the local path is unchanged). Side effect:
+  read them). The local path now interpolates host position values at the
+  caller's precision, with the numerical effect described above. Side effect:
   `predict_clusterless_gmm_log_likelihood(position=None, is_local=False)` now
   returns a result instead of raising `AttributeError`, matching the other
   clusterless backends, whose non-local paths never touch `position` either.
@@ -562,18 +574,51 @@ main; the other measured paths are faster. These are single-session CPU
 measurements on a small spatial grid, not an end-to-end HMM benchmark, a GPU
 benchmark or a production-arena scaling claim. No golden or tolerance changed.
 
+### Reviewer-clarity follow-up
+
+The spike selection now carries named metadata rather than encoding the JAX
+sorted-index promise in its indexer type. Feature pairing is validated from the
+original row counts before selection. Before the fix, sorted inputs accepted
+extra feature rows and prefix chunks could miss a short feature array; unsorted
+inputs rejected the same mismatch. Thirty-two backend cases cover both paths,
+both ordering cases, and both missing/extra rows. Twelve of these failed before
+the fix; the GMM entry point already had independent pairing validation.
+
+Both core drivers now copy requested likelihood chunks into one preallocated
+host output. The two driver storage regressions failed before the fix with
+about 2.13 MB retained for a 1.05 MB likelihood; both now retain about 1.07 MB,
+below a 1.5-output budget that permits bookkeeping but excludes a second full copy. Numerical
+kernels are stubbed only in this allocation test; the existing real-driver
+accumulation tests continue to cover numerical results and donation safety.
+Callback preparation is centralized and its two opt-in contracts documented.
+Compatibility wording now distinguishes exact spike counts, reduction rounding,
+and local GMM position-interpolation precision.
+
+Validation: **48 targeted tests passed**, **207 float64 tests passed** (20
+allocation/sharding cases deselected), and all **18 saved likelihood arrays were
+bit-identical** to the pre-fix branch outputs. Ruff checks passed. An independent
+review found no additional code issues. Goldens, snapshots and tolerances were
+not changed.
+
+The full run completed with **1654 passed, 6 skipped and one Hypothesis timing
+failure** in 971.36 s. The unchanged `test_normalize_preserves_proportions`
+exceeded its 200 ms deadline (267.44 ms initially, 0.71 ms on Hypothesis retry);
+its numerical assertions did not fail. The isolated rerun passed, followed by
+**all 17 tests in the property module** on a fresh run. This is recorded separately from a clean full-suite pass; numerical assertions and
+wall-clock settings were not changed.
+
 ### Test coverage and validation results
 
-262 tests in six modules, including the runtime, exception-handling, JAX and
-ordering-preparation follow-ups:
+296 tests in six modules, including the runtime, exception-handling, JAX,
+ordering-preparation and reviewer-clarity follow-ups:
 
 | module | tests | covers |
 | --- | --- | --- |
 | `tests/likelihoods/test_row_slice_parity.py` | 36 | every registered backend × both `is_local`, plus `no_spike`: a row range equals the full-time slice, and every row partition tiles the full result; zero-rate sentinels asserted per backend in the fixture; `resolve_row_slice` normalization and non-unit-step rejection |
-| `tests/likelihoods/test_row_slice_edge_cases.py` | 147 | helper- and backend-level edge cases: endpoint convention, spikes on timestamps / between timestamps / duplicates, irregular and ragged partitions, empty and singleton row requests, spike-free chunks and all-units-empty, spike/feature alignment under shuffled input in both local and non-local paths, direct checks of JAX sorted-index promises, NumPy/JAX feature-selection allocation checks, propagation of unexpected selection errors without host copies, plus guard-the-guard assertions that the legacy chunk-local call really does differ |
+| `tests/likelihoods/test_row_slice_edge_cases.py` | 179 | helper- and backend-level edge cases: endpoint convention, spikes on timestamps / between timestamps / duplicates, irregular and ragged partitions, empty and singleton row requests, spike-free chunks and all-units-empty, spike/feature alignment under shuffled input in both local and non-local paths, direct checks of JAX sorted-index promises, original spike/feature row-count validation independent of ordering, NumPy/JAX feature-selection allocation checks, propagation of unexpected selection errors without host copies, plus guard-the-guard assertions that the legacy chunk-local call really does differ |
 | `tests/integration/test_chunk_boundary_spikes.py` | 7 | public `predict(n_chunks=5, cache_likelihood=False)` vs `n_chunks=1` for both detector families, the covariate-dependent core path, `is_missing` straddling every boundary, and requested `log_likelihood` from `predict` and from `estimate_parameters` |
 | `tests/integration/test_chunk_boundary_edge_cases.py` | 26 | the same public path over ragged chunk counts (5/6/7 with `n_time % n_chunks != 0`), singleton chunks (`n_chunks == n_time`), spike-free chunks, unsorted spike input, `is_missing`, and preservation of a legitimate `-inf` mask (delta local-position kernel), comparing acausal + causal posteriors, both state-probability sets, evidence and the full `log_likelihood` |
-| `tests/core/test_row_slice_callback.py` | 11 | both chunked drivers: a marked callback receives the full time and tiling global rows, a legacy callback receives the sliced time and no `row_slice` (and yields a different answer), the marker survives bound methods / `partial` / `__wrapped__`, accumulated rows cover every row, and positional dtype compatibility is preserved (two tests require x64) |
+| `tests/core/test_row_slice_callback.py` | 13 | both chunked drivers: a marked callback receives the full time and tiling global rows, a legacy callback receives the sliced time and no `row_slice` (and yields a different answer), the marker survives bound methods / `partial` / `__wrapped__`, accumulated rows cover every row without retaining a second full host array, and positional dtype compatibility is preserved (two tests require x64) |
 | `tests/models/test_chunk_likelihood_preparation.py` | 35 | digitization scans only chunk boundaries while matching independent global indices; No-Spike computes the full median once per prediction for both detector families and both drivers, refreshes mutated timelines, skips preparation for supplied likelihoods, and supports custom callbacks with the older signature; ordering is checked once per prediction/direct call, refreshed after input mutation, and skipped for non-owning rows; host conversion is shared for NumPy/JAX/list spike times |
 
 | Command | Result |
