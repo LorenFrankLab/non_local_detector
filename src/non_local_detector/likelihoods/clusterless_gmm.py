@@ -621,9 +621,11 @@ def predict_clusterless_gmm_log_likelihood(
     time : jnp.ndarray
         Decoding time bins.
     position_time : jnp.ndarray, shape (n_time_position,)
-        Time of each position sample for the decoding period.
+        Time of each position sample for the decoding period (used only by the
+        local path; accepted for signature parity when ``is_local`` is False).
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
-        Position samples during the decoding period (used for local decoding).
+        Position samples during the decoding period (used only by the local
+        path; accepted for signature parity when ``is_local`` is False).
     spike_times : list[jnp.ndarray]
         Decoding spike times per electrode.
     spike_waveform_features : list[jnp.ndarray]

@@ -649,6 +649,18 @@ def accepts_row_slice(log_likelihood_func: Callable[..., ArrayLike]) -> bool:
     attribute lookups, so both are unwrapped here: silently demoting a marked
     callback to the legacy branch would drop the boundary spikes again while
     still returning plausible numbers.
+
+    Parameters
+    ----------
+    log_likelihood_func : callable
+        The callback a chunked driver was given.
+
+    Returns
+    -------
+    accepts_row_slice : bool
+        True if the callback (or anything it wraps) was marked by
+        :func:`row_slice_aware`, in which case it is called with the full
+        ``time`` and a ``row_slice``.
     """
     func: object = log_likelihood_func
     seen: set[int] = set()
@@ -849,8 +861,13 @@ def chunked_filter_smoother(
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
             if accumulate_log_likelihoods:
-                # Copy to host now: the chunk is donated to the JIT filter below.
-                accumulated_log_likelihoods.append(np.asarray(log_likelihood_chunk))
+                # Copy to host NOW and explicitly: the chunk is donated to the
+                # jitted filter below, whose output has the same shape and dtype,
+                # so a zero-copy view (what np.asarray returns on CPU) would be
+                # left aliasing whatever the donated buffer is reused for.
+                accumulated_log_likelihoods.append(
+                    np.array(log_likelihood_chunk, copy=True)
+                )
 
         # Tally degenerate (all -inf) and NaN timesteps at one host sync point
         # before the array is donated to the JIT call. Accumulated across chunks
@@ -1478,8 +1495,13 @@ def chunked_filter_smoother_covariate_dependent(
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
             if accumulate_log_likelihoods:
-                # Copy to host now: the chunk is donated to the JIT filter below.
-                accumulated_log_likelihoods.append(np.asarray(log_likelihood_chunk))
+                # Copy to host NOW and explicitly: the chunk is donated to the
+                # jitted filter below, whose output has the same shape and dtype,
+                # so a zero-copy view (what np.asarray returns on CPU) would be
+                # left aliasing whatever the donated buffer is reused for.
+                accumulated_log_likelihoods.append(
+                    np.array(log_likelihood_chunk, copy=True)
+                )
 
         # Tally degenerate (all -inf) and NaN timesteps at one host sync point
         # before the array is donated to the JIT call. Accumulated across chunks

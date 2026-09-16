@@ -1674,7 +1674,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         cache_likelihood: bool = True,
         n_chunks: int = 1,
         discrete_state_transitions: np.ndarray | None = None,
-        accumulate_log_likelihood: bool = False,
+        accumulate_log_likelihoods: bool = False,
     ) -> tuple[
         np.ndarray,
         np.ndarray,
@@ -1706,7 +1706,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Covariate-driven transition matrices to use instead of
             self.discrete_state_transitions_. When None, falls back to the
             fitted attribute. By default None.
-        accumulate_log_likelihood : bool, optional
+        accumulate_log_likelihoods : bool, optional
             If True, the chunked (uncached) path concatenates the per-chunk
             likelihood rows so the returned log likelihoods cover every row in
             global order. This allocates the full (n_time, n_state_bins) array
@@ -1763,7 +1763,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 n_chunks=n_chunks,
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
-                accumulate_log_likelihoods=accumulate_log_likelihood,
+                accumulate_log_likelihoods=accumulate_log_likelihoods,
                 degenerate_indices_out=degenerate_out,
             )
         else:
@@ -1781,7 +1781,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 n_chunks=n_chunks,
                 log_likelihoods=log_likelihoods,
                 cache_log_likelihoods=cache_likelihood,
-                accumulate_log_likelihoods=accumulate_log_likelihood,
+                accumulate_log_likelihoods=accumulate_log_likelihoods,
                 degenerate_indices_out=degenerate_out,
             )
         self._degenerate_timesteps_ = np.asarray(sorted(degenerate_out), dtype=int)
@@ -2216,7 +2216,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             # path accumulates the per-chunk rows (the documented T x N
             # exception) instead of returning None. The in-loop E-steps never
             # need the array, so they keep the per-chunk allocation.
-            accumulate_log_likelihood=(
+            accumulate_log_likelihoods=(
                 store_log_likelihood or "log_likelihood" in requested_outputs
             ),
         )
@@ -3507,7 +3507,7 @@ class ClusterlessDetector(_DetectorBase):
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
             discrete_state_transitions=predicted_transitions,
-            accumulate_log_likelihood=return_log_likelihood,
+            accumulate_log_likelihoods=return_log_likelihood,
         )
 
         return self._convert_results_to_xarray(
@@ -3599,6 +3599,11 @@ class ClusterlessDetector(_DetectorBase):
             Convergence tolerance for the EM algorithm, by default 1e-4.
         cache_likelihood : bool, optional
             If True, log likelihoods are cached instead of recomputed for each chunk, by default True
+            Caching is disabled automatically when ``n_chunks > 1``; asking to
+            keep the likelihood there (``store_log_likelihood=True`` or
+            ``return_outputs='log_likelihood'``) makes the FINAL E-step
+            accumulate the per-chunk rows into the full (n_time, n_state_bins)
+            array instead. In-loop E-steps never retain a chunk array.
         store_log_likelihood : bool, optional
             Whether to store the log likelihoods in self.log_likelihoods_, by default False.
         n_chunks : int, optional
@@ -4432,7 +4437,7 @@ class SortedSpikesDetector(_DetectorBase):
             cache_likelihood=cache_likelihood,
             n_chunks=n_chunks,
             discrete_state_transitions=predicted_transitions,
-            accumulate_log_likelihood=return_log_likelihood,
+            accumulate_log_likelihoods=return_log_likelihood,
         )
 
         return self._convert_results_to_xarray(
@@ -4525,6 +4530,11 @@ class SortedSpikesDetector(_DetectorBase):
             Convergence tolerance for EM, by default 0.0001
         cache_likelihood : bool, optional
             Store the likelihood for faster iterations, by default True
+            Caching is disabled automatically when ``n_chunks > 1``; asking to
+            keep the likelihood there (``store_log_likelihood=True`` or
+            ``return_outputs='log_likelihood'``) makes the FINAL E-step
+            accumulate the per-chunk rows into the full (n_time, n_state_bins)
+            array instead. In-loop E-steps never retain a chunk array.
         store_log_likelihood : bool, optional
             Whether to store the log likelihoods in self.log_likelihoods_, by default False.
         n_chunks : int, optional

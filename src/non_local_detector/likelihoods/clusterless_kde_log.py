@@ -1566,9 +1566,11 @@ def predict_clusterless_kde_log_likelihood(
     time : jnp.ndarray
         Decoding time bins.
     position_time : jnp.ndarray, shape (n_time_position,)
-        Time of each position sample.
+        Time of each position sample (used only by the local path; accepted for
+        signature parity when ``is_local`` is False).
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
-        Position samples.
+        Position samples (used only by the local path; accepted for signature
+        parity when ``is_local`` is False).
     spike_times : list[jnp.ndarray]
         Spike times for each electrode.
     spike_waveform_features : list[jnp.ndarray]
