@@ -1643,6 +1643,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 )
 
         position = position[:, np.newaxis] if position.ndim == 1 else position
+        # Refitting replaces the environments, initial conditions and both
+        # transition matrices, so a stored log likelihood no longer describes
+        # this model.
+        self._invalidate_stored_log_likelihood()
         self.initialize_environments(
             position=position, environment_labels=environment_labels
         )
@@ -1786,6 +1790,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             )
         self._degenerate_timesteps_ = np.asarray(sorted(degenerate_out), dtype=int)
         return result
+
+    def _invalidate_stored_log_likelihood(self) -> None:
+        """Drop ``log_likelihood_``, which no longer describes this model.
+
+        ``log_likelihood_`` is an OUTPUT of the run that produced it: it is tied
+        to that run's spikes, position, missing-data mask and encoding model.
+        Feeding it back into a later run decodes new data with an old likelihood
+        and returns a plausible, wrong posterior, so it is dropped whenever the
+        model or the data it describes can have changed -- at the start of every
+        estimation run and on any refit.
+        """
+        try:
+            del self.log_likelihood_
+        except AttributeError:
+            pass
 
     def fit_predict(self) -> xr.Dataset:
         """Fit the model and predict the posterior probabilities. To be implemented by inheriting class."""
@@ -1987,6 +2006,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self.n_iter_ = 0
         self.em_monotonicity_violations_ = []
         self.degenerate_timesteps_ = np.array([], dtype=int)
+        # Any likelihood stored by an EARLIER run describes that run's data and
+        # encoding model, not this one's. Drop it now, and reuse within this run
+        # only a likelihood computed inside this run (``run_log_likelihoods``).
+        self._invalidate_stored_log_likelihood()
+        run_log_likelihoods: np.ndarray | None = None
         # Fitted initial-condition distribution starts at the user-supplied
         # constructor argument; overwritten with the fitted distribution below
         # when ``estimate_initial_conditions`` is True.
@@ -2009,9 +2033,16 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 log_likelihood_args=log_likelihood_args,
                 is_missing=is_missing,
                 cache_likelihood=cache_likelihood,
-                log_likelihoods=getattr(self, "log_likelihood_", None),
+                log_likelihoods=run_log_likelihoods,
                 n_chunks=n_chunks,
             )
+            # Reusable by the next iteration: the likelihood depends only on the
+            # data and the encoding model, and the M-step below clears this when
+            # it updates the encoding model. ``None`` when the likelihood was not
+            # materialized (n_chunks > 1 disables caching), i.e. recompute.
+            if cache_likelihood:
+                run_log_likelihoods = log_likelihood
+
             # Maximization step
             logger.info("Maximization step...")
 
@@ -2081,11 +2112,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                                 encoding_update_damping,
                             )
 
-                        if cache_likelihood:
-                            try:
-                                del self.log_likelihood_
-                            except AttributeError:
-                                pass
+                        # The encoding model changed, so the likelihood
+                        # computed from the previous one is stale.
+                        # (``fit_encoding_model`` also drops any stored
+                        # ``log_likelihood_``.)
+                        run_log_likelihoods = None
 
             if estimate_discrete_transition:
                 (
@@ -2209,7 +2240,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             log_likelihood_args=log_likelihood_args,
             is_missing=is_missing,
             cache_likelihood=cache_likelihood,
-            log_likelihoods=getattr(self, "log_likelihood_", None),
+            log_likelihoods=run_log_likelihoods,
             n_chunks=n_chunks,
             # Final E-step only: this is the likelihood the caller can ask to
             # keep. With n_chunks > 1 caching is unavailable, so the chunked
@@ -2316,7 +2347,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 log_likelihood_func=self.compute_log_likelihood,
                 log_likelihood_args=log_likelihood_args,
                 is_missing=is_missing,
-                log_likelihoods=getattr(self, "log_likelihood_", None),
+                # Never a stored likelihood: it belongs to the run that produced
+                # it, not to the data passed here (see
+                # ``_invalidate_stored_log_likelihood``).
+                log_likelihoods=None,
                 n_chunks=n_chunks,
             )
         else:
@@ -2331,7 +2365,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 log_likelihood_func=self.compute_log_likelihood,
                 log_likelihood_args=log_likelihood_args,
                 is_missing=is_missing,
-                log_likelihoods=getattr(self, "log_likelihood_", None),
+                # Never a stored likelihood: it belongs to the run that produced
+                # it, not to the data passed here (see
+                # ``_invalidate_stored_log_likelihood``).
+                log_likelihoods=None,
                 n_chunks=n_chunks,
             )
 
@@ -2955,6 +2992,9 @@ class ClusterlessDetector(_DetectorBase):
             The values depend on the chosen `clusterless_algorithm`.
         """
         logger.info("Fitting clusterless spikes...")
+        # The encoding model is being replaced, so any stored log likelihood
+        # (an output describing the previous one) is stale.
+        self._invalidate_stored_log_likelihood()
         n_time = position.shape[0]
         position = position if position.ndim > 1 else position[:, np.newaxis]
 
@@ -3937,6 +3977,9 @@ class SortedSpikesDetector(_DetectorBase):
             The values depend on the chosen `sorted_spikes_algorithm`.
         """
         logger.info("Fitting place fields...")
+        # The encoding model is being replaced, so any stored log likelihood
+        # (an output describing the previous one) is stale.
+        self._invalidate_stored_log_likelihood()
         n_time = position.shape[0]
         position = position if position.ndim > 1 else position[:, np.newaxis]
         if is_training is None:
