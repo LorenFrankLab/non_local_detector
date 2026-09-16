@@ -335,7 +335,9 @@ def select_spikes_in_rows(
         Index into ``spike_times`` -- and, by the identical index, into any
         per-spike array such as waveform features -- selecting the owned spikes
         in their original order. A ``slice`` when the spike times are verified
-        ascending, otherwise a boolean mask.
+        ascending (or the selection is empty), otherwise a boolean mask. A
+        slice therefore guarantees sorted ``bin_ind`` for JAX's
+        ``indices_are_sorted`` reduction hint; a mask makes no such promise.
     bin_ind : np.ndarray, shape (n_selected,)
         Row of each selected spike, LOCAL to the requested range
         (``global_row - row_start``), for ``num_segments = row_stop - row_start``.

@@ -73,12 +73,18 @@ CPU/XLA examples produced matching results with/without the assertion; GPU
 behavior was not tested. This is a contract/portability issue, not evidence of an
 observed GPU failure.
 
-Re-inventory actual call sites, including paths rewritten by Phase 3. Select a
-strategy through tests and profiling: remove the unsupported assertion, or
-establish ordered indices with explicit input handling that preserves
-spike/feature/weight alignment. Rejecting previously accepted unsorted input is
-a separate public behavior choice and needs clear documentation. Do not require
-rejection in the acceptance tests before that strategy has been chosen.
+**Addressed in the Phase 3 JAX follow-up:** all nine consumers now enable the
+hint only when `select_spikes_in_rows` returns a slice, which establishes sorted
+IDs (or an empty selection). The mask fallback passes `False` and keeps original
+spike/feature order. Tests check the actual compiler promise in both prediction
+paths, including zero-rate electrodes, and CPU likelihoods remain bit-identical.
+See [Phase 3's audit](phase-3-chunk-boundary.md#jax-audit-follow-up).
+
+The remaining performance task is to establish ordering once rather than scan
+every recording-length spike train on every chunk. Re-inventory consumers when
+implementing that prepared-input contract and profile it. Preserve accepted
+unsorted inputs and paired spike/feature/weight alignment. Rejection would be a
+separate public behavior choice; GPU validation remains outstanding.
 
 ### Acceptance
 

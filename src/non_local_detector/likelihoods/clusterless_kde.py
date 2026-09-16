@@ -497,7 +497,7 @@ def predict_clusterless_kde_log_likelihood(
                     encoding_weights=electrode_encoding_weights,
                 ),
                 spike_bin_ind,
-                indices_are_sorted=True,
+                indices_are_sorted=isinstance(spike_indexer, slice),
                 num_segments=n_rows,
             )
 
@@ -654,7 +654,7 @@ def compute_local_log_likelihood(
                 )
             ),
             spike_bin_ind,
-            indices_are_sorted=True,
+            indices_are_sorted=isinstance(spike_indexer, slice),
             num_segments=n_rows,
         )
 

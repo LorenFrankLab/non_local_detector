@@ -949,7 +949,7 @@ def compute_local_log_likelihood(
                     terms[:, None],
                     seg_ids,
                     num_segments=n_rows,
-                    indices_are_sorted=True,
+                    indices_are_sorted=isinstance(spike_indexer, slice),
                 ).ravel()
             )
 

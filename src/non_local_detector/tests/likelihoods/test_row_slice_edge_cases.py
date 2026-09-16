@@ -26,6 +26,7 @@ import tracemalloc
 from pathlib import Path
 
 import jax.numpy as jnp
+import jax.ops
 import numpy as np
 import pytest
 
@@ -34,6 +35,7 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
+    clusterless_gmm,
 )
 from non_local_detector.likelihoods.common import (
     get_spikecount_per_time_bin,
@@ -690,15 +692,33 @@ def test_singleton_row_requests_tile_the_full_result(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
+@pytest.mark.parametrize("is_local", [False, True])
 def test_shuffled_spike_order_row_slice_parity(
-    fitted_backends, edge_case_data, algorithm
+    fitted_backends, edge_case_data, algorithm, is_local, monkeypatch
 ):
     """Item 7 at the backend: unsorted decoding input, features still paired.
 
     The spikes are permuted together with their waveform features, so the set of
     (time, feature) pairs is unchanged: a correct backend must return the same
     full-time likelihood as the sorted input *and* the same row ranges.
+
+    CPU scatter implementations may ignore an incorrect sorted-indices hint.
+    Check the JAX contract at the call boundary as well as the numerical result,
+    so this catches invalid optimization promises without requiring a GPU.
+    Both the fitted and zero-rate electrodes pass through this check.
     """
+    original_segment_sum = jax.ops.segment_sum
+
+    def checked_segment_sum(values, segment_ids, **kwargs):
+        if kwargs.get("indices_are_sorted", False):
+            ids = np.asarray(segment_ids)
+            assert np.all(ids[1:] >= ids[:-1]), (
+                "JAX was promised sorted segment IDs for unsorted spikes"
+            )
+        return original_segment_sum(values, segment_ids, **kwargs)
+
+    monkeypatch.setattr(jax.ops, "segment_sum", checked_segment_sum)
+    monkeypatch.setattr(clusterless_gmm, "segment_sum", checked_segment_sum)
     predict_func, encoding_model, is_clusterless = fitted_backends[algorithm]
     time = edge_case_data["time"]
     spike_times, features = edge_case_data["spike_cases"]["mixed"]
@@ -716,7 +736,9 @@ def test_shuffled_spike_order_row_slice_parity(
         args = [edge_case_data["position_time"], edge_case_data["position"], spikes]
         if is_clusterless:
             args.append(feats)
-        return np.asarray(predict_func(time, *args, **encoding_model, **kwargs))
+        return np.asarray(
+            predict_func(time, *args, **encoding_model, is_local=is_local, **kwargs)
+        )
 
     sorted_full = predict(spike_times, features)
     assert_fixture_scale(sorted_full, algorithm)

@@ -264,14 +264,14 @@ chunk instead of scanning the full timeline per unit. If not ascending (NaNs
 fail the test too), it falls back to a boolean mask, i.e. exactly the baseline
 selection, **in input order**.
 
-Every `indices_are_sorted=` argument was left exactly as it was (verified: the
-diff adds and removes no line containing it). In the ascending case the local
-`bin_ind` is provably non-decreasing, so the flag is now justified rather than
-assumed; in the unsorted fallback the pre-existing mismatch persists (unsorted
-decoding spikes still reach `segment_sum(..., indices_are_sorted=True)`) because
-sorting the subset there would change float summation order versus the baseline.
-That contract belongs to [Phase 8](phase-8-remaining-findings.md); the per-chunk
-`O(n_spikes)` ordering check is its concrete trigger (measured below).
+The JAX follow-up corrects all nine `indices_are_sorted=` arguments to use
+`isinstance(spike_indexer, slice)`. A slice establishes non-decreasing local
+`bin_ind` (including empty selections); a boolean mask preserves arbitrary input
+order and therefore passes `False`. This removes the pre-existing unsupported
+compiler promise without sorting or changing spike/feature alignment. Sorted
+inputs keep the fast path. Establishing order once at the model layer remains
+[Phase 8](phase-8-remaining-findings.md) work; the per-chunk `O(n_spikes)` ordering
+check is its concrete trigger (measured below).
 
 No `astype`/float32 downcast happens on the selection path (`np.asarray` only),
 so timestamp precision is preserved.
@@ -559,12 +559,12 @@ benchmark or a production-arena scaling claim. No golden or tolerance changed.
 
 ### Test coverage and validation results
 
-221 tests in six modules, including the runtime and exception-handling follow-ups:
+229 tests in six modules, including the runtime, exception-handling and JAX follow-ups:
 
 | module | tests | covers |
 | --- | --- | --- |
 | `tests/likelihoods/test_row_slice_parity.py` | 36 | every registered backend × both `is_local`, plus `no_spike`: a row range equals the full-time slice, and every row partition tiles the full result; zero-rate sentinels asserted per backend in the fixture; `resolve_row_slice` normalization and non-unit-step rejection |
-| `tests/likelihoods/test_row_slice_edge_cases.py` | 123 | helper- and backend-level edge cases: endpoint convention, spikes on timestamps / between timestamps / duplicates, irregular and ragged partitions, empty and singleton row requests, spike-free chunks and all-units-empty, spike/feature alignment under shuffled input, NumPy/JAX feature-selection allocation checks, propagation of unexpected selection errors without host copies, plus guard-the-guard assertions that the legacy chunk-local call really does differ |
+| `tests/likelihoods/test_row_slice_edge_cases.py` | 131 | helper- and backend-level edge cases: endpoint convention, spikes on timestamps / between timestamps / duplicates, irregular and ragged partitions, empty and singleton row requests, spike-free chunks and all-units-empty, spike/feature alignment under shuffled input in both local and non-local paths, direct checks of JAX sorted-index promises, NumPy/JAX feature-selection allocation checks, propagation of unexpected selection errors without host copies, plus guard-the-guard assertions that the legacy chunk-local call really does differ |
 | `tests/integration/test_chunk_boundary_spikes.py` | 7 | public `predict(n_chunks=5, cache_likelihood=False)` vs `n_chunks=1` for both detector families, the covariate-dependent core path, `is_missing` straddling every boundary, and requested `log_likelihood` from `predict` and from `estimate_parameters` |
 | `tests/integration/test_chunk_boundary_edge_cases.py` | 26 | the same public path over ragged chunk counts (5/6/7 with `n_time % n_chunks != 0`), singleton chunks (`n_chunks == n_time`), spike-free chunks, unsorted spike input, `is_missing`, and preservation of a legitimate `-inf` mask (delta local-position kernel), comparing acausal + causal posteriors, both state-probability sets, evidence and the full `log_likelihood` |
 | `tests/core/test_row_slice_callback.py` | 11 | both chunked drivers: a marked callback receives the full time and tiling global rows, a legacy callback receives the sliced time and no `row_slice` (and yields a different answer), the marker survives bound methods / `partial` / `__wrapped__`, accumulated rows cover every row, and positional dtype compatibility is preserved (two tests require x64) |
@@ -572,6 +572,7 @@ benchmark or a production-arena scaling claim. No golden or tolerance changed.
 
 | Command | Result |
 | --- | --- |
+| `uv run --no-sync pytest -q` after the JAX sorted-index fix | **1588 passed, 6 skipped** in 693.21 s (11:33), including property, integration, EM, snapshot and golden tests. The skips are unchanged from the exception-handling run below. |
 | Exception-handling regressions, before tightening the fallback | **8 failed**: injected `RuntimeError`, `ValueError`, `TypeError` and `MemoryError` were swallowed for both mask and slice selection |
 | Selection and sharding tests after tightening the fallback (`-k 'select_spike_rows or sharded'`) | **18 passed**, including both two-device sharding modes; an isolated compatibility check also confirmed module import and ordinary selection when the private JAX exception type is unavailable |
 | `uv run --no-sync python -m doctest src/non_local_detector/likelihoods/no_spike.py` | All **8 examples passed** after correcting the output shape; the two shape assertions failed before the documentation fix |
@@ -592,6 +593,41 @@ Pre-existing ruff findings in unrelated scripts (2 × `B007` in
 rewrite) were left alone. Runtime-follow-up checks cover the modified Python
 files, including both chunk-likelihood benchmark scripts.
 
+### JAX audit follow-up
+
+The [JAX `segment_sum` contract](https://docs.jax.dev/en/latest/_autosummary/jax.ops.segment_sum.html)
+allows unsorted IDs, but `indices_are_sorted=True` promises that they are sorted.
+The nine clusterless likelihood reductions now make that promise only when the
+selection helper established it. The regression checks inspect actual IDs at the
+JAX call boundary: CPU scatter implementations need not exploit the hint, so
+numerical parity alone would not catch a false promise. Before the fix, **7 of
+16 cases failed** the contract check; after it, **all 16 passed**, including local
+and non-local paths and fitted and zero-rate electrodes. The same **16 passed**
+under `JAX_ENABLE_X64=1`. The full suite passed **1588 tests, with 6 unchanged
+skips**. Ruff check/format and independent code review were clean.
+
+Numerical comparison saved 32 likelihood arrays before and after: four
+clusterless backends × local/non-local × sorted/shuffled × full/requested rows.
+All were **bit-identical** on JAX 0.9.0 CPU. Goldens and tolerances are unchanged.
+
+The surrounding audit verified module-level JIT functions, scan-based HMM
+recurrences, and explicit host copies of requested likelihoods before buffer
+donation. With `jax.log_compiles(True)`, each clusterless backend/path was warmed
+on a seven-row request, then called three more times with changed waveform values
+and alternating row offsets but the same 14 selected spikes per electrode. All
+eight paths logged **zero additional compilations**. JAX feature selection also
+reused its dynamic-slice executable across equal-sized selections at different
+offsets. These checks cover fixed shapes: different selected-spike counts, chunk
+lengths, or block remainders can still compile additional executables.
+
+Host event selection preserves timestamp precision, and SciPy interpolation
+remains outside compiled kernels. Selected JAX features return to the host to
+avoid mixing their input sharding with single-device encoding arrays. The
+explicit-sharding full-input fallback and recording-sized spike-time ordering
+check remain documented limitations. Padding/bucketing or a consistent device
+placement design needs a separate measured change; this audit does not claim
+GPU performance or eliminate those transfers. Only CPU devices were available.
+
 ### Deferred — explicitly NOT implemented here
 
 - **Phase 6a endpoint migration.** The endpoint convention is preserved exactly:
@@ -602,11 +638,9 @@ files, including both chunk-likelihood benchmark scripts.
 - **Phase 7a full-session posterior and incremental outputs.** Unchanged. The
   `T × N` accumulation for an explicitly requested likelihood, the full posterior
   arrays and the recording-sized inputs all remain.
-- **Phase 8 sorted-index contract.** Unsorted decoding spikes still reach
-  `segment_sum(..., indices_are_sorted=True)` through the boolean-mask fallback
-  (pre-existing; the baseline digitized masked spikes in input order too, and on
-  the CPU build tested the results were identical). The per-chunk `O(n_spikes)`
-  ascending check is Phase 8's trigger to establish order once at the model layer.
+- **Phase 8 prepared spike ordering.** The JAX hint is now valid for both sorted
+  and unsorted inputs. The per-chunk `O(n_spikes)` ascending check remains
+  Phase 8's trigger to establish order once at the model layer.
 - **C1 floors and C3b encoding exposure.** Untouched. No floor, background model
   or occupancy guard was added; `LOG_EPS` sentinels, `safe_log`, `EPS` clips,
   legitimate `-inf`s and NaN diagnostics are unchanged.

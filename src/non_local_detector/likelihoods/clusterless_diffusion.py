@@ -624,7 +624,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 log_likelihood += jax.ops.segment_sum(
                     jnp.full((n_decode,), LOG_EPS),
                     seg,
-                    indices_are_sorted=True,
+                    indices_are_sorted=isinstance(spike_indexer, slice),
                     num_segments=n_rows,
                 )
                 continue
@@ -684,7 +684,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 log_likelihood += jax.ops.segment_sum(
                     lc,
                     seg_block,
-                    indices_are_sorted=True,
+                    indices_are_sorted=isinstance(spike_indexer, slice),
                     num_segments=n_rows,
                 )
 
@@ -742,7 +742,7 @@ def predict_clusterless_diffusion_log_likelihood(
             spike_counts = jax.ops.segment_sum(
                 jnp.ones(n_decode),
                 seg,
-                indices_are_sorted=True,
+                indices_are_sorted=isinstance(spike_indexer, slice),
                 num_segments=n_rows,
             )  # (n_rows,)
             log_likelihood += spike_counts[:, None] * LOG_EPS
@@ -802,7 +802,7 @@ def predict_clusterless_diffusion_log_likelihood(
             log_likelihood += jax.ops.segment_sum(
                 log_intensity.T,
                 seg_block,
-                indices_are_sorted=True,
+                indices_are_sorted=isinstance(spike_indexer, slice),
                 num_segments=n_rows,
             )
 
