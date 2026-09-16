@@ -27,6 +27,8 @@ def predict_no_spike_log_likelihood(
     spike_times: list[list[float]],
     no_spike_rate: float = 1e-10,
     row_slice: slice | None = None,
+    *,
+    _time_bin_size: float | None = None,
 ) -> jnp.ndarray:
     """Return the log likelihood of low spike rate for each time bin.
 
@@ -50,6 +52,10 @@ def predict_no_spike_log_likelihood(
         ``time`` always stays the FULL decoding timeline: the bin duration and
         the spike-to-row assignment are both taken from it, so the result equals
         the full-time result sliced by ``row_slice``.
+    _time_bin_size : float | None, optional
+        Internal precomputed ``np.median(np.diff(time))`` for this full timeline.
+        Detector predictions prepare it once and reuse it across chunks. Direct
+        callers can omit it; the same full-timeline value is computed here.
 
     Returns
     -------
@@ -88,7 +94,9 @@ def predict_no_spike_log_likelihood(
     """
     # Bin duration comes from the full timeline so a row request cannot change
     # the rate scaling.
-    no_spike_rates = no_spike_rate * np.median(np.diff(time))
+    if _time_bin_size is None:
+        _time_bin_size = np.median(np.diff(time))
+    no_spike_rates = no_spike_rate * _time_bin_size
     row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
     no_spike_log_likelihood = jnp.zeros((row_stop - row_start,))
 

@@ -365,7 +365,12 @@ def select_spikes_in_rows(
         indexer = in_rows
         selected = spike_times[in_rows]
 
-    return indexer, np.digitize(selected, time[1:-1]) - row_start
+    # Selection above establishes global ownership. Only boundaries inside the
+    # requested rows are needed to get the local row index; passing time[1:-1]
+    # would make digitize's monotonicity check scan the entire recording for
+    # every unit and every chunk. Exclude time[-1] to preserve the final empty row.
+    boundaries = time[row_start + 1 : min(row_stop, n_time - 1)]
+    return indexer, np.digitize(selected, boundaries)
 
 
 @jax.jit

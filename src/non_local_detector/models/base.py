@@ -3,6 +3,7 @@ import copy
 import inspect
 import pickle
 import warnings
+from functools import partial
 from logging import getLogger
 
 import jax
@@ -1746,6 +1747,22 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             else self.discrete_state_transitions_
         )
 
+        log_likelihood_func = self.compute_log_likelihood
+        if (
+            log_likelihoods is None
+            and any(obs.is_no_spike for obs in self.observation_models)
+            and "_no_spike_time_bin_size"
+            in inspect.signature(log_likelihood_func).parameters
+        ):
+            # The full-timeline median is O(n_time), so compute it once per
+            # prediction, not per chunk. Keep it in this call's callback rather
+            # than on the detector: a later prediction may use different times.
+            # Custom overrides with the older signature remain supported.
+            log_likelihood_func = partial(
+                log_likelihood_func,
+                _no_spike_time_bin_size=np.median(np.diff(time)),
+            )
+
         # Collect degenerate (all-impossible) timestep indices during the
         # forward pass. This is reliable regardless of n_chunks/caching,
         # unlike the returned log-likelihoods (which are None when uncached,
@@ -1761,7 +1778,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     self.continuous_state_transitions_[cross_is_track_interior]
                     * discrete_transitions[np.ix_(state_ind, state_ind)]
                 ),
-                log_likelihood_func=self.compute_log_likelihood,
+                log_likelihood_func=log_likelihood_func,
                 log_likelihood_args=log_likelihood_args,
                 is_missing=is_missing,
                 n_chunks=n_chunks,
@@ -1779,7 +1796,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 continuous_transition_matrix=self.continuous_state_transitions_[
                     cross_is_track_interior
                 ],
-                log_likelihood_func=self.compute_log_likelihood,
+                log_likelihood_func=log_likelihood_func,
                 log_likelihood_args=log_likelihood_args,
                 is_missing=is_missing,
                 n_chunks=n_chunks,
@@ -3126,6 +3143,8 @@ class ClusterlessDetector(_DetectorBase):
         spike_waveform_features: list[np.ndarray],
         is_missing: np.ndarray | None = None,
         row_slice: slice | None = None,
+        *,
+        _no_spike_time_bin_size: float | None = None,
     ) -> jnp.ndarray:
         """
         Compute the log likelihood for the given data.
@@ -3181,6 +3200,9 @@ class ClusterlessDetector(_DetectorBase):
             so a decoding spike is owned by its global row no matter how the
             rows were chunked, and the result equals the full-time likelihood
             sliced by ``row_slice``.
+        _no_spike_time_bin_size : float | None, optional
+            Internal full-timeline median time step, prepared once by ``_predict``
+            and reused for No-Spike in every chunk. None computes it on demand.
 
         Returns
         -------
@@ -3249,7 +3271,11 @@ class ClusterlessDetector(_DetectorBase):
 
             if obs.is_no_spike:
                 likelihood_results[state_id] = predict_no_spike_log_likelihood(
-                    time, spike_times, self.no_spike_rate, row_slice=row_slice
+                    time,
+                    spike_times,
+                    self.no_spike_rate,
+                    row_slice=row_slice,
+                    _time_bin_size=_no_spike_time_bin_size,
                 )
             elif likelihood_name not in computed_likelihoods:
                 likelihood_results[state_id] = likelihood_func(
@@ -4132,6 +4158,8 @@ class SortedSpikesDetector(_DetectorBase):
         spike_times: list[np.ndarray],
         is_missing: np.ndarray | None = None,
         row_slice: slice | None = None,
+        *,
+        _no_spike_time_bin_size: float | None = None,
     ) -> jnp.ndarray:
         """
         Compute the log likelihood for the given data.
@@ -4185,6 +4213,9 @@ class SortedSpikesDetector(_DetectorBase):
             so a decoding spike is owned by its global row no matter how the
             rows were chunked, and the result equals the full-time likelihood
             sliced by ``row_slice``.
+        _no_spike_time_bin_size : float | None, optional
+            Internal full-timeline median time step, prepared once by ``_predict``
+            and reused for No-Spike in every chunk. None computes it on demand.
 
         Returns
         -------
@@ -4254,7 +4285,11 @@ class SortedSpikesDetector(_DetectorBase):
 
             if obs.is_no_spike:
                 likelihood_results[state_id] = predict_no_spike_log_likelihood(
-                    time, spike_times, self.no_spike_rate, row_slice=row_slice
+                    time,
+                    spike_times,
+                    self.no_spike_rate,
+                    row_slice=row_slice,
+                    _time_bin_size=_no_spike_time_bin_size,
                 )
             elif likelihood_name not in computed_likelihoods:
                 likelihood_results[state_id] = likelihood_func(
