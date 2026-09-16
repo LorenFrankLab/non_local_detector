@@ -60,6 +60,7 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import os
 import platform
 import sys
 import threading
@@ -67,17 +68,42 @@ import time as timer
 import tracemalloc
 from dataclasses import asdict, dataclass, field
 
-import jax
-import jax.numpy as jnp
-import numpy as np
-import psutil
 
-from non_local_detector.environment import Environment
-from non_local_detector.likelihoods import (
+def _forced_device_count() -> int:
+    """Honour ``--devices N`` before JAX is imported.
+
+    ``XLA_FLAGS`` is read when jaxlib initializes its platforms, so the flag has
+    to be in the environment before ``import jax`` -- argparse runs far too late.
+    """
+    count = 1
+    argv = sys.argv[1:]
+    for index, token in enumerate(argv):
+        if token == "--devices" and index + 1 < len(argv):
+            count = int(argv[index + 1])
+        elif token.startswith("--devices="):
+            count = int(token.split("=", 1)[1])
+    if count > 1:
+        os.environ["XLA_FLAGS"] = (
+            f"{os.environ.get('XLA_FLAGS', '')} "
+            f"--xla_force_host_platform_device_count={count}"
+        ).strip()
+    return count
+
+
+N_FORCED_DEVICES = _forced_device_count()
+
+# Imported after the XLA flag above is in place, so --devices takes effect.
+import jax  # noqa: E402
+import jax.numpy as jnp  # noqa: E402
+import numpy as np  # noqa: E402
+import psutil  # noqa: E402
+
+from non_local_detector.environment import Environment  # noqa: E402
+from non_local_detector.likelihoods import (  # noqa: E402
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
 )
-from non_local_detector.likelihoods.common import (
+from non_local_detector.likelihoods.common import (  # noqa: E402
     resolve_row_slice,
     select_spikes_in_rows,
 )
@@ -117,6 +143,15 @@ QUICK_DURATIONS_S = (60.0, 240.0, 960.0)
 CHUNK_ROWS = (125, 250, 500, 1000, 2000)  # 16x span
 QUICK_CHUNK_ROWS = (125, 500, 2000)
 REFERENCE_CHUNK_ROWS = 500
+
+# Spike sweep: total decoding spikes x64 while the REQUEST is held fixed (same
+# rows, same selected spikes). Extra spikes land only outside the requested
+# rows, so anything that grows here is paid per chunk for spikes the call never
+# evaluates -- i.e. a full-array conversion that precedes the selection.
+SPIKE_SWEEP_EXTRA_PER_UNIT = (250, 1_000, 4_000, 16_000)
+QUICK_SPIKE_SWEEP_EXTRA_PER_UNIT = (250, 16_000)
+SPIKE_SWEEP_DURATION_S = 960.0
+SPIKE_SWEEP_ROWS = 500
 
 
 # =============================================================================
@@ -315,6 +350,104 @@ def make_recording(duration_s: float, seed: int = 0) -> Recording:
     )
 
 
+def make_spike_sweep_recording(
+    n_extra_per_unit: int, duration_s: float = SPIKE_SWEEP_DURATION_S, seed: int = 0
+) -> Recording:
+    """A recording whose FIRST ``SPIKE_SWEEP_ROWS`` rows hold a fixed spike set.
+
+    Every extra spike is placed after those rows, so the row request at the
+    start of the timeline selects the same spikes at every sweep point while the
+    recording's total grows. Anything that then grows with the total is being
+    paid for spikes the call never evaluates.
+    """
+    rng = np.random.default_rng(seed)
+    position_time, position = make_position(duration_s, seed)
+    n_time = int(round(duration_s * SAMPLING_FREQUENCY)) + 1
+    time = np.linspace(0.0, duration_s, n_time)
+
+    requested_end = time[SPIKE_SWEEP_ROWS]
+    spike_times = []
+    features = []
+    for unit in range(N_UNITS):
+        # Fixed content inside the request: one spike per 10 rows, offset per unit.
+        inside = time[5 + unit : SPIKE_SWEEP_ROWS - 1 : 10] + 1e-4
+        outside = np.sort(rng.uniform(requested_end, time[-1], n_extra_per_unit))
+        unit_times = np.concatenate([inside, outside])
+        spike_times.append(unit_times)
+        # float64 features on purpose: numpy's default, what most feature
+        # pipelines hand in -- and the case where converting the array actually
+        # costs something. On the CPU backend ``jnp.asarray`` of a float32 array
+        # is zero-copy, so a full-array conversion of float32 features allocates
+        # nothing measurable and would hide the scaling this sweep is for.
+        features.append(make_marks(len(unit_times), rng).astype(np.float64))
+
+    return Recording(
+        duration_s=duration_s,
+        time=time,
+        position_time=position_time,
+        position=position,
+        spike_times=spike_times,
+        spike_waveform_features=features,
+    )
+
+
+def as_device_inputs(recording: Recording, n_devices: int) -> Recording:
+    """Return ``recording`` with decoding spikes/features as ``jax.Array``.
+
+    With more than one device the arrays are sharded over their leading (spike)
+    axis under an ``Auto``-typed mesh, which is the configuration a user hits
+    when they hand in device arrays: ``np.asarray`` of such an array gathers it
+    AND caches the host copy on the array object, so a per-chunk full-array
+    conversion is retained for the lifetime of the input.
+    """
+    from jax.sharding import NamedSharding
+    from jax.sharding import PartitionSpec as P
+
+    mesh = None
+    if n_devices > 1:
+        mesh = jax.make_mesh(
+            (n_devices,), ("spike",), axis_types=(jax.sharding.AxisType.Auto,)
+        )
+
+    def convert(array: np.ndarray) -> jnp.ndarray:
+        if mesh is None:
+            return jnp.asarray(array)
+        # An even sharding needs the spike axis divisible by the device count.
+        # Repeat the LAST spike as padding: it sits at the end of the recording,
+        # far outside the requested rows, so the selection is untouched and the
+        # times stay sorted.
+        remainder = array.shape[0] % n_devices
+        if remainder:
+            pad = np.repeat(array[-1:], n_devices - remainder, axis=0)
+            array = np.concatenate([array, pad], axis=0)
+        device_array = jnp.asarray(array)
+        spec = P("spike") if device_array.ndim == 1 else P("spike", None)
+        return jax.device_put(device_array, NamedSharding(mesh, spec))
+
+    return Recording(
+        duration_s=recording.duration_s,
+        time=recording.time,
+        position_time=recording.position_time,
+        position=recording.position,
+        spike_times=[convert(t) for t in recording.spike_times],
+        spike_waveform_features=[convert(f) for f in recording.spike_waveform_features],
+    )
+
+
+def host_value_cached(recording: Recording) -> bool:
+    """Whether any decoding FEATURE array has had its host value materialized.
+
+    ``jax.Array._npy_value`` is set the first time anything calls ``np.asarray``
+    on the array and kept for its lifetime, so it is an exact proxy for "a chunk
+    call copied the whole recording to the host". Spike times are exempt:
+    ``select_spikes_in_rows`` reads all of them by construction.
+    """
+    return any(
+        getattr(features, "_npy_value", None) is not None
+        for features in recording.spike_waveform_features
+    )
+
+
 def make_encoding_data(seed: int = 1):
     """Fit-time data: fixed for every sweep point so the model never changes."""
     rng = np.random.default_rng(seed)
@@ -353,7 +486,9 @@ class FittedBackend:
     encoding_bytes: int = 0
     n_position_bins: int = 0
 
-    def call(self, recording: Recording, row_slice: slice | None):
+    def call(
+        self, recording: Recording, row_slice: slice | None, is_local: bool = False
+    ):
         args = [recording.position_time, recording.position, recording.spike_times]
         if self.is_clusterless:
             args.append(recording.spike_waveform_features)
@@ -361,7 +496,7 @@ class FittedBackend:
             recording.time,
             *args,
             **self.encoding_model,
-            is_local=False,
+            is_local=is_local,
             row_slice=row_slice,
         )
 
@@ -450,6 +585,7 @@ class ChunkMeasurement:
     """One measured chunk call."""
 
     backend: str
+    is_local: bool
     duration_s: float
     n_time: int
     n_total_spikes: int
@@ -469,16 +605,25 @@ class ChunkMeasurement:
 
 
 def measure_chunk(
-    backend: FittedBackend, recording: Recording, n_rows: int
+    backend: FittedBackend,
+    recording: Recording,
+    n_rows: int,
+    row_start: int | None = None,
+    is_local: bool = False,
 ) -> ChunkMeasurement:
-    """Measure one row-aware call for a chunk in the middle of the recording."""
-    row_start = (recording.n_time - n_rows) // 2
+    """Measure one row-aware call for one chunk of the recording.
+
+    The chunk sits in the middle unless ``row_start`` says otherwise (the spike
+    sweep pins it to the start, where its selected spikes are held fixed).
+    """
+    if row_start is None:
+        row_start = (recording.n_time - n_rows) // 2
     row_slice = slice(row_start, row_start + n_rows)
     sizes = selection_sizes(backend, recording, row_slice)
 
     # Warm up: compile for these shapes and let any one-off caches fill, so the
     # measured call is steady-state rather than a compilation.
-    warm = backend.call(recording, row_slice)
+    warm = backend.call(recording, row_slice, is_local=is_local)
     warm = np.asarray(jax.block_until_ready(warm))
     del warm
     gc.collect()
@@ -487,7 +632,9 @@ def measure_chunk(
     tracemalloc.start()
     with RSSPeakSampler() as rss:
         start = timer.perf_counter()
-        result = jax.block_until_ready(backend.call(recording, row_slice))
+        result = jax.block_until_ready(
+            backend.call(recording, row_slice, is_local=is_local)
+        )
         elapsed = timer.perf_counter() - start
     _, tm_peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
@@ -505,6 +652,7 @@ def measure_chunk(
     n_bins = output.shape[1]
     return ChunkMeasurement(
         backend=backend.name,
+        is_local=is_local,
         duration_s=recording.duration_s,
         n_time=recording.n_time,
         n_total_spikes=recording.n_spikes,
@@ -633,6 +781,40 @@ DURATION_COLUMNS = [
 ]
 
 
+def spike_sweep_rows(measurements: list[ChunkMeasurement]) -> list[dict]:
+    return [
+        {
+            "backend": m.backend,
+            "is_local": str(m.is_local),
+            "total_spikes": f"{m.n_total_spikes:,}",
+            "rows": m.n_rows,
+            "selected": m.n_selected_spikes,
+            "feat_sel": fmt_bytes(m.selected_feature_bytes),
+            "feat_all": fmt_bytes(m.recording_input_bytes["spike_waveform_features"]),
+            "out": f"{m.output_shape} = {fmt_bytes(m.output_bytes)}",
+            "tm_peak": fmt_bytes(m.tracemalloc_peak_bytes),
+            "live_delta": fmt_bytes(m.live_array_delta_bytes),
+            "secs": f"{m.seconds:.3f}",
+        }
+        for m in measurements
+    ]
+
+
+SPIKE_COLUMNS = [
+    ("backend", "backend"),
+    ("is_local", "is_local"),
+    ("total spikes", "total_spikes"),
+    ("chunk rows", "rows"),
+    ("selected spikes", "selected"),
+    ("selected features", "feat_sel"),
+    ("all features (input)", "feat_all"),
+    ("output", "out"),
+    ("tracemalloc peak", "tm_peak"),
+    ("live-array delta", "live_delta"),
+    ("s", "secs"),
+]
+
+
 def report_memory_budget(backends: list[FittedBackend], recording: Recording) -> None:
     """The three budgets the brief asks to keep apart."""
     print("\n### Memory budget, kept separate\n")
@@ -654,10 +836,27 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backends", nargs="+", default=DEFAULT_BACKENDS)
     parser.add_argument(
-        "--sweep", choices=("duration", "chunk", "xla", "all"), default="all"
+        "--sweep",
+        choices=("duration", "chunk", "spikes", "xla", "all"),
+        default="all",
     )
     parser.add_argument(
         "--quick", action="store_true", help="fewer sweep points (smoke test)"
+    )
+    parser.add_argument(
+        "--features-as",
+        choices=("numpy", "jax"),
+        default="numpy",
+        help="type of the decoding spike/feature arrays handed to the backends",
+    )
+    parser.add_argument(
+        "--devices",
+        type=int,
+        default=1,
+        help=(
+            "force this many CPU devices and shard jax inputs over them "
+            "(applies to --features-as jax; read before jax is imported)"
+        ),
     )
     parser.add_argument("--json", type=str, default=None, help="write raw results here")
     args = parser.parse_args(argv)
@@ -716,6 +915,62 @@ def main(argv: list[str] | None = None) -> int:
             duration_sweep_rows(measurements),
             DURATION_COLUMNS,
         )
+
+    if args.sweep in ("spikes", "all"):
+        extras = (
+            QUICK_SPIKE_SWEEP_EXTRA_PER_UNIT
+            if args.quick
+            else SPIKE_SWEEP_EXTRA_PER_UNIT
+        )
+        recordings = {n: make_spike_sweep_recording(n) for n in extras}
+        measurements = []
+        selected_counts = set()
+        cached_after = {}
+        for backend in backends:
+            for is_local in (False, True):
+                for n_extra in extras:
+                    recording = recordings[n_extra]
+                    if args.features_as == "jax":
+                        # Fresh device arrays per measurement: the cached host
+                        # value is per-array and per-lifetime.
+                        recording = as_device_inputs(recording, args.devices)
+                    measurement = measure_chunk(
+                        backend,
+                        recording,
+                        SPIKE_SWEEP_ROWS,
+                        row_start=0,
+                        is_local=is_local,
+                    )
+                    if args.features_as == "jax":
+                        cached_after[(backend.name, is_local, n_extra)] = (
+                            host_value_cached(recording)
+                        )
+                    selected_counts.add(measurement.n_selected_spikes)
+                    measurements.append(measurement)
+        # The premise of this sweep: the request selects the same spikes at
+        # every point, so only the recording's total changed.
+        assert len(selected_counts) == 1, selected_counts
+        results["spike_sweep"] = [asdict(m) for m in measurements]
+        print_table(
+            f"D. Total decoding spikes x{extras[-1] / extras[0]:.0f}, request fixed "
+            f"at rows [0:{SPIKE_SWEEP_ROWS}] ({selected_counts.pop()} selected "
+            f"spikes), inputs as {args.features_as} on {args.devices} device(s)",
+            spike_sweep_rows(measurements),
+            SPIKE_COLUMNS,
+        )
+        if cached_after:
+            results["host_value_cached"] = {
+                "|".join(map(str, key)): value for key, value in cached_after.items()
+            }
+            print(
+                "\nDecoding-feature host value cached after the call "
+                "(True = the whole recording was materialized on the host and "
+                "retained on the input array):\n"
+            )
+            print("| backend | is_local | extra spikes/unit | features_host_cached |")
+            print("| --- | --- | --- | --- |")
+            for (name, is_local, n_extra), value in cached_after.items():
+                print(f"| {name} | {is_local} | {n_extra:,} | {value} |")
 
     if args.sweep in ("xla", "all"):
         rows = xla_memory_analysis(

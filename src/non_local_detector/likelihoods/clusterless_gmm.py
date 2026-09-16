@@ -27,6 +27,7 @@ from non_local_detector.likelihoods.common import (
     interpolate_weights_at_spike_times,
     resolve_row_slice,
     safe_log,
+    select_spike_rows,
     select_spikes_in_rows,
     validate_population_lengths,
     validate_weights,
@@ -743,7 +744,7 @@ def predict_clusterless_gmm_log_likelihood(
         spike_indexer, seg_ids = select_spikes_in_rows(
             elect_times, time, row_start, row_stop
         )
-        elect_feats = _as_jnp(elect_feats[spike_indexer])
+        elect_feats = _as_jnp(select_spike_rows(elect_feats, spike_indexer))
 
         # Process spikes in blocks to reduce peak memory
         # Memory: O(spike_block_size × n_bins) instead of O(n_spikes × n_bins)
@@ -862,9 +863,17 @@ def compute_local_log_likelihood(
     log_likelihood : jnp.ndarray, shape (n_rows, 1)
         Log likelihood at the animal's position for each requested time bin.
     """
-    # NOTE: Keep position_time as numpy to avoid float64→float32 precision loss
+    # NOTE: Keep position_time and position as numpy to avoid float64→float32
+    # precision loss. Every consumer below is host-side (``get_position_at_time``
+    # interpolates with scipy), so converting the recording-length position to a
+    # device array would copy the whole recording on every chunk call for an
+    # array this path never evaluates on device. The working dtype comes from a
+    # one-sample probe instead, which is the dtype a full conversion would have
+    # produced (JAX canonicalizes float64 to float32 unless x64 is enabled).
     position_time = np.asarray(position_time)
-    position = _as_jnp(position if position.ndim > 1 else position[:, None])
+    position = np.asarray(position)
+    position = position if position.ndim > 1 else position[:, None]
+    working_dtype = _as_jnp(position[:1]).dtype
 
     row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
     n_rows = row_stop - row_start
@@ -872,14 +881,14 @@ def compute_local_log_likelihood(
     # Interpolate position at the requested rows' bin times (use bin centers)
 
     interp_pos = get_position_at_time(
-        position_time, np.asarray(position), time[row_start:row_stop], environment
+        position_time, position, time[row_start:row_stop], environment
     )  # (n_rows, pos_dims)
 
     # Occupancy density and its log at the animal's position
     log_occ_at_pos = _gmm_logp(occupancy_model, interp_pos)  # (n_rows,)
 
-    log_likelihood = jnp.zeros((n_rows,), dtype=position.dtype)
-    summed_expected_counts = jnp.zeros((n_rows,), dtype=position.dtype)
+    log_likelihood = jnp.zeros((n_rows,), dtype=working_dtype)
+    summed_expected_counts = jnp.zeros((n_rows,), dtype=working_dtype)
 
     for elect_feats, elect_times, joint_gmm, gpi_gmm, mean_rate in tqdm(
         zip(
@@ -906,19 +915,20 @@ def compute_local_log_likelihood(
                 log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin
             continue
 
-        elect_feats = _as_jnp(elect_feats)
-
-        # Select the spikes owned by the requested rows and bin them locally
+        # Select the spikes owned by the requested rows and bin them locally.
+        # Select on the host FIRST, then convert: converting the whole array
+        # would device-copy every decoding spike in the recording on every chunk
+        # call (the non-local branch above does the same).
         spike_indexer, seg_ids = select_spikes_in_rows(
             elect_times, time, row_start, row_stop
         )
-        elect_times = np.asarray(elect_times)[spike_indexer]
-        elect_feats = elect_feats[spike_indexer]
+        elect_times = np.asarray(select_spike_rows(elect_times, spike_indexer))
+        elect_feats = _as_jnp(select_spike_rows(elect_feats, spike_indexer))
 
         # Spike contributions at their true positions
         if elect_times.shape[0] > 0:
             pos_at_spike_time = get_position_at_time(
-                position_time, np.asarray(position), elect_times, environment
+                position_time, position, elect_times, environment
             )  # (n_spikes, pos_dims)
             eval_points = jnp.concatenate(
                 [pos_at_spike_time, elect_feats], axis=1

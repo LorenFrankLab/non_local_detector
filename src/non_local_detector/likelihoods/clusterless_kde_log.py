@@ -16,6 +16,7 @@ from non_local_detector.likelihoods.common import (
     log_gaussian_pdf,
     resolve_row_slice,
     safe_log,
+    select_spike_rows,
     select_spikes_in_rows,
     validate_finite,
     validate_weights,
@@ -1691,8 +1692,8 @@ def predict_clusterless_kde_log_likelihood(
             spike_indexer, spike_bin_ind = select_spikes_in_rows(
                 electrode_spike_times, time, row_start, row_stop
             )
-            electrode_decoding_spike_waveform_features = (
-                electrode_decoding_spike_waveform_features[spike_indexer]
+            electrode_decoding_spike_waveform_features = select_spike_rows(
+                electrode_decoding_spike_waveform_features, spike_indexer
             )
             # Compute position kernel in log-space to prevent underflow
             # (Skip if using streaming mode - computed on-the-fly)
@@ -1833,7 +1834,10 @@ def compute_local_log_likelihood(
         spike_selections, spike_times, strict=True
     ):
         position_at_spike_time = get_position_at_time(
-            position_time, position, electrode_spike_times[spike_indexer], environment
+            position_time,
+            position,
+            np.asarray(select_spike_rows(electrode_spike_times, spike_indexer)),
+            environment,
         )
         all_spike_positions.append(position_at_spike_time)
         all_spike_position_offsets.append(
@@ -1876,8 +1880,8 @@ def compute_local_log_likelihood(
         )
     ):
         spike_indexer, spike_bin_ind = spike_selections[electrode_idx]
-        electrode_decoding_spike_waveform_features = (
-            electrode_decoding_spike_waveform_features[spike_indexer]
+        electrode_decoding_spike_waveform_features = select_spike_rows(
+            electrode_decoding_spike_waveform_features, spike_indexer
         )
 
         # Get pre-computed position and occupancy for this electrode

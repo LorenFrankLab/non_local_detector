@@ -68,6 +68,7 @@ from non_local_detector.likelihoods.common import (
     interpolate_weights_at_spike_times,
     resolve_row_slice,
     safe_log,
+    select_spike_rows,
     select_spikes_in_rows,
     validate_finite,
     validate_weights,
@@ -599,11 +600,18 @@ def predict_clusterless_diffusion_log_likelihood(
             spike_indexer, spike_bin_ind = select_spikes_in_rows(
                 electrode_spike_times, time, row_start, row_stop
             )
-            electrode_spike_times = np.asarray(electrode_spike_times)[spike_indexer]
+            electrode_spike_times = np.asarray(
+                select_spike_rows(electrode_spike_times, spike_indexer)
+            )
             # Validate only the in-window decode features that actually enter the
             # likelihood (mirrors fit's post-clip validation); an out-of-window
             # spike's feature must not raise.
-            decode_features = jnp.asarray(electrode_decode_features)[spike_indexer]
+            # Select FIRST, convert after: converting the whole array would
+            # cost every decoding spike in the recording on every chunk call
+            # (and, for a jax.Array input, retain that host copy on the array).
+            decode_features = jnp.asarray(
+                select_spike_rows(electrode_decode_features, spike_indexer)
+            )
             validate_finite(decode_features, "spike_waveform_features")
             n_decode = electrode_spike_times.shape[0]
             if n_decode == 0:
@@ -715,7 +723,10 @@ def predict_clusterless_diffusion_log_likelihood(
         # Validate only the in-window decode features that actually enter the
         # likelihood (mirrors fit's post-clip validation); an out-of-window spike's
         # feature must not raise.
-        decode_features = jnp.asarray(electrode_decode_features)[spike_indexer]
+        # Select FIRST, convert after (see the local branch above).
+        decode_features = jnp.asarray(
+            select_spike_rows(electrode_decode_features, spike_indexer)
+        )
         validate_finite(decode_features, "spike_waveform_features")
         n_decode = decode_features.shape[0]
         if n_decode == 0:

@@ -679,6 +679,94 @@ class KDEModel:
         return block_log_kde(eval_points, self.samples_, std, block_size, self.weights_)
 
 
+def select_spike_rows(
+    array: "np.ndarray | jnp.ndarray", indexer: "slice | np.ndarray"
+) -> np.ndarray:
+    """Take the rows an indexer names without materializing the whole array.
+
+    ``select_spikes_in_rows`` returns one indexer per unit/electrode, applied to
+    the spike times and to the per-spike waveform features. Those arrays are
+    recording-length; the selection is one chunk's worth. Converting the array
+    before selecting therefore pays for the whole recording on every chunk call.
+    For a ``jax.Array`` it is worse than a copy: ``np.asarray`` gathers the array
+    to the host **and caches that host copy on the array object**
+    (``jax.Array._npy_value``), so the memory is retained for as long as the
+    caller holds its inputs.
+
+    Indexing on device avoids both. It is not always available: under a mesh with
+    ``AxisType.Explicit`` axes JAX refuses a gather whose output sharding it
+    cannot infer, so that case falls back to gather-then-slice — the behaviour
+    every backend had before, correct but paying the host copy.
+
+    Parameters
+    ----------
+    array : np.ndarray or jnp.ndarray, shape (n_spikes, ...)
+        Per-spike array for one unit/electrode.
+    indexer : slice or np.ndarray
+        The indexer from ``select_spikes_in_rows`` (a ``slice`` for ascending
+        spike times, otherwise a boolean mask).
+
+    Returns
+    -------
+    selected : np.ndarray, shape (n_selected, ...)
+        The selected rows, always on the host. A selection that kept a sharded
+        input's sharding would carry it into the jitted kernels downstream, which
+        also take single-device encoding-model arrays -- JAX rejects that mix.
+        The selection is request-sized, so this costs the chunk, not the
+        recording; consumers that want a device array convert it themselves.
+
+    Raises
+    ------
+    ValidationError
+        If the indexer does not address this array: a boolean mask of a different
+        length, or a slice reaching past the end. ``jnp.take`` would otherwise
+        silently NaN-fill out-of-range rows (its default ``mode='fill'``), where
+        NumPy raises -- a silent-NaN path into the likelihood.
+    """
+    n_rows = array.shape[0]
+    if isinstance(indexer, slice):
+        stop = indexer.stop
+        if stop is not None and stop > n_rows:
+            raise ValidationError(
+                "spike selection reaches past the end of a per-spike array",
+                expected=f"at least {stop} rows",
+                got=f"{n_rows} rows",
+                hint="Spike times and waveform features must be paired row for row.",
+            )
+    elif indexer.shape[0] != n_rows:
+        raise ValidationError(
+            "spike selection does not match the length of a per-spike array",
+            expected=f"{indexer.shape[0]} rows (one per spike time)",
+            got=f"{n_rows} rows",
+            hint="Spike times and waveform features must be paired row for row.",
+        )
+
+    if not isinstance(array, jax.Array):
+        return array[indexer]
+
+    try:
+        if isinstance(indexer, slice):
+            selected = array[indexer]
+        else:
+            # A boolean mask becomes a gather of integer positions: ``take`` is
+            # shardable, while boolean indexing needs the mask's popcount and
+            # would force a host sync. The length check above is what keeps
+            # ``take``'s default ``mode='fill'`` from turning a mismatch into
+            # NaN rows.
+            selected = jnp.take(array, jnp.asarray(np.flatnonzero(indexer)), axis=0)
+    except Exception:
+        # jax raises a private ShardingTypeError (jax._src.core, no public base
+        # class in jax 0.9) when the operand is explicitly sharded and the output
+        # sharding is ambiguous. Gathering first always works and is what this
+        # code did before; it just costs the host copy this function avoids.
+        return np.asarray(array)[indexer]
+
+    # See Returns: the selection comes back on the host so the jitted kernels
+    # downstream all see one device ("Received incompatible devices for jitted
+    # computation" otherwise).
+    return np.asarray(selected)
+
+
 def get_spikecount_per_time_bin(
     spike_times: np.ndarray,
     time: np.ndarray,

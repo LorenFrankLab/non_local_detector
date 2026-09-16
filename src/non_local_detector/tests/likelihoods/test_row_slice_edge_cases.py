@@ -19,6 +19,12 @@ spike is in range iff ``time[0] <= t <= time[-1]``, it lands in row
 row ``n_time - 2`` and the final row of a multi-row timeline is always empty.
 """
 
+import subprocess
+import sys
+import tracemalloc
+from pathlib import Path
+
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -31,6 +37,7 @@ from non_local_detector.likelihoods import (
 from non_local_detector.likelihoods.common import (
     get_spikecount_per_time_bin,
     resolve_row_slice,
+    select_spike_rows,
     select_spikes_in_rows,
 )
 from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
@@ -749,3 +756,361 @@ def test_no_spike_model_edge_cases(edge_case_data, case):
             ]
         )
         np.testing.assert_allclose(tiled, full, **EXACT)
+
+
+# ---------------------------------------------------------------------------
+# Allocation: a fixed row request must not scale with TOTAL decoding spikes
+# ---------------------------------------------------------------------------
+
+# The row request below always selects the same two decoding spikes; everything
+# else is added far outside the requested rows. A backend that converts the
+# whole waveform array (or the whole spike-time array) before selecting pays for
+# every spike in the recording on every chunk call, which is what this pins.
+ALLOC_N_TIME = 200
+ALLOC_ROWS = slice(0, 5)
+ALLOC_N_FEATURES = 4
+ALLOC_SPIKE_COUNTS = (200, 6400)
+# Threshold: a quarter of one float32 copy of the largest feature array. A
+# backend that converts the full array allocates ~one such copy per call (the
+# measured pre-fix growth was 77-90 KiB of a 100 KiB float32 copy); a backend
+# that selects first allocates a fixed few KiB regardless of the total. A
+# quarter therefore sits an order of magnitude above the post-fix noise and
+# well below the defect, so it fails loudly without being flaky.
+ALLOC_GROWTH_FRACTION = 0.25
+
+# The local paths also take a recording-length ``position`` array, which they
+# only ever interpolate on the host. Converting it to a device array (e.g. for
+# its dtype) costs one float32 copy of the whole recording per chunk call.
+# ``scipy.interpolate.interpn`` inside ``get_position_at_time`` allocates its own
+# ~1 byte/sample temporary, which is shared by every backend and is not a device
+# buffer, so the bound below is half of one float32 copy: comfortably above that
+# shared floor (~0.24 of a copy) and far below a whole extra copy.
+# Exit codes of _sharded_jax_input_check.py (kept in sync with that module).
+CHECK_EXIT_OK = 0
+CHECK_EXIT_ENVIRONMENT = 2
+
+ALLOC_POSITION_SAMPLES = (2_000, 400_000)
+POSITION_GROWTH_FRACTION = 0.5
+
+
+@pytest.fixture(scope="module")
+def allocation_data():
+    """Encoding data plus decoding sets that differ only OUTSIDE the request."""
+    rng = np.random.default_rng(11)
+    position_time = np.linspace(0.0, 20.0, 2000)
+    position = (50.0 + 40.0 * np.sin(2 * np.pi * position_time / 20.0))[:, None]
+    environment = Environment(
+        environment_name="line",
+        place_bin_size=10.0,
+        position_range=((0.0, 100.0),),
+    ).fit_place_grid(position=position, infer_track_interior=False)
+    time = np.linspace(0.0, 20.0, ALLOC_N_TIME)
+
+    encoding_spike_times = [np.sort(rng.uniform(0.0, 20.0, 300))]
+    encoding_features = [rng.standard_normal((300, ALLOC_N_FEATURES)) * 5.0 + 20.0]
+
+    decoding = {}
+    for n_total in ALLOC_SPIKE_COUNTS:
+        inside = np.array([time[1] + 1e-3, time[3] + 1e-3])
+        outside = np.sort(rng.uniform(time[50], time[-1], n_total))
+        spike_times = np.concatenate([inside, outside])
+        # float64 on purpose (numpy's default, and what most feature pipelines
+        # hand in): on the CPU backend ``jnp.asarray`` of a float32 array is
+        # zero-copy, so a full-array conversion of float32 features allocates
+        # nothing ``tracemalloc`` can see and would silently disarm this test.
+        # Same reason as scripts/benchmark_chunk_likelihood_memory.py's sweep.
+        features = (
+            rng.standard_normal((spike_times.shape[0], ALLOC_N_FEATURES)) * 5.0 + 20.0
+        )
+        decoding[n_total] = ([spike_times], [features])
+
+    # The request must select the same two spikes in every set.
+    for n_total, (spike_times, _) in decoding.items():
+        _, bin_ind = select_spikes_in_rows(spike_times[0], time, 0, 5)
+        assert bin_ind.shape[0] == 2, (n_total, bin_ind)
+
+    return {
+        "position_time": position_time,
+        "position": position,
+        "environment": environment,
+        "time": time,
+        "encoding_spike_times": encoding_spike_times,
+        "encoding_features": encoding_features,
+        "decoding": decoding,
+    }
+
+
+@pytest.fixture(scope="module")
+def allocation_backends(allocation_data):
+    """Fit the clusterless backends whose per-chunk allocation this pins."""
+    fitted = {}
+    for name in sorted(_CLUSTERLESS_ALGORITHMS):
+        fit_func, predict_func = _CLUSTERLESS_ALGORITHMS[name]
+        fitted[name] = (
+            predict_func,
+            fit_func(
+                position_time=allocation_data["position_time"],
+                position=allocation_data["position"],
+                spike_times=allocation_data["encoding_spike_times"],
+                spike_waveform_features=allocation_data["encoding_features"],
+                environment=allocation_data["environment"],
+                **BACKEND_FIT_PARAMS.get(name, {}),
+            ),
+        )
+    return fitted
+
+
+def peak_bytes_for_one_call(predict_func, encoding_model, data, n_total, is_local):
+    """Host peak of ONE row-range call, after a warm-up call to exclude tracing."""
+    spike_times, features = data["decoding"][n_total]
+    call_kwargs = dict(**encoding_model, is_local=is_local, row_slice=ALLOC_ROWS)
+    args = (
+        data["time"],
+        data["position_time"],
+        data["position"],
+        spike_times,
+        features,
+    )
+    predict_func(*args, **call_kwargs)  # warm up: compile/trace once
+    tracemalloc.start()
+    predict_func(*args, **call_kwargs)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    return peak
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("is_local", [False, True])
+@pytest.mark.parametrize("algorithm", ["clusterless_diffusion", "clusterless_gmm"])
+def test_fixed_row_request_does_not_allocate_per_total_spike(
+    allocation_backends, allocation_data, algorithm, is_local
+):
+    """The same row request must cost the same whatever else is in the recording.
+
+    Both backends select their spikes with ``select_spikes_in_rows`` and then
+    evaluate only those. If the waveform features (or spike times) are converted
+    to a device array *before* that selection, the call pays a full-array copy
+    per chunk, so chunked prediction scales with the recording rather than with
+    the request.
+    """
+    predict_func, encoding_model = allocation_backends[algorithm]
+    small, large = ALLOC_SPIKE_COUNTS
+
+    peak_small = peak_bytes_for_one_call(
+        predict_func, encoding_model, allocation_data, small, is_local
+    )
+    peak_large = peak_bytes_for_one_call(
+        predict_func, encoding_model, allocation_data, large, is_local
+    )
+
+    one_float32_copy = (large + 2) * ALLOC_N_FEATURES * 4
+    allowed_growth = ALLOC_GROWTH_FRACTION * one_float32_copy
+    growth = peak_large - peak_small
+    assert growth < allowed_growth, (
+        f"{algorithm} is_local={is_local}: host peak grew {growth / 1024:.1f} KiB "
+        f"when total decoding spikes went {small} -> {large} at a fixed "
+        f"{ALLOC_ROWS} request (allowed {allowed_growth / 1024:.1f} KiB, one "
+        f"float32 copy of the feature array is {one_float32_copy / 1024:.1f} KiB)"
+    )
+
+
+def position_of_length(n_samples: int, duration_s: float = 20.0):
+    """A position record of the requested length over the same time span."""
+    position_time = np.linspace(0.0, duration_s, n_samples)
+    position = (50.0 + 40.0 * np.sin(2 * np.pi * position_time / duration_s))[:, None]
+    return position_time, position
+
+
+def peak_bytes_for_position_length(
+    predict_func, encoding_model, data, n_samples, is_local
+):
+    """Host peak of ONE row-range call with a position record of this length."""
+    spike_times, features = data["decoding"][ALLOC_SPIKE_COUNTS[0]]
+    position_time, position = position_of_length(n_samples)
+    args = (data["time"], position_time, position, spike_times, features)
+    call_kwargs = dict(**encoding_model, is_local=is_local, row_slice=ALLOC_ROWS)
+
+    predict_func(*args, **call_kwargs)  # warm up: compile/trace once
+    tracemalloc.start()
+    predict_func(*args, **call_kwargs)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    return peak
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("algorithm", sorted(_CLUSTERLESS_ALGORITHMS))
+def test_fixed_row_request_does_not_allocate_per_position_sample(
+    allocation_backends, allocation_data, algorithm
+):
+    """A fixed row request must not cost a copy of the whole position record.
+
+    The local paths interpolate position on the host at the requested rows (and
+    at the selected spikes' times), so nothing recording-length should be
+    converted to a device array -- not even to read its dtype.
+    """
+    predict_func, encoding_model = allocation_backends[algorithm]
+    small, large = ALLOC_POSITION_SAMPLES
+
+    peak_small = peak_bytes_for_position_length(
+        predict_func, encoding_model, allocation_data, small, True
+    )
+    peak_large = peak_bytes_for_position_length(
+        predict_func, encoding_model, allocation_data, large, True
+    )
+
+    one_float32_copy = large * 4
+    allowed_growth = POSITION_GROWTH_FRACTION * one_float32_copy
+    growth = peak_large - peak_small
+    assert growth < allowed_growth, (
+        f"{algorithm} is_local=True: host peak grew {growth / 1024:.1f} KiB when "
+        f"the position record went {small:,} -> {large:,} samples at a fixed "
+        f"{ALLOC_ROWS} request (allowed {allowed_growth / 1024:.1f} KiB, one "
+        f"float32 copy of the position record is {one_float32_copy / 1024:.1f} KiB)"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("is_local", [False, True])
+@pytest.mark.parametrize("algorithm", sorted(_CLUSTERLESS_ALGORITHMS))
+def test_row_slice_accepts_jax_array_inputs(
+    allocation_backends, allocation_data, algorithm, is_local
+):
+    """A row request must select the same spikes from ``jax.Array`` inputs.
+
+    Every other test in this module hands the backends NumPy arrays, so the
+    ``jax.Array`` branch of each selection (``features[indexer]`` on a device
+    array, ``np.asarray(times)`` on one) is otherwise untested. The decoding
+    arrays are float32 here so the two input types carry bit-identical values
+    and any difference is the selection, not a dtype truncation.
+    """
+    predict_func, encoding_model = allocation_backends[algorithm]
+    spike_times, features = allocation_data["decoding"][ALLOC_SPIKE_COUNTS[0]]
+    host_times = [np.asarray(t, dtype=np.float32) for t in spike_times]
+    host_features = [np.asarray(f, dtype=np.float32) for f in features]
+    device_times = [jnp.asarray(t) for t in host_times]
+    device_features = [jnp.asarray(f) for f in host_features]
+
+    common = (allocation_data["time"], allocation_data["position_time"])
+    call_kwargs = dict(**encoding_model, is_local=is_local, row_slice=ALLOC_ROWS)
+    from_host = np.asarray(
+        predict_func(
+            *common,
+            allocation_data["position"],
+            host_times,
+            host_features,
+            **call_kwargs,
+        )
+    )
+    from_device = np.asarray(
+        predict_func(
+            *common,
+            allocation_data["position"],
+            device_times,
+            device_features,
+            **call_kwargs,
+        )
+    )
+
+    assert from_device.shape == from_host.shape
+    np.testing.assert_allclose(from_device, from_host, **parity_kwargs(algorithm))
+
+    # ``jax.Array._npy_value`` caches the array's full host value the first time
+    # a conversion has to COPY, and keeps it for the array's lifetime, so it is an
+    # exact proxy for "this call materialized the whole recording-length array on
+    # the host and retained it". On a single CPU device the conversion is a
+    # zero-copy view and the cache is never populated (measured), so this
+    # assertion is a guard -- it bites where the transfer must copy, i.e. a GPU
+    # install -- and NOT the failing-then-passing evidence for the defect. That
+    # evidence is the 2-device subprocess check below, where the gather is real.
+    #
+    # Only the FEATURES are asserted on: ``select_spikes_in_rows`` converts the
+    # whole spike-time array by design (its ascending-order check and
+    # ``searchsorted`` read every element), which is a 1-D 4 B/spike array
+    # against 2-D features, and removing it is Phase 8's sorted-index contract.
+    for array in device_features:
+        if not hasattr(array, "_npy_value"):
+            pytest.skip(
+                "jax.Array has no _npy_value cache in this JAX version, so "
+                "the retained-host-copy proxy is unavailable"
+            )
+        assert array._npy_value is None, (
+            f"{algorithm} is_local={is_local}: the call materialized the whole "
+            f"decoding feature array on the host (its cached host value is set), "
+            f"so a chunk call costs the whole recording instead of the request"
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("axis_type", ["Auto", "Explicit"])
+def test_sharded_jax_inputs_do_not_materialize_the_recording(axis_type):
+    """A chunk call on SHARDED ``jax.Array`` inputs must not gather the inputs.
+
+    Runs in a subprocess because ``XLA_FLAGS`` has to be set before JAX is
+    imported and this process has already imported it. The child checks every
+    clusterless backend and both ``is_local`` values, on both mesh axis types:
+    under ``Auto`` the selection stays on device (nothing recording-length
+    reaches the host); under ``Explicit`` JAX refuses a gather whose output
+    sharding it cannot infer, so the documented fallback gathers first — it must
+    still produce a result rather than raising.
+    """
+    script = Path(__file__).with_name("_sharded_jax_input_check.py")
+    result = subprocess.run(
+        [sys.executable, str(script), "2", axis_type],
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    # The child uses distinct exit codes so an environment that cannot run the
+    # check (fewer than two devices, or any setup error) skips, while a failed
+    # assertion fails. Anything unexpected also fails rather than passing quietly.
+    if result.returncode == CHECK_EXIT_ENVIRONMENT:
+        pytest.skip(f"sharded check cannot run here: {result.stdout.strip()[-300:]}")
+    assert result.returncode == CHECK_EXIT_OK, (
+        f"exit code {result.returncode}\n{result.stdout}\n{result.stderr[-2000:]}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("as_jax", [False, True])
+@pytest.mark.parametrize("indexer_kind", ["mask", "slice"])
+def test_select_spike_rows_rejects_a_mismatched_per_spike_array(as_jax, indexer_kind):
+    """Fewer feature rows than spike times must raise, not NaN-fill.
+
+    ``jnp.take`` defaults to ``mode="fill"``, which returns NaN for an
+    out-of-range row instead of raising the way NumPy does -- a silent-NaN path
+    into the likelihood if a caller's waveform features and spike times ever
+    disagree in length.
+    """
+    features = np.arange(8, dtype=np.float32).reshape(4, 2)
+    if as_jax:
+        features = jnp.asarray(features)
+
+    if indexer_kind == "mask":
+        # A mask sized for six spike times against four feature rows.
+        indexer = np.zeros(6, dtype=bool)
+        indexer[[1, 5]] = True
+    else:
+        indexer = slice(2, 6)
+
+    with pytest.raises(ValidationError, match="per-spike array"):
+        select_spike_rows(features, indexer)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("as_jax", [False, True])
+def test_select_spike_rows_selects_the_named_rows(as_jax):
+    """The helper is a selection, whatever the input type or indexer."""
+    features = np.arange(10, dtype=np.float32).reshape(5, 2)
+    if as_jax:
+        features = jnp.asarray(features)
+
+    mask = np.zeros(5, dtype=bool)
+    mask[[0, 3]] = True
+    np.testing.assert_array_equal(
+        np.asarray(select_spike_rows(features, mask)), [[0.0, 1.0], [6.0, 7.0]]
+    )
+    np.testing.assert_array_equal(
+        np.asarray(select_spike_rows(features, slice(1, 3))), [[2.0, 3.0], [4.0, 5.0]]
+    )
+    assert np.asarray(select_spike_rows(features, slice(2, 2))).shape == (0, 2)

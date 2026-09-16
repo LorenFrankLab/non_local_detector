@@ -16,6 +16,7 @@ from non_local_detector.likelihoods.common import (
     interpolate_weights_at_spike_times,
     resolve_row_slice,
     safe_log,
+    select_spike_rows,
     select_spikes_in_rows,
     validate_finite,
     validate_weights,
@@ -473,8 +474,8 @@ def predict_clusterless_kde_log_likelihood(
             spike_indexer, spike_bin_ind = select_spikes_in_rows(
                 electrode_spike_times, time, row_start, row_stop
             )
-            electrode_decoding_spike_waveform_features = (
-                electrode_decoding_spike_waveform_features[spike_indexer]
+            electrode_decoding_spike_waveform_features = select_spike_rows(
+                electrode_decoding_spike_waveform_features, spike_indexer
             )
             position_distance = kde_distance(
                 interior_place_bin_centers,
@@ -606,9 +607,9 @@ def compute_local_log_likelihood(
         spike_indexer, spike_bin_ind = select_spikes_in_rows(
             electrode_spike_times, time, row_start, row_stop
         )
-        electrode_spike_times = electrode_spike_times[spike_indexer]
-        electrode_decoding_spike_waveform_features = (
-            electrode_decoding_spike_waveform_features[spike_indexer]
+        electrode_spike_times = select_spike_rows(electrode_spike_times, spike_indexer)
+        electrode_decoding_spike_waveform_features = select_spike_rows(
+            electrode_decoding_spike_waveform_features, spike_indexer
         )
 
         position_at_spike_time = get_position_at_time(
