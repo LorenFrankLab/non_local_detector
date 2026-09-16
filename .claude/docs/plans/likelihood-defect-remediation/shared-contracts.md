@@ -244,8 +244,12 @@ Name the three quantities separately and never reuse one array for two roles.
 
 Bin `i` covers `[edges[i], edges[i+1])`, except bin `n_bins - 1` which is
 right-closed so a spike at `edges[-1]` is counted. This is the target contract
-implemented by Phase 6a; Phase 3 preserves the current unchunked convention
-until that migration. Phase 6c's detector guard ships with 6a. Full nonuniform
+implemented by Phase 6a. [Phase 3](phase-3-chunk-boundary.md) has implemented
+global event binning **under the current unchunked convention**: a chunked
+likelihood request now bins every spike against the full decoding timeline and
+returns exactly the rows of the full-time result, but the convention itself is
+untouched — a spike at `time[-1]` still lands in row `n-2` and the final row
+still never owns a spike. Phase 6c's detector guard ships with 6a. Full nonuniform
 likelihood support, including duration scaling, is established by 6b/6d.
 
 ### C3b — Encoding exposure (UNRESOLVED)

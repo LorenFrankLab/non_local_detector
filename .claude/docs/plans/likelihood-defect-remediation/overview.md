@@ -103,8 +103,13 @@ even when working RAM is bounded.
 
 These targets add work to [Phase 7](phase-7-performance.md). They do not reopen
 Phase 0/1 or require architectural work before shipping the remaining correctness
-fixes. [Phase 3](phase-3-chunk-boundary.md) establishes correct likelihood chunks;
-the integration baseline for Phase 7 incorporates the settled likelihood and
+fixes. [Phase 3](phase-3-chunk-boundary.md) has established correct likelihood
+chunks — each requested row range equals the corresponding rows of the full-time
+likelihood, and its measured workspace scales with the requested rows and the
+selected spikes rather than with the recording length — but that bounds the
+likelihood only: the recording-sized inputs, the accumulation of an explicitly
+requested likelihood, and the posteriors above are unchanged.
+The integration baseline for Phase 7 incorporates the settled likelihood and
 time/exposure contracts and relevant Phase 8 fixes. Follow the release dependencies
 in [PLAN.md](PLAN.md#execution-order-and-baselines), rather than numeric order alone.
 
@@ -147,7 +152,7 @@ NaN visibility; later phases preserve those contracts.
 | Fixing float32 cancellation changes well-conditioned results too, via summation order. | Assert invariants (Mahalanobis ≥ 0) plus `rtol=1e-5` parity on well-conditioned fixtures, not bit-exactness. |
 | A phase's acceptance criteria are never run against its own proposed fix. | Reproduce the defect or contract violation, then exercise the phase's prototype and acceptance checks before calling it ready. Performance work also needs a measured baseline. |
 | Small CPU kernels appear fast while full-session decoding exhausts memory. | Use the representative dimensions, account for model/output storage, and measure host/device peaks and end-to-end throughput. |
-| Chunked smoothing resets context or drops spikes at boundaries. | Phase 3 preserves global event ownership; Phase 7a carries both forward and backward boundary messages and tests parity across chunk sizes. |
+| Chunked smoothing resets context or drops spikes at boundaries. | Done for spikes: Phase 3 binds every decoding spike to the row that owns it on the full timeline (row-aware backends receive the full `time` plus a `row_slice`), with chunked-vs-unchunked parity tests on both detector families, both core transition paths, boundary/ragged/singleton/spike-free chunks and missing-data masks. Chunk context is still Phase 7a's: it carries both forward and backward boundary messages and tests parity across chunk sizes. |
 | An apparently exact transition optimization changes boundaries or silently approximates a different movement model. | Phase 7b requires row normalization, forward and backward operator parity, explicit capability checks, and a tested fallback. |
 
 ## Deferred with triggers
