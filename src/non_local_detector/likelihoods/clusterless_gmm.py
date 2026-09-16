@@ -681,10 +681,10 @@ def predict_clusterless_gmm_log_likelihood(
                 hint="Use the same waveform feature representation at fit and predict.",
             )
 
-    # NOTE: Keep position_time as numpy to avoid float64→float32 precision loss
-    position_time = np.asarray(position_time)
-    position = _as_jnp(position if position.ndim > 1 else position[:, None])
-
+    # The position arrays are converted by compute_local_log_likelihood, the only
+    # consumer. Converting here instead would copy the FULL-recording position to
+    # the device on every call -- once per chunk under chunked prediction -- for a
+    # non-local likelihood that never reads it.
     if is_local:
         return compute_local_log_likelihood(
             time=time,

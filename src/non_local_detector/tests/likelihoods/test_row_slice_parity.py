@@ -29,20 +29,37 @@ N_TIME = 41
 ROW_SLICE = slice(13, 29)
 N_PARTITIONS = 5
 
-# Every backend but one is bit-identical between a row range and the full-time
-# result, so exact equality is the regression guard. ``clusterless_kde_log``
-# stabilizes each block with the maximum over the *decoding* spikes in that
-# block, so a row range changes block membership and therefore the rounding of
-# the blocked log-sum; it agrees to float32 accuracy instead.
-EXACT = {"rtol": 0.0, "atol": 0.0}
-PARITY_KWARGS: dict[str, dict[str, float]] = {
-    "clusterless_kde_log": {"rtol": 1e-5, "atol": 1e-5}
-}
+# Tolerances by reduction kind, mirroring test_row_slice_edge_cases.py.
+#
+# The sorted-spikes backends and the no-spike model accumulate integer spike
+# COUNTS per row and only then do float work, so a row range is bit-identical to
+# the corresponding full-time rows.
+#
+# The clusterless backends scatter-add one float32 row per selected spike into
+# the output rows (``jax.ops.segment_sum`` / ``.at[].add``). A row range hands
+# XLA a different number of input rows and a different ``num_segments``, so it
+# may group that reduction differently; ``clusterless_kde_log`` additionally
+# re-blocks its stabilized log-sum over the decoding spikes. Those regroupings
+# are float32 rounding, not a different answer.
+#
+# This fixture puts about one spike in most rows, where the regrouping happens
+# to cancel for everything but ``clusterless_kde_log`` (<= 7.6e-6 absolute on
+# log intensities of order 1e0--1e1). That is fixture luck, not a property:
+# Task 2 measured the same backends at ~2 spikes per row and saw
+# ``clusterless_kde`` 1.5e-5 abs, ``clusterless_gmm`` 2.0 abs on values of order
+# 2e7, ``clusterless_diffusion`` 3.8e-6 abs -- at most 1.2e-7 RELATIVE in every
+# case. So the tolerance follows the reduction kind rather than this fixture's
+# spike density; a real regression (a lost or double-counted spike) moves a log
+# likelihood by O(1) and is caught either way.
+EXACT: dict[str, float] = {"rtol": 0.0, "atol": 0.0}
+FLOAT32_REDUCTION: dict[str, float] = {"rtol": 1e-6, "atol": 1e-5}
 
 
 def parity_kwargs(algorithm: str) -> dict[str, float]:
-    """Tolerance for one backend: exact unless its reduction is re-blocked."""
-    return PARITY_KWARGS.get(algorithm, EXACT)
+    """Tolerance for one backend: exact counts, or float32 reduction rounding."""
+    if algorithm in _SORTED_SPIKES_ALGORITHMS:
+        return EXACT
+    return FLOAT32_REDUCTION
 
 
 @pytest.fixture(scope="module")
