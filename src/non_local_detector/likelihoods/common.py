@@ -326,6 +326,22 @@ class _SpikeTimeOrder:
         return values, ascending
 
 
+@dataclass(frozen=True)
+class SpikeSelection:
+    """Host metadata for spikes belonging to one likelihood row range.
+
+    ``n_spikes`` is the original train length, used to validate paired arrays
+    before slicing. ``indices_are_sorted`` records the verified ordering of
+    ``bin_ind`` independently of how ``indexer`` represents the selection.
+    This object stays outside JIT kernels.
+    """
+
+    indexer: slice | np.ndarray
+    bin_ind: np.ndarray
+    indices_are_sorted: bool
+    n_spikes: int
+
+
 def select_spikes_in_rows(
     spike_times: np.ndarray,
     time: np.ndarray,
@@ -333,7 +349,7 @@ def select_spikes_in_rows(
     row_stop: int,
     *,
     _spike_time_order: _SpikeTimeOrder | None = None,
-) -> tuple[slice | np.ndarray, np.ndarray]:
+) -> SpikeSelection:
     """Select the spikes owned by the global rows ``[row_start, row_stop)``.
 
     Row ownership is the unchunked convention evaluated on the full timeline: a
@@ -364,24 +380,23 @@ def select_spikes_in_rows(
 
     Returns
     -------
-    indexer : slice | np.ndarray
-        Index into ``spike_times`` -- and, by the identical index, into any
-        per-spike array such as waveform features -- selecting the owned spikes
-        in their original order. A ``slice`` when the spike times are verified
-        ascending (or the selection is empty), otherwise a boolean mask. A
-        slice therefore guarantees sorted ``bin_ind`` for JAX's
-        ``indices_are_sorted`` reduction hint; a mask makes no such promise.
-    bin_ind : np.ndarray, shape (n_selected,)
-        Row of each selected spike, LOCAL to the requested range
-        (``global_row - row_start``), for ``num_segments = row_stop - row_start``.
+    selection : SpikeSelection
+        ``indexer`` selects owned spikes in their original order and is applied
+        identically to waveform features by ``select_spike_rows``. ``bin_ind``
+        contains LOCAL row indices (``global_row - row_start``), for
+        ``num_segments = row_stop - row_start``. ``indices_are_sorted`` is the
+        verified JAX reduction hint; callers must use it rather than infer
+        ordering from the indexer's type. ``n_spikes`` records the original
+        length so paired arrays can be validated even for empty requests.
     """
     time = np.asarray(time)
     n_time = time.shape[0]
+    n_spikes = len(spike_times)
     # A length-1 timeline owns t == time[0]; the last row of longer timelines
     # owns no spikes. Such requests need neither a host transfer nor ordering.
     n_owning_rows = max(n_time - 1, 1)
     if row_start >= min(row_stop, n_owning_rows):
-        return slice(0, 0), np.zeros((0,), dtype=int)
+        return SpikeSelection(slice(0, 0), np.zeros((0,), dtype=int), True, n_spikes)
 
     if _spike_time_order is None:
         spike_times = np.asarray(spike_times)
@@ -389,7 +404,7 @@ def select_spikes_in_rows(
     else:
         spike_times, is_ascending = _spike_time_order.get(spike_times)
     if spike_times.size == 0:
-        return slice(0, 0), np.zeros((0,), dtype=int)
+        return SpikeSelection(slice(0, 0), np.zeros((0,), dtype=int), True, n_spikes)
 
     lower = time[row_start]
     # Reaching the last owning row extends the range to time[-1] inclusive,
@@ -420,7 +435,9 @@ def select_spikes_in_rows(
     # would make digitize's monotonicity check scan the entire recording for
     # every unit and every chunk. Exclude time[-1] to preserve the final empty row.
     boundaries = time[row_start + 1 : min(row_stop, n_time - 1)]
-    return indexer, np.digitize(selected, boundaries)
+    return SpikeSelection(
+        indexer, np.digitize(selected, boundaries), is_ascending, n_spikes
+    )
 
 
 @jax.jit
@@ -735,11 +752,11 @@ class KDEModel:
 
 
 def select_spike_rows(
-    array: "np.ndarray | jnp.ndarray", indexer: "slice | np.ndarray"
+    array: "np.ndarray | jnp.ndarray", selection: SpikeSelection
 ) -> np.ndarray:
     """Take the rows an indexer names without materializing the whole array.
 
-    ``select_spikes_in_rows`` returns one indexer per unit/electrode, applied to
+    ``select_spikes_in_rows`` returns one selection per unit/electrode, applied to
     the spike times and to the per-spike waveform features. Those arrays are
     recording-length; the selection is one chunk's worth. Converting the array
     before selecting therefore pays for the whole recording on every chunk call.
@@ -757,9 +774,10 @@ def select_spike_rows(
     ----------
     array : np.ndarray or jnp.ndarray, shape (n_spikes, ...)
         Per-spike array for one unit/electrode.
-    indexer : slice or np.ndarray
-        The indexer from ``select_spikes_in_rows`` (a ``slice`` for ascending
-        spike times, otherwise a boolean mask).
+    selection : SpikeSelection
+        The selection from ``select_spikes_in_rows``, including the original
+        spike count. Every paired array must have exactly that many rows,
+        whether the requested selection uses a slice or a mask.
 
     Returns
     -------
@@ -773,29 +791,20 @@ def select_spike_rows(
     Raises
     ------
     ValidationError
-        If the indexer does not address this array: a boolean mask of a different
-        length, or a slice reaching past the end. ``jnp.take`` would otherwise
-        silently NaN-fill out-of-range rows (its default ``mode='fill'``), where
-        NumPy raises -- a silent-NaN path into the likelihood.
+        If the array's row count differs from the original spike count. Checking
+        before selection catches both extra and missing feature rows, including
+        mismatches outside the requested chunk, without reading array values.
     """
     n_rows = array.shape[0]
-    if isinstance(indexer, slice):
-        stop = indexer.stop
-        if stop is not None and stop > n_rows:
-            raise ValidationError(
-                "spike selection reaches past the end of a per-spike array",
-                expected=f"at least {stop} rows",
-                got=f"{n_rows} rows",
-                hint="Spike times and waveform features must be paired row for row.",
-            )
-    elif indexer.shape[0] != n_rows:
+    if n_rows != selection.n_spikes:
         raise ValidationError(
             "spike selection does not match the length of a per-spike array",
-            expected=f"{indexer.shape[0]} rows (one per spike time)",
+            expected=f"{selection.n_spikes} rows (one per spike time)",
             got=f"{n_rows} rows",
             hint="Spike times and waveform features must be paired row for row.",
         )
 
+    indexer = selection.indexer
     if not isinstance(array, jax.Array):
         return array[indexer]
 
@@ -847,10 +856,10 @@ def get_spikecount_per_time_bin(
         ``n_rows`` is ``n_time`` by default, else the length of ``row_slice``.
     """
     row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
-    _, bin_ind = select_spikes_in_rows(
+    selection = select_spikes_in_rows(
         spike_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
     )
-    return np.bincount(bin_ind, minlength=row_stop - row_start)
+    return np.bincount(selection.bin_ind, minlength=row_stop - row_start)
 
 
 def safe_divide(numerator, denominator, eps=EPS, condition=None):

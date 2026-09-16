@@ -30,9 +30,10 @@ def test_prepared_spike_times_convert_original_input_only_once(monkeypatch, arra
     order = _SpikeTimeOrder()
     monkeypatch.setattr(np, "asarray", tracked_asarray)
     for row_start, row_stop in [(0, 3), (3, 7), (7, 10)]:
-        indexer, rows = select_spikes_in_rows(
+        selection = select_spikes_in_rows(
             spikes, time, row_start, row_stop, _spike_time_order=order
         )
+        indexer, rows = selection.indexer, selection.bin_ind
         selected = original_asarray(spikes)[indexer]
         np.testing.assert_array_equal(
             rows, np.digitize(selected, time[1:-1]) - row_start
@@ -55,9 +56,10 @@ def test_non_owning_rows_do_not_read_spike_times(monkeypatch, rows, prepared):
         return original_asarray(values, *args, **kwargs)
 
     monkeypatch.setattr(np, "asarray", tracked_asarray)
-    indexer, bin_ind = select_spikes_in_rows(
+    selection = select_spikes_in_rows(
         spikes, time, *rows, _spike_time_order=_SpikeTimeOrder() if prepared else None
     )
+    indexer, bin_ind = selection.indexer, selection.bin_ind
     assert spikes[indexer].size == 0
     assert bin_ind.size == 0
 
@@ -87,7 +89,8 @@ def test_binning_scans_only_requested_boundaries(
         return digitize(values, bins, **kwargs)
 
     monkeypatch.setattr(np, "digitize", tracked_digitize)
-    indexer, local_rows = select_spikes_in_rows(spikes, time, row_start, row_stop)
+    selection = select_spikes_in_rows(spikes, time, row_start, row_stop)
+    indexer, local_rows = selection.indexer, selection.bin_ind
 
     np.testing.assert_array_equal(spikes[indexer], spikes[keep])
     np.testing.assert_array_equal(local_rows, global_rows[keep] - row_start)

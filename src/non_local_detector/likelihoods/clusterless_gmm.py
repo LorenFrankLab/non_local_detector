@@ -738,22 +738,24 @@ def predict_clusterless_gmm_log_likelihood(
         # (e.g. against a state whose encoding de-weighted this electrode). With
         # no in-window spikes the scatter-add contributes zero.
         if joint_gmm is None:
-            _, seg_ids = select_spikes_in_rows(
+            selection = select_spikes_in_rows(
                 elect_times,
                 time,
                 row_start,
                 row_stop,
                 _spike_time_order=_spike_time_order,
             )
-            spikes_per_bin = jnp.zeros(n_rows).at[seg_ids].add(1.0)  # (n_rows,)
+            spikes_per_bin = (
+                jnp.zeros(n_rows).at[selection.bin_ind].add(1.0)
+            )  # (n_rows,)
             log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin[:, None]
             continue
 
         # Select the spikes owned by the requested rows and bin them locally
-        spike_indexer, seg_ids = select_spikes_in_rows(
+        selection = select_spikes_in_rows(
             elect_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
         )
-        elect_feats = _as_jnp(select_spike_rows(elect_feats, spike_indexer))
+        elect_feats = _as_jnp(select_spike_rows(elect_feats, selection))
 
         # Process spikes in blocks to reduce peak memory
         # Memory: O(spike_block_size × n_bins) instead of O(n_spikes × n_bins)
@@ -766,7 +768,7 @@ def predict_clusterless_gmm_log_likelihood(
         for spike_start in range(0, n_spikes, spike_block_size):
             spike_end = min(spike_start + spike_block_size, n_spikes)
             block_feats = elect_feats[spike_start:spike_end]
-            block_seg_ids = seg_ids[spike_start:spike_end]
+            block_seg_ids = selection.bin_ind[spike_start:spike_end]
             block_size = block_feats.shape[0]
 
             if bin_tile_size is None or bin_tile_size >= n_bins:
@@ -920,15 +922,17 @@ def compute_local_log_likelihood(
         # and the marked-point-process likelihood. The integral term is zero. Do
         # not skip -- an observed spike is negative evidence, not "no data".
         if joint_gmm is None:
-            _, seg_ids = select_spikes_in_rows(
+            selection = select_spikes_in_rows(
                 elect_times,
                 time,
                 row_start,
                 row_stop,
                 _spike_time_order=_spike_time_order,
             )
-            if seg_ids.shape[0] > 0:
-                spikes_per_bin = jnp.zeros(n_rows).at[seg_ids].add(1.0)  # (n_rows,)
+            if selection.bin_ind.shape[0] > 0:
+                spikes_per_bin = (
+                    jnp.zeros(n_rows).at[selection.bin_ind].add(1.0)
+                )  # (n_rows,)
                 log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin
             continue
 
@@ -936,11 +940,11 @@ def compute_local_log_likelihood(
         # Select on the host FIRST, then convert: converting the whole array
         # would device-copy every decoding spike in the recording on every chunk
         # call (the non-local branch above does the same).
-        spike_indexer, seg_ids = select_spikes_in_rows(
+        selection = select_spikes_in_rows(
             elect_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
         )
-        elect_times = np.asarray(select_spike_rows(elect_times, spike_indexer))
-        elect_feats = _as_jnp(select_spike_rows(elect_feats, spike_indexer))
+        elect_times = np.asarray(select_spike_rows(elect_times, selection))
+        elect_feats = _as_jnp(select_spike_rows(elect_feats, selection))
 
         # Spike contributions at their true positions
         if elect_times.shape[0] > 0:
@@ -964,9 +968,9 @@ def compute_local_log_likelihood(
                 log_likelihood
                 + segment_sum(
                     terms[:, None],
-                    seg_ids,
+                    selection.bin_ind,
                     num_segments=n_rows,
-                    indices_are_sorted=isinstance(spike_indexer, slice),
+                    indices_are_sorted=selection.indices_are_sorted,
                 ).ravel()
             )
 

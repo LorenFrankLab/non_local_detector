@@ -475,7 +475,7 @@ def predict_clusterless_kde_log_likelihood(
             spike_times,
             strict=True,
         ):
-            spike_indexer, spike_bin_ind = select_spikes_in_rows(
+            selection = select_spikes_in_rows(
                 electrode_spike_times,
                 time,
                 row_start,
@@ -483,7 +483,7 @@ def predict_clusterless_kde_log_likelihood(
                 _spike_time_order=_spike_time_order,
             )
             electrode_decoding_spike_waveform_features = select_spike_rows(
-                electrode_decoding_spike_waveform_features, spike_indexer
+                electrode_decoding_spike_waveform_features, selection
             )
             position_distance = kde_distance(
                 interior_place_bin_centers,
@@ -504,8 +504,8 @@ def predict_clusterless_kde_log_likelihood(
                     block_size,
                     encoding_weights=electrode_encoding_weights,
                 ),
-                spike_bin_ind,
-                indices_are_sorted=isinstance(spike_indexer, slice),
+                selection.bin_ind,
+                indices_are_sorted=selection.indices_are_sorted,
                 num_segments=n_rows,
             )
 
@@ -614,16 +614,16 @@ def compute_local_log_likelihood(
         spike_times,
         strict=True,
     ):
-        spike_indexer, spike_bin_ind = select_spikes_in_rows(
+        selection = select_spikes_in_rows(
             electrode_spike_times,
             time,
             row_start,
             row_stop,
             _spike_time_order=_spike_time_order,
         )
-        electrode_spike_times = select_spike_rows(electrode_spike_times, spike_indexer)
+        electrode_spike_times = select_spike_rows(electrode_spike_times, selection)
         electrode_decoding_spike_waveform_features = select_spike_rows(
-            electrode_decoding_spike_waveform_features, spike_indexer
+            electrode_decoding_spike_waveform_features, selection
         )
 
         position_at_spike_time = get_position_at_time(
@@ -667,8 +667,8 @@ def compute_local_log_likelihood(
                     0.0,
                 )
             ),
-            spike_bin_ind,
-            indices_are_sorted=isinstance(spike_indexer, slice),
+            selection.bin_ind,
+            indices_are_sorted=selection.indices_are_sorted,
             num_segments=n_rows,
         )
 

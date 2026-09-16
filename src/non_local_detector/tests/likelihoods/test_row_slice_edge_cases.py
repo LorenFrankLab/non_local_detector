@@ -257,7 +257,8 @@ def test_empty_row_request_returns_zero_rows():
         assert resolve_row_slice(slice(a, a), len(time)) == (a, a)
         counts = get_spikecount_per_time_bin(spikes, time, row_slice=slice(a, a))
         assert counts.shape == (0,)
-        indexer, bin_ind = select_spikes_in_rows(spikes, time, a, a)
+        selection = select_spikes_in_rows(spikes, time, a, a)
+        indexer, bin_ind = selection.indexer, selection.bin_ind
         assert spikes[indexer].size == 0
         assert bin_ind.shape == (0,)
 
@@ -282,7 +283,8 @@ def test_empty_spike_input_selects_nothing():
     """Item 3 at the helper: no spikes at all still yields the requested rows."""
     time = np.arange(6.0)
     for empty in (np.array([]), np.zeros((0,), dtype=float)):
-        indexer, bin_ind = select_spikes_in_rows(empty, time, 1, 4)
+        selection = select_spikes_in_rows(empty, time, 1, 4)
+        indexer, bin_ind = selection.indexer, selection.bin_ind
         assert empty[indexer].size == 0
         assert bin_ind.shape == (0,)
         np.testing.assert_array_equal(
@@ -353,9 +355,8 @@ def test_selected_features_stay_paired_with_their_spike(shuffled):
         partition_ids: list[np.ndarray] = []
         for row_slice in partition:
             row_start, row_stop = resolve_row_slice(row_slice, len(time))
-            indexer, bin_ind = select_spikes_in_rows(
-                spike_times, time, row_start, row_stop
-            )
+            selection = select_spikes_in_rows(spike_times, time, row_start, row_stop)
+            indexer, bin_ind = selection.indexer, selection.bin_ind
             selected_ids = spike_ids[indexer]
             selected_features = features[indexer]
 
@@ -510,6 +511,40 @@ def call_backend(fitted_backends, edge_case_data, algorithm, case, time=None, **
     return np.asarray(predict_func(time, *args, **encoding_model, **kwargs))
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("algorithm", sorted(_CLUSTERLESS_ALGORITHMS))
+@pytest.mark.parametrize("is_local", [False, True])
+@pytest.mark.parametrize("ascending", [False, True])
+@pytest.mark.parametrize("extra_rows", [-1, 1])
+def test_backend_rejects_unpaired_feature_rows(
+    fitted_backends, edge_case_data, algorithm, is_local, ascending, extra_rows
+):
+    """A prefix chunk must reject a mismatch elsewhere in the paired arrays."""
+    predict, encoding, _ = fitted_backends[algorithm]
+    spikes, features = edge_case_data["spike_cases"]["between_timestamps"]
+    spikes = [s.copy() for s in spikes]
+    features = [f.copy() for f in features]
+    if not ascending:
+        spikes[0] = spikes[0][::-1]
+        features[0] = features[0][::-1]
+    features[0] = (
+        features[0][:-1]
+        if extra_rows < 0
+        else np.concatenate([features[0], features[0][-1:]])
+    )
+    with pytest.raises(ValidationError):
+        predict(
+            edge_case_data["time"],
+            edge_case_data["position_time"],
+            edge_case_data["position"],
+            spikes,
+            features,
+            **encoding,
+            is_local=is_local,
+            row_slice=slice(0, 2),
+        )
+
+
 def assert_some_chunk_is_spike_free(edge_case_data, case, partitions) -> None:
     """At least one chunk of every partition must select zero spikes everywhere.
 
@@ -528,7 +563,7 @@ def assert_some_chunk_is_spike_free(edge_case_data, case, partitions) -> None:
                 len(
                     select_spikes_in_rows(
                         unit_times, time, *resolve_row_slice(row_slice, len(time))
-                    )[1]
+                    ).bin_ind
                 )
                 == 0
                 for unit_times in spike_times
@@ -872,7 +907,8 @@ def allocation_data():
 
     # The request must select the same two spikes in every set.
     for n_total, (spike_times, _) in decoding.items():
-        _, bin_ind = select_spikes_in_rows(spike_times[0], time, 0, 5)
+        selection = select_spikes_in_rows(spike_times[0], time, 0, 5)
+        _, bin_ind = selection.indexer, selection.bin_ind
         assert bin_ind.shape[0] == 2, (n_total, bin_ind)
 
     return {
@@ -1171,15 +1207,13 @@ def test_select_spike_rows_rejects_a_mismatched_per_spike_array(as_jax, indexer_
     if as_jax:
         features = jnp.asarray(features)
 
+    times = np.arange(6.0)
     if indexer_kind == "mask":
-        # A mask sized for six spike times against four feature rows.
-        indexer = np.zeros(6, dtype=bool)
-        indexer[[1, 5]] = True
-    else:
-        indexer = slice(2, 6)
+        times = times[::-1]
+    selection = select_spikes_in_rows(times, np.arange(7.0), 2, 6)
 
     with pytest.raises(ValidationError, match="per-spike array"):
-        select_spike_rows(features, indexer)
+        select_spike_rows(features, selection)
 
 
 @pytest.mark.unit
@@ -1190,15 +1224,18 @@ def test_select_spike_rows_selects_the_named_rows(as_jax):
     if as_jax:
         features = jnp.asarray(features)
 
-    mask = np.zeros(5, dtype=bool)
-    mask[[0, 3]] = True
-    np.testing.assert_array_equal(
-        np.asarray(select_spike_rows(features, mask)), [[0.0, 1.0], [6.0, 7.0]]
+    selection = select_spikes_in_rows(
+        np.array([0.5, 4.5, 5.5, 1.5, 6.5]), np.arange(8.0), 0, 2
     )
     np.testing.assert_array_equal(
-        np.asarray(select_spike_rows(features, slice(1, 3))), [[2.0, 3.0], [4.0, 5.0]]
+        np.asarray(select_spike_rows(features, selection)), [[0.0, 1.0], [6.0, 7.0]]
     )
-    assert np.asarray(select_spike_rows(features, slice(2, 2))).shape == (0, 2)
+    selection = select_spikes_in_rows(np.arange(5.0), np.arange(6.0), 1, 3)
+    np.testing.assert_array_equal(
+        np.asarray(select_spike_rows(features, selection)), [[2.0, 3.0], [4.0, 5.0]]
+    )
+    selection = select_spikes_in_rows(np.arange(5.0), np.arange(6.0), 2, 2)
+    assert np.asarray(select_spike_rows(features, selection)).shape == (0, 2)
 
 
 @pytest.mark.unit
@@ -1224,15 +1261,17 @@ def test_select_spike_rows_propagates_unexpected_errors(
         raise error
 
     if indexer_kind == "mask":
-        indexer = np.array([True, False, False, True, False])
+        selection = select_spikes_in_rows(
+            np.array([0.5, 4.5, 5.5, 1.5, 6.5]), np.arange(8.0), 0, 2
+        )
         monkeypatch.setattr(jnp, "take", fail_selection)
     else:
-        indexer = slice(1, 3)
+        selection = select_spikes_in_rows(np.arange(5.0), np.arange(6.0), 1, 3)
         monkeypatch.setattr(type(features), "__getitem__", fail_selection)
     monkeypatch.setattr(np, "asarray", tracked_asarray)
 
     with pytest.raises(error_type, match="unexpected selection failure") as exc:
-        select_spike_rows(features, indexer)
+        select_spike_rows(features, selection)
 
     assert exc.value is error
     assert not host_copies

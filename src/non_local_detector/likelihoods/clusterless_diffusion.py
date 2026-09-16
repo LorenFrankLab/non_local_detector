@@ -599,7 +599,7 @@ def predict_clusterless_diffusion_log_likelihood(
             spike_times,
             strict=True,
         ):
-            spike_indexer, spike_bin_ind = select_spikes_in_rows(
+            selection = select_spikes_in_rows(
                 electrode_spike_times,
                 time,
                 row_start,
@@ -607,7 +607,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 _spike_time_order=_spike_time_order,
             )
             electrode_spike_times = np.asarray(
-                select_spike_rows(electrode_spike_times, spike_indexer)
+                select_spike_rows(electrode_spike_times, selection)
             )
             # Validate only the in-window decode features that actually enter the
             # likelihood (mirrors fit's post-clip validation); an out-of-window
@@ -616,13 +616,13 @@ def predict_clusterless_diffusion_log_likelihood(
             # cost every decoding spike in the recording on every chunk call
             # (and, for a jax.Array input, retain that host copy on the array).
             decode_features = jnp.asarray(
-                select_spike_rows(electrode_decode_features, spike_indexer)
+                select_spike_rows(electrode_decode_features, selection)
             )
             validate_finite(decode_features, "spike_waveform_features")
             n_decode = electrode_spike_times.shape[0]
             if n_decode == 0:
                 continue
-            seg = jnp.asarray(spike_bin_ind)
+            seg = jnp.asarray(selection.bin_ind)
 
             # Zero-rate electrode: floor every observed decode spike to LOG_EPS,
             # identical contract to the non-local zero-rate guard.
@@ -630,7 +630,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 log_likelihood += jax.ops.segment_sum(
                     jnp.full((n_decode,), LOG_EPS),
                     seg,
-                    indices_are_sorted=isinstance(spike_indexer, slice),
+                    indices_are_sorted=selection.indices_are_sorted,
                     num_segments=n_rows,
                 )
                 continue
@@ -690,7 +690,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 log_likelihood += jax.ops.segment_sum(
                     lc,
                     seg_block,
-                    indices_are_sorted=isinstance(spike_indexer, slice),
+                    indices_are_sorted=selection.indices_are_sorted,
                     num_segments=n_rows,
                 )
 
@@ -723,7 +723,7 @@ def predict_clusterless_diffusion_log_likelihood(
         spike_times,
         strict=True,
     ):
-        spike_indexer, spike_bin_ind = select_spikes_in_rows(
+        selection = select_spikes_in_rows(
             electrode_spike_times,
             time,
             row_start,
@@ -735,13 +735,13 @@ def predict_clusterless_diffusion_log_likelihood(
         # feature must not raise.
         # Select FIRST, convert after (see the local branch above).
         decode_features = jnp.asarray(
-            select_spike_rows(electrode_decode_features, spike_indexer)
+            select_spike_rows(electrode_decode_features, selection)
         )
         validate_finite(decode_features, "spike_waveform_features")
         n_decode = decode_features.shape[0]
         if n_decode == 0:
             continue
-        seg = jnp.asarray(spike_bin_ind)
+        seg = jnp.asarray(selection.bin_ind)
 
         # Zero-rate electrode: floor every observed decode spike to LOG_EPS BEFORE any
         # division (D_e == 0 and P_e / weight_total_e is 0/0). Not skipped. Each
@@ -752,7 +752,7 @@ def predict_clusterless_diffusion_log_likelihood(
             spike_counts = jax.ops.segment_sum(
                 jnp.ones(n_decode),
                 seg,
-                indices_are_sorted=isinstance(spike_indexer, slice),
+                indices_are_sorted=selection.indices_are_sorted,
                 num_segments=n_rows,
             )  # (n_rows,)
             log_likelihood += spike_counts[:, None] * LOG_EPS
@@ -812,7 +812,7 @@ def predict_clusterless_diffusion_log_likelihood(
             log_likelihood += jax.ops.segment_sum(
                 log_intensity.T,
                 seg_block,
-                indices_are_sorted=isinstance(spike_indexer, slice),
+                indices_are_sorted=selection.indices_are_sorted,
                 num_segments=n_rows,
             )
 

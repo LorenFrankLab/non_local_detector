@@ -568,9 +568,10 @@ def selection_sizes(
     for unit_times, unit_features in zip(
         recording.spike_times, recording.spike_waveform_features, strict=True
     ):
-        indexer, bin_ind = select_spikes_in_rows(
+        selection = select_spikes_in_rows(
             unit_times, recording.time, row_start, row_stop
         )
+        indexer, bin_ind = selection.indexer, selection.bin_ind
         assert len(bin_ind) == len(unit_times[indexer])
         assert len(bin_ind) == 0 or (bin_ind.min() >= 0 and bin_ind.max() < n_rows)
         n_selected += len(bin_ind)

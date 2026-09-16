@@ -1693,7 +1693,7 @@ def predict_clusterless_kde_log_likelihood(
             per_electrode_weights,
             strict=True,
         ):
-            spike_indexer, spike_bin_ind = select_spikes_in_rows(
+            selection = select_spikes_in_rows(
                 electrode_spike_times,
                 time,
                 row_start,
@@ -1701,7 +1701,7 @@ def predict_clusterless_kde_log_likelihood(
                 _spike_time_order=_spike_time_order,
             )
             electrode_decoding_spike_waveform_features = select_spike_rows(
-                electrode_decoding_spike_waveform_features, spike_indexer
+                electrode_decoding_spike_waveform_features, selection
             )
             # Compute position kernel in log-space to prevent underflow
             # (Skip if using streaming mode - computed on-the-fly)
@@ -1739,8 +1739,8 @@ def predict_clusterless_kde_log_likelihood(
                     position_std=position_std if use_streaming else None,
                     encoding_weights=electrode_encoding_weights,
                 ),
-                spike_bin_ind,
-                indices_are_sorted=isinstance(spike_indexer, slice),
+                selection.bin_ind,
+                indices_are_sorted=selection.indices_are_sorted,
                 num_segments=n_rows,
             )
 
@@ -1846,13 +1846,13 @@ def compute_local_log_likelihood(
     all_spike_positions = []
     all_spike_position_offsets = [0]  # Track where each electrode's spikes start
 
-    for (spike_indexer, _), electrode_spike_times in zip(
+    for selection, electrode_spike_times in zip(
         spike_selections, spike_times, strict=True
     ):
         position_at_spike_time = get_position_at_time(
             position_time,
             position,
-            np.asarray(select_spike_rows(electrode_spike_times, spike_indexer)),
+            np.asarray(select_spike_rows(electrode_spike_times, selection)),
             environment,
         )
         all_spike_positions.append(position_at_spike_time)
@@ -1895,9 +1895,9 @@ def compute_local_log_likelihood(
             strict=True,
         )
     ):
-        spike_indexer, spike_bin_ind = spike_selections[electrode_idx]
+        selection = spike_selections[electrode_idx]
         electrode_decoding_spike_waveform_features = select_spike_rows(
-            electrode_decoding_spike_waveform_features, spike_indexer
+            electrode_decoding_spike_waveform_features, selection
         )
 
         # Get pre-computed position and occupancy for this electrode
@@ -1949,8 +1949,8 @@ def compute_local_log_likelihood(
 
         log_likelihood += jax.ops.segment_sum(
             spike_contribution,
-            spike_bin_ind,
-            indices_are_sorted=isinstance(spike_indexer, slice),
+            selection.bin_ind,
+            indices_are_sorted=selection.indices_are_sorted,
             num_segments=n_rows,
         )
 
