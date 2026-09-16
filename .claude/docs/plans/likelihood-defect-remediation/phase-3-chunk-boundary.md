@@ -240,12 +240,12 @@ accumulate_log_likelihoods: bool  # new flag on both chunked drivers
 | `time` (bin edges / ownership) | **nobody**, for a row-aware callback | the full array is passed; a legacy callback still gets `time[chunk]` |
 | output rows | backend | `resolve_row_slice` → `jnp.zeros((n_rows, …))`, `num_segments=n_rows` |
 | `is_missing` | **core** (unchanged) | `is_missing[time_inds]`; the model sizes a default to `n_rows` |
-| decoding spike times | backend, via `select_spikes_in_rows` | global bin, then keep rows `[start, stop)` |
+| decoding spike times | backend, via `select_spikes_in_rows` | select spikes owned by global rows `[start, stop)`, then bin against that range's internal boundaries |
 | decoding waveform features | backend, via the **identical** indexer | selected before any density evaluation |
 | position interpolation, local-position kernel, non-local penalty | model / backend | evaluated at `time[row_start:row_stop]` |
 | time-varying discrete transitions | **core** (unchanged) | `discrete_transition_matrix_jax[time_inds]` |
 | encoding model (fit-time arrays) | **nobody** | untouched; encoding exposure unchanged |
-| `no_spike` bin duration | **nobody** | `np.median(np.diff(time))` over the full timeline |
+| `no_spike` bin duration | **nobody** | `np.median(np.diff(time))` over the full timeline, prepared by the model once per `_predict` call and reused across chunks; direct likelihood calls compute it on demand |
 
 Nothing is sliced twice: a row-aware backend slices only what the core does not.
 
@@ -255,10 +255,14 @@ Nothing is sliced twice: a row-aware backend slices only what the core does not.
 it verifies ascending order in one `O(n_spikes)` vector pass
 (`np.all(spike_times[1:] >= spike_times[:-1])`). If ascending, two
 `np.searchsorted` calls give the contiguous range, the returned `slice` is a
-view for the waveform features, and only the *selected* subset is digitized — no
-spike is re-binned for every chunk. If not ascending (NaNs fail the test too), it
-falls back to a boolean mask, i.e. exactly the baseline selection, **in input
-order**.
+view for the waveform features, and only the *selected* subset is digitized
+against the boundaries inside the requested row range. Global selection happens
+first, so removing the earlier boundaries simply makes the indices local; the
+final timestamp remains excluded from the boundaries to preserve the final
+empty row. This also bounds `np.digitize`'s linear monotonicity check to the
+chunk instead of scanning the full timeline per unit. If not ascending (NaNs
+fail the test too), it falls back to a boolean mask, i.e. exactly the baseline
+selection, **in input order**.
 
 Every `indices_are_sorted=` argument was left exactly as it was (verified: the
 diff adds and removes no line containing it). In the ascending case the local
@@ -373,8 +377,9 @@ is retained.
   golden fixture covers `clusterless_gmm`, and the full GMM test surface passes
   unchanged.
 
-- `predict_no_spike_log_likelihood` derives its bin duration from the full
-  timeline. The expression (`np.median(np.diff(time))`) is unchanged; because a
+- `predict_no_spike_log_likelihood` uses the full timeline's bin duration,
+  prepared once by `_predict` or computed on demand for direct calls.
+  The expression (`np.median(np.diff(time))`) is unchanged; because a
   row-aware callback now receives the full `time` instead of `time[chunk]`, a
   chunk can no longer rescale `no_spike_rate`. This restores unchunked parity.
   Two legacy cases actually differed (verified): non-uniform timestamps, where
@@ -471,12 +476,15 @@ metadata ≈ 4.1 MiB (`time`, `position_time`, `position` 750 KiB each,
 `spike_times` 600 KiB, `spike_waveform_features` 1.2 MiB, `is_missing` 93.8 KiB) —
 linear in duration and **unchanged by this phase**; per-chunk workspace ≈ 100 KiB.
 
-*Cost of the ordering check* (`select_spikes_in_rows`, one electrode, chunk fixed
-at 500 rows): ~1 byte/spike transient; 21.2 µs at 600 spikes rising to 56.3 µs at
-9,600 spikes, ≈ 6 ns/spike. Extrapolated linearly to 1 h at 20 Hz/unit
-(72,000 spikes/unit): ~0.4 ms per unit per chunk, ~4 s total for 100 units ×
-100 chunks. Not dominant, but it is a term that scales with recording length
-inside a per-chunk call — the Phase 8 trigger.
+*Cost of the ordering check:* the earlier 21.2–56.3 µs timings measured the
+entire selector, including `np.digitize`'s full-timeline monotonicity scan, and
+could not isolate spike-order validation. A follow-up measurement on a one-hour
+recording at 2 ms resolution found 0.429 ms for the old selector, of which
+0.412 ms was full-timeline digitization and 0.015 ms was the ascending-spike
+check (72,000 spikes/unit). The digitization scan is now bounded to the chunk.
+The remaining ascending check still costs `O(n_spikes)` time and roughly one
+byte per spike transiently on every chunk; establishing order once remains
+Phase 8 work. The previous ~0.4 ms extrapolation for that check is withdrawn.
 
 **Method and limitations, as recorded in `memory-evidence.md`:** measurements are
 `tracemalloc` peak, 1 ms-sampled RSS delta, `jax.live_arrays()` byte deltas and
@@ -494,31 +502,85 @@ swept. A single run per point, no repetitions or confidence intervals: the
 duration sweep's flatness is robust (five points within ~1 KiB) but individual
 peaks are ±20 KiB noisy.
 
+### Runtime follow-up
+
+Two recording-length-dependent regressions were found after the initial memory
+validation: `np.digitize(selected, time[1:-1])` checked all time boundaries for
+each unit/chunk, and No-Spike recomputed the full median time step for every
+chunk. The former now uses only the requested row boundaries after global spike
+selection. The latter is prepared once in `_DetectorBase._predict` and bound
+to that call's likelihood callback with `functools.partial`. It is not stored
+on the detector or in a global cache, so later predictions, including a mutated
+time array, compute a fresh duration. Supplied likelihoods skip preparation;
+custom likelihood overrides retaining the older signature remain callable.
+The same callback serves stationary and covariate-dependent filtering.
+
+Reproduce with:
+
+```sh
+uv run python scripts/benchmark_chunk_likelihood_runtime.py /tmp/phase3-runtime
+```
+
+The script also supports baseline source via `PYTHONPATH`. Measured against
+pre-PR `86e22f0` and pre-performance-fix PR `a04c4da`, in separate sequential
+CPU processes: one hour, 2 ms decoding bins (1.8 million rows), eight units at
+20 Hz, a fixed 500-row chunk, 50 spatial bins, 300 encoding spikes/unit and
+four waveform features. Each call selects 20 spikes/unit. Three warmups then
+15 timed calls, synchronized with `jax.block_until_ready`; fitting and JIT
+compilation excluded. The selected chunk has no spike in the interval the old
+baseline dropped, making the work comparable.
+
+| Backend | Path | Pre-PR main ms | Pre-fix PR ms | Fixed ms |
+| --- | --- | ---: | ---: | ---: |
+| Sorted KDE | non-local | 2.507 | 5.954 | 2.573 |
+| Sorted KDE | local | 2.492 | 5.844 | 2.594 |
+| Clusterless log-KDE | non-local | 3.832 | 5.886 | 3.297 |
+| Clusterless log-KDE | local | 9.260 | 10.505 | 8.245 |
+| GMM | non-local | 2.791 | 5.696 | 1.582 |
+| GMM | local | 6.352 | 8.119 | 4.076 |
+| Diffusion | non-local | 8.678 | 11.000 | 6.818 |
+| Diffusion | local | 13.838 | 15.036 | 11.909 |
+| No-Spike | — | 1.808 | 8.444 | 1.480 |
+
+All 18 output arrays across 60-second and one-hour recordings were bit-identical
+to the pre-fix PR. Per-chunk likelihood time fell 21–83% at one hour. No-Spike's
+one-time preparation took 4.42 ms for the hour timeline in this run and is
+excluded from its per-chunk figure; ordinary direct backend calls without a
+prepared duration still compute the full median. Sorted KDE is within ~4% of
+main; the other measured paths are faster. These are single-session CPU
+measurements on a small spatial grid, not an end-to-end HMM benchmark, a GPU
+benchmark or a production-arena scaling claim. No golden or tolerance changed.
+
 ### Test coverage and validation results
 
-167 tests in five modules:
+213 tests in six modules, including the runtime follow-up:
 
 | module | tests | covers |
 | --- | --- | --- |
 | `tests/likelihoods/test_row_slice_parity.py` | 36 | every registered backend × both `is_local`, plus `no_spike`: a row range equals the full-time slice, and every row partition tiles the full result; zero-rate sentinels asserted per backend in the fixture; `resolve_row_slice` normalization and non-unit-step rejection |
-| `tests/likelihoods/test_row_slice_edge_cases.py` | 89 | helper- and backend-level edge cases: endpoint convention, spikes on timestamps / between timestamps / duplicates, irregular and ragged partitions, empty and singleton row requests, spike-free chunks and all-units-empty, spike/feature alignment under shuffled input, plus guard-the-guard assertions that the legacy chunk-local call really does differ |
+| `tests/likelihoods/test_row_slice_edge_cases.py` | 115 | helper- and backend-level edge cases: endpoint convention, spikes on timestamps / between timestamps / duplicates, irregular and ragged partitions, empty and singleton row requests, spike-free chunks and all-units-empty, spike/feature alignment under shuffled input, NumPy/JAX feature-selection allocation checks, plus guard-the-guard assertions that the legacy chunk-local call really does differ |
 | `tests/integration/test_chunk_boundary_spikes.py` | 7 | public `predict(n_chunks=5, cache_likelihood=False)` vs `n_chunks=1` for both detector families, the covariate-dependent core path, `is_missing` straddling every boundary, and requested `log_likelihood` from `predict` and from `estimate_parameters` |
 | `tests/integration/test_chunk_boundary_edge_cases.py` | 26 | the same public path over ragged chunk counts (5/6/7 with `n_time % n_chunks != 0`), singleton chunks (`n_chunks == n_time`), spike-free chunks, unsorted spike input, `is_missing`, and preservation of a legitimate `-inf` mask (delta local-position kernel), comparing acausal + causal posteriors, both state-probability sets, evidence and the full `log_likelihood` |
-| `tests/core/test_row_slice_callback.py` | 9 | both chunked drivers: a marked callback receives the full time and tiling global rows, a legacy callback receives the sliced time and no `row_slice` (and yields a different answer), the marker survives bound methods / `partial` / `__wrapped__`, and accumulated rows cover every row |
+| `tests/core/test_row_slice_callback.py` | 11 | both chunked drivers: a marked callback receives the full time and tiling global rows, a legacy callback receives the sliced time and no `row_slice` (and yields a different answer), the marker survives bound methods / `partial` / `__wrapped__`, accumulated rows cover every row, and positional dtype compatibility is preserved (two tests require x64) |
+| `tests/models/test_chunk_likelihood_preparation.py` | 18 | digitization scans only chunk boundaries while matching independent global indices; No-Spike computes the full median once per prediction for both detector families and both drivers, refreshes mutated timelines, skips preparation for supplied likelihoods, and supports custom callbacks with the older signature |
 
 | Command | Result |
 | --- | --- |
+| Runtime regression tests, before the performance fix (16 cases at that point) | **10 failed, 6 passed**: digitization scanned 999 boundaries for a 20-row request; No-Spike computed three full medians for three chunks, in both detector families and both drivers |
+| `JAX_ENABLE_X64=1 uv run pytest` on `test_chunk_likelihood_preparation.py`, `test_row_slice_parity.py`, `test_row_slice_edge_cases.py`, `test_row_slice_callback.py` after the performance fix | **180 passed** in 66.16 s, including the two positional dtype compatibility tests skipped without x64 |
+| `uv run python scripts/benchmark_chunk_likelihood_runtime.py /tmp/phase3-runtime` after the performance fix | All **18** saved likelihood arrays bit-identical to pre-fix PR `a04c4da`; runtime table above |
 | `uv run pytest src/non_local_detector/tests/integration/test_chunk_boundary_spikes.py -q -p no:randomly` (**on the untouched baseline**, 4 tests at that point) | **4 failed** — `TypeError: get_spikecount_per_time_bin() got an unexpected keyword argument 'row_slice'`; sorted chunked-vs-unchunked `acausal_posterior` mismatched in 51,627/52,200 entries (98.9 %, max abs 0.34); clusterless 23,917/53,400 (44.8 %, max abs 0.011); `assert 'log_likelihood' in chunked` |
-| `uv run pytest src/non_local_detector/tests -q --no-header -p no:randomly` | **1523 passed, 4 skipped** in 602.39 s (10:02). The 4 skips are pre-existing and unrelated (one float64/`JAX_ENABLE_X64` test, two manual visualization tests, one missing `sortingview`). |
-| `JAX_ENABLE_X64=1 uv run pytest <the five modules above> -q --no-header -p no:randomly` | **167 passed** in 70.52 s; no float64-specific skip or behaviour change in these modules |
-| `uvx ruff check src/ scripts/benchmark_chunk_likelihood_memory.py` | All checks passed! |
-| `uvx ruff format --check src/ scripts/benchmark_chunk_likelihood_memory.py` | 153 files already formatted |
+| `uv run --no-sync pytest -q` after the performance fix | **1572 passed, 6 skipped** in 659.80 s (10:59), including property, integration, EM, snapshot and golden tests. Skips: three tests requiring `JAX_ENABLE_X64`, two manual visualization tests and one missing optional `sortingview` dependency. The two skipped row-callback dtype tests passed in the separate x64 run above. |
+| Initial implementation: `JAX_ENABLE_X64=1 uv run pytest <the original five modules> -q --no-header -p no:randomly` | **167 passed** in 70.52 s; no float64-specific skip or behaviour change in these modules |
+| `uv run --no-sync ruff check src/ scripts/benchmark_chunk_likelihood_memory.py scripts/benchmark_chunk_likelihood_runtime.py` | All checks passed |
+| `uv run --no-sync ruff format --check src/ scripts/benchmark_chunk_likelihood_memory.py scripts/benchmark_chunk_likelihood_runtime.py` | 157 files already formatted |
 | `git status --porcelain src/non_local_detector/tests/golden_data` | empty — all 8 golden `.pkl` files untouched; no snapshot fixture modified; `--snapshot-update` was never passed |
 | `uv run python scripts/benchmark_chunk_likelihood_memory.py --backends clusterless_gmm --sweep duration` | independent re-run: peaks 56.7 / 56.8 / 55.9 / 55.8 / 59.6 KiB over 60 → 960 s (flat; pre-fix was 80.1 → 435.0 KiB), with identical shape columns at every duration |
 
-Pre-existing ruff findings under `scripts/` (2 × `B007` in `scripts/profile_optimized_kde.py` and 14
-legacy files that `ruff format` would rewrite) were left alone: `git diff HEAD -- scripts/` is empty,
-so none of them belongs to this phase.
+Pre-existing ruff findings in unrelated scripts (2 × `B007` in
+`scripts/profile_optimized_kde.py` and 14 legacy files that `ruff format` would
+rewrite) were left alone. Runtime-follow-up checks cover the modified Python
+files, including both chunk-likelihood benchmark scripts.
 
 ### Deferred — explicitly NOT implemented here
 

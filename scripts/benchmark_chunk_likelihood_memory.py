@@ -4,9 +4,12 @@ The chunk-boundary fix (``row_slice``) hands every backend the FULL decoding
 ``time`` but asks for only a contiguous range of rows. The claim this script
 tests is narrow and mechanical:
 
-    producing ONE requested chunk of the likelihood costs
-    O(chunk rows x position bins) + O(selected spikes) work and memory,
-    and does NOT grow with the total length of the recording.
+    likelihood output and density-evaluation workspace for ONE requested chunk
+    scale with chunk rows and selected spikes, rather than the full recording.
+
+This is not a constant-runtime guarantee: spike-order validation still scans
+each unit's spike times on every call. For repeated, synchronized runtime
+measurements, use ``benchmark_chunk_likelihood_runtime.py``.
 
 It is *not* a claim about total HMM memory: the driver still holds the full
 ``time`` array, the full per-unit spike-time (and waveform-feature) arrays and
@@ -16,10 +19,10 @@ reported here **separately** so the two are not conflated.
 Two sweeps
 ----------
 A. ``--sweep duration``: the fitted model and the requested chunk length are
-   held fixed while the recording duration grows 16x. Per-chunk cost must stay
-   flat; the recording-sized inputs grow linearly (and are reported as such).
+   held fixed while the recording duration grows 16x. Density workspace should
+   stay flat; recording-sized inputs and spike-order checks are separate costs.
 B. ``--sweep chunk``: the recording duration is held at its largest while the
-   requested chunk length grows 16x. Per-chunk cost must grow with it.
+   requested chunk length grows 16x. Density workspace should grow with it.
 
 Decoding spikes are placed on a regular grid at a fixed rate, so a chunk of a
 given length selects exactly the same number of spikes at every duration: the
