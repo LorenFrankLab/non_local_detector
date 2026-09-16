@@ -3,7 +3,7 @@
 > **NEEDS PROTOTYPING.** These are separate correctness/contract tasks with the
 > recorded evidence below. Unexecuted implementation snippets are removed. The
 > density/exposure work uses the corrected Phase 6 units and applicable C1
-> decisions; sorted-index contract work can be prototyped independently.
+> decisions; sorted-index contract work is implemented in Phase 3.
 
 Phase numbering does not require delaying these fixes behind Phase 7. Relevant
 Phase 8 corrections must be included in the baseline used to claim production
@@ -80,11 +80,14 @@ spike/feature order. Tests check the actual compiler promise in both prediction
 paths, including zero-rate electrodes, and CPU likelihoods remain bit-identical.
 See [Phase 3's audit](phase-3-chunk-boundary.md#jax-audit-follow-up).
 
-The remaining performance task is to establish ordering once rather than scan
-every recording-length spike train on every chunk. Re-inventory consumers when
-implementing that prepared-input contract and profile it. Preserve accepted
-unsorted inputs and paired spike/feature/weight alignment. Rejection would be a
-separate public behavior choice; GPU validation remains outstanding.
+**Also implemented in Phase 3's ordering follow-up:** detector predictions share
+one host conversion and ordering check per distinct spike-time object across
+states/chunks. Preparation is local to each prediction, so repeated calls recheck
+even arrays modified in place. Direct backend calls remain independently checked.
+Unsorted inputs remain accepted with their original alignment and per-chunk masks.
+See [ordering preparation](phase-3-chunk-boundary.md#ordering-preparation-follow-up)
+for scope and validation. GPU validation remains outstanding; rejection or automatic
+sorting would be a separate public behavior choice.
 
 ### Acceptance
 

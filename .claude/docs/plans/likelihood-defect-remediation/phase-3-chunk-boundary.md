@@ -253,7 +253,9 @@ Nothing is sliced twice: a row-aware backend slices only what the core does not.
 
 `select_spikes_in_rows` **establishes** its precondition instead of assuming it:
 it verifies ascending order in one `O(n_spikes)` vector pass
-(`np.all(spike_times[1:] >= spike_times[:-1])`). If ascending, two
+(`np.all(spike_times[1:] >= spike_times[:-1])`). Detector predictions now share
+that result across states and chunks through a prediction-local `_SpikeTimeOrder`
+object; standalone backend calls still check their own inputs. If ascending, two
 `np.searchsorted` calls give the contiguous range, the returned `slice` is a
 view for the waveform features, and only the *selected* subset is digitized
 against the boundaries inside the requested row range. Global selection happens
@@ -269,9 +271,8 @@ The JAX follow-up corrects all nine `indices_are_sorted=` arguments to use
 `bin_ind` (including empty selections); a boolean mask preserves arbitrary input
 order and therefore passes `False`. This removes the pre-existing unsupported
 compiler promise without sorting or changing spike/feature alignment. Sorted
-inputs keep the fast path. Establishing order once at the model layer remains
-[Phase 8](phase-8-remaining-findings.md) work; the per-chunk `O(n_spikes)` ordering
-check is its concrete trigger (measured below).
+inputs keep the fast path. The ordering-preparation follow-up implements the
+once-per-prediction work originally deferred to [Phase 8](phase-8-remaining-findings.md).
 
 No `astype`/float32 downcast happens on the selection path (`np.asarray` only),
 so timestamp precision is preserved.
@@ -357,7 +358,9 @@ is retained.
   also fixed five of eight backend x `is_local` combinations that previously
   raised `ShardingTypeError` on explicitly-sharded inputs. The one remaining
   recording-length read is `select_spikes_in_rows`' own pass over the 1-D spike
-  times, which its ascending-order check requires (Phase 8's trigger).
+  times, which its ascending-order check requires. Detector predictions now
+  share that host conversion and ordering result across chunks; direct backend
+  calls without preparation still perform the read themselves.
   The fallback now catches only JAX's `ShardingTypeError`: unrelated indexing,
   device and memory failures propagate without materializing a full host copy.
   The private exception import is guarded for older supported JAX releases
@@ -488,9 +491,11 @@ could not isolate spike-order validation. A follow-up measurement on a one-hour
 recording at 2 ms resolution found 0.429 ms for the old selector, of which
 0.412 ms was full-timeline digitization and 0.015 ms was the ascending-spike
 check (72,000 spikes/unit). The digitization scan is now bounded to the chunk.
-The remaining ascending check still costs `O(n_spikes)` time and roughly one
-byte per spike transiently on every chunk; establishing order once remains
-Phase 8 work. The previous ~0.4 ms extrapolation for that check is withdrawn.
+The ascending check costs `O(n_spikes)` time and roughly one byte per spike
+transiently. The ordering-preparation follow-up now pays it once per distinct
+spike-time object per detector prediction, instead of once per state/chunk.
+Standalone backend calls without preparation retain the original check. The
+previous ~0.4 ms extrapolation for that check is withdrawn.
 
 **Method and limitations, as recorded in `memory-evidence.md`:** measurements are
 `tracemalloc` peak, 1 ms-sampled RSS delta, `jax.live_arrays()` byte deltas and
@@ -559,16 +564,17 @@ benchmark or a production-arena scaling claim. No golden or tolerance changed.
 
 ### Test coverage and validation results
 
-229 tests in six modules, including the runtime, exception-handling and JAX follow-ups:
+262 tests in six modules, including the runtime, exception-handling, JAX and
+ordering-preparation follow-ups:
 
 | module | tests | covers |
 | --- | --- | --- |
 | `tests/likelihoods/test_row_slice_parity.py` | 36 | every registered backend × both `is_local`, plus `no_spike`: a row range equals the full-time slice, and every row partition tiles the full result; zero-rate sentinels asserted per backend in the fixture; `resolve_row_slice` normalization and non-unit-step rejection |
-| `tests/likelihoods/test_row_slice_edge_cases.py` | 131 | helper- and backend-level edge cases: endpoint convention, spikes on timestamps / between timestamps / duplicates, irregular and ragged partitions, empty and singleton row requests, spike-free chunks and all-units-empty, spike/feature alignment under shuffled input in both local and non-local paths, direct checks of JAX sorted-index promises, NumPy/JAX feature-selection allocation checks, propagation of unexpected selection errors without host copies, plus guard-the-guard assertions that the legacy chunk-local call really does differ |
+| `tests/likelihoods/test_row_slice_edge_cases.py` | 147 | helper- and backend-level edge cases: endpoint convention, spikes on timestamps / between timestamps / duplicates, irregular and ragged partitions, empty and singleton row requests, spike-free chunks and all-units-empty, spike/feature alignment under shuffled input in both local and non-local paths, direct checks of JAX sorted-index promises, NumPy/JAX feature-selection allocation checks, propagation of unexpected selection errors without host copies, plus guard-the-guard assertions that the legacy chunk-local call really does differ |
 | `tests/integration/test_chunk_boundary_spikes.py` | 7 | public `predict(n_chunks=5, cache_likelihood=False)` vs `n_chunks=1` for both detector families, the covariate-dependent core path, `is_missing` straddling every boundary, and requested `log_likelihood` from `predict` and from `estimate_parameters` |
 | `tests/integration/test_chunk_boundary_edge_cases.py` | 26 | the same public path over ragged chunk counts (5/6/7 with `n_time % n_chunks != 0`), singleton chunks (`n_chunks == n_time`), spike-free chunks, unsorted spike input, `is_missing`, and preservation of a legitimate `-inf` mask (delta local-position kernel), comparing acausal + causal posteriors, both state-probability sets, evidence and the full `log_likelihood` |
 | `tests/core/test_row_slice_callback.py` | 11 | both chunked drivers: a marked callback receives the full time and tiling global rows, a legacy callback receives the sliced time and no `row_slice` (and yields a different answer), the marker survives bound methods / `partial` / `__wrapped__`, accumulated rows cover every row, and positional dtype compatibility is preserved (two tests require x64) |
-| `tests/models/test_chunk_likelihood_preparation.py` | 18 | digitization scans only chunk boundaries while matching independent global indices; No-Spike computes the full median once per prediction for both detector families and both drivers, refreshes mutated timelines, skips preparation for supplied likelihoods, and supports custom callbacks with the older signature |
+| `tests/models/test_chunk_likelihood_preparation.py` | 35 | digitization scans only chunk boundaries while matching independent global indices; No-Spike computes the full median once per prediction for both detector families and both drivers, refreshes mutated timelines, skips preparation for supplied likelihoods, and supports custom callbacks with the older signature; ordering is checked once per prediction/direct call, refreshed after input mutation, and skipped for non-owning rows; host conversion is shared for NumPy/JAX/list spike times |
 
 | Command | Result |
 | --- | --- |
@@ -623,10 +629,89 @@ lengths, or block remainders can still compile additional executables.
 Host event selection preserves timestamp precision, and SciPy interpolation
 remains outside compiled kernels. Selected JAX features return to the host to
 avoid mixing their input sharding with single-device encoding arrays. The
-explicit-sharding full-input fallback and recording-sized spike-time ordering
-check remain documented limitations. Padding/bucketing or a consistent device
+explicit-sharding full-input fallback remains a documented limitation. The
+ordering follow-up below shares the spike-time ordering check across chunks.
+Padding/bucketing or a consistent device
 placement design needs a separate measured change; this audit does not claim
 GPU performance or eliminate those transfers. Only CPU devices were available.
+
+### Ordering preparation follow-up
+
+`_predict` now binds a fresh `_SpikeTimeOrder` to its likelihood callback. Each
+spike train is converted to host values and checked for ascending order on first
+use, then reused across observation states and chunks. All eight registered
+backends (including MRF's shared diffusion predictor), both local paths and
+No-Spike forward that object to the common selector. A direct
+`compute_log_likelihood` call creates its own preparation. Direct backend calls
+without the private preparation keyword retain independent input checking.
+
+The cache is local to the call and holds strong references to its source arrays,
+so object identity cannot be recycled while the cached result is live. Nothing
+is stored on the detector or globally, and no cache enters JAX kernels. Every
+later prediction rechecks its inputs, including arrays modified in place.
+Precomputed likelihoods bypass preparation, and custom callbacks with older
+signatures remain supported. Inputs must remain unchanged during one prediction.
+Empty row requests and the terminal empty row skip spike reads and preparation.
+
+Sorted inputs retain `indices_are_sorted=True`. The repeated work changes from
+`O(states × chunks × spikes)` order validation to one `O(spikes)` check per
+distinct input plus binary searches per requested range. Unsorted inputs retain
+their original order and still need a per-chunk `O(spikes)` selection mask.
+This does not remove full recording inputs, posterior storage, density work or
+variable-shape JAX compilation costs.
+
+Regression checks count the actual recording-length ordering reduction: all
+eight detector-family × transition-driver × chunk-count cases failed before the
+change and passed after it. They then shuffle the same input arrays in place and
+verify that the next prediction rechecks and matches independent direct
+likelihoods. Additional coverage checks direct-call freshness, one host conversion
+for NumPy/JAX/list inputs, no work for non-owning rows, and prepared/unprepared
+sorted/shuffled parity through every backend and both local modes. The runtime
+benchmark's 18 saved likelihood arrays were bit-identical before and after.
+
+Validation: the full regression run passed **1617 tests, with 6 unchanged skips**
+in 824.29 s. That run began before the final empty-row early return; **182 focused
+tests passed on the final implementation**, including all four new empty-row
+regressions, all backend row-slice edge cases and detector preparation checks.
+The preparation and sorted/shuffled parity subset also passed **67 tests under
+`JAX_ENABLE_X64=1`**. Independent review and ruff check/format were clean. No golden,
+snapshot or tolerance changed.
+
+The initial separate-process 20 Hz timing comparison was mixed (roughly −7% to
++11% savings on one-hour inputs), so it does not establish a broad speedup. The
+benchmark now offers a paired mode to isolate the preparation effect:
+
+```bash
+uv run python scripts/benchmark_chunk_likelihood_runtime.py /tmp/ordering-paired \
+  --compare-ordering --spikes-per-second 100
+```
+
+It alternates prepared and unprepared calls on the same fitted model and inputs,
+warms both paths three times, and measures thirty synchronized calls per path.
+Every paired result is checked for exact equality. This compares this branch
+with/without ordering reuse, not against `main`. CPU, eight electrodes, one hour
+at 100 spikes/s/electrode (360,000 spike times each), 2 ms time bins, a fixed
+500-row request, 50 spatial bins, 300 encoding spikes/electrode and four waveform
+features; fitting and compilation are excluded.
+
+| backend / path | recheck each chunk (ms) | prepared (ms) | less time |
+| --- | ---: | ---: | ---: |
+| sorted KDE non-local | 2.764 | 2.140 | 22.6% |
+| sorted KDE local | 2.569 | 2.041 | 20.6% |
+| log-KDE non-local | 2.425 | 1.831 | 24.5% |
+| log-KDE local | 7.208 | 6.633 | 8.0% |
+| GMM non-local | 3.506 | 3.489 | 0.5% |
+| GMM local | 4.367 | 3.773 | 13.6% |
+| diffusion non-local | 7.290 | 6.605 | 9.4% |
+| diffusion local | 11.033 | 10.384 | 5.9% |
+| No-Spike | 1.939 | 1.325 | 31.6% |
+
+Preparing ordering for all eight electrodes cost **0.57–0.64 ms once**; No-Spike's
+separate timeline-median preparation cost 4.43 ms once. Those costs are reported
+separately from per-chunk timings. GMM non-local was essentially unchanged; the
+other paths saved about 6–32%. On the 60-second recordings the paired differences
+were only −1.9% to +2.2%. These are small-grid likelihood-only CPU measurements,
+not GPU or end-to-end HMM speedups, and do not establish production-arena scaling.
 
 ### Deferred — explicitly NOT implemented here
 
@@ -638,9 +723,10 @@ GPU performance or eliminate those transfers. Only CPU devices were available.
 - **Phase 7a full-session posterior and incremental outputs.** Unchanged. The
   `T × N` accumulation for an explicitly requested likelihood, the full posterior
   arrays and the recording-sized inputs all remain.
-- **Phase 8 prepared spike ordering.** The JAX hint is now valid for both sorted
-  and unsorted inputs. The per-chunk `O(n_spikes)` ascending check remains
-  Phase 8's trigger to establish order once at the model layer.
+- **GPU validation and device placement.** Ordering preparation is implemented;
+  CPU coverage includes both sharding modes, but GPU runtime and a device-only
+  feature-selection path remain unmeasured. Unsorted-input masks remain linear
+  in the full spike count per chunk.
 - **C1 floors and C3b encoding exposure.** Untouched. No floor, background model
   or occupancy guard was added; `LOG_EPS` sentinels, `safe_log`, `EPS` clips,
   legitimate `-inf`s and NaN diagnostics are unchanged.
