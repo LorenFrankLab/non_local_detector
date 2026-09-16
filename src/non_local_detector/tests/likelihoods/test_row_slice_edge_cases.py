@@ -1154,3 +1154,40 @@ def test_select_spike_rows_selects_the_named_rows(as_jax):
         np.asarray(select_spike_rows(features, slice(1, 3))), [[2.0, 3.0], [4.0, 5.0]]
     )
     assert np.asarray(select_spike_rows(features, slice(2, 2))).shape == (0, 2)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("indexer_kind", ["mask", "slice"])
+@pytest.mark.parametrize(
+    "error_type", [RuntimeError, ValueError, TypeError, MemoryError]
+)
+def test_select_spike_rows_propagates_unexpected_errors(
+    monkeypatch, indexer_kind, error_type
+):
+    """Only unsupported sharding may trigger a recording-sized host copy."""
+    features = jnp.arange(10, dtype=jnp.float32).reshape(5, 2)
+    error = error_type("unexpected selection failure")
+    host_copies = []
+    asarray = np.asarray
+
+    def tracked_asarray(array, *args, **kwargs):
+        if array is features:
+            host_copies.append(array)
+        return asarray(array, *args, **kwargs)
+
+    def fail_selection(*args, **kwargs):
+        raise error
+
+    if indexer_kind == "mask":
+        indexer = np.array([True, False, False, True, False])
+        monkeypatch.setattr(jnp, "take", fail_selection)
+    else:
+        indexer = slice(1, 3)
+        monkeypatch.setattr(type(features), "__getitem__", fail_selection)
+    monkeypatch.setattr(np, "asarray", tracked_asarray)
+
+    with pytest.raises(error_type, match="unexpected selection failure") as exc:
+        select_spike_rows(features, indexer)
+
+    assert exc.value is error
+    assert not host_copies

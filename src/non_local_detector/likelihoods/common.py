@@ -11,6 +11,15 @@ from track_linearization import get_linearized_position  # type: ignore[import-u
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 
+# JAX exposes this exception only privately. Older supported releases predate
+# explicit sharding and may lack the type; an empty tuple catches nothing.
+try:
+    from jax._src.core import ShardingTypeError as _JaxShardingTypeError
+except ImportError:
+    _JAX_SHARDING_ERRORS: tuple[type[Exception], ...] = ()
+else:
+    _JAX_SHARDING_ERRORS = (_JaxShardingTypeError,)
+
 EPS = 1e-15
 LOG_EPS = np.log(EPS)
 
@@ -759,11 +768,10 @@ def select_spike_rows(
             # ``take``'s default ``mode='fill'`` from turning a mismatch into
             # NaN rows.
             selected = jnp.take(array, jnp.asarray(np.flatnonzero(indexer)), axis=0)
-    except Exception:
-        # jax raises a private ShardingTypeError (jax._src.core, no public base
-        # class in jax 0.9) when the operand is explicitly sharded and the output
-        # sharding is ambiguous. Gathering first always works and is what this
-        # code did before; it just costs the host copy this function avoids.
+    except _JAX_SHARDING_ERRORS:
+        # Explicitly sharded indexing may have ambiguous output sharding.
+        # Preserve its host fallback, but let unrelated indexing, device and
+        # memory errors propagate without copying the full recording.
         return np.asarray(array)[indexer]
 
     # See Returns: the selection comes back on the host so the jitted kernels
