@@ -33,6 +33,7 @@ from non_local_detector.environment import Environment, get_centers
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
+    _SpikeTimeOrder,
     get_position_at_time,
     get_spikecount_per_time_bin,
     interpolate_weights_at_spike_times,
@@ -552,6 +553,8 @@ def _spike_counts_matrix(
     desc: str,
     disable_progress_bar: bool,
     row_slice: slice | None = None,
+    *,
+    _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> np.ndarray:
     """Stack per-neuron spike counts into a ``(n_rows, n_neurons)`` matrix.
 
@@ -561,7 +564,12 @@ def _spike_counts_matrix(
     """
     row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
     counts = [
-        get_spikecount_per_time_bin(neuron_spike_times, time, row_slice=row_slice)
+        get_spikecount_per_time_bin(
+            neuron_spike_times,
+            time,
+            row_slice=row_slice,
+            _spike_time_order=_spike_time_order,
+        )
         for neuron_spike_times in tqdm(
             spike_times, unit="cell", desc=desc, disable=disable_progress_bar
         )
@@ -589,6 +597,8 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     is_local: bool = False,
     interior_log_place_fields: jnp.ndarray | None = None,
     row_slice: slice | None = None,
+    *,
+    _spike_time_order: _SpikeTimeOrder | None = None,
     **_encoding_extras: object,
 ) -> jnp.ndarray:
     """Predict the Poisson log-likelihood of sorted spikes under the diffusion model.
@@ -680,6 +690,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
                 "Local Likelihood",
                 disable_progress_bar,
                 row_slice=row_slice,
+                _spike_time_order=_spike_time_order,
             ),
             dtype=local_rates.dtype,
         )
@@ -703,6 +714,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
             "Non-Local Likelihood",
             disable_progress_bar,
             row_slice=row_slice,
+            _spike_time_order=_spike_time_order,
         ),
         dtype=log_interior_fields.dtype,
     )

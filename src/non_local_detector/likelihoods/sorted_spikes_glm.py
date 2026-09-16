@@ -62,6 +62,7 @@ from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 from non_local_detector.environment import Environment, get_n_bins
 from non_local_detector.likelihoods.common import (
     EPS,
+    _SpikeTimeOrder,
     get_position_at_time,
     get_spikecount_per_time_bin,
     resolve_row_slice,
@@ -399,6 +400,8 @@ def predict_sorted_spikes_glm_log_likelihood(
     disable_progress_bar: bool = False,
     is_local: bool = False,
     row_slice: slice | None = None,
+    *,
+    _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of spikes given a fitted GLM encoding model.
 
@@ -481,7 +484,10 @@ def predict_sorted_spikes_glm_log_likelihood(
             strict=True,
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times, time, row_slice=row_slice
+                neuron_spike_times,
+                time,
+                row_slice=row_slice,
+                _spike_time_order=_spike_time_order,
             )
             local_rate = jnp.exp(emission_predict_matrix @ coef)
             local_rate = jnp.clip(local_rate, min=EPS, max=None)
@@ -505,7 +511,10 @@ def predict_sorted_spikes_glm_log_likelihood(
             strict=True,
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times, time, row_slice=row_slice
+                neuron_spike_times,
+                time,
+                row_slice=row_slice,
+                _spike_time_order=_spike_time_order,
             )
             log_likelihood += jax.scipy.special.xlogy(
                 np.expand_dims(spike_count_per_time_bin, axis=1),

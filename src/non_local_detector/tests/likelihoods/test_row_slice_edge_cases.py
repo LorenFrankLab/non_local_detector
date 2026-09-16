@@ -36,8 +36,10 @@ from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
     clusterless_gmm,
+    common,
 )
 from non_local_detector.likelihoods.common import (
+    _SpikeTimeOrder,
     get_spikecount_per_time_bin,
     resolve_row_slice,
     select_spike_rows,
@@ -693,8 +695,9 @@ def test_singleton_row_requests_tile_the_full_result(
 @pytest.mark.integration
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
 @pytest.mark.parametrize("is_local", [False, True])
+@pytest.mark.parametrize("prepared", [False, True])
 def test_shuffled_spike_order_row_slice_parity(
-    fitted_backends, edge_case_data, algorithm, is_local, monkeypatch
+    fitted_backends, edge_case_data, algorithm, is_local, prepared, monkeypatch
 ):
     """Item 7 at the backend: unsorted decoding input, features still paired.
 
@@ -719,6 +722,15 @@ def test_shuffled_spike_order_row_slice_parity(
 
     monkeypatch.setattr(jax.ops, "segment_sum", checked_segment_sum)
     monkeypatch.setattr(clusterless_gmm, "segment_sum", checked_segment_sum)
+    order_cache = _SpikeTimeOrder() if prepared else None
+    check_order = common._spikes_are_ascending
+    order_checks = []
+
+    def tracked_order_check(spikes):
+        order_checks.append(id(spikes))
+        return check_order(spikes)
+
+    monkeypatch.setattr(common, "_spikes_are_ascending", tracked_order_check)
     predict_func, encoding_model, is_clusterless = fitted_backends[algorithm]
     time = edge_case_data["time"]
     spike_times, features = edge_case_data["spike_cases"]["mixed"]
@@ -737,19 +749,30 @@ def test_shuffled_spike_order_row_slice_parity(
         if is_clusterless:
             args.append(feats)
         return np.asarray(
-            predict_func(time, *args, **encoding_model, is_local=is_local, **kwargs)
+            predict_func(
+                time,
+                *args,
+                **encoding_model,
+                is_local=is_local,
+                _spike_time_order=order_cache,
+                **kwargs,
+            )
         )
 
     sorted_full = predict(spike_times, features)
     assert_fixture_scale(sorted_full, algorithm)
     shuffled_full = predict(shuffled_times, shuffled_features)
     np.testing.assert_allclose(shuffled_full, sorted_full, **parity_kwargs(algorithm))
+    checks_after_full = len(order_checks)
 
     row_slice = slice(3, 10)
     rows = predict(shuffled_times, shuffled_features, row_slice=row_slice)
     np.testing.assert_allclose(
         rows, shuffled_full[row_slice], **parity_kwargs(algorithm)
     )
+    if prepared:
+        assert checks_after_full > 0
+        assert len(order_checks) == checks_after_full
 
 
 @pytest.mark.unit

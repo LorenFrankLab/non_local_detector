@@ -23,6 +23,7 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     LOG_EPS,
+    _SpikeTimeOrder,
     get_position_at_time,
     interpolate_weights_at_spike_times,
     resolve_row_slice,
@@ -612,6 +613,7 @@ def predict_clusterless_gmm_log_likelihood(
     row_slice: slice | None = None,
     *,
     mark_dimensions: list[int],
+    _spike_time_order: _SpikeTimeOrder | None = None,
     **kwargs,  # Accept and ignore extra kwargs for compatibility with model interface
 ) -> jnp.ndarray:
     """
@@ -702,6 +704,7 @@ def predict_clusterless_gmm_log_likelihood(
             mean_rates=mean_rates,
             disable_progress_bar=disable_progress_bar,
             row_slice=row_slice,
+            _spike_time_order=_spike_time_order,
         )
 
     row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
@@ -735,14 +738,20 @@ def predict_clusterless_gmm_log_likelihood(
         # (e.g. against a state whose encoding de-weighted this electrode). With
         # no in-window spikes the scatter-add contributes zero.
         if joint_gmm is None:
-            _, seg_ids = select_spikes_in_rows(elect_times, time, row_start, row_stop)
+            _, seg_ids = select_spikes_in_rows(
+                elect_times,
+                time,
+                row_start,
+                row_stop,
+                _spike_time_order=_spike_time_order,
+            )
             spikes_per_bin = jnp.zeros(n_rows).at[seg_ids].add(1.0)  # (n_rows,)
             log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin[:, None]
             continue
 
         # Select the spikes owned by the requested rows and bin them locally
         spike_indexer, seg_ids = select_spikes_in_rows(
-            elect_times, time, row_start, row_stop
+            elect_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
         )
         elect_feats = _as_jnp(select_spike_rows(elect_feats, spike_indexer))
 
@@ -831,6 +840,8 @@ def compute_local_log_likelihood(
     mean_rates: jnp.ndarray,
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
+    *,
+    _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Local log-likelihood at the animal's interpolated position.
 
@@ -909,7 +920,13 @@ def compute_local_log_likelihood(
         # and the marked-point-process likelihood. The integral term is zero. Do
         # not skip -- an observed spike is negative evidence, not "no data".
         if joint_gmm is None:
-            _, seg_ids = select_spikes_in_rows(elect_times, time, row_start, row_stop)
+            _, seg_ids = select_spikes_in_rows(
+                elect_times,
+                time,
+                row_start,
+                row_stop,
+                _spike_time_order=_spike_time_order,
+            )
             if seg_ids.shape[0] > 0:
                 spikes_per_bin = jnp.zeros(n_rows).at[seg_ids].add(1.0)  # (n_rows,)
                 log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin
@@ -920,7 +937,7 @@ def compute_local_log_likelihood(
         # would device-copy every decoding spike in the recording on every chunk
         # call (the non-local branch above does the same).
         spike_indexer, seg_ids = select_spikes_in_rows(
-            elect_times, time, row_start, row_stop
+            elect_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
         )
         elect_times = np.asarray(select_spike_rows(elect_times, spike_indexer))
         elect_feats = _as_jnp(select_spike_rows(elect_feats, spike_indexer))

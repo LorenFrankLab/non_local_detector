@@ -1,5 +1,6 @@
 """Recording-wide work must be prepared once, not repeated in every chunk."""
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -9,7 +10,56 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
 )
 from non_local_detector.core import row_slice_aware
-from non_local_detector.likelihoods.common import select_spikes_in_rows
+from non_local_detector.likelihoods.common import _SpikeTimeOrder, select_spikes_in_rows
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("array_type", [np.asarray, jnp.asarray, list])
+def test_prepared_spike_times_convert_original_input_only_once(monkeypatch, array_type):
+    """Reuse the host times for NumPy, JAX and list inputs across row requests."""
+    time = np.arange(10.0)
+    spikes = array_type([0.5, 1.5, 3.5, 6.5, 8.5])
+    original_asarray = np.asarray
+    conversions = []
+
+    def tracked_asarray(values, *args, **kwargs):
+        if values is spikes:
+            conversions.append(values)
+        return original_asarray(values, *args, **kwargs)
+
+    order = _SpikeTimeOrder()
+    monkeypatch.setattr(np, "asarray", tracked_asarray)
+    for row_start, row_stop in [(0, 3), (3, 7), (7, 10)]:
+        indexer, rows = select_spikes_in_rows(
+            spikes, time, row_start, row_stop, _spike_time_order=order
+        )
+        selected = original_asarray(spikes)[indexer]
+        np.testing.assert_array_equal(
+            rows, np.digitize(selected, time[1:-1]) - row_start
+        )
+    assert len(conversions) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rows", [(3, 3), (9, 10)])
+@pytest.mark.parametrize("prepared", [False, True])
+def test_non_owning_rows_do_not_read_spike_times(monkeypatch, rows, prepared):
+    """Empty requests and the terminal empty row need no spike transfer/check."""
+    time = np.arange(10.0)
+    spikes = np.arange(10_000.0)
+    original_asarray = np.asarray
+
+    def tracked_asarray(values, *args, **kwargs):
+        if values is spikes:
+            pytest.fail("Rows that cannot own spikes should not read spike times")
+        return original_asarray(values, *args, **kwargs)
+
+    monkeypatch.setattr(np, "asarray", tracked_asarray)
+    indexer, bin_ind = select_spikes_in_rows(
+        spikes, time, *rows, _spike_time_order=_SpikeTimeOrder() if prepared else None
+    )
+    assert spikes[indexer].size == 0
+    assert bin_ind.size == 0
 
 
 @pytest.mark.unit
@@ -113,6 +163,7 @@ def test_cached_likelihood_skips_duration_preparation(fitted_detector, monkeypat
         pytest.fail("No-Spike duration is unused when likelihoods are supplied")
 
     monkeypatch.setattr(np, "median", unexpected_median)
+    monkeypatch.setattr(_SpikeTimeOrder, "get", unexpected_median)
     result = detector._predict(time, log_likelihoods=expected, n_chunks=3)
     np.testing.assert_array_equal(result[5], expected)
 
@@ -138,3 +189,78 @@ def test_custom_likelihood_signature_remains_supported(fitted_detector, monkeypa
         accumulate_log_likelihoods=True,
     )
     np.testing.assert_allclose(result[5], expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.integration
+def test_direct_likelihood_uses_fresh_order_preparation(fitted_detector, monkeypatch):
+    """Standalone likelihood calls share state work but never retain ordering."""
+    detector, fitted_args = fitted_detector
+    spikes = fitted_args[2][0].copy()
+    args = (*fitted_args[:2], [spikes], *fitted_args[3:])
+    time = np.arange(31) * 0.002
+    original_all = np.all
+    checks = []
+
+    def tracked_all(values, *args, **kwargs):
+        result = original_all(values, *args, **kwargs)
+        if getattr(values, "shape", None) == (len(spikes) - 1,):
+            checks.append(bool(result))
+        return result
+
+    monkeypatch.setattr(np, "all", tracked_all)
+    detector.compute_log_likelihood(time, *args)
+    spikes[:] = spikes[::-1]
+    detector.compute_log_likelihood(time, *args)
+    assert checks == [True, False]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("covariate", [False, True])
+@pytest.mark.parametrize("n_chunks", [1, 3])
+def test_spike_order_checked_once_per_prediction(
+    fitted_detector, monkeypatch, covariate, n_chunks
+):
+    """Check once across states/chunks; changed arrays get a fresh check next run.
+
+    Track the recording-length boolean reduction, rather than a cache helper,
+    so the test fails if any backend still scans all spikes on every chunk.
+    The array is shuffled in place between predictions along with its features.
+    """
+    detector, fitted_args = fitted_detector
+    time = np.arange(31) * 0.002
+    spikes = np.linspace(0.0, 0.059, 503)
+    args = (*fitted_args[:2], [spikes])
+    if len(fitted_args) == 4:
+        features = np.random.default_rng(9).normal(size=(len(spikes), 2))
+        args = (*args, [features])
+    transitions = detector.discrete_state_transitions_
+    if covariate:
+        transitions = np.broadcast_to(transitions, (len(time), *transitions.shape))
+    original_all = np.all
+    checks = []
+
+    def tracked_all(values, *args, **kwargs):
+        result = original_all(values, *args, **kwargs)
+        if getattr(values, "shape", None) == (len(spikes) - 1,):
+            checks.append(bool(result))
+        return result
+
+    for ascending in (True, False):
+        expected = np.asarray(detector.compute_log_likelihood(time, *args))
+        checks.clear()
+        with monkeypatch.context() as patch:
+            patch.setattr(np, "all", tracked_all)
+            result = detector._predict(
+                time,
+                log_likelihood_args=args,
+                cache_likelihood=False,
+                n_chunks=n_chunks,
+                discrete_state_transitions=transitions,
+                accumulate_log_likelihoods=True,
+            )
+        assert checks == [ascending]
+        np.testing.assert_allclose(result[5], expected, rtol=1e-5, atol=1e-6)
+        order = np.random.default_rng(10).permutation(len(spikes))
+        spikes[:] = spikes[order]
+        if len(args) == 4:
+            args[3][0][:] = args[3][0][order]

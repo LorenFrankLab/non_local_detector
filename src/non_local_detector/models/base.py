@@ -47,7 +47,7 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
     predict_no_spike_log_likelihood,
 )
-from non_local_detector.likelihoods.common import resolve_row_slice
+from non_local_detector.likelihoods.common import _SpikeTimeOrder, resolve_row_slice
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
     ContinuousInitialConditions,
@@ -1748,20 +1748,22 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         )
 
         log_likelihood_func = self.compute_log_likelihood
-        if (
-            log_likelihoods is None
-            and any(obs.is_no_spike for obs in self.observation_models)
-            and "_no_spike_time_bin_size"
-            in inspect.signature(log_likelihood_func).parameters
-        ):
-            # The full-timeline median is O(n_time), so compute it once per
-            # prediction, not per chunk. Keep it in this call's callback rather
-            # than on the detector: a later prediction may use different times.
-            # Custom overrides with the older signature remain supported.
-            log_likelihood_func = partial(
-                log_likelihood_func,
-                _no_spike_time_bin_size=np.median(np.diff(time)),
-            )
+        if log_likelihoods is None:
+            parameters = inspect.signature(log_likelihood_func).parameters
+            prepared: dict[str, object] = {}
+            if "_spike_time_order" in parameters:
+                # Lazy, shared by every state/chunk, and discarded after this
+                # prediction. A later call rechecks even the same input object.
+                prepared["_spike_time_order"] = _SpikeTimeOrder()
+            if (
+                any(obs.is_no_spike for obs in self.observation_models)
+                and "_no_spike_time_bin_size" in parameters
+            ):
+                prepared["_no_spike_time_bin_size"] = np.median(np.diff(time))
+            # Only opted-in keywords reach custom overrides. Keep preparation
+            # on the callback, never on the detector or in a global cache.
+            if prepared:
+                log_likelihood_func = partial(log_likelihood_func, **prepared)
 
         # Collect degenerate (all-impossible) timestep indices during the
         # forward pass. This is reliable regardless of n_chunks/caching,
@@ -3145,6 +3147,7 @@ class ClusterlessDetector(_DetectorBase):
         row_slice: slice | None = None,
         *,
         _no_spike_time_bin_size: float | None = None,
+        _spike_time_order: _SpikeTimeOrder | None = None,
     ) -> jnp.ndarray:
         """
         Compute the log likelihood for the given data.
@@ -3203,6 +3206,9 @@ class ClusterlessDetector(_DetectorBase):
         _no_spike_time_bin_size : float | None, optional
             Internal full-timeline median time step, prepared once by ``_predict``
             and reused for No-Spike in every chunk. None computes it on demand.
+        _spike_time_order : _SpikeTimeOrder | None, optional
+            Internal ordering preparation shared across states and chunks. None
+            creates fresh preparation for this likelihood call.
 
         Returns
         -------
@@ -3210,6 +3216,8 @@ class ClusterlessDetector(_DetectorBase):
             ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
         logger.info("Computing log likelihood...")
+        if _spike_time_order is None:
+            _spike_time_order = _SpikeTimeOrder()
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
         needs_position = (
             np.any([obs.is_local for obs in self.observation_models])
@@ -3276,6 +3284,7 @@ class ClusterlessDetector(_DetectorBase):
                     self.no_spike_rate,
                     row_slice=row_slice,
                     _time_bin_size=_no_spike_time_bin_size,
+                    _spike_time_order=_spike_time_order,
                 )
             elif likelihood_name not in computed_likelihoods:
                 likelihood_results[state_id] = likelihood_func(
@@ -3287,6 +3296,7 @@ class ClusterlessDetector(_DetectorBase):
                     **self.encoding_model_[likelihood_name[:2]],
                     is_local=effective_is_local,
                     row_slice=row_slice,
+                    _spike_time_order=_spike_time_order,
                 )
                 computed_likelihoods[likelihood_name] = state_id
             else:
@@ -4160,6 +4170,7 @@ class SortedSpikesDetector(_DetectorBase):
         row_slice: slice | None = None,
         *,
         _no_spike_time_bin_size: float | None = None,
+        _spike_time_order: _SpikeTimeOrder | None = None,
     ) -> jnp.ndarray:
         """
         Compute the log likelihood for the given data.
@@ -4216,6 +4227,9 @@ class SortedSpikesDetector(_DetectorBase):
         _no_spike_time_bin_size : float | None, optional
             Internal full-timeline median time step, prepared once by ``_predict``
             and reused for No-Spike in every chunk. None computes it on demand.
+        _spike_time_order : _SpikeTimeOrder | None, optional
+            Internal ordering preparation shared across states and chunks. None
+            creates fresh preparation for this likelihood call.
 
         Returns
         -------
@@ -4223,6 +4237,8 @@ class SortedSpikesDetector(_DetectorBase):
             ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
         logger.info("Computing log likelihood...")
+        if _spike_time_order is None:
+            _spike_time_order = _SpikeTimeOrder()
         row_start, row_stop = resolve_row_slice(row_slice, len(time))
         n_rows = row_stop - row_start
         # Position interpolation, local kernels and the non-local penalty are
@@ -4290,6 +4306,7 @@ class SortedSpikesDetector(_DetectorBase):
                     self.no_spike_rate,
                     row_slice=row_slice,
                     _time_bin_size=_no_spike_time_bin_size,
+                    _spike_time_order=_spike_time_order,
                 )
             elif likelihood_name not in computed_likelihoods:
                 likelihood_results[state_id] = likelihood_func(
@@ -4300,6 +4317,7 @@ class SortedSpikesDetector(_DetectorBase):
                     **self.encoding_model_[likelihood_name[:2]],
                     is_local=effective_is_local,
                     row_slice=row_slice,
+                    _spike_time_order=_spike_time_order,
                 )
                 computed_likelihoods[likelihood_name] = state_id
             else:

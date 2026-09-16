@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Detector predictions now check each spike train's ordering once and reuse the result across observation states and chunks, preserving JAX's sorted-index optimization. Preparation is discarded after each prediction, so later calls recheck modified inputs. Empty row requests skip spike-data reads entirely.
 - Clusterless likelihood reductions now promise sorted indices to JAX only when spike ordering has been verified. Unsorted decoding spikes retain their original feature pairing and use the general reduction path, including zero-rate electrodes; sorted inputs keep the existing optimization.
 
 - Per-spike JAX selection now uses the full-array host fallback only for JAX sharding errors. Unrelated indexing, device and memory errors propagate instead of being silently retried with a recording-sized host copy. The No-Spike predictor's documentation and examples now correctly describe one output row per timestamp.

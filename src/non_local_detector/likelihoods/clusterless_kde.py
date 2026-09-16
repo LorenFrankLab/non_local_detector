@@ -10,6 +10,7 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     KDEModel,
     _log_kernel_matrix,
+    _SpikeTimeOrder,
     as_std_array,
     block_kde,
     get_position_at_time,
@@ -359,6 +360,8 @@ def predict_clusterless_kde_log_likelihood(
     disable_progress_bar: bool = False,
     encoding_weights: list[jnp.ndarray] | None = None,
     row_slice: slice | None = None,
+    *,
+    _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of the clusterless KDE model.
 
@@ -443,6 +446,7 @@ def predict_clusterless_kde_log_likelihood(
             disable_progress_bar,
             encoding_weights=encoding_weights,
             row_slice=row_slice,
+            _spike_time_order=_spike_time_order,
         )
     else:
         is_track_interior = environment.is_track_interior_.ravel()
@@ -472,7 +476,11 @@ def predict_clusterless_kde_log_likelihood(
             strict=True,
         ):
             spike_indexer, spike_bin_ind = select_spikes_in_rows(
-                electrode_spike_times, time, row_start, row_stop
+                electrode_spike_times,
+                time,
+                row_start,
+                row_stop,
+                _spike_time_order=_spike_time_order,
             )
             electrode_decoding_spike_waveform_features = select_spike_rows(
                 electrode_decoding_spike_waveform_features, spike_indexer
@@ -522,6 +530,8 @@ def compute_local_log_likelihood(
     disable_progress_bar: bool = False,
     encoding_weights: list[jnp.ndarray] | None = None,
     row_slice: slice | None = None,
+    *,
+    _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Compute the log likelihood at the animal's position.
 
@@ -605,7 +615,11 @@ def compute_local_log_likelihood(
         strict=True,
     ):
         spike_indexer, spike_bin_ind = select_spikes_in_rows(
-            electrode_spike_times, time, row_start, row_stop
+            electrode_spike_times,
+            time,
+            row_start,
+            row_stop,
+            _spike_time_order=_spike_time_order,
         )
         electrode_spike_times = select_spike_rows(electrode_spike_times, spike_indexer)
         electrode_decoding_spike_waveform_features = select_spike_rows(

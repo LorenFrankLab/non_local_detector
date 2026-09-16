@@ -17,6 +17,7 @@ import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.likelihoods.common import (
+    _SpikeTimeOrder,
     get_spikecount_per_time_bin,
     resolve_row_slice,
 )
@@ -29,6 +30,7 @@ def predict_no_spike_log_likelihood(
     row_slice: slice | None = None,
     *,
     _time_bin_size: float | None = None,
+    _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Return the log likelihood of low spike rate for each time bin.
 
@@ -110,7 +112,10 @@ def predict_no_spike_log_likelihood(
         no_spike_log_likelihood += (
             jax.scipy.special.xlogy(
                 get_spikecount_per_time_bin(
-                    neuron_spike_times, time, row_slice=row_slice
+                    neuron_spike_times,
+                    time,
+                    row_slice=row_slice,
+                    _spike_time_order=_spike_time_order,
                 ),
                 no_spike_rates,
             )

@@ -63,6 +63,7 @@ from non_local_detector.likelihoods.clusterless_kde import kde_distance
 from non_local_detector.likelihoods.common import (
     EPS,
     LOG_EPS,
+    _SpikeTimeOrder,
     as_std_array,
     get_position_at_time,
     interpolate_weights_at_spike_times,
@@ -464,6 +465,7 @@ def predict_clusterless_diffusion_log_likelihood(
     *,
     is_local: bool = False,
     row_slice: slice | None = None,
+    _spike_time_order: _SpikeTimeOrder | None = None,
     **encoding_model: object,
 ) -> jnp.ndarray:
     """Predict the clusterless graph-diffusion log likelihood.
@@ -598,7 +600,11 @@ def predict_clusterless_diffusion_log_likelihood(
             strict=True,
         ):
             spike_indexer, spike_bin_ind = select_spikes_in_rows(
-                electrode_spike_times, time, row_start, row_stop
+                electrode_spike_times,
+                time,
+                row_start,
+                row_stop,
+                _spike_time_order=_spike_time_order,
             )
             electrode_spike_times = np.asarray(
                 select_spike_rows(electrode_spike_times, spike_indexer)
@@ -718,7 +724,11 @@ def predict_clusterless_diffusion_log_likelihood(
         strict=True,
     ):
         spike_indexer, spike_bin_ind = select_spikes_in_rows(
-            electrode_spike_times, time, row_start, row_stop
+            electrode_spike_times,
+            time,
+            row_start,
+            row_stop,
+            _spike_time_order=_spike_time_order,
         )
         # Validate only the in-window decode features that actually enter the
         # likelihood (mirrors fit's post-clip validation); an out-of-window spike's

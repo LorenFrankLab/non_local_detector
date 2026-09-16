@@ -59,6 +59,7 @@ from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.common import (
     EPS,
     KDEModel,
+    _SpikeTimeOrder,
     get_position_at_time,
     get_spikecount_per_time_bin,
     resolve_row_slice,
@@ -280,6 +281,8 @@ def predict_sorted_spikes_kde_log_likelihood(
     disable_progress_bar: bool = False,
     is_local: bool = False,
     row_slice: slice | None = None,
+    *,
+    _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of sorted spikes using KDE encoding models.
 
@@ -358,7 +361,10 @@ def predict_sorted_spikes_kde_log_likelihood(
             strict=True,
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times, time, row_slice=row_slice
+                neuron_spike_times,
+                time,
+                row_slice=row_slice,
+                _spike_time_order=_spike_time_order,
             )
             marginal_density = neuron_marginal_model.predict(interpolated_position)
             # A NaN marginal at decode means a NaN interpolated position
@@ -395,7 +401,10 @@ def predict_sorted_spikes_kde_log_likelihood(
             strict=True,
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times, time, row_slice=row_slice
+                neuron_spike_times,
+                time,
+                row_slice=row_slice,
+                _spike_time_order=_spike_time_order,
             )
             log_likelihood += jax.scipy.special.xlogy(
                 np.expand_dims(spike_count_per_time_bin, axis=1),

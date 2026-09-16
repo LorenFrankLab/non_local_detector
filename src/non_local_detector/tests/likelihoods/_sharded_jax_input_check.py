@@ -175,10 +175,10 @@ def run(mesh) -> int:
                 jax.block_until_ready(predict_func(*args, **kwargs))
                 peaks.append(peak_rss() - before)
                 # Only the FEATURES are asserted on. The spike times are gathered
-                # by ``select_spikes_in_rows`` itself (its ascending-order check
-                # and ``searchsorted`` read every element), which is a 1-D
-                # 4 B/spike array against the 2-D 16 B/spike features, and
-                # removing it needs the Phase 8 sorted-index contract.
+                # by ``select_spikes_in_rows`` for host-side order validation:
+                # 1-D 4 B/spike against the 2-D 16 B/spike features. Detector
+                # predictions reuse this conversion/check across chunks; these
+                # direct backend calls each validate their own inputs.
                 cached = cached or any(
                     getattr(array, "_npy_value", None) is not None
                     for array in device_features

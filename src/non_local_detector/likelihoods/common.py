@@ -298,11 +298,41 @@ def resolve_row_slice(row_slice: slice | None, n_time: int) -> tuple[int, int]:
     return row_start, max(row_start, row_stop)
 
 
+def _spikes_are_ascending(spike_times: np.ndarray) -> bool:
+    """Verify non-decreasing times without sorting or changing precision."""
+    return spike_times.size < 2 or bool(np.all(spike_times[1:] >= spike_times[:-1]))
+
+
+class _SpikeTimeOrder:
+    """Host spike times and verified ordering, scoped to one prediction.
+
+    Each original input is converted and checked on first use, then reused by
+    every observation state and chunk. Strong references prevent identity reuse.
+    Inputs must remain unchanged during the prediction; a fresh instance on the
+    next call rechecks even arrays modified in place. Never store this object on
+    a detector or pass it into a JIT kernel.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[int, tuple[object, np.ndarray, bool]] = {}
+
+    def get(self, spike_times) -> tuple[np.ndarray, bool]:
+        """Return the original input's host values and established ordering."""
+        key = id(spike_times)
+        if key not in self._entries:
+            values = np.asarray(spike_times)
+            self._entries[key] = (spike_times, values, _spikes_are_ascending(values))
+        _, values, ascending = self._entries[key]
+        return values, ascending
+
+
 def select_spikes_in_rows(
     spike_times: np.ndarray,
     time: np.ndarray,
     row_start: int,
     row_stop: int,
+    *,
+    _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> tuple[slice | np.ndarray, np.ndarray]:
     """Select the spikes owned by the global rows ``[row_start, row_stop)``.
 
@@ -328,6 +358,9 @@ def select_spikes_in_rows(
     row_start : int
     row_stop : int
         Half-open range of requested rows, as returned by ``resolve_row_slice``.
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal prediction-local preparation shared across states and chunks.
+        Direct callers omit it and verify ordering on each call.
 
     Returns
     -------
@@ -343,12 +376,19 @@ def select_spikes_in_rows(
         (``global_row - row_start``), for ``num_segments = row_stop - row_start``.
     """
     time = np.asarray(time)
-    spike_times = np.asarray(spike_times)
     n_time = time.shape[0]
-    # Rows that can own a spike. A length-1 timeline owns only t == time[0].
+    # A length-1 timeline owns t == time[0]; the last row of longer timelines
+    # owns no spikes. Such requests need neither a host transfer nor ordering.
     n_owning_rows = max(n_time - 1, 1)
+    if row_start >= min(row_stop, n_owning_rows):
+        return slice(0, 0), np.zeros((0,), dtype=int)
 
-    if spike_times.size == 0 or row_start >= min(row_stop, n_owning_rows):
+    if _spike_time_order is None:
+        spike_times = np.asarray(spike_times)
+        is_ascending = None
+    else:
+        spike_times, is_ascending = _spike_time_order.get(spike_times)
+    if spike_times.size == 0:
         return slice(0, 0), np.zeros((0,), dtype=int)
 
     lower = time[row_start]
@@ -358,9 +398,8 @@ def select_spikes_in_rows(
     upper = time[n_time - 1] if upper_is_inclusive else time[row_stop]
 
     # Establish, never assume, the ordering the range lookup needs.
-    is_ascending = spike_times.size < 2 or bool(
-        np.all(spike_times[1:] >= spike_times[:-1])
-    )
+    if is_ascending is None:
+        is_ascending = _spikes_are_ascending(spike_times)
     if is_ascending:
         start = int(np.searchsorted(spike_times, lower, side="left"))
         stop = int(
@@ -786,6 +825,8 @@ def get_spikecount_per_time_bin(
     spike_times: np.ndarray,
     time: np.ndarray,
     row_slice: slice | None = None,
+    *,
+    _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> np.ndarray:
     """Get the number of spikes in each requested time bin.
 
@@ -806,7 +847,9 @@ def get_spikecount_per_time_bin(
         ``n_rows`` is ``n_time`` by default, else the length of ``row_slice``.
     """
     row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
-    _, bin_ind = select_spikes_in_rows(spike_times, time, row_start, row_stop)
+    _, bin_ind = select_spikes_in_rows(
+        spike_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
+    )
     return np.bincount(bin_ind, minlength=row_stop - row_start)
 
 
