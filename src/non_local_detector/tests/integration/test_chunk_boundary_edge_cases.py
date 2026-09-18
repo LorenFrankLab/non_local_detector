@@ -1,10 +1,13 @@
-"""Edge cases of chunked prediction through the public ``predict`` path.
+"""Decoding spikes must survive likelihood chunk boundaries.
 
-``test_chunk_boundary_spikes.py`` establishes the headline regression: an
-uncached chunked ``predict`` must equal the unchunked one when spikes fall in
-the gap between adjacent chunks. This module pins the boundary cases of that
-guarantee, all through the public detector API with ``cache_likelihood=False``
-so the likelihood is genuinely recomputed per chunk:
+``predict(n_chunks > 1)`` recomputes the likelihood once per chunk. When the
+likelihood callback received only ``time[chunk]``, every backend clipped the
+decoding spikes to that chunk's first and last timestamp, so a spike falling
+strictly between the last timestamp of chunk ``k`` and the first timestamp of
+chunk ``k + 1`` was dropped by both chunks. These tests place spikes in those
+gaps and require an uncached chunked ``predict`` to equal the unchunked one,
+all through the public detector API with ``cache_likelihood=False`` so the
+likelihood is genuinely recomputed per chunk. The boundary cases covered:
 
 * spikes exactly on a chunk-start timestamp, on ``time[0]`` and on ``time[-1]``;
 * ragged (``n_time`` not divisible by ``n_chunks``) and single-row chunks;
@@ -12,15 +15,17 @@ so the likelihood is genuinely recomputed per chunk:
 * ``is_missing`` runs straddling chunk boundaries;
 * unsorted decoding spike input;
 * a likelihood with legitimate ``-inf`` entries (``local_position_std=0``
-  delta kernel): the non-finite mask must be identical, not merely "finite".
+  delta kernel): the non-finite mask must be identical, not merely "finite";
+* a requested log likelihood (``return_outputs``) and ``estimate_parameters``
+  delivering every row in global order.
 
 Both chunk drivers are covered: the stationary
 ``chunked_filter_smoother`` and, for the boundary-spike and ``is_missing``
 cases, ``chunked_filter_smoother_covariate_dependent``.
 
-Endpoint convention under test is the current one (Phase 6a migrates it):
-in-range is ``time[0] <= t <= time[-1]`` and a spike at ``time[-1]`` lands in
-row ``n_time - 2``.
+Row ownership is defined on the full decoding timeline: a spike is in range iff
+``time[0] <= t <= time[-1]`` and lands in row ``np.digitize(t, time[1:-1])``,
+so a spike at ``time[-1]`` lands in row ``n_time - 2``.
 """
 
 import numpy as np
@@ -31,6 +36,7 @@ from non_local_detector import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
 )
+from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
@@ -58,9 +64,24 @@ def boundary_gap_times(time: np.ndarray, n_chunks: int) -> np.ndarray:
 
 
 def boundary_timestamp_times(time: np.ndarray, n_chunks: int) -> np.ndarray:
-    """Chunk-start timestamps themselves, plus both timeline endpoints (item 1)."""
+    """Chunk-end and chunk-start timestamps, plus both timeline endpoints (item 1).
+
+    A spike exactly on a chunk's LAST timestamp is the on-timestamp case that
+    per-chunk binning gets wrong: the chunk's own timeline ends there, so the
+    ``<= time[-1]`` clip keeps the spike but ``digitize`` against the chunk's
+    interior edges assigns it one row early (the final row of any timeline owns
+    nothing). A spike on a chunk's first timestamp lands in the same row either
+    way, so it is included for completeness rather than as the discriminator.
+    """
     rows = chunk_start_rows(len(time), n_chunks)
-    return np.array([time[0], *[time[row] for row in rows], time[-1]])
+    return np.array(
+        [
+            time[0],
+            *[time[row - 1] for row in rows],
+            *[time[row] for row in rows],
+            time[-1],
+        ]
+    )
 
 
 def extra_spike_times(time: np.ndarray) -> np.ndarray:
@@ -147,10 +168,10 @@ def assert_results_match(reference, chunked, check_log_likelihood: bool = True):
 def assert_log_likelihood_matches(reference: np.ndarray, chunked: np.ndarray) -> None:
     """Compare log likelihoods without demanding finiteness.
 
-    Phase 2 legitimately produces ``-inf`` entries (a zero-probability state
-    bin), so the non-finite *mask* is compared exactly and the finite values
-    numerically. A blanket finiteness assertion would either fail on correct
-    output or hide a mask that moved.
+    A likelihood legitimately carries ``-inf`` entries (a zero-probability
+    state bin), so the non-finite *mask* is compared exactly and the finite
+    values numerically. A blanket finiteness assertion would either fail on
+    correct output or hide a mask that moved.
     """
     assert chunked.shape == reference.shape
     np.testing.assert_array_equal(
@@ -192,13 +213,18 @@ def sorted_simulation():
     }
 
 
-def fit_sorted_detector(sim, **detector_kwargs):
-    """Fit a non-local sorted-spikes detector on the simulated recording."""
+def sorted_detector(**detector_kwargs) -> NonLocalSortedSpikesDetector:
+    """An unfitted non-local sorted-spikes KDE detector."""
     return NonLocalSortedSpikesDetector(
         sorted_spikes_algorithm="sorted_spikes_kde",
         sorted_spikes_algorithm_params={"position_std": 6.0, "block_size": int(2**12)},
         **detector_kwargs,
-    ).fit(
+    )
+
+
+def fit_sorted_detector(sim, **detector_kwargs):
+    """Fit a non-local sorted-spikes detector on the simulated recording."""
+    return sorted_detector(**detector_kwargs).fit(
         sim["time"],
         sim["position"],
         sim["spike_times"],
@@ -282,12 +308,10 @@ def clusterless_setup():
 def covariate_setup(sorted_simulation):
     """Fitted covariate-dependent detector (time-varying discrete transitions)."""
     sim = sorted_simulation
-    detector = NonLocalSortedSpikesDetector(
-        sorted_spikes_algorithm="sorted_spikes_kde",
-        sorted_spikes_algorithm_params={"position_std": 6.0, "block_size": int(2**12)},
+    detector = sorted_detector(
         discrete_transition_type=DiscreteNonStationaryDiagonal(
             diagonal_values=np.full((4,), 0.98), formula="1 + speed"
-        ),
+        )
     ).fit(
         sim["time"],
         sim["position"],
@@ -374,6 +398,34 @@ def clusterless_predict_kwargs(setup, **overrides):
 
 
 # ==============================================================================
+# The recorded chunk-boundary example, at the spike-counting helper
+# ==============================================================================
+
+
+@pytest.mark.unit
+def test_row_sliced_spike_counts_match_full_time_counts():
+    """Row slices must tile the full counts.
+
+    ``time = [0..5]`` with spikes at every bin midpoint. Chunk-local binning
+    yields ``[1, 1, 0, 1, 1, 0]`` (the spike at 2.5 is lost); global binning
+    must reproduce ``[1, 1, 1, 1, 1, 0]``.
+    """
+    time = np.arange(6.0)
+    spikes = np.array([0.5, 1.5, 2.5, 3.5, 4.5])
+
+    full_counts = get_spikecount_per_time_bin(spikes, time)
+    np.testing.assert_array_equal(full_counts, [1, 1, 1, 1, 1, 0])
+
+    chunked_counts = np.concatenate(
+        [
+            get_spikecount_per_time_bin(spikes, time, row_slice=slice(0, 3)),
+            get_spikecount_per_time_bin(spikes, time, row_slice=slice(3, 6)),
+        ]
+    )
+    np.testing.assert_array_equal(chunked_counts, full_counts)
+
+
+# ==============================================================================
 # Items 1, 2, 5: boundary timestamps, in-gap spikes, ragged/uneven chunks
 # ==============================================================================
 
@@ -433,9 +485,15 @@ def test_spikes_only_on_chunk_boundaries_match_unchunked(sorted_setup):
     reference = detector.predict(**kwargs, n_chunks=1)
     chunked = detector.predict(**kwargs, n_chunks=n_chunks, cache_likelihood=False)
 
-    # Premise: those spikes really are counted (a silent drop on both sides
-    # would make this test vacuous).
-    assert reference.log_likelihood.to_numpy().shape[0] == len(time)
+    # Premise: those spikes really are counted -- the reference must differ
+    # from decoding no spikes at all, otherwise a drop on both sides would
+    # make this test vacuous.
+    no_spikes = detector.predict(
+        **{**kwargs, "spike_times": [np.array([]) for _ in spike_times]}, n_chunks=1
+    )
+    assert not np.allclose(
+        reference.log_likelihood.to_numpy(), no_spikes.log_likelihood.to_numpy()
+    )
     assert_results_match(reference, chunked)
 
 
@@ -698,6 +756,74 @@ def test_covariate_dependent_is_missing_matches_unchunked(covariate_setup):
     chunked = detector.predict(**kwargs, n_chunks=n_chunks, cache_likelihood=False)
 
     assert_results_match(reference, chunked)
+
+
+# ==============================================================================
+# A requested log likelihood is delivered in global row order
+# ==============================================================================
+
+
+@pytest.mark.integration
+def test_chunked_predict_returns_requested_log_likelihood(sorted_setup):
+    """``return_outputs='log_likelihood'`` must deliver all rows in global order."""
+    detector = sorted_setup["detector"]
+    kwargs = sorted_predict_kwargs(sorted_setup, return_outputs="log_likelihood")
+
+    reference = detector.predict(**kwargs, n_chunks=1)
+    chunked = detector.predict(**kwargs, n_chunks=5, cache_likelihood=False)
+
+    assert "log_likelihood" in chunked
+    assert_log_likelihood_matches(
+        reference.log_likelihood.to_numpy(), chunked.log_likelihood.to_numpy()
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.filterwarnings("ignore:EM did not converge")
+def test_chunked_estimate_parameters_returns_requested_log_likelihood(
+    sorted_simulation, sorted_setup
+):
+    """EM must also deliver a requested log likelihood when chunked.
+
+    ``estimate_parameters`` reaches the chunked drivers through the same
+    ``_DetectorBase._estimate_parameters`` final E-step for both detector
+    families, so the sorted-spikes case covers the shared code path.
+    """
+    sim = sorted_simulation
+    time = sorted_setup["time"]
+    spike_times = sorted_setup["spike_times"]
+
+    # A fresh detector: estimate_parameters refits and mutates the model, so the
+    # module-scoped fixture detector must not be used here.
+    detector = sorted_detector()
+    results = detector.estimate_parameters(
+        position_time=sim["time"],
+        position=sim["position"],
+        spike_times=spike_times,
+        time=time,
+        is_training=~sim["is_event"],
+        max_iter=1,
+        n_chunks=5,
+        cache_likelihood=False,
+        store_log_likelihood=True,
+        return_outputs="log_likelihood",
+    )
+
+    n_state_bins = results.acausal_posterior.shape[1]
+    assert "log_likelihood" in results
+    assert results.log_likelihood.shape == (len(time), n_state_bins)
+    assert detector.log_likelihood_ is not None
+    assert detector.log_likelihood_.shape == (len(time), n_state_bins)
+
+    # The final E-step runs after the last M-step, so recomputing the likelihood
+    # from the fitted model over the full timeline must reproduce the returned
+    # rows exactly, in global order.
+    expected = np.asarray(
+        detector.compute_log_likelihood(time, sim["time"], sim["position"], spike_times)
+    )
+    np.testing.assert_allclose(
+        results.log_likelihood.to_numpy(), expected, **PARITY_KWARGS
+    )
 
 
 # ==============================================================================

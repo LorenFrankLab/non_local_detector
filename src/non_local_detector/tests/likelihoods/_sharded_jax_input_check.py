@@ -103,16 +103,24 @@ class EnvironmentUnavailable(Exception):
 def setup():
     """Everything that can legitimately be unavailable: devices and the mesh.
 
-    Raises ``EnvironmentUnavailable`` (or any exception, which ``__main__`` maps
-    to the environment exit code) only from here; nothing in ``run`` is allowed
-    to be reported as a skip.
+    Only an ``EnvironmentUnavailable`` raised from here becomes the environment
+    exit code; any other exception (a typo, an API regression) exits 1 like a
+    failure in ``run``, so a broken check cannot hide behind a skip.
     """
-    if os.environ.get("NLD_SHARDED_CHECK_INJECT") == "setup":
-        raise RuntimeError("injected setup failure")
+    injected = os.environ.get("NLD_SHARDED_CHECK_INJECT")
+    if injected == "setup":
+        raise EnvironmentUnavailable("injected setup failure")
+    if injected == "setup-bug":
+        raise RuntimeError("injected setup bug")
     if len(jax.devices()) < N_DEVICES:
         raise EnvironmentUnavailable(f"only {len(jax.devices())} device(s) available")
+    if not hasattr(jax.sharding, "AxisType"):
+        raise EnvironmentUnavailable("this JAX predates jax.sharding.AxisType")
     axis_types = (getattr(jax.sharding.AxisType, AXIS_TYPE),)
-    return jax.make_mesh((N_DEVICES,), ("d",), axis_types=axis_types)
+    try:
+        return jax.make_mesh((N_DEVICES,), ("d",), axis_types=axis_types)
+    except TypeError as exc:  # older signature without ``axis_types``
+        raise EnvironmentUnavailable(f"jax.make_mesh: {exc}") from exc
 
 
 def run(mesh) -> int:
@@ -206,7 +214,9 @@ def run(mesh) -> int:
 if __name__ == "__main__":
     try:
         mesh = setup()
-    except Exception as exc:  # only setup may turn into an environment skip
+    except EnvironmentUnavailable as exc:
+        # The parent test requires exactly this marker before it skips, so an
+        # unrelated exit status 2 (Python could not open this file, say) fails.
         print(f"SKIP {type(exc).__name__}: {exc}")
         raise SystemExit(EXIT_ENVIRONMENT) from None
     # ``run`` is deliberately NOT wrapped: an exception while fitting, predicting

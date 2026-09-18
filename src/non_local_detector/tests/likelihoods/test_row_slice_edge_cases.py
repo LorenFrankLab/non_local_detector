@@ -13,10 +13,10 @@ cases of that interface, which is where a chunked driver actually breaks:
 * unsorted decoding spikes, where the waveform features must stay paired with
   their own spike.
 
-Endpoint convention under test is the *current* one (Phase 6a migrates it): a
-spike is in range iff ``time[0] <= t <= time[-1]``, it lands in row
-``np.digitize(t, time[1:-1])``, and therefore a spike at ``time[-1]`` lands in
-row ``n_time - 2`` and the final row of a multi-row timeline is always empty.
+Endpoint convention under test: a spike is in range iff
+``time[0] <= t <= time[-1]``, it lands in row ``np.digitize(t, time[1:-1])``,
+and therefore a spike at ``time[-1]`` lands in row ``n_time - 2`` and the final
+row of a multi-row timeline is always empty.
 """
 
 import os
@@ -25,6 +25,7 @@ import sys
 import tracemalloc
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import jax.ops
 import numpy as np
@@ -32,37 +33,22 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods import (
-    _CLUSTERLESS_ALGORITHMS,
-    _SORTED_SPIKES_ALGORITHMS,
-    clusterless_gmm,
-    common,
-)
+from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS, common
 from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
     get_spikecount_per_time_bin,
     resolve_row_slice,
     select_spike_rows,
     select_spikes_in_rows,
+    sum_spikes_into_rows,
 )
 from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
-
-# Tolerances by reduction kind, measured on this fixture (see task-2 report).
-#
-# The sorted-spikes backends accumulate integer spike COUNTS per row and then
-# apply ``xlogy``, so a row range is bit-identical to the full-time rows.
-#
-# The clusterless backends scatter-add one float32 row per selected spike into
-# the output rows (``jax.ops.segment_sum``). A row range hands XLA a different
-# number of input rows and a different ``num_segments``, so it may group that
-# reduction differently; the same happens when the decoding spikes arrive in a
-# different order. Those regroupings are float32 rounding, not a different
-# answer: on this fixture at most 2 of 130 entries move, by <= 1.2e-7 relative
-# (largest absolute move 1.5e-5). ``clusterless_kde_log`` additionally re-blocks
-# its stabilized log-sum over the decoding spikes, which is the same class of
-# difference.
-EXACT: dict[str, float] = {"rtol": 0.0, "atol": 0.0}
-FLOAT32_REDUCTION: dict[str, float] = {"rtol": 1e-6, "atol": 1e-5}
+from non_local_detector.tests.likelihoods.conftest import (
+    ALGORITHMS,
+    EXACT,
+    fit_registered_backends,
+    parity_kwargs,
+)
 
 # A relative tolerance is only a meaningful guard if the values it is applied to
 # have a sane magnitude. Losing or misplacing one decoding spike changes an
@@ -96,13 +82,6 @@ BACKEND_FIT_PARAMS: dict[str, dict] = {
 }
 
 
-def parity_kwargs(algorithm: str) -> dict[str, float]:
-    """Tolerance for one backend: exact counts, or float32 reduction rounding."""
-    if algorithm in _SORTED_SPIKES_ALGORITHMS:
-        return EXACT
-    return FLOAT32_REDUCTION
-
-
 def assert_fixture_scale(log_likelihood: np.ndarray, algorithm: str) -> None:
     """Fail if the fixture's magnitudes make the tolerance meaningless.
 
@@ -123,7 +102,6 @@ def assert_fixture_scale(log_likelihood: np.ndarray, algorithm: str) -> None:
     )
 
 
-ALGORITHMS = sorted(_SORTED_SPIKES_ALGORITHMS) + sorted(_CLUSTERLESS_ALGORITHMS)
 # Per-row (singleton) requests recompile the jitted kernels once per distinct
 # row count, so the exhaustive one-row-at-a-time sweep uses one representative
 # backend per likelihood family instead of all eight.
@@ -135,6 +113,25 @@ REPRESENTATIVE_ALGORITHMS = [
 ]
 
 N_TIME = 13
+
+
+def spike_placements(time: np.ndarray) -> dict[str, np.ndarray]:
+    """Decoding spike placements that hit every boundary case of ``time``.
+
+    ``on_timestamps`` puts a spike on every timestamp, including both endpoints;
+    ``between_timestamps`` puts one strictly inside every bin (the original
+    chunk-boundary defect); ``mixed`` is both; ``duplicates`` repeats ``mixed``
+    three times, since identical spike times must be counted once each, not
+    lost or duplicated by the searchsorted range.
+    """
+    midpoints = 0.5 * (time[:-1] + time[1:])
+    mixed = np.sort(np.concatenate([time, midpoints]))
+    return {
+        "on_timestamps": time.copy(),
+        "between_timestamps": midpoints,
+        "mixed": mixed,
+        "duplicates": np.sort(np.repeat(mixed, 3)),
+    }
 
 
 def row_partitions(n_time: int) -> list[list[slice]]:
@@ -166,10 +163,10 @@ def row_partitions(n_time: int) -> list[list[slice]]:
 
 @pytest.mark.unit
 def test_endpoint_convention_is_unchanged():
-    """Pin the current in-range-inclusive convention the row request derives from.
+    """Pin the in-range-inclusive convention the row request derives from.
 
-    Phase 6a owns migrating this; until then a row request must reproduce it
-    exactly, so it is asserted here as the reference the parity tests compare to.
+    A row request must reproduce it exactly, so it is asserted here as the
+    reference the parity tests compare to.
     """
     time = np.arange(6.0)
 
@@ -203,15 +200,7 @@ def test_every_row_partition_tiles_the_full_counts(spike_kind):
     partitions include ragged and irregular chunk sizes and the singleton split.
     """
     time = np.linspace(0.0, 1.0, N_TIME)
-    midpoints = 0.5 * (time[:-1] + time[1:])
-    spikes = {
-        "on_timestamps": time.copy(),
-        "between_timestamps": midpoints.copy(),
-        "mixed": np.sort(np.concatenate([time, midpoints])),
-        # Repeated identical spike times must be counted once each, not lost or
-        # duplicated by the searchsorted range.
-        "duplicates": np.sort(np.repeat(np.concatenate([time, midpoints]), 3)),
-    }[spike_kind]
+    spikes = spike_placements(time)[spike_kind]
 
     full = get_spikecount_per_time_bin(spikes, time)
     assert full.sum() == np.sum((spikes >= time[0]) & (spikes <= time[-1]))
@@ -221,6 +210,41 @@ def test_every_row_partition_tiles_the_full_counts(spike_kind):
             [get_spikecount_per_time_bin(spikes, time, row_slice=s) for s in partition]
         )
         np.testing.assert_array_equal(tiled, full, err_msg=f"partition={partition}")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "spike_kind", ["on_timestamps", "between_timestamps", "mixed", "duplicates"]
+)
+def test_selection_carries_its_own_row_count(spike_kind):
+    """A selection knows how many rows it was made for, so reductions cannot drift.
+
+    ``bin_ind`` holds LOCAL rows of the requested range; the segment count
+    that pairs with it is a property of the same request. Callers that derive
+    it separately can pair one chunk's selection with another chunk's row
+    count and silently drop spikes, so the selection records it and the
+    reduction helper reads it from there. Covers the empty early return (rows
+    past the last owning row) and the ascending and unsorted selection paths.
+    """
+    time = np.linspace(0.0, 1.0, N_TIME)
+    spikes = spike_placements(time)[spike_kind]
+    full = get_spikecount_per_time_bin(spikes, time)
+
+    for partition in row_partitions(N_TIME):
+        for rows in partition:
+            selection = select_spikes_in_rows(spikes, time, rows.start, rows.stop)
+            assert selection.n_rows == rows.stop - rows.start
+            row_sums = sum_spikes_into_rows(
+                jnp.ones(selection.bin_ind.shape[0]), selection
+            )
+            assert row_sums.shape == (selection.n_rows,)
+            np.testing.assert_array_equal(np.asarray(row_sums), full[rows])
+
+    # Requests entirely past the last owning row still report their row count.
+    selection = select_spikes_in_rows(spikes, time, N_TIME - 1, N_TIME)
+    assert selection.n_rows == 1
+    assert selection.bin_ind.shape == (0,)
+    assert sum_spikes_into_rows(jnp.zeros(0), selection).shape == (1,)
 
 
 @pytest.mark.unit
@@ -305,12 +329,7 @@ def test_chunk_local_binning_is_detectably_wrong(spike_kind):
     this assertion a row-request test could pass vacuously.
     """
     time = np.linspace(0.0, 1.0, N_TIME)
-    midpoints = 0.5 * (time[:-1] + time[1:])
-    spikes = {
-        "on_timestamps": time.copy(),
-        "between_timestamps": midpoints.copy(),
-        "mixed": np.sort(np.concatenate([time, midpoints])),
-    }[spike_kind]
+    spikes = spike_placements(time)[spike_kind]
 
     full = get_spikecount_per_time_bin(spikes, time)
     for partition in row_partitions(N_TIME):
@@ -398,7 +417,9 @@ def edge_case_data():
     ).fit_place_grid(position=position, infer_track_interior=False)
 
     time = np.linspace(0.0, 4.0, N_TIME)
-    midpoints = 0.5 * (time[:-1] + time[1:])
+    placements = spike_placements(time)
+    on_timestamps = placements["on_timestamps"]
+    between = placements["between_timestamps"]
 
     # Unit 1 has encoding spikes; unit 2 has none, which reaches the zero-rate
     # fast paths of every clusterless backend.
@@ -408,7 +429,6 @@ def edge_case_data():
     def features_for(spike_times):
         return rng.standard_normal((len(spike_times), 2)) * 5.0 + 20.0
 
-    # "on_timestamps" includes time[0] and time[-1]; "between" is the defect;
     # "empty" has no spikes at all.
     #
     # "gap" leaves rows 5, 6, 9 and 10 with no spikes on ANY electrode, chosen so
@@ -416,14 +436,12 @@ def edge_case_data():
     # spike-free chunk: the even 13/5 split's [9, 11) and the irregular split's
     # [5, 7). ``assert_some_chunk_is_spike_free`` re-derives and enforces that,
     # so this arithmetic cannot silently drift.
-    on_timestamps = time.copy()
-    between = midpoints.copy()
     spike_free_rows = {5, 6, 9, 10}
-    gap = np.array([t for row, t in enumerate(midpoints) if row not in spike_free_rows])
+    gap = np.array([t for row, t in enumerate(between) if row not in spike_free_rows])
     spike_cases = {
         "on_timestamps": [on_timestamps, on_timestamps.copy()],
         "between_timestamps": [between, between.copy()],
-        "mixed": [np.sort(np.concatenate([time, midpoints]))] * 2,
+        "mixed": [placements["mixed"]] * 2,
         "spike_free_gap": [gap, gap.copy()],
         "one_unit_empty": [between, np.array([])],
         "all_units_empty": [np.array([]), np.array([])],
@@ -449,45 +467,12 @@ def edge_case_data():
 @pytest.fixture(scope="module")
 def fitted_backends(edge_case_data):
     """Fit every registered backend once on the shared encoding data."""
-    environment = edge_case_data["environment"]
-    fitted = {}
-
-    for name, (fit_func, predict_func) in _SORTED_SPIKES_ALGORITHMS.items():
-        geometry = {}
-        if name == "sorted_spikes_glm":
-            geometry = {
-                "place_bin_edges": environment.place_bin_edges_,
-                "edges": environment.edges_,
-                "is_track_interior": environment.is_track_interior_,
-                "is_track_boundary": environment.is_track_boundary_,
-            }
-        fitted[name] = (
-            predict_func,
-            fit_func(
-                position_time=edge_case_data["position_time"],
-                position=edge_case_data["position"],
-                spike_times=edge_case_data["encoding_spike_times"],
-                environment=environment,
-                **geometry,
-            ),
-            False,
+    return {
+        name: (predict_func, encoding_model, is_clusterless)
+        for name, predict_func, encoding_model, is_clusterless in (
+            fit_registered_backends(edge_case_data, BACKEND_FIT_PARAMS)
         )
-
-    for name, (fit_func, predict_func) in _CLUSTERLESS_ALGORITHMS.items():
-        fitted[name] = (
-            predict_func,
-            fit_func(
-                position_time=edge_case_data["position_time"],
-                position=edge_case_data["position"],
-                spike_times=edge_case_data["encoding_spike_times"],
-                spike_waveform_features=edge_case_data["encoding_features"],
-                environment=environment,
-                **BACKEND_FIT_PARAMS.get(name, {}),
-            ),
-            True,
-        )
-
-    return fitted
+    }
 
 
 def call_backend(fitted_backends, edge_case_data, algorithm, case, time=None, **kwargs):
@@ -756,7 +741,6 @@ def test_shuffled_spike_order_row_slice_parity(
         return original_segment_sum(values, segment_ids, **kwargs)
 
     monkeypatch.setattr(jax.ops, "segment_sum", checked_segment_sum)
-    monkeypatch.setattr(clusterless_gmm, "segment_sum", checked_segment_sum)
     order_cache = _SpikeTimeOrder() if prepared else None
     check_order = common._spikes_are_ascending
     order_checks = []
@@ -866,10 +850,6 @@ ALLOC_GROWTH_FRACTION = 0.25
 # ~1 byte/sample temporary, which is shared by every backend and is not a device
 # buffer, so the bound below is half of one float32 copy: comfortably above that
 # shared floor (~0.24 of a copy) and far below a whole extra copy.
-# Exit codes of _sharded_jax_input_check.py (kept in sync with that module).
-CHECK_EXIT_OK = 0
-CHECK_EXIT_ENVIRONMENT = 2
-
 ALLOC_POSITION_SAMPLES = (2_000, 400_000)
 POSITION_GROWTH_FRACTION = 0.5
 
@@ -942,10 +922,19 @@ def allocation_backends(allocation_data):
     return fitted
 
 
-def peak_bytes_for_one_call(predict_func, encoding_model, data, n_total, is_local):
-    """Host peak of ONE row-range call, after a warm-up call to exclude tracing."""
+def peak_host_bytes(predict_func, args, call_kwargs) -> int:
+    """Host peak of ONE call, after a warm-up call to exclude tracing."""
+    predict_func(*args, **call_kwargs)  # warm up: compile/trace once
+    tracemalloc.start()
+    predict_func(*args, **call_kwargs)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    return peak
+
+
+def peak_bytes_for_spike_total(predict_func, encoding_model, data, n_total, is_local):
+    """Host peak of one ``ALLOC_ROWS`` call with ``n_total`` decoding spikes."""
     spike_times, features = data["decoding"][n_total]
-    call_kwargs = dict(**encoding_model, is_local=is_local, row_slice=ALLOC_ROWS)
     args = (
         data["time"],
         data["position_time"],
@@ -953,12 +942,8 @@ def peak_bytes_for_one_call(predict_func, encoding_model, data, n_total, is_loca
         spike_times,
         features,
     )
-    predict_func(*args, **call_kwargs)  # warm up: compile/trace once
-    tracemalloc.start()
-    predict_func(*args, **call_kwargs)
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    return peak
+    call_kwargs = dict(**encoding_model, is_local=is_local, row_slice=ALLOC_ROWS)
+    return peak_host_bytes(predict_func, args, call_kwargs)
 
 
 @pytest.mark.integration
@@ -978,10 +963,10 @@ def test_fixed_row_request_does_not_allocate_per_total_spike(
     predict_func, encoding_model = allocation_backends[algorithm]
     small, large = ALLOC_SPIKE_COUNTS
 
-    peak_small = peak_bytes_for_one_call(
+    peak_small = peak_bytes_for_spike_total(
         predict_func, encoding_model, allocation_data, small, is_local
     )
-    peak_large = peak_bytes_for_one_call(
+    peak_large = peak_bytes_for_spike_total(
         predict_func, encoding_model, allocation_data, large, is_local
     )
 
@@ -1006,18 +991,12 @@ def position_of_length(n_samples: int, duration_s: float = 20.0):
 def peak_bytes_for_position_length(
     predict_func, encoding_model, data, n_samples, is_local
 ):
-    """Host peak of ONE row-range call with a position record of this length."""
+    """Host peak of one ``ALLOC_ROWS`` call with a position record of this length."""
     spike_times, features = data["decoding"][ALLOC_SPIKE_COUNTS[0]]
     position_time, position = position_of_length(n_samples)
     args = (data["time"], position_time, position, spike_times, features)
     call_kwargs = dict(**encoding_model, is_local=is_local, row_slice=ALLOC_ROWS)
-
-    predict_func(*args, **call_kwargs)  # warm up: compile/trace once
-    tracemalloc.start()
-    predict_func(*args, **call_kwargs)
-    _, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    return peak
+    return peak_host_bytes(predict_func, args, call_kwargs)
 
 
 @pytest.mark.integration
@@ -1106,10 +1085,9 @@ def test_row_slice_accepts_jax_array_inputs(
     # install -- and NOT the failing-then-passing evidence for the defect. That
     # evidence is the 2-device subprocess check below, where the gather is real.
     #
-    # Only the FEATURES are asserted on: ``select_spikes_in_rows`` converts the
-    # whole spike-time array by design (its ascending-order check and
-    # ``searchsorted`` read every element), which is a 1-D 4 B/spike array
-    # against 2-D features, and removing it is Phase 8's sorted-index contract.
+    # Only the 2-D FEATURES are asserted on: ``select_spikes_in_rows`` reads the
+    # whole 1-D spike-time array for its ascending-order check (done once per
+    # prediction on the detector path), so the spike times are materialized.
     for array in device_features:
         if not hasattr(array, "_npy_value"):
             pytest.skip(
@@ -1121,6 +1099,14 @@ def test_row_slice_accepts_jax_array_inputs(
             f"decoding feature array on the host (its cached host value is set), "
             f"so a chunk call costs the whole recording instead of the request"
         )
+
+
+# Exit codes of _sharded_jax_input_check.py (kept in sync with that module).
+CHECK_EXIT_OK = 0
+CHECK_EXIT_ENVIRONMENT = 2
+# The child prints this before exiting with CHECK_EXIT_ENVIRONMENT. CPython
+# itself exits 2 when it cannot open the script, with nothing on stdout.
+CHECK_SKIP_MARKER = "SKIP EnvironmentUnavailable"
 
 
 @pytest.mark.integration
@@ -1144,9 +1130,12 @@ def test_sharded_jax_inputs_do_not_materialize_the_recording(axis_type):
         timeout=900,
     )
     # The child uses distinct exit codes so an environment that cannot run the
-    # check (fewer than two devices, or any setup error) skips, while a failed
-    # assertion fails. Anything unexpected also fails rather than passing quietly.
-    if result.returncode == CHECK_EXIT_ENVIRONMENT:
+    # check (fewer than two devices, an older JAX) skips, while a failed
+    # assertion fails. The skip also requires the child's marker: a missing
+    # script or a setup bug exits 2 too, and must fail rather than skip forever.
+    if result.returncode == CHECK_EXIT_ENVIRONMENT and result.stdout.startswith(
+        CHECK_SKIP_MARKER
+    ):
         pytest.skip(f"sharded check cannot run here: {result.stdout.strip()[-300:]}")
     assert result.returncode == CHECK_EXIT_OK, (
         f"exit code {result.returncode}\n{result.stdout}\n{result.stderr[-2000:]}"
@@ -1156,15 +1145,16 @@ def test_sharded_jax_inputs_do_not_materialize_the_recording(axis_type):
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("inject", "expected"),
-    [("setup", CHECK_EXIT_ENVIRONMENT), ("run", 1)],
-    ids=["setup-error-is-a-skip", "run-error-is-a-failure"],
+    [("setup", CHECK_EXIT_ENVIRONMENT), ("setup-bug", 1), ("run", 1)],
+    ids=["unavailable-is-a-skip", "setup-bug-is-a-failure", "run-error-is-a-failure"],
 )
 def test_sharded_check_maps_only_setup_errors_to_a_skip(inject, expected):
-    """Only a setup problem may become an environment skip.
+    """Only ``EnvironmentUnavailable`` from setup may become an environment skip.
 
-    A ``RuntimeError`` raised while fitting, predicting or asserting must reach
-    the parent as a non-skip, non-zero exit (the uncaught exception's 1), so a
-    broken backend cannot hide behind ``pytest.skip``. Uses the child's
+    Any other exception -- a ``RuntimeError`` while building the mesh, fitting,
+    predicting or asserting -- must reach the parent as a non-skip, non-zero
+    exit (the uncaught exception's 1), so a broken backend or a broken check
+    cannot hide behind ``pytest.skip``. Uses the child's
     ``NLD_SHARDED_CHECK_INJECT`` hook so no real fit or predict runs.
 
     Independent of device availability: the child is asked for a ONE-device
@@ -1188,7 +1178,9 @@ def test_sharded_check_maps_only_setup_errors_to_a_skip(inject, expected):
         f"exit code {result.returncode}\n{result.stdout}\n{result.stderr[-2000:]}"
     )
     assert "injected" in (result.stdout + result.stderr)
-    if inject == "run":
+    if expected == CHECK_EXIT_ENVIRONMENT:
+        assert result.stdout.startswith(CHECK_SKIP_MARKER)
+    else:
         assert "SKIP" not in result.stdout
 
 
@@ -1236,6 +1228,62 @@ def test_select_spike_rows_selects_the_named_rows(as_jax):
     )
     selection = select_spikes_in_rows(np.arange(5.0), np.arange(6.0), 2, 2)
     assert np.asarray(select_spike_rows(features, selection)).shape == (0, 2)
+
+
+# JAX releases without explicit sharding (``AxisType``) have no
+# ``ShardingTypeError`` either, and the fallback correctly catches nothing there.
+requires_explicit_sharding = pytest.mark.skipif(
+    not hasattr(jax.sharding, "AxisType"),
+    reason="this JAX predates explicit sharding",
+)
+
+
+@pytest.mark.unit
+@requires_explicit_sharding
+def test_sharding_error_type_is_known_on_this_jax():
+    """On a JAX with explicit sharding, the fallback's exception tuple is set.
+
+    ``ShardingTypeError`` is imported from a private JAX path; if a release
+    moves it the ``ImportError`` guard leaves an empty tuple and every
+    explicitly-sharded gather raises instead of falling back.
+    """
+    assert common._JAX_SHARDING_ERRORS
+    assert all(issubclass(t, Exception) for t in common._JAX_SHARDING_ERRORS)
+
+
+@pytest.mark.unit
+@requires_explicit_sharding
+@pytest.mark.parametrize("indexer_kind", ["mask", "slice"])
+def test_select_spike_rows_falls_back_to_a_host_copy_on_sharding_errors(
+    monkeypatch, indexer_kind
+):
+    """A sharding refusal on device selects the same rows on the host.
+
+    The subprocess check exercises this on a real ``Explicit`` mesh but skips
+    on single-device machines; this pins the fallback in-process by raising
+    the sharding error type from the device-side selection.
+    """
+    features = jnp.arange(10, dtype=jnp.float32).reshape(5, 2)
+    error = common._JAX_SHARDING_ERRORS[0]("simulated sharding refusal")
+
+    def fail_selection(*args, **kwargs):
+        raise error
+
+    if indexer_kind == "mask":
+        selection = select_spikes_in_rows(
+            np.array([0.5, 4.5, 5.5, 1.5, 6.5]), np.arange(8.0), 0, 2
+        )
+        expected = [[0.0, 1.0], [6.0, 7.0]]
+        monkeypatch.setattr(jnp, "take", fail_selection)
+    else:
+        selection = select_spikes_in_rows(np.arange(5.0), np.arange(6.0), 1, 3)
+        expected = [[2.0, 3.0], [4.0, 5.0]]
+        monkeypatch.setattr(type(features), "__getitem__", fail_selection)
+
+    selected = select_spike_rows(features, selection)
+
+    assert isinstance(selected, np.ndarray)
+    np.testing.assert_array_equal(selected, expected)
 
 
 @pytest.mark.unit

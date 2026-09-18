@@ -67,7 +67,7 @@ def datasets():
     return first, second
 
 
-def run_em(detector, data, **kwargs):
+def run_em(detector, data, max_iter=1, **kwargs):
     """One EM run on ``data`` (one iteration keeps the test fast)."""
     return detector.estimate_parameters(
         position_time=data["position_time"],
@@ -75,7 +75,7 @@ def run_em(detector, data, **kwargs):
         spike_times=data["spike_times"],
         time=data["time"],
         is_training=data["is_training"],
-        max_iter=1,
+        max_iter=max_iter,
         **kwargs,
     )
 
@@ -115,6 +115,58 @@ def test_second_estimate_parameters_ignores_the_stored_log_likelihood(
     fresh = run_em(make_detector(), second, n_chunks=n_chunks, cache_likelihood=False)
 
     assert_matches_fresh_run(reused, fresh)
+
+
+@pytest.mark.integration
+@pytest.mark.filterwarnings("ignore:EM did not converge")
+def test_cached_likelihood_is_recomputed_after_the_encoding_model_updates(datasets):
+    """Within one EM run, the cached likelihood must not outlive the M-step.
+
+    With ``cache_likelihood=True`` and ``n_chunks == 1`` the E-step's likelihood
+    is kept for the next iteration. The M-step then refits the encoding model,
+    so a second E-step that reused the cached array would decode with the
+    first iteration's place fields: plausible, wrong, and invisible from the
+    posterior alone. The stored output must equal a fresh computation on the
+    FINAL encoding model, and that must differ from the first iteration's.
+    """
+    first, _ = datasets
+
+    detector = make_detector()
+    run_em(
+        detector,
+        first,
+        max_iter=1,
+        n_chunks=1,
+        cache_likelihood=True,
+        estimate_encoding_model=True,
+        store_log_likelihood=True,
+    )
+    after_one_iteration = np.asarray(detector.log_likelihood_)
+
+    detector = make_detector()
+    run_em(
+        detector,
+        first,
+        max_iter=2,
+        n_chunks=1,
+        cache_likelihood=True,
+        estimate_encoding_model=True,
+        store_log_likelihood=True,
+    )
+    stored = np.asarray(detector.log_likelihood_)
+    fresh = np.asarray(
+        detector.compute_log_likelihood(
+            first["time"],
+            first["position_time"],
+            first["position"],
+            first["spike_times"],
+        )
+    )
+
+    # Guard the guard: the M-step must have changed the likelihood, otherwise
+    # a stale cache would be indistinguishable from a fresh computation.
+    assert not np.allclose(after_one_iteration, fresh, **PARITY_KWARGS)
+    np.testing.assert_allclose(stored, fresh, **PARITY_KWARGS)
 
 
 @pytest.mark.integration
