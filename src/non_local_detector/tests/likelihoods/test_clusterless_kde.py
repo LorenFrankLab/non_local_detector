@@ -7,10 +7,10 @@ from non_local_detector.likelihoods.clusterless_kde import (
     block_estimate_log_joint_mark_intensity,
     estimate_log_joint_mark_intensity,
     fit_clusterless_kde_encoding_model,
-    get_spike_time_bin_ind,
     kde_distance,
     predict_clusterless_kde_log_likelihood,
 )
+from non_local_detector.likelihoods.common import get_spike_time_bin_ind
 
 
 def rng(seed=0):

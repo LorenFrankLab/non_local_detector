@@ -10,12 +10,16 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     KDEModel,
     _log_kernel_matrix,
+    _SpikeTimeOrder,
     as_std_array,
     block_kde,
     get_position_at_time,
-    get_spike_time_bin_ind,
     interpolate_weights_at_spike_times,
+    resolve_row_slice,
     safe_log,
+    select_spike_rows,
+    select_spikes_in_rows,
+    sum_spikes_into_rows,
     validate_finite,
     validate_weights,
     weighted_mean_rate,
@@ -356,6 +360,9 @@ def predict_clusterless_kde_log_likelihood(
     block_size: int = 100,
     disable_progress_bar: bool = False,
     encoding_weights: list[jnp.ndarray] | None = None,
+    row_slice: slice | None = None,
+    *,
+    _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of the clusterless KDE model.
 
@@ -364,9 +371,11 @@ def predict_clusterless_kde_log_likelihood(
     time : jnp.ndarray
         Decoding time bins.
     position_time : jnp.ndarray, shape (n_time_position,)
-        Time of each position sample.
+        Time of each position sample (used only by the local path; accepted for
+        signature parity when ``is_local`` is False).
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
-        Position samples.
+        Position samples (used only by the local path; accepted for signature
+        parity when ``is_local`` is False).
     spike_times : list[jnp.ndarray]
         Spike times for each electrode.
     spike_waveform_features : list[jnp.ndarray]
@@ -400,13 +409,25 @@ def predict_clusterless_kde_log_likelihood(
         Divide computation into blocks, by default 100
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
+    row_slice : slice | None, optional
+        Contiguous range of output rows to compute, by default None (all rows).
+        ``time`` always stays the FULL decoding timeline: spikes are binned
+        against it and only those owned by the requested rows are evaluated, so
+        the result equals the full-time result sliced by ``row_slice`` while the
+        spatial workspaces scale with the requested rows and selected spikes.
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal ordering preparation that a detector prediction shares across
+        observation states and chunks. Direct callers omit it; the spike-time
+        ordering is then verified on this call.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_time, 1) or (n_time, n_position_bins)
+    log_likelihood : jnp.ndarray, shape (n_rows, 1) or (n_rows, n_position_bins)
         Shape depends on whether local or non-local decoding, respectively.
+        ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
     """
-    n_time = len(time)
+    row_start, row_stop = resolve_row_slice(row_slice, len(time))
+    n_rows = row_stop - row_start
     # Normalize to a per-electrode list; None -> uniform weights for each electrode.
     if encoding_weights is None:
         encoding_weights = [None] * len(encoding_positions)
@@ -429,12 +450,14 @@ def predict_clusterless_kde_log_likelihood(
             block_size,
             disable_progress_bar,
             encoding_weights=encoding_weights,
+            row_slice=row_slice,
+            _spike_time_order=_spike_time_order,
         )
     else:
         is_track_interior = environment.is_track_interior_.ravel()
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
-        log_likelihood = -1.0 * summed_ground_process_intensity * jnp.ones((n_time, 1))
+        log_likelihood = -1.0 * summed_ground_process_intensity * jnp.ones((n_rows, 1))
 
         for (
             electrode_encoding_spike_waveform_features,
@@ -457,13 +480,15 @@ def predict_clusterless_kde_log_likelihood(
             spike_times,
             strict=True,
         ):
-            is_in_bounds = jnp.logical_and(
-                electrode_spike_times >= time[0],
-                electrode_spike_times <= time[-1],
+            selection = select_spikes_in_rows(
+                electrode_spike_times,
+                time,
+                row_start,
+                row_stop,
+                _spike_time_order=_spike_time_order,
             )
-            electrode_spike_times = electrode_spike_times[is_in_bounds]
-            electrode_decoding_spike_waveform_features = (
-                electrode_decoding_spike_waveform_features[is_in_bounds]
+            electrode_decoding_spike_waveform_features = select_spike_rows(
+                electrode_decoding_spike_waveform_features, selection
             )
             position_distance = kde_distance(
                 interior_place_bin_centers,
@@ -473,7 +498,7 @@ def predict_clusterless_kde_log_likelihood(
             # Expand waveform_std to match this electrode's feature count if scalar
             n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
             electrode_waveform_std = as_std_array(waveform_std, n_waveform_features)
-            log_likelihood += jax.ops.segment_sum(
+            log_likelihood += sum_spikes_into_rows(
                 block_estimate_log_joint_mark_intensity(
                     electrode_decoding_spike_waveform_features,
                     electrode_encoding_spike_waveform_features,
@@ -484,9 +509,7 @@ def predict_clusterless_kde_log_likelihood(
                     block_size,
                     encoding_weights=electrode_encoding_weights,
                 ),
-                get_spike_time_bin_ind(electrode_spike_times, time),
-                indices_are_sorted=True,
-                num_segments=n_time,
+                selection,
             )
 
     return log_likelihood
@@ -509,6 +532,9 @@ def compute_local_log_likelihood(
     block_size: int = 100,
     disable_progress_bar: bool = False,
     encoding_weights: list[jnp.ndarray] | None = None,
+    row_slice: slice | None = None,
+    *,
+    _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Compute the log likelihood at the animal's position.
 
@@ -546,23 +572,32 @@ def compute_local_log_likelihood(
         Divide computation into blocks, by default 100
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
+    row_slice : slice | None, optional
+        Contiguous range of output rows to compute, by default None (all rows).
+        ``time`` stays the FULL decoding timeline (see
+        ``predict_clusterless_kde_log_likelihood``).
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal ordering preparation that a detector prediction shares across
+        observation states and chunks. Direct callers omit it; the spike-time
+        ordering is then verified on this call.
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_time, 1)
+    log_likelihood : jnp.ndarray, shape (n_rows, 1)
     """
+    row_start, row_stop = resolve_row_slice(row_slice, len(time))
+    n_rows = row_stop - row_start
 
-    # Need to interpolate position
+    # Need to interpolate position at the requested rows only
     interpolated_position = get_position_at_time(
-        position_time, position, time, environment
+        position_time, position, time[row_start:row_stop], environment
     )
     occupancy = occupancy_model.predict(interpolated_position)
 
-    n_time = len(time)
     if encoding_weights is None:
         encoding_weights = [None] * len(encoding_positions)
-    log_likelihood = jnp.zeros((n_time,))
-    summed_expected_counts = jnp.zeros((n_time,))
+    log_likelihood = jnp.zeros((n_rows,))
+    summed_expected_counts = jnp.zeros((n_rows,))
     for (
         electrode_encoding_spike_waveform_features,
         electrode_encoding_positions,
@@ -586,13 +621,16 @@ def compute_local_log_likelihood(
         spike_times,
         strict=True,
     ):
-        is_in_bounds = jnp.logical_and(
-            electrode_spike_times >= time[0],
-            electrode_spike_times <= time[-1],
+        selection = select_spikes_in_rows(
+            electrode_spike_times,
+            time,
+            row_start,
+            row_stop,
+            _spike_time_order=_spike_time_order,
         )
-        electrode_spike_times = electrode_spike_times[is_in_bounds]
-        electrode_decoding_spike_waveform_features = (
-            electrode_decoding_spike_waveform_features[is_in_bounds]
+        electrode_spike_times = select_spike_rows(electrode_spike_times, selection)
+        electrode_decoding_spike_waveform_features = select_spike_rows(
+            electrode_decoding_spike_waveform_features, selection
         )
 
         position_at_spike_time = get_position_at_time(
@@ -624,7 +662,7 @@ def compute_local_log_likelihood(
         )
         occupancy_at_spike_time = occupancy_model.predict(position_at_spike_time)
 
-        log_likelihood += jax.ops.segment_sum(
+        log_likelihood += sum_spikes_into_rows(
             safe_log(
                 electrode_mean_rate
                 * jnp.where(
@@ -636,9 +674,7 @@ def compute_local_log_likelihood(
                     0.0,
                 )
             ),
-            get_spike_time_bin_ind(electrode_spike_times, time),
-            indices_are_sorted=True,
-            num_segments=n_time,
+            selection,
         )
 
         summed_expected_counts += electrode_mean_rate * jnp.where(

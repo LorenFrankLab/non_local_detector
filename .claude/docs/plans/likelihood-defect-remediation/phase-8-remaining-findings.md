@@ -3,7 +3,7 @@
 > **NEEDS PROTOTYPING.** These are separate correctness/contract tasks with the
 > recorded evidence below. Unexecuted implementation snippets are removed. The
 > density/exposure work uses the corrected Phase 6 units and applicable C1
-> decisions; sorted-index contract work can be prototyped independently.
+> decisions; sorted-index contract work is implemented in Phase 3.
 
 Phase numbering does not require delaying these fixes behind Phase 7. Relevant
 Phase 8 corrections must be included in the baseline used to claim production
@@ -73,12 +73,22 @@ CPU/XLA examples produced matching results with/without the assertion; GPU
 behavior was not tested. This is a contract/portability issue, not evidence of an
 observed GPU failure.
 
-Re-inventory actual call sites, including paths rewritten by Phase 3. Select a
-strategy through tests and profiling: remove the unsupported assertion, or
-establish ordered indices with explicit input handling that preserves
-spike/feature/weight alignment. Rejecting previously accepted unsorted input is
-a separate public behavior choice and needs clear documentation. Do not require
-rejection in the acceptance tests before that strategy has been chosen.
+**Addressed in the Phase 3 JAX follow-up:** all nine consumers now enable the
+hint from `SpikeSelection.indices_are_sorted`, established by the ordering check
+(or an early empty selection), independently of the indexer's representation.
+The unsorted fallback passes `False` and keeps original spike/feature order.
+Tests check the actual compiler promise in both prediction
+paths, including zero-rate electrodes, and CPU likelihoods remain bit-identical.
+See [Phase 3's audit](phase-3-chunk-boundary.md#jax-audit-follow-up).
+
+**Also implemented in Phase 3's ordering follow-up:** detector predictions share
+one host conversion and ordering check per distinct spike-time object across
+states/chunks. Preparation is local to each prediction, so repeated calls recheck
+even arrays modified in place. Direct backend calls remain independently checked.
+Unsorted inputs remain accepted with their original alignment and per-chunk masks.
+See [ordering preparation](phase-3-chunk-boundary.md#ordering-preparation-follow-up)
+for scope and validation. GPU validation remains outstanding; rejection or automatic
+sorting would be a separate public behavior choice.
 
 ### Acceptance
 

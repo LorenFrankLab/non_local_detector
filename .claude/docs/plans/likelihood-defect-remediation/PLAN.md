@@ -1,8 +1,10 @@
 # Likelihood Defect Remediation
 
 Status: Phase 1 implemented and validated. Phase 0 is implemented, optimized,
-and validated in the working branch. Remaining phases have the readiness states
-recorded below.
+and validated in the working branch. Phase 2 is implemented at its narrowed
+scope. Phase 3 is implemented and validated on `fix/likelihood-chunk-boundaries`
+(uncommitted working tree over baseline `86e22f0`). Remaining phases have the
+readiness states recorded below.
 
 ## Summary
 
@@ -97,12 +99,12 @@ release order; implementation details remain subject to prototyping.
 |---|---|---|
 | 0 and 1 | Existing likelihood/time semantics | Complete; preserve their regression coverage. Future policy changes belong to the phase introducing them. |
 | 2 | Existing floors and zero-rate fallback (narrowed C1 decision) | Complete; the package-wide policy is deferred and any later floor change belongs to the phase introducing it. |
-| 3 | Current unchunked event ownership | May proceed without choosing C1/C3b; retain corrected behavior through 6a. |
+| 3 | Current unchunked event ownership | Complete (uncommitted on `fix/likelihood-chunk-boundaries`); it chose neither C1 nor C3b and preserved the endpoint convention, so the corrected behavior must be retained through 6a. |
 | 4 | Existing or selected baseline floor policy, recorded explicitly | Numerical kernels can be prototyped independently; coordinate overlapping sites with Phase 2. |
 | 5 | Settled C2 weighted-event ownership | Remove hard windows; do not independently settle acquisition endpoints/gaps from C3b. |
 | 6a + 6c | Settled C3a and resolved C3b for encoding-cell migration | Ship the edge/coordinate migration and detector uniformity guard together. |
 | 6b + 6d | 6a/6c, resolved C3b, and applicable C1 decisions | Ship Hz conversion, metadata plumbing, and legacy-model rejection atomically. |
-| 8 | Corrected exposure/rate units for density and MRF work; applicable C1 decisions | Can ship before Phase 7; sorted-index contract work can be prototyped independently and shared with Phase 3. |
+| 8 | Corrected exposure/rate units for density and MRF work; applicable C1 decisions | Can ship before Phase 7; sorted-index contract work is implemented in Phase 3 and shared with Phase 3. |
 | 7 | Corrected likelihood/time baseline and relevant Phase 8 fixes | Pure-core prototypes may run earlier; production claims require the integrated corrected baseline. |
 
 Phases 0–5 remain the correctness priority before the Phase 6 migration. Review
@@ -118,12 +120,12 @@ an assumption that every golden must change.
 | 0 | **Implemented, optimized, and validated** on `fix/core-hmm-conditioning` (`c1f7e33`; benchmark script `e79501a`). Full suite: **1329 passed / 4 skipped**; reference tests: **63 passed / 1 skipped** in default float32 and **64 passed** with x64 enabled. Golden files and existing tolerances unchanged; ruff and format pass. Numerical comparisons are bit-identical to the pre-optimization fix; stationary kernels take 6.5–14.3% less time than that intermediate draft. The corrected 200-bin filter remains approximately 13% slower than the pre-Phase-0 `main` baseline in the recorded CPU runs. See [phase 0](phase-0-core-hmm.md). Independent of C1/C3. |
 | 1 | **Implemented and reviewed** on `fix/sorted-spikes-exposure-mask` (`8c8765f` plus regression coverage). Mask and zero-exposure regressions fail against the relevant pre-fix behavior. Post-review full suite: **1266 passed / 3 skipped**, goldens unchanged; ruff and format pass. |
 | 2 | **Implemented (narrowed scope)** on `fix/gmm-log-intensity-ordering`: raw log ratios at all three GMM spike-intensity sites and one shared log-space ground-process helper (rate inside the exponent, no underflow guard, NaN propagates) on both fit and local paths; the zero-rate fallback, mean-rate floor, and summed-intensity clip are preserved. Reference tests fail on `main` and pass on the branch in float32 and float64; no GMM golden/snapshot fixture exists. The package-wide degeneracy policy (background firing model) is deferred. See [phase 2](phase-2-gmm-log-intensity.md). |
-| 3 | **Revised requirements; needs prototyping.** Bin events globally and restrict decoding spikes before density evaluation; cover no-spike states, masks, and position-dependent terms. Validate likelihood-specific memory bounds. Full posterior retention is assigned to Phase 7a; the former >4× total-memory target is withdrawn. |
+| 3 | **Implemented and validated** on `fix/likelihood-chunk-boundaries`, based on `86e22f0`. Backends bin spikes against the full timeline and evaluate only requested rows, including boundary spikes. Both detector families and transition drivers return requested likelihoods in global order. Follow-ups invalidate stale stored likelihoods, preserve positional dtype compatibility, select features before conversion, bound digitization to chunk boundaries, prepare No-Spike duration once, validate JAX sorted-index hints, and share spike ordering across states/chunks within each prediction. Later predictions recheck mutated inputs. The six dedicated modules contain 262 tests; current numerical, full-suite and runtime evidence is recorded in [Phase 3](phase-3-chunk-boundary.md). Goldens, snapshots and tolerances are unchanged. Memory/runtime measurements are CPU-only on small grids; full posterior retention remains Phase 7a, and the former total-memory reduction target remains withdrawn. |
 | 4 | **Needs prototyping.** Guard all empty-tile operands, stabilize Gaussian distances, and make weighted GMM fitting/objectives scale-invariant without overflowing weight normalization. The GLM weighted-objective normalization already exists; preserve it. |
 | 5 | **Needs prototyping against settled C2.** Remove hard windows, implement fractional event ownership consistently (including GLM sufficient statistics), reject unsupported damping before mutation, and close validation gaps. |
 | 6a–6d | **C3b unresolved; needs prototyping.** Central edge validation and encoding-cell alignment; 6a/6c ship together and 6b/6d ship atomically. Uniformity checks must account for timestamp representability. |
 | 7 | **Expanded scope; needs prototyping.** 7a: bounded memory smoothing and incremental/compact outputs. 7b: structured forward/backward transitions. 7c: measured likelihood and compilation optimizations. Validate the representative workload, existing numerical tolerances, host/device peak memory, and end-to-end runtime before claiming production support. |
-| 8 | **Needs prototyping.** Distinguish mass from density on variable-volume bins, define unoccupied-component behavior consistently with the selected policy, and select a tested sorted-index strategy. The historical inventory found nine reduction sites; re-inventory before editing. |
+| 8 | **Density/component fixes need prototyping.** Distinguish mass from density on variable-volume bins and define unoccupied-component behavior consistently with the selected policy. Phase 3 now validates sorted-index hints at all nine reduction sites and shares ordering checks across states/chunks within each prediction. GPU validation remains outstanding. |
 
 ## Reading order
 
@@ -140,7 +142,7 @@ an assumption that every golden must change.
 | 0 | [phase-0-core-hmm.md](phase-0-core-hmm.md) | Stable Bayesian conditioning and posterior normalization in both core paths | Validated unchanged; defect regressions now match the mathematical reference |
 | 1 | [phase-1-exposure-mask.md](phase-1-exposure-mask.md) | Sorted fits honour the training/group/environment mask; zero-exposure is defined | Validated unchanged |
 | 2 | [phase-2-gmm-log-intensity.md](phase-2-gmm-log-intensity.md) | Raw log-intensity ratios and a log-space ground process in the clusterless GMM, local and non-local | No GMM fixtures exist; KDE goldens unaffected |
-| 3 | [phase-3-chunk-boundary.md](phase-3-chunk-boundary.md) | Backends bin globally and allocate only requested rows | Existing cached-path goldens unchanged; corrected chunks match the unchunked reference |
+| 3 | [phase-3-chunk-boundary.md](phase-3-chunk-boundary.md) | Backends bin globally and allocate only requested rows | Validated unchanged; corrected chunks match the unchunked reference |
 | 4 | [phase-4-numerical-hardening.md](phase-4-numerical-hardening.md) | KDE reducer NaN, stable Gaussian distances, scale-invariant weighted GMM and objective | Changes possible; measure |
 | 5 | [phase-5-windows-and-validation.md](phase-5-windows-and-validation.md) | Canonical event weights and hard-window removal (C2), damping rejection, validators | Measure ownership changes; unaffected fixtures retain parity |
 | 6a | [phase-6a-time-vocabulary.md](phase-6a-time-vocabulary.md) | Edges, centers, encoding cells, and row alignment; ships with 6c | Shape, coordinate, and numerical changes possible; measure |

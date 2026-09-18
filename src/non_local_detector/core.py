@@ -1,3 +1,4 @@
+import functools
 import logging
 from collections.abc import Callable
 
@@ -612,6 +613,146 @@ _smoother_internal = jax.jit(
 )
 
 
+ROW_SLICE_ATTRIBUTE = "accepts_row_slice"
+
+
+def row_slice_aware(log_likelihood_func: Callable[..., ArrayLike]):
+    """Mark a likelihood callback as accepting the ``row_slice`` keyword.
+
+    A marked callback bins the spikes against the FULL decoding ``time`` it is
+    handed and returns only the rows named by ``row_slice``, so chunked
+    prediction owns every spike exactly once. The chunked drivers call an
+    unmarked (legacy) callback the old way -- with ``time[chunk]`` -- and never
+    inject the keyword into it, so arbitrary user callables keep working.
+
+    Parameters
+    ----------
+    log_likelihood_func : callable
+        Function (or unbound method) accepting ``is_missing=None`` and
+        ``row_slice=None``. When a row range is requested, ``time`` has shape
+        ``(n_time,)`` but ``is_missing`` is already sliced to ``(n_rows,)``;
+        the callback must not slice the missing-data mask again. It returns
+        ``(n_rows, n_state_bins)``. With ``row_slice=None``, both inputs and
+        the result cover the full timeline.
+
+    Returns
+    -------
+    log_likelihood_func : callable
+        The same object, marked.
+    """
+    setattr(log_likelihood_func, ROW_SLICE_ATTRIBUTE, True)
+    return log_likelihood_func
+
+
+def accepts_row_slice(log_likelihood_func: Callable[..., ArrayLike]) -> bool:
+    """Whether a likelihood callback was marked by :func:`row_slice_aware`.
+
+    Bound methods forward the lookup to their underlying function, so marking
+    the method in the class body is enough. ``functools.partial`` objects and
+    decorators that only record their wrappee in ``__wrapped__`` do not forward
+    attribute lookups, so both are unwrapped here: silently demoting a marked
+    callback to the legacy branch would drop the boundary spikes again while
+    still returning plausible numbers.
+
+    Parameters
+    ----------
+    log_likelihood_func : callable
+        The callback a chunked driver was given.
+
+    Returns
+    -------
+    accepts_row_slice : bool
+        True if the callback (or anything it wraps) was marked by
+        :func:`row_slice_aware`, in which case it is called with the full
+        ``time`` and a ``row_slice``.
+    """
+    func: object = log_likelihood_func
+    seen: set[int] = set()
+    while id(func) not in seen:
+        if getattr(func, ROW_SLICE_ATTRIBUTE, False):
+            return True
+        seen.add(id(func))
+        if isinstance(func, functools.partial):
+            func = func.func
+        elif hasattr(func, "__wrapped__"):
+            func = func.__wrapped__
+        else:
+            break
+    return False
+
+
+def _warn_if_legacy_chunking(
+    log_likelihood_func: Callable[..., ArrayLike], n_chunks: int
+) -> None:
+    """Warn once per driver call when chunking will use the legacy branch.
+
+    The legacy call hands each chunk only ``time[chunk]``. A callback that bins
+    spikes against the timeline it is given then clips them to the chunk and
+    loses every spike between two chunks while still returning plausible
+    numbers; a callback whose per-timestamp values do not depend on the
+    surrounding timeline is unaffected. The driver cannot tell the two apart,
+    so it warns. A ``logger.warning`` (not ``warnings.warn``) matches the
+    drivers' other host-side diagnostics.
+    """
+    if n_chunks > 1 and not accepts_row_slice(log_likelihood_func):
+        logger.warning(
+            "n_chunks=%d with a likelihood callback that is not marked "
+            "row_slice_aware: each chunk receives only its own timestamps. If "
+            "the callback bins spikes against the timeline it is given, spikes "
+            "between chunks are dropped from the likelihood. Mark the callback "
+            "with non_local_detector.core.row_slice_aware and honour "
+            "row_slice, or use n_chunks=1.",
+            n_chunks,
+        )
+
+
+def _store_chunk_rows(
+    buffer: np.ndarray | None,
+    chunk: jnp.ndarray,
+    time_inds: np.ndarray,
+    n_time: int,
+) -> np.ndarray:
+    """Copy one chunk's rows into the host log-likelihood buffer, allocating it first.
+
+    Assignment copies into the final host buffer before the chunk is donated
+    to the filter. Retaining a NumPy view would alias the donated buffer on
+    CPU; retaining separate chunk copies would double host storage.
+    """
+    if buffer is None:
+        buffer = np.empty((n_time, chunk.shape[1]), dtype=chunk.dtype)
+    buffer[int(time_inds[0]) : int(time_inds[-1]) + 1] = np.asarray(chunk)
+    return buffer
+
+
+def _call_log_likelihood_chunk(
+    log_likelihood_func: Callable[..., ArrayLike],
+    time: np.ndarray,
+    log_likelihood_args: tuple,
+    time_inds: np.ndarray,
+    is_missing_chunk: np.ndarray | None,
+) -> ArrayLike:
+    """Evaluate one chunk's log likelihood, preferring global spike binning.
+
+    A ``row_slice_aware`` callback receives the FULL ``time`` plus the chunk's
+    global row range, so a spike lands in the row that owns it on the full
+    timeline. A legacy callback receives ``time[time_inds]`` and therefore
+    clips the spikes to the chunk -- dropping any spike between two chunks. It
+    is NOT a global-binning implementation.
+    """
+    if accepts_row_slice(log_likelihood_func):
+        return log_likelihood_func(
+            time,
+            *log_likelihood_args,
+            is_missing=is_missing_chunk,
+            row_slice=slice(int(time_inds[0]), int(time_inds[-1]) + 1),
+        )
+    return log_likelihood_func(
+        time[time_inds],
+        *log_likelihood_args,
+        is_missing=is_missing_chunk,
+    )
+
+
 def chunked_filter_smoother(
     time: np.ndarray,
     state_ind: np.ndarray,
@@ -625,6 +766,8 @@ def chunked_filter_smoother(
     cache_log_likelihoods: bool = True,
     dtype: jnp.dtype = jnp.float32,
     degenerate_indices_out: list | None = None,
+    *,
+    accumulate_log_likelihoods: bool = False,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -645,6 +788,15 @@ def chunked_filter_smoother(
     initial_distribution : np.ndarray, shape (n_state_bins,)
     transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
     log_likelihood_func : callable
+        Called as ``log_likelihood_func(time, *log_likelihood_args,
+        is_missing=...)``. When the callable is marked by
+        :func:`row_slice_aware` it additionally receives
+        ``row_slice=slice(start, stop)`` and is handed the FULL ``time``, so
+        each decoding spike is binned once against the whole timeline and lands
+        in the row that owns it. An unmarked (legacy) callable is called the
+        historical way, with ``time[chunk]`` only: it therefore clips spikes to
+        the chunk and DROPS any spike falling between two chunks, so it is not a
+        global-binning implementation. No new keyword is injected into it.
     log_likelihood_args : tuple
     is_missing : np.ndarray, shape (n_time,), optional
     n_chunks : int, optional
@@ -661,6 +813,14 @@ def chunked_filter_smoother(
         timesteps are appended to this list during the forward pass. This is
         the only way to recover those indices when likelihoods are not cached
         (the returned ``log_likelihoods`` is then ``None``). By default None.
+    accumulate_log_likelihoods : bool, optional, keyword-only
+        If True and the log likelihoods are not cached, each chunk's rows are
+        copied into a single preallocated host array so the returned
+        ``log_likelihoods`` covers every row in global order instead of being
+        ``None``. This allocates the full (n_time, n_state_bins) array, so set
+        it only when the caller explicitly asked for the log likelihoods.
+        Keyword-only, and last, so that it cannot capture a positional argument
+        aimed at a parameter that predates it (``dtype``). By default False.
 
     Returns
     -------
@@ -728,6 +888,9 @@ def chunked_filter_smoother(
         if log_likelihoods is not None
         else None
     )
+    accumulated_log_likelihoods: np.ndarray | None = None
+    if log_likelihoods_jax is None:
+        _warn_if_legacy_chunking(log_likelihood_func, n_chunks)
 
     # Forward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(time_chunks):
@@ -740,12 +903,21 @@ def chunked_filter_smoother(
             is_missing_chunk = (
                 is_missing[time_inds_np] if is_missing is not None else None
             )
-            log_likelihood_chunk = log_likelihood_func(
-                time[time_inds_np],
-                *log_likelihood_args,
-                is_missing=is_missing_chunk,
+            log_likelihood_chunk = _call_log_likelihood_chunk(
+                log_likelihood_func,
+                time,
+                log_likelihood_args,
+                time_inds_np,
+                is_missing_chunk,
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
+            if accumulate_log_likelihoods:
+                accumulated_log_likelihoods = _store_chunk_rows(
+                    accumulated_log_likelihoods,
+                    log_likelihood_chunk,
+                    time_inds_np,
+                    n_time,
+                )
 
         # Tally degenerate (all -inf) and NaN timesteps at one host sync point
         # before the array is donated to the JIT call. Accumulated across chunks
@@ -792,6 +964,9 @@ def chunked_filter_smoother(
         n_time,
         marginal_log_likelihood=float(marginal_likelihood),
     )
+
+    if accumulated_log_likelihoods is not None:
+        log_likelihoods = accumulated_log_likelihoods
 
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
@@ -1217,6 +1392,8 @@ def chunked_filter_smoother_covariate_dependent(
     cache_log_likelihoods: bool = True,
     dtype: jnp.dtype = jnp.float32,
     degenerate_indices_out: list | None = None,
+    *,
+    accumulate_log_likelihoods: bool = False,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -1237,6 +1414,15 @@ def chunked_filter_smoother_covariate_dependent(
     discrete_transition_matrix : np.ndarray, shape (n_time, n_states, n_states)
     continuous_transition_matrix : np.ndarray, shape (n_state_bins, n_state_bins)
     log_likelihood_func : callable
+        Called as ``log_likelihood_func(time, *log_likelihood_args,
+        is_missing=...)``. When the callable is marked by
+        :func:`row_slice_aware` it additionally receives
+        ``row_slice=slice(start, stop)`` and is handed the FULL ``time``, so
+        each decoding spike is binned once against the whole timeline and lands
+        in the row that owns it. An unmarked (legacy) callable is called the
+        historical way, with ``time[chunk]`` only: it therefore clips spikes to
+        the chunk and DROPS any spike falling between two chunks, so it is not a
+        global-binning implementation. No new keyword is injected into it.
     log_likelihood_args : tuple
     is_missing : np.ndarray, shape (n_time,), optional
     n_chunks : int, optional
@@ -1257,6 +1443,14 @@ def chunked_filter_smoother_covariate_dependent(
         timesteps are appended to this list during the forward pass. This is
         the only way to recover those indices when likelihoods are not cached
         (the returned ``log_likelihoods`` is then ``None``). By default None.
+    accumulate_log_likelihoods : bool, optional, keyword-only
+        If True and the log likelihoods are not cached, each chunk's rows are
+        copied into a single preallocated host array so the returned
+        ``log_likelihoods`` covers every row in global order instead of being
+        ``None``. This allocates the full (n_time, n_state_bins) array, so set
+        it only when the caller explicitly asked for the log likelihoods.
+        Keyword-only, and last, so that it cannot capture a positional argument
+        aimed at a parameter that predates it (``dtype``). By default False.
 
     Returns
     -------
@@ -1331,6 +1525,9 @@ def chunked_filter_smoother_covariate_dependent(
         if log_likelihoods is not None
         else None
     )
+    accumulated_log_likelihoods: np.ndarray | None = None
+    if log_likelihoods_jax is None:
+        _warn_if_legacy_chunking(log_likelihood_func, n_chunks)
 
     # Forward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(time_chunks):
@@ -1343,12 +1540,21 @@ def chunked_filter_smoother_covariate_dependent(
             is_missing_chunk = (
                 is_missing[time_inds_np] if is_missing is not None else None
             )
-            log_likelihood_chunk = log_likelihood_func(
-                time[time_inds_np],
-                *log_likelihood_args,
-                is_missing=is_missing_chunk,
+            log_likelihood_chunk = _call_log_likelihood_chunk(
+                log_likelihood_func,
+                time,
+                log_likelihood_args,
+                time_inds_np,
+                is_missing_chunk,
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
+            if accumulate_log_likelihoods:
+                accumulated_log_likelihoods = _store_chunk_rows(
+                    accumulated_log_likelihoods,
+                    log_likelihood_chunk,
+                    time_inds_np,
+                    n_time,
+                )
 
         # Tally degenerate (all -inf) and NaN timesteps at one host sync point
         # before the array is donated to the JIT call. Accumulated across chunks
@@ -1398,6 +1604,9 @@ def chunked_filter_smoother_covariate_dependent(
         n_time,
         marginal_log_likelihood=float(marginal_likelihood),
     )
+
+    if accumulated_log_likelihoods is not None:
+        log_likelihoods = accumulated_log_likelihoods
 
     # Concatenate JAX arrays on device
     causal_posterior_jax = jnp.concatenate(causal_posterior)
