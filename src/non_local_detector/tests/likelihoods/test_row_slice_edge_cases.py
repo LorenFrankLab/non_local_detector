@@ -787,7 +787,7 @@ def test_shuffled_spike_order_row_slice_parity(
     row_slice = slice(3, 10)
     rows = predict(shuffled_times, shuffled_features, row_slice=row_slice)
     np.testing.assert_allclose(
-        rows, shuffled_full[row_slice], **parity_kwargs(algorithm)
+        rows, shuffled_full[row_slice], **parity_kwargs(algorithm, is_local=is_local)
     )
     if prepared:
         assert checks_after_full > 0

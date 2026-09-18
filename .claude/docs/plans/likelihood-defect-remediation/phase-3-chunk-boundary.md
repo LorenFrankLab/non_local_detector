@@ -424,10 +424,31 @@ is retained.
 
 ### Numerical parity
 
-Sorted-spikes backends and `no_spike` accumulate integer spike counts per row
-before any float work and are **bit-identical** (`rtol=0, atol=0`) between a row
-request and the corresponding slice of the full-time result. The clusterless
-backends scatter-add one float32 row per selected spike
+Sorted-spikes backends and `no_spike` accumulate integer spike counts per row;
+those counts remain **bit-identical** between a row request and the corresponding
+slice of the full-time result. Likelihood parity also uses `rtol=0, atol=0` for
+the fixed-rate sorted paths and `no_spike`. Local `sorted_spikes_glm` recomputes
+`exp(spline_matrix @ coefficients)` for each requested range, so its floating-point
+evaluation can round differently when the row count changes. It uses the existing
+float32 likelihood bound (`rtol=1e-6, atol=1e-5`); non-local GLM and same-shape
+sorted-versus-shuffled GLM predictions still require exact equality.
+
+This exception was exposed by Linux x86 CI on JAX 0.11.2 (run `35357541375`):
+two local row requests differed by 7.6293945e-6 absolute (1.0421794e-7 relative),
+and a ragged final row differed by 1.4901161e-8 (2.4071485e-7 relative). The latter
+row owns no spikes, so its difference is in the local expected-count term, not
+event ownership. The same fixtures have exact chunk parity on macOS/JAX 0.9.0
+and Linux ARM/JAX 0.11.2. On Linux ARM, both full and chunk predictions agree
+with independent float64 Poisson arithmetic within 3.20e-6 absolute. The new
+`test_local_glm_chunks_match_float64_reference` requires exact counts and float32
+spline inputs for full, seven-row and ragged requests, then checks each likelihood
+against that reference. With x64 enabled, the spline basis agrees within 1e-14
+(its float64 constraint projection can also regroup), and the reference
+likelihood check tightens to `rtol=atol=1e-12`.
+Only the local GLM chunk-comparison tolerance changes;
+the production calculation, fitted model, goldens and snapshots are unchanged.
+
+The clusterless backends scatter-add one float32 row per selected spike
 (`jax.ops.segment_sum`), so a different row range can group the reduction
 differently; measured deviations are at float32 epsilon (≤ 1.2e-7 relative:
 `clusterless_kde` 1.5e-5 abs, `clusterless_gmm` 2.0 abs on values of order 2e7,

@@ -14,11 +14,15 @@ from non_local_detector.likelihoods import (
 
 ALGORITHMS = sorted(_SORTED_SPIKES_ALGORITHMS) + sorted(_CLUSTERLESS_ALGORITHMS)
 
-# Tolerances by reduction kind.
+# Tolerances by prediction path.
 #
 # The sorted-spikes backends and the no-spike model accumulate integer spike
-# COUNTS per row and only then do float work, so a row range is bit-identical to
-# the corresponding full-time rows.
+# COUNTS per row. Most then use fixed fitted rate maps, so a row range is
+# bit-identical to the corresponding full-time rows. The local GLM instead
+# evaluates exp(spline_matrix @ coefficients) for each requested row range;
+# changing the matrix shape can change float32 rounding on some CPU backends.
+# Linux x86 CI measured 7.63e-6 absolute / 2.41e-7 relative likelihood differences,
+# including a final row with no spikes. Its counts must still match exactly.
 #
 # The clusterless backends scatter-add one float32 row per selected spike into
 # the output rows (``jax.ops.segment_sum`` / ``.at[].add``). A row range hands
@@ -34,14 +38,16 @@ ALGORITHMS = sorted(_SORTED_SPIKES_ALGORITHMS) + sorted(_CLUSTERLESS_ALGORITHMS)
 # fixture's spike density; a real regression (a lost or double-counted spike)
 # moves a log likelihood by O(1) and is caught either way.
 EXACT: dict[str, float] = {"rtol": 0.0, "atol": 0.0}
-FLOAT32_REDUCTION: dict[str, float] = {"rtol": 1e-6, "atol": 1e-5}
+FLOAT32_ROUNDING: dict[str, float] = {"rtol": 1e-6, "atol": 1e-5}
 
 
-def parity_kwargs(algorithm: str) -> dict[str, float]:
-    """Tolerance for one backend: exact counts, or float32 reduction rounding."""
-    if algorithm in _SORTED_SPIKES_ALGORITHMS:
+def parity_kwargs(algorithm: str, *, is_local: bool = False) -> dict[str, float]:
+    """Likelihood parity: fixed-rate sorted paths are exact; others may round."""
+    if algorithm in _SORTED_SPIKES_ALGORITHMS and not (
+        algorithm == "sorted_spikes_glm" and is_local
+    ):
         return EXACT
-    return FLOAT32_REDUCTION
+    return FLOAT32_ROUNDING
 
 
 def fit_registered_backends(
