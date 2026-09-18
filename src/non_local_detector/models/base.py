@@ -1923,7 +1923,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             accumulate the per-chunk rows into the full (n_time, n_state_bins)
             array instead. In-loop E-steps never retain a chunk array.
         store_log_likelihood : bool, optional
-            Whether to store the log likelihoods in self.log_likelihoods_, by default False.
+            Whether to store the log likelihoods in self.log_likelihood_, by default False.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
         return_outputs : str, list of str, set of str, or None, optional
@@ -3416,9 +3416,9 @@ class ClusterlessDetector(_DetectorBase):
             Caching is disabled automatically when ``n_chunks > 1``. Requesting
             ``return_outputs='log_likelihood'`` with ``n_chunks > 1`` instead
             accumulates the per-chunk rows into the full
-            (n_time, n_state_bins) array -- the documented exception to this
-            phase's per-chunk allocation; when the log likelihood is not
-            requested, no chunk array is retained.
+            (n_time, n_state_bins) array -- the one exception to per-chunk
+            likelihood allocation; when the log likelihood is not requested, no
+            chunk array is retained.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
         return_outputs : str, list of str, set of str, or None, optional
@@ -3698,7 +3698,7 @@ class ClusterlessDetector(_DetectorBase):
             accumulate the per-chunk rows into the full (n_time, n_state_bins)
             array instead. In-loop E-steps never retain a chunk array.
         store_log_likelihood : bool, optional
-            Whether to store the log likelihoods in self.log_likelihoods_, by default False.
+            Whether to store the log likelihoods in self.log_likelihood_, by default False.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
         return_outputs : str, list of str, set of str, or None, optional
@@ -4435,9 +4435,9 @@ class SortedSpikesDetector(_DetectorBase):
             Caching is disabled automatically when ``n_chunks > 1``. Requesting
             ``return_outputs='log_likelihood'`` with ``n_chunks > 1`` instead
             accumulates the per-chunk rows into the full
-            (n_time, n_state_bins) array -- the documented exception to this
-            phase's per-chunk allocation; when the log likelihood is not
-            requested, no chunk array is retained.
+            (n_time, n_state_bins) array -- the one exception to per-chunk
+            likelihood allocation; when the log likelihood is not requested, no
+            chunk array is retained.
         n_chunks : int, optional
             Splits data into chunks for processing, by default 1
         return_outputs : str, list of str, set of str, or None, optional
@@ -4649,7 +4649,7 @@ class SortedSpikesDetector(_DetectorBase):
             accumulate the per-chunk rows into the full (n_time, n_state_bins)
             array instead. In-loop E-steps never retain a chunk array.
         store_log_likelihood : bool, optional
-            Whether to store the log likelihoods in self.log_likelihoods_, by default False.
+            Whether to store the log likelihoods in self.log_likelihood_, by default False.
         n_chunks : int, optional
             Number of chunks for processing, by default 1
         return_outputs : str, list of str, set of str, or None, optional

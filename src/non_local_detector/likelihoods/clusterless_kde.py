@@ -19,6 +19,7 @@ from non_local_detector.likelihoods.common import (
     safe_log,
     select_spike_rows,
     select_spikes_in_rows,
+    sum_spikes_into_rows,
     validate_finite,
     validate_weights,
     weighted_mean_rate,
@@ -414,6 +415,10 @@ def predict_clusterless_kde_log_likelihood(
         against it and only those owned by the requested rows are evaluated, so
         the result equals the full-time result sliced by ``row_slice`` while the
         spatial workspaces scale with the requested rows and selected spikes.
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal ordering preparation that a detector prediction shares across
+        observation states and chunks. Direct callers omit it; the spike-time
+        ordering is then verified on this call.
 
     Returns
     -------
@@ -493,7 +498,7 @@ def predict_clusterless_kde_log_likelihood(
             # Expand waveform_std to match this electrode's feature count if scalar
             n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
             electrode_waveform_std = as_std_array(waveform_std, n_waveform_features)
-            log_likelihood += jax.ops.segment_sum(
+            log_likelihood += sum_spikes_into_rows(
                 block_estimate_log_joint_mark_intensity(
                     electrode_decoding_spike_waveform_features,
                     electrode_encoding_spike_waveform_features,
@@ -504,9 +509,7 @@ def predict_clusterless_kde_log_likelihood(
                     block_size,
                     encoding_weights=electrode_encoding_weights,
                 ),
-                selection.bin_ind,
-                indices_are_sorted=selection.indices_are_sorted,
-                num_segments=n_rows,
+                selection,
             )
 
     return log_likelihood
@@ -573,6 +576,10 @@ def compute_local_log_likelihood(
         Contiguous range of output rows to compute, by default None (all rows).
         ``time`` stays the FULL decoding timeline (see
         ``predict_clusterless_kde_log_likelihood``).
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal ordering preparation that a detector prediction shares across
+        observation states and chunks. Direct callers omit it; the spike-time
+        ordering is then verified on this call.
 
     Returns
     -------
@@ -655,7 +662,7 @@ def compute_local_log_likelihood(
         )
         occupancy_at_spike_time = occupancy_model.predict(position_at_spike_time)
 
-        log_likelihood += jax.ops.segment_sum(
+        log_likelihood += sum_spikes_into_rows(
             safe_log(
                 electrode_mean_rate
                 * jnp.where(
@@ -667,9 +674,7 @@ def compute_local_log_likelihood(
                     0.0,
                 )
             ),
-            selection.bin_ind,
-            indices_are_sorted=selection.indices_are_sorted,
-            num_segments=n_rows,
+            selection,
         )
 
         summed_expected_counts += electrode_mean_rate * jnp.where(

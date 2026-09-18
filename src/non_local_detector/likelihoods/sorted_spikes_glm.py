@@ -447,6 +447,10 @@ def predict_sorted_spikes_glm_log_likelihood(
         ``time`` always stays the FULL decoding timeline, so spikes are binned
         against it and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal ordering preparation that a detector prediction shares across
+        observation states and chunks. Direct callers omit it; the spike-time
+        ordering is then verified on this call.
 
     Returns
     -------

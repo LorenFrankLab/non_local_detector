@@ -71,6 +71,7 @@ from non_local_detector.likelihoods.common import (
     safe_log,
     select_spike_rows,
     select_spikes_in_rows,
+    sum_spikes_into_rows,
     validate_finite,
     validate_weights,
     weighted_mean_rate,
@@ -494,6 +495,10 @@ def predict_clusterless_diffusion_log_likelihood(
         against it and only those owned by the requested rows are evaluated, so
         the result equals the full-time result sliced by ``row_slice`` while the
         spatial workspaces scale with the requested rows and selected spikes.
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal ordering preparation that a detector prediction shares across
+        observation states and chunks. Direct callers omit it; the spike-time
+        ordering is then verified on this call.
     **encoding_model
         The dict returned by :func:`fit_clusterless_diffusion_encoding_model`.
 
@@ -622,18 +627,16 @@ def predict_clusterless_diffusion_log_likelihood(
             n_decode = electrode_spike_times.shape[0]
             if n_decode == 0:
                 continue
-            seg = jnp.asarray(selection.bin_ind)
 
             # Zero-rate electrode: floor every observed decode spike to LOG_EPS,
             # identical contract to the non-local zero-rate guard.
             if electrode_weight_total == 0:
-                log_likelihood += jax.ops.segment_sum(
-                    jnp.full((n_decode,), LOG_EPS),
-                    seg,
-                    indices_are_sorted=selection.indices_are_sorted,
-                    num_segments=n_rows,
+                log_likelihood += sum_spikes_into_rows(
+                    jnp.full((n_decode,), LOG_EPS), selection
                 )
                 continue
+
+            seg = jnp.asarray(selection.bin_ind)
 
             enc_bins = jnp.asarray(electrode_bins)
             enc_marks = jnp.asarray(electrode_marks)
@@ -691,7 +694,7 @@ def predict_clusterless_diffusion_log_likelihood(
                     lc,
                     seg_block,
                     indices_are_sorted=selection.indices_are_sorted,
-                    num_segments=n_rows,
+                    num_segments=selection.n_rows,
                 )
 
         return log_likelihood[:, None]
@@ -741,7 +744,6 @@ def predict_clusterless_diffusion_log_likelihood(
         n_decode = decode_features.shape[0]
         if n_decode == 0:
             continue
-        seg = jnp.asarray(selection.bin_ind)
 
         # Zero-rate electrode: floor every observed decode spike to LOG_EPS BEFORE any
         # division (D_e == 0 and P_e / weight_total_e is 0/0). Not skipped. Each
@@ -749,14 +751,13 @@ def predict_clusterless_diffusion_log_likelihood(
         # bins -- accumulate it from per-time-bin counts rather than materializing an
         # (n_decode, n_bins) array (which would be gigabytes at millions of spikes).
         if electrode_weight_total == 0:
-            spike_counts = jax.ops.segment_sum(
-                jnp.ones(n_decode),
-                seg,
-                indices_are_sorted=selection.indices_are_sorted,
-                num_segments=n_rows,
+            spike_counts = sum_spikes_into_rows(
+                jnp.ones(n_decode), selection
             )  # (n_rows,)
             log_likelihood += spike_counts[:, None] * LOG_EPS
             continue
+
+        seg = jnp.asarray(selection.bin_ind)
 
         enc_bins = jnp.asarray(electrode_bins)
         enc_marks = jnp.asarray(electrode_marks)
@@ -813,7 +814,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 log_intensity.T,
                 seg_block,
                 indices_are_sorted=selection.indices_are_sorted,
-                num_segments=n_rows,
+                num_segments=selection.n_rows,
             )
 
     return log_likelihood

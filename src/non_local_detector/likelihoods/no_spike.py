@@ -58,6 +58,10 @@ def predict_no_spike_log_likelihood(
         Internal precomputed ``np.median(np.diff(time))`` for this full timeline.
         Detector predictions prepare it once and reuse it across chunks. Direct
         callers can omit it; the same full-timeline value is computed here.
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal ordering preparation that a detector prediction shares across
+        observation states and chunks. Direct callers omit it; the spike-time
+        ordering is then verified on this call.
 
     Returns
     -------

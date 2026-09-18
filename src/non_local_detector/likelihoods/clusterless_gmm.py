@@ -14,7 +14,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jax.ops import segment_sum
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
@@ -30,6 +29,7 @@ from non_local_detector.likelihoods.common import (
     safe_log,
     select_spike_rows,
     select_spikes_in_rows,
+    sum_spikes_into_rows,
     validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
@@ -656,6 +656,10 @@ def predict_clusterless_gmm_log_likelihood(
         Fitted waveform-feature count per electrode, taken from the encoding
         model. Predict rejects decode spikes whose feature dimension differs, so
         every electrode (including zero-rate ones) must have a recorded count.
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal ordering preparation that a detector prediction shares across
+        observation states and chunks. Direct callers omit it; the spike-time
+        ordering is then verified on this call.
 
     Returns
     -------
@@ -686,10 +690,10 @@ def predict_clusterless_gmm_log_likelihood(
                 hint="Use the same waveform feature representation at fit and predict.",
             )
 
-    # The position arrays are converted by compute_local_log_likelihood, the only
-    # consumer. Converting here instead would copy the FULL-recording position to
-    # the device on every call -- once per chunk under chunked prediction -- for a
-    # non-local likelihood that never reads it.
+    # The position arrays are read only by compute_local_log_likelihood, which
+    # keeps them on the host. Converting them to device arrays here would copy
+    # the FULL-recording position on every call -- once per chunk under chunked
+    # prediction -- for a non-local likelihood that never reads it.
     if is_local:
         return compute_local_log_likelihood(
             time=time,
@@ -746,7 +750,7 @@ def predict_clusterless_gmm_log_likelihood(
                 _spike_time_order=_spike_time_order,
             )
             spikes_per_bin = (
-                jnp.zeros(n_rows).at[selection.bin_ind].add(1.0)
+                jnp.zeros(selection.n_rows).at[selection.bin_ind].add(1.0)
             )  # (n_rows,)
             log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin[:, None]
             continue
@@ -870,6 +874,10 @@ def compute_local_log_likelihood(
         Contiguous range of output rows to compute, by default None (all rows).
         ``time`` stays the FULL decoding timeline (see
         ``predict_clusterless_gmm_log_likelihood``).
+    _spike_time_order : _SpikeTimeOrder | None, optional
+        Internal ordering preparation that a detector prediction shares across
+        observation states and chunks. Direct callers omit it; the spike-time
+        ordering is then verified on this call.
 
     Returns
     -------
@@ -931,15 +939,15 @@ def compute_local_log_likelihood(
             )
             if selection.bin_ind.shape[0] > 0:
                 spikes_per_bin = (
-                    jnp.zeros(n_rows).at[selection.bin_ind].add(1.0)
+                    jnp.zeros(selection.n_rows).at[selection.bin_ind].add(1.0)
                 )  # (n_rows,)
                 log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin
             continue
 
         # Select the spikes owned by the requested rows and bin them locally.
-        # Select on the host FIRST, then convert: converting the whole array
-        # would device-copy every decoding spike in the recording on every chunk
-        # call (the non-local branch above does the same).
+        # Select FIRST, then convert: converting the whole array would
+        # device-copy every decoding spike in the recording on every chunk call
+        # (the non-local branch above does the same).
         selection = select_spikes_in_rows(
             elect_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
         )
@@ -965,13 +973,7 @@ def compute_local_log_likelihood(
             )  # (n_spikes,)
 
             log_likelihood = (
-                log_likelihood
-                + segment_sum(
-                    terms[:, None],
-                    selection.bin_ind,
-                    num_segments=n_rows,
-                    indices_are_sorted=selection.indices_are_sorted,
-                ).ravel()
+                log_likelihood + sum_spikes_into_rows(terms[:, None], selection).ravel()
             )
 
         # Expected counts term at the animal's position, in log space:
