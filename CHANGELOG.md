@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `core.chunked_filter_smoother` and `core.chunked_filter_smoother_covariate_dependent` now log a warning (via `logging`, once per call) when `n_chunks > 1` and the likelihood callback is not marked `row_slice_aware`: that legacy branch hands each chunk only its own timestamps, so a callback that bins spikes against the timeline it is given drops spikes between chunks while returning plausible values. The detectors' own `compute_log_likelihood` methods are marked, so only custom or subclass callbacks trigger it.
 - `likelihoods.common.SpikeSelection` records `n_rows`, the requested row count, and `sum_spikes_into_rows(values, selection)` reads the segment count from the selection, so a reduction can no longer be paired with another chunk's row count.
 - Clusterless spike/feature row-count mismatches are rejected for sorted and unsorted inputs, including mismatches outside the requested chunk. Requested full likelihoods are copied directly into one host output before JAX buffer donation, avoiding retention of both chunk copies and their concatenation.
 

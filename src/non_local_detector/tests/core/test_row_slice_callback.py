@@ -175,6 +175,28 @@ def test_legacy_callback_gets_the_sliced_time_and_no_row_slice(driver, problem):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("driver", DRIVERS, ids=DRIVER_IDS)
+def test_legacy_callback_under_chunking_is_warned_about_once(driver, problem, caplog):
+    """Chunking an unmarked callback must not be silent.
+
+    The legacy branch returns plausible numbers with the boundary spikes
+    missing, so the driver logs one warning per call naming the fix
+    (``row_slice_aware``). A marked callback, or a single chunk, warns nothing.
+    """
+    with caplog.at_level("WARNING", logger="non_local_detector.core"):
+        run_driver(driver, problem, legacy_callback, [], N_CHUNKS)
+    warnings = [r for r in caplog.records if "row_slice_aware" in r.getMessage()]
+    assert len(warnings) == 1
+    assert warnings[0].levelname == "WARNING"
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="non_local_detector.core"):
+        run_driver(driver, problem, legacy_callback, [], 1)
+        run_driver(driver, problem, row_aware_callback, [], N_CHUNKS)
+    assert not [r for r in caplog.records if "row_slice_aware" in r.getMessage()]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("driver", DRIVERS, ids=DRIVER_IDS)
 def test_row_aware_chunked_matches_unchunked(driver, problem):
     """Chunked prediction through a row-aware callback is exact."""
     chunked = run_driver(driver, problem, row_aware_callback, [], N_CHUNKS)
@@ -271,15 +293,18 @@ def test_requested_likelihood_retains_one_host_array(driver, monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("driver", DRIVERS, ids=DRIVER_IDS)
-def test_positional_dtype_still_selects_the_dtype(driver, problem):
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64], ids=["f32", "f64"])
+def test_positional_dtype_still_selects_the_dtype(driver, problem, dtype):
     """A pre-existing positional ``dtype`` must not land on the new flag.
 
     ``accumulate_log_likelihoods`` was added to drivers whose parameter order
     was already public. A caller passing ``dtype`` positionally in its original
-    slot would otherwise set the accumulation flag instead and silently keep the
-    computation in float32, so the flag is keyword-only and comes last.
+    slot would otherwise set the accumulation flag instead (a dtype object is
+    truthy) and silently keep the computation in float32, so the flag is
+    keyword-only and comes last. The float32 case runs everywhere and guards
+    the flag; the float64 case additionally shows the dtype was honoured.
     """
-    if not jax.config.jax_enable_x64:
+    if dtype == jnp.float64 and not jax.config.jax_enable_x64:
         pytest.skip("float64 requires JAX_ENABLE_X64=1")
 
     args = [
@@ -303,10 +328,10 @@ def test_positional_dtype_still_selects_the_dtype(driver, problem):
         N_CHUNKS,  # n_chunks
         None,  # log_likelihoods
         False,  # cache_log_likelihoods
-        jnp.float64,  # dtype, in its pre-existing positional slot
+        dtype,  # dtype, in its pre-existing positional slot
     ]
     result = driver(*args)
 
-    assert result[0].dtype == np.float64  # acausal_posterior
-    assert result[6].dtype == np.float64  # causal_posterior
     assert result[5] is None  # log_likelihoods: accumulation stayed off
+    assert result[0].dtype == dtype  # acausal_posterior
+    assert result[6].dtype == dtype  # causal_posterior

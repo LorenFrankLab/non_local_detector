@@ -681,6 +681,31 @@ def accepts_row_slice(log_likelihood_func: Callable[..., ArrayLike]) -> bool:
     return False
 
 
+def _warn_if_legacy_chunking(
+    log_likelihood_func: Callable[..., ArrayLike], n_chunks: int
+) -> None:
+    """Warn once per driver call when chunking will use the legacy branch.
+
+    The legacy call hands each chunk only ``time[chunk]``. A callback that bins
+    spikes against the timeline it is given then clips them to the chunk and
+    loses every spike between two chunks while still returning plausible
+    numbers; a callback whose per-timestamp values do not depend on the
+    surrounding timeline is unaffected. The driver cannot tell the two apart,
+    so it warns. A ``logger.warning`` (not ``warnings.warn``) matches the
+    drivers' other host-side diagnostics.
+    """
+    if n_chunks > 1 and not accepts_row_slice(log_likelihood_func):
+        logger.warning(
+            "n_chunks=%d with a likelihood callback that is not marked "
+            "row_slice_aware: each chunk receives only its own timestamps. If "
+            "the callback bins spikes against the timeline it is given, spikes "
+            "between chunks are dropped from the likelihood. Mark the callback "
+            "with non_local_detector.core.row_slice_aware and honour "
+            "row_slice, or use n_chunks=1.",
+            n_chunks,
+        )
+
+
 def _call_log_likelihood_chunk(
     log_likelihood_func: Callable[..., ArrayLike],
     time: np.ndarray,
@@ -846,6 +871,8 @@ def chunked_filter_smoother(
         else None
     )
     accumulated_log_likelihoods: np.ndarray | None = None
+    if log_likelihoods_jax is None:
+        _warn_if_legacy_chunking(log_likelihood_func, n_chunks)
 
     # Forward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(time_chunks):
@@ -1487,6 +1514,8 @@ def chunked_filter_smoother_covariate_dependent(
         else None
     )
     accumulated_log_likelihoods: np.ndarray | None = None
+    if log_likelihoods_jax is None:
+        _warn_if_legacy_chunking(log_likelihood_func, n_chunks)
 
     # Forward pass: accumulate JAX arrays
     for chunk_id, time_inds_np in enumerate(time_chunks):
