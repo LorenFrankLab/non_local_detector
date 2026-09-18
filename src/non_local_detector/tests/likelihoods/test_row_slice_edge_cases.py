@@ -115,6 +115,9 @@ REPRESENTATIVE_ALGORITHMS = [
 N_TIME = 13
 
 
+SPIKE_KINDS = ("on_timestamps", "between_timestamps", "mixed", "duplicates")
+
+
 def spike_placements(time: np.ndarray) -> dict[str, np.ndarray]:
     """Decoding spike placements that hit every boundary case of ``time``.
 
@@ -189,9 +192,7 @@ def test_endpoint_convention_is_unchanged():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "spike_kind", ["on_timestamps", "between_timestamps", "mixed", "duplicates"]
-)
+@pytest.mark.parametrize("spike_kind", SPIKE_KINDS)
 def test_every_row_partition_tiles_the_full_counts(spike_kind):
     """Row-partition counts must tile the full counts for every spike placement.
 
@@ -213,9 +214,7 @@ def test_every_row_partition_tiles_the_full_counts(spike_kind):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    "spike_kind", ["on_timestamps", "between_timestamps", "mixed", "duplicates"]
-)
+@pytest.mark.parametrize("spike_kind", SPIKE_KINDS)
 def test_selection_carries_its_own_row_count(spike_kind):
     """A selection knows how many rows it was made for, so reductions cannot drift.
 
@@ -282,9 +281,8 @@ def test_empty_row_request_returns_zero_rows():
         counts = get_spikecount_per_time_bin(spikes, time, row_slice=slice(a, a))
         assert counts.shape == (0,)
         selection = select_spikes_in_rows(spikes, time, a, a)
-        indexer, bin_ind = selection.indexer, selection.bin_ind
-        assert spikes[indexer].size == 0
-        assert bin_ind.shape == (0,)
+        assert spikes[selection.indexer].size == 0
+        assert selection.bin_ind.shape == (0,)
 
     # An inverted request is normalized to empty rather than a negative length.
     assert resolve_row_slice(slice(4, 2), len(time)) == (4, 4)
@@ -308,16 +306,15 @@ def test_empty_spike_input_selects_nothing():
     time = np.arange(6.0)
     for empty in (np.array([]), np.zeros((0,), dtype=float)):
         selection = select_spikes_in_rows(empty, time, 1, 4)
-        indexer, bin_ind = selection.indexer, selection.bin_ind
-        assert empty[indexer].size == 0
-        assert bin_ind.shape == (0,)
+        assert empty[selection.indexer].size == 0
+        assert selection.bin_ind.shape == (0,)
         np.testing.assert_array_equal(
             get_spikecount_per_time_bin(empty, time, row_slice=slice(1, 4)), [0, 0, 0]
         )
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("spike_kind", ["on_timestamps", "between_timestamps", "mixed"])
+@pytest.mark.parametrize("spike_kind", SPIKE_KINDS[:3])
 def test_chunk_local_binning_is_detectably_wrong(spike_kind):
     """The edge cases above must be able to fail: show the legacy call differs.
 
@@ -375,9 +372,9 @@ def test_selected_features_stay_paired_with_their_spike(shuffled):
         for row_slice in partition:
             row_start, row_stop = resolve_row_slice(row_slice, len(time))
             selection = select_spikes_in_rows(spike_times, time, row_start, row_stop)
-            indexer, bin_ind = selection.indexer, selection.bin_ind
-            selected_ids = spike_ids[indexer]
-            selected_features = features[indexer]
+            bin_ind = selection.bin_ind
+            selected_ids = spike_ids[selection.indexer]
+            selected_features = features[selection.indexer]
 
             # The feature rows are exactly the selected spikes' own features.
             np.testing.assert_array_equal(
@@ -888,8 +885,7 @@ def allocation_data():
     # The request must select the same two spikes in every set.
     for n_total, (spike_times, _) in decoding.items():
         selection = select_spikes_in_rows(spike_times[0], time, 0, 5)
-        _, bin_ind = selection.indexer, selection.bin_ind
-        assert bin_ind.shape[0] == 2, (n_total, bin_ind)
+        assert selection.bin_ind.shape[0] == 2, (n_total, selection.bin_ind)
 
     return {
         "position_time": position_time,

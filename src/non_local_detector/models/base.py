@@ -49,6 +49,7 @@ from non_local_detector.likelihoods import (
     predict_no_spike_log_likelihood,
 )
 from non_local_detector.likelihoods.common import _SpikeTimeOrder, resolve_row_slice
+from non_local_detector.likelihoods.no_spike import no_spike_time_bin_size
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
     ContinuousInitialConditions,
@@ -114,7 +115,7 @@ def _prepare_likelihood_callback(
     if "_spike_time_order" in parameters:
         prepared["_spike_time_order"] = _SpikeTimeOrder()
     if has_no_spike and "_no_spike_time_bin_size" in parameters:
-        prepared["_no_spike_time_bin_size"] = np.median(np.diff(time))
+        prepared["_no_spike_time_bin_size"] = no_spike_time_bin_size(time)
     return partial(callback, **prepared) if prepared else callback
 
 
@@ -1671,10 +1672,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 )
 
         position = position[:, np.newaxis] if position.ndim == 1 else position
-        # Refitting replaces the environments, initial conditions and both
-        # transition matrices, so a stored log likelihood no longer describes
-        # this model.
-        self._invalidate_stored_log_likelihood()
+        self._invalidate_stored_log_likelihood()  # stale after a refit
         self.initialize_environments(
             position=position, environment_labels=environment_labels
         )
@@ -2358,6 +2356,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     ) -> np.ndarray:
         """Find the most likely sequence of states.
 
+        The likelihood is always recomputed from the data passed here; a
+        stored ``log_likelihood_`` belongs to the run that produced it.
+
         Returns
         -------
         pd.DataFrame, shape (n_time, n_columns)
@@ -2383,10 +2384,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 log_likelihood_func=self.compute_log_likelihood,
                 log_likelihood_args=log_likelihood_args,
                 is_missing=is_missing,
-                # Never a stored likelihood: it belongs to the run that produced
-                # it, not to the data passed here (see
-                # ``_invalidate_stored_log_likelihood``).
-                log_likelihoods=None,
                 n_chunks=n_chunks,
             )
         else:
@@ -2401,10 +2398,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 log_likelihood_func=self.compute_log_likelihood,
                 log_likelihood_args=log_likelihood_args,
                 is_missing=is_missing,
-                # Never a stored likelihood: it belongs to the run that produced
-                # it, not to the data passed here (see
-                # ``_invalidate_stored_log_likelihood``).
-                log_likelihoods=None,
                 n_chunks=n_chunks,
             )
 
@@ -3028,9 +3021,7 @@ class ClusterlessDetector(_DetectorBase):
             The values depend on the chosen `clusterless_algorithm`.
         """
         logger.info("Fitting clusterless spikes...")
-        # The encoding model is being replaced, so any stored log likelihood
-        # (an output describing the previous one) is stale.
-        self._invalidate_stored_log_likelihood()
+        self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         n_time = position.shape[0]
         position = position if position.ndim > 1 else position[:, np.newaxis]
 
@@ -4030,9 +4021,7 @@ class SortedSpikesDetector(_DetectorBase):
             The values depend on the chosen `sorted_spikes_algorithm`.
         """
         logger.info("Fitting place fields...")
-        # The encoding model is being replaced, so any stored log likelihood
-        # (an output describing the previous one) is stale.
-        self._invalidate_stored_log_likelihood()
+        self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         n_time = position.shape[0]
         position = position if position.ndim > 1 else position[:, np.newaxis]
         if is_training is None:

@@ -364,6 +364,25 @@ def delta_kernel_setup(sorted_simulation):
     }
 
 
+def assert_chunked_matches(detector, kwargs, n_chunks):
+    """Predict unchunked and chunked with ``kwargs``; assert parity; return both."""
+    reference = detector.predict(**kwargs, n_chunks=1)
+    chunked = detector.predict(**kwargs, n_chunks=n_chunks, cache_likelihood=False)
+    assert_results_match(reference, chunked)
+    return reference, chunked
+
+
+def assert_some_chunk_is_spike_free(time, spike_times, n_chunks):
+    """Premise for the spike-free-chunk tests: a whole chunk really is empty."""
+    chunk_bounds = np.array_split(np.arange(len(time)), n_chunks)
+    assert any(
+        not any(
+            np.any((s >= time[chunk[0]]) & (s <= time[chunk[-1]])) for s in spike_times
+        )
+        for chunk in chunk_bounds
+    ), "no spike-free chunk in this configuration"
+
+
 def sorted_predict_kwargs(setup, **overrides):
     """Predict arguments for a sorted-spikes setup.
 
@@ -442,10 +461,7 @@ def test_sorted_ragged_chunks_match_unchunked(sorted_setup, n_chunks):
     kwargs = sorted_predict_kwargs(sorted_setup)
     assert len(sorted_setup["time"]) % n_chunks != 0
 
-    reference = detector.predict(**kwargs, n_chunks=1)
-    chunked = detector.predict(**kwargs, n_chunks=n_chunks, cache_likelihood=False)
-
-    assert_results_match(reference, chunked)
+    assert_chunked_matches(detector, kwargs, n_chunks)
 
 
 @pytest.mark.integration
@@ -456,10 +472,7 @@ def test_clusterless_ragged_chunks_match_unchunked(clusterless_setup, n_chunks):
     kwargs = clusterless_predict_kwargs(clusterless_setup)
     assert len(clusterless_setup["time"]) % n_chunks != 0
 
-    reference = detector.predict(**kwargs, n_chunks=1)
-    chunked = detector.predict(**kwargs, n_chunks=n_chunks, cache_likelihood=False)
-
-    assert_results_match(reference, chunked)
+    assert_chunked_matches(detector, kwargs, n_chunks)
 
 
 @pytest.mark.integration
@@ -475,15 +488,8 @@ def test_spikes_only_on_chunk_boundaries_match_unchunked(sorted_setup):
     only_boundary = boundary_timestamp_times(time, n_chunks)
     spike_times = [only_boundary.copy() for _ in sorted_setup["clean_spike_times"]]
 
-    kwargs = {
-        "spike_times": spike_times,
-        "time": time,
-        "position": sorted_setup["position"],
-        "position_time": time,
-        "return_outputs": "all",
-    }
-    reference = detector.predict(**kwargs, n_chunks=1)
-    chunked = detector.predict(**kwargs, n_chunks=n_chunks, cache_likelihood=False)
+    kwargs = sorted_predict_kwargs(sorted_setup, spike_times=spike_times)
+    reference, _ = assert_chunked_matches(detector, kwargs, n_chunks)
 
     # Premise: those spikes really are counted -- the reference must differ
     # from decoding no spikes at all, otherwise a drop on both sides would
@@ -494,7 +500,6 @@ def test_spikes_only_on_chunk_boundaries_match_unchunked(sorted_setup):
     assert not np.allclose(
         reference.log_likelihood.to_numpy(), no_spikes.log_likelihood.to_numpy()
     )
-    assert_results_match(reference, chunked)
 
 
 # ==============================================================================
@@ -509,11 +514,9 @@ def test_singleton_chunks_match_unchunked(delta_kernel_setup):
     kwargs = sorted_predict_kwargs(delta_kernel_setup)
     n_time = len(delta_kernel_setup["time"])
 
-    reference = detector.predict(**kwargs, n_chunks=1)
-    chunked = detector.predict(**kwargs, n_chunks=n_time, cache_likelihood=False)
+    _, chunked = assert_chunked_matches(detector, kwargs, n_time)
 
     assert chunked.log_likelihood.to_numpy().shape[0] == n_time
-    assert_results_match(reference, chunked)
 
 
 # ==============================================================================
@@ -541,29 +544,10 @@ def test_spike_free_chunks_match_unchunked(sorted_setup, emptiness):
     else:
         lo, hi = time[len(time) // 3], time[2 * len(time) // 3]
         spike_times = [s[(s < lo) | (s > hi)] for s in spike_times]
-        # Premise: a whole chunk really is spike-free.
-        chunk_bounds = np.array_split(np.arange(len(time)), n_chunks)
-        empty_chunks = [
-            chunk
-            for chunk in chunk_bounds
-            if not any(
-                np.any((s >= time[chunk[0]]) & (s <= time[chunk[-1]]))
-                for s in spike_times
-            )
-        ]
-        assert empty_chunks, "no spike-free chunk in this configuration"
+        assert_some_chunk_is_spike_free(time, spike_times, n_chunks)
 
-    kwargs = {
-        "spike_times": spike_times,
-        "time": time,
-        "position": sorted_setup["position"],
-        "position_time": time,
-        "return_outputs": "all",
-    }
-    reference = detector.predict(**kwargs, n_chunks=1)
-    chunked = detector.predict(**kwargs, n_chunks=n_chunks, cache_likelihood=False)
-
-    assert_results_match(reference, chunked)
+    kwargs = sorted_predict_kwargs(sorted_setup, spike_times=spike_times)
+    assert_chunked_matches(detector, kwargs, n_chunks)
 
 
 @pytest.mark.integration
@@ -589,26 +573,12 @@ def test_clusterless_spike_free_chunks_match_unchunked(clusterless_setup):
         spike_times.append(unit_times[keep])
         features.append(unit_features[keep])
 
-    chunk_bounds = np.array_split(np.arange(len(time)), n_chunks)
-    assert any(
-        not any(
-            np.any((s >= time[chunk[0]]) & (s <= time[chunk[-1]])) for s in spike_times
-        )
-        for chunk in chunk_bounds
+    assert_some_chunk_is_spike_free(time, spike_times, n_chunks)
+
+    kwargs = clusterless_predict_kwargs(
+        clusterless_setup, spike_times=spike_times, spike_waveform_features=features
     )
-
-    kwargs = {
-        "spike_times": spike_times,
-        "spike_waveform_features": features,
-        "time": time,
-        "position": clusterless_setup["position"],
-        "position_time": time,
-        "return_outputs": "all",
-    }
-    reference = detector.predict(**kwargs, n_chunks=1)
-    chunked = detector.predict(**kwargs, n_chunks=n_chunks, cache_likelihood=False)
-
-    assert_results_match(reference, chunked)
+    assert_chunked_matches(detector, kwargs, n_chunks)
 
 
 # ==============================================================================
@@ -685,13 +655,11 @@ def test_is_missing_straddling_boundaries_matches_unchunked(sorted_setup, n_chun
         assert is_missing[row - 1] and is_missing[row]
 
     kwargs = sorted_predict_kwargs(sorted_setup, is_missing=is_missing)
-    reference = detector.predict(**kwargs, n_chunks=1)
-    chunked = detector.predict(**kwargs, n_chunks=n_chunks, cache_likelihood=False)
+    reference, _ = assert_chunked_matches(detector, kwargs, n_chunks)
 
     # Missing rows carry no spike evidence: their likelihood is exactly zero.
     reference_ll = reference.log_likelihood.to_numpy()
     np.testing.assert_array_equal(reference_ll[is_missing], 0.0)
-    assert_results_match(reference, chunked)
 
 
 @pytest.mark.integration
@@ -705,10 +673,7 @@ def test_clusterless_is_missing_straddling_boundaries_matches_unchunked(
     is_missing = missing_mask_straddling_boundaries(len(time), n_chunks)
 
     kwargs = clusterless_predict_kwargs(clusterless_setup, is_missing=is_missing)
-    reference = detector.predict(**kwargs, n_chunks=1)
-    chunked = detector.predict(**kwargs, n_chunks=n_chunks, cache_likelihood=False)
-
-    assert_results_match(reference, chunked)
+    assert_chunked_matches(detector, kwargs, n_chunks)
 
 
 # ==============================================================================
@@ -721,18 +686,11 @@ def test_clusterless_is_missing_straddling_boundaries_matches_unchunked(
 def test_covariate_dependent_ragged_chunks_match_unchunked(covariate_setup, n_chunks):
     """Item 2 and 5 on the covariate-dependent driver."""
     detector = covariate_setup["detector"]
-    kwargs = {
-        "spike_times": covariate_setup["spike_times"],
-        "time": covariate_setup["time"],
-        "position": covariate_setup["position"],
-        "position_time": covariate_setup["time"],
-        "discrete_transition_covariate_data": {"speed": covariate_setup["speed"]},
-        "return_outputs": "all",
-    }
-    reference = detector.predict(**kwargs, n_chunks=1)
-    chunked = detector.predict(**kwargs, n_chunks=n_chunks, cache_likelihood=False)
-
-    assert_results_match(reference, chunked)
+    kwargs = sorted_predict_kwargs(
+        covariate_setup,
+        discrete_transition_covariate_data={"speed": covariate_setup["speed"]},
+    )
+    assert_chunked_matches(detector, kwargs, n_chunks)
 
 
 @pytest.mark.integration
@@ -743,19 +701,12 @@ def test_covariate_dependent_is_missing_matches_unchunked(covariate_setup):
     n_chunks = 7
     is_missing = missing_mask_straddling_boundaries(len(time), n_chunks)
 
-    kwargs = {
-        "spike_times": covariate_setup["spike_times"],
-        "time": time,
-        "position": covariate_setup["position"],
-        "position_time": time,
-        "is_missing": is_missing,
-        "discrete_transition_covariate_data": {"speed": covariate_setup["speed"]},
-        "return_outputs": "all",
-    }
-    reference = detector.predict(**kwargs, n_chunks=1)
-    chunked = detector.predict(**kwargs, n_chunks=n_chunks, cache_likelihood=False)
-
-    assert_results_match(reference, chunked)
+    kwargs = sorted_predict_kwargs(
+        covariate_setup,
+        is_missing=is_missing,
+        discrete_transition_covariate_data={"speed": covariate_setup["speed"]},
+    )
+    assert_chunked_matches(detector, kwargs, n_chunks)
 
 
 # ==============================================================================

@@ -400,20 +400,15 @@ def select_spikes_in_rows(
     # A length-1 timeline owns t == time[0]; the last row of longer timelines
     # owns no spikes. Such requests need neither a host transfer nor ordering.
     n_owning_rows = max(n_time - 1, 1)
-    if row_start >= min(row_stop, n_owning_rows):
+    if n_spikes == 0 or row_start >= min(row_stop, n_owning_rows):
         return SpikeSelection(
             slice(0, 0), np.zeros((0,), dtype=int), True, n_spikes, n_rows
         )
 
+    # Direct callers get a fresh preparation: converted and checked once here.
     if _spike_time_order is None:
-        spike_times = np.asarray(spike_times)
-        is_ascending = None
-    else:
-        spike_times, is_ascending = _spike_time_order.get(spike_times)
-    if spike_times.size == 0:
-        return SpikeSelection(
-            slice(0, 0), np.zeros((0,), dtype=int), True, n_spikes, n_rows
-        )
+        _spike_time_order = _SpikeTimeOrder()
+    spike_times, is_ascending = _spike_time_order.get(spike_times)
 
     lower = time[row_start]
     # Reaching the last owning row extends the range to time[-1] inclusive,
@@ -421,9 +416,7 @@ def select_spikes_in_rows(
     upper_is_inclusive = row_stop >= n_owning_rows
     upper = time[n_time - 1] if upper_is_inclusive else time[row_stop]
 
-    # Establish, never assume, the ordering the range lookup needs.
-    if is_ascending is None:
-        is_ascending = _spikes_are_ascending(spike_times)
+    # The ordering the range lookup needs was established, never assumed.
     if is_ascending:
         start = int(np.searchsorted(spike_times, lower, side="left"))
         stop = int(
@@ -828,12 +821,11 @@ def select_spike_rows(
         before selection catches both extra and missing feature rows, including
         mismatches outside the requested chunk, without reading array values.
     """
-    n_rows = array.shape[0]
-    if n_rows != selection.n_spikes:
+    if array.shape[0] != selection.n_spikes:
         raise ValidationError(
             "spike selection does not match the length of a per-spike array",
             expected=f"{selection.n_spikes} rows (one per spike time)",
-            got=f"{n_rows} rows",
+            got=f"{array.shape[0]} rows",
             hint="Spike times and waveform features must be paired row for row.",
         )
 
@@ -857,9 +849,6 @@ def select_spike_rows(
         # memory errors propagate without copying the full recording.
         return np.asarray(array)[indexer]
 
-    # See Returns: the selection comes back on the host so the jitted kernels
-    # downstream all see one device ("Received incompatible devices for jitted
-    # computation" otherwise).
     return np.asarray(selected)
 
 

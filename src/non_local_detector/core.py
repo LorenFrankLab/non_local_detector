@@ -706,6 +706,24 @@ def _warn_if_legacy_chunking(
         )
 
 
+def _store_chunk_rows(
+    buffer: np.ndarray | None,
+    chunk: jnp.ndarray,
+    time_inds: np.ndarray,
+    n_time: int,
+) -> np.ndarray:
+    """Copy one chunk's rows into the host log-likelihood buffer, allocating it first.
+
+    Assignment copies into the final host buffer before the chunk is donated
+    to the filter. Retaining a NumPy view would alias the donated buffer on
+    CPU; retaining separate chunk copies would double host storage.
+    """
+    if buffer is None:
+        buffer = np.empty((n_time, chunk.shape[1]), dtype=chunk.dtype)
+    buffer[int(time_inds[0]) : int(time_inds[-1]) + 1] = np.asarray(chunk)
+    return buffer
+
+
 def _call_log_likelihood_chunk(
     log_likelihood_func: Callable[..., ArrayLike],
     time: np.ndarray,
@@ -894,17 +912,11 @@ def chunked_filter_smoother(
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
             if accumulate_log_likelihoods:
-                if accumulated_log_likelihoods is None:
-                    accumulated_log_likelihoods = np.empty(
-                        (n_time, log_likelihood_chunk.shape[1]),
-                        dtype=log_likelihood_chunk.dtype,
-                    )
-                # Assignment copies into the final host buffer before donation.
-                # Retaining a NumPy view would alias the donated buffer on CPU;
-                # retaining separate chunk copies would double host storage.
-                row_start, row_stop = int(time_inds_np[0]), int(time_inds_np[-1]) + 1
-                accumulated_log_likelihoods[row_start:row_stop] = np.asarray(
-                    log_likelihood_chunk
+                accumulated_log_likelihoods = _store_chunk_rows(
+                    accumulated_log_likelihoods,
+                    log_likelihood_chunk,
+                    time_inds_np,
+                    n_time,
                 )
 
         # Tally degenerate (all -inf) and NaN timesteps at one host sync point
@@ -1537,17 +1549,11 @@ def chunked_filter_smoother_covariate_dependent(
             )
             log_likelihood_chunk = jnp.asarray(log_likelihood_chunk, dtype=dtype)
             if accumulate_log_likelihoods:
-                if accumulated_log_likelihoods is None:
-                    accumulated_log_likelihoods = np.empty(
-                        (n_time, log_likelihood_chunk.shape[1]),
-                        dtype=log_likelihood_chunk.dtype,
-                    )
-                # Assignment copies into the final host buffer before donation.
-                # Retaining a NumPy view would alias the donated buffer on CPU;
-                # retaining separate chunk copies would double host storage.
-                row_start, row_stop = int(time_inds_np[0]), int(time_inds_np[-1]) + 1
-                accumulated_log_likelihoods[row_start:row_stop] = np.asarray(
-                    log_likelihood_chunk
+                accumulated_log_likelihoods = _store_chunk_rows(
+                    accumulated_log_likelihoods,
+                    log_likelihood_chunk,
+                    time_inds_np,
+                    n_time,
                 )
 
         # Tally degenerate (all -inf) and NaN timesteps at one host sync point

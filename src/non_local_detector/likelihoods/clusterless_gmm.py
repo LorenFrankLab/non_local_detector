@@ -740,26 +740,20 @@ def predict_clusterless_gmm_log_likelihood(
         # process likelihood. This is *not* the same as skipping the electrode:
         # skipping would drop the negative evidence an observed spike carries
         # (e.g. against a state whose encoding de-weighted this electrode). With
-        # no in-window spikes the scatter-add contributes zero.
+        # no in-window spikes the row sums contribute zero.
+        selection = select_spikes_in_rows(
+            elect_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
+        )
         if joint_gmm is None:
-            selection = select_spikes_in_rows(
-                elect_times,
-                time,
-                row_start,
-                row_stop,
-                _spike_time_order=_spike_time_order,
-            )
-            spikes_per_bin = (
-                jnp.zeros(selection.n_rows).at[selection.bin_ind].add(1.0)
+            spikes_per_bin = sum_spikes_into_rows(
+                jnp.ones(selection.bin_ind.shape[0]), selection
             )  # (n_rows,)
             log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin[:, None]
             continue
 
-        # Select the spikes owned by the requested rows and bin them locally
-        selection = select_spikes_in_rows(
-            elect_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
-        )
-        elect_feats = _as_jnp(select_spike_rows(elect_feats, selection))
+        # Select FIRST, then convert: converting the whole array would
+        # device-copy every decoding spike in the recording on every chunk call.
+        elect_feats = jnp.asarray(select_spike_rows(elect_feats, selection))
 
         # Process spikes in blocks to reduce peak memory
         # Memory: O(spike_block_size × n_bins) instead of O(n_spikes × n_bins)
@@ -888,13 +882,13 @@ def compute_local_log_likelihood(
     # precision loss. Every consumer below is host-side (``get_position_at_time``
     # interpolates with scipy), so converting the recording-length position to a
     # device array would copy the whole recording on every chunk call for an
-    # array this path never evaluates on device. The working dtype comes from a
-    # one-sample probe instead, which is the dtype a full conversion would have
-    # produced (JAX canonicalizes float64 to float32 unless x64 is enabled).
+    # array this path never evaluates on device. The working dtype is the one a
+    # full conversion would have produced (JAX canonicalizes float64 to float32
+    # unless x64 is enabled).
     position_time = np.asarray(position_time)
     position = np.asarray(position)
     position = position if position.ndim > 1 else position[:, None]
-    working_dtype = _as_jnp(position[:1]).dtype
+    working_dtype = jax.dtypes.canonicalize_dtype(position.dtype)
 
     row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
     n_rows = row_stop - row_start
@@ -929,30 +923,22 @@ def compute_local_log_likelihood(
         # log-intensity to LOG_EPS (added to its time bin), matching the KDE path
         # and the marked-point-process likelihood. The integral term is zero. Do
         # not skip -- an observed spike is negative evidence, not "no data".
+        selection = select_spikes_in_rows(
+            elect_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
+        )
         if joint_gmm is None:
-            selection = select_spikes_in_rows(
-                elect_times,
-                time,
-                row_start,
-                row_stop,
-                _spike_time_order=_spike_time_order,
-            )
+            # Skip the device reduction when the chunk owns none of its spikes:
+            # the row sums would be all zero.
             if selection.bin_ind.shape[0] > 0:
-                spikes_per_bin = (
-                    jnp.zeros(selection.n_rows).at[selection.bin_ind].add(1.0)
+                spikes_per_bin = sum_spikes_into_rows(
+                    jnp.ones(selection.bin_ind.shape[0]), selection
                 )  # (n_rows,)
                 log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin
             continue
 
-        # Select the spikes owned by the requested rows and bin them locally.
-        # Select FIRST, then convert: converting the whole array would
-        # device-copy every decoding spike in the recording on every chunk call
-        # (the non-local branch above does the same).
-        selection = select_spikes_in_rows(
-            elect_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
-        )
-        elect_times = np.asarray(select_spike_rows(elect_times, selection))
-        elect_feats = _as_jnp(select_spike_rows(elect_feats, selection))
+        # Select FIRST, then convert (see the non-local branch).
+        elect_times = select_spike_rows(elect_times, selection)
+        elect_feats = jnp.asarray(select_spike_rows(elect_feats, selection))
 
         # Spike contributions at their true positions
         if elect_times.shape[0] > 0:

@@ -1859,7 +1859,7 @@ def compute_local_log_likelihood(
         position_at_spike_time = get_position_at_time(
             position_time,
             position,
-            np.asarray(select_spike_rows(electrode_spike_times, selection)),
+            select_spike_rows(electrode_spike_times, selection),
             environment,
         )
         all_spike_positions.append(position_at_spike_time)
@@ -1884,7 +1884,7 @@ def compute_local_log_likelihood(
         electrode_mean_rate,
         electrode_gpi_model,
         electrode_decoding_spike_waveform_features,
-        _electrode_spike_times,
+        selection,
     ) in enumerate(
         zip(
             tqdm(
@@ -1898,11 +1898,10 @@ def compute_local_log_likelihood(
             mean_rates,
             gpi_models,
             spike_waveform_features,
-            spike_times,
+            spike_selections,
             strict=True,
         )
     ):
-        selection = spike_selections[electrode_idx]
         electrode_decoding_spike_waveform_features = select_spike_rows(
             electrode_decoding_spike_waveform_features, selection
         )

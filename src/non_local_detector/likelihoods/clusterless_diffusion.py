@@ -611,9 +611,7 @@ def predict_clusterless_diffusion_log_likelihood(
                 row_stop,
                 _spike_time_order=_spike_time_order,
             )
-            electrode_spike_times = np.asarray(
-                select_spike_rows(electrode_spike_times, selection)
-            )
+            electrode_spike_times = select_spike_rows(electrode_spike_times, selection)
             # Validate only the in-window decode features that actually enter the
             # likelihood (mirrors fit's post-clip validation); an out-of-window
             # spike's feature must not raise.

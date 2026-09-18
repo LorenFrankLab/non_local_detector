@@ -36,7 +36,10 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
     common,
 )
-from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
+from non_local_detector.likelihoods.no_spike import (
+    no_spike_time_bin_size,
+    predict_no_spike_log_likelihood,
+)
 
 BACKENDS = (
     "sorted_spikes_kde",
@@ -174,7 +177,7 @@ def main():
             spike_order_preparation_ms = 0.0
             if name == "no_spike" and "_time_bin_size" in parameters:
                 start = time.perf_counter()
-                extra["_time_bin_size"] = np.median(np.diff(timeline))
+                extra["_time_bin_size"] = no_spike_time_bin_size(timeline)
                 preparation_ms = (time.perf_counter() - start) * 1000
             if "_spike_time_order" in parameters:
                 start = time.perf_counter()
