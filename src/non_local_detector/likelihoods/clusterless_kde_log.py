@@ -103,6 +103,40 @@ def _log_joint_from_log_marginal(
     return jnp.where(floor, LOG_EPS, log_joint)
 
 
+def _zero_if_neginf(log_max: jnp.ndarray) -> jnp.ndarray:
+    """Neutralize ``-inf`` maxima before a max-subtraction stabilization.
+
+    The compensated-linear paths stabilize by subtracting a maximum (per kernel
+    row, or the running/global offset) from log-space values. An *empty* row or
+    prefix -- one carrying no mass at all, because every kernel entry or the
+    weight is ``-inf`` -- has a ``-inf`` maximum, and ``-inf - (-inf)`` is
+    ``NaN``. Substituting ``0.0`` for that maximum *before* the subtraction
+    leaves the entries at ``-inf``, so ``exp(-inf - 0) == 0``: the empty row
+    contributes nothing, which is the correct answer, and the derivative stays
+    finite. A ``jnp.where`` applied *after* the ``NaN`` arithmetic would repair
+    the value but still poison autodiff, because the untaken branch's ``NaN``
+    propagates back through the reverse-mode sum.
+
+    A ``-inf`` maximum means zero mass whatever produced it -- a zero encoding
+    weight, a fully underflowed kernel row, or a padded row. ``NaN`` inputs are
+    deliberately left visible (``isneginf`` does not match them), so a broken
+    computation reaches ``core.py``'s NaN diagnostics instead of being treated
+    as an empty row.
+
+    Parameters
+    ----------
+    log_max : jnp.ndarray
+        Log-space maximum: either a per-row array, shape ``(n_rows,)``, or a
+        scalar running/global maximum.
+
+    Returns
+    -------
+    safe_log_max : jnp.ndarray, same shape as ``log_max``
+        ``log_max`` with every ``-inf`` entry replaced by ``0.0``.
+    """
+    return jnp.where(jnp.isneginf(log_max), 0.0, log_max)
+
+
 @jax.jit
 def kde_distance(
     eval_points: jnp.ndarray, samples: jnp.ndarray, std: jnp.ndarray
@@ -639,14 +673,6 @@ def _compensated_linear_marginal(
     log_joint : jnp.ndarray, shape (n_dec, n_pos)
         Log joint mark intensity.
     """
-    # Every encoding spike de-weighted (all log_w == -inf) is a genuine zero
-    # marginal -- no effective encoding data -- not a broken input. The
-    # compensation below turns the all -inf case into NaN (global_max == -inf so
-    # -inf - -inf), so detect it up front and floor to LOG_EPS via the combiner,
-    # matching the logsumexp path. (A partial de-weighting keeps global_max
-    # finite and is handled correctly by the -inf terms dropping out.)
-    all_zero_weight = jnp.all(jnp.isneginf(log_w))
-
     # Per-encoding-spike row maxima for numerical stabilization
     max_pos = jnp.max(log_position_distance, axis=1)  # (n_enc,)
     max_wf = jnp.max(logK_mark, axis=1)  # (n_enc,)
@@ -656,11 +682,16 @@ def _compensated_linear_marginal(
     global_max = jnp.max(total_max_per_enc)
 
     # Stable per-row scale: all values in (-inf, 0]
-    log_scale = total_max_per_enc - global_max  # (n_enc,)
+    # An electrode with no mass at all has global_max == -inf; see _zero_if_neginf.
+    safe_global_max = _zero_if_neginf(global_max)
+    log_scale = total_max_per_enc - safe_global_max  # (n_enc,)
 
     # Stabilized kernels: all values in [0, 1]
-    K_pos_stable = jnp.exp(log_position_distance - max_pos[:, None])  # (n_enc, n_pos)
-    K_wf_stable = jnp.exp(logK_mark - max_wf[:, None])  # (n_enc, n_dec)
+    # Empty kernel rows have -inf maxima; see _zero_if_neginf.
+    safe_max_pos = _zero_if_neginf(max_pos)
+    safe_max_wf = _zero_if_neginf(max_wf)
+    K_pos_stable = jnp.exp(log_position_distance - safe_max_pos[:, None])
+    K_wf_stable = jnp.exp(logK_mark - safe_max_wf[:, None])
 
     # Absorb sqrt(scale) into each factor so the matmul carries the weight.
     # Identity: sum_e scale[e] * K_wf[e,d] * K_pos[e,p]
@@ -686,10 +717,6 @@ def _compensated_linear_marginal(
         jnp.log(safe_marginal) + global_max,
         jnp.where(jnp.isnan(marginal_scaled), jnp.nan, -jnp.inf),
     )
-    # Floor the fully de-weighted electrode to -inf (-> LOG_EPS) instead of the
-    # NaN the compensation produced from global_max == -inf.
-    log_marginal = jnp.where(all_zero_weight, -jnp.inf, log_marginal)
-
     return _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
 
 
@@ -759,12 +786,6 @@ def _compensated_linear_marginal_chunked(
     else:
         n_pos = log_position_distance.shape[1]
 
-    # Every encoding spike de-weighted (all log_w == -inf) is a genuine zero
-    # marginal, but the online rescaling below turns the all -inf case into NaN
-    # (final_max stays -inf, so 0 * exp(-inf - -inf)). Detect it before padding
-    # and floor to LOG_EPS via the combiner, matching the logsumexp path.
-    all_zero_weight = jnp.all(jnp.isneginf(log_w))
-
     # Pad encoding arrays to be divisible by enc_tile_size
     n_chunks = (n_enc + enc_tile_size - 1) // enc_tile_size
     n_enc_padded = n_chunks * enc_tile_size
@@ -788,8 +809,7 @@ def _compensated_linear_marginal_chunked(
                 ((0, pad_enc), (0, 0)),
                 constant_values=-jnp.inf,
             )
-        # Pad the per-spike log weight to match; padded rows are masked to -inf
-        # below via ``row_valid`` so the pad value is inert.
+        # Padded rows have zero mass through their -inf log weight.
         log_w = jnp.pad(log_w, (0, pad_enc), constant_values=-jnp.inf)
 
     # Validity mask for padded entries
@@ -839,29 +859,30 @@ def _compensated_linear_marginal_chunked(
         logK_pos_chunk = jnp.where(chunk_valid[:, None], logK_pos_chunk, -jnp.inf)
         logK_mark_chunk = jnp.where(chunk_valid[:, None], logK_mark_chunk, -jnp.inf)
 
-        # Per-row maxima.  Invalid (all -inf) rows get -inf, which would
-        # produce NaN in the stabilization step (-inf - (-inf) = NaN).
-        # Replace with 0.0 so those rows exp to 0 and contribute nothing.
+        # Preserve empty rows' -inf total, but use safe maxima in the kernel
+        # subtractions below. This covers both padding and real zero-mass rows.
         max_pos = jnp.max(logK_pos_chunk, axis=1)  # (tile,)
         max_wf = jnp.max(logK_mark_chunk, axis=1)  # (tile,)
-        row_valid = chunk_valid  # rows with real data
-        max_pos = jnp.where(row_valid, max_pos, 0.0)
-        max_wf = jnp.where(row_valid, max_wf, 0.0)
-        chunk_total = jnp.where(row_valid, max_pos + max_wf + log_w_chunk, -jnp.inf)
+        chunk_total = jnp.where(chunk_valid, max_pos + max_wf + log_w_chunk, -jnp.inf)
         chunk_max = jnp.max(chunk_total)
 
         # Online max update: rescale running_sum if new max is larger.
         # If chunk_max <= running_max, exp(running_max - new_max) = 1 (no-op).
         new_max = jnp.maximum(running_max, chunk_max)
-        running_sum = running_sum * jnp.exp(running_max - new_max)
+        # An empty prefix has new_max == -inf; safe_new_max is reused in BOTH
+        # subtractions below (here and in log_scale). See _zero_if_neginf.
+        safe_new_max = _zero_if_neginf(new_max)
+        running_sum = running_sum * jnp.exp(running_max - safe_new_max)
 
         # Stabilize this chunk's kernels.  Invalid rows get 0 because
-        # logK - 0 is still -inf, and exp(-inf) = 0.
-        K_pos_stable = jnp.exp(logK_pos_chunk - max_pos[:, None])
-        K_wf_stable = jnp.exp(logK_mark_chunk - max_wf[:, None])
+        # logK - 0 is still -inf, and exp(-inf) = 0.  See _zero_if_neginf.
+        safe_max_pos = _zero_if_neginf(max_pos)
+        safe_max_wf = _zero_if_neginf(max_wf)
+        K_pos_stable = jnp.exp(logK_pos_chunk - safe_max_pos[:, None])
+        K_wf_stable = jnp.exp(logK_mark_chunk - safe_max_wf[:, None])
 
         # Scale factors relative to current global max
-        log_scale = chunk_total - new_max
+        log_scale = chunk_total - safe_new_max
         sqrt_scale = jnp.exp(0.5 * log_scale)
         W = K_wf_stable * sqrt_scale[:, None]  # (tile, n_dec)
         P = K_pos_stable * sqrt_scale[:, None]  # (tile, n_pos)
@@ -891,10 +912,6 @@ def _compensated_linear_marginal_chunked(
         jnp.log(safe_sum) + final_max,
         jnp.where(jnp.isnan(final_sum), jnp.nan, -jnp.inf),
     )
-    # Floor the fully de-weighted electrode to -inf (-> LOG_EPS) instead of the
-    # NaN the online rescaling produced from final_max == -inf.
-    log_marginal = jnp.where(all_zero_weight, -jnp.inf, log_marginal)
-
     return _log_joint_from_log_marginal(log_marginal, mean_rate, occupancy)
 
 
