@@ -5,10 +5,14 @@ posterior as ``weights`` (models/base.py). If the fit ignores ``weights`` the
 posterior-weighted refit is silently uniform.
 """
 
+import warnings
+
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
 )
@@ -167,6 +171,56 @@ def test_weights_change_the_clusterless_gmm_occupancy(simple_1d_environment):
     ), "weights had no effect on the GMM occupancy -- they are being ignored"
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("bad_feature", [np.nan, np.inf, -np.inf])
+@pytest.mark.parametrize("spike_weight", [0.0, 1.0])
+def test_gmm_nonfinite_features_are_ignored_only_at_zero_weight(
+    simple_1d_environment, bad_feature, spike_weight
+):
+    """Excluded spikes match a physical subset; invalid included spikes raise."""
+    t_pos = np.arange(11, dtype=float)
+    pos = t_pos[:, None]
+    spikes = np.arange(1, 10, dtype=float)
+    features = np.column_stack((np.sin(spikes), np.cos(spikes)))
+    features[4, 0] = bad_feature
+    weights = np.ones(len(t_pos))
+    weights[5] = spike_weight
+
+    def fit(spike_times, waveform_features):
+        return fit_clusterless_gmm_encoding_model(
+            position_time=t_pos,
+            position=pos,
+            spike_times=[spike_times],
+            spike_waveform_features=[waveform_features],
+            environment=simple_1d_environment,
+            weights=weights,
+            gmm_components_occupancy=1,
+            gmm_components_gpi=1,
+            gmm_components_joint=1,
+            gmm_random_state=0,
+            disable_progress_bar=True,
+        )
+
+    if spike_weight > 0:
+        with pytest.raises(ValidationError, match="non-finite"):
+            fit(spikes, features)
+        return
+
+    keep = spikes != 5.0
+    expected = fit(spikes[keep], features[keep])
+    actual = fit(spikes, features)
+    for key in ("log_occupancy", "mean_rates", "summed_ground_process_intensity"):
+        np.testing.assert_allclose(actual[key], expected[key], rtol=1e-5, atol=1e-6)
+    for key in ("gpi_models", "joint_models"):
+        for attribute in ("weights_", "means_", "covariances_"):
+            np.testing.assert_allclose(
+                getattr(actual[key][0], attribute),
+                getattr(expected[key][0], attribute),
+                rtol=1e-5,
+                atol=1e-6,
+            )
+
+
 def test_predict_preserves_old_positional_api(simple_1d_environment):
     """Old positional predict calls must still bind is_local/block_size correctly.
 
@@ -227,11 +281,12 @@ def _fit_gmm(env, t_pos, pos, spikes, feats, weights):
 def test_all_zero_weights_are_finite_clusterless_gmm(simple_1d_environment):
     """All-zero weights must warn and produce a finite zero-rate model, not crash.
 
-    An all-zero ``sample_weight`` makes the GMM EM M-step divide by 0 and raise
-    ``RuntimeError: Fitting failed``. A fully-masked encoding group (e.g. a state
-    the EM posterior never assigns) must instead warn and produce a finite
-    encoding model: the occupancy falls back to an unweighted fit, and the
-    electrode is marked zero-rate (mean rate 0, no fitted density).
+    ``GaussianMixtureModel.fit`` rejects an all-zero ``sample_weight`` (it
+    leaves no effective training data). A fully-masked encoding group (e.g. a
+    state the EM posterior never assigns) must not surface that as an error:
+    the wrapper warns, the occupancy deliberately degrades to an unweighted
+    fit, and the electrode is marked zero-rate (mean rate 0, no fitted
+    density).
     """
     env = simple_1d_environment
     t_pos = jnp.linspace(0.0, 10.0, 201)
@@ -281,6 +336,102 @@ def test_per_electrode_zero_weights_are_finite_clusterless_gmm(simple_1d_environ
     # The zero-weight electrode is zero-rate; the weighted one has a positive rate.
     assert mean_rates[1] == 0.0
     assert mean_rates[0] > mean_rates[1]
+
+
+# eps of the dtype the GMM fits in (float32 by default, float64 under x64): a
+# weight 1e-3 of the 10 * eps count guard is representable but below it.
+_FIT_EPS = float(np.finfo(jax.dtypes.canonicalize_dtype(np.float64)).eps)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("vanishing_weight", [1e-60, 1e-2 * _FIT_EPS])
+def test_vanishing_spike_weight_does_not_create_a_phantom_component(
+    simple_1d_environment, vanishing_weight
+):
+    """A spike weight below the GMM's empty-component guard must not reserve a
+    component.
+
+    Counting it as an effective spike reserved a mixture component whose count
+    is dominated by the ``10 * eps`` guard, leaving a phantom component near
+    the origin. The fit must instead match the one that drops the spike
+    outright.
+    """
+    env = simple_1d_environment
+    t_pos = jnp.linspace(0.0, 10.0, 101)
+    pos = jnp.linspace(0.0, 10.0, 101)[:, None]
+    spikes = [jnp.array([2.0, 4.0, 6.0, 9.0])]
+    feats = [
+        jnp.array(
+            [[0.0, 0.0], [0.2, 0.1], [1.0, -1.0], [-0.3, 0.4]],
+            dtype=float,
+        )
+    ]
+
+    def fit(last_weight):
+        weights = np.where(np.asarray(t_pos) < 8.0, 1.0, last_weight)
+        with pytest.warns(UserWarning, match="joint components 4->3"):
+            return fit_clusterless_gmm_encoding_model(
+                position_time=t_pos,
+                position=pos,
+                spike_times=spikes,
+                spike_waveform_features=feats,
+                environment=env,
+                weights=weights,
+                gmm_components_occupancy=4,
+                gmm_components_gpi=4,
+                gmm_components_joint=4,
+                gmm_random_state=0,
+                disable_progress_bar=True,
+            )
+
+    vanishing = fit(vanishing_weight)
+    dropped = fit(0.0)
+
+    joint = vanishing["joint_models"][0]
+    assert np.min(np.asarray(joint.weights_)) > 1e-3  # no guard-level component
+    assert vanishing["gmm_effective_components"]["joint"] == [3]
+    for key in ("gpi_models", "joint_models"):
+        for attribute in ("weights_", "means_", "covariances_"):
+            np.testing.assert_allclose(
+                getattr(vanishing[key][0], attribute),
+                getattr(dropped[key][0], attribute),
+                rtol=1e-5,
+                atol=1e-6,
+            )
+
+
+@pytest.mark.unit
+def test_gmm_component_counts_use_the_fitted_array_dtype(simple_1d_environment):
+    """Component counts must be sized with the dtype of the arrays actually fit.
+
+    With x64 enabled, float32 positions still yield float64 GPI and joint
+    arrays, whose zero-weight cutoff (10 * float64 eps) keeps a 1e-9 spike
+    weight that the float32 cutoff (~1.2e-6) would drop. Counting with the
+    position dtype would reduce both fits to 3 components although the GMM
+    fits all 4 spikes.
+    """
+    t_pos = np.linspace(0.0, 10.0, 101)
+    spikes = [np.array([2.0, 4.0, 6.0, 9.0])]
+    feats = [np.array([[0.0, 0.0], [0.2, 0.1], [1.0, -1.0], [-0.3, 0.4]])]
+    weights = np.where(t_pos < 8.0, 1.0, 1e-9)
+    with jax.enable_x64(True), warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)  # no "reduced" warning
+        encoding = fit_clusterless_gmm_encoding_model(
+            position_time=t_pos,
+            position=t_pos.astype(np.float32)[:, None],
+            spike_times=spikes,
+            spike_waveform_features=feats,
+            environment=simple_1d_environment,
+            weights=weights,
+            gmm_components_occupancy=2,
+            gmm_components_gpi=4,
+            gmm_components_joint=4,
+            gmm_random_state=0,
+            disable_progress_bar=True,
+        )
+    assert encoding["joint_models"][0].means_.dtype == np.float64
+    assert encoding["gmm_effective_components"]["gpi"] == [4]
+    assert encoding["gmm_effective_components"]["joint"] == [4]
 
 
 def test_all_zero_weights_are_finite_clusterless_kde(simple_1d_environment):

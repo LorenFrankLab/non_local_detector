@@ -34,7 +34,10 @@ from non_local_detector.likelihoods.common import (
     validate_weights,
     weighted_mean_rate,
 )
-from non_local_detector.likelihoods.gmm import GaussianMixtureModel
+from non_local_detector.likelihoods.gmm import (
+    GaussianMixtureModel,
+    _effective_sample_count,
+)
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -162,9 +165,10 @@ def _fit_gmm_density(
     X : jnp.ndarray, shape (n_samples, n_features)
         Input samples for fitting.
     weights : jnp.ndarray, shape (n_samples,), optional
-        Sample weights, by default None (uniform weights). Zero-weight samples
-        are dropped before fitting so they influence neither the KMeans
-        initialization nor EM, keeping the fit equal to a hard subset.
+        Sample weights, by default None (uniform weights). ``fit`` validates
+        them and drops the zero-weight samples itself, so they influence
+        neither the KMeans initialization nor EM and the fit equals a hard
+        subset fit.
     n_components : int
         Number of Gaussian components in the mixture.
     random_state : int, optional
@@ -186,23 +190,6 @@ def _fit_gmm_density(
         Fitted Gaussian mixture model.
     """
     X = _as_jnp(X)
-    sample_weight = None
-    if weights is not None:
-        # A zero-weight sample is absent from the weighted density. Remove it
-        # before KMeans initialization as well as EM; sklearn's unweighted
-        # KMeans would otherwise let mathematically excluded samples choose the
-        # initial component centers and break binary-weight/subset equivalence.
-        weights_np = np.asarray(weights)
-        positive_weight = weights_np > 0.0
-        if np.all(positive_weight):
-            # Posterior weights used during EM are normally all positive. Avoid
-            # gathering millions of rows through an all-True mask on every
-            # occupancy, GPI, and joint refit.
-            sample_weight = _as_jnp(weights_np)
-        else:
-            X = X[positive_weight]
-            sample_weight = _as_jnp(weights_np[positive_weight])
-
     key = jax.random.PRNGKey(0 if random_state is None else random_state)
     gmm = GaussianMixtureModel(
         n_components=n_components,
@@ -215,7 +202,7 @@ def _fit_gmm_density(
         kmeans_n_init=1,
         random_state=random_state,
     )
-    gmm.fit(X, key, sample_weight=sample_weight)
+    gmm.fit(X, key, sample_weight=weights)
     return gmm
 
 
@@ -228,8 +215,13 @@ def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
     """sample_weight for a GMM EM fit, or None to take the unweighted path.
 
     Returns None when the caller passed no weights (keeps the unweighted fit
-    byte-identical) or when the weights sum to 0 (an all-zero ``sample_weight`` makes
-    the EM M-step divide by 0 and raise "Fitting failed"); otherwise the weights.
+    byte-identical) or when the weights sum to 0; otherwise the weights. An
+    all-zero ``sample_weight`` is rejected by ``GaussianMixtureModel.fit`` (it
+    leaves no effective training data), so a fully de-weighted encoding group
+    deliberately degrades to an unweighted occupancy fit after the caller's
+    "weights sum to 0" warning rather than raising. Because the unweighted
+    fallback keeps every position row, the caller's ``occupancy_n_samples < 1``
+    check below is then reachable only for a zero-row position array.
     """
     if weights_was_none or float(np.sum(weights)) == 0.0:
         return None
@@ -371,28 +363,6 @@ def fit_clusterless_gmm_encoding_model(
             stacklevel=2,
         )
     occupancy_sample_weight = _gmm_sample_weight(weights, weights_was_none)
-    occupancy_n_samples = (
-        position.shape[0]
-        if occupancy_sample_weight is None
-        else int(np.count_nonzero(occupancy_sample_weight > 0.0))
-    )
-    if occupancy_n_samples < 1:
-        raise ValidationError(
-            "clusterless GMM has no position samples to fit the occupancy density",
-            expected="at least one position sample in the encoding period",
-            got=f"{occupancy_n_samples} effective position samples",
-            hint="Provide position data covering the encoding period.",
-        )
-    effective_occupancy_components = min(gmm_components_occupancy, occupancy_n_samples)
-    if effective_occupancy_components < gmm_components_occupancy:
-        warnings.warn(
-            "Clusterless GMM: reduced occupancy components from "
-            f"{gmm_components_occupancy} to {effective_occupancy_components} "
-            f"because only {occupancy_n_samples} effective position samples are "
-            "available.",
-            UserWarning,
-            stacklevel=2,
-        )
 
     # Interior bins (cached)
     if environment.is_track_interior_ is not None:
@@ -415,6 +385,28 @@ def fit_clusterless_gmm_encoding_model(
         pos_for_occ = _as_jnp(position1D)
     else:
         pos_for_occ = position
+
+    # Count the rows the GMM will actually fit on, using the array it fits: its
+    # zero-weight cutoff depends on that array's dtype, so counting every
+    # positive weight here could reserve more components than there are rows.
+    occupancy_n_samples = _effective_sample_count(pos_for_occ, occupancy_sample_weight)
+    if occupancy_n_samples < 1:
+        raise ValidationError(
+            "clusterless GMM has no position samples to fit the occupancy density",
+            expected="at least one position sample in the encoding period",
+            got=f"{occupancy_n_samples} effective position samples",
+            hint="Provide position data covering the encoding period.",
+        )
+    effective_occupancy_components = min(gmm_components_occupancy, occupancy_n_samples)
+    if effective_occupancy_components < gmm_components_occupancy:
+        warnings.warn(
+            "Clusterless GMM: reduced occupancy components from "
+            f"{gmm_components_occupancy} to {effective_occupancy_components} "
+            f"because only {occupancy_n_samples} effective position samples are "
+            "available.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
@@ -477,8 +469,7 @@ def fit_clusterless_gmm_encoding_model(
         # rather than skipping the electrode (which would drop that negative
         # evidence), matching the KDE path. An electrode that has spikes and no
         # supplied weights still takes the normal unweighted fit below.
-        effective_spike_count = int(np.count_nonzero(elect_weights > 0.0))
-        if effective_spike_count == 0:
+        if not np.any(elect_weights > 0.0):
             warnings.warn(
                 f"Clusterless GMM: electrode {electrode} has no effective encoding "
                 "spikes (empty or zero total weight); it is treated as "
@@ -505,9 +496,15 @@ def fit_clusterless_gmm_encoding_model(
             position_time, position, elect_times, environment
         )
 
+        joint_samples = jnp.concatenate([enc_pos, elect_feats], axis=1)
         elect_sample_weight = None if weights_was_none else elect_weights
-        n_gpi_components = min(gmm_components_gpi, effective_spike_count)
-        n_joint_components = min(gmm_components_joint, effective_spike_count)
+        # Count per fitted array: the GPI and joint fits can differ in dtype
+        # (e.g. float32 positions with float64 marks), and with it the rows the
+        # GMM's zero-weight cutoff keeps.
+        n_gpi_spikes = _effective_sample_count(enc_pos, elect_sample_weight)
+        n_joint_spikes = _effective_sample_count(joint_samples, elect_sample_weight)
+        n_gpi_components = min(gmm_components_gpi, n_gpi_spikes)
+        n_joint_components = min(gmm_components_joint, n_joint_spikes)
         effective_gpi_components.append(n_gpi_components)
         effective_joint_components.append(n_joint_components)
         if (
@@ -515,8 +512,8 @@ def fit_clusterless_gmm_encoding_model(
             or n_joint_components < gmm_components_joint
         ):
             warnings.warn(
-                f"Clusterless GMM: electrode {electrode} has "
-                f"{effective_spike_count} effective encoding spikes; reduced "
+                f"Clusterless GMM: electrode {electrode} has {n_gpi_spikes} "
+                f"(GPI) / {n_joint_spikes} (joint) effective encoding spikes; reduced "
                 f"GPI components {gmm_components_gpi}->{n_gpi_components} and "
                 f"joint components {gmm_components_joint}->{n_joint_components}.",
                 UserWarning,
@@ -537,7 +534,6 @@ def fit_clusterless_gmm_encoding_model(
         gpi_models.append(gpi_gmm)
 
         # Joint GMM over [position, waveform]
-        joint_samples = jnp.concatenate([enc_pos, elect_feats], axis=1)
         joint_gmm = _fit_gmm_density(
             X=joint_samples,
             weights=elect_sample_weight,
