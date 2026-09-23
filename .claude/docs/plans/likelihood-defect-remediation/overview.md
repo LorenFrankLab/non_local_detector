@@ -25,8 +25,8 @@
   `**encoding_model` splat. Phase 6d adds a single unit marker, not a schema.
 - Clearing the historical mypy backlog (190 errors at the original audit).
   Phases must not add errors relative to their pinned baseline; a sweep is separate.
-- A backend-owned EM damping rebuild protocol. Phase 5 rejects damping where it
-  cannot be supported.
+- A backend-owned EM damping rebuild protocol. Phase 5 rejects any nonzero
+  `encoding_update_damping` before mutation.
 - Changing spatial/temporal resolution, truncating Gaussian tails, or using
   approximate smoothing to obtain performance parity. These would change the
   scientific model and require separate scope and validation.
@@ -117,8 +117,9 @@ in [PLAN.md](PLAN.md#execution-order-and-baselines), rather than numeric order a
 
 ```
 detector.fit()
-  └─ fit_encoding_model()          models/base.py:2900 (clusterless), :3890 (sorted)
+  └─ fit_encoding_model()          models/base.py:2983 (clusterless), :3986 (sorted)
      ├─ is_group = is_training & is_encoding & is_environment
+     │    sorted: full timeline + mask weights; clusterless: subset timeline (Phase 5)
      ├─ group spikes               _get_group_spike_data / _get_group_spikes
      └─ registry fit fn            likelihoods/__init__.py:41 (sorted), :59 (clusterless)
 
@@ -161,9 +162,9 @@ Recorded so they are not silently dropped.
 
 | Item | Trigger to revisit |
 |---|---|
-| Duration-calibrated continuous/discrete transitions, so nonuniform detector bins become valid. Currently `core.py:643` applies one transition per row regardless of duration; phase 6c restricts detectors to uniform bins instead. | When a user needs nonuniform decoding, or when variable-`dt` event-based decoding is scoped. |
+| Duration-calibrated continuous/discrete transitions, so nonuniform detector bins become valid. Currently `core.py:464` (the per-step transition in `_filter_impl`; chunked call at `core.py:940`) applies one transition per row regardless of duration; phase 6c restricts detectors to uniform bins instead. | When a user needs nonuniform decoding, or when variable-`dt` event-based decoding is scoped. |
 | Retiring the linear `clusterless_kde` implementation in favor of the log path. | When the log-vs-prob golden parity gap closes. Profiling and, if required by the production memory budget, tiling the linear path's `(n_encoding_spikes, n_position_bins)` kernel are now assigned to Phase 7c; they need not wait for backend retirement. |
-| `GaussianMixture.score_samples` computes discarded responsibilities (`gmm.py:1068`). | Next GMM cleanup. |
+| `GaussianMixtureModel.score_samples` computes discarded responsibilities (`gmm.py:1296-1312`). | Next GMM cleanup. |
 | Typed/versioned encoding-model schema. | When a third consumer of the encoding dict appears, or after phase 6d's unit marker proves insufficient. |
 
 ## Environment
@@ -211,20 +212,21 @@ record rather than treating the audit failure as current readiness.
 
 **Delegated judgement calls.**
 
-- Phase 4: diagnose new collapse warnings against the frozen reference. Neither
-  increasing fixture regularization nor lowering a floor is an automatic fix;
-  numerical-criterion changes follow the repository review process.
-- Phase 5: the recorded damping audit found no coherent supported backend for
-  the existing blend. Recheck that inventory at implementation time and reject
-  unsupported damping before mutation; a general rebuild protocol is out of scope.
+- Phase 4 (resolved): no new covariance-collapse warning appeared in either
+  full-suite run; no fixture regularization, floor, or tolerance changed.
+- Phase 5 (decided): reject any nonzero damping regardless of backend or runtime
+  configuration; a general rebuild protocol is out of scope. Open: whether
+  `needs_position` should be true when `local_position_std` is set with no
+  local state.
 
 ## Found during review, not yet scheduled
 
 - **`save_model` is broken for every GLM detector.** Reproduced end-to-end:
   `sorted_spikes_kde` saves fine, `sorted_spikes_glm` raises
   `NotImplementedError: Sorry, pickling not yet supported` because the encoding
-  dict holds a Patsy `DesignInfo` (`sorted_spikes_glm.py:316`) and `save_model`
-  uses stdlib `pickle` (`models/base.py:2337`). This is a live user-facing bug
+  dict holds a Patsy `DesignInfo` (`sorted_spikes_glm.py:333`, stored at `:381`)
+  and `save_model` uses stdlib `pickle` (`models/base.py:2425-2435`); still
+  reproduced at `ee2cc21`. This is a live user-facing bug
   independent of this plan and should be fixed on its own, not folded into
   phase 6d. Remedies: reconstruct `DesignInfo` from the formula and knots at load
   time, or store the spline basis numerically instead of the Patsy object.

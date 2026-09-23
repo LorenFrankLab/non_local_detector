@@ -2,7 +2,8 @@
 
 > **IMPLEMENTED AND VALIDATED** on
 > `fix/likelihood-numerical-hardening`, based on
-> `ffc85a140a3dc91a7562bb452bb51ce8e15dceda` (merged Phase 3).
+> `ffc85a140a3dc91a7562bb452bb51ce8e15dceda` (merged Phase 3); merged to `main`
+> at `ee2cc21`.
 > Existing likelihood floors, regularization, and convergence tolerances are
 > preserved. This phase does not select C1's deferred background model.
 
@@ -44,7 +45,11 @@ original specification. The following records the executed implementation.
   The objective still describes the E-step parameters before the final M-step.
   Mixture weights divide by the sum of guarded counts, so the existing small
   count guard cannot inflate their total above one.
-- **Clusterless exclusion order preserved:** `_fit_gmm_density` validates
+- **Clusterless exclusion order preserved** (superseded by the review rounds
+  below: exclusion now lives in `GaussianMixtureModel.fit` via
+  `_effective_weight_mask`, which also drops rows below `10·eps` after
+  rescaling to mean one, and direct `fit` checks finiteness on kept rows only):
+  `_fit_gmm_density` validates
   weights and removes zero-weight rows before the GMM checks data finiteness.
   This retains the baseline's physical-subset behavior when an excluded spike
   has a NaN or infinite waveform feature. Invalid positive-weight observations
@@ -149,6 +154,9 @@ this is a correctness change, with further throughput work left to Phase 7c.
 These measurements do not establish full-session feasibility or GPU performance.
 
 ### Validation results
+
+(Recorded before review round 2; after it the full suite is **1762 passed /
+6 skipped**, see PLAN.md.)
 
 - Final full suite: **1751 passed / 6 skipped**, 249 warnings, in 717.93 seconds.
   This includes likelihood, integration, probability-property, GLM-preservation,

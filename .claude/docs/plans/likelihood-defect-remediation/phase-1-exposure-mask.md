@@ -1,7 +1,8 @@
 # Phase 1 — Sorted fits honour the exposure mask
 
 > **IMPLEMENTED AND REVIEWED** on branch `fix/sorted-spikes-exposure-mask`
-> (implementation commit `8c8765f`).
+> (implementation commit `8c8765f`); now on `main` with regression coverage
+> `5bd63d4`.
 > The spy test failed on the pre-`8c8765f` implementation (`assert None is not None` — "the detector dropped
 > the exposure mask") and passes after the two-file change below. Full suite:
 > **1262 passed, 3 skipped**; golden regressions **4 passed** unchanged; ruff and
@@ -62,6 +63,17 @@ accumulates over held-out samples, other environments, and other encoding groups
 
 The clusterless path already subsets correctly (`models/base.py:2980-2989`).
 
+> **Correction (2026-09-22, verified at `ee2cc21`):** "subsets correctly" held
+> only for sample occupancy. The clusterless fit passes the subset timeline
+> `position_time[is_group]` (now `models/base.py:3079-3088`), so per-spike
+> weight interpolation bridges gaps in the group mask, and the ±dt hard windows
+> include a spike in a one-sample gap in both neighbouring runs. With mask
+> `[T,T,F,T,T]` at t=0…4 and spikes `[1.5, 2.0, 2.5]`, public
+> `ClusterlessDecoder.fit` (KDE/log-KDE) stores spikes `[1.5, 2.0, 2.0, 2.5]`
+> at weight 1 and `mean_rate = 1.0` (GMM also 1.0); canonical weights
+> `[0.5, 0, 0.5]` give 0.25. This is Phase 5 §1 scope; the sorted-path fix and
+> results of this phase are unaffected.
+
 Reproduced — 40 s at 100 Hz, group = first half, one neuron:
 
 ```
@@ -85,7 +97,8 @@ with OVERLAPPING coverage, place fields do not cancel:
 This phase did **not** depend on a new C1 or C3b policy, and does not touch the
 hard-window machinery C2 now says to delete — that is phase 5. It changed the
 mask expression in `models/base.py` and added a zero-exposure guard. Any future
-C1 change to the existing EPS fallback belongs to Phase 2 and does not reopen
+C1 change to the existing EPS fallback belongs to the phase adopting the C1
+policy and does not reopen
 this phase.
 
 Scoped out of this phase deliberately: fractional event ownership for the GLM.

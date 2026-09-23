@@ -1,7 +1,7 @@
 # Phase 2 — Clusterless GMM log intensity and ground process in log space
 
 > **IMPLEMENTED (narrowed scope)** on `fix/gmm-log-intensity-ordering`
-> (2026-09-14). Two numerical defects in `likelihoods/clusterless_gmm.py` are
+> (2026-09-14); merged to `main` at `86e22f0` (`fc20abb`). Two numerical defects in `likelihoods/clusterless_gmm.py` are
 > fixed as pure arithmetic corrections; no floor is added or removed elsewhere,
 > and no package-wide degeneracy policy is chosen. That policy — a background
 > firing model making impossible and very-unlikely spikes commensurate, uniform
