@@ -32,9 +32,8 @@ CovType = Literal["full", "tied", "diag", "spherical"]
 def _has_negative_or_nonfinite(arr: Array) -> bool:
     """True if ``arr`` has any NaN/Inf or negative entry (as a concrete Python bool).
 
-    Shared by the ``weights_init`` and ``sample_weight`` validators, which both reject
-    negative-or-non-finite weights (a NaN/negative weight becomes ``jnp.log(w) = NaN``
-    in EM and is otherwise misreported as a singular covariance).
+    Used for initial mixture weights: a NaN/negative weight becomes
+    ``jnp.log(w) = NaN`` in EM and is otherwise misreported as a singular covariance.
     """
     return not bool(jnp.all(jnp.isfinite(arr))) or bool(jnp.any(arr < 0))
 
@@ -117,23 +116,39 @@ def _estimate_gaussian_covariances_tied(
     covariance : Array, shape (n_features, n_features)
         Tied covariance matrix.
     """
-    n_samples, n_features = X.shape
-    # Per-sample total weights: w_i = sum_k resp[i,k]
-    w = resp.sum(axis=1, keepdims=True)  # (N, 1)
-    sum_w = jnp.sum(w)  # scalar (total weighted sample size)
+    _, n_features = X.shape
+    sum_w = resp.sum()
 
-    # Second moment: sum_i w_i x_i x_i^T
-    XTX_w = X.T @ (X * w)  # (D, D)
+    def add_component(k: Array, covariance_sum: Array) -> Array:
+        centered = X - means[k]
+        return covariance_sum + (centered.T * resp[:, k]) @ centered
 
-    # Mean term: sum_k nk_k mu_k mu_k^T == (nk * means^T) @ means
-    avg_means2 = (nk * means.T) @ means  # (D, D)
+    # Center before summing: the second-moment form E[xx^T] - mu mu^T cancels
+    # catastrophically when |mu| >> sigma. The loop keeps the workspace at
+    # O(unroll * N * D) (a centered block and its weighted copy per unrolled
+    # step) plus a (D, D) accumulator, instead of a (K, N, D) batch.
+    # A small unroll lets XLA overlap the per-component matmuls, with
+    # bitwise-identical output: measured 1.35x faster at D=8 and 1.09x at D=32
+    # (N=100k, K=32, float32 CPU). The scratch buffer scales exactly with the
+    # unroll factor (and linearly with N), so the factor is capped at 2 -- twice
+    # the serial loop's O(N D) rather than the 8x that `unroll=8` costs and the
+    # Kx that `unroll=True` costs. At N=1M, D=32 that is the difference between
+    # 512 MB and 2 GB of transient, which decides whether a large clusterless
+    # fit survives on GPU; the speed difference (1.16x vs 1.24x there) does not.
+    covariance_sum: Array = jax.lax.fori_loop(
+        0,
+        means.shape[0],
+        add_component,
+        jnp.zeros((n_features, n_features), dtype=jnp.result_type(X, means, resp)),
+        unroll=2,
+    )
 
     # Guard division by zero with a tiny floor rather than 1.0: for legitimate
     # fractional sample weights whose total is < 1, dividing by 1.0 would bias
     # the covariance downward; eps only intervenes when there is effectively no
     # weight at all.
     eps = 10 * jnp.finfo(X.dtype).eps
-    covariance = (XTX_w - avg_means2) / jnp.maximum(sum_w, eps)
+    covariance = covariance_sum / jnp.maximum(sum_w, eps)
     # Symmetrize covariance for numerical stability (ensure exact symmetry)
     covariance = (covariance + covariance.T) * 0.5
     covariance += jnp.eye(n_features, dtype=X.dtype) * reg_covar
@@ -168,9 +183,32 @@ def _estimate_gaussian_covariances_diag(
     covariances : Array, shape (n_components, n_features)
         Diagonal covariance for each component.
     """
-    avg_X2 = resp.T @ (X * X) / nk[:, jnp.newaxis]
-    avg_means2 = means**2
-    return avg_X2 - avg_means2 + reg_covar
+
+    _, n_features = X.shape
+
+    def add_dimension(d: Array, second_moment: Array) -> Array:
+        centered = X[:, d, None] - means[None, :, d]  # (N, K)
+        return second_moment.at[:, d].set(jnp.sum(resp * centered * centered, axis=0))
+
+    # Center per component before squaring: the second-moment form
+    # E[x^2] - mu^2 cancels catastrophically when |mu| >> sigma. Looping over
+    # features (rather than components) writes straight into the required
+    # (K, D) output and keeps the transient at O(unroll * N * K), so neither a
+    # (K, N, D) batch nor a transposed copy of ``resp`` is ever materialized.
+    # Note the transient is O(N K) per step, independent of D, where the
+    # per-component map this replaces was O(N D). As in the tied loop the unroll
+    # is capped at 2, since the scratch scales exactly with it: at unroll=2 the
+    # buffer matches the old map's at D=32 and is 1.6x it at D=8 (N=100k, K=32,
+    # float32 CPU: 26 MB vs 26/16 MB), while being 1.0-1.6x faster. unroll=1
+    # would be cheaper still (13 MB) but is ~8% slower than the old map at D=32.
+    second_moment: Array = jax.lax.fori_loop(
+        0,
+        n_features,
+        add_dimension,
+        jnp.zeros(means.shape, dtype=jnp.result_type(X, means, resp)),
+        unroll=2,
+    )
+    return second_moment / nk[:, None] + reg_covar
 
 
 def _estimate_gaussian_covariances_spherical(
@@ -379,7 +417,23 @@ def _estimate_log_gaussian_prob(
     -------
     log_prob : Array, shape (n_samples, n_components)
     """
-    _, n_features = X.shape
+    if X.ndim != 2 or means.ndim != 2 or X.shape[1] != means.shape[1]:
+        raise ValueError("X and means must be 2-D with matching feature dimensions")
+    n_components, n_features = means.shape
+    # Validate every parameterization here: 'full'/'tied' would otherwise fail
+    # deep inside solve_triangular with a shape message that names neither the
+    # covariance type nor the expected layout.
+    expected_precision_shape = {
+        "full": (n_components, n_features, n_features),
+        "tied": (n_features, n_features),
+        "diag": (n_components, n_features),
+        "spherical": (n_components,),
+    }[covariance_type]
+    if tuple(precisions_chol.shape) != expected_precision_shape:
+        raise ValueError(
+            f"precisions_chol for covariance_type='{covariance_type}' must have "
+            f"shape {expected_precision_shape}, got {tuple(precisions_chol.shape)}"
+        )
 
     if covariance_type == "full":
 
@@ -405,20 +459,22 @@ def _estimate_log_gaussian_prob(
             return jnp.sum(Yk * Yk, axis=1)  # (N,)
 
         maha = jax.lax.map(comp_tied, means).T
-    elif covariance_type == "diag":
-        precisions = precisions_chol**2
-        maha = (
-            jnp.sum(means**2 * precisions, axis=1)
-            - 2.0 * X @ (means * precisions).T
-            + (X**2) @ precisions.T
-        )
-    else:  # spherical
-        precisions = precisions_chol**2
-        maha = (
-            jnp.sum(X**2, axis=1)[:, None] * precisions[None, :]
-            - 2 * X @ (means.T * precisions)
-            + jnp.sum(means**2, axis=1) * precisions
-        )
+    else:  # diag / spherical
+        # Center on each component's own mean before squaring: the matmul
+        # expansion |x|^2 - 2 x.mu + |mu|^2 cancels catastrophically whenever
+        # |mu| >> sigma, and centering on a shared point only removes a common
+        # offset, not the separation between tight, distant components. XLA
+        # fuses the broadcast into the minor-axis reduction, so no (N, K, D)
+        # buffer is allocated (0 bytes of compiled scratch; N=100k, K=32, CPU).
+        centered = X[:, None, :] - means[None, :, :]  # (N, K, D), fused
+        if covariance_type == "diag":
+            # precisions_chol holds per-feature inverse standard deviations.
+            centered = centered * precisions_chol[None, :, :]
+            maha = jnp.sum(centered * centered, axis=-1)  # (N, K)
+        else:
+            # One inverse standard deviation per component: scale after the
+            # reduction (1.2-1.5x faster than inside it).
+            maha = jnp.sum(centered * centered, axis=-1) * precisions_chol**2
 
     log_det = _compute_log_det_cholesky(precisions_chol, covariance_type, n_features)
     return -0.5 * (n_features * jnp.log(2.0 * jnp.pi) + maha) + log_det
@@ -546,8 +602,9 @@ def _m_step_func(
     nk, means, covariances = _estimate_gaussian_parameters(
         X, jnp.exp(log_resp), reg_covar, covariance_type, sample_weight
     )
-    total_weight = X.shape[0] if sample_weight is None else jnp.sum(sample_weight)
-    weights = nk / total_weight
+    # nk carries the small empty-component guard; dividing by the sum of the
+    # guarded counts keeps the mixture weights summing to exactly one.
+    weights = nk / jnp.sum(nk)
     return (weights, means, covariances)
 
 
@@ -580,13 +637,20 @@ def _em_fit_while_loop(
     -------
     final_params : tuple(weights, means, covariances)
     final_lb : Array, shape ()
-        Final average lower bound (scalar).
+        Final average log likelihood (weighted when sample_weight is given),
+        evaluated before the final M-step, not at final_params.
     final_i : Array, shape ()
         Number of iterations run.
     converged : Array, shape ()
         Boolean scalar (True if converged).
     """
     tol = jnp.asarray(tol, dtype=X.dtype)
+    # Loop-invariant: normalize once here rather than on every iteration. The
+    # weights are not assumed to average one because this is a public jitted
+    # entry point that callers may reach with arbitrary positive weights.
+    normalized_weight = (
+        None if sample_weight is None else sample_weight / jnp.sum(sample_weight)
+    )
 
     state0 = (
         init_params,  # params
@@ -605,7 +669,13 @@ def _em_fit_while_loop(
         new_params = _m_step_func(
             X, log_resp, reg_covar, covariance_type, sample_weight
         )
-        lb = jnp.mean(log_prob_norm)
+        # The objective describes params at the E-step, before this M-step.
+        # Use the same sample weights as fitting for stopping and restart choice.
+        lb = (
+            jnp.mean(log_prob_norm)
+            if normalized_weight is None
+            else jnp.sum(log_prob_norm * normalized_weight)
+        )
         delta = jnp.abs(lb - prev_lb)
         return (new_params, lb, delta, i + 1)
 
@@ -619,6 +689,72 @@ def _em_fit_while_loop(
     # mislabeled that boundary case as non-converged.
     converged = final_delta <= tol
     return final_params, final_lb, final_i, converged
+
+
+def _effective_weight_mask(
+    sample_weight: np.ndarray, dtype: np.typing.DTypeLike
+) -> np.ndarray:
+    """
+    Rows whose weight is large enough for ``fit`` to treat as data.
+
+    ``fit`` rescales the positive weights to mean one, and the M-step adds a
+    ``10 * eps`` guard (eps of ``dtype``) to every component count. A row whose
+    rescaled weight is below that guard contributes less to any component than
+    the guard itself: a component seeded by it is effectively empty, and its
+    mean collapses toward the origin. Such rows are treated as zero weight.
+    Together they hold less than ``10 * eps`` of the total weight (each is
+    below ``10 * eps`` and the rescaled weights sum to the number of positive
+    rows), so dropping them is below the dtype's resolution of the fit.
+
+    Parameters
+    ----------
+    sample_weight : np.ndarray, shape (n_samples,)
+        Nonnegative, finite per-sample weights.
+    dtype : np.typing.DTypeLike
+        Floating dtype the weights are fitted in (the feature dtype of ``X``).
+
+    Returns
+    -------
+    keep : np.ndarray, shape (n_samples,)
+        Boolean mask of the rows ``fit`` trains on. All False when no weight is
+        positive; the largest weight is always kept otherwise.
+    """
+    sample_weight = np.asarray(sample_weight, dtype=np.float64)
+    maximum = float(np.max(sample_weight, initial=0.0))
+    if maximum <= 0.0:
+        return np.zeros(sample_weight.shape, dtype=bool)
+    # Divide by the maximum first so the sum cannot overflow for huge weights.
+    ratio = sample_weight / maximum
+    mean_one = ratio * (np.count_nonzero(ratio) / np.sum(ratio))
+    return np.asarray(mean_one >= 10 * np.finfo(dtype).eps, dtype=bool)
+
+
+def _effective_sample_count(
+    X: Array | np.ndarray, sample_weight: np.ndarray | None
+) -> int:
+    """
+    Number of rows ``GaussianMixtureModel.fit`` trains on for this ``X``.
+
+    Callers that size ``n_components`` before fitting must count with the dtype
+    of the array actually fitted, since the zero-weight cutoff depends on it.
+
+    Parameters
+    ----------
+    X : Array | np.ndarray, shape (n_samples, n_features)
+        The exact array that will be passed to ``fit``.
+    sample_weight : np.ndarray | None, shape (n_samples,)
+        Nonnegative, finite per-sample weights, or None for an unweighted fit.
+
+    Returns
+    -------
+    n_effective : int
+        ``n_samples`` when ``sample_weight`` is None, otherwise the number of
+        rows kept by the zero-weight cutoff.
+    """
+    if sample_weight is None:
+        return int(X.shape[0])
+    dtype = jax.dtypes.canonicalize_dtype(X.dtype)
+    return int(np.count_nonzero(_effective_weight_mask(sample_weight, dtype)))
 
 
 # ---------------------------------------------------------------------
@@ -679,7 +815,8 @@ class GaussianMixtureModel:
     n_iter_ : int
         Number of EM iterations run in the best restart.
     lower_bound_ : float
-        Best average lower bound across restarts.
+        Best average log likelihood across restarts, weighted when fitting with
+        sample_weight. Evaluated before the best restart's final M-step.
     """
 
     n_components: int
@@ -800,21 +937,44 @@ class GaussianMixtureModel:
             # Feature-dependent shape is validated at fit time (needs n_features).
             self.covariances_init = jnp.asarray(self.covariances_init)
 
-    # ----------------- Public API -----------------
-    def _validate_fit_inputs(self, X: Array, sample_weight: Array | None) -> None:
-        """
-        Validate fit inputs whose constraints depend on ``X``.
+    def _supplied_params(self) -> tuple[Array, Array, Array] | None:
+        """(weights, means, covariances) if all are user-initialized, else None."""
+        if (
+            self.weights_init is not None
+            and self.means_init is not None
+            and self.covariances_init is not None
+        ):
+            return self.weights_init, self.means_init, self.covariances_init
+        return None
 
-        Checks that ``X`` is 2-D and finite, ``sample_weight`` (if given) is
-        finite, nonnegative, and has one entry per sample, and any user-provided
-        init array agrees with ``X``'s number of features. Construction-time
-        constraints (component counts, ``weights_init`` sum) are enforced in
-        ``__post_init__``.
+    # ----------------- Public API -----------------
+    def _validate_fit_inputs(
+        self, X: Array, sample_weight: Array | np.ndarray | None
+    ) -> np.ndarray | None:
+        """
+        Validate fit inputs whose constraints depend on ``X``, and select rows.
+
+        Checks that ``sample_weight`` (if given) is finite, nonnegative, and has
+        one entry per sample, that ``X`` is 2-D and that the rows ``fit`` will
+        train on are finite, that those rows still cover every component, and
+        that any user-provided init array agrees with ``X``'s number of
+        features. Construction-time constraints (component counts,
+        ``weights_init`` sum) are enforced in ``__post_init__``.
+
+        The weights are validated before ``X``'s finiteness because ``fit``
+        trains only on the rows this method keeps: a NaN in a row that carries
+        no usable weight is not part of the fitted data and must not reject it.
 
         Parameters
         ----------
         X : Array, shape (n_samples, n_features)
-        sample_weight : Array | None, shape (n_samples,)
+        sample_weight : Array | np.ndarray | None, shape (n_samples,)
+
+        Returns
+        -------
+        keep : np.ndarray | None, shape (n_samples,)
+            Boolean mask of the rows ``fit`` trains on, or None when
+            ``sample_weight`` is None (every row is kept).
 
         Raises
         ------
@@ -831,21 +991,11 @@ class GaussianMixtureModel:
                 hint="Reshape X so each row is one sample's feature vector",
                 example="    X = X.reshape(n_samples, n_features)",
             )
-        if not bool(jnp.all(jnp.isfinite(X))):
-            # Caught here for a clear message; otherwise NaN/Inf surfaces either
-            # as an opaque sklearn KMeans ValueError or as a NaN lower bound
-            # misreported as a singular covariance.
-            raise ValidationError(
-                "X contains non-finite values",
-                expected="all entries of X are finite",
-                got="X has NaN or Inf entries",
-                hint="Remove or impute NaN/Inf samples before fitting",
-                example="    X = X[np.all(np.isfinite(X), axis=1)]",
-            )
         n_samples, n_features = X.shape
 
+        keep = None
         if sample_weight is not None:
-            sw = jnp.asarray(sample_weight)
+            sw = np.asarray(sample_weight)
             if sw.shape != (n_samples,):
                 raise ValidationError(
                     "sample_weight has the wrong length",
@@ -854,26 +1004,75 @@ class GaussianMixtureModel:
                     hint="Provide one nonnegative weight per sample in X",
                     example="    model.fit(X, key, sample_weight=np.ones(len(X)))",
                 )
-            if _has_negative_or_nonfinite(sw):
+            if not np.all(np.isfinite(sw)) or np.any(sw < 0):
                 raise ValidationError(
                     "sample_weight must be finite and nonnegative",
                     expected="all sample_weight >= 0 and finite",
-                    got=f"min = {float(jnp.min(sw)):.6g}, "
-                    f"all_finite = {bool(jnp.all(jnp.isfinite(sw)))}",
+                    got=f"min = {float(np.min(sw)):.6g}, "
+                    f"all_finite = {bool(np.all(np.isfinite(sw)))}",
                     hint="Remove or zero out negative/NaN weights before fitting",
                     example="    sample_weight = np.clip(sample_weight, 0.0, None)",
                 )
-            if not bool(jnp.sum(sw) > 0):
-                # An all-zero sample_weight has no effective data: total_weight = 0
-                # makes the M-step divide the covariance by 0 -> NaN, which would
-                # otherwise be misreported as a singular covariance / reg_covar issue.
+            if not np.any(sw > 0):
+                # An all-zero sample_weight has no effective data: dropping the
+                # zero-weight rows in ``fit`` would leave no samples, and
+                # KMeans/EM would then fail opaquely.
                 raise ValidationError(
                     "sample_weight sums to 0 (no effective training data)",
                     expected="sum(sample_weight) > 0",
-                    got=f"sum = {float(jnp.sum(sw)):.6g}",
+                    got="sum = 0",
                     hint="At least one sample must carry positive weight",
                     example="    sample_weight = np.ones(len(X))",
                 )
+            keep = _effective_weight_mask(sw, jax.dtypes.canonicalize_dtype(X.dtype))
+
+        # Only the kept rows are fitted, so only they must be finite. Caught
+        # here for a clear message; otherwise NaN/Inf surfaces either as an
+        # opaque sklearn KMeans ValueError or as a NaN lower bound misreported
+        # as a singular covariance.
+        # A per-row flag, not a gathered copy of X, so a partly de-weighted fit
+        # does not copy the kept rows twice (``fit`` gathers them once).
+        if keep is None:
+            all_finite = bool(jnp.all(jnp.isfinite(X)))
+        else:
+            finite_rows = np.asarray(jnp.all(jnp.isfinite(X), axis=1))
+            all_finite = bool(np.all(finite_rows[keep]))
+        if not all_finite:
+            raise ValidationError(
+                "X contains non-finite values",
+                expected="all entries of X with positive weight are finite",
+                got="X has NaN or Inf entries",
+                hint="Remove or impute NaN/Inf samples before fitting",
+                example="    X = X[np.all(np.isfinite(X), axis=1)]",
+            )
+
+        # ``fit`` drops the rows this method excluded before initialization and
+        # EM, so the rows that remain must still cover every component. Fewer
+        # rows than components would otherwise reach sklearn KMeans as a raw
+        # ValueError naming a sample count the caller never passed, or let
+        # random initialization fit duplicate components silently. A full
+        # warm start (every init array supplied) initializes from no data, so
+        # EM may start from it on any nonempty batch.
+        n_effective = n_samples if keep is None else int(np.count_nonzero(keep))
+        if n_effective < self.n_components and self._supplied_params() is None:
+            if keep is None:
+                raise ValidationError(
+                    "fewer samples than mixture components",
+                    expected=f"at least n_components = {self.n_components} samples",
+                    got=f"{n_samples} samples",
+                    hint="Reduce n_components or supply more samples",
+                    example="    model = GaussianMixtureModel(n_components=1)",
+                )
+            raise ValidationError(
+                "fewer positive-weight samples than mixture components",
+                expected=f"at least n_components = {self.n_components} samples "
+                "with positive weight",
+                got=f"{n_effective} of {n_samples} samples have usable positive "
+                "weight (a weight below 10 * eps of the feature dtype, after "
+                "rescaling the weights to mean one, counts as zero)",
+                hint="Reduce n_components or supply more positive-weight samples",
+                example="    model = GaussianMixtureModel(n_components=1)",
+            )
 
         if self.means_init is not None and self.means_init.shape[1] != n_features:
             raise ValidationError(
@@ -901,8 +1100,10 @@ class GaussianMixtureModel:
                     example=f"    covariance_type='{self.covariance_type}' expects {expected}",
                 )
 
+        return keep
+
     def fit(
-        self, X: Array, key: jax.Array, sample_weight: Array | None = None
+        self, X: Array, key: jax.Array, sample_weight: Array | np.ndarray | None = None
     ) -> GaussianMixtureModel:
         """
         Fit the model by EM.
@@ -913,8 +1114,16 @@ class GaussianMixtureModel:
             Training data.
         key : jax.Array
             PRNG key; if `random_state` is provided, it overrides JAX randomness in inits.
-        sample_weight : Array | None, shape (n_samples,), default=None
-            Nonnegative per-sample weights.
+        sample_weight : Array | np.ndarray | None, shape (n_samples,), default=None
+            Nonnegative per-sample weights. They are rescaled to mean one
+            before initialization and EM, so their common scale does not change
+            the fit. A weight whose rescaled value is below ``10 * eps`` of the
+            feature dtype (about 1.2e-6 for float32) is treated as zero: it
+            weighs less than the empty-component guard, and such rows together
+            carry under ``10 * eps`` of the total weight. Zero-weight rows are
+            excluded from initialization and fitting, and only the kept rows
+            are required to be finite. The convergence objective and restart
+            ranking use the weighted average log likelihood.
 
         Returns
         -------
@@ -923,21 +1132,40 @@ class GaussianMixtureModel:
         Raises
         ------
         ValidationError
-            If ``X`` is not 2-D, ``sample_weight`` is negative or the wrong
-            length, or any user-provided init array is inconsistent with ``X``.
+            If ``X`` is not 2-D, a fitted row of ``X`` is non-finite,
+            ``sample_weight`` is negative, all-zero or the wrong length, fewer
+            rows are fitted than there are components (with or without
+            ``sample_weight``) and not every init array is supplied, or any
+            user-provided init array is inconsistent with ``X``.
         RuntimeError
             If every restart fails to produce a finite lower bound (e.g. a
             component's covariance became singular). The message names the
             likely cause and remedy.
         """
-        self._validate_fit_inputs(X, sample_weight)
+        # Validate and normalize on the host before JAX arithmetic can flush
+        # subnormal weights to zero or narrow finite float64 weights to float32.
+        # ``keep`` marks the rows EM will see; the count guards were applied to
+        # exactly those rows, so the guards and the fitted data agree.
+        host_weights = None if sample_weight is None else np.asarray(sample_weight)
+        keep = self._validate_fit_inputs(X, host_weights)
 
         best_lower_bound = -jnp.inf
         init_keys = jax.random.split(key, self.n_init)
 
-        sw = (
-            None if sample_weight is None else jnp.asarray(sample_weight, dtype=X.dtype)
-        )
+        sw = None
+        if keep is not None:  # sample_weight was given
+            weights = np.asarray(host_weights, dtype=np.float64)
+            if not keep.all():
+                X, weights = X[keep], weights[keep]
+            # Divide by the maximum first, in float64: the rescaled sum is then
+            # bounded by the number of samples, so even huge float64 weights
+            # cannot overflow the sum used for the mean-one rescale. The
+            # division also makes each weight's own magnitude irrelevant -- only
+            # its ratio to the largest weight, which ``keep`` has already
+            # bounded below. A new array, so the caller's weights are untouched.
+            weights = weights / np.max(weights)
+            weights *= X.shape[0] / np.sum(weights)
+            sw = jnp.asarray(weights, dtype=X.dtype)
 
         # Reset all fitted attributes so a refit cannot silently retain the
         # previous fit's parameters. If every init returns final_lb == -inf/NaN,
@@ -1106,7 +1334,12 @@ class GaussianMixtureModel:
         return rand_resp / rand_resp.sum(axis=1, keepdims=True)
 
     def _initialize_kmeans_resp(
-        self, X: Array, key: jax.Array, init_index: int = 0
+        self,
+        X: Array,
+        key: jax.Array,
+        init_index: int = 0,
+        *,
+        sample_weight: Array | None = None,
     ) -> Array:
         """
         One-hot responsibilities from sklearn KMeans.
@@ -1119,6 +1352,8 @@ class GaussianMixtureModel:
             restarts beyond the first when ``random_state`` is set.
         init_index : int, default=0
             Index of the current restart within ``n_init``.
+        sample_weight : Array | None, optional
+            Relative sample weights for KMeans centers and initialization.
 
         Returns
         -------
@@ -1157,7 +1392,10 @@ class GaussianMixtureModel:
             init=self.kmeans_init,
             n_init=self.kmeans_n_init,
             random_state=seed,
-        ).fit(X_np)
+        ).fit(
+            X_np,
+            sample_weight=None if sample_weight is None else np.asarray(sample_weight),
+        )
         labels = km.labels_
         resp_np = np.zeros((n_samples, self.n_components), dtype=X_np.dtype)
         resp_np[np.arange(n_samples), labels] = 1.0
@@ -1201,15 +1439,14 @@ class GaussianMixtureModel:
         """
         # When every piece is user-supplied there is nothing to fill, so skip
         # the responsibility-based estimate (and the needless KMeans run).
-        if (
-            self.weights_init is not None
-            and self.means_init is not None
-            and self.covariances_init is not None
-        ):
-            return self.weights_init, self.means_init, self.covariances_init
+        supplied = self._supplied_params()
+        if supplied is not None:
+            return supplied
 
         if self.init_params == "kmeans":
-            resp = self._initialize_kmeans_resp(X, key, init_index)
+            resp = self._initialize_kmeans_resp(
+                X, key, init_index, sample_weight=sample_weight
+            )
         elif self.init_params == "random":
             resp = self._initialize_random(X, key)
         else:
@@ -1218,8 +1455,7 @@ class GaussianMixtureModel:
         nk, means_est, cov_est = _estimate_gaussian_parameters(
             X, resp, self.reg_covar, self.covariance_type, sample_weight
         )
-        total_weight = X.shape[0] if sample_weight is None else jnp.sum(sample_weight)
-        weights_est = nk / total_weight
+        weights_est = nk / jnp.sum(nk)
 
         # Override only the pieces the user supplied; the rest keep their
         # resp-based values (sklearn parity, avoids the symmetry trap).
@@ -1253,7 +1489,8 @@ class GaussianMixtureModel:
         covariances : Array
             Shape depends on `covariance_type`.
         lower_bound : float
-            Final average lower bound.
+            Final average log likelihood (weighted when sample_weight is given),
+            evaluated before the final M-step.
         n_iter : int
             Number of EM iterations performed.
         converged : bool
