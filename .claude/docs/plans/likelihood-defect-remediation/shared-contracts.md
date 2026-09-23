@@ -5,7 +5,7 @@ them. Alternatives are recorded so a later reader does not reopen a closed
 decision by accident. [Phase 0](phase-0-core-hmm.md) fixes core HMM conditioning
 independently of these likelihood and time/exposure decisions.
 
-**State: C2 and C3a are settled; C1 and C3b are unresolved.** C1's former policy
+**State: C2 and C3a are settled; C1 is partially resolved and C3b is unresolved.** C1's former policy
 was withdrawn after it was shown to be non-monotonic. C3b's draft exposure helper
 undercounts the full-cell reference and needs redesign. Implementation that
 selects either unresolved policy is blocked; work preserving current semantics
@@ -42,8 +42,9 @@ Flooring the **numerator** before forming `log_rate + log_marginal −
 log_occupancy` destroys tail information. For `log_joint = −60`,
 `log_occupancy = −8` the true intensity is `−52`; clamping `log_joint` at
 `LOG_EPS = log(1e-15) ≈ −34.54` first yields `−26.54` when `log_rate = 0`, an error
-of 25.5 log units (~1e11 in intensity). The audited clusterless GMM intensity
-paths do this; the ordering defect is settled.
+of 25.5 log units (~1e11 in intensity). Before Phase 2 (`fc20abb`) the audited
+clusterless GMM intensity paths did this; they now form raw log ratios
+(`clusterless_gmm.py:106-113`). The ordering defect is settled.
 
 ### Why "floor only `-inf`" fails
 
@@ -66,7 +67,7 @@ requires flooring **both** or **neither**.
 ### Scope is wider than first recorded
 
 "Package-wide" reaches more than the two `clusterless_kde_log` caller clamps:
-`clusterless_kde.py:98` and `clusterless_diffusion.py:667` both floor finite
+`clusterless_kde.py:102` and `clusterless_diffusion.py:688` both floor finite
 values via `safe_log` in probability space. Whichever policy is chosen must name
 every site explicitly.
 
@@ -107,21 +108,33 @@ every site explicitly.
 
 The scope question cannot be answered without knowing every site. The partial
 list recorded earlier was incomplete. Build a **backend × {local, non-local} ×
-{spike term, ground process}** matrix covering at least:
+{spike term, ground process}** matrix covering at least the sites below
+(line numbers at `ee2cc21`; Phase 4 added no output floors):
 
 | Site | What it floors |
 |---|---|
-| `clusterless_gmm.py:722`, `:754`, `:876` | joint log density, before the ratio (the defect) |
-| `clusterless_kde.py:98` | finished intensity, via `safe_log` in probability space |
-| `clusterless_kde.py:158` | assembled block result, `jnp.clip(..., min=LOG_EPS)` |
-| `clusterless_kde_log.py:90-92` | occupancy inside the shared helper, via `safe_log` |
-| `clusterless_kde_log.py:1328` | assembled non-local result |
-| `clusterless_kde_log.py:1905-1912` | local per-spike contribution |
-| `clusterless_diffusion.py:667`, `:787` | intensity via `safe_log` |
-| sorted backends | interior place fields EPS-floored at fit (`sorted_spikes_kde.py:225-234`, `sorted_spikes_glm.py:351-354`) |
+| `clusterless_gmm.py` | no pre-ratio floor since Phase 2; zero-rate electrode spikes → LOG_EPS (`:747`, `:932`); mean-rate floor (`:489-490`, `:759`, `:953`) |
+| `clusterless_kde.py:102` | finished intensity, via `safe_log` in probability space |
+| `clusterless_kde.py:162` | assembled block result, `jnp.clip(..., min=LOG_EPS)` |
+| `clusterless_kde.py:666` | local per-spike contribution, via `safe_log` |
+| `clusterless_kde_log.py:94-103` | mean rate and occupancy inside the shared helper, via `safe_log`, plus the degenerate-bin (zero occupancy or `-inf`, NaN excluded) floor to LOG_EPS |
+| `clusterless_kde_log.py:1030-1037` | `use_gemm=False` probability-space `safe_log` (substitutes EPS for zero occupancy, where the linear path uses 0) |
+| `clusterless_kde_log.py:1355` | assembled non-local result |
+| `clusterless_kde_log.py:1964-1970` | local per-spike contribution, `jnp.maximum(..., LOG_EPS)` |
+| `common.py:666`, `:698` | `block_log_kde` all-zero-weight LOG_EPS (feeds the log-KDE local path and `KDEModel`) |
+| `clusterless_diffusion.py:688`, `:808` | intensity via `safe_log` |
+| `clusterless_diffusion.py:360`, `:633`, `:755` | occupancy floor; zero-rate electrode spikes |
+| summed ground-process EPS clips | fit: `clusterless_kde.py:322`, `clusterless_kde_log.py:1533`, `clusterless_gmm.py:558`, `clusterless_diffusion.py:436`; predict: `clusterless_kde.py:690`, `clusterless_kde_log.py:1985`, `clusterless_gmm.py:970` |
+| sorted backends | interior place fields EPS-floored at fit (`sorted_spikes_kde.py:227-235`, `sorted_spikes_glm.py:365-371`); local rates (`sorted_spikes_kde.py:387`, `sorted_spikes_glm.py:497`, `sorted_spikes_diffusion.py:226`, `:247`); GLM objective/zero-exposure (`sorted_spikes_glm.py:178`, `:203`, `:210`); diffusion/MRF interior field floor (`sorted_spikes_diffusion.py:371`, `:529`); MRF EPS fallback field (`sorted_spikes_mrf.py:832`) |
+
+The `& ~isnan` degenerate-bin guard (`clusterless_kde_log.py:100`) is not
+reached by the current log-KDE code, where `log_occ = safe_log(occupancy)` is
+never `-inf`; it matters for a future raw-log policy.
 
 The sorted row matters: including sorted likelihoods would require Phase 2 to
 reconcile the existing EPS zero-exposure fallback and field floors explicitly.
+(Phase 2 shipped at narrowed scope; "Phase 2" in this section now means the
+phase that adopts the deferred package-wide C1 policy.)
 Phase 1 is already complete under the existing policy; this future decision
 does not retroactively block or reopen it. Phase 7c must use the policy selected
 for its baseline and cannot assume every log field is finite.
@@ -129,7 +142,8 @@ for its baseline and cannot assume every log field is finite.
 Three sub-decisions must be made explicitly alongside the main one:
 
 1. **Does the scope include sorted likelihoods?** Any resulting changes to the
-   completed Phase 1 fallback belong to Phase 2, with their own validation.
+   completed Phase 1 fallback belong to the phase adopting the C1 policy, with
+   their own validation.
 2. **What does zero-numerator-over-zero-occupancy mean?** `0/0` is *unsupported*,
    not "true zero" — the distinction changes whether it floors or propagates.
 3. **Is an all-degenerate ground-process aggregate zero, or floored once?**
@@ -137,7 +151,7 @@ Three sub-decisions must be made explicitly alongside the main one:
 Apply these requirements at the sites covered by the selected scope; identify
 any existing out-of-scope behavior explicitly rather than claiming package-wide
 parity.
-Phase 2 must distinguish raw log ratios, per-electrode ground-process terms,
+The phase adopting the C1 policy must distinguish raw log ratios, per-electrode ground-process terms,
 their aggregate, and finished likelihoods when specifying where a floor applies.
 
 ---
@@ -147,10 +161,19 @@ their aggregate, and finished likelihoods when specifying where a floor applies.
 Two mechanisms currently assign a spike to an encoding model, and they disagree.
 
 1. **Hard windows** — `_get_group_spikes` / `_get_group_spike_data`
-   (`models/base.py:3804-3826`, `:2838-2860`) select spikes by interval.
+   (`models/base.py:3931-3985`, `:2908-2981` at `ee2cc21`) select spikes by
+   interval, widened by the global first time difference, and duplicate a
+   spike that falls in two runs' windows.
 2. **Interpolated weights** — `common.interpolate_weights_at_spike_times`
-   (`common.py:161-182`) gives each spike `np.interp(t, position_time, weights)`,
-   which is fractional near a mask transition.
+   (`common.py:170-191`) gives each spike `np.interp(t, position_time, weights)`.
+   This is fractional near a mask transition **only when the mask reaches the
+   weights on the full timeline**, which is true for the sorted fit (Phase 1)
+   but not for the clusterless fit: it passes the subset
+   `position_time[is_group]` with `weights[is_group]` (or `None`), so
+   interpolation bridges gaps and the mask never reaches the event weight. With
+   mask `[1,1,0,1,1]` and `weights=None`, a clusterless spike at t=2 is kept by
+   both windows and counted twice at weight 1 (verified 2026-09-22). Phase 5
+   moves the clusterless fit to the full timeline with mask weights.
 
 **Decision: interpolated weights are canonical and sufficient. Delete the hard
 windows.**
@@ -286,19 +309,22 @@ Two decisions are required before this can be written:
    reject input too short to define a cell.
 2. **Gap policy** — is a long jump in `position_time` exposure (the animal was
    tracked, sampling was sparse) or missing data (tracking dropped)? The current
-   code has no policy, and `base.py:2942-2949` already drops NaN position rows
-   *before* this point, so interpolation silently bridges dropped-tracking gaps.
+   code has no policy, and `base.py:3041-3048` (clusterless) and `:4039-4046`
+   (sorted) already drop NaN position rows *before* this point, so
+   interpolation silently bridges dropped-tracking gaps; the clusterless fit's
+   subset timeline also bridges group-mask gaps (Phase 5).
 
 Whatever is chosen, encoding exposure is `sum(weights × sample_cell_width)`.
 
 **Do not pass `position_time` to a decode-edge binning helper.** The sorted GLM
-currently does exactly that (`sorted_spikes_glm.py:299`, `:339`), which is why
+currently does exactly that (`sorted_spikes_glm.py:316`, `:356`), which is why
 rewriting the shared helper in place would break GLM fitting: N samples would
 yield N-1 counts against an N-row design matrix. Phase 6a gives encoding its own
 helper.
 
 **Uniform-bin restriction.** `core.py` applies one transition matrix per row
-regardless of that row's duration (`_filter_internal` call at `core.py:643`), so
+regardless of that row's duration (`core.py:464`, the per-step transition in
+`_filter_impl`; chunked call at `core.py:940`), so
 nonuniform bins produce a time-miscalibrated posterior even when the likelihood
 is correct. The target detector contract therefore **requires uniform edges**
 and raises otherwise. Phase 6c implements that guard with 6a; it is not a claim

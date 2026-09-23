@@ -1,8 +1,8 @@
 # Phase 3 — Backends bin globally, allocate only requested rows
 
 > **IMPLEMENTED AND VALIDATED** on branch `fix/likelihood-chunk-boundaries`
-> (baseline `86e22f08252bfe248ad8e53b5b8dbbfd1b73f110`); the changes are
-> uncommitted in the working tree at the time of writing. See the
+> (baseline `86e22f08252bfe248ad8e53b5b8dbbfd1b73f110`); merged to `main` at
+> `ffc85a1`. See the
 > [Implementation record](#implementation-record) at the end of this file for the
 > chosen interface, the ownership-of-slicing table, the measured likelihood-memory
 > evidence, and what was deliberately deferred. The former unexecuted

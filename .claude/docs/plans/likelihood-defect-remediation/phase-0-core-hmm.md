@@ -1,6 +1,6 @@
 # Phase 0 — Core HMM conditioning and normalization
 
-> **IMPLEMENTED** on `fix/core-hmm-conditioning` (2026-09-14; CPU,
+> **IMPLEMENTED** on `fix/core-hmm-conditioning`; merged to `main` at `c808dde` (2026-09-14; CPU,
 > JAX 0.9.0, NumPy 2.4.1, Python 3.13).
 > `_normalize` divides by the exact sum and preserves the zero-input contract.
 > `_condition_on_primal` uses reachable-likelihood and log-joint shifts, then
