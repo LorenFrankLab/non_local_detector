@@ -48,7 +48,11 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
     predict_no_spike_log_likelihood,
 )
-from non_local_detector.likelihoods.common import _SpikeTimeOrder, resolve_row_slice
+from non_local_detector.likelihoods.common import (
+    _SpikeTimeOrder,
+    resolve_row_slice,
+    validate_spike_feature_population,
+)
 from non_local_detector.likelihoods.no_spike import no_spike_time_bin_size
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
@@ -2894,7 +2898,7 @@ class ClusterlessDetector(_DetectorBase):
         group_spike_times = []
         group_spike_waveform_features = []
         for electrode_spike_times, electrode_spike_waveform_features in zip(
-            spike_times, spike_waveform_features, strict=False
+            spike_times, spike_waveform_features, strict=True
         ):
             group_electrode_spike_times = []
             group_electrode_waveform_features = []
@@ -2976,6 +2980,9 @@ class ClusterlessDetector(_DetectorBase):
             The values depend on the chosen `clusterless_algorithm`.
         """
         logger.info("Fitting clusterless spikes...")
+        # Validate before any state changes and before the group helper pairs the
+        # collections electrode by electrode.
+        validate_spike_feature_population(spike_times, spike_waveform_features)
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         n_time = position.shape[0]
         position = position if position.ndim > 1 else position[:, np.newaxis]

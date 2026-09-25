@@ -31,6 +31,7 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
     sum_spikes_into_rows,
     validate_population_lengths,
+    validate_spike_feature_pair,
     validate_weights,
     weighted_mean_rate,
 )
@@ -228,36 +229,6 @@ def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
     return weights
 
 
-def _validate_spike_feature_pair(
-    spike_times: np.ndarray | jnp.ndarray,
-    spike_features: np.ndarray | jnp.ndarray,
-    electrode: int,
-) -> tuple[np.ndarray | jnp.ndarray, np.ndarray | jnp.ndarray]:
-    """Validate one electrode's parallel spike/mark arrays without copying them."""
-    times_shape = np.shape(spike_times)
-    features_shape = np.shape(spike_features)
-    if len(times_shape) != 1:
-        raise ValidationError(
-            f"spike_times for electrode {electrode} must be 1-D",
-            expected="shape (n_spikes,)",
-            got=f"shape {times_shape}",
-        )
-    if len(features_shape) != 2:
-        raise ValidationError(
-            f"spike_waveform_features for electrode {electrode} must be 2-D",
-            expected="shape (n_spikes, n_features)",
-            got=f"shape {features_shape}",
-        )
-    if features_shape[0] != times_shape[0]:
-        raise ValidationError(
-            f"spike times and waveform features disagree for electrode {electrode}",
-            expected=f"{times_shape[0]} waveform-feature rows",
-            got=f"{features_shape[0]} rows",
-            hint="Provide exactly one waveform-feature row for every spike time.",
-        )
-    return spike_times, spike_features
-
-
 def fit_clusterless_gmm_encoding_model(
     position_time: jnp.ndarray,
     position: jnp.ndarray,
@@ -442,7 +413,7 @@ def fit_clusterless_gmm_encoding_model(
             disable=disable_progress_bar,
         )
     ):
-        elect_times, elect_feats = _validate_spike_feature_pair(
+        elect_times, elect_feats = validate_spike_feature_pair(
             elect_times, elect_feats, electrode
         )
         mark_dimensions.append(elect_feats.shape[1])
@@ -677,7 +648,7 @@ def predict_clusterless_gmm_log_likelihood(
     for electrode, (elect_times, elect_feats, expected_mark_dims) in enumerate(
         zip(spike_times, spike_waveform_features, mark_dimensions, strict=True)
     ):
-        _, features = _validate_spike_feature_pair(elect_times, elect_feats, electrode)
+        _, features = validate_spike_feature_pair(elect_times, elect_feats, electrode)
         if features.shape[1] != expected_mark_dims:
             raise ValidationError(
                 f"waveform feature dimension changed for electrode {electrode}",

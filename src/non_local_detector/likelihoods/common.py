@@ -1,4 +1,4 @@
-from collections.abc import Sized
+from collections.abc import Sequence, Sized
 from dataclasses import dataclass, field
 
 import jax
@@ -165,6 +165,90 @@ def validate_population_lengths(unit_name: str, **populations: Sized) -> int:
             ),
         )
     return expected
+
+
+def validate_spike_feature_pair(
+    spike_times: np.ndarray | jnp.ndarray,
+    spike_features: np.ndarray | jnp.ndarray,
+    electrode: int,
+) -> tuple[np.ndarray | jnp.ndarray, np.ndarray | jnp.ndarray]:
+    """Validate one electrode's parallel spike/mark arrays without copying them.
+
+    Parameters
+    ----------
+    spike_times : np.ndarray or jnp.ndarray, shape (n_spikes,)
+    spike_features : np.ndarray or jnp.ndarray, shape (n_spikes, n_features)
+    electrode : int
+        Electrode index, used in the error message.
+
+    Returns
+    -------
+    spike_times, spike_features
+        The inputs, unchanged.
+
+    Raises
+    ------
+    ValidationError
+        If either array has the wrong rank or their row counts differ.
+    """
+    times_shape = np.shape(spike_times)
+    features_shape = np.shape(spike_features)
+    if len(times_shape) != 1:
+        raise ValidationError(
+            f"spike_times for electrode {electrode} must be 1-D",
+            expected="shape (n_spikes,)",
+            got=f"shape {times_shape}",
+        )
+    if len(features_shape) != 2:
+        raise ValidationError(
+            f"spike_waveform_features for electrode {electrode} must be 2-D",
+            expected="shape (n_spikes, n_features)",
+            got=f"shape {features_shape}",
+        )
+    if features_shape[0] != times_shape[0]:
+        raise ValidationError(
+            f"spike times and waveform features disagree for electrode {electrode}",
+            expected=f"{times_shape[0]} waveform-feature rows",
+            got=f"{features_shape[0]} rows",
+            hint="Provide exactly one waveform-feature row for every spike time.",
+        )
+    return spike_times, spike_features
+
+
+def validate_spike_feature_population(
+    spike_times: Sequence[np.ndarray | jnp.ndarray],
+    spike_waveform_features: Sequence[np.ndarray | jnp.ndarray],
+) -> int:
+    """Require clusterless spike times and features to describe the same electrodes.
+
+    Checks the electrode count and each electrode's spike/feature row alignment
+    before anything pairs the collections, so a mismatch cannot silently drop an
+    electrode or misalign features with spike times.
+
+    Parameters
+    ----------
+    spike_times : sequence of arrays, each shape (n_spikes,)
+    spike_waveform_features : sequence of arrays, each shape (n_spikes, n_features)
+
+    Returns
+    -------
+    n_electrodes : int
+
+    Raises
+    ------
+    ValidationError
+        If the electrode counts differ or any electrode's arrays disagree.
+    """
+    n_electrodes = validate_population_lengths(
+        "electrode",
+        spike_times=spike_times,
+        spike_waveform_features=spike_waveform_features,
+    )
+    for electrode, (times, features) in enumerate(
+        zip(spike_times, spike_waveform_features, strict=True)
+    ):
+        validate_spike_feature_pair(times, features, electrode)
+    return n_electrodes
 
 
 def interpolate_weights_at_spike_times(

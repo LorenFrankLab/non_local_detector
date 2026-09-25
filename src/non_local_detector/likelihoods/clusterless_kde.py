@@ -21,6 +21,7 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
     sum_spikes_into_rows,
     validate_finite,
+    validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
 )
@@ -426,6 +427,20 @@ def predict_clusterless_kde_log_likelihood(
         Shape depends on whether local or non-local decoding, respectively.
         ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
     """
+    fitted_populations = {
+        "gpi_models": gpi_models,
+        "encoding_spike_waveform_features": encoding_spike_waveform_features,
+        "encoding_positions": encoding_positions,
+        "mean_rates": mean_rates,
+    }
+    if encoding_weights is not None:
+        fitted_populations["encoding_weights"] = encoding_weights
+    validate_population_lengths(
+        "electrode",
+        spike_times=spike_times,
+        spike_waveform_features=spike_waveform_features,
+        **fitted_populations,
+    )
     row_start, row_stop = resolve_row_slice(row_slice, len(time))
     n_rows = row_stop - row_start
     # Normalize to a per-electrode list; None -> uniform weights for each electrode.
