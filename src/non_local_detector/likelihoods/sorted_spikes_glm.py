@@ -66,7 +66,6 @@ from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
     get_position_at_time,
     get_spikecount_per_time_bin,
-    interpolate_weights_at_spike_times,
     resolve_row_slice,
     select_spike_rows,
     select_spikes_in_rows,
@@ -263,21 +262,19 @@ def fit_poisson_regression(
 def weighted_spike_counts(
     spike_times: np.ndarray, position_time: np.ndarray, weights: np.ndarray
 ) -> np.ndarray:
-    """Sum each position row's interpolated spike weights.
+    """Split each spike's interpolated weight between its bracketing samples.
 
-    A spike's weight is ``weights`` linearly interpolated to its time on the
-    position timeline. It is added to the row that owns it under the
-    ``get_spikecount_per_time_bin`` convention (the left position sample; spikes
-    outside ``[position_time[0], position_time[-1]]`` are dropped). This is the
-    GLM's event term, so a spike near a mask transition contributes its
-    fractional weight rather than the row's weight.
-
-    Rows are left-closed sample intervals, so the row just before a 0 -> 1 mask
-    transition has zero exposure weight yet owns the positive-weight spikes
-    that follow its sample. Those spikes add an event term evaluated at that
-    row's position with no matching exposure term. The effect is bounded by
-    the spikes within one sample of a transition; aligning event cells with
-    exposure cells is part of the encoding-cell time vocabulary work.
+    A spike a fraction ``a`` of the way from sample ``i`` to sample ``i + 1``
+    adds ``(1 - a) * weights[i]`` to row ``i`` and ``a * weights[i + 1]`` to
+    row ``i + 1``. The two parts sum to ``weights`` linearly interpolated to the
+    spike time, so each spike keeps its canonical weight and complementary
+    groups still partition it. Each part is carried by the sample that supplies
+    it, so a row receives event mass only where its own exposure weight is
+    positive; a row with events but no exposure would let the fitted rate at
+    its position diverge. For a locally constant rate and uniform sampling, an
+    interior row's expected event mass is ``rate * weights[i] * dt``,
+    proportional to its exposure term. Spikes outside
+    ``[position_time[0], position_time[-1]]`` are dropped.
 
     Parameters
     ----------
@@ -289,15 +286,21 @@ def weighted_spike_counts(
     -------
     counts : np.ndarray, shape (n_time_position,)
     """
-    selection = select_spikes_in_rows(
-        spike_times, position_time, 0, position_time.shape[0]
-    )
-    spike_weights = interpolate_weights_at_spike_times(
-        select_spike_rows(spike_times, selection), position_time, weights
+    position_time = np.asarray(position_time)
+    weights = np.asarray(weights)
+    n_time = position_time.shape[0]
+    selection = select_spikes_in_rows(spike_times, position_time, 0, n_time)
+    times = np.asarray(select_spike_rows(spike_times, selection))
+    left = selection.bin_ind
+    right = np.minimum(left + 1, n_time - 1)
+    interval = position_time[right] - position_time[left]
+    safe_interval = np.where(interval > 0.0, interval, 1.0)
+    fraction = np.where(
+        interval > 0.0, (times - position_time[left]) / safe_interval, 0.0
     )
     return np.bincount(
-        selection.bin_ind, weights=spike_weights, minlength=selection.n_rows
-    )
+        left, weights=(1.0 - fraction) * weights[left], minlength=n_time
+    ) + np.bincount(right, weights=fraction * weights[right], minlength=n_time)
 
 
 def fit_sorted_spikes_glm_encoding_model(
