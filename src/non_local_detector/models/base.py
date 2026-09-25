@@ -119,27 +119,27 @@ def _prepare_likelihood_callback(
     return partial(callback, **prepared) if prepared else callback
 
 
-def _snapshot_encoding_model(encoding_model: dict | None) -> dict | None:
-    """Create a restorable snapshot of the encoding model.
+def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
+    """Reject any nonzero ``encoding_update_damping``.
 
-    Deep-copies numpy/jax arrays but keeps non-picklable objects (e.g.
-    patsy DesignInfo, KDEModel) by reference so that ``copy.deepcopy``
-    failures are avoided.
+    Blending only ``place_fields`` cannot keep a refit encoding model
+    self-consistent: the GLM and KDE local paths read other fitted state, the
+    diffusion/MRF spike term reads ``interior_log_place_fields``, and the
+    clusterless models have no ``place_fields`` at all. Estimation wrappers call
+    this before their initial ``fit`` so a rejected value changes nothing.
     """
-    if encoding_model is None:
-        return None
-    snapshot = {}
-    for key, entry in encoding_model.items():
-        entry_copy = {}
-        for k, v in entry.items():
-            if isinstance(v, (np.ndarray, jnp.ndarray)):
-                entry_copy[k] = (
-                    np.array(v) if isinstance(v, np.ndarray) else jnp.array(v)
-                )
-            else:
-                entry_copy[k] = v
-        snapshot[key] = entry_copy
-    return snapshot
+    if encoding_update_damping != 0.0:
+        raise ValidationError(
+            "encoding_update_damping is not supported",
+            expected="encoding_update_damping=0.0",
+            got=str(encoding_update_damping),
+            hint=(
+                "Damped encoding updates are not implemented for any likelihood: "
+                "blending place fields leaves the other fitted encoding state "
+                "stale. Use min_encoding_local_mass / min_encoding_local_ess to "
+                "skip poorly supported encoding updates instead."
+            ),
+        )
 
 
 def _normalize_frozen_discrete_transition_rows(
@@ -1848,31 +1848,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     def fit_encoding_model(self):
         """Fit the encoding model. To be implemented by inheriting class."""
 
-    @staticmethod
-    def _apply_encoding_damping(
-        new_model: dict,
-        old_model: dict,
-        damping: float,
-    ) -> None:
-        """Blend new encoding model place fields with old ones in-place.
-
-        For each key present in both models, computes:
-            place_fields = (1 - damping) * new + damping * old
-        and recomputes no_spike_part_log_likelihood accordingly.
-        """
-        for key in new_model:
-            if key not in old_model:
-                continue
-            new_entry = new_model[key]
-            old_entry = old_model[key]
-            if "place_fields" not in new_entry or "place_fields" not in old_entry:
-                continue
-            blended = (1 - damping) * new_entry["place_fields"] + damping * old_entry[
-                "place_fields"
-            ]
-            new_entry["place_fields"] = blended
-            new_entry["no_spike_part_log_likelihood"] = jnp.sum(blended, axis=0)
-
     def estimate_parameters(
         self,
         time: np.ndarray | None = None,
@@ -1947,10 +1922,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             to update the encoding model. ESS = sum(w)^2 / sum(w^2). If ESS
             is below this threshold, the encoding M-step is skipped. By default 1.0.
         encoding_update_damping : float, optional
-            Damping factor in [0, 1) for encoding model updates. When > 0, the
-            new place fields are blended with the old ones:
-            new = (1 - damping) * refit + damping * old. Set higher (e.g. 0.5)
-            when local ESS is expected to be low. By default 0.0 (no damping).
+            Must be 0.0 (the default). Damped encoding updates are not supported
+            by any likelihood; a nonzero value raises ``ValidationError`` before
+            any fitting. Use ``min_encoding_local_mass`` /
+            ``min_encoding_local_ess`` to skip poorly supported updates.
 
         Returns
         -------
@@ -2012,10 +1987,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             cache_likelihood = True
 
         # Validate encoding update parameters
-        if not 0.0 <= encoding_update_damping < 1.0:
-            raise ValueError(
-                f"encoding_update_damping must be in [0, 1), got {encoding_update_damping}"
-            )
+        _validate_encoding_update_damping(encoding_update_damping)
         if min_encoding_local_mass < 0:
             raise ValueError(
                 f"min_encoding_local_mass must be >= 0, got {min_encoding_local_mass}"
@@ -2116,15 +2088,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                             min_encoding_local_ess,
                         )
                     else:
-                        # Snapshot for damping (only when needed)
-                        prev_encoding_model = (
-                            _snapshot_encoding_model(
-                                getattr(self, "encoding_model_", None)
-                            )
-                            if encoding_update_damping > 0
-                            else None
-                        )
-
                         # Re-fit the encoding model using the posterior weights.
                         # Known limitation (issue #31): the encoding model (the
                         # emission) is shared across states but is re-fit here
@@ -2137,14 +2100,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                             **self._encoding_model_data,
                             weights=local_state_weights,
                         )
-
-                        # Apply damping: blend new place fields with old
-                        if prev_encoding_model is not None:
-                            self._apply_encoding_damping(
-                                self.encoding_model_,
-                                prev_encoding_model,
-                                encoding_update_damping,
-                            )
 
                         # The encoding model changed, so the likelihood
                         # computed from the previous one is stale.
@@ -3702,13 +3657,17 @@ class ClusterlessDetector(_DetectorBase):
         min_encoding_local_ess : float, optional
             Minimum effective sample size of local weights to update encoding. By default 1.0.
         encoding_update_damping : float, optional
-            Damping factor in [0, 1) for encoding updates. By default 0.0.
+            Must be 0.0 (the default). Damped encoding updates are not supported
+            by any likelihood; a nonzero value raises ``ValidationError`` before
+            any fitting. Use ``min_encoding_local_mass`` /
+            ``min_encoding_local_ess`` to skip poorly supported updates.
 
         Returns
         -------
         results : xr.Dataset
             Results of the decoding.
         """
+        _validate_encoding_update_damping(encoding_update_damping)
         self._encoding_model_data = {
             "position_time": position_time,
             "position": position,
@@ -4651,13 +4610,17 @@ class SortedSpikesDetector(_DetectorBase):
         min_encoding_local_ess : float, optional
             Minimum effective sample size of local weights to update encoding. By default 1.0.
         encoding_update_damping : float, optional
-            Damping factor in [0, 1) for encoding updates. By default 0.0.
+            Must be 0.0 (the default). Damped encoding updates are not supported
+            by any likelihood; a nonzero value raises ``ValidationError`` before
+            any fitting. Use ``min_encoding_local_mass`` /
+            ``min_encoding_local_ess`` to skip poorly supported updates.
 
         Returns
         -------
         xr.Dataset
             Results of the decoding
         """
+        _validate_encoding_update_damping(encoding_update_damping)
         position = position[:, np.newaxis] if position.ndim == 1 else position
         self._encoding_model_data = {
             "position_time": position_time,
