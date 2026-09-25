@@ -830,3 +830,54 @@ def test_weighted_spike_counts_conserve_interpolated_weight(
         counts.sum(), np.interp(spike_times, position_time, weights).sum()
     )
     np.testing.assert_array_equal(counts[weights == 0.0], 0.0)
+
+
+def _reference_weighted_spike_counts(spike_times, position_time, weights):
+    """Per-spike loop: a spike in ``[t[0], t[-1]]`` splits its interpolated
+    weight between the last sample ``i <= n - 2`` with ``t[i] <= spike`` (or
+    ``i = 0``) and sample ``i + 1``, each part carried by its own sample."""
+    n = len(position_time)
+    counts = np.zeros(n)
+    for spike in spike_times:
+        if not position_time[0] <= spike <= position_time[-1]:
+            continue
+        left = 0
+        for i in range(1, n - 1):
+            if position_time[i] <= spike:
+                left = i
+        right = min(left + 1, n - 1)
+        interval = position_time[right] - position_time[left]
+        fraction = (spike - position_time[left]) / interval if interval > 0 else 1.0
+        counts[left] += (1.0 - fraction) * weights[left]
+        counts[right] += fraction * weights[right]
+    return counts
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("n_samples", [1, 2, 3, 17])
+@pytest.mark.parametrize("seed", range(5))
+def test_weighted_spike_counts_match_per_spike_reference(n_samples, seed):
+    """Encoding event rows follow the position samples, independently of the
+    decode binning convention: unsorted spikes, spikes on samples, repeated
+    timestamps, and spikes outside the position timeline."""
+    from non_local_detector.likelihoods.sorted_spikes_glm import weighted_spike_counts
+
+    rng = np.random.default_rng(seed)
+    position_time = np.sort(rng.integers(0, 2 * n_samples, n_samples)).astype(float)
+    weights = rng.choice([0.0, 0.3, 1.0], n_samples)
+    on_samples = rng.choice(position_time, 5)
+    spike_times = rng.permutation(
+        np.concatenate(
+            [
+                rng.uniform(position_time[0] - 1.0, position_time[-1] + 1.0, 20),
+                on_samples,
+            ]
+        )
+    )
+
+    np.testing.assert_allclose(
+        weighted_spike_counts(spike_times, position_time, weights),
+        _reference_weighted_spike_counts(spike_times, position_time, weights),
+        rtol=1e-12,
+        atol=1e-15,
+    )

@@ -67,8 +67,6 @@ from non_local_detector.likelihoods.common import (
     get_position_at_time,
     get_spikecount_per_time_bin,
     resolve_row_slice,
-    select_spike_rows,
-    select_spikes_in_rows,
     validate_population_lengths,
     validate_weights,
 )
@@ -289,10 +287,15 @@ def weighted_spike_counts(
     """
     position_time = np.asarray(position_time)
     weights = np.asarray(weights)
+    spike_times = np.asarray(spike_times)
     n_time = position_time.shape[0]
-    selection = select_spikes_in_rows(spike_times, position_time, 0, n_time)
-    times = np.asarray(select_spike_rows(spike_times, selection))
-    left = selection.bin_ind
+    times = spike_times[
+        (spike_times >= position_time[0]) & (spike_times <= position_time[-1])
+    ]
+    # Encoding rows are position samples, not decode bins: the left sample is
+    # the last one at or before the spike, never the final sample, so a spike
+    # at position_time[-1] splits into the final interval.
+    left = np.searchsorted(position_time[1:-1], times, side="right")
     right = np.minimum(left + 1, n_time - 1)
     interval = position_time[right] - position_time[left]
     safe_interval = np.where(interval > 0.0, interval, 1.0)
