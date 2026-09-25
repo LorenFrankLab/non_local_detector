@@ -1,5 +1,3 @@
-from collections.abc import Sized
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -248,27 +246,18 @@ def fit_clusterless_kde_encoding_model(
     is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
+    occupancy_samples, occupancy_weights = drop_zero_weight_samples(position, weights)
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D
-        position1D = get_linearized_position(
-            position,
+        occupancy_samples = get_linearized_position(
+            occupancy_samples,
             environment.track_graph,
             edge_order=environment.edge_order,
             edge_spacing=environment.edge_spacing,
         ).linear_position.to_numpy()[:, None]
-        occupancy_samples, occupancy_weights = drop_zero_weight_samples(
-            position1D, weights
-        )
-        occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
-            occupancy_samples, weights=jnp.asarray(occupancy_weights)
-        )
-    else:
-        occupancy_samples, occupancy_weights = drop_zero_weight_samples(
-            position, weights
-        )
-        occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
-            occupancy_samples, weights=jnp.asarray(occupancy_weights)
-        )
+    occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
+        occupancy_samples, weights=jnp.asarray(occupancy_weights)
+    )
 
     occupancy = occupancy_model.predict(interior_place_bin_centers)
     encoding_positions = []
@@ -436,19 +425,15 @@ def predict_clusterless_kde_log_likelihood(
         Shape depends on whether local or non-local decoding, respectively.
         ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
     """
-    fitted_populations: dict[str, Sized] = {
-        "gpi_models": gpi_models,
-        "encoding_spike_waveform_features": encoding_spike_waveform_features,
-        "encoding_positions": encoding_positions,
-        "mean_rates": mean_rates,
-    }
-    if encoding_weights is not None:
-        fitted_populations["encoding_weights"] = encoding_weights
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
         spike_waveform_features=spike_waveform_features,
-        **fitted_populations,
+        gpi_models=gpi_models,
+        encoding_spike_waveform_features=encoding_spike_waveform_features,
+        encoding_positions=encoding_positions,
+        mean_rates=mean_rates,
+        encoding_weights=encoding_weights,
     )
     row_start, row_stop = resolve_row_slice(row_slice, len(time))
     n_rows = row_stop - row_start

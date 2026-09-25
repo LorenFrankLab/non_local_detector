@@ -1,5 +1,6 @@
 from collections.abc import Sequence, Sized
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -123,7 +124,7 @@ def validate_finite(array: np.ndarray | jnp.ndarray, name: str) -> None:
         raise ValidationError(f"{name} must contain only finite values")
 
 
-def validate_population_lengths(unit_name: str, **populations: Sized) -> int:
+def validate_population_lengths(unit_name: str, **populations: Sized | None) -> int:
     """Require parallel population collections to contain the same number of units.
 
     Likelihood predictors combine observed spike trains with fitted per-unit models.
@@ -136,7 +137,8 @@ def validate_population_lengths(unit_name: str, **populations: Sized) -> int:
     unit_name : str
         Human-readable population unit, such as ``"electrode"`` or ``"neuron"``.
     **populations
-        Named sized collections that should be parallel.
+        Named sized collections that should be parallel. ``None`` marks an
+        optional collection that was not supplied and is skipped.
 
     Returns
     -------
@@ -148,10 +150,11 @@ def validate_population_lengths(unit_name: str, **populations: Sized) -> int:
     ValidationError
         If the collection lengths differ.
     """
-    if not populations:
+    lengths = {
+        name: len(values) for name, values in populations.items() if values is not None
+    }
+    if not lengths:
         return 0
-
-    lengths = {name: len(values) for name, values in populations.items()}
     expected = next(iter(lengths.values()))
     if any(length != expected for length in lengths.values()):
         details = ", ".join(f"{name}={length}" for name, length in lengths.items())
@@ -171,7 +174,7 @@ def validate_spike_feature_pair(
     spike_times: np.ndarray | jnp.ndarray,
     spike_features: np.ndarray | jnp.ndarray,
     electrode: int,
-) -> tuple[np.ndarray | jnp.ndarray, np.ndarray | jnp.ndarray]:
+) -> None:
     """Validate one electrode's parallel spike/mark arrays without copying them.
 
     Parameters
@@ -180,11 +183,6 @@ def validate_spike_feature_pair(
     spike_features : np.ndarray or jnp.ndarray, shape (n_spikes, n_features)
     electrode : int
         Electrode index, used in the error message.
-
-    Returns
-    -------
-    spike_times, spike_features
-        The inputs, unchanged.
 
     Raises
     ------
@@ -212,7 +210,6 @@ def validate_spike_feature_pair(
             got=f"{features_shape[0]} rows",
             hint="Provide exactly one waveform-feature row for every spike time.",
         )
-    return spike_times, spike_features
 
 
 def validate_spike_feature_population(
@@ -792,9 +789,13 @@ def block_log_kde(
     return jnp.concatenate(blocks)
 
 
+_Samples = TypeVar("_Samples")
+_Weights = TypeVar("_Weights")
+
+
 def drop_zero_weight_samples(
-    samples: np.ndarray, weights: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
+    samples: _Samples, weights: _Weights
+) -> tuple[_Samples, _Weights]:
     """Remove samples that carry no weight from a weighted KDE's training set.
 
     A zero-weight sample adds nothing to a weighted kernel density, so removing
@@ -818,7 +819,7 @@ def drop_zero_weight_samples(
     keep = np.asarray(weights) > 0.0
     if not np.any(keep) or np.all(keep):
         return samples, weights
-    return samples[keep], weights[keep]
+    return samples[keep], weights[keep]  # type: ignore[index]
 
 
 @dataclass

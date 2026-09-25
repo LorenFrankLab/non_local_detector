@@ -188,19 +188,29 @@ def _group_spike_mask(
     return is_group_spike
 
 
-def _warn_if_group_unexposed(group_weights: np.ndarray, likelihood_name: tuple) -> None:
-    """Warn when an encoding group has no training samples with positive weight.
+def _group_weights(
+    is_group: np.ndarray, weights: np.ndarray | None, likelihood_name: tuple
+) -> np.ndarray:
+    """Per-sample weights of one encoding group on the full position timeline.
 
-    Such a group owns no spikes and has zero exposure, so its encoding model
-    carries no spike-based spatial information and states that use it decode
-    from the prior alone. This is usually a mask or label mistake.
+    The group mask is the model's exposure: a sample outside it contributes no
+    occupancy and owns no spikes. Warns when no sample has positive weight;
+    such a group is fit with zero exposure and its states decode from the prior
+    alone, which is usually a mask or label mistake.
 
     Parameters
     ----------
-    group_weights : np.ndarray, shape (n_time_position,)
+    is_group : np.ndarray of bool, shape (n_time_position,)
+    weights : np.ndarray, shape (n_time_position,), optional
+        Extra per-sample weights (e.g. EM local-state weights).
     likelihood_name : tuple
         ``(environment_name, encoding_group)`` of the group.
+
+    Returns
+    -------
+    group_weights : np.ndarray, shape (n_time_position,)
     """
+    group_weights = is_group.astype(float) if weights is None else weights * is_group
     if not np.any(group_weights > 0.0):
         environment_name, encoding_group = likelihood_name
         warnings.warn(
@@ -212,6 +222,7 @@ def _warn_if_group_unexposed(group_weights: np.ndarray, likelihood_name: tuple) 
             UserWarning,
             stacklevel=3,
         )
+    return group_weights
 
 
 def _normalize_frozen_discrete_transition_rows(
@@ -1937,7 +1948,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
-        encoding_update_damping: float = 0.0,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -1993,11 +2003,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Minimum effective sample size (ESS) of local state weights required
             to update the encoding model. ESS = sum(w)^2 / sum(w^2). If ESS
             is below this threshold, the encoding M-step is skipped. By default 1.0.
-        encoding_update_damping : float, optional
-            Must be 0.0 (the default). Damped encoding updates are not supported
-            by any likelihood; a nonzero value raises ``ValidationError`` before
-            any fitting. Use ``min_encoding_local_mass`` /
-            ``min_encoding_local_ess`` to skip poorly supported updates.
 
         Returns
         -------
@@ -2059,7 +2064,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             cache_likelihood = True
 
         # Validate encoding update parameters
-        _validate_encoding_update_damping(encoding_update_damping)
         if min_encoding_local_mass < 0:
             raise ValueError(
                 f"min_encoding_local_mass must be >= 0, got {min_encoding_local_mass}"
@@ -2974,8 +2978,8 @@ class ClusterlessDetector(_DetectorBase):
         """
         logger.info("Fitting clusterless spikes...")
         # Validate before any state changes and before the collections are
-        # paired electrode by electrode (``fit`` and ``estimate_parameters`` also
-        # check first, before rebuilding their own state).
+        # paired electrode by electrode (``fit`` also checks first, before
+        # ``_fit`` rebuilds its own state).
         validate_spike_feature_population(spike_times, spike_waveform_features)
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         n_time = position.shape[0]
@@ -3029,20 +3033,21 @@ class ClusterlessDetector(_DetectorBase):
             # The mask is this model's exposure on the full timeline, as for
             # sorted spikes: a subset timeline would let spike-weight
             # interpolation bridge the mask's gaps.
-            group_weights = (
-                is_group.astype(float) if weights is None else weights * is_group
-            )
-            _warn_if_group_unexposed(group_weights, likelihood_name)
-            group_spike_times = []
-            group_spike_waveform_features = []
-            for electrode_spike_times, electrode_features in zip(
-                spike_times, spike_waveform_features, strict=True
-            ):
-                is_group_spike = _group_spike_mask(
-                    electrode_spike_times, position_time, group_weights
+            group_weights = _group_weights(is_group, weights, likelihood_name)
+            is_group_spike = [
+                _group_spike_mask(times, position_time, group_weights)
+                for times in spike_times
+            ]
+            group_spike_times = [
+                times[mask]
+                for times, mask in zip(spike_times, is_group_spike, strict=True)
+            ]
+            group_spike_waveform_features = [
+                features[mask]
+                for features, mask in zip(
+                    spike_waveform_features, is_group_spike, strict=True
                 )
-                group_spike_times.append(electrode_spike_times[is_group_spike])
-                group_spike_waveform_features.append(electrode_features[is_group_spike])
+            ]
             self.encoding_model_[likelihood_name] = encoding_algorithm(
                 position_time=position_time,
                 position=position,
@@ -3680,16 +3685,6 @@ class ClusterlessDetector(_DetectorBase):
             Results of the decoding.
         """
         _validate_encoding_update_damping(encoding_update_damping)
-        validate_spike_feature_population(spike_times, spike_waveform_features)
-        self._encoding_model_data = {
-            "position_time": position_time,
-            "position": position,
-            "spike_times": spike_times,
-            "spike_waveform_features": spike_waveform_features,
-            "is_training": is_training,
-            "encoding_group_labels": encoding_group_labels,
-            "environment_labels": environment_labels,
-        }
         # Mirror predict(): treat NaN positions as missing observations during
         # the E-step so EM and predict use the same local-likelihood handling.
         if position is not None:
@@ -3710,6 +3705,15 @@ class ClusterlessDetector(_DetectorBase):
             environment_labels=environment_labels,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
         )
+        self._encoding_model_data = {
+            "position_time": position_time,
+            "position": position,
+            "spike_times": spike_times,
+            "spike_waveform_features": spike_waveform_features,
+            "is_training": is_training,
+            "encoding_group_labels": encoding_group_labels,
+            "environment_labels": environment_labels,
+        }
 
         return super().estimate_parameters(
             time=time,
@@ -3732,7 +3736,6 @@ class ClusterlessDetector(_DetectorBase):
             save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
-            encoding_update_damping=encoding_update_damping,
         )
 
     def most_likely_sequence(
@@ -3994,10 +3997,7 @@ class SortedSpikesDetector(_DetectorBase):
             # count does not, biasing every place field low. The position array
             # stays full-length so it remains aligned with the weights and with
             # the grid used to interpolate per-spike weights.
-            group_weights = (
-                is_group.astype(float) if weights is None else weights * is_group
-            )
-            _warn_if_group_unexposed(group_weights, likelihood_name)
+            group_weights = _group_weights(is_group, weights, likelihood_name)
 
             # GLM requires environment geometry that KDE derives internally
             glm_kwargs = {}
@@ -4630,7 +4630,6 @@ class SortedSpikesDetector(_DetectorBase):
             save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
-            encoding_update_damping=encoding_update_damping,
         )
 
     def most_likely_sequence(

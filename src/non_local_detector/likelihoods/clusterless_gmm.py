@@ -416,9 +416,7 @@ def fit_clusterless_gmm_encoding_model(
             disable=disable_progress_bar,
         )
     ):
-        elect_times, elect_feats = validate_spike_feature_pair(
-            elect_times, elect_feats, electrode
-        )
+        validate_spike_feature_pair(elect_times, elect_feats, electrode)
         mark_dimensions.append(elect_feats.shape[1])
         # Clip to encoding window
         in_bounds = np.logical_and(
@@ -651,12 +649,12 @@ def predict_clusterless_gmm_log_likelihood(
     for electrode, (elect_times, elect_feats, expected_mark_dims) in enumerate(
         zip(spike_times, spike_waveform_features, mark_dimensions, strict=True)
     ):
-        _, features = validate_spike_feature_pair(elect_times, elect_feats, electrode)
-        if features.shape[1] != expected_mark_dims:
+        validate_spike_feature_pair(elect_times, elect_feats, electrode)
+        if np.shape(elect_feats)[1] != expected_mark_dims:
             raise ValidationError(
                 f"waveform feature dimension changed for electrode {electrode}",
                 expected=f"{expected_mark_dims} features per spike",
-                got=f"{features.shape[1]} features",
+                got=f"{np.shape(elect_feats)[1]} features",
                 hint="Use the same waveform feature representation at fit and predict.",
             )
 
