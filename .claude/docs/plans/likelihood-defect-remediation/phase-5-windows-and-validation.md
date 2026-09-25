@@ -277,10 +277,10 @@ confirmed failing on the pre-fix code before the fix. Preservation tests
 **Numerical effects** (compared against the pre-change tree on the same inputs):
 
 - Golden fixtures pass with existing tolerances; no golden or snapshot update.
-  Clusterless decoder and random-walk fixtures are bit-identical. The sorted
-  decoder and non-local detector differ by at most 1.2e-7 in the posterior.
-  The non-local detector's training block ends inside the recording, so one
-  boundary interval now has fractional ownership.
+  At the final tip, the clusterless decoder, random-walk, and non-local detector
+  fixtures are bit-identical to `main`, and the sorted decoder differs by at most
+  6e-8. Before `27d8bea` the non-local detector differed by 1.2e-7, from zero-weight
+  samples in the occupancy sum.
 - A clusterless KDE fit with a mask that skips every fourth block of 150 samples
   changed one electrode's mean rate by 0.58%. The largest posterior total
   variation over 3,000 rows was 0.013.

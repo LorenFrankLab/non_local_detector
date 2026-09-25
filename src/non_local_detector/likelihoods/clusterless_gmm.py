@@ -221,7 +221,9 @@ def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
     all-zero ``sample_weight`` is rejected by ``GaussianMixtureModel.fit`` (it
     leaves no effective training data), so a fully de-weighted encoding group
     deliberately degrades to an unweighted occupancy fit after the caller's
-    "weights sum to 0" warning rather than raising. Because the unweighted
+    "weights sum to 0" warning rather than raising; detectors pass the full
+    position timeline, so that fallback occupancy covers every supplied sample,
+    not only the group's. Because the unweighted
     fallback keeps every position row, the caller's ``occupancy_n_samples < 1``
     check below is then reachable only for a zero-row position array.
     """

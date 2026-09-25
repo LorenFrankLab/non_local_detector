@@ -165,8 +165,8 @@ def fit_poisson_regression(
     ----------
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
     spikes : np.ndarray, shape (n_time,)
-        Weighted spike count per row: the sum of the weights of the spikes the
-        row owns. Equals the plain spike count when every spike has weight 1.
+        Event mass per row: the weighted spike counts from
+        ``weighted_spike_counts``, not multiplied by ``weights`` again.
     weights : np.ndarray, shape (n_time,)
         Per-row exposure weight.
     l2_penalty : float, optional
@@ -202,7 +202,7 @@ def fit_poisson_regression(
     dlike = jax.grad(neglogp)
 
     # Zero total exposure means this group has no training coverage at all, so
-    # the rate is unidentified and ``jnp.average`` would return 0/0 = NaN. Return
+    # the rate is unidentified and ``sum(spikes) / sum(weights)`` is 0/0 = NaN. Return
     # an intercept-only model at the EPS floor, which is exactly what a unit with
     # real exposure but no spikes already gets from the ``maximum(avg_rate, EPS)``
     # guard below -- the two zero-rate cases agree. A group with small-but-
@@ -285,6 +285,7 @@ def weighted_spike_counts(
     Returns
     -------
     counts : np.ndarray, shape (n_time_position,)
+        Event mass per position row.
     """
     position_time = np.asarray(position_time)
     weights = np.asarray(weights)

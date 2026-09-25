@@ -131,6 +131,15 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
     diffusion/MRF spike term reads ``interior_log_place_fields``, and the
     clusterless models have no ``place_fields`` at all. Estimation wrappers call
     this before their initial ``fit`` so a rejected value changes nothing.
+
+    Parameters
+    ----------
+    encoding_update_damping : float
+
+    Raises
+    ------
+    ValidationError
+        If the value is not zero (including NaN).
     """
     if encoding_update_damping != 0.0:
         raise ValidationError(

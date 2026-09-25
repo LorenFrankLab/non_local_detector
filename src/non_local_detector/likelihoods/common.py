@@ -808,7 +808,7 @@ def drop_zero_weight_samples(
     ----------
     samples : np.ndarray, shape (n_samples, ...)
     weights : np.ndarray, shape (n_samples,)
-        Host array of non-negative weights.
+        Non-negative weights.
 
     Returns
     -------
