@@ -1,7 +1,7 @@
 # Phase 5 — Canonical event ownership and validation gaps
 
-> **IMPLEMENTED on `fix/canonical-event-ownership` (2026-09-25), not yet
-> merged.** See [Implementation record](#implementation-record). Sections below
+> **IMPLEMENTED and merged at `68e88b0` (2026-09-25).** See
+> [Implementation record](#implementation-record). Sections below
 > are the plan as executed; line references are to `ee2cc21`.
 >
 > Hard group windows are removed, not repaired. The former half-interval window
