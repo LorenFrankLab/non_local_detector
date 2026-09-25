@@ -2973,8 +2973,9 @@ class ClusterlessDetector(_DetectorBase):
             The values depend on the chosen `clusterless_algorithm`.
         """
         logger.info("Fitting clusterless spikes...")
-        # Validate before any state changes and before the group helper pairs the
-        # collections electrode by electrode.
+        # Validate before any state changes and before the collections are
+        # paired electrode by electrode (``fit`` and ``estimate_parameters`` also
+        # check first, before rebuilding their own state).
         validate_spike_feature_population(spike_times, spike_waveform_features)
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         n_time = position.shape[0]
@@ -3091,6 +3092,7 @@ class ClusterlessDetector(_DetectorBase):
         ClusterlessDetector
             Fitted detector instance.
         """
+        validate_spike_feature_population(spike_times, spike_waveform_features)
         self._fit(
             position,
             is_training,
@@ -3678,6 +3680,7 @@ class ClusterlessDetector(_DetectorBase):
             Results of the decoding.
         """
         _validate_encoding_update_damping(encoding_update_damping)
+        validate_spike_feature_population(spike_times, spike_waveform_features)
         self._encoding_model_data = {
             "position_time": position_time,
             "position": position,

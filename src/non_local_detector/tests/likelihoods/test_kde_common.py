@@ -406,6 +406,7 @@ def test_validate_population_lengths_detects_short_non_first_collection():
     assert "spike_times=3" in message
 
 
+@pytest.mark.unit
 def test_drop_zero_weight_samples_preserves_density_and_shrinks_model():
     """Zero-weight samples add nothing to a weighted KDE, so dropping them keeps
     the density and stops every later evaluation from paying for them."""

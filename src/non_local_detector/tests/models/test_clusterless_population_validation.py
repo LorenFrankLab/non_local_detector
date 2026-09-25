@@ -89,3 +89,30 @@ def test_predict_rejects_electrode_count_mismatch(fitted_decoder, sim):
                 **encoding_model,
                 is_local=False,
             )
+
+
+@pytest.mark.unit
+def test_refit_with_mismatch_leaves_fitted_state_unchanged(sim):
+    """Validation runs before ``fit`` (or ``estimate_parameters``) rebuilds the
+    environments and transitions of an already-fitted detector."""
+    detector = NonLocalClusterlessDetector().fit(
+        sim.position_time, sim.position, sim.spike_times, sim.spike_waveform_features
+    )
+    state_before = dict(vars(detector))
+    spike_times, features = _mismatched_populations(sim)[0]
+
+    with pytest.raises(ValidationError, match="electrode population lengths"):
+        detector.fit(sim.position_time, sim.position, spike_times, features)
+    with pytest.raises(ValidationError, match="electrode population lengths"):
+        detector.estimate_parameters(
+            sim.position_time,
+            sim.position,
+            spike_times,
+            features,
+            time=sim.position_time,
+            max_iter=1,
+        )
+
+    assert vars(detector).keys() == state_before.keys()
+    for name, value in state_before.items():
+        assert vars(detector)[name] is value, name
