@@ -13,7 +13,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
-import scipy.ndimage  # type: ignore[import-untyped]
 import seaborn as sns  # type: ignore[import-untyped]
 import sklearn  # type: ignore[import-untyped]
 import xarray as xr
@@ -50,6 +49,7 @@ from non_local_detector.likelihoods import (
 )
 from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
+    interpolate_weights_at_spike_times,
     resolve_row_slice,
     validate_spike_feature_population,
 )
@@ -144,6 +144,39 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
                 "skip poorly supported encoding updates instead."
             ),
         )
+
+
+def _group_spike_mask(
+    spike_times: np.ndarray, position_time: np.ndarray, group_weights: np.ndarray
+) -> np.ndarray:
+    """Select the spikes an encoding group owns.
+
+    A spike belongs to a group exactly when the group's per-sample weights,
+    linearly interpolated to the spike time on the full position timeline, are
+    positive. Selection does not set the spike's weight: the encoding fit
+    re-interpolates the same weights and applies each one once, so a spike near
+    a mask transition keeps its fractional weight and complementary groups
+    partition every spike. Spikes outside the position timeline are not
+    selected, matching the encoding fits' own bounds.
+
+    Parameters
+    ----------
+    spike_times : np.ndarray, shape (n_spikes,)
+    position_time : np.ndarray, shape (n_time_position,)
+    group_weights : np.ndarray, shape (n_time_position,)
+        Per-sample weights of this group (mask times any EM weight).
+
+    Returns
+    -------
+    is_group_spike : np.ndarray of bool, shape (n_spikes,)
+    """
+    spike_times = np.asarray(spike_times)
+    in_bounds = (spike_times >= position_time[0]) & (spike_times <= position_time[-1])
+    spike_weights = interpolate_weights_at_spike_times(
+        spike_times, position_time, group_weights
+    )
+    is_group_spike: np.ndarray = in_bounds & (spike_weights > 0.0)
+    return is_group_spike
 
 
 def _normalize_frozen_discrete_transition_rows(
@@ -2864,81 +2897,6 @@ class ClusterlessDetector(_DetectorBase):
             return dict(_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS)
         return dict(self.clusterless_algorithm_params)
 
-    def _get_group_spike_data(
-        self,
-        spike_times: list[np.ndarray],
-        spike_waveform_features: list[np.ndarray],
-        is_group: np.ndarray,
-        position_time: np.ndarray,
-    ) -> tuple[list[np.ndarray], list[np.ndarray]]:
-        """
-        Get group spike data based on is_group mask.
-
-        Parameters
-        ----------
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
-        is_group : np.ndarray, shape (n_time_position,)
-            Boolean mask indicating group membership.
-        position_time : np.ndarray
-            Time points for position data.
-
-        Returns
-        -------
-        group_spike_times : list of np.ndarray
-        group_spike_waveform_features : list of np.ndarray
-        """
-        # get consecutive runs in each group
-        group_labels, n_groups = scipy.ndimage.label(is_group)
-
-        time_delta = position_time[1] - position_time[0]
-
-        group_spike_times = []
-        group_spike_waveform_features = []
-        for electrode_spike_times, electrode_spike_waveform_features in zip(
-            spike_times, spike_waveform_features, strict=True
-        ):
-            group_electrode_spike_times = []
-            group_electrode_waveform_features = []
-            # get spike times for each run
-            for group in range(1, n_groups + 1):
-                start_time, stop_time = position_time[group_labels == group][[0, -1]]
-                # Add half a time bin to the start and stop times
-                # to ensure that the spike times are within the group
-                start_time -= time_delta
-                stop_time += time_delta
-                is_valid_spike_time = np.logical_and(
-                    electrode_spike_times >= start_time,
-                    electrode_spike_times <= stop_time,
-                )
-                group_electrode_spike_times.append(
-                    electrode_spike_times[is_valid_spike_time]
-                )
-                group_electrode_waveform_features.append(
-                    electrode_spike_waveform_features[is_valid_spike_time]
-                )
-            if group_electrode_spike_times:
-                group_spike_times.append(np.concatenate(group_electrode_spike_times))
-                group_spike_waveform_features.append(
-                    np.concatenate(group_electrode_waveform_features, axis=0)
-                )
-            else:
-                # No training coverage for this obs group; return empty arrays
-                # with the right dtype/feature-dim so downstream encoding can
-                # fit an (empty) model without crashing on np.concatenate([]).
-                group_spike_times.append(
-                    np.asarray(
-                        electrode_spike_times[:0], dtype=electrode_spike_times.dtype
-                    )
-                )
-                group_spike_waveform_features.append(
-                    electrode_spike_waveform_features[:0]
-                )
-
-        return group_spike_times, group_spike_waveform_features
-
     def fit_encoding_model(
         self,
         position_time: np.ndarray,
@@ -3032,20 +2990,30 @@ class ClusterlessDetector(_DetectorBase):
 
             encoding_algorithm, _ = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
             is_group = is_training & is_encoding & is_environment
-            (
-                group_spike_times,
-                group_spike_waveform_features,
-            ) = self._get_group_spike_data(
-                spike_times, spike_waveform_features, is_group, position_time
+            # The mask is this model's exposure on the full timeline, as for
+            # sorted spikes: a subset timeline would let spike-weight
+            # interpolation bridge the mask's gaps.
+            group_weights = (
+                is_group.astype(float) if weights is None else weights * is_group
             )
+            group_spike_times = []
+            group_spike_waveform_features = []
+            for electrode_spike_times, electrode_features in zip(
+                spike_times, spike_waveform_features, strict=True
+            ):
+                is_group_spike = _group_spike_mask(
+                    electrode_spike_times, position_time, group_weights
+                )
+                group_spike_times.append(electrode_spike_times[is_group_spike])
+                group_spike_waveform_features.append(electrode_features[is_group_spike])
             self.encoding_model_[likelihood_name] = encoding_algorithm(
-                position_time=position_time[is_group],
-                position=position[is_group],
+                position_time=position_time,
+                position=position,
                 spike_times=group_spike_times,
                 spike_waveform_features=group_spike_waveform_features,
                 environment=environment,
                 sampling_frequency=self.sampling_frequency,
-                weights=weights[is_group] if weights is not None else None,
+                weights=group_weights,
                 **kwargs,
             )
 
@@ -3892,62 +3860,6 @@ class SortedSpikesDetector(_DetectorBase):
             return dict(_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS)
         return dict(self.sorted_spikes_algorithm_params)
 
-    @staticmethod
-    def _get_group_spikes(
-        spike_times: list[np.ndarray], is_group: np.ndarray, position_time: np.ndarray
-    ) -> list[np.ndarray]:
-        """
-        Get group spike times based on is_group mask.
-
-        Parameters
-        ----------
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        is_group : np.ndarray
-            Boolean mask indicating group membership.
-        position_time : np.ndarray
-            Time points for position data.
-
-        Returns
-        -------
-        list of np.ndarray
-            Grouped spike times.
-        """
-        # get consecutive runs in each group
-        group_labels, n_groups = scipy.ndimage.label(is_group)
-
-        time_delta = position_time[1] - position_time[0]
-
-        group_spike_times = []
-        for neuron_spike_times in spike_times:
-            group_neuron_spike_times = []
-            # get spike times for each run
-            for group in range(1, n_groups + 1):
-                start_time, stop_time = position_time[group_labels == group][[0, -1]]
-                # Add half a time bin to the start and stop times
-                # to ensure that the spike times are within the group
-                start_time -= time_delta
-                stop_time += time_delta
-                group_neuron_spike_times.append(
-                    neuron_spike_times[
-                        np.logical_and(
-                            neuron_spike_times >= start_time,
-                            neuron_spike_times <= stop_time,
-                        )
-                    ]
-                )
-            if group_neuron_spike_times:
-                group_spike_times.append(np.concatenate(group_neuron_spike_times))
-            else:
-                # No training coverage for this obs group; return empty spike
-                # array so downstream encoding can still fit a (uninformative)
-                # model without crashing on np.concatenate([]).
-                group_spike_times.append(
-                    np.asarray(neuron_spike_times[:0], dtype=neuron_spike_times.dtype)
-                )
-
-        return group_spike_times
-
     def fit_encoding_model(
         self,
         position_time: np.ndarray,
@@ -4068,9 +3980,14 @@ class SortedSpikesDetector(_DetectorBase):
             self.encoding_model_[likelihood_name] = encoding_algorithm(
                 position_time=position_time,
                 position=position,
-                spike_times=self._get_group_spikes(
-                    spike_times, is_group, position_time
-                ),
+                spike_times=[
+                    neuron_spike_times[
+                        _group_spike_mask(
+                            neuron_spike_times, position_time, group_weights
+                        )
+                    ]
+                    for neuron_spike_times in spike_times
+                ],
                 environment=environment,
                 sampling_frequency=self.sampling_frequency,
                 weights=group_weights,

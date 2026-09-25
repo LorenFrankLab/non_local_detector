@@ -215,8 +215,9 @@ def _fit_gmm_density(
 def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
     """sample_weight for a GMM EM fit, or None to take the unweighted path.
 
-    Returns None when the caller passed no weights (keeps the unweighted fit
-    byte-identical) or when the weights sum to 0; otherwise the weights. An
+    Returns None when the caller passed no weights (keeps a direct unweighted
+    fit byte-identical; detectors always pass their group mask as weights) or
+    when the weights sum to 0; otherwise the weights. An
     all-zero ``sample_weight`` is rejected by ``GaussianMixtureModel.fit`` (it
     leaves no effective training data), so a fully de-weighted encoding group
     deliberately degrades to an unweighted occupancy fit after the caller's

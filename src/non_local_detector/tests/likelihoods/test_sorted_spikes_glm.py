@@ -237,13 +237,17 @@ class TestPoissonRegression:
     def test_fit_poisson_regression_preserves_small_positive_exposure(
         self, weight_scale
     ):
-        """Small positive weights still recover the known constant Poisson rate."""
+        """Small positive weights still recover the known constant Poisson rate.
+
+        The spikes are weighted by the same scale as the exposure, as the
+        weighted event counts from a uniformly down-weighted fit are.
+        """
         position = np.linspace(-1.0, 1.0, 20)
         design_matrix = np.column_stack([np.ones(position.size), position])
 
         coefficients = fit_poisson_regression(
             design_matrix,
-            spikes=np.full(position.size, 2.0),
+            spikes=np.full(position.size, 2.0 * weight_scale),
             weights=np.full(position.size, weight_scale),
         )
 
@@ -668,3 +672,98 @@ class TestPredictGLMLogLikelihood:
         # Assert - should still produce valid likelihoods (negative due to Poisson)
         assert jnp.all(jnp.isfinite(log_likelihood))
         assert jnp.all(log_likelihood < 0)  # Log likelihood should be negative
+
+
+@pytest.mark.unit
+class TestWeightedEventOwnership:
+    """The GLM event term uses per-row sums of interpolated spike weights.
+
+    Each spike's weight is the per-sample weight interpolated to its time; the
+    spike is assigned to its left position-sample row (the design matrix is
+    evaluated at that row's position). The per-sample weight multiplies only the
+    exposure term. Weighting a row's plain spike count by the row weight instead
+    applies the row's weight to spikes that should be fractional, and cannot
+    reproduce interpolated ownership when spikes sit near a mask transition.
+    """
+
+    def test_constant_rate_mle_is_weighted_events_per_exposure(self):
+        """With an intercept-only design the MLE is ``sum(c) / sum(w)``."""
+        weighted_counts = np.array([1.0, 0.5, 0.0, 0.25, 2.0])
+        exposure = np.array([1.0, 0.0, 0.5, 1.0, 0.75])
+        coefficients = fit_poisson_regression(
+            np.ones((5, 1)), weighted_counts, exposure, l2_penalty=0.0
+        )
+        np.testing.assert_allclose(
+            np.exp(coefficients[0]),
+            weighted_counts.sum() / exposure.sum(),
+            rtol=1e-5,
+        )
+
+    def test_fit_passes_interpolated_event_weights(
+        self, monkeypatch, simple_1d_environment
+    ):
+        """Mask ``[1, 1, 0, 1, 1]``: spikes at 1.1 and 1.9 carry 0.9 and 0.1, so
+        row 1's event count is 1.0, not ``2 * w_1 = 2.0``; exposure is the mask."""
+        from non_local_detector.likelihoods import sorted_spikes_glm
+
+        captured = []
+
+        def spy(design_matrix, spikes, weights, l2_penalty):
+            captured.append((np.asarray(spikes), np.asarray(weights)))
+            return fit_poisson_regression(design_matrix, spikes, weights, l2_penalty)
+
+        monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regression", spy)
+        env = simple_1d_environment
+        mask = np.array([1.0, 1.0, 0.0, 1.0, 1.0])
+        fit_sorted_spikes_glm_encoding_model(
+            position_time=np.arange(5.0),
+            position=np.linspace(10.0, 90.0, 5)[:, None],
+            spike_times=[np.array([1.1, 1.9, 2.5, 3.0])],
+            environment=env,
+            place_bin_edges=env.place_bin_edges_,
+            edges=env.edges_,
+            is_track_interior=env.is_track_interior_,
+            is_track_boundary=env.is_track_boundary_,
+            weights=mask,
+            disable_progress_bar=True,
+        )
+
+        ((event_counts, exposure),) = captured
+        np.testing.assert_allclose(event_counts, [0.0, 1.0, 0.5, 1.0, 0.0])
+        np.testing.assert_array_equal(exposure, mask)
+
+    def test_unit_weights_give_plain_spike_counts(
+        self, monkeypatch, simple_1d_environment, simple_spike_data
+    ):
+        """Without weights, event counts are ordinary per-row spike counts."""
+        from non_local_detector.likelihoods import sorted_spikes_glm
+        from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
+
+        captured = []
+
+        def spy(design_matrix, spikes, weights, l2_penalty):
+            captured.append(np.asarray(spikes))
+            return fit_poisson_regression(design_matrix, spikes, weights, l2_penalty)
+
+        monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regression", spy)
+        env = simple_1d_environment
+        data = simple_spike_data
+        fit_sorted_spikes_glm_encoding_model(
+            position_time=data["position_time"],
+            position=data["position"],
+            spike_times=data["spike_times"],
+            environment=env,
+            place_bin_edges=env.place_bin_edges_,
+            edges=env.edges_,
+            is_track_interior=env.is_track_interior_,
+            is_track_boundary=env.is_track_boundary_,
+            disable_progress_bar=True,
+        )
+
+        for event_counts, spike_times in zip(
+            captured, data["spike_times"], strict=True
+        ):
+            np.testing.assert_array_equal(
+                event_counts,
+                get_spikecount_per_time_bin(spike_times, data["position_time"]),
+            )

@@ -25,7 +25,8 @@ Key functionalities include:
 
 2.  **Model Fitting:**
     - `fit_poisson_regression`: Fits the Poisson GLM coefficients for a *single*
-      neuron using its spike counts and the design matrix. It employs L2
+      neuron using its weighted spike counts, per-sample exposure weights, and
+      the design matrix. It employs L2
       regularization and optimizes the Poisson log-likelihood using SciPy's
       BFGS optimizer, leveraging JAX for automatic differentiation.
     - `fit_sorted_spikes_glm_encoding_model`: Orchestrates the fitting process
@@ -65,7 +66,10 @@ from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
     get_position_at_time,
     get_spikecount_per_time_bin,
+    interpolate_weights_at_spike_times,
     resolve_row_slice,
+    select_spike_rows,
+    select_spikes_in_rows,
     validate_population_lengths,
     validate_weights,
 )
@@ -151,13 +155,21 @@ def fit_poisson_regression(
     weights: np.ndarray,
     l2_penalty: float = 1e-7,
 ) -> jnp.ndarray:
-    """Fit a Poisson regression model.
+    """Fit a weighted Poisson regression model.
+
+    Maximizes ``sum_i [spikes_i * log(lambda_i) - weights_i * lambda_i]``
+    (normalized by ``sum(weights)``) minus the L2 penalty. The event and
+    exposure terms are weighted separately: ``spikes`` already carries each
+    event's weight, so it is not multiplied by ``weights`` again.
 
     Parameters
     ----------
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
     spikes : np.ndarray, shape (n_time,)
+        Weighted spike count per row: the sum of the weights of the spikes the
+        row owns. Equals the plain spike count when every spike has weight 1.
     weights : np.ndarray, shape (n_time,)
+        Per-row exposure weight.
     l2_penalty : float, optional
         L2 regression penalty, by default 1e-7
 
@@ -176,9 +188,9 @@ def fit_poisson_regression(
     ):
         conditional_intensity = jnp.exp(design_matrix @ coefficients)
         conditional_intensity = jnp.clip(conditional_intensity, min=EPS, max=None)
-        log_likelihood_term = weights * (
+        log_likelihood_term = (
             jax.scipy.special.xlogy(spikes, conditional_intensity)
-            - conditional_intensity
+            - weights * conditional_intensity
         )
         # Normalize by sum of weights (not n_time) so the data term
         # scales correctly when local state mass is small, keeping
@@ -205,7 +217,7 @@ def fit_poisson_regression(
             ]
         )
 
-    avg_rate = jnp.average(spikes, weights=weights)
+    avg_rate = jnp.sum(spikes) / jnp.sum(weights)
     # Guard against zero spikes: use EPS to avoid log(0) = -inf
     initial_condition = jnp.asarray([jnp.log(jnp.maximum(avg_rate, EPS))])
     initial_condition = jnp.concatenate(
@@ -246,6 +258,46 @@ def fit_poisson_regression(
         )
 
     return jnp.asarray(res.x)
+
+
+def weighted_spike_counts(
+    spike_times: np.ndarray, position_time: np.ndarray, weights: np.ndarray
+) -> np.ndarray:
+    """Sum each position row's interpolated spike weights.
+
+    A spike's weight is ``weights`` linearly interpolated to its time on the
+    position timeline. It is added to the row that owns it under the
+    ``get_spikecount_per_time_bin`` convention (the left position sample; spikes
+    outside ``[position_time[0], position_time[-1]]`` are dropped). This is the
+    GLM's event term, so a spike near a mask transition contributes its
+    fractional weight rather than the row's weight.
+
+    Rows are left-closed sample intervals, so the row just before a 0 -> 1 mask
+    transition has zero exposure weight yet owns the positive-weight spikes
+    that follow its sample. Those spikes add an event term evaluated at that
+    row's position with no matching exposure term. The effect is bounded by
+    the spikes within one sample of a transition; aligning event cells with
+    exposure cells is part of the encoding-cell time vocabulary work.
+
+    Parameters
+    ----------
+    spike_times : np.ndarray, shape (n_spikes,)
+    position_time : np.ndarray, shape (n_time_position,)
+    weights : np.ndarray, shape (n_time_position,)
+
+    Returns
+    -------
+    counts : np.ndarray, shape (n_time_position,)
+    """
+    selection = select_spikes_in_rows(
+        spike_times, position_time, 0, position_time.shape[0]
+    )
+    spike_weights = interpolate_weights_at_spike_times(
+        select_spike_rows(spike_times, selection), position_time, weights
+    )
+    return np.bincount(
+        selection.bin_ind, weights=spike_weights, minlength=selection.n_rows
+    )
 
 
 def fit_sorted_spikes_glm_encoding_model(
@@ -353,10 +405,9 @@ def fit_sorted_spikes_glm_encoding_model(
         desc="Encoding models",
         disable=disable_progress_bar,
     ):
-        spike_count_per_time_bin = get_spikecount_per_time_bin(neuron_spike_times, time)
         coef = fit_poisson_regression(
             emission_design_matrix,
-            spike_count_per_time_bin,
+            weighted_spike_counts(neuron_spike_times, time, weights),
             weights,
             l2_penalty=l2_penalty,
         )
