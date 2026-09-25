@@ -59,7 +59,7 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.likelihoods.no_spike import no_spike_time_bin_size
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import (
-    _spacing_tolerance,
+    _uniformity_tolerance,
     calculate_time_edges,
     uniform_time_bin_width,
     validate_time_edges,
@@ -301,7 +301,7 @@ def _decode_time_edges(
     transition_time_bin_width : float or None
         Bin width recorded with learned transitions, or None.
     transition_time_bin_width_tolerance : float, optional
-        Timestamp precision of the grid the width was learned on. The widths
+        Uniformity tolerance of the grid the width was learned on. The widths
         match when they differ by no more than the larger of the two grids'
         tolerances.
 
@@ -321,7 +321,9 @@ def _decode_time_edges(
     width = uniform_time_bin_width(time_edges)
     if transition_time_bin_width is not None and abs(
         width - transition_time_bin_width
-    ) > max(_spacing_tolerance(time_edges), transition_time_bin_width_tolerance):
+    ) > max(
+        _uniformity_tolerance(time_edges, width), transition_time_bin_width_tolerance
+    ):
         raise ValidationError(
             "time_edges bin width differs from the learned transitions",
             expected=f"bin width {transition_time_bin_width!r} s",
@@ -2494,8 +2496,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 )
                 # The learned transitions are per bin at this width.
                 self.transition_time_bin_width_ = time_bin_width
-                self._transition_time_bin_width_tolerance = _spacing_tolerance(
-                    time_edges
+                self._transition_time_bin_width_tolerance = _uniformity_tolerance(
+                    time_edges, time_bin_width
                 )
                 # Restore frozen rows: overwrite the M-step result with
                 # the initial snapshot for rows the user wants pinned.

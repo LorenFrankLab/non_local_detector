@@ -127,11 +127,16 @@ Shipped with 6a on `feat/time-edges-uniform-bins` (see the
 - **Bound (prototyped).** Correctly built float64 grids (`t0 + i*dt`,
   `arange`, `linspace`, cumulative sums, centers → edges) stay within 1.7 ulp
   of the mean width for 1 to 1.8M bins, origins 0 to 1.75e9, widths 0.5 to
-  33 ms. The guard allows 4 ulp of `max|edge|`, measured in the edges' own
-  dtype (floating edges are not upcast), and rejects edges whose tolerance
-  exceeds 1% of a bin width as unresolvable (float32 Unix-epoch timestamps).
-  At a 1.7e9 origin a 2 ms bin displaced by 5e-4 of its width is still
-  detected; the 10 ms → 50 ms grid is rejected.
+  33 ms. The guard allows the larger of 4 ulp of `max|edge|` (in the edges'
+  own dtype; floating edges are not upcast) and 0.1% of the bin width, and
+  rejects edges whose ulp tolerance exceeds 1% of a bin width as unresolvable
+  (float32 Unix-epoch timestamps). The 0.1% floor (user decision, 2026-09-25,
+  after review) admits rounding inherited from a larger scale or dtype: epoch
+  edges shifted to start at 0 and short float32 grids cast to float64 pass.
+  Microsecond-rounded grids whose period is not a whole number of
+  microseconds (1/1500 s alternates 666 and 667 µs, a 1.0e-3 deviation) sit
+  on the floor and are rejected. A 2 ms bin displaced by 2e-3 of its width is
+  detected at a 1.7e9 origin; the 10 ms → 50 ms grid is rejected.
 - **Coverage.** `predict`, `most_likely_sequence`, and `estimate_parameters`
   (both families; the estimation check is in `_validate_estimation_arguments`,
   before `fit`) validate before any state change, including before covariate

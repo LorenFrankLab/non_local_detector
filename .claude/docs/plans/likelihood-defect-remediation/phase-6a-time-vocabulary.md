@@ -274,9 +274,9 @@ posterior is backward-pass propagation. No coordinate change reaches a
 likelihood in these fixtures, because sample-centered bins put the centers on
 the old timestamps.
 
-**Validation.** Full suite after review fixes: 2090 passed / 6 skipped / 2
-failed: the clusterless-decoder golden (pending approval) and the
-cache-invalidation test rescoped above, whose module then passed (6/6). Property and
+**Validation.** Final full suite (after review fixes, the approved golden
+update `bd5a8fa`, and the uniformity floor): 2096 passed / 6 skipped / 0
+failed. Property and
 snapshot markers: 65 passed. ruff and format clean; mypy on the touched files
 has no new errors against the baseline (185 vs 212). Edge validation costs
 3.2 ms per backend call on 1.8M edges (about 1.3 s for 4 states × 100 chunks).

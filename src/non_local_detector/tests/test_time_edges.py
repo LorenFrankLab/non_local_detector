@@ -126,10 +126,40 @@ def test_irregular_grids_are_rejected_with_the_transition_reason():
 
 @pytest.mark.unit
 def test_small_displacement_is_detected_at_epoch_origin():
-    """One edge moved by 1e-3 of a 2 ms bin is resolvable in float64 at 1.7e9."""
+    """One edge moved by 2e-3 of a 2 ms bin is detected at 1.7e9."""
     edges = 1.7e9 + np.arange(100_001) * 0.002
-    edges[50_000] += 1e-3 * 0.002
+    edges[50_000] += 2e-3 * 0.002
     with pytest.raises(DataError):
+        uniform_time_bin_width(edges)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "make_edges",
+    [
+        lambda: (lambda e: e - e[0])(1.7e9 + np.arange(1001) * 0.002),
+        lambda: time_edges_from_centers((1.7e9 + np.arange(1000) * 0.002) - 1.7e9),
+        lambda: np.linspace(0, 10, 5001, dtype=np.float32).astype(np.float64),
+    ],
+    ids=[
+        "shifted-epoch",
+        "shifted-epoch-centers",
+        "float32-cast",
+    ],
+)
+def test_inherited_rounding_below_a_thousandth_of_a_bin_is_accepted(make_edges):
+    """Rounding inherited from a larger scale or a coarser dtype is not real
+    irregularity; the guard allows 0.1% of a bin on top of the ulp bound."""
+    edges = make_edges()
+    width = (edges[-1] - edges[0]) / (edges.size - 1)
+    assert uniform_time_bin_width(edges) == pytest.approx(width)
+
+
+@pytest.mark.unit
+def test_irregularity_above_a_thousandth_of_a_bin_is_rejected():
+    edges = np.arange(1001) * 0.002
+    edges[500] += 1.5e-3 * 0.002
+    with pytest.raises(DataError, match="uniform"):
         uniform_time_bin_width(edges)
 
 

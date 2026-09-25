@@ -6,12 +6,15 @@ contains ``time_edges[-1]``. The bin centers are the observation coordinates
 (position interpolation, local kernels, result coordinates) and
 ``np.diff(time_edges)`` are the bin durations.
 
-Tolerances are stated in units in the last place (ulp) of the largest edge
-magnitude. Correctly built float64 grids (``t0 + i * dt``, ``np.arange``,
-``np.linspace``, cumulative sums, or edges derived from uniform centers) keep
-every spacing within 1.7 ulp of the mean width at origins from 0 to
-Unix-epoch seconds, so a bound of ``_SPACING_TOLERANCE_ULPS`` accepts them while
-still detecting a 2 ms bin displaced by 5e-4 of its width at a 1.7e9 origin.
+Precision tolerances are stated in units in the last place (ulp) of the
+largest edge magnitude. Correctly built float64 grids (``t0 + i * dt``,
+``np.arange``, ``np.linspace``, cumulative sums, or edges derived from uniform
+centers) keep every spacing within 1.7 ulp of the mean width at origins from 0
+to Unix-epoch seconds. Grids can also carry rounding inherited from a larger
+scale or a coarser dtype (epoch edges shifted to start at 0, or float32 edges
+cast to float64); that stays well below a thousandth of a bin. The uniformity guard therefore allows the larger of
+``_SPACING_TOLERANCE_ULPS`` ulp and ``_UNIFORMITY_RELATIVE_FLOOR`` of the bin
+width, and still rejects any irregularity above 0.1% of a bin.
 """
 
 import numpy as np
@@ -23,11 +26,19 @@ _SPACING_TOLERANCE_ULPS = 4
 # Edges whose spacing tolerance exceeds this fraction of a bin width cannot
 # resolve the bins they describe.
 _MAX_RELATIVE_SPACING_TOLERANCE = 1e-2
+# Deviation from the mean width always allowed by the uniformity guard, as a
+# fraction of the width: rounding inherited from a larger scale or dtype.
+_UNIFORMITY_RELATIVE_FLOOR = 1e-3
 
 
 def _spacing_tolerance(time_edges: np.ndarray) -> float:
     """Timestamp representation tolerance of ``time_edges``, in seconds."""
     return float(_SPACING_TOLERANCE_ULPS * np.spacing(np.max(np.abs(time_edges))))
+
+
+def _uniformity_tolerance(time_edges: np.ndarray, width: float) -> float:
+    """Allowed deviation of a bin width from ``width``, in seconds."""
+    return max(_spacing_tolerance(time_edges), _UNIFORMITY_RELATIVE_FLOOR * width)
 
 
 def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
@@ -116,7 +127,8 @@ def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:
     """Validate that decode bins are uniform and return their width.
 
     The width is inferred from the edges as ``(edges[-1] - edges[0]) / n_bins``
-    and every bin must match it within the timestamp representation tolerance.
+    and every bin must match it within the larger of the timestamp
+    representation tolerance and a thousandth of the width.
 
     Parameters
     ----------
@@ -133,13 +145,13 @@ def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:
     ------
     ValidationError, DataError
         From :func:`validate_time_edges`, or `DataError` if any bin width
-        differs from the mean by more than the representation tolerance.
+        differs from the mean by more than that tolerance.
     """
     edges = validate_time_edges(time_edges, name)
     n_bins = edges.shape[0] - 1
     width = (float(edges[-1]) - float(edges[0])) / n_bins
     deviation = np.abs(np.diff(edges) - width)
-    tolerance = _spacing_tolerance(edges)
+    tolerance = _uniformity_tolerance(edges, width)
     if np.any(deviation > tolerance):
         i = int(np.argmax(deviation))
         raise DataError(

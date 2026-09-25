@@ -446,11 +446,13 @@ def test_equal_widths_at_different_origins_are_accepted():
 
     learned = calculate_time_edges([1.7e9, 1.7e9 + 100 * 0.002], 500.0)
     width = (learned[-1] - learned[0]) / 100
-    tolerance = 4 * np.spacing(np.max(np.abs(learned)))
+    tolerance = max(4 * np.spacing(np.max(np.abs(learned))), 1e-3 * width)
     for origin in (0.0, 100.0, 1.7e9):
         _decode_time_edges(origin + np.arange(51) * 0.002, width, tolerance)
     with pytest.raises(ValidationError, match="bin width"):
         _decode_time_edges(np.arange(51) * 0.004, width, tolerance)
+    with pytest.raises(ValidationError, match="bin width"):
+        _decode_time_edges(np.arange(51) * 0.002 * 1.002, width, tolerance)
 
 
 @pytest.mark.unit
