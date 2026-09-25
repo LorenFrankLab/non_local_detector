@@ -104,6 +104,10 @@ for name, params in experiments.items():
     print(f"{'='*60}")
 
     detector = NonLocalSortedSpikesDetector(**COMMON_PARAMS, **params)
+    # Decode bins must be uniform; build them over the recorded position times.
+    time_edges = detector.calculate_time_edges(
+        np.array([time_subset[0], time_subset[-1]]), trim=True
+    )
 
     t0 = time_module.time()
     try:
@@ -111,7 +115,7 @@ for name, params in experiments.items():
             position_time=time_subset,
             position=position_subset,
             spike_times=spike_times,
-            time=time_subset,
+            time_edges=time_edges,
             max_iter=MAX_ITER,
             store_log_likelihood=True,
         )

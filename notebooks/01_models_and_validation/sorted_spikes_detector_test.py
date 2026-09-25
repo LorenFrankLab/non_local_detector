@@ -14,6 +14,7 @@
 # ---
 
 # %%
+from non_local_detector import time_edges_from_centers
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 (
@@ -44,7 +45,7 @@ results = detector.estimate_parameters(
     position=position,
     spike_times=spike_times,
     is_training=is_training,
-    time=time,
+    time_edges=time_edges_from_centers(time),
     store_log_likelihood=True,
 )
 results
@@ -54,7 +55,7 @@ most_likely_sequence = detector.most_likely_sequence(
     position_time=time,
     position=position,
     spike_times=spike_times,
-    time=time,
+    time_edges=time_edges_from_centers(time),
 )
 most_likely_sequence
 
@@ -326,7 +327,7 @@ results2 = decoder.estimate_parameters(
     position=position,
     spike_times=spike_times,
     is_training=is_training,
-    time=time,
+    time_edges=time_edges_from_centers(time),
     store_log_likelihood=True,
 )
 
@@ -339,7 +340,9 @@ from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
 true_log_likelihood = np.zeros_like(decoder.log_likelihood_)
 
 for neuron_spike_times, neuron_place_field in zip(spike_times, place_fields.T, strict=False):
-    spike_counts = get_spikecount_per_time_bin(neuron_spike_times, time)
+    spike_counts = get_spikecount_per_time_bin(
+        neuron_spike_times, time_edges_from_centers(time)
+    )
     neuron_place_intensity = (
         scipy.interpolate.interp1d(position, neuron_place_field)(
             decoder.environments[0].place_bin_centers_
