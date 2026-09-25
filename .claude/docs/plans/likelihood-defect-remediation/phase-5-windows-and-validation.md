@@ -1,13 +1,16 @@
 # Phase 5 — Canonical event ownership and validation gaps
 
-> **NEEDS PROTOTYPING AGAINST SETTLED C2.** Hard group windows are removed, not
-> repaired. The former half-interval window implementation and disjoint-window
-> tests contradicted C2 and are withdrawn. Other validation changes retain the
-> scopes below; no backend damping-rebuild architecture is added.
+> **IMPLEMENTED on `fix/canonical-event-ownership` (2026-09-25), not yet
+> merged.** See [Implementation record](#implementation-record). Sections below
+> are the plan as executed; line references are to `ee2cc21`.
+>
+> Hard group windows are removed, not repaired. The former half-interval window
+> implementation and disjoint-window tests contradicted C2 and are withdrawn.
+> No backend damping-rebuild architecture is added.
 >
 > Claims below were re-verified against `main` at `ee2cc21` (2026-09-22), with
 > reproductions for the window, weighting, damping, population, and position
-> findings. Line references are to that revision.
+> findings.
 
 ## Contracts and scope
 
@@ -250,3 +253,52 @@ the clusterless full-timeline exposure, GLM sufficient-statistic/exposure
 alignment, validation before mutation, and the damping rejection. This phase
 fixes ownership; Phase 3 separately fixes decoding-bin ownership, and Phase 7
 later changes storage/evaluation strategy.
+
+## Implementation record
+
+Branch `fix/canonical-event-ownership`, based on `84259d4`. Each defect test was
+confirmed failing on the pre-fix code before the fix. Preservation tests
+(existing optional-position behavior, unit-weight GLM counts) passed on both.
+
+| Commit | Section | Change |
+|---|---|---|
+| `b483843` | §3 | Decision recorded: `local_position_std` alone does not require position. |
+| `8edaf59` | §2 | `_validate_encoding_update_damping` rejects any nonzero value with `ValidationError` at the start of both wrappers (before `_encoding_model_data` / `fit`) and in the base. The unreachable blend and snapshot helpers were removed. |
+| `c84222f` | §3 | `needs_position = any(is_local) or penalty > 0` in both families; regression tests for position-free GMM/KDE/log-KDE prediction (public and direct) and the missing-position error. |
+| `84f0479` | §4 | `validate_population_lengths` at the start of the shared diffusion/MRF predictor (spike trains, `mean_rates`, `place_fields`, `interior_log_place_fields`). |
+| `409b2df` | §1 | `validate_spike_feature_population` (moved from the GMM's pair validator into `common`) runs first in `ClusterlessDetector.fit_encoding_model`; KDE, log-KDE, and diffusion predictors validate electrode populations. |
+| `aad7fa7` | — | Typing only (keeps mypy at the `main` baseline for the touched files). |
+| `970f476` | §1 | Window helpers deleted; `_group_spike_mask` selects spikes with positive interpolated group weight in `[t0, t_end]`; clusterless fits get the full timeline with `weights = mask` (or `weights * mask`); GLM `weighted_spike_counts` for the event term, exposure-only weights in `fit_poisson_regression`. |
+| `27d8bea` | review | Occupancy KDEs (clusterless KDE/log-KDE, sorted KDE) drop zero-weight samples before fitting. Output is bit-identical. With a 10% mask, local predict took 0.10 s instead of 25.0 s (466k samples, 20k rows, CPU). |
+
+**Validation.** Full suite at `27d8bea`: **1827 passed / 6 skipped** (Phase 4: 1762 / 6). ruff and format pass; mypy adds no errors to the touched files relative to `main`. An independent review found no code defects. It found one incorrect CHANGELOG claim, which was corrected, and the occupancy performance regression, which was fixed in `27d8bea`.
+
+**Numerical effects** (compared against the pre-change tree on the same inputs):
+
+- Golden fixtures pass with existing tolerances; no golden or snapshot update.
+  Clusterless decoder and random-walk fixtures are bit-identical. The sorted
+  decoder and non-local detector differ by at most 1.2e-7 in the posterior.
+  The non-local detector's training block ends inside the recording, so one
+  boundary interval now has fractional ownership.
+- A clusterless KDE fit with a mask that skips every fourth block of 150 samples
+  changed one electrode's mean rate by 0.58%. The largest posterior total
+  variation over 3,000 rows was 0.013.
+- GLM with spikes jittered within their sample interval: place fields changed
+  by up to 0.65% of peak (event mask) and 3.1% (25-sample blocks); the largest
+  posterior total variation was 8e-4. Spikes placed exactly on samples (the
+  default simulator) show no change, as the C2 measurement warned.
+- Full-coverage `clusterless_gmm` fits now take the weighted EM path, changing
+  occupancy by about 7e-5 relative. No GMM golden exists.
+- Posteriors sum to 1 within 3e-7 and are finite in every comparison.
+
+**Review follow-ups not addressed here:**
+
+- Weight interpolation still bridges **NaN-position** stretches, because NaN
+  rows are dropped before the timeline reaches the encoding fit. This has not
+  changed from before and belongs to C3b's gap policy.
+- The GLM's left-closed rows let the row before a 0 → 1 transition own
+  positive-weight spikes with zero exposure. The effect is bounded, and it is
+  documented in `weighted_spike_counts`. Aligning event cells with exposure
+  cells is Phase 6a encoding-cell work.
+- Out of scope, noted: `min_encoding_local_mass` / `min_encoding_local_ess` are
+  still validated only after the wrapper's initial `fit`.
