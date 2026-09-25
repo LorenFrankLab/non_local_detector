@@ -16,7 +16,7 @@ platform-level (CPU vs GPU) noise while still catching real changes.
 import numpy as np
 import pytest
 
-from non_local_detector import NonLocalSortedSpikesDetector
+from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 
@@ -70,7 +70,7 @@ class TestLocalPositionStdSnapshot:
             spike_times=_sim_data["spike_times"],
             position_time=_sim_data["time"],
             position=_sim_data["position"],
-            time=_sim_data["time"],
+            time_edges=time_edges_from_centers(_sim_data["time"]),
         )
 
         state_probs = np.asarray(results.acausal_state_probabilities)
@@ -113,7 +113,7 @@ class TestLocalPositionStdSnapshot:
             spike_times=_sim_data["spike_times"],
             position_time=_sim_data["time"],
             position=_sim_data["position"],
-            time=_sim_data["time"],
+            time_edges=time_edges_from_centers(_sim_data["time"]),
         )
 
         acausal = np.asarray(results.acausal_posterior)
@@ -159,13 +159,13 @@ class TestLocalPositionStdSnapshot:
             spike_times=_sim_data["spike_times"],
             position_time=_sim_data["time"],
             position=_sim_data["position"],
-            time=_sim_data["time"],
+            time_edges=time_edges_from_centers(_sim_data["time"]),
         )
         r_delta = detector_delta.predict(
             spike_times=_sim_data["spike_times"],
             position_time=_sim_data["time"],
             position=_sim_data["position"],
-            time=_sim_data["time"],
+            time_edges=time_edges_from_centers(_sim_data["time"]),
         )
 
         sp_sharp = np.asarray(r_sharp.acausal_state_probabilities)
@@ -209,7 +209,7 @@ class TestLocalPositionStdSnapshot:
                 spike_times=_sim_data["spike_times"],
                 position_time=_sim_data["time"],
                 position=_sim_data["position"],
-                time=_sim_data["time"],
+                time_edges=time_edges_from_centers(_sim_data["time"]),
             )
             mll = results.attrs.get("marginal_log_likelihoods")
             assert mll is not None, f"σ={sigma}: missing marginal_log_likelihoods attr"

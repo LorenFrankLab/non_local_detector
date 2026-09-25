@@ -7,7 +7,7 @@ and SortedSpikesDecoder with synthetic spike data.
 import numpy as np
 import pytest
 
-from non_local_detector import NonLocalSortedSpikesDetector
+from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
 from non_local_detector.models import (
     ContFragSortedSpikesClassifier,
     SortedSpikesDecoder,
@@ -64,7 +64,7 @@ def test_nonlocal_sorted_spikes_detector(simulated_data):
     # Predict
     results = detector.predict(
         spike_times=spike_times,
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
         save_log_likelihood_to_results=False,  # Skip for speed
@@ -126,7 +126,7 @@ def test_contfrag_sorted_spikes_classifier(simulated_data):
     # Predict
     results = classifier.predict(
         spike_times=spike_times,
-        time=time,
+        time_edges=time_edges_from_centers(time),
     )
 
     # Check output shapes
@@ -205,7 +205,7 @@ def test_sorted_spikes_decoder(simulated_data):
     # Predict
     results = decoder.predict(
         spike_times=spike_times,
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
         save_log_likelihood_to_results=False,  # Skip for speed
@@ -244,7 +244,7 @@ def test_sorted_spikes_decoder(simulated_data):
 
     # Test log likelihood computation
     log_likelihood = decoder.compute_log_likelihood(
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position_time=time,
         position=position,
         spike_times=spike_times,
@@ -286,7 +286,7 @@ def test_models_handle_missing_data(simulated_data):
 
     results = detector.predict(
         spike_times=spike_times_subset,
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
         save_log_likelihood_to_results=False,

@@ -37,10 +37,10 @@ def shared_simulation_data():
     # Time parameters
     dt = 0.02  # 20 ms bins
     n_time = 50
-    time = np.arange(n_time + 1) * dt  # time bin edges
+    time_edges = np.arange(n_time + 1) * dt  # n_time bins
 
     # Position parameters (encoding period)
-    position_time = np.linspace(0, time[-1], 200)
+    position_time = np.linspace(0, time_edges[-1], 200)
     position = np.column_stack(
         [
             np.linspace(0, 10, len(position_time)),  # x coordinate
@@ -57,7 +57,7 @@ def shared_simulation_data():
     for _elec_idx in range(n_electrodes):
         # Generate random spike times within encoding period
         n_spikes = rng.integers(30, 50)
-        times = np.sort(rng.uniform(time[0], time[-1], n_spikes))
+        times = np.sort(rng.uniform(time_edges[0], time_edges[-1], n_spikes))
         encoding_spike_times.append(times)
 
         # Generate random waveform features
@@ -75,7 +75,7 @@ def shared_simulation_data():
     )
 
     return {
-        "time": time,
+        "time_edges": time_edges,
         "position_time": position_time,
         "position": position,
         "encoding_spike_times": encoding_spike_times,
@@ -108,7 +108,7 @@ def test_kde_end_to_end_pipeline(shared_simulation_data):
     decoding_spike_features = [
         jnp.asarray(sf) for sf in data["decoding_spike_features"]
     ]
-    time = jnp.asarray(data["time"])
+    time_edges = jnp.asarray(data["time_edges"])
 
     # Step 1: Fit encoding model
     kde_encoding = fit_clusterless_kde_encoding_model(
@@ -143,7 +143,7 @@ def test_kde_end_to_end_pipeline(shared_simulation_data):
 
     # Step 2: Predict non-local likelihood
     ll_nonlocal = predict_clusterless_kde_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=position_time,
         position=position,
         spike_times=decoding_spike_times,
@@ -167,13 +167,13 @@ def test_kde_end_to_end_pipeline(shared_simulation_data):
 
     # Verify non-local output
     assert ll_nonlocal.ndim == 2
-    assert ll_nonlocal.shape[0] == len(time)
+    assert ll_nonlocal.shape[0] == len(time_edges) - 1
     assert ll_nonlocal.shape[1] > 0  # interior bins
     assert jnp.all(jnp.isfinite(ll_nonlocal))
 
     # Step 3: Predict local likelihood
     ll_local = predict_clusterless_kde_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=position_time,
         position=position,
         spike_times=decoding_spike_times,
@@ -196,7 +196,7 @@ def test_kde_end_to_end_pipeline(shared_simulation_data):
     )
 
     # Verify local output
-    assert ll_local.shape == (len(time), 1)
+    assert ll_local.shape == (len(time_edges) - 1, 1)
     assert jnp.all(jnp.isfinite(ll_local))
 
 
@@ -222,7 +222,7 @@ def test_gmm_end_to_end_pipeline(shared_simulation_data):
     decoding_spike_features = [
         jnp.asarray(sf) for sf in data["decoding_spike_features"]
     ]
-    time = jnp.asarray(data["time"])
+    time_edges = jnp.asarray(data["time_edges"])
 
     # Step 1: Fit encoding model
     # Note: Using fewer components to match small dataset size
@@ -260,7 +260,7 @@ def test_gmm_end_to_end_pipeline(shared_simulation_data):
 
     # Step 2: Predict non-local likelihood
     ll_nonlocal = predict_clusterless_gmm_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=position_time,
         position=position,
         spike_times=decoding_spike_times,
@@ -273,7 +273,7 @@ def test_gmm_end_to_end_pipeline(shared_simulation_data):
 
     # Verify non-local output
     assert ll_nonlocal.ndim == 2
-    assert ll_nonlocal.shape[0] == len(time)
+    assert ll_nonlocal.shape[0] == len(time_edges) - 1
     assert ll_nonlocal.shape[1] > 0  # interior bins
     # GMM non-local values: the fitted GPI/occupancy ratio of this deliberately
     # overfit fixture (8/8/16 components on ~40 spikes) overflows float32 at
@@ -283,7 +283,7 @@ def test_gmm_end_to_end_pipeline(shared_simulation_data):
 
     # Step 3: Predict local likelihood
     ll_local = predict_clusterless_gmm_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=position_time,
         position=position,
         spike_times=decoding_spike_times,
@@ -293,7 +293,7 @@ def test_gmm_end_to_end_pipeline(shared_simulation_data):
     )
 
     # Verify local output
-    assert ll_local.shape == (len(time), 1)
+    assert ll_local.shape == (len(time_edges) - 1, 1)
     assert jnp.all(jnp.isfinite(ll_local))
 
 
@@ -376,7 +376,7 @@ def test_api_consistency_predict_functions(shared_simulation_data):
     )
 
     # Common predict parameters
-    time = jnp.asarray(data["time"])
+    time_edges = jnp.asarray(data["time_edges"])
     position_time = jnp.asarray(data["position_time"])
     position = jnp.asarray(data["position"])
     spike_times = [jnp.asarray(st) for st in data["decoding_spike_times"]]
@@ -384,7 +384,7 @@ def test_api_consistency_predict_functions(shared_simulation_data):
 
     # KDE prediction requires unpacking encoding model
     ll_kde = predict_clusterless_kde_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=position_time,
         position=position,
         spike_times=spike_times,
@@ -407,7 +407,7 @@ def test_api_consistency_predict_functions(shared_simulation_data):
 
     # GMM prediction uses encoding model dictionary directly
     ll_gmm = predict_clusterless_gmm_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=position_time,
         position=position,
         spike_times=spike_times,
@@ -456,12 +456,12 @@ def test_kde_gmm_output_shape_consistency(shared_simulation_data):
     )
 
     # Predict with both
-    time = jnp.asarray(data["time"])
+    time_edges = jnp.asarray(data["time_edges"])
     spike_times = [jnp.asarray(st) for st in data["decoding_spike_times"]]
     spike_features = [jnp.asarray(sf) for sf in data["decoding_spike_features"]]
 
     ll_kde = predict_clusterless_kde_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=common_params["position_time"],
         position=common_params["position"],
         spike_times=spike_times,
@@ -481,7 +481,7 @@ def test_kde_gmm_output_shape_consistency(shared_simulation_data):
     )
 
     ll_gmm = predict_clusterless_gmm_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=common_params["position_time"],
         position=common_params["position"],
         spike_times=spike_times,
@@ -492,7 +492,7 @@ def test_kde_gmm_output_shape_consistency(shared_simulation_data):
 
     # Shape consistency checks
     assert ll_kde.ndim == ll_gmm.ndim == 2
-    assert ll_kde.shape[0] == ll_gmm.shape[0] == len(time)
+    assert ll_kde.shape[0] == ll_gmm.shape[0] == len(time_edges) - 1
     # Note: number of interior bins might differ slightly due to environment fitting
     assert ll_kde.shape[1] > 0 and ll_gmm.shape[1] > 0
 
@@ -525,13 +525,13 @@ def test_both_support_local_and_nonlocal_modes(shared_simulation_data):
         gmm_components_joint=8,
     )
 
-    time = jnp.asarray(data["time"])
+    time_edges = jnp.asarray(data["time_edges"])
     spike_times = [jnp.asarray(st) for st in data["decoding_spike_times"]]
     spike_features = [jnp.asarray(sf) for sf in data["decoding_spike_features"]]
 
     # Test KDE: local and non-local
     kde_nonlocal = predict_clusterless_kde_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=common_params["position_time"],
         position=common_params["position"],
         spike_times=spike_times,
@@ -551,7 +551,7 @@ def test_both_support_local_and_nonlocal_modes(shared_simulation_data):
     )
 
     kde_local = predict_clusterless_kde_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=common_params["position_time"],
         position=common_params["position"],
         spike_times=spike_times,
@@ -572,7 +572,7 @@ def test_both_support_local_and_nonlocal_modes(shared_simulation_data):
 
     # Test GMM: local and non-local
     gmm_nonlocal = predict_clusterless_gmm_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=common_params["position_time"],
         position=common_params["position"],
         spike_times=spike_times,
@@ -582,7 +582,7 @@ def test_both_support_local_and_nonlocal_modes(shared_simulation_data):
     )
 
     gmm_local = predict_clusterless_gmm_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=common_params["position_time"],
         position=common_params["position"],
         spike_times=spike_times,

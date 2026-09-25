@@ -37,15 +37,15 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
     ----------
     time_edges : array_like, shape (n_bins + 1,)
         Bin boundaries in seconds. Any real numeric array-like is accepted;
-        integers are converted to float64 and float64 or wider precision is
-        preserved.
+        integers are converted to float64 and floating-point edges keep their
+        dtype, so later checks judge them at the precision they carry.
     name : str, optional
         Name used in error messages, by default "time_edges".
 
     Returns
     -------
     time_edges : np.ndarray, shape (n_bins + 1,)
-        The edges, at least float64.
+        The edges, as a floating-point array.
 
     Raises
     ------
@@ -107,7 +107,9 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
             f"{edges[i + 1]!r}. Repeated edges give zero-width bins and "
             "decreasing edges misassign spikes.",
         )
-    return edges.astype(np.result_type(edges.dtype, np.float64), copy=False)
+    if np.issubdtype(edges.dtype, np.integer):
+        return edges.astype(np.float64)
+    return edges
 
 
 def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:
@@ -172,10 +174,11 @@ def time_edges_from_centers(time) -> np.ndarray:
     Raises
     ------
     ValidationError
-        If fewer than two centers are given; a single timestamp does not
-        determine a bin duration.
+        If fewer than two centers are given (a single timestamp does not
+        determine a bin duration) or the input is not one-dimensional.
     DataError
-        If the centers are invalid or not uniformly spaced.
+        If the centers are not finite, not strictly increasing, or not
+        uniformly spaced.
     """
     centers = np.asarray(time)
     if centers.ndim == 1 and centers.shape[0] < 2:
@@ -220,9 +223,18 @@ def calculate_time_edges(
     Raises
     ------
     ValidationError
-        If the range is invalid, is not a whole number of bins and ``trim`` is
-        False, or contains no complete bin.
+        If ``sampling_frequency`` is not positive and finite, ``time_range`` is
+        not ``(start, stop)``, the range is not a whole number of bins and
+        ``trim`` is False, or it contains no complete bin.
+    DataError
+        If ``start`` or ``stop`` is not finite, or ``stop <= start``.
     """
+    if not (np.isfinite(sampling_frequency) and sampling_frequency > 0):
+        raise ValidationError(
+            "sampling_frequency must be a positive finite number",
+            expected="bins per second > 0",
+            got=repr(sampling_frequency),
+        )
     if np.shape(time_range) != (2,):
         raise ValidationError(
             "time_range must be (start, stop)",

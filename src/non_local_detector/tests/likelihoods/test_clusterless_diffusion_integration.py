@@ -11,6 +11,7 @@ simulated grid and spike counts are kept deliberately small.
 import numpy as np
 import pytest
 
+from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
@@ -116,7 +117,7 @@ def test_registry_and_end_to_end() -> None:
     test_edges = np.linspace(test_position_time[0], test_position_time[-1], 11)
 
     decoder_results = decoder.predict(
-        time=test_edges,
+        time_edges=test_edges,
         position_time=test_position_time,
         position=sim.position[n_encode:],
         spike_times=test_spike_times,
@@ -144,7 +145,7 @@ def test_registry_and_end_to_end() -> None:
     )
 
     detector_results = detector.predict(
-        time=test_edges,
+        time_edges=test_edges,
         position_time=test_position_time,
         position=sim.position[n_encode:],
         spike_times=test_spike_times,
@@ -234,7 +235,7 @@ def test_refit_requires_encoding_refit() -> None:
     new_decode_time = np.linspace(new_position_time[0], new_position_time[-1], 6)
     new_log_likelihood = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            new_decode_time,
+            time_edges_from_centers(new_decode_time),
             new_position_time,
             new_position,
             new_spike_times,
@@ -358,7 +359,7 @@ def test_save_load_predict_parity(tmp_path) -> None:
     test_edges = np.linspace(test_position_time[0], test_position_time[-1], 11)
 
     results_before = detector.predict(
-        time=test_edges,
+        time_edges=test_edges,
         position_time=test_position_time,
         position=sim.position[n_encode:],
         spike_times=test_spike_times,
@@ -372,7 +373,7 @@ def test_save_load_predict_parity(tmp_path) -> None:
     loaded_detector = NonLocalClusterlessDetector.load_model(model_path)
 
     results_after = loaded_detector.predict(
-        time=test_edges,
+        time_edges=test_edges,
         position_time=test_position_time,
         position=sim.position[n_encode:],
         spike_times=test_spike_times,

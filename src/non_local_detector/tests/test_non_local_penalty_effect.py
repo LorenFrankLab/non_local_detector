@@ -9,7 +9,7 @@ penalty is accepted but silently ignored.
 import numpy as np
 import pytest
 
-from non_local_detector import NonLocalSortedSpikesDetector
+from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 
@@ -25,7 +25,7 @@ def test_penalty_changes_posterior():
         "position_time": time,
         "position": position,
         "spike_times": spike_times,
-        "time": time,
+        "time_edges": time_edges_from_centers(time),
         "is_training": ~is_event,
     }
 

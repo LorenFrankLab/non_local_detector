@@ -14,7 +14,7 @@ dataset B. Any difference is contamination carried across the call boundary.
 import numpy as np
 import pytest
 
-from non_local_detector import NonLocalSortedSpikesDetector
+from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 N_CHUNKS = 5
@@ -55,6 +55,7 @@ def make_dataset(seed):
         "spike_times": spike_times,
         "is_training": ~is_event,
         "time": time[DECODE],
+        "time_edges": time_edges_from_centers(time[DECODE]),
     }
 
 
@@ -73,7 +74,7 @@ def run_em(detector, data, max_iter=1, **kwargs):
         position_time=data["position_time"],
         position=data["position"],
         spike_times=data["spike_times"],
-        time=data["time"],
+        time_edges=data["time_edges"],
         is_training=data["is_training"],
         max_iter=max_iter,
         **kwargs,
@@ -130,6 +131,20 @@ def test_cached_likelihood_is_recomputed_after_the_encoding_model_updates(datase
     FINAL encoding model, and that must differ from the first iteration's.
     """
     first, _ = datasets
+    # EM weights exist only on decoded bins, so decode the whole window the
+    # encoding model is refit on.
+    window = slice(0, 6_000)
+    position_time = first["position_time"][window]
+    first = {
+        "position_time": position_time,
+        "position": first["position"][window],
+        "spike_times": [
+            s[(s >= position_time[0]) & (s <= position_time[-1])]
+            for s in first["spike_times"]
+        ],
+        "is_training": first["is_training"][window],
+        "time_edges": time_edges_from_centers(position_time),
+    }
 
     detector = make_detector()
     run_em(
@@ -156,7 +171,7 @@ def test_cached_likelihood_is_recomputed_after_the_encoding_model_updates(datase
     stored = np.asarray(detector.log_likelihood_)
     fresh = np.asarray(
         detector.compute_log_likelihood(
-            first["time"],
+            first["time_edges"],
             first["position_time"],
             first["position"],
             first["spike_times"],
@@ -181,7 +196,7 @@ def test_predict_ignores_the_stored_log_likelihood(datasets):
 
     predict_kwargs = {
         "spike_times": second["spike_times"],
-        "time": second["time"],
+        "time_edges": second["time_edges"],
         "position": second["position"][DECODE],
         "position_time": second["time"],
         "cache_likelihood": False,
@@ -212,10 +227,9 @@ def test_most_likely_sequence_ignores_the_stored_log_likelihood(datasets):
         second["position_time"],
         second["position"],
         second["spike_times"],
-        second["time"],
     )
-    reused = detector.most_likely_sequence(*args)
-    fresh = fresh_detector.most_likely_sequence(*args)
+    reused = detector.most_likely_sequence(*args, time_edges=second["time_edges"])
+    fresh = fresh_detector.most_likely_sequence(*args, time_edges=second["time_edges"])
 
     np.testing.assert_array_equal(reused["state"].to_numpy(), fresh["state"].to_numpy())
 

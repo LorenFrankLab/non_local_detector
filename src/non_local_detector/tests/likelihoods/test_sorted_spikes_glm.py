@@ -10,6 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import EPS
@@ -551,7 +552,7 @@ class TestPredictGLMLogLikelihood:
 
         # Act
         log_likelihood = predict_sorted_spikes_glm_log_likelihood(
-            time=jnp.asarray(time),
+            time_edges=jnp.asarray(time_edges_from_centers(time)),
             position_time=jnp.asarray(data["position_time"]),
             position=jnp.asarray(data["position"]),
             spike_times=data["spike_times"],
@@ -572,7 +573,7 @@ class TestPredictGLMLogLikelihood:
 
         with pytest.raises(ValidationError, match="population lengths do not match"):
             predict_sorted_spikes_glm_log_likelihood(
-                time=jnp.asarray(time),
+                time_edges=jnp.asarray(time_edges_from_centers(time)),
                 position_time=jnp.asarray(data["position_time"]),
                 position=jnp.asarray(data["position"]),
                 spike_times=data["spike_times"][:-1],
@@ -611,7 +612,7 @@ class TestPredictGLMLogLikelihood:
 
         # Act
         log_likelihood = predict_sorted_spikes_glm_log_likelihood(
-            time=jnp.asarray(time),
+            time_edges=jnp.asarray(time_edges_from_centers(time)),
             position_time=jnp.asarray(data["position_time"]),
             position=jnp.asarray(data["position"]),
             spike_times=data["spike_times"],
@@ -655,7 +656,7 @@ class TestPredictGLMLogLikelihood:
 
         # Act
         log_likelihood = predict_sorted_spikes_glm_log_likelihood(
-            time=jnp.asarray(time),
+            time_edges=jnp.asarray(time_edges_from_centers(time)),
             position_time=jnp.asarray(data["position_time"]),
             position=jnp.asarray(data["position"]),
             spike_times=data["spike_times"],

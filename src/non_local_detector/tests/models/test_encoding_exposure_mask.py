@@ -16,7 +16,7 @@ everything.
 import numpy as np
 import pytest
 
-from non_local_detector import SortedSpikesDecoder
+from non_local_detector import SortedSpikesDecoder, time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.likelihoods.common import EPS
@@ -111,7 +111,9 @@ def test_glm_group_without_training_coverage_returns_eps_model():
     place_fields = np.asarray(encoding_model["place_fields"])
     np.testing.assert_allclose(place_fields[:, interior], EPS, rtol=1e-5, atol=0.0)
 
-    results = detector.predict(spike_times=spike_times, time=time[200:])
+    results = detector.predict(
+        spike_times=spike_times, time_edges=time_edges_from_centers(time[200:])
+    )
     posterior = results.acausal_posterior.values
     assert np.all(np.isfinite(posterior))
     np.testing.assert_allclose(posterior.sum(axis=-1), 1.0, rtol=1e-5, atol=0.0)

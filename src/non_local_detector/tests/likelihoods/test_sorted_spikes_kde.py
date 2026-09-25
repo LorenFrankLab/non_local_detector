@@ -77,7 +77,7 @@ def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(
 
     # Non-local
     ll = predict_sorted_spikes_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=spikes,
@@ -92,13 +92,13 @@ def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(
         disable_progress_bar=True,
         is_local=False,
     )
-    assert ll.shape[0] == t_edges.shape[0]
+    assert ll.shape[0] == t_edges.shape[0] - 1
     assert ll.ndim == 2 and ll.shape[1] == int(enc["is_track_interior"].sum())
     assert jnp.all(jnp.isfinite(ll))
 
     # Local
     ll_local = predict_sorted_spikes_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=spikes,
@@ -113,12 +113,12 @@ def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(
         disable_progress_bar=True,
         is_local=True,
     )
-    assert ll_local.shape == (t_edges.shape[0], 1)
+    assert ll_local.shape == (t_edges.shape[0] - 1, 1)
     assert jnp.all(jnp.isfinite(ll_local))
 
     with pytest.raises(ValidationError, match="population lengths do not match"):
         predict_sorted_spikes_kde_log_likelihood(
-            time=t_edges,
+            time_edges=t_edges,
             position_time=t_pos,
             position=pos,
             spike_times=spikes[:-1],
@@ -159,7 +159,7 @@ def test_local_likelihood_zero_spikes_equals_negative_rate_sum(simple_1d_environ
     t_edges = jnp.linspace(0.0, 10.0, 6)
     empty_spikes = [jnp.array([]), jnp.array([])]
     ll_local = predict_sorted_spikes_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=empty_spikes,
@@ -175,10 +175,12 @@ def test_local_likelihood_zero_spikes_equals_negative_rate_sum(simple_1d_environ
         is_local=True,
     )
 
-    # Compute expected negative sum of local rates at interpolated positions
-    interpolated_position = get_position_at_time(t_pos, pos, t_edges, env)
+    # Compute expected negative sum of local rates at the positions interpolated
+    # at the decode bin centers
+    bin_centers = t_edges[:-1] + 0.5 * jnp.diff(t_edges)
+    interpolated_position = get_position_at_time(t_pos, pos, bin_centers, env)
     occupancy_at_time = enc["occupancy_model"].predict(interpolated_position)
-    expected = jnp.zeros((t_edges.shape[0],))
+    expected = jnp.zeros((bin_centers.shape[0],))
     for m, mean_rate in zip(
         enc["marginal_models"], jnp.asarray(enc["mean_rates"]), strict=False
     ):
@@ -216,7 +218,7 @@ def test_nonlocal_with_no_spikes_equals_negative_no_spike_part(simple_1d_environ
     t_edges = jnp.linspace(0.0, 10.0, 6)
     empty_spikes = [jnp.array([]), jnp.array([])]
     ll = predict_sorted_spikes_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=empty_spikes,
@@ -232,7 +234,7 @@ def test_nonlocal_with_no_spikes_equals_negative_no_spike_part(simple_1d_environ
         is_local=False,
     )
     expected = -enc["no_spike_part_log_likelihood"][enc["is_track_interior"]]
-    expected = jnp.tile(expected, (t_edges.shape[0], 1))
+    expected = jnp.tile(expected, (t_edges.shape[0] - 1, 1))
     assert jnp.allclose(ll, expected, rtol=1e-5, atol=1e-6)
 
 

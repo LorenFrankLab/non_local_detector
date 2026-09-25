@@ -60,6 +60,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     KDEModel,
     _SpikeTimeOrder,
+    decode_bin_centers,
     drop_zero_weight_samples,
     get_position_at_time,
     get_spikecount_per_time_bin,
@@ -68,6 +69,7 @@ from non_local_detector.likelihoods.common import (
     validate_weights,
     weighted_mean_rate,
 )
+from non_local_detector.time_edges import validate_time_edges
 
 
 def fit_sorted_spikes_kde_encoding_model(
@@ -256,7 +258,7 @@ def fit_sorted_spikes_kde_encoding_model(
 
 
 def predict_sorted_spikes_kde_log_likelihood(
-    time: jnp.ndarray,
+    time_edges: np.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[np.ndarray],
@@ -278,8 +280,8 @@ def predict_sorted_spikes_kde_log_likelihood(
 
     Parameters
     ----------
-    time : jnp.ndarray, shape (n_time,)
-        Decoding time bins.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
     position_time : jnp.ndarray, shape (n_time_position,)
         Sampling times for the position.
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
@@ -308,8 +310,8 @@ def predict_sorted_spikes_kde_log_likelihood(
         Compute the log likelihood at the animal's position, by default False
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
-        ``time`` always stays the FULL decoding timeline, so spikes are binned
-        against it and only those owned by the requested rows are counted; the
+        ``time_edges`` always stay the FULL decoding edges, so spikes are binned
+        against them and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
@@ -320,10 +322,11 @@ def predict_sorted_spikes_kde_log_likelihood(
     -------
     log_likelihood : jnp.ndarray, shape (n_rows, n_place_bins) or (n_rows, 1)
         The log likelihood of the spikes at each requested time bin. ``n_rows``
-        is ``n_time`` unless ``row_slice`` is given. The shape is
+        is ``n_bins`` unless ``row_slice`` is given. The shape is
         (n_rows, n_place_bins) if is_local is False, otherwise (n_rows, 1).
 
     """
+    time_edges = validate_time_edges(time_edges)
     validate_population_lengths(
         "neuron",
         spike_times=spike_times,
@@ -331,9 +334,9 @@ def predict_sorted_spikes_kde_log_likelihood(
         mean_rates=mean_rates,
         place_fields=place_fields,
     )
-    row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_rows = row_stop - row_start
-    row_time = time[row_start:row_stop]
+    row_time = decode_bin_centers(time_edges, row_start, row_stop)
     if is_local:
         log_likelihood = jnp.zeros((n_rows,))
 
@@ -356,7 +359,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
                 neuron_spike_times,
-                time,
+                time_edges,
                 row_slice=row_slice,
                 _spike_time_order=_spike_time_order,
             )
@@ -396,7 +399,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
                 neuron_spike_times,
-                time,
+                time_edges,
                 row_slice=row_slice,
                 _spike_time_order=_spike_time_order,
             )

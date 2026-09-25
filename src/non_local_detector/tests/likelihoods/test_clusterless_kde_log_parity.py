@@ -44,7 +44,7 @@ def _fit_both(env, weights, enc_times=None):
 def _predict(pred, enc, env, *, is_local, dec_times=None, with_encoding_weights=True):
     """Run predict on a fitted encoding model, returning a numpy likelihood."""
     kwargs = {
-        "time": T_EDGES,
+        "time_edges": T_EDGES,
         "position_time": T_POS,
         "position": POS,
         "spike_times": DEC_TIMES if dec_times is None else dec_times,
@@ -127,7 +127,7 @@ def test_clusterless_log_vs_linear_parity_local_weighted(simple_1d_environment):
     ll_lin = _predict(pred_lin, enc_lin, env, is_local=True)
     ll_log = _predict(pred_log, enc_log, env, is_local=True)
 
-    assert ll_lin.shape == ll_log.shape == (T_EDGES.shape[0], 1)
+    assert ll_lin.shape == ll_log.shape == (T_EDGES.shape[0] - 1, 1)
     assert np.allclose(ll_lin, ll_log, rtol=1e-4, atol=1e-5), (
         f"weighted local log vs linear mismatch; "
         f"max|diff|={np.abs(ll_lin - ll_log).max():.3e}"

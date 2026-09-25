@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 import scipy.linalg
 
+from non_local_detector import time_edges_from_centers
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
 from non_local_detector.likelihoods.diffusion import (
@@ -827,16 +828,17 @@ def test_predict_shapes_local_and_nonlocal():
         rank=30,
     )
     decode_time = time[:150]
+    decode_time_edges = time_edges_from_centers(decode_time)
     n_interior = int(env.is_track_interior_.ravel().sum())
 
     nonlocal_ll = predict_sorted_spikes_mrf_log_likelihood(
-        decode_time, time, position, spike_times, is_local=False, **encoding
+        decode_time_edges, time, position, spike_times, is_local=False, **encoding
     )
     assert nonlocal_ll.shape == (decode_time.shape[0], n_interior)
     assert np.all(np.isfinite(nonlocal_ll))
 
     local_ll = predict_sorted_spikes_mrf_log_likelihood(
-        decode_time, time, position, spike_times, is_local=True, **encoding
+        decode_time_edges, time, position, spike_times, is_local=True, **encoding
     )
     assert local_ll.shape == (decode_time.shape[0], 1)
     assert np.all(np.isfinite(local_ll))
@@ -873,7 +875,7 @@ def test_end_to_end_sorted_spikes_mrf_decoder():
     )
     results = decoder.predict(
         spike_times=spike_times,
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
         save_log_likelihood_to_results=False,

@@ -52,10 +52,10 @@ def comparison_data():
     # Time parameters - longer duration for better statistics
     dt = 0.02  # 20 ms bins
     n_time = 100
-    time = np.arange(n_time + 1) * dt
+    time_edges = np.arange(n_time + 1) * dt  # n_time bins
 
     # Position parameters - smoother trajectory
-    position_time = np.linspace(0, time[-1], 400)
+    position_time = np.linspace(0, time_edges[-1], 400)
     t_normalized = np.linspace(0, 1, len(position_time))
     position = np.column_stack(
         [
@@ -73,7 +73,7 @@ def comparison_data():
     for elec_idx in range(n_electrodes):
         # Generate spatially modulated firing
         n_spikes = rng.integers(80, 120)
-        times = np.sort(rng.uniform(time[0], time[-1], n_spikes))
+        times = np.sort(rng.uniform(time_edges[0], time_edges[-1], n_spikes))
         encoding_spike_times.append(times)
 
         # Features with electrode-specific bias
@@ -94,7 +94,7 @@ def comparison_data():
     )
 
     return {
-        "time": time,
+        "time_edges": time_edges,
         "position_time": position_time,
         "position": position,
         "encoding_spike_times": encoding_spike_times,
@@ -198,7 +198,7 @@ def predict_both_models(data, kde_encoding, gmm_encoding, is_local=False):
     ll_gmm : jnp.ndarray
         GMM log-likelihood
     """
-    time = jnp.asarray(data["time"])
+    time_edges = jnp.asarray(data["time_edges"])
     position_time = jnp.asarray(data["position_time"])
     position = jnp.asarray(data["position"])
     spike_times = [jnp.asarray(st) for st in data["decoding_spike_times"]]
@@ -206,7 +206,7 @@ def predict_both_models(data, kde_encoding, gmm_encoding, is_local=False):
 
     # KDE prediction
     ll_kde = predict_clusterless_kde_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=position_time,
         position=position,
         spike_times=spike_times,
@@ -230,7 +230,7 @@ def predict_both_models(data, kde_encoding, gmm_encoding, is_local=False):
 
     # GMM prediction
     ll_gmm = predict_clusterless_gmm_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=position_time,
         position=position,
         spike_times=spike_times,
@@ -460,16 +460,8 @@ def test_local_likelihood_comparison(likelihoods_local):
     print(f"KDE: mean={ll_kde_np.mean():.2f}, std={ll_kde_np.std():.2f}")
     print(f"GMM: mean={ll_gmm_np.mean():.2f}, std={ll_gmm_np.std():.2f}")
 
-    # Check if shapes match (KDE uses time edges, GMM uses time bin centers)
-    if ll_kde_np.shape != ll_gmm_np.shape:
-        print(
-            f"Warning: Shape mismatch - KDE has {len(ll_kde_np)} values, GMM has {len(ll_gmm_np)}"
-        )
-        # Trim to same length for comparison
-        min_len = min(len(ll_kde_np), len(ll_gmm_np))
-        ll_kde_np = ll_kde_np[:min_len]
-        ll_gmm_np = ll_gmm_np[:min_len]
-        print(f"Comparing first {min_len} values")
+    # Both models return one row per decode bin.
+    assert ll_kde_np.shape == ll_gmm_np.shape
 
     # Correlation
     r_pearson, _ = pearsonr(ll_kde_np, ll_gmm_np)
@@ -571,7 +563,7 @@ def test_overparameterized_gmm_overflow_locations(comparison_data):
     data = comparison_data
     ll_gmm = np.asarray(
         predict_clusterless_gmm_log_likelihood(
-            time=jnp.asarray(data["time"]),
+            time_edges=jnp.asarray(data["time_edges"]),
             position_time=jnp.asarray(data["position_time"]),
             position=jnp.asarray(data["position"]),
             spike_times=[jnp.asarray(st) for st in data["decoding_spike_times"]],

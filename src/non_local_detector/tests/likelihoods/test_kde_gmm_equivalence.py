@@ -73,13 +73,13 @@ def equivalence_data():
 
     n_time = 30
     dt = 0.02
-    time = np.arange(n_time + 1) * dt
+    time_edges = np.arange(n_time + 1) * dt  # n_time bins
 
-    position_time = np.linspace(0, time[-1], 200)
+    position_time = np.linspace(0, time_edges[-1], 200)
     position = np.linspace(0, 10, len(position_time))[:, None]
 
     n_spikes = 30
-    spike_times = [np.sort(rng.uniform(time[0], time[-1], n_spikes))]
+    spike_times = [np.sort(rng.uniform(time_edges[0], time_edges[-1], n_spikes))]
     spike_features = [rng.standard_normal((n_spikes, 2)).astype(np.float32)]
 
     environment = Environment(position_range=[(0, 10)])
@@ -88,7 +88,7 @@ def equivalence_data():
     )
 
     return {
-        "time": time,
+        "time_edges": time_edges,
         "position_time": position_time,
         "position": position,
         "spike_times": spike_times,
@@ -215,7 +215,7 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data):
 
     position_time = jnp.asarray(data["position_time"])
     position = jnp.asarray(data["position"])
-    time = jnp.asarray(data["time"])
+    time_edges = jnp.asarray(data["time_edges"])
     env = data["environment"]
     spike_times_jnp = [jnp.asarray(st) for st in data["spike_times"]]
     spike_features_jnp = [jnp.asarray(sf) for sf in data["spike_features"]]
@@ -233,7 +233,7 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data):
     )
 
     ll_kde = predict_clusterless_kde_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=position_time,
         position=position,
         spike_times=spike_times_jnp,
@@ -305,7 +305,7 @@ def test_kde_gmm_full_likelihood_equivalence(equivalence_data):
     }
 
     ll_gmm = predict_clusterless_gmm_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=position_time,
         position=position,
         spike_times=spike_times_jnp,

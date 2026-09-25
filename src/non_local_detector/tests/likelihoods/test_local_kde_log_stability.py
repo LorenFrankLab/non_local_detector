@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde_log import (
     compute_local_log_likelihood,
@@ -128,7 +129,7 @@ def test_local_likelihood_log_space_prevents_underflow(
 
     # Compute local likelihood
     ll_local = compute_local_log_likelihood(
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position_time=data["position_time"],
         position=data["position"],
         spike_times=data["spike_times"],
@@ -210,7 +211,7 @@ def test_local_likelihood_log_space_moderate_features(
 
     # Compute local likelihood
     ll_local = compute_local_log_likelihood(
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position_time=data["position_time"],
         position=data["position"],
         spike_times=data["spike_times"],

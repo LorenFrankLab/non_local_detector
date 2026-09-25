@@ -34,6 +34,7 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     _SpikeTimeOrder,
+    decode_bin_centers,
     get_position_at_time,
     get_spikecount_per_time_bin,
     interpolate_weights_at_spike_times,
@@ -51,6 +52,7 @@ from non_local_detector.likelihoods.diffusion import (
     environment_graph,
     to_density,
 )
+from non_local_detector.time_edges import validate_time_edges
 
 _LOCAL_INTERPOLATION_MODES = {"nearest", "linear"}
 
@@ -550,7 +552,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
 
 def _spike_counts_matrix(
     spike_times: list[np.ndarray],
-    time: np.ndarray,
+    time_edges: np.ndarray,
     desc: str,
     disable_progress_bar: bool,
     row_slice: slice | None = None,
@@ -559,15 +561,15 @@ def _spike_counts_matrix(
 ) -> np.ndarray:
     """Stack per-neuron spike counts into a ``(n_rows, n_neurons)`` matrix.
 
-    ``get_spikecount_per_time_bin`` bins spikes against the full ``time`` and
+    ``get_spikecount_per_time_bin`` bins spikes against the full ``time_edges`` and
     selects those owned by ``row_slice`` internally, so no explicit pre-masking
-    is needed here. ``n_rows`` is ``len(time)`` unless ``row_slice`` is given.
+    is needed here. ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
-    row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     counts = [
         get_spikecount_per_time_bin(
             neuron_spike_times,
-            time,
+            time_edges,
             row_slice=row_slice,
             _spike_time_order=_spike_time_order,
         )
@@ -581,7 +583,7 @@ def _spike_counts_matrix(
 
 
 def predict_sorted_spikes_diffusion_log_likelihood(
-    time: np.ndarray,
+    time_edges: np.ndarray,
     position_time: np.ndarray,
     position: np.ndarray,
     spike_times: list[np.ndarray],
@@ -615,8 +617,8 @@ def predict_sorted_spikes_diffusion_log_likelihood(
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time,)
-        Decoding time bins.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
     position_time : np.ndarray, shape (n_time_position,)
         Sampling times for the position.
     position : np.ndarray, shape (n_time_position, n_position_dims)
@@ -655,8 +657,8 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         recomputed per call.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
-        ``time`` always stays the FULL decoding timeline, so spikes are binned
-        against it and only those owned by the requested rows are counted; the
+        ``time_edges`` always stay the FULL decoding edges, so spikes are binned
+        against them and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
@@ -670,8 +672,9 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     -------
     log_likelihood : jnp.ndarray
         Shape (n_rows, n_interior_bins) when ``is_local`` is False, else
-        (n_rows, 1). ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
+        (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
+    time_edges = validate_time_edges(time_edges)
     # Both paths broadcast or contract over neurons, so a population mismatch would
     # otherwise surface as a JAX shape error or, on the local path, broadcast one
     # neuron's rates across the observed spike trains.
@@ -682,10 +685,13 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         place_fields=place_fields,
         interior_log_place_fields=interior_log_place_fields,
     )
-    row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     if is_local:
         interpolated_position = get_position_at_time(
-            position_time, position, time[row_start:row_stop], environment
+            position_time,
+            position,
+            decode_bin_centers(time_edges, row_start, row_stop),
+            environment,
         )
         local_rates = _local_place_field_rates(
             environment,
@@ -701,7 +707,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         spike_counts = jnp.asarray(
             _spike_counts_matrix(
                 spike_times,
-                time,
+                time_edges,
                 "Local Likelihood",
                 disable_progress_bar,
                 row_slice=row_slice,
@@ -725,7 +731,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     spike_counts = jnp.asarray(
         _spike_counts_matrix(
             spike_times,
-            time,
+            time_edges,
             "Non-Local Likelihood",
             disable_progress_bar,
             row_slice=row_slice,

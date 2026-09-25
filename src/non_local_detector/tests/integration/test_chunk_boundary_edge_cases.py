@@ -1,16 +1,17 @@
 """Decoding spikes must survive likelihood chunk boundaries.
 
-``predict(n_chunks > 1)`` recomputes the likelihood once per chunk. When the
-likelihood callback received only ``time[chunk]``, every backend clipped the
-decoding spikes to that chunk's first and last timestamp, so a spike falling
-strictly between the last timestamp of chunk ``k`` and the first timestamp of
-chunk ``k + 1`` was dropped by both chunks. These tests place spikes in those
-gaps and require an uncached chunked ``predict`` to equal the unchunked one,
+``predict(n_chunks > 1)`` recomputes the likelihood once per chunk. Each chunk
+must own exactly the spikes its bins own on the full decoding edges: a spike on
+an edge shared by two chunks belongs to the later chunk only, and a spike in
+the last bin before a chunk edge to the earlier one. These tests place spikes
+on and next to every chunk edge and require an uncached chunked ``predict`` to
+equal the unchunked one,
 all through the public detector API with ``cache_likelihood=False`` so the
 likelihood is genuinely recomputed per chunk. The boundary cases covered:
 
-* spikes exactly on a chunk-start timestamp, on ``time[0]`` and on ``time[-1]``;
-* ragged (``n_time`` not divisible by ``n_chunks``) and single-row chunks;
+* spikes exactly on a chunk-start edge, on ``time_edges[0]`` and on
+  ``time_edges[-1]``;
+* ragged (``n_bins`` not divisible by ``n_chunks``) and single-row chunks;
 * chunks with no spikes at all, and units with no spikes at all;
 * ``is_missing`` runs straddling chunk boundaries;
 * unsorted decoding spike input;
@@ -23,9 +24,11 @@ Both chunk drivers are covered: the stationary
 ``chunked_filter_smoother`` and, for the boundary-spike and ``is_missing``
 cases, ``chunked_filter_smoother_covariate_dependent``.
 
-Row ownership is defined on the full decoding timeline: a spike is in range iff
-``time[0] <= t <= time[-1]`` and lands in row ``np.digitize(t, time[1:-1])``,
-so a spike at ``time[-1]`` lands in row ``n_time - 2``.
+Row ownership is defined on the full decoding edges: a spike is in range iff
+``time_edges[0] <= t <= time_edges[-1]`` and lands in the bin
+``[time_edges[i], time_edges[i + 1])`` containing it; a spike at
+``time_edges[-1]`` lands in the final bin. Each setup's decode window is a
+uniform sample grid used as the edges, with the positions sampled on it.
 """
 
 import numpy as np
@@ -41,39 +44,37 @@ from non_local_detector.simulate.clusterless_simulation import make_simulated_ru
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 PARITY_KWARGS = {"rtol": 1e-5, "atol": 1e-6}
-# 202 rows is not divisible by 5, 6 or 7, so every chunk split below has a
-# ragged final chunk (item 5) as well as uneven boundaries.
+# 202 bins (203 edges) is not divisible by 5, 6 or 7, so every chunk split below
+# has a ragged final chunk (item 5) as well as uneven boundaries.
 N_DECODE = 202
 CHUNK_COUNTS = (5, 6, 7)
 N_SINGLETON = 41
 
 
-def chunk_start_rows(n_time: int, n_chunks: int) -> list[int]:
-    """First row of each chunk after the first, mirroring the core's split."""
-    return [int(chunk[0]) for chunk in np.array_split(np.arange(n_time), n_chunks)[1:]]
+def chunk_start_rows(n_bins: int, n_chunks: int) -> list[int]:
+    """First bin of each chunk after the first, mirroring the core's split."""
+    return [int(chunk[0]) for chunk in np.array_split(np.arange(n_bins), n_chunks)[1:]]
 
 
 def boundary_gap_times(time: np.ndarray, n_chunks: int) -> np.ndarray:
-    """Times strictly inside the gap a chunk-local likelihood would drop."""
+    """Times strictly inside the last bin before each chunk-start edge."""
     return np.array(
         [
             0.5 * (time[row - 1] + time[row])
-            for row in chunk_start_rows(len(time), n_chunks)
+            for row in chunk_start_rows(len(time) - 1, n_chunks)
         ]
     )
 
 
 def boundary_timestamp_times(time: np.ndarray, n_chunks: int) -> np.ndarray:
-    """Chunk-end and chunk-start timestamps, plus both timeline endpoints (item 1).
+    """Chunk-start edges, the edges before them, and both endpoints (item 1).
 
-    A spike exactly on a chunk's LAST timestamp is the on-timestamp case that
-    per-chunk binning gets wrong: the chunk's own timeline ends there, so the
-    ``<= time[-1]`` clip keeps the spike but ``digitize`` against the chunk's
-    interior edges assigns it one row early (the final row of any timeline owns
-    nothing). A spike on a chunk's first timestamp lands in the same row either
-    way, so it is included for completeness rather than as the discriminator.
+    A spike exactly on a chunk-start edge is the case per-chunk binning gets
+    wrong: that edge also closes the previous chunk, so binning each chunk
+    against its own edges counts the spike in both. The edge before it lies
+    inside one chunk and is included for completeness.
     """
-    rows = chunk_start_rows(len(time), n_chunks)
+    rows = chunk_start_rows(len(time) - 1, n_chunks)
     return np.array(
         [
             time[0],
@@ -85,7 +86,7 @@ def boundary_timestamp_times(time: np.ndarray, n_chunks: int) -> np.ndarray:
 
 
 def extra_spike_times(time: np.ndarray) -> np.ndarray:
-    """Every boundary time of interest for all chunk counts under test."""
+    """Every boundary time of interest for the edges ``time``, all chunk counts."""
     extras = [time[0], time[-1]]
     for n_chunks in CHUNK_COUNTS:
         extras.extend(boundary_gap_times(time, n_chunks))
@@ -238,7 +239,7 @@ def sorted_setup(sorted_simulation):
     sim = sorted_simulation
     detector = fit_sorted_detector(sim)
 
-    decode = slice(10_000, 10_000 + N_DECODE)
+    decode = slice(10_000, 10_000 + N_DECODE + 1)
     decode_time = sim["time"][decode]
     extras = extra_spike_times(decode_time)
     assert len(extras) > len(CHUNK_COUNTS)
@@ -280,7 +281,7 @@ def clusterless_setup():
         ],
     )
 
-    decode = slice(n_encode, n_encode + N_DECODE)
+    decode = slice(n_encode, n_encode + N_DECODE + 1)
     decode_time = sim.position_time[decode]
     extras = extra_spike_times(decode_time)
 
@@ -323,7 +324,7 @@ def covariate_setup(sorted_simulation):
     # covariate-dependent chunk driver.
     assert detector.discrete_state_transitions_.ndim == 3
 
-    decode = slice(10_000, 10_000 + N_DECODE)
+    decode = slice(10_000, 10_000 + N_DECODE + 1)
     decode_time = sim["time"][decode]
     extras = extra_spike_times(decode_time)
 
@@ -331,7 +332,8 @@ def covariate_setup(sorted_simulation):
         "detector": detector,
         "time": decode_time,
         "position": sim["position"][decode],
-        "speed": sim["speed"][decode],
+        # One covariate row per decode bin: the speed at each bin's left edge.
+        "speed": sim["speed"][decode][:-1],
         "spike_times": [
             merge_spikes(unit_times, extras) for unit_times in sim["spike_times"]
         ],
@@ -350,7 +352,7 @@ def delta_kernel_setup(sorted_simulation):
     sim = sorted_simulation
     detector = fit_sorted_detector(sim, local_position_std=0.0)
 
-    decode = slice(10_000, 10_000 + N_SINGLETON)
+    decode = slice(10_000, 10_000 + N_SINGLETON + 1)
     decode_time = sim["time"][decode]
     extras = extra_spike_times(decode_time)
 
@@ -374,10 +376,11 @@ def assert_chunked_matches(detector, kwargs, n_chunks):
 
 def assert_some_chunk_is_spike_free(time, spike_times, n_chunks):
     """Premise for the spike-free-chunk tests: a whole chunk really is empty."""
-    chunk_bounds = np.array_split(np.arange(len(time)), n_chunks)
+    chunk_bounds = np.array_split(np.arange(len(time) - 1), n_chunks)
     assert any(
         not any(
-            np.any((s >= time[chunk[0]]) & (s <= time[chunk[-1]])) for s in spike_times
+            np.any((s >= time[chunk[0]]) & (s <= time[chunk[-1] + 1]))
+            for s in spike_times
         )
         for chunk in chunk_bounds
     ), "no spike-free chunk in this configuration"
@@ -393,7 +396,7 @@ def sorted_predict_kwargs(setup, **overrides):
     """
     kwargs = {
         "spike_times": setup["spike_times"],
-        "time": setup["time"],
+        "time_edges": setup["time"],
         "position": setup["position"],
         "position_time": setup["time"],
         "return_outputs": "all",
@@ -407,7 +410,7 @@ def clusterless_predict_kwargs(setup, **overrides):
     kwargs = {
         "spike_times": setup["spike_times"],
         "spike_waveform_features": setup["spike_waveform_features"],
-        "time": setup["time"],
+        "time_edges": setup["time"],
         "position": setup["position"],
         "position_time": setup["time"],
         "return_outputs": "all",
@@ -425,20 +428,19 @@ def clusterless_predict_kwargs(setup, **overrides):
 def test_row_sliced_spike_counts_match_full_time_counts():
     """Row slices must tile the full counts.
 
-    ``time = [0..5]`` with spikes at every bin midpoint. Chunk-local binning
-    yields ``[1, 1, 0, 1, 1, 0]`` (the spike at 2.5 is lost); global binning
-    must reproduce ``[1, 1, 1, 1, 1, 0]``.
+    ``time_edges = [0..5]`` with spikes at every bin midpoint and one on the
+    shared chunk edge 3.0, which belongs to bin 3 only: ``[1, 1, 1, 2, 1]``.
     """
-    time = np.arange(6.0)
-    spikes = np.array([0.5, 1.5, 2.5, 3.5, 4.5])
+    time_edges = np.arange(6.0)
+    spikes = np.array([0.5, 1.5, 2.5, 3.0, 3.5, 4.5])
 
-    full_counts = get_spikecount_per_time_bin(spikes, time)
-    np.testing.assert_array_equal(full_counts, [1, 1, 1, 1, 1, 0])
+    full_counts = get_spikecount_per_time_bin(spikes, time_edges)
+    np.testing.assert_array_equal(full_counts, [1, 1, 1, 2, 1])
 
     chunked_counts = np.concatenate(
         [
-            get_spikecount_per_time_bin(spikes, time, row_slice=slice(0, 3)),
-            get_spikecount_per_time_bin(spikes, time, row_slice=slice(3, 6)),
+            get_spikecount_per_time_bin(spikes, time_edges, row_slice=slice(0, 3)),
+            get_spikecount_per_time_bin(spikes, time_edges, row_slice=slice(3, 5)),
         ]
     )
     np.testing.assert_array_equal(chunked_counts, full_counts)
@@ -459,7 +461,7 @@ def test_sorted_ragged_chunks_match_unchunked(sorted_setup, n_chunks):
     """
     detector = sorted_setup["detector"]
     kwargs = sorted_predict_kwargs(sorted_setup)
-    assert len(sorted_setup["time"]) % n_chunks != 0
+    assert (len(sorted_setup["time"]) - 1) % n_chunks != 0
 
     assert_chunked_matches(detector, kwargs, n_chunks)
 
@@ -470,7 +472,7 @@ def test_clusterless_ragged_chunks_match_unchunked(clusterless_setup, n_chunks):
     """Ragged, uneven chunk splits must not move a spike (clusterless)."""
     detector = clusterless_setup["detector"]
     kwargs = clusterless_predict_kwargs(clusterless_setup)
-    assert len(clusterless_setup["time"]) % n_chunks != 0
+    assert (len(clusterless_setup["time"]) - 1) % n_chunks != 0
 
     assert_chunked_matches(detector, kwargs, n_chunks)
 
@@ -503,20 +505,20 @@ def test_spikes_only_on_chunk_boundaries_match_unchunked(sorted_setup):
 
 
 # ==============================================================================
-# Item 4: singleton chunks (n_chunks == n_time)
+# Item 4: singleton chunks (n_chunks == n_bins)
 # ==============================================================================
 
 
 @pytest.mark.integration
 def test_singleton_chunks_match_unchunked(delta_kernel_setup):
-    """One row per chunk (``n_chunks == n_time``) must still match exactly."""
+    """One row per chunk (``n_chunks == n_bins``) must still match exactly."""
     detector = delta_kernel_setup["detector"]
     kwargs = sorted_predict_kwargs(delta_kernel_setup)
-    n_time = len(delta_kernel_setup["time"])
+    n_bins = len(delta_kernel_setup["time"]) - 1
 
-    _, chunked = assert_chunked_matches(detector, kwargs, n_time)
+    _, chunked = assert_chunked_matches(detector, kwargs, n_bins)
 
-    assert chunked.log_likelihood.to_numpy().shape[0] == n_time
+    assert chunked.log_likelihood.to_numpy().shape[0] == n_bins
 
 
 # ==============================================================================
@@ -632,10 +634,10 @@ def test_unsorted_spike_input_matches_unchunked(clusterless_setup):
 # ==============================================================================
 
 
-def missing_mask_straddling_boundaries(n_time: int, n_chunks: int) -> np.ndarray:
+def missing_mask_straddling_boundaries(n_bins: int, n_chunks: int) -> np.ndarray:
     """Missing-data runs that each span a chunk boundary, plus both endpoints."""
-    is_missing = np.zeros(n_time, dtype=bool)
-    for row in chunk_start_rows(n_time, n_chunks):
+    is_missing = np.zeros(n_bins, dtype=bool)
+    for row in chunk_start_rows(n_bins, n_chunks):
         is_missing[max(row - 2, 0) : row + 3] = True
     is_missing[0] = True
     is_missing[-1] = True
@@ -648,10 +650,10 @@ def test_is_missing_straddling_boundaries_matches_unchunked(sorted_setup, n_chun
     """Item 8: missing-data runs crossing chunk boundaries, chunked == unchunked."""
     detector = sorted_setup["detector"]
     time = sorted_setup["time"]
-    is_missing = missing_mask_straddling_boundaries(len(time), n_chunks)
+    is_missing = missing_mask_straddling_boundaries(len(time) - 1, n_chunks)
     # Premise: the mask really does straddle boundaries (a mask aligned to the
     # chunk edges would not exercise the core's per-chunk slicing).
-    for row in chunk_start_rows(len(time), n_chunks):
+    for row in chunk_start_rows(len(time) - 1, n_chunks):
         assert is_missing[row - 1] and is_missing[row]
 
     kwargs = sorted_predict_kwargs(sorted_setup, is_missing=is_missing)
@@ -670,7 +672,7 @@ def test_clusterless_is_missing_straddling_boundaries_matches_unchunked(
     detector = clusterless_setup["detector"]
     time = clusterless_setup["time"]
     n_chunks = 6
-    is_missing = missing_mask_straddling_boundaries(len(time), n_chunks)
+    is_missing = missing_mask_straddling_boundaries(len(time) - 1, n_chunks)
 
     kwargs = clusterless_predict_kwargs(clusterless_setup, is_missing=is_missing)
     assert_chunked_matches(detector, kwargs, n_chunks)
@@ -699,7 +701,7 @@ def test_covariate_dependent_is_missing_matches_unchunked(covariate_setup):
     detector = covariate_setup["detector"]
     time = covariate_setup["time"]
     n_chunks = 7
-    is_missing = missing_mask_straddling_boundaries(len(time), n_chunks)
+    is_missing = missing_mask_straddling_boundaries(len(time) - 1, n_chunks)
 
     kwargs = sorted_predict_kwargs(
         covariate_setup,
@@ -751,7 +753,7 @@ def test_chunked_estimate_parameters_returns_requested_log_likelihood(
         position_time=sim["time"],
         position=sim["position"],
         spike_times=spike_times,
-        time=time,
+        time_edges=time,
         is_training=~sim["is_event"],
         max_iter=1,
         n_chunks=5,
@@ -762,9 +764,9 @@ def test_chunked_estimate_parameters_returns_requested_log_likelihood(
 
     n_state_bins = results.acausal_posterior.shape[1]
     assert "log_likelihood" in results
-    assert results.log_likelihood.shape == (len(time), n_state_bins)
+    assert results.log_likelihood.shape == (len(time) - 1, n_state_bins)
     assert detector.log_likelihood_ is not None
-    assert detector.log_likelihood_.shape == (len(time), n_state_bins)
+    assert detector.log_likelihood_.shape == (len(time) - 1, n_state_bins)
 
     # The final E-step runs after the last M-step, so recomputing the likelihood
     # from the fitted model over the full timeline must reproduce the returned

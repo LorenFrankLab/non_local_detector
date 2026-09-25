@@ -25,7 +25,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
 def _predict_nonlocal(env, encoding, t_pos, pos, dec_spike_times, dec_feats, t_edges):
     return np.asarray(
         predict_clusterless_kde_log_likelihood(
-            time=t_edges,
+            time_edges=t_edges,
             position_time=t_pos,
             position=pos,
             spike_times=dec_spike_times,
@@ -259,7 +259,7 @@ def test_predict_preserves_old_positional_api(simple_1d_environment):
         jnp.asarray(enc["waveform_std"]),
         True,  # is_local, positional
     )
-    assert np.asarray(ll).shape == (t_edges.shape[0], 1)  # local -> (n_time, 1)
+    assert np.asarray(ll).shape == (t_edges.shape[0] - 1, 1)  # local -> (n_bins, 1)
 
 
 def _fit_gmm(env, t_pos, pos, spikes, feats, weights):

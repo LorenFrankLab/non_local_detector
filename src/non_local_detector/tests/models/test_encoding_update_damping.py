@@ -12,7 +12,11 @@ encoding model.
 import numpy as np
 import pytest
 
-from non_local_detector import NonLocalClusterlessDetector, NonLocalSortedSpikesDetector
+from non_local_detector import (
+    NonLocalClusterlessDetector,
+    NonLocalSortedSpikesDetector,
+    time_edges_from_centers,
+)
 from non_local_detector.exceptions import ValidationError
 
 REJECTED_DAMPING = [0.5, 1e-6, 1.0, -0.1, np.nan]
@@ -25,7 +29,7 @@ def sorted_inputs(sorted_sim):
         "position_time": time,
         "position": position,
         "spike_times": spike_times,
-        "time": time,
+        "time_edges": time_edges_from_centers(time),
     }
 
 
@@ -37,12 +41,12 @@ def clusterless_inputs(clusterless_sim):
         "position": sim.position,
         "spike_times": sim.spike_times,
         "spike_waveform_features": sim.spike_waveform_features,
-        "time": sim.position_time,
+        "time_edges": time_edges_from_centers(sim.position_time),
     }
 
 
 def _fit(detector, inputs):
-    fit_inputs = {k: v for k, v in inputs.items() if k != "time"}
+    fit_inputs = {k: v for k, v in inputs.items() if k != "time_edges"}
     return detector.fit(**fit_inputs)
 
 

@@ -176,3 +176,28 @@ def test_calculate_time_edges_rejects_partial_bins_unless_trimmed():
     assert edges[-1] <= 0.3005
     with pytest.raises(ValidationError):
         detector.calculate_time_edges(np.array([0.0, 0.001]), trim=True)
+
+
+@pytest.mark.unit
+def test_uniform_float32_grids_keep_their_dtype_and_tolerance():
+    """float32 edges that resolve their bins are judged in float32 ulps.
+
+    Upcasting first would measure a float32 grid's rounding against float64
+    ulps and reject every uniform ``jnp.linspace`` built without x64.
+    """
+    edges = np.linspace(1, 9, 20, dtype=np.float32)
+    assert validate_time_edges(edges).dtype == np.float32
+    assert uniform_time_bin_width(edges) == pytest.approx(8 / 19, rel=1e-6)
+    centers = (np.arange(100, dtype=np.float32) + 0.5) * np.float32(0.02)
+    assert uniform_time_bin_width(time_edges_from_centers(centers)) == pytest.approx(
+        0.02, rel=1e-5
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("sampling_frequency", [0.0, -500.0, np.nan, np.inf])
+def test_calculate_time_edges_rejects_invalid_sampling_frequency(sampling_frequency):
+    from non_local_detector.time_edges import calculate_time_edges
+
+    with pytest.raises(ValidationError, match="sampling_frequency"):
+        calculate_time_edges(np.array([0.0, 1.0]), sampling_frequency)

@@ -17,7 +17,7 @@ from non_local_detector.likelihoods.common import _SpikeTimeOrder, select_spikes
 @pytest.mark.parametrize("array_type", [np.asarray, jnp.asarray, list])
 def test_prepared_spike_times_convert_original_input_only_once(monkeypatch, array_type):
     """Reuse the host times for NumPy, JAX and list inputs across row requests."""
-    time = np.arange(10.0)
+    time = np.arange(10.0)  # nine bins
     spikes = array_type([0.5, 1.5, 3.5, 6.5, 8.5])
     original_asarray = np.asarray
     conversions = []
@@ -29,23 +29,23 @@ def test_prepared_spike_times_convert_original_input_only_once(monkeypatch, arra
 
     order = _SpikeTimeOrder()
     monkeypatch.setattr(np, "asarray", tracked_asarray)
-    for row_start, row_stop in [(0, 3), (3, 7), (7, 10)]:
+    for row_start, row_stop in [(0, 3), (3, 7), (7, 9)]:
         selection = select_spikes_in_rows(
             spikes, time, row_start, row_stop, _spike_time_order=order
         )
         indexer, rows = selection.indexer, selection.bin_ind
         selected = original_asarray(spikes)[indexer]
         np.testing.assert_array_equal(
-            rows, np.digitize(selected, time[1:-1]) - row_start
+            rows, np.searchsorted(time, selected, side="right") - 1 - row_start
         )
     assert len(conversions) == 1
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("rows", [(3, 3), (9, 10)])
+@pytest.mark.parametrize("rows", [(3, 3), (9, 9)])
 @pytest.mark.parametrize("prepared", [False, True])
 def test_non_owning_rows_do_not_read_spike_times(monkeypatch, rows, prepared):
-    """Empty requests and the terminal empty row need no spike transfer/check."""
+    """Empty row requests need no spike transfer/check."""
     time = np.arange(10.0)
     spikes = np.arange(10_000.0)
     original_asarray = np.asarray
@@ -65,7 +65,7 @@ def test_non_owning_rows_do_not_read_spike_times(monkeypatch, rows, prepared):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("row_start,row_stop", [(0, 20), (401, 421), (980, 1001)])
+@pytest.mark.parametrize("row_start,row_stop", [(0, 20), (401, 421), (980, 1000)])
 @pytest.mark.parametrize("ascending", [True, False])
 def test_binning_scans_only_requested_boundaries(
     monkeypatch, row_start, row_stop, ascending
@@ -73,13 +73,13 @@ def test_binning_scans_only_requested_boundaries(
     """Digitize checks monotonicity linearly; its bins must be chunk-sized.
 
     The independent full-timeline reference also pins global ownership for
-    irregular times, boundary spikes, the inclusive endpoint and unsorted input.
+    irregular edges, boundary spikes, the inclusive final edge and unsorted input.
     """
-    time = np.cumsum(np.resize([0.002, 0.003, 0.004], 1001))
+    time = np.cumsum(np.resize([0.002, 0.003, 0.004], 1001))  # 1000 bins
     spikes = np.sort(np.r_[time, (time[:-1] + time[1:]) / 2])
     if not ascending:
         spikes = spikes[::-1]
-    global_rows = np.digitize(spikes, time[1:-1])
+    global_rows = np.minimum(np.searchsorted(time, spikes, side="right") - 1, 999)
     keep = (global_rows >= row_start) & (global_rows < row_stop)
     digitize = np.digitize
     scanned_sizes = []
@@ -126,7 +126,7 @@ def test_no_spike_duration_prepared_once_per_prediction(
     time = np.r_[0.0, np.cumsum(np.resize([0.002, 0.003, 0.004], 30))]
     transitions = detector.discrete_state_transitions_
     if covariate:
-        transitions = np.broadcast_to(transitions, (len(time), *transitions.shape))
+        transitions = np.broadcast_to(transitions, (len(time) - 1, *transitions.shape))
     median = np.median
     durations = []
 
@@ -238,7 +238,7 @@ def test_spike_order_checked_once_per_prediction(
         args = (*args, [features])
     transitions = detector.discrete_state_transitions_
     if covariate:
-        transitions = np.broadcast_to(transitions, (len(time), *transitions.shape))
+        transitions = np.broadcast_to(transitions, (len(time) - 1, *transitions.shape))
     original_all = np.all
     checks = []
 

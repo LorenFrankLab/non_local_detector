@@ -72,7 +72,7 @@ def test_sorted_kde_nonlocal_argmax_snapshot(make_env_1d):
     dec_spike_times = [jnp.asarray(time_bin_centers)]
 
     ll = predict_sorted_spikes_kde_log_likelihood(
-        time=jnp.asarray(time_edges),
+        time_edges=jnp.asarray(time_edges),
         position_time=jnp.asarray(t_pos),
         position=jnp.asarray(pos),
         spike_times=dec_spike_times,
@@ -94,9 +94,9 @@ def test_sorted_kde_nonlocal_argmax_snapshot(make_env_1d):
     expected_scores = np.log(np.clip(pf_interior, EPS, None)) - pf_interior
     pf_argmax = int(np.argmax(expected_scores))
     argmax_bins = np.asarray(jnp.argmax(ll, axis=1))
-    # Note: Most bins should match pf_argmax, but edge cases (like last time bin)
-    # may differ due to boundary handling. Check that majority match.
-    assert np.sum(argmax_bins == pf_argmax) >= len(argmax_bins) - 1
+    # Every decoding bin, including the final one, owns exactly one spike.
+    assert argmax_bins.shape == (len(time_edges) - 1,)
+    assert np.all(argmax_bins == pf_argmax)
 
 
 @pytest.mark.snapshot
@@ -120,7 +120,7 @@ def test_sorted_kde_nonlocal_topk_ranking_snapshot(make_env_1d):
     time_edges = np.linspace(0.0, 10.0, 6)
     time_bin_centers = (time_edges[:-1] + time_edges[1:]) / 2.0
     ll = predict_sorted_spikes_kde_log_likelihood(
-        time=jnp.asarray(time_edges),
+        time_edges=jnp.asarray(time_edges),
         position_time=jnp.asarray(t_pos),
         position=jnp.asarray(pos),
         spike_times=[jnp.asarray(time_bin_centers)],
@@ -140,8 +140,9 @@ def test_sorted_kde_nonlocal_topk_ranking_snapshot(make_env_1d):
     pf_interior = np.asarray(enc["place_fields"][0])[interior_mask]
     expected_scores = np.log(np.clip(pf_interior, EPS, None)) - pf_interior
     pf_top3 = set(np.argsort(expected_scores)[-3:])
-    # Note: Check all but last time bin (boundary handling edge case)
-    for t in range(ll.shape[0] - 1):
+    # Every decoding bin, including the final one, owns exactly one spike.
+    assert ll.shape[0] == len(time_edges) - 1
+    for t in range(ll.shape[0]):
         topk = set(np.asarray(jnp.argsort(ll[t])[::-1][:3]).tolist())
         assert topk == pf_top3
 
@@ -180,7 +181,7 @@ def test_clusterless_kde_nonlocal_argmax_snapshot(make_env_1d):
     dec_feats = [jnp.asarray(np.array([[0.02, -0.01]], dtype=float))]
 
     ll = predict_clusterless_kde_log_likelihood(
-        time=time_edges,
+        time_edges=time_edges,
         position_time=jnp.asarray(t_pos),
         position=jnp.asarray(pos),
         spike_times=dec_times,
@@ -238,7 +239,7 @@ def test_clusterless_kde_nonlocal_profile_monotone_decay_snapshot(make_env_1d):
     dec_times = [jnp.asarray(np.array([5.0]))]
     dec_feats = [jnp.asarray(np.array([[0.0, 0.0]], dtype=float))]
     ll = predict_clusterless_kde_log_likelihood(
-        time=time_edges,
+        time_edges=time_edges,
         position_time=jnp.asarray(t_pos),
         position=jnp.asarray(pos),
         spike_times=dec_times,

@@ -12,6 +12,7 @@ from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
     as_std_array,
     block_log_kde,
+    decode_bin_centers,
     drop_zero_weight_samples,
     get_position_at_time,
     interpolate_weights_at_spike_times,
@@ -26,6 +27,7 @@ from non_local_detector.likelihoods.common import (
     validate_weights,
     weighted_mean_rate,
 )
+from non_local_detector.time_edges import validate_time_edges
 
 # Maximum waveform feature dimensions for the compensated-linear fast path.
 # Above this threshold, mark kernel underflow causes accuracy degradation
@@ -1554,7 +1556,7 @@ def fit_clusterless_kde_encoding_model(
 
 
 def predict_clusterless_kde_log_likelihood(
-    time: jnp.ndarray,
+    time_edges: np.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
@@ -1584,8 +1586,8 @@ def predict_clusterless_kde_log_likelihood(
 
     Parameters
     ----------
-    time : jnp.ndarray
-        Decoding time bins.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
     position_time : jnp.ndarray, shape (n_time_position,)
         Time of each position sample (used only by the local path; accepted for
         signature parity when ``is_local`` is False).
@@ -1641,8 +1643,8 @@ def predict_clusterless_kde_log_likelihood(
         electrode's joint mark intensity. By default None (uniform weights).
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
-        ``time`` always stays the FULL decoding timeline: spikes are binned
-        against it and only those owned by the requested rows are evaluated, so
+        ``time_edges`` always stay the FULL decoding edges: spikes are binned
+        against them and only those owned by the requested rows are evaluated, so
         the result equals the full-time result sliced by ``row_slice`` while the
         spatial workspaces scale with the requested rows and selected spikes.
     _spike_time_order : _SpikeTimeOrder | None, optional
@@ -1654,8 +1656,9 @@ def predict_clusterless_kde_log_likelihood(
     -------
     log_likelihood : jnp.ndarray, shape (n_rows, 1) or (n_rows, n_position_bins)
         Shape depends on whether local or non-local decoding, respectively.
-        ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
+        ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
+    time_edges = validate_time_edges(time_edges)
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -1666,7 +1669,7 @@ def predict_clusterless_kde_log_likelihood(
         mean_rates=mean_rates,
         encoding_weights=encoding_weights,
     )
-    row_start, row_stop = resolve_row_slice(row_slice, len(time))
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_rows = row_stop - row_start
     # Uniform (None) weights per electrode when the caller passes none, so the loop
     # and the local path can zip a weight per electrode uniformly.
@@ -1678,7 +1681,7 @@ def predict_clusterless_kde_log_likelihood(
 
     if is_local:
         log_likelihood = compute_local_log_likelihood(
-            time,
+            time_edges,
             position_time,
             position,
             spike_times,
@@ -1726,7 +1729,7 @@ def predict_clusterless_kde_log_likelihood(
         ):
             selection = select_spikes_in_rows(
                 electrode_spike_times,
-                time,
+                time_edges,
                 row_start,
                 row_stop,
                 _spike_time_order=_spike_time_order,
@@ -1777,7 +1780,7 @@ def predict_clusterless_kde_log_likelihood(
 
 
 def compute_local_log_likelihood(
-    time: jnp.ndarray,
+    time_edges: np.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
@@ -1801,8 +1804,8 @@ def compute_local_log_likelihood(
 
     Parameters
     ----------
-    time : jnp.ndarray, shape (n_time,)
-        Time bins for decoding.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
     position_time : jnp.ndarray, shape (n_time_position,)
         Time of each position sample.
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
@@ -1837,7 +1840,7 @@ def compute_local_log_likelihood(
         default None (uniform); weight the local marginal density KDE per electrode.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
-        ``time`` stays the FULL decoding timeline (see
+        ``time_edges`` stay the FULL decoding edges (see
         ``predict_clusterless_kde_log_likelihood``).
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
@@ -1848,7 +1851,7 @@ def compute_local_log_likelihood(
     -------
     log_likelihood : jnp.ndarray, shape (n_rows, 1)
     """
-    row_start, row_stop = resolve_row_slice(row_slice, len(time))
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_rows = row_stop - row_start
 
     # Normalize to a per-electrode list; None -> uniform weights for each electrode.
@@ -1857,7 +1860,10 @@ def compute_local_log_likelihood(
 
     # Need to interpolate position at the requested rows only
     interpolated_position = get_position_at_time(
-        position_time, position, time[row_start:row_stop], environment
+        position_time,
+        position,
+        decode_bin_centers(time_edges, row_start, row_stop),
+        environment,
     )
     occupancy = occupancy_model.predict(interpolated_position)
 
@@ -1866,7 +1872,7 @@ def compute_local_log_likelihood(
     spike_selections = [
         select_spikes_in_rows(
             electrode_spike_times,
-            time,
+            time_edges,
             row_start,
             row_stop,
             _spike_time_order=_spike_time_order,

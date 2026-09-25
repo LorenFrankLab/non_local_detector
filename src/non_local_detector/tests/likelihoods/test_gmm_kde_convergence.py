@@ -42,14 +42,14 @@ def convergence_test_data():
     # Simple 1D position for clarity
     n_time = 50
     dt = 0.02
-    time = np.arange(n_time + 1) * dt
+    time_edges = np.arange(n_time + 1) * dt  # n_time bins
 
-    position_time = np.linspace(0, time[-1], 200)
+    position_time = np.linspace(0, time_edges[-1], 200)
     position = np.linspace(0, 10, len(position_time))[:, None]  # 1D position
 
     # Single electrode for simplicity
     n_spikes = 100
-    spike_times = [np.sort(rng.uniform(time[0], time[-1], n_spikes))]
+    spike_times = [np.sort(rng.uniform(time_edges[0], time_edges[-1], n_spikes))]
 
     # 2D waveform features
     spike_features = [rng.standard_normal((n_spikes, 2)).astype(np.float32)]
@@ -61,7 +61,7 @@ def convergence_test_data():
     )
 
     return {
-        "time": time,
+        "time_edges": time_edges,
         "position_time": position_time,
         "position": position,
         "spike_times": spike_times,
@@ -220,7 +220,7 @@ def test_log_space_operations(convergence_test_data):
 
     position_time = jnp.asarray(data["position_time"])
     position = jnp.asarray(data["position"])
-    time = jnp.asarray(data["time"])
+    time_edges = jnp.asarray(data["time_edges"])
     spike_times = [jnp.asarray(st) for st in data["spike_times"]]
     spike_features = [jnp.asarray(sf) for sf in data["spike_features"]]
 
@@ -239,7 +239,7 @@ def test_log_space_operations(convergence_test_data):
 
     # Predict
     ll_gmm = predict_clusterless_gmm_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=position_time,
         position=position,
         spike_times=spike_times,
@@ -275,7 +275,7 @@ def test_visualize_convergence(convergence_test_data):
 
     position_time = jnp.asarray(data["position_time"])
     position = jnp.asarray(data["position"])
-    time = jnp.asarray(data["time"])
+    time_edges = jnp.asarray(data["time_edges"])
     spike_times = [jnp.asarray(st) for st in data["spike_times"]]
     spike_features = [jnp.asarray(sf) for sf in data["spike_features"]]
 
@@ -291,7 +291,7 @@ def test_visualize_convergence(convergence_test_data):
     )
 
     ll_kde = predict_clusterless_kde_log_likelihood(
-        time=time,
+        time_edges=time_edges,
         position_time=position_time,
         position=position,
         spike_times=spike_times,
@@ -335,7 +335,7 @@ def test_visualize_convergence(convergence_test_data):
         )
 
         ll_gmm = predict_clusterless_gmm_log_likelihood(
-            time=time,
+            time_edges=time_edges,
             position_time=position_time,
             position=position,
             spike_times=spike_times,

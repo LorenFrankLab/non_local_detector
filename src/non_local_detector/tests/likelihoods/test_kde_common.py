@@ -249,11 +249,11 @@ def test_get_spikecount_per_time_bin_edges_and_outliers():
     # spikes include below-first, on edges, interior, and at last edge
     spikes = np.array([-0.5, 0.0, 0.4, 1.0, 2.99, 3.0, 3.5])
     counts = get_spikecount_per_time_bin(spikes, time_edges)
-    # Function clips spikes to [time[0], time[-1]]. It then digitizes against
-    # interior edges time[1:-1] = [1.0, 2.0], so a spike at the last edge (3.0)
-    # is assigned to the previous interior bin index (2). Last bin remains 0.
-    assert counts.shape == (time_edges.shape[0],)
-    assert counts.tolist() == [2, 1, 2, 0]
+    # Three bins [0, 1), [1, 2), [2, 3]: spikes outside [0, 3] are dropped, an
+    # interior edge opens the bin to its right, and the last edge (3.0) closes
+    # the final bin.
+    assert counts.shape == (time_edges.shape[0] - 1,)
+    assert counts.tolist() == [2, 1, 2]
 
 
 def test_weights_scaling_invariance_and_reweighting_effect():

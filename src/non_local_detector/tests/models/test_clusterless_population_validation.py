@@ -12,7 +12,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from non_local_detector import ClusterlessDecoder, NonLocalClusterlessDetector
+from non_local_detector import (
+    ClusterlessDecoder,
+    NonLocalClusterlessDetector,
+    time_edges_from_centers,
+)
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
@@ -73,15 +77,15 @@ def test_fit_rejects_per_electrode_row_mismatch(sim, algorithm):
 @pytest.mark.unit
 def test_predict_rejects_electrode_count_mismatch(fitted_decoder, sim):
     """Public prediction and a direct predictor call both raise the package error."""
-    time = sim.position_time[:N_DECODE]
+    time_edges = time_edges_from_centers(sim.position_time[:N_DECODE])
     _, predict = _CLUSTERLESS_ALGORITHMS[fitted_decoder.clusterless_algorithm]
     (encoding_model,) = fitted_decoder.encoding_model_.values()
     for spike_times, features in _mismatched_populations(sim):
         with pytest.raises(ValidationError, match="electrode population lengths"):
-            fitted_decoder.predict(spike_times, features, time=time)
+            fitted_decoder.predict(spike_times, features, time_edges=time_edges)
         with pytest.raises(ValidationError, match="electrode population lengths"):
             predict(
-                jnp.asarray(time),
+                jnp.asarray(time_edges),
                 None,
                 None,
                 spike_times,
@@ -109,7 +113,7 @@ def test_refit_with_mismatch_leaves_fitted_state_unchanged(sim):
             sim.position,
             spike_times,
             features,
-            time=sim.position_time,
+            time_edges=time_edges_from_centers(sim.position_time),
             max_iter=1,
         )
 

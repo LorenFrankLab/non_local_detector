@@ -21,7 +21,11 @@ from collections import defaultdict
 import numpy as np
 import pytest
 
-from non_local_detector import ClusterlessDecoder, SortedSpikesDecoder
+from non_local_detector import (
+    ClusterlessDecoder,
+    SortedSpikesDecoder,
+    time_edges_from_centers,
+)
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
@@ -302,7 +306,9 @@ def test_clusterless_group_without_training_coverage(gapped_clusterless_run, alg
     (model,) = decoder.encoding_model_.values()
     np.testing.assert_array_equal(np.asarray(model["mean_rates"]), 0.0)
     posterior = decoder.predict(
-        sim.spike_times, sim.spike_waveform_features, time=sim.position_time[:500]
+        sim.spike_times,
+        sim.spike_waveform_features,
+        time_edges=time_edges_from_centers(sim.position_time[:500]),
     ).acausal_posterior.values
     assert np.all(np.isfinite(posterior))
     np.testing.assert_allclose(posterior.sum(axis=-1), 1.0, rtol=1e-5)
@@ -341,7 +347,7 @@ def test_sorted_group_without_training_coverage(algorithm):
         )
 
     posterior = decoder.predict(
-        spike_times, time=sim.position_time[:500]
+        spike_times, time_edges=time_edges_from_centers(sim.position_time[:500])
     ).acausal_posterior.values
     assert np.all(np.isfinite(posterior))
     np.testing.assert_allclose(posterior.sum(axis=-1), 1.0, rtol=1e-5)
@@ -379,7 +385,7 @@ def test_glm_em_refit_with_gapped_mask_and_off_sample_spikes():
         position_time=sim.position_time,
         position=sim.position,
         spike_times=spike_times,
-        time=sim.position_time,
+        time_edges=time_edges_from_centers(sim.position_time),
         is_training=is_training,
         estimate_encoding_model=True,
         max_iter=2,

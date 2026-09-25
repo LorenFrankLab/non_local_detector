@@ -34,8 +34,9 @@ import pytest  # noqa: E402
 from scipy import stats  # noqa: E402
 from scipy.spatial import cKDTree  # noqa: E402
 
+from non_local_detector import time_edges_from_centers  # noqa: E402
 from non_local_detector.environment import Environment  # noqa: E402
-from non_local_detector.exceptions import ValidationError  # noqa: E402
+from non_local_detector.exceptions import DataError, ValidationError  # noqa: E402
 from non_local_detector.likelihoods import clusterless_kde  # noqa: E402
 from non_local_detector.likelihoods.clusterless_diffusion import (  # noqa: E402
     fit_clusterless_diffusion_encoding_model,
@@ -46,7 +47,6 @@ from non_local_detector.likelihoods.common import (  # noqa: E402
     EPS,
     LOG_EPS,
     get_position_at_time,
-    get_spike_time_bin_ind,
     interpolate_weights_at_spike_times,
 )
 from non_local_detector.likelihoods.diffusion import (  # noqa: E402
@@ -65,6 +65,16 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (  # noqa: E4
 
 WAVEFORM_STD = 6.0
 POSITION_STD = 1.5
+
+
+def _decode_bin(spike_times, time_edges):
+    """Decode bin owning each spike: bin i is [edges[i], edges[i + 1]) and the
+    final bin also owns edges[-1]. Every spike must lie within the edges."""
+    spike_times = np.asarray(spike_times)
+    time_edges = np.asarray(time_edges)
+    assert np.all((spike_times >= time_edges[0]) & (spike_times <= time_edges[-1]))
+    bins = np.searchsorted(time_edges, spike_times, side="right") - 1
+    return np.minimum(bins, time_edges.shape[0] - 2)
 
 
 def _make_1d_env(bin_size=1.0, lo=0.0, hi=8.0):
@@ -124,7 +134,7 @@ def _sim(seed=0, hi=8.0, n_pos=200, n_elec=2, n_features=2, weights=None):
     ]
     env = _make_1d_env(1.0, 0.0, hi)
     return {
-        "time": time,
+        "time_edges": time_edges_from_centers(time),
         "position_time": position_time,
         "position": position,
         "enc_t": enc_t,
@@ -159,7 +169,7 @@ def _predict(s, enc, is_local=False, **overrides):
     encoding = dict(enc)
     encoding.update(overrides)
     return predict_clusterless_diffusion_log_likelihood(
-        jnp.asarray(s["time"]),
+        jnp.asarray(s["time_edges"]),
         s["position_time"],
         s["position"],
         [jnp.asarray(t) for t in s["dec_t"]],
@@ -323,7 +333,7 @@ def test_absolute_log_likelihood_small_fixture():
     enc_marks = np.array([[0.3, -0.4], [1.1, 0.7]], dtype=np.float32)
     dec_times = np.array([0.2, 0.7])
     dec_marks = np.array([[0.0, 0.0], [0.9, 0.5]], dtype=np.float32)
-    time = np.array([0.0, 0.5, 1.0])  # 2 usable time bins: dec 0.2 -> 0, dec 0.7 -> 1
+    time_edges = np.array([0.0, 0.5, 1.0])  # 2 time bins: dec 0.2 -> 0, dec 0.7 -> 1
 
     enc = fit_clusterless_diffusion_encoding_model(
         position_time,
@@ -340,7 +350,7 @@ def test_absolute_log_likelihood_small_fixture():
     )
     ll = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time),
+            jnp.asarray(time_edges),
             position_time,
             position,
             [jnp.asarray(dec_times)],
@@ -394,12 +404,14 @@ def test_absolute_log_likelihood_small_fixture():
     lc = np.log(np.clip(mean_rate * p_e / pi[:, None], EPS, None))  # (n_bins, n_dec)
     summed_gpi = np.clip(mean_rate * p_gpi / pi, EPS, None)
 
-    expected = -summed_gpi[None, :] * np.ones((len(time), 1))
-    seg = get_spike_time_bin_ind(dec_times, time)  # [0, 1]
+    n_time_bins = len(time_edges) - 1
+    expected = -summed_gpi[None, :] * np.ones((n_time_bins, 1))
+    seg = _decode_bin(dec_times, time_edges)
+    assert seg.tolist() == [0, 1]
     for j, t_bin in enumerate(seg):
         expected[t_bin] += lc[:, j]
 
-    assert ll.shape == (len(time), n_bins)
+    assert ll.shape == (n_time_bins, n_bins)
     assert np.allclose(ll, expected, rtol=1e-3, atol=1e-3), (
         f"absolute log-likelihood mismatch: max|diff|={np.abs(ll - expected).max():.3e}"
     )
@@ -560,7 +572,7 @@ def test_nonlocal_finite_and_zero_rate():
     assert enc["mean_rates"][1] == 0.0
 
     # decode: only the zero-rate electrode has spikes, so its contribution is isolated
-    time = np.linspace(0.0, 10.0, 6)
+    time_edges = np.linspace(0.0, 10.0, 6)
     dec_times = [np.array([]), np.array([2.5, 7.5])]
     dec_feats = [
         np.zeros((0, 2), dtype=np.float32),
@@ -568,7 +580,7 @@ def test_nonlocal_finite_and_zero_rate():
     ]
     ll = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time),
+            jnp.asarray(time_edges),
             position_time,
             position,
             [jnp.asarray(t) for t in dec_times],
@@ -580,7 +592,7 @@ def test_nonlocal_finite_and_zero_rate():
 
     assert np.all(np.isfinite(ll))
     gpi = np.asarray(enc["summed_ground_process_intensity"])
-    seg = get_spike_time_bin_ind(dec_times[1], time)
+    seg = _decode_bin(dec_times[1], time_edges)
     for t_bin in seg:
         # only the zero-rate electrode contributed at this bin -> exactly LOG_EPS + (-gpi)
         assert np.allclose(ll[t_bin] + gpi, LOG_EPS, atol=1e-6), (
@@ -620,7 +632,7 @@ def test_local_block_parity():
         _predict(s, enc, is_local=True, memory_budget=1)
     )  # one decode spike per block
 
-    assert ll_big.shape == ll_small.shape == (s["time"].shape[0], 1)
+    assert ll_big.shape == ll_small.shape == (s["time_edges"].shape[0] - 1, 1)
     assert np.allclose(ll_big, ll_small, rtol=1e-5, atol=1e-6), (
         f"local block parity failed: max|diff|={np.abs(ll_big - ll_small).max():.3e}"
     )
@@ -659,12 +671,12 @@ def test_zero_rate_fit_and_predict_finite_and_warn():
     assert enc["weight_total"][0] == 0.0
     assert enc["mean_rates"][0] == 0.0
 
-    time = np.array([0.0, 2.0, 4.0, 6.0])  # 3 usable bins
+    time_edges = np.array([0.0, 2.0, 4.0, 6.0])  # 3 time bins
     dec_times = [np.array([1.0, 3.0])]  # -> time bins 0 and 1
     dec_feats = [np.array([[0.1, 0.1], [0.9, -0.8]], dtype=np.float32)]
     ll = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time),
+            jnp.asarray(time_edges),
             position_time,
             position,
             [jnp.asarray(t) for t in dec_times],
@@ -677,7 +689,8 @@ def test_zero_rate_fit_and_predict_finite_and_warn():
     gpi = np.asarray(enc["summed_ground_process_intensity"])
     # all electrodes zero-rate -> gpi floored to EPS everywhere
     assert np.allclose(gpi, EPS)
-    seg = get_spike_time_bin_ind(dec_times[0], time)
+    seg = _decode_bin(dec_times[0], time_edges)
+    assert seg.tolist() == [0, 1]
     for t_bin in seg:
         assert np.allclose(ll[t_bin], LOG_EPS - EPS, atol=1e-6)
 
@@ -699,7 +712,7 @@ def test_local_equals_nonlocal_per_spike():
     contributes to the compared cell) and an animal that is stationary ONLY
     within the single decode-time-bin window containing that spike (so the
     animal's bin is the same at the decode spike's exact time AND at that
-    bin's grid point ``time[t_bin]``, which is all the identity needs), it
+    bin's center ``time[t_bin]``, which is all the identity needs), it
     holds exactly::
 
         ll_local[t_bin, 0] == ll_nonlocal[t_bin, animal_bin]
@@ -710,7 +723,7 @@ def test_local_equals_nonlocal_per_spike():
     Position is NOT held constant for the whole session: it ramps linearly
     across all 6 interior bins for t in [0, 2) (carrying the 3 encoding spikes
     through 3 distinct bins), then holds at ``x_c`` (bin 3) for t in [2, 5],
-    covering both the decode spike (t=3.3) and its time bin's grid point
+    covering both the decode spike (t=3.3) and its time bin's center
     (time[3]=3.0). This matters: if position were constant for the ENTIRE
     session, both the encoding spikes AND the occupancy samples would land in
     a single bin ``bin0``, so every bin's diffused value in the compared row
@@ -745,14 +758,15 @@ def test_local_equals_nonlocal_per_spike():
         disable_progress_bar=True,
     )
 
-    time = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+    time = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])  # decode bin centers
+    time_edges = time_edges_from_centers(time)
     # Single decode spike, single electrode, inside the stationary window [2, 5].
     dec_times = [np.array([3.3])]
     dec_feats = [np.array([[0.3, -0.2]], dtype=np.float32)]
 
     ll_nonlocal = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time),
+            jnp.asarray(time_edges),
             position_time,
             position,
             [jnp.asarray(t) for t in dec_times],
@@ -763,7 +777,7 @@ def test_local_equals_nonlocal_per_spike():
     )
     ll_local = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time),
+            jnp.asarray(time_edges),
             position_time,
             position,
             [jnp.asarray(t) for t in dec_times],
@@ -782,7 +796,8 @@ def test_local_equals_nonlocal_per_spike():
     full_to_local = _full_to_local(np.asarray(enc["node_order"]), n_total_bins)
     animal_position = get_position_at_time(position_time, position, dec_times[0], env)
     animal_bin = int(_interior_bin_indices(env, animal_position, full_to_local)[0])
-    t_bin = int(get_spike_time_bin_ind(dec_times[0], time)[0])
+    t_bin = int(_decode_bin(dec_times[0], time_edges)[0])
+    assert t_bin == 3  # [2.5, 3.5) owns t=3.3; its center is time[3]=3.0
     assert animal_bin == 3  # bin containing x_c = 3.2
 
     # Regression guard: if a future fixture edit collapses this row back to
@@ -837,7 +852,8 @@ def test_local_finite_and_zero_rate():
     assert enc["mean_rates"][1] == 0.0
 
     # decode: only the zero-rate electrode has spikes, so its contribution is isolated
-    time = np.linspace(0.0, 10.0, 6)
+    time = np.linspace(0.0, 10.0, 6)  # decode bin centers
+    time_edges = time_edges_from_centers(time)
     dec_times = [np.array([]), np.array([2.5, 7.5])]
     dec_feats = [
         np.zeros((0, 2), dtype=np.float32),
@@ -845,7 +861,7 @@ def test_local_finite_and_zero_rate():
     ]
     ll = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time),
+            jnp.asarray(time_edges),
             position_time,
             position,
             [jnp.asarray(t) for t in dec_times],
@@ -865,7 +881,7 @@ def test_local_finite_and_zero_rate():
     gpi = np.asarray(enc["summed_ground_process_intensity"])
     local_gpi = gpi[animal_bins]
 
-    seg = get_spike_time_bin_ind(dec_times[1], time)
+    seg = _decode_bin(dec_times[1], time_edges)
     for t_bin in seg:
         # only the zero-rate electrode contributed at this bin -> exactly
         # LOG_EPS - local_gpi[t_bin]
@@ -999,16 +1015,17 @@ def test_validation_fit():
 
 
 def test_validation_predict():
-    """Every Tier-1 predict-time contract raises ValidationError, and
-    a non-finite feature on an out-of-window decode spike does NOT raise."""
+    """Every Tier-1 predict-time contract raises (DataError for non-finite time
+    edges, ValidationError otherwise), and a non-finite feature on an
+    out-of-window decode spike does NOT raise."""
     s = _sim(seed=11)
     enc = _fit(s)
 
-    # non-finite time.
-    bad_time = np.array(s["time"], copy=True)
-    bad_time[0] = np.nan
-    with pytest.raises(ValidationError):
-        _predict(dict(s, time=bad_time), enc)
+    # non-finite time edges.
+    bad_time_edges = np.array(s["time_edges"], copy=True)
+    bad_time_edges[0] = np.nan
+    with pytest.raises(DataError, match="non-finite"):
+        _predict(dict(s, time_edges=bad_time_edges), enc)
 
     # non-finite decoding position raises for the LOCAL path (which reads position);
     # the non-local path never reads position (see the positionless case below).
@@ -1025,14 +1042,14 @@ def test_validation_predict():
     # non-finite IN-window decode spike_waveform_features on a valid (non-zero-rate)
     # electrode raises.
     bad_feats = [np.array(f, copy=True) for f in s["dec_f"]]
-    bad_feats[0][0, 0] = np.nan  # s["dec_t"][0][0] lies within [time[0], time[-1]]
+    bad_feats[0][0, 0] = np.nan  # s["dec_t"][0][0] lies within the time edges
     with pytest.raises(ValidationError):
         _predict(dict(s, dec_f=bad_feats), enc)
 
     # A non-finite feature on an OUT-of-window decode spike must not raise.
-    time = s["time"]
+    time_edges = s["time_edges"]
     out_of_window_dec_t = [
-        np.array([time[-1] + 10.0, time[-1] + 20.0]),
+        np.array([time_edges[-1] + 10.0, time_edges[-1] + 20.0]),
         s["dec_t"][1],
     ]
     out_of_window_dec_f = [
@@ -1059,14 +1076,14 @@ def test_validation_predict_local():
     # non-finite IN-window decode spike_waveform_features on a valid (non-zero-rate)
     # electrode raises.
     bad_feats = [np.array(f, copy=True) for f in s["dec_f"]]
-    bad_feats[0][0, 0] = np.nan  # s["dec_t"][0][0] lies within [time[0], time[-1]]
+    bad_feats[0][0, 0] = np.nan  # s["dec_t"][0][0] lies within the time edges
     with pytest.raises(ValidationError):
         _predict(dict(s, dec_f=bad_feats), enc, is_local=True)
 
     # A non-finite feature on an OUT-of-window decode spike must not raise.
-    time = s["time"]
+    time_edges = s["time_edges"]
     out_of_window_dec_t = [
-        np.array([time[-1] + 10.0, time[-1] + 20.0]),
+        np.array([time_edges[-1] + 10.0, time_edges[-1] + 20.0]),
         s["dec_t"][1],
     ]
     out_of_window_dec_f = [
@@ -1383,17 +1400,19 @@ def test_geometry_no_barrier_leak():
     )
 
     # One decode spike, mark = [0, 0] (matches the left-room encoding marks), in a
-    # single usable time bin.
-    decode_time = np.array([0.0, time[-1]])
+    # single time bin.
+    decode_time_edges = np.array([0.0, time[-1]])
     dec_t = [np.array([time[position.shape[0] // 2]])]
     dec_f = [np.array([[0.0, 0.0]], dtype=np.float32)]
-    ll_d = _predict_diffusion_nonlocal(decode_time, time, position, dec_t, dec_f, enc_d)
-    ll_k = _predict_kde_nonlocal(decode_time, time, position, dec_t, dec_f, enc_k)
+    ll_d = _predict_diffusion_nonlocal(
+        decode_time_edges, time, position, dec_t, dec_f, enc_d
+    )
+    ll_k = _predict_kde_nonlocal(decode_time_edges, time, position, dec_t, dec_f, enc_k)
 
     interior = env.is_track_interior_.ravel()
     interior_centers = env.place_bin_centers_[interior]
     right_room = interior_centers[:, 0] > 20.0
-    seg = int(get_spike_time_bin_ind(dec_t[0], decode_time)[0])
+    seg = int(_decode_bin(dec_t[0], decode_time_edges)[0])
 
     def _posterior_right_room_mass(ll_row):
         post = np.exp(ll_row - ll_row.max())

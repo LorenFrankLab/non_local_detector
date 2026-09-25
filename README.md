@@ -77,17 +77,20 @@ detector = NonLocalClusterlessDetector(
 
 # Fit the model
 detector.fit(
+    position_time=training_position_time,  # Timestamp of each position sample
     position=training_position,
     spike_times=training_spike_times,  # List of arrays, one per electrode
     spike_waveform_features=training_waveform_features,  # List of arrays, one per electrode
-    time=training_time
 )
 
-# Detect replay events
+# Detect replay events in uniform 2 ms bins (n_bins + 1 edges)
+time_edges = detector.calculate_time_edges(np.array([test_start, test_stop]))
 results = detector.predict(
     spike_times=test_spike_times,
     spike_waveform_features=test_waveform_features,
-    time=test_time
+    time_edges=time_edges,
+    position=test_position,
+    position_time=test_position_time,
 )
 
 # Analyze results
@@ -107,11 +110,33 @@ detector = NonLocalSortedSpikesDetector(
 )
 
 detector.fit(
+    position_time=position_time,
     position=position,
     spike_times=spike_times,  # List of arrays, one per neuron
-    time=time
 )
 ```
+
+### Decode Time Bins
+
+Decoding takes bin **edges**, `time_edges` with shape `(n_bins + 1,)`, and
+returns one row per bin at the bin **centers**. Bin `i` covers
+`[time_edges[i], time_edges[i + 1])`; the final bin also contains
+`time_edges[-1]`, so every bin can own a spike. Detector bins must be uniform
+(the HMM applies one transition per bin); edges are validated before any work
+and a grid whose spacing its timestamp dtype cannot resolve (e.g. float32
+Unix times) is rejected.
+
+- `detector.calculate_time_edges([start, stop])` builds edges at
+  `1 / sampling_frequency`; a range that is not a whole number of bins raises
+  unless `trim=True`.
+- `time_edges_from_centers(timestamps)` builds edges centered on uniformly
+  spaced timestamps. Code that decoded one row per position sample
+  (`time=position_time`) migrates to
+  `time_edges=time_edges_from_centers(position_time)`, which keeps the same
+  rows and coordinates; a spike between samples now belongs to the nearest
+  sample's bin rather than the preceding one.
+- After `estimate_parameters`, the learned transitions are tied to that bin
+  width (`transition_time_bin_width_`); decoding at a different width raises.
 
 ## 🏗️ Architecture
 

@@ -65,6 +65,7 @@ from non_local_detector.likelihoods.common import (
     LOG_EPS,
     _SpikeTimeOrder,
     as_std_array,
+    decode_bin_centers,
     get_position_at_time,
     interpolate_weights_at_spike_times,
     resolve_row_slice,
@@ -89,6 +90,7 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
     _interior_bin_indices,
 )
+from non_local_detector.time_edges import validate_time_edges
 
 logger = logging.getLogger(__name__)
 
@@ -459,7 +461,7 @@ def fit_clusterless_diffusion_encoding_model(
 
 
 def predict_clusterless_diffusion_log_likelihood(
-    time: np.ndarray,
+    time_edges: np.ndarray,
     position_time: np.ndarray,
     position: np.ndarray,
     spike_times: list[jnp.ndarray],
@@ -474,8 +476,8 @@ def predict_clusterless_diffusion_log_likelihood(
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time,)
-        Decoding time bins.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
     position_time : np.ndarray, shape (n_time_position,)
         Time of each position sample (used only by the local path; accepted for
         signature parity when ``is_local`` is False).
@@ -492,8 +494,8 @@ def predict_clusterless_diffusion_log_likelihood(
         the non-local path -- only the readout differs). By default False.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
-        ``time`` always stays the FULL decoding timeline: spikes are binned
-        against it and only those owned by the requested rows are evaluated, so
+        ``time_edges`` always stay the FULL decoding edges: spikes are binned
+        against them and only those owned by the requested rows are evaluated, so
         the result equals the full-time result sliced by ``row_slice`` while the
         spatial workspaces scale with the requested rows and selected spikes.
     _spike_time_order : _SpikeTimeOrder | None, optional
@@ -506,7 +508,7 @@ def predict_clusterless_diffusion_log_likelihood(
     Returns
     -------
     log_likelihood : jnp.ndarray, shape (n_rows, n_interior_bins) if ``is_local`` is
-        False, else (n_rows, 1). ``n_rows`` is ``n_time`` unless ``row_slice``
+        False, else (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice``
         is given.
     """
     environment: Environment = encoding_model["environment"]  # type: ignore[assignment]
@@ -538,9 +540,8 @@ def predict_clusterless_diffusion_log_likelihood(
         weight_total=weight_total,  # type: ignore[arg-type]
         mean_rates=mean_rates,  # type: ignore[arg-type]
     )
-    time = np.asarray(time)
-    validate_finite(time, "time")
-    row_start, row_stop = resolve_row_slice(row_slice, len(time))
+    time_edges = validate_time_edges(time_edges)
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_rows = row_stop - row_start
     n_bins = occupancy.shape[0]
 
@@ -580,7 +581,10 @@ def predict_clusterless_diffusion_log_likelihood(
         full_to_local = _full_to_local(node_order, n_total_bins)
 
         interpolated_position = get_position_at_time(
-            position_time, position, time[row_start:row_stop], environment
+            position_time,
+            position,
+            decode_bin_centers(time_edges, row_start, row_stop),
+            environment,
         )
         animal_time_bins = _interior_bin_indices(
             environment, interpolated_position, full_to_local
@@ -617,7 +621,7 @@ def predict_clusterless_diffusion_log_likelihood(
         ):
             selection = select_spikes_in_rows(
                 electrode_spike_times,
-                time,
+                time_edges,
                 row_start,
                 row_stop,
                 _spike_time_order=_spike_time_order,
@@ -737,7 +741,7 @@ def predict_clusterless_diffusion_log_likelihood(
     ):
         selection = select_spikes_in_rows(
             electrode_spike_times,
-            time,
+            time_edges,
             row_start,
             row_stop,
             _spike_time_order=_spike_time_order,

@@ -96,7 +96,7 @@ def _fit_predict_sorted_kde(env, t, pos, spike_times, is_local=False):
     )
     t_edges = jnp.linspace(0.0, 1.0, 6)
     ll = predict_sorted_spikes_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=jnp.asarray(t),
         position=jnp.asarray(pos),
         spike_times=spike_times,
@@ -129,7 +129,7 @@ def _fit_predict_sorted_glm(env, t, pos, spike_times, is_local=False):
     )
     t_edges = jnp.linspace(0.0, 1.0, 6)
     ll = predict_sorted_spikes_glm_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=jnp.asarray(t),
         position=jnp.asarray(pos),
         spike_times=spike_times,
@@ -162,7 +162,7 @@ def _fit_predict_clusterless_kde(
     )
     t_edges = jnp.linspace(0.0, 1.0, 6)
     ll = predict_clusterless_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=jnp.asarray(t),
         position=jnp.asarray(pos),
         spike_times=spike_times,
@@ -202,7 +202,7 @@ def _fit_predict_clusterless_gmm(
     )
     t_edges = jnp.linspace(0.0, 1.0, 6)
     ll = predict_clusterless_gmm_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=jnp.asarray(t),
         position=jnp.asarray(pos),
         spike_times=spike_times,
@@ -360,7 +360,7 @@ class TestNoSpikePoisson:
         empty_spikes = [jnp.array([]) for _ in range(n_neurons)]
         t_edges = jnp.linspace(0.0, 1.0, 6)
         ll_no_spike = predict_sorted_spikes_kde_log_likelihood(
-            time=t_edges,
+            time_edges=t_edges,
             position_time=jnp.asarray(t),
             position=jnp.asarray(pos),
             spike_times=empty_spikes,
@@ -401,7 +401,7 @@ class TestNoSpikePoisson:
         empty_spikes = [jnp.array([]) for _ in range(n_neurons)]
         t_edges = jnp.linspace(0.0, 1.0, 6)
         ll_no_spike = predict_sorted_spikes_glm_log_likelihood(
-            time=t_edges,
+            time_edges=t_edges,
             position_time=jnp.asarray(t),
             position=jnp.asarray(pos),
             spike_times=empty_spikes,

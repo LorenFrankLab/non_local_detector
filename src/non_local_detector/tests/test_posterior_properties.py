@@ -84,7 +84,7 @@ def decoder_with_results() -> dict[str, Any]:
 
     # Predict on test data
     results = decoder.predict(
-        time=test_edges,
+        time_edges=test_edges,
         position_time=test_position_time,
         position=sim.position[n_encode:],
         spike_times=test_spike_times,

@@ -29,6 +29,7 @@ from non_local_detector.initial_conditions import UniformInitialConditions
 from non_local_detector.models.base import _DetectorBase
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.tests.conftest import assert_stochastic_matrix
+from non_local_detector.time_edges import time_edges_from_centers
 
 
 class _FixedTransition:
@@ -105,7 +106,7 @@ class _FixedLikelihoodDetector(_DetectorBase):
             state_names=["Source A", "Source B", "Target"],
         )
 
-    def compute_log_likelihood(self, time, *args, is_missing=None):
+    def compute_log_likelihood(self, time_edges, *args, is_missing=None):
         return self._fixed_log_likelihoods
 
     def fit_encoding_model(self, *args, **kwargs):
@@ -298,7 +299,7 @@ def _estimate_simulated_discrete_transition(
     )
     detector._fit(position=np.array([[0.25], [1.25]]))
     results = detector.estimate_parameters(
-        time=np.arange(n_time, dtype=float),
+        time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
         estimate_initial_conditions=False,
         estimate_discrete_transition=True,
         estimate_encoding_model=False,
@@ -374,7 +375,7 @@ def _estimate_simulated_nonstationary_discrete_transition(
         discrete_transition_covariate_data=covariate_data,
     )
     results = detector.estimate_parameters(
-        time=np.arange(n_time, dtype=float),
+        time_edges=time_edges_from_centers(np.arange(n_time, dtype=float)),
         estimate_initial_conditions=False,
         estimate_discrete_transition=True,
         estimate_encoding_model=False,
@@ -843,7 +844,7 @@ class TestExpandedTransitionMstepEndToEnd:
         detector = _FixedLikelihoodDetector(log_likelihoods)
         detector._fit(position=np.array([[0.25], [1.25]]))
         detector.estimate_parameters(
-            time=np.array([0.0, 1.0]),
+            time_edges=time_edges_from_centers(np.array([0.0, 1.0])),
             estimate_initial_conditions=False,
             estimate_discrete_transition=True,
             estimate_encoding_model=False,

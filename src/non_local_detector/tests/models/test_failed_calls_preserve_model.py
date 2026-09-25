@@ -11,7 +11,11 @@ outputs.
 import numpy as np
 import pytest
 
-from non_local_detector import NonLocalClusterlessDetector, NonLocalSortedSpikesDetector
+from non_local_detector import (
+    NonLocalClusterlessDetector,
+    NonLocalSortedSpikesDetector,
+    time_edges_from_centers,
+)
 from non_local_detector.exceptions import DataError, ValidationError
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
@@ -54,7 +58,7 @@ def _fitted(family_data):
     detector = detector_cls()
     detector.estimate_parameters(
         **fit_args,
-        time=fit_args["position_time"],
+        time_edges=time_edges_from_centers(fit_args["position_time"]),
         max_iter=1,
         estimate_encoding_model=False,
         store_log_likelihood=True,
@@ -87,7 +91,7 @@ def _posterior(detector, family_data):
     time = fit_args["position_time"][:N_DECODE]
     return detector.predict(
         **predict_args,
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position=fit_args["position"][:N_DECODE],
         position_time=time,
     ).acausal_posterior.values
@@ -112,7 +116,9 @@ def _refit_changes_state(fit_args):
             ValueError,
         ),
         ({"n_chunks": "more_than_time"}, ValueError),
-        ({"time": "reversed"}, DataError),
+        ({"time_edges": "decreasing"}, DataError),
+        ({"time_edges": "repeated"}, DataError),
+        ({"time_edges": "nonuniform"}, DataError),
         ({"encoding_update_damping": 0.5}, ValidationError),
     ],
     ids=[
@@ -121,7 +127,9 @@ def _refit_changes_state(fit_args):
         "unknown-output",
         "deprecated-flag-conflict",
         "too-many-chunks",
-        "non-monotonic-time",
+        "decreasing-edges",
+        "repeated-edges",
+        "nonuniform-edges",
         "damping",
     ],
 )
@@ -134,17 +142,25 @@ def test_invalid_estimation_arguments_fail_before_fitting(
     snapshot = _snapshot(detector)
     _, fit_args, _ = family_data
     refit_args, is_training = _refit_changes_state(fit_args)
-    time = fit_args["position_time"]
-    if bad_arguments.get("time") == "reversed":
-        bad_arguments = {**bad_arguments, "time": time[::-1]}
+    time_edges = time_edges_from_centers(fit_args["position_time"])
+    bad_edges = time_edges.copy()
+    if bad_arguments.get("time_edges") == "decreasing":
+        bad_edges = time_edges[::-1]
+    elif bad_arguments.get("time_edges") == "repeated":
+        bad_edges[5] = bad_edges[4]
+    elif bad_arguments.get("time_edges") == "nonuniform":
+        bad_edges[5] += 0.25 * (time_edges[6] - time_edges[5])
+    if "time_edges" in bad_arguments:
+        bad_arguments = {**bad_arguments, "time_edges": bad_edges}
     if bad_arguments.get("n_chunks") == "more_than_time":
-        bad_arguments = {**bad_arguments, "n_chunks": time.shape[0] + 1}
+        n_bins = time_edges.shape[0] - 1
+        bad_arguments = {**bad_arguments, "n_chunks": n_bins + 1}
 
     with pytest.raises(error):
         detector.estimate_parameters(
             **refit_args,
             is_training=is_training,
-            **{"time": time, "max_iter": 1, **bad_arguments},
+            **{"time_edges": time_edges, "max_iter": 1, **bad_arguments},
         )
 
     _assert_unchanged(detector, snapshot)
@@ -220,7 +236,7 @@ def test_successful_calls_store_and_replace_outputs(family_data):
 
     detector.estimate_parameters(
         **fit_args,
-        time=fit_args["position_time"],
+        time_edges=time_edges_from_centers(fit_args["position_time"]),
         max_iter=1,
         store_log_likelihood=True,
     )

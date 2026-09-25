@@ -83,12 +83,12 @@ class TestPublicAPIStreaming:
             disable_progress_bar=True,
         )
 
-        # Decode time
-        decode_time = jnp.linspace(1, 9, 20)
+        # Decode bin edges
+        decode_time_edges = jnp.linspace(1, 9, 20)
 
         # Predict WITHOUT tiling (baseline)
         log_likelihood_baseline = predict_clusterless_kde_log_likelihood(
-            time=decode_time,
+            time_edges=decode_time_edges,
             position_time=sample_data["position_time"],
             position=sample_data["position"],
             spike_times=sample_data["spike_times"],
@@ -115,7 +115,7 @@ class TestPublicAPIStreaming:
 
         # Predict WITH tiling
         log_likelihood_tiled = predict_clusterless_kde_log_likelihood(
-            time=decode_time,
+            time_edges=decode_time_edges,
             position_time=sample_data["position_time"],
             position=sample_data["position"],
             spike_times=sample_data["spike_times"],
@@ -162,12 +162,12 @@ class TestPublicAPIStreaming:
             disable_progress_bar=True,
         )
 
-        # Decode time
-        decode_time = jnp.linspace(1, 9, 20)
+        # Decode bin edges
+        decode_time_edges = jnp.linspace(1, 9, 20)
 
         # Predict WITHOUT streaming (baseline)
         log_likelihood_precomputed = predict_clusterless_kde_log_likelihood(
-            time=decode_time,
+            time_edges=decode_time_edges,
             position_time=sample_data["position_time"],
             position=sample_data["position"],
             spike_times=sample_data["spike_times"],
@@ -195,7 +195,7 @@ class TestPublicAPIStreaming:
 
         # Predict WITH streaming
         log_likelihood_streaming = predict_clusterless_kde_log_likelihood(
-            time=decode_time,
+            time_edges=decode_time_edges,
             position_time=sample_data["position_time"],
             position=sample_data["position"],
             spike_times=sample_data["spike_times"],
@@ -245,11 +245,11 @@ class TestPublicAPIStreaming:
             disable_progress_bar=True,
         )
 
-        decode_time = jnp.linspace(1, 9, 15)
+        decode_time_edges = jnp.linspace(1, 9, 15)
 
         # Baseline
         log_likelihood_baseline = predict_clusterless_kde_log_likelihood(
-            time=decode_time,
+            time_edges=decode_time_edges,
             position_time=sample_data["position_time"],
             position=sample_data["position"],
             spike_times=sample_data["spike_times"],
@@ -274,7 +274,7 @@ class TestPublicAPIStreaming:
 
         # With both tilings
         log_likelihood_tiled = predict_clusterless_kde_log_likelihood(
-            time=decode_time,
+            time_edges=decode_time_edges,
             position_time=sample_data["position_time"],
             position=sample_data["position"],
             spike_times=sample_data["spike_times"],
@@ -315,11 +315,11 @@ class TestPublicAPIStreaming:
             disable_progress_bar=True,
         )
 
-        decode_time = jnp.linspace(1, 9, 10)
+        decode_time_edges = jnp.linspace(1, 9, 10)
 
         # Precomputed with both tilings
         log_likelihood_precomputed = predict_clusterless_kde_log_likelihood(
-            time=decode_time,
+            time_edges=decode_time_edges,
             position_time=sample_data["position_time"],
             position=sample_data["position"],
             spike_times=sample_data["spike_times"],
@@ -347,7 +347,7 @@ class TestPublicAPIStreaming:
 
         # Streaming with both tilings
         log_likelihood_streaming = predict_clusterless_kde_log_likelihood(
-            time=decode_time,
+            time_edges=decode_time_edges,
             position_time=sample_data["position_time"],
             position=sample_data["position"],
             spike_times=sample_data["spike_times"],

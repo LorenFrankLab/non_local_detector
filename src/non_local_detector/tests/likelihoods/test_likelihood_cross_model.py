@@ -128,7 +128,7 @@ def _fit_sorted_glm(env, data):
 def _predict_sorted_kde(enc, env, data, is_local=False):
     t_edges = jnp.linspace(0.0, 1.0, 11)
     return predict_sorted_spikes_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=jnp.asarray(data["position_time"]),
         position=jnp.asarray(data["position"]),
         spike_times=data["spike_times"],
@@ -148,7 +148,7 @@ def _predict_sorted_kde(enc, env, data, is_local=False):
 def _predict_sorted_glm(enc, env, data, is_local=False):
     t_edges = jnp.linspace(0.0, 1.0, 11)
     return predict_sorted_spikes_glm_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=jnp.asarray(data["position_time"]),
         position=jnp.asarray(data["position"]),
         spike_times=data["spike_times"],
@@ -182,7 +182,7 @@ def _fit_clusterless_kde(env, data):
 def _predict_clusterless_kde(enc, env, data, is_local=False):
     t_edges = jnp.linspace(0.0, 1.0, 11)
     return predict_clusterless_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=jnp.asarray(data["position_time"]),
         position=jnp.asarray(data["position"]),
         spike_times=data["spike_times"],
@@ -223,7 +223,7 @@ def _fit_clusterless_gmm(env, data):
 def _predict_clusterless_gmm(enc, env, data, is_local=False):
     t_edges = jnp.linspace(0.0, 1.0, 11)
     return predict_clusterless_gmm_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=jnp.asarray(data["position_time"]),
         position=jnp.asarray(data["position"]),
         spike_times=data["spike_times"],

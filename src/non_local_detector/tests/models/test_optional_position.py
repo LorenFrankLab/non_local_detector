@@ -15,6 +15,7 @@ from non_local_detector import (
     ClusterlessDecoder,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
+    time_edges_from_centers,
 )
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _CLUSTERLESS_ALGORITHMS
@@ -49,13 +50,14 @@ def test_decoder_predicts_without_position(fitted_decoder, clusterless_sim):
     """Omitting position gives the same posterior as supplying it."""
     sim = clusterless_sim
     time = sim.position_time[:N_DECODE]
+    time_edges = time_edges_from_centers(time)
     without = fitted_decoder.predict(
-        sim.spike_times, sim.spike_waveform_features, time=time
+        sim.spike_times, sim.spike_waveform_features, time_edges=time_edges
     )
     with_position = fitted_decoder.predict(
         sim.spike_times,
         sim.spike_waveform_features,
-        time=time,
+        time_edges=time_edges,
         position=sim.position[:N_DECODE],
         position_time=time,
     )
@@ -70,12 +72,12 @@ def test_direct_non_local_predict_without_position(fitted_decoder, clusterless_s
     sim = clusterless_sim
     _, predict = _CLUSTERLESS_ALGORITHMS[fitted_decoder.clusterless_algorithm]
     (encoding_model,) = fitted_decoder.encoding_model_.values()
-    time = jnp.asarray(sim.position_time[:N_DECODE])
+    time_edges = jnp.asarray(time_edges_from_centers(sim.position_time[:N_DECODE]))
 
     def call(position_time, position):
         return np.asarray(
             predict(
-                time,
+                time_edges,
                 position_time,
                 position,
                 sim.spike_times,
@@ -99,13 +101,15 @@ def test_local_state_requires_position(clusterless_sim, sorted_sim):
         clusterless.predict(
             sim.spike_times,
             sim.spike_waveform_features,
-            time=sim.position_time[:N_DECODE],
+            time_edges=time_edges_from_centers(sim.position_time[:N_DECODE]),
         )
 
     time, position, spike_times = sorted_sim
     sorted_detector = NonLocalSortedSpikesDetector().fit(time, position, spike_times)
     with pytest.raises(ValidationError, match="local observation models"):
-        sorted_detector.predict(spike_times, time=time[:N_DECODE])
+        sorted_detector.predict(
+            spike_times, time_edges=time_edges_from_centers(time[:N_DECODE])
+        )
 
 
 @pytest.mark.unit
@@ -121,7 +125,9 @@ def test_local_position_std_without_local_state_does_not_need_position(
     assert not any(obs.is_local for obs in clusterless.observation_models)
     _fit_clusterless(clusterless, sim)
     results = clusterless.predict(
-        sim.spike_times, sim.spike_waveform_features, time=sim.position_time[:N_DECODE]
+        sim.spike_times,
+        sim.spike_waveform_features,
+        time_edges=time_edges_from_centers(sim.position_time[:N_DECODE]),
     )
     assert np.all(np.isfinite(results.acausal_posterior.values))
 
@@ -130,7 +136,9 @@ def test_local_position_std_without_local_state_does_not_need_position(
         **ContFragSortedSpikesClassifier().get_params(), local_position_std=5.0
     )
     sorted_detector.fit(time, position, spike_times)
-    results = sorted_detector.predict(spike_times, time=time[:N_DECODE])
+    results = sorted_detector.predict(
+        spike_times, time_edges=time_edges_from_centers(time[:N_DECODE])
+    )
     assert np.all(np.isfinite(results.acausal_posterior.values))
 
 
@@ -157,4 +165,4 @@ def test_non_local_position_penalty_requires_position(
         decode_time = sim.position_time[:N_DECODE]
 
     with pytest.raises(ValidationError, match="non_local_position_penalty > 0"):
-        detector.predict(*predict_args, time=decode_time)
+        detector.predict(*predict_args, time_edges=time_edges_from_centers(decode_time))

@@ -386,10 +386,10 @@ def test_gmm_edge_cases(gmm_simulation_data):
         bin_tile_size=10000,
     )
 
-    # All should produce valid results (note: shape[0] may be < len(time) if spikes fall outside bins)
-    assert result_large_block.shape[0] > 0
-    assert result_large_tile.shape[0] > 0
-    assert result_combined.shape[0] > 0
+    # One row per decode bin; ``time`` is passed as the decode edges.
+    assert result_large_block.shape[0] == len(time) - 1
+    assert result_large_tile.shape[0] == len(time) - 1
+    assert result_combined.shape[0] == len(time) - 1
 
     # All should have same shape
     assert result_large_block.shape == result_large_tile.shape
@@ -767,10 +767,8 @@ def test_gmm_zero_weight_electrode_penalizes_decode_spikes():
     spikes the electrode does contribute nothing, matching a physically removed
     one; skipping observed spikes would discard that negative evidence.
     """
-    from non_local_detector.likelihoods.common import (
-        LOG_EPS,
-        get_spike_time_bin_ind,
-    )
+    from non_local_detector import time_edges_from_centers
+    from non_local_detector.likelihoods.common import LOG_EPS
 
     rng = np.random.default_rng(0)
 
@@ -837,14 +835,17 @@ def test_gmm_zero_weight_electrode_penalizes_decode_spikes():
         **fit_kwargs,
     )
 
-    decode_time = jnp.asarray(time)
+    # One decode bin centered on each timestamp.
+    decode_time_edges = jnp.asarray(time_edges_from_centers(time))
     pt = jnp.asarray(position_time)
     pos = jnp.asarray(position)
 
     # Expected penalty: LOG_EPS per in-window electrode-1 decode spike, per bin.
-    in_bounds = (e1_times >= time[0]) & (e1_times <= time[-1])
-    seg = np.asarray(
-        get_spike_time_bin_ind(jnp.asarray(e1_times[in_bounds]), decode_time)
+    # Bin i owns [edges[i], edges[i + 1]); the final bin also owns edges[-1].
+    edges = np.asarray(decode_time_edges)
+    in_bounds = (e1_times >= edges[0]) & (e1_times <= edges[-1])
+    seg = np.minimum(
+        np.searchsorted(edges, e1_times[in_bounds], side="right") - 1, n_time - 1
     )
     counts = np.bincount(seg, minlength=n_time).astype(float)  # (n_time,)
     assert counts.sum() > 0, "electrode 1 must fire in-window for a real test"
@@ -865,7 +866,7 @@ def test_gmm_zero_weight_electrode_penalizes_decode_spikes():
         def _predict(spike_times, spike_features, encoding, local=is_local):
             return np.asarray(
                 predict_clusterless_gmm_log_likelihood(
-                    decode_time,
+                    decode_time_edges,
                     pt,
                     pos,
                     spike_times,

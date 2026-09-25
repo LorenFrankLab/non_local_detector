@@ -293,9 +293,9 @@ def weighted_mean_rate(spike_weights: np.ndarray, weight_sum: float) -> float:
 
 
 def get_position_at_time(
-    time: jnp.ndarray,
+    time: np.ndarray | jnp.ndarray,
     position: jnp.ndarray,
-    spike_times: jnp.ndarray,
+    spike_times: np.ndarray | jnp.ndarray,
     env: Environment | None = None,
 ) -> np.ndarray:
     """Get the position at the time of each spike.
@@ -329,53 +329,37 @@ def get_position_at_time(
     return position_at_spike_times
 
 
-def get_spike_time_bin_ind(spike_times: np.ndarray, time: np.ndarray) -> np.ndarray:
-    """Get the index of the time bin for each spike time.
-
-    Parameters
-    ----------
-    spike_times : np.ndarray, shape (n_spikes,)
-    time : np.ndarray, shape (n_time_bins,)
-        Bin edges.
-
-    Returns
-    -------
-    ind : np.ndarray, shape (n_spikes,)
-    """
-    return np.digitize(spike_times, time[1:-1])
-
-
-def resolve_row_slice(row_slice: slice | None, n_time: int) -> tuple[int, int]:
+def resolve_row_slice(row_slice: slice | None, n_bins: int) -> tuple[int, int]:
     """Normalize a likelihood row request against the full decoding timeline.
 
     A backend's ``row_slice`` selects which rows of the FULL-time likelihood to
-    return; ``time`` always stays the full decoding timeline so that spike-to-row
-    ownership is independent of how the rows were chunked.
+    return; ``time_edges`` always stay the full decoding edges so that
+    spike-to-row ownership is independent of how the rows were chunked.
 
     Parameters
     ----------
     row_slice : slice | None
         Contiguous (unit-step) range of output rows, or None for all rows.
-    n_time : int
-        Length of the full decoding ``time`` array.
+    n_bins : int
+        Number of decode bins, ``len(time_edges) - 1``.
 
     Returns
     -------
     row_start : int
     row_stop : int
-        Half-open row range with ``0 <= row_start <= row_stop <= n_time``.
+        Half-open row range with ``0 <= row_start <= row_stop <= n_bins``.
     """
     if row_slice is None:
-        return 0, n_time
+        return 0, n_bins
     if row_slice.step not in (None, 1):
         raise ValidationError(
             "row_slice must select a contiguous range of rows",
             expected="a slice with step None or 1",
             got=f"step={row_slice.step}",
             hint="Chunked prediction only requests contiguous row ranges.",
-            example="    predict_..._log_likelihood(time, ..., row_slice=slice(0, 100))",
+            example="    predict_..._log_likelihood(time_edges, ..., row_slice=slice(0, 100))",
         )
-    row_start, row_stop, _ = row_slice.indices(n_time)
+    row_start, row_stop, _ = row_slice.indices(n_bins)
     return row_start, max(row_start, row_stop)
 
 
@@ -429,36 +413,35 @@ class SpikeSelection:
 
 def select_spikes_in_rows(
     spike_times: np.ndarray,
-    time: np.ndarray,
+    time_edges: np.ndarray,
     row_start: int,
     row_stop: int,
     *,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> SpikeSelection:
-    """Select the spikes owned by the global rows ``[row_start, row_stop)``.
+    """Select the spikes owned by the decode bins ``[row_start, row_stop)``.
 
-    Row ownership is the unchunked convention evaluated on the full timeline: a
-    spike is in range iff ``time[0] <= t <= time[-1]`` and it belongs to row
-    ``np.digitize(t, time[1:-1])``. Only rows ``0 .. max(n_time - 2, 0)`` can own
-    a spike, so the final row of a multi-row timeline always stays empty.
+    Bin ``i`` owns ``time_edges[i] <= t < time_edges[i + 1]``; the final bin
+    also owns ``t == time_edges[-1]``. Spikes outside
+    ``[time_edges[0], time_edges[-1]]`` belong to no bin.
 
-    Because ``np.digitize(t, time[1:-1])`` is ``searchsorted(time[1:-1], t,
-    "right")``, owning row ``>= row_start`` is exactly ``t >= time[row_start]``
-    and owning row ``< row_stop`` is exactly ``t < time[row_stop]`` (inclusive of
-    ``time[-1]`` when the range reaches the last owning row). The selection is
-    therefore a contiguous range in time, found with ``np.searchsorted`` when the
-    spike times are ascending; only the selected subset is digitized, so no spike
-    is re-binned for every chunk.
+    Owning a bin ``>= row_start`` is exactly ``t >= time_edges[row_start]`` and
+    owning a bin ``< row_stop`` is exactly ``t < time_edges[row_stop]``
+    (inclusive when ``row_stop == n_bins``, i.e. the range reaches the final
+    bin), so the selection is a
+    contiguous range in time, found with ``np.searchsorted`` when the spike
+    times are ascending. Only the selected subset is binned, so no spike is
+    re-binned for every chunk.
 
     Parameters
     ----------
     spike_times : np.ndarray, shape (n_spikes,)
         Decoding spike times for one neuron/electrode.
-    time : np.ndarray, shape (n_time,)
-        FULL decoding timeline (not the chunk's rows).
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        FULL decoding bin edges (not the chunk's).
     row_start : int
     row_stop : int
-        Half-open range of requested rows, as returned by ``resolve_row_slice``.
+        Half-open range of requested bins, as returned by ``resolve_row_slice``.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal prediction-local preparation shared across states and chunks.
         Direct callers omit it and verify ordering on each call.
@@ -474,14 +457,11 @@ def select_spikes_in_rows(
         ordering from the indexer's type. ``n_spikes`` records the original
         length so paired arrays can be validated even for empty requests.
     """
-    time = np.asarray(time)
-    n_time = time.shape[0]
+    time_edges = np.asarray(time_edges)
+    n_bins = time_edges.shape[0] - 1
     n_spikes = len(spike_times)
     n_rows = row_stop - row_start
-    # A length-1 timeline owns t == time[0]; the last row of longer timelines
-    # owns no spikes. Such requests need neither a host transfer nor ordering.
-    n_owning_rows = max(n_time - 1, 1)
-    if n_spikes == 0 or row_start >= min(row_stop, n_owning_rows):
+    if n_spikes == 0 or n_rows <= 0:
         return SpikeSelection(
             slice(0, 0), np.zeros((0,), dtype=int), True, n_spikes, n_rows
         )
@@ -491,11 +471,10 @@ def select_spikes_in_rows(
         _spike_time_order = _SpikeTimeOrder()
     spike_times, is_ascending = _spike_time_order.get(spike_times)
 
-    lower = time[row_start]
-    # Reaching the last owning row extends the range to time[-1] inclusive,
-    # matching the unchunked ``spike_times <= time[-1]`` clip.
-    upper_is_inclusive = row_stop >= n_owning_rows
-    upper = time[n_time - 1] if upper_is_inclusive else time[row_stop]
+    lower = time_edges[row_start]
+    upper = time_edges[row_stop]
+    # The final bin is closed so a spike at the last edge is counted.
+    upper_is_inclusive = row_stop == n_bins
 
     # The ordering the range lookup needs was established, never assumed.
     if is_ascending:
@@ -513,13 +492,14 @@ def select_spikes_in_rows(
         indexer = in_rows
         selected = spike_times[in_rows]
 
-    # Selection above establishes global ownership. Only boundaries inside the
-    # requested rows are needed to get the local row index; passing time[1:-1]
-    # would make digitize's monotonicity check scan the entire recording for
-    # every unit and every chunk. Exclude time[-1] to preserve the final empty row.
-    boundaries = time[row_start + 1 : min(row_stop, n_time - 1)]
+    # Selection above establishes global ownership. Only the interior edges of
+    # the requested bins are needed for the local bin index; the full edge
+    # array would make digitize's monotonicity check scan the whole recording
+    # for every unit and every chunk. A spike at the closing edge of the final
+    # bin lands past the last interior edge, in the final local bin.
+    interior_edges = time_edges[row_start + 1 : row_stop]
     return SpikeSelection(
-        indexer, np.digitize(selected, boundaries), is_ascending, n_spikes, n_rows
+        indexer, np.digitize(selected, interior_edges), is_ascending, n_spikes, n_rows
     )
 
 
@@ -968,23 +948,26 @@ def select_spike_rows(
 
 def get_spikecount_per_time_bin(
     spike_times: np.ndarray,
-    time: np.ndarray,
+    time_edges: np.ndarray,
     row_slice: slice | None = None,
     *,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> np.ndarray:
-    """Get the number of spikes in each requested time bin.
+    """Get the number of spikes in each requested decode bin.
 
     Parameters
     ----------
     spike_times : np.ndarray, shape (n_spikes,)
-    time : np.ndarray, shape (n_time,)
-        FULL decoding timeline, which defines the bins a spike belongs to.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        FULL decoding bin edges, which define the bin a spike belongs to (see
+        ``select_spikes_in_rows``). They are not validated here, because this
+        runs per unit and per chunk; callers validate them once (see
+        ``non_local_detector.time_edges.validate_time_edges``).
     row_slice : slice | None, optional
-        Contiguous range of rows to count, by default None (all rows). Counting
-        rows ``[a, b)`` of the full timeline gives the same values as counting
-        all rows and slicing ``[a:b]``, so concatenating the chunks of a row
-        partition reproduces the full-time counts exactly.
+        Contiguous range of bins to count, by default None (all bins).
+        Counting bins ``[a, b)`` of the full timeline gives the same values as
+        counting all bins and slicing ``[a:b]``, so concatenating the chunks of
+        a partition reproduces the full-time counts exactly.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -993,13 +976,39 @@ def get_spikecount_per_time_bin(
     Returns
     -------
     count : np.ndarray, shape (n_rows,)
-        ``n_rows`` is ``n_time`` by default, else the length of ``row_slice``.
+        ``n_rows`` is ``n_bins`` by default, else the length of ``row_slice``.
     """
-    row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     selection = select_spikes_in_rows(
-        spike_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
+        spike_times,
+        time_edges,
+        row_start,
+        row_stop,
+        _spike_time_order=_spike_time_order,
     )
     return np.bincount(selection.bin_ind, minlength=selection.n_rows)
+
+
+def decode_bin_centers(
+    time_edges: np.ndarray, row_start: int, row_stop: int
+) -> np.ndarray:
+    """Centers of the decode bins ``[row_start, row_stop)``.
+
+    Local-position kernels, the non-local penalty, and local likelihoods
+    evaluate the animal's position at these observation coordinates.
+
+    Parameters
+    ----------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+    row_start : int
+    row_stop : int
+
+    Returns
+    -------
+    centers : np.ndarray, shape (row_stop - row_start,)
+    """
+    edges = np.asarray(time_edges)[row_start : row_stop + 1]
+    return edges[:-1] + 0.5 * np.diff(edges)
 
 
 def safe_divide(numerator, denominator, eps=EPS, condition=None):

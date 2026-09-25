@@ -7,7 +7,7 @@ verifying posteriors, position coordinates, and mathematical invariants.
 import numpy as np
 import pytest
 
-from non_local_detector import NonLocalSortedSpikesDetector
+from non_local_detector import NonLocalSortedSpikesDetector, time_edges_from_centers
 from non_local_detector.models import NonLocalClusterlessDetector
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
@@ -58,7 +58,7 @@ def test_multibin_local_fit_predict(simulated_data):
 
     results = detector.predict(
         spike_times=spike_times,
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
     )
@@ -100,7 +100,7 @@ def test_multibin_local_has_position_coordinates(simulated_data):
 
     results = detector.predict(
         spike_times=spike_times,
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
     )
@@ -133,7 +133,7 @@ def test_legacy_local_unchanged(simulated_data):
 
     results = detector.predict(
         spike_times=spike_times,
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
     )
@@ -171,7 +171,7 @@ def test_penalty_and_kernel_simultaneous(simulated_data):
 
     results = detector.predict(
         spike_times=spike_times,
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
     )
@@ -217,7 +217,7 @@ def test_clusterless_multibin_local_fit_predict(clusterless_simulated_data):
     results = detector.predict(
         spike_times=sim.spike_times,
         spike_waveform_features=sim.spike_waveform_features,
-        time=sim.edges,
+        time_edges=sim.edges,
         position=sim.position,
         position_time=sim.position_time,
     )
@@ -253,7 +253,7 @@ def test_multibin_local_posterior_invariants(simulated_data):
 
     results = detector.predict(
         spike_times=spike_times,
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
     )
@@ -302,7 +302,7 @@ def _fit_predict_state_probs(simulated_data, **detector_kwargs):
     )
     results = detector.predict(
         spike_times=simulated_data["spike_times"],
-        time=simulated_data["time"],
+        time_edges=time_edges_from_centers(simulated_data["time"]),
         position=simulated_data["position"],
         position_time=simulated_data["time"],
     )
@@ -361,7 +361,7 @@ def test_large_sigma_spreads_local_posterior(simulated_data):
     )
     results = detector.predict(
         spike_times=simulated_data["spike_times"],
-        time=simulated_data["time"],
+        time_edges=time_edges_from_centers(simulated_data["time"]),
         position=simulated_data["position"],
         position_time=simulated_data["time"],
     )
@@ -412,7 +412,7 @@ def test_delta_kernel_fit_predict(simulated_data):
 
     results = detector.predict(
         spike_times=spike_times,
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position=position,
         position_time=time,
     )
@@ -451,7 +451,7 @@ def test_delta_kernel_matches_narrow_gaussian(simulated_data):
         ).fit(time, position, spike_times, is_training=~is_event)
         results = detector.predict(
             spike_times=spike_times,
-            time=time,
+            time_edges=time_edges_from_centers(time),
             position=position,
             position_time=time,
         )

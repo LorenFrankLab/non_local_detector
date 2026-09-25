@@ -215,8 +215,13 @@ class NonLocalSortedSpikesDetector(SortedSpikesDetector):
     Examples
     --------
     >>> detector = NonLocalSortedSpikesDetector()
-    >>> detector.fit(position, spike_times, environments)
-    >>> results = detector.predict(spike_times, time)
+    >>> detector.fit(position_time, position, spike_times)
+    >>> results = detector.predict(
+    ...     spike_times,
+    ...     time_edges=time_edges,
+    ...     position=position,
+    ...     position_time=position_time,
+    ... )
     >>> non_local_posterior = detector.get_conditional_non_local_posterior(results)
     """
 
@@ -392,8 +397,14 @@ class NonLocalClusterlessDetector(ClusterlessDetector):
     Examples
     --------
     >>> detector = NonLocalClusterlessDetector()
-    >>> detector.fit(position, spike_waveform_features, environments)
-    >>> results = detector.predict(spike_waveform_features, time)
+    >>> detector.fit(position_time, position, spike_times, spike_waveform_features)
+    >>> results = detector.predict(
+    ...     spike_times,
+    ...     spike_waveform_features,
+    ...     time_edges=time_edges,
+    ...     position=position,
+    ...     position_time=position_time,
+    ... )
     >>> non_local_posterior = detector.get_conditional_non_local_posterior(results)
     """
 

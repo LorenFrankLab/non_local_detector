@@ -85,7 +85,7 @@ def test_sorted_kde_encoding_uses_linearized_positions_when_graph_and_2d():
     # Non-local prediction shape sanity
     time_edges = np.linspace(0.0, 10.0, 6)
     ll = predict_sorted_spikes_kde_log_likelihood(
-        time=time_edges,
+        time_edges=time_edges,
         position_time=t,
         position=pos,
         spike_times=spikes,
@@ -100,7 +100,7 @@ def test_sorted_kde_encoding_uses_linearized_positions_when_graph_and_2d():
         disable_progress_bar=True,
         is_local=False,
     )
-    assert ll.shape[0] == time_edges.shape[0] and ll.ndim == 2
+    assert ll.shape[0] == time_edges.shape[0] - 1 and ll.ndim == 2
 
 
 def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
@@ -126,7 +126,7 @@ def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
     # Non-local predictor shape sanity
     time_edges = np.linspace(0.0, 10.0, 6)
     ll = predict_clusterless_kde_log_likelihood(
-        time=time_edges,
+        time_edges=time_edges,
         position_time=t,
         position=pos,
         spike_times=[np.array([2.1])],
@@ -145,7 +145,7 @@ def test_clusterless_kde_encoding_uses_linearized_positions_when_graph_and_2d():
         block_size=8,
         disable_progress_bar=True,
     )
-    assert ll.shape[0] == time_edges.shape[0] and ll.ndim == 2
+    assert ll.shape[0] == time_edges.shape[0] - 1 and ll.ndim == 2
 
 
 # =============================================================================

@@ -10,19 +10,20 @@ from non_local_detector.likelihoods.clusterless_kde import (
     kde_distance,
     predict_clusterless_kde_log_likelihood,
 )
-from non_local_detector.likelihoods.common import get_spike_time_bin_ind
+from non_local_detector.likelihoods.common import select_spikes_in_rows
 
 
 def rng(seed=0):
     return np.random.default_rng(seed)
 
 
-def test_get_spike_time_bin_ind_right_edge_last_bin():
+def test_select_spikes_in_rows_right_edge_last_bin():
     edges = np.array([0.0, 1.0, 2.0, 3.0])
     spikes = np.array([0.0, 0.5, 2.0, 3.0])
-    inds = get_spike_time_bin_ind(spikes, edges)
+    selection = select_spikes_in_rows(spikes, edges, 0, 3)
     # bins: [0,1), [1,2), [2,3]; right-edge 3.0 -> last bin index 2
-    assert inds.tolist() == [0, 0, 2, 2]
+    assert spikes[selection.indexer].tolist() == spikes.tolist()
+    assert selection.bin_ind.tolist() == [0, 0, 2, 2]
 
 
 def test_kde_distance_shapes_and_values():
@@ -101,7 +102,7 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
     dec_feats = [jnp.array([[0.1, 0.05], [1.1, -0.9]], dtype=float)]
 
     ll_nonlocal = predict_clusterless_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=dec_spike_times,
@@ -120,13 +121,13 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
         block_size=8,
         disable_progress_bar=True,
     )
-    # shape: (n_time, n_interior_bins)
-    assert ll_nonlocal.shape[0] == t_edges.shape[0]
+    # shape: (n_bins, n_interior_bins), one row per decode bin
+    assert ll_nonlocal.shape[0] == t_edges.shape[0] - 1
     assert ll_nonlocal.ndim == 2 and ll_nonlocal.shape[1] > 0
     assert jnp.all(jnp.isfinite(ll_nonlocal))
 
     ll_local = predict_clusterless_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=dec_spike_times,
@@ -145,18 +146,21 @@ def test_fit_and_predict_clusterless_kde_minimal(simple_1d_environment):
         block_size=8,
         disable_progress_bar=True,
     )
-    assert ll_local.shape == (t_edges.shape[0], 1)
+    assert ll_local.shape == (t_edges.shape[0] - 1, 1)
     assert jnp.all(jnp.isfinite(ll_local))
 
 
-def test_get_spike_time_bin_ind_unsorted_and_interior_edges():
+def test_select_spikes_in_rows_unsorted_and_interior_edges():
     edges = np.array([0.0, 1.0, 2.0, 3.0])
     spikes = np.array(
         [2.0, 0.0, 1.0, 1.0, 0.5]
     )  # unsorted, includes interior edges 1.0
-    inds = get_spike_time_bin_ind(spikes, edges)
+    selection = select_spikes_in_rows(spikes, edges, 0, 3)
     # bins: [0,1), [1,2), [2,3]; interior edge 1.0 -> bin 1 (right side)
-    assert inds.tolist() == [2, 0, 1, 1, 0]
+    # Unsorted spikes keep their original order in the selection.
+    assert spikes[selection.indexer].tolist() == spikes.tolist()
+    assert selection.bin_ind.tolist() == [2, 0, 1, 1, 0]
+    assert not selection.indices_are_sorted
 
 
 def test_fit_clusterless_kde_raises_without_place_grid():
@@ -236,7 +240,7 @@ def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment)
 
     # Non-local prediction should work
     ll_nonlocal = predict_clusterless_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=dec_spike_times,
@@ -256,13 +260,13 @@ def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment)
         disable_progress_bar=True,
     )
 
-    assert ll_nonlocal.shape[0] == t_edges.shape[0]
+    assert ll_nonlocal.shape[0] == t_edges.shape[0] - 1
     assert ll_nonlocal.ndim == 2 and ll_nonlocal.shape[1] > 0
     assert jnp.all(jnp.isfinite(ll_nonlocal))
 
     # Local prediction should also work
     ll_local = predict_clusterless_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=dec_spike_times,
@@ -282,7 +286,7 @@ def test_clusterless_kde_varying_electrode_feature_counts(simple_1d_environment)
         disable_progress_bar=True,
     )
 
-    assert ll_local.shape == (t_edges.shape[0], 1)
+    assert ll_local.shape == (t_edges.shape[0] - 1, 1)
     assert jnp.all(jnp.isfinite(ll_local))
 
 

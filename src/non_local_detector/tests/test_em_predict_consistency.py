@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from sklearn.base import clone
 
-from non_local_detector import ClusterlessDecoder
+from non_local_detector import ClusterlessDecoder, time_edges_from_centers
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 
 
@@ -41,7 +41,7 @@ class TestEstimateParametersPredictConsistency:
             position=sim.position,
             spike_times=sim.spike_times,
             spike_waveform_features=sim.spike_waveform_features,
-            time=sim.position_time,
+            time_edges=time_edges_from_centers(sim.position_time),
             max_iter=3,
             estimate_encoding_model=False,
         )
@@ -49,7 +49,7 @@ class TestEstimateParametersPredictConsistency:
         pred_results = decoder.predict(
             spike_times=sim.spike_times,
             spike_waveform_features=sim.spike_waveform_features,
-            time=sim.position_time,
+            time_edges=time_edges_from_centers(sim.position_time),
             position_time=sim.position_time,
             position=sim.position,
         )
@@ -113,7 +113,7 @@ class TestEncodingModelDataCleanup:
             position=sim.position,
             spike_times=sim.spike_times,
             spike_waveform_features=sim.spike_waveform_features,
-            time=sim.position_time,
+            time_edges=time_edges_from_centers(sim.position_time),
             max_iter=1,
             estimate_encoding_model=False,
         )
@@ -152,7 +152,7 @@ class TestEncodingModelDataCleanup:
             position=sim.position,
             spike_times=sim.spike_times,
             spike_waveform_features=sim.spike_waveform_features,
-            time=sim.position_time,
+            time_edges=time_edges_from_centers(sim.position_time),
             max_iter=2,
             estimate_encoding_model=False,
         )
@@ -202,7 +202,7 @@ class TestEncodingModelDataCleanup:
             position=sim.position,
             spike_times=sim.spike_times,
             spike_waveform_features=sim.spike_waveform_features,
-            time=sim.position_time,
+            time_edges=time_edges_from_centers(sim.position_time),
             max_iter=1,
             estimate_encoding_model=False,
             estimate_initial_conditions=False,
@@ -250,7 +250,7 @@ class TestEncodingModelDataCleanup:
             position=sim.position,
             spike_times=sim.spike_times,
             spike_waveform_features=sim.spike_waveform_features,
-            time=sim.position_time,
+            time_edges=time_edges_from_centers(sim.position_time),
             max_iter=2,
             estimate_encoding_model=False,
         )

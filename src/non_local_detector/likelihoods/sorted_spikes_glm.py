@@ -64,12 +64,14 @@ from non_local_detector.environment import Environment, get_n_bins
 from non_local_detector.likelihoods.common import (
     EPS,
     _SpikeTimeOrder,
+    decode_bin_centers,
     get_position_at_time,
     get_spikecount_per_time_bin,
     resolve_row_slice,
     validate_population_lengths,
     validate_weights,
 )
+from non_local_detector.time_edges import validate_time_edges
 
 
 def make_spline_design_matrix(
@@ -447,7 +449,7 @@ def fit_sorted_spikes_glm_encoding_model(
 
 
 def predict_sorted_spikes_glm_log_likelihood(
-    time: jnp.ndarray,
+    time_edges: np.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[np.ndarray],
@@ -471,8 +473,8 @@ def predict_sorted_spikes_glm_log_likelihood(
 
     Parameters
     ----------
-    time : jnp.ndarray, shape (n_time,)
-        Time bins for decoding likelihood.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
     position_time : jnp.ndarray, shape (n_time_position,)
         Timestamps corresponding to the position data.
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
@@ -504,8 +506,8 @@ def predict_sorted_spikes_glm_log_likelihood(
         By default False.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
-        ``time`` always stays the FULL decoding timeline, so spikes are binned
-        against it and only those owned by the requested rows are counted; the
+        ``time_edges`` always stay the FULL decoding edges, so spikes are binned
+        against them and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
@@ -514,18 +516,19 @@ def predict_sorted_spikes_glm_log_likelihood(
 
     Returns
     -------
-    log_likelihood : jnp.ndarray, shape (n_rows, n_bins)
-        ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
+    log_likelihood : jnp.ndarray, shape (n_rows, n_place_bins)
+        ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
+    time_edges = validate_time_edges(time_edges)
     validate_population_lengths(
         "neuron",
         spike_times=spike_times,
         coefficients=coefficients,
         place_fields=place_fields,
     )
-    row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_rows = row_stop - row_start
-    row_time = time[row_start:row_stop]
+    row_time = decode_bin_centers(time_edges, row_start, row_stop)
 
     if is_local:
         log_likelihood = jnp.zeros((n_rows,))
@@ -549,7 +552,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
                 neuron_spike_times,
-                time,
+                time_edges,
                 row_slice=row_slice,
                 _spike_time_order=_spike_time_order,
             )
@@ -576,7 +579,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
                 neuron_spike_times,
-                time,
+                time_edges,
                 row_slice=row_slice,
                 _spike_time_order=_spike_time_order,
             )

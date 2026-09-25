@@ -66,8 +66,8 @@ class SortedSpikesDecoder(SortedSpikesDetector):
     Examples
     --------
     >>> decoder = SortedSpikesDecoder()
-    >>> decoder.fit(position, spike_times, environments)
-    >>> decoded_position = decoder.predict(spike_times, time)
+    >>> decoder.fit(position_time, position, spike_times)
+    >>> decoded_position = decoder.predict(spike_times, time_edges=time_edges)
     """
 
     def __init__(
@@ -172,8 +172,10 @@ class ClusterlessDecoder(ClusterlessDetector):
     Examples
     --------
     >>> decoder = ClusterlessDecoder()
-    >>> decoder.fit(position, spike_waveform_features, environments)
-    >>> decoded_position = decoder.predict(spike_waveform_features, time)
+    >>> decoder.fit(position_time, position, spike_times, spike_waveform_features)
+    >>> decoded_position = decoder.predict(
+    ...     spike_times, spike_waveform_features, time_edges=time_edges
+    ... )
     """
 
     def __init__(

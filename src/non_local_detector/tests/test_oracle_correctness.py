@@ -144,10 +144,10 @@ def kde_decoding_setup() -> dict[str, Any]:
 
     # Decode on test data
     test_time = sim.position_time[n_encode:]
-    test_edges = np.linspace(test_time[0], test_time[-1], 50)  # 50 time bins
+    test_edges = np.linspace(test_time[0], test_time[-1], 50)  # 49 time bins
 
     log_likelihood = predict_clusterless_kde_log_likelihood(
-        time=test_edges,
+        time_edges=test_edges,
         position_time=sim.position_time,
         position=sim.position,
         spike_times=[
@@ -281,7 +281,7 @@ def test_delta_t_scaling_normalized() -> None:
     # Decode with standard bin width (50 bins)
     test_edges_standard = np.linspace(test_time[0], test_time[-1], 51)  # 50 bins
     ll_standard = predict_clusterless_kde_log_likelihood(
-        time=test_edges_standard,
+        time_edges=test_edges_standard,
         position_time=sim.position_time,
         position=sim.position,
         spike_times=[
@@ -308,7 +308,7 @@ def test_delta_t_scaling_normalized() -> None:
     # Decode with wider bins (25 bins)
     test_edges_wide = np.linspace(test_time[0], test_time[-1], 26)  # 25 bins
     ll_wide = predict_clusterless_kde_log_likelihood(
-        time=test_edges_wide,
+        time_edges=test_edges_wide,
         position_time=sim.position_time,
         position=sim.position,
         spike_times=[
