@@ -14,6 +14,7 @@ from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
     as_std_array,
     block_log_kde,
+    drop_zero_weight_samples,
     get_position_at_time,
     interpolate_weights_at_spike_times,
     log_gaussian_pdf,
@@ -1467,12 +1468,18 @@ def fit_clusterless_kde_encoding_model(
             edge_order=environment.edge_order,
             edge_spacing=environment.edge_spacing,
         ).linear_position.to_numpy()[:, None]
+        occupancy_samples, occupancy_weights = drop_zero_weight_samples(
+            position1D, weights
+        )
         occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
-            position1D, weights=jnp.asarray(weights)
+            occupancy_samples, weights=jnp.asarray(occupancy_weights)
         )
     else:
+        occupancy_samples, occupancy_weights = drop_zero_weight_samples(
+            position, weights
+        )
         occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
-            position, weights=jnp.asarray(weights)
+            occupancy_samples, weights=jnp.asarray(occupancy_weights)
         )
 
     occupancy = occupancy_model.predict(interior_place_bin_centers)

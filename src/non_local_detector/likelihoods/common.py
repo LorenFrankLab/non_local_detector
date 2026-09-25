@@ -792,6 +792,35 @@ def block_log_kde(
     return jnp.concatenate(blocks)
 
 
+def drop_zero_weight_samples(
+    samples: np.ndarray, weights: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Remove samples that carry no weight from a weighted KDE's training set.
+
+    A zero-weight sample adds nothing to a weighted kernel density, so removing
+    it leaves the density unchanged while every later evaluation stops paying
+    for it. Detectors pass the full position timeline with the group mask as
+    weights, so an occupancy model would otherwise evaluate every out-of-group
+    sample. When no weight is positive the inputs are returned unchanged, which
+    keeps the zero-exposure behavior of the fits.
+
+    Parameters
+    ----------
+    samples : np.ndarray, shape (n_samples, ...)
+    weights : np.ndarray, shape (n_samples,)
+        Host array of non-negative weights.
+
+    Returns
+    -------
+    samples, weights
+        The rows with positive weight.
+    """
+    keep = np.asarray(weights) > 0.0
+    if not np.any(keep) or np.all(keep):
+        return samples, weights
+    return samples[keep], weights[keep]
+
+
 @dataclass
 class KDEModel:
     std: jnp.ndarray

@@ -60,6 +60,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     KDEModel,
     _SpikeTimeOrder,
+    drop_zero_weight_samples,
     get_position_at_time,
     get_spikecount_per_time_bin,
     resolve_row_slice,
@@ -153,18 +154,12 @@ def fit_sorted_spikes_kde_encoding_model(
         occupancy_model = KDEModel(
             std=position_std,
             block_size=block_size,
-        ).fit(
-            position1D,
-            weights=weights,
-        )
+        ).fit(*drop_zero_weight_samples(position1D, weights))
     else:
         occupancy_model = KDEModel(
             std=position_std,
             block_size=block_size,
-        ).fit(
-            position,
-            weights=weights,
-        )
+        ).fit(*drop_zero_weight_samples(position, weights))
 
     occupancy = occupancy_model.predict(interior_place_bin_centers)
 
