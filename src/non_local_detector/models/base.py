@@ -3182,10 +3182,11 @@ class ClusterlessDetector(_DetectorBase):
         if _spike_time_order is None:
             _spike_time_order = _SpikeTimeOrder()
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
+        # ``local_position_std`` only shapes Local states, so it does not require
+        # position on its own.
         needs_position = (
             np.any([obs.is_local for obs in self.observation_models])
             or non_local_penalty > 0
-            or self.local_position_std is not None
         )
         if position is None and needs_position:
             reason = []
@@ -3193,8 +3194,6 @@ class ClusterlessDetector(_DetectorBase):
                 reason.append("local observation models")
             if non_local_penalty > 0:
                 reason.append("non_local_position_penalty > 0")
-            if self.local_position_std is not None:
-                reason.append("local_position_std is set")
             raise ValidationError(
                 f"Missing required parameter: position (needed for {', '.join(reason)})",
                 expected="position array with shape (n_time, n_dims)",
@@ -4212,10 +4211,11 @@ class SortedSpikesDetector(_DetectorBase):
         row_time = time[row_start:row_stop]
 
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
+        # ``local_position_std`` only shapes Local states, so it does not require
+        # position on its own.
         needs_position = (
             np.any([obs.is_local for obs in self.observation_models])
             or non_local_penalty > 0
-            or self.local_position_std is not None
         )
         if position is None and needs_position:
             reason = []
@@ -4223,8 +4223,6 @@ class SortedSpikesDetector(_DetectorBase):
                 reason.append("local observation models")
             if non_local_penalty > 0:
                 reason.append("non_local_position_penalty > 0")
-            if self.local_position_std is not None:
-                reason.append("local_position_std is set")
             raise ValidationError(
                 f"Missing required parameter: position (needed for {', '.join(reason)})",
                 expected="position array with shape (n_time, n_dims)",
