@@ -270,8 +270,9 @@ confirmed failing on the pre-fix code before the fix. Preservation tests
 | `aad7fa7` | — | Typing only (keeps mypy at the `main` baseline for the touched files). |
 | `970f476` | §1 | Window helpers deleted; `_group_spike_mask` selects spikes with positive interpolated group weight in `[t0, t_end]`; clusterless fits get the full timeline with `weights = mask` (or `weights * mask`); GLM `weighted_spike_counts` for the event term, exposure-only weights in `fit_poisson_regression`. |
 | `27d8bea` | review | Occupancy KDEs (clusterless KDE/log-KDE, sorted KDE) drop zero-weight samples before fitting. Output is bit-identical. With a 10% mask, local predict took 0.10 s instead of 25.0 s (466k samples, 20k rows, CPU). |
+| `919286b` | review | GLM event mass is split between each spike's bracketing samples, `(1 - a) * w[i]` and `a * w[i+1]`, so events land only on exposed rows. With the left-sample assignment in `970f476`, a mask `[1,1,0,1,1]` with a spike at 2.5 gave infinite place fields. Unweighted jittered fits move by at most 0.03% of peak. |
 
-**Validation.** Full suite at `27d8bea`: **1827 passed / 6 skipped** (Phase 4: 1762 / 6). ruff and format pass; mypy adds no errors to the touched files relative to `main`. An independent review found no code defects. It found one incorrect CHANGELOG claim, which was corrected, and the occupancy performance regression, which was fixed in `27d8bea`.
+**Validation.** Full suite at `919286b`: **1828 passed / 6 skipped** (Phase 4: 1762 / 6). ruff and format pass; mypy adds no errors to the touched files relative to `main`. An independent review found no code defects. It found one incorrect CHANGELOG claim, which was corrected, and the occupancy performance regression, which was fixed in `27d8bea`.
 
 **Numerical effects** (compared against the pre-change tree on the same inputs):
 
@@ -296,9 +297,5 @@ confirmed failing on the pre-fix code before the fix. Preservation tests
 - Weight interpolation still bridges **NaN-position** stretches, because NaN
   rows are dropped before the timeline reaches the encoding fit. This has not
   changed from before and belongs to C3b's gap policy.
-- The GLM's left-closed rows let the row before a 0 → 1 transition own
-  positive-weight spikes with zero exposure. The effect is bounded, and it is
-  documented in `weighted_spike_counts`. Aligning event cells with exposure
-  cells is Phase 6a encoding-cell work.
 - Out of scope, noted: `min_encoding_local_mass` / `min_encoding_local_ess` are
   still validated only after the wrapper's initial `fit`.
