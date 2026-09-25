@@ -215,9 +215,10 @@ record rather than treating the audit failure as current readiness.
 - Phase 4 (resolved): no new covariance-collapse warning appeared in either
   full-suite run; no fixture regularization, floor, or tolerance changed.
 - Phase 5 (decided): reject any nonzero damping regardless of backend or runtime
-  configuration; a general rebuild protocol is out of scope. Open: whether
-  `needs_position` should be true when `local_position_std` is set with no
-  local state.
+  configuration; a general rebuild protocol is out of scope. Also decided
+  (2026-09-25): `needs_position` is not true merely because
+  `local_position_std` is set; it requires a local state or a nonzero
+  non-local position penalty.
 
 ## Found during review, not yet scheduled
 

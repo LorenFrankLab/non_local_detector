@@ -188,8 +188,19 @@ drafted. Verified on `main`:
 Remaining work is regression coverage: public and direct `position=None`
 non-local prediction for GMM, KDE, and log-KDE (only a direct diffusion call is
 tested today), and a test for the missing-position `ValidationError`.
-`needs_position` is also true whenever `local_position_std` is set, even with no
-local state; decide whether that is intended rather than changing it silently.
+
+**Decision (2026-09-25): `local_position_std` alone does not require
+position.** `needs_position` is currently also true whenever
+`local_position_std` is set, even with no local state. That clause is removed
+from both families, so the predicate becomes
+`any(obs.is_local) or non_local_position_penalty > 0`, and the
+`"local_position_std is set"` reason is dropped from the error. Verified: every
+consumer of `local_position_std` is gated on `obs.is_local` — the kernel loop
+(`base.py:3353-3366` clusterless, `:4372` sorted) and `:1151`, `:1194`,
+`:1288`, `:3279`, `:4299` — so with no local state the parameter has no
+effect. Test: a detector with `local_position_std` set and no local
+observation model predicts with `position=None`; with a local state, the
+missing-position `ValidationError` still fires.
 
 ## 4. Population validation in sorted diffusion and MRF
 
@@ -222,7 +233,7 @@ shape errors. Re-inventory current validators before adding duplicates.
 | Backend sufficient statistics | KDE/GLM/diffusion/MRF/clusterless paths apply event weights once and use the corresponding exposure; GLM weighted counts have an independent reference with a stated spike-position convention. |
 | Population alignment | Collection and per-electrode row mismatches raise package diagnostics through the public fit before truncation or indexing, and through predict for every clusterless backend. |
 | Damping | Any nonzero damping fails before mutation through both public wrappers with `ValidationError`; fitted state is unchanged; zero damping retains behavior. |
-| Optional position | Regression tests cover existing position-free non-local prediction (GMM/KDE/log-KDE, public and direct) and the missing-position `ValidationError`. |
+| Optional position | Regression tests cover existing position-free non-local prediction (GMM/KDE/log-KDE, public and direct) and the missing-position `ValidationError`; `local_position_std` without a local state no longer requires position, in both families. |
 | Diffusion/MRF validation | Mismatches fail through both entry points and both local/non-local branches, including the direct local call that currently broadcasts silently. |
 
 Use existing applicable numerical tolerances and preserve Phase 1 regressions.
