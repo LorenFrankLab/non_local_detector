@@ -3,7 +3,8 @@ import copy
 import inspect
 import pickle
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from functools import partial
 from logging import getLogger
 
@@ -152,6 +153,72 @@ def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
                 "stale. Use min_encoding_local_mass / min_encoding_local_ess to "
                 "skip poorly supported encoding updates instead."
             ),
+        )
+
+
+def _validate_estimation_arguments(
+    time: np.ndarray | None,
+    n_chunks: int,
+    return_outputs: str | list[str] | set[str] | None,
+    save_log_likelihood_to_results: bool | None,
+    min_encoding_local_mass: float,
+    min_encoding_local_ess: float,
+) -> None:
+    """Check ``estimate_parameters`` arguments that need no fitted state.
+
+    The estimation wrappers call this before their initial ``fit`` so an invalid
+    argument cannot leave a fitted detector partly rebuilt.
+
+    Parameters
+    ----------
+    time : np.ndarray, shape (n_time,), optional
+    n_chunks : int
+    return_outputs : str or list of str or set of str, optional
+    save_log_likelihood_to_results : bool, optional
+    min_encoding_local_mass : float
+    min_encoding_local_ess : float
+
+    Raises
+    ------
+    ValidationError
+        If ``time`` is missing, not an array, or not finite.
+    DataError
+        If ``time`` is not monotonically increasing.
+    ValueError
+        If ``n_chunks`` exceeds the number of time bins, ``return_outputs`` is
+        invalid or conflicts with ``save_log_likelihood_to_results``, or an
+        encoding-update threshold is negative.
+    """
+    if time is None:
+        raise ValidationError(
+            "Missing required parameter: time",
+            expected="time array with shape (n_time,)",
+            got="None",
+            hint="Provide timestamps corresponding to your data",
+            example="    results = detector.predict(spikes=spikes_test, time=time_test)",
+        )
+    val.ensure_ndarray(time, "time")
+    val.ensure_all_finite(time, "time")
+    val.ensure_monotonic_increasing(time, "time", strict=False)
+    if n_chunks > len(time):
+        raise ValueError(
+            f"n_chunks ({n_chunks}) cannot exceed n_time ({len(time)}). "
+            f"Each chunk must contain at least one time point."
+        )
+    if save_log_likelihood_to_results and return_outputs is not None:
+        raise ValueError(
+            "Cannot specify both return_outputs and deprecated "
+            "save_log_likelihood_to_results flag. "
+            "Use return_outputs only."
+        )
+    _normalize_return_outputs(return_outputs)
+    if min_encoding_local_mass < 0:
+        raise ValueError(
+            f"min_encoding_local_mass must be >= 0, got {min_encoding_local_mass}"
+        )
+    if min_encoding_local_ess < 0:
+        raise ValueError(
+            f"min_encoding_local_ess must be >= 0, got {min_encoding_local_ess}"
         )
 
 
@@ -1908,6 +1975,28 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self._degenerate_timesteps_ = np.asarray(sorted(degenerate_out), dtype=int)
         return result
 
+    @contextmanager
+    def _restore_state_on_error(self) -> Iterator[None]:
+        """Restore this detector and its environments if the block raises.
+
+        ``fit`` rebuilds the environments (in place), transitions, and encoding
+        model in stages. If a later stage fails, the earlier stages must not
+        leave the previously fitted detector paired with a refit grid. Both the
+        detector and ``Environment.fit_place_grid`` rebind attributes rather than
+        edit arrays in place, so shallow attribute snapshots are enough.
+        """
+        detector_state = dict(self.__dict__)
+        environment_states = [(env, dict(env.__dict__)) for env in self.environments]
+        try:
+            yield
+        except BaseException:
+            for env, env_state in environment_states:
+                env.__dict__.clear()
+                env.__dict__.update(env_state)
+            self.__dict__.clear()
+            self.__dict__.update(detector_state)
+            raise
+
     def _invalidate_stored_log_likelihood(self) -> None:
         """Drop ``log_likelihood_``, which no longer describes this model.
 
@@ -2014,20 +2103,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         converged = False
         log_likelihood_change = np.inf
 
-        # Validate required parameters
-        if time is None:
-            raise ValidationError(
-                "Missing required parameter: time",
-                expected="time array with shape (n_time,)",
-                got="None",
-                hint="Provide timestamps corresponding to your data",
-                example="    results = detector.predict(spikes=spikes_test, time=time_test)",
-            )
-
-        # Validate time properties
-        val.ensure_ndarray(time, "time")
-        val.ensure_all_finite(time, "time")
-        val.ensure_monotonic_increasing(time, "time", strict=False)
+        _validate_estimation_arguments(
+            time,
+            n_chunks,
+            return_outputs,
+            save_log_likelihood_to_results,
+            min_encoding_local_mass,
+            min_encoding_local_ess,
+        )
+        assert time is not None  # narrowing for type checker
 
         if log_likelihood_args is None:
             log_likelihood_args = ()
@@ -2041,12 +2125,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 stacklevel=2,
             )
             if save_log_likelihood_to_results:
-                if return_outputs is not None:
-                    raise ValueError(
-                        "Cannot specify both return_outputs and deprecated "
-                        "save_log_likelihood_to_results flag. "
-                        "Use return_outputs only."
-                    )
                 return_outputs = "log_likelihood"
 
         # Normalize return_outputs to canonical set
@@ -2062,16 +2140,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             and n_chunks == 1
         ):
             cache_likelihood = True
-
-        # Validate encoding update parameters
-        if min_encoding_local_mass < 0:
-            raise ValueError(
-                f"min_encoding_local_mass must be >= 0, got {min_encoding_local_mass}"
-            )
-        if min_encoding_local_ess < 0:
-            raise ValueError(
-                f"min_encoding_local_ess must be >= 0, got {min_encoding_local_ess}"
-            )
 
         if estimate_discrete_transition:
             interior_state_bins = self.is_track_interior_state_bins_
@@ -2981,7 +3049,6 @@ class ClusterlessDetector(_DetectorBase):
         # paired electrode by electrode (``fit`` also checks first, before
         # ``_fit`` rebuilds its own state).
         validate_spike_feature_population(spike_times, spike_waveform_features)
-        self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         n_time = position.shape[0]
         position = position if position.ndim > 1 else position[:, np.newaxis]
 
@@ -3009,7 +3076,9 @@ class ClusterlessDetector(_DetectorBase):
 
         kwargs = self._resolve_clusterless_algorithm_params()
 
-        self.encoding_model_ = {}
+        # Build the new models locally so a failed refit keeps the previous
+        # encoding model and its stored log likelihood.
+        encoding_model: dict = {}
 
         # An encoding model is shared by ``(environment_name, encoding_group)``;
         # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
@@ -3048,7 +3117,7 @@ class ClusterlessDetector(_DetectorBase):
                     spike_waveform_features, is_group_spike, strict=True
                 )
             ]
-            self.encoding_model_[likelihood_name] = encoding_algorithm(
+            encoding_model[likelihood_name] = encoding_algorithm(
                 position_time=position_time,
                 position=position,
                 spike_times=group_spike_times,
@@ -3058,6 +3127,9 @@ class ClusterlessDetector(_DetectorBase):
                 weights=group_weights,
                 **kwargs,
             )
+
+        self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
+        self.encoding_model_ = encoding_model
 
     def fit(
         self,
@@ -3098,22 +3170,23 @@ class ClusterlessDetector(_DetectorBase):
             Fitted detector instance.
         """
         validate_spike_feature_population(spike_times, spike_waveform_features)
-        self._fit(
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
-            discrete_transition_covariate_data,
-        )
-        self.fit_encoding_model(
-            position_time,
-            position,
-            spike_times,
-            spike_waveform_features,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
-        )
+        with self._restore_state_on_error():
+            self._fit(
+                position,
+                is_training,
+                encoding_group_labels,
+                environment_labels,
+                discrete_transition_covariate_data,
+            )
+            self.fit_encoding_model(
+                position_time,
+                position,
+                spike_times,
+                spike_waveform_features,
+                is_training,
+                encoding_group_labels,
+                environment_labels,
+            )
         return self
 
     @row_slice_aware
@@ -3685,6 +3758,14 @@ class ClusterlessDetector(_DetectorBase):
             Results of the decoding.
         """
         _validate_encoding_update_damping(encoding_update_damping)
+        _validate_estimation_arguments(
+            time,
+            n_chunks,
+            return_outputs,
+            save_log_likelihood_to_results,
+            min_encoding_local_mass,
+            min_encoding_local_ess,
+        )
         # Mirror predict(): treat NaN positions as missing observations during
         # the E-step so EM and predict use the same local-likelihood handling.
         if position is not None:
@@ -3940,7 +4021,6 @@ class SortedSpikesDetector(_DetectorBase):
             The values depend on the chosen `sorted_spikes_algorithm`.
         """
         logger.info("Fitting place fields...")
-        self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         n_time = position.shape[0]
         position = position if position.ndim > 1 else position[:, np.newaxis]
         if is_training is None:
@@ -3966,7 +4046,9 @@ class SortedSpikesDetector(_DetectorBase):
 
         kwargs = self._resolve_sorted_spikes_algorithm_params()
 
-        self.encoding_model_ = {}
+        # Build the new models locally so a failed refit keeps the previous
+        # encoding model and its stored log likelihood.
+        encoding_model: dict = {}
 
         # An encoding model is shared by ``(environment_name, encoding_group)``;
         # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
@@ -4017,7 +4099,7 @@ class SortedSpikesDetector(_DetectorBase):
             valid_params = set(sig.parameters.keys()) - set(glm_kwargs.keys())
             filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
 
-            self.encoding_model_[likelihood_name] = encoding_algorithm(
+            encoding_model[likelihood_name] = encoding_algorithm(
                 position_time=position_time,
                 position=position,
                 spike_times=[
@@ -4034,6 +4116,9 @@ class SortedSpikesDetector(_DetectorBase):
                 **glm_kwargs,
                 **filtered_kwargs,
             )
+
+        self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
+        self.encoding_model_ = encoding_model
 
     def fit(
         self,
@@ -4070,21 +4155,22 @@ class SortedSpikesDetector(_DetectorBase):
         SortedSpikesDetector
             Fitted detector instance.
         """
-        self._fit(
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
-            discrete_transition_covariate_data,
-        )
-        self.fit_encoding_model(
-            position_time,
-            position,
-            spike_times,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
-        )
+        with self._restore_state_on_error():
+            self._fit(
+                position,
+                is_training,
+                encoding_group_labels,
+                environment_labels,
+                discrete_transition_covariate_data,
+            )
+            self.fit_encoding_model(
+                position_time,
+                position,
+                spike_times,
+                is_training,
+                encoding_group_labels,
+                environment_labels,
+            )
         return self
 
     @row_slice_aware
@@ -4583,15 +4669,15 @@ class SortedSpikesDetector(_DetectorBase):
             Results of the decoding
         """
         _validate_encoding_update_damping(encoding_update_damping)
+        _validate_estimation_arguments(
+            time,
+            n_chunks,
+            return_outputs,
+            save_log_likelihood_to_results,
+            min_encoding_local_mass,
+            min_encoding_local_ess,
+        )
         position = position[:, np.newaxis] if position.ndim == 1 else position
-        self._encoding_model_data = {
-            "position_time": position_time,
-            "position": position,
-            "spike_times": spike_times,
-            "is_training": is_training,
-            "encoding_group_labels": encoding_group_labels,
-            "environment_labels": environment_labels,
-        }
         # Mirror predict(): treat NaN positions as missing observations during
         # the E-step so EM and predict use the same local-likelihood handling.
         nan_position = np.any(np.isnan(position), axis=1)
@@ -4609,6 +4695,14 @@ class SortedSpikesDetector(_DetectorBase):
             environment_labels=environment_labels,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
         )
+        self._encoding_model_data = {
+            "position_time": position_time,
+            "position": position,
+            "spike_times": spike_times,
+            "is_training": is_training,
+            "encoding_group_labels": encoding_group_labels,
+            "environment_labels": environment_labels,
+        }
 
         return super().estimate_parameters(
             time=time,
