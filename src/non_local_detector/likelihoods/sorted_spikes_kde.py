@@ -60,6 +60,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     KDEModel,
     _SpikeTimeOrder,
+    drop_zero_weight_samples,
     get_position_at_time,
     get_spikecount_per_time_bin,
     resolve_row_slice,
@@ -142,29 +143,18 @@ def fit_sorted_spikes_kde_encoding_model(
     else:
         weights = validate_weights(weights, position.shape[0])
 
+    occupancy_samples, occupancy_weights = drop_zero_weight_samples(position, weights)
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D
-        position1D = get_linearized_position(
-            position,
+        occupancy_samples = get_linearized_position(
+            occupancy_samples,
             environment.track_graph,
             edge_order=environment.edge_order,
             edge_spacing=environment.edge_spacing,
         ).linear_position.to_numpy()[:, None]
-        occupancy_model = KDEModel(
-            std=position_std,
-            block_size=block_size,
-        ).fit(
-            position1D,
-            weights=weights,
-        )
-    else:
-        occupancy_model = KDEModel(
-            std=position_std,
-            block_size=block_size,
-        ).fit(
-            position,
-            weights=weights,
-        )
+    occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
+        occupancy_samples, weights=occupancy_weights
+    )
 
     occupancy = occupancy_model.predict(interior_place_bin_centers)
 

@@ -237,13 +237,17 @@ class TestPoissonRegression:
     def test_fit_poisson_regression_preserves_small_positive_exposure(
         self, weight_scale
     ):
-        """Small positive weights still recover the known constant Poisson rate."""
+        """Small positive weights still recover the known constant Poisson rate.
+
+        The spikes are weighted by the same scale as the exposure, as the
+        weighted event counts from a uniformly down-weighted fit are.
+        """
         position = np.linspace(-1.0, 1.0, 20)
         design_matrix = np.column_stack([np.ones(position.size), position])
 
         coefficients = fit_poisson_regression(
             design_matrix,
-            spikes=np.full(position.size, 2.0),
+            spikes=np.full(position.size, 2.0 * weight_scale),
             weights=np.full(position.size, weight_scale),
         )
 
@@ -668,3 +672,161 @@ class TestPredictGLMLogLikelihood:
         # Assert - should still produce valid likelihoods (negative due to Poisson)
         assert jnp.all(jnp.isfinite(log_likelihood))
         assert jnp.all(log_likelihood < 0)  # Log likelihood should be negative
+
+
+def _fit_glm(env, position_time, position, spike_times, weights=None):
+    return fit_sorted_spikes_glm_encoding_model(
+        position_time=position_time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        place_bin_edges=env.place_bin_edges_,
+        edges=env.edges_,
+        is_track_interior=env.is_track_interior_,
+        is_track_boundary=env.is_track_boundary_,
+        weights=weights,
+        disable_progress_bar=True,
+    )
+
+
+def _spy_event_counts(monkeypatch):
+    """Record the (event counts, exposure) pairs the GLM hands the optimizer."""
+    from non_local_detector.likelihoods import sorted_spikes_glm
+
+    captured = []
+
+    def spy(design_matrix, spikes, weights, l2_penalty):
+        captured.append((np.asarray(spikes), np.asarray(weights)))
+        return fit_poisson_regression(design_matrix, spikes, weights, l2_penalty)
+
+    monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regression", spy)
+    return captured
+
+
+@pytest.mark.unit
+class TestWeightedEventOwnership:
+    """The GLM event term splits each spike's interpolated weight between the
+    two position samples that bracket it.
+
+    A spike a fraction ``a`` of the way from sample ``i`` to ``i + 1`` adds
+    ``(1 - a) * w_i`` to row ``i`` and ``a * w_{i+1}`` to row ``i + 1``. The two
+    parts sum to the spike's interpolated weight, so group ownership is
+    unchanged, and a row receives event mass only where its own exposure
+    weight is positive. Putting the whole weight on the left row gives a row
+    with zero exposure positive events at a 0 -> 1 mask transition, and the
+    spline rate there diverges.
+    """
+
+    def test_constant_rate_mle_is_weighted_events_per_exposure(self):
+        """With an intercept-only design the MLE is ``sum(c) / sum(w)``."""
+        weighted_counts = np.array([1.0, 0.5, 0.0, 0.25, 2.0])
+        exposure = np.array([1.0, 0.0, 0.5, 1.0, 0.75])
+        coefficients = fit_poisson_regression(
+            np.ones((5, 1)), weighted_counts, exposure, l2_penalty=0.0
+        )
+        np.testing.assert_allclose(
+            np.exp(coefficients[0]),
+            weighted_counts.sum() / exposure.sum(),
+            rtol=1e-5,
+        )
+
+    def test_mask_transition_events_stay_on_exposed_rows(
+        self, monkeypatch, simple_1d_environment
+    ):
+        """Mask ``[1, 1, 0, 1, 1]``. Spikes at 1.1 and 1.9 carry 0.9 and 0.1 and
+        stay on row 1. The spike at 2.5 carries 0.5 and goes to row 3 (row 2 has
+        no exposure), and the spike at 3.0 sits on row 3. The fit must stay
+        finite: the left-row convention put 0.5 events on the unexposed row 2
+        and the place field diverged."""
+        captured = _spy_event_counts(monkeypatch)
+        mask = np.array([1.0, 1.0, 0.0, 1.0, 1.0])
+        position_time = np.arange(5.0)
+        position = np.linspace(10.0, 90.0, 5)[:, None]
+        spike_times = [np.array([1.1, 1.9, 2.5, 3.0])]
+
+        encoding = _fit_glm(
+            simple_1d_environment, position_time, position, spike_times, mask
+        )
+
+        ((event_counts, exposure),) = captured
+        np.testing.assert_allclose(event_counts, [0.0, 1.0, 0.0, 1.5, 0.0])
+        np.testing.assert_array_equal(exposure, mask)
+        assert np.all(np.isfinite(encoding["place_fields"]))
+        log_likelihood = predict_sorted_spikes_glm_log_likelihood(
+            position_time, position_time, position, spike_times, **encoding
+        )
+        assert np.all(np.isfinite(log_likelihood))
+
+    def test_event_mass_matches_interpolated_weights_and_exposure_support(
+        self, monkeypatch, simple_1d_environment
+    ):
+        """For jittered samples, fractional weights, and a mask with gaps, each
+        spike's interpolated weight is conserved and no unexposed row gets
+        event mass."""
+        captured = _spy_event_counts(monkeypatch)
+        rng = np.random.default_rng(0)
+        n = 200
+        position_time = np.cumsum(rng.uniform(0.5, 1.5, n))
+        position = rng.uniform(5.0, 95.0, (n, 1))
+        weights = rng.uniform(0.0, 1.0, n) * ((np.arange(n) // 9) % 3 != 2)
+        spike_times = np.sort(rng.uniform(position_time[0], position_time[-1], 400))
+
+        encoding = _fit_glm(
+            simple_1d_environment, position_time, position, [spike_times], weights
+        )
+
+        ((event_counts, _),) = captured
+        np.testing.assert_allclose(
+            event_counts.sum(),
+            np.interp(spike_times, position_time, weights).sum(),
+            rtol=1e-12,
+        )
+        np.testing.assert_array_equal(event_counts[weights == 0.0], 0.0)
+        assert np.all(np.isfinite(encoding["place_fields"]))
+
+    def test_unit_weights_split_each_spike_between_bracketing_samples(
+        self, monkeypatch, simple_1d_environment
+    ):
+        """Without weights every in-range spike carries 1, split linearly
+        between the samples on either side of it."""
+        captured = _spy_event_counts(monkeypatch)
+        position_time = np.arange(5.0)
+        spike_times = [np.array([-0.5, 0.25, 1.0, 3.75, 4.0, 4.5])]
+
+        _fit_glm(
+            simple_1d_environment,
+            position_time,
+            np.linspace(10.0, 90.0, 5)[:, None],
+            spike_times,
+        )
+
+        ((event_counts, _),) = captured
+        np.testing.assert_allclose(event_counts, [0.75, 1.25, 0.0, 0.25, 1.75])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("position_time", "weights", "spike_times"),
+    [
+        # Repeated final timestamp: the spike at t=2 has interpolated weight 1.
+        ([0.0, 1.0, 2.0, 2.0], [1.0, 1.0, 0.0, 1.0], [2.0]),
+        # Repeated interior timestamp.
+        ([0.0, 1.0, 1.0, 2.0], [1.0, 0.0, 1.0, 1.0], [1.0, 1.5]),
+        # A single position sample.
+        ([3.0], [0.5], [3.0, 3.0]),
+    ],
+    ids=["repeated-final", "repeated-interior", "single-sample"],
+)
+def test_weighted_spike_counts_conserve_interpolated_weight(
+    position_time, weights, spike_times
+):
+    """Event mass always equals the spike's interpolated weight, including
+    zero-length sample intervals, so a selected spike cannot lose its weight."""
+    from non_local_detector.likelihoods.sorted_spikes_glm import weighted_spike_counts
+
+    position_time, weights = np.array(position_time), np.array(weights)
+    counts = weighted_spike_counts(np.array(spike_times), position_time, weights)
+    np.testing.assert_allclose(
+        counts.sum(), np.interp(spike_times, position_time, weights).sum()
+    )
+    np.testing.assert_array_equal(counts[weights == 0.0], 0.0)

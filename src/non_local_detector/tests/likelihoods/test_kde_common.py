@@ -8,6 +8,7 @@ from non_local_detector.likelihoods.common import (
     as_std_array,
     block_kde,
     block_log_kde,
+    drop_zero_weight_samples,
     get_position_at_time,
     get_spikecount_per_time_bin,
     kde,
@@ -403,3 +404,26 @@ def test_validate_population_lengths_detects_short_non_first_collection():
     message = str(exc.value)
     assert "mean_rates=2" in message
     assert "spike_times=3" in message
+
+
+@pytest.mark.unit
+def test_drop_zero_weight_samples_preserves_density_and_shrinks_model():
+    """Zero-weight samples add nothing to a weighted KDE, so dropping them keeps
+    the density and stops every later evaluation from paying for them."""
+    rng = np.random.default_rng(0)
+    samples = rng.uniform(0.0, 100.0, size=(500, 2))
+    weights = (np.arange(500) // 50 % 3 == 0).astype(float) * rng.uniform(0.5, 1.5, 500)
+    eval_points = rng.uniform(0.0, 100.0, size=(64, 2))
+    std = np.array([5.0, 5.0])
+
+    kept_samples, kept_weights = drop_zero_weight_samples(samples, weights)
+    full = KDEModel(std=std).fit(samples, weights)
+    kept = KDEModel(std=std).fit(kept_samples, kept_weights)
+
+    assert kept.samples_.shape[0] == np.count_nonzero(weights)
+    np.testing.assert_allclose(
+        kept.predict(eval_points), full.predict(eval_points), rtol=1e-5
+    )
+    # No positive weight: inputs are returned as-is (zero-exposure behavior).
+    zeros = np.zeros(500)
+    assert drop_zero_weight_samples(samples, zeros)[0] is samples

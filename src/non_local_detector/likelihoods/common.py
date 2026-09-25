@@ -1,5 +1,6 @@
-from collections.abc import Sized
+from collections.abc import Sequence, Sized
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -123,7 +124,7 @@ def validate_finite(array: np.ndarray | jnp.ndarray, name: str) -> None:
         raise ValidationError(f"{name} must contain only finite values")
 
 
-def validate_population_lengths(unit_name: str, **populations: Sized) -> int:
+def validate_population_lengths(unit_name: str, **populations: Sized | None) -> int:
     """Require parallel population collections to contain the same number of units.
 
     Likelihood predictors combine observed spike trains with fitted per-unit models.
@@ -136,7 +137,8 @@ def validate_population_lengths(unit_name: str, **populations: Sized) -> int:
     unit_name : str
         Human-readable population unit, such as ``"electrode"`` or ``"neuron"``.
     **populations
-        Named sized collections that should be parallel.
+        Named sized collections that should be parallel. ``None`` marks an
+        optional collection that was not supplied and is skipped.
 
     Returns
     -------
@@ -148,10 +150,11 @@ def validate_population_lengths(unit_name: str, **populations: Sized) -> int:
     ValidationError
         If the collection lengths differ.
     """
-    if not populations:
+    lengths = {
+        name: len(values) for name, values in populations.items() if values is not None
+    }
+    if not lengths:
         return 0
-
-    lengths = {name: len(values) for name, values in populations.items()}
     expected = next(iter(lengths.values()))
     if any(length != expected for length in lengths.values()):
         details = ", ".join(f"{name}={length}" for name, length in lengths.items())
@@ -165,6 +168,84 @@ def validate_population_lengths(unit_name: str, **populations: Sized) -> int:
             ),
         )
     return expected
+
+
+def validate_spike_feature_pair(
+    spike_times: np.ndarray | jnp.ndarray,
+    spike_features: np.ndarray | jnp.ndarray,
+    electrode: int,
+) -> None:
+    """Validate one electrode's parallel spike/mark arrays without copying them.
+
+    Parameters
+    ----------
+    spike_times : np.ndarray or jnp.ndarray, shape (n_spikes,)
+    spike_features : np.ndarray or jnp.ndarray, shape (n_spikes, n_features)
+    electrode : int
+        Electrode index, used in the error message.
+
+    Raises
+    ------
+    ValidationError
+        If either array has the wrong rank or their row counts differ.
+    """
+    times_shape = np.shape(spike_times)
+    features_shape = np.shape(spike_features)
+    if len(times_shape) != 1:
+        raise ValidationError(
+            f"spike_times for electrode {electrode} must be 1-D",
+            expected="shape (n_spikes,)",
+            got=f"shape {times_shape}",
+        )
+    if len(features_shape) != 2:
+        raise ValidationError(
+            f"spike_waveform_features for electrode {electrode} must be 2-D",
+            expected="shape (n_spikes, n_features)",
+            got=f"shape {features_shape}",
+        )
+    if features_shape[0] != times_shape[0]:
+        raise ValidationError(
+            f"spike times and waveform features disagree for electrode {electrode}",
+            expected=f"{times_shape[0]} waveform-feature rows",
+            got=f"{features_shape[0]} rows",
+            hint="Provide exactly one waveform-feature row for every spike time.",
+        )
+
+
+def validate_spike_feature_population(
+    spike_times: Sequence[np.ndarray | jnp.ndarray],
+    spike_waveform_features: Sequence[np.ndarray | jnp.ndarray],
+) -> int:
+    """Require clusterless spike times and features to describe the same electrodes.
+
+    Checks the electrode count and each electrode's spike/feature row alignment
+    before anything pairs the collections, so a mismatch cannot silently drop an
+    electrode or misalign features with spike times.
+
+    Parameters
+    ----------
+    spike_times : sequence of arrays, each shape (n_spikes,)
+    spike_waveform_features : sequence of arrays, each shape (n_spikes, n_features)
+
+    Returns
+    -------
+    n_electrodes : int
+
+    Raises
+    ------
+    ValidationError
+        If the electrode counts differ or any electrode's arrays disagree.
+    """
+    n_electrodes = validate_population_lengths(
+        "electrode",
+        spike_times=spike_times,
+        spike_waveform_features=spike_waveform_features,
+    )
+    for electrode, (times, features) in enumerate(
+        zip(spike_times, spike_waveform_features, strict=True)
+    ):
+        validate_spike_feature_pair(times, features, electrode)
+    return n_electrodes
 
 
 def interpolate_weights_at_spike_times(
@@ -706,6 +787,39 @@ def block_log_kde(
         for start in range(0, n_eval, block_size)
     ]
     return jnp.concatenate(blocks)
+
+
+_Samples = TypeVar("_Samples")
+_Weights = TypeVar("_Weights")
+
+
+def drop_zero_weight_samples(
+    samples: _Samples, weights: _Weights
+) -> tuple[_Samples, _Weights]:
+    """Remove samples that carry no weight from a weighted KDE's training set.
+
+    A zero-weight sample adds nothing to a weighted kernel density, so removing
+    it leaves the density unchanged while every later evaluation stops paying
+    for it. Detectors pass the full position timeline with the group mask as
+    weights, so an occupancy model would otherwise evaluate every out-of-group
+    sample. When no weight is positive the inputs are returned unchanged, which
+    keeps the zero-exposure behavior of the fits.
+
+    Parameters
+    ----------
+    samples : np.ndarray, shape (n_samples, ...)
+    weights : np.ndarray, shape (n_samples,)
+        Non-negative weights.
+
+    Returns
+    -------
+    samples, weights
+        The rows with positive weight.
+    """
+    keep = np.asarray(weights) > 0.0
+    if not np.any(keep) or np.all(keep):
+        return samples, weights
+    return samples[keep], weights[keep]  # type: ignore[index]
 
 
 @dataclass

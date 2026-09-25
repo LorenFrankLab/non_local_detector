@@ -25,7 +25,8 @@ Key functionalities include:
 
 2.  **Model Fitting:**
     - `fit_poisson_regression`: Fits the Poisson GLM coefficients for a *single*
-      neuron using its spike counts and the design matrix. It employs L2
+      neuron using its weighted spike counts, per-sample exposure weights, and
+      the design matrix. It employs L2
       regularization and optimizes the Poisson log-likelihood using SciPy's
       BFGS optimizer, leveraging JAX for automatic differentiation.
     - `fit_sorted_spikes_glm_encoding_model`: Orchestrates the fitting process
@@ -66,6 +67,8 @@ from non_local_detector.likelihoods.common import (
     get_position_at_time,
     get_spikecount_per_time_bin,
     resolve_row_slice,
+    select_spike_rows,
+    select_spikes_in_rows,
     validate_population_lengths,
     validate_weights,
 )
@@ -151,13 +154,21 @@ def fit_poisson_regression(
     weights: np.ndarray,
     l2_penalty: float = 1e-7,
 ) -> jnp.ndarray:
-    """Fit a Poisson regression model.
+    """Fit a weighted Poisson regression model.
+
+    Maximizes ``sum_i [spikes_i * log(lambda_i) - weights_i * lambda_i]``
+    (normalized by ``sum(weights)``) minus the L2 penalty. The event and
+    exposure terms are weighted separately: ``spikes`` already carries each
+    event's weight, so it is not multiplied by ``weights`` again.
 
     Parameters
     ----------
     design_matrix : np.ndarray, shape (n_time, n_coefficients)
     spikes : np.ndarray, shape (n_time,)
+        Event mass per row: the weighted spike counts from
+        ``weighted_spike_counts``, not multiplied by ``weights`` again.
     weights : np.ndarray, shape (n_time,)
+        Per-row exposure weight.
     l2_penalty : float, optional
         L2 regression penalty, by default 1e-7
 
@@ -176,9 +187,9 @@ def fit_poisson_regression(
     ):
         conditional_intensity = jnp.exp(design_matrix @ coefficients)
         conditional_intensity = jnp.clip(conditional_intensity, min=EPS, max=None)
-        log_likelihood_term = weights * (
+        log_likelihood_term = (
             jax.scipy.special.xlogy(spikes, conditional_intensity)
-            - conditional_intensity
+            - weights * conditional_intensity
         )
         # Normalize by sum of weights (not n_time) so the data term
         # scales correctly when local state mass is small, keeping
@@ -191,7 +202,7 @@ def fit_poisson_regression(
     dlike = jax.grad(neglogp)
 
     # Zero total exposure means this group has no training coverage at all, so
-    # the rate is unidentified and ``jnp.average`` would return 0/0 = NaN. Return
+    # the rate is unidentified and ``sum(spikes) / sum(weights)`` is 0/0 = NaN. Return
     # an intercept-only model at the EPS floor, which is exactly what a unit with
     # real exposure but no spikes already gets from the ``maximum(avg_rate, EPS)``
     # guard below -- the two zero-rate cases agree. A group with small-but-
@@ -205,7 +216,7 @@ def fit_poisson_regression(
             ]
         )
 
-    avg_rate = jnp.average(spikes, weights=weights)
+    avg_rate = jnp.sum(spikes) / jnp.sum(weights)
     # Guard against zero spikes: use EPS to avoid log(0) = -inf
     initial_condition = jnp.asarray([jnp.log(jnp.maximum(avg_rate, EPS))])
     initial_condition = jnp.concatenate(
@@ -246,6 +257,53 @@ def fit_poisson_regression(
         )
 
     return jnp.asarray(res.x)
+
+
+def weighted_spike_counts(
+    spike_times: np.ndarray, position_time: np.ndarray, weights: np.ndarray
+) -> np.ndarray:
+    """Split each spike's interpolated weight between its bracketing samples.
+
+    A spike a fraction ``a`` of the way from sample ``i`` to sample ``i + 1``
+    adds ``(1 - a) * weights[i]`` to row ``i`` and ``a * weights[i + 1]`` to
+    row ``i + 1``. The two parts sum to ``weights`` linearly interpolated to the
+    spike time, so each spike keeps its canonical weight and complementary
+    groups still partition it. Each part is carried by the sample that supplies
+    it, so a row receives event mass only where its own exposure weight is
+    positive; a row with events but no exposure would let the fitted rate at
+    its position diverge. For a locally constant rate and uniform sampling, an
+    interior row's expected event mass is ``rate * weights[i] * dt``,
+    proportional to its exposure term. Spikes outside
+    ``[position_time[0], position_time[-1]]`` are dropped.
+
+    Parameters
+    ----------
+    spike_times : np.ndarray, shape (n_spikes,)
+    position_time : np.ndarray, shape (n_time_position,)
+    weights : np.ndarray, shape (n_time_position,)
+
+    Returns
+    -------
+    counts : np.ndarray, shape (n_time_position,)
+        Event mass per position row.
+    """
+    position_time = np.asarray(position_time)
+    weights = np.asarray(weights)
+    n_time = position_time.shape[0]
+    selection = select_spikes_in_rows(spike_times, position_time, 0, n_time)
+    times = np.asarray(select_spike_rows(spike_times, selection))
+    left = selection.bin_ind
+    right = np.minimum(left + 1, n_time - 1)
+    interval = position_time[right] - position_time[left]
+    safe_interval = np.where(interval > 0.0, interval, 1.0)
+    # A zero-length interval (a repeated final timestamp, or a single sample)
+    # gives the spike the right sample's weight, as np.interp does.
+    fraction = np.where(
+        interval > 0.0, (times - position_time[left]) / safe_interval, 1.0
+    )
+    return np.bincount(
+        left, weights=(1.0 - fraction) * weights[left], minlength=n_time
+    ) + np.bincount(right, weights=fraction * weights[right], minlength=n_time)
 
 
 def fit_sorted_spikes_glm_encoding_model(
@@ -353,10 +411,9 @@ def fit_sorted_spikes_glm_encoding_model(
         desc="Encoding models",
         disable=disable_progress_bar,
     ):
-        spike_count_per_time_bin = get_spikecount_per_time_bin(neuron_spike_times, time)
         coef = fit_poisson_regression(
             emission_design_matrix,
-            spike_count_per_time_bin,
+            weighted_spike_counts(neuron_spike_times, time, weights),
             weights,
             l2_penalty=l2_penalty,
         )

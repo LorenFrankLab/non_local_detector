@@ -31,6 +31,7 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
     sum_spikes_into_rows,
     validate_population_lengths,
+    validate_spike_feature_pair,
     validate_weights,
     weighted_mean_rate,
 )
@@ -214,48 +215,21 @@ def _fit_gmm_density(
 def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
     """sample_weight for a GMM EM fit, or None to take the unweighted path.
 
-    Returns None when the caller passed no weights (keeps the unweighted fit
-    byte-identical) or when the weights sum to 0; otherwise the weights. An
+    Returns None when the caller passed no weights (keeps a direct unweighted
+    fit byte-identical; detectors always pass their group mask as weights) or
+    when the weights sum to 0; otherwise the weights. An
     all-zero ``sample_weight`` is rejected by ``GaussianMixtureModel.fit`` (it
     leaves no effective training data), so a fully de-weighted encoding group
     deliberately degrades to an unweighted occupancy fit after the caller's
-    "weights sum to 0" warning rather than raising. Because the unweighted
+    "weights sum to 0" warning rather than raising; detectors pass the full
+    position timeline, so that fallback occupancy covers every supplied sample,
+    not only the group's. Because the unweighted
     fallback keeps every position row, the caller's ``occupancy_n_samples < 1``
     check below is then reachable only for a zero-row position array.
     """
     if weights_was_none or float(np.sum(weights)) == 0.0:
         return None
     return weights
-
-
-def _validate_spike_feature_pair(
-    spike_times: np.ndarray | jnp.ndarray,
-    spike_features: np.ndarray | jnp.ndarray,
-    electrode: int,
-) -> tuple[np.ndarray | jnp.ndarray, np.ndarray | jnp.ndarray]:
-    """Validate one electrode's parallel spike/mark arrays without copying them."""
-    times_shape = np.shape(spike_times)
-    features_shape = np.shape(spike_features)
-    if len(times_shape) != 1:
-        raise ValidationError(
-            f"spike_times for electrode {electrode} must be 1-D",
-            expected="shape (n_spikes,)",
-            got=f"shape {times_shape}",
-        )
-    if len(features_shape) != 2:
-        raise ValidationError(
-            f"spike_waveform_features for electrode {electrode} must be 2-D",
-            expected="shape (n_spikes, n_features)",
-            got=f"shape {features_shape}",
-        )
-    if features_shape[0] != times_shape[0]:
-        raise ValidationError(
-            f"spike times and waveform features disagree for electrode {electrode}",
-            expected=f"{times_shape[0]} waveform-feature rows",
-            got=f"{features_shape[0]} rows",
-            hint="Provide exactly one waveform-feature row for every spike time.",
-        )
-    return spike_times, spike_features
 
 
 def fit_clusterless_gmm_encoding_model(
@@ -442,9 +416,7 @@ def fit_clusterless_gmm_encoding_model(
             disable=disable_progress_bar,
         )
     ):
-        elect_times, elect_feats = _validate_spike_feature_pair(
-            elect_times, elect_feats, electrode
-        )
+        validate_spike_feature_pair(elect_times, elect_feats, electrode)
         mark_dimensions.append(elect_feats.shape[1])
         # Clip to encoding window
         in_bounds = np.logical_and(
@@ -677,12 +649,12 @@ def predict_clusterless_gmm_log_likelihood(
     for electrode, (elect_times, elect_feats, expected_mark_dims) in enumerate(
         zip(spike_times, spike_waveform_features, mark_dimensions, strict=True)
     ):
-        _, features = _validate_spike_feature_pair(elect_times, elect_feats, electrode)
-        if features.shape[1] != expected_mark_dims:
+        validate_spike_feature_pair(elect_times, elect_feats, electrode)
+        if np.shape(elect_feats)[1] != expected_mark_dims:
             raise ValidationError(
                 f"waveform feature dimension changed for electrode {electrode}",
                 expected=f"{expected_mark_dims} features per spike",
-                got=f"{features.shape[1]} features",
+                got=f"{np.shape(elect_feats)[1]} features",
                 hint="Use the same waveform feature representation at fit and predict.",
             )
 

@@ -73,6 +73,7 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
     sum_spikes_into_rows,
     validate_finite,
+    validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
 )
@@ -527,6 +528,16 @@ def predict_clusterless_diffusion_log_likelihood(
     memory_budget = int(encoding_model["memory_budget"])  # type: ignore[call-overload]
     disable_progress_bar = bool(encoding_model.get("disable_progress_bar", False))
 
+    validate_population_lengths(
+        "electrode",
+        spike_times=spike_times,
+        spike_waveform_features=spike_waveform_features,
+        encoding_bin_indices=encoding_bin_indices,  # type: ignore[arg-type]
+        encoding_marks=encoding_marks,  # type: ignore[arg-type]
+        encoding_weights=encoding_weights,  # type: ignore[arg-type]
+        weight_total=weight_total,  # type: ignore[arg-type]
+        mean_rates=mean_rates,  # type: ignore[arg-type]
+    )
     time = np.asarray(time)
     validate_finite(time, "time")
     row_start, row_stop = resolve_row_slice(row_slice, len(time))

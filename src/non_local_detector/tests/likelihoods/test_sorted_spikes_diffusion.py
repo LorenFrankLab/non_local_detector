@@ -967,3 +967,75 @@ def test_end_to_end_sorted_spikes_diffusion_decoder():
     decoded_position = bin_position[np.asarray(posterior.values).argmax(axis=1)]
     corr = np.corrcoef(decoded_position, np.asarray(position).ravel())[0, 1]
     assert corr > 0.9
+
+
+# ----------------------------------------------------------------------------
+# population validation (shared by sorted_spikes_diffusion and sorted_spikes_mrf)
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module", params=["sorted_spikes_diffusion", "sorted_spikes_mrf"])
+def one_neuron_fit(request):
+    """A registered diffusion-family model fit on a single neuron."""
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=1)
+    fit, predict = _SORTED_SPIKES_ALGORITHMS[request.param]
+    fit_params = (
+        {"position_std": 6.0} if request.param == "sorted_spikes_diffusion" else {}
+    )
+    encoding = fit(
+        position_time=time,
+        position=position,
+        spike_times=spike_times,
+        environment=env,
+        **fit_params,
+    )
+    return predict, encoding, time, position, spike_times
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("is_local", [True, False])
+@pytest.mark.parametrize("n_decode_neurons", [0, 2])
+def test_predict_rejects_population_mismatch(
+    one_neuron_fit, is_local, n_decode_neurons
+):
+    """A spike-train count that differs from the fitted population raises a
+    package error on both paths. The local path used to broadcast the one-neuron
+    rates and return finite likelihoods for the wrong population."""
+    predict, encoding, time, position, spike_times = one_neuron_fit
+    decode_spike_times = (spike_times * 2)[:n_decode_neurons]
+
+    with pytest.raises(ValidationError, match="neuron population lengths"):
+        predict(
+            time[:200],
+            time,
+            position,
+            decode_spike_times,
+            is_local=is_local,
+            **encoding,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("algorithm", ["sorted_spikes_diffusion", "sorted_spikes_mrf"])
+def test_detectors_reject_population_mismatch(algorithm):
+    """The public decoder and non-local detector raise the package error."""
+    from non_local_detector.models import (
+        NonLocalSortedSpikesDetector,
+        SortedSpikesDecoder,
+    )
+
+    env = make_2d_env()
+    time, position, spike_times = simulate_place_data(env, n_neurons=2)
+    for detector_cls in (SortedSpikesDecoder, NonLocalSortedSpikesDetector):
+        detector = detector_cls(
+            sorted_spikes_algorithm=algorithm,
+            sorted_spikes_algorithm_params={"position_std": 6.0},
+        ).fit(position_time=time, position=position, spike_times=spike_times)
+        with pytest.raises(ValidationError, match="neuron population lengths"):
+            detector.predict(
+                spike_times=spike_times[:1],
+                time=time[:200],
+                position=position[:200],
+                position_time=time[:200],
+            )

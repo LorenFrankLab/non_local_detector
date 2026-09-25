@@ -12,6 +12,7 @@ from non_local_detector.likelihoods.common import (
     _SpikeTimeOrder,
     as_std_array,
     block_log_kde,
+    drop_zero_weight_samples,
     get_position_at_time,
     interpolate_weights_at_spike_times,
     log_gaussian_pdf,
@@ -21,6 +22,7 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
     sum_spikes_into_rows,
     validate_finite,
+    validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
 )
@@ -1456,21 +1458,18 @@ def fit_clusterless_kde_encoding_model(
     is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
+    occupancy_samples, occupancy_weights = drop_zero_weight_samples(position, weights)
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D
-        position1D = get_linearized_position(
-            position,
+        occupancy_samples = get_linearized_position(
+            occupancy_samples,
             environment.track_graph,
             edge_order=environment.edge_order,
             edge_spacing=environment.edge_spacing,
         ).linear_position.to_numpy()[:, None]
-        occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
-            position1D, weights=jnp.asarray(weights)
-        )
-    else:
-        occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
-            position, weights=jnp.asarray(weights)
-        )
+    occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
+        occupancy_samples, weights=jnp.asarray(occupancy_weights)
+    )
 
     occupancy = occupancy_model.predict(interior_place_bin_centers)
     encoding_positions = []
@@ -1657,6 +1656,16 @@ def predict_clusterless_kde_log_likelihood(
         Shape depends on whether local or non-local decoding, respectively.
         ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
     """
+    validate_population_lengths(
+        "electrode",
+        spike_times=spike_times,
+        spike_waveform_features=spike_waveform_features,
+        gpi_models=gpi_models,
+        encoding_spike_waveform_features=encoding_spike_waveform_features,
+        encoding_positions=encoding_positions,
+        mean_rates=mean_rates,
+        encoding_weights=encoding_weights,
+    )
     row_start, row_stop = resolve_row_slice(row_slice, len(time))
     n_rows = row_stop - row_start
     # Uniform (None) weights per electrode when the caller passes none, so the loop

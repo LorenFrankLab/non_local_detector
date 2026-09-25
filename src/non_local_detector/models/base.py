@@ -3,7 +3,8 @@ import copy
 import inspect
 import pickle
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from functools import partial
 from logging import getLogger
 
@@ -13,7 +14,6 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
-import scipy.ndimage  # type: ignore[import-untyped]
 import seaborn as sns  # type: ignore[import-untyped]
 import sklearn  # type: ignore[import-untyped]
 import xarray as xr
@@ -48,7 +48,12 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
     predict_no_spike_log_likelihood,
 )
-from non_local_detector.likelihoods.common import _SpikeTimeOrder, resolve_row_slice
+from non_local_detector.likelihoods.common import (
+    _SpikeTimeOrder,
+    interpolate_weights_at_spike_times,
+    resolve_row_slice,
+    validate_spike_feature_population,
+)
 from non_local_detector.likelihoods.no_spike import no_spike_time_bin_size
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.types import (
@@ -119,27 +124,172 @@ def _prepare_likelihood_callback(
     return partial(callback, **prepared) if prepared else callback
 
 
-def _snapshot_encoding_model(encoding_model: dict | None) -> dict | None:
-    """Create a restorable snapshot of the encoding model.
+def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
+    """Reject any nonzero ``encoding_update_damping``.
 
-    Deep-copies numpy/jax arrays but keeps non-picklable objects (e.g.
-    patsy DesignInfo, KDEModel) by reference so that ``copy.deepcopy``
-    failures are avoided.
+    Blending only ``place_fields`` cannot keep a refit encoding model
+    self-consistent: the GLM and KDE local paths read other fitted state, the
+    diffusion/MRF spike term reads ``interior_log_place_fields``, and the
+    clusterless models have no ``place_fields`` at all. Estimation wrappers call
+    this before their initial ``fit`` so a rejected value changes nothing.
+
+    Parameters
+    ----------
+    encoding_update_damping : float
+
+    Raises
+    ------
+    ValidationError
+        If the value is not zero (including NaN).
     """
-    if encoding_model is None:
-        return None
-    snapshot = {}
-    for key, entry in encoding_model.items():
-        entry_copy = {}
-        for k, v in entry.items():
-            if isinstance(v, (np.ndarray, jnp.ndarray)):
-                entry_copy[k] = (
-                    np.array(v) if isinstance(v, np.ndarray) else jnp.array(v)
-                )
-            else:
-                entry_copy[k] = v
-        snapshot[key] = entry_copy
-    return snapshot
+    if encoding_update_damping != 0.0:
+        raise ValidationError(
+            "encoding_update_damping is not supported",
+            expected="encoding_update_damping=0.0",
+            got=str(encoding_update_damping),
+            hint=(
+                "Damped encoding updates are not implemented for any likelihood: "
+                "blending place fields leaves the other fitted encoding state "
+                "stale. Use min_encoding_local_mass / min_encoding_local_ess to "
+                "skip poorly supported encoding updates instead."
+            ),
+        )
+
+
+def _validate_estimation_arguments(
+    time: np.ndarray | None,
+    n_chunks: int,
+    return_outputs: str | list[str] | set[str] | None,
+    save_log_likelihood_to_results: bool | None,
+    min_encoding_local_mass: float,
+    min_encoding_local_ess: float,
+) -> None:
+    """Check ``estimate_parameters`` arguments that need no fitted state.
+
+    The estimation wrappers call this before their initial ``fit`` so an invalid
+    argument cannot leave a fitted detector partly rebuilt.
+
+    Parameters
+    ----------
+    time : np.ndarray, shape (n_time,), optional
+    n_chunks : int
+    return_outputs : str or list of str or set of str, optional
+    save_log_likelihood_to_results : bool, optional
+    min_encoding_local_mass : float
+    min_encoding_local_ess : float
+
+    Raises
+    ------
+    ValidationError
+        If ``time`` is missing, not an array, or not finite.
+    DataError
+        If ``time`` is not monotonically increasing.
+    ValueError
+        If ``n_chunks`` exceeds the number of time bins, ``return_outputs`` is
+        invalid or conflicts with ``save_log_likelihood_to_results``, or an
+        encoding-update threshold is negative.
+    """
+    if time is None:
+        raise ValidationError(
+            "Missing required parameter: time",
+            expected="time array with shape (n_time,)",
+            got="None",
+            hint="Provide timestamps corresponding to your data",
+            example="    results = detector.predict(spikes=spikes_test, time=time_test)",
+        )
+    val.ensure_ndarray(time, "time")
+    val.ensure_all_finite(time, "time")
+    val.ensure_monotonic_increasing(time, "time", strict=False)
+    if n_chunks > len(time):
+        raise ValueError(
+            f"n_chunks ({n_chunks}) cannot exceed n_time ({len(time)}). "
+            f"Each chunk must contain at least one time point."
+        )
+    if save_log_likelihood_to_results and return_outputs is not None:
+        raise ValueError(
+            "Cannot specify both return_outputs and deprecated "
+            "save_log_likelihood_to_results flag. "
+            "Use return_outputs only."
+        )
+    _normalize_return_outputs(return_outputs)
+    if min_encoding_local_mass < 0:
+        raise ValueError(
+            f"min_encoding_local_mass must be >= 0, got {min_encoding_local_mass}"
+        )
+    if min_encoding_local_ess < 0:
+        raise ValueError(
+            f"min_encoding_local_ess must be >= 0, got {min_encoding_local_ess}"
+        )
+
+
+def _group_spike_mask(
+    spike_times: np.ndarray, position_time: np.ndarray, group_weights: np.ndarray
+) -> np.ndarray:
+    """Select the spikes an encoding group owns.
+
+    A spike belongs to a group exactly when the group's per-sample weights,
+    linearly interpolated to the spike time on the full position timeline, are
+    positive. Selection does not set the spike's weight: the encoding fit
+    re-interpolates the same weights and applies each one once, so a spike near
+    a mask transition keeps its fractional weight and complementary groups
+    partition every spike. Spikes outside the position timeline are not
+    selected, matching the encoding fits' own bounds.
+
+    Parameters
+    ----------
+    spike_times : np.ndarray, shape (n_spikes,)
+    position_time : np.ndarray, shape (n_time_position,)
+    group_weights : np.ndarray, shape (n_time_position,)
+        Per-sample weights of this group (mask times any EM weight).
+
+    Returns
+    -------
+    is_group_spike : np.ndarray of bool, shape (n_spikes,)
+    """
+    spike_times = np.asarray(spike_times)
+    in_bounds = (spike_times >= position_time[0]) & (spike_times <= position_time[-1])
+    spike_weights = interpolate_weights_at_spike_times(
+        spike_times, position_time, group_weights
+    )
+    is_group_spike: np.ndarray = in_bounds & (spike_weights > 0.0)
+    return is_group_spike
+
+
+def _group_weights(
+    is_group: np.ndarray, weights: np.ndarray | None, likelihood_name: tuple
+) -> np.ndarray:
+    """Per-sample weights of one encoding group on the full position timeline.
+
+    The group mask is the model's exposure: a sample outside it contributes no
+    occupancy and owns no spikes. Warns when no sample has positive weight;
+    such a group is fit with zero exposure and its states decode from the prior
+    alone, which is usually a mask or label mistake.
+
+    Parameters
+    ----------
+    is_group : np.ndarray of bool, shape (n_time_position,)
+    weights : np.ndarray, shape (n_time_position,), optional
+        Extra per-sample weights (e.g. EM local-state weights).
+    likelihood_name : tuple
+        ``(environment_name, encoding_group)`` of the group.
+
+    Returns
+    -------
+    group_weights : np.ndarray, shape (n_time_position,)
+    """
+    group_weights = is_group.astype(float) if weights is None else weights * is_group
+    if not np.any(group_weights > 0.0):
+        environment_name, encoding_group = likelihood_name
+        warnings.warn(
+            f"Encoding group {encoding_group!r} in environment "
+            f"{environment_name!r} has no training samples with positive weight, "
+            "so its encoding model is fit with zero exposure and carries no "
+            "spike information. Check is_training, encoding_group_labels, and "
+            "environment_labels.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return group_weights
 
 
 def _normalize_frozen_discrete_transition_rows(
@@ -1825,6 +1975,28 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         self._degenerate_timesteps_ = np.asarray(sorted(degenerate_out), dtype=int)
         return result
 
+    @contextmanager
+    def _restore_state_on_error(self) -> Iterator[None]:
+        """Restore this detector and its environments if the block raises.
+
+        ``fit`` rebuilds the environments (in place), transitions, and encoding
+        model in stages. If a later stage fails, the earlier stages must not
+        leave the previously fitted detector paired with a refit grid. Both the
+        detector and ``Environment.fit_place_grid`` rebind attributes rather than
+        edit arrays in place, so shallow attribute snapshots are enough.
+        """
+        detector_state = dict(self.__dict__)
+        environment_states = [(env, dict(env.__dict__)) for env in self.environments]
+        try:
+            yield
+        except BaseException:
+            for env, env_state in environment_states:
+                env.__dict__.clear()
+                env.__dict__.update(env_state)
+            self.__dict__.clear()
+            self.__dict__.update(detector_state)
+            raise
+
     def _invalidate_stored_log_likelihood(self) -> None:
         """Drop ``log_likelihood_``, which no longer describes this model.
 
@@ -1848,31 +2020,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     def fit_encoding_model(self):
         """Fit the encoding model. To be implemented by inheriting class."""
 
-    @staticmethod
-    def _apply_encoding_damping(
-        new_model: dict,
-        old_model: dict,
-        damping: float,
-    ) -> None:
-        """Blend new encoding model place fields with old ones in-place.
-
-        For each key present in both models, computes:
-            place_fields = (1 - damping) * new + damping * old
-        and recomputes no_spike_part_log_likelihood accordingly.
-        """
-        for key in new_model:
-            if key not in old_model:
-                continue
-            new_entry = new_model[key]
-            old_entry = old_model[key]
-            if "place_fields" not in new_entry or "place_fields" not in old_entry:
-                continue
-            blended = (1 - damping) * new_entry["place_fields"] + damping * old_entry[
-                "place_fields"
-            ]
-            new_entry["place_fields"] = blended
-            new_entry["no_spike_part_log_likelihood"] = jnp.sum(blended, axis=0)
-
     def estimate_parameters(
         self,
         time: np.ndarray | None = None,
@@ -1890,7 +2037,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         save_log_likelihood_to_results: bool | None = None,
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
-        encoding_update_damping: float = 0.0,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -1946,11 +2092,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Minimum effective sample size (ESS) of local state weights required
             to update the encoding model. ESS = sum(w)^2 / sum(w^2). If ESS
             is below this threshold, the encoding M-step is skipped. By default 1.0.
-        encoding_update_damping : float, optional
-            Damping factor in [0, 1) for encoding model updates. When > 0, the
-            new place fields are blended with the old ones:
-            new = (1 - damping) * refit + damping * old. Set higher (e.g. 0.5)
-            when local ESS is expected to be low. By default 0.0 (no damping).
 
         Returns
         -------
@@ -1962,20 +2103,15 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         converged = False
         log_likelihood_change = np.inf
 
-        # Validate required parameters
-        if time is None:
-            raise ValidationError(
-                "Missing required parameter: time",
-                expected="time array with shape (n_time,)",
-                got="None",
-                hint="Provide timestamps corresponding to your data",
-                example="    results = detector.predict(spikes=spikes_test, time=time_test)",
-            )
-
-        # Validate time properties
-        val.ensure_ndarray(time, "time")
-        val.ensure_all_finite(time, "time")
-        val.ensure_monotonic_increasing(time, "time", strict=False)
+        _validate_estimation_arguments(
+            time,
+            n_chunks,
+            return_outputs,
+            save_log_likelihood_to_results,
+            min_encoding_local_mass,
+            min_encoding_local_ess,
+        )
+        assert time is not None  # narrowing for type checker
 
         if log_likelihood_args is None:
             log_likelihood_args = ()
@@ -1989,12 +2125,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 stacklevel=2,
             )
             if save_log_likelihood_to_results:
-                if return_outputs is not None:
-                    raise ValueError(
-                        "Cannot specify both return_outputs and deprecated "
-                        "save_log_likelihood_to_results flag. "
-                        "Use return_outputs only."
-                    )
                 return_outputs = "log_likelihood"
 
         # Normalize return_outputs to canonical set
@@ -2010,20 +2140,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             and n_chunks == 1
         ):
             cache_likelihood = True
-
-        # Validate encoding update parameters
-        if not 0.0 <= encoding_update_damping < 1.0:
-            raise ValueError(
-                f"encoding_update_damping must be in [0, 1), got {encoding_update_damping}"
-            )
-        if min_encoding_local_mass < 0:
-            raise ValueError(
-                f"min_encoding_local_mass must be >= 0, got {min_encoding_local_mass}"
-            )
-        if min_encoding_local_ess < 0:
-            raise ValueError(
-                f"min_encoding_local_ess must be >= 0, got {min_encoding_local_ess}"
-            )
 
         if estimate_discrete_transition:
             interior_state_bins = self.is_track_interior_state_bins_
@@ -2116,15 +2232,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                             min_encoding_local_ess,
                         )
                     else:
-                        # Snapshot for damping (only when needed)
-                        prev_encoding_model = (
-                            _snapshot_encoding_model(
-                                getattr(self, "encoding_model_", None)
-                            )
-                            if encoding_update_damping > 0
-                            else None
-                        )
-
                         # Re-fit the encoding model using the posterior weights.
                         # Known limitation (issue #31): the encoding model (the
                         # emission) is shared across states but is re-fit here
@@ -2137,14 +2244,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                             **self._encoding_model_data,
                             weights=local_state_weights,
                         )
-
-                        # Apply damping: blend new place fields with old
-                        if prev_encoding_model is not None:
-                            self._apply_encoding_damping(
-                                self.encoding_model_,
-                                prev_encoding_model,
-                                encoding_update_damping,
-                            )
 
                         # The encoding model changed, so the likelihood
                         # computed from the previous one is stale.
@@ -2905,81 +3004,6 @@ class ClusterlessDetector(_DetectorBase):
             return dict(_DEFAULT_CLUSTERLESS_ALGORITHM_PARAMS)
         return dict(self.clusterless_algorithm_params)
 
-    def _get_group_spike_data(
-        self,
-        spike_times: list[np.ndarray],
-        spike_waveform_features: list[np.ndarray],
-        is_group: np.ndarray,
-        position_time: np.ndarray,
-    ) -> tuple[list[np.ndarray], list[np.ndarray]]:
-        """
-        Get group spike data based on is_group mask.
-
-        Parameters
-        ----------
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        spike_waveform_features : list of np.ndarray
-            Spike waveform features for each neuron.
-        is_group : np.ndarray, shape (n_time_position,)
-            Boolean mask indicating group membership.
-        position_time : np.ndarray
-            Time points for position data.
-
-        Returns
-        -------
-        group_spike_times : list of np.ndarray
-        group_spike_waveform_features : list of np.ndarray
-        """
-        # get consecutive runs in each group
-        group_labels, n_groups = scipy.ndimage.label(is_group)
-
-        time_delta = position_time[1] - position_time[0]
-
-        group_spike_times = []
-        group_spike_waveform_features = []
-        for electrode_spike_times, electrode_spike_waveform_features in zip(
-            spike_times, spike_waveform_features, strict=False
-        ):
-            group_electrode_spike_times = []
-            group_electrode_waveform_features = []
-            # get spike times for each run
-            for group in range(1, n_groups + 1):
-                start_time, stop_time = position_time[group_labels == group][[0, -1]]
-                # Add half a time bin to the start and stop times
-                # to ensure that the spike times are within the group
-                start_time -= time_delta
-                stop_time += time_delta
-                is_valid_spike_time = np.logical_and(
-                    electrode_spike_times >= start_time,
-                    electrode_spike_times <= stop_time,
-                )
-                group_electrode_spike_times.append(
-                    electrode_spike_times[is_valid_spike_time]
-                )
-                group_electrode_waveform_features.append(
-                    electrode_spike_waveform_features[is_valid_spike_time]
-                )
-            if group_electrode_spike_times:
-                group_spike_times.append(np.concatenate(group_electrode_spike_times))
-                group_spike_waveform_features.append(
-                    np.concatenate(group_electrode_waveform_features, axis=0)
-                )
-            else:
-                # No training coverage for this obs group; return empty arrays
-                # with the right dtype/feature-dim so downstream encoding can
-                # fit an (empty) model without crashing on np.concatenate([]).
-                group_spike_times.append(
-                    np.asarray(
-                        electrode_spike_times[:0], dtype=electrode_spike_times.dtype
-                    )
-                )
-                group_spike_waveform_features.append(
-                    electrode_spike_waveform_features[:0]
-                )
-
-        return group_spike_times, group_spike_waveform_features
-
     def fit_encoding_model(
         self,
         position_time: np.ndarray,
@@ -3021,7 +3045,10 @@ class ClusterlessDetector(_DetectorBase):
             The values depend on the chosen `clusterless_algorithm`.
         """
         logger.info("Fitting clusterless spikes...")
-        self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
+        # Validate before any state changes and before the collections are
+        # paired electrode by electrode (``fit`` also checks first, before
+        # ``_fit`` rebuilds its own state).
+        validate_spike_feature_population(spike_times, spike_waveform_features)
         n_time = position.shape[0]
         position = position if position.ndim > 1 else position[:, np.newaxis]
 
@@ -3049,7 +3076,9 @@ class ClusterlessDetector(_DetectorBase):
 
         kwargs = self._resolve_clusterless_algorithm_params()
 
-        self.encoding_model_ = {}
+        # Build the new models locally so a failed refit keeps the previous
+        # encoding model and its stored log likelihood.
+        encoding_model: dict = {}
 
         # An encoding model is shared by ``(environment_name, encoding_group)``;
         # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
@@ -3070,22 +3099,37 @@ class ClusterlessDetector(_DetectorBase):
 
             encoding_algorithm, _ = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
             is_group = is_training & is_encoding & is_environment
-            (
-                group_spike_times,
-                group_spike_waveform_features,
-            ) = self._get_group_spike_data(
-                spike_times, spike_waveform_features, is_group, position_time
-            )
-            self.encoding_model_[likelihood_name] = encoding_algorithm(
-                position_time=position_time[is_group],
-                position=position[is_group],
+            # The mask is this model's exposure on the full timeline, as for
+            # sorted spikes: a subset timeline would let spike-weight
+            # interpolation bridge the mask's gaps.
+            group_weights = _group_weights(is_group, weights, likelihood_name)
+            is_group_spike = [
+                _group_spike_mask(times, position_time, group_weights)
+                for times in spike_times
+            ]
+            group_spike_times = [
+                times[mask]
+                for times, mask in zip(spike_times, is_group_spike, strict=True)
+            ]
+            group_spike_waveform_features = [
+                features[mask]
+                for features, mask in zip(
+                    spike_waveform_features, is_group_spike, strict=True
+                )
+            ]
+            encoding_model[likelihood_name] = encoding_algorithm(
+                position_time=position_time,
+                position=position,
                 spike_times=group_spike_times,
                 spike_waveform_features=group_spike_waveform_features,
                 environment=environment,
                 sampling_frequency=self.sampling_frequency,
-                weights=weights[is_group] if weights is not None else None,
+                weights=group_weights,
                 **kwargs,
             )
+
+        self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
+        self.encoding_model_ = encoding_model
 
     def fit(
         self,
@@ -3125,22 +3169,24 @@ class ClusterlessDetector(_DetectorBase):
         ClusterlessDetector
             Fitted detector instance.
         """
-        self._fit(
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
-            discrete_transition_covariate_data,
-        )
-        self.fit_encoding_model(
-            position_time,
-            position,
-            spike_times,
-            spike_waveform_features,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
-        )
+        validate_spike_feature_population(spike_times, spike_waveform_features)
+        with self._restore_state_on_error():
+            self._fit(
+                position,
+                is_training,
+                encoding_group_labels,
+                environment_labels,
+                discrete_transition_covariate_data,
+            )
+            self.fit_encoding_model(
+                position_time,
+                position,
+                spike_times,
+                spike_waveform_features,
+                is_training,
+                encoding_group_labels,
+                environment_labels,
+            )
         return self
 
     @row_slice_aware
@@ -3227,10 +3273,11 @@ class ClusterlessDetector(_DetectorBase):
         if _spike_time_order is None:
             _spike_time_order = _SpikeTimeOrder()
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
+        # ``local_position_std`` only shapes Local states, so it does not require
+        # position on its own.
         needs_position = (
             np.any([obs.is_local for obs in self.observation_models])
             or non_local_penalty > 0
-            or self.local_position_std is not None
         )
         if position is None and needs_position:
             reason = []
@@ -3238,8 +3285,6 @@ class ClusterlessDetector(_DetectorBase):
                 reason.append("local observation models")
             if non_local_penalty > 0:
                 reason.append("non_local_position_penalty > 0")
-            if self.local_position_std is not None:
-                reason.append("local_position_std is set")
             raise ValidationError(
                 f"Missing required parameter: position (needed for {', '.join(reason)})",
                 expected="position array with shape (n_time, n_dims)",
@@ -3702,22 +3747,25 @@ class ClusterlessDetector(_DetectorBase):
         min_encoding_local_ess : float, optional
             Minimum effective sample size of local weights to update encoding. By default 1.0.
         encoding_update_damping : float, optional
-            Damping factor in [0, 1) for encoding updates. By default 0.0.
+            Must be 0.0 (the default). Damped encoding updates are not supported
+            by any likelihood; a nonzero value raises ``ValidationError`` before
+            any fitting. Use ``min_encoding_local_mass`` /
+            ``min_encoding_local_ess`` to skip poorly supported updates.
 
         Returns
         -------
         results : xr.Dataset
             Results of the decoding.
         """
-        self._encoding_model_data = {
-            "position_time": position_time,
-            "position": position,
-            "spike_times": spike_times,
-            "spike_waveform_features": spike_waveform_features,
-            "is_training": is_training,
-            "encoding_group_labels": encoding_group_labels,
-            "environment_labels": environment_labels,
-        }
+        _validate_encoding_update_damping(encoding_update_damping)
+        _validate_estimation_arguments(
+            time,
+            n_chunks,
+            return_outputs,
+            save_log_likelihood_to_results,
+            min_encoding_local_mass,
+            min_encoding_local_ess,
+        )
         # Mirror predict(): treat NaN positions as missing observations during
         # the E-step so EM and predict use the same local-likelihood handling.
         if position is not None:
@@ -3738,6 +3786,15 @@ class ClusterlessDetector(_DetectorBase):
             environment_labels=environment_labels,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
         )
+        self._encoding_model_data = {
+            "position_time": position_time,
+            "position": position,
+            "spike_times": spike_times,
+            "spike_waveform_features": spike_waveform_features,
+            "is_training": is_training,
+            "encoding_group_labels": encoding_group_labels,
+            "environment_labels": environment_labels,
+        }
 
         return super().estimate_parameters(
             time=time,
@@ -3760,7 +3817,6 @@ class ClusterlessDetector(_DetectorBase):
             save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
-            encoding_update_damping=encoding_update_damping,
         )
 
     def most_likely_sequence(
@@ -3927,62 +3983,6 @@ class SortedSpikesDetector(_DetectorBase):
             return dict(_DEFAULT_SORTED_SPIKES_ALGORITHM_PARAMS)
         return dict(self.sorted_spikes_algorithm_params)
 
-    @staticmethod
-    def _get_group_spikes(
-        spike_times: list[np.ndarray], is_group: np.ndarray, position_time: np.ndarray
-    ) -> list[np.ndarray]:
-        """
-        Get group spike times based on is_group mask.
-
-        Parameters
-        ----------
-        spike_times : list of np.ndarray
-            Spike times for each neuron.
-        is_group : np.ndarray
-            Boolean mask indicating group membership.
-        position_time : np.ndarray
-            Time points for position data.
-
-        Returns
-        -------
-        list of np.ndarray
-            Grouped spike times.
-        """
-        # get consecutive runs in each group
-        group_labels, n_groups = scipy.ndimage.label(is_group)
-
-        time_delta = position_time[1] - position_time[0]
-
-        group_spike_times = []
-        for neuron_spike_times in spike_times:
-            group_neuron_spike_times = []
-            # get spike times for each run
-            for group in range(1, n_groups + 1):
-                start_time, stop_time = position_time[group_labels == group][[0, -1]]
-                # Add half a time bin to the start and stop times
-                # to ensure that the spike times are within the group
-                start_time -= time_delta
-                stop_time += time_delta
-                group_neuron_spike_times.append(
-                    neuron_spike_times[
-                        np.logical_and(
-                            neuron_spike_times >= start_time,
-                            neuron_spike_times <= stop_time,
-                        )
-                    ]
-                )
-            if group_neuron_spike_times:
-                group_spike_times.append(np.concatenate(group_neuron_spike_times))
-            else:
-                # No training coverage for this obs group; return empty spike
-                # array so downstream encoding can still fit a (uninformative)
-                # model without crashing on np.concatenate([]).
-                group_spike_times.append(
-                    np.asarray(neuron_spike_times[:0], dtype=neuron_spike_times.dtype)
-                )
-
-        return group_spike_times
-
     def fit_encoding_model(
         self,
         position_time: np.ndarray,
@@ -4021,7 +4021,6 @@ class SortedSpikesDetector(_DetectorBase):
             The values depend on the chosen `sorted_spikes_algorithm`.
         """
         logger.info("Fitting place fields...")
-        self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         n_time = position.shape[0]
         position = position if position.ndim > 1 else position[:, np.newaxis]
         if is_training is None:
@@ -4047,7 +4046,9 @@ class SortedSpikesDetector(_DetectorBase):
 
         kwargs = self._resolve_sorted_spikes_algorithm_params()
 
-        self.encoding_model_ = {}
+        # Build the new models locally so a failed refit keeps the previous
+        # encoding model and its stored log likelihood.
+        encoding_model: dict = {}
 
         # An encoding model is shared by ``(environment_name, encoding_group)``;
         # ``is_local`` / ``is_no_spike`` do not affect the fit. Since
@@ -4078,9 +4079,7 @@ class SortedSpikesDetector(_DetectorBase):
             # count does not, biasing every place field low. The position array
             # stays full-length so it remains aligned with the weights and with
             # the grid used to interpolate per-spike weights.
-            group_weights = (
-                is_group.astype(float) if weights is None else weights * is_group
-            )
+            group_weights = _group_weights(is_group, weights, likelihood_name)
 
             # GLM requires environment geometry that KDE derives internally
             glm_kwargs = {}
@@ -4100,18 +4099,26 @@ class SortedSpikesDetector(_DetectorBase):
             valid_params = set(sig.parameters.keys()) - set(glm_kwargs.keys())
             filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
 
-            self.encoding_model_[likelihood_name] = encoding_algorithm(
+            encoding_model[likelihood_name] = encoding_algorithm(
                 position_time=position_time,
                 position=position,
-                spike_times=self._get_group_spikes(
-                    spike_times, is_group, position_time
-                ),
+                spike_times=[
+                    neuron_spike_times[
+                        _group_spike_mask(
+                            neuron_spike_times, position_time, group_weights
+                        )
+                    ]
+                    for neuron_spike_times in spike_times
+                ],
                 environment=environment,
                 sampling_frequency=self.sampling_frequency,
                 weights=group_weights,
                 **glm_kwargs,
                 **filtered_kwargs,
             )
+
+        self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
+        self.encoding_model_ = encoding_model
 
     def fit(
         self,
@@ -4148,21 +4155,22 @@ class SortedSpikesDetector(_DetectorBase):
         SortedSpikesDetector
             Fitted detector instance.
         """
-        self._fit(
-            position,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
-            discrete_transition_covariate_data,
-        )
-        self.fit_encoding_model(
-            position_time,
-            position,
-            spike_times,
-            is_training,
-            encoding_group_labels,
-            environment_labels,
-        )
+        with self._restore_state_on_error():
+            self._fit(
+                position,
+                is_training,
+                encoding_group_labels,
+                environment_labels,
+                discrete_transition_covariate_data,
+            )
+            self.fit_encoding_model(
+                position_time,
+                position,
+                spike_times,
+                is_training,
+                encoding_group_labels,
+                environment_labels,
+            )
         return self
 
     @row_slice_aware
@@ -4253,10 +4261,11 @@ class SortedSpikesDetector(_DetectorBase):
         row_time = time[row_start:row_stop]
 
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
+        # ``local_position_std`` only shapes Local states, so it does not require
+        # position on its own.
         needs_position = (
             np.any([obs.is_local for obs in self.observation_models])
             or non_local_penalty > 0
-            or self.local_position_std is not None
         )
         if position is None and needs_position:
             reason = []
@@ -4264,8 +4273,6 @@ class SortedSpikesDetector(_DetectorBase):
                 reason.append("local observation models")
             if non_local_penalty > 0:
                 reason.append("non_local_position_penalty > 0")
-            if self.local_position_std is not None:
-                reason.append("local_position_std is set")
             raise ValidationError(
                 f"Missing required parameter: position (needed for {', '.join(reason)})",
                 expected="position array with shape (n_time, n_dims)",
@@ -4651,22 +4658,26 @@ class SortedSpikesDetector(_DetectorBase):
         min_encoding_local_ess : float, optional
             Minimum effective sample size of local weights to update encoding. By default 1.0.
         encoding_update_damping : float, optional
-            Damping factor in [0, 1) for encoding updates. By default 0.0.
+            Must be 0.0 (the default). Damped encoding updates are not supported
+            by any likelihood; a nonzero value raises ``ValidationError`` before
+            any fitting. Use ``min_encoding_local_mass`` /
+            ``min_encoding_local_ess`` to skip poorly supported updates.
 
         Returns
         -------
         xr.Dataset
             Results of the decoding
         """
+        _validate_encoding_update_damping(encoding_update_damping)
+        _validate_estimation_arguments(
+            time,
+            n_chunks,
+            return_outputs,
+            save_log_likelihood_to_results,
+            min_encoding_local_mass,
+            min_encoding_local_ess,
+        )
         position = position[:, np.newaxis] if position.ndim == 1 else position
-        self._encoding_model_data = {
-            "position_time": position_time,
-            "position": position,
-            "spike_times": spike_times,
-            "is_training": is_training,
-            "encoding_group_labels": encoding_group_labels,
-            "environment_labels": environment_labels,
-        }
         # Mirror predict(): treat NaN positions as missing observations during
         # the E-step so EM and predict use the same local-likelihood handling.
         nan_position = np.any(np.isnan(position), axis=1)
@@ -4684,6 +4695,14 @@ class SortedSpikesDetector(_DetectorBase):
             environment_labels=environment_labels,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
         )
+        self._encoding_model_data = {
+            "position_time": position_time,
+            "position": position,
+            "spike_times": spike_times,
+            "is_training": is_training,
+            "encoding_group_labels": encoding_group_labels,
+            "environment_labels": environment_labels,
+        }
 
         return super().estimate_parameters(
             time=time,
@@ -4705,7 +4724,6 @@ class SortedSpikesDetector(_DetectorBase):
             save_log_likelihood_to_results=save_log_likelihood_to_results,
             min_encoding_local_mass=min_encoding_local_mass,
             min_encoding_local_ess=min_encoding_local_ess,
-            encoding_update_damping=encoding_update_damping,
         )
 
     def most_likely_sequence(

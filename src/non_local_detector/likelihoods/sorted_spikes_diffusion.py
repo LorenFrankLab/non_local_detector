@@ -38,6 +38,7 @@ from non_local_detector.likelihoods.common import (
     get_spikecount_per_time_bin,
     interpolate_weights_at_spike_times,
     resolve_row_slice,
+    validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
 )
@@ -671,6 +672,16 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         Shape (n_rows, n_interior_bins) when ``is_local`` is False, else
         (n_rows, 1). ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
     """
+    # Both paths broadcast or contract over neurons, so a population mismatch would
+    # otherwise surface as a JAX shape error or, on the local path, broadcast one
+    # neuron's rates across the observed spike trains.
+    validate_population_lengths(
+        "neuron",
+        spike_times=spike_times,
+        mean_rates=mean_rates,
+        place_fields=place_fields,
+        interior_log_place_fields=interior_log_place_fields,
+    )
     row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
     if is_local:
         interpolated_position = get_position_at_time(
