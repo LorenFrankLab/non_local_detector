@@ -150,3 +150,29 @@ def test_local_position_std_without_local_state_does_not_need_position(
     sorted_detector.fit(time, position, spike_times)
     results = sorted_detector.predict(spike_times, time=time[:N_DECODE])
     assert np.all(np.isfinite(results.acausal_posterior.values))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
+def test_non_local_position_penalty_requires_position(
+    family, clusterless_sim, sorted_sim
+):
+    """The non-local position penalty reads position, so its reason appears in
+    the missing-position error."""
+    if family == "sorted":
+        time, position, spike_times = sorted_sim
+        detector = NonLocalSortedSpikesDetector(non_local_position_penalty=1.0).fit(
+            time, position, spike_times
+        )
+        predict_args = (spike_times,)
+        decode_time = time[:N_DECODE]
+    else:
+        sim = clusterless_sim
+        detector = _fit_clusterless(
+            NonLocalClusterlessDetector(non_local_position_penalty=1.0), sim
+        )
+        predict_args = (sim.spike_times, sim.spike_waveform_features)
+        decode_time = sim.position_time[:N_DECODE]
+
+    with pytest.raises(ValidationError, match="non_local_position_penalty > 0"):
+        detector.predict(*predict_args, time=decode_time)

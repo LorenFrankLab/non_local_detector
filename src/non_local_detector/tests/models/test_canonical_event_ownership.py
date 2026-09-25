@@ -345,3 +345,48 @@ def test_sorted_group_without_training_coverage(algorithm):
     ).acausal_posterior.values
     assert np.all(np.isfinite(posterior))
     np.testing.assert_allclose(posterior.sum(axis=-1), 1.0, rtol=1e-5)
+
+
+@pytest.mark.integration
+def test_glm_em_refit_with_gapped_mask_and_off_sample_spikes():
+    """EM re-fits the GLM with fractional Local-state weights times a gapped
+    training mask, with spikes between position samples. The re-fit place fields
+    and the final posterior stay finite and normalized. (The zero-exposure
+    divergence itself is pinned by the direct GLM ownership tests; this
+    well-sampled run exercises the EM path, not that failure.)"""
+    from non_local_detector import NonLocalSortedSpikesDetector
+
+    sim = make_simulated_run_data(
+        n_tetrodes=3, place_field_means=np.arange(0, 90, 15), n_runs=1, seed=0
+    )
+    n = sim.position_time.shape[0]
+    dt = np.median(np.diff(sim.position_time))
+    rng = np.random.default_rng(0)
+    spike_times = [
+        np.sort(
+            np.clip(
+                t + rng.uniform(0.0, dt, t.shape),
+                sim.position_time[0],
+                sim.position_time[-1],
+            )
+        )
+        for t in sim.spike_times
+    ]
+    is_training = (np.arange(n) // 40) % 3 != 2
+
+    detector = NonLocalSortedSpikesDetector(sorted_spikes_algorithm="sorted_spikes_glm")
+    results = detector.estimate_parameters(
+        position_time=sim.position_time,
+        position=sim.position,
+        spike_times=spike_times,
+        time=sim.position_time,
+        is_training=is_training,
+        estimate_encoding_model=True,
+        max_iter=2,
+    )
+
+    (model,) = detector.encoding_model_.values()
+    assert np.all(np.isfinite(model["place_fields"]))
+    posterior = results.acausal_state_probabilities.values
+    assert np.all(np.isfinite(posterior))
+    np.testing.assert_allclose(posterior.sum(axis=-1), 1.0, rtol=1e-5)
