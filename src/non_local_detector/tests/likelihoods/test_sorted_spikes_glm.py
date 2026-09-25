@@ -802,3 +802,31 @@ class TestWeightedEventOwnership:
 
         ((event_counts, _),) = captured
         np.testing.assert_allclose(event_counts, [0.75, 1.25, 0.0, 0.25, 1.75])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("position_time", "weights", "spike_times"),
+    [
+        # Repeated final timestamp: the spike at t=2 has interpolated weight 1.
+        ([0.0, 1.0, 2.0, 2.0], [1.0, 1.0, 0.0, 1.0], [2.0]),
+        # Repeated interior timestamp.
+        ([0.0, 1.0, 1.0, 2.0], [1.0, 0.0, 1.0, 1.0], [1.0, 1.5]),
+        # A single position sample.
+        ([3.0], [0.5], [3.0, 3.0]),
+    ],
+    ids=["repeated-final", "repeated-interior", "single-sample"],
+)
+def test_weighted_spike_counts_conserve_interpolated_weight(
+    position_time, weights, spike_times
+):
+    """Event mass always equals the spike's interpolated weight, including
+    zero-length sample intervals, so a selected spike cannot lose its weight."""
+    from non_local_detector.likelihoods.sorted_spikes_glm import weighted_spike_counts
+
+    position_time, weights = np.array(position_time), np.array(weights)
+    counts = weighted_spike_counts(np.array(spike_times), position_time, weights)
+    np.testing.assert_allclose(
+        counts.sum(), np.interp(spike_times, position_time, weights).sum()
+    )
+    np.testing.assert_array_equal(counts[weights == 0.0], 0.0)

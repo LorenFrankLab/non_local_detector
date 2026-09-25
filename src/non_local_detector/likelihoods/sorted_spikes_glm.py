@@ -295,8 +295,10 @@ def weighted_spike_counts(
     right = np.minimum(left + 1, n_time - 1)
     interval = position_time[right] - position_time[left]
     safe_interval = np.where(interval > 0.0, interval, 1.0)
+    # A zero-length interval (a repeated final timestamp, or a single sample)
+    # gives the spike the right sample's weight, as np.interp does.
     fraction = np.where(
-        interval > 0.0, (times - position_time[left]) / safe_interval, 0.0
+        interval > 0.0, (times - position_time[left]) / safe_interval, 1.0
     )
     return np.bincount(
         left, weights=(1.0 - fraction) * weights[left], minlength=n_time
