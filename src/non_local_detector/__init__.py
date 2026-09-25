@@ -35,6 +35,7 @@ from non_local_detector.models import (  # noqa
     NoSpikeContFragSortedSpikesClassifier,
     SortedSpikesDecoder,
 )
+from non_local_detector.time_edges import time_edges_from_centers  # noqa
 
 try:
     from ._version import __version__

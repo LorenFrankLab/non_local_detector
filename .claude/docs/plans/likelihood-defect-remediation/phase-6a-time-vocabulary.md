@@ -46,6 +46,27 @@ the span over which linear interpolation touches a NaN position sample, i.e.
 superset of every support-based definition, and guarantees a finite
 interpolated position at the center of every non-missing bin.
 
+**Implementation decisions (user, 2026-09-25):**
+
+- `time` → `time_edges` everywhere decode edges are taken: detector `predict`,
+  `estimate_parameters`, `most_likely_sequence`, `compute_log_likelihood`, the
+  direct `predict_*_log_likelihood` and no-spike functions, and
+  `get_spikecount_per_time_bin`. Detector entry points take it keyword-only so
+  old positional calls fail loudly. `core.py` keeps `time` as observation rows;
+  the detector hands core the centers and binds the edges in its callback.
+- `estimate_parameters` records the decode bin width with the learned
+  transitions; `predict` / `most_likely_sequence` reject a grid whose width
+  differs beyond the precision bound. Detectors only `fit` record nothing.
+- `calculate_time_bins` becomes `calculate_time_edges(time_range, trim=False)`:
+  N+1 edges at `1/sampling_frequency`, rejecting a range that is not a whole
+  number of bins unless `trim=True`. A public `time_edges_from_centers(t)`
+  builds edges centered on uniform sample timestamps (spacing inferred and
+  validated); it is the documented migration for decoding on the position grid.
+  For on-sample spikes (the simulators) it preserves every row's coordinate and
+  spike ownership except that a spike at `t[-1]` moves from row `N-2` to the
+  now-reachable terminal row.
+- Notebooks: migrate the source (jupytext pairing) without re-executing.
+
 ## Dependencies and rollout
 
 Use [C3](shared-contracts.md#c3--time-vocabulary) as the contract authority and

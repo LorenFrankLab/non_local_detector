@@ -56,6 +56,7 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.no_spike import no_spike_time_bin_size
 from non_local_detector.observation_models import ObservationModel
+from non_local_detector.time_edges import calculate_time_edges
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -2502,24 +2503,31 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         return self._convert_seq_to_df(sequence_ind, time)
 
-    def calculate_time_bins(self, time_range: np.ndarray) -> np.ndarray:
-        """
-        Calculate time bins based on the provided time range.
+    def calculate_time_edges(
+        self, time_range: np.ndarray, trim: bool = False
+    ) -> np.ndarray:
+        """Uniform decode edges at ``1 / sampling_frequency`` spanning a range.
 
         Parameters
         ----------
         time_range : np.ndarray, shape (2,)
-            Array specifying the range of time.
+            ``(start, stop)`` in seconds.
+        trim : bool, optional
+            If False (default), the range must be a whole number of bins. If
+            True, a partial final bin is dropped.
 
         Returns
         -------
-        time : np.ndarray, shape (n_time_bins,)
-            Array of time bins.
+        time_edges : np.ndarray, shape (n_bins + 1,)
+            Pass as ``time_edges`` to ``predict``.
+
+        Raises
+        ------
+        ValidationError
+            If the range is not a whole number of bins and ``trim`` is False,
+            or holds no complete bin.
         """
-        n_time_bins = int(
-            np.ceil((time_range[-1] - time_range[0]) * self.sampling_frequency)
-        )
-        return time_range[0] + np.arange(n_time_bins) / self.sampling_frequency
+        return calculate_time_edges(time_range, self.sampling_frequency, trim=trim)
 
     def save_model(self, filename: str = "model.pkl") -> None:
         """
