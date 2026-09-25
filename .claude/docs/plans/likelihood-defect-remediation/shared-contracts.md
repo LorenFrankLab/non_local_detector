@@ -173,7 +173,8 @@ Two mechanisms currently assign a spike to an encoding model, and they disagree.
    interpolation bridges gaps and the mask never reaches the event weight. With
    mask `[1,1,0,1,1]` and `weights=None`, a clusterless spike at t=2 is kept by
    both windows and counted twice at weight 1 (verified 2026-09-22). Phase 5
-   moves the clusterless fit to the full timeline with mask weights.
+   (`68e88b0`) moved the clusterless fit to the full timeline with mask weights
+   and deleted the windows; this item describes the pre-Phase-5 code.
 
 **Decision: interpolated weights are canonical and sufficient. Delete the hard
 windows.**
@@ -208,6 +209,18 @@ must preserve event/feature alignment and apply each event weight once. For the
 GLM, fractional event ownership requires weighted count sufficient statistics;
 weighting ordinary sample counts a second time is not equivalent. Phase 6a's
 encoding-cell migration must preserve that Phase 5 ownership contract.
+
+**As implemented (Phase 5, `68e88b0`).** The detector selects a group's spikes
+by `interpolated_weight > 0` within `[position_time[0], position_time[-1]]`
+(`_group_spike_mask`), and every backend re-interpolates and applies the weight
+once. The GLM event term (`sorted_spikes_glm.weighted_spike_counts`) splits
+each spike's interpolated weight between its bracketing samples,
+`(1 - a) * w[i]` to row `i` and `a * w[i+1]` to row `i+1`. The parts sum to
+the interpolated weight, and a row receives events only where its exposure
+weight is positive. Assigning the whole weight to the left sample diverged at
+0 -> 1 mask transitions. Exposure stays the per-sample weight; no endpoint
+policy was chosen. Occupancy KDEs drop zero-weight samples before fitting,
+which leaves the density unchanged. Phase 6a must keep these properties.
 
 ### How much does this change results?
 
@@ -311,8 +324,9 @@ Two decisions are required before this can be written:
    tracked, sampling was sparse) or missing data (tracking dropped)? The current
    code has no policy, and `base.py:3041-3048` (clusterless) and `:4039-4046`
    (sorted) already drop NaN position rows *before* this point, so
-   interpolation silently bridges dropped-tracking gaps; the clusterless fit's
-   subset timeline also bridges group-mask gaps (Phase 5).
+   interpolation silently bridges dropped-tracking gaps. (Group-mask gaps are no
+   longer bridged: Phase 5 put the clusterless fit on the full timeline. NaN-row
+   dropping still bridges tracking gaps and is part of this decision.)
 
 Whatever is chosen, encoding exposure is `sum(weights × sample_cell_width)`.
 

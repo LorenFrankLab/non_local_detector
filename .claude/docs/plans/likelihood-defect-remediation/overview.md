@@ -117,10 +117,10 @@ in [PLAN.md](PLAN.md#execution-order-and-baselines), rather than numeric order a
 
 ```
 detector.fit()
-  └─ fit_encoding_model()          models/base.py:2983 (clusterless), :3986 (sorted)
+  └─ fit_encoding_model()          models/base.py (both families; built locally, published on success)
      ├─ is_group = is_training & is_encoding & is_environment
-     │    sorted: full timeline + mask weights; clusterless: subset timeline (Phase 5)
-     ├─ group spikes               _get_group_spike_data / _get_group_spikes
+     │    both families: full timeline, weights = mask (x EM weights)  _group_weights
+     ├─ group spikes               _group_spike_mask: interpolated weight > 0
      └─ registry fit fn            likelihoods/__init__.py:41 (sorted), :59 (clusterless)
 
 detector.predict()
