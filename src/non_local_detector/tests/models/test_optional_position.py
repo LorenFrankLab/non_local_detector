@@ -23,8 +23,6 @@ from non_local_detector.models.cont_frag_model import (
     ContFragClusterlessClassifier,
     ContFragSortedSpikesClassifier,
 )
-from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
-from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 POSITION_FREE_ALGORITHMS = [
     "clusterless_gmm",
@@ -32,22 +30,6 @@ POSITION_FREE_ALGORITHMS = [
     "clusterless_kde_log",
 ]
 N_DECODE = 400
-
-
-@pytest.fixture(scope="module")
-def clusterless_sim():
-    return make_simulated_run_data(
-        n_tetrodes=2, place_field_means=np.arange(0, 80, 20), n_runs=1, seed=0
-    )
-
-
-@pytest.fixture(scope="module")
-def sorted_sim():
-    _, position, spike_times, time, _, _, _, _ = make_simulated_data(
-        seed=0, n_neurons=3
-    )
-    n = 2_000
-    return time[:n], position[:n], [st[st <= time[n - 1]] for st in spike_times]
 
 
 def _fit_clusterless(detector, sim):

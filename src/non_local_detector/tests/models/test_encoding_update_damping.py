@@ -14,31 +14,24 @@ import pytest
 
 from non_local_detector import NonLocalClusterlessDetector, NonLocalSortedSpikesDetector
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
-from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
 REJECTED_DAMPING = [0.5, 1e-6, 1.0, -0.1, np.nan]
 
 
 @pytest.fixture(scope="module")
-def sorted_inputs():
-    _, position, spike_times, time, _, _, _, _ = make_simulated_data(
-        seed=0, n_neurons=3
-    )
-    n = 2_000
+def sorted_inputs(sorted_sim):
+    time, position, spike_times = sorted_sim
     return {
-        "position_time": time[:n],
-        "position": position[:n],
-        "spike_times": [st[st <= time[n - 1]] for st in spike_times],
-        "time": time[:n],
+        "position_time": time,
+        "position": position,
+        "spike_times": spike_times,
+        "time": time,
     }
 
 
 @pytest.fixture(scope="module")
-def clusterless_inputs():
-    sim = make_simulated_run_data(
-        n_tetrodes=2, place_field_means=np.arange(0, 80, 20), n_runs=1, seed=0
-    )
+def clusterless_inputs(clusterless_sim):
+    sim = clusterless_sim
     return {
         "position_time": sim.position_time,
         "position": sim.position,
