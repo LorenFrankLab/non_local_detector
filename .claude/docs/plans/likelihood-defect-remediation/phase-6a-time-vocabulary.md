@@ -1,6 +1,6 @@
 # Phase 6a — Time vocabulary, coordinates, and encoding-cell migration
 
-> **READY (decode migration); encoding cells move to 6b.** C3a and C3b are
+> **IMPLEMENTED (decode migration; see the implementation record below); encoding cells move to 6b.** C3a and C3b are
 > settled ([shared-contracts](shared-contracts.md#c3--time-vocabulary)). The
 > user chose the split on 2026-09-25: (1) give the GLM its own encoding row
 > assignment, bit-identical to today's; (2) this phase's decode migration with
@@ -205,3 +205,104 @@ HMM effects in the numerical analysis. Preserve rate units in this phase so 6b's
 conversion remains attributable. Run the full suite, affected snapshot/golden
 checks, and a complete caller audit. Measure which references actually change;
 request approval only for an observed reference or numerical-contract update.
+
+## Implementation record
+
+Branch `feat/time-edges-uniform-bins`, based on `09de7e9`. Baseline for the
+numerical comparison: `94dd814` (pre-migration API), run from a worktree.
+
+| Commit | Change |
+|---|---|
+| `f8887c1` | C3b resolved; 6a/6c re-verified at `09de7e9`; rollout split recorded. |
+| `bf5ab16` | GLM `weighted_spike_counts` finds its left sample with its own `searchsorted` over the position samples. Bit-identical to the decode-selector version on 3000 randomized cases (float, integer and 1.7e9-origin grids, repeated timestamps, unsorted and JAX spikes); a per-spike reference test pins it. |
+| `94dd814` | `non_local_detector.time_edges`: `validate_time_edges`, `uniform_time_bin_width`, `time_edges_from_centers`, `calculate_time_edges` (replaces `calculate_time_bins`). |
+| (migration) | Decode API, backends, detector, tests, docs; see below. |
+
+**What changed.**
+
+- `select_spikes_in_rows` / `get_spikecount_per_time_bin` bin on edges: bin
+  `i` is `[e_i, e_{i+1})`, the final bin is closed, spikes outside the edges are
+  not counted. `get_spike_time_bin_ind` is removed. `decode_bin_centers` gives
+  per-request centers.
+- All eight registered predictors and no-spike take `time_edges` (positional,
+  validated with `validate_time_edges`; nonuniform accepted), return `n_bins`
+  rows, and evaluate local positions at centers. Per-spike mark terms still use
+  each spike's own time.
+- Detectors: keyword-only `time_edges` on `predict`, `estimate_parameters`,
+  `most_likely_sequence` (all 12 entry points); `compute_log_likelihood(time_edges, ...)`.
+  Core is unchanged: `_predict` hands core the centers and
+  `_prepare_likelihood_callback` binds the edges. A `row_slice_aware` callback
+  gets the full edges and a row slice; an unmarked override gets its chunk's
+  own edges with the closing edge of every chunk but the last moved down one
+  ulp, so a spike on a shared chunk edge is owned by the later chunk only.
+  Both paths check the returned row count.
+- `_missing_bins`: a bin is missing when it overlaps `(t[k-1], t[k+1])` for a
+  non-finite position sample `k`, extended to ±∞ for a sample in an end
+  interval (linear extrapolation reads it). `position` must have one row per
+  `position_time` sample; `position_time` must be finite and non-decreasing.
+  Applied in `predict`, `most_likely_sequence` (previously ignored NaN
+  positions) and both estimation wrappers (before `fit`).
+- EM: local-state weights are interpolated from centers onto `position_time`
+  in every case; samples outside `[edges[0], edges[-1]]` get weight 0.
+  Consequence: EM that decodes only part of the training timeline refits the
+  encoding model from the decoded part alone (previously every other sample
+  took the nearest end bin's weight). One cache-invalidation test that decoded
+  200 bins of a 97,500-sample recording was rescoped to decode its whole
+  training window.
+- `transition_time_bin_width_` is set when the discrete M-step updates the
+  transitions (with the grid's precision tolerance); `fit` and estimation with
+  `estimate_discrete_transition=False` leave it `None`. Widths match within the
+  larger of the two grids' tolerances.
+- `visualization.static.get_multiunit_firing_rate` counts, per row timestamp,
+  the spikes nearest it, so rows line up with decode centers.
+- README, CHANGELOG, docstring examples, and 17 notebooks (source only, stored
+  outputs byte-identical) use `time_edges`.
+
+**Numerical attribution** (golden scenarios; baseline API `time=t`, branch
+`time_edges=time_edges_from_centers(t)`, which keeps rows and coordinates):
+
+| Scenario | Rows | Coordinates | Log-likelihood rows changed | Posterior |
+|---|---|---|---|---|
+| random-walk decoder | 50/50 | identical | none | bit-identical |
+| sorted decoder | 50/50 | max 1.4e-17 s | none | bit-identical |
+| non-local detector (local state at centers) | 50/50 | identical | none | bit-identical |
+| clusterless decoder | 50/50 | identical | 48, 49 (max 34.5) | TV 1.3e-2 in the final row, 2.4e-4 in the first; sums in [1-2e-7, 1+2e-7] |
+
+The only likelihood change is one on-sample spike at the final timestamp
+moving from row 48 to the formerly unreachable row 49; everything else in that
+posterior is backward-pass propagation. No coordinate change reaches a
+likelihood in these fixtures, because sample-centered bins put the centers on
+the old timestamps.
+
+**Validation.** Full suite after review fixes: 2090 passed / 6 skipped / 2
+failed: the clusterless-decoder golden (pending approval) and the
+cache-invalidation test rescoped above, whose module then passed (6/6). Property and
+snapshot markers: 65 passed. ruff and format clean; mypy on the touched files
+has no new errors against the baseline (185 vs 212). Edge validation costs
+3.2 ms per backend call on 1.8M edges (about 1.3 s for 4 states × 100 chunks).
+
+**Review** (code, tests, comments/docs, silent failures; each finding checked
+before acting). Fixed: the row-count check broke `row_slice_aware` chunking
+(caught by the code reviewer before commit); legacy chunk double counting;
+unchecked callback row counts; `_missing_bins` trusting `position_time`, ±inf
+positions, and extrapolated end bins; width recorded when transitions were
+not learned and compared with one grid's tolerance; EM weights outside the
+decoded edges; `calculate_time_edges` accepting a nonpositive or non-finite
+`sampling_frequency`; float32 edges upcast before the uniformity check;
+docstring and CHANGELOG inaccuracies. Coverage added for all of these, NaN
+mapping in `most_likely_sequence`, user masks in estimation, a Unix-epoch
+parity test, a randomized `_missing_bins` oracle, and keyword-only signatures.
+
+**Not addressed here:**
+
+- `get_spikecount_per_time_bin` does not validate its edges (it runs per unit
+  and per chunk; callers validate once). Documented on the helper.
+- Old timestamp arrays passed positionally to the direct likelihood functions
+  are read as edges (one fewer row); only the detector entry points are
+  keyword-only.
+- Rate units: the spike likelihoods use per-position-sample rates, so a decode
+  width different from the position sampling interval is miscalibrated, and
+  no-spike uses the median width for nonuniform direct calls. Both belong to
+  6b. `clusterless_diffusion` local prediction still rejects any NaN position
+  (pre-existing). Viterbi with covariate transitions has no length check
+  (pre-existing).

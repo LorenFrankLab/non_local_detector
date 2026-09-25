@@ -1,6 +1,6 @@
 # Phase 6c — Detector uniformity guard
 
-> **SETTLED REQUIREMENT — VALIDATOR NEEDS PROTOTYPING.** Ship with 6a, when the
+> **IMPLEMENTED with 6a** (see the implementation record below). Original status: settled requirement, validator needed prototyping. Ship with 6a, when the
 > explicit edge API is introduced. The earlier fixed-relative-tolerance snippet
 > is withdrawn because large absolute timestamps can make an intended uniform
 > grid fail it. Complete nonuniform direct-likelihood support arrives with 6b/6d.
@@ -118,3 +118,31 @@ outputs should retain parity; invalid inputs gain an explicit error. Measure
 any golden impact with the associated 6a migration rather than assuming a new
 reference is required by the validator itself. Review bypass paths and the
 representability argument for the selected bound.
+
+## Implementation record
+
+Shipped with 6a on `feat/time-edges-uniform-bins` (see the
+[6a record](phase-6a-time-vocabulary.md#implementation-record)).
+
+- **Bound (prototyped).** Correctly built float64 grids (`t0 + i*dt`,
+  `arange`, `linspace`, cumulative sums, centers → edges) stay within 1.7 ulp
+  of the mean width for 1 to 1.8M bins, origins 0 to 1.75e9, widths 0.5 to
+  33 ms. The guard allows 4 ulp of `max|edge|`, measured in the edges' own
+  dtype (floating edges are not upcast), and rejects edges whose tolerance
+  exceeds 1% of a bin width as unresolvable (float32 Unix-epoch timestamps).
+  At a 1.7e9 origin a 2 ms bin displaced by 5e-4 of its width is still
+  detected; the 10 ms → 50 ms grid is rejected.
+- **Coverage.** `predict`, `most_likely_sequence`, and `estimate_parameters`
+  (both families; the estimation check is in `_validate_estimation_arguments`,
+  before `fit`) validate before any state change, including before covariate
+  transitions are predicted. The public `core.py` functions are out of scope:
+  they index observation rows and never see edges.
+- **Width is inferred from the edges.** `sampling_frequency` is used only by
+  `calculate_time_edges`, which rejects ranges that are not a whole number of
+  bins unless `trim=True`, and a nonpositive or non-finite frequency.
+- **Transitions.** `transition_time_bin_width_` records the width the discrete
+  transitions were learned at; decoding at another width raises.
+- **Downstream.** Spyglass decodes with raw camera timestamps (irregular) or
+  `linspace` grids at Unix-epoch origins; the former are rejected with the
+  uniformity message and must be regridded (`calculate_time_edges`), the latter
+  pass. Coordinate the spyglass change with its non_local_detector pin.
