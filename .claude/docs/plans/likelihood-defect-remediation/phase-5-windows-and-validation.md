@@ -271,8 +271,14 @@ confirmed failing on the pre-fix code before the fix. Preservation tests
 | `970f476` | §1 | Window helpers deleted; `_group_spike_mask` selects spikes with positive interpolated group weight in `[t0, t_end]`; clusterless fits get the full timeline with `weights = mask` (or `weights * mask`); GLM `weighted_spike_counts` for the event term, exposure-only weights in `fit_poisson_regression`. |
 | `27d8bea` | review | Occupancy KDEs (clusterless KDE/log-KDE, sorted KDE) drop zero-weight samples before fitting. Output is bit-identical. With a 10% mask, local predict took 0.10 s instead of 25.0 s (466k samples, 20k rows, CPU). |
 | `919286b` | review | GLM event mass is split between each spike's bracketing samples, `(1 - a) * w[i]` and `a * w[i+1]`, so events land only on exposed rows. With the left-sample assignment in `970f476`, a mask `[1,1,0,1,1]` with a spike at 2.5 gave infinite place fields. Unweighted jittered fits move by at most 0.03% of peak. |
+| `f30fc7d` | review | A spike at a repeated final position timestamp keeps its interpolated weight in the GLM split. |
+| `1fd842a` | review | Both families warn when an encoding group has no training samples with positive weight. |
+| `2e13fb6` | review | Tests for the penalty-only position requirement and the GLM EM re-fit path. |
+| `076c90c` | review | Docstring and CHANGELOG corrections. Golden deltas were re-measured at the tip: all bit-identical except the sorted decoder, which moved by 6e-8. |
+| `1b9e54d` | review | Clusterless `fit` / `estimate_parameters` validate populations before `_fit` rebuilds state. |
+| `0a963c0`, `555a73c` | simplify | Shared validation and grouping helpers. The damping parameter was removed from base `estimate_parameters`. Zero-weight samples are dropped before linearization (bit-identical on a track graph). Shared test fixtures. |
 
-**Validation.** Full suite at `919286b`: **1828 passed / 6 skipped** (Phase 4: 1762 / 6). ruff and format pass; mypy adds no errors to the touched files relative to `main`. An independent review found no code defects. It found one incorrect CHANGELOG claim, which was corrected, and the occupancy performance regression, which was fixed in `27d8bea`.
+**Validation.** Full suite at `0a963c0`: **1839 passed / 6 skipped** (Phase 4: 1762 / 6). ruff and format pass; mypy on the touched files reports 199 errors against 203 on `main`, with no new ones. An independent review found no code defects. It found one incorrect CHANGELOG claim, which was corrected, and the occupancy performance regression, which was fixed in `27d8bea`.
 
 **Numerical effects** (compared against the pre-change tree on the same inputs):
 
@@ -297,5 +303,12 @@ confirmed failing on the pre-fix code before the fix. Preservation tests
 - Weight interpolation still bridges **NaN-position** stretches, because NaN
   rows are dropped before the timeline reaches the encoding fit. This has not
   changed from before and belongs to C3b's gap policy.
-- Out of scope, noted: `min_encoding_local_mass` / `min_encoding_local_ess` are
-  still validated only after the wrapper's initial `fit`.
+- Out of scope, noted from the branch reviews (pre-existing, not changed here):
+  `min_encoding_local_mass` / `min_encoding_local_ess`, `return_outputs`, and
+  `time` monotonicity are still validated only after the wrapper's `fit`; a failed
+  `fit_encoding_model` leaves `encoding_model_` empty (build into a local dict and
+  assign on success); `position_time` order is not validated in `fit`; NaN-position
+  stretches are bridged by weight interpolation when `fit_encoding_model` is called
+  directly (`fit` rejects NaN positions, so the NaN handling in `estimate_parameters`
+  is unreachable); the GMM and diffusion occupancy fits still linearize or
+  interpolate the full timeline before discarding zero-weight samples.
