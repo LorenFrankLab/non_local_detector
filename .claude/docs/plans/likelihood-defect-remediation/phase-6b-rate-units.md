@@ -1,11 +1,17 @@
 # Phase 6b — Rates in Hz and duration-scaled intensities
 
-> **BLOCKED ON C3b AND APPLICABLE C1 DECISIONS — NEEDS PROTOTYPING.** Depends on
-> 6a/6c and ships atomically with 6d's model-unit validation and metadata plumbing.
-> The former unexecuted formulas and constant-posterior-rescale criterion are
-> replaced by the unit requirements below. Also depends on Phase 5 (canonical
-> event weights, hard-window removal, clusterless full-timeline weights), which
-> is not yet implemented.
+> **C3b RESOLVED (2026-09-25) — NEEDS PROTOTYPING.** Depends on 6a/6c and ships
+> atomically with 6d's model-unit validation and metadata plumbing. Phase 5
+> (canonical event weights, clusterless full-timeline weights) is merged. By the
+> user's rollout decision this phase also carries C3b's encoding support
+> (valid intervals, supported half-cells, NaN breaks in support, the seven
+> encoding clip sites from 6a) and exposure in seconds, plus C3b item 4's
+> unit-bearing floors and GLM normalization/penalty migration. Acceptance:
+> the same physical recording encoded at different position sampling rates
+> recovers the same known firing rate on all eight backends, then decodes at a
+> different bin width. The former unexecuted formulas and
+> constant-posterior-rescale criterion are replaced by the unit requirements
+> below.
 >
 > Re-verified against `main` at `ee2cc21` (2026-09-22) by fitting every
 > registered backend; line references are to that revision.

@@ -4,7 +4,8 @@ Status: Phases 0–5 are merged on `main` (Phase 0 `c808dde`; Phase 1 `8c8765f` 
 `5bd63d4`; Phase 2 `86e22f0`; Phase 3 `ffc85a1`; Phase 4 `ee2cc21`; Phase 5
 `68e88b0`). The remaining phase plans were re-verified against `ee2cc21` on
 2026-09-22 and have the readiness states recorded below; Phase 5 did not change
-their blockers (C1 and C3b remain unresolved).
+their blockers. C3b was resolved on 2026-09-25 (see
+[shared-contracts](shared-contracts.md#c3b--encoding-exposure-resolved-2026-09-25)).
 
 ## Summary
 
@@ -27,8 +28,8 @@ as bin edges vs. timestamps, leaving a final row that can never contain a spike
 and rates calibrated to an unstated assumption (Phase 6). The clusterless encoding fit bridged group-mask gaps and counted a gap spike
 twice at full weight (fixed in Phase 5).
 
-**Read [shared-contracts.md](shared-contracts.md) first. C2 and C3a are settled;
-C1 is partially resolved and C3b is unresolved.** C1's former policy was
+**Read [shared-contracts.md](shared-contracts.md) first. C2, C3a, and C3b are
+settled; C1 is partially resolved.** C1's former policy was
 withdrawn as non-monotonic; phase 2 shipped the GMM arithmetic corrections
 under the existing floors, and the package-wide policy (a background firing
 model) is deferred to a separate proposal. Implementation selecting an
@@ -104,14 +105,15 @@ release order; implementation details remain subject to prototyping.
 | 3 | Current unchunked event ownership | Complete (merged at `ffc85a1`); it chose neither C1 nor C3b and preserved the endpoint convention, so the corrected behavior must be retained through 6a. |
 | 4 | Existing baseline floor policy, preserved explicitly | Complete (merged at `ee2cc21`); existing floors preserved; no deferred C1 policy selected. |
 | 5 | Settled C2 weighted-event ownership | Remove hard windows and move the clusterless fit to full-timeline mask weights (as Phase 1 did for sorted); do not independently settle acquisition endpoints/gaps from C3b. |
-| 6a + 6c | Settled C3a and resolved C3b for encoding-cell migration | Ship the edge/coordinate migration and detector uniformity guard together. |
-| 6b + 6d | 6a/6c, Phase 5 event weights, resolved C3b, and applicable C1 decisions | Ship Hz conversion, metadata plumbing, and legacy-model rejection atomically. |
+| GLM row ownership | Phase 5 weighted counts | Give the GLM its own encoding row assignment, bit-identical to today's, so decode binning can change independently. |
+| 6a + 6c | Settled C3a | Ship the edge/coordinate migration and detector uniformity guard together. Encoding cells moved to 6b (C3b exposure is in seconds). |
+| 6b + 6d | 6a/6c, Phase 5 event weights, C3b, and C3b's unit-bearing floor decisions | Ship C3b encoding support, seconds exposure, Hz conversion, metadata plumbing, and legacy-model rejection atomically. |
 | 8 | Applicable C1 decisions for the zero-exposure floor (not Phase 6b units) | Can ship before Phase 7 and does not require Phase 6b units; sorted-index work was done in Phase 3 (GPU validation outstanding). |
 | 7 | Corrected likelihood/time baseline and relevant Phase 8 fixes | Pure-core prototypes may run earlier; production claims require the integrated corrected baseline. |
 
 Phases 0–5 remain the correctness priority before the Phase 6 migration. Review
 Phase 6a/6c separately from 6b/6d so time/coordinate effects and rate-unit effects
-remain attributable. No ordering here selects C1 or C3b. Record actual golden
+remain attributable. No ordering here selects the deferred C1 policy. Record actual golden
 changes at each step; approval requirements apply to changes observed, not to
 an assumption that every golden must change.
 
@@ -125,7 +127,7 @@ an assumption that every golden must change.
 | 3 | **Implemented and validated**; merged at `ffc85a1` (based on `86e22f0`). Backends bin spikes against the full timeline and evaluate only requested rows, including boundary spikes. Both detector families and transition drivers return requested likelihoods in global order. Follow-ups invalidate stale stored likelihoods, preserve positional dtype compatibility, select features before conversion, bound digitization to chunk boundaries, prepare No-Spike duration once, validate JAX sorted-index hints, and share spike ordering across states/chunks within each prediction. Later predictions recheck mutated inputs. The six dedicated modules contain 262 tests; current numerical, full-suite and runtime evidence is recorded in [Phase 3](phase-3-chunk-boundary.md). Goldens, snapshots and tolerances are unchanged. Memory/runtime measurements are CPU-only on small grids; full posterior retention remains Phase 7a, and the former total-memory reduction target remains withdrawn. |
 | 4 | **Implemented and validated**; merged at `ee2cc21` (based on `ffc85a1`). Empty-tile operands are safe, diagonal/spherical Gaussian distances and covariance updates are centered, and weighted GMM initialization/EM/objectives use stable weight normalization. Clusterless fits retain zero-weight exclusion before data validation. Full suite: **1762 passed / 6 skipped** after the second review round; focused GMM/KDE-tile/clusterless-weight tests: **120 passed** in both default float32 and x64 modes. |
 | 5 | **Implemented, reviewed, and merged at `68e88b0`** (based on `84259d4`; full suite 1859 passed / 6 skipped). Hard windows are removed. Spikes are owned by positive interpolated group weight on the full timeline. Clusterless fits use full-timeline mask weights, and the GLM uses weighted event counts with exposure-only weights. Populations are validated before pairing and in diffusion/MRF predict. Nonzero damping is rejected before mutation. `needs_position` ignores `local_position_std` without a Local state. Occupancy KDEs drop zero-weight samples. Goldens pass unchanged; gapped clusterless masks change by design. See the [implementation record](phase-5-windows-and-validation.md#implementation-record). |
-| 6a–6d | **C3b unresolved; needs prototyping.** Central edge validation and encoding-cell alignment; 6a/6c ship together and 6b/6d ship atomically. Uniformity checks must account for timestamp representability. |
+| 6a–6d | **C3b resolved (2026-09-25); 6a/6c in progress** on `feat/time-edges-uniform-bins`. Central edge validation, `time_edges` API, center coordinates, and the uniformity guard ship together; C3b encoding support and seconds exposure ship with 6b/6d. Uniformity checks must account for timestamp representability. |
 | 7 | **Expanded scope; needs prototyping.** 7a: bounded memory smoothing and incremental/compact outputs. 7b: structured forward/backward transitions. 7c: measured likelihood and compilation optimizations. Validate the representative workload, existing numerical tolerances, host/device peak memory, and end-to-end runtime before claiming production support. |
 | 8 | **Density/component fixes need prototyping** (both reproduced at `ee2cc21`). Distinguish mass from density on variable-volume bins (sorted diffusion is the outlier; clusterless diffusion already uses the mass convention) and define unoccupied-component behavior consistently with the selected policy. Phase 3 now sets sorted-index hints from a verified ordering at every reduction site and shares ordering checks across states/chunks within each prediction. GPU validation remains outstanding. |
 

@@ -1,15 +1,50 @@
 # Phase 6a — Time vocabulary, coordinates, and encoding-cell migration
 
-> **BLOCKED ON C3b FOR ENCODING CELLS — NEEDS PROTOTYPING.** C3a decode vocabulary
-> is settled. The former unexecuted helpers and shape-only parity claims are
-> withdrawn. This phase changes row alignment and evaluation coordinates but
-> does not perform the Hz conversion assigned to 6b.
+> **READY (decode migration); encoding cells move to 6b.** C3a and C3b are
+> settled ([shared-contracts](shared-contracts.md#c3--time-vocabulary)). The
+> user chose the split on 2026-09-25: (1) give the GLM its own encoding row
+> assignment, bit-identical to today's; (2) this phase's decode migration with
+> 6c; (3) C3b's encoding support and seconds exposure with 6b/6d, since that
+> exposure is defined in seconds. Tasks 2 and the encoding half of the
+> acceptance table below therefore belong to 6b. The former unexecuted helpers
+> and shape-only parity claims remain withdrawn.
 >
-> Claims were re-verified against `main` at `ee2cc21` (2026-09-22); line
-> references are to that revision. If Phase 5 gives the GLM its own encoding
-> row-assignment helper that preserves today's assignment exactly, the C3a
-> decode migration no longer shares a helper with encoding and could ship
-> independently of C3b; only encoding-cell changes would remain blocked.
+> Line references below are to `ee2cc21`; the re-verification at `09de7e9`
+> follows.
+
+## Re-verification at `09de7e9` (2026-09-25)
+
+Reproduced: `get_spikecount_per_time_bin([0.5..4.5], arange(6))` gives
+`[1,1,1,1,1,0]`, and a spike at `time[-1]` lands in row `n-2`; the direct helper
+accepts repeated and decreasing edges; `predict`, `most_likely_sequence`, and
+the decoder accept repeated, decreasing, NaN (all-NaN posterior with only a
+warning), and nonuniform grids; `estimate_parameters` accepts repeated and
+nonuniform grids. `core.py` and `no_spike.py` are unchanged since `ee2cc21`.
+
+Changed since `ee2cc21`:
+
+- **GLM.** Phase 5 replaced the decode count with `weighted_spike_counts`
+  (`sorted_spikes_glm.py:262-306`), which splits each spike's weight between its
+  bracketing samples; the terminal sample row now receives event mass. It still
+  finds the left sample with the decode selector `select_spikes_in_rows`
+  (`:293`), the only encoding caller of any decode helper (every other call site
+  is inside a predict function). Step (1) removes that coupling.
+- **Seventh clip site.** `_group_spike_mask` (`base.py:250`) also clips encoding
+  spikes to `[position_time[0], position_time[-1]]`.
+- **Moved lines.** Time validation is `_validate_estimation_arguments`
+  (`base.py:159-218`, still non-strict), called before `fit` in both wrappers
+  and the base loop; `get_spike_time_bin_ind` is `common.py:332-345`;
+  `select_spikes_in_rows` `:430-523`; `calculate_time_bins` `base.py:2505-2522`;
+  EM weight alignment `base.py:2210-2217`; NaN-position → `is_missing`
+  `base.py:3556, 3773, 4466, 4683`; Viterbi's no-chunk guard is `core.py:1120-1121`
+  (and `:1792-1793` for the covariate path).
+
+**Decode missing-position rule (C3b item 2).** With edges, a per-sample NaN
+mask no longer aligns with rows. A decode bin is marked missing when it overlaps
+the span over which linear interpolation touches a NaN position sample, i.e.
+`(t[k-1], t[k+1])` for NaN sample `k`. This needs no support-segment API, is a
+superset of every support-based definition, and guarantees a finite
+interpolated position at the center of every non-missing bin.
 
 ## Dependencies and rollout
 

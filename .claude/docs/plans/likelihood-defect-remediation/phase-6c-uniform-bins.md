@@ -8,6 +8,24 @@
 > Re-verified against `main` at `ee2cc21` (2026-09-22); line references are to
 > that revision.
 
+## Re-verification at `09de7e9` (2026-09-25)
+
+`core.py`, `no_spike.py`, and `continuous_state_transitions.py` are unchanged
+since `ee2cc21`. The nonuniform grid (1× then 5× dt) still decodes without error
+through `predict`, `most_likely_sequence`, and `estimate_parameters`. Stale
+since `daa9362`: `estimate_parameters` now validates `time` in
+`_validate_estimation_arguments` before `fit`, and `fit` restores state on
+failure, so a rejected grid no longer leaves the detector refit; that function
+is the natural home for the guard. Float64 spacing error at 1.8M × 2 ms is
+2.0e-10 (origin 0) and 7.25e-5 (origin 1.7e9); float32 keeps 29 unique edges at
+1.7e9. `calculate_time_bins`' origin dependence reproduces at 0.7 s (350 vs 351
+bins), not at 0.3 s (150 at both origins).
+
+Decisions (user, 2026-09-25; see C3a API decisions): spacing is inferred from
+the edges, `sampling_frequency` is used only to generate grids, non-divisible
+requested intervals are rejected or explicitly trimmed, and the interval
+associated with learned transitions is recorded.
+
 ## Problem and contract
 
 Core HMM transitions advance once per observation and are not scaled by each
