@@ -277,6 +277,7 @@ confirmed failing on the pre-fix code before the fix. Preservation tests
 | `076c90c` | review | Docstring and CHANGELOG corrections. Golden deltas were re-measured at the tip: all bit-identical except the sorted decoder, which moved by 6e-8. |
 | `1b9e54d` | review | Clusterless `fit` / `estimate_parameters` validate populations before `_fit` rebuilds state. |
 | `0a963c0`, `555a73c` | simplify | Shared validation and grouping helpers. The damping parameter was removed from base `estimate_parameters`. Zero-weight samples are dropped before linearization (bit-identical on a track graph). Shared test fixtures. |
+| `daa9362` | follow-up | `estimate_parameters` checks all argument-only conditions (time, `n_chunks`, `return_outputs`, thresholds, damping) before its initial `fit`. `fit_encoding_model` replaces the model and drops the stored likelihood only on success, and `fit` restores the detector and environments if any stage fails. Full suite 1859 passed / 6 skipped. |
 
 **Validation.** Full suite at `0a963c0`: **1839 passed / 6 skipped** (Phase 4: 1762 / 6). ruff and format pass; mypy on the touched files reports 199 errors against 203 on `main`, with no new ones. An independent review found no code defects. It found one incorrect CHANGELOG claim, which was corrected, and the occupancy performance regression, which was fixed in `27d8bea`.
 
@@ -303,12 +304,10 @@ confirmed failing on the pre-fix code before the fix. Preservation tests
 - Weight interpolation still bridges **NaN-position** stretches, because NaN
   rows are dropped before the timeline reaches the encoding fit. This has not
   changed from before and belongs to C3b's gap policy.
-- Out of scope, noted from the branch reviews (pre-existing, not changed here):
-  `min_encoding_local_mass` / `min_encoding_local_ess`, `return_outputs`, and
-  `time` monotonicity are still validated only after the wrapper's `fit`; a failed
-  `fit_encoding_model` leaves `encoding_model_` empty (build into a local dict and
-  assign on success); `position_time` order is not validated in `fit`; NaN-position
-  stretches are bridged by weight interpolation when `fit_encoding_model` is called
-  directly (`fit` rejects NaN positions, so the NaN handling in `estimate_parameters`
-  is unreachable); the GMM and diffusion occupancy fits still linearize or
+- Still open, noted from the branch reviews (pre-existing, not changed here):
+  `position_time` order is not validated in `fit`; NaN-position stretches are
+  bridged by weight interpolation when `fit_encoding_model` is called directly
+  (`fit` rejects NaN positions, so the NaN handling in `estimate_parameters` is
+  unreachable); the GMM and diffusion occupancy fits still linearize or
   interpolate the full timeline before discarding zero-weight samples.
+  Argument validation order and failed-refit state were fixed in `daa9362`.
