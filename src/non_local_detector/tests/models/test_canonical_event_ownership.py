@@ -282,25 +282,66 @@ def test_clusterless_exposure_uses_full_timeline_mask(
 @pytest.mark.parametrize("algorithm", CLUSTERLESS_ALGORITHMS)
 def test_clusterless_group_without_training_coverage(gapped_clusterless_run, algorithm):
     """A group observed only outside training owns no spikes and has zero
-    exposure. It fits zero-rate electrodes and still decodes. The subset
+    exposure. It warns, fits zero-rate electrodes, and still decodes. The subset
     timeline was empty here and the backends raised instead."""
     sim, is_training = gapped_clusterless_run
     decoder = ClusterlessDecoder(
         clusterless_algorithm=algorithm,
         observation_models=[ObservationModel(encoding_group=1)],
-    ).fit(
-        sim.position_time,
-        sim.position,
-        sim.spike_times,
-        sim.spike_waveform_features,
-        is_training=is_training,
-        encoding_group_labels=(~is_training).astype(int),
     )
+    with pytest.warns(UserWarning, match="no training samples"):
+        decoder.fit(
+            sim.position_time,
+            sim.position,
+            sim.spike_times,
+            sim.spike_waveform_features,
+            is_training=is_training,
+            encoding_group_labels=(~is_training).astype(int),
+        )
 
     (model,) = decoder.encoding_model_.values()
     np.testing.assert_array_equal(np.asarray(model["mean_rates"]), 0.0)
     posterior = decoder.predict(
         sim.spike_times, sim.spike_waveform_features, time=sim.position_time[:500]
+    ).acausal_posterior.values
+    assert np.all(np.isfinite(posterior))
+    np.testing.assert_allclose(posterior.sum(axis=-1), 1.0, rtol=1e-5)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "algorithm",
+    [
+        "sorted_spikes_kde",
+        "sorted_spikes_glm",
+        "sorted_spikes_diffusion",
+        "sorted_spikes_mrf",
+    ],
+)
+def test_sorted_group_without_training_coverage(algorithm):
+    """The sorted family warns for a group with no training samples and still
+    decodes a normalized posterior."""
+    sim = make_simulated_run_data(
+        n_tetrodes=2, place_field_means=np.arange(0, 80, 20), n_runs=1, seed=0
+    )
+    n = sim.position_time.shape[0]
+    is_training = np.arange(n) < n // 2
+    spike_times = [t[t < sim.position_time[-1]] for t in sim.spike_times]
+    decoder = SortedSpikesDecoder(
+        sorted_spikes_algorithm=algorithm,
+        observation_models=[ObservationModel(encoding_group=1)],
+    )
+    with pytest.warns(UserWarning, match="no training samples"):
+        decoder.fit(
+            sim.position_time,
+            sim.position,
+            spike_times,
+            is_training=is_training,
+            encoding_group_labels=(~is_training).astype(int),
+        )
+
+    posterior = decoder.predict(
+        spike_times, time=sim.position_time[:500]
     ).acausal_posterior.values
     assert np.all(np.isfinite(posterior))
     np.testing.assert_allclose(posterior.sum(axis=-1), 1.0, rtol=1e-5)

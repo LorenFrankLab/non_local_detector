@@ -179,6 +179,32 @@ def _group_spike_mask(
     return is_group_spike
 
 
+def _warn_if_group_unexposed(group_weights: np.ndarray, likelihood_name: tuple) -> None:
+    """Warn when an encoding group has no training samples with positive weight.
+
+    Such a group owns no spikes and has zero exposure, so its encoding model
+    carries no spike-based spatial information and states that use it decode
+    from the prior alone. This is usually a mask or label mistake.
+
+    Parameters
+    ----------
+    group_weights : np.ndarray, shape (n_time_position,)
+    likelihood_name : tuple
+        ``(environment_name, encoding_group)`` of the group.
+    """
+    if not np.any(group_weights > 0.0):
+        environment_name, encoding_group = likelihood_name
+        warnings.warn(
+            f"Encoding group {encoding_group!r} in environment "
+            f"{environment_name!r} has no training samples with positive weight, "
+            "so its encoding model is fit with zero exposure and carries no "
+            "spike information. Check is_training, encoding_group_labels, and "
+            "environment_labels.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
 def _normalize_frozen_discrete_transition_rows(
     frozen_rows: np.ndarray | list[int] | tuple[int, ...] | None,
     n_states: int,
@@ -2996,6 +3022,7 @@ class ClusterlessDetector(_DetectorBase):
             group_weights = (
                 is_group.astype(float) if weights is None else weights * is_group
             )
+            _warn_if_group_unexposed(group_weights, likelihood_name)
             group_spike_times = []
             group_spike_waveform_features = []
             for electrode_spike_times, electrode_features in zip(
@@ -3958,6 +3985,7 @@ class SortedSpikesDetector(_DetectorBase):
             group_weights = (
                 is_group.astype(float) if weights is None else weights * is_group
             )
+            _warn_if_group_unexposed(group_weights, likelihood_name)
 
             # GLM requires environment geometry that KDE derives internally
             glm_kwargs = {}
