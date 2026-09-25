@@ -1,3 +1,5 @@
+from collections.abc import Sized
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -1658,7 +1660,7 @@ def predict_clusterless_kde_log_likelihood(
         Shape depends on whether local or non-local decoding, respectively.
         ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
     """
-    fitted_populations = {
+    fitted_populations: dict[str, Sized] = {
         "gpi_models": gpi_models,
         "encoding_spike_waveform_features": encoding_spike_waveform_features,
         "encoding_positions": encoding_positions,

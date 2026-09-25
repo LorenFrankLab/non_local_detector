@@ -22,6 +22,8 @@ and cached on the ``Environment``, so it is built once and reused across neurons
 EM refits.
 """
 
+from collections.abc import Sized
+
 import jax
 import jax.numpy as jnp
 import networkx as nx
@@ -675,7 +677,10 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     # Both paths broadcast or contract over neurons, so a population mismatch would
     # otherwise surface as a JAX shape error or, on the local path, broadcast one
     # neuron's rates across the observed spike trains.
-    fitted_populations = {"mean_rates": mean_rates, "place_fields": place_fields}
+    fitted_populations: dict[str, Sized] = {
+        "mean_rates": mean_rates,
+        "place_fields": place_fields,
+    }
     if interior_log_place_fields is not None:
         fitted_populations["interior_log_place_fields"] = interior_log_place_fields
     validate_population_lengths("neuron", spike_times=spike_times, **fitted_populations)
