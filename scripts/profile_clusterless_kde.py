@@ -306,7 +306,7 @@ def profile_decoding(data, encoding, implementation: Literal["reference", "log",
 
     def predict_wrapper():
         return predict_func(
-            time=data["decoding"]["time"],
+            time_edges=data["decoding"]["time"],
             position_time=data["decoding"]["position_time"],
             position=data["decoding"]["position"],
             spike_times=data["decoding"]["spike_times"],

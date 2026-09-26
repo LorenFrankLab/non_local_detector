@@ -130,7 +130,7 @@ def profile_reference_implementation():
     # Decoding
     import jax.numpy as jnp
     log_likelihood = predict_reference(
-        time=data["decoding"]["time"],
+        time_edges=data["decoding"]["time"],
         position_time=data["decoding"]["position_time"],
         position=data["decoding"]["position"],
         spike_times=data["decoding"]["spike_times"],
@@ -176,7 +176,7 @@ def profile_log_implementation():
     # Decoding
     import jax.numpy as jnp
     log_likelihood = predict_log(
-        time=data["decoding"]["time"],
+        time_edges=data["decoding"]["time"],
         position_time=data["decoding"]["position_time"],
         position=data["decoding"]["position"],
         spike_times=data["decoding"]["spike_times"],

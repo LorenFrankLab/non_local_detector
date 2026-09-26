@@ -249,7 +249,10 @@ def fmt_bytes(n: float) -> str:
 
 @dataclass
 class Recording:
-    """One synthetic decoding recording (encoding data is generated separately)."""
+    """One synthetic decoding recording (encoding data is generated separately).
+
+    ``time`` holds the decode bin edges; ``n_time`` is the number of bins.
+    """
 
     duration_s: float
     time: np.ndarray
@@ -260,7 +263,7 @@ class Recording:
 
     @property
     def n_time(self) -> int:
-        return len(self.time)
+        return len(self.time) - 1
 
     @property
     def n_spikes(self) -> int:
