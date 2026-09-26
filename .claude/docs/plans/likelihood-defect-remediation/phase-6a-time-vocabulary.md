@@ -234,7 +234,9 @@ numerical comparison: `94dd814` (pre-migration API), run from a worktree.
   `_prepare_likelihood_callback` binds the edges. A `row_slice_aware` callback
   gets the full edges and a row slice; an unmarked override gets its chunk's
   own edges with the closing edge of every chunk but the last moved down one
-  ulp, so a spike on a shared chunk edge is owned by the later chunk only.
+  float64 ulp (edges passed as at least float64), so a spike on a shared
+  chunk edge is owned by the later chunk only and float64 spikes just below
+  a float32 edge keep their bin.
   Both paths check the returned row count.
 - `_missing_bins`: a bin is missing when it overlaps `(t[k-1], t[k+1])` for a
   non-finite position sample `k`, extended to ±∞ for a sample in an end

@@ -618,3 +618,28 @@ def test_every_detector_entry_point_takes_keyword_only_time_edges():
                 cls,
                 method,
             )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("edge_dtype", [np.float32, np.float64])
+def test_unmarked_chunks_keep_higher_precision_spikes_in_their_bin(edge_dtype):
+    """Excluding a shared chunk edge must not open a gap wider than the spike
+    times' precision: float32 edges with float64 spikes just below an edge."""
+    from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
+    from non_local_detector.models.base import _prepare_likelihood_callback
+
+    edges = np.array([0.0, 1.0, 2.0], dtype=edge_dtype)
+    spikes = np.array([0.99999999, 1.0])
+
+    def unmarked(time_edges, spike_times, is_missing=None):
+        return get_spikecount_per_time_bin(spike_times, time_edges)[:, None]
+
+    callback = _prepare_likelihood_callback(unmarked, edges, has_no_spike=False)
+    centers = edges[:-1] + 0.5 * np.diff(edges)
+    chunked = np.concatenate(
+        [callback(centers[i : i + 1], spikes, is_missing=None) for i in range(2)]
+    )
+    np.testing.assert_array_equal(
+        chunked[:, 0], get_spikecount_per_time_bin(spikes, edges)
+    )
+    np.testing.assert_array_equal(chunked[:, 0], [1, 1])

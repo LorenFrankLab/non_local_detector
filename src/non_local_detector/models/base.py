@@ -122,8 +122,10 @@ def _prepare_likelihood_callback(
     * An unmarked (legacy) callback cannot request rows, so each chunk receives
       its own edges, ``time_edges[start : stop + 1]``. A chunk's final bin is
       closed, so for every chunk but the last the closing edge is moved down
-      by one ulp: a spike exactly on an edge shared with the next chunk then
-      belongs to the next chunk only, as it does on the full edges.
+      by one float64 ulp: a spike exactly on an edge shared with the next chunk
+      then belongs to the next chunk only, as it does on the full edges. Such a
+      chunk's edges are passed as (at least) float64, so spike times of up to
+      float64 precision keep their bins.
 
     Both adapters check that the callback returned one row per requested bin:
     a callback written for one row per timestamp would otherwise be silently
@@ -181,7 +183,11 @@ def _prepare_likelihood_callback(
             )
         chunk_edges = time_edges[start : stop + 1]
         if stop < n_bins:
-            chunk_edges = chunk_edges.copy()
+            # Nudge at float64 precision: one ulp of coarser edges (float32)
+            # would exclude float64 spikes just below the shared edge.
+            chunk_edges = chunk_edges.astype(
+                np.result_type(chunk_edges.dtype, np.float64)
+            )
             chunk_edges[-1] = np.nextafter(chunk_edges[-1], -np.inf)
         return checked(bound(chunk_edges, *args, **kwargs), stop - start)
 
