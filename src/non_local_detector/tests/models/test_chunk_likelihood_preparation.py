@@ -10,7 +10,60 @@ from non_local_detector import (
     NonLocalSortedSpikesDetector,
 )
 from non_local_detector.core import row_slice_aware
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import _SpikeTimeOrder, select_spikes_in_rows
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("row_aware", [False, True])
+def test_prepared_no_spike_durations_match_exact_global_rows(row_aware):
+    """Chunk ownership adjustments must not alter physical bin durations.
+
+    Uniform Unix timestamps have alternating representable widths. Reusing the
+    start of the prepared vector silently assigns the wrong exposure to a row.
+    """
+    from non_local_detector.likelihoods import predict_no_spike_log_likelihood
+    from non_local_detector.models.base import _prepare_likelihood_callback
+
+    edges = 1.7e9 + np.arange(5) * 0.002
+
+    def likelihood(time_edges, *, row_slice=None, _no_spike_time_bin_sizes=None):
+        return predict_no_spike_log_likelihood(
+            [[]],
+            no_spike_rate=1.0,
+            time_edges=time_edges,
+            row_slice=row_slice,
+            _time_bin_sizes=_no_spike_time_bin_sizes,
+        )
+
+    if row_aware:
+        row_slice_aware(likelihood)
+    callback = _prepare_likelihood_callback(likelihood, edges, has_no_spike=True)
+    full = callback(None)
+    if not row_aware:
+        np.testing.assert_array_equal(full[:, 0], -np.diff(edges).astype(np.float32))
+        return
+    chunks = np.concatenate(
+        [callback(None, row_slice=slice(i, i + 1)) for i in range(4)]
+    )
+    np.testing.assert_array_equal(chunks, full)
+    np.testing.assert_array_equal(full[:, 0], -np.diff(edges).astype(np.float32))
+
+
+@pytest.mark.unit
+def test_chunked_unmarked_callback_rejects_altered_physical_exposure():
+    """An edges-only callback cannot express an open chunk closing boundary."""
+    from non_local_detector.models.base import _prepare_likelihood_callback
+
+    edges = 1.7e9 + np.arange(5) * 0.002
+
+    def likelihood(time_edges):
+        return -np.diff(time_edges)[:, None]
+
+    callback = _prepare_likelihood_callback(likelihood, edges, has_no_spike=False)
+    np.testing.assert_array_equal(callback(None)[:, 0], -np.diff(edges))
+    with pytest.raises(ValidationError, match="row_slice_aware"):
+        callback(None, row_slice=slice(0, 1))
 
 
 @pytest.mark.unit
@@ -124,7 +177,7 @@ def fitted_detector(request):
 def test_no_spike_duration_prepared_once_per_prediction(
     fitted_detector, monkeypatch, covariate, n_chunks
 ):
-    """Prepare the full-grid median once; refresh it when the time array mutates."""
+    """Prepare full-grid durations once; refresh them when the time array mutates."""
     detector, args = fitted_detector
     time = np.arange(31) * 0.002
     transitions = detector.discrete_state_transitions_
@@ -132,7 +185,7 @@ def test_no_spike_duration_prepared_once_per_prediction(
         transitions = np.broadcast_to(transitions, (len(time) - 1, *transitions.shape))
     from non_local_detector.models import base
 
-    prepare = base.no_spike_time_bin_size
+    prepare = base.no_spike_time_bin_sizes
     durations = []
 
     def tracked_durations(values, *args, **kwargs):
@@ -145,7 +198,7 @@ def test_no_spike_duration_prepared_once_per_prediction(
         durations.clear()
 
         with monkeypatch.context() as patch:
-            patch.setattr(base, "no_spike_time_bin_size", tracked_durations)
+            patch.setattr(base, "no_spike_time_bin_sizes", tracked_durations)
             result = detector._predict(
                 time,
                 log_likelihood_args=args,
@@ -157,7 +210,7 @@ def test_no_spike_duration_prepared_once_per_prediction(
 
         np.testing.assert_allclose(result[5], expected, rtol=1e-5, atol=1e-6)
         assert len(durations) == 1
-        assert durations[0] == np.median(np.diff(time))
+        np.testing.assert_array_equal(durations[0], np.diff(time))
         time *= 2
 
 

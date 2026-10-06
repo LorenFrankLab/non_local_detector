@@ -4,7 +4,7 @@ import pytest
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.common import EPS, get_position_at_time
+from non_local_detector.likelihoods.common import EPS, RATE_EPS_HZ, get_position_at_time
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
     predict_sorted_spikes_kde_log_likelihood,
@@ -25,7 +25,6 @@ def test_fit_sorted_spikes_kde_encoding_model_minimal(simple_1d_environment):
         spike_times=spikes,
         environment=env,
         weights=weights,
-        sampling_frequency=10,
         position_std=np.sqrt(1.0),
         block_size=16,
         disable_progress_bar=True,
@@ -66,7 +65,6 @@ def test_predict_sorted_spikes_kde_log_likelihood_shapes_local_and_nonlocal(
         spike_times=spikes,
         environment=env,
         weights=weights,
-        sampling_frequency=10,
         position_std=np.sqrt(1.0),
         block_size=16,
         disable_progress_bar=True,
@@ -149,7 +147,6 @@ def test_local_likelihood_zero_spikes_equals_negative_rate_sum(simple_1d_environ
         spike_times=spikes_enc,
         environment=env,
         weights=weights,
-        sampling_frequency=10,
         position_std=np.sqrt(1.0),
         block_size=16,
         disable_progress_bar=True,
@@ -189,8 +186,8 @@ def test_local_likelihood_zero_spikes_equals_negative_rate_sum(simple_1d_environ
         local_rate = mean_rate * jnp.where(
             occupancy_at_time > 0.0, marginal / occupancy_at_time, EPS
         )
-        local_rate = jnp.clip(local_rate, min=EPS)
-        expected -= local_rate
+        local_rate = jnp.clip(local_rate, min=RATE_EPS_HZ)
+        expected -= jnp.diff(t_edges) * local_rate
     expected = jnp.expand_dims(expected, axis=1)
 
     assert jnp.allclose(ll_local, expected, rtol=1e-5, atol=1e-6)
@@ -209,7 +206,6 @@ def test_nonlocal_with_no_spikes_equals_negative_no_spike_part(simple_1d_environ
         spike_times=spikes_enc,
         environment=env,
         weights=weights,
-        sampling_frequency=10,
         position_std=np.sqrt(1.0),
         block_size=16,
         disable_progress_bar=True,
@@ -233,7 +229,10 @@ def test_nonlocal_with_no_spikes_equals_negative_no_spike_part(simple_1d_environ
         disable_progress_bar=True,
         is_local=False,
     )
-    expected = -enc["no_spike_part_log_likelihood"][enc["is_track_interior"]]
+    expected = (
+        -jnp.diff(t_edges)[0]
+        * enc["no_spike_part_log_likelihood"][enc["is_track_interior"]]
+    )
     expected = jnp.tile(expected, (t_edges.shape[0] - 1, 1))
     assert jnp.allclose(ll, expected, rtol=1e-5, atol=1e-6)
 
@@ -290,7 +289,6 @@ def test_nan_marginal_density_warns(simple_1d_environment, monkeypatch):
             spike_times=spikes,
             environment=env,
             weights=weights,
-            sampling_frequency=10,
             position_std=np.sqrt(1.0),
             block_size=16,
             disable_progress_bar=True,
@@ -315,7 +313,6 @@ def test_fit_sorted_spikes_kde_rejects_nonfinite_weights(simple_1d_environment):
             spike_times=spikes,
             environment=env,
             weights=weights,
-            sampling_frequency=10,
             position_std=np.sqrt(1.0),
             block_size=16,
             disable_progress_bar=True,

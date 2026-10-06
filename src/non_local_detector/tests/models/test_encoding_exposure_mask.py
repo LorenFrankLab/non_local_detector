@@ -19,7 +19,7 @@ import pytest
 from non_local_detector import SortedSpikesDecoder, time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
-from non_local_detector.likelihoods.common import EPS
+from non_local_detector.likelihoods.common import RATE_EPS_HZ
 from non_local_detector.likelihoods.sorted_spikes_kde import (
     fit_sorted_spikes_kde_encoding_model,
 )
@@ -109,7 +109,9 @@ def test_glm_group_without_training_coverage_returns_eps_model():
     assert np.all(np.isfinite(encoding_model["coefficients"]))
     interior = np.asarray(encoding_model["is_track_interior"])
     place_fields = np.asarray(encoding_model["place_fields"])
-    np.testing.assert_allclose(place_fields[:, interior], EPS, rtol=1e-5, atol=0.0)
+    np.testing.assert_allclose(
+        place_fields[:, interior], RATE_EPS_HZ, rtol=1e-5, atol=0.0
+    )
 
     results = detector.predict(
         spike_times=spike_times, time_edges=time_edges_from_centers(time[200:])

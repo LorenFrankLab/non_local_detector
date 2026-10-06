@@ -4,10 +4,14 @@ import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
+from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     LOG_EPS,
+    RATE_EPS_HZ,
+    RATE_REFERENCE_SECONDS,
     KDEModel,
     _SpikeTimeOrder,
     as_std_array,
@@ -16,6 +20,7 @@ from non_local_detector.likelihoods.common import (
     drop_zero_weight_samples,
     get_position_at_time,
     interpolate_weights_at_spike_times,
+    log_bin_duration_evidence,
     log_gaussian_pdf,
     resolve_row_slice,
     safe_log,
@@ -1365,7 +1370,6 @@ def fit_clusterless_kde_encoding_model(
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
     environment: Environment,
-    sampling_frequency: int = 500,
     weights: jnp.ndarray | None = None,
     position_std: float = np.sqrt(12.5),
     waveform_std: float = 24.0,
@@ -1374,6 +1378,10 @@ def fit_clusterless_kde_encoding_model(
     pos_tile_size: int | None = None,
     use_streaming: bool = False,
     disable_progress_bar: bool = False,
+    *,
+    encoding_time_range=None,
+    valid_position_intervals=None,
+    _encoding_support=None,
 ) -> dict:
     """Fit the clusterless KDE encoding model.
 
@@ -1389,10 +1397,6 @@ def fit_clusterless_kde_encoding_model(
         Spike waveform features for each electrode.
     environment : Environment
         The spatial environment.
-    sampling_frequency : int, optional
-        Samples per second, by default 500. Accepted for the uniform encoding-
-        algorithm interface (all algorithms receive it) but **not used** by this
-        KDE estimator — see Notes on the rate convention.
     weights : jnp.ndarray | None, shape (n_time_position,), optional
         Per-position-sample weights (e.g. the EM posterior for this encoding
         group), by default None (uniform). They weight the occupancy KDE, the
@@ -1407,23 +1411,34 @@ def fit_clusterless_kde_encoding_model(
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
 
+    encoding_time_range : array_like, shape (2,), optional
+        Acquisition start/stop in seconds. Clips encoding support using the
+        original interpolation basis. Uniform samples otherwise include endpoint
+        half-cells; a singleton requires explicit bounds or a tracking interval.
+    valid_position_intervals : array_like, shape (n_intervals, 2), optional
+        Ordered, non-overlapping continuous tracking intervals in seconds.
+        Required for irregular timestamps; each interval needs a finite sample.
+        Positions are held at segment endpoints and NaN rows split support.
+        Encoding support does not automatically mark decode bins missing.
+
     Returns
     -------
     encoding_model : dict
 
     Notes
     -----
-    ``mean_rate`` is computed as ``n_spikes / n_position_samples`` — a rate in
-    units of *expected spikes per position sample*, not Hz. This is intentional:
-    the decoder builds its decoding time bins at the same ``sampling_frequency``
-    used to sample position, so a per-sample rate is
-    the correct Poisson intensity per decoding bin and both the ground-process
-    term and the joint intensity stay self-consistent. The assumption is that
-    the decoding bin width equals the position sampling interval; if you ever
-    decode at a different bin width, ``mean_rate`` (and thus both terms) would
-    need a ``decode_dt / position_dt`` correction. Because the rate is already
-    per-sample, ``sampling_frequency`` is not needed here.
+    Fitted mean rates and ground-process intensities are Hz. Occupancy weights
+    integrate the interpolation basis over valid encoding support in seconds;
+    event weights are dimensionless. Decode bins may differ from tracking samples.
     """
+    support, weights, exposure_weights, position = prepare_encoding_support(
+        position_time,
+        position,
+        weights,
+        encoding_time_range=encoding_time_range,
+        valid_position_intervals=valid_position_intervals,
+        _encoding_support=_encoding_support,
+    )
     if environment.place_bin_centers_ is None:
         raise ValueError(
             "Environment must be fitted with place_bin_centers_. "
@@ -1433,11 +1448,11 @@ def fit_clusterless_kde_encoding_model(
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if weights is None:
         weights = np.ones((position.shape[0],))
-    weights = validate_weights(weights, position.shape[0])
+    weights = validate_weights(np.asarray(weights), position.shape[0])
     # Weighted occupancy "time": the sum of per-sample weights (uniform weights
     # recover the training-sample count). Gaps from is_training / encoding-group
     # masks carry weight 0 and are not charged as occupancy time.
-    weight_sum = float(weights.sum())
+    weight_sum = float(exposure_weights.sum())
     # A track graph with multi-dim position linearizes occupancy to 1D, so the
     # bandwidth is a single dimension there; otherwise one per position column.
     n_std_dims = (
@@ -1460,7 +1475,9 @@ def fit_clusterless_kde_encoding_model(
     is_track_interior = environment.is_track_interior_.ravel()
     interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
-    occupancy_samples, occupancy_weights = drop_zero_weight_samples(position, weights)
+    occupancy_samples, occupancy_weights = drop_zero_weight_samples(
+        position, exposure_weights
+    )
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D
         occupancy_samples = get_linearized_position(
@@ -1491,10 +1508,7 @@ def fit_clusterless_kde_encoding_model(
         spike_times,
         strict=True,
     ):
-        is_in_bounds = np.logical_and(
-            electrode_spike_times >= position_time[0],
-            electrode_spike_times <= position_time[-1],
-        )
+        is_in_bounds = support.contains(electrode_spike_times)
         electrode_spike_times = electrode_spike_times[is_in_bounds]
         # Validate only the in-window spikes that actually enter the fit; a
         # non-finite feature on a spike outside the encoding interval is
@@ -1504,7 +1518,10 @@ def fit_clusterless_kde_encoding_model(
         bounded_spike_waveform_features.append(bounded_features)
         # Weight each encoding spike by the posterior weight at its spike time.
         electrode_weights_host = interpolate_weights_at_spike_times(
-            electrode_spike_times, position_time, weights
+            electrode_spike_times,
+            position_time,
+            np.asarray(weights),
+            encoding_support=support,
         )
         electrode_weights = jnp.asarray(electrode_weights_host)
         encoding_weights.append(electrode_weights)
@@ -1513,7 +1530,11 @@ def fit_clusterless_kde_encoding_model(
         mean_rates.append(weighted_mean_rate(electrode_weights_host, weight_sum))
         encoding_positions.append(
             get_position_at_time(
-                position_time, position, electrode_spike_times, environment
+                position_time,
+                position,
+                electrode_spike_times,
+                environment,
+                encoding_support=support,
             )
         )
 
@@ -1532,7 +1553,7 @@ def fit_clusterless_kde_encoding_model(
     # Clip the summed intensity once (not per electrode) so an empty bin gets a
     # single EPS floor rather than accumulating n_electrodes * EPS.
     summed_ground_process_intensity = jnp.clip(
-        summed_ground_process_intensity, min=EPS, max=None
+        summed_ground_process_intensity, min=RATE_EPS_HZ, max=None
     )
 
     return {
@@ -1552,6 +1573,8 @@ def fit_clusterless_kde_encoding_model(
         "enc_tile_size": enc_tile_size,
         "pos_tile_size": pos_tile_size,
         "use_streaming": use_streaming,
+        "rate_units": "Hz",
+        "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
 
 
@@ -1581,6 +1604,8 @@ def predict_clusterless_kde_log_likelihood(
     row_slice: slice | None = None,
     *,
     time_edges: np.ndarray,
+    rate_units: str = "Hz",
+    encoding_exposure_seconds: float | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of the clusterless KDE model.
@@ -1659,6 +1684,10 @@ def predict_clusterless_kde_log_likelihood(
         Shape depends on whether local or non-local decoding, respectively.
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
+    if rate_units != "Hz":
+        raise ValidationError(
+            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
+        )
     time_edges = validate_time_edges(time_edges)
     validate_population_lengths(
         "electrode",
@@ -1671,7 +1700,6 @@ def predict_clusterless_kde_log_likelihood(
         encoding_weights=encoding_weights,
     )
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    n_rows = row_stop - row_start
     # Uniform (None) weights per electrode when the caller passes none, so the loop
     # and the local path can zip a weight per electrode uniformly.
     per_electrode_weights = (
@@ -1705,7 +1733,10 @@ def predict_clusterless_kde_log_likelihood(
         is_track_interior = environment.is_track_interior_.ravel()
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
-        log_likelihood = -1.0 * summed_ground_process_intensity * jnp.ones((n_rows, 1))
+        log_likelihood = (
+            -jnp.asarray(np.diff(time_edges)[row_start:row_stop])[:, None]
+            * summed_ground_process_intensity
+        )
 
         for (
             electrode_encoding_spike_waveform_features,
@@ -1759,7 +1790,7 @@ def predict_clusterless_kde_log_likelihood(
                     electrode_encoding_spike_waveform_features,
                     electrode_waveform_std,
                     occupancy,
-                    electrode_mean_rate,
+                    electrode_mean_rate * RATE_REFERENCE_SECONDS,
                     log_position_distance,
                     block_size=block_size,
                     enc_tile_size=enc_tile_size,
@@ -1777,7 +1808,16 @@ def predict_clusterless_kde_log_likelihood(
                 selection,
             )
 
-    return log_likelihood
+    return (
+        log_likelihood
+        + log_bin_duration_evidence(
+            spike_times,
+            time_edges,
+            row_slice,
+            _spike_time_order,
+            intensity_time_scale=RATE_REFERENCE_SECONDS,
+        )[:, None]
+    )
 
 
 def compute_local_log_likelihood(
@@ -1980,7 +2020,7 @@ def compute_local_log_likelihood(
         spike_contribution = jnp.maximum(
             _log_joint_from_log_marginal(
                 log_marginal_density[None, :],
-                electrode_mean_rate,
+                electrode_mean_rate * RATE_REFERENCE_SECONDS,
                 occupancy_at_spike_time,
             )[0],
             LOG_EPS,
@@ -1998,5 +2038,7 @@ def compute_local_log_likelihood(
     # Subtract the summed ground-process intensity once, floored at EPS to
     # mirror fit_clusterless_kde_encoding_model's summed_ground_process_intensity
     # (a single EPS floor, not n_electrodes * EPS).
-    log_likelihood -= jnp.clip(summed_expected_counts, min=EPS)
+    log_likelihood -= jnp.asarray(np.diff(time_edges)[row_start:row_stop]) * jnp.clip(
+        summed_expected_counts, min=RATE_EPS_HZ
+    )
     return log_likelihood[:, jnp.newaxis]

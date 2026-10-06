@@ -36,7 +36,7 @@ from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
     predict_clusterless_gmm_log_likelihood,
 )
-from non_local_detector.likelihoods.common import EPS, LOG_EPS
+from non_local_detector.likelihoods.common import EPS, LOG_EPS, RATE_EPS_HZ
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _compute_precision_cholesky,
@@ -122,7 +122,6 @@ def _fit_far_from_most_bins(seed: int):
         spike_times=[position_time],
         spike_waveform_features=[marks],
         environment=env,
-        sampling_frequency=20,
         gmm_components_occupancy=1,
         gmm_components_gpi=1,
         gmm_components_joint=1,
@@ -259,7 +258,7 @@ class TestDeepTailRateTerm:
     event term is exactly ``log(rate)`` at every bin.
     """
 
-    RATE = 1e-15
+    RATE = RATE_EPS_HZ
 
     def _model(self):
         # var = 1e-8 puts the density at bin 19.5 near -0.5 * 14.5**2 / 1e-8.

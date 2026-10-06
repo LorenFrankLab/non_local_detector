@@ -58,7 +58,6 @@ def _fit(env, t_pos, pos, spike_times, feats, weights=None):
         spike_waveform_features=feats,
         environment=env,
         weights=weights,
-        sampling_frequency=10,
         position_std=np.sqrt(1.0),
         waveform_std=1.0,
         block_size=16,

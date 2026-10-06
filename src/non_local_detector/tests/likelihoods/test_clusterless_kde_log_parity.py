@@ -32,7 +32,6 @@ def _fit_both(env, weights, enc_times=None):
         "spike_waveform_features": ENC_FEATS,
         "environment": env,
         "weights": weights,
-        "sampling_frequency": 10,
         "position_std": np.sqrt(1.0),
         "waveform_std": 1.0,
         "block_size": 8,

@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from scipy.stats import norm
 
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
@@ -60,7 +61,6 @@ def test_sorted_kde_nonlocal_argmax_snapshot(make_env_1d):
         spike_times=[jnp.asarray(s) for s in spikes_lists],
         environment=env,
         weights=jnp.ones_like(jnp.asarray(t_pos)),
-        sampling_frequency=20,
         position_std=np.sqrt(1.0),
         block_size=32,
         disable_progress_bar=True,
@@ -88,10 +88,11 @@ def test_sorted_kde_nonlocal_argmax_snapshot(make_env_1d):
         is_local=False,
     )
 
-    # Snapshot: argmax over interior bins should match argmax of log(PF) - PF
+    # Snapshot: one event scores log(rate_Hz * duration) - rate_Hz * duration
     interior_mask = enc["is_track_interior"]
     pf_interior = np.asarray(enc["place_fields"][0])[interior_mask]
-    expected_scores = np.log(np.clip(pf_interior, EPS, None)) - pf_interior
+    expected_counts = pf_interior * np.diff(time_edges)[0]
+    expected_scores = np.log(np.clip(expected_counts, EPS, None)) - expected_counts
     pf_argmax = int(np.argmax(expected_scores))
     argmax_bins = np.asarray(jnp.argmax(ll, axis=1))
     # Every decoding bin, including the final one, owns exactly one spike.
@@ -112,7 +113,6 @@ def test_sorted_kde_nonlocal_topk_ranking_snapshot(make_env_1d):
         spike_times=[jnp.asarray(enc_spike_times)],
         environment=env,
         weights=jnp.ones_like(jnp.asarray(t_pos)),
-        sampling_frequency=20,
         position_std=np.sqrt(1.0),
         block_size=32,
         disable_progress_bar=True,
@@ -135,10 +135,11 @@ def test_sorted_kde_nonlocal_topk_ranking_snapshot(make_env_1d):
         disable_progress_bar=True,
         is_local=False,
     )
-    # Top-3 bins should match top-3 of log(PF) - PF over interior
+    # Top-3 bins use the same physical expected counts as the argmax reference
     interior_mask = enc["is_track_interior"]
     pf_interior = np.asarray(enc["place_fields"][0])[interior_mask]
-    expected_scores = np.log(np.clip(pf_interior, EPS, None)) - pf_interior
+    expected_counts = pf_interior * np.diff(time_edges)[0]
+    expected_scores = np.log(np.clip(expected_counts, EPS, None)) - expected_counts
     pf_top3 = set(np.argsort(expected_scores)[-3:])
     # Every decoding bin, including the final one, owns exactly one spike.
     assert ll.shape[0] == len(time_edges) - 1
@@ -168,7 +169,6 @@ def test_clusterless_kde_nonlocal_argmax_snapshot(make_env_1d):
         spike_waveform_features=enc_feats,
         environment=env,
         weights=jnp.asarray(weights),
-        sampling_frequency=20,
         position_std=np.sqrt(1.0),
         waveform_std=0.2,
         block_size=16,
@@ -202,13 +202,27 @@ def test_clusterless_kde_nonlocal_argmax_snapshot(make_env_1d):
     )
 
     argmax_bin = int(np.asarray(jnp.argmax(ll, axis=1))[0])
-    expected_interior_idx = interior_index_for_position(env, 7.0)
-    ok_set = {
-        expected_interior_idx,
-        max(0, expected_interior_idx - 1),
-        min(ll.shape[1] - 1, expected_interior_idx + 1),
-    }
-    assert argmax_bin in ok_set
+    # Independent float64 Gaussian reference: a single event in a 10-second
+    # bin need not favor the encoding mode because its integrated ground rate
+    # penalizes positions that predict many more than one event.
+    centers = env.place_bin_centers_[env.is_track_interior_.ravel(), 0]
+    encoding_positions = np.array([7.0, 7.1, 6.9])
+    spatial = norm.pdf(centers[:, None], loc=encoding_positions, scale=1.0)
+    mark_density = np.prod(
+        norm.pdf(
+            np.array([0.02, -0.01]),
+            loc=np.array([[0.0, 0.0], [0.05, -0.05], [-0.05, 0.05]]),
+            scale=0.2,
+        ),
+        axis=1,
+    )
+    occupancy = norm.pdf(centers[:, None], loc=pos[:, 0], scale=1.0).mean(axis=1)
+    mean_rate_hz = 3 / (len(t_pos) * (t_pos[1] - t_pos[0]))
+    ground_rate = mean_rate_hz * spatial.mean(axis=1) / occupancy
+    mark_intensity = mean_rate_hz * (spatial * mark_density).mean(axis=1) / occupancy
+    duration = float(time_edges[-1] - time_edges[0])
+    expected_scores = np.log(mark_intensity * duration) - ground_rate * duration
+    assert argmax_bin == int(np.argmax(expected_scores))
 
 
 @pytest.mark.snapshot
@@ -229,7 +243,6 @@ def test_clusterless_kde_nonlocal_profile_monotone_decay_snapshot(make_env_1d):
         spike_waveform_features=enc_feats,
         environment=env,
         weights=jnp.asarray(weights),
-        sampling_frequency=20,
         position_std=np.sqrt(1.0),
         waveform_std=0.25,
         block_size=16,

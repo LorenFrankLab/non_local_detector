@@ -212,7 +212,6 @@ def test_pos_tiling_matches_no_tiling(simple_1d_environment, pos_tile_size):
         spike_times=enc_times,
         spike_waveform_features=enc_feats,
         environment=env,
-        sampling_frequency=10,
         position_std=np.sqrt(1.0),
         waveform_std=1.0,
         block_size=8,

@@ -223,6 +223,7 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, decode_data):
         rows = np.minimum(np.searchsorted(time, in_range, side="right") - 1, n_bins - 1)
         np.add.at(counts[:, neuron], rows, 1)
     assert np.all(counts[-1] > 0)  # the final bin owns its midpoint spikes
+    rates = rates * np.diff(time)[:, None]
     expected = np.sum(counts * np.log(rates) - rates, axis=1, keepdims=True)
 
     partitions = [

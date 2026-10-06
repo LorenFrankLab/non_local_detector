@@ -99,6 +99,9 @@ def _spy(monkeypatch, family):
 def _fit(detector, family, position_time, spike_times, **fit_kwargs):
     """Fit with a linear position ramp; clusterless features encode spike time."""
     position = np.linspace(0.0, 100.0, position_time.shape[0])[:, np.newaxis]
+    fit_kwargs.setdefault(
+        "valid_position_intervals", [[position_time[0], position_time[-1]]]
+    )
     if family == "sorted":
         return detector.fit(position_time, position, spike_times, **fit_kwargs)
     features = [np.column_stack([t, -t]) for t in spike_times]
@@ -201,6 +204,7 @@ def test_complementary_groups_partition_every_event(monkeypatch, family):
         "spike_times": [spike_times],
         "encoding_group_labels": groups,
         "weights": em_weights,
+        "valid_position_intervals": [[position_time[0], position_time[-1]]],
     }
     if family == "clusterless":
         data["spike_waveform_features"] = [np.column_stack([spike_times, -spike_times])]
@@ -249,7 +253,7 @@ def test_clusterless_exposure_uses_full_timeline_mask(
 
     A zero-weight sample contributes no occupancy, so occupancy matches a fit on
     the masked samples alone. The mean rate is the canonical weighted event
-    count per weighted sample, so gap spikes are excluded and boundary spikes
+    count per weighted second, so gap spikes are excluded and boundary spikes
     count fractionally, instead of being bridged by a subset timeline.
     """
     sim, is_training = gapped_clusterless_run
@@ -264,18 +268,29 @@ def test_clusterless_exposure_uses_full_timeline_mask(
 
     mask = is_training.astype(float)
     expected_rates = [
-        sum(_canonical(times, sim.position_time, mask).values()) / mask.sum()
+        sum(_canonical(times, sim.position_time, mask).values())
+        / (mask.sum() * np.median(np.diff(sim.position_time)))
         for times in sim.spike_times
     ]
     np.testing.assert_allclose(model["mean_rates"], expected_rates, rtol=1e-5)
 
     fit, _ = _CLUSTERLESS_ALGORITHMS[algorithm]
+    dt = np.median(np.diff(sim.position_time))
+    selected_indices = np.flatnonzero(is_training)
+    runs = np.split(
+        selected_indices, np.flatnonzero(np.diff(selected_indices) != 1) + 1
+    )
+    valid_position_intervals = [
+        [sim.position_time[run[0]] - dt / 2, sim.position_time[run[-1]] + dt / 2]
+        for run in runs
+    ]
     subset = fit(
         position_time=sim.position_time[is_training],
         position=sim.position[is_training],
         spike_times=[t[:0] for t in sim.spike_times],
         spike_waveform_features=[f[:0] for f in sim.spike_waveform_features],
         environment=detector.environments[0],
+        valid_position_intervals=valid_position_intervals,
         **detector._resolve_clusterless_algorithm_params(),
     )
     key = "log_occupancy" if algorithm == "clusterless_gmm" else "occupancy"

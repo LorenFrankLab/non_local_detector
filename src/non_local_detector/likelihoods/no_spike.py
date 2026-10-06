@@ -24,15 +24,9 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.time_edges import requires_time_edges, validate_time_edges
 
 
-def no_spike_time_bin_size(time_edges: np.ndarray) -> float:
-    """Bin duration of the FULL decoding timeline: ``np.median(np.diff(time_edges))``.
-
-    Prepared once per detector prediction and shared across chunks, so a row
-    request cannot change the rate scaling. Detector bins are uniform, so this
-    is every bin's duration; nonuniform direct calls are scaled by the median
-    duration, not per bin.
-    """
-    return float(np.median(np.diff(time_edges)))
+def no_spike_time_bin_sizes(time_edges: np.ndarray) -> np.ndarray:
+    """Durations in seconds for every bin of the full decode grid."""
+    return np.diff(time_edges)
 
 
 @requires_time_edges
@@ -42,7 +36,7 @@ def predict_no_spike_log_likelihood(
     row_slice: slice | None = None,
     *,
     time_edges: np.ndarray,
-    _time_bin_size: float | None = None,
+    _time_bin_sizes: np.ndarray | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Return the log likelihood of low spike rate for each time bin.
@@ -67,10 +61,10 @@ def predict_no_spike_log_likelihood(
         ``time_edges`` always stay the FULL decoding edges: the bin duration
         and the spike-to-row assignment are both taken from them, so the result
         equals the full-time result sliced by ``row_slice``.
-    _time_bin_size : float | None, optional
-        Internal precomputed ``no_spike_time_bin_size(time_edges)`` for these edges.
+    _time_bin_sizes : np.ndarray | None, optional
+        Internal precomputed ``no_spike_time_bin_sizes(time_edges)`` for these edges.
         Detector predictions prepare it once and reuse it across chunks. Direct
-        callers can omit it; the same full-timeline value is computed here.
+        callers can omit it; the same full-timeline durations is computed here.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -97,7 +91,7 @@ def predict_no_spike_log_likelihood(
     where n is the spike count, λ is the firing rate, and Δt is the bin duration.
 
     Bins are left-closed and right-open, and the final bin also holds a spike
-    at ``time_edges[-1]``. ``Δt`` is the median bin duration.
+    at ``time_edges[-1]``. ``Δt`` is each bin's actual duration.
 
     Examples
     --------
@@ -111,16 +105,16 @@ def predict_no_spike_log_likelihood(
     >>> # With some sparse spikes
     >>> spike_times = [[1.0, 5.0], [], [8.5], [], []]
     >>> log_lik = predict_no_spike_log_likelihood(
-    ...     time_edges, spike_times, no_spike_rate=1e-8
+    ...     spike_times, time_edges=time_edges, no_spike_rate=1e-8
     ... )
     >>> log_lik.shape
     (100, 1)
     """
     time_edges = validate_time_edges(time_edges)
-    if _time_bin_size is None:
-        _time_bin_size = no_spike_time_bin_size(time_edges)
-    no_spike_rates = no_spike_rate * _time_bin_size
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
+    if _time_bin_sizes is None:
+        _time_bin_sizes = no_spike_time_bin_sizes(time_edges)
+    no_spike_rates = no_spike_rate * jnp.asarray(_time_bin_sizes[row_start:row_stop])
     no_spike_log_likelihood = jnp.zeros((row_stop - row_start,))
 
     for neuron_spike_times in tqdm(

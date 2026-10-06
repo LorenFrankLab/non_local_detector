@@ -55,14 +55,18 @@ import warnings
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pandas as pd  # type: ignore[import-untyped]
 from patsy import build_design_matrices, dmatrix  # type: ignore[import-untyped]
 from patsy.design_info import DesignInfo  # type: ignore[import-untyped]
 from scipy.optimize import minimize  # type: ignore[import-untyped]
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
+from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment, get_n_bins
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
+    RATE_EPS_HZ,
     _SpikeTimeOrder,
     decode_bin_centers,
     get_position_at_time,
@@ -93,8 +97,12 @@ def make_spline_design_matrix(
     design_matrix : np.ndarray, shape (n_time, n_spline_basis)
     """
     position = position if position.ndim > 1 else position[:, np.newaxis]
+    varying_dimensions = np.flatnonzero(np.ptp(position, axis=0) > 0)
+    if not len(varying_dimensions):
+        return dmatrix("1", pd.DataFrame(index=np.arange(len(position))))
     inner_knots = []
-    for pos, edges in zip(position.T, place_bin_edges.T, strict=False):
+    for ind in varying_dimensions:
+        pos, edges = position[:, ind], place_bin_edges[:, ind]
         n_points = get_n_bins(edges, bin_size=knot_spacing)
         knots = np.linspace(edges.min(), edges.max(), n_points)[1:-1]
         knots = knots[(knots > pos.min()) & (knots < pos.max())]
@@ -104,8 +112,8 @@ def make_spline_design_matrix(
 
     data = {}
     formula = "1 + te("
-    for ind in range(position.shape[1]):
-        formula += f"cr(x{ind}, knots=inner_knots[{ind}])"
+    for knot_ind, ind in enumerate(varying_dimensions):
+        formula += f"cr(x{ind}, knots=inner_knots[{knot_ind}])"
         formula += ", "
         data[f"x{ind}"] = position[:, ind]
 
@@ -135,7 +143,8 @@ def make_spline_predict_matrix(
     for ind in range(position.shape[1]):
         predict_data[f"x{ind}"] = position[:, ind]
 
-    design_matrix = build_design_matrices([design_info], predict_data)[0]
+    data = predict_data if design_info.factor_infos else pd.DataFrame(predict_data)
+    design_matrix = build_design_matrices([design_info], data)[0]
     design_matrix[is_nan] = np.nan
 
     return jnp.asarray(design_matrix)
@@ -153,6 +162,8 @@ def fit_poisson_regression(
     spikes: np.ndarray,
     weights: np.ndarray,
     l2_penalty: float = 1e-7,
+    *,
+    rate_floor: float = EPS,
 ) -> jnp.ndarray:
     """Fit a weighted Poisson regression model.
 
@@ -186,7 +197,9 @@ def fit_poisson_regression(
         coefficients, spikes=spikes, design_matrix=design_matrix, weights=weights
     ):
         conditional_intensity = jnp.exp(design_matrix @ coefficients)
-        conditional_intensity = jnp.clip(conditional_intensity, min=EPS, max=None)
+        conditional_intensity = jnp.clip(
+            conditional_intensity, min=rate_floor, max=None
+        )
         log_likelihood_term = (
             jax.scipy.special.xlogy(spikes, conditional_intensity)
             - weights * conditional_intensity
@@ -211,14 +224,14 @@ def fit_poisson_regression(
     if float(jnp.sum(weights)) <= 0.0:
         return jnp.concatenate(
             [
-                jnp.asarray([jnp.log(EPS)]),
+                jnp.asarray([jnp.log(rate_floor)]),
                 jnp.zeros(design_matrix.shape[1] - 1),
             ]
         )
 
     avg_rate = jnp.sum(spikes) / jnp.sum(weights)
     # Guard against zero spikes: use EPS to avoid log(0) = -inf
-    initial_condition = jnp.asarray([jnp.log(jnp.maximum(avg_rate, EPS))])
+    initial_condition = jnp.asarray([jnp.log(jnp.maximum(avg_rate, rate_floor))])
     initial_condition = jnp.concatenate(
         [initial_condition, jnp.zeros(design_matrix.shape[1] - 1)]
     )
@@ -322,9 +335,12 @@ def fit_sorted_spikes_glm_encoding_model(
     is_track_boundary: np.ndarray,
     weights: np.ndarray | None = None,
     emission_knot_spacing: float = np.sqrt(12.5) * 2,
-    l2_penalty: float = 1e-3,
+    l2_penalty: float = 0.5,
     disable_progress_bar: bool = False,
-    sampling_frequency: float = 500.0,
+    *,
+    encoding_time_range=None,
+    valid_position_intervals=None,
+    _encoding_support=None,
 ) -> dict:
     """Fit a GLM encoding model
 
@@ -350,11 +366,19 @@ def fit_sorted_spikes_glm_encoding_model(
     emission_knot_spacing : float, optional
         Knots over position, by default 10.0
     l2_penalty : float, optional
-        L2 penalty for regression, by default 1e-3
+        L2 penalty per second, by default 0.5 (0.001 at the 500 Hz reference)
     disable_progress_bar : bool, optional
         Turn off the progress bars, by default False
-    sampling_frequency : float, optional
-        Samples per second, by default 500.0
+
+    encoding_time_range : array_like, shape (2,), optional
+        Acquisition start/stop in seconds. Clips encoding support using the
+        original interpolation basis. Uniform samples otherwise include endpoint
+        half-cells; a singleton requires explicit bounds or a tracking interval.
+    valid_position_intervals : array_like, shape (n_intervals, 2), optional
+        Ordered, non-overlapping continuous tracking intervals in seconds.
+        Required for irregular timestamps; each interval needs a finite sample.
+        Positions are held at segment endpoints and NaN rows split support.
+        Encoding support does not automatically mark decode bins missing.
 
     Returns
     -------
@@ -364,19 +388,26 @@ def fit_sorted_spikes_glm_encoding_model(
         emission_design_info : patsy.design_info.DesignInfo
             DesignInfo object for the spline basis.
         place_fields : jnp.ndarray, shape (n_neurons, n_bins)
-            Place fields for each neuron.
+            Spatial firing rates in Hz for each neuron.
         no_spike_part_log_likelihood : jnp.ndarray, shape (n_bins,)
-            Contribution to the log likelihood from no spikes.
+            Sum of Hz rates across neurons; multiply by duration before scoring.
         is_track_interior : jnp.ndarray, shape (n_bins,)
             Boolean array indicating track interior.
         disable_progress_bar : bool
             If True, suppresses the progress bar display.
 
     """
+    support, weights, exposure_weights, position = prepare_encoding_support(
+        position_time,
+        position,
+        weights,
+        encoding_time_range=encoding_time_range,
+        valid_position_intervals=valid_position_intervals,
+        _encoding_support=_encoding_support,
+    )
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     # Use position_time directly so spike counts, design matrix, and
     # weights all share the same time grid.
-    time = np.asarray(position_time)
 
     if environment.is_track_interior_ is not None:
         is_track_interior = environment.is_track_interior_.ravel()
@@ -390,11 +421,31 @@ def fit_sorted_spikes_glm_encoding_model(
         environment.place_bin_centers_[is_track_interior]
     )
 
+    encoding_positions = position[support.indices]
+    # A known recording duration can expose a stationary/singleton sample.
+    # Define its spline on the environment, then retain only actual encoding
+    # rows for the event and exposure terms. A one-center grid uses an intercept.
+    basis_positions = (
+        encoding_positions
+        if len(encoding_positions) and np.all(np.ptp(encoding_positions, axis=0) > 0)
+        else np.asarray(interior_place_bin_centers)
+    )
     emission_design_matrix = make_spline_design_matrix(
-        position, place_bin_edges, knot_spacing=emission_knot_spacing
+        np.asarray(basis_positions),
+        place_bin_edges,
+        knot_spacing=emission_knot_spacing,
     )
     emission_design_info = emission_design_matrix.design_info
-    emission_design_matrix = jnp.asarray(emission_design_matrix)
+    emission_design_matrix = (
+        jnp.asarray(emission_design_matrix)
+        if basis_positions is encoding_positions
+        else make_spline_predict_matrix(
+            emission_design_info,
+            encoding_positions
+            if len(encoding_positions)
+            else interior_place_bin_centers,
+        )
+    )
 
     emission_predict_matrix = make_spline_predict_matrix(
         emission_design_info, interior_place_bin_centers
@@ -418,9 +469,14 @@ def fit_sorted_spikes_glm_encoding_model(
     ):
         coef = fit_poisson_regression(
             emission_design_matrix,
-            weighted_spike_counts(neuron_spike_times, time, weights),
-            weights,
+            support.event_counts(neuron_spike_times, weights)[support.indices]
+            if len(support.indices)
+            else np.zeros(len(emission_design_matrix)),
+            exposure_weights[support.indices]
+            if len(support.indices)
+            else np.zeros(len(emission_design_matrix)),
             l2_penalty=l2_penalty,
+            rate_floor=RATE_EPS_HZ,
         )
         coefficients.append(coef)
         place_field = jnp.zeros((is_track_interior.shape[0],))
@@ -428,7 +484,7 @@ def fit_sorted_spikes_glm_encoding_model(
             place_field.at[is_track_interior].set(
                 jnp.clip(
                     jnp.exp(emission_predict_matrix @ coef),
-                    min=EPS,
+                    min=RATE_EPS_HZ,
                     max=None,
                 )
             )
@@ -445,6 +501,8 @@ def fit_sorted_spikes_glm_encoding_model(
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
         "is_track_interior": is_track_interior,
         "disable_progress_bar": disable_progress_bar,
+        "rate_units": "Hz",
+        "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
 
 
@@ -464,6 +522,8 @@ def predict_sorted_spikes_glm_log_likelihood(
     row_slice: slice | None = None,
     *,
     time_edges: np.ndarray,
+    rate_units: str = "Hz",
+    encoding_exposure_seconds: float | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of spikes given a fitted GLM encoding model.
@@ -490,11 +550,12 @@ def predict_sorted_spikes_glm_log_likelihood(
         Patsy DesignInfo object used for creating the spline design matrix
         during encoding, needed for prediction.
     place_fields : jnp.ndarray, shape (n_neurons, n_position_bins)
-        Expected firing rate for each neuron in each position bin, derived
+        Expected firing rate in Hz for each neuron in each position bin, derived
         from the fitted GLM (`exp(predict_matrix @ coefficients)`).
     no_spike_part_log_likelihood : jnp.ndarray, shape (n_position_bins,)
-        The contribution to the log likelihood from the possibility of no spikes
-        occurring in a time bin, summed across neurons (`sum(place_fields)`).
+        Sum of Hz rates across neurons (`sum(place_fields)`), despite the
+        historical key name. Multiply by bin duration and subtract to score
+        no spikes.
     is_track_interior : jnp.ndarray, shape (n_position_bins,)
         Boolean array indicating which position bins are part of the valid
         track area.
@@ -520,6 +581,10 @@ def predict_sorted_spikes_glm_log_likelihood(
     log_likelihood : jnp.ndarray, shape (n_rows, n_place_bins)
         ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
+    if rate_units != "Hz":
+        raise ValidationError(
+            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
+        )
     time_edges = validate_time_edges(time_edges)
     validate_population_lengths(
         "neuron",
@@ -528,6 +593,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         place_fields=place_fields,
     )
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
+    durations = jnp.asarray(np.diff(time_edges)[row_start:row_stop])
     n_rows = row_stop - row_start
     row_time = decode_bin_centers(time_edges, row_start, row_stop)
 
@@ -558,7 +624,8 @@ def predict_sorted_spikes_glm_log_likelihood(
                 _spike_time_order=_spike_time_order,
             )
             local_rate = jnp.exp(emission_predict_matrix @ coef)
-            local_rate = jnp.clip(local_rate, min=EPS, max=None)
+            local_rate = jnp.clip(local_rate, min=RATE_EPS_HZ, max=None)
+            local_rate = local_rate * durations
             log_likelihood += (
                 jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
                 - local_rate
@@ -586,9 +653,12 @@ def predict_sorted_spikes_glm_log_likelihood(
             )
             log_likelihood += jax.scipy.special.xlogy(
                 np.expand_dims(spike_count_per_time_bin, axis=1),
-                jnp.expand_dims(place_field[is_track_interior], axis=0),
+                jnp.expand_dims(place_field[is_track_interior], axis=0)
+                * durations[:, None],
             )
 
-        log_likelihood -= no_spike_part_log_likelihood[is_track_interior]
+        log_likelihood -= (
+            durations[:, None] * no_spike_part_log_likelihood[is_track_interior]
+        )
 
     return log_likelihood

@@ -381,9 +381,8 @@ def test_learned_transitions_require_the_same_bin_width(family):
 # ----------------------------------------------------------------- callbacks
 @pytest.mark.integration
 @pytest.mark.parametrize("family", ["sorted"], indirect=True)
-def test_unmarked_callback_chunks_count_boundary_spikes_once(family, monkeypatch):
-    """An override without ``row_slice_aware`` must not count a spike on a
-    shared chunk edge in both chunks."""
+def test_unmarked_callback_requires_row_slices_for_chunking(family, monkeypatch):
+    """Full-grid overrides work; chunking needs explicit global row ownership."""
     detector = _fitted(family)
     position_time = family[1]
     edges = _coarse_edges(position_time)
@@ -403,14 +402,13 @@ def test_unmarked_callback_chunks_count_boundary_spikes_once(family, monkeypatch
         return original(*args, time_edges=time_edges, is_missing=is_missing)
 
     monkeypatch.setattr(detector, "compute_log_likelihood", unmarked)
-    chunked = detector.predict(
-        **args, n_chunks=3, cache_likelihood=False, return_outputs="log_likelihood"
-    )
+    full = detector.predict(**args, n_chunks=1, return_outputs="log_likelihood")
     np.testing.assert_allclose(
-        chunked.log_likelihood.values, reference.log_likelihood.values, rtol=1e-6
+        full.log_likelihood.values, reference.log_likelihood.values, rtol=1e-6
     )
-    # Each chunk evaluates only its own bins, not the whole recording.
-    assert received == [68, 68, 67]
+    with pytest.raises(ValidationError, match="row_slice_aware"):
+        detector.predict(**args, n_chunks=3, cache_likelihood=False)
+    assert received == [len(edges)]
 
 
 @pytest.mark.integration
@@ -712,20 +710,23 @@ def test_every_detector_entry_point_takes_keyword_only_time_edges():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("edge_dtype", [np.float32, np.float64])
-def test_unmarked_chunks_keep_higher_precision_spikes_in_their_bin(edge_dtype):
+def test_row_aware_chunks_keep_higher_precision_spikes_in_their_bin(edge_dtype):
     """Excluding a shared chunk edge must not open a gap wider than the spike
     times' precision: float32 edges with float64 spikes just below an edge."""
-    from non_local_detector.core import accepts_row_slice
+    from non_local_detector.core import accepts_row_slice, row_slice_aware
     from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
     from non_local_detector.models.base import _prepare_likelihood_callback
 
     edges = np.array([0.0, 1.0, 2.0], dtype=edge_dtype)
     spikes = np.array([0.99999999, 1.0])
 
-    def unmarked(time_edges, spike_times, is_missing=None):
-        return get_spikecount_per_time_bin(spike_times, time_edges=time_edges)[:, None]
+    @row_slice_aware
+    def likelihood(time_edges, spike_times, is_missing=None, row_slice=None):
+        return get_spikecount_per_time_bin(
+            spike_times, time_edges=time_edges, row_slice=row_slice
+        )[:, None]
 
-    callback = _prepare_likelihood_callback(unmarked, edges, has_no_spike=False)
+    callback = _prepare_likelihood_callback(likelihood, edges, has_no_spike=False)
     # The adapter takes the chunk's global row range from core, like a marked
     # callback, so it never has to recover it from the row coordinates.
     assert accepts_row_slice(callback)

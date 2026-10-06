@@ -415,6 +415,19 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
     arrays caused scipy.interpolate.interpn to fail with "must be strictly
     ascending or descending" error.
     """
+    # Compare array containers with identical represented values. Physical
+    # exposure integrates timestamp spacing, so float32 and float64 grids can
+    # fit slightly different mixtures even with the same random seed.
+    gmm_simulation_data = dict(gmm_simulation_data)
+    for key in ("position_time", "position", "time"):
+        gmm_simulation_data[key] = np.asarray(
+            gmm_simulation_data[key], dtype=np.float32
+        )
+    for key in ("spike_times", "spike_features"):
+        gmm_simulation_data[key] = [
+            np.asarray(value, dtype=np.float32) for value in gmm_simulation_data[key]
+        ]
+
     # Fit the encoding model with JAX arrays (tests scipy compatibility)
     encoding_model = fit_clusterless_gmm_encoding_model(
         jnp.asarray(gmm_simulation_data["position_time"]),  # JAX array
@@ -768,7 +781,7 @@ def test_gmm_zero_weight_electrode_penalizes_decode_spikes():
     one; skipping observed spikes would discard that negative evidence.
     """
     from non_local_detector import time_edges_from_centers
-    from non_local_detector.likelihoods.common import LOG_EPS
+    from non_local_detector.likelihoods.common import LOG_RATE_EPS_HZ
 
     rng = np.random.default_rng(0)
 
@@ -849,7 +862,9 @@ def test_gmm_zero_weight_electrode_penalizes_decode_spikes():
     )
     counts = np.bincount(seg, minlength=n_time).astype(float)  # (n_time,)
     assert counts.sum() > 0, "electrode 1 must fire in-window for a real test"
-    expected_penalty = LOG_EPS * counts[:, None]  # broadcast across bins
+    expected_penalty = (LOG_RATE_EPS_HZ + np.log(np.diff(edges)))[:, None] * counts[
+        :, None
+    ]  # broadcast across bins
 
     absent_times = [jnp.asarray(e0_times)]
     absent_feats = [jnp.asarray(e0_feats)]

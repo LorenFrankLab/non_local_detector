@@ -58,7 +58,6 @@ def _fit_sorted_kde(env, spike_times, n_time=101, position_std=1.0):
         spike_times=spike_times,
         environment=env,
         weights=weights,
-        sampling_frequency=10,
         position_std=position_std,
         block_size=16,
         disable_progress_bar=True,
@@ -100,7 +99,6 @@ def _fit_sorted_glm(env, spike_times, n_time=101):
         edges=env.edges_,
         is_track_interior=env.is_track_interior_,
         is_track_boundary=env.is_track_boundary_,
-        sampling_frequency=10,
         disable_progress_bar=True,
     )
     return enc, t, pos
@@ -137,7 +135,6 @@ def _fit_clusterless_kde(
         spike_times=spike_times,
         spike_waveform_features=spike_features,
         environment=env,
-        sampling_frequency=10,
         position_std=position_std,
         waveform_std=waveform_std,
         block_size=8,
@@ -183,7 +180,6 @@ def _fit_clusterless_gmm(env, spike_times, spike_features, n_time=101, n_compone
         spike_times=spike_times,
         spike_waveform_features=spike_features,
         environment=env,
-        sampling_frequency=10,
         gmm_components_occupancy=n_components,
         gmm_components_gpi=n_components,
         gmm_components_joint=n_components,
@@ -418,7 +414,6 @@ def test_sorted_kde_partial_occupancy():
         spike_times=spike_times,
         environment=env,
         weights=weights,
-        sampling_frequency=10,
         position_std=1.0,
         block_size=16,
         disable_progress_bar=True,
@@ -462,7 +457,6 @@ def test_clusterless_kde_partial_occupancy():
         spike_times=spike_times,
         spike_waveform_features=spike_features,
         environment=env,
-        sampling_frequency=10,
         position_std=1.0,
         waveform_std=1.0,
         block_size=8,
@@ -516,7 +510,6 @@ def test_sorted_glm_high_l2_penalty():
         edges=env.edges_,
         is_track_interior=env.is_track_interior_,
         is_track_boundary=env.is_track_boundary_,
-        sampling_frequency=100,
         l2_penalty=1e6,
         disable_progress_bar=True,
     )
@@ -545,7 +538,6 @@ def test_sorted_glm_low_l2_penalty():
         edges=env.edges_,
         is_track_interior=env.is_track_interior_,
         is_track_boundary=env.is_track_boundary_,
-        sampling_frequency=100,
         l2_penalty=1e-10,
         disable_progress_bar=True,
     )

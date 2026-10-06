@@ -434,7 +434,6 @@ class TestFitGLMEncodingModel:
             edges=env.edges_,
             is_track_interior=env.is_track_interior_,
             is_track_boundary=env.is_track_boundary_,
-            sampling_frequency=data["sampling_frequency"],
             disable_progress_bar=True,
         )
 
@@ -467,7 +466,6 @@ class TestFitGLMEncodingModel:
             edges=env.edges_,
             is_track_interior=env.is_track_interior_,
             is_track_boundary=env.is_track_boundary_,
-            sampling_frequency=data["sampling_frequency"],
             disable_progress_bar=True,
         )
 
@@ -497,7 +495,6 @@ class TestFitGLMEncodingModel:
             edges=env.edges_,
             is_track_interior=env.is_track_interior_,
             is_track_boundary=env.is_track_boundary_,
-            sampling_frequency=data["sampling_frequency"],
             emission_knot_spacing=30.0,  # Coarse
             disable_progress_bar=True,
         )
@@ -511,7 +508,6 @@ class TestFitGLMEncodingModel:
             edges=env.edges_,
             is_track_interior=env.is_track_interior_,
             is_track_boundary=env.is_track_boundary_,
-            sampling_frequency=data["sampling_frequency"],
             emission_knot_spacing=10.0,  # Fine
             disable_progress_bar=True,
         )
@@ -543,7 +539,6 @@ class TestPredictGLMLogLikelihood:
             edges=env.edges_,
             is_track_interior=env.is_track_interior_,
             is_track_boundary=env.is_track_boundary_,
-            sampling_frequency=data["sampling_frequency"],
             disable_progress_bar=True,
         )
 
@@ -604,7 +599,6 @@ class TestPredictGLMLogLikelihood:
             edges=env.edges_,
             is_track_interior=env.is_track_interior_,
             is_track_boundary=env.is_track_boundary_,
-            sampling_frequency=data["sampling_frequency"],
             disable_progress_bar=True,
         )
 
@@ -647,7 +641,6 @@ class TestPredictGLMLogLikelihood:
             edges=env.edges_,
             is_track_interior=env.is_track_interior_,
             is_track_boundary=env.is_track_boundary_,
-            sampling_frequency=data["sampling_frequency"],
             disable_progress_bar=True,
         )
 
@@ -675,7 +668,15 @@ class TestPredictGLMLogLikelihood:
         assert jnp.all(log_likelihood < 0)  # Log likelihood should be negative
 
 
-def _fit_glm(env, position_time, position, spike_times, weights=None):
+def _fit_glm(
+    env,
+    position_time,
+    position,
+    spike_times,
+    weights=None,
+    *,
+    valid_position_intervals=None,
+):
     return fit_sorted_spikes_glm_encoding_model(
         position_time=position_time,
         position=position,
@@ -686,6 +687,7 @@ def _fit_glm(env, position_time, position, spike_times, weights=None):
         is_track_interior=env.is_track_interior_,
         is_track_boundary=env.is_track_boundary_,
         weights=weights,
+        valid_position_intervals=valid_position_intervals,
         disable_progress_bar=True,
     )
 
@@ -696,9 +698,11 @@ def _spy_event_counts(monkeypatch):
 
     captured = []
 
-    def spy(design_matrix, spikes, weights, l2_penalty):
+    def spy(design_matrix, spikes, weights, l2_penalty, **kwargs):
         captured.append((np.asarray(spikes), np.asarray(weights)))
-        return fit_poisson_regression(design_matrix, spikes, weights, l2_penalty)
+        return fit_poisson_regression(
+            design_matrix, spikes, weights, l2_penalty, **kwargs
+        )
 
     monkeypatch.setattr(sorted_spikes_glm, "fit_poisson_regression", spy)
     return captured
@@ -773,7 +777,12 @@ class TestWeightedEventOwnership:
         spike_times = np.sort(rng.uniform(position_time[0], position_time[-1], 400))
 
         encoding = _fit_glm(
-            simple_1d_environment, position_time, position, [spike_times], weights
+            simple_1d_environment,
+            position_time,
+            position,
+            [spike_times],
+            weights,
+            valid_position_intervals=[[position_time[0], position_time[-1]]],
         )
 
         ((event_counts, _),) = captured
@@ -788,8 +797,8 @@ class TestWeightedEventOwnership:
     def test_unit_weights_split_each_spike_between_bracketing_samples(
         self, monkeypatch, simple_1d_environment
     ):
-        """Without weights every in-range spike carries 1, split linearly
-        between the samples on either side of it."""
+        """Interior events split linearly; endpoint half-cell events belong
+        entirely to their nearest endpoint sample."""
         captured = _spy_event_counts(monkeypatch)
         position_time = np.arange(5.0)
         spike_times = [np.array([-0.5, 0.25, 1.0, 3.75, 4.0, 4.5])]
@@ -802,7 +811,7 @@ class TestWeightedEventOwnership:
         )
 
         ((event_counts, _),) = captured
-        np.testing.assert_allclose(event_counts, [0.75, 1.25, 0.0, 0.25, 1.75])
+        np.testing.assert_allclose(event_counts, [1.75, 1.25, 0.0, 0.25, 2.75])
 
 
 @pytest.mark.unit

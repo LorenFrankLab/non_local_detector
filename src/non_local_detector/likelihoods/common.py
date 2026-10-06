@@ -24,6 +24,29 @@ else:
 
 EPS = 1e-15
 LOG_EPS = np.log(EPS)
+RATE_REFERENCE_SECONDS = 0.002
+LOG_RATE_EPS_HZ = np.log(EPS / RATE_REFERENCE_SECONDS)
+RATE_EPS_HZ = (
+    EPS / RATE_REFERENCE_SECONDS
+)  # Historical safeguard at the 2 ms reference, now Hz.
+
+
+def log_bin_duration_evidence(
+    spike_times, time_edges, row_slice, spike_time_order, *, intensity_time_scale=1.0
+) -> jnp.ndarray:
+    """The marked-process event term ``N_bin * log(duration_seconds)``."""
+    start, stop = resolve_row_slice(row_slice, len(time_edges) - 1)
+    counts = np.zeros(stop - start, dtype=int)
+    for times in spike_times:
+        counts += get_spikecount_per_time_bin(
+            times,
+            time_edges=time_edges,
+            row_slice=row_slice,
+            _spike_time_order=spike_time_order,
+        )
+    return jnp.asarray(counts) * jnp.log(
+        jnp.asarray(np.diff(time_edges)[start:stop] / intensity_time_scale)
+    )
 
 
 def as_std_array(std: "jnp.ndarray | float | int", n_dims: int) -> jnp.ndarray:
@@ -250,7 +273,11 @@ def validate_spike_feature_population(
 
 
 def interpolate_weights_at_spike_times(
-    spike_times: np.ndarray, position_time: np.ndarray, weights: np.ndarray
+    spike_times: np.ndarray,
+    position_time: np.ndarray,
+    weights: np.ndarray,
+    *,
+    encoding_support=None,
 ) -> np.ndarray:
     """Per-spike weights: the per-sample ``weights`` linearly interpolated onto times.
 
@@ -268,6 +295,8 @@ def interpolate_weights_at_spike_times(
     -------
     spike_weights : np.ndarray, shape (n_spikes,)
     """
+    if encoding_support is not None:
+        return encoding_support.interpolate(weights, spike_times, fill_value=0.0)
     return np.interp(
         np.asarray(spike_times), np.asarray(position_time), np.asarray(weights)
     )
@@ -284,7 +313,7 @@ def weighted_mean_rate(spike_weights: np.ndarray, weight_sum: float) -> float:
     spike_weights : np.ndarray, shape (n_spikes,)
         Per-spike weights (see :func:`interpolate_weights_at_spike_times`).
     weight_sum : float
-        Sum of the per-sample weights (the weighted occupancy time).
+        Sum of weighted sample exposure in seconds (not sample count).
 
     Returns
     -------
@@ -298,6 +327,8 @@ def get_position_at_time(
     position: jnp.ndarray,
     spike_times: np.ndarray | jnp.ndarray,
     env: Environment | None = None,
+    *,
+    encoding_support=None,
 ) -> np.ndarray:
     """Get the position at the time of each spike.
 
@@ -313,9 +344,12 @@ def get_position_at_time(
     -------
     position_at_spike_times : np.ndarray, shape (n_spikes, n_dims_position)
     """
-    position_at_spike_times = scipy.interpolate.interpn(
-        (time,), position, spike_times, bounds_error=False, fill_value=None
-    )
+    if encoding_support is None:
+        position_at_spike_times = scipy.interpolate.interpn(
+            (time,), position, spike_times, bounds_error=False, fill_value=None
+        )
+    else:
+        position_at_spike_times = encoding_support.interpolate(position, spike_times)
     if env is not None and env.track_graph is not None:
         if position_at_spike_times.shape[0] > 0:
             position_at_spike_times = get_linearized_position(

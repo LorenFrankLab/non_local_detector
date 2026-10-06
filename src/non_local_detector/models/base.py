@@ -42,6 +42,7 @@ from non_local_detector.discrete_state_transitions import (
     centered_softmax_forward,
     predict_discrete_state_transitions,
 )
+from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ConfigurationError, ValidationError
 from non_local_detector.likelihoods import (
@@ -56,7 +57,7 @@ from non_local_detector.likelihoods.common import (
     resolve_row_slice,
     validate_spike_feature_population,
 )
-from non_local_detector.likelihoods.no_spike import no_spike_time_bin_size
+from non_local_detector.likelihoods.no_spike import no_spike_time_bin_sizes
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import (
     _uniformity_tolerance,
@@ -124,14 +125,11 @@ def _prepare_likelihood_callback(
     * A ``@row_slice_aware`` callback receives the full ``time_edges``, a
       global ``row_slice``, and an already sliced ``is_missing`` mask, and
       returns only the requested rows.
-    * An unmarked (legacy) callback cannot request rows, so its adapter takes
-      the global ``row_slice`` itself and hands each chunk its own edges,
-      ``time_edges[start : stop + 1]``. A chunk's final bin is closed, so for
-      every chunk but the last the closing edge is moved down by one float64
-      ulp: a spike exactly on an edge shared with the next chunk then belongs
-      to the next chunk only, as it does on the full edges. Such a chunk's
-      edges are passed as (at least) float64, so spike times of up to float64
-      precision keep their bins.
+    * An unmarked callback receives the original full edges. Partial row
+      requests are rejected: an edges-only callback cannot represent a chunk's
+      open closing boundary without changing its physical duration and center.
+      Custom callbacks used with chunking must declare ``row_slice_aware`` and
+      forward the global row range to their likelihood implementation.
 
     Both adapters are marked ``row_slice_aware``, so core hands them the
     chunk's row range rather than only its row coordinates, and both check
@@ -139,7 +137,7 @@ def _prepare_likelihood_callback(
     for one row per timestamp would otherwise be silently misaligned with the
     bins.
 
-    Declaring ``_spike_time_order`` or ``_no_spike_time_bin_size`` lets this
+    Declaring ``_spike_time_order`` or ``_no_spike_time_bin_sizes`` lets this
     adapter bind shared preparation. Each call creates fresh preparation;
     nothing is stored on the detector or reused by a later prediction. Callers
     with a precomputed likelihood bypass this adapter entirely.
@@ -148,8 +146,8 @@ def _prepare_likelihood_callback(
     prepared: dict[str, object] = {}
     if "_spike_time_order" in parameters:
         prepared["_spike_time_order"] = _SpikeTimeOrder()
-    if has_no_spike and "_no_spike_time_bin_size" in parameters:
-        prepared["_no_spike_time_bin_size"] = no_spike_time_bin_size(time_edges)
+    if has_no_spike and "_no_spike_time_bin_sizes" in parameters:
+        prepared["_no_spike_time_bin_sizes"] = no_spike_time_bin_sizes(time_edges)
     bound = partial(callback, **prepared) if prepared else callback
 
     n_bins = len(time_edges) - 1
@@ -188,16 +186,14 @@ def _prepare_likelihood_callback(
 
     def chunk_callback(row_time, *args, row_slice=None, **kwargs):
         row_start, row_stop = resolve_row_slice(row_slice, n_bins)
-        chunk_edges = time_edges[row_start : row_stop + 1]
-        if row_stop < n_bins:
-            # Nudge at float64 precision: one ulp of coarser edges (float32)
-            # would exclude float64 spikes just below the shared edge.
-            # ``astype`` copies, so the full edges are never modified.
-            chunk_edges = chunk_edges.astype(
-                np.result_type(chunk_edges.dtype, np.float64)
+        if (row_start, row_stop) != (0, n_bins):
+            raise ValidationError(
+                "Chunked custom likelihoods must be row_slice_aware",
+                hint="Decorate the callback with @row_slice_aware from "
+                "non_local_detector.core and forward row_slice with the full "
+                "time_edges. This preserves durations and counts boundary spikes once.",
             )
-            chunk_edges[-1] = np.nextafter(chunk_edges[-1], -np.inf)
-        return checked(evaluate(chunk_edges, *args, **kwargs), row_stop - row_start)
+        return checked(evaluate(time_edges, *args, **kwargs), n_bins)
 
     row_slice_aware(chunk_callback)  # marks the function in place
     return chunk_callback
@@ -443,7 +439,10 @@ def _missing_bins(
 
 
 def _group_spike_mask(
-    spike_times: np.ndarray, position_time: np.ndarray, group_weights: np.ndarray
+    spike_times: np.ndarray,
+    position_time: np.ndarray,
+    group_weights: np.ndarray,
+    encoding_support: EncodingSupport | None = None,
 ) -> np.ndarray:
     """Select the spikes an encoding group owns.
 
@@ -467,9 +466,13 @@ def _group_spike_mask(
     is_group_spike : np.ndarray of bool, shape (n_spikes,)
     """
     spike_times = np.asarray(spike_times)
-    in_bounds = (spike_times >= position_time[0]) & (spike_times <= position_time[-1])
+    in_bounds = (
+        (spike_times >= position_time[0]) & (spike_times <= position_time[-1])
+        if encoding_support is None
+        else encoding_support.contains(spike_times)
+    )
     spike_weights = interpolate_weights_at_spike_times(
-        spike_times, position_time, group_weights
+        spike_times, position_time, group_weights, encoding_support=encoding_support
     )
     is_group_spike: np.ndarray = in_bounds & (spike_weights > 0.0)
     return is_group_spike
@@ -1474,6 +1477,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 is_environment = environment_labels == environment.environment_name
 
             env_position = position[is_environment]
+            env_position = env_position[np.all(np.isfinite(env_position), axis=1)]
             if environment.track_graph is not None:
                 # convert to 1D
                 env_position = get_linearized_position(
@@ -2020,7 +2024,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         # Validate data types and properties
         val.ensure_ndarray(position, "position")
-        val.ensure_all_finite(position, "position")
+        val.ensure_all_finite(position[~np.isnan(position)], "position")
+        if not np.any(np.all(np.isfinite(position.reshape(len(position), -1)), axis=1)):
+            raise ValidationError(
+                "At least one finite position sample is required for fitting"
+            )
 
         # Raises ValidationError if position is 1D but env has track_graph.
         self._validate_position_dimensionality(position, context="fit")
@@ -2070,16 +2078,28 @@ class _DetectorBase(BaseEstimator, abc.ABC):
     def compute_log_likelihood(self):
         """Compute the log likelihood. To be implemented by inheriting class."""
 
-    def _validate_decode_model(self) -> None:
-        """Require a fitted model with known discrete-transition provenance."""
+    def _validate_time_contract(self) -> None:
+        """Reject unknown encoding units and unknown learned transition clocks."""
         if not hasattr(self, "encoding_model_"):
             raise ValidationError(
                 "Detector is not fitted; call fit(...) before decoding."
             )
-        if not hasattr(self, "transition_time_bin_width_"):
+        if (
+            getattr(self, "time_contract_", None)
+            != {
+                "version": 1,
+                "rate_units": "Hz",
+                "encoding_time_units": "seconds",
+            }
+            or not hasattr(self, "transition_time_bin_width_")
+            or any(
+                model.get("rate_units") != "Hz"
+                for model in self.encoding_model_.values()
+            )
+        ):
             raise ValidationError(
-                "Saved model has an unknown transition clock; refit before decoding.",
-                hint="Load for inspection, then call fit(...) or estimate_parameters(..., time_edges=...) with the original recording. A missing transition clock cannot be assumed to mean unlearned transitions.",
+                "Saved model has a legacy or unknown time contract; refit before decoding.",
+                hint="Load for inspection, then call fit(...) or estimate_parameters(..., time_edges=...) with the original recording. Old rates and learned transition clocks cannot be inferred safely.",
             )
 
     def _learned_transition_time_bin_width(self) -> tuple[float | None, float]:
@@ -2174,7 +2194,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
         log_likelihood_func = self.compute_log_likelihood
         if hasattr(self, "encoding_model_"):
-            self._validate_decode_model()
+            self._validate_time_contract()
         if log_likelihoods is None:
             log_likelihood_func = _prepare_likelihood_callback(
                 log_likelihood_func,
@@ -3347,6 +3367,9 @@ class ClusterlessDetector(_DetectorBase):
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
         weights: np.ndarray | None = None,
+        *,
+        encoding_time_range: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
     ) -> None:
         """
         Fit the encoding model to the data.
@@ -3369,6 +3392,16 @@ class ClusterlessDetector(_DetectorBase):
             Environment labels, by default None.
         weights : np.ndarray, optional, shape (n_time_position,)
             Weights for training data, by default None.
+
+        encoding_time_range : array_like, shape (2,), optional
+            Acquisition start/stop in seconds. Clips encoding support using the
+            original interpolation basis. Uniform samples otherwise include endpoint
+            half-cells; a singleton requires explicit bounds or a tracking interval.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping continuous tracking intervals in seconds.
+            Required for irregular timestamps; each interval needs a finite sample.
+            Positions are held at segment endpoints and NaN rows split support.
+            Encoding support does not automatically mark decode bins missing.
 
         Attributes
         ----------
@@ -3398,14 +3431,12 @@ class ClusterlessDetector(_DetectorBase):
 
         is_training = np.asarray(is_training).squeeze()
 
-        is_nan = np.any(np.isnan(position), axis=1)
-        position = position[~is_nan]
-        position_time = position_time[~is_nan]
-        is_training = is_training[~is_nan]
-        encoding_group_labels = encoding_group_labels[~is_nan]
-        environment_labels = environment_labels[~is_nan]
-        if weights is not None:
-            weights = weights[~is_nan]
+        support = EncodingSupport(
+            position_time,
+            position,
+            encoding_time_range=encoding_time_range,
+            valid_position_intervals=valid_position_intervals,
+        )
 
         kwargs = self._resolve_clusterless_algorithm_params()
 
@@ -3437,7 +3468,7 @@ class ClusterlessDetector(_DetectorBase):
             # interpolation bridge the mask's gaps.
             group_weights = _group_weights(is_group, weights, likelihood_name)
             is_group_spike = [
-                _group_spike_mask(times, position_time, group_weights)
+                _group_spike_mask(times, position_time, group_weights, support)
                 for times in spike_times
             ]
             group_spike_times = [
@@ -3456,13 +3487,18 @@ class ClusterlessDetector(_DetectorBase):
                 spike_times=group_spike_times,
                 spike_waveform_features=group_spike_waveform_features,
                 environment=environment,
-                sampling_frequency=self.sampling_frequency,
+                _encoding_support=support,
                 weights=group_weights,
                 **kwargs,
             )
 
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         self.encoding_model_ = encoding_model
+        self.time_contract_ = {
+            "version": 1,
+            "rate_units": "Hz",
+            "encoding_time_units": "seconds",
+        }
 
     def fit(
         self,
@@ -3474,6 +3510,9 @@ class ClusterlessDetector(_DetectorBase):
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
+        *,
+        encoding_time_range: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
     ) -> "ClusterlessDetector":
         """
         Fit the detector to the data.
@@ -3497,6 +3536,16 @@ class ClusterlessDetector(_DetectorBase):
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Covariate data for covariate-dependent discrete transition, by default None.
 
+        encoding_time_range : array_like, shape (2,), optional
+            Acquisition start/stop in seconds. Clips encoding support using the
+            original interpolation basis. Uniform samples otherwise include endpoint
+            half-cells; a singleton requires explicit bounds or a tracking interval.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping continuous tracking intervals in seconds.
+            Required for irregular timestamps; each interval needs a finite sample.
+            Positions are held at segment endpoints and NaN rows split support.
+            Encoding support does not automatically mark decode bins missing.
+
         Returns
         -------
         ClusterlessDetector
@@ -3519,6 +3568,8 @@ class ClusterlessDetector(_DetectorBase):
                 is_training,
                 encoding_group_labels,
                 environment_labels,
+                encoding_time_range=encoding_time_range,
+                valid_position_intervals=valid_position_intervals,
             )
         return self
 
@@ -3534,7 +3585,7 @@ class ClusterlessDetector(_DetectorBase):
         row_slice: slice | None = None,
         *,
         time_edges: np.ndarray,
-        _no_spike_time_bin_size: float | None = None,
+        _no_spike_time_bin_sizes: np.ndarray | None = None,
         _spike_time_order: _SpikeTimeOrder | None = None,
     ) -> jnp.ndarray:
         """
@@ -3592,8 +3643,8 @@ class ClusterlessDetector(_DetectorBase):
             so a decoding spike is owned by its global row no matter how the
             rows were chunked, and the result equals the full-time likelihood
             sliced by ``row_slice``.
-        _no_spike_time_bin_size : float | None, optional
-            Internal full-timeline median bin duration, prepared once by ``_predict``
+        _no_spike_time_bin_sizes : np.ndarray | None, optional
+            Internal full-timeline array of bin durations, prepared once by ``_predict``
             and reused for No-Spike in every chunk. None computes it on demand.
         _spike_time_order : _SpikeTimeOrder | None, optional
             Internal ordering preparation shared across states and chunks. None
@@ -3604,7 +3655,7 @@ class ClusterlessDetector(_DetectorBase):
         log_likelihood : jnp.ndarray, shape (n_rows, n_state_bins)
             ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
-        self._validate_decode_model()
+        self._validate_time_contract()
         time_edges, _ = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
@@ -3699,7 +3750,7 @@ class ClusterlessDetector(_DetectorBase):
                     self.no_spike_rate,
                     time_edges=time_edges,
                     row_slice=row_slice,
-                    _time_bin_size=_no_spike_time_bin_size,
+                    _time_bin_sizes=_no_spike_time_bin_sizes,
                     _spike_time_order=_spike_time_order,
                 )
             elif likelihood_name not in computed_likelihoods:
@@ -3922,7 +3973,7 @@ class ClusterlessDetector(_DetectorBase):
                 "    )",
             )
 
-        self._validate_decode_model()
+        self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
@@ -4060,6 +4111,8 @@ class ClusterlessDetector(_DetectorBase):
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
         encoding_update_damping: float = 0.0,
+        encoding_time_range: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities using the Expectation-Maximization (EM) algorithm.
@@ -4123,6 +4176,16 @@ class ClusterlessDetector(_DetectorBase):
             any fitting. Use ``min_encoding_local_mass`` /
             ``min_encoding_local_ess`` to skip poorly supported updates.
 
+        encoding_time_range : array_like, shape (2,), optional
+            Acquisition start/stop in seconds. Clips encoding support using the
+            original interpolation basis. Uniform samples otherwise include endpoint
+            half-cells; a singleton requires explicit bounds or a tracking interval.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping continuous tracking intervals in seconds.
+            Required for irregular timestamps; each interval needs a finite sample.
+            Positions are held at segment endpoints and NaN rows split support.
+            Encoding support does not automatically mark decode bins missing.
+
         Returns
         -------
         results : xr.Dataset
@@ -4156,6 +4219,8 @@ class ClusterlessDetector(_DetectorBase):
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
+            encoding_time_range=encoding_time_range,
+            valid_position_intervals=valid_position_intervals,
         )
         self._encoding_model_data = {
             "position_time": position_time,
@@ -4165,6 +4230,8 @@ class ClusterlessDetector(_DetectorBase):
             "is_training": is_training,
             "encoding_group_labels": encoding_group_labels,
             "environment_labels": environment_labels,
+            "encoding_time_range": encoding_time_range,
+            "valid_position_intervals": valid_position_intervals,
         }
 
         return super().estimate_parameters(
@@ -4226,7 +4293,7 @@ class ClusterlessDetector(_DetectorBase):
         -------
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
         """
-        self._validate_decode_model()
+        self._validate_time_contract()
         time_edges, _ = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
@@ -4373,6 +4440,9 @@ class SortedSpikesDetector(_DetectorBase):
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
         weights: np.ndarray | None = None,
+        *,
+        encoding_time_range: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
     ) -> None:
         """
         Fit place fields to the data.
@@ -4393,6 +4463,16 @@ class SortedSpikesDetector(_DetectorBase):
             Environment labels, by default None.
         weights : np.ndarray, optional, shape (n_time_position,)
             Weights for training data, by default None.
+
+        encoding_time_range : array_like, shape (2,), optional
+            Acquisition start/stop in seconds. Clips encoding support using the
+            original interpolation basis. Uniform samples otherwise include endpoint
+            half-cells; a singleton requires explicit bounds or a tracking interval.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping continuous tracking intervals in seconds.
+            Required for irregular timestamps; each interval needs a finite sample.
+            Positions are held at segment endpoints and NaN rows split support.
+            Encoding support does not automatically mark decode bins missing.
 
         Attributes
         ----------
@@ -4416,14 +4496,12 @@ class SortedSpikesDetector(_DetectorBase):
             )
 
         is_training = np.asarray(is_training).squeeze()
-        is_nan = np.any(np.isnan(position), axis=1)
-        position = position[~is_nan]
-        position_time = position_time[~is_nan]
-        is_training = is_training[~is_nan]
-        encoding_group_labels = encoding_group_labels[~is_nan]
-        environment_labels = environment_labels[~is_nan]
-        if weights is not None:
-            weights = weights[~is_nan]
+        support = EncodingSupport(
+            position_time,
+            position,
+            encoding_time_range=encoding_time_range,
+            valid_position_intervals=valid_position_intervals,
+        )
 
         kwargs = self._resolve_sorted_spikes_algorithm_params()
 
@@ -4486,13 +4564,13 @@ class SortedSpikesDetector(_DetectorBase):
                 spike_times=[
                     neuron_spike_times[
                         _group_spike_mask(
-                            neuron_spike_times, position_time, group_weights
+                            neuron_spike_times, position_time, group_weights, support
                         )
                     ]
                     for neuron_spike_times in spike_times
                 ],
                 environment=environment,
-                sampling_frequency=self.sampling_frequency,
+                _encoding_support=support,
                 weights=group_weights,
                 **glm_kwargs,
                 **filtered_kwargs,
@@ -4500,6 +4578,11 @@ class SortedSpikesDetector(_DetectorBase):
 
         self._invalidate_stored_log_likelihood()  # stale: encoding model replaced
         self.encoding_model_ = encoding_model
+        self.time_contract_ = {
+            "version": 1,
+            "rate_units": "Hz",
+            "encoding_time_units": "seconds",
+        }
 
     def fit(
         self,
@@ -4510,6 +4593,9 @@ class SortedSpikesDetector(_DetectorBase):
         encoding_group_labels: np.ndarray | None = None,
         environment_labels: np.ndarray | None = None,
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
+        *,
+        encoding_time_range: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
     ) -> "SortedSpikesDetector":
         """
         Fit the detector to the data.
@@ -4531,6 +4617,16 @@ class SortedSpikesDetector(_DetectorBase):
         discrete_transition_covariate_data : dict or pd.DataFrame, optional
             Covariate data for covariate-dependent discrete transition, by default None.
 
+        encoding_time_range : array_like, shape (2,), optional
+            Acquisition start/stop in seconds. Clips encoding support using the
+            original interpolation basis. Uniform samples otherwise include endpoint
+            half-cells; a singleton requires explicit bounds or a tracking interval.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping continuous tracking intervals in seconds.
+            Required for irregular timestamps; each interval needs a finite sample.
+            Positions are held at segment endpoints and NaN rows split support.
+            Encoding support does not automatically mark decode bins missing.
+
         Returns
         -------
         SortedSpikesDetector
@@ -4551,6 +4647,8 @@ class SortedSpikesDetector(_DetectorBase):
                 is_training,
                 encoding_group_labels,
                 environment_labels,
+                encoding_time_range=encoding_time_range,
+                valid_position_intervals=valid_position_intervals,
             )
         return self
 
@@ -4565,7 +4663,7 @@ class SortedSpikesDetector(_DetectorBase):
         row_slice: slice | None = None,
         *,
         time_edges: np.ndarray,
-        _no_spike_time_bin_size: float | None = None,
+        _no_spike_time_bin_sizes: np.ndarray | None = None,
         _spike_time_order: _SpikeTimeOrder | None = None,
     ) -> jnp.ndarray:
         """
@@ -4621,8 +4719,8 @@ class SortedSpikesDetector(_DetectorBase):
             so a decoding spike is owned by its global row no matter how the
             rows were chunked, and the result equals the full-time likelihood
             sliced by ``row_slice``.
-        _no_spike_time_bin_size : float | None, optional
-            Internal full-timeline median bin duration, prepared once by ``_predict``
+        _no_spike_time_bin_sizes : np.ndarray | None, optional
+            Internal full-timeline array of bin durations, prepared once by ``_predict``
             and reused for No-Spike in every chunk. None computes it on demand.
         _spike_time_order : _SpikeTimeOrder | None, optional
             Internal ordering preparation shared across states and chunks. None
@@ -4633,7 +4731,7 @@ class SortedSpikesDetector(_DetectorBase):
         log_likelihood : jnp.ndarray, shape (n_rows, n_state_bins)
             ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
-        self._validate_decode_model()
+        self._validate_time_contract()
         time_edges, _ = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
@@ -4729,7 +4827,7 @@ class SortedSpikesDetector(_DetectorBase):
                     self.no_spike_rate,
                     time_edges=time_edges,
                     row_slice=row_slice,
-                    _time_bin_size=_no_spike_time_bin_size,
+                    _time_bin_sizes=_no_spike_time_bin_sizes,
                     _spike_time_order=_spike_time_order,
                 )
             elif likelihood_name not in computed_likelihoods:
@@ -4875,7 +4973,7 @@ class SortedSpikesDetector(_DetectorBase):
                 "    )",
             )
 
-        self._validate_decode_model()
+        self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
@@ -5012,6 +5110,8 @@ class SortedSpikesDetector(_DetectorBase):
         min_encoding_local_mass: float = 1.0,
         min_encoding_local_ess: float = 1.0,
         encoding_update_damping: float = 0.0,
+        encoding_time_range: np.ndarray | None = None,
+        valid_position_intervals: np.ndarray | None = None,
     ) -> xr.Dataset:
         """
         Estimate the initial conditions and transition probabilities
@@ -5077,6 +5177,16 @@ class SortedSpikesDetector(_DetectorBase):
             any fitting. Use ``min_encoding_local_mass`` /
             ``min_encoding_local_ess`` to skip poorly supported updates.
 
+        encoding_time_range : array_like, shape (2,), optional
+            Acquisition start/stop in seconds. Clips encoding support using the
+            original interpolation basis. Uniform samples otherwise include endpoint
+            half-cells; a singleton requires explicit bounds or a tracking interval.
+        valid_position_intervals : array_like, shape (n_intervals, 2), optional
+            Ordered, non-overlapping continuous tracking intervals in seconds.
+            Required for irregular timestamps; each interval needs a finite sample.
+            Positions are held at segment endpoints and NaN rows split support.
+            Encoding support does not automatically mark decode bins missing.
+
         Returns
         -------
         xr.Dataset
@@ -5103,6 +5213,8 @@ class SortedSpikesDetector(_DetectorBase):
             encoding_group_labels=encoding_group_labels,
             environment_labels=environment_labels,
             discrete_transition_covariate_data=discrete_transition_covariate_data,
+            encoding_time_range=encoding_time_range,
+            valid_position_intervals=valid_position_intervals,
         )
         self._encoding_model_data = {
             "position_time": position_time,
@@ -5111,6 +5223,8 @@ class SortedSpikesDetector(_DetectorBase):
             "is_training": is_training,
             "encoding_group_labels": encoding_group_labels,
             "environment_labels": environment_labels,
+            "encoding_time_range": encoding_time_range,
+            "valid_position_intervals": valid_position_intervals,
         }
 
         return super().estimate_parameters(
@@ -5168,7 +5282,7 @@ class SortedSpikesDetector(_DetectorBase):
         -------
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
         """
-        self._validate_decode_model()
+        self._validate_time_contract()
         time_edges, _ = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )

@@ -97,7 +97,6 @@ def _fit_predict_local(module, s):
         spike_times=[jnp.asarray(t) for t in s["enc_spike_times"]],
         spike_waveform_features=[jnp.asarray(f) for f in s["enc_feats"]],
         environment=s["env"],
-        sampling_frequency=50,
         position_std=np.sqrt(12.5),
         waveform_std=24.0,
         block_size=100,

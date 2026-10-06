@@ -45,7 +45,8 @@ from non_local_detector.likelihoods.clusterless_diffusion import (  # noqa: E402
 from non_local_detector.likelihoods.clusterless_kde import kde_distance  # noqa: E402
 from non_local_detector.likelihoods.common import (  # noqa: E402
     EPS,
-    LOG_EPS,
+    LOG_RATE_EPS_HZ,
+    RATE_EPS_HZ,
     get_position_at_time,
     interpolate_weights_at_spike_times,
 )
@@ -148,7 +149,6 @@ def _sim(seed=0, hi=8.0, n_pos=200, n_elec=2, n_features=2, weights=None):
 
 def _fit(s, **overrides):
     kwargs = {
-        "sampling_frequency": 50,
         "position_std": POSITION_STD,
         "waveform_std": WAVEFORM_STD,
         "weights": s["weights"],
@@ -327,7 +327,8 @@ def test_absolute_log_likelihood_small_fixture():
     # Non-uniform ramp whose endpoints (the encoding-spike weights) sum to 3.0 != n_enc
     # (2), so this test also pins /sum_w_i rather than /n_enc.
     weights = np.linspace(0.5, 2.5, n_pos)
-    sum_w_pos = float(weights.sum())
+    exposure = weights * (position_time[1] - position_time[0])
+    sum_w_pos = float(exposure.sum())
 
     enc_times = np.array([0.0, 1.0])  # -> positions 0.5, 2.5 -> bins 0, 2
     enc_marks = np.array([[0.3, -0.4], [1.1, 0.7]], dtype=np.float32)
@@ -341,7 +342,6 @@ def test_absolute_log_likelihood_small_fixture():
         [jnp.asarray(enc_times)],
         [jnp.asarray(enc_marks)],
         env,
-        sampling_frequency=50,
         position_std=POSITION_STD,
         waveform_std=WAVEFORM_STD,
         weights=weights,
@@ -392,7 +392,7 @@ def test_absolute_log_likelihood_small_fixture():
 
     occ_pos = get_position_at_time(position_time, position, position_time, env)
     occ_bins = _interior_bin_indices(env, occ_pos, f2l)
-    occ_field = np.bincount(occ_bins, weights=weights, minlength=n_bins)[:, None]
+    occ_field = np.bincount(occ_bins, weights=exposure, minlength=n_bins)[:, None]
 
     P = diffuse(eigvals, eigvecs, POSITION_STD, D, component_labels=labels)
     Shat = diffuse(eigvals, eigvecs, POSITION_STD, S, component_labels=labels)
@@ -401,15 +401,17 @@ def test_absolute_log_likelihood_small_fixture():
     pi = np.clip(Ohat[:, 0] / (sum_w_pos * dV), EPS, None)
     p_e = P / (w_total * dV[:, None])
     p_gpi = Shat[:, 0] / (w_total * dV)
-    lc = np.log(np.clip(mean_rate * p_e / pi[:, None], EPS, None))  # (n_bins, n_dec)
-    summed_gpi = np.clip(mean_rate * p_gpi / pi, EPS, None)
+    lc = np.log(
+        np.clip(mean_rate * p_e / pi[:, None], RATE_EPS_HZ, None)
+    )  # (n_bins, n_dec)
+    summed_gpi = np.clip(mean_rate * p_gpi / pi, RATE_EPS_HZ, None)
 
     n_time_bins = len(time_edges) - 1
-    expected = -summed_gpi[None, :] * np.ones((n_time_bins, 1))
+    expected = -np.diff(time_edges)[:, None] * summed_gpi[None, :]
     seg = _decode_bin(dec_times, time_edges)
     assert seg.tolist() == [0, 1]
     for j, t_bin in enumerate(seg):
-        expected[t_bin] += lc[:, j]
+        expected[t_bin] += lc[:, j] + np.log(np.diff(time_edges)[t_bin])
 
     assert ll.shape == (n_time_bins, n_bins)
     assert np.allclose(ll, expected, rtol=1e-3, atol=1e-3), (
@@ -489,7 +491,6 @@ def test_binary_weights_match_hard_subset():
     block = (t_np >= 3.0) & (t_np <= 7.0)
 
     common = {
-        "sampling_frequency": 10,
         "position_std": POSITION_STD,
         "waveform_std": WAVEFORM_STD,
         "disable_progress_bar": True,
@@ -524,7 +525,7 @@ def test_binary_weights_match_hard_subset():
                 pos,
                 dec_spike_times,
                 dec_feats,
-                time_edges=jnp.asarray(time),
+                time_edges=np.asarray(time),
                 is_local=False,
                 **enc,
             )
@@ -562,7 +563,6 @@ def test_nonlocal_finite_and_zero_rate():
             [jnp.asarray(f) for f in enc_feats],
             env,
             weights=weights,
-            sampling_frequency=20,
             position_std=POSITION_STD,
             waveform_std=WAVEFORM_STD,
             disable_progress_bar=True,
@@ -595,9 +595,11 @@ def test_nonlocal_finite_and_zero_rate():
     seg = _decode_bin(dec_times[1], time_edges)
     for t_bin in seg:
         # only the zero-rate electrode contributed at this bin -> exactly LOG_EPS + (-gpi)
-        assert np.allclose(ll[t_bin] + gpi, LOG_EPS, atol=1e-6), (
-            f"zero-rate electrode did not floor to LOG_EPS at time bin {t_bin}"
-        )
+        assert np.allclose(
+            ll[t_bin] + np.diff(time_edges)[t_bin] * gpi,
+            LOG_RATE_EPS_HZ + np.log(np.diff(time_edges)[t_bin]),
+            atol=1e-6,
+        ), f"zero-rate electrode did not floor to LOG_EPS at time bin {t_bin}"
 
 
 def test_block_parity():
@@ -657,7 +659,6 @@ def test_zero_rate_fit_and_predict_finite_and_warn():
             [jnp.asarray(f) for f in enc_feats],
             env,
             weights=weights,
-            sampling_frequency=20,
             position_std=POSITION_STD,
             waveform_std=WAVEFORM_STD,
             disable_progress_bar=True,
@@ -692,7 +693,13 @@ def test_zero_rate_fit_and_predict_finite_and_warn():
     seg = _decode_bin(dec_times[0], time_edges)
     assert seg.tolist() == [0, 1]
     for t_bin in seg:
-        assert np.allclose(ll[t_bin], LOG_EPS - EPS, atol=1e-6)
+        assert np.allclose(
+            ll[t_bin],
+            LOG_RATE_EPS_HZ
+            + np.log(np.diff(time_edges)[t_bin])
+            - np.diff(time_edges)[t_bin] * RATE_EPS_HZ,
+            atol=1e-6,
+        )
 
 
 # ----------------------------------------------------------------------------
@@ -751,8 +758,7 @@ def test_local_equals_nonlocal_per_spike():
         [jnp.asarray(t) for t in enc_times],
         [jnp.asarray(f) for f in enc_feats],
         env,
-        sampling_frequency=20,
-        position_std=POSITION_STD,
+        position_std=1.0,
         waveform_std=WAVEFORM_STD,
         weights=None,
         disable_progress_bar=True,
@@ -842,7 +848,6 @@ def test_local_finite_and_zero_rate():
             [jnp.asarray(f) for f in enc_feats],
             env,
             weights=weights,
-            sampling_frequency=20,
             position_std=POSITION_STD,
             waveform_std=WAVEFORM_STD,
             disable_progress_bar=True,
@@ -885,9 +890,11 @@ def test_local_finite_and_zero_rate():
     for t_bin in seg:
         # only the zero-rate electrode contributed at this bin -> exactly
         # LOG_EPS - local_gpi[t_bin]
-        assert np.allclose(ll[t_bin, 0] + local_gpi[t_bin], LOG_EPS, atol=1e-6), (
-            f"zero-rate electrode did not floor to LOG_EPS at time bin {t_bin}"
-        )
+        assert np.allclose(
+            ll[t_bin, 0] + np.diff(time_edges)[t_bin] * local_gpi[t_bin],
+            LOG_RATE_EPS_HZ + np.log(np.diff(time_edges)[t_bin]),
+            atol=1e-6,
+        ), f"zero-rate electrode did not floor to LOG_EPS at time bin {t_bin}"
 
 
 # ----------------------------------------------------------------------------
@@ -971,10 +978,10 @@ def test_validation_fit():
 
     # non-finite position.
     bad_position = np.array(s["position"], copy=True)
-    bad_position[0, 0] = np.nan
+    bad_position[0, 0] = np.inf
     s_bad_position = dict(s)
     s_bad_position["position"] = bad_position
-    with pytest.raises(ValidationError):
+    with pytest.raises(DataError):
         _fit(s_bad_position)
 
     # Non-finite IN-window encoding spike_waveform_features raises; a non-finite
@@ -1030,7 +1037,7 @@ def test_validation_predict():
     # non-finite decoding position raises for the LOCAL path (which reads position);
     # the non-local path never reads position (see the positionless case below).
     bad_position = np.array(s["position"], copy=True)
-    bad_position[0, 0] = np.nan
+    bad_position[0, 0] = np.inf
     with pytest.raises(ValidationError):
         _predict(dict(s, position=bad_position), enc, is_local=True)
 
@@ -1133,7 +1140,6 @@ def test_validation_predict_zero_rate_precedence(is_local):
             [jnp.asarray(f) for f in enc_feats],
             env,
             weights=weights,
-            sampling_frequency=20,
             position_std=POSITION_STD,
             waveform_std=WAVEFORM_STD,
             disable_progress_bar=True,
@@ -1155,7 +1161,7 @@ def test_validation_predict_zero_rate_precedence(is_local):
             position,
             [jnp.asarray(t) for t in dec_times],
             [jnp.asarray(f) for f in dec_feats],
-            time_edges=jnp.asarray(time),
+            time_edges=np.asarray(time),
             is_local=is_local,
             **enc,
         )
@@ -1187,7 +1193,6 @@ def _fit_diffusion(
         [jnp.asarray(t) for t in enc_t],
         [jnp.asarray(f) for f in enc_f],
         env,
-        sampling_frequency=sampling_frequency,
         position_std=position_std,
         waveform_std=GEOM_WAVEFORM_STD,
         disable_progress_bar=True,
@@ -1203,7 +1208,6 @@ def _fit_kde(
         [jnp.asarray(t) for t in enc_t],
         [jnp.asarray(f) for f in enc_f],
         env,
-        sampling_frequency=sampling_frequency,
         position_std=position_std,
         waveform_std=GEOM_WAVEFORM_STD,
         disable_progress_bar=True,
@@ -1217,7 +1221,7 @@ def _predict_diffusion_nonlocal(time, position_time, position, dec_t, dec_f, enc
             jnp.asarray(position),
             [jnp.asarray(t) for t in dec_t],
             [jnp.asarray(f) for f in dec_f],
-            time_edges=jnp.asarray(time),
+            time_edges=np.asarray(time),
             is_local=False,
             **enc,
         )
@@ -1231,7 +1235,7 @@ def _predict_kde_nonlocal(time, position_time, position, dec_t, dec_f, enc):
             jnp.asarray(position),
             [jnp.asarray(t) for t in dec_t],
             [jnp.asarray(f) for f in dec_f],
-            time_edges=jnp.asarray(time),
+            time_edges=np.asarray(time),
             is_local=False,
             **enc,
         )
@@ -1401,7 +1405,8 @@ def test_geometry_no_barrier_leak():
 
     # One decode spike, mark = [0, 0] (matches the left-room encoding marks), in a
     # single time bin.
-    decode_time_edges = np.array([0.0, time[-1]])
+    decode_center = time[position.shape[0] // 2]
+    decode_time_edges = np.array([decode_center - 0.001, decode_center + 0.001])
     dec_t = [np.array([time[position.shape[0] // 2]])]
     dec_f = [np.array([[0.0, 0.0]], dtype=np.float32)]
     ll_d = _predict_diffusion_nonlocal(
@@ -1607,7 +1612,6 @@ def test_nonuniform_dv_density_correctness():
         [jnp.asarray(enc_t)],
         [jnp.asarray(enc_f)],
         env,
-        sampling_frequency=100,
         position_std=6.0,
         waveform_std=waveform_std,
         weights=weights,
@@ -1741,7 +1745,6 @@ def test_benchmark_diffusion_vs_kde_large_grid():
         [jnp.asarray(t) for t in enc_t],
         [jnp.asarray(f) for f in enc_f],
         env,
-        sampling_frequency=50,
         position_std=position_std,
         waveform_std=waveform_std,
         block_size=10_000,
@@ -1764,7 +1767,6 @@ def test_benchmark_diffusion_vs_kde_large_grid():
         [jnp.asarray(t) for t in enc_t],
         [jnp.asarray(f) for f in enc_f],
         env,
-        sampling_frequency=50,
         position_std=position_std,
         waveform_std=waveform_std,
         block_size=10_000,

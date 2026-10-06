@@ -117,7 +117,6 @@ def test_kde_end_to_end_pipeline(shared_simulation_data):
         spike_times=encoding_spike_times,
         spike_waveform_features=encoding_spike_features,
         environment=data["environment"],
-        sampling_frequency=50,
         position_std=np.sqrt(12.5),
         waveform_std=24.0,
         block_size=100,
@@ -232,7 +231,6 @@ def test_gmm_end_to_end_pipeline(shared_simulation_data):
         spike_times=encoding_spike_times,
         spike_waveform_features=encoding_spike_features,
         environment=data["environment"],
-        sampling_frequency=50,
         weights=None,
         gmm_components_occupancy=8,
         gmm_components_gpi=8,
@@ -314,7 +312,6 @@ def test_api_consistency_fit_functions(shared_simulation_data):
             jnp.asarray(sf) for sf in data["encoding_spike_features"]
         ],
         "environment": data["environment"],
-        "sampling_frequency": 50,
         "disable_progress_bar": True,
     }
 
@@ -358,7 +355,6 @@ def test_api_consistency_predict_functions(shared_simulation_data):
             jnp.asarray(sf) for sf in data["encoding_spike_features"]
         ],
         "environment": data["environment"],
-        "sampling_frequency": 50,
         "disable_progress_bar": True,
     }
 

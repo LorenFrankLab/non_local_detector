@@ -29,10 +29,12 @@ import numpy as np
 import scipy.interpolate  # type: ignore[import-untyped]
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
+from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment, get_centers
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
+    RATE_EPS_HZ,
     _SpikeTimeOrder,
     decode_bin_centers,
     get_position_at_time,
@@ -226,7 +228,7 @@ def _local_place_field_rates(
     nearest_rates = place_fields_np[:, bin_inds].T
 
     if local_interpolation == "nearest":
-        return jnp.clip(jnp.asarray(nearest_rates), min=EPS, max=None)
+        return jnp.clip(jnp.asarray(nearest_rates), min=RATE_EPS_HZ, max=None)
 
     axes = _grid_axes(environment)
     values_grid = np.moveaxis(
@@ -247,7 +249,7 @@ def _local_place_field_rates(
     )
     safe = safe & np.all(np.isfinite(interpolated_rates), axis=1)
     rates = np.where(safe[:, np.newaxis], interpolated_rates, nearest_rates)
-    return jnp.clip(jnp.asarray(rates), min=EPS, max=None)
+    return jnp.clip(jnp.asarray(rates), min=RATE_EPS_HZ, max=None)
 
 
 def pixellate_interior_fields(
@@ -258,6 +260,8 @@ def pixellate_interior_fields(
     node_order: np.ndarray,
     weights: np.ndarray,
     disable_progress_bar: bool = False,
+    *,
+    encoding_support=None,
 ) -> tuple[np.ndarray, list[np.ndarray], list[float]]:
     """Histogram weighted occupancy and per-neuron spike counts onto interior bins.
 
@@ -285,29 +289,40 @@ def pixellate_interior_fields(
     Returns
     -------
     occupancy_field : np.ndarray, shape (n_interior,)
-        Weighted position-sample count per interior bin.
+        Weighted exposure in seconds per interior bin.
     spike_fields : list[np.ndarray]
         Weighted spike count per interior bin (each array shape ``(n_interior,)``), one
         array per neuron.
     mean_rates : list[float]
-        ``weights_at_spike_times.sum() / weights.sum()`` per neuron.
+        Weighted event count divided by weighted exposure seconds per neuron (Hz).
     """
+    support, weights, exposure_weights, position = prepare_encoding_support(
+        position_time,
+        position,
+        weights,
+        _encoding_support=encoding_support,
+    )
     assert environment.is_track_interior_ is not None
     n_total_bins = environment.is_track_interior_.ravel().shape[0]
     n_interior = node_order.shape[0]
 
     full_to_local = _full_to_local(node_order, n_total_bins)
 
-    occupancy_positions = get_position_at_time(
-        position_time, position, position_time, environment
-    )
-    occupancy_field = np.bincount(
-        _interior_bin_indices(environment, occupancy_positions, full_to_local),
-        weights=weights,
-        minlength=n_interior,
-    )
+    occupancy_field: np.ndarray
+    active = exposure_weights > 0
+    if np.any(active):
+        occupancy_positions = get_position_at_time(
+            position_time, position, position_time[active], environment
+        )
+        occupancy_field = np.bincount(
+            _interior_bin_indices(environment, occupancy_positions, full_to_local),
+            weights=exposure_weights[active],
+            minlength=n_interior,
+        )
+    else:
+        occupancy_field = np.zeros(n_interior)
 
-    weight_sum = weights.sum()
+    weight_sum = exposure_weights.sum()
     mean_rates: list[float] = []
     spike_fields: list[np.ndarray] = []
     for neuron_spike_times in tqdm(
@@ -316,21 +331,20 @@ def pixellate_interior_fields(
         desc="Encoding models",
         disable=disable_progress_bar,
     ):
-        neuron_spike_times = neuron_spike_times[
-            np.logical_and(
-                neuron_spike_times >= position_time[0],
-                neuron_spike_times <= position_time[-1],
-            )
-        ]
+        neuron_spike_times = neuron_spike_times[support.contains(neuron_spike_times)]
         # Spike times are clipped above, so the 1-D interpolation does not extrapolate.
         weights_at_spike_times = interpolate_weights_at_spike_times(
-            neuron_spike_times, position_time, weights
+            neuron_spike_times, position_time, weights, encoding_support=support
         )
         mean_rates.append(weighted_mean_rate(weights_at_spike_times, weight_sum))
 
         if neuron_spike_times.shape[0] > 0:
             spike_positions = get_position_at_time(
-                position_time, position, neuron_spike_times, environment
+                position_time,
+                position,
+                neuron_spike_times,
+                environment,
+                encoding_support=support,
             )
             spike_field = np.bincount(
                 _interior_bin_indices(environment, spike_positions, full_to_local),
@@ -355,7 +369,7 @@ def _assemble_place_fields(
     Parameters
     ----------
     rate_interior : np.ndarray, shape (n_interior, n_neurons)
-        Per-interior-bin firing rate for each neuron.
+        Per-interior-bin firing rate in Hz for each neuron.
     node_order : np.ndarray, shape (n_interior,)
         Interior flat-bin indices in graph order.
     n_total_bins : int
@@ -365,13 +379,15 @@ def _assemble_place_fields(
     place_fields : jnp.ndarray, shape (n_neurons, n_total_bins)
         EPS-floored on interior bins, exactly 0 off-track.
     no_spike_part_log_likelihood : jnp.ndarray, shape (n_total_bins,)
-        Summed place fields.
+        Sum of Hz rates across neurons; multiply by duration before scoring.
     interior_log_place_fields : jnp.ndarray, shape (n_neurons, n_interior)
         ``log`` of the interior place fields, in ``node_order`` (== interior-flat-bin)
         order -- exactly the quantity the non-local likelihood needs. Precomputed once so
         repeated non-local decoding of the same encoding does not recompute the log.
     """
-    clipped_interior = np.clip(rate_interior.T, EPS, None)  # (n_neurons, n_interior)
+    clipped_interior = np.clip(
+        rate_interior.T, RATE_EPS_HZ, None
+    )  # (n_neurons, n_interior)
     place_fields = np.zeros((rate_interior.shape[1], n_total_bins))
     place_fields[:, node_order] = clipped_interior
     place_fields = jnp.asarray(place_fields)
@@ -388,12 +404,15 @@ def fit_sorted_spikes_diffusion_encoding_model(
     spike_times: list[np.ndarray],
     environment: Environment,
     weights: np.ndarray | None = None,
-    sampling_frequency: int = 500,
     position_std: float = float(np.sqrt(12.5)),
     rank: int | None = None,
     block_size: int = 100,
     local_interpolation: str = "linear",
     disable_progress_bar: bool = False,
+    *,
+    encoding_time_range=None,
+    valid_position_intervals=None,
+    _encoding_support=None,
 ) -> dict:
     """Fit a graph-diffusion encoding model for sorted spikes.
 
@@ -410,9 +429,6 @@ def fit_sorted_spikes_diffusion_encoding_model(
     weights : np.ndarray, shape (n_time_position,), optional
         Per-sample weights (e.g. posterior state probabilities during EM), by default
         None. If None, uniform weights are used.
-    sampling_frequency : int, optional
-        Samples per second, by default 500. Accepted for signature compatibility;
-        not used by the diffusion smoother.
     position_std : float, optional
         Heat-kernel smoothing standard deviation in coordinate units (the physical
         bandwidth), by default sqrt(12.5). Scalar only: the heat kernel is isotropic in
@@ -440,6 +456,16 @@ def fit_sorted_spikes_diffusion_encoding_model(
     disable_progress_bar : bool, optional
         Turn off the progress bar, by default False.
 
+    encoding_time_range : array_like, shape (2,), optional
+        Acquisition start/stop in seconds. Clips encoding support using the
+        original interpolation basis. Uniform samples otherwise include endpoint
+        half-cells; a singleton requires explicit bounds or a tracking interval.
+    valid_position_intervals : array_like, shape (n_intervals, 2), optional
+        Ordered, non-overlapping continuous tracking intervals in seconds.
+        Required for irregular timestamps; each interval needs a finite sample.
+        Positions are held at segment endpoints and NaN rows split support.
+        Encoding support does not automatically mark decode bins missing.
+
     Returns
     -------
     encoding_model : dict
@@ -464,6 +490,14 @@ def fit_sorted_spikes_diffusion_encoding_model(
         supported), or if ``weights`` is not a 1-D array of length ``n_time_position``
         with finite, non-negative values.
     """
+    support, weights, exposure_weights, position = prepare_encoding_support(
+        position_time,
+        position,
+        weights,
+        encoding_time_range=encoding_time_range,
+        valid_position_intervals=valid_position_intervals,
+        _encoding_support=_encoding_support,
+    )
     position = position if position.ndim > 1 else position[:, np.newaxis]
     if weights is None:
         weights = np.ones((position.shape[0],))
@@ -506,6 +540,7 @@ def fit_sorted_spikes_diffusion_encoding_model(
         node_order,
         weights,
         disable_progress_bar,
+        encoding_support=support,
     )
 
     # Diffuse occupancy + all neuron fields in a single batched matmul, then
@@ -547,6 +582,8 @@ def fit_sorted_spikes_diffusion_encoding_model(
         "bin_sizes": bin_sizes,
         "local_interpolation": local_interpolation,
         "disable_progress_bar": disable_progress_bar,
+        "rate_units": "Hz",
+        "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
 
 
@@ -602,6 +639,8 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     row_slice: slice | None = None,
     *,
     time_edges: np.ndarray,
+    rate_units: str = "Hz",
+    encoding_exposure_seconds: float | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
     **_encoding_extras: object,
 ) -> jnp.ndarray:
@@ -631,11 +670,12 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     occupancy : np.ndarray, shape (n_interior_bins,)
         Occupancy density (unused; carried for KDE parity).
     mean_rates : list[float]
-        Mean firing rate per neuron (unused; carried for KDE parity).
+        Mean firing rate in Hz per neuron (unused; carried for KDE parity).
     place_fields : jnp.ndarray, shape (n_neurons, n_total_bins)
-        FULL-GRID place fields.
+        FULL-GRID spatial firing rates in Hz.
     no_spike_part_log_likelihood : jnp.ndarray, shape (n_total_bins,)
-        Summed FULL-GRID place fields (the Poisson no-spike term).
+        Sum of FULL-GRID Hz rates across neurons, despite the historical key
+        name. Multiply by bin duration and subtract to score no spikes.
     is_track_interior : np.ndarray, shape (n_total_bins,)
         Interior-bin mask.
     node_order : np.ndarray, shape (n_interior,), optional
@@ -675,6 +715,10 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         Shape (n_rows, n_interior_bins) when ``is_local`` is False, else
         (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
+    if rate_units != "Hz":
+        raise ValidationError(
+            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
+        )
     time_edges = validate_time_edges(time_edges)
     # Both paths broadcast or contract over neurons, so a population mismatch would
     # otherwise surface as a JAX shape error or, on the local path, broadcast one
@@ -687,6 +731,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         interior_log_place_fields=interior_log_place_fields,
     )
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
+    durations = jnp.asarray(np.diff(time_edges)[row_start:row_stop])
     if is_local:
         interpolated_position = get_position_at_time(
             position_time,
@@ -716,6 +761,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
             ),
             dtype=local_rates.dtype,
         )
+        local_rates = local_rates * durations[:, None]
         log_likelihood = (
             jax.scipy.special.xlogy(spike_counts, local_rates) - local_rates
         ).sum(axis=1)
@@ -741,6 +787,9 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         dtype=log_interior_fields.dtype,
     )
     log_likelihood = spike_counts @ log_interior_fields
-    log_likelihood -= no_spike_part_log_likelihood[is_track_interior]
+    log_likelihood += spike_counts.sum(axis=1)[:, None] * jnp.log(durations)[:, None]
+    log_likelihood -= (
+        durations[:, None] * no_spike_part_log_likelihood[is_track_interior]
+    )
 
     return log_likelihood

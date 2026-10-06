@@ -89,7 +89,6 @@ def _fit_predict_sorted_kde(env, t, pos, spike_times, is_local=False):
         spike_times=spike_times,
         environment=env,
         weights=weights,
-        sampling_frequency=float(len(t)),
         position_std=np.sqrt(12.5),
         block_size=16,
         disable_progress_bar=True,
@@ -124,7 +123,6 @@ def _fit_predict_sorted_glm(env, t, pos, spike_times, is_local=False):
         edges=env.edges_,
         is_track_interior=env.is_track_interior_,
         is_track_boundary=env.is_track_boundary_,
-        sampling_frequency=float(len(t)),
         disable_progress_bar=True,
     )
     t_edges = jnp.linspace(0.0, 1.0, 6)
@@ -154,7 +152,6 @@ def _fit_predict_clusterless_kde(
         spike_times=spike_times,
         spike_waveform_features=spike_features,
         environment=env,
-        sampling_frequency=float(len(t)),
         position_std=np.sqrt(12.5),
         waveform_std=1.0,
         block_size=8,
@@ -193,7 +190,6 @@ def _fit_predict_clusterless_gmm(
         spike_times=spike_times,
         spike_waveform_features=spike_features,
         environment=env,
-        sampling_frequency=float(len(t)),
         gmm_components_occupancy=5,
         gmm_components_gpi=3,
         gmm_components_joint=5,
@@ -377,7 +373,9 @@ class TestNoSpikePoisson:
         )
 
         # Each time bin should have LL = -no_spike_part (which is -sum(place_fields))
-        expected = -enc["no_spike_part_log_likelihood"]
+        expected = (
+            -np.diff(np.asarray(t_edges))[0] * enc["no_spike_part_log_likelihood"]
+        )
         for t_idx in range(ll_no_spike.shape[0]):
             assert jnp.allclose(
                 ll_no_spike[t_idx],
@@ -415,7 +413,9 @@ class TestNoSpikePoisson:
             disable_progress_bar=True,
         )
 
-        expected = -enc["no_spike_part_log_likelihood"]
+        expected = (
+            -np.diff(np.asarray(t_edges))[0] * enc["no_spike_part_log_likelihood"]
+        )
         for t_idx in range(ll_no_spike.shape[0]):
             assert jnp.allclose(
                 ll_no_spike[t_idx],

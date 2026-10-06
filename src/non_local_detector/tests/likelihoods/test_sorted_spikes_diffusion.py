@@ -18,7 +18,7 @@ from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods import _SORTED_SPIKES_ALGORITHMS
-from non_local_detector.likelihoods.common import EPS, get_position_at_time
+from non_local_detector.likelihoods.common import RATE_EPS_HZ, get_position_at_time
 from non_local_detector.likelihoods.diffusion import (
     connected_component_labels,
     environment_graph,
@@ -169,7 +169,12 @@ def test_fit_caches_interior_log_place_fields_and_predict_uses_them():
         )
     )
     no_spike = np.asarray(encoding["no_spike_part_log_likelihood"])[is_interior]
-    np.testing.assert_allclose(ll, np.broadcast_to(-no_spike, ll.shape), rtol=1e-5)
+    durations = np.diff(time[:100])
+    counts = sum(np.histogram(spikes, time[:100])[0] for spikes in spike_times)
+    expected_ll = (
+        counts[:, None] * np.log(durations)[:, None] - durations[:, None] * no_spike
+    )
+    np.testing.assert_allclose(ll, expected_ll, rtol=1e-5)
 
 
 def test_fit_accepts_shared_sorted_spikes_params():
@@ -180,7 +185,6 @@ def test_fit_accepts_shared_sorted_spikes_params():
     )
     assert {
         "weights",
-        "sampling_frequency",
         "position_std",
         "rank",
         "block_size",
@@ -331,7 +335,7 @@ def test_fit_silent_cell_and_zero_neurons():
     assert place_fields.shape == (2, n_total)
     assert np.all(np.isfinite(place_fields))
     # The silent cell has mean_rate 0, so its interior field floors uniformly to EPS.
-    np.testing.assert_allclose(place_fields[1, is_interior], EPS)
+    np.testing.assert_allclose(place_fields[1, is_interior], RATE_EPS_HZ)
 
     empty = fit_sorted_spikes_diffusion_encoding_model(
         position_time=time,
@@ -631,7 +635,10 @@ def test_nonlocal_no_spikes_equals_negative_no_spike_part():
         )
     )
     is_interior = env.is_track_interior_.ravel()
-    expected = -np.asarray(encoding["no_spike_part_log_likelihood"])[is_interior]
+    expected = (
+        -(decode_time[1] - decode_time[0])
+        * np.asarray(encoding["no_spike_part_log_likelihood"])[is_interior]
+    )
     np.testing.assert_allclose(
         ll, np.tile(expected, (decode_time.shape[0], 1)), rtol=1e-5, atol=1e-6
     )
@@ -664,7 +671,9 @@ def test_local_no_spikes_equals_negative_local_rate_sum():
     interpolated = get_position_at_time(time, position, decode_time, env)
     bin_inds = env.get_bin_ind(interpolated)
     place_fields = np.asarray(encoding["place_fields"])
-    expected = -np.clip(place_fields[:, bin_inds], EPS, None).sum(axis=0)
+    expected = -(decode_time[1] - decode_time[0]) * np.clip(
+        place_fields[:, bin_inds], RATE_EPS_HZ, None
+    ).sum(axis=0)
     np.testing.assert_allclose(ll_local, expected[:, None], rtol=1e-5, atol=1e-6)
 
 
