@@ -1,6 +1,30 @@
 # Spyglass companion migration
 
-The [current adapter patch](spyglass-current-explicit-time-grid.patch) targets
+The active integration is [Spyglass PR #1618](https://github.com/LorenFrankLab/spyglass/pull/1618)
+on `decoding-params-serialization-roundtrip`, updated from Spyglass `master`
+(`5f43f89b535bea243c1adbd9b12a73a9c9f222cb`). It combines concrete-model
+parameter serialization with the explicit-bin/Hz adapter migration and retains
+master's NumPy, SciPy, JAX, and SpikeInterface constraints. Local validation used detector commit
+`139b7cae51d28d149773580400f309e780fb990d`, the reviewed source for the pending
+0.7 release. Version 0.7 has not been tagged or published by this work.
+
+Use PR #1618 for the companion change and its migration guide for rollout.
+
+The master-compatible companion passed 67 focused tests and the normal
+DataJoint decoding suite (167 passed, 14 existing skips). Four additional
+actual-source NetCDF4/KDE model round trips cover prediction and EM for both
+modalities. These used Python 3.11, NumPy 1.26.4, SciPy 1.12, JAX 0.6.2, and
+SpikeInterface 0.99.1 with a local candidate-version build of the reviewed
+detector source. See PR #1618 for the release gates and validation limits.
+
+The patch files below are historical review snapshots, with their own exact
+baselines. They are not the patch to apply to master or PR #1618. The
+`spikesorting-v2` snapshot includes observed-time work outside the scope of
+the master-based integration.
+
+## Historical spikesorting-v2 snapshot
+
+The [snapshot adapter patch](spyglass-current-explicit-time-grid.patch) targets
 Spyglass `cbc30e2088e2b5fa07a6e013f99ace7141bf6d9a` plus the captured uncommitted
 observed-time edits. [Baseline hashes](spyglass-current-baseline.json) identify
 its exact input files. It preserves unrelated sorting, workflow, and dependency
