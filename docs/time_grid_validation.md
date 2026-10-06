@@ -385,3 +385,20 @@ Refreshed GitHub CI, including Python 3.10–3.13 and wheel/sdist/archive checks
 is tracked in [PR #59 checks](https://github.com/LorenFrankLab/non_local_detector/pull/59/checks).
 The independently reviewed downstream companion is complete as a reviewable
 artifact, with the release qualification limits above.
+
+### Supported-JAX test context — 2026-10-06
+
+The first final-head CI run (`37475116876`, source checkpoint `74b45b8`)
+passed Python 3.11, 3.12, and 3.13. Python 3.10 passed 2,655 tests and failed
+one test before its assertions: JAX 0.6.2 has `jax.experimental.enable_x64`,
+whereas newer JAX exposes `jax.enable_x64`. The test now selects the available
+context. Its dtype/component assertions and warning policy are unchanged;
+production source, references, and tolerances are unchanged.
+
+The complete 17-test clusterless-weight module passes on both JAX 0.9 and
+0.6.2, with the float64 setting restored after execution. Logs:
+`/private/tmp/nld-final-jax-context-modern.log` and
+`/private/tmp/nld-final-jax-context-legacy.log`. All production files retain
+their successful full-suite hashes; only this test's API selection differs
+from the frozen 231-file checkpoint. A new supported-version and packaging
+run is tracked in PR checks. The first run never reached build/package tests.

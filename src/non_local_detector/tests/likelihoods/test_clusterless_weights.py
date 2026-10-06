@@ -413,7 +413,12 @@ def test_gmm_component_counts_use_the_fitted_array_dtype(simple_1d_environment):
     spikes = [np.array([2.0, 4.0, 6.0, 9.0])]
     feats = [np.array([[0.0, 0.0], [0.2, 0.1], [1.0, -1.0], [-0.3, 0.4]])]
     weights = np.where(t_pos < 8.0, 1.0, 1e-9)
-    with jax.enable_x64(True), warnings.catch_warnings():
+    if hasattr(jax, "enable_x64"):
+        enable_x64 = jax.enable_x64
+    else:
+        from jax.experimental import enable_x64
+
+    with enable_x64(True), warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)  # no "reduced" warning
         encoding = fit_clusterless_gmm_encoding_model(
             position_time=t_pos,
