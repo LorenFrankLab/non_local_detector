@@ -234,3 +234,14 @@ with hashes in `/private/tmp/nld-phase6c-accepted-source-hashes.json`. Its separ
 runtime/test diff against approved 6b is
 `/private/tmp/nld-phase6c-vs-accepted6b.patch`. This records completed package
 work, not a commit, merge, downstream migration, or release.
+
+
+## PR follow-up — 2026-10-06
+
+Prepared grid/tracking chunk workspace and stored-covariate row acceptance is recorded in the
+[follow-up validation](../../../../docs/time_grid_validation.md#pr-review-follow-up--2026-10-06)
+and [scope record](phase-6-worktree-scope.md#pr-review-follow-up--2026-10-06).
+The accepted checkpoint above remains unchanged; these fixes do not alter
+existing reference data, tolerance policies, convergence criteria, or deferred
+scientific policies. Final frozen suite: **2,656 / 6 skipped / 0 failed**; all source hashes match.
+GitHub CI is tracked in [PR #59 checks](https://github.com/LorenFrankLab/non_local_detector/pull/59/checks); downstream release qualification remains required.

@@ -84,6 +84,8 @@ detector.fit(
 Each interval needs at least one finite position sample. Positions are linearly
 interpolated within an interval and held at its endpoint samples. NaN rows split
 support before fitting; do not drop them and concatenate across tracking gaps.
+Only NaNs inside an explicitly declared interval split that interval. Missing
+samples outside it do not shorten its declared endpoint support.
 Acquisition bounds alone do not assert tracking continuity. Duplicate timestamps
 must be resolved upstream with an explicit policy.
 
@@ -91,6 +93,14 @@ Adjacent declared encoding intervals stay separate. If they share a boundary,
 an event on that boundary belongs to the interval on its right; a segment's
 closing boundary is included when no following segment starts there. These
 rules count each supported encoding event once.
+
+A position sample exactly on a shared tracking boundary anchors both adjacent
+interpolation bases. This declares a shared physical endpoint; event ownership
+does not give that sample an exclusive epoch owner. A unique timestamp row
+cannot represent two different endpoint positions or headings. For discontinuous
+epochs, retain separate measured sample spans or supply sequence-local tracking;
+do not let a right-epoch sample become the earlier epoch's endpoint. This
+tracking constraint is separate from sharing a boundary between decode calls.
 
 Exposure integrates the same interpolation basis used for event weights. Sample
 occupancy is weighted in seconds; spikes carry their dimensionless interpolated
@@ -109,6 +119,11 @@ Direct predictors default to `rate_units="Hz"`: callers supplying rate arrays
 themselves are responsible for those units. Passing an old per-sample array
 without its marker cannot be detected; prefer freshly fitted dictionaries or
 the guarded detector API.
+
+Do not multiply fitted Hz fields by the tracking or decoding frequency when
+plotting firing rates. Custom GLM penalties must also be chosen in the new
+per-second objective units; the default conversion does not convert a custom
+penalty automatically.
 
 ## Align masks, covariates, and interval labels
 
@@ -159,8 +174,39 @@ mask.
 
 Viterbi uses the fitted covariate-transition tensor. Its rows must already align
 with the requested bins; a different row count raises before likelihood
-evaluation. Fit/estimate with aligned covariates before Viterbi. `predict` also
-accepts new aligned `discrete_transition_covariate_data` for another grid.
+evaluation. The same check applies when `predict` reuses stored covariates,
+including cached-likelihood prediction. Fit/estimate with aligned covariates
+before Viterbi. `predict` also accepts new aligned
+`discrete_transition_covariate_data` for another grid.
+The length check cannot prove timestamp alignment: rebuild covariates whenever
+the requested centers change, even if the new grid has the same number of bins.
+
+For downstream tracking analysis, the public alignment helper returns one row
+per actual result time and a whole-bin measured-support mask:
+
+```python
+from non_local_detector.analysis import align_tracking_to_results
+
+tracking, is_valid = align_tracking_to_results(
+    position_info, results,
+    position_columns=["position_x", "position_y"],
+    valid_position_intervals=observation_intervals,
+    categorical_columns=["track_segment_id"],
+    circular_columns=["head_orientation"],  # radians
+)
+analysis_rows = is_valid & np.isfinite(tracking["head_orientation"])
+```
+
+Continuous columns interpolate within finite measured spans, categorical
+columns use the preceding sample, and circular columns follow the shortest
+arc. NaNs and declared interval boundaries stop interpolation. Unsupported
+rows remain NaN; the helper also respects `results.is_missing`. Require finite
+values in every additional covariate an analysis uses. Pair trajectories,
+ahead/behind distances, and plots with these aligned rows rather than the
+original camera rows.
+The same shared-physical-endpoint rule applies to adjacent tracking intervals
+passed to this helper. Use each discontinuous epoch's measured sample bounds
+when declaring its valid span.
 
 Custom likelihoods used with chunking must accept global `row_slice` and carry
 the `@row_slice_aware` decorator. Always forward the full edges and row range:
@@ -186,6 +232,14 @@ Use `results.time` and the saved `time_bin_start`, `time_bin_end`,
 joining, or saving. Give independent calls a sequence/interval identifier before
 concatenation; the inclusion flag retains each call's final closed boundary.
 NaN tracking does not change the identity of the requested interval.
+Returned bin bounds and missingness are copied from caller inputs, so reusing
+or changing an input array cannot alter an already returned result.
+
+Built-in detector likelihood callbacks prepare the validated grid and tracking
+missingness once per prediction. Chunk likelihoods allocate duration arrays only
+for their requested rows. These preparations are local to the call; changing
+tracking between predictions does not reuse stale state. Custom callbacks remain
+responsible for their own workspace and preparation.
 
 ## Decide whether gaps continue or reset the HMM
 
@@ -199,6 +253,43 @@ event is passed to only one call. Apply that same event mask to waveform marks.
 For example, use `[start, stop)` for each earlier sequence and include the final
 stop only in the last sequence. The decoder's final-closed rule otherwise counts
 the shared event in both calls.
+Use the requested shared interval boundary for this ownership decision:
+floating-point grid construction can put the computed final edge a few ulps
+past that boundary. If trimming leaves a real gap before the next interval,
+retain the earlier call's closing-edge event because it has no competing owner.
+
+## Pass physical time to model checks
+
+Sorted-spike model checks retain their existing default expected-count API.
+For fitted Hz rates, select the units and provide the physical grid explicitly:
+
+```python
+from non_local_detector.model_checking.sorted_spikes import (
+    TimeRescaling, point_process_residuals,
+)
+
+check = TimeRescaling(rate_Hz, is_spike, rate_units="Hz", time_edges=edges)
+residuals = point_process_residuals(
+    rate_Hz, is_spike, rate_units="Hz", time_edges=edges,
+)
+```
+
+With `time_edges`, rates are piecewise constant within bins and spike indicators
+are assigned to closing edges. This is a binned approximation; it does not
+recover within-bin event times. Alternatively, `time=sample_time` integrates
+sampled Hz rates by trapezoids and locates indicators at those sample times.
+Supply exactly one physical grid. Independent trials are integrated separately.
+
+Clusterless `interval_rescaling_transform` now defaults to `rate_units="Hz"`
+and integrates linearly interpolated ground-process rates over the supplied
+physical `time`. Spikes must lie inside that sample domain; provide endpoint
+rate samples to cover a wider domain rather than relying on extrapolation.
+Ground and joint mark intensities must have matching temporal units.
+Check independent observed sequences separately; a timestamp gap alone does
+not declare an interruption in recording availability to this rescaling API.
+Explicit `rate_units="expected_counts"` preserves the legacy unit-index
+integration for existing expected-count arrays. Units are never inferred from
+the sampling frequency.
 
 ## Saved models and downstream pipelines
 
@@ -215,6 +306,11 @@ missing/unsupported Hz marker requires fitting again, even if other entries
 are current or a likelihood array is cached. Unused entries do not block
 decoding; NoSpike-only states use the constructor's already-Hz rate rather than
 an encoding entry. Known model and transition-clock metadata are still required.
+
+Prediction also checks fitted population size and per-electrode waveform feature
+dimensions before missing tracking can neutralize likelihood rows. Dropping a
+unit or changing mark dimensions requires a matching refit, even for an entirely
+missing interval. Correctly shaped empty spike arrays remain valid.
 
 Unit markers live in fitted attributes and encoding dictionaries. Constructor
 parameters and `get_params()` remain configuration only, so reconstruct from

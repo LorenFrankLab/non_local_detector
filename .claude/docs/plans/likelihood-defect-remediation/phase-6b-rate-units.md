@@ -272,3 +272,14 @@ tracking support, aligned masks/covariates, dependency pins, and re-population o
 saved scientific results. External repositories were not modified or validated
 on a real DataJoint/NWB stack. Phases 7/8, the C1 background model, singleton
 geometry, general GLM knot defaults, and EmpiricalMovement defects remain separate.
+
+
+## PR follow-up — 2026-10-06
+
+Explicit interval support and physical-time model-checking acceptance is recorded in the
+[follow-up validation](../../../../docs/time_grid_validation.md#pr-review-follow-up--2026-10-06)
+and [scope record](phase-6-worktree-scope.md#pr-review-follow-up--2026-10-06).
+The accepted checkpoint above remains unchanged; these fixes do not alter
+existing reference data, tolerance policies, convergence criteria, or deferred
+scientific policies. Final frozen suite: **2,656 / 6 skipped / 0 failed**; all source hashes match.
+GitHub CI is tracked in [PR #59 checks](https://github.com/LorenFrankLab/non_local_detector/pull/59/checks); downstream release qualification remains required.

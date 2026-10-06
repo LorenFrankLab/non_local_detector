@@ -1,0 +1,24 @@
+diff --git a/pyproject.toml b/pyproject.toml
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -53,7 +53,7 @@
+   "ndx-optogenetics==0.3.0",
+   "ndx-ophys-devices",
+   "ndx-pose",
+-  "non-local-detector",
++  "non-local-detector<0.7",
+   "numpy",
+   "opencv-python",
+   "panel>=1.4",
+diff --git a/environments/environment.yml b/environments/environment.yml
+--- a/environments/environment.yml
++++ b/environments/environment.yml
+@@ -22,7 +22,7 @@
+   - jupyterlab>=3.*
+   # - libgcc # dlc-only
+   - matplotlib
+-  - non_local_detector
++  - non_local_detector<0.7
+   - numpy
+   - pip
+   - scipy<1.13  # spikeinterface 0.99.x uses scipy.linalg.tril, removed in 1.13

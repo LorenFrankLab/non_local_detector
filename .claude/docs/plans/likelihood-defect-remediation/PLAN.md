@@ -98,7 +98,7 @@ they do not establish that an unresolved policy or implementation is ready.
 Phase numbers identify scope and reading order. These dependencies determine
 release order; implementation details remain subject to prototyping.
 
-**Current worktree note (2026-10-05):** the review fixes on
+**Accepted checkpoint note (2026-10-05):** the review fixes on
 `feat/time-edges-uniform-bins` were separated and executed in order at the user's
 request. **Phase 6a–6d package work is complete and independently reviewed**,
 with separate frozen review checkpoints and source commits in logical groups.
@@ -112,6 +112,17 @@ skipped / 0 failed**; valid-model outputs remain bit-identical to accepted 6c.
 External adapter/pin coordination remains a release gate.
 Both pairs are committed; neither is merged or released. See the
 [worktree scope record](phase-6-worktree-scope.md).
+
+
+**PR follow-up (2026-10-06):** user-requested fixes extend Phase 6 acceptance to
+explicit-interval endpoints, physical-time model checking, stored covariate
+rows, all-missing population/mark validation, stable result provenance, prepared
+chunk workspace, and executable consumers. Separate scientific and API/UX
+reviews plus red/green tests retain attribution to accepted `338b4f8`; the frozen
+complete suite passes **2,656 / 6 skipped / 0 failed**. A tested Spyglass companion is prepared
+separately, while the live checkout's new 0.6.9 dependency pin prevents an
+uncoordinated upgrade. Full downstream database/matrix qualification and release
+coordination remain separate. See the [follow-up validation](../../../../docs/time_grid_validation.md#pr-review-follow-up--2026-10-06).
 
 | Work | Required contract or predecessor | Release constraint |
 |---|---|---|

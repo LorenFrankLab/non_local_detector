@@ -204,3 +204,14 @@ The separate runtime/test diff is
 with 6b. Downstream adapters, dependency pins, and model/result re-population
 remain release work. The audit itself made no commit, push, or downstream write;
 the user subsequently authorized the source commits recorded above.
+
+
+## PR follow-up — 2026-10-06
+
+All-missing fitted population/mark checks and stable result provenance acceptance is recorded in the
+[follow-up validation](../../../../docs/time_grid_validation.md#pr-review-follow-up--2026-10-06)
+and [scope record](phase-6-worktree-scope.md#pr-review-follow-up--2026-10-06).
+The accepted checkpoint above remains unchanged; these fixes do not alter
+existing reference data, tolerance policies, convergence criteria, or deferred
+scientific policies. Final frozen suite: **2,656 / 6 skipped / 0 failed**; all source hashes match.
+GitHub CI is tracked in [PR #59 checks](https://github.com/LorenFrankLab/non_local_detector/pull/59/checks); downstream release qualification remains required.

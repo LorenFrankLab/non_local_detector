@@ -1,0 +1,2613 @@
+diff --git a/pyproject.toml b/pyproject.toml
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -53,9 +53,9 @@
+   "ndx-optogenetics==0.3.0",
+   "ndx-pose",
+   "networkx",                       # imported by spikesorting v2 _matcher_graph
+-  "non-local-detector==0.6.9",
+-  # NLD 0.6.9 uses the clip(a_min=..., a_max=...) keywords removed in JAX 0.10.
+-  # Keep the published detector API and test real fitting before moving these.
++  "non-local-detector>=0.7,<0.8",
++  # Keep the previously qualified JAX line during the detector API migration.
++  # Audit a JAX upgrade separately from the physical time/unit change.
+   "jax<0.10",
+   "numba",                          # SI locally_exclusive peak detection
+                                     # (clusterless) and burst-curation correlograms
+diff --git a/environments/environment.yml b/environments/environment.yml
+--- a/environments/environment.yml
++++ b/environments/environment.yml
+@@ -19,11 +19,11 @@
+   # - cudatoolkit=11.3 # dlc-only
+   # - ffmpeg # dlc-only
+   - ipympl
+-  - jax<0.10  # non_local_detector 0.6.9 calls clip(a_min=..., a_max=...), keywords JAX 0.10 removed
++  - jax<0.10  # retain the qualified JAX line during the detector API migration
+   - jupyterlab>=3.*
+   # - libgcc # dlc-only
+   - matplotlib
+-  - non_local_detector==0.6.9
++  - non_local_detector>=0.7,<0.8
+   - numpy>=2,<3
+   - pip
+   - position_tools
+diff --git a/src/spyglass/decoding/v1/core.py b/src/spyglass/decoding/v1/core.py
+--- a/src/spyglass/decoding/v1/core.py
++++ b/src/spyglass/decoding/v1/core.py
+@@ -285,9 +285,15 @@
+         # sort_index() required: merge_ids may be fetched in non-chronological
+         # order (e.g., alphabetically by UUID), causing .loc[min:max] to return
+         # empty on unsorted index. See: github.com/LorenFrankLab/spyglass/issues/1471
++        tracking_intervals = sorted(
++            [max(frame.index[0], min_time), min(frame.index[-1], max_time)]
++            for frame in position_info
++            if max(frame.index[0], min_time) < min(frame.index[-1], max_time)
++        )
+         position_info = (
+             pd.concat(position_info, axis=0).sort_index().loc[min_time:max_time]
+         )
++        position_info.attrs["valid_position_intervals"] = tracking_intervals
+ 
+         return position_info, position_variable_names
+ 
+diff --git a/src/spyglass/decoding/v1/utils.py b/src/spyglass/decoding/v1/utils.py
+--- a/src/spyglass/decoding/v1/utils.py
++++ b/src/spyglass/decoding/v1/utils.py
+@@ -3,6 +3,7 @@
+ from typing import List
+ 
+ import numpy as np
++import pandas as pd
+ import numpy.typing as npt
+ import xarray as xr
+ from scipy.ndimage import label
+@@ -207,3 +208,296 @@
+     }
+ 
+     return fit_kwargs, predict_kwargs
++
++
++def declared_tracking_intervals(position_info, decoding_kwargs=None):
++    """Keep declared epoch continuity instead of inferring it from camera gaps."""
++    kwargs = decoding_kwargs or {}
++    intervals = kwargs.get(
++        "valid_position_intervals",
++        position_info.attrs.get("valid_position_intervals"),
++    )
++    if intervals is None:
++        raise ValueError(
++            "Tracking continuity is required: retain PositionGroup epoch support "
++            "or pass decoding_kwargs['valid_position_intervals']."
++        )
++    intervals = np.asarray(intervals, dtype=float)
++    if (
++        intervals.ndim != 2
++        or intervals.shape[1] != 2
++        or not len(intervals)
++        or not np.isfinite(intervals).all()
++        or np.any(intervals[:, 0] >= intervals[:, 1])
++        or np.any(intervals[1:, 0] < intervals[:-1, 1])
++    ):
++        raise ValueError(
++            "Tracking intervals must be ordered and non-overlapping; resolve overlapping epochs upstream"
++        )
++    if np.any(np.diff(position_info.index.to_numpy(dtype=float)) <= 0):
++        raise ValueError(
++            "Resolve duplicate or unordered position timestamps upstream"
++        )
++    return intervals
++
++
++def prepare_decoder_grid(
++    classifier, position_info, position_columns, time_range, decoding_kwargs
++):
++    """Build uniform bins, measured support, and explicitly aligned covariates.
++
++    Training masks and environment/group labels retain their original rows.
++    A timestamped missing mask uses preceding-sample ownership. Transition
++    covariates may use original timestamps with declared interpolation kinds,
++    or already match the actual decode centers. Values during masked HMM gaps
++    must be supplied explicitly; tracking continuity does not fill those gaps.
++    """
++    from non_local_detector.analysis import align_tracking_to_results
++
++    edges = classifier.calculate_time_edges(time_range, trim=True)
++    centers = (edges[:-1] + edges[1:]) / 2
++    grid = xr.Dataset(
++        coords={
++            "time": centers,
++            "time_bin_start": ("time", edges[:-1]),
++            "time_bin_end": ("time", edges[1:]),
++        }
++    )
++    intervals = declared_tracking_intervals(position_info, decoding_kwargs)
++    _, supported = align_tracking_to_results(
++        position_info[position_columns],
++        grid,
++        position_columns=position_columns,
++        valid_position_intervals=intervals,
++    )
++    supplied_missing = decoding_kwargs.get("is_missing")
++    if isinstance(supplied_missing, pd.Series):
++        if np.array_equal(supplied_missing.index.to_numpy(), centers):
++            supplied_missing = supplied_missing.to_numpy()
++        elif np.array_equal(
++            supplied_missing.index.to_numpy(), position_info.index.to_numpy()
++        ):
++            tracking = position_info[position_columns].copy()
++            tracking["__missing__"] = supplied_missing.to_numpy()
++            aligned, _ = align_tracking_to_results(
++                tracking,
++                grid,
++                position_columns=position_columns,
++                valid_position_intervals=intervals,
++                categorical_columns=["__missing__"],
++            )
++            supplied_missing = (
++                aligned["__missing__"]
++                .where(aligned["__missing__"].notna(), True)
++                .to_numpy(dtype=bool)
++            )
++        else:
++            raise ValueError(
++                "Timestamped is_missing must match original tracking or actual decode centers"
++            )
++    if supplied_missing is None:
++        supplied_missing = np.zeros(len(centers), dtype=bool)
++    supplied_missing = np.asarray(supplied_missing, dtype=bool)
++    if supplied_missing.shape != centers.shape:
++        raise ValueError(
++            "is_missing needs one value per decode bin; use a timestamped Series to align an original tracking mask"
++        )
++    missing = ~supported | supplied_missing
++    observation_intervals = decoding_kwargs.get("_neural_observation_intervals")
++    if observation_intervals is not None:
++        observed = np.zeros(len(edges) - 1, dtype=bool)
++        for selected in _interval_bin_masks(edges, observation_intervals):
++            observed |= selected
++        missing |= ~observed
++
++    covariates = decoding_kwargs.get("discrete_transition_covariate_data")
++    kinds = decoding_kwargs.get("discrete_transition_covariate_kinds", {})
++    if covariates is not None:
++        if isinstance(covariates, pd.DataFrame) and not np.array_equal(
++            covariates.index.to_numpy(), centers
++        ):
++            if not np.array_equal(
++                covariates.index.to_numpy(), position_info.index.to_numpy()
++            ):
++                raise ValueError(
++                    "Covariate DataFrame timestamps must match original tracking or actual decode centers"
++                )
++            if set(kinds) - set(covariates) or any(
++                kind not in {"continuous", "categorical", "circular"}
++                for kind in kinds.values()
++            ):
++                raise ValueError(
++                    "Declare existing covariate kinds as continuous, categorical, or circular"
++                )
++            tracking = position_info[position_columns].copy()
++            names = {column: f"__covariate__{column}" for column in covariates}
++            for column, renamed in names.items():
++                tracking[renamed] = covariates[column].to_numpy()
++            categorical = [
++                names[column]
++                for column in covariates
++                if kinds.get(column) == "categorical"
++                or (
++                    column not in kinds
++                    and (
++                        pd.api.types.is_bool_dtype(covariates[column])
++                        or not pd.api.types.is_numeric_dtype(covariates[column])
++                    )
++                )
++            ]
++            circular = [
++                names[column]
++                for column in covariates
++                if kinds.get(column) == "circular"
++            ]
++            aligned, _ = align_tracking_to_results(
++                tracking,
++                grid,
++                position_columns=position_columns,
++                valid_position_intervals=intervals,
++                categorical_columns=categorical,
++                circular_columns=circular,
++            )
++            covariates = aligned[list(names.values())].rename(
++                columns={value: key for key, value in names.items()}
++            )
++        values = (
++            covariates.values()
++            if isinstance(covariates, dict)
++            else (covariates[column].to_numpy() for column in covariates)
++        )
++        for value in values:
++            value = np.asarray(value)
++            if value.shape != centers.shape:
++                raise ValueError(
++                    "Transition covariates need one row per actual decode bin"
++                )
++            if pd.isna(value).any() or (
++                np.issubdtype(value.dtype, np.number)
++                and not np.isfinite(value).all()
++            ):
++                raise ValueError(
++                    "Transition covariates must be finite even in masked HMM gaps; supply explicitly grid-aligned covariates rather than interpolate across missing tracking"
++                )
++    return edges, missing, covariates
++
++
++def spikes_for_sequence(
++    spike_times,
++    edges,
++    *,
++    shared_stop=False,
++    shared_boundary=None,
++    spike_waveform_features=None,
++):
++    """Assign a shared sequence boundary once, preserving event/mark alignment."""
++    masks = [
++        (times >= edges[0])
++        & (times <= edges[-1])
++        & (
++            (
++                times
++                < (edges[-1] if shared_boundary is None else shared_boundary)
++            )
++            if shared_stop
++            else True
++        )
++        for times in spike_times
++    ]
++    times = [
++        np.asarray(events)[mask]
++        for events, mask in zip(spike_times, masks, strict=True)
++    ]
++    marks = (
++        None
++        if spike_waveform_features is None
++        else [
++            np.asarray(features)[mask]
++            for features, mask in zip(
++                spike_waveform_features, masks, strict=True
++            )
++        ]
++    )
++    return times, marks
++
++
++def _interval_bin_masks(edges, intervals):
++    """Yield whole-bin masks with O(n_bins) workspace and timestamp roundoff."""
++    intervals = np.asarray(intervals, dtype=float)
++    if (
++        intervals.ndim != 2
++        or intervals.shape[1] != 2
++        or not np.isfinite(intervals).all()
++    ):
++        raise ValueError(
++            "Observation intervals must contain finite start/stop pairs"
++        )
++    lower, upper = edges[:-1], edges[1:]
++    width_bound = np.diff(edges) * 0.01
++    for start, stop in intervals:
++        lower_tol = np.minimum(
++            4 * np.maximum(np.spacing(np.abs(lower)), np.spacing(abs(start))),
++            width_bound,
++        )
++        upper_tol = np.minimum(
++            4 * np.maximum(np.spacing(np.abs(upper)), np.spacing(abs(stop))),
++            width_bound,
++        )
++        yield (lower >= start - lower_tol) & (upper <= stop + upper_tol)
++
++
++def decoder_interval_labels(edges, intervals):
++    """Preserve requested interval identity independently of missing tracking."""
++    labels = np.full(len(edges) - 1, -1, dtype=np.intp)
++    for number, selected in enumerate(_interval_bin_masks(edges, intervals)):
++        labels[selected] = number
++    return labels
++
++
++def connected_encoding_acquisition(position_info, decoding_kwargs):
++    """Clip one observed acquisition window without changing sample weights."""
++    observed = decoding_kwargs.get("_neural_observation_intervals")
++    explicit = decoding_kwargs.get("encoding_time_range")
++    if observed is None:
++        return explicit
++    tracking = declared_tracking_intervals(position_info, decoding_kwargs)
++    bounds = np.asarray(
++        explicit if explicit is not None else [tracking[0, 0], tracking[-1, 1]],
++        dtype=float,
++    )
++    if (
++        bounds.shape != (2,)
++        or not np.isfinite(bounds).all()
++        or bounds[0] >= bounds[1]
++    ):
++        raise ValueError("encoding_time_range must be a finite start/stop pair")
++    selected = np.asarray(
++        decoding_kwargs.get("_encoding_selection_intervals", [bounds]),
++        dtype=float,
++    )
++    windows = []
++    for start, stop in np.asarray(observed, dtype=float):
++        for lower, upper in selected:
++            begin, end = (
++                max(start, lower, bounds[0]),
++                min(stop, upper, bounds[1]),
++            )
++            if begin < end:
++                windows.append([begin, end])
++    merged = []
++    for start, stop in sorted(windows):
++        if merged and start <= merged[-1][1]:
++            merged[-1][1] = max(merged[-1][1], stop)
++        else:
++            merged.append([start, stop])
++    if not merged:
++        raise ValueError(
++            "No observed training time remains for this population and encoding interval."
++        )
++    if len(merged) != 1:
++        raise ValueError(
++            "Disconnected observed encoding acquisition windows are unsupported by this adapter. "
++            "Select encoding_time_range entirely within one supported window or refit each window separately; "
++            "camera-row masks cannot represent missing recording exposure."
++        )
++    return np.asarray(merged[0])
+diff --git a/src/spyglass/decoding/v1/sorted_spikes.py b/src/spyglass/decoding/v1/sorted_spikes.py
+--- a/src/spyglass/decoding/v1/sorted_spikes.py
++++ b/src/spyglass/decoding/v1/sorted_spikes.py
+@@ -32,8 +32,12 @@
+ from spyglass.decoding.v1.utils import (
+     _get_interval_range,
+     concatenate_interval_results,
+-    create_interval_labels,
+     get_valid_kwargs,
++    declared_tracking_intervals,
++    prepare_decoder_grid,
++    spikes_for_sequence,
++    decoder_interval_labels,
++    connected_encoding_acquisition,
+ )
+ from spyglass.position.position_merge import PositionOutput  # noqa: F401
+ from spyglass.settings import config
+@@ -130,6 +134,7 @@
+                 "interval_list_name": key["encoding_interval"],
+             }
+         ).fetch1("valid_times")
++        requested_encoding_interval = encoding_interval.copy()
+         encoding_interval = observation.restrict(encoding_interval)
+         is_training = np.zeros(len(position_info), dtype=bool)
+         for interval_start, interval_end in encoding_interval:
+@@ -146,26 +151,43 @@
+         if observation.intervals is None:
+             decoding_kwargs.setdefault("is_training", is_training)
+         else:
+-            # The decoder treats None like an omitted mask: every sample is
+-            # eligible before the encoding and observation restrictions.
++            # None means all original samples remain eligible. Hard physical
++            # availability/encoding ranges are expressed by an acquisition clip,
++            # never by tapering a derived mask on the camera timeline.
+             requested_training = decoding_kwargs.get("is_training")
+             if requested_training is None:
+-                requested_training = True
+-            decoding_kwargs["is_training"] = (
+-                np.asarray(requested_training, dtype=bool)
+-                & is_training
+-                & observed
+-            )
+-        if observation.intervals is not None and not np.any(
+-            decoding_kwargs["is_training"]
++                requested_training = np.ones(len(position_info), dtype=bool)
++            elif np.ndim(requested_training) == 0:
++                requested_training = np.full(
++                    len(position_info), bool(requested_training)
++                )
++            decoding_kwargs["is_training"] = np.asarray(
++                requested_training
++            ).copy()
++            decoding_kwargs["_encoding_selection_intervals"] = (
++                requested_encoding_interval
++            )
++            decoding_kwargs["_neural_observation_intervals"] = (
++                observation.intervals.copy()
++            )
++            decoding_kwargs["encoding_time_range"] = (
++                connected_encoding_acquisition(position_info, decoding_kwargs)
++            )
++            if not np.any(decoding_kwargs["is_training"]):
++                raise ValueError(
++                    "No observed training time remains for this population and encoding interval."
++                )
++        if "is_missing" in decoding_kwargs and isinstance(
++            decoding_kwargs["is_missing"], pd.Series
+         ):
+-            raise ValueError(
+-                "No observed training time remains for this population and encoding interval."
+-            )
+-        if "is_missing" in decoding_kwargs:
++            # Keep caller timestamps. Neural support is combined on actual bin
++            # bounds in prepare_decoder_grid, independently of camera samples.
+             decoding_kwargs["is_missing"] = (
+-                np.asarray(decoding_kwargs["is_missing"], dtype=bool)
+-                | ~observed
++                decoding_kwargs["is_missing"].astype(bool).copy()
++            )
++        if observation.intervals is not None:
++            decoding_kwargs["_neural_observation_intervals"] = (
++                observation.intervals.copy()
+             )
+ 
+         decoding_interval = (
+@@ -178,11 +200,9 @@
+         effective_decoding = observation.restrict(decoding_interval)
+         decoding_interval = effective_decoding.copy()
+         if observation.intervals is not None:
+-            # The decoder treats intervals as closed. Convert half-open
+-            # observation stops without changing the original timeline.
+-            decoding_interval[:, 1] = np.nextafter(
+-                decoding_interval[:, 1], -np.inf
+-            )
++            # Preserve physical bounds. Exclude each half-open stop upstream
++            # when selecting sequence events for the final-closed bin API.
++            decoding_kwargs["decoding_interval_end_inclusive"] = False
+ 
+         # Run decoder (external dependency - can be mocked in tests)
+         classifier, results = self._run_decoder(
+@@ -291,52 +311,87 @@
+         ValueError
+             If all decoding intervals are empty (no valid time points)
+         """
++
+         from non_local_detector.models.base import SortedSpikesDetector
+ 
++        from non_local_detector.exceptions import ValidationError
++
+         classifier = SortedSpikesDetector(**decoding_params)
+ 
++        decoding_kwargs = dict(decoding_kwargs)
++        supplied_missing = decoding_kwargs.get("is_missing")
++        if supplied_missing is not None and not isinstance(
++            supplied_missing, pd.Series
++        ):
++            mask = np.asarray(supplied_missing, dtype=bool)
++            if mask.ndim == 0:
++                mask = np.full(len(position_info), bool(mask))
++            if mask.shape == (len(position_info),):
++                decoding_kwargs["is_missing"] = pd.Series(
++                    mask, index=position_info.index
++                )
++        end_inclusive = bool(
++            decoding_kwargs.pop("decoding_interval_end_inclusive", True)
++        )
++        tracking_intervals = declared_tracking_intervals(
++            position_info, decoding_kwargs
++        )
++        decoding_kwargs["valid_position_intervals"] = tracking_intervals
++        acquisition = connected_encoding_acquisition(
++            position_info, decoding_kwargs
++        )
++        if acquisition is not None:
++            decoding_kwargs["encoding_time_range"] = acquisition
++        decoding_kwargs.pop("_encoding_selection_intervals", None)
++        adapter_kwargs = {
++            name: decoding_kwargs.pop(name)
++            for name in [
++                "discrete_transition_covariate_kinds",
++                "_neural_observation_intervals",
++            ]
++            if name in decoding_kwargs
++        }
++        intervals = np.asarray(decoding_interval, dtype=float)
++        if (
++            intervals.ndim != 2
++            or intervals.shape[1] != 2
++            or not len(intervals)
++            or not np.isfinite(intervals).all()
++            or np.any(intervals[:, 0] >= intervals[:, 1])
++            or np.any(intervals[1:, 0] < intervals[:-1, 1])
++        ):
++            raise ValueError(
++                "Decode intervals must be ordered, non-overlapping [start, stop] intervals"
++            )
++        position_time = position_info.index.to_numpy()
++        position = position_info[position_variable_names].to_numpy()
++
+         if key["estimate_decoding_params"]:
+-            # When estimating parameters, treat times outside decoding intervals
+-            # as missing. This means:
+-            # 1. Spike data at those times is ignored
+-            # 2. Only state transitions and previous time steps determine the
+-            #    posterior
+-            # 3. Longer gaps may lead to less reliable predictions
+-            #
+-            # Alternative approach: Treat intervals as multiple independent
+-            # sequences (see https://en.wikipedia.org/wiki/Baum%E2%80%93Welch_algorithm#Multiple_sequences)
+-
+-            is_missing = np.ones(len(position_info), dtype=bool)
+-            for interval_start, interval_end in decoding_interval:
+-                is_missing[
+-                    np.logical_and(
+-                        position_info.index >= interval_start,
+-                        position_info.index <= interval_end,
+-                    )
+-                ] = False
+-
+-            is_missing |= np.asarray(
+-                decoding_kwargs.get("is_missing", False), dtype=bool
+-            )
+-            # Validate that at least some time points are in decoding intervals
+-            if np.all(is_missing):
++            edges, missing, covariates = prepare_decoder_grid(
++                classifier,
++                position_info,
++                position_variable_names,
++                [position_time[0], position_time[-1]],
++                decoding_kwargs | adapter_kwargs,
++            )
++            interval_labels = decoder_interval_labels(edges, intervals)
++            missing |= interval_labels < 0
++            if np.all(missing):
+                 raise ValueError(
+-                    "All decoding intervals are empty - no valid time points.\n"
+-                    f"Decoding intervals: {decoding_interval.tolist()}\n"
+-                    f"Position data range: "
+-                    f"[{position_info.index.min()}, {position_info.index.max()}]"
+-                )
+-
+-            decoding_kwargs["is_missing"] = is_missing
++                    "All decoding intervals are empty - no fully supported decode bins"
++                )
++            estimate_kwargs = decoding_kwargs | {"is_missing": missing}
++            if covariates is not None:
++                estimate_kwargs["discrete_transition_covariate_data"] = (
++                    covariates
++                )
+             results = classifier.estimate_parameters(
+-                position_time=position_info.index.to_numpy(),
+-                position=position_info[position_variable_names].to_numpy(),
++                position_time=position_time,
++                position=position,
+                 spike_times=spike_times,
+-                time=position_info.index.to_numpy(),
+-                **decoding_kwargs,
+-            )
+-            # Add interval_labels coordinate for consistency with predict branch
+-            interval_labels = create_interval_labels(is_missing)
++                time_edges=edges,
++                **estimate_kwargs,
++            )
+             results = results.assign_coords(
+                 interval_labels=("time", interval_labels)
+             )
+@@ -344,82 +399,127 @@
+             fit_kwargs, predict_kwargs = get_valid_kwargs(
+                 classifier, decoding_kwargs, logger
+             )
+-
+             classifier.fit(
+-                position_time=position_info.index.to_numpy(),
+-                position=position_info[position_variable_names].to_numpy(),
++                position_time=position_time,
++                position=position,
+                 spike_times=spike_times,
+                 **fit_kwargs,
+             )
+-
+-            # We treat each decoding interval as a separate sequence
+             interval_results = []
+-            for interval_start, interval_end in decoding_interval:
+-                in_interval = (position_info.index >= interval_start) & (
+-                    position_info.index <= interval_end
+-                )
+-                interval_time = position_info.loc[
+-                    interval_start:interval_end
+-                ].index.to_numpy()
+-
+-                if interval_time.size == 0:
++            interval_ids = []
++            for interval_id, (start, stop) in enumerate(intervals):
++                try:
++                    edges, missing, covariates = prepare_decoder_grid(
++                        classifier,
++                        position_info,
++                        position_variable_names,
++                        [start, stop],
++                        decoding_kwargs | adapter_kwargs,
++                    )
++                except ValidationError as error:
++                    if "time_range contains no complete bin" not in str(error):
++                        raise
+                     logger.warning(
+-                        f"Interval {interval_start}:{interval_end} is empty"
++                        f"Interval {start}:{stop} contains no complete decode bin"
+                     )
+                     continue
+-                interval_kwargs = dict(predict_kwargs)
+-                if "is_missing" in interval_kwargs:
+-                    interval_kwargs["is_missing"] = np.broadcast_to(
+-                        interval_kwargs["is_missing"], (len(position_info),)
+-                    )[in_interval]
++                if np.all(missing):
++                    logger.warning(
++                        f"Interval {start}:{stop} has no fully supported decode bins"
++                    )
++                    continue
++                shared_stop = (
++                    interval_id + 1 < len(intervals)
++                    and intervals[interval_id + 1, 0] == stop
++                )
++                sequence_spikes, sequence_marks = spikes_for_sequence(
++                    spike_times,
++                    edges,
++                    shared_stop=shared_stop or not end_inclusive,
++                    shared_boundary=stop,
++                )
++                interval_kwargs = predict_kwargs | {"is_missing": missing}
++                if covariates is not None:
++                    interval_kwargs["discrete_transition_covariate_data"] = (
++                        covariates
++                    )
+                 interval_result = classifier.predict(
+-                    position_time=interval_time,
+-                    position=position_info.loc[interval_start:interval_end][
+-                        position_variable_names
+-                    ].to_numpy(),
+-                    spike_times=spike_times,
+-                    time=interval_time,
++                    position_time=position_time,
++                    position=position,
++                    spike_times=sequence_spikes,
++                    time_edges=edges,
+                     **interval_kwargs,
+                 )
+-                if "is_missing" in interval_kwargs:
+-                    interval_result = interval_result.assign_coords(
+-                        is_missing=("time", interval_kwargs["is_missing"])
+-                    )
+                 interval_results.append(interval_result)
+-
+-            # Validate that at least one interval had valid time points
++                interval_ids.extend(
++                    [interval_id] * interval_result.sizes["time"]
++                )
+             if not interval_results:
+                 raise ValueError(
+-                    "All decoding intervals are empty - no valid time points.\n"
+-                    f"Decoding intervals: {decoding_interval.tolist()}\n"
+-                    f"Position data range: "
+-                    f"[{position_info.index.min()}, {position_info.index.max()}]"
+-                )
+-
+-            # Concatenate along time with interval_labels coordinate
+-            results = concatenate_interval_results(interval_results)
++                    "All decoding intervals are empty - no fully supported decode bins"
++                )
++            results = concatenate_interval_results(
++                interval_results
++            ).assign_coords(
++                interval_labels=(
++                    "time",
++                    np.asarray(interval_ids, dtype=np.intp),
++                )
++            )
+ 
+         # Save discrete transition and initial conditions
+         # Use existing coordinates from results
+-        state_names = results.coords["states"].values
++        state_names = np.atleast_1d(results.coords["states"].values)
+         results["initial_conditions"] = xr.DataArray(
+             classifier.initial_conditions_,
+             dims=("state_bins",),
+             coords={"state_bins": results.coords["state_bins"]},
+             name="initial_conditions",
+         )
++        transition_dims = ("states_from", "states_to")
++        transition_coords = {
++            "states_from": state_names,
++            "states_to": state_names,
++        }
++        if classifier.discrete_state_transitions_.ndim == 3:
++            covariates = (
++                decoding_kwargs.get("discrete_transition_covariate_data")
++                if not key["estimate_decoding_params"]
++                else covariates
++            )
++            axis = (
++                "transition_time"
++                if key["estimate_decoding_params"]
++                or isinstance(covariates, pd.DataFrame)
++                else "transition_row"
++            )
++            transition_dims = (axis,) + transition_dims
++            transition_coords[axis] = (
++                results.time.to_numpy()
++                if key["estimate_decoding_params"]
++                else covariates.index.to_numpy()
++                if isinstance(covariates, pd.DataFrame)
++                else np.arange(classifier.discrete_state_transitions_.shape[0])
++            )
+         results["discrete_state_transitions"] = xr.DataArray(
+             classifier.discrete_state_transitions_,
+-            dims=("states_from", "states_to"),
+-            coords={"states_from": state_names, "states_to": state_names},
++            dims=transition_dims,
++            coords=transition_coords,
+             name="discrete_state_transitions",
+         )
+         if (
+             vars(classifier).get("discrete_transition_coefficients_")
+             is not None
+         ):
+-            results["discrete_transition_coefficients"] = (
++            coefficients = np.asarray(
+                 classifier.discrete_transition_coefficients_
++            )
++            results["discrete_transition_coefficients"] = xr.DataArray(
++                coefficients,
++                dims=tuple(
++                    f"transition_coefficient_dim_{number}"
++                    for number in range(coefficients.ndim)
++                ),
+             )
+ 
+         return classifier, results
+@@ -616,7 +716,7 @@
+ 
+         # sort_index() for defensive programming - ensures chronological order
+         # before .loc[] slice. See: github.com/LorenFrankLab/spyglass/issues/1471
+-        return (
++        result = (
+             pd.concat(
+                 [linear_position_df.set_index(position_df.index), position_df],
+                 axis=1,
+@@ -624,6 +724,9 @@
+             .sort_index()
+             .loc[min_time:max_time]
+         )
++
++        result.attrs.update(position_df.attrs)
++        return result
+ 
+     @classmethod
+     def fetch_spike_data(
+@@ -737,59 +840,71 @@
+         distance_metrics : np.ndarray
+             Information about the distance of the animal to the mental position.
+         """
++
++        import non_local_detector.analysis as analysis
+         # TODO: store in table
+-
+-        import non_local_detector.analysis as analysis
+ 
+         if time_slice is None:
+             time_slice = slice(-np.inf, np.inf)
+ 
+         classifier = self.fetch_model()
+-        posterior = (
+-            self.fetch_results()
+-            .acausal_posterior.sel(time=time_slice)
+-            .squeeze()
+-            .unstack("state_bins")
+-            .sum("state")
+-        )
+-
++        results = self.fetch_results().sel(time=time_slice)
++        posterior = results.acausal_posterior.unstack("state_bins").sum("state")
+         if track_graph is None:
+             track_graph = classifier.environments[0].track_graph
+-
++        distance = np.full(results.sizes["time"], np.nan)
+         if track_graph is not None:
+-            linear_position_info = self.fetch_linear_position_info(
+-                self.fetch1("KEY")
+-            ).loc[time_slice]
+-
+-            orientation_name = self.get_orientation_col(linear_position_info)
+-
+-            traj_data = analysis.get_trajectory_data(
+-                posterior=posterior,
+-                track_graph=track_graph,
+-                decoder=classifier,
+-                actual_projected_position=linear_position_info[
+-                    ["projected_x_position", "projected_y_position"]
+-                ],
+-                track_segment_id=linear_position_info["track_segment_id"],
+-                actual_orientation=linear_position_info[orientation_name],
+-            )
+-
+-            return analysis.get_ahead_behind_distance(track_graph, *traj_data)
++            tracking = self.fetch_linear_position_info(self.fetch1("KEY"))
++            orientation = self.get_orientation_col(tracking)
++            columns = ["projected_x_position", "projected_y_position"]
++            aligned, valid = analysis.align_tracking_to_results(
++                tracking,
++                results,
++                position_columns=columns,
++                valid_position_intervals=declared_tracking_intervals(tracking),
++                categorical_columns=["track_segment_id"],
++                circular_columns=[orientation],
++            )
++            valid &= np.isfinite(
++                aligned[columns + ["track_segment_id", orientation]].to_numpy(
++                    dtype=float
++                )
++            ).all(axis=1)
++            if np.any(valid):
++                trajectory = analysis.get_trajectory_data(
++                    posterior=posterior.isel(time=valid),
++                    track_graph=track_graph,
++                    decoder=classifier,
++                    actual_projected_position=aligned.loc[valid, columns],
++                    track_segment_id=aligned.loc[
++                        valid, "track_segment_id"
++                    ].astype(int),
++                    actual_orientation=aligned.loc[valid, orientation],
++                )
++                distance[valid] = analysis.get_ahead_behind_distance(
++                    track_graph, *trajectory
++                )
+         else:
+-            position_info = self.fetch_position_info(self.fetch1("KEY"))[0].loc[
+-                time_slice
+-            ]
+-            map_position = analysis.maximum_a_posteriori_estimate(posterior)
+-
+-            orientation_name = self.get_orientation_col(position_info)
+-
+-            position_variable_names = (
+-                PositionGroup & self.fetch1("KEY")
+-            ).fetch1("position_variables")
+-
+-            return analysis.get_ahead_behind_distance2D(
+-                position_info[position_variable_names].to_numpy(),
+-                position_info[orientation_name].to_numpy(),
+-                map_position,
+-                classifier.environments[0].track_graphDD,
+-            )
++            tracking, columns = self.fetch_position_info(self.fetch1("KEY"))
++            orientation = self.get_orientation_col(tracking)
++            aligned, valid = analysis.align_tracking_to_results(
++                tracking,
++                results,
++                position_columns=columns,
++                valid_position_intervals=declared_tracking_intervals(tracking),
++                circular_columns=[orientation],
++            )
++            valid &= np.isfinite(
++                aligned[columns + [orientation]].to_numpy(dtype=float)
++            ).all(axis=1)
++            if np.any(valid):
++                map_position = analysis.maximum_a_posteriori_estimate(
++                    posterior.isel(time=valid)
++                )
++                distance[valid] = analysis.get_ahead_behind_distance2D(
++                    aligned.loc[valid, columns].to_numpy(),
++                    aligned.loc[valid, orientation].to_numpy(),
++                    map_position,
++                    classifier.environments[0].track_graphDD,
++                )
++        return distance
+diff --git a/src/spyglass/decoding/v1/clusterless.py b/src/spyglass/decoding/v1/clusterless.py
+--- a/src/spyglass/decoding/v1/clusterless.py
++++ b/src/spyglass/decoding/v1/clusterless.py
+@@ -29,8 +29,12 @@
+ from spyglass.decoding.v1.utils import (
+     _get_interval_range,
+     concatenate_interval_results,
+-    create_interval_labels,
+     get_valid_kwargs,
++    declared_tracking_intervals,
++    prepare_decoder_grid,
++    spikes_for_sequence,
++    decoder_interval_labels,
++    connected_encoding_acquisition,
+ )
+ from spyglass.decoding.v1.waveform_features import (
+     UnitWaveformFeatures,
+@@ -209,7 +213,6 @@
+         is_training,
+         decoding_interval,
+     ):
+-
+         # Run decoder (external dependency - can be mocked in tests)
+         classifier, results = self._run_decoder(
+             key=key,
+@@ -233,7 +236,6 @@
+         return [self_insert]
+ 
+     def make_insert(self, key: dict, self_insert: dict):
+-
+         self.insert1(self_insert)
+ 
+         from spyglass.decoding.decoding_merge import DecodingOutput
+@@ -309,51 +311,88 @@
+         ValueError
+             If all decoding intervals are empty (no valid time points)
+         """
++
+         from non_local_detector.models.base import ClusterlessDetector
+ 
++        from non_local_detector.exceptions import ValidationError
++
+         classifier = ClusterlessDetector(**decoding_params)
+ 
++        decoding_kwargs = dict(decoding_kwargs)
++        supplied_missing = decoding_kwargs.get("is_missing")
++        if supplied_missing is not None and not isinstance(
++            supplied_missing, pd.Series
++        ):
++            mask = np.asarray(supplied_missing, dtype=bool)
++            if mask.ndim == 0:
++                mask = np.full(len(position_info), bool(mask))
++            if mask.shape == (len(position_info),):
++                decoding_kwargs["is_missing"] = pd.Series(
++                    mask, index=position_info.index
++                )
++        end_inclusive = bool(
++            decoding_kwargs.pop("decoding_interval_end_inclusive", True)
++        )
++        tracking_intervals = declared_tracking_intervals(
++            position_info, decoding_kwargs
++        )
++        decoding_kwargs["valid_position_intervals"] = tracking_intervals
++        acquisition = connected_encoding_acquisition(
++            position_info, decoding_kwargs
++        )
++        if acquisition is not None:
++            decoding_kwargs["encoding_time_range"] = acquisition
++        decoding_kwargs.pop("_encoding_selection_intervals", None)
++        adapter_kwargs = {
++            name: decoding_kwargs.pop(name)
++            for name in [
++                "discrete_transition_covariate_kinds",
++                "_neural_observation_intervals",
++            ]
++            if name in decoding_kwargs
++        }
++        intervals = np.asarray(decoding_interval, dtype=float)
++        if (
++            intervals.ndim != 2
++            or intervals.shape[1] != 2
++            or not len(intervals)
++            or not np.isfinite(intervals).all()
++            or np.any(intervals[:, 0] >= intervals[:, 1])
++            or np.any(intervals[1:, 0] < intervals[:-1, 1])
++        ):
++            raise ValueError(
++                "Decode intervals must be ordered, non-overlapping [start, stop] intervals"
++            )
++        position_time = position_info.index.to_numpy()
++        position = position_info[position_variable_names].to_numpy()
++
+         if key["estimate_decoding_params"]:
+-            # When estimating parameters, treat times outside decoding intervals
+-            # as missing. This means:
+-            # 1. Spike data at those times is ignored
+-            # 2. Only state transitions and previous time steps determine the
+-            #    posterior
+-            # 3. Longer gaps may lead to less reliable predictions
+-            #
+-            # Alternative approach: Treat intervals as multiple independent
+-            # sequences (see https://en.wikipedia.org/wiki/Baum%E2%80%93Welch_algorithm#Multiple_sequences)
+-
+-            is_missing = np.ones(len(position_info), dtype=bool)
+-            for interval_start, interval_end in decoding_interval:
+-                is_missing[
+-                    np.logical_and(
+-                        position_info.index >= interval_start,
+-                        position_info.index <= interval_end,
+-                    )
+-                ] = False
+-
+-            # Validate that at least some time points are in decoding intervals
+-            if np.all(is_missing):
++            edges, missing, covariates = prepare_decoder_grid(
++                classifier,
++                position_info,
++                position_variable_names,
++                [position_time[0], position_time[-1]],
++                decoding_kwargs | adapter_kwargs,
++            )
++            interval_labels = decoder_interval_labels(edges, intervals)
++            missing |= interval_labels < 0
++            if np.all(missing):
+                 raise ValueError(
+-                    "All decoding intervals are empty - no valid time points.\n"
+-                    f"Decoding intervals: {decoding_interval.tolist()}\n"
+-                    f"Position data range: "
+-                    f"[{position_info.index.min()}, {position_info.index.max()}]"
+-                )
+-
+-            if "is_missing" not in decoding_kwargs:
+-                decoding_kwargs["is_missing"] = is_missing
++                    "All decoding intervals are empty - no fully supported decode bins"
++                )
++            estimate_kwargs = decoding_kwargs | {"is_missing": missing}
++            if covariates is not None:
++                estimate_kwargs["discrete_transition_covariate_data"] = (
++                    covariates
++                )
+             results = classifier.estimate_parameters(
+-                position_time=position_info.index.to_numpy(),
+-                position=position_info[position_variable_names].to_numpy(),
++                position_time=position_time,
++                position=position,
+                 spike_times=spike_times,
+                 spike_waveform_features=spike_waveform_features,
+-                time=position_info.index.to_numpy(),
+-                **decoding_kwargs,
+-            )
+-            # Add interval_labels coordinate for consistency with predict branch
+-            interval_labels = create_interval_labels(is_missing)
++                time_edges=edges,
++                **estimate_kwargs,
++            )
+             results = results.assign_coords(
+                 interval_labels=("time", interval_labels)
+             )
+@@ -361,64 +400,115 @@
+             fit_kwargs, predict_kwargs = get_valid_kwargs(
+                 classifier, decoding_kwargs, logger
+             )
+-
+             classifier.fit(
+-                position_time=position_info.index.to_numpy(),
+-                position=position_info[position_variable_names].to_numpy(),
++                position_time=position_time,
++                position=position,
+                 spike_times=spike_times,
+                 spike_waveform_features=spike_waveform_features,
+                 **fit_kwargs,
+             )
+-
+-            # We treat each decoding interval as a separate sequence
+             interval_results = []
+-            for interval_start, interval_end in decoding_interval:
+-                interval_time = position_info.loc[
+-                    interval_start:interval_end
+-                ].index.to_numpy()
+-
+-                if interval_time.size == 0:
++            interval_ids = []
++            for interval_id, (start, stop) in enumerate(intervals):
++                try:
++                    edges, missing, covariates = prepare_decoder_grid(
++                        classifier,
++                        position_info,
++                        position_variable_names,
++                        [start, stop],
++                        decoding_kwargs | adapter_kwargs,
++                    )
++                except ValidationError as error:
++                    if "time_range contains no complete bin" not in str(error):
++                        raise
+                     logger.warning(
+-                        f"Interval {interval_start}:{interval_end} is empty"
++                        f"Interval {start}:{stop} contains no complete decode bin"
+                     )
+                     continue
++                if np.all(missing):
++                    logger.warning(
++                        f"Interval {start}:{stop} has no fully supported decode bins"
++                    )
++                    continue
++                shared_stop = (
++                    interval_id + 1 < len(intervals)
++                    and intervals[interval_id + 1, 0] == stop
++                )
++                sequence_spikes, sequence_marks = spikes_for_sequence(
++                    spike_times,
++                    edges,
++                    shared_stop=shared_stop or not end_inclusive,
++                    shared_boundary=stop,
++                    spike_waveform_features=spike_waveform_features,
++                )
++                interval_kwargs = predict_kwargs | {"is_missing": missing}
++                if covariates is not None:
++                    interval_kwargs["discrete_transition_covariate_data"] = (
++                        covariates
++                    )
+                 interval_result = classifier.predict(
+-                    position_time=interval_time,
+-                    position=position_info.loc[interval_start:interval_end][
+-                        position_variable_names
+-                    ].to_numpy(),
+-                    spike_times=spike_times,
+-                    spike_waveform_features=spike_waveform_features,
+-                    time=interval_time,
+-                    **predict_kwargs,
++                    position_time=position_time,
++                    position=position,
++                    spike_times=sequence_spikes,
++                    spike_waveform_features=sequence_marks,
++                    time_edges=edges,
++                    **interval_kwargs,
+                 )
+                 interval_results.append(interval_result)
+-
+-            # Validate that at least one interval had valid time points
++                interval_ids.extend(
++                    [interval_id] * interval_result.sizes["time"]
++                )
+             if not interval_results:
+                 raise ValueError(
+-                    "All decoding intervals are empty - no valid time points.\n"
+-                    f"Decoding intervals: {decoding_interval.tolist()}\n"
+-                    f"Position data range: "
+-                    f"[{position_info.index.min()}, {position_info.index.max()}]"
+-                )
+-
+-            # Concatenate along time with interval_labels coordinate
+-            results = concatenate_interval_results(interval_results)
++                    "All decoding intervals are empty - no fully supported decode bins"
++                )
++            results = concatenate_interval_results(
++                interval_results
++            ).assign_coords(
++                interval_labels=(
++                    "time",
++                    np.asarray(interval_ids, dtype=np.intp),
++                )
++            )
+ 
+         # Save discrete transition and initial conditions
+         # Use existing coordinates from results
+-        state_names = results.coords["states"].values
++        state_names = np.atleast_1d(results.coords["states"].values)
+         results["initial_conditions"] = xr.DataArray(
+             classifier.initial_conditions_,
+             dims=("state_bins",),
+             coords={"state_bins": results.coords["state_bins"]},
+             name="initial_conditions",
+         )
++        transition_dims = ("states_from", "states_to")
++        transition_coords = {
++            "states_from": state_names,
++            "states_to": state_names,
++        }
++        if classifier.discrete_state_transitions_.ndim == 3:
++            covariates = (
++                decoding_kwargs.get("discrete_transition_covariate_data")
++                if not key["estimate_decoding_params"]
++                else covariates
++            )
++            axis = (
++                "transition_time"
++                if key["estimate_decoding_params"]
++                or isinstance(covariates, pd.DataFrame)
++                else "transition_row"
++            )
++            transition_dims = (axis,) + transition_dims
++            transition_coords[axis] = (
++                results.time.to_numpy()
++                if key["estimate_decoding_params"]
++                else covariates.index.to_numpy()
++                if isinstance(covariates, pd.DataFrame)
++                else np.arange(classifier.discrete_state_transitions_.shape[0])
++            )
+         results["discrete_state_transitions"] = xr.DataArray(
+             classifier.discrete_state_transitions_,
+-            dims=("states_from", "states_to"),
+-            coords={"states_from": state_names, "states_to": state_names},
++            dims=transition_dims,
++            coords=transition_coords,
+             name="discrete_state_transitions",
+         )
+ 
+@@ -426,8 +516,15 @@
+             vars(classifier).get("discrete_transition_coefficients_")
+             is not None
+         ):
+-            results["discrete_transition_coefficients"] = (
++            coefficients = np.asarray(
+                 classifier.discrete_transition_coefficients_
++            )
++            results["discrete_transition_coefficients"] = xr.DataArray(
++                coefficients,
++                dims=tuple(
++                    f"transition_coefficient_dim_{number}"
++                    for number in range(coefficients.ndim)
++                ),
+             )
+ 
+         return classifier, results
+@@ -624,7 +721,7 @@
+ 
+         # sort_index() for defensive programming - ensures chronological order
+         # before .loc[] slice. See: github.com/LorenFrankLab/spyglass/issues/1471
+-        return (
++        result = (
+             pd.concat(
+                 [linear_position_df.set_index(position_df.index), position_df],
+                 axis=1,
+@@ -632,6 +729,9 @@
+             .sort_index()
+             .loc[min_time:max_time]
+         )
++
++        result.attrs.update(position_df.attrs)
++        return result
+ 
+     @classmethod
+     def fetch_spike_data(cls, key, filter_by_interval=True):
+@@ -767,63 +867,73 @@
+         distance_metrics : np.ndarray
+             Information about the distance of the animal to the mental position.
+         """
++
++        import non_local_detector.analysis as analysis
+         # TODO: allow specification of specific time interval
+         # TODO: allow specification of track graph
+         # TODO: Handle decode intervals, store in table
+ 
+-        import non_local_detector.analysis as analysis
+-
+         if time_slice is None:
+             time_slice = slice(-np.inf, np.inf)
+ 
+         classifier = self.fetch_model()
+-        posterior = (
+-            self.fetch_results()
+-            .acausal_posterior.sel(time=time_slice)
+-            .squeeze()
+-            .unstack("state_bins")
+-            .sum("state")
+-        )
+-
++        results = self.fetch_results().sel(time=time_slice)
++        posterior = results.acausal_posterior.unstack("state_bins").sum("state")
+         if track_graph is None:
+             track_graph = classifier.environments[0].track_graph
+-
++        distance = np.full(results.sizes["time"], np.nan)
+         if track_graph is not None:
+-            linear_position_info = self.fetch_linear_position_info(
+-                self.fetch1("KEY")
+-            ).loc[time_slice]
+-
+-            orientation_name = self.get_orientation_col(linear_position_info)
+-
+-            traj_data = analysis.get_trajectory_data(
+-                posterior=posterior,
+-                track_graph=track_graph,
+-                decoder=classifier,
+-                actual_projected_position=linear_position_info[
+-                    ["projected_x_position", "projected_y_position"]
+-                ],
+-                track_segment_id=linear_position_info["track_segment_id"],
+-                actual_orientation=linear_position_info[orientation_name],
+-            )
+-
+-            return analysis.get_ahead_behind_distance(
+-                classifier.environments[0].track_graph, *traj_data
+-            )
++            tracking = self.fetch_linear_position_info(self.fetch1("KEY"))
++            orientation = self.get_orientation_col(tracking)
++            columns = ["projected_x_position", "projected_y_position"]
++            aligned, valid = analysis.align_tracking_to_results(
++                tracking,
++                results,
++                position_columns=columns,
++                valid_position_intervals=declared_tracking_intervals(tracking),
++                categorical_columns=["track_segment_id"],
++                circular_columns=[orientation],
++            )
++            valid &= np.isfinite(
++                aligned[columns + ["track_segment_id", orientation]].to_numpy(
++                    dtype=float
++                )
++            ).all(axis=1)
++            if np.any(valid):
++                trajectory = analysis.get_trajectory_data(
++                    posterior=posterior.isel(time=valid),
++                    track_graph=track_graph,
++                    decoder=classifier,
++                    actual_projected_position=aligned.loc[valid, columns],
++                    track_segment_id=aligned.loc[
++                        valid, "track_segment_id"
++                    ].astype(int),
++                    actual_orientation=aligned.loc[valid, orientation],
++                )
++                distance[valid] = analysis.get_ahead_behind_distance(
++                    track_graph, *trajectory
++                )
+         else:
+-            # `fetch_position_info` returns a tuple
+-            position_info = self.fetch_position_info(self.fetch1("KEY"))[0].loc[
+-                time_slice
+-            ]
+-            map_position = analysis.maximum_a_posteriori_estimate(posterior)
+-
+-            orientation_name = self.get_orientation_col(position_info)
+-            position_variable_names = (
+-                PositionGroup & self.fetch1("KEY")
+-            ).fetch1("position_variables")
+-
+-            return analysis.get_ahead_behind_distance2D(
+-                position_info[position_variable_names].to_numpy(),
+-                position_info[orientation_name].to_numpy(),
+-                map_position,
+-                classifier.environments[0].track_graphDD,
+-            )
++            tracking, columns = self.fetch_position_info(self.fetch1("KEY"))
++            orientation = self.get_orientation_col(tracking)
++            aligned, valid = analysis.align_tracking_to_results(
++                tracking,
++                results,
++                position_columns=columns,
++                valid_position_intervals=declared_tracking_intervals(tracking),
++                circular_columns=[orientation],
++            )
++            valid &= np.isfinite(
++                aligned[columns + [orientation]].to_numpy(dtype=float)
++            ).all(axis=1)
++            if np.any(valid):
++                map_position = analysis.maximum_a_posteriori_estimate(
++                    posterior.isel(time=valid)
++                )
++                distance[valid] = analysis.get_ahead_behind_distance2D(
++                    aligned.loc[valid, columns].to_numpy(),
++                    aligned.loc[valid, orientation].to_numpy(),
++                    map_position,
++                    classifier.environments[0].track_graphDD,
++                )
++        return distance
+diff --git a/tests/decoding/test_observed_time.py b/tests/decoding/test_observed_time.py
+--- a/tests/decoding/test_observed_time.py
++++ b/tests/decoding/test_observed_time.py
+@@ -11,6 +11,7 @@
+     decode_v1, monkeypatch, estimate
+ ):
+     from non_local_detector.models import base
++    from non_local_detector import calculate_time_edges
+ 
+     calls = []
+ 
+@@ -19,7 +20,18 @@
+             self.initial_conditions_ = np.array([1.0])
+             self.discrete_state_transitions_ = np.array([[1.0]])
+ 
+-        def fit(self, *, position_time, position, spike_times, is_training):
++        def calculate_time_edges(self, bounds, trim=False):
++            return calculate_time_edges(bounds, sampling_frequency=1, trim=trim)
++
++        def fit(
++            self,
++            *,
++            position_time,
++            position,
++            spike_times,
++            is_training,
++            valid_position_intervals,
++        ):
+             calls.append(("fit", position_time, is_training))
+ 
+         def predict(
+@@ -28,12 +40,20 @@
+             position_time,
+             position,
+             spike_times,
+-            time,
++            time_edges,
+             is_missing=None,
+         ):
++            time = (time_edges[:-1] + time_edges[1:]) / 2
+             calls.append(("predict", time, is_missing))
+             return xr.Dataset(
+-                coords={"time": time, "states": ["local"], "state_bins": [0]}
++                coords={
++                    "time": time,
++                    "states": ["local"],
++                    "state_bins": [0],
++                    "time_bin_start": ("time", time_edges[:-1]),
++                    "time_bin_end": ("time", time_edges[1:]),
++                    "is_missing": ("time", is_missing),
++                }
+             )
+ 
+         def estimate_parameters(
+@@ -42,48 +62,47 @@
+             position_time,
+             position,
+             spike_times,
+-            time,
++            time_edges,
+             is_training,
+             is_missing,
++            valid_position_intervals,
+         ):
+             calls.append(("fit", position_time, is_training))
+             return self.predict(
+                 position_time=position_time,
+                 position=position,
+                 spike_times=spike_times,
+-                time=time,
++                time_edges=time_edges,
+                 is_missing=is_missing,
+             )
+ 
+     monkeypatch.setattr(base, "SortedSpikesDetector", Detector)
+     time = np.arange(10, dtype=float)
+     training = (time < 3) | (time >= 7)
+-    explicit_missing = time == 8
++    position = pd.DataFrame({"x": time}, index=time)
++    position.attrs["valid_position_intervals"] = [[0.0, 9.0]]
+     _, result = decode_v1.sorted_spikes.SortedSpikesDecodingV1()._run_decoder(
+         key={"estimate_decoding_params": estimate},
+         decoding_params={},
+-        decoding_kwargs={
+-            "is_training": training,
+-            "is_missing": explicit_missing,
+-        },
+-        position_info=pd.DataFrame({"x": time}, index=time),
++        decoding_kwargs={"is_training": training, "is_missing": time == 8},
++        position_info=position,
+         position_variable_names=["x"],
+         spike_times=[np.array([1.0, 7.0])],
+         decoding_interval=np.array([[0.0, 2.0], [7.0, 9.0]]),
+     )
+     np.testing.assert_array_equal(calls[0][2], training)
+     if estimate:
+-        missing = ~training | explicit_missing
+-        np.testing.assert_array_equal(calls[1][2], missing)
++        expected = np.array(
++            [False, False, True, True, True, True, True, False, True]
++        )
++        np.testing.assert_array_equal(calls[1][2], expected)
+         np.testing.assert_array_equal(
+-            result.interval_labels.values == -1, missing
++            result.interval_labels.values, [0, 0, -1, -1, -1, -1, -1, 1, 1]
+         )
+     else:
+-        np.testing.assert_array_equal(result.time, [0, 1, 2, 7, 8, 9])
+-        np.testing.assert_array_equal(calls[1][2], [False, False, False])
+-        np.testing.assert_array_equal(calls[2][2], [False, True, False])
++        np.testing.assert_array_equal(result.time, [0.5, 1.5, 7.5, 8.5])
+         np.testing.assert_array_equal(
+-            result.is_missing, [False, False, False, False, True, False]
++            result.is_missing, [False, False, False, True]
+         )
+ 
+ 
+@@ -138,6 +157,7 @@
+     decoding_kwargs = {
+         **(original["decoding_kwargs"] or {}),
+         "is_missing": np.zeros(len(time), dtype=bool),
++        "encoding_time_range": [time[0], first],
+     }
+     decoding_kwargs.pop("is_training", None)
+     if training_mode == "none":
+@@ -179,12 +199,24 @@
+         )
+         training = captured["decoding_kwargs"]["is_training"]
+         assert training.any()
+-        assert not training[~valid].any()
++        # Hard neural availability is clipped on the physical acquisition
++        # basis; it must not taper user weights at camera timestamps.
++        np.testing.assert_allclose(
++            captured["decoding_kwargs"]["encoding_time_range"], [time[0], first]
++        )
+         if training_mode == "array":
+             assert not training[~decoding_kwargs["is_training"]].any()
+-        assert captured["decoding_kwargs"]["is_missing"][~valid].all()
++        assert not captured["decoding_kwargs"]["is_missing"].any()
++        np.testing.assert_array_equal(
++            captured["decoding_kwargs"]["_neural_observation_intervals"],
++            observation.intervals,
++        )
++        assert (
++            captured["decoding_kwargs"]["decoding_interval_end_inclusive"]
++            is False
++        )
+         for start, stop in captured["decoding_interval"]:
+-            assert not (start < last and stop >= first)
++            assert not (start < last and stop > first)
+     finally:
+         (table & key).super_delete(
+             warn=False, safemode=False, force_masters=True
+diff --git a/tests/decoding/test_time_grid_migration.py b/tests/decoding/test_time_grid_migration.py
+new file mode 100644
+--- /dev/null
++++ b/tests/decoding/test_time_grid_migration.py
+@@ -0,0 +1,805 @@
++"""Hermetic actual-adapter tests; run with --noconftest to avoid DB fixtures.
++
++These execute the real source methods and real decoder, not mock decoder calls.
++The DataJoint table module is not imported. This is API and row-alignment
++coverage, not a replacement for the separate database/NWB integration suite.
++"""
++
++import ast
++import importlib.util
++import inspect
++import logging
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import patch
++
++import networkx as nx
++import numpy as np
++import pandas as pd
++import pytest
++import xarray as xr
++
++import non_local_detector.analysis as analysis
++from non_local_detector import (
++    Environment,
++    ContFragSortedSpikesClassifier,
++    ContFragClusterlessClassifier,
++)
++from non_local_detector.models.base import (
++    SortedSpikesDetector,
++    ClusterlessDetector,
++)
++from non_local_detector.continuous_state_transitions import Uniform
++from non_local_detector.discrete_state_transitions import (
++    DiscreteNonStationaryDiagonal,
++)
++
++ROOT = Path(__file__).resolve().parents[2]
++SOURCE = ROOT / "src/spyglass/decoding/v1"
++spec = importlib.util.spec_from_file_location(
++    "isolated_spyglass_utils", SOURCE / "utils.py"
++)
++utils = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(utils)
++
++
++def source_method(filename, class_name, method_name):
++    tree = ast.parse((SOURCE / filename).read_text())
++    cls = next(
++        node
++        for node in tree.body
++        if isinstance(node, ast.ClassDef) and node.name == class_name
++    )
++    node = next(
++        node
++        for node in cls.body
++        if isinstance(node, ast.FunctionDef) and node.name == method_name
++    )
++    node.decorator_list = []
++    node.returns = None
++    for arg in node.args.args:
++        arg.annotation = None
++    namespace = vars(utils).copy() | {
++        "SortedSpikesDetector": SortedSpikesDetector,
++        "ClusterlessDetector": ClusterlessDetector,
++        "logger": logging.getLogger("time-grid-test"),
++        "analysis": analysis,
++    }
++    exec(
++        compile(
++            ast.Module(body=[node], type_ignores=[]),
++            str(SOURCE / filename),
++            "exec",
++        ),
++        namespace,
++    )
++    return namespace[method_name]
++
++
++def fixture(family, tracking_rate=30, covariates=False):
++    time = np.arange(tracking_rate + 1) / tracking_rate
++    tracking = pd.DataFrame({"position": 5 + np.sin(time * 6)}, index=time)
++    tracking.attrs["valid_position_intervals"] = [[0.0, 1.0]]
++    spikes = [np.array([0.019, 0.101, 0.201, 0.501, 0.801])]
++    marks = [
++        np.array([[2.0, 4.0], [5.0, 3.0], [7.0, 2.0], [4.0, 6.0], [3.0, 5.0]])
++    ]
++    cls, base = (
++        (ContFragSortedSpikesClassifier, SortedSpikesDetector)
++        if family == "sorted"
++        else (ContFragClusterlessClassifier, ClusterlessDetector)
++    )
++    args = dict(
++        environments=Environment(place_bin_size=2, position_range=((0, 10),)),
++        infer_track_interior=False,
++        continuous_transition_types=[
++            [Uniform(), Uniform()],
++            [Uniform(), Uniform()],
++        ],
++    )
++    if covariates:
++        args["discrete_transition_type"] = DiscreteNonStationaryDiagonal(
++            np.array([0.9, 0.9]), formula="1 + speed"
++        )
++    template = cls(**args)
++    params = {
++        name: getattr(template, name)
++        for name in inspect.signature(base).parameters
++    }
++    return tracking, spikes, marks, params
++
++
++def run_adapter(
++    family,
++    estimate,
++    tracking,
++    spikes,
++    marks,
++    params,
++    kwargs=None,
++    intervals=None,
++):
++    filename = "sorted_spikes.py" if family == "sorted" else "clusterless.py"
++    name = (
++        "SortedSpikesDecodingV1"
++        if family == "sorted"
++        else "ClusterlessDecodingV1"
++    )
++    method = source_method(filename, name, "_run_decoder")
++    args = [
++        None,
++        {"estimate_decoding_params": estimate},
++        params,
++        kwargs or {},
++        tracking,
++        ["position"],
++        spikes,
++    ]
++    if family == "clusterless":
++        args.append(marks)
++    args.append(
++        np.array([[0.1, 0.3]]) if intervals is None else np.asarray(intervals)
++    )
++    return method(*args)
++
++
++@pytest.mark.parametrize("family", ["sorted", "clusterless"])
++@pytest.mark.parametrize("estimate", [False, True])
++@pytest.mark.parametrize("tracking_rate", [30, 500])
++def test_actual_adapters_use_uniform_grid_and_actual_interval_rows(
++    family, estimate, tracking_rate
++):
++    tracking, spikes, marks, params = fixture(family, tracking_rate)
++    kwargs = {"max_iter": 1} if estimate else {}
++    model, results = run_adapter(
++        family, estimate, tracking, spikes, marks, params, kwargs
++    )
++    assert results.sizes["time"] == (500 if estimate else 100)
++    if not estimate:
++        # Five supported events over one physical second, independent of camera
++        # rate. This catches accidental restoration of per-sample rates.
++        np.testing.assert_allclose(
++            model.encoding_model_[("", 0)]["mean_rates"], [5.0], rtol=1e-6
++        )
++    np.testing.assert_allclose(
++        results.time_bin_end - results.time_bin_start, 0.002, rtol=1e-12
++    )
++    assert results.interval_labels.shape == results.time.shape
++    assert np.all(
++        results.interval_labels.values[~results.is_missing.values] == 0
++    )
++    np.testing.assert_allclose(
++        results.acausal_posterior.sum("state_bins"), 1.0, rtol=1e-6
++    )
++
++
++@pytest.mark.parametrize("family", ["sorted", "clusterless"])
++def test_nan_tracking_does_not_change_interval_identity(family):
++    tracking, spikes, marks, params = fixture(family)
++    tracking.iloc[15, 0] = np.nan
++    _, results = run_adapter(
++        family, True, tracking, spikes, marks, params, {"max_iter": 1}, [[0, 1]]
++    )
++    assert results.is_missing.any()
++    assert np.all(results.interval_labels.values == 0)
++
++
++def test_epoch_support_is_preserved_by_actual_position_fetch():
++    frames = {
++        0: pd.DataFrame({"position": [0.0, 1.0]}, index=[0.0, 1.0]),
++        1: pd.DataFrame({"position": [2.0, 3.0]}, index=[10.0, 11.0]),
++    }
++
++    class PositionRelation:
++        def __and__(self, key):
++            return SimpleNamespace(
++                fetch1_dataframe=lambda: frames[key["merge_id"]]
++            )
++
++    class Group:
++        Position = SimpleNamespace(__and__=lambda self, key: self)
++
++        def __and__(self, key):
++            return self
++
++        def fetch1(self, name):
++            return {
++                "KEY": {},
++                "position_variables": ["position"],
++                "upsample_rate": np.nan,
++            }[name]
++
++    class Part:
++        def __and__(self, key):
++            return self
++
++        def fetch(self, name):
++            return [0, 1]
++
++    group = Group()
++    group.Position = Part()
++    method = source_method("core.py", "PositionGroup", "fetch_position_info")
++    method.__globals__["PositionOutput"] = PositionRelation()
++    data, names = method(group)
++    assert names == ["position"]
++    assert data.attrs["valid_position_intervals"] == [[0.0, 1.0], [10.0, 11.0]]
++    assert data.index.tolist() == [0.0, 1.0, 10.0, 11.0]
++
++
++def test_adjacent_sequences_count_shared_event_once_and_keep_marks():
++    spikes = [np.array([0.1, 0.2, 0.3])]
++    marks = [np.array([[1.0], [2.0], [3.0]])]
++    first, first_marks = utils.spikes_for_sequence(
++        spikes,
++        np.array([0.1, 0.2]),
++        shared_stop=True,
++        spike_waveform_features=marks,
++    )
++    second, second_marks = utils.spikes_for_sequence(
++        spikes, np.array([0.2, 0.3]), spike_waveform_features=marks
++    )
++    np.testing.assert_array_equal(np.concatenate(first + second), spikes[0])
++    np.testing.assert_array_equal(
++        np.concatenate(first_marks + second_marks), marks[0]
++    )
++
++
++@pytest.mark.parametrize("family", ["sorted", "clusterless"])
++def test_timestamped_covariates_are_aligned_for_actual_prediction(family):
++    tracking, spikes, marks, params = fixture(family, covariates=True)
++    covariates = pd.DataFrame(
++        {"speed": np.linspace(0, 20, len(tracking))}, index=tracking.index
++    )
++    _, results = run_adapter(
++        family,
++        False,
++        tracking,
++        spikes,
++        marks,
++        params,
++        {"discrete_transition_covariate_data": covariates},
++    )
++    assert results.sizes["time"] == 100
++    assert results.discrete_state_transitions.dims == (
++        "transition_time",
++        "states_from",
++        "states_to",
++    )
++    np.testing.assert_array_equal(results.transition_time, tracking.index)
++
++
++def test_grid_preparation_rejects_covariate_invention_in_masked_gaps():
++    tracking, _, _, params = fixture("sorted")
++    tracking.iloc[15, 0] = np.nan
++    covariates = pd.DataFrame(
++        {"speed": np.ones(len(tracking))}, index=tracking.index
++    )
++    with pytest.raises(ValueError, match="finite even in masked HMM gaps"):
++        utils.prepare_decoder_grid(
++            SortedSpikesDetector(**params),
++            tracking,
++            ["position"],
++            [0, 1],
++            {"discrete_transition_covariate_data": covariates},
++        )
++    centers = np.arange(500) * 0.002 + 0.001
++    explicit = pd.DataFrame({"speed": np.ones(500)}, index=centers)
++    # Use the exact centers returned by the grid rather than relying on bitwise
++    # equality of another floating-point construction.
++    classifier = SortedSpikesDetector(**params)
++    edges = classifier.calculate_time_edges([0, 1])
++    explicit.index = (edges[:-1] + edges[1:]) / 2
++    _, missing, actual = utils.prepare_decoder_grid(
++        classifier,
++        tracking,
++        ["position"],
++        [0, 1],
++        {"discrete_transition_covariate_data": explicit},
++    )
++    assert missing.any()
++    assert not actual.isna().any().any()
++
++
++@pytest.mark.parametrize("family", ["sorted", "clusterless"])
++def test_actual_ahead_behind_consumer_aligns_31_samples_to_500_bins(family):
++    tracking, spikes, marks, params = fixture(family)
++    classifier, results = run_adapter(
++        family, False, tracking, spikes, marks, params, intervals=[[0, 1]]
++    )
++    graph = nx.Graph()
++    graph.add_node(0, pos=(0.0, 0.0))
++    graph.add_node(1, pos=(100.0, 0.0))
++    graph.add_edge(0, 1, distance=100.0)
++    classifier.environments[0].track_graph = graph
++    time = tracking.index.to_numpy()
++    linear = pd.DataFrame(
++        {
++            "projected_x_position": 100 * time,
++            "projected_y_position": 0.0,
++            "track_segment_id": 0,
++            "head_orientation": 0.0,
++        },
++        index=time,
++    )
++    linear.attrs.update(tracking.attrs)
++    dummy = SimpleNamespace(
++        fetch_model=lambda: classifier,
++        fetch_results=lambda: results,
++        fetch_linear_position_info=lambda key: linear,
++        fetch1=lambda key: {},
++        get_orientation_col=lambda data: "head_orientation",
++    )
++    filename = "sorted_spikes.py" if family == "sorted" else "clusterless.py"
++    name = (
++        "SortedSpikesDecodingV1"
++        if family == "sorted"
++        else "ClusterlessDecodingV1"
++    )
++    method = source_method(filename, name, "get_ahead_behind_distance")
++    mental = np.column_stack([100 * results.time.values, np.zeros(500)])
++    with patch.object(
++        analysis.distance1D,
++        "_get_MAP_estimate_2d_position_edges",
++        return_value=(mental, np.tile([0, 1], (500, 1))),
++    ):
++        distance = method(dummy)
++    assert distance.shape == (500,)
++    np.testing.assert_allclose(distance, 0.0, atol=1e-12)
++
++
++@pytest.mark.parametrize("family", ["sorted", "clusterless"])
++@pytest.mark.parametrize("estimate", [False, True])
++def test_synthetic_nwb_arrays_feed_actual_adapters_without_a_database(
++    tmp_path, family, estimate
++):
++    from datetime import datetime, timezone
++    import datajoint  # Installed supported dependency; no connection/schema call.
++    from pynwb import NWBFile, NWBHDF5IO, TimeSeries
++
++    assert datajoint.__version__
++    tracking, spikes, marks, params = fixture(family)
++    nwb = NWBFile(
++        session_description="Hermetic decoder migration fixture",
++        identifier="time-grid-fixture",
++        session_start_time=datetime(2020, 1, 1, tzinfo=timezone.utc),
++    )
++    nwb.add_acquisition(
++        TimeSeries(
++            name="tracking",
++            data=tracking[["position"]].to_numpy(),
++            unit="cm",
++            timestamps=tracking.index.to_numpy(),
++        )
++    )
++    nwb.add_acquisition(
++        TimeSeries(name="marks", data=marks[0], unit="mV", timestamps=spikes[0])
++    )
++    nwb.add_unit(spike_times=spikes[0])
++    nwb.add_epoch(start_time=0.0, stop_time=1.0, tags=["continuous_tracking"])
++    path = tmp_path / "migration.nwb"
++    with NWBHDF5IO(path, "w") as io:
++        io.write(nwb)
++    with NWBHDF5IO(path, "r") as io:
++        restored = io.read()
++        position = restored.acquisition["tracking"]
++        fetched = pd.DataFrame(
++            position.data[:], index=position.timestamps[:], columns=["position"]
++        )
++        fetched.attrs["valid_position_intervals"] = (
++            restored.epochs.to_dataframe()[
++                ["start_time", "stop_time"]
++            ].to_numpy()
++        )
++        fetched_spikes = [restored.units.get_unit_spike_times(0)]
++        fetched_marks = [restored.acquisition["marks"].data[:]]
++    model, results = run_adapter(
++        family,
++        estimate,
++        fetched,
++        fetched_spikes,
++        fetched_marks,
++        params,
++        {"max_iter": 1} if estimate else {},
++    )
++    assert model.encoding_model_[("", 0)]["rate_units"] == "Hz"
++    assert results.sizes["time"] == (500 if estimate else 100)
++    np.testing.assert_allclose(
++        results.time_bin_end - results.time_bin_start, 0.002, rtol=1e-12
++    )
++
++
++@pytest.mark.parametrize("family", ["sorted", "clusterless"])
++def test_actual_adjacent_adapter_sequences_own_the_declared_boundary_once(
++    family,
++):
++    from functools import wraps
++
++    tracking, spikes, marks, params = fixture(family)
++    spikes = [np.insert(spikes[0], 3, 0.3)]
++    marks = [np.insert(marks[0], 3, [9.0, 10.0], axis=0)]
++    base = SortedSpikesDetector if family == "sorted" else ClusterlessDetector
++    original = base.predict
++    passed = []
++
++    @wraps(original)
++    def record(self, *args, **kwargs):
++        passed.append(
++            (kwargs["spike_times"], kwargs.get("spike_waveform_features"))
++        )
++        return original(self, *args, **kwargs)
++
++    with patch.object(base, "predict", record):
++        _, results = run_adapter(
++            family,
++            False,
++            tracking,
++            spikes,
++            marks,
++            params,
++            intervals=[[0.1, 0.3], [0.3, 0.5]],
++        )
++    assert results.sizes["time"] == 200
++    all_passed = np.concatenate([unit[0] for unit, _ in passed])
++    assert (all_passed == 0.3).sum() == 1
++    assert 0.3 not in passed[0][0][0]
++    assert 0.3 in passed[1][0][0]
++    if family == "clusterless":
++        owner = np.flatnonzero(passed[1][0][0] == 0.3)[0]
++        np.testing.assert_array_equal(passed[1][1][0][owner], [9.0, 10.0])
++
++
++@pytest.mark.parametrize("family", ["sorted", "clusterless"])
++def test_between_camera_interval_decodes_all_fully_supported_bins(family):
++    tracking, spikes, marks, params = fixture(family, tracking_rate=30)
++    assert not ((tracking.index >= 0.004) & (tracking.index <= 0.010)).any()
++    _, results = run_adapter(
++        family,
++        False,
++        tracking,
++        spikes,
++        marks,
++        params,
++        intervals=[[0.004, 0.010]],
++    )
++    assert results.sizes["time"] == 3
++    assert not results.is_missing.any()
++
++
++@pytest.mark.parametrize("family", ["sorted", "clusterless"])
++def test_sub_bin_and_unsupported_intervals_do_not_drop_later_valid_results(
++    family,
++):
++    tracking, spikes, marks, params = fixture(family, tracking_rate=30)
++    _, results = run_adapter(
++        family,
++        False,
++        tracking,
++        spikes,
++        marks,
++        params,
++        intervals=[[-0.1, -0.01], [0.004, 0.005], [0.010, 0.020]],
++    )
++    assert results.sizes["time"] == 5
++    assert np.all(results.interval_labels.values == 2)
++    assert not results.is_missing.any()
++
++
++@pytest.mark.parametrize("family", ["sorted", "clusterless"])
++@pytest.mark.parametrize("estimate", [False, True])
++def test_original_tracking_masks_are_aligned_before_current_adapter_calls(
++    family, estimate
++):
++    tracking, spikes, marks, params = fixture(family, tracking_rate=30)
++    missing = np.zeros(len(tracking), bool)
++    missing[5] = True
++    kwargs = {
++        "is_missing": missing,
++        "is_training": np.ones(len(tracking), bool),
++    }
++    if estimate:
++        kwargs["max_iter"] = 1
++    _, results = run_adapter(
++        family, estimate, tracking, spikes, marks, params, kwargs, [[0, 1]]
++    )
++    assert results.sizes["time"] == 500
++    expected = (results.time.values >= tracking.index[5]) & (
++        results.time.values < tracking.index[6]
++    )
++    np.testing.assert_array_equal(results.is_missing, expected)
++    # Missingness does not relabel the requested observed interval.
++    assert np.all(results.interval_labels.values == 0)
++
++
++@pytest.mark.parametrize("family", ["sorted", "clusterless"])
++def test_current_adapter_preserves_scalar_missing_mask_support(family):
++    tracking, spikes, marks, params = fixture(family)
++    _, results = run_adapter(
++        family, False, tracking, spikes, marks, params, {"is_missing": False}
++    )
++    assert results.sizes["time"] == 100
++    assert not results.is_missing.any()
++
++
++@pytest.mark.parametrize("family", ["sorted", "clusterless"])
++def test_current_adapter_owns_half_open_observed_stop_at_physical_boundary(
++    family,
++):
++    from functools import wraps
++
++    tracking, spikes, marks, params = fixture(family)
++    spikes = [np.insert(spikes[0], 3, 0.3)]
++    marks = [np.insert(marks[0], 3, [9.0, 10.0], axis=0)]
++    base = SortedSpikesDetector if family == "sorted" else ClusterlessDetector
++    original = base.predict
++    passed = []
++
++    @wraps(original)
++    def record(self, *args, **kwargs):
++        passed.extend(kwargs["spike_times"][0])
++        return original(self, *args, **kwargs)
++
++    with patch.object(base, "predict", record):
++        _, results = run_adapter(
++            family,
++            False,
++            tracking,
++            spikes,
++            marks,
++            params,
++            {"decoding_interval_end_inclusive": False},
++            [[0.1, 0.3]],
++        )
++    assert 0.3 not in passed
++    assert results.sizes["time"] == 100
++    assert results.time_bin_start[0] == 0.1
++
++
++def _make_probe():
++    probe_spec = importlib.util.spec_from_file_location(
++        "time_grid_make_probe",
++        Path(__file__).with_name("_time_grid_make_probe.py"),
++    )
++    probe = importlib.util.module_from_spec(probe_spec)
++    probe_spec.loader.exec_module(probe)
++    return probe
++
++
++def _this_module():
++    from types import SimpleNamespace
++
++    return SimpleNamespace(source_method=source_method, run_adapter=run_adapter)
++
++
++@pytest.mark.parametrize("training", [None, "omitted", "ones"])
++def test_actual_make_and_fit_clip_connected_neural_exposure_exactly(training):
++    probe = _make_probe()
++    tracking, _, _, params = fixture("sorted")
++    tracking["position"] = 5.0
++    kwargs = (
++        {}
++        if training == "omitted"
++        else {
++            "is_training": np.ones(len(tracking), bool)
++            if training == "ones"
++            else None
++        }
++    )
++    captured = probe.capture_make(
++        _this_module(),
++        tracking,
++        [np.array([0.2])],
++        params,
++        kwargs=kwargs,
++        observation_intervals=[[0.11, 0.3]],
++    )
++    np.testing.assert_allclose(
++        captured["decoding_kwargs"]["encoding_time_range"], [0.11, 0.3]
++    )
++    assert captured["decoding_kwargs"]["is_training"].all()
++    np.testing.assert_array_equal(
++        captured["position_info"].index, tracking.index
++    )
++    model, results = probe.run_captured_adapter(_this_module(), captured)
++    entry = model.encoding_model_[("", 0)]
++    np.testing.assert_allclose(
++        entry["encoding_exposure_seconds"], 0.19, rtol=1e-6
++    )
++    np.testing.assert_allclose(entry["mean_rates"], [1 / 0.19], rtol=1e-6)
++    assert results.sizes["time"] == 95
++    assert not results.is_missing.any()
++
++
++def test_actual_make_and_fit_support_short_between_camera_acquisition():
++    probe = _make_probe()
++    tracking, _, _, params = fixture("sorted")
++    tracking["position"] = 5.0
++    captured = probe.capture_make(
++        _this_module(),
++        tracking,
++        [np.array([0.007])],
++        params,
++        observation_intervals=[[0.004, 0.010]],
++    )
++    model, results = probe.run_captured_adapter(_this_module(), captured)
++    np.testing.assert_allclose(
++        model.encoding_model_[("", 0)]["encoding_exposure_seconds"],
++        0.006,
++        rtol=1e-6,
++    )
++    np.testing.assert_allclose(
++        model.encoding_model_[("", 0)]["mean_rates"], [1 / 0.006], rtol=1e-6
++    )
++    assert results.sizes["time"] == 3
++
++
++def test_actual_make_rejects_disconnected_encoding_but_explicit_clip_selects_one():
++    probe = _make_probe()
++    tracking, spikes, _, params = fixture("sorted")
++    with pytest.raises(
++        ValueError, match="Disconnected observed encoding acquisition"
++    ):
++        probe.capture_make(
++            _this_module(),
++            tracking,
++            spikes,
++            params,
++            observation_intervals=[[0.11, 0.3], [0.7, 0.9]],
++        )
++    captured = probe.capture_make(
++        _this_module(),
++        tracking,
++        spikes,
++        params,
++        kwargs={"encoding_time_range": [0.12, 0.25]},
++        observation_intervals=[[0.11, 0.3], [0.7, 0.9]],
++    )
++    model, results = probe.run_captured_adapter(_this_module(), captured)
++    np.testing.assert_allclose(
++        model.encoding_model_[("", 0)]["encoding_exposure_seconds"],
++        0.13,
++        rtol=1e-6,
++    )
++    assert (
++        results.interval_labels.max() == 1
++    )  # Decoding still supports both windows.
++
++
++@pytest.mark.parametrize(
++    "mask_form",
++    ["omitted", "scalar", "original_array", "camera_series", "decode_series"],
++)
++def test_actual_make_combines_neural_masks_on_decode_grid_without_camera_aliasing(
++    mask_form,
++):
++    probe = _make_probe()
++    tracking, spikes, _, params = fixture("sorted")
++    kwargs = {}
++    if mask_form == "scalar":
++        kwargs["is_missing"] = False
++    if mask_form == "original_array":
++        kwargs["is_missing"] = np.zeros(len(tracking), bool)
++    if mask_form == "camera_series":
++        kwargs["is_missing"] = pd.Series(False, index=tracking.index)
++    if mask_form == "decode_series":
++        edges = SortedSpikesDetector(**params).calculate_time_edges([0, 1])
++        kwargs["is_missing"] = pd.Series(
++            False, index=(edges[:-1] + edges[1:]) / 2
++        )
++        kwargs["max_iter"] = 1
++    captured = probe.capture_make(
++        _this_module(),
++        tracking,
++        spikes,
++        params,
++        kwargs=kwargs,
++        observation_intervals=[[0.11, 0.3]],
++        estimate=mask_form == "decode_series",
++    )
++    if mask_form in {"camera_series", "decode_series"}:
++        np.testing.assert_array_equal(
++            captured["decoding_kwargs"]["is_missing"].index,
++            kwargs["is_missing"].index,
++        )
++    _, results = probe.run_captured_adapter(_this_module(), captured)
++    if mask_form == "decode_series":
++        observed = (results.time_bin_start.values >= 0.11) & (
++            results.time_bin_end.values <= 0.3
++        )
++        np.testing.assert_array_equal(results.is_missing, ~observed)
++    else:
++        assert results.sizes["time"] == 95
++        assert not results.is_missing.any()
++        assert results.time[0] == pytest.approx(0.111)
++
++
++@pytest.mark.parametrize("family", ["sorted", "clusterless"])
++def test_shifted_origin_interval_labels_match_prediction_and_em(family):
++    tracking, spikes, marks, params = fixture(family)
++    tracking.index = tracking.index + 0.1
++    tracking.attrs["valid_position_intervals"] = [[0.1, 1.1]]
++    spikes = [unit + 0.1 for unit in spikes]
++    _, predicted = run_adapter(
++        family, False, tracking, spikes, marks, params, intervals=[[0.1, 0.3]]
++    )
++    _, estimated = run_adapter(
++        family,
++        True,
++        tracking,
++        spikes,
++        marks,
++        params,
++        {"max_iter": 1},
++        [[0.1, 0.3]],
++    )
++    assert predicted.sizes["time"] == 100
++    assert (estimated.interval_labels.values == 0).sum() == 100
++    assert (~estimated.is_missing.values).sum() == 100
++
++
++def test_interval_label_roundoff_never_admits_materially_partial_bins():
++    from non_local_detector import calculate_time_edges
++
++    edges = calculate_time_edges([0.1, 0.3], 500)
++    assert (
++        utils.decoder_interval_labels(edges, [[0.1, 0.3]]) >= 0
++    ).sum() == 100
++    assert (
++        utils.decoder_interval_labels(edges, [[0.1, 0.299]]) >= 0
++    ).sum() == 99
++
++
++def test_physical_interval_labels_keep_host_workspace_independent_of_window_count():
++    import tracemalloc
++    from non_local_detector import calculate_time_edges
++
++    edges = calculate_time_edges([0, 36], 500)
++
++    def peak(n_windows):
++        intervals = np.column_stack(
++            [np.linspace(0, 34, n_windows), np.linspace(1, 35, n_windows)]
++        )
++        tracemalloc.start()
++        utils.decoder_interval_labels(edges, intervals)
++        _, maximum = tracemalloc.get_traced_memory()
++        tracemalloc.stop()
++        return maximum
++
++    assert peak(50) < peak(10) * 2
++
++
++@pytest.mark.parametrize("estimate", [False, True])
++def test_migrated_existing_observed_time_mask_test_runs_without_database(
++    estimate, monkeypatch
++):
++    tree = ast.parse(
++        (Path(__file__).with_name("test_observed_time.py")).read_text()
++    )
++    definition = next(
++        node
++        for node in tree.body
++        if isinstance(node, ast.FunctionDef)
++        and node.name == "test_decoder_branches_preserve_missing_time"
++    )
++    definition.decorator_list = []
++    namespace = {"np": np, "pd": pd, "xr": xr}
++    exec(
++        compile(
++            ast.Module(body=[definition], type_ignores=[]),
++            "existing observed-time test",
++            "exec",
++        ),
++        namespace,
++    )
++    table = type(
++        "IsolatedSortedTable",
++        (),
++        {
++            "_run_decoder": source_method(
++                "sorted_spikes.py", "SortedSpikesDecodingV1", "_run_decoder"
++            )
++        },
++    )
++    decoder = SimpleNamespace(
++        sorted_spikes=SimpleNamespace(SortedSpikesDecodingV1=table)
++    )
++    namespace[definition.name](decoder, monkeypatch, estimate)
+diff --git a/tests/decoding/_time_grid_make_probe.py b/tests/decoding/_time_grid_make_probe.py
+new file mode 100644
+--- /dev/null
++++ b/tests/decoding/_time_grid_make_probe.py
+@@ -0,0 +1,138 @@
++"""Read-only actual make() source harness, stopping before persistence.
++
++Load candidate migration tests via importlib; pass that module as ``migration``.
++The only replacements are fetch-table inputs and the pre-persistence adapter
++capture. ``run_adapter`` can then run the captured inputs through real decoding.
++"""
++
++import copy
++from types import SimpleNamespace
++
++import numpy as np
++import pandas as pd
++
++
++class Observation:
++    def __init__(self, intervals):
++        self.intervals = (
++            None
++            if intervals is None
++            else np.asarray(intervals, float).reshape(-1, 2)
++        )
++        self.unknown_sources = ()
++
++    def contains(self, times):
++        times = np.asarray(times)
++        if self.intervals is None:
++            return np.ones(times.shape, bool)
++        result = np.zeros(times.shape, bool)
++        for start, stop in self.intervals:
++            result |= (times >= start) & (times < stop)
++        return result
++
++    def restrict(self, intervals):
++        intervals = np.asarray(intervals, float).reshape(-1, 2)
++        if self.intervals is None:
++            return intervals.copy()
++        result = []
++        for start, stop in intervals:
++            for observed_start, observed_stop in self.intervals:
++                left, right = (
++                    max(start, observed_start),
++                    min(stop, observed_stop),
++                )
++                if right > left:
++                    result.append([left, right])
++        return np.asarray(result, float).reshape(-1, 2)
++
++
++class Relation:
++    def __init__(self, data, key=None):
++        self.data = data
++        self.key = key
++
++    def __and__(self, key):
++        return Relation(self.data, key)
++
++    def fetch1(self, *args):
++        if self.key is not None and "interval_list_name" in self.key:
++            return self.data[self.key["interval_list_name"]]
++        return self.data
++
++
++class AdapterCaptured(Exception):
++    pass
++
++
++def capture_make(
++    migration,
++    tracking,
++    spikes,
++    params,
++    *,
++    kwargs=None,
++    observation_intervals=None,
++    encoding_intervals=((0.0, 1.0),),
++    decoding_intervals=((0.0, 1.0),),
++    estimate=False,
++):
++    method = migration.source_method(
++        "sorted_spikes.py", "SortedSpikesDecodingV1", "make"
++    )
++    method.__globals__.update(
++        {
++            "copy": copy,
++            "pd": pd,
++            "DecodingParameters": Relation(
++                {"decoding_params": params, "decoding_kwargs": kwargs}
++            ),
++            "IntervalList": Relation(
++                {
++                    "encoding": np.asarray(encoding_intervals, float),
++                    "decoding": np.asarray(decoding_intervals, float),
++                }
++            ),
++            "SortedSpikesGroup": SimpleNamespace(
++                get_observation_intervals=lambda *a, **k: Observation(
++                    observation_intervals
++                )
++            ),
++        }
++    )
++    captured = {}
++
++    def capture(**values):
++        captured.update(values)
++        raise AdapterCaptured
++
++    table = SimpleNamespace(
++        fetch_position_info=lambda key: (tracking, ["position"]),
++        fetch_spike_data=lambda *a, **k: (spikes, [1]),
++        _run_decoder=capture,
++    )
++    key = {
++        "decoding_param_name": "probe",
++        "nwb_file_name": "probe.nwb",
++        "encoding_interval": "encoding",
++        "decoding_interval": "decoding",
++        "estimate_decoding_params": estimate,
++    }
++    try:
++        method(table, key)
++    except AdapterCaptured:
++        pass
++    assert captured, "make never reached the decoder"
++    return captured
++
++
++def run_captured_adapter(migration, captured):
++    return migration.run_adapter(
++        "sorted",
++        captured["key"]["estimate_decoding_params"],
++        captured["position_info"],
++        captured["spike_times"],
++        None,
++        captured["decoding_params"],
++        captured["decoding_kwargs"],
++        captured["decoding_interval"],
++    )
+diff --git a/docs/time_grid_migration.md b/docs/time_grid_migration.md
+new file mode 100644
+--- /dev/null
++++ b/docs/time_grid_migration.md
+@@ -0,0 +1,142 @@
++# Explicit decode bins and Hz model migration
++
++This companion patch targets the pending non-local-detector 0.7 API. Version 0.7
++has not been published or tagged by this patch. Publish the matching detector
++release before releasing this adapter. The current live adapter already pins
++detector 0.6.9; preserve that protection until the coordinated rollout. This rebased patch retains the qualified JAX
++cap and all unrelated dependency constraints. The migrated adapter requires
++`non-local-detector>=0.7,<0.8` in both Python and conda dependency declarations.
++
++Recompute fitted models, decoded results, and derived analyses. Loading an old
++model for inspection does not establish new rate units or transition clocks.
++Refit from the original position/spike recording. GLM model persistence remains
++an unsupported upstream Patsy serialization path; this companion does not repair
++or qualify that path.
++
++PositionGroup keeps each source epoch's continuity in
++`position_info.attrs['valid_position_intervals']`, after clipping to the fetched
++recording. Original timestamps, training masks, environment labels, and encoding
++group labels remain on the tracking samples. NaN position rows remain present.
++Overlapping epochs or duplicate timestamps require an upstream ownership policy;
++the adapter rejects them instead of silently inferring continuity. An exact
++shared tracking-boundary sample anchors both physical interpolation endpoints.
++One indexed value cannot describe discontinuous positions or angles on opposite
++sides; use separate measured spans or sequence-local tracking for those epochs.
++This physical endpoint basis is separate from spike event ownership.
++
++The decoder constructs uniform bins at its configured `sampling_frequency`,
++independently of camera timestamps. Partial terminal bins are trimmed. A short
++interval between camera samples is decodable when its complete bins lie inside the measured interpolation support;
++it does not need a camera sample inside the interval. Bins are
++observed only when their entire span lies between finite measured samples of a
++declared tracking segment. Encoding's endpoint hold does not extend observed
++decode support. Explicit missing masks can be provided on the decode rows, or as
++a timestamped Series on the original tracking timeline using preceding-sample
++ownership. Missingness combines with measured support and never changes the
++identity of a requested interval.
++
++Known neural acquisition availability is applied on physical time bounds. The
++original tracking interpolation basis and explicit user training weights and
++encoding labels are retained. A single connected observed acquisition window,
++intersected with the selected encoding intervals and any explicit
++`encoding_time_range`, becomes the fitted `encoding_time_range`. For example,
++observing `[0.11, 0.3)` yields 0.19 seconds of exposure even when neither boundary
++is a camera timestamp. Derived recording availability is not interpolated as a
++camera-row training or missing mask. Neural missingness is combined with caller
++masks using whole decode-bin spans. An explicit `is_training=None` keeps all
++original samples eligible before the physical acquisition clip.
++
++Fitting disconnected observed acquisition windows is deliberately unsupported
++by this bounded adapter bridge: select `encoding_time_range` entirely inside one
++supported window or refit each window separately. Decoding and missing masks
++still support multiple observation windows. Unknown acquisition availability
++retains the existing encoding-interval behavior.
++
++Each prediction interval starts a separate sequence. At a truly shared closing
++boundary, the earlier sequence excludes the boundary event; waveform marks use
++the same event mask. EM uses one uniform grid through masked gaps and therefore
++propagates its HMM instead of resetting. Result interval labels come from the
++actual requested bin spans, rather than from connected regions of missingness.
++Membership allows only endpoint roundoff (four ULP, capped at one percent of a
++bin width), so a shifted clock origin does not drop a complete bin or admit a
++materially partial bin. Interval masks stream one interval at a time to keep
++workspace proportional to the number of decode rows.
++
++Timestamped transition covariates can use the original tracking index or actual
++decode centers. Numeric covariates default to continuous interpolation; Boolean
++and non-numeric columns use preceding-sample categorical ownership. For numeric
++categories or angles, declare, for example:
++
++```python
++decoding_kwargs['discrete_transition_covariate_kinds'] = {
++    'route_id': 'categorical',
++    'heading': 'circular',  # radians, shortest-arc interpolation
++    'speed': 'continuous',
++}
++```
++
++Original covariates interpolate only within their finite tracking segments.
++Every transition row needs finite covariates, including rows where observations
++are masked. For gaps, supply explicit values on the actual decode-center index;
++the adapter raises instead of inventing covariates between epochs. Plain
++covariate dictionaries already need one value per requested decode bin. Fit
++transition tensors retain their original covariate axis when saved; prediction
++covariates are rebuilt for every requested interval.
++
++Ahead/behind analyses align actual position, heading, and track segment to saved
++result bin centers and bounds. They return one distance per result row, with NaN
++for missing or unsupported tracking. Categorical segment IDs use the preceding
++sample; angles follow the shortest arc. No raw camera-row zip is used.
++
++## Validation and remaining release gates
++
++`tests/decoding/test_time_grid_migration.py` executes the actual adapter method
++source and real detector without importing DataJoint table schemas. Its fixtures
++cover sorted and clusterless prediction/EM at 30 and 500 Hz tracking, missing
++tracking, epoch support preservation, shared event/mark ownership, nonstationary
++covariates, and perfect 500-bin trajectory decoding from 31 camera samples. It
++also executes the actual `make()` preparation through read-only fetch fixtures
++and then fits/decodes its exact prepared inputs. These cases cover connected
++physical exposure, disconnected-fit rejection, user masks and timestamps,
++between-camera acquisition, and shifted-origin prediction/EM parity. A workspace
++regression checks that interval count does not multiply host memory. The suite
++also writes and reads synthetic NWB tracking/spikes/marks/epochs before feeding
++those arrays to all four actual adapter paths. DataJoint is imported without
++opening a connection.
++
++Run the hermetic tests with a supported environment and the detector source
++checkout on PYTHONPATH:
++
++```sh
++PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONDONTWRITEBYTECODE=1 \
++NUMBA_CACHE_DIR=/tmp/spyglass-migration-numba \
++MPLCONFIGDIR=/tmp/spyglass-migration-mpl \
++PYTHONPATH=/path/to/non_local_detector/src \
++uv run --no-sync python -m pytest --noconftest -o addopts= -o filterwarnings= \
++    tests/decoding/test_time_grid_migration.py -q
++```
++
++The review environment is Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1, JAX 0.6.2,
++Pandas 2.3.3, Xarray 2026.4.0, DataJoint 0.14.9, and PyNWB 3.1.3. This meets
++the current Python and SciPy/JAX declarations; it does not qualify the archived
++8d3cb conda profile's `scipy<1.13` constraint. Before release, run the existing
++DataJoint/NWB pipeline suite with its normal database fixtures, verify model/result persistence for the
++selected supported backends, run the supported Python 3.10–3.12 matrix and conda
++profile, and compare representative scientific outputs after recomputation.
++The hermetic tests establish API and array/clock compatibility, not a complete
++production database qualification.
++
++This candidate is based on Spyglass HEAD
++`cbc30e2088e2b5fa07a6e013f99ace7141bf6d9a` plus the existing uncommitted
++observed-time adapter and test edits. The companion artifact's
++`baseline_manifest.json` records exact baseline hashes; apply it only after
++checking those hashes or rebase it onto subsequent edits. All unrelated dirty
++sorting/CI/test edits were copied unchanged. The old `nextafter` stop adjustment
++is replaced with explicit half-open event ownership at the physical stop. Legacy
++array/scalar missing masks retain their original tracking timeline; use a Series
++on actual decode centers to supply explicitly decode-aligned masks.
++
++The focused hermetic suite passed 51 cases. It includes an extracted source
++version of the updated existing mask test, but the normal database-backed
++`test_observed_time.py` suite remains a release gate. No database writes, model
++publication, or release tagging were performed.

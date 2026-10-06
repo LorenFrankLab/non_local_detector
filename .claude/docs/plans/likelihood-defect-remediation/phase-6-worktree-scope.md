@@ -150,3 +150,48 @@ Phases 7/8, the C1 background firing model, general encoding schemas, singleton
 geometry, general GLM knot defaults, GLM serialization, and EmpiricalMovement
 repairs remain outside this implementation. Passing package tests does not
 claim completion of those items or downstream rollout.
+
+
+## PR review follow-up — 2026-10-06
+
+The user requested fixing all findings after the published `338b4f8` review.
+This follow-up preserves the accepted checkpoints above and changes only
+Phase 6 support/units, decode rows, compatibility, bounded chunk preparation,
+and consumer migration. The new scientific behaviors have independent analytic
+references; no new reference approval, tolerance change, convergence change,
+C1 policy, Phase 7/8 work, or continuous-time transition model is introduced.
+
+| Commit | Follow-up scope |
+|---|---|
+| `3ca874b` | Explicit interval support and physical-time rate diagnostics. |
+| `98bb20d` | Model inputs, stable provenance, prepared chunk grids, and the float64 independent CI reference. |
+| `7c9dd29` | Tracking alignment, actual consumer calls, Hz displays, portable consumer tests, and stale output cleanup. |
+
+The separate documentation/companion commit follows these source groups.
+
+The follow-up closes explicit-interval clipping by outside NaNs, physical-time
+model checks, stored nonstationary covariate row mismatches, all-missing
+population/mark validation, caller-input aliasing in results, and repeated
+recording-sized chunk workspace. Consumer fixes execute actual notebook and
+profiler calls, preserve measured tracking gaps and categorical/circular
+semantics, correct fitted-Hz display units, and remove stale changed-cell
+outputs. Source-dependent consumer tests skip only when wheel installations
+omit those source files; public alignment tests remain active.
+
+The [validation record](../../../../docs/time_grid_validation.md#pr-review-follow-up--2026-10-06)
+contains red/green evidence, bit-identical valid-input controls, unchanged golden
+files, 237 float64 cases, unchanged mypy diagnostics, and benchmark scope.
+The frozen complete suite passes **2,656 / 6 skipped / 0 failed** (825.84
+seconds); all 231 source/test/notebook hashes match and goldens/snapshots pass.
+GitHub CI is tracked in [PR #59 checks](https://github.com/LorenFrankLab/non_local_detector/pull/59/checks). The current companion passes **51 tests**, independently
+repeated; archived adapter passes **27**. Both patches and baseline hashes are
+saved in the repository. The current observed-time test needs a test-hunk rebase
+before any live application; production files remain untouched.
+
+A [Spyglass adapter companion](../../../../docs/spyglass_migration/README.md)
+is prepared and tested separately. The live checkout advanced independently
+with unrelated dirty edits and already pins NLD 0.6.9; it is untouched. This
+supersedes the earlier unbounded-dependency finding for that checkout, while
+preserving the archived adapter evidence. Normal DataJoint database fixtures,
+selected backend persistence, supported matrix/conda checks, representative
+recomputed scientific results, and coordinated releases remain rollout gates.

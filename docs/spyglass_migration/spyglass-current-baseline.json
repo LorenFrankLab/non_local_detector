@@ -1,0 +1,52 @@
+{
+  "head": "cbc30e2088e2b5fa07a6e013f99ace7141bf6d9a",
+  "dirty_overlay": [
+    ".github/workflows/test-conda.yml",
+    "src/spyglass/decoding/v1/sorted_spikes.py",
+    "src/spyglass/spikesorting/v2/_concat_recording.py",
+    "src/spyglass/spikesorting/v2/_evaluation_acceptance.py",
+    "src/spyglass/spikesorting/v2/_pipeline_run.py",
+    "src/spyglass/spikesorting/v2/_pipeline_types.py",
+    "src/spyglass/spikesorting/v2/_sorting_analyzer.py",
+    "src/spyglass/spikesorting/v2/_unit_match_inputs.py",
+    "src/spyglass/spikesorting/v2/_unit_match_planning.py",
+    "src/spyglass/spikesorting/v2/unit_matching.py",
+    "tests/decoding/test_observed_time.py",
+    "tests/spikesorting/v2/test_analyzer_lifecycle.py",
+    "tests/spikesorting/v2/test_concat_recording.py",
+    "tests/spikesorting/v2/test_sorting_services.py",
+    "tests/spikesorting/v2/test_unit_match_planning.py",
+    "tests/spikesorting/v2/test_unitmatch_concat.py"
+  ],
+  "untracked_overlay": [
+    "tests/spikesorting/v2/test_analyzer_cache_completeness.py",
+    "tests/spikesorting/v2/test_evaluation_merge_ids.py",
+    "tests/spikesorting/v2/test_unit_match_generation.py"
+  ],
+  "files": {
+    "pyproject.toml": "9c524aa94e27b095b7d1bced819ed442886b80b370d49adc87e906f9fb85d37c",
+    "environments/environment.yml": "a8fdebd6274c4bc8f16a4d48afa3351458c517ed086843c1142df737ffe25215",
+    "src/spyglass/decoding/v1/core.py": "4749e0e51fe40891bd8f55698b37b3d6984aae0bcc8db210d9c5cfc84c3c68e9",
+    "src/spyglass/decoding/v1/utils.py": "108404be613cbaad8003d541c1221a6515ae0ea06068c4c72a9b9bdfd3f05210",
+    "src/spyglass/decoding/v1/sorted_spikes.py": "f3546ed8173f10837d1a2bd2a1a5d1826c12ab26b65335d1cbc35c7591312fd5",
+    "src/spyglass/decoding/v1/clusterless.py": "9c90f48fdadff2ea00ad4ee0073a758d13534377419b594c6959e637234cb018",
+    "tests/decoding/test_observed_time.py": "c59d79622a44ffe52f2d0adad79e5a114561f2ea54abe2f57b37d2f927f1cafe"
+  },
+  "patch_targets": [
+    "pyproject.toml",
+    "environments/environment.yml",
+    "src/spyglass/decoding/v1/core.py",
+    "src/spyglass/decoding/v1/utils.py",
+    "src/spyglass/decoding/v1/sorted_spikes.py",
+    "src/spyglass/decoding/v1/clusterless.py",
+    "tests/decoding/test_observed_time.py",
+    "tests/decoding/test_time_grid_migration.py",
+    "tests/decoding/_time_grid_make_probe.py",
+    "docs/time_grid_migration.md"
+  ],
+  "new_files": [
+    "tests/decoding/test_time_grid_migration.py",
+    "tests/decoding/_time_grid_make_probe.py",
+    "docs/time_grid_migration.md"
+  ]
+}
