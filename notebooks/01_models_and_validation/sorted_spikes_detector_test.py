@@ -136,6 +136,7 @@ def hmm_posterior_mode(
         most likely state sequence
 
     """
+
     # Run the backward pass
     def _backward_pass(best_next_score, t):
         scores = jnp.log(transition_matrix) + best_next_score + log_likelihoods[t + 1]
@@ -165,20 +166,22 @@ def hmm_posterior_mode(
 # %%
 import numpy as np
 
-initial_distribution=detector.initial_conditions_
-transition_matrix=(
+initial_distribution = detector.initial_conditions_
+transition_matrix = (
     detector.discrete_state_transitions_[
         np.ix_(detector.state_ind_, detector.state_ind_)
     ]
     * detector.continuous_state_transitions_
 )
-log_likelihoods=detector.log_likelihood_
+log_likelihoods = detector.log_likelihood_
+
 
 def _backward_pass(best_next_score, t):
     scores = jnp.log(transition_matrix) + best_next_score + log_likelihoods[t + 1]
     best_next_state = jnp.argmax(scores, axis=1)
     best_next_score = jnp.max(scores, axis=1)
     return best_next_score, best_next_state
+
 
 num_timesteps, num_states = log_likelihoods.shape
 best_second_score, rev_best_next_states = jax.lax.scan(
@@ -262,6 +265,7 @@ def hmm_posterior_mode2(
         most likely state sequence
 
     """
+
     # Run the backward pass
     def _backward_pass(best_next_score, t):
         scores = jnp.log(transition_matrix) + best_next_score + log_likelihoods[t + 1]
@@ -273,7 +277,7 @@ def hmm_posterior_mode2(
     best_second_score, best_next_states = jax.lax.scan(
         _backward_pass,
         jnp.zeros(num_states),
-        jnp.arange(num_timesteps-1),
+        jnp.arange(num_timesteps - 1),
         reverse=True,
     )
 
@@ -288,6 +292,7 @@ def hmm_posterior_mode2(
     _, states = jax.lax.scan(_forward_pass, first_state, best_next_states)
 
     return jnp.concatenate([jnp.array([first_state]), states])
+
 
 most_likely_state_id2 = hmm_posterior_mode2(
     initial_distribution=detector.initial_conditions_,
@@ -339,9 +344,11 @@ from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
 
 true_log_likelihood = np.zeros_like(decoder.log_likelihood_)
 
-for neuron_spike_times, neuron_place_field in zip(spike_times, place_fields.T, strict=False):
+for neuron_spike_times, neuron_place_field in zip(
+    spike_times, place_fields.T, strict=False
+):
     spike_counts = get_spikecount_per_time_bin(
-        neuron_spike_times, time_edges_from_centers(time)
+        neuron_spike_times, time_edges=time_edges_from_centers(time)
     )
     neuron_place_intensity = (
         scipy.interpolate.interp1d(position, neuron_place_field)(
@@ -466,12 +473,14 @@ for obs in self.observation_models:
         environment_names.append([None])
         encoding_group_names.append([None])
     else:
-        environment = self.environments[
-            self.environments.index(obs.environment_name)
-        ]
+        environment = self.environments[self.environments.index(obs.environment_name)]
         position.append(environment.place_bin_centers_)
-        environment_names.append([obs.environment_name] * environment.place_bin_centers_.shape[0])
-        encoding_group_names.append([obs.encoding_group] * environment.place_bin_centers_.shape[0])
+        environment_names.append(
+            [obs.environment_name] * environment.place_bin_centers_.shape[0]
+        )
+        encoding_group_names.append(
+            [obs.encoding_group] * environment.place_bin_centers_.shape[0]
+        )
 
 position = np.concatenate(position, axis=0)
 environment_names = np.concatenate(environment_names, axis=0)
@@ -482,7 +491,8 @@ if n_position_dims == 1:
     position_names = ["position"]
 else:
     position_names = [
-        f"{name}_position" for name, _ in zip(["x", "y", "z", "w"], position.T, strict=False)
+        f"{name}_position"
+        for name, _ in zip(["x", "y", "z", "w"], position.T, strict=False)
     ]
 state_bins = pd.DataFrame(
     {

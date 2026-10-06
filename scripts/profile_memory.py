@@ -24,6 +24,7 @@ import numpy as np
 
 sys.path.insert(0, "src")
 
+from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model as fit_reference,
@@ -120,7 +121,6 @@ def profile_reference_implementation():
         spike_times=data["encoding"]["spike_times"],
         spike_waveform_features=data["encoding"]["spike_waveform_features"],
         environment=data["environment"],
-        sampling_frequency=500,
         position_std=np.sqrt(12.5),
         waveform_std=24.0,
         block_size=100,
@@ -129,8 +129,9 @@ def profile_reference_implementation():
 
     # Decoding
     import jax.numpy as jnp
+
     log_likelihood = predict_reference(
-        time_edges=data["decoding"]["time"],
+        time_edges=time_edges_from_centers(data["decoding"]["time"]),
         position_time=data["decoding"]["position_time"],
         position=data["decoding"]["position"],
         spike_times=data["decoding"]["spike_times"],
@@ -166,7 +167,6 @@ def profile_log_implementation():
         spike_times=data["encoding"]["spike_times"],
         spike_waveform_features=data["encoding"]["spike_waveform_features"],
         environment=data["environment"],
-        sampling_frequency=500,
         position_std=np.sqrt(12.5),
         waveform_std=24.0,
         block_size=100,
@@ -175,8 +175,9 @@ def profile_log_implementation():
 
     # Decoding
     import jax.numpy as jnp
+
     log_likelihood = predict_log(
-        time_edges=data["decoding"]["time"],
+        time_edges=time_edges_from_centers(data["decoding"]["time"]),
         position_time=data["decoding"]["position_time"],
         position=data["decoding"]["position"],
         spike_times=data["decoding"]["spike_times"],
@@ -199,7 +200,9 @@ def profile_log_implementation():
     return log_likelihood
 
 
-def estimate_memory_requirements(n_electrodes, n_encoding_spikes, n_decoding_spikes, n_positions):
+def estimate_memory_requirements(
+    n_electrodes, n_encoding_spikes, n_decoding_spikes, n_positions
+):
     """Estimate memory requirements for a given dataset size.
 
     Parameters
@@ -222,11 +225,15 @@ def estimate_memory_requirements(n_electrodes, n_encoding_spikes, n_decoding_spi
 
     # Encoding model
     occupancy = n_positions * bytes_per_float
-    position_distance = n_encoding_spikes * n_positions * bytes_per_float  # per electrode
+    position_distance = (
+        n_encoding_spikes * n_positions * bytes_per_float
+    )  # per electrode
     encoding_features = n_encoding_spikes * 2 * bytes_per_float  # 2D features
 
     # Decoding (worst case: all in memory at once)
-    mark_kernel = n_encoding_spikes * n_decoding_spikes * bytes_per_float  # per electrode
+    mark_kernel = (
+        n_encoding_spikes * n_decoding_spikes * bytes_per_float
+    )  # per electrode
     joint_intensity = n_decoding_spikes * n_positions * bytes_per_float  # per electrode
 
     # Total per electrode (dominant terms)
@@ -249,9 +256,9 @@ def estimate_memory_requirements(n_electrodes, n_encoding_spikes, n_decoding_spi
 
 def main():
     """Run memory profiling."""
-    print("="*60)
+    print("=" * 60)
     print("MEMORY PROFILING FOR CLUSTERLESS KDE")
-    print("="*60)
+    print("=" * 60)
 
     # Estimate memory requirements
     print("\nMemory Requirements Estimation:")
@@ -264,12 +271,16 @@ def main():
         ("Realistic", 64, 64000, 25600, 2000),
     ]
 
-    print(f"{'Config':<12} {'Elec':>5} {'EncSpk':>7} {'DecSpk':>7} {'Pos':>5} {'Total (MB)':>12}")
+    print(
+        f"{'Config':<12} {'Elec':>5} {'EncSpk':>7} {'DecSpk':>7} {'Pos':>5} {'Total (MB)':>12}"
+    )
     print("-" * 60)
 
     for name, n_elec, n_enc, n_dec, n_pos in configs:
         est = estimate_memory_requirements(n_elec, n_enc, n_dec, n_pos)
-        print(f"{name:<12} {n_elec:>5} {n_enc:>7} {n_dec:>7} {n_pos:>5} {est['total_mb']:>12.1f}")
+        print(
+            f"{name:<12} {n_elec:>5} {n_enc:>7} {n_dec:>7} {n_pos:>5} {est['total_mb']:>12.1f}"
+        )
 
     print("\nDetailed breakdown for 'Medium' config:")
     est = estimate_memory_requirements(16, 3200, 1600, 500)
@@ -281,9 +292,9 @@ def main():
     print(f"  Total (16 elec):   {est['total_mb']:.2f} MB")
 
     # Run profiling
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Running memory profiling...")
-    print("="*60)
+    print("=" * 60)
 
     try:
         ll_ref = profile_reference_implementation()
@@ -297,11 +308,12 @@ def main():
     except Exception as e:
         print(f"\nError during profiling: {e}")
         import traceback
+
         traceback.print_exc()
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("MEMORY OPTIMIZATION TIPS")
-    print("="*60)
+    print("=" * 60)
     print("""
 1. Block Processing:
    - Use block_size parameter to limit peak memory
@@ -331,7 +343,7 @@ def main():
    - Consider downsampling position grid if high-resolution not needed
     """)
 
-    print("="*60 + "\n")
+    print("=" * 60 + "\n")
 
 
 if __name__ == "__main__":

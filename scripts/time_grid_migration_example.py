@@ -41,7 +41,11 @@ def main():
             and decode_intervals[sequence_id + 1][0] == stop
         )
         selected_spikes = [
-            s[(s >= edges[0]) & (s < edges[-1] if shared_stop else s <= edges[-1])]
+            s[
+                (s >= edges[0])
+                & (s <= edges[-1])
+                & ((s < stop) if shared_stop else True)
+            ]
             for s in spike_times
         ]
         # Give each independent call its own tracking segment. This prevents

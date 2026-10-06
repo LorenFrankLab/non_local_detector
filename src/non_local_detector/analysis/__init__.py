@@ -17,3 +17,4 @@ from non_local_detector.analysis.posterior import (
     maximum_a_posteriori_estimate,
     sample_posterior,
 )
+from non_local_detector.analysis.time_alignment import align_tracking_to_results

@@ -27,6 +27,7 @@ import numpy as np
 # Add src to path
 sys.path.insert(0, "src")
 
+from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_kde import (
     fit_clusterless_kde_encoding_model as fit_reference,
@@ -125,9 +126,7 @@ def create_synthetic_data(size: DatasetSize, seed: int = 42):
     env = Environment(environment_name="profiling")
     position_range = (0.0, 100.0)
     env.place_bin_size = (position_range[1] - position_range[0]) / size.n_position_bins
-    env.fit_place_grid(
-        np.linspace(*position_range, size.n_position_bins)[:, None]
-    )
+    env.fit_place_grid(np.linspace(*position_range, size.n_position_bins)[:, None])
 
     # Encoding data
     encoding_duration = 100.0  # seconds
@@ -137,9 +136,7 @@ def create_synthetic_data(size: DatasetSize, seed: int = 42):
     enc_spike_times = []
     enc_spike_features = []
     for _ in range(size.n_electrodes):
-        n_spikes = int(
-            rng.poisson(size.n_encoding_spikes_per_electrode)
-        )
+        n_spikes = int(rng.poisson(size.n_encoding_spikes_per_electrode))
         spike_times = np.sort(rng.uniform(0, encoding_duration, n_spikes))
         # 2D waveform features
         spike_features = rng.normal(0, 1, (n_spikes, 2))
@@ -155,9 +152,7 @@ def create_synthetic_data(size: DatasetSize, seed: int = 42):
     dec_spike_times = []
     dec_spike_features = []
     for _ in range(size.n_electrodes):
-        n_spikes = int(
-            rng.poisson(size.n_decoding_spikes_per_electrode)
-        )
+        n_spikes = int(rng.poisson(size.n_decoding_spikes_per_electrode))
         spike_times = np.sort(rng.uniform(0, decoding_duration, n_spikes))
         spike_features = rng.normal(0, 1, (n_spikes, 2))
         dec_spike_times.append(spike_times)
@@ -191,6 +186,7 @@ def get_memory_usage_mb():
     """Get current JAX device memory usage in MB."""
     try:
         import jax.profiler as profiler
+
         memory_stats = profiler.device_memory_profile()
         # Sum across all devices
         total_bytes = sum(stats.bytes_in_use for stats in memory_stats.values())
@@ -268,7 +264,6 @@ def profile_encoding(data, implementation: Literal["reference", "log"]):
             spike_times=data["encoding"]["spike_times"],
             spike_waveform_features=data["encoding"]["spike_waveform_features"],
             environment=data["environment"],
-            sampling_frequency=data["params"]["sampling_frequency"],
             position_std=data["params"]["position_std"],
             waveform_std=data["params"]["waveform_std"],
             block_size=data["params"]["block_size"],
@@ -282,7 +277,9 @@ def profile_encoding(data, implementation: Literal["reference", "log"]):
     return encoding, timing
 
 
-def profile_decoding(data, encoding, implementation: Literal["reference", "log", "log_gemm"]):
+def profile_decoding(
+    data, encoding, implementation: Literal["reference", "log", "log_gemm"]
+):
     """Profile decoding (likelihood prediction).
 
     Parameters
@@ -306,7 +303,7 @@ def profile_decoding(data, encoding, implementation: Literal["reference", "log",
 
     def predict_wrapper():
         return predict_func(
-            time_edges=data["decoding"]["time"],
+            time_edges=time_edges_from_centers(data["decoding"]["time"]),
             position_time=data["decoding"]["position_time"],
             position=data["decoding"]["position"],
             spike_times=data["decoding"]["spike_times"],
@@ -314,7 +311,9 @@ def profile_decoding(data, encoding, implementation: Literal["reference", "log",
             occupancy=encoding["occupancy"],
             occupancy_model=encoding["occupancy_model"],
             gpi_models=encoding["gpi_models"],
-            encoding_spike_waveform_features=encoding["encoding_spike_waveform_features"],
+            encoding_spike_waveform_features=encoding[
+                "encoding_spike_waveform_features"
+            ],
             encoding_positions=encoding["encoding_positions"],
             environment=data["environment"],
             mean_rates=jnp.asarray(encoding["mean_rates"]),
@@ -337,7 +336,9 @@ def print_comparison(reference_stats, log_stats, name=""):
     """Print comparison of timing statistics."""
     speedup = reference_stats["mean"] / log_stats["mean"]
     print(f"\n{name} Comparison:")
-    print(f"  Reference: {reference_stats['mean']:.4f} ± {reference_stats['std']:.4f} s")
+    print(
+        f"  Reference: {reference_stats['mean']:.4f} ± {reference_stats['std']:.4f} s"
+    )
     print(f"  Log-space: {log_stats['mean']:.4f} ± {log_stats['std']:.4f} s")
     print(f"  Speedup:   {speedup:.2f}x")
 
@@ -391,36 +392,42 @@ Examples:
 
     # Create dataset
     size = DATASET_SIZES[args.size]
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Profiling Configuration: {size.name.upper()}")
-    print(f"{'='*60}")
-    print(f"  Encoding: {size.n_time_encoding} time points, {size.n_electrodes} electrodes")
-    print(f"  Encoding spikes: ~{size.n_encoding_spikes_per_electrode * size.n_electrodes} total")
+    print(f"{'=' * 60}")
+    print(
+        f"  Encoding: {size.n_time_encoding} time points, {size.n_electrodes} electrodes"
+    )
+    print(
+        f"  Encoding spikes: ~{size.n_encoding_spikes_per_electrode * size.n_electrodes} total"
+    )
     print(f"  Decoding: {size.n_time_decoding} time bins")
-    print(f"  Decoding spikes: ~{size.n_decoding_spikes_per_electrode * size.n_electrodes} total")
+    print(
+        f"  Decoding spikes: ~{size.n_decoding_spikes_per_electrode * size.n_electrodes} total"
+    )
     print(f"  Position bins: {size.n_position_bins}")
 
     print("\nCreating synthetic dataset...")
     data = create_synthetic_data(size, seed=args.seed)
 
     # Profile Reference Implementation
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("REFERENCE IMPLEMENTATION (linear-space)")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     enc_ref, enc_ref_timing = profile_encoding(data, "reference")
     ll_ref, ll_ref_timing = profile_decoding(data, enc_ref, "reference")
 
     # Profile Log-Space Implementation
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("LOG-SPACE IMPLEMENTATION (optimized)")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     enc_log, enc_log_timing = profile_encoding(data, "log")
     ll_log, ll_log_timing = profile_decoding(data, enc_log, "log")
 
     # Results
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("RESULTS")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     print_comparison(enc_ref_timing, enc_log_timing, "Encoding")
     print_comparison(ll_ref_timing, ll_log_timing, "Decoding")
@@ -444,7 +451,7 @@ Examples:
     if mem_usage is not None:
         print(f"\nMemory Usage: {mem_usage:.1f} MB")
 
-    print(f"\n{'='*60}\n")
+    print(f"\n{'=' * 60}\n")
 
 
 if __name__ == "__main__":
