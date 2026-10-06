@@ -3,7 +3,7 @@ import copy
 import inspect
 import pickle
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from functools import partial
 from logging import getLogger
@@ -2114,15 +2114,31 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 "encoding_time_units": "seconds",
             }
             or not hasattr(self, "transition_time_bin_width_")
-            or any(
-                model.get("rate_units") != "Hz"
-                for model in self.encoding_model_.values()
-            )
+            or not isinstance(self.encoding_model_, Mapping)
         ):
             raise ValidationError(
                 "Saved model has a legacy or unknown time contract; refit before decoding.",
                 hint="Load for inspection, then call fit(...) or estimate_parameters(..., time_edges=...) with the original recording. Old rates and learned transition clocks cannot be inferred safely.",
             )
+        # Validate the complete dispatch set before any state is evaluated.
+        # Scanning existing values alone misses a deleted active entry and
+        # wrongly rejects unused entries, including No-Spike-only keys.
+        required_keys = {
+            (obs.environment_name, obs.encoding_group)
+            for obs in self.observation_models
+            if not obs.is_no_spike
+        }
+        for key in required_keys:
+            model = self.encoding_model_.get(key)
+            units = model.get("rate_units") if isinstance(model, Mapping) else None
+            if not isinstance(units, str) or units != "Hz":
+                raise ValidationError(
+                    f"Encoding entry {key!r} is missing or has unknown rate units; refit before decoding.",
+                    hint="Each environment/encoding-group used by a spike state "
+                    "needs a fitted encoding dictionary with rate_units='Hz'. "
+                    "Call fit(...) or estimate_parameters(..., time_edges=...) "
+                    "with the original recording. No-Spike uses its constructor rate in Hz.",
+                )
 
     def _learned_transition_time_bin_width(self) -> tuple[float | None, float]:
         """Bin width the discrete transitions were learned at, and its precision.
@@ -2196,7 +2212,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         causal_posterior : np.ndarray, shape (n_time, n_state_bins)
         predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
         """
-        if hasattr(self, "encoding_model_"):
+        if isinstance(self, (SortedSpikesDetector, ClusterlessDetector)) or hasattr(
+            self, "encoding_model_"
+        ):
             self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
@@ -2789,7 +2807,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             and corresponding positions/metadata at each time step.
 
         """
-        if hasattr(self, "encoding_model_"):
+        if isinstance(self, (SortedSpikesDetector, ClusterlessDetector)) or hasattr(
+            self, "encoding_model_"
+        ):
             self._validate_time_contract()
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
