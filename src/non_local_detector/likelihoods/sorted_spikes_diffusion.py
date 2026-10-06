@@ -794,7 +794,9 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         ),
         dtype=log_interior_fields.dtype,
     )
-    log_likelihood = spike_counts @ log_interior_fields
+    log_likelihood = jnp.matmul(
+        spike_counts, log_interior_fields, precision=jax.lax.Precision.HIGHEST
+    )
     log_likelihood += spike_counts.sum(axis=1)[:, None] * jnp.log(durations)[:, None]
     log_likelihood -= (
         durations[:, None] * no_spike_part_log_likelihood[is_track_interior]

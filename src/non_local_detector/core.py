@@ -949,11 +949,19 @@ def chunked_filter_smoother(
         # Marginalize state bins -> discrete states by summing probabilities
         causal_posterior.append(causal_posterior_chunk)
         causal_state_probabilities.append(
-            causal_posterior_chunk @ state_aggregation_matrix
+            jnp.matmul(
+                causal_posterior_chunk,
+                state_aggregation_matrix,
+                precision=jax.lax.Precision.HIGHEST,
+            )
         )
         predictive_posterior.append(predicted_probs_chunk)
         predictive_state_probabilities.append(
-            predicted_probs_chunk @ state_aggregation_matrix
+            jnp.matmul(
+                predicted_probs_chunk,
+                state_aggregation_matrix,
+                precision=jax.lax.Precision.HIGHEST,
+            )
         )
 
         marginal_likelihood += marginal_likelihood_chunk
@@ -994,7 +1002,11 @@ def chunked_filter_smoother(
         )
         acausal_posterior.append(acausal_posterior_chunk)
         acausal_state_probabilities.append(
-            acausal_posterior_chunk @ state_aggregation_matrix
+            jnp.matmul(
+                acausal_posterior_chunk,
+                state_aggregation_matrix,
+                precision=jax.lax.Precision.HIGHEST,
+            )
         )
 
     # Concatenate JAX arrays on device
@@ -1589,11 +1601,19 @@ def chunked_filter_smoother_covariate_dependent(
         # Marginalize state bins -> discrete states by summing probabilities
         causal_posterior.append(causal_posterior_chunk)
         causal_state_probabilities.append(
-            causal_posterior_chunk @ state_aggregation_matrix
+            jnp.matmul(
+                causal_posterior_chunk,
+                state_aggregation_matrix,
+                precision=jax.lax.Precision.HIGHEST,
+            )
         )
         predictive_posterior.append(predicted_probs_chunk)
         predictive_state_probabilities.append(
-            predicted_probs_chunk @ state_aggregation_matrix
+            jnp.matmul(
+                predicted_probs_chunk,
+                state_aggregation_matrix,
+                precision=jax.lax.Precision.HIGHEST,
+            )
         )
 
         marginal_likelihood += marginal_likelihood_chunk
@@ -1639,7 +1659,11 @@ def chunked_filter_smoother_covariate_dependent(
         )
         acausal_posterior.append(acausal_posterior_chunk)
         acausal_state_probabilities.append(
-            acausal_posterior_chunk @ state_aggregation_matrix
+            jnp.matmul(
+                acausal_posterior_chunk,
+                state_aggregation_matrix,
+                precision=jax.lax.Precision.HIGHEST,
+            )
         )
 
     # Concatenate JAX arrays on device

@@ -1,5 +1,6 @@
 from collections.abc import Sequence, Sized
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TypeVar
 
 import jax
@@ -337,6 +338,99 @@ def weighted_mean_rate(spike_weights: np.ndarray, weight_sum: float) -> float:
     return float(np.sum(spike_weights) / weight_sum) if weight_sum > 0 else 0.0
 
 
+@jax.jit
+def _poisson_nonlocal_log_likelihood(
+    counts: jnp.ndarray,
+    rates: jnp.ndarray,
+    durations: jnp.ndarray,
+    summed_rates: jnp.ndarray,
+) -> jnp.ndarray:
+    """Batched Poisson emissions with fixed arithmetic across row partitions.
+
+    A fixed 64-row matrix kernel uses the same rate-duration products as the
+    per-neuron reference. Highest dot precision excludes a TF32 approximation.
+    Exact zeros, non-finite products and nonuniform durations retain xlogy.
+    Padding is internal and never contributes an observation or returned row.
+    """
+    n_rows, n_neurons = counts.shape
+    n_bins = rates.shape[1]
+    accumulator_dtype = jnp.result_type(rates, durations, jnp.zeros(()))
+    if not n_rows or not n_neurons or not n_bins:
+        return (
+            jnp.zeros((n_rows, n_bins), dtype=accumulator_dtype)
+            - durations[:, None] * summed_rates
+        )
+    block_rows = 64
+    n_full, remainder = divmod(n_rows, block_rows)
+    padded_rows = n_rows + (-n_rows) % block_rows
+    padded_counts = jnp.pad(counts, ((0, padded_rows - n_rows), (0, 0)))
+    padded_durations = jnp.pad(durations, (0, padded_rows - n_rows), mode="edge")
+
+    def emit_block(block_counts, block_durations):
+        smallest = jnp.min(rates) * jnp.min(block_durations)
+        largest = jnp.max(rates) * jnp.max(block_durations)
+        matrix_is_safe = (
+            jnp.all(jnp.isfinite(rates))
+            & jnp.all(jnp.isfinite(block_durations))
+            & jnp.all(block_durations == block_durations[0])
+            & (smallest > 0)
+            & jnp.isfinite(largest)
+            & (jnp.result_type(rates, block_durations) == accumulator_dtype)
+        )
+
+        def matrix_accumulation(_):
+            dtype = jnp.result_type(rates, block_durations)
+            return jnp.matmul(
+                block_counts.astype(dtype),
+                jnp.log(rates.astype(dtype) * block_durations[0]),
+                precision=jax.lax.Precision.HIGHEST,
+            ).astype(accumulator_dtype)
+
+        def xlogy_accumulation(_):
+            def add_neuron(likelihood, neuron):
+                neuron_counts, neuron_rates = neuron
+                product = jax.lax.optimization_barrier(
+                    neuron_rates[None, :] * block_durations[:, None]
+                )
+                contribution = jax.lax.optimization_barrier(
+                    jax.scipy.special.xlogy(neuron_counts[:, None], product)
+                )
+                return jax.lax.optimization_barrier(likelihood + contribution), None
+
+            likelihood, _ = jax.lax.scan(
+                add_neuron,
+                jnp.zeros((block_rows, n_bins), dtype=accumulator_dtype),
+                (block_counts.T, rates),
+            )
+            return likelihood
+
+        return jax.lax.cond(
+            matrix_is_safe, matrix_accumulation, xlogy_accumulation, None
+        )
+
+    likelihood = jnp.zeros((n_rows, n_bins), dtype=accumulator_dtype)
+    if n_full:
+
+        def update_block(number, result):
+            first = number * block_rows
+            block_counts = jax.lax.dynamic_slice(
+                padded_counts, (first, 0), (block_rows, n_neurons)
+            )
+            block_durations = jax.lax.dynamic_slice(
+                padded_durations, (first,), (block_rows,)
+            )
+            return jax.lax.dynamic_update_slice(
+                result, emit_block(block_counts, block_durations), (first, 0)
+            )
+
+        likelihood = jax.lax.fori_loop(0, n_full, update_block, likelihood)
+    if remainder:
+        first = n_full * block_rows
+        tail = emit_block(padded_counts[first:], padded_durations[first:])[:remainder]
+        likelihood = likelihood.at[first:].set(tail)
+    return likelihood - durations[:, None] * summed_rates
+
+
 def get_position_at_time(
     time: np.ndarray | jnp.ndarray,
     position: jnp.ndarray,
@@ -558,6 +652,48 @@ def select_spikes_in_rows(
     )
 
 
+@jax.jit
+def _ordered_spike_row_add(output, values, row_indices, column_start=None):
+    """Add spike vectors in input order, optionally into a contiguous column tile."""
+    n_rows = output.shape[0]
+    if n_rows == 0 or values.shape[0] == 0 or values.size == 0:
+        return output
+    values = values.astype(output.dtype)
+    row_shape = (1, *values.shape[1:])
+    zero = jnp.asarray(0, dtype=row_indices.dtype)
+    trailing_starts = (zero,) * (values.ndim - 1)
+    if column_start is not None:
+        trailing_starts = (
+            jnp.asarray(column_start, dtype=row_indices.dtype),
+            *trailing_starts[1:],
+        )
+
+    def add_spike(number, rows):
+        row = row_indices[number]
+        valid = (row >= 0) & (row < n_rows)
+        safe_row = jnp.clip(row, 0, n_rows - 1)
+        current = jax.lax.dynamic_slice(rows, (safe_row, *trailing_starts), row_shape)
+        value = jax.lax.dynamic_slice(
+            values,
+            (
+                jnp.asarray(number, dtype=row_indices.dtype),
+                *((zero,) * (values.ndim - 1)),
+            ),
+            row_shape,
+        )
+        updated = jnp.where(valid, current + value, current)
+        return jax.lax.dynamic_update_slice(rows, updated, (safe_row, *trailing_starts))
+
+    return jax.lax.fori_loop(0, values.shape[0], add_spike, output)
+
+
+@partial(jax.jit, static_argnames=("n_rows",))
+def _ordered_spike_row_sum(values, row_indices, n_rows):
+    """Accumulate one row vector per step without concurrent float atomics."""
+    output = jnp.zeros((n_rows, *values.shape[1:]), dtype=values.dtype)
+    return _ordered_spike_row_add(output, values, row_indices)
+
+
 def sum_spikes_into_rows(values: jnp.ndarray, selection: SpikeSelection) -> jnp.ndarray:
     """Sum one value per selected spike into the local row that owns it.
 
@@ -573,13 +709,42 @@ def sum_spikes_into_rows(values: jnp.ndarray, selection: SpikeSelection) -> jnp.
     -------
     row_sums : jnp.ndarray, shape (selection.n_rows, ...)
         Rows owning no selected spike sum to zero.
+
+    Notes
+    -----
+    Concrete CPU arrays retain the existing segment reduction and its verified
+    ordering hint. CUDA arrays and transformed calls use a compiled loop that
+    adds contributions in their original selection order, one row vector at a
+    time, avoiding nondeterministic CUDA floating-point atomics. Invalid row
+    indices are dropped. Loop working storage is the row output plus a row
+    vector, excluding the caller's contributions.
     """
-    return jax.ops.segment_sum(
-        values,
-        selection.bin_ind,
-        indices_are_sorted=selection.indices_are_sorted,
-        num_segments=selection.n_rows,
-    )
+    values = jnp.asarray(values)
+    if values.dtype == jnp.bool_:
+        raise TypeError(
+            "Spike row sums require numeric values; Boolean sums are unsupported"
+        )
+    indices = np.asarray(selection.bin_ind)
+    if indices.ndim != 1 or indices.dtype.kind not in "iu":
+        raise ValueError("Spike row indices must be a one-dimensional integer array")
+    if values.ndim == 0 or values.shape[0] != len(indices):
+        raise ValueError("Values must contain one entry per selected spike")
+    # Normalize invalid host metadata before JAX dtype canonicalization, so a
+    # huge unsigned/out-of-range index cannot truncate into a valid row.
+    valid = (indices >= 0) & (indices < selection.n_rows)
+    safe_indices = np.full(indices.shape, -1, dtype=np.intp)
+    safe_indices[indices >= selection.n_rows] = selection.n_rows
+    safe_indices[valid] = indices[valid]
+    if not isinstance(values, jax.core.Tracer) and all(
+        device.platform == "cpu" for device in values.devices()
+    ):
+        return jax.ops.segment_sum(
+            values,
+            safe_indices,
+            indices_are_sorted=selection.indices_are_sorted,
+            num_segments=selection.n_rows,
+        )
+    return _ordered_spike_row_sum(values, jnp.asarray(safe_indices), selection.n_rows)
 
 
 @jax.jit

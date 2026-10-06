@@ -79,7 +79,7 @@ def _estimate_gaussian_covariances_full(
     def per_component(args: tuple[Array, Array, Array]) -> Array:
         mu, r, n = args
         d = X - mu  # (N, D)
-        return ((d.T * r) @ d) / n
+        return jnp.matmul(d.T * r, d, precision=jax.lax.Precision.HIGHEST) / n
 
     covariances = jax.lax.map(per_component, (means, resp.T, nk))
     # Symmetrize covariances for numerical stability (ensure exact symmetry)
@@ -121,7 +121,9 @@ def _estimate_gaussian_covariances_tied(
 
     def add_component(k: Array, covariance_sum: Array) -> Array:
         centered = X - means[k]
-        return covariance_sum + (centered.T * resp[:, k]) @ centered
+        return covariance_sum + jnp.matmul(
+            centered.T * resp[:, k], centered, precision=jax.lax.Precision.HIGHEST
+        )
 
     # Center before summing: the second-moment form E[xx^T] - mu mu^T cancels
     # catastrophically when |mu| >> sigma. The loop keeps the workspace at
@@ -380,7 +382,9 @@ def _estimate_gaussian_parameters(
 
     eps = 10 * jnp.finfo(X.dtype).eps
     nk = resp.sum(axis=0) + eps  # (K,)
-    means = (resp.T @ X) / nk[:, jnp.newaxis]  # (K, D)
+    means = (
+        jnp.matmul(resp.T, X, precision=jax.lax.Precision.HIGHEST) / nk[:, jnp.newaxis]
+    )  # (K, D)
 
     estimator = {
         "full": _estimate_gaussian_covariances_full,
@@ -446,7 +450,7 @@ def _estimate_log_gaussian_prob(
             # ~3x slower (the multi-GB (K, N, D) intermediate) and OOMs on GPU. Keep
             # lax.map.
             mu, R = args
-            Y = (X - mu) @ R  # (N, D)
+            Y = jnp.matmul(X - mu, R, precision=jax.lax.Precision.HIGHEST)  # (N, D)
             return jnp.sum(Y * Y, axis=1)  # (N,)
 
         maha = jax.lax.map(comp_full, (means, precisions_chol)).T
@@ -455,7 +459,9 @@ def _estimate_log_gaussian_prob(
         def comp_tied(mu: Array) -> Array:
             # Sequential over components as in the 'full' branch above; a
             # batched (X[None] - means[:, None]) would materialize (K, N, D).
-            Yk = (X - mu) @ precisions_chol  # (N, D)
+            Yk = jnp.matmul(
+                X - mu, precisions_chol, precision=jax.lax.Precision.HIGHEST
+            )  # (N, D)
             return jnp.sum(Yk * Yk, axis=1)  # (N,)
 
         maha = jax.lax.map(comp_tied, means).T

@@ -11,6 +11,7 @@ for specified time bins based on the provided spike times and baseline rate.
 It utilizes JAX for efficient computation.
 """
 
+import jax
 import jax.numpy as jnp
 import jax.scipy
 import numpy as np
@@ -21,6 +22,7 @@ from non_local_detector.likelihoods.common import (
     get_spikecount_per_time_bin,
     resolve_row_slice,
 )
+from non_local_detector.likelihoods.sorted_spikes_diffusion import _spike_counts_matrix
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
@@ -31,6 +33,25 @@ from non_local_detector.time_edges import (
 def no_spike_time_bin_sizes(time_edges: np.ndarray) -> np.ndarray:
     """Durations in seconds for every bin of the full decode grid."""
     return np.diff(time_edges)
+
+
+@jax.jit
+def _poisson_row_log_likelihood(counts, expected_counts):
+    """Retain neuron addition order inside one compiled row-bounded scan."""
+    expected_counts = jnp.broadcast_to(expected_counts, counts.shape)
+    # xlogy's forward pass already promotes integer counts to this dtype.
+    # Explicit promotion also avoids float0 tangents in its rate derivative.
+    counts = counts.astype(expected_counts.dtype)
+
+    def add_unit(total, inputs):
+        count, expected = inputs
+        event = jax.lax.optimization_barrier(jax.scipy.special.xlogy(count, expected))
+        term = jax.lax.optimization_barrier(event - expected)
+        return total + term, None
+
+    return jax.lax.scan(
+        add_unit, jnp.zeros((counts.shape[0],)), (counts.T, expected_counts.T)
+    )[0]
 
 
 @requires_time_edges
@@ -125,22 +146,30 @@ def predict_no_spike_log_likelihood(
     else:
         durations = _time_bin_sizes[row_start:row_stop]
     no_spike_rates = no_spike_rate * jnp.asarray(durations)
-    no_spike_log_likelihood = jnp.zeros((row_stop - row_start,))
-
-    for neuron_spike_times in tqdm(
-        spike_times, unit="cell", desc="No Spike Likelihood"
-    ):
-        no_spike_log_likelihood += (
-            jax.scipy.special.xlogy(
+    if row_stop - row_start > 256:
+        # Full-grid legacy callers must not acquire a rows-by-population count
+        # buffer merely to use the optimization for bounded decode chunks.
+        total = jnp.zeros((row_stop - row_start,))
+        for events in tqdm(spike_times, unit="cell", desc="No Spike Likelihood"):
+            counts = jnp.asarray(
                 get_spikecount_per_time_bin(
-                    neuron_spike_times,
+                    events,
                     time_edges=time_edges,
                     row_slice=row_slice,
                     _spike_time_order=_spike_time_order,
                 ),
-                no_spike_rates,
+                dtype=no_spike_rates.dtype,
             )
-            - no_spike_rates
-        )
-
-    return no_spike_log_likelihood[:, None]
+            total += jax.scipy.special.xlogy(counts, no_spike_rates) - no_spike_rates
+        return total[:, None]
+    counts = _spike_counts_matrix(
+        spike_times,
+        time_edges,
+        "No Spike Likelihood",
+        False,
+        row_slice,
+        _spike_time_order=_spike_time_order,
+    )
+    return _poisson_row_log_likelihood(jnp.asarray(counts), no_spike_rates[:, None])[
+        :, None
+    ]

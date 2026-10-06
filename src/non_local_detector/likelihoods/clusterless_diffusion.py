@@ -52,7 +52,6 @@ and one low-rank diffusion. Prob-space throughout, with ``safe_log`` flooring to
 import logging
 import warnings
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
@@ -65,6 +64,7 @@ from non_local_detector.likelihoods.common import (
     EPS,
     LOG_RATE_EPS_HZ,
     RATE_EPS_HZ,
+    _ordered_spike_row_sum,
     _SpikeTimeOrder,
     as_std_array,
     decode_bin_centers,
@@ -733,11 +733,7 @@ def predict_clusterless_diffusion_log_likelihood(
                     decode_block, enc_marks, electrode_waveform_std
                 )
                 weighted_kernel = enc_weights[:, None] * mark_kernel
-                D = (
-                    jnp.zeros((n_bins, decode_block.shape[0]))
-                    .at[enc_bins]
-                    .add(weighted_kernel)
-                )
+                D = _ordered_spike_row_sum(weighted_kernel, enc_bins, n_bins)
                 P = heat_kernel_apply(
                     Lam, Q, position_std, D, labels, n_components=n_components
                 )
@@ -749,11 +745,8 @@ def predict_clusterless_diffusion_log_likelihood(
                     electrode_mean_rate * p_e_at_animal / occupancy[spike_bins_block],
                     eps=RATE_EPS_HZ,
                 )  # (n_block,)
-                log_likelihood += jax.ops.segment_sum(
-                    lc,
-                    seg_block,
-                    indices_are_sorted=selection.indices_are_sorted,
-                    num_segments=selection.n_rows,
+                log_likelihood += _ordered_spike_row_sum(
+                    lc, seg_block, selection.n_rows
                 )
 
         return (
@@ -864,11 +857,7 @@ def predict_clusterless_diffusion_log_likelihood(
             mark_kernel = kde_distance(decode_block, enc_marks, electrode_waveform_std)
             # D_e[:, j] = sum_i w_i K(m_j, m_i) onehot(bin(x_i))  -> (n_bins, n_block)
             weighted_kernel = enc_weights[:, None] * mark_kernel
-            D = (
-                jnp.zeros((n_bins, decode_block.shape[0]))
-                .at[enc_bins]
-                .add(weighted_kernel)
-            )
+            D = _ordered_spike_row_sum(weighted_kernel, enc_bins, n_bins)
             P = heat_kernel_apply(
                 Lam, Q, position_std, D, labels, n_components=n_components
             )
@@ -881,11 +870,8 @@ def predict_clusterless_diffusion_log_likelihood(
             log_intensity = safe_log(
                 electrode_mean_rate * p_e / occupancy_col, eps=RATE_EPS_HZ
             )  # (n_bins, n_block)
-            log_likelihood += jax.ops.segment_sum(
-                log_intensity.T,
-                seg_block,
-                indices_are_sorted=selection.indices_are_sorted,
-                num_segments=selection.n_rows,
+            log_likelihood += _ordered_spike_row_sum(
+                log_intensity.T, seg_block, selection.n_rows
             )
 
     return (

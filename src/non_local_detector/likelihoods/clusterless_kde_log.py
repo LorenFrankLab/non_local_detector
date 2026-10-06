@@ -360,7 +360,9 @@ def _compute_log_mark_kernel_gemm(
     x2 = jnp.sum(X**2, axis=1)  # (n_dec,)
 
     # GEMM: compute cross terms X @ Y^T = (n_dec, n_features) @ (n_features, n_enc)
-    cross_term = X @ Y.T  # (n_dec, n_enc)
+    cross_term = jnp.matmul(
+        X, Y.T, precision=jax.lax.Precision.HIGHEST
+    )  # (n_dec, n_enc)
 
     # Combine: log K[i,j] = -0.5 * (y2[i] + x2[j] - 2*cross_term[j,i]) + log_norm_const
     # Note: We need (n_enc, n_dec) output, so transpose the cross term
@@ -715,7 +717,7 @@ def _compensated_linear_marginal(
     P = K_pos_stable * sqrt_scale[:, None]  # (n_enc, n_pos)
 
     # Single BLAS matmul: (n_dec, n_enc) @ (n_enc, n_pos) -> (n_dec, n_pos)
-    marginal_scaled = W.T @ P
+    marginal_scaled = jnp.matmul(W.T, P, precision=jax.lax.Precision.HIGHEST)
 
     # Back to log space.  Use double-where (safe_marginal avoids log(0) in the
     # untaken branch) and encode a zero matmul result as -inf so the shared
@@ -901,7 +903,9 @@ def _compensated_linear_marginal_chunked(
         P = K_pos_stable * sqrt_scale[:, None]  # (tile, n_pos)
 
         # Accumulate: matmul adds to running sum
-        running_sum = running_sum + W.T @ P  # (n_dec, n_pos)
+        running_sum = running_sum + jnp.matmul(
+            W.T, P, precision=jax.lax.Precision.HIGHEST
+        )  # (n_dec, n_pos)
 
         return (running_sum, new_max), None
 
@@ -1023,7 +1027,12 @@ def estimate_log_joint_mark_intensity(
             safe_n = jnp.where(n_encoding_spikes > 0, n_encoding_spikes, 1)
             marginal_density = jnp.where(
                 n_encoding_spikes > 0,
-                spike_waveform_feature_distance.T @ position_distance / safe_n,
+                jnp.matmul(
+                    spike_waveform_feature_distance.T,
+                    position_distance,
+                    precision=jax.lax.Precision.HIGHEST,
+                )
+                / safe_n,
                 0.0,
             )  # shape (n_decoding_spikes, n_position_bins)
         else:
@@ -1034,8 +1043,11 @@ def estimate_log_joint_mark_intensity(
             safe_weight_total = jnp.where(weight_total > 0, weight_total, 1.0)
             marginal_density = jnp.where(
                 weight_total > 0,
-                spike_waveform_feature_distance.T
-                @ (encoding_weights[:, None] * position_distance)
+                jnp.matmul(
+                    spike_waveform_feature_distance.T,
+                    encoding_weights[:, None] * position_distance,
+                    precision=jax.lax.Precision.HIGHEST,
+                )
                 / safe_weight_total,
                 0.0,
             )  # shape (n_decoding_spikes, n_position_bins)

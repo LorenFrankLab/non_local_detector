@@ -47,6 +47,7 @@ It utilizes JAX and SciPy for efficient computation and interpolation.
 """
 
 import warnings
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -61,7 +62,10 @@ from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
     KDEModel,
+    _poisson_nonlocal_log_likelihood,
     _SpikeTimeOrder,
+    as_std_array,
+    block_kde,
     decode_bin_centers,
     drop_zero_weight_samples,
     get_position_at_time,
@@ -71,11 +75,49 @@ from non_local_detector.likelihoods.common import (
     validate_weights,
     weighted_mean_rate,
 )
+from non_local_detector.likelihoods.sorted_spikes_diffusion import _spike_counts_matrix
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
     requires_time_edges,
 )
+
+
+@partial(jax.jit, static_argnames=("block_sizes",))
+def _local_kde_log_likelihood(
+    points, occupancy, counts, mean_rates, durations, model_leaves, *, block_sizes
+):
+    """Evaluate fitted KDE leaves and Poisson rows in one compiled call."""
+    if points.ndim == 1:
+        points = points[:, None]
+    if not model_leaves:
+        return jnp.zeros((points.shape[0],))
+    total = jnp.zeros((points.shape[0],))
+    for neuron, ((samples, weights, std), block_size) in enumerate(
+        zip(model_leaves, block_sizes, strict=True)
+    ):
+        marginal = jax.lax.optimization_barrier(
+            block_kde(
+                points, samples, as_std_array(std, points.shape[1]), block_size, weights
+            )
+        )
+        marginal = jnp.where(jnp.isnan(marginal), 0.0, marginal)
+        rate = jax.lax.optimization_barrier(
+            mean_rates[neuron]
+            * jnp.where(
+                occupancy > 0.0,
+                marginal / jnp.where(occupancy > 0.0, occupancy, 1.0),
+                EPS,
+            )
+        )
+        rate = jax.lax.optimization_barrier(jnp.clip(rate, min=RATE_EPS_HZ, max=None))
+        expected = jax.lax.optimization_barrier(rate * durations)
+        event = jax.lax.optimization_barrier(
+            jax.scipy.special.xlogy(counts[:, neuron].astype(expected.dtype), expected)
+        )
+        term = jax.lax.optimization_barrier(event - expected)
+        total = jax.lax.optimization_barrier(total + term)
+    return total
 
 
 def fit_sorted_spikes_kde_encoding_model(
@@ -375,6 +417,37 @@ def predict_sorted_spikes_kde_log_likelihood(
         )
         occupancy = occupancy_model.predict(interpolated_position)
 
+        # A legacy full-recording request can contain millions of evaluation
+        # blocks. Compile the model tuple only for bounded row chunks; larger
+        # requests retain the existing per-model blocked evaluation.
+        if n_rows <= 256 and all(
+            type(model) is KDEModel and model.samples_ is not None
+            for model in marginal_models
+        ):
+            counts = _spike_counts_matrix(
+                spike_times,
+                time_edges,
+                "Local Likelihood",
+                disable_progress_bar,
+                row_slice,
+                _spike_time_order=_spike_time_order,
+            )
+            return _local_kde_log_likelihood(
+                jnp.asarray(interpolated_position),
+                jnp.asarray(occupancy),
+                jnp.asarray(counts),
+                jnp.asarray(mean_rates),
+                durations,
+                tuple(
+                    (model.samples_, model.weights_, model.std)
+                    for model in marginal_models
+                ),
+                block_sizes=tuple(
+                    n_rows if model.block_size is None else model.block_size
+                    for model in marginal_models
+                ),
+            )[:, None]
+
         for neuron_spike_times, neuron_marginal_model, neuron_mean_rate in zip(
             tqdm(
                 spike_times,
@@ -415,32 +488,19 @@ def predict_sorted_spikes_kde_log_likelihood(
 
         log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
     else:
-        n_interior_bins = is_track_interior.sum()
-        log_likelihood = jnp.zeros((n_rows, n_interior_bins))
-        for neuron_spike_times, place_field in zip(
-            tqdm(
-                spike_times,
-                unit="cell",
-                desc="Non-Local Likelihood",
-                disable=disable_progress_bar,
-            ),
-            place_fields,
-            strict=True,
-        ):
-            spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times,
-                time_edges=time_edges,
-                row_slice=row_slice,
-                _spike_time_order=_spike_time_order,
-            )
-            log_likelihood += jax.scipy.special.xlogy(
-                np.expand_dims(spike_count_per_time_bin, axis=1),
-                jnp.expand_dims(place_field[is_track_interior], axis=0)
-                * durations[:, None],
-            )
-
-        log_likelihood -= (
-            durations[:, None] * no_spike_part_log_likelihood[is_track_interior]
+        counts = _spike_counts_matrix(
+            spike_times,
+            time_edges,
+            "Non-Local Likelihood",
+            disable_progress_bar,
+            row_slice,
+            _spike_time_order=_spike_time_order,
+        )
+        log_likelihood = _poisson_nonlocal_log_likelihood(
+            jnp.asarray(counts),
+            jnp.asarray(place_fields)[:, is_track_interior],
+            durations,
+            no_spike_part_log_likelihood[is_track_interior],
         )
 
     return log_likelihood

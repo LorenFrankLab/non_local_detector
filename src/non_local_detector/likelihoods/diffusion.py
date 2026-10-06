@@ -473,18 +473,36 @@ def diffuse(
     return renormalized
 
 
+@partial(jax.jit, static_argnames=("n_components",))
+def _component_mass_sum(fields, labels, n_components):
+    """Reduce one component at a time with a deterministic pairwise sum.
+
+    Masking and summing are fused; no component-by-node-by-field array is
+    constructed. Tree reduction avoids large-grid sequential float32 drift.
+    """
+    output = jnp.zeros((n_components, *fields.shape[1:]), dtype=fields.dtype)
+
+    def sum_component(component, masses):
+        mask = (labels == component).reshape((-1, *((1,) * (fields.ndim - 1))))
+        mass = jnp.sum(jnp.where(mask, fields, 0), axis=0)
+        return masses.at[component].set(mass, unique_indices=True)
+
+    return jax.lax.fori_loop(0, n_components, sum_component, output)
+
+
 @partial(jax.jit, static_argnames=("sigma", "n_components"))
 def _heat_kernel_apply_jit(eigvals, eigvecs, sigma, fields, labels, n_components):
     """Jitted core of :func:`heat_kernel_apply` (see it for the full contract)."""
     t = sigma**2 / 2.0
     coeff = jnp.exp(-t * eigvals)  # (m,)
-    smoothed = eigvecs @ (coeff[:, None] * (eigvecs.T @ fields))  # (n_bins, n_fields)
+    projected = jnp.matmul(eigvecs.T, fields, precision=jax.lax.Precision.HIGHEST)
+    smoothed = jnp.matmul(
+        eigvecs, coeff[:, None] * projected, precision=jax.lax.Precision.HIGHEST
+    )  # (n_bins, n_fields)
     clipped = jnp.clip(smoothed, 0.0, None)
     # Vectorized per-component mass rescale (jittable; labels are segment ids).
-    in_mass = jax.ops.segment_sum(
-        fields, labels, num_segments=n_components
-    )  # (n_components, n_fields)
-    cl_mass = jax.ops.segment_sum(clipped, labels, num_segments=n_components)
+    in_mass = _component_mass_sum(fields, labels, n_components)
+    cl_mass = _component_mass_sum(clipped, labels, n_components)
     scale = jnp.where(cl_mass > 0, in_mass / jnp.where(cl_mass > 0, cl_mass, 1.0), 0.0)
     return clipped * scale[labels]  # gather back to (n_bins, n_fields)
 
