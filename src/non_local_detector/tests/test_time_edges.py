@@ -243,3 +243,43 @@ def test_uniform_time_edges_returns_float_edges_and_width():
     np.testing.assert_array_equal(edges, [0.0, 2.0, 4.0, 6.0])
     assert width == 2.0
     assert width == uniform_time_bin_width(np.array([0, 2, 4, 6]))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("frequency", [2e6, 1e7])
+def test_grid_generator_rejects_unresolvable_requested_width_before_allocation(
+    frequency, monkeypatch
+):
+    """A valid acquisition range need not resolve the requested HMM bins."""
+    from non_local_detector import time_edges as module
+
+    original_arange = np.arange
+    allocations = []
+
+    def tracked_arange(*args, **kwargs):
+        allocations.append(args)
+        return original_arange(*args, **kwargs)
+
+    monkeypatch.setattr(np, "arange", tracked_arange)
+    with pytest.raises(DataError, match="precision"):
+        module.calculate_time_edges([1.7e9, 1.7e9 + 0.002], frequency)
+    assert not allocations
+
+
+@pytest.mark.unit
+def test_finite_edges_with_overflowed_duration_are_rejected():
+    """Finite endpoints must still describe a finite physical duration."""
+    extreme = np.finfo(np.float64).max
+    with pytest.raises(DataError, match="finite.*duration"):
+        uniform_time_bin_width(np.array([-extreme, extreme]))
+
+
+@pytest.mark.unit
+def test_center_conversion_validates_outer_edge_precision():
+    """An outer half-cell can cross a float exponent boundary and double its ulp."""
+    centers = 2.0**31 - np.array(
+        [0.0002002716064453125, 0.00010013580322265625, 0.0000002384185791015625]
+    )
+    assert np.isfinite(uniform_time_bin_width(centers))
+    with pytest.raises(DataError, match="precision"):
+        time_edges_from_centers(centers)

@@ -14,7 +14,8 @@ to Unix-epoch seconds. Grids can also carry rounding inherited from a larger
 scale or a coarser dtype (epoch edges shifted to start at 0, or float32 edges
 cast to float64); that stays well below a thousandth of a bin. The uniformity guard therefore allows the larger of
 ``_SPACING_TOLERANCE_ULPS`` ulp and ``_UNIFORMITY_RELATIVE_FLOOR`` of the bin
-width, and still rejects any irregularity above 0.1% of a bin.
+width, and rejects deviations above that larger bound. The separate precision
+guard rejects grids whose ulp bound exceeds 1% of their smallest bin width.
 """
 
 from functools import wraps
@@ -66,6 +67,26 @@ def _uniformity_tolerance(time_edges: np.ndarray, width: float) -> float:
     return max(_spacing_tolerance(time_edges), _UNIFORMITY_RELATIVE_FLOOR * width)
 
 
+def _validate_time_precision(
+    time_edges: np.ndarray, smallest: float, name: str = "time_edges"
+) -> None:
+    """Require timestamps to resolve a requested width under the existing bound."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        tolerance = _spacing_tolerance(time_edges)
+    if not np.isfinite(tolerance) or (
+        tolerance > _MAX_RELATIVE_SPACING_TOLERANCE * smallest
+    ):
+        raise DataError(
+            f"{name} has insufficient precision for its bin widths",
+            data_name=name,
+            hint=f"dtype {time_edges.dtype} resolves timestamps near "
+            f"{np.max(np.abs(time_edges)):.6g} only to about {tolerance:.3g} s, which "
+            f"is more than {_MAX_RELATIVE_SPACING_TOLERANCE:.0%} of a "
+            f"{smallest:.3g} s bin. Use float64 timestamps, or subtract a "
+            "reference time before converting to a lower precision.",
+        )
+
+
 def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
     """Validate decode bin edges and return them as a float array.
 
@@ -90,7 +111,8 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
         two entries.
     DataError
         If any edge is not finite, the edges are not strictly increasing, or
-        their dtype cannot resolve the bin widths.
+        their durations/span are not finite or their dtype cannot resolve the
+        bin widths.
     """
     edges = np.asarray(time_edges)
     if edges.ndim != 1 or edges.shape[0] < 2:
@@ -119,20 +141,19 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
             hint="Every bin edge must be a finite timestamp.",
         )
 
-    widths = np.diff(edges.astype(np.result_type(edges.dtype, np.float64)))
-    tolerance = _spacing_tolerance(edges)
+    with np.errstate(over="ignore", invalid="ignore"):
+        widths = np.diff(edges.astype(np.result_type(edges.dtype, np.float64)))
     span = float(edges[-1]) - float(edges[0])
-    smallest = float(np.min(widths)) if np.all(widths > 0) else span / widths.size
-    if span > 0 and tolerance > _MAX_RELATIVE_SPACING_TOLERANCE * smallest:
+    if not np.all(np.isfinite(widths)) or not np.isfinite(span):
         raise DataError(
-            f"{name} has insufficient precision for its bin widths",
+            f"{name} must describe finite bin durations and a finite span",
             data_name=name,
-            hint=f"dtype {edges.dtype} resolves timestamps near "
-            f"{np.max(np.abs(edges)):.6g} only to about {tolerance:.3g} s, which "
-            f"is more than {_MAX_RELATIVE_SPACING_TOLERANCE:.0%} of a "
-            f"{smallest:.3g} s bin. Use float64 timestamps, or subtract a "
-            "reference time before converting to a lower precision.",
+            hint="Subtract a reference time or express timestamps in seconds "
+            "at a scale whose differences remain finite.",
         )
+    smallest = float(np.min(widths)) if np.all(widths > 0) else span / widths.size
+    if span > 0:
+        _validate_time_precision(edges, smallest, name)
     bad = np.flatnonzero(widths <= 0)
     if bad.size > 0:
         i = int(bad[0])
@@ -256,13 +277,16 @@ def time_edges_from_centers(time) -> np.ndarray:
         )
     centers = validate_time_edges(centers, name="time")
     width = uniform_time_bin_width(centers, name="time")
-    return np.concatenate(
+    edges = np.concatenate(
         [
             [centers[0] - width / 2],
             centers[:-1] + 0.5 * np.diff(centers),
             [centers[-1] + width / 2],
         ]
     )
+    # An outer half-cell can cross a floating-point exponent boundary. Judge
+    # the resulting edges at their own precision, rather than only the centers.
+    return uniform_time_edges(edges)[0]
 
 
 def calculate_time_edges(
@@ -292,7 +316,9 @@ def calculate_time_edges(
         not ``(start, stop)``, the range is not a whole number of bins and
         ``trim`` is False, or it contains no complete bin.
     DataError
-        If ``start`` or ``stop`` is not finite, or ``stop <= start``.
+        If ``start`` or ``stop`` is not finite, ``stop <= start``, or timestamp
+        precision cannot resolve the requested width. Generated edges are
+        validated by the same uniformity guard as detector inputs.
     """
     if not (np.isfinite(sampling_frequency) and sampling_frequency > 0):
         raise ValidationError(
@@ -307,6 +333,11 @@ def calculate_time_edges(
             got=f"array with shape {np.shape(time_range)}",
         )
     start, stop = validate_time_edges(time_range, name="time_range")
+    # The range can be resolvable while the requested bins are not. Generated
+    # edges are float64; reject an impossible width before allocating them.
+    _validate_time_precision(
+        np.asarray([start, stop], dtype=np.float64), 1.0 / sampling_frequency
+    )
     n_float = (stop - start) * sampling_frequency
     # Precision of the span in bins: the endpoints' representation plus the
     # rounding of the product.
@@ -332,4 +363,4 @@ def calculate_time_edges(
             got=f"{stop - start!r} s",
         )
     edges: np.ndarray = start + np.arange(n_bins + 1) / sampling_frequency
-    return edges
+    return uniform_time_edges(edges)[0]

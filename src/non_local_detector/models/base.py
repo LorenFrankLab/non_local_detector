@@ -60,6 +60,7 @@ from non_local_detector.likelihoods.common import (
 from non_local_detector.likelihoods.no_spike import no_spike_time_bin_sizes
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import (
+    _MAX_RELATIVE_SPACING_TOLERANCE,
     _uniformity_tolerance,
     calculate_time_edges,
     requires_time_edges,
@@ -328,6 +329,27 @@ def _decode_time_edges(
         ``transition_time_bin_width`` by more than the timestamp precision.
     """
     time_edges, width = uniform_time_edges(time_edges)
+    if (
+        transition_time_bin_width is not None
+        and (
+            not np.isfinite(transition_time_bin_width) or transition_time_bin_width <= 0
+        )
+    ) or (
+        not np.isfinite(transition_time_bin_width_tolerance)
+        or transition_time_bin_width_tolerance < 0
+        or (
+            transition_time_bin_width is not None
+            and transition_time_bin_width_tolerance
+            > _MAX_RELATIVE_SPACING_TOLERANCE * transition_time_bin_width
+        )
+    ):
+        raise ValidationError(
+            "Saved model has invalid transition clock provenance; refit before decoding.",
+            hint="The learned bin width must be finite and positive, with a "
+            "finite nonnegative timestamp tolerance within the existing "
+            "precision bound. Call fit(...) or "
+            "estimate_parameters(..., time_edges=...) with the original recording.",
+        )
     if transition_time_bin_width is not None and abs(
         width - transition_time_bin_width
     ) > max(
@@ -2174,6 +2196,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         causal_posterior : np.ndarray, shape (n_time, n_state_bins)
         predictive_posterior : np.ndarray, shape (n_time, n_state_bins)
         """
+        if hasattr(self, "encoding_model_"):
+            self._validate_time_contract()
+        time_edges, time_centers = _decode_time_edges(
+            time_edges, *self._learned_transition_time_bin_width()
+        )
         # Disable caching when using multiple chunks (memory optimization)
         if n_chunks > 1 and cache_likelihood:
             logger.info("Disabling likelihood caching for chunked processing")
@@ -2191,10 +2218,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             else self.discrete_state_transitions_
         )
 
-        time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
         log_likelihood_func = self.compute_log_likelihood
-        if hasattr(self, "encoding_model_"):
-            self._validate_time_contract()
         if log_likelihoods is None:
             log_likelihood_func = _prepare_likelihood_callback(
                 log_likelihood_func,
@@ -2765,6 +2789,11 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             and corresponding positions/metadata at each time step.
 
         """
+        if hasattr(self, "encoding_model_"):
+            self._validate_time_contract()
+        time_edges, time_centers = _decode_time_edges(
+            time_edges, *self._learned_transition_time_bin_width()
+        )
         # Validate parameters
         if log_likelihood_args is None:
             log_likelihood_args = ()
@@ -2780,7 +2809,6 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                 hint="Viterbi uses the fitted covariate transitions. Fit or estimate with covariates aligned to this grid; predict(..., discrete_transition_covariate_data=...) accepts new aligned prediction covariates.",
             )
 
-        time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
         log_likelihood_func = _prepare_likelihood_callback(
             self.compute_log_likelihood,
             time_edges,
