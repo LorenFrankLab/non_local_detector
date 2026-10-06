@@ -20,7 +20,7 @@ def rng(seed=0):
 def test_select_spikes_in_rows_right_edge_last_bin():
     edges = np.array([0.0, 1.0, 2.0, 3.0])
     spikes = np.array([0.0, 0.5, 2.0, 3.0])
-    selection = select_spikes_in_rows(spikes, edges, 0, 3)
+    selection = select_spikes_in_rows(spikes, 0, 3, time_edges=edges)
     # bins: [0,1), [1,2), [2,3]; right-edge 3.0 -> last bin index 2
     assert spikes[selection.indexer].tolist() == spikes.tolist()
     assert selection.bin_ind.tolist() == [0, 0, 2, 2]
@@ -155,7 +155,7 @@ def test_select_spikes_in_rows_unsorted_and_interior_edges():
     spikes = np.array(
         [2.0, 0.0, 1.0, 1.0, 0.5]
     )  # unsorted, includes interior edges 1.0
-    selection = select_spikes_in_rows(spikes, edges, 0, 3)
+    selection = select_spikes_in_rows(spikes, 0, 3, time_edges=edges)
     # bins: [0,1), [1,2), [2,3]; interior edge 1.0 -> bin 1 (right side)
     # Unsorted spikes keep their original order in the selection.
     assert spikes[selection.indexer].tolist() == spikes.tolist()

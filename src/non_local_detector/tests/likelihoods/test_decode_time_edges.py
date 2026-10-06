@@ -28,14 +28,16 @@ EDGES = np.arange(6.0)  # five bins
 # ------------------------------------------------------------ event assignment
 @pytest.mark.unit
 def test_every_bin_including_the_last_can_own_a_spike():
-    counts = get_spikecount_per_time_bin(np.array([0.5, 1.5, 2.5, 3.5, 4.5]), EDGES)
+    counts = get_spikecount_per_time_bin(
+        np.array([0.5, 1.5, 2.5, 3.5, 4.5]), time_edges=EDGES
+    )
     np.testing.assert_array_equal(counts, [1, 1, 1, 1, 1])
 
 
 @pytest.mark.unit
 def test_boundaries_are_left_closed_and_the_final_edge_is_included():
     np.testing.assert_array_equal(
-        get_spikecount_per_time_bin(EDGES.copy(), EDGES), [1, 1, 1, 1, 2]
+        get_spikecount_per_time_bin(EDGES.copy(), time_edges=EDGES), [1, 1, 1, 1, 2]
     )
 
 
@@ -43,7 +45,7 @@ def test_boundaries_are_left_closed_and_the_final_edge_is_included():
 def test_events_outside_the_edges_are_not_counted():
     spikes = np.array([-1e-9, -0.5, 5.0 + 1e-9, 6.0])
     np.testing.assert_array_equal(
-        get_spikecount_per_time_bin(spikes, EDGES), [0, 0, 0, 0, 0]
+        get_spikecount_per_time_bin(spikes, time_edges=EDGES), [0, 0, 0, 0, 0]
     )
 
 
@@ -54,17 +56,17 @@ def test_any_row_partition_reproduces_the_full_counts(ascending):
     edges = np.sort(rng.uniform(0, 10, 12))
     spikes = np.concatenate([edges, rng.uniform(edges[0] - 1, edges[-1] + 1, 50)])
     spikes = np.sort(spikes) if ascending else rng.permutation(spikes)
-    full = get_spikecount_per_time_bin(spikes, edges)
+    full = get_spikecount_per_time_bin(spikes, time_edges=edges)
     assert full.shape == (11,)
     assert full.sum() == np.sum((spikes >= edges[0]) & (spikes <= edges[-1]))
     for cuts in ([0, 4, 11], [0, 1, 10, 11], [0, 5, 6, 11]):
         parts = [
-            get_spikecount_per_time_bin(spikes, edges, row_slice=slice(a, b))
+            get_spikecount_per_time_bin(spikes, time_edges=edges, row_slice=slice(a, b))
             for a, b in zip(cuts[:-1], cuts[1:], strict=True)
         ]
         np.testing.assert_array_equal(np.concatenate(parts), full)
         for a, b in zip(cuts[:-1], cuts[1:], strict=True):
-            selection = select_spikes_in_rows(spikes, edges, a, b)
+            selection = select_spikes_in_rows(spikes, a, b, time_edges=edges)
             assert selection.n_rows == b - a
             assert np.all((selection.bin_ind >= 0) & (selection.bin_ind < b - a))
 
@@ -109,10 +111,10 @@ def _predict(
 ):
     predict, model, is_clusterless = fitted[name]
     rng = np.random.default_rng(0)
-    args = [time_edges, position_time, position, spike_times]
+    args = [position_time, position, spike_times]
     if is_clusterless:
         args.append([rng.standard_normal((len(t), 2)) + 5.0 for t in spike_times])
-    return np.asarray(predict(*args, **model, is_local=is_local))
+    return np.asarray(predict(*args, time_edges=time_edges, **model, is_local=is_local))
 
 
 @pytest.mark.integration
@@ -185,14 +187,20 @@ def test_backend_rejects_invalid_edges(fitted, encoding_data, name, edges):
 @pytest.mark.unit
 def test_no_spike_returns_one_row_per_bin_and_owns_the_final_edge():
     edges = np.linspace(0.0, 1.0, 11)
-    empty = np.asarray(predict_no_spike_log_likelihood(edges, [np.array([])]))
-    final = np.asarray(predict_no_spike_log_likelihood(edges, [np.array([1.0])]))
+    empty = np.asarray(
+        predict_no_spike_log_likelihood([np.array([])], time_edges=edges)
+    )
+    final = np.asarray(
+        predict_no_spike_log_likelihood([np.array([1.0])], time_edges=edges)
+    )
     assert empty.shape[0] == 10
     np.testing.assert_array_equal(
         np.any(final != empty, axis=tuple(range(1, final.ndim))), [False] * 9 + [True]
     )
     with pytest.raises(DataError):
-        predict_no_spike_log_likelihood(np.array([0.0, 1.0, 0.5]), [np.array([])])
+        predict_no_spike_log_likelihood(
+            [np.array([])], time_edges=np.array([0.0, 1.0, 0.5])
+        )
 
 
 @pytest.mark.integration

@@ -434,13 +434,17 @@ def test_row_sliced_spike_counts_match_full_time_counts():
     time_edges = np.arange(6.0)
     spikes = np.array([0.5, 1.5, 2.5, 3.0, 3.5, 4.5])
 
-    full_counts = get_spikecount_per_time_bin(spikes, time_edges)
+    full_counts = get_spikecount_per_time_bin(spikes, time_edges=time_edges)
     np.testing.assert_array_equal(full_counts, [1, 1, 1, 2, 1])
 
     chunked_counts = np.concatenate(
         [
-            get_spikecount_per_time_bin(spikes, time_edges, row_slice=slice(0, 3)),
-            get_spikecount_per_time_bin(spikes, time_edges, row_slice=slice(3, 5)),
+            get_spikecount_per_time_bin(
+                spikes, time_edges=time_edges, row_slice=slice(0, 3)
+            ),
+            get_spikecount_per_time_bin(
+                spikes, time_edges=time_edges, row_slice=slice(3, 5)
+            ),
         ]
     )
     np.testing.assert_array_equal(chunked_counts, full_counts)
@@ -772,7 +776,9 @@ def test_chunked_estimate_parameters_returns_requested_log_likelihood(
     # from the fitted model over the full timeline must reproduce the returned
     # rows exactly, in global order.
     expected = np.asarray(
-        detector.compute_log_likelihood(time, sim["time"], sim["position"], spike_times)
+        detector.compute_log_likelihood(
+            sim["time"], sim["position"], spike_times, time_edges=time
+        )
     )
     np.testing.assert_allclose(
         results.log_likelihood.to_numpy(), expected, **PARITY_KWARGS
@@ -790,7 +796,10 @@ def test_delta_local_kernel_has_nonfinite_rows(delta_kernel_setup):
     setup = delta_kernel_setup
     log_likelihood = np.asarray(
         setup["detector"].compute_log_likelihood(
-            setup["time"], setup["time"], setup["position"], setup["spike_times"]
+            setup["time"],
+            setup["position"],
+            setup["spike_times"],
+            time_edges=setup["time"],
         )
     )
     assert np.any(np.isneginf(log_likelihood))
@@ -832,8 +841,8 @@ def test_nonfinite_mask_survives_row_requests(delta_kernel_setup):
     """The same at the model layer: every row range reproduces the ``-inf`` mask."""
     setup = delta_kernel_setup
     detector = setup["detector"]
-    args = (setup["time"], setup["time"], setup["position"], setup["spike_times"])
-    full = np.asarray(detector.compute_log_likelihood(*args))
+    args = (setup["time"], setup["position"], setup["spike_times"])
+    full = np.asarray(detector.compute_log_likelihood(*args, time_edges=setup["time"]))
 
     for partition in (
         [slice(0, 7), slice(7, 20), slice(20, N_SINGLETON)],
@@ -841,7 +850,11 @@ def test_nonfinite_mask_survives_row_requests(delta_kernel_setup):
     ):
         tiled = np.concatenate(
             [
-                np.asarray(detector.compute_log_likelihood(*args, row_slice=row_slice))
+                np.asarray(
+                    detector.compute_log_likelihood(
+                        *args, time_edges=setup["time"], row_slice=row_slice
+                    )
+                )
                 for row_slice in partition
             ]
         )

@@ -131,10 +131,16 @@ def test_row_slice_equals_full_time_slice(
     predict_func, encoding_model, args = fitted_backends[algorithm]
     time = decode_data["time"]
 
-    full = np.asarray(predict_func(time, *args, **encoding_model, is_local=is_local))
+    full = np.asarray(
+        predict_func(*args, **encoding_model, is_local=is_local, time_edges=time)
+    )
     rows = np.asarray(
         predict_func(
-            time, *args, **encoding_model, is_local=is_local, row_slice=ROW_SLICE
+            *args,
+            **encoding_model,
+            is_local=is_local,
+            row_slice=ROW_SLICE,
+            time_edges=time,
         )
     )
 
@@ -158,17 +164,19 @@ def test_row_partition_tiles_full_time_result(
     predict_func, encoding_model, args = fitted_backends[algorithm]
     time = decode_data["time"]
 
-    full = np.asarray(predict_func(time, *args, **encoding_model, is_local=is_local))
+    full = np.asarray(
+        predict_func(*args, **encoding_model, is_local=is_local, time_edges=time)
+    )
     chunks = np.array_split(np.arange(len(time)), N_PARTITIONS)
     tiled = np.concatenate(
         [
             np.asarray(
                 predict_func(
-                    time,
                     *args,
                     **encoding_model,
                     is_local=is_local,
                     row_slice=slice(int(chunk[0]), int(chunk[-1]) + 1),
+                    time_edges=time,
                 )
             )
             for chunk in chunks
@@ -242,11 +250,13 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, decode_data):
             )
         for neuron, unit_times in enumerate(spikes):
             np.testing.assert_array_equal(
-                get_spikecount_per_time_bin(unit_times, time, row_slice=rows),
+                get_spikecount_per_time_bin(
+                    unit_times, time_edges=time, row_slice=rows
+                ),
                 counts[rows, neuron],
             )
         actual = np.asarray(
-            predict(time, *args, **model, is_local=True, row_slice=rows)
+            predict(*args, **model, is_local=True, row_slice=rows, time_edges=time)
         )
         np.testing.assert_allclose(
             actual, expected[rows], **reference_kwargs, equal_nan=False
@@ -259,17 +269,19 @@ def test_no_spike_row_slice_matches_full_time(decode_data):
     time = decode_data["time"]
     spike_times = decode_data["decoding_spike_times"]
 
-    full = np.asarray(predict_no_spike_log_likelihood(time, spike_times))
+    full = np.asarray(predict_no_spike_log_likelihood(spike_times, time_edges=time))
     rows = np.asarray(
-        predict_no_spike_log_likelihood(time, spike_times, row_slice=ROW_SLICE)
+        predict_no_spike_log_likelihood(
+            spike_times, time_edges=time, row_slice=ROW_SLICE
+        )
     )
     chunks = np.array_split(np.arange(len(time)), N_PARTITIONS)
     tiled = np.concatenate(
         [
             np.asarray(
                 predict_no_spike_log_likelihood(
-                    time,
                     spike_times,
+                    time_edges=time,
                     row_slice=slice(int(chunk[0]), int(chunk[-1]) + 1),
                 )
             )

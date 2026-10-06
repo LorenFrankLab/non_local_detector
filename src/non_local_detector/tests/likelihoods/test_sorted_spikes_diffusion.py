@@ -165,7 +165,7 @@ def test_fit_caches_interior_log_place_fields_and_predict_uses_them():
     zeroed = {**encoding, "interior_log_place_fields": np.zeros_like(cached)}
     ll = np.asarray(
         predict_sorted_spikes_diffusion_log_likelihood(
-            time[:100], time, position, spike_times, is_local=False, **zeroed
+            time, position, spike_times, time_edges=time[:100], is_local=False, **zeroed
         )
     )
     no_spike = np.asarray(encoding["no_spike_part_log_likelihood"])[is_interior]
@@ -252,7 +252,12 @@ def test_fit_truncated_rank_full_grid_and_predict():
     assert np.all(place_fields[:, is_interior] > 0.0)
     ll = np.asarray(
         predict_sorted_spikes_diffusion_log_likelihood(
-            time[:100], time, position, spike_times, is_local=False, **encoding
+            time,
+            position,
+            spike_times,
+            time_edges=time[:100],
+            is_local=False,
+            **encoding,
         )
     )
     assert np.all(np.isfinite(ll))
@@ -379,13 +384,23 @@ def test_predict_shapes_local_and_nonlocal():
     n_interior = int(env.is_track_interior_.ravel().sum())
 
     nonlocal_ll = predict_sorted_spikes_diffusion_log_likelihood(
-        decode_time_edges, time, position, spike_times, is_local=False, **encoding
+        time,
+        position,
+        spike_times,
+        time_edges=decode_time_edges,
+        is_local=False,
+        **encoding,
     )
     assert nonlocal_ll.shape == (decode_time.shape[0], n_interior)
     assert np.all(np.isfinite(nonlocal_ll))
 
     local_ll = predict_sorted_spikes_diffusion_log_likelihood(
-        decode_time_edges, time, position, spike_times, is_local=True, **encoding
+        time,
+        position,
+        spike_times,
+        time_edges=decode_time_edges,
+        is_local=True,
+        **encoding,
     )
     assert local_ll.shape == (decode_time.shape[0], 1)
     assert np.all(np.isfinite(local_ll))
@@ -408,7 +423,12 @@ def test_invariants_place_fields_and_likelihood():
 
     ll = np.asarray(
         predict_sorted_spikes_diffusion_log_likelihood(
-            time[:100], time, position, spike_times, is_local=False, **encoding
+            time,
+            position,
+            spike_times,
+            time_edges=time[:100],
+            is_local=False,
+            **encoding,
         )
     )
     assert np.all(np.isfinite(ll))
@@ -556,12 +576,22 @@ def test_linearized_track_graph_fit_and_predict():
 
     decode_time_edges = time_edges_from_centers(time[:100])
     nonlocal_ll = predict_sorted_spikes_diffusion_log_likelihood(
-        decode_time_edges, time, position, spike_times, is_local=False, **encoding
+        time,
+        position,
+        spike_times,
+        time_edges=decode_time_edges,
+        is_local=False,
+        **encoding,
     )
     assert nonlocal_ll.shape == (100, int(is_interior.sum()))
     assert np.all(np.isfinite(nonlocal_ll))
     local_ll = predict_sorted_spikes_diffusion_log_likelihood(
-        decode_time_edges, time, position, spike_times, is_local=True, **encoding
+        time,
+        position,
+        spike_times,
+        time_edges=decode_time_edges,
+        is_local=True,
+        **encoding,
     )
     assert local_ll.shape == (100, 1)
     assert np.all(np.isfinite(local_ll))
@@ -592,10 +622,10 @@ def test_nonlocal_no_spikes_equals_negative_no_spike_part():
     empty_spikes = [np.array([]), np.array([])]
     ll = np.asarray(
         predict_sorted_spikes_diffusion_log_likelihood(
-            time_edges_from_centers(decode_time),
             time,
             position,
             empty_spikes,
+            time_edges=time_edges_from_centers(decode_time),
             is_local=False,
             **encoding,
         )
@@ -623,10 +653,10 @@ def test_local_no_spikes_equals_negative_local_rate_sum():
     empty_spikes = [np.array([]), np.array([]), np.array([])]
     ll_local = np.asarray(
         predict_sorted_spikes_diffusion_log_likelihood(
-            time_edges_from_centers(decode_time),
             time,
             position,
             empty_spikes,
+            time_edges=time_edges_from_centers(decode_time),
             is_local=True,
             **encoding,
         )
@@ -657,9 +687,9 @@ def test_local_linear_interpolation_evaluates_point_rate_in_1d():
     ll_local = np.asarray(
         predict_sorted_spikes_diffusion_log_likelihood(
             time,
-            time,
             position,
             [np.array([])],
+            time_edges=time,
             environment=env,
             occupancy=np.ones(node_order.shape[0]),
             mean_rates=[0.0],
@@ -705,9 +735,9 @@ def test_local_linear_interpolation_evaluates_point_rate_in_2d():
     ll_local = np.asarray(
         predict_sorted_spikes_diffusion_log_likelihood(
             time,
-            time,
             position,
             [np.array([])],
+            time_edges=time,
             environment=env,
             occupancy=np.ones(node_order.shape[0]),
             mean_rates=[0.0],
@@ -1025,12 +1055,12 @@ def test_predict_rejects_population_mismatch(
 
     with pytest.raises(ValidationError, match="neuron population lengths"):
         predict(
-            time[:200],
             time,
             position,
             decode_spike_times,
             is_local=is_local,
             **encoding,
+            time_edges=time[:200],
         )
 
 

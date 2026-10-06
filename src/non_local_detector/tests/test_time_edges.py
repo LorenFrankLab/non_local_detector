@@ -231,3 +231,15 @@ def test_calculate_time_edges_rejects_invalid_sampling_frequency(sampling_freque
 
     with pytest.raises(ValidationError, match="sampling_frequency"):
         calculate_time_edges(np.array([0.0, 1.0]), sampling_frequency)
+
+
+@pytest.mark.unit
+def test_uniform_time_edges_returns_float_edges_and_width():
+    """One validation pass yields both the float edges and the bin width."""
+    from non_local_detector.time_edges import uniform_time_edges
+
+    edges, width = uniform_time_edges(np.array([0, 2, 4, 6]))
+    assert edges.dtype == np.float64
+    np.testing.assert_array_equal(edges, [0.0, 2.0, 4.0, 6.0])
+    assert width == 2.0
+    assert width == uniform_time_bin_width(np.array([0, 2, 4, 6]))

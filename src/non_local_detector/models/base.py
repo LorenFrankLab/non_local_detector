@@ -61,9 +61,14 @@ from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import (
     _uniformity_tolerance,
     calculate_time_edges,
-    uniform_time_bin_width,
-    validate_time_edges,
+    requires_time_edges,
+    uniform_time_edges,
 )
+
+try:
+    from non_local_detector._version import __version__ as _PACKAGE_VERSION
+except ImportError:
+    _PACKAGE_VERSION = "unknown"
 from non_local_detector.types import (
     ContinuousInitialConditions,
     ContinuousTransitions,
@@ -119,17 +124,20 @@ def _prepare_likelihood_callback(
     * A ``@row_slice_aware`` callback receives the full ``time_edges``, a
       global ``row_slice``, and an already sliced ``is_missing`` mask, and
       returns only the requested rows.
-    * An unmarked (legacy) callback cannot request rows, so each chunk receives
-      its own edges, ``time_edges[start : stop + 1]``. A chunk's final bin is
-      closed, so for every chunk but the last the closing edge is moved down
-      by one float64 ulp: a spike exactly on an edge shared with the next chunk
-      then belongs to the next chunk only, as it does on the full edges. Such a
-      chunk's edges are passed as (at least) float64, so spike times of up to
-      float64 precision keep their bins.
+    * An unmarked (legacy) callback cannot request rows, so its adapter takes
+      the global ``row_slice`` itself and hands each chunk its own edges,
+      ``time_edges[start : stop + 1]``. A chunk's final bin is closed, so for
+      every chunk but the last the closing edge is moved down by one float64
+      ulp: a spike exactly on an edge shared with the next chunk then belongs
+      to the next chunk only, as it does on the full edges. Such a chunk's
+      edges are passed as (at least) float64, so spike times of up to float64
+      precision keep their bins.
 
-    Both adapters check that the callback returned one row per requested bin:
-    a callback written for one row per timestamp would otherwise be silently
-    misaligned with the bins.
+    Both adapters are marked ``row_slice_aware``, so core hands them the
+    chunk's row range rather than only its row coordinates, and both check
+    that the callback returned one row per requested bin: a callback written
+    for one row per timestamp would otherwise be silently misaligned with the
+    bins.
 
     Declaring ``_spike_time_order`` or ``_no_spike_time_bin_size`` lets this
     adapter bind shared preparation. Each call creates fresh preparation;
@@ -145,6 +153,15 @@ def _prepare_likelihood_callback(
     bound = partial(callback, **prepared) if prepared else callback
 
     n_bins = len(time_edges) - 1
+    edges_are_keyword_only = (
+        "time_edges" in parameters
+        and parameters["time_edges"].kind is inspect.Parameter.KEYWORD_ONLY
+    )
+
+    def evaluate(edges, *args, **kwargs):
+        if edges_are_keyword_only:
+            return bound(*args, time_edges=edges, **kwargs)
+        return bound(edges, *args, **kwargs)
 
     def checked(result, n_rows: int):
         if np.shape(result)[0] != n_rows:
@@ -162,35 +179,27 @@ def _prepare_likelihood_callback(
         def row_callback(row_time, *args, row_slice=None, **kwargs):
             row_start, row_stop = resolve_row_slice(row_slice, n_bins)
             return checked(
-                bound(time_edges, *args, row_slice=row_slice, **kwargs),
+                evaluate(time_edges, *args, row_slice=row_slice, **kwargs),
                 row_stop - row_start,
             )
 
         row_slice_aware(row_callback)  # marks the function in place
         return row_callback
 
-    centers = time_edges[:-1] + 0.5 * np.diff(time_edges)
-
-    def chunk_callback(row_time, *args, **kwargs):
-        row_time = np.asarray(row_time)
-        start = int(np.searchsorted(centers, row_time[0]))
-        stop = start + len(row_time)
-        if stop > n_bins or not np.array_equal(centers[start:stop], row_time):
-            raise ValidationError(
-                "chunk rows do not match the decode bins",
-                expected="a contiguous run of the decode bin centers",
-                got=f"{len(row_time)} rows starting at {row_time[0]!r}",
-            )
-        chunk_edges = time_edges[start : stop + 1]
-        if stop < n_bins:
+    def chunk_callback(row_time, *args, row_slice=None, **kwargs):
+        row_start, row_stop = resolve_row_slice(row_slice, n_bins)
+        chunk_edges = time_edges[row_start : row_stop + 1]
+        if row_stop < n_bins:
             # Nudge at float64 precision: one ulp of coarser edges (float32)
             # would exclude float64 spikes just below the shared edge.
+            # ``astype`` copies, so the full edges are never modified.
             chunk_edges = chunk_edges.astype(
                 np.result_type(chunk_edges.dtype, np.float64)
             )
             chunk_edges[-1] = np.nextafter(chunk_edges[-1], -np.inf)
-        return checked(bound(chunk_edges, *args, **kwargs), stop - start)
+        return checked(evaluate(chunk_edges, *args, **kwargs), row_stop - row_start)
 
+    row_slice_aware(chunk_callback)  # marks the function in place
     return chunk_callback
 
 
@@ -258,14 +267,13 @@ def _validate_estimation_arguments(
     ------
     ValidationError, DataError
         If ``time_edges`` are invalid or not uniform (see
-        :func:`~non_local_detector.time_edges.uniform_time_bin_width`).
+        :func:`~non_local_detector.time_edges.uniform_time_edges`).
     ValueError
         If ``n_chunks`` exceeds the number of bins, ``return_outputs`` is
         invalid or conflicts with ``save_log_likelihood_to_results``, or an
         encoding-update threshold is negative.
     """
-    time_edges = validate_time_edges(time_edges)
-    time_bin_width = uniform_time_bin_width(time_edges)
+    time_edges, time_bin_width = uniform_time_edges(time_edges)
     n_bins = len(time_edges) - 1
     if n_chunks > n_bins:
         raise ValueError(
@@ -323,8 +331,7 @@ def _decode_time_edges(
         If the edges are invalid or not uniform, or their width differs from
         ``transition_time_bin_width`` by more than the timestamp precision.
     """
-    time_edges = validate_time_edges(time_edges)
-    width = uniform_time_bin_width(time_edges)
+    time_edges, width = uniform_time_edges(time_edges)
     if transition_time_bin_width is not None and abs(
         width - transition_time_bin_width
     ) > max(
@@ -338,7 +345,7 @@ def _decode_time_edges(
             "and are not valid at another rate. Decode at the same bin width, "
             "or refit the detector for the new width.",
         )
-    return time_edges, time_edges[:-1] + 0.5 * np.diff(time_edges)
+    return time_edges, decode_bin_centers(time_edges, 0, len(time_edges) - 1)
 
 
 def _missing_bins(
@@ -349,11 +356,16 @@ def _missing_bins(
 ) -> np.ndarray | None:
     """Combine the caller's missing mask with bins affected by NaN position.
 
-    Missing tracking is a break in support. A bin is decoded as missing when it
-    overlaps the span over which linear interpolation touches a non-finite
-    position sample ``k``: ``(t[k - 1], t[k + 1])``, extended to infinity for a
-    sample in an end interval, which extrapolation reads. Every other bin's
-    center then has a finite interpolated position.
+    Missing tracking is a break in support. Likelihoods read the position by
+    linear interpolation (extrapolating from the end intervals) at the bin
+    centers and, for local clusterless models, at every decoding spike time.
+    A read is non-finite exactly when its time lies in ``[t[k - 1], t[k + 1])``
+    for a non-finite sample ``k``: at ``t[k - 1]`` the sample still enters
+    with weight zero (``0 * nan``), while at ``t[k + 1]`` it no longer does.
+    The span extends to infinity for a sample in an end interval. A bin is
+    decoded as missing when any time it owns (``[edges[i], edges[i + 1])``,
+    plus ``edges[-1]`` for the final bin) lies in such a span, so the center
+    and every spike of a non-missing bin have finite positions.
 
     Parameters
     ----------
@@ -417,8 +429,11 @@ def _missing_bins(
         position_time[np.minimum(run_ends + 1, n_samples - 1)],
         np.inf,
     )
-    # Bin i overlaps (lower, upper) iff edges[i + 1] > lower and edges[i] < upper.
+    # Bin i owns [edges[i], edges[i + 1]) and meets [lower, upper) iff
+    # edges[i + 1] > lower and edges[i] < upper; the final bin also owns
+    # edges[-1], so a read exactly there (lower == edges[-1]) marks it.
     first = np.searchsorted(time_edges[1:], lower, side="right")
+    first = np.where(lower == time_edges[-1], n_bins - 1, first)
     stop = np.maximum(np.searchsorted(time_edges[:-1], upper, side="left"), first)
     change = np.zeros(n_bins + 1, dtype=int)
     np.add.at(change, first, 1)
@@ -2051,8 +2066,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         return self
 
     @abc.abstractmethod
+    @requires_time_edges
     def compute_log_likelihood(self):
         """Compute the log likelihood. To be implemented by inheriting class."""
+
+    def _validate_decode_model(self) -> None:
+        """Require a fitted model with known discrete-transition provenance."""
+        if not hasattr(self, "encoding_model_"):
+            raise ValidationError(
+                "Detector is not fitted; call fit(...) before decoding."
+            )
+        if not hasattr(self, "transition_time_bin_width_"):
+            raise ValidationError(
+                "Saved model has an unknown transition clock; refit before decoding.",
+                hint="Load for inspection, then call fit(...) or estimate_parameters(..., time_edges=...) with the original recording. A missing transition clock cannot be assumed to mean unlearned transitions.",
+            )
 
     def _learned_transition_time_bin_width(self) -> tuple[float | None, float]:
         """Bin width the discrete transitions were learned at, and its precision.
@@ -2143,8 +2171,10 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             else self.discrete_state_transitions_
         )
 
-        time_centers = time_edges[:-1] + 0.5 * np.diff(time_edges)
+        time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
         log_likelihood_func = self.compute_log_likelihood
+        if hasattr(self, "encoding_model_"):
+            self._validate_decode_model()
         if log_likelihoods is None:
             log_likelihood_func = _prepare_likelihood_callback(
                 log_likelihood_func,
@@ -2335,8 +2365,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             min_encoding_local_mass,
             min_encoding_local_ess,
         )
-        time_centers = time_edges[:-1] + 0.5 * np.diff(time_edges)
-        is_missing = _missing_bins(time_edges, is_missing, None, None)
+        # Subclasses have already combined ``is_missing`` with the bins
+        # affected by NaN positions via ``_missing_bins``.
+        time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
 
         if log_likelihood_args is None:
             log_likelihood_args = ()
@@ -2661,6 +2692,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihoods,
+            time_edges=time_edges,
+            is_missing=is_missing,
             log_likelihood=(
                 log_likelihood if "log_likelihood" in requested_outputs else None
             ),
@@ -2716,7 +2749,18 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         if log_likelihood_args is None:
             log_likelihood_args = ()
 
-        time_centers = time_edges[:-1] + 0.5 * np.diff(time_edges)
+        if (
+            self.discrete_state_transitions_.ndim == 3
+            and self.discrete_state_transitions_.shape[0] != len(time_edges) - 1
+        ):
+            raise ValidationError(
+                "Viterbi covariate transitions must have one row per decode bin",
+                expected=f"{len(time_edges) - 1} transition rows",
+                got=f"{self.discrete_state_transitions_.shape[0]} rows",
+                hint="Viterbi uses the fitted covariate transitions. Fit or estimate with covariates aligned to this grid; predict(..., discrete_transition_covariate_data=...) accepts new aligned prediction covariates.",
+            )
+
+        time_centers = decode_bin_centers(time_edges, 0, len(time_edges) - 1)
         log_likelihood_func = _prepare_likelihood_callback(
             self.compute_log_likelihood,
             time_edges,
@@ -2852,7 +2896,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             Decoding results
         """
         results = xr.open_dataset(filename)
-        coord_names = list(results["state_bins"].coords)
+        # Scalar state/environment coordinates are also attached to this array,
+        # but only the original one-dimensional levels form its spatial index.
+        coord_names = [
+            name
+            for name, coordinate in results.coords.items()
+            if name != "state_bins" and coordinate.dims == ("state_bins",)
+        ]
         return results.set_index(state_bins=coord_names)
 
     def copy(self) -> "_DetectorBase":
@@ -2935,6 +2985,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         causal_state_probabilities: np.ndarray | None = None,
         predictive_state_probabilities: np.ndarray | None = None,
         predictive_posterior: np.ndarray | None = None,
+        *,
+        time_edges: np.ndarray,
+        is_missing: np.ndarray | None = None,
     ) -> xr.Dataset:
         """
         Convert the results to an xarray Dataset.
@@ -3012,6 +3065,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         coords = {
             "time": time,
+            "time_bin_start": ("time", time_edges[:-1]),
+            "time_bin_end": ("time", time_edges[1:]),
+            "time_bin_end_inclusive": ("time", np.arange(len(time)) == len(time) - 1),
+            "is_missing": (
+                "time",
+                np.zeros(len(time), dtype=bool) if is_missing is None else is_missing,
+            ),
             "state_ind": self.state_ind_,
             "states": states,
             "environments": ("states", environment_names),
@@ -3030,7 +3090,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             coords["state_bins"] = state_bins_mindex
             mindex_coords = None
 
-        attrs = {"marginal_log_likelihoods": np.asarray(marginal_log_likelihoods)}
+        attrs = {
+            "marginal_log_likelihoods": np.asarray(marginal_log_likelihoods),
+            "time_bin_convention": "left_closed_right_open_final_closed",
+            "non_local_detector_version": _PACKAGE_VERSION,
+            "time_units": "seconds",
+        }
 
         # Build data_vars dict with masked posteriors
         n_total_bins = len(is_track_interior)
@@ -3090,7 +3155,13 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         if mindex_coords is not None:
             results = results.assign_coords(mindex_coords)
 
-        return results.squeeze()
+        return results.squeeze(
+            dim=[
+                dim
+                for dim, size in results.sizes.items()
+                if size == 1 and dim not in {"time", "state_bins"}
+            ]
+        )
 
     def _convert_seq_to_df(
         self, sequence_ind: np.ndarray, time: np.ndarray
@@ -3452,9 +3523,9 @@ class ClusterlessDetector(_DetectorBase):
         return self
 
     @row_slice_aware
+    @requires_time_edges
     def compute_log_likelihood(
         self,
-        time_edges: np.ndarray,
         position_time: np.ndarray,
         position: np.ndarray | None,
         spike_times: list[np.ndarray],
@@ -3462,6 +3533,7 @@ class ClusterlessDetector(_DetectorBase):
         is_missing: np.ndarray | None = None,
         row_slice: slice | None = None,
         *,
+        time_edges: np.ndarray,
         _no_spike_time_bin_size: float | None = None,
         _spike_time_order: _SpikeTimeOrder | None = None,
     ) -> jnp.ndarray:
@@ -3521,7 +3593,7 @@ class ClusterlessDetector(_DetectorBase):
             rows were chunked, and the result equals the full-time likelihood
             sliced by ``row_slice``.
         _no_spike_time_bin_size : float | None, optional
-            Internal full-timeline median time step, prepared once by ``_predict``
+            Internal full-timeline median bin duration, prepared once by ``_predict``
             and reused for No-Spike in every chunk. None computes it on demand.
         _spike_time_order : _SpikeTimeOrder | None, optional
             Internal ordering preparation shared across states and chunks. None
@@ -3532,6 +3604,13 @@ class ClusterlessDetector(_DetectorBase):
         log_likelihood : jnp.ndarray, shape (n_rows, n_state_bins)
             ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
+        self._validate_decode_model()
+        time_edges, _ = _decode_time_edges(
+            time_edges, *self._learned_transition_time_bin_width()
+        )
+        if position is not None and position_time is None:
+            raise ValidationError("position_time is required when position is provided")
+        position_missing = _missing_bins(time_edges, None, position_time, position)
         logger.info("Computing log likelihood...")
         if _spike_time_order is None:
             _spike_time_order = _SpikeTimeOrder()
@@ -3565,7 +3644,28 @@ class ClusterlessDetector(_DetectorBase):
         # bins' centers; the spike likelihoods bin against the full edges.
         row_time = decode_bin_centers(time_edges, row_start, row_stop)
         if is_missing is None:
-            is_missing = jnp.zeros((n_rows,), dtype=bool)
+            is_missing = np.zeros(n_rows, dtype=bool)
+        else:
+            is_missing = np.asarray(is_missing, dtype=bool)
+            if is_missing.shape != (n_rows,):
+                raise ValidationError(
+                    "is_missing must have one entry per requested decode bin"
+                )
+        if position_missing is not None:
+            is_missing = is_missing | position_missing[row_start:row_stop]
+        if position is not None:
+            position = np.asarray(position)
+            position = position[:, None] if position.ndim == 1 else position
+            finite = np.all(np.isfinite(position), axis=1)
+            if not np.all(finite):
+                if not np.any(finite):
+                    return jnp.zeros(
+                        (n_rows, int(self.is_track_interior_state_bins_.sum()))
+                    )
+                # Every interpolation span touching these rows is already missing.
+                # Supply a finite placeholder only for masked backend workspaces.
+                position = position.copy()
+                position[~finite] = position[finite][0]
 
         _, likelihood_func = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
 
@@ -3595,20 +3695,20 @@ class ClusterlessDetector(_DetectorBase):
 
             if obs.is_no_spike:
                 likelihood_results[state_id] = predict_no_spike_log_likelihood(
-                    time_edges,
                     spike_times,
                     self.no_spike_rate,
+                    time_edges=time_edges,
                     row_slice=row_slice,
                     _time_bin_size=_no_spike_time_bin_size,
                     _spike_time_order=_spike_time_order,
                 )
             elif likelihood_name not in computed_likelihoods:
                 likelihood_results[state_id] = likelihood_func(
-                    time_edges,
                     position_time,
                     position,
                     spike_times,
                     spike_waveform_features,
+                    time_edges=time_edges,
                     **self.encoding_model_[likelihood_name[:2]],
                     is_local=effective_is_local,
                     row_slice=row_slice,
@@ -3676,6 +3776,7 @@ class ClusterlessDetector(_DetectorBase):
         # Apply missing data mask
         return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
 
+    @requires_time_edges
     def predict(
         self,
         spike_times: list[np.ndarray],
@@ -3821,6 +3922,7 @@ class ClusterlessDetector(_DetectorBase):
                 "    )",
             )
 
+        self._validate_decode_model()
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
@@ -3908,6 +4010,8 @@ class ClusterlessDetector(_DetectorBase):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihood,
+            time_edges=time_edges,
+            is_missing=is_missing,
             log_likelihood=(
                 log_likelihood if "log_likelihood" in requested_outputs else None
             ),
@@ -3929,6 +4033,7 @@ class ClusterlessDetector(_DetectorBase):
             ),
         )
 
+    @requires_time_edges
     def estimate_parameters(
         self,
         position_time: np.ndarray,
@@ -4085,14 +4190,15 @@ class ClusterlessDetector(_DetectorBase):
             min_encoding_local_ess=min_encoding_local_ess,
         )
 
+    @requires_time_edges
     def most_likely_sequence(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
         spike_times: list[np.ndarray],
         spike_waveform_features: list[np.ndarray],
         *,
         time_edges: np.ndarray,
+        position: np.ndarray | None = None,
+        position_time: np.ndarray | None = None,
         is_missing: np.ndarray | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
@@ -4100,9 +4206,9 @@ class ClusterlessDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,)
+        position_time : np.ndarray, shape (n_time_position,), optional
             Time points for position data.
-        position : np.ndarray, shape (n_time_position, n_position_dims)
+        position : np.ndarray, shape (n_time_position, n_position_dims), optional
             Position data
         spike_times : list of np.ndarray
             Spike times for each neuron.
@@ -4120,6 +4226,7 @@ class ClusterlessDetector(_DetectorBase):
         -------
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
         """
+        self._validate_decode_model()
         time_edges, _ = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
@@ -4448,15 +4555,16 @@ class SortedSpikesDetector(_DetectorBase):
         return self
 
     @row_slice_aware
+    @requires_time_edges
     def compute_log_likelihood(
         self,
-        time_edges: np.ndarray,
         position_time: np.ndarray,
         position: np.ndarray | None,
         spike_times: list[np.ndarray],
         is_missing: np.ndarray | None = None,
         row_slice: slice | None = None,
         *,
+        time_edges: np.ndarray,
         _no_spike_time_bin_size: float | None = None,
         _spike_time_order: _SpikeTimeOrder | None = None,
     ) -> jnp.ndarray:
@@ -4514,7 +4622,7 @@ class SortedSpikesDetector(_DetectorBase):
             rows were chunked, and the result equals the full-time likelihood
             sliced by ``row_slice``.
         _no_spike_time_bin_size : float | None, optional
-            Internal full-timeline median time step, prepared once by ``_predict``
+            Internal full-timeline median bin duration, prepared once by ``_predict``
             and reused for No-Spike in every chunk. None computes it on demand.
         _spike_time_order : _SpikeTimeOrder | None, optional
             Internal ordering preparation shared across states and chunks. None
@@ -4525,6 +4633,13 @@ class SortedSpikesDetector(_DetectorBase):
         log_likelihood : jnp.ndarray, shape (n_rows, n_state_bins)
             ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
+        self._validate_decode_model()
+        time_edges, _ = _decode_time_edges(
+            time_edges, *self._learned_transition_time_bin_width()
+        )
+        if position is not None and position_time is None:
+            raise ValidationError("position_time is required when position is provided")
+        position_missing = _missing_bins(time_edges, None, position_time, position)
         logger.info("Computing log likelihood...")
         if _spike_time_order is None:
             _spike_time_order = _SpikeTimeOrder()
@@ -4559,7 +4674,28 @@ class SortedSpikesDetector(_DetectorBase):
             self._validate_position_dimensionality(position, context="predict")
 
         if is_missing is None:
-            is_missing = np.zeros((n_rows,), dtype=bool)
+            is_missing = np.zeros(n_rows, dtype=bool)
+        else:
+            is_missing = np.asarray(is_missing, dtype=bool)
+            if is_missing.shape != (n_rows,):
+                raise ValidationError(
+                    "is_missing must have one entry per requested decode bin"
+                )
+        if position_missing is not None:
+            is_missing = is_missing | position_missing[row_start:row_stop]
+        if position is not None:
+            position = np.asarray(position)
+            position = position[:, None] if position.ndim == 1 else position
+            finite = np.all(np.isfinite(position), axis=1)
+            if not np.all(finite):
+                if not np.any(finite):
+                    return jnp.zeros(
+                        (n_rows, int(self.is_track_interior_state_bins_.sum()))
+                    )
+                # Every interpolation span touching these rows is already missing.
+                # Supply a finite placeholder only for masked backend workspaces.
+                position = position.copy()
+                position[~finite] = position[finite][0]
 
         _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
 
@@ -4589,19 +4725,19 @@ class SortedSpikesDetector(_DetectorBase):
 
             if obs.is_no_spike:
                 likelihood_results[state_id] = predict_no_spike_log_likelihood(
-                    time_edges,
                     spike_times,
                     self.no_spike_rate,
+                    time_edges=time_edges,
                     row_slice=row_slice,
                     _time_bin_size=_no_spike_time_bin_size,
                     _spike_time_order=_spike_time_order,
                 )
             elif likelihood_name not in computed_likelihoods:
                 likelihood_results[state_id] = likelihood_func(
-                    time_edges,
                     position_time,
                     position,
                     spike_times,
+                    time_edges=time_edges,
                     **self.encoding_model_[likelihood_name[:2]],
                     is_local=effective_is_local,
                     row_slice=row_slice,
@@ -4670,6 +4806,7 @@ class SortedSpikesDetector(_DetectorBase):
         is_missing = jnp.asarray(is_missing)
         return jnp.where(is_missing[:, jnp.newaxis], 0.0, log_likelihood)
 
+    @requires_time_edges
     def predict(
         self,
         spike_times: list[np.ndarray],
@@ -4738,6 +4875,7 @@ class SortedSpikesDetector(_DetectorBase):
                 "    )",
             )
 
+        self._validate_decode_model()
         time_edges, time_centers = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )
@@ -4825,6 +4963,8 @@ class SortedSpikesDetector(_DetectorBase):
             acausal_posterior,
             acausal_state_probabilities,
             marginal_log_likelihood,
+            time_edges=time_edges,
+            is_missing=is_missing,
             log_likelihood=(
                 log_likelihood if "log_likelihood" in requested_outputs else None
             ),
@@ -4846,6 +4986,7 @@ class SortedSpikesDetector(_DetectorBase):
             ),
         )
 
+    @requires_time_edges
     def estimate_parameters(
         self,
         position_time: np.ndarray,
@@ -4994,13 +5135,14 @@ class SortedSpikesDetector(_DetectorBase):
             min_encoding_local_ess=min_encoding_local_ess,
         )
 
+    @requires_time_edges
     def most_likely_sequence(
         self,
-        position_time: np.ndarray,
-        position: np.ndarray,
         spike_times: list[np.ndarray],
         *,
         time_edges: np.ndarray,
+        position: np.ndarray | None = None,
+        position_time: np.ndarray | None = None,
         is_missing: np.ndarray | None = None,
         n_chunks: int = 1,
     ) -> pd.DataFrame:
@@ -5008,7 +5150,7 @@ class SortedSpikesDetector(_DetectorBase):
 
         Parameters
         ----------
-        position_time : np.ndarray, shape (n_time_position,)
+        position_time : np.ndarray, shape (n_time_position,), optional
             Time of each position sample
         position : np.ndarray, shape (n_time_position, n_position_dims), optional
             Position data, by default None.
@@ -5026,6 +5168,7 @@ class SortedSpikesDetector(_DetectorBase):
         -------
         most_likely_sequence : pd.DataFrame, shape (n_bins, n_cols)
         """
+        self._validate_decode_model()
         time_edges, _ = _decode_time_edges(
             time_edges, *self._learned_transition_time_bin_width()
         )

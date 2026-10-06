@@ -90,7 +90,7 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
     _interior_bin_indices,
 )
-from non_local_detector.time_edges import validate_time_edges
+from non_local_detector.time_edges import requires_time_edges, validate_time_edges
 
 logger = logging.getLogger(__name__)
 
@@ -460,13 +460,14 @@ def fit_clusterless_diffusion_encoding_model(
     }
 
 
+@requires_time_edges
 def predict_clusterless_diffusion_log_likelihood(
-    time_edges: np.ndarray,
     position_time: np.ndarray,
     position: np.ndarray,
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
     *,
+    time_edges: np.ndarray,
     is_local: bool = False,
     row_slice: slice | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
@@ -621,9 +622,9 @@ def predict_clusterless_diffusion_log_likelihood(
         ):
             selection = select_spikes_in_rows(
                 electrode_spike_times,
-                time_edges,
                 row_start,
                 row_stop,
+                time_edges=time_edges,
                 _spike_time_order=_spike_time_order,
             )
             electrode_spike_times = select_spike_rows(electrode_spike_times, selection)
@@ -741,9 +742,9 @@ def predict_clusterless_diffusion_log_likelihood(
     ):
         selection = select_spikes_in_rows(
             electrode_spike_times,
-            time_edges,
             row_start,
             row_stop,
+            time_edges=time_edges,
             _spike_time_order=_spike_time_order,
         )
         # Validate only the in-window decode features that actually enter the

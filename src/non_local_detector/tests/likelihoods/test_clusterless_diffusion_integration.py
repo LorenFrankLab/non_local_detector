@@ -197,11 +197,11 @@ def test_refit_requires_encoding_refit() -> None:
 
     decode_time = np.linspace(position_time[0], position_time[-1], 6)
     log_likelihood = predict_clusterless_diffusion_log_likelihood(
-        decode_time,
         position_time,
         position,
         spike_times,
         spike_waveform_features,
+        time_edges=decode_time,
         **encoding_model,
     )
     assert np.all(np.isfinite(np.asarray(log_likelihood)))
@@ -235,11 +235,11 @@ def test_refit_requires_encoding_refit() -> None:
     new_decode_time = np.linspace(new_position_time[0], new_position_time[-1], 6)
     new_log_likelihood = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            time_edges_from_centers(new_decode_time),
             new_position_time,
             new_position,
             new_spike_times,
             new_spike_waveform_features,
+            time_edges=time_edges_from_centers(new_decode_time),
             **new_encoding_model,
         )
     )
@@ -299,11 +299,11 @@ def test_stale_encoding_model_after_refit_raises() -> None:
     decode_time = np.linspace(0.0, 1.0, 6)
     with pytest.raises(ValidationError, match="stale"):
         predict_clusterless_diffusion_log_likelihood(
-            decode_time,
             position_time,
             position,
             [np.array([0.4, 0.7])],
             [np.array([[0.1, 0.0], [0.2, -0.5]], dtype=np.float32)],
+            time_edges=decode_time,
             **encoding_model,
         )
 

@@ -171,10 +171,10 @@ def test_cached_likelihood_is_recomputed_after_the_encoding_model_updates(datase
     stored = np.asarray(detector.log_likelihood_)
     fresh = np.asarray(
         detector.compute_log_likelihood(
-            first["time_edges"],
             first["position_time"],
             first["position"],
             first["spike_times"],
+            time_edges=first["time_edges"],
         )
     )
 
@@ -228,8 +228,18 @@ def test_most_likely_sequence_ignores_the_stored_log_likelihood(datasets):
         second["position"],
         second["spike_times"],
     )
-    reused = detector.most_likely_sequence(*args, time_edges=second["time_edges"])
-    fresh = fresh_detector.most_likely_sequence(*args, time_edges=second["time_edges"])
+    reused = detector.most_likely_sequence(
+        args[2],
+        position_time=args[0],
+        position=args[1],
+        time_edges=second["time_edges"],
+    )
+    fresh = fresh_detector.most_likely_sequence(
+        args[2],
+        position_time=args[0],
+        position=args[1],
+        time_edges=second["time_edges"],
+    )
 
     np.testing.assert_array_equal(reused["state"].to_numpy(), fresh["state"].to_numpy())
 

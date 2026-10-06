@@ -248,7 +248,7 @@ def test_get_spikecount_per_time_bin_edges_and_outliers():
     time_edges = np.array([0.0, 1.0, 2.0, 3.0])
     # spikes include below-first, on edges, interior, and at last edge
     spikes = np.array([-0.5, 0.0, 0.4, 1.0, 2.99, 3.0, 3.5])
-    counts = get_spikecount_per_time_bin(spikes, time_edges)
+    counts = get_spikecount_per_time_bin(spikes, time_edges=time_edges)
     # Three bins [0, 1), [1, 2), [2, 3]: spikes outside [0, 3] are dropped, an
     # interior edge opens the bin to its right, and the last edge (3.0) closes
     # the final bin.

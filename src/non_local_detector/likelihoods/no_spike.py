@@ -21,7 +21,7 @@ from non_local_detector.likelihoods.common import (
     get_spikecount_per_time_bin,
     resolve_row_slice,
 )
-from non_local_detector.time_edges import validate_time_edges
+from non_local_detector.time_edges import requires_time_edges, validate_time_edges
 
 
 def no_spike_time_bin_size(time_edges: np.ndarray) -> float:
@@ -35,12 +35,13 @@ def no_spike_time_bin_size(time_edges: np.ndarray) -> float:
     return float(np.median(np.diff(time_edges)))
 
 
+@requires_time_edges
 def predict_no_spike_log_likelihood(
-    time_edges: np.ndarray,
     spike_times: list[list[float]],
     no_spike_rate: float = 1e-10,
     row_slice: slice | None = None,
     *,
+    time_edges: np.ndarray,
     _time_bin_size: float | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
@@ -103,7 +104,7 @@ def predict_no_spike_log_likelihood(
     >>> import numpy as np
     >>> time_edges = np.linspace(0, 10, 101)  # 100 bins
     >>> spike_times = [[] for _ in range(5)]  # 5 neurons, no spikes
-    >>> log_lik = predict_no_spike_log_likelihood(time_edges, spike_times)
+    >>> log_lik = predict_no_spike_log_likelihood(spike_times, time_edges=time_edges)
     >>> log_lik.shape
     (100, 1)
 
@@ -129,7 +130,7 @@ def predict_no_spike_log_likelihood(
             jax.scipy.special.xlogy(
                 get_spikecount_per_time_bin(
                     neuron_spike_times,
-                    time_edges,
+                    time_edges=time_edges,
                     row_slice=row_slice,
                     _spike_time_order=_spike_time_order,
                 ),

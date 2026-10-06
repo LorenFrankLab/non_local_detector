@@ -626,7 +626,12 @@ def test_invariants_place_fields_and_likelihood():
 
     ll = np.asarray(
         predict_sorted_spikes_mrf_log_likelihood(
-            time[:100], time, position, spike_times, is_local=False, **encoding
+            time,
+            position,
+            spike_times,
+            time_edges=time[:100],
+            is_local=False,
+            **encoding,
         )
     )
     assert np.all(np.isfinite(ll))
@@ -832,13 +837,23 @@ def test_predict_shapes_local_and_nonlocal():
     n_interior = int(env.is_track_interior_.ravel().sum())
 
     nonlocal_ll = predict_sorted_spikes_mrf_log_likelihood(
-        decode_time_edges, time, position, spike_times, is_local=False, **encoding
+        time,
+        position,
+        spike_times,
+        time_edges=decode_time_edges,
+        is_local=False,
+        **encoding,
     )
     assert nonlocal_ll.shape == (decode_time.shape[0], n_interior)
     assert np.all(np.isfinite(nonlocal_ll))
 
     local_ll = predict_sorted_spikes_mrf_log_likelihood(
-        decode_time_edges, time, position, spike_times, is_local=True, **encoding
+        time,
+        position,
+        spike_times,
+        time_edges=decode_time_edges,
+        is_local=True,
+        **encoding,
     )
     assert local_ll.shape == (decode_time.shape[0], 1)
     assert np.all(np.isfinite(local_ll))

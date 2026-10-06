@@ -71,7 +71,7 @@ from non_local_detector.likelihoods.common import (
     validate_population_lengths,
     validate_weights,
 )
-from non_local_detector.time_edges import validate_time_edges
+from non_local_detector.time_edges import requires_time_edges, validate_time_edges
 
 
 def make_spline_design_matrix(
@@ -448,8 +448,8 @@ def fit_sorted_spikes_glm_encoding_model(
     }
 
 
+@requires_time_edges
 def predict_sorted_spikes_glm_log_likelihood(
-    time_edges: np.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[np.ndarray],
@@ -463,6 +463,7 @@ def predict_sorted_spikes_glm_log_likelihood(
     is_local: bool = False,
     row_slice: slice | None = None,
     *,
+    time_edges: np.ndarray,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of spikes given a fitted GLM encoding model.
@@ -552,7 +553,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
                 neuron_spike_times,
-                time_edges,
+                time_edges=time_edges,
                 row_slice=row_slice,
                 _spike_time_order=_spike_time_order,
             )
@@ -579,7 +580,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
                 neuron_spike_times,
-                time_edges,
+                time_edges=time_edges,
                 row_slice=row_slice,
                 _spike_time_order=_spike_time_order,
             )

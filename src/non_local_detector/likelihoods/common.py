@@ -11,6 +11,7 @@ from track_linearization import get_linearized_position  # type: ignore[import-u
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
+from non_local_detector.time_edges import requires_time_edges, validate_time_edges
 
 # JAX exposes this exception only privately. Older supported releases predate
 # explicit sharding and may lack the type; an empty tuple catches nothing.
@@ -411,12 +412,13 @@ class SpikeSelection:
     n_rows: int
 
 
+@requires_time_edges
 def select_spikes_in_rows(
     spike_times: np.ndarray,
-    time_edges: np.ndarray,
     row_start: int,
     row_stop: int,
     *,
+    time_edges: np.ndarray,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> SpikeSelection:
     """Select the spikes owned by the decode bins ``[row_start, row_stop)``.
@@ -457,7 +459,11 @@ def select_spikes_in_rows(
         ordering from the indexer's type. ``n_spikes`` records the original
         length so paired arrays can be validated even for empty requests.
     """
-    time_edges = np.asarray(time_edges)
+    time_edges = (
+        validate_time_edges(time_edges)
+        if _spike_time_order is None
+        else np.asarray(time_edges)
+    )
     n_bins = time_edges.shape[0] - 1
     n_spikes = len(spike_times)
     n_rows = row_stop - row_start
@@ -946,11 +952,12 @@ def select_spike_rows(
     return np.asarray(selected)
 
 
+@requires_time_edges
 def get_spikecount_per_time_bin(
     spike_times: np.ndarray,
-    time_edges: np.ndarray,
     row_slice: slice | None = None,
     *,
+    time_edges: np.ndarray,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> np.ndarray:
     """Get the number of spikes in each requested decode bin.
@@ -960,9 +967,8 @@ def get_spikecount_per_time_bin(
     spike_times : np.ndarray, shape (n_spikes,)
     time_edges : np.ndarray, shape (n_bins + 1,)
         FULL decoding bin edges, which define the bin a spike belongs to (see
-        ``select_spikes_in_rows``). They are not validated here, because this
-        runs per unit and per chunk; callers validate them once (see
-        ``non_local_detector.time_edges.validate_time_edges``).
+        ``select_spikes_in_rows``). Direct calls validate these edges. Internal
+        calls with prepared spike ordering reuse the detector's validated grid.
     row_slice : slice | None, optional
         Contiguous range of bins to count, by default None (all bins).
         Counting bins ``[a, b)`` of the full timeline gives the same values as
@@ -978,12 +984,17 @@ def get_spikecount_per_time_bin(
     count : np.ndarray, shape (n_rows,)
         ``n_rows`` is ``n_bins`` by default, else the length of ``row_slice``.
     """
+    time_edges = (
+        validate_time_edges(time_edges)
+        if _spike_time_order is None
+        else np.asarray(time_edges)
+    )
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     selection = select_spikes_in_rows(
         spike_times,
-        time_edges,
         row_start,
         row_stop,
+        time_edges=time_edges,
         _spike_time_order=_spike_time_order,
     )
     return np.bincount(selection.bin_ind, minlength=selection.n_rows)

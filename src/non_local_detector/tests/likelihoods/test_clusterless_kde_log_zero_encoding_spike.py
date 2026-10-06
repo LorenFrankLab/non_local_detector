@@ -104,11 +104,11 @@ def _fit_predict_local(module, s):
         disable_progress_bar=True,
     )
     return module.predict_clusterless_kde_log_likelihood(
-        jnp.asarray(s["time"]),
         jnp.asarray(s["position_time"]),
         jnp.asarray(s["position"]),
         [jnp.asarray(t) for t in s["dec_spike_times"]],
         [jnp.asarray(f) for f in s["dec_feats"]],
+        time_edges=jnp.asarray(s["time"]),
         **encoding,
         is_local=True,
     )

@@ -77,11 +77,11 @@ def test_direct_non_local_predict_without_position(fitted_decoder, clusterless_s
     def call(position_time, position):
         return np.asarray(
             predict(
-                time_edges,
                 position_time,
                 position,
                 sim.spike_times,
                 sim.spike_waveform_features,
+                time_edges=time_edges,
                 **encoding_model,
                 is_local=False,
             )

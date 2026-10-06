@@ -85,13 +85,13 @@ def test_predict_rejects_electrode_count_mismatch(fitted_decoder, sim):
             fitted_decoder.predict(spike_times, features, time_edges=time_edges)
         with pytest.raises(ValidationError, match="electrode population lengths"):
             predict(
-                jnp.asarray(time_edges),
                 None,
                 None,
                 spike_times,
                 features,
                 **encoding_model,
                 is_local=False,
+                time_edges=jnp.asarray(time_edges),
             )
 
 

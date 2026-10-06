@@ -27,7 +27,7 @@ from non_local_detector.likelihoods.common import (
     validate_weights,
     weighted_mean_rate,
 )
-from non_local_detector.time_edges import validate_time_edges
+from non_local_detector.time_edges import requires_time_edges, validate_time_edges
 
 
 def kde_distance(
@@ -341,8 +341,8 @@ def fit_clusterless_kde_encoding_model(
     }
 
 
+@requires_time_edges
 def predict_clusterless_kde_log_likelihood(
-    time_edges: np.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
@@ -363,6 +363,7 @@ def predict_clusterless_kde_log_likelihood(
     encoding_weights: list[jnp.ndarray] | None = None,
     row_slice: slice | None = None,
     *,
+    time_edges: np.ndarray,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of the clusterless KDE model.
@@ -494,9 +495,9 @@ def predict_clusterless_kde_log_likelihood(
         ):
             selection = select_spikes_in_rows(
                 electrode_spike_times,
-                time_edges,
                 row_start,
                 row_stop,
+                time_edges=time_edges,
                 _spike_time_order=_spike_time_order,
             )
             electrode_decoding_spike_waveform_features = select_spike_rows(
@@ -638,9 +639,9 @@ def compute_local_log_likelihood(
     ):
         selection = select_spikes_in_rows(
             electrode_spike_times,
-            time_edges,
             row_start,
             row_stop,
+            time_edges=time_edges,
             _spike_time_order=_spike_time_order,
         )
         electrode_spike_times = select_spike_rows(electrode_spike_times, selection)

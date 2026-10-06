@@ -99,26 +99,26 @@ def test_gmm_blocking_parity(gmm_simulation_data):
 
     # Predict with no blocking (very large block size)
     result_no_block = predict_clusterless_gmm_log_likelihood(
-        time,
         position_time,
         position,
         spike_times,
         spike_features,
+        time_edges=time,
         **encoding_model,
         is_local=False,
-        spike_block_size=999999,  # Effectively no blocking
+        spike_block_size=999999,
     )
 
     # Predict with blocking
     result_blocked = predict_clusterless_gmm_log_likelihood(
-        time,
         position_time,
         position,
         spike_times,
         spike_features,
+        time_edges=time,
         **encoding_model,
         is_local=False,
-        spike_block_size=10,  # Small blocks to test the mechanism
+        spike_block_size=10,
     )
 
     # Results should be identical (within numerical precision)
@@ -158,25 +158,25 @@ def test_gmm_bin_tiling_parity(gmm_simulation_data):
 
     # Predict without bin tiling
     result_no_tile = predict_clusterless_gmm_log_likelihood(
-        time,
         position_time,
         position,
         spike_times,
         spike_features,
+        time_edges=time,
         **encoding_model,
         is_local=False,
-        bin_tile_size=None,  # No tiling
+        bin_tile_size=None,
     )
 
     # Predict with bin tiling
     bin_tile_size = 3
     assert encoding_model["interior_place_bin_centers"].shape[0] > bin_tile_size
     result_tiled = predict_clusterless_gmm_log_likelihood(
-        time,
         position_time,
         position,
         spike_times,
         spike_features,
+        time_edges=time,
         **encoding_model,
         is_local=False,
         bin_tile_size=bin_tile_size,
@@ -219,29 +219,29 @@ def test_gmm_combined_optimizations(gmm_simulation_data):
 
     # Predict with neither optimization
     result_baseline = predict_clusterless_gmm_log_likelihood(
-        time,
         position_time,
         position,
         spike_times,
         spike_features,
+        time_edges=time,
         **encoding_model,
         is_local=False,
-        spike_block_size=999999,  # No blocking
-        bin_tile_size=None,  # No tiling
+        spike_block_size=999999,
+        bin_tile_size=None,
     )
 
     # Predict with both optimizations
     bin_tile_size = 3
     assert encoding_model["interior_place_bin_centers"].shape[0] > bin_tile_size
     result_optimized = predict_clusterless_gmm_log_likelihood(
-        time,
         position_time,
         position,
         spike_times,
         spike_features,
+        time_edges=time,
         **encoding_model,
         is_local=False,
-        spike_block_size=10,  # Small spike blocks
+        spike_block_size=10,
         bin_tile_size=bin_tile_size,
     )
 
@@ -351,35 +351,35 @@ def test_gmm_edge_cases(gmm_simulation_data):
 
     # Test 1: Block size larger than spike count (should work fine)
     result_large_block = predict_clusterless_gmm_log_likelihood(
-        time,
         position_time,
         position,
         spike_times,
         spike_features,
+        time_edges=time,
         **encoding_model,
         is_local=False,
-        spike_block_size=1000,  # Much larger than 1 spike
+        spike_block_size=1000,
     )
 
     # Test 2: Bin tile size larger than total bins (should work fine)
     result_large_tile = predict_clusterless_gmm_log_likelihood(
-        time,
         position_time,
         position,
         spike_times,
         spike_features,
+        time_edges=time,
         **encoding_model,
         is_local=False,
-        bin_tile_size=10000,  # Much larger than bin count
+        bin_tile_size=10000,
     )
 
     # Test 3: Both combined with single spike
     result_combined = predict_clusterless_gmm_log_likelihood(
-        time,
         position_time,
         position,
         spike_times,
         spike_features,
+        time_edges=time,
         **encoding_model,
         is_local=False,
         spike_block_size=1000,
@@ -459,22 +459,22 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
 
     # This should not raise "must be strictly ascending" error
     result_jax = predict_clusterless_gmm_log_likelihood(
-        time,
         position_time,
         position,
         spike_times,
         spike_features,
+        time_edges=time,
         **encoding_model,
         is_local=False,
     )
 
     # Test local likelihood as well (uses different code path)
     result_local_jax = predict_clusterless_gmm_log_likelihood(
-        time,
         position_time,
         position,
         spike_times,
         spike_features,
+        time_edges=time,
         **encoding_model,
         is_local=True,
     )
@@ -488,11 +488,11 @@ def test_gmm_jax_array_inputs(gmm_simulation_data):
         return np.asarray(x, dtype=np.float32)
 
     result_numpy = predict_clusterless_gmm_log_likelihood(
-        as_np32(time),
         as_np32(position_time),
         as_np32(position),
         [as_np32(st) for st in spike_times],
         [as_np32(sf) for sf in spike_features],
+        time_edges=as_np32(time),
         **encoding_model,
         is_local=False,
     )
@@ -543,11 +543,11 @@ def test_gmm_empty_and_sparse_electrodes_are_supported(gmm_simulation_data):
     # electrode contributes its zero-rate (None) sentinel, the sparse one its fit.
     n_features = sparse_features.shape[1]
     log_likelihood = predict_clusterless_gmm_log_likelihood(
-        gmm_simulation_data["time"],
         gmm_simulation_data["position_time"],
         gmm_simulation_data["position"],
         [np.zeros((0,)), sparse_times],
         [np.zeros((0, n_features)), sparse_features],
+        time_edges=gmm_simulation_data["time"],
         **encoding,
     )
     assert np.all(np.isfinite(log_likelihood))
@@ -577,11 +577,11 @@ def test_gmm_single_effective_spike_electrode(gmm_simulation_data):
     assert encoding["gmm_effective_components"]["joint"] == [1]
 
     log_likelihood = predict_clusterless_gmm_log_likelihood(
-        data["time"],
         data["position_time"],
         data["position"],
         [one_time],
         [one_feature],
+        time_edges=data["time"],
         **encoding,
     )
     assert np.all(np.isfinite(log_likelihood))
@@ -694,11 +694,11 @@ def test_gmm_rejects_mismatched_electrode_inputs(gmm_simulation_data):
 
     with pytest.raises(ValidationError, match="population lengths do not match"):
         predict_clusterless_gmm_log_likelihood(
-            data["time"],
             data["position_time"],
             data["position"],
             data["spike_times"][:-1],
             data["spike_features"][:-1],
+            time_edges=data["time"],
             **encoding,
         )
 
@@ -706,11 +706,11 @@ def test_gmm_rejects_mismatched_electrode_inputs(gmm_simulation_data):
     wrong_dimension[0] = np.pad(wrong_dimension[0], ((0, 0), (0, 1)))
     with pytest.raises(ValidationError, match="feature dimension changed"):
         predict_clusterless_gmm_log_likelihood(
-            data["time"],
             data["position_time"],
             data["position"],
             data["spike_times"],
             wrong_dimension,
+            time_edges=data["time"],
             **encoding,
         )
 
@@ -866,11 +866,11 @@ def test_gmm_zero_weight_electrode_penalizes_decode_spikes():
         def _predict(spike_times, spike_features, encoding, local=is_local):
             return np.asarray(
                 predict_clusterless_gmm_log_likelihood(
-                    decode_time_edges,
                     pt,
                     pos,
                     spike_times,
                     spike_features,
+                    time_edges=decode_time_edges,
                     **encoding,
                     is_local=local,
                 )

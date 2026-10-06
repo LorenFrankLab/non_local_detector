@@ -40,7 +40,7 @@ from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _effective_sample_count,
 )
-from non_local_detector.time_edges import validate_time_edges
+from non_local_detector.time_edges import requires_time_edges, validate_time_edges
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -562,8 +562,8 @@ def fit_clusterless_gmm_encoding_model(
 # ---------------------------------------------------------------------
 
 
+@requires_time_edges
 def predict_clusterless_gmm_log_likelihood(
-    time_edges: np.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
@@ -582,9 +582,10 @@ def predict_clusterless_gmm_log_likelihood(
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
     *,
+    time_edges: np.ndarray,
     mark_dimensions: list[int],
     _spike_time_order: _SpikeTimeOrder | None = None,
-    **kwargs,  # Accept and ignore extra kwargs for compatibility with model interface
+    **kwargs,
 ) -> jnp.ndarray:
     """
     Predict the (non-local or local) log likelihood using the fitted GMM model.
@@ -714,9 +715,9 @@ def predict_clusterless_gmm_log_likelihood(
         # no in-window spikes the row sums contribute zero.
         selection = select_spikes_in_rows(
             elect_times,
-            time_edges,
             row_start,
             row_stop,
+            time_edges=time_edges,
             _spike_time_order=_spike_time_order,
         )
         if joint_gmm is None:
@@ -903,9 +904,9 @@ def compute_local_log_likelihood(
         # not skip -- an observed spike is negative evidence, not "no data".
         selection = select_spikes_in_rows(
             elect_times,
-            time_edges,
             row_start,
             row_stop,
+            time_edges=time_edges,
             _spike_time_order=_spike_time_order,
         )
         if joint_gmm is None:

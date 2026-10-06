@@ -17,6 +17,8 @@ cast to float64); that stays well below a thousandth of a bin. The uniformity gu
 width, and still rejects any irregularity above 0.1% of a bin.
 """
 
+from functools import wraps
+
 import numpy as np
 
 from non_local_detector.exceptions import DataError, ValidationError
@@ -29,6 +31,29 @@ _MAX_RELATIVE_SPACING_TOLERANCE = 1e-2
 # Deviation from the mean width always allowed by the uniformity guard, as a
 # fraction of the width: rounding inherited from a larger scale or dtype.
 _UNIFORMITY_RELATIVE_FLOOR = 1e-3
+
+
+def requires_time_edges(function):
+    """Keep the explicit-edge signature and explain obsolete time arguments.
+
+    This is an error adapter, not a compatibility conversion: old inputs are
+    never interpreted as bin boundaries automatically.
+    """
+
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if "time" in kwargs or "time_edges" not in kwargs:
+            raise TypeError(
+                f"{function.__qualname__} requires keyword-only time_edges "
+                "(n_bins + 1 bin boundaries). For uniformly spaced sample "
+                "timestamps, use time_edges=time_edges_from_centers(time). "
+                "This preserves row count but changes between-sample spike "
+                "ownership. See docs/time_grid_migration.md for irregular "
+                "tracking, masks, and independent sequences."
+            )
+        return function(*args, **kwargs)
+
+    return wrapped
 
 
 def _spacing_tolerance(time_edges: np.ndarray) -> float:
@@ -126,6 +151,32 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
 def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:
     """Validate that decode bins are uniform and return their width.
 
+    See :func:`uniform_time_edges`, which also returns the validated edges.
+
+    Parameters
+    ----------
+    time_edges : array_like, shape (n_bins + 1,)
+    name : str, optional
+        Name used in error messages, by default "time_edges".
+
+    Returns
+    -------
+    width : float
+        Bin width in the units of ``time_edges`` (seconds).
+
+    Raises
+    ------
+    ValidationError, DataError
+        From :func:`uniform_time_edges`.
+    """
+    return uniform_time_edges(time_edges, name)[1]
+
+
+def uniform_time_edges(
+    time_edges, name: str = "time_edges"
+) -> tuple[np.ndarray, float]:
+    """Validate uniform decode bins in one pass; return the edges and width.
+
     The width is inferred from the edges as ``(edges[-1] - edges[0]) / n_bins``
     and every bin must match it within the larger of the timestamp
     representation tolerance and a thousandth of the width.
@@ -138,6 +189,8 @@ def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:
 
     Returns
     -------
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        The edges as a floating-point array (see :func:`validate_time_edges`).
     width : float
         Bin width in the units of ``time_edges`` (seconds).
 
@@ -164,7 +217,7 @@ def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:
             "uniformly sampled interval separately, or build a uniform grid "
             "with calculate_time_edges.",
         )
-    return float(width)
+    return edges, float(width)
 
 
 def time_edges_from_centers(time) -> np.ndarray:

@@ -242,7 +242,6 @@ def test_predict_preserves_old_positional_api(simple_1d_environment):
     t_edges = jnp.linspace(0.0, 10.0, 6)
     # Positional call through is_local (16th positional arg), as pre-change callers did.
     ll = predict_clusterless_kde_log_likelihood(
-        t_edges,
         t_pos,
         pos,
         [jnp.array([4.2, 5.6])],
@@ -257,7 +256,8 @@ def test_predict_preserves_old_positional_api(simple_1d_environment):
         enc["summed_ground_process_intensity"],
         jnp.asarray(enc["position_std"]),
         jnp.asarray(enc["waveform_std"]),
-        True,  # is_local, positional
+        True,
+        time_edges=t_edges,
     )
     assert np.asarray(ll).shape == (t_edges.shape[0] - 1, 1)  # local -> (n_bins, 1)
 

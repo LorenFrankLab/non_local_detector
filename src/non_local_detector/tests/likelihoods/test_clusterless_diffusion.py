@@ -169,11 +169,11 @@ def _predict(s, enc, is_local=False, **overrides):
     encoding = dict(enc)
     encoding.update(overrides)
     return predict_clusterless_diffusion_log_likelihood(
-        jnp.asarray(s["time_edges"]),
         s["position_time"],
         s["position"],
         [jnp.asarray(t) for t in s["dec_t"]],
         [jnp.asarray(f) for f in s["dec_f"]],
+        time_edges=jnp.asarray(s["time_edges"]),
         is_local=is_local,
         **encoding,
     )
@@ -350,11 +350,11 @@ def test_absolute_log_likelihood_small_fixture():
     )
     ll = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time_edges),
             position_time,
             position,
             [jnp.asarray(dec_times)],
             [jnp.asarray(dec_marks)],
+            time_edges=jnp.asarray(time_edges),
             is_local=False,
             **enc,
         )
@@ -520,11 +520,11 @@ def test_binary_weights_match_hard_subset():
     def predict(enc, pt, pos):
         return np.asarray(
             predict_clusterless_diffusion_log_likelihood(
-                jnp.asarray(time),
                 pt,
                 pos,
                 dec_spike_times,
                 dec_feats,
+                time_edges=jnp.asarray(time),
                 is_local=False,
                 **enc,
             )
@@ -580,11 +580,11 @@ def test_nonlocal_finite_and_zero_rate():
     ]
     ll = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time_edges),
             position_time,
             position,
             [jnp.asarray(t) for t in dec_times],
             [jnp.asarray(f) for f in dec_feats],
+            time_edges=jnp.asarray(time_edges),
             is_local=False,
             **enc,
         )
@@ -676,11 +676,11 @@ def test_zero_rate_fit_and_predict_finite_and_warn():
     dec_feats = [np.array([[0.1, 0.1], [0.9, -0.8]], dtype=np.float32)]
     ll = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time_edges),
             position_time,
             position,
             [jnp.asarray(t) for t in dec_times],
             [jnp.asarray(f) for f in dec_feats],
+            time_edges=jnp.asarray(time_edges),
             is_local=False,
             **enc,
         )
@@ -766,22 +766,22 @@ def test_local_equals_nonlocal_per_spike():
 
     ll_nonlocal = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time_edges),
             position_time,
             position,
             [jnp.asarray(t) for t in dec_times],
             [jnp.asarray(f) for f in dec_feats],
+            time_edges=jnp.asarray(time_edges),
             is_local=False,
             **enc,
         )
     )
     ll_local = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time_edges),
             position_time,
             position,
             [jnp.asarray(t) for t in dec_times],
             [jnp.asarray(f) for f in dec_feats],
+            time_edges=jnp.asarray(time_edges),
             is_local=True,
             **enc,
         )
@@ -861,11 +861,11 @@ def test_local_finite_and_zero_rate():
     ]
     ll = np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time_edges),
             position_time,
             position,
             [jnp.asarray(t) for t in dec_times],
             [jnp.asarray(f) for f in dec_feats],
+            time_edges=jnp.asarray(time_edges),
             is_local=True,
             **enc,
         )
@@ -1151,11 +1151,11 @@ def test_validation_predict_zero_rate_precedence(is_local):
     ]
     with pytest.raises(ValidationError):
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time),
             position_time,
             position,
             [jnp.asarray(t) for t in dec_times],
             [jnp.asarray(f) for f in dec_feats],
+            time_edges=jnp.asarray(time),
             is_local=is_local,
             **enc,
         )
@@ -1213,11 +1213,11 @@ def _fit_kde(
 def _predict_diffusion_nonlocal(time, position_time, position, dec_t, dec_f, enc):
     return np.asarray(
         predict_clusterless_diffusion_log_likelihood(
-            jnp.asarray(time),
             jnp.asarray(position_time),
             jnp.asarray(position),
             [jnp.asarray(t) for t in dec_t],
             [jnp.asarray(f) for f in dec_f],
+            time_edges=jnp.asarray(time),
             is_local=False,
             **enc,
         )
@@ -1227,11 +1227,11 @@ def _predict_diffusion_nonlocal(time, position_time, position, dec_t, dec_f, enc
 def _predict_kde_nonlocal(time, position_time, position, dec_t, dec_f, enc):
     return np.asarray(
         clusterless_kde.predict_clusterless_kde_log_likelihood(
-            jnp.asarray(time),
             jnp.asarray(position_time),
             jnp.asarray(position),
             [jnp.asarray(t) for t in dec_t],
             [jnp.asarray(f) for f in dec_f],
+            time_edges=jnp.asarray(time),
             is_local=False,
             **enc,
         )
@@ -1750,7 +1750,7 @@ def test_benchmark_diffusion_vs_kde_large_grid():
 
     def kde_predict():
         return clusterless_kde.predict_clusterless_kde_log_likelihood(
-            tm, pt, po, dec_t_j, dec_f_j, is_local=False, **enc_kde
+            pt, po, dec_t_j, dec_f_j, time_edges=tm, is_local=False, **enc_kde
         )
 
     ll_kde = np.asarray(kde_predict())
@@ -1773,7 +1773,7 @@ def test_benchmark_diffusion_vs_kde_large_grid():
 
     def diffusion_predict():
         return predict_clusterless_diffusion_log_likelihood(
-            tm, pt, po, dec_t_j, dec_f_j, is_local=False, **enc_diff
+            pt, po, dec_t_j, dec_f_j, time_edges=tm, is_local=False, **enc_diff
         )
 
     ll_diff = np.asarray(diffusion_predict())

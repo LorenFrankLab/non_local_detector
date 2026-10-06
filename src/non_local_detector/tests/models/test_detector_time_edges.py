@@ -179,15 +179,111 @@ def test_is_missing_must_have_one_entry_per_bin(family):
 
 # ----------------------------------------------------------------- missing
 def _expected_missing(edges, position_time, is_nan):
-    """Bins overlapping the span over which interpolation touches a NaN sample."""
+    """Bins owning any time at which interpolation reads a NaN sample.
+
+    Linear interpolation (``scipy.interpolate.interpn``, extrapolating from
+    the end intervals) reads sample ``k`` at times in ``[t[k - 1], t[k + 1])``,
+    reaching to infinity when ``k`` is in an end interval. Bin ``i`` owns
+    ``[edges[i], edges[i + 1])``, and the final bin also owns ``edges[-1]``.
+    """
+    n = position_time.size
     missing = np.zeros(edges.size - 1, bool)
     for k in np.flatnonzero(is_nan):
-        lo = position_time[k - 1] if k > 0 else -np.inf
-        hi = position_time[k + 1] if k + 1 < position_time.size else np.inf
+        lo = position_time[k - 1] if k > 1 else -np.inf
+        hi = position_time[k + 1] if k < n - 2 else np.inf
         for i in range(edges.size - 1):
-            if edges[i] < hi and edges[i + 1] > lo:
+            closed_end = (
+                edges[i + 1] >= lo if i == edges.size - 2 else edges[i + 1] > lo
+            )
+            if edges[i] < hi and closed_end:
                 missing[i] = True
     return missing
+
+
+@pytest.mark.unit
+def test_interpolation_reads_a_nan_sample_on_a_half_open_span():
+    """Pins the convention the missing-bin oracle relies on: at the lower
+    neighbour's time the NaN sample still enters with weight zero, at the
+    upper neighbour's time it no longer does."""
+    import scipy.interpolate
+
+    position_time = np.arange(10.0)
+    position = np.arange(10.0)[:, None]
+    position[5] = np.nan
+    at = np.array([3.9, 4.0, 4.5, 5.9, 6.0])
+    read = scipy.interpolate.interpn(
+        (position_time,), position, at, bounds_error=False, fill_value=None
+    )[:, 0]
+    np.testing.assert_array_equal(np.isfinite(read), [True, False, False, False, True])
+
+
+@pytest.mark.unit
+def test_missing_bins_cover_every_time_in_the_bin():
+    """Local likelihoods interpolate position at spike times, not only at bin
+    centers, so a bin is missing when any time it owns reads a NaN sample. On a
+    sample-centered grid with one NaN sample ``k`` that is bins ``k - 1`` to
+    ``k + 1``: bin ``k + 1`` has a finite center but owns times below
+    ``t[k + 1]`` that read NaN."""
+    from non_local_detector.models.base import _missing_bins
+    from non_local_detector.time_edges import time_edges_from_centers
+
+    position_time = np.arange(10.0)
+    position = np.arange(10.0)[:, None]
+    position[5] = np.nan
+    edges = time_edges_from_centers(position_time)
+    missing = _missing_bins(edges, None, position_time, position)
+    np.testing.assert_array_equal(np.flatnonzero(missing), [4, 5, 6])
+    np.testing.assert_array_equal(
+        missing, _expected_missing(edges, position_time, ~np.isfinite(position[:, 0]))
+    )
+
+
+@pytest.mark.unit
+def test_missing_bins_include_a_nan_read_at_the_closed_final_edge():
+    """The final bin also owns ``edges[-1]``; a NaN read exactly there marks it."""
+    from non_local_detector.models.base import _missing_bins
+
+    position_time = np.arange(10.0)
+    position = np.arange(10.0)[:, None]
+    position[6] = np.nan  # read on [5, 7)
+    edges = np.array([1.0, 3.0, 5.0])
+    np.testing.assert_array_equal(
+        _missing_bins(edges, None, position_time, position), [False, True]
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("family", ["clusterless"], indirect=True)
+def test_spike_with_nan_position_in_a_finite_center_bin_is_missing(family):
+    """A decoding spike at ``t[k] + 0.75 dt`` with ``position[k]`` NaN reads a
+    NaN position although its bin's center ``t[k + 1]`` reads a finite one.
+    The bin must be missing, or the local likelihood turns the posterior NaN."""
+    detector = _fitted(family)
+    position_time = family[1][:300]
+    position = family[2]["position"].astype(float)[:300].copy()
+    position = position if position.ndim > 1 else position[:, None]
+    k = 50
+    position[k] = np.nan
+    dt = position_time[1] - position_time[0]
+    spike_times = [s.copy() for s in family[3]["spike_times"]]
+    features = [f.copy() for f in family[3]["spike_waveform_features"]]
+    spike_times[0] = np.sort(np.append(spike_times[0], position_time[k] + 0.75 * dt))
+    features[0] = np.vstack([features[0], features[0][:1]])
+    edges = time_edges_from_centers(position_time)
+    results = detector.predict(
+        **_decode_args(
+            family,
+            edges,
+            position=position,
+            position_time=position_time,
+            spike_times=spike_times,
+            spike_waveform_features=features,
+        ),
+        return_outputs="log_likelihood",
+    )
+    is_zero_row = np.all(results.log_likelihood.values == 0.0, axis=1)
+    np.testing.assert_array_equal(np.flatnonzero(is_zero_row), [k - 1, k, k + 1])
+    assert np.all(np.isfinite(results.acausal_posterior.values))
 
 
 @pytest.mark.integration
@@ -304,7 +400,7 @@ def test_unmarked_callback_chunks_count_boundary_spikes_once(family, monkeypatch
 
     def unmarked(time_edges, *args, is_missing=None):
         received.append(len(time_edges))
-        return original(time_edges, *args, is_missing=is_missing)
+        return original(*args, time_edges=time_edges, is_missing=is_missing)
 
     monkeypatch.setattr(detector, "compute_log_likelihood", unmarked)
     chunked = detector.predict(
@@ -346,7 +442,7 @@ def test_callback_returning_the_wrong_row_count_is_rejected(
     original = detector.compute_log_likelihood
 
     def one_row_per_edge(time_edges, *args, is_missing=None):
-        rows = original(time_edges, *args)
+        rows = original(*args, time_edges=time_edges)
         return np.concatenate([rows, rows[-1:]])
 
     monkeypatch.setattr(detector, "compute_log_likelihood", one_row_per_edge)
@@ -495,14 +591,8 @@ def test_missing_bins_match_the_interpolation_oracle(seed):
     )
     edges = np.unique(edges)
     user_mask = rng.random(edges.size - 1) < 0.1
-    centers = edges[:-1] + 0.5 * np.diff(edges)
 
     expected = _expected_missing(edges, position_time, is_nan)
-    # The extrapolated ends read the end intervals.
-    reads_first = centers < position_time[0]
-    reads_last = centers > position_time[-1]
-    expected |= reads_first & (is_nan[0] | is_nan[1])
-    expected |= reads_last & (is_nan[-1] | is_nan[-2])
     np.testing.assert_array_equal(
         _missing_bins(edges, user_mask, position_time, position), expected | user_mask
     )
@@ -625,6 +715,7 @@ def test_every_detector_entry_point_takes_keyword_only_time_edges():
 def test_unmarked_chunks_keep_higher_precision_spikes_in_their_bin(edge_dtype):
     """Excluding a shared chunk edge must not open a gap wider than the spike
     times' precision: float32 edges with float64 spikes just below an edge."""
+    from non_local_detector.core import accepts_row_slice
     from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
     from non_local_detector.models.base import _prepare_likelihood_callback
 
@@ -632,14 +723,20 @@ def test_unmarked_chunks_keep_higher_precision_spikes_in_their_bin(edge_dtype):
     spikes = np.array([0.99999999, 1.0])
 
     def unmarked(time_edges, spike_times, is_missing=None):
-        return get_spikecount_per_time_bin(spike_times, time_edges)[:, None]
+        return get_spikecount_per_time_bin(spike_times, time_edges=time_edges)[:, None]
 
     callback = _prepare_likelihood_callback(unmarked, edges, has_no_spike=False)
+    # The adapter takes the chunk's global row range from core, like a marked
+    # callback, so it never has to recover it from the row coordinates.
+    assert accepts_row_slice(callback)
     centers = edges[:-1] + 0.5 * np.diff(edges)
     chunked = np.concatenate(
-        [callback(centers[i : i + 1], spikes, is_missing=None) for i in range(2)]
+        [
+            callback(centers, spikes, is_missing=None, row_slice=slice(i, i + 1))
+            for i in range(2)
+        ]
     )
     np.testing.assert_array_equal(
-        chunked[:, 0], get_spikecount_per_time_bin(spikes, edges)
+        chunked[:, 0], get_spikecount_per_time_bin(spikes, time_edges=edges)
     )
     np.testing.assert_array_equal(chunked[:, 0], [1, 1])

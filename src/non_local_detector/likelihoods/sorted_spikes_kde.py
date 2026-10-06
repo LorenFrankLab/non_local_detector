@@ -69,7 +69,7 @@ from non_local_detector.likelihoods.common import (
     validate_weights,
     weighted_mean_rate,
 )
-from non_local_detector.time_edges import validate_time_edges
+from non_local_detector.time_edges import requires_time_edges, validate_time_edges
 
 
 def fit_sorted_spikes_kde_encoding_model(
@@ -257,8 +257,8 @@ def fit_sorted_spikes_kde_encoding_model(
     }
 
 
+@requires_time_edges
 def predict_sorted_spikes_kde_log_likelihood(
-    time_edges: np.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[np.ndarray],
@@ -274,6 +274,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     is_local: bool = False,
     row_slice: slice | None = None,
     *,
+    time_edges: np.ndarray,
     _spike_time_order: _SpikeTimeOrder | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of sorted spikes using KDE encoding models.
@@ -359,7 +360,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
                 neuron_spike_times,
-                time_edges,
+                time_edges=time_edges,
                 row_slice=row_slice,
                 _spike_time_order=_spike_time_order,
             )
@@ -399,7 +400,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
                 neuron_spike_times,
-                time_edges,
+                time_edges=time_edges,
                 row_slice=row_slice,
                 _spike_time_order=_spike_time_order,
             )

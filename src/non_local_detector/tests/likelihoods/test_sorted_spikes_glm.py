@@ -754,7 +754,7 @@ class TestWeightedEventOwnership:
         np.testing.assert_array_equal(exposure, mask)
         assert np.all(np.isfinite(encoding["place_fields"]))
         log_likelihood = predict_sorted_spikes_glm_log_likelihood(
-            position_time, position_time, position, spike_times, **encoding
+            position_time, position, spike_times, time_edges=position_time, **encoding
         )
         assert np.all(np.isfinite(log_likelihood))
 

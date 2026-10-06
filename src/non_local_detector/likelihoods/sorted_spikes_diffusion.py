@@ -52,7 +52,7 @@ from non_local_detector.likelihoods.diffusion import (
     environment_graph,
     to_density,
 )
-from non_local_detector.time_edges import validate_time_edges
+from non_local_detector.time_edges import requires_time_edges, validate_time_edges
 
 _LOCAL_INTERPOLATION_MODES = {"nearest", "linear"}
 
@@ -569,7 +569,7 @@ def _spike_counts_matrix(
     counts = [
         get_spikecount_per_time_bin(
             neuron_spike_times,
-            time_edges,
+            time_edges=time_edges,
             row_slice=row_slice,
             _spike_time_order=_spike_time_order,
         )
@@ -582,8 +582,8 @@ def _spike_counts_matrix(
     return np.stack(counts, axis=1)
 
 
+@requires_time_edges
 def predict_sorted_spikes_diffusion_log_likelihood(
-    time_edges: np.ndarray,
     position_time: np.ndarray,
     position: np.ndarray,
     spike_times: list[np.ndarray],
@@ -601,6 +601,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     interior_log_place_fields: jnp.ndarray | None = None,
     row_slice: slice | None = None,
     *,
+    time_edges: np.ndarray,
     _spike_time_order: _SpikeTimeOrder | None = None,
     **_encoding_extras: object,
 ) -> jnp.ndarray:

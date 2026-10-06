@@ -48,7 +48,6 @@ def create_test_data(n_encoding=100, n_decoding=50, n_positions=200):
         spike_times=enc_spike_times,
         spike_waveform_features=enc_spike_features,
         environment=env,
-        sampling_frequency=500,
         position_std=np.sqrt(12.5),
         waveform_std=24.0,
         block_size=100,
@@ -82,14 +81,15 @@ def create_test_data(n_encoding=100, n_decoding=50, n_positions=200):
 
 def profile_with_compilation_time():
     """Profile showing compilation vs execution time."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("COMPILATION VS EXECUTION TIME")
-    print("="*60)
+    print("=" * 60)
 
     data = create_test_data(n_encoding=100, n_decoding=50, n_positions=200)
 
     # Time first call (includes compilation)
     import time
+
     start = time.perf_counter()
     result1 = estimate_log_joint_mark_intensity(
         data["decoding_features"],
@@ -125,9 +125,9 @@ def profile_with_compilation_time():
 
 def profile_memory_usage():
     """Profile memory allocation patterns."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("MEMORY USAGE ANALYSIS")
-    print("="*60)
+    print("=" * 60)
 
     # Test different dataset sizes
     sizes = [
@@ -161,14 +161,16 @@ def profile_memory_usage():
                 total_bytes += val.nbytes
         total_bytes += result.nbytes
 
-        print(f"{name:<10} {n_enc:>6} {n_dec:>6} {n_pos:>6} {total_bytes / 1024**2:>12.2f}")
+        print(
+            f"{name:<10} {n_enc:>6} {n_dec:>6} {n_pos:>6} {total_bytes / 1024**2:>12.2f}"
+        )
 
 
 def profile_optimization_strategies():
     """Compare different optimization strategies."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("OPTIMIZATION STRATEGY COMPARISON")
-    print("="*60)
+    print("=" * 60)
 
     data = create_test_data(n_encoding=200, n_decoding=100, n_positions=500)
 
@@ -222,9 +224,9 @@ def profile_optimization_strategies():
 
 def analyze_compilation_cache():
     """Show how JAX caches compiled functions."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("COMPILATION CACHING ANALYSIS")
-    print("="*60)
+    print("=" * 60)
 
     data = create_test_data(n_encoding=100, n_decoding=50, n_positions=200)
 
@@ -265,9 +267,9 @@ def analyze_compilation_cache():
 
 def main():
     """Run all profiling analyses."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("JAX PROFILING FOR CLUSTERLESS KDE")
-    print("="*60)
+    print("=" * 60)
     print(f"\nJAX version: {jax.__version__}")
     print(f"Devices: {jax.devices()}")
     print(f"Backend: {jax.default_backend()}")
@@ -278,9 +280,9 @@ def main():
         profile_optimization_strategies()
         analyze_compilation_cache()
 
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("PROFILING TIPS")
-        print("="*60)
+        print("=" * 60)
         print("""
 1. JIT Compilation:
    - First call includes compilation time (~100-1000ms)
@@ -311,9 +313,10 @@ def main():
     except Exception as e:
         print(f"\nError during profiling: {e}")
         import traceback
+
         traceback.print_exc()
 
-    print("\n" + "="*60 + "\n")
+    print("\n" + "=" * 60 + "\n")
 
 
 if __name__ == "__main__":
