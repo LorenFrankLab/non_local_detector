@@ -1,9 +1,11 @@
 # Likelihood Defect Remediation
 
-Status: Phases 0–4 are merged on `main` (Phase 0 `c808dde`; Phase 1 `8c8765f` +
-`5bd63d4`; Phase 2 `86e22f0`; Phase 3 `ffc85a1`; Phase 4 `ee2cc21`). The
-remaining phase plans were re-verified against `ee2cc21` on 2026-09-22 and have
-the readiness states recorded below.
+Status: Phases 0–5 are merged on `main` (Phase 0 `c808dde`; Phase 1 `8c8765f` +
+`5bd63d4`; Phase 2 `86e22f0`; Phase 3 `ffc85a1`; Phase 4 `ee2cc21`; Phase 5
+`68e88b0`). The remaining phase plans were re-verified against `ee2cc21` on
+2026-09-22 and have the readiness states recorded below; Phase 5 did not change
+their blockers. C3b was resolved on 2026-09-25 (see
+[shared-contracts](shared-contracts.md#c3b--encoding-exposure-resolved-2026-09-25)).
 
 ## Summary
 
@@ -23,12 +25,11 @@ GMM floored a log-density before forming a ratio (~10^11 intensity distortion in
 a realistic tail; fixed in Phase 2); chunked prediction dropped every spike
 falling between two chunks (fixed in Phase 3); and `time` is read inconsistently
 as bin edges vs. timestamps, leaving a final row that can never contain a spike
-and rates calibrated to an unstated assumption (Phase 6). Still open: the
-clusterless encoding fit bridges group-mask gaps and counts a gap spike twice at
-full weight (Phase 5).
+and rates calibrated to an unstated assumption (Phase 6). The clusterless encoding fit bridged group-mask gaps and counted a gap spike
+twice at full weight (fixed in Phase 5).
 
-**Read [shared-contracts.md](shared-contracts.md) first. C2 and C3a are settled;
-C1 is partially resolved and C3b is unresolved.** C1's former policy was
+**Read [shared-contracts.md](shared-contracts.md) first. C2, C3a, and C3b are
+settled; C1 is partially resolved.** C1's former policy was
 withdrawn as non-monotonic; phase 2 shipped the GMM arithmetic corrections
 under the existing floors, and the package-wide policy (a background firing
 model) is deferred to a separate proposal. Implementation selecting an
@@ -97,6 +98,32 @@ they do not establish that an unresolved policy or implementation is ready.
 Phase numbers identify scope and reading order. These dependencies determine
 release order; implementation details remain subject to prototyping.
 
+**Accepted checkpoint note (2026-10-05):** the review fixes on
+`feat/time-edges-uniform-bins` were separated and executed in order at the user's
+request. **Phase 6a–6d package work is complete and independently reviewed**,
+with separate frozen review checkpoints and source commits in logical groups.
+The user approved the three duration-sensitive 6b snapshot corrections; they
+are applied and all eight snapshots pass. The separate 6c completion review
+closed private/cached, grid-generator, overflow, and clock-provenance gaps under
+the same tolerance policy. The subsequent 6d audit closed missing active
+encoding entries and missing encoding-state bypasses, while preserving unused
+and No-Spike-only entry behavior. The final complete suite passes **2,397 / 6
+skipped / 0 failed**; valid-model outputs remain bit-identical to accepted 6c.
+External adapter/pin coordination remains a release gate.
+Both pairs are committed; neither is merged or released. See the
+[worktree scope record](phase-6-worktree-scope.md).
+
+
+**PR follow-up (2026-10-06):** user-requested fixes extend Phase 6 acceptance to
+explicit-interval endpoints, physical-time model checking, stored covariate
+rows, all-missing population/mark validation, stable result provenance, prepared
+chunk workspace, and executable consumers. Separate scientific and API/UX
+reviews plus red/green tests retain attribution to accepted `338b4f8`; the frozen
+complete suite passes **2,656 / 6 skipped / 0 failed**. A tested Spyglass companion is prepared
+separately, while the live checkout's new 0.6.9 dependency pin prevents an
+uncoordinated upgrade. Full downstream database/matrix qualification and release
+coordination remain separate. See the [follow-up validation](../../../../docs/time_grid_validation.md#pr-review-follow-up--2026-10-06).
+
 | Work | Required contract or predecessor | Release constraint |
 |---|---|---|
 | 0 and 1 | Existing likelihood/time semantics | Complete; preserve their regression coverage. Future policy changes belong to the phase introducing them. |
@@ -104,14 +131,15 @@ release order; implementation details remain subject to prototyping.
 | 3 | Current unchunked event ownership | Complete (merged at `ffc85a1`); it chose neither C1 nor C3b and preserved the endpoint convention, so the corrected behavior must be retained through 6a. |
 | 4 | Existing baseline floor policy, preserved explicitly | Complete (merged at `ee2cc21`); existing floors preserved; no deferred C1 policy selected. |
 | 5 | Settled C2 weighted-event ownership | Remove hard windows and move the clusterless fit to full-timeline mask weights (as Phase 1 did for sorted); do not independently settle acquisition endpoints/gaps from C3b. |
-| 6a + 6c | Settled C3a and resolved C3b for encoding-cell migration | Ship the edge/coordinate migration and detector uniformity guard together. |
-| 6b + 6d | 6a/6c, Phase 5 event weights, resolved C3b, and applicable C1 decisions | Ship Hz conversion, metadata plumbing, and legacy-model rejection atomically. |
+| GLM row ownership | Phase 5 weighted counts | Give the GLM its own encoding row assignment, bit-identical to today's, so decode binning can change independently. |
+| 6a + 6c | Settled C3a | Ship the edge/coordinate migration and detector uniformity guard together. Encoding cells moved to 6b (C3b exposure is in seconds). |
+| 6b + 6d | 6a/6c, Phase 5 event weights, C3b, and C3b's unit-bearing floor decisions | Ship C3b encoding support, seconds exposure, Hz conversion, metadata plumbing, and legacy-model rejection atomically. |
 | 8 | Applicable C1 decisions for the zero-exposure floor (not Phase 6b units) | Can ship before Phase 7 and does not require Phase 6b units; sorted-index work was done in Phase 3 (GPU validation outstanding). |
 | 7 | Corrected likelihood/time baseline and relevant Phase 8 fixes | Pure-core prototypes may run earlier; production claims require the integrated corrected baseline. |
 
 Phases 0–5 remain the correctness priority before the Phase 6 migration. Review
 Phase 6a/6c separately from 6b/6d so time/coordinate effects and rate-unit effects
-remain attributable. No ordering here selects C1 or C3b. Record actual golden
+remain attributable. No ordering here selects the deferred C1 policy. Record actual golden
 changes at each step; approval requirements apply to changes observed, not to
 an assumption that every golden must change.
 
@@ -124,8 +152,11 @@ an assumption that every golden must change.
 | 2 | **Implemented (narrowed scope)**; merged at `86e22f0` (`fc20abb`): raw log ratios at all three GMM spike-intensity sites and one shared log-space ground-process helper (rate inside the exponent, no underflow guard, NaN propagates) on both fit and local paths; the zero-rate fallback, mean-rate floor, and summed-intensity clip are preserved. Reference tests fail on `main` and pass on the branch in float32 and float64; no GMM golden/snapshot fixture exists. The package-wide degeneracy policy (background firing model) is deferred. See [phase 2](phase-2-gmm-log-intensity.md). |
 | 3 | **Implemented and validated**; merged at `ffc85a1` (based on `86e22f0`). Backends bin spikes against the full timeline and evaluate only requested rows, including boundary spikes. Both detector families and transition drivers return requested likelihoods in global order. Follow-ups invalidate stale stored likelihoods, preserve positional dtype compatibility, select features before conversion, bound digitization to chunk boundaries, prepare No-Spike duration once, validate JAX sorted-index hints, and share spike ordering across states/chunks within each prediction. Later predictions recheck mutated inputs. The six dedicated modules contain 262 tests; current numerical, full-suite and runtime evidence is recorded in [Phase 3](phase-3-chunk-boundary.md). Goldens, snapshots and tolerances are unchanged. Memory/runtime measurements are CPU-only on small grids; full posterior retention remains Phase 7a, and the former total-memory reduction target remains withdrawn. |
 | 4 | **Implemented and validated**; merged at `ee2cc21` (based on `ffc85a1`). Empty-tile operands are safe, diagonal/spherical Gaussian distances and covariance updates are centered, and weighted GMM initialization/EM/objectives use stable weight normalization. Clusterless fits retain zero-weight exclusion before data validation. Full suite: **1762 passed / 6 skipped** after the second review round; focused GMM/KDE-tile/clusterless-weight tests: **120 passed** in both default float32 and x64 modes. |
-| 5 | **Needs prototyping against settled C2** (claims re-verified at `ee2cc21`). Remove hard windows in both helpers; move the clusterless fit from the subset timeline to full-timeline mask weights so interpolation no longer bridges gaps (this changes clusterless fits whose group mask has gaps); use per-neuron weighted GLM counts; validate populations before pairing/indexing and in sorted diffusion/MRF; reject any nonzero `encoding_update_damping` with `ValidationError` before mutation. Optional non-local `position` needs regression tests only (the GMM defect was fixed by `4f4e862`). |
-| 6a–6d | **C3b unresolved; needs prototyping.** Central edge validation and encoding-cell alignment; 6a/6c ship together and 6b/6d ship atomically. Uniformity checks must account for timestamp representability. |
+| 5 | **Implemented, reviewed, and merged at `68e88b0`** (based on `84259d4`; full suite 1859 passed / 6 skipped). Hard windows are removed. Spikes are owned by positive interpolated group weight on the full timeline. Clusterless fits use full-timeline mask weights, and the GLM uses weighted event counts with exposure-only weights. Populations are validated before pairing and in diffusion/MRF predict. Nonzero damping is rejected before mutation. `needs_position` ignores `local_position_std` without a Local state. Occupancy KDEs drop zero-weight samples. Goldens pass unchanged; gapped clusterless masks change by design. See the [implementation record](phase-5-windows-and-validation.md#implementation-record). |
+| 6a | **Package implementation finished and reviewed**, committed on `feat/time-edges-uniform-bins`. The isolated 6a/6c baseline passed **2,125 / 6 skipped / 0 failed**, with unchanged references. Separate source/numerical attribution is in the [6a completion review](phase-6a-time-vocabulary.md#completion-review--2026-10-05); subsequent 6c completion is below. |
+| 6b/6d | **Implemented and reviewed against accepted 6a/6c**, committed. All eight backends pass physical-rate calibration through public fit/predict with 30/500 Hz tracking and 2/4 ms decoding; seven supported model families preserve exact predictions through save/load. Hz/support/metadata changes ship atomically. The three duration-sensitive corrections were explicitly approved and applied; all eight snapshots pass. The final integrated suite passes **2,397 / 6 skipped / 0 failed**. See the [6b review record](phase-6b-rate-units.md#implementation-and-review--2026-10-05), [6d completion record](phase-6d-model-compat.md#completion-review--2026-10-05), and [scope record](phase-6-worktree-scope.md). External adapter and dependency coordination remains required before release. |
+| 6c | **Package implementation finished, reviewed, and accepted**, committed. Cached/base-Viterbi and generator bypasses, overflow, and invalid clock provenance are closed under unchanged precision bounds. Final complete suite: **2,269 / 6 skipped / 0 failed**; focused: **300**; float64: **120**. Valid-grid arrays are bit-identical to reviewed 6b. See the [6c completion record](phase-6c-uniform-bins.md#completion-review--2026-10-05). Core row APIs and duration-calibrated transitions remain outside this guard; external rollout remains separate. |
+| 6d | **Package implementation finished, reviewed, and accepted**, committed. All active spike-state encoding entries are checked before dispatch; cached/base-Viterbi cannot bypass validation by omitting fitted encoding state. Unused/No-Spike-only entries are handled explicitly. New regressions: **128**; focused: **314**; float64 compatibility/persistence: **177**. Final complete suite: **2,397 / 6 skipped / 0 failed**; valid-model arrays are bit-identical to accepted 6c. See the [6d completion record](phase-6d-model-compat.md#completion-review--2026-10-05). Ships atomically with 6b; external rollout remains separate. |
 | 7 | **Expanded scope; needs prototyping.** 7a: bounded memory smoothing and incremental/compact outputs. 7b: structured forward/backward transitions. 7c: measured likelihood and compilation optimizations. Validate the representative workload, existing numerical tolerances, host/device peak memory, and end-to-end runtime before claiming production support. |
 | 8 | **Density/component fixes need prototyping** (both reproduced at `ee2cc21`). Distinguish mass from density on variable-volume bins (sorted diffusion is the outlier; clusterless diffusion already uses the mass convention) and define unoccupied-component behavior consistently with the selected policy. Phase 3 now sets sorted-index hints from a verified ordering at every reduction site and shares ordering checks across states/chunks within each prediction. GPU validation remains outstanding. |
 
@@ -146,8 +177,8 @@ an assumption that every golden must change.
 | 2 | [phase-2-gmm-log-intensity.md](phase-2-gmm-log-intensity.md) | Raw log-intensity ratios and a log-space ground process in the clusterless GMM, local and non-local | No GMM fixtures exist; KDE goldens unaffected |
 | 3 | [phase-3-chunk-boundary.md](phase-3-chunk-boundary.md) | Backends bin globally and allocate only requested rows | Validated unchanged; corrected chunks match the unchunked reference |
 | 4 | [phase-4-numerical-hardening.md](phase-4-numerical-hardening.md) | KDE reducer NaN, stable Gaussian distances/covariances, scale-invariant weighted GMM and objective | Validated unchanged; affected primitive and estimator differences match independent references |
-| 5 | [phase-5-windows-and-validation.md](phase-5-windows-and-validation.md) | Canonical event weights and hard-window removal (C2), damping rejection, validators | Clusterless fits with gapped group masks change by design; measure and attribute. Full-coverage fixtures are expected to retain parity but cannot show absence of effect |
-| 6a | [phase-6a-time-vocabulary.md](phase-6a-time-vocabulary.md) | Edges, centers, encoding cells, and row alignment; ships with 6c | Shape, coordinate, and numerical changes possible; measure |
+| 5 | [phase-5-windows-and-validation.md](phase-5-windows-and-validation.md) | Canonical event weights and hard-window removal (C2), damping rejection, validators | Goldens pass unchanged (max 1.2e-7); gapped clusterless masks change by design (measured in the phase record) |
+| 6a | [phase-6a-time-vocabulary.md](phase-6a-time-vocabulary.md) | Edges, centers, and row alignment; ships with 6c. Encoding cells/support belong to 6b. | Completion review preserves existing references |
 | 6b | [phase-6b-rate-units.md](phase-6b-rate-units.md) | Backend-by-backend conversion to Hz; ships with 6d | Stored units change; likelihood/posterior effects require derivation |
 | 6c | [phase-6c-uniform-bins.md](phase-6c-uniform-bins.md) | Detector requires uniform bins; nonuniform stays on the direct API | None |
 | 6d | [phase-6d-model-compat.md](phase-6d-model-compat.md) | Saved models with per-sample rates are detected and rejected | None |

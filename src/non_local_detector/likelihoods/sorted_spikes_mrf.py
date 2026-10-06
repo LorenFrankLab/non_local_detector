@@ -51,9 +51,10 @@ import numpy as np
 import scipy.optimize
 from jax import lax
 
+from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.likelihoods.common import EPS, validate_weights
+from non_local_detector.likelihoods.common import RATE_EPS_HZ, validate_weights
 from non_local_detector.likelihoods.diffusion import (
     cached_eigenbasis,
     environment_graph,
@@ -246,6 +247,7 @@ def _newton_fit_jax(
     penalty_diag: jnp.ndarray,
     max_iter: int,
     tol: jnp.ndarray,
+    rate_scale: float = 1.0,
 ):
     """Batched penalized-Poisson Newton/IRLS with per-neuron step-halving (jit).
 
@@ -259,13 +261,15 @@ def _newton_fit_jax(
     )  # float32-safe floor on the relative-objective decrease
 
     def penalized_neg_loglik(coeffs, eta, mu):
-        loglik = jnp.sum(counts * eta - mu, axis=0)  # (n_neurons,)
+        loglik = jnp.sum(
+            counts * (eta - jnp.log(rate_scale)) - mu, axis=0
+        )  # (n_neurons,)
         penalty_term = 0.5 * jnp.sum(penalty_diag[:, None] * coeffs**2, axis=0)
         return -loglik + penalty_term
 
     # Warm start each neuron from a constant log-rate (fast, convex problem).
-    total_occupancy = jnp.maximum(occupancy.sum(), 1e-9)
-    eta0 = jnp.log(jnp.clip(counts.sum(0) / total_occupancy, 1e-6, None))
+    total_occupancy = jnp.maximum(occupancy.sum(), 1e-9 / rate_scale)
+    eta0 = jnp.log(jnp.clip(counts.sum(0) / total_occupancy, 1e-6 * rate_scale, None))
     basis_pinv_ones = jnp.linalg.lstsq(basis, jnp.ones(n_bins, basis.dtype))[0]
     coeffs0 = basis_pinv_ones[:, None] * eta0[None, :]  # (rank, n_neurons)
 
@@ -284,7 +288,11 @@ def _newton_fit_jax(
     def newton_body(state):
         coeffs, iteration, _max_step, _rel = state
         eta = basis @ coeffs
-        mu = occupancy[:, None] * jnp.exp(jnp.clip(eta, -_ETA_CLIP, _ETA_CLIP))
+        mu = occupancy[:, None] * jnp.exp(
+            jnp.clip(
+                eta, -_ETA_CLIP + jnp.log(rate_scale), _ETA_CLIP + jnp.log(rate_scale)
+            )
+        )
         grad = basis.T @ (counts - mu) - penalty_diag[:, None] * coeffs
         hessian = _penalized_hessian(basis, mu, penalty_diag)
         step = jnp.linalg.solve(hessian, grad.T[..., None])[..., 0]  # (n_neurons, rank)
@@ -297,7 +305,11 @@ def _newton_fit_jax(
             trial = coeffs + scale[None, :] * step.T
             trial_eta = basis @ trial
             trial_mu = occupancy[:, None] * jnp.exp(
-                jnp.clip(trial_eta, -_ETA_CLIP, _ETA_CLIP)
+                jnp.clip(
+                    trial_eta,
+                    -_ETA_CLIP + jnp.log(rate_scale),
+                    _ETA_CLIP + jnp.log(rate_scale),
+                )
             )
             trial_objective = penalized_neg_loglik(trial, trial_eta, trial_mu)
             # NaN or a non-noise increase (float32-safe threshold) -> halve.
@@ -327,7 +339,13 @@ def _newton_fit_jax(
         # (n_neurons == 0) reduces to 0 -> converged immediately (keeps REML safe).
         new_coeffs = coeffs + accepted_step
         new_eta = basis @ new_coeffs
-        new_mu = occupancy[:, None] * jnp.exp(jnp.clip(new_eta, -_ETA_CLIP, _ETA_CLIP))
+        new_mu = occupancy[:, None] * jnp.exp(
+            jnp.clip(
+                new_eta,
+                -_ETA_CLIP + jnp.log(rate_scale),
+                _ETA_CLIP + jnp.log(rate_scale),
+            )
+        )
         new_objective = penalized_neg_loglik(new_coeffs, new_eta, new_mu)
         rel_decrease = jnp.max(
             (objective - new_objective) / (1.0 + jnp.abs(new_objective)), initial=0.0
@@ -346,7 +364,11 @@ def _newton_fit_jax(
     )
     # Clip eta so any rate the caller derives via exp(eta) stays finite even if a
     # low-penalty / near-zero-occupancy fit drove eta large (mirrors mgcv).
-    eta = jnp.clip(basis @ coeffs, -_ETA_CLIP, _ETA_CLIP)
+    eta = jnp.clip(
+        basis @ coeffs,
+        -_ETA_CLIP + jnp.log(rate_scale),
+        _ETA_CLIP + jnp.log(rate_scale),
+    )
     mu = occupancy[:, None] * jnp.exp(eta)
     return coeffs, eta, mu, n_iter, max_step, rel_decrease < tol
 
@@ -360,6 +382,7 @@ def mrf_penalized_poisson_fit(
     max_iter: int = 100,
     tol: float = 1e-10,
     validate: bool = True,
+    rate_scale: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, int | float | bool]]:
     """Fit the population penalized-Poisson GAM by vectorized Newton/IRLS.
 
@@ -392,6 +415,12 @@ def mrf_penalized_poisson_fit(
         search passes False to skip re-validation on every candidate fit (the caller
         has already validated the shared, loop-invariant arrays once).
 
+    rate_scale : float, optional
+        Positive conversion from reference rate units to fitted rate units,
+        by default 1.0. Rescales numerical rate safeguards and removes the
+        corresponding unit constant from convergence/REML objectives. The
+        encoding fitter uses 500.0 for Hz with a 2 ms reference.
+
     Returns
     -------
     coeffs : np.ndarray, shape (rank, n_neurons)
@@ -403,6 +432,7 @@ def mrf_penalized_poisson_fit(
     diagnostics : dict
         Solver diagnostics with ``n_iter``, ``converged``, and ``max_step``.
     """
+    rate_scale = _as_positive_float("rate_scale", rate_scale)
     if validate:
         counts, occupancy, basis, penalty_weights, penalty, max_iter, tol = (
             _validate_mrf_problem(
@@ -424,6 +454,7 @@ def mrf_penalized_poisson_fit(
         jnp.asarray(penalty * penalty_weights, _FIT_DTYPE),  # penalty_diag
         int(max_iter),
         _FIT_DTYPE(tol),
+        rate_scale=rate_scale,
     )
     diagnostics = {
         "n_iter": int(n_iter),
@@ -451,6 +482,7 @@ def _reml_score_jax(
     penalty_rank: jnp.ndarray,
     max_iter: int,
     tol: jnp.ndarray,
+    rate_scale: float = 1.0,
 ) -> jnp.ndarray:
     """Negative Laplace REML for ``lambda = exp(log_penalty)``, summed over neurons.
 
@@ -461,9 +493,9 @@ def _reml_score_jax(
     penalty = jnp.exp(log_penalty)
     penalty_diag = penalty * penalty_weights
     coeffs, eta, mu, _, _, _ = _newton_fit_jax(
-        counts, occupancy, basis, penalty_diag, max_iter, tol
+        counts, occupancy, basis, penalty_diag, max_iter, tol, rate_scale=rate_scale
     )
-    loglik = jnp.sum(counts * eta - mu, axis=0)
+    loglik = jnp.sum(counts * (eta - jnp.log(rate_scale)) - mu, axis=0)
     penalty_term = 0.5 * penalty * jnp.sum(penalty_weights[:, None] * coeffs**2, axis=0)
     # log|H| via Cholesky: logdet = 2 * sum(log(diag(L))), more float32-stable than the
     # LU-based slogdet (and the SPD structure is exact here). A non-positive-definite
@@ -483,6 +515,7 @@ def mrf_reml_objective(
     max_iter: int = 100,
     tol: float = 1e-10,
     validate: bool = True,
+    rate_scale: float = 1.0,
 ) -> float:
     """Negative Laplace REML (Wood 2011) for a single shared ``lambda``, all neurons.
 
@@ -513,6 +546,12 @@ def mrf_reml_objective(
         Validate inputs via :func:`_validate_mrf_problem`, by default True. The REML
         search passes False to skip re-validation on every evaluation.
 
+    rate_scale : float, optional
+        Positive conversion from reference rate units to fitted rate units,
+        by default 1.0. Rescales numerical rate safeguards and removes the
+        corresponding unit constant from convergence/REML objectives. The
+        encoding fitter uses 500.0 for Hz with a 2 ms reference.
+
     Returns
     -------
     score : float
@@ -522,6 +561,7 @@ def mrf_reml_objective(
     log_penalty = float(log_penalty)
     if not np.isfinite(log_penalty):
         return np.inf
+    rate_scale = _as_positive_float("rate_scale", rate_scale)
     if validate:
         counts, occupancy, basis, penalty_weights, _, max_iter, tol = (
             _validate_mrf_problem(
@@ -543,6 +583,7 @@ def mrf_reml_objective(
         _FIT_DTYPE(_penalty_rank(penalty_weights)),
         int(max_iter),
         _FIT_DTYPE(tol),
+        rate_scale=rate_scale,
     )
     return float(score)
 
@@ -556,6 +597,7 @@ def select_penalty_by_reml(
     reml_xatol: float = 1e-3,
     max_iter: int = 100,
     tol: float = 1e-10,
+    rate_scale: float = 1.0,
 ) -> tuple[float, float]:
     """Select a single shared smoothing parameter ``lambda`` by REML.
 
@@ -582,6 +624,12 @@ def select_penalty_by_reml(
         Relative tolerance on the penalized-objective (-loglik + penalty) decrease; the
         fit stops when the objective improves by less than this, by default 1e-10.
 
+    rate_scale : float, optional
+        Positive conversion from reference rate units to fitted rate units,
+        by default 1.0. Rescales numerical rate safeguards and removes the
+        corresponding unit constant from convergence/REML objectives. The
+        encoding fitter uses 500.0 for Hz with a 2 ms reference.
+
     Returns
     -------
     lambda : float
@@ -596,6 +644,7 @@ def select_penalty_by_reml(
         the reduced-rank basis is too large for the data, or too many interior bins have
         zero occupancy).
     """
+    rate_scale = _as_positive_float("rate_scale", rate_scale)
     log_penalty_bounds = _validate_log_penalty_bounds(log_penalty_bounds)
     reml_xatol = _as_positive_float("reml_xatol", reml_xatol)
     # Validate the problem arrays and solver controls once here: the bounded optimizer
@@ -633,6 +682,7 @@ def select_penalty_by_reml(
             penalty_rank,
             max_iter,
             tol_dev,
+            rate_scale=rate_scale,
         )
         return float(score)
 
@@ -668,16 +718,19 @@ def fit_sorted_spikes_mrf_encoding_model(
     spike_times: list[np.ndarray],
     environment: Environment,
     weights: np.ndarray | None = None,
-    sampling_frequency: int = 500,
     rank: int | None = None,
     penalty: float | None = None,
     max_iter: int = 100,
     tol: float = 1e-10,
     log_penalty_bounds: tuple[float, float] = _LOG_PENALTY_BOUNDS,
-    reml_xatol: float = 1e-3,
+    reml_xatol: float = 0.001,
     block_size: int = 100,
     local_interpolation: str = "linear",
     disable_progress_bar: bool = False,
+    *,
+    encoding_time_range=None,
+    valid_position_intervals=None,
+    _encoding_support=None,
 ) -> dict:
     """Fit a population MRF-GAM encoding model for sorted spikes.
 
@@ -702,8 +755,6 @@ def fit_sorted_spikes_mrf_encoding_model(
     weights : np.ndarray, shape (n_time_position,), optional
         Per-sample weights (e.g. posterior state probabilities during EM), by default
         None. If None, uniform weights are used.
-    sampling_frequency : int, optional
-        Accepted for signature compatibility, by default 500; not used by the MRF fit.
     rank : int or None, optional
         Number of smoothest eigenmodes used as the basis. None (default) caps at
         ``min(n_interior_bins, 250)`` -- a performance bound on the dense per-neuron
@@ -738,6 +789,16 @@ def fit_sorted_spikes_mrf_encoding_model(
     disable_progress_bar : bool, optional
         Turn off the progress bar, by default False.
 
+    encoding_time_range : array_like, shape (2,), optional
+        Acquisition start/stop in seconds. Clips encoding support using the
+        original interpolation basis. Uniform samples otherwise include endpoint
+        half-cells; a singleton requires explicit bounds or a tracking interval.
+    valid_position_intervals : array_like, shape (n_intervals, 2), optional
+        Ordered, non-overlapping continuous tracking intervals in seconds.
+        Required for irregular timestamps; each interval needs a finite sample.
+        Positions are held at segment endpoints and NaN rows split support.
+        Encoding support does not automatically mark decode bins missing.
+
     Returns
     -------
     encoding_model : dict
@@ -762,6 +823,14 @@ def fit_sorted_spikes_mrf_encoding_model(
         counts), NOT the integral-one density ``sorted_spikes_diffusion`` stores; it is
         carried only for contract parity and is unused in prediction.
     """
+    support, weights, exposure_weights, position = prepare_encoding_support(
+        position_time,
+        position,
+        weights,
+        encoding_time_range=encoding_time_range,
+        valid_position_intervals=valid_position_intervals,
+        _encoding_support=_encoding_support,
+    )
     position = position if position.ndim > 1 else position[:, np.newaxis]
     if weights is None:
         weights = np.ones((position.shape[0],))
@@ -816,6 +885,7 @@ def fit_sorted_spikes_mrf_encoding_model(
         node_order,
         weights,
         disable_progress_bar,
+        encoding_support=support,
     )
     if spike_fields:
         counts = np.stack(spike_fields, axis=1)  # (n_interior, n_neurons)
@@ -829,7 +899,7 @@ def fit_sorted_spikes_mrf_encoding_model(
         # return its warm-started intercept (~1e-6 everywhere). Match the diffusion
         # likelihood -- EPS-floored place fields -- and skip REML.
         coeffs = np.zeros((basis.shape[1], counts.shape[1]))
-        rate_interior = np.full((node_order.shape[0], counts.shape[1]), EPS)
+        rate_interior = np.full((node_order.shape[0], counts.shape[1]), RATE_EPS_HZ)
         fit_penalty = penalty if penalty is not None else 1.0
         reml_objective = np.nan
         penalty_selected_by_reml = False
@@ -846,6 +916,7 @@ def fit_sorted_spikes_mrf_encoding_model(
                 reml_xatol=reml_xatol,
                 max_iter=max_iter,
                 tol=tol,
+                rate_scale=500.0,
             )
         else:
             reml_objective = np.nan
@@ -861,6 +932,7 @@ def fit_sorted_spikes_mrf_encoding_model(
             fit_penalty,
             max_iter=max_iter,
             tol=tol,
+            rate_scale=500.0,
         )
         # REML total failure raises; the softer Newton/IRLS non-convergence was
         # previously silent (only stored in `mrf_converged`). Surface it.
@@ -902,4 +974,6 @@ def fit_sorted_spikes_mrf_encoding_model(
         "mrf_max_step": diagnostics["max_step"],
         "mrf_log_penalty_bounds": log_penalty_bounds,
         "mrf_penalty_selected_by_reml": penalty_selected_by_reml,
+        "rate_units": "Hz",
+        "encoding_exposure_seconds": float(exposure_weights.sum()),
     }

@@ -131,10 +131,16 @@ def test_row_slice_equals_full_time_slice(
     predict_func, encoding_model, args = fitted_backends[algorithm]
     time = decode_data["time"]
 
-    full = np.asarray(predict_func(time, *args, **encoding_model, is_local=is_local))
+    full = np.asarray(
+        predict_func(*args, **encoding_model, is_local=is_local, time_edges=time)
+    )
     rows = np.asarray(
         predict_func(
-            time, *args, **encoding_model, is_local=is_local, row_slice=ROW_SLICE
+            *args,
+            **encoding_model,
+            is_local=is_local,
+            row_slice=ROW_SLICE,
+            time_edges=time,
         )
     )
 
@@ -158,17 +164,19 @@ def test_row_partition_tiles_full_time_result(
     predict_func, encoding_model, args = fitted_backends[algorithm]
     time = decode_data["time"]
 
-    full = np.asarray(predict_func(time, *args, **encoding_model, is_local=is_local))
+    full = np.asarray(
+        predict_func(*args, **encoding_model, is_local=is_local, time_edges=time)
+    )
     chunks = np.array_split(np.arange(len(time)), N_PARTITIONS)
     tiled = np.concatenate(
         [
             np.asarray(
                 predict_func(
-                    time,
                     *args,
                     **encoding_model,
                     is_local=is_local,
                     row_slice=slice(int(chunk[0]), int(chunk[-1]) + 1),
+                    time_edges=time,
                 )
             )
             for chunk in chunks
@@ -196,8 +204,9 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, decode_data):
     # Independent 1-D interpolation and Patsy basis evaluation. Match the
     # predictor's working precision, then use float64 for reference arithmetic.
     working_dtype = np.float64 if jax.config.jax_enable_x64 else np.float32
+    centers = time[:-1] + 0.5 * np.diff(time)
     position = np.interp(
-        time, decode_data["position_time"], decode_data["position"][:, 0]
+        centers, decode_data["position_time"], decode_data["position"][:, 0]
     ).astype(working_dtype)
     design = np.asarray(
         build_design_matrices([model["emission_design_info"]], {"x0": position})[0],
@@ -207,17 +216,19 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, decode_data):
     rates = np.maximum(np.exp(design.astype(np.float64) @ coefficients.T), EPS)
 
     # Derive full-timeline counts independently of the selection/count helpers.
-    counts = np.zeros((len(time), len(spikes)), dtype=int)
+    n_bins = len(time) - 1
+    counts = np.zeros((n_bins, len(spikes)), dtype=int)
     for neuron, unit_times in enumerate(spikes):
         in_range = unit_times[(unit_times >= time[0]) & (unit_times <= time[-1])]
-        rows = np.searchsorted(time[1:-1], in_range, side="right")
+        rows = np.minimum(np.searchsorted(time, in_range, side="right") - 1, n_bins - 1)
         np.add.at(counts[:, neuron], rows, 1)
-    assert not np.any(counts[-1])  # the recorded CI ground-process-only failure
+    assert np.all(counts[-1] > 0)  # the final bin owns its midpoint spikes
+    rates = rates * np.diff(time)[:, None]
     expected = np.sum(counts * np.log(rates) - rates, axis=1, keepdims=True)
 
     partitions = [
         slice(int(chunk[0]), int(chunk[-1]) + 1)
-        for chunk in np.array_split(np.arange(len(time)), N_PARTITIONS)
+        for chunk in np.array_split(np.arange(n_bins), N_PARTITIONS)
     ]
     reference_kwargs = (
         FLOAT32_ROUNDING
@@ -240,11 +251,13 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, decode_data):
             )
         for neuron, unit_times in enumerate(spikes):
             np.testing.assert_array_equal(
-                get_spikecount_per_time_bin(unit_times, time, row_slice=rows),
+                get_spikecount_per_time_bin(
+                    unit_times, time_edges=time, row_slice=rows
+                ),
                 counts[rows, neuron],
             )
         actual = np.asarray(
-            predict(time, *args, **model, is_local=True, row_slice=rows)
+            predict(*args, **model, is_local=True, row_slice=rows, time_edges=time)
         )
         np.testing.assert_allclose(
             actual, expected[rows], **reference_kwargs, equal_nan=False
@@ -257,17 +270,19 @@ def test_no_spike_row_slice_matches_full_time(decode_data):
     time = decode_data["time"]
     spike_times = decode_data["decoding_spike_times"]
 
-    full = np.asarray(predict_no_spike_log_likelihood(time, spike_times))
+    full = np.asarray(predict_no_spike_log_likelihood(spike_times, time_edges=time))
     rows = np.asarray(
-        predict_no_spike_log_likelihood(time, spike_times, row_slice=ROW_SLICE)
+        predict_no_spike_log_likelihood(
+            spike_times, time_edges=time, row_slice=ROW_SLICE
+        )
     )
     chunks = np.array_split(np.arange(len(time)), N_PARTITIONS)
     tiled = np.concatenate(
         [
             np.asarray(
                 predict_no_spike_log_likelihood(
-                    time,
                     spike_times,
+                    time_edges=time,
                     row_slice=slice(int(chunk[0]), int(chunk[-1]) + 1),
                 )
             )

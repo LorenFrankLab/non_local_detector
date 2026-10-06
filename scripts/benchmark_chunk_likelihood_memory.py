@@ -249,7 +249,10 @@ def fmt_bytes(n: float) -> str:
 
 @dataclass
 class Recording:
-    """One synthetic decoding recording (encoding data is generated separately)."""
+    """One synthetic decoding recording (encoding data is generated separately).
+
+    ``time`` holds the decode bin edges; ``n_time`` is the number of bins.
+    """
 
     duration_s: float
     time: np.ndarray
@@ -260,7 +263,7 @@ class Recording:
 
     @property
     def n_time(self) -> int:
-        return len(self.time)
+        return len(self.time) - 1
 
     @property
     def n_spikes(self) -> int:
@@ -569,7 +572,7 @@ def selection_sizes(
         recording.spike_times, recording.spike_waveform_features, strict=True
     ):
         selection = select_spikes_in_rows(
-            unit_times, recording.time, row_start, row_stop
+            unit_times, row_start, row_stop, time_edges=recording.time
         )
         indexer, bin_ind = selection.indexer, selection.bin_ind
         assert len(bin_ind) == len(unit_times[indexer])

@@ -58,7 +58,6 @@ def _fit_sorted_kde(env, spike_times, n_time=101, position_std=1.0):
         spike_times=spike_times,
         environment=env,
         weights=weights,
-        sampling_frequency=10,
         position_std=position_std,
         block_size=16,
         disable_progress_bar=True,
@@ -70,7 +69,7 @@ def _predict_sorted_kde(enc, env, spike_times, t_pos, pos, n_decode=6, is_local=
     lo, hi = env.position_range[0]
     t_edges = jnp.linspace(0.0, float(hi - lo), n_decode)
     return predict_sorted_spikes_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=spike_times,
@@ -100,7 +99,6 @@ def _fit_sorted_glm(env, spike_times, n_time=101):
         edges=env.edges_,
         is_track_interior=env.is_track_interior_,
         is_track_boundary=env.is_track_boundary_,
-        sampling_frequency=10,
         disable_progress_bar=True,
     )
     return enc, t, pos
@@ -110,7 +108,7 @@ def _predict_sorted_glm(enc, env, spike_times, t_pos, pos, n_decode=6, is_local=
     lo, hi = env.position_range[0]
     t_edges = jnp.linspace(0.0, float(hi - lo), n_decode)
     return predict_sorted_spikes_glm_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=spike_times,
@@ -137,7 +135,6 @@ def _fit_clusterless_kde(
         spike_times=spike_times,
         spike_waveform_features=spike_features,
         environment=env,
-        sampling_frequency=10,
         position_std=position_std,
         waveform_std=waveform_std,
         block_size=8,
@@ -152,7 +149,7 @@ def _predict_clusterless_kde(
     lo, hi = env.position_range[0]
     t_edges = jnp.linspace(0.0, float(hi - lo), n_decode)
     return predict_clusterless_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=spike_times,
@@ -183,7 +180,6 @@ def _fit_clusterless_gmm(env, spike_times, spike_features, n_time=101, n_compone
         spike_times=spike_times,
         spike_waveform_features=spike_features,
         environment=env,
-        sampling_frequency=10,
         gmm_components_occupancy=n_components,
         gmm_components_gpi=n_components,
         gmm_components_joint=n_components,
@@ -199,7 +195,7 @@ def _predict_clusterless_gmm(
     lo, hi = env.position_range[0]
     t_edges = jnp.linspace(0.0, float(hi - lo), n_decode)
     return predict_clusterless_gmm_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=spike_times,
@@ -418,7 +414,6 @@ def test_sorted_kde_partial_occupancy():
         spike_times=spike_times,
         environment=env,
         weights=weights,
-        sampling_frequency=10,
         position_std=1.0,
         block_size=16,
         disable_progress_bar=True,
@@ -426,7 +421,7 @@ def test_sorted_kde_partial_occupancy():
 
     t_edges = jnp.linspace(0.0, 10.0, 6)
     ll = predict_sorted_spikes_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t,
         position=pos,
         spike_times=spike_times,
@@ -462,7 +457,6 @@ def test_clusterless_kde_partial_occupancy():
         spike_times=spike_times,
         spike_waveform_features=spike_features,
         environment=env,
-        sampling_frequency=10,
         position_std=1.0,
         waveform_std=1.0,
         block_size=8,
@@ -471,7 +465,7 @@ def test_clusterless_kde_partial_occupancy():
 
     t_edges = jnp.linspace(0.0, 10.0, 6)
     ll = predict_clusterless_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t,
         position=pos,
         spike_times=spike_times,
@@ -516,7 +510,6 @@ def test_sorted_glm_high_l2_penalty():
         edges=env.edges_,
         is_track_interior=env.is_track_interior_,
         is_track_boundary=env.is_track_boundary_,
-        sampling_frequency=100,
         l2_penalty=1e6,
         disable_progress_bar=True,
     )
@@ -545,7 +538,6 @@ def test_sorted_glm_low_l2_penalty():
         edges=env.edges_,
         is_track_interior=env.is_track_interior_,
         is_track_boundary=env.is_track_boundary_,
-        sampling_frequency=100,
         l2_penalty=1e-10,
         disable_progress_bar=True,
     )
@@ -568,9 +560,9 @@ def test_decode_single_time_bin_all_models():
 
     # Sorted KDE
     enc_kde, t, pos = _fit_sorted_kde(env, spike_times_sorted)
-    t_single = jnp.array([0.0, 10.0])  # 1 bin
+    t_single = jnp.array([0.0, 10.0])  # 2 edges -> 1 bin
     ll = predict_sorted_spikes_kde_log_likelihood(
-        time=t_single,
+        time_edges=t_single,
         position_time=t,
         position=pos,
         spike_times=spike_times_sorted,
@@ -585,13 +577,13 @@ def test_decode_single_time_bin_all_models():
         disable_progress_bar=True,
         is_local=False,
     )
-    assert ll.shape[0] == 2
+    assert ll.shape[0] == 1
     assert not jnp.any(jnp.isnan(ll))
 
     # Clusterless KDE
     enc_cl, t, pos = _fit_clusterless_kde(env, spike_times_cl, spike_features_cl)
     ll_cl = predict_clusterless_kde_log_likelihood(
-        time=t_single,
+        time_edges=t_single,
         position_time=t,
         position=pos,
         spike_times=spike_times_cl,
@@ -610,7 +602,7 @@ def test_decode_single_time_bin_all_models():
         disable_progress_bar=True,
         block_size=8,
     )
-    assert ll_cl.shape[0] == 2
+    assert ll_cl.shape[0] == 1
     assert not jnp.any(jnp.isnan(ll_cl))
 
 

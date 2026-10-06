@@ -25,7 +25,6 @@ from non_local_detector.core import (
     chunked_filter_smoother_covariate_dependent,
     row_slice_aware,
 )
-from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
 
 N_TIME = 12
 N_STATES = 3
@@ -34,9 +33,26 @@ RATES = np.array([0.5, 4.0, 20.0])
 PARITY_KWARGS = {"rtol": 1e-5, "atol": 1e-6}
 
 
+def count_spikes(spike_times, time, row_slice=None):
+    """Toy callback binning against the row timestamps it is handed.
+
+    Row ``i`` owns ``[time[i], time[i + 1])``, so the last row of whatever
+    timeline the callback receives owns nothing. Core passes row coordinates;
+    a callback like this one that bins against them is exactly the kind a
+    chunk-local call breaks.
+    """
+    in_range = (spike_times >= time[0]) & (spike_times <= time[-1])
+    rows = np.digitize(spike_times[in_range], time[1:-1])
+    counts = np.bincount(rows, minlength=len(time))
+    start, stop = (
+        (0, len(time)) if row_slice is None else (row_slice.start, row_slice.stop)
+    )
+    return counts[start:stop]
+
+
 def poisson_log_likelihood(time, spike_times, row_slice=None):
     """Tiny Poisson backend over ``N_STATES`` bins, binned on the given ``time``."""
-    counts = get_spikecount_per_time_bin(spike_times, time, row_slice=row_slice)
+    counts = count_spikes(spike_times, time, row_slice=row_slice)
     rates = jnp.asarray(RATES)[None, :]
     return jax.scipy.special.xlogy(jnp.asarray(counts)[:, None], rates) - rates
 

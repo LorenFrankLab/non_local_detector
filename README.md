@@ -71,28 +71,34 @@ from non_local_detector import NonLocalClusterlessDetector
 # Initialize detector
 detector = NonLocalClusterlessDetector(
     environments=[environment],  # Your spatial environment
-    observation_model="clusterless_kde",
-    transition_type="random_walk"
+    clusterless_algorithm="clusterless_kde"
 )
 
 # Fit the model
 detector.fit(
+    position_time=training_position_time,  # Timestamp of each position sample
     position=training_position,
     spike_times=training_spike_times,  # List of arrays, one per electrode
     spike_waveform_features=training_waveform_features,  # List of arrays, one per electrode
-    time=training_time
 )
 
-# Detect replay events
+# Detect replay events in uniform 2 ms bins (n_bins + 1 edges); trim=True
+# drops a partial final bin instead of requiring a whole number of bins
+time_edges = detector.calculate_time_edges(
+    np.array([test_start, test_stop]), trim=True
+)
 results = detector.predict(
     spike_times=test_spike_times,
     spike_waveform_features=test_waveform_features,
-    time=test_time
+    time_edges=time_edges,
+    position=test_position,
+    position_time=test_position_time,
 )
 
 # Analyze results
 state_probability = results.acausal_state_probabilities
-decoded_position = results.acausal_posterior.unstack("state_bins").sum("position")
+# Spatial posterior coordinates are available by unstacking state_bins.
+spatial_posterior = results.acausal_posterior.unstack("state_bins")
 ```
 
 ### Working with Sorted Spikes
@@ -103,15 +109,48 @@ from non_local_detector import NonLocalSortedSpikesDetector
 # For traditional spike-sorted data
 detector = NonLocalSortedSpikesDetector(
     environments=[environment],
-    observation_model="sorted_spikes_kde"
+    sorted_spikes_algorithm="sorted_spikes_kde"
 )
 
 detector.fit(
+    position_time=position_time,
     position=position,
     spike_times=spike_times,  # List of arrays, one per neuron
-    time=time
 )
 ```
+
+### Decode Time Bins
+
+Decoding takes bin **edges**, `time_edges` with shape `(n_bins + 1,)`, and
+returns one row per bin at the bin **centers**. Bin `i` covers
+`[time_edges[i], time_edges[i + 1])`; the final bin also contains
+`time_edges[-1]`, so every bin can own a spike. Detector bins must be uniform
+(the HMM applies one transition per bin); edges are validated before any work
+and a grid whose spacing its timestamp dtype cannot resolve (e.g. float32
+Unix times) is rejected.
+
+- `detector.calculate_time_edges([start, stop])` builds edges at
+  `1 / sampling_frequency`; a range that is not a whole number of bins raises
+  unless `trim=True`.
+- `time_edges_from_centers(timestamps)` builds edges centered on uniformly
+  spaced timestamps. Code that decoded one row per position sample
+  (`time=position_time`) migrates to
+  `time_edges=time_edges_from_centers(position_time)`, which keeps the same
+  row count and nominal coordinates; a spike between samples now belongs to the nearest
+  sample's bin rather than the preceding one.
+- After `estimate_parameters`, the learned transitions are tied to that bin
+  width (`transition_time_bin_width_`); decoding at a different width raises.
+- Movement transitions remain per step: `RandomWalk.movement_var` is the
+  displacement variance per HMM bin, and `EmpiricalMovement` uses successive
+  selected position samples with `speedup` applied through a matrix power.
+  Changing decode width does not automatically rescale those transitions.
+
+Fitted firing rates and ground-process intensities are in **Hz**. Encoding uses
+sample exposure in seconds, independently of decode frequency. Irregular
+tracking needs explicit `valid_position_intervals`; saved models with unknown
+units require refitting. Results save exact bin bounds and effective missingness.
+See the [migration guide](docs/time_grid_migration.md) for support, masks,
+covariates, independent intervals, and downstream pipeline changes.
 
 ## 🏗️ Architecture
 

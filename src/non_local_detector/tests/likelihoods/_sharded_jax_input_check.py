@@ -168,17 +168,18 @@ def run(mesh) -> int:
                 device_times = [shard(host_times, mesh)]
                 device_features = [shard(host_features, mesh)]
                 args = (
-                    time,
                     position_time,
                     position,
                     device_times,
                     device_features,
                 )
-                kwargs = dict(**encoding_model, is_local=is_local, row_slice=ROWS)
+                kwargs = dict(
+                    time_edges=time, **encoding_model, is_local=is_local, row_slice=ROWS
+                )
                 jax.block_until_ready(predict_func(*args, **kwargs))  # warm up
                 device_times = [shard(host_times, mesh)]
                 device_features = [shard(host_features, mesh)]
-                args = (time, position_time, position, device_times, device_features)
+                args = (position_time, position, device_times, device_features)
                 before = peak_rss()
                 jax.block_until_ready(predict_func(*args, **kwargs))
                 peaks.append(peak_rss() - before)

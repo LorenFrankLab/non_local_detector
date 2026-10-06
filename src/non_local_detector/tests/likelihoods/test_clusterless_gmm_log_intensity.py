@@ -28,6 +28,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from non_local_detector import time_edges_from_centers
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods.clusterless_gmm import (
     _accumulate_log_likelihood_block,
@@ -35,7 +36,7 @@ from non_local_detector.likelihoods.clusterless_gmm import (
     fit_clusterless_gmm_encoding_model,
     predict_clusterless_gmm_log_likelihood,
 )
-from non_local_detector.likelihoods.common import EPS, LOG_EPS
+from non_local_detector.likelihoods.common import EPS, LOG_EPS, RATE_EPS_HZ
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _compute_precision_cholesky,
@@ -80,10 +81,10 @@ def _log_gaussian(x, mean, var: float) -> np.ndarray:
 def _predict_kwargs(env, occupancy, joint, rate, spike_times, marks, **extra):
     n_bins = env.place_bin_centers_[env.is_track_interior_.ravel()].shape[0]
     bins = env.place_bin_centers_[env.is_track_interior_.ravel()]
-    time = jnp.arange(0.0, 4.0, 1.0)
+    # Four 1 s bins [0, 1), [1, 2), [2, 3), [3, 4]: a spike at 1.5 is in bin 1.
     return dict(
-        time=time,
-        position_time=np.asarray(time),
+        time_edges=jnp.arange(0.0, 5.0, 1.0),
+        position_time=np.arange(0.0, 4.0, 1.0),
         position=jnp.full((4, 1), 5.0),
         spike_times=[spike_times],
         spike_waveform_features=[marks],
@@ -121,7 +122,6 @@ def _fit_far_from_most_bins(seed: int):
         spike_times=[position_time],
         spike_waveform_features=[marks],
         environment=env,
-        sampling_frequency=20,
         gmm_components_occupancy=1,
         gmm_components_gpi=1,
         gmm_components_joint=1,
@@ -224,7 +224,7 @@ class TestTailSpikeIntensity:
             jnp.asarray([[self.MARK]]),
         )
         local_keys = (
-            "time",
+            "time_edges",
             "position_time",
             "position",
             "spike_times",
@@ -258,7 +258,7 @@ class TestDeepTailRateTerm:
     event term is exactly ``log(rate)`` at every bin.
     """
 
-    RATE = 1e-15
+    RATE = RATE_EPS_HZ
 
     def _model(self):
         # var = 1e-8 puts the density at bin 19.5 near -0.5 * 14.5**2 / 1e-8.
@@ -307,7 +307,8 @@ class TestDeepTailRateTerm:
         assert _log_gaussian([far_position], [5.0], 1e-8)[0] < -1e9
 
         local_kwargs = {
-            "time": jnp.arange(0.0, 4.0),
+            # Four 1 s bins [0, 1), [1, 2), [2, 3), [3, 4]: 1.5 is in bin 1.
+            "time_edges": jnp.arange(0.0, 5.0),
             "position_time": np.arange(0.0, 4.0),
             "position": jnp.full((4, 1), far_position),
             "spike_times": [jnp.asarray([1.5])],
@@ -354,7 +355,7 @@ class TestGroundProcessRange:
         assert np.isfinite(np.float32(expected))
 
         log_likelihood = compute_local_log_likelihood(
-            time=jnp.arange(0.0, 3.0),
+            time_edges=time_edges_from_centers(np.arange(0.0, 3.0)),
             position_time=np.arange(0.0, 3.0),
             position=jnp.full((3, 1), 5.0),
             spike_times=[jnp.zeros(0)],
@@ -447,7 +448,7 @@ class TestGroundProcessRange:
         assert np.exp(np.float32(_log_gaussian([far_position], [5.0], 1.0)[0])) == 0.0
 
         log_likelihood = compute_local_log_likelihood(
-            time=jnp.arange(0.0, 3.0),
+            time_edges=time_edges_from_centers(np.arange(0.0, 3.0)),
             position_time=np.arange(0.0, 3.0),
             position=jnp.full((3, 1), far_position),
             spike_times=[jnp.zeros(0)],
@@ -469,7 +470,7 @@ class TestGroundProcessRange:
         position = jnp.asarray([[5.0], [np.nan], [5.0]])
 
         log_likelihood = compute_local_log_likelihood(
-            time=jnp.arange(0.0, 3.0),
+            time_edges=time_edges_from_centers(np.arange(0.0, 3.0)),
             position_time=np.arange(0.0, 3.0),
             position=position,
             spike_times=[jnp.zeros(0)],
@@ -494,7 +495,7 @@ class TestGroundProcessRange:
         n_bins = bins.shape[0]
 
         local = compute_local_log_likelihood(
-            time=jnp.arange(n_bins, dtype=jnp.float32),
+            time_edges=time_edges_from_centers(np.arange(n_bins, dtype=np.float64)),
             position_time=np.arange(n_bins, dtype=np.float64),
             position=jnp.asarray(bins),
             spike_times=[jnp.zeros(0)],

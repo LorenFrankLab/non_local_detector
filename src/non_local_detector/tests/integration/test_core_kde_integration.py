@@ -28,7 +28,6 @@ def test_filter_smoother_with_sorted_kde_nonlocal(n_chunks, simple_1d_environmen
         spike_times=spikes,
         environment=env,
         weights=np.ones_like(t_pos),
-        sampling_frequency=10,
         position_std=np.sqrt(1.0),
         block_size=16,
         disable_progress_bar=True,
@@ -36,8 +35,9 @@ def test_filter_smoother_with_sorted_kde_nonlocal(n_chunks, simple_1d_environmen
 
     # Decoding log-likelihoods (non-local across interior bins)
     t_edges = np.linspace(0.0, 10.0, 21)  # 20 time bins
+    t_centers = t_edges[:-1] + 0.5 * np.diff(t_edges)  # one row per bin
     ll = predict_sorted_spikes_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=spikes,
@@ -54,6 +54,7 @@ def test_filter_smoother_with_sorted_kde_nonlocal(n_chunks, simple_1d_environmen
     )
     assert ll.ndim == 2
     n_time, n_states = ll.shape
+    assert n_time == len(t_edges) - 1
 
     # Simple near-identity transition (row-stochastic)
     tm = np.eye(n_states) * 0.9 + (np.ones((n_states, n_states)) / n_states) * 0.1
@@ -90,7 +91,7 @@ def test_filter_smoother_with_sorted_kde_nonlocal(n_chunks, simple_1d_environmen
         causal_post_chunked,
         _predictive_post_chunked,
     ) = chunked_filter_smoother(
-        time=t_edges,
+        time=t_centers,
         state_ind=state_ind,
         initial_distribution=init,
         transition_matrix=tm,
@@ -126,7 +127,6 @@ def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(
         spike_waveform_features=enc_feats,
         environment=env,
         weights=np.ones_like(t_pos),
-        sampling_frequency=10,
         position_std=np.sqrt(1.0),
         waveform_std=1.0,
         block_size=8,
@@ -134,11 +134,12 @@ def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(
     )
 
     t_edges = np.linspace(0.0, 10.0, 21)
+    t_centers = t_edges[:-1] + 0.5 * np.diff(t_edges)  # one row per bin
     dec_times = [np.array([2.1, 5.2])]
     dec_feats = [np.array([[0.1, 0.05], [1.1, -0.9]], dtype=float)]
 
     ll = predict_clusterless_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=t_pos,
         position=pos,
         spike_times=dec_times,
@@ -159,6 +160,8 @@ def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(
     )
 
     n_time, n_states = ll.shape
+
+    assert n_time == len(t_edges) - 1
     tm = np.eye(n_states) * 0.9 + (np.ones((n_states, n_states)) / n_states) * 0.1
     tm = tm / tm.sum(axis=1, keepdims=True)
     init = np.ones((n_states,)) / n_states
@@ -181,7 +184,7 @@ def test_chunked_equals_nonchunked_clusterless_kde_nonlocal(
         causal_post_chunked,
         _,
     ) = chunked_filter_smoother(
-        time=t_edges,
+        time=t_centers,
         state_ind=state_ind,
         initial_distribution=init,
         transition_matrix=tm,

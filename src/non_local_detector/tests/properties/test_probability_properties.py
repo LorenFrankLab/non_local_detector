@@ -21,6 +21,7 @@ from non_local_detector.core import (
 )
 from non_local_detector.models.decoder import ClusterlessDecoder
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
+from non_local_detector.time_edges import time_edges_from_centers
 
 
 # Custom strategies for probability distributions
@@ -327,7 +328,9 @@ class TestProbabilityProperties:
                     sim.spike_times, sim.spike_waveform_features, strict=False
                 )
             ],
-            time=sim.position_time[test_start_idx:test_end_idx],
+            time_edges=time_edges_from_centers(
+                sim.position_time[test_start_idx:test_end_idx]
+            ),
             position=sim.position[test_start_idx:test_end_idx],
             position_time=sim.position_time[test_start_idx:test_end_idx],
         )

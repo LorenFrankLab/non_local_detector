@@ -5,11 +5,11 @@ them. Alternatives are recorded so a later reader does not reopen a closed
 decision by accident. [Phase 0](phase-0-core-hmm.md) fixes core HMM conditioning
 independently of these likelihood and time/exposure decisions.
 
-**State: C2 and C3a are settled; C1 is partially resolved and C3b is unresolved.** C1's former policy
-was withdrawn after it was shown to be non-monotonic. C3b's draft exposure helper
-undercounts the full-cell reference and needs redesign. Implementation that
-selects either unresolved policy is blocked; work preserving current semantics
-or depending only on the settled contracts can be prototyped independently. See the execution order in
+**State: C2, C3a and C3b are settled; C1 is partially resolved.** C1's former policy
+was withdrawn after it was shown to be non-monotonic; its unit-bearing floors
+are resolved with 6b (C3b item 4). Implementation that selects the deferred C1
+policy is blocked; work preserving current semantics or depending only on the
+settled contracts can be prototyped independently. See the execution order in
 [PLAN.md](PLAN.md#execution-order-and-baselines).
 
 - [C1 — Degeneracy policy for log intensities](#c1--degeneracy-policy-for-log-intensities)
@@ -173,7 +173,8 @@ Two mechanisms currently assign a spike to an encoding model, and they disagree.
    interpolation bridges gaps and the mask never reaches the event weight. With
    mask `[1,1,0,1,1]` and `weights=None`, a clusterless spike at t=2 is kept by
    both windows and counted twice at weight 1 (verified 2026-09-22). Phase 5
-   moves the clusterless fit to the full timeline with mask weights.
+   (`68e88b0`) moved the clusterless fit to the full timeline with mask weights
+   and deleted the windows; this item describes the pre-Phase-5 code.
 
 **Decision: interpolated weights are canonical and sufficient. Delete the hard
 windows.**
@@ -208,6 +209,18 @@ must preserve event/feature alignment and apply each event weight once. For the
 GLM, fractional event ownership requires weighted count sufficient statistics;
 weighting ordinary sample counts a second time is not equivalent. Phase 6a's
 encoding-cell migration must preserve that Phase 5 ownership contract.
+
+**As implemented (Phase 5, `68e88b0`).** The detector selects a group's spikes
+by `interpolated_weight > 0` within `[position_time[0], position_time[-1]]`
+(`_group_spike_mask`), and every backend re-interpolates and applies the weight
+once. The GLM event term (`sorted_spikes_glm.weighted_spike_counts`) splits
+each spike's interpolated weight between its bracketing samples,
+`(1 - a) * w[i]` to row `i` and `a * w[i+1]` to row `i+1`. The parts sum to
+the interpolated weight, and a row receives events only where its exposure
+weight is positive. Assigning the whole weight to the left sample diverged at
+0 -> 1 mask transitions. Exposure stays the per-sample weight; no endpoint
+policy was chosen. Occupancy KDEs drop zero-weight samples before fitting,
+which leaves the density unchanged. Phase 6a must keep these properties.
 
 ### How much does this change results?
 
@@ -252,7 +265,7 @@ existing MRF tests already do the latter.
 
 ## C3 — Time vocabulary
 
-**Split. The decode half is settled; the encoding-exposure half is not.**
+**Both halves are settled (C3b on 2026-09-25).**
 
 ### C3a — Decode vocabulary (settled)
 
@@ -275,46 +288,102 @@ untouched — a spike at `time[-1]` still lands in row `n-2` and the final row
 still never owns a spike. Phase 6c's detector guard ships with 6a. Full nonuniform
 likelihood support, including duration scaling, is established by 6b/6d.
 
-### C3b — Encoding exposure (UNRESOLVED)
+**API decisions (user, 2026-09-25):**
 
-> **Do not implement against this section.** The helper drafted here undercounts;
-> the replacement needs a decision this document cannot make.
+| Question | Decision |
+|---|---|
+| Decode timestamps | Detector entry points require `time_edges` and return center coordinates. This removes the unreachable terminal observation. |
+| Bin boundaries | Left-closed/right-open, final edge included (NumPy histogram semantics). |
+| Uniformity | Spacing is inferred from the supplied edges and validated with a bound that accounts for timestamp precision. Unresolved or genuinely irregular bins are rejected. |
+| `sampling_frequency` | Used only for explicit grid generation, never as a second authority overriding timestamps. |
+| Non-divisible requested intervals | Rejected by default or explicitly trimmed; a shorter detector bin is never silently appended. |
+| HMM transitions | Detector bins stay uniform; the interval associated with learned transitions is recorded. Uniformity alone does not make transitions valid at another rate. |
+| Saved models | Fitted entries are stamped with rate units; legacy models load for inspection but must be refit before decoding (6d, with the Hz conversion). |
+| Low-level core | `core.py` keeps its contract in observation rows; physical-time rules are enforced at detector boundaries. |
+
+Rollout (user, 2026-09-25): (1) separate GLM encoding row ownership from the
+shared decode selector; (2) 6a/6c decode migration and uniformity guard; (3)
+6b/6d with C3b's encoding support and seconds exposure.
+
+### C3b — Encoding exposure (RESOLVED 2026-09-25)
+
+> **Resolved by the user on 2026-09-25**, after the prototype below. The
+> exposure half is implemented with the Hz conversion (6b/6d), because exposure
+> is defined in seconds. The earlier clamped helper remains withdrawn.
 
 `position_time` is an array of sample **centers**, not decode edges, so encoding
-exposure needs its own per-sample cell widths — `weight_sum × median(diff(...))`
-is wrong for jittered or gapped timestamps.
+exposure needs its own per-sample support. The decisions:
 
-The drafted helper clamped the outer edges to the first and last sample centers.
-Compared with an acquisition containing one complete 1 s cell per sample, it
-undercounts — verified under that reference convention:
+1. **Valid recording intervals are authoritative.** Accept explicit acquisition
+   bounds and valid tracking intervals. Within each uninterrupted segment,
+   interpolate between position samples; hold the endpoint position and weight
+   constant over the segment's supported outer half-cells. For ordinary
+   uniformly sampled data a documented convenience default extends half a
+   sample interval beyond each endpoint. A single sample needs an explicit
+   duration or bounds. Timestamps alone cannot establish when acquisition
+   started or stopped; this keeps the familiar `N × dt` exposure for regular
+   recordings without giving one sample zero exposure or losing an endpoint
+   interval.
+2. **Missing tracking is a break in support; never interpolate across it
+   automatically.** Preserve NaN locations long enough to identify missing
+   intervals, and exclude those intervals from both encoding exposure and
+   encoding spikes. This is separate from training/group masks, which keep
+   Phase 5's fractional boundary ownership. For irregular timestamps the caller
+   identifies valid continuous segments: a large timestamp difference cannot
+   distinguish sparse tracking from dropped tracking. An optional gap threshold
+   may help build segments, but only as an explicit choice. During decoding,
+   bins affected by missing position are conservatively marked missing until a
+   more selective missing-position model is designed.
+3. **Occupancy and exposure are in seconds; spike weights stay
+   dimensionless.** Two quantities are kept distinct: the *event weight* (the
+   Phase 5 interpolated group/EM weight) and the *exposure weight* (sample
+   weight × supported duration in seconds). Exposure weights are used
+   throughout occupancy fitting (KDE, GMM, diffusion), not only in the
+   mean-rate denominator. The GLM keeps fractional event counts and uses
+   seconds in its expected-count term (a log-exposure offset); MRF needs the
+   equivalent change. For clipped intervals, exposure comes from the same
+   interpolation basis as event ownership, so expected event mass and exposure
+   agree at boundaries. Changing only the scalar denominator would leave
+   occupancy biased toward densely sampled periods; multiplying spike weights by
+   duration would apply the correction to the wrong term.
+4. **C1 stays deferred, but unit-bearing floors are resolved explicitly** (6b):
+   preserve existing fallback behavior; separate rate floors, density floors,
+   and numerical safeguards; give rate floors physical units and apply them
+   before multiplying by decode duration; choose their values against a
+   documented reference fixture. Normalize the GLM objective by weighted
+   seconds and migrate the regularization strength explicitly. The background
+   firing model follows afterwards; "floor only `-inf`" is not revived.
 
-| N uniform centers, dt=1 | clamped helper exposure | full-cell reference exposure |
-|---|---|---|
-| 2 | 1.00 | 2.00 |
-| 5 | 4.00 | 5.00 |
-| 100 | 99.00 | 100.00 |
-| 1 | 0.00 | 1.00 |
+**Decisive acceptance test (6b):** the same physical recording, encoded at
+different position sampling rates, recovers the same known firing rate on all
+eight backends, and then decodes at a different bin width.
 
-Relative to that reference, Hz rates would be inflated by `N/(N−1)` for N > 1,
-and a single sample gets zero exposure. A single center alone cannot determine
-the 1 s width assumed in the table. Clamping can describe a different acquisition
-domain, but it cannot silently replace full-cell exposure while claiming equal
-encoding/decode intervals preserve the old arithmetic. Phase 6b's preservation
-check requires matched physical exposure under the chosen endpoint convention.
+#### Prototype evidence (2026-09-25, `09de7e9`)
 
-Two decisions are required before this can be written:
+Deterministic prototype: expected spike mass on a 0.1 ms grid, 500 Hz position
+samples, σ = 5 cm smoothed rate estimator standing in for the KDE. The
+"current code" row was checked against the real sorted KDE fit (the 20 s gap
+inflated its mean rate by the same 1.200×).
 
-1. **Endpoint policy** — extrapolate half-cells at the ends (`t[0] − dt₀/2`,
-   `t[-1] + dt_{N-1}/2`), require explicit acquisition bounds from the caller, or
-   reject input too short to define a cell.
-2. **Gap policy** — is a long jump in `position_time` exposure (the animal was
-   tracked, sampling was sparse) or missing data (tracking dropped)? The current
-   code has no policy, and `base.py:3041-3048` (clusterless) and `:4039-4046`
-   (sorted) already drop NaN position rows *before* this point, so
-   interpolation silently bridges dropped-tracking gaps; the clusterless fit's
-   subset timeline also bridges group-mask gaps (Phase 5).
+Endpoints, homogeneous 10 Hz, full-cell reference `N·dt` at 10 Hz (exposure s /
+rate Hz): current code `0.002/0`, `0.004/5`, `0.2/9.9` for N = 1, 2, 100 —
+biased by `(N−1)/N` because exposure counts N samples while spikes are clipped
+to `N−1` intervals. Clamped cells with a clamped spike range are unbiased
+(`(N−1)·dt` exposure; the N/(N−1) inflation recorded earlier needs a mismatched
+spike range) but undefined at N = 1. Extrapolated half-cells and true
+acquisition bounds match the reference.
 
-Whatever is chosen, encoding exposure is `sum(weights × sample_cell_width)`.
+Gaps (mean-rate error / max place-field error as fraction of peak):
+
+| option | NaN dropouts 5% random | NaN 3×1.5 s in field | 20 s gap, epochs concatenated | tracked at 20 Hz for 20 s | ±20% jitter |
+|---|---|---|---|---|---|
+| current (drop NaN rows, bridge) | +5.4% / 5.4% | +3.9% / 5.3% | +20% / 86% | +19% / 19% | 0 / 0 |
+| gap = exposure (midpoint cells) | 0 / 5.3% | 0 / 7.1% | 0 / 10.8% | 0 / 0.3% | 0 / 0 |
+| gap = missing beyond 1×dt | −1.3%* / 0.1% | −0.9%* / 0.5% | 0 / 0.0% | 0 / 0.0% (drops 19.2 s) | drops 6.7% of data |
+| gap = missing beyond 2×dt | −1.3%* / 0.1% | −0.9%* / 0.5% | 0 / 0.0% | 0 / 0.0% | 0 / 0 |
+| NaN rows kept at weight 0 | −1.3%* / 0.1% | −0.9%* / 0.5% | = missing | n/a | n/a |
+
+\* Mean rate over tracked time only; the field error shows no bias.
 
 **Do not pass `position_time` to a decode-edge binning helper.** The sorted GLM
 currently does exactly that (`sorted_spikes_glm.py:316`, `:356`), which is why

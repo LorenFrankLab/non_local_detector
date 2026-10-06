@@ -18,7 +18,11 @@ import warnings
 import numpy as np
 import pytest
 
-from non_local_detector import ClusterlessDecoder, NonLocalSortedSpikesDetector
+from non_local_detector import (
+    ClusterlessDecoder,
+    NonLocalSortedSpikesDetector,
+    time_edges_from_centers,
+)
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
 
@@ -60,7 +64,7 @@ class TestEMMonotonicity:
             position=sim.position,
             spike_times=sim.spike_times,
             spike_waveform_features=sim.spike_waveform_features,
-            time=sim.position_time,
+            time_edges=time_edges_from_centers(sim.position_time),
             max_iter=5,
             estimate_encoding_model=False,
         )
@@ -88,7 +92,7 @@ class TestEncodingUpdateGuards:
             position_time=time,
             position=position,
             spike_times=spike_times,
-            time=time,
+            time_edges=time_edges_from_centers(time),
             is_training=~is_event,
             max_iter=5,
             estimate_encoding_model=True,
@@ -111,7 +115,7 @@ class TestEncodingUpdateGuards:
                 position=sim.position,
                 spike_times=sim.spike_times,
                 spike_waveform_features=sim.spike_waveform_features,
-                time=sim.position_time,
+                time_edges=time_edges_from_centers(sim.position_time),
                 max_iter=20,
                 estimate_encoding_model=False,
             )
@@ -153,7 +157,7 @@ class TestEncodingUpdateGuards:
             position_time=time,
             position=position,
             spike_times=spike_times,
-            time=time,
+            time_edges=time_edges_from_centers(time),
             is_training=~is_event,
             max_iter=3,
             estimate_encoding_model=True,
@@ -174,7 +178,7 @@ class TestEMAttributeInitialization:
         set of EM-result attributes on the model.
 
         Calls the base ``_DetectorBase.estimate_parameters`` directly with
-        ``time=None`` so validation fails immediately (before any model state
+        ``time_edges=None`` so validation fails immediately (before any model state
         or data is needed), isolating the attribute-initialization order.
         """
         from non_local_detector.exceptions import ValidationError
@@ -183,7 +187,7 @@ class TestEMAttributeInitialization:
         decoder = ClusterlessDecoder()
         with pytest.raises(ValidationError):
             _DetectorBase.estimate_parameters(
-                decoder, time=None, estimate_encoding_model=False
+                decoder, time_edges=None, estimate_encoding_model=False
             )
 
         for attr in ("converged_", "n_iter_", "em_monotonicity_violations_"):
@@ -229,7 +233,7 @@ class TestEMConvergenceSurfacing:
                 position=sim.position,
                 spike_times=sim.spike_times,
                 spike_waveform_features=sim.spike_waveform_features,
-                time=sim.position_time,
+                time_edges=time_edges_from_centers(sim.position_time),
                 max_iter=3,
                 estimate_encoding_model=False,
             )
@@ -276,7 +280,7 @@ class TestEMConvergenceSurfacing:
                 position=sim.position,
                 spike_times=sim.spike_times,
                 spike_waveform_features=sim.spike_waveform_features,
-                time=sim.position_time,
+                time_edges=time_edges_from_centers(sim.position_time),
                 max_iter=1,
                 estimate_encoding_model=False,
             )
@@ -305,7 +309,7 @@ class TestEMConvergenceSurfacing:
                 position=sim.position,
                 spike_times=sim.spike_times,
                 spike_waveform_features=sim.spike_waveform_features,
-                time=sim.position_time,
+                time_edges=time_edges_from_centers(sim.position_time),
                 max_iter=1,
                 tolerance=1e-20,
                 estimate_encoding_model=False,

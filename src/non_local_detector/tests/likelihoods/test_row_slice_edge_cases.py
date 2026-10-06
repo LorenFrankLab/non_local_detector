@@ -5,18 +5,19 @@ registered backend: a requested row range equals the full-time result sliced,
 and a row partition tiles the full-time result. This module pins the *boundary*
 cases of that interface, which is where a chunked driver actually breaks:
 
-* spikes exactly on a timestamp -- including ``time[0]`` and ``time[-1]``;
-* spikes strictly between adjacent timestamps under *irregular* partitions;
+* spikes exactly on an edge -- including ``time_edges[0]`` and
+  ``time_edges[-1]``;
+* spikes strictly between adjacent edges under *irregular* partitions;
 * chunks with no spikes at all (``segment_sum`` over zero selected rows);
-* singleton row ranges (``n_chunks == n_time``) and ragged final chunks;
+* singleton row ranges (``n_chunks == n_bins``) and ragged final chunks;
 * empty row requests (``slice(a, a)``) and rejected non-contiguous requests;
 * unsorted decoding spikes, where the waveform features must stay paired with
   their own spike.
 
-Endpoint convention under test: a spike is in range iff
-``time[0] <= t <= time[-1]``, it lands in row ``np.digitize(t, time[1:-1])``,
-and therefore a spike at ``time[-1]`` lands in row ``n_time - 2`` and the final
-row of a multi-row timeline is always empty.
+Bin convention under test: ``time_edges`` of shape ``(n_bins + 1,)``; a spike
+is in range iff ``time_edges[0] <= t <= time_edges[-1]`` and lands in bin ``i``
+with ``time_edges[i] <= t < time_edges[i + 1]``, except that a spike at
+``time_edges[-1]`` lands in the final bin. Every bin can own a spike.
 """
 
 import os
@@ -112,16 +113,17 @@ REPRESENTATIVE_ALGORITHMS = [
     "clusterless_gmm",
 ]
 
-N_TIME = 13
+N_EDGES = 13
+N_BINS = N_EDGES - 1
 
 
 SPIKE_KINDS = ("on_timestamps", "between_timestamps", "mixed", "duplicates")
 
 
 def spike_placements(time: np.ndarray) -> dict[str, np.ndarray]:
-    """Decoding spike placements that hit every boundary case of ``time``.
+    """Decoding spike placements that hit every boundary case of the edges ``time``.
 
-    ``on_timestamps`` puts a spike on every timestamp, including both endpoints;
+    ``on_timestamps`` puts a spike on every edge, including both endpoints;
     ``between_timestamps`` puts one strictly inside every bin (the original
     chunk-boundary defect); ``mixed`` is both; ``duplicates`` repeats ``mixed``
     three times, since identical spike times must be counted once each, not
@@ -138,7 +140,7 @@ def spike_placements(time: np.ndarray) -> dict[str, np.ndarray]:
 
 
 def row_partitions(n_time: int) -> list[list[slice]]:
-    """Contiguous row partitions of ``range(n_time)`` that tile it exactly.
+    """Contiguous row partitions of ``range(n_time)`` (bins) that tile it exactly.
 
     Includes the even ``np.array_split`` partitions the core actually uses
     (ragged final chunks included), plus hand-picked irregular partitions whose
@@ -165,30 +167,42 @@ def row_partitions(n_time: int) -> list[list[slice]]:
 
 
 @pytest.mark.unit
-def test_endpoint_convention_is_unchanged():
-    """Pin the in-range-inclusive convention the row request derives from.
+def test_bin_convention():
+    """Pin the bin convention the row request derives from.
 
     A row request must reproduce it exactly, so it is asserted here as the
     reference the parity tests compare to.
     """
-    time = np.arange(6.0)
+    time_edges = np.arange(6.0)  # five bins
 
-    # time[0] lands in row 0; time[-1] lands in row n_time - 2 (not the last row).
+    # The first edge opens bin 0; the last edge closes the final bin.
     np.testing.assert_array_equal(
-        get_spikecount_per_time_bin(np.array([time[0]]), time), [1, 0, 0, 0, 0, 0]
+        get_spikecount_per_time_bin(np.array([time_edges[0]]), time_edges=time_edges),
+        [1, 0, 0, 0, 0],
     )
     np.testing.assert_array_equal(
-        get_spikecount_per_time_bin(np.array([time[-1]]), time), [0, 0, 0, 0, 1, 0]
+        get_spikecount_per_time_bin(np.array([time_edges[-1]]), time_edges=time_edges),
+        [0, 0, 0, 0, 1],
+    )
+    # An interior edge opens the bin to its right.
+    np.testing.assert_array_equal(
+        get_spikecount_per_time_bin(np.array([2.0]), time_edges=time_edges),
+        [0, 0, 1, 0, 0],
     )
     # Out-of-range spikes are dropped entirely.
     np.testing.assert_array_equal(
-        get_spikecount_per_time_bin(np.array([-0.5, 5.5]), time), np.zeros(6, dtype=int)
+        get_spikecount_per_time_bin(np.array([-0.5, 5.5]), time_edges=time_edges),
+        np.zeros(5, dtype=int),
     )
-    # The final row of a multi-row timeline can never own a spike.
+    # Every bin, including the last, owns its left edge and midpoint; the last
+    # also owns the final edge.
     all_edges_and_midpoints = np.sort(
-        np.concatenate([time, 0.5 * (time[:-1] + time[1:])])
+        np.concatenate([time_edges, 0.5 * (time_edges[:-1] + time_edges[1:])])
     )
-    assert get_spikecount_per_time_bin(all_edges_and_midpoints, time)[-1] == 0
+    np.testing.assert_array_equal(
+        get_spikecount_per_time_bin(all_edges_and_midpoints, time_edges=time_edges),
+        [2, 2, 2, 2, 3],
+    )
 
 
 @pytest.mark.unit
@@ -200,15 +214,18 @@ def test_every_row_partition_tiles_the_full_counts(spike_kind):
     both endpoints); ``between_timestamps`` is the original defect; the
     partitions include ragged and irregular chunk sizes and the singleton split.
     """
-    time = np.linspace(0.0, 1.0, N_TIME)
+    time = np.linspace(0.0, 1.0, N_EDGES)
     spikes = spike_placements(time)[spike_kind]
 
-    full = get_spikecount_per_time_bin(spikes, time)
+    full = get_spikecount_per_time_bin(spikes, time_edges=time)
     assert full.sum() == np.sum((spikes >= time[0]) & (spikes <= time[-1]))
 
-    for partition in row_partitions(N_TIME):
+    for partition in row_partitions(N_BINS):
         tiled = np.concatenate(
-            [get_spikecount_per_time_bin(spikes, time, row_slice=s) for s in partition]
+            [
+                get_spikecount_per_time_bin(spikes, time_edges=time, row_slice=s)
+                for s in partition
+            ]
         )
         np.testing.assert_array_equal(tiled, full, err_msg=f"partition={partition}")
 
@@ -222,16 +239,18 @@ def test_selection_carries_its_own_row_count(spike_kind):
     that pairs with it is a property of the same request. Callers that derive
     it separately can pair one chunk's selection with another chunk's row
     count and silently drop spikes, so the selection records it and the
-    reduction helper reads it from there. Covers the empty early return (rows
-    past the last owning row) and the ascending and unsorted selection paths.
+    reduction helper reads it from there. Covers the empty early return (no
+    spikes) and the ascending and unsorted selection paths.
     """
-    time = np.linspace(0.0, 1.0, N_TIME)
+    time = np.linspace(0.0, 1.0, N_EDGES)
     spikes = spike_placements(time)[spike_kind]
-    full = get_spikecount_per_time_bin(spikes, time)
+    full = get_spikecount_per_time_bin(spikes, time_edges=time)
 
-    for partition in row_partitions(N_TIME):
+    for partition in row_partitions(N_BINS):
         for rows in partition:
-            selection = select_spikes_in_rows(spikes, time, rows.start, rows.stop)
+            selection = select_spikes_in_rows(
+                spikes, rows.start, rows.stop, time_edges=time
+            )
             assert selection.n_rows == rows.stop - rows.start
             row_sums = sum_spikes_into_rows(
                 jnp.ones(selection.bin_ind.shape[0]), selection
@@ -239,34 +258,36 @@ def test_selection_carries_its_own_row_count(spike_kind):
             assert row_sums.shape == (selection.n_rows,)
             np.testing.assert_array_equal(np.asarray(row_sums), full[rows])
 
-    # Requests entirely past the last owning row still report their row count.
-    selection = select_spikes_in_rows(spikes, time, N_TIME - 1, N_TIME)
+    # A request that selects no spike still reports its row count.
+    selection = select_spikes_in_rows(np.array([]), N_BINS - 1, N_BINS, time_edges=time)
     assert selection.n_rows == 1
     assert selection.bin_ind.shape == (0,)
     assert sum_spikes_into_rows(jnp.zeros(0), selection).shape == (1,)
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("n_time", [1, 2, 3, 6, 17])
-def test_singleton_row_requests_tile_the_full_counts(n_time):
-    """``n_chunks == n_time``: every row requested on its own must still tile."""
-    time = np.linspace(0.0, 1.0, n_time)
+@pytest.mark.parametrize("n_bins", [1, 2, 3, 6, 17])
+def test_singleton_row_requests_tile_the_full_counts(n_bins):
+    """``n_chunks == n_bins``: every bin requested on its own must still tile."""
+    time = np.linspace(0.0, 1.0, n_bins + 1)
     rng = np.random.default_rng(0)
     spikes = np.sort(
         np.concatenate([time, rng.uniform(-0.1, 1.1, 20), np.array([time[-1]])])
     )
 
-    full = get_spikecount_per_time_bin(spikes, time)
+    full = get_spikecount_per_time_bin(spikes, time_edges=time)
     singleton = np.concatenate(
         [
-            get_spikecount_per_time_bin(spikes, time, row_slice=slice(row, row + 1))
-            for row in range(n_time)
+            get_spikecount_per_time_bin(
+                spikes, time_edges=time, row_slice=slice(row, row + 1)
+            )
+            for row in range(n_bins)
         ]
     )
     np.testing.assert_array_equal(singleton, full)
-    for row in range(n_time):
+    for row in range(n_bins):
         assert get_spikecount_per_time_bin(
-            spikes, time, row_slice=slice(row, row + 1)
+            spikes, time_edges=time, row_slice=slice(row, row + 1)
         ).shape == (1,)
 
 
@@ -276,19 +297,22 @@ def test_empty_row_request_returns_zero_rows():
     time = np.arange(6.0)
     spikes = np.array([0.5, 2.5, 4.5])
 
-    for a in range(len(time) + 1):
-        assert resolve_row_slice(slice(a, a), len(time)) == (a, a)
-        counts = get_spikecount_per_time_bin(spikes, time, row_slice=slice(a, a))
+    n_bins = len(time) - 1
+    for a in range(n_bins + 1):
+        assert resolve_row_slice(slice(a, a), n_bins) == (a, a)
+        counts = get_spikecount_per_time_bin(
+            spikes, time_edges=time, row_slice=slice(a, a)
+        )
         assert counts.shape == (0,)
-        selection = select_spikes_in_rows(spikes, time, a, a)
+        selection = select_spikes_in_rows(spikes, a, a, time_edges=time)
         assert spikes[selection.indexer].size == 0
         assert selection.bin_ind.shape == (0,)
 
     # An inverted request is normalized to empty rather than a negative length.
-    assert resolve_row_slice(slice(4, 2), len(time)) == (4, 4)
-    assert get_spikecount_per_time_bin(spikes, time, row_slice=slice(4, 2)).shape == (
-        0,
-    )
+    assert resolve_row_slice(slice(4, 2), n_bins) == (4, 4)
+    assert get_spikecount_per_time_bin(
+        spikes, time_edges=time, row_slice=slice(4, 2)
+    ).shape == (0,)
 
 
 @pytest.mark.unit
@@ -297,7 +321,9 @@ def test_non_contiguous_row_request_is_rejected():
     with pytest.raises(ValidationError, match="contiguous"):
         resolve_row_slice(slice(0, 6, 2), 6)
     with pytest.raises(ValidationError, match="contiguous"):
-        get_spikecount_per_time_bin(np.array([0.5]), np.arange(6.0), slice(0, 6, 2))
+        get_spikecount_per_time_bin(
+            np.array([0.5]), slice(0, 5, 2), time_edges=np.arange(6.0)
+        )
 
 
 @pytest.mark.unit
@@ -305,11 +331,12 @@ def test_empty_spike_input_selects_nothing():
     """Item 3 at the helper: no spikes at all still yields the requested rows."""
     time = np.arange(6.0)
     for empty in (np.array([]), np.zeros((0,), dtype=float)):
-        selection = select_spikes_in_rows(empty, time, 1, 4)
+        selection = select_spikes_in_rows(empty, 1, 4, time_edges=time)
         assert empty[selection.indexer].size == 0
         assert selection.bin_ind.shape == (0,)
         np.testing.assert_array_equal(
-            get_spikecount_per_time_bin(empty, time, row_slice=slice(1, 4)), [0, 0, 0]
+            get_spikecount_per_time_bin(empty, time_edges=time, row_slice=slice(1, 4)),
+            [0, 0, 0],
         )
 
 
@@ -318,32 +345,39 @@ def test_empty_spike_input_selects_nothing():
 def test_chunk_local_binning_is_detectably_wrong(spike_kind):
     """The edge cases above must be able to fail: show the legacy call differs.
 
-    The historical chunked call handed the backend ``time[chunk]``, which bins
-    the spikes against the chunk instead of the recording. For each spike
-    placement and each partition shape used above, that produces *different*
-    counts from the full timeline -- spikes strictly between chunks are dropped,
-    and spikes on a chunk-start timestamp are moved one row earlier. Without
-    this assertion a row-request test could pass vacuously.
+    A legacy (unmarked) chunk callback bins against its chunk's own edges,
+    ``time_edges[start : stop + 1]``. Each chunk then closes its final bin, so
+    a spike exactly on an edge shared by two chunks is counted in both. Spikes
+    strictly inside bins are unaffected, which is why this is shown for the
+    on-edge placements; without it a row-request test could pass vacuously.
     """
-    time = np.linspace(0.0, 1.0, N_TIME)
+    time = np.linspace(0.0, 1.0, N_EDGES)
     spikes = spike_placements(time)[spike_kind]
 
-    full = get_spikecount_per_time_bin(spikes, time)
-    for partition in row_partitions(N_TIME):
+    full = get_spikecount_per_time_bin(spikes, time_edges=time)
+    for partition in row_partitions(N_BINS):
         if len(partition) == 1:
             continue  # a single chunk IS the full timeline
         chunk_local = np.concatenate(
             [
-                get_spikecount_per_time_bin(spikes, time[s.start : s.stop])
+                get_spikecount_per_time_bin(
+                    spikes, time_edges=time[s.start : s.stop + 1]
+                )
                 for s in partition
             ]
         )
         row_aware = np.concatenate(
-            [get_spikecount_per_time_bin(spikes, time, row_slice=s) for s in partition]
+            [
+                get_spikecount_per_time_bin(spikes, time_edges=time, row_slice=s)
+                for s in partition
+            ]
         )
-        assert not np.array_equal(chunk_local, full), (
-            f"chunk-local binning is indistinguishable here: {partition}"
-        )
+        if spike_kind == "between_timestamps":
+            np.testing.assert_array_equal(chunk_local, full)
+        else:
+            assert chunk_local.sum() == full.sum() + len(partition) - 1, (
+                f"chunk-local binning is indistinguishable here: {partition}"
+            )
         np.testing.assert_array_equal(row_aware, full)
 
 
@@ -355,7 +389,7 @@ def test_selected_features_stay_paired_with_their_spike(shuffled):
     Each spike's "waveform feature" is its own index, so a feature that moved to
     a different spike is detectable, not merely a value that looks plausible.
     """
-    time = np.linspace(0.0, 1.0, N_TIME)
+    time = np.linspace(0.0, 1.0, N_EDGES)
     rng = np.random.default_rng(7)
     spike_times = np.sort(
         np.concatenate([0.5 * (time[:-1] + time[1:]), rng.uniform(0.0, 1.0, 9)])
@@ -367,11 +401,13 @@ def test_selected_features_stay_paired_with_their_spike(shuffled):
 
     in_range = (spike_times >= time[0]) & (spike_times <= time[-1])
     seen: list[np.ndarray] = []
-    for partition in row_partitions(N_TIME):
+    for partition in row_partitions(N_BINS):
         partition_ids: list[np.ndarray] = []
         for row_slice in partition:
-            row_start, row_stop = resolve_row_slice(row_slice, len(time))
-            selection = select_spikes_in_rows(spike_times, time, row_start, row_stop)
+            row_start, row_stop = resolve_row_slice(row_slice, N_BINS)
+            selection = select_spikes_in_rows(
+                spike_times, row_start, row_stop, time_edges=time
+            )
             bin_ind = selection.bin_ind
             selected_ids = spike_ids[selection.indexer]
             selected_features = features[selection.indexer]
@@ -382,7 +418,10 @@ def test_selected_features_stay_paired_with_their_spike(shuffled):
             )
             assert selected_features.shape == (len(selected_ids), 1)
             # Every selected spike's local row is the global row minus row_start.
-            expected_rows = np.digitize(spike_times[selected_ids], time[1:-1])
+            expected_rows = np.minimum(
+                np.searchsorted(time, spike_times[selected_ids], side="right") - 1,
+                N_BINS - 1,
+            )
             np.testing.assert_array_equal(bin_ind, expected_rows - row_start)
             assert np.all(bin_ind >= 0) and np.all(bin_ind < row_stop - row_start)
             partition_ids.append(selected_ids)
@@ -413,7 +452,7 @@ def edge_case_data():
         position_range=((0.0, 100.0),),
     ).fit_place_grid(position=position, infer_track_interior=False)
 
-    time = np.linspace(0.0, 4.0, N_TIME)
+    time = np.linspace(0.0, 4.0, N_EDGES)
     placements = spike_placements(time)
     on_timestamps = placements["on_timestamps"]
     between = placements["between_timestamps"]
@@ -428,12 +467,12 @@ def edge_case_data():
 
     # "empty" has no spikes at all.
     #
-    # "gap" leaves rows 5, 6, 9 and 10 with no spikes on ANY electrode, chosen so
+    # "gap" leaves bins 5, 6, 8 and 9 with no spikes on ANY electrode, chosen so
     # that BOTH partitions used by the ragged/irregular test contain a fully
-    # spike-free chunk: the even 13/5 split's [9, 11) and the irregular split's
+    # spike-free chunk: the even 12/5 split's [8, 10) and the irregular split's
     # [5, 7). ``assert_some_chunk_is_spike_free`` re-derives and enforces that,
     # so this arithmetic cannot silently drift.
-    spike_free_rows = {5, 6, 9, 10}
+    spike_free_rows = {5, 6, 8, 9}
     gap = np.array([t for row, t in enumerate(between) if row not in spike_free_rows])
     spike_cases = {
         "on_timestamps": [on_timestamps, on_timestamps.copy()],
@@ -475,8 +514,8 @@ def fitted_backends(edge_case_data):
 def call_backend(fitted_backends, edge_case_data, algorithm, case, time=None, **kwargs):
     """Evaluate one backend on one decoding-spike case.
 
-    ``time`` defaults to the full decoding timeline. Passing a sub-range instead
-    reproduces the historical chunk-local call, which is what
+    ``time`` defaults to the full decoding edges. Passing a chunk's own edges
+    instead reproduces the legacy chunk-local call, which is what
     ``chunk_local_result`` uses to show these assertions are not vacuous.
     """
     predict_func, encoding_model, is_clusterless = fitted_backends[algorithm]
@@ -490,7 +529,7 @@ def call_backend(fitted_backends, edge_case_data, algorithm, case, time=None, **
         args.append(features)
     if time is None:
         time = edge_case_data["time"]
-    return np.asarray(predict_func(time, *args, **encoding_model, **kwargs))
+    return np.asarray(predict_func(*args, **encoding_model, **kwargs, time_edges=time))
 
 
 @pytest.mark.unit
@@ -516,7 +555,6 @@ def test_backend_rejects_unpaired_feature_rows(
     )
     with pytest.raises(ValidationError):
         predict(
-            edge_case_data["time"],
             edge_case_data["position_time"],
             edge_case_data["position"],
             spikes,
@@ -524,6 +562,7 @@ def test_backend_rejects_unpaired_feature_rows(
             **encoding,
             is_local=is_local,
             row_slice=slice(0, 2),
+            time_edges=edge_case_data["time"],
         )
 
 
@@ -544,7 +583,9 @@ def assert_some_chunk_is_spike_free(edge_case_data, case, partitions) -> None:
             if all(
                 len(
                     select_spikes_in_rows(
-                        unit_times, time, *resolve_row_slice(row_slice, len(time))
+                        unit_times,
+                        *resolve_row_slice(row_slice, len(time) - 1),
+                        time_edges=time,
                     ).bin_ind
                 )
                 == 0
@@ -555,7 +596,7 @@ def assert_some_chunk_is_spike_free(edge_case_data, case, partitions) -> None:
 
 
 def chunk_local_result(fitted_backends, edge_case_data, algorithm, case, partition):
-    """The legacy per-chunk call: each chunk gets only its own slice of ``time``."""
+    """The legacy per-chunk call: each chunk gets only its own edges."""
     full_time = edge_case_data["time"]
     return np.concatenate(
         [
@@ -564,7 +605,7 @@ def chunk_local_result(fitted_backends, edge_case_data, algorithm, case, partiti
                 edge_case_data,
                 algorithm,
                 case,
-                time=full_time[row_slice],
+                time=full_time[row_slice.start : row_slice.stop + 1],
             )
             for row_slice in partition
         ]
@@ -581,7 +622,7 @@ def test_zero_row_request_returns_zero_rows(
     full = call_backend(
         fitted_backends, edge_case_data, algorithm, "mixed", is_local=is_local
     )
-    for row_slice in (slice(0, 0), slice(5, 5), slice(N_TIME, N_TIME)):
+    for row_slice in (slice(0, 0), slice(5, 5), slice(N_BINS, N_BINS)):
         rows = call_backend(
             fitted_backends,
             edge_case_data,
@@ -609,13 +650,13 @@ def test_irregular_and_ragged_partitions_tile_the_full_result(
     """
     full = call_backend(fitted_backends, edge_case_data, algorithm, case)
     assert_fixture_scale(full, algorithm)
-    # Even (ragged: 13 rows / 5 chunks) and irregular (chunk lengths 1, 4, 2, 6).
+    # Even (ragged: 12 bins / 5 chunks) and irregular (chunk lengths 1, 4, 2, 5).
     partitions = [
         [
             slice(int(c[0]), int(c[-1]) + 1)
-            for c in np.array_split(np.arange(N_TIME), 5)
+            for c in np.array_split(np.arange(N_BINS), 5)
         ],
-        [slice(0, 1), slice(1, 5), slice(5, 7), slice(7, N_TIME)],
+        [slice(0, 1), slice(1, 5), slice(5, 7), slice(7, N_BINS)],
     ]
     if case == "spike_free_gap":
         assert_some_chunk_is_spike_free(edge_case_data, case, partitions)
@@ -643,9 +684,9 @@ def test_irregular_and_ragged_partitions_tile_the_full_result(
 
         # Guard the guard: the legacy chunk-local call must FAIL the same
         # assertion, otherwise this case could not detect the defect it exists
-        # for. Only the boundary-spike cases move a spike; the spike-free cases
-        # are shape/allocation tests and are exempt.
-        if case in ("on_timestamps", "between_timestamps"):
+        # for. Only spikes on a shared chunk edge are miscounted (twice) by
+        # chunk-local edges; the other cases are exempt.
+        if case == "on_timestamps":
             chunk_local = chunk_local_result(
                 fitted_backends, edge_case_data, algorithm, case, partition
             )
@@ -668,7 +709,7 @@ def test_all_units_empty_matches_full_result(
     # With no observed spikes every row of a backend's result is the same
     # (ground-process-only) row, so a wrong row count would still "look right";
     # the shape assertions below are what catch that.
-    for partition in ([slice(0, 6), slice(6, N_TIME)], [slice(0, 1), slice(1, N_TIME)]):
+    for partition in ([slice(0, 6), slice(6, N_BINS)], [slice(0, 1), slice(1, N_BINS)]):
         tiled = np.concatenate(
             [
                 call_backend(
@@ -690,7 +731,7 @@ def test_all_units_empty_matches_full_result(
 def test_singleton_row_requests_tile_the_full_result(
     fitted_backends, edge_case_data, algorithm
 ):
-    """Item 4: ``n_chunks == n_time``, one row per call."""
+    """Item 4: ``n_chunks == n_bins``, one row per call."""
     full = call_backend(fitted_backends, edge_case_data, algorithm, "mixed")
     assert_fixture_scale(full, algorithm)
     tiled = np.concatenate(
@@ -702,7 +743,7 @@ def test_singleton_row_requests_tile_the_full_result(
                 "mixed",
                 row_slice=slice(row, row + 1),
             )
-            for row in range(N_TIME)
+            for row in range(N_BINS)
         ]
     )
     assert tiled.shape == full.shape
@@ -766,12 +807,12 @@ def test_shuffled_spike_order_row_slice_parity(
             args.append(feats)
         return np.asarray(
             predict_func(
-                time,
                 *args,
                 **encoding_model,
                 is_local=is_local,
                 _spike_time_order=order_cache,
                 **kwargs,
+                time_edges=time,
             )
         )
 
@@ -800,18 +841,20 @@ def test_no_spike_model_edge_cases(edge_case_data, case):
     time = edge_case_data["time"]
     spike_times, _ = edge_case_data["spike_cases"][case]
 
-    full = np.asarray(predict_no_spike_log_likelihood(time, spike_times))
-    assert full.shape == (N_TIME, 1)
+    full = np.asarray(predict_no_spike_log_likelihood(spike_times, time_edges=time))
+    assert full.shape == (N_BINS, 1)
 
     assert np.asarray(
-        predict_no_spike_log_likelihood(time, spike_times, row_slice=slice(4, 4))
+        predict_no_spike_log_likelihood(
+            spike_times, time_edges=time, row_slice=slice(4, 4)
+        )
     ).shape == (0, 1)
-    for partition in row_partitions(N_TIME):
+    for partition in row_partitions(N_BINS):
         tiled = np.concatenate(
             [
                 np.asarray(
                     predict_no_spike_log_likelihood(
-                        time, spike_times, row_slice=row_slice
+                        spike_times, time_edges=time, row_slice=row_slice
                     )
                 )
                 for row_slice in partition
@@ -884,7 +927,7 @@ def allocation_data():
 
     # The request must select the same two spikes in every set.
     for n_total, (spike_times, _) in decoding.items():
-        selection = select_spikes_in_rows(spike_times[0], time, 0, 5)
+        selection = select_spikes_in_rows(spike_times[0], 0, 5, time_edges=time)
         assert selection.bin_ind.shape[0] == 2, (n_total, selection.bin_ind)
 
     return {
@@ -932,13 +975,17 @@ def peak_bytes_for_spike_total(predict_func, encoding_model, data, n_total, is_l
     """Host peak of one ``ALLOC_ROWS`` call with ``n_total`` decoding spikes."""
     spike_times, features = data["decoding"][n_total]
     args = (
-        data["time"],
         data["position_time"],
         data["position"],
         spike_times,
         features,
     )
-    call_kwargs = dict(**encoding_model, is_local=is_local, row_slice=ALLOC_ROWS)
+    call_kwargs = dict(
+        time_edges=data["time"],
+        **encoding_model,
+        is_local=is_local,
+        row_slice=ALLOC_ROWS,
+    )
     return peak_host_bytes(predict_func, args, call_kwargs)
 
 
@@ -990,8 +1037,13 @@ def peak_bytes_for_position_length(
     """Host peak of one ``ALLOC_ROWS`` call with a position record of this length."""
     spike_times, features = data["decoding"][ALLOC_SPIKE_COUNTS[0]]
     position_time, position = position_of_length(n_samples)
-    args = (data["time"], position_time, position, spike_times, features)
-    call_kwargs = dict(**encoding_model, is_local=is_local, row_slice=ALLOC_ROWS)
+    args = (position_time, position, spike_times, features)
+    call_kwargs = dict(
+        time_edges=data["time"],
+        **encoding_model,
+        is_local=is_local,
+        row_slice=ALLOC_ROWS,
+    )
     return peak_host_bytes(predict_func, args, call_kwargs)
 
 
@@ -1048,8 +1100,13 @@ def test_row_slice_accepts_jax_array_inputs(
     device_times = [jnp.asarray(t) for t in host_times]
     device_features = [jnp.asarray(f) for f in host_features]
 
-    common = (allocation_data["time"], allocation_data["position_time"])
-    call_kwargs = dict(**encoding_model, is_local=is_local, row_slice=ALLOC_ROWS)
+    common = (allocation_data["position_time"],)
+    call_kwargs = dict(
+        time_edges=allocation_data["time"],
+        **encoding_model,
+        is_local=is_local,
+        row_slice=ALLOC_ROWS,
+    )
     from_host = np.asarray(
         predict_func(
             *common,
@@ -1198,7 +1255,7 @@ def test_select_spike_rows_rejects_a_mismatched_per_spike_array(as_jax, indexer_
     times = np.arange(6.0)
     if indexer_kind == "mask":
         times = times[::-1]
-    selection = select_spikes_in_rows(times, np.arange(7.0), 2, 6)
+    selection = select_spikes_in_rows(times, 2, 6, time_edges=np.arange(7.0))
 
     with pytest.raises(ValidationError, match="per-spike array"):
         select_spike_rows(features, selection)
@@ -1213,16 +1270,16 @@ def test_select_spike_rows_selects_the_named_rows(as_jax):
         features = jnp.asarray(features)
 
     selection = select_spikes_in_rows(
-        np.array([0.5, 4.5, 5.5, 1.5, 6.5]), np.arange(8.0), 0, 2
+        np.array([0.5, 4.5, 5.5, 1.5, 6.5]), 0, 2, time_edges=np.arange(8.0)
     )
     np.testing.assert_array_equal(
         np.asarray(select_spike_rows(features, selection)), [[0.0, 1.0], [6.0, 7.0]]
     )
-    selection = select_spikes_in_rows(np.arange(5.0), np.arange(6.0), 1, 3)
+    selection = select_spikes_in_rows(np.arange(5.0), 1, 3, time_edges=np.arange(6.0))
     np.testing.assert_array_equal(
         np.asarray(select_spike_rows(features, selection)), [[2.0, 3.0], [4.0, 5.0]]
     )
-    selection = select_spikes_in_rows(np.arange(5.0), np.arange(6.0), 2, 2)
+    selection = select_spikes_in_rows(np.arange(5.0), 2, 2, time_edges=np.arange(6.0))
     assert np.asarray(select_spike_rows(features, selection)).shape == (0, 2)
 
 
@@ -1267,12 +1324,14 @@ def test_select_spike_rows_falls_back_to_a_host_copy_on_sharding_errors(
 
     if indexer_kind == "mask":
         selection = select_spikes_in_rows(
-            np.array([0.5, 4.5, 5.5, 1.5, 6.5]), np.arange(8.0), 0, 2
+            np.array([0.5, 4.5, 5.5, 1.5, 6.5]), 0, 2, time_edges=np.arange(8.0)
         )
         expected = [[0.0, 1.0], [6.0, 7.0]]
         monkeypatch.setattr(jnp, "take", fail_selection)
     else:
-        selection = select_spikes_in_rows(np.arange(5.0), np.arange(6.0), 1, 3)
+        selection = select_spikes_in_rows(
+            np.arange(5.0), 1, 3, time_edges=np.arange(6.0)
+        )
         expected = [[2.0, 3.0], [4.0, 5.0]]
         monkeypatch.setattr(type(features), "__getitem__", fail_selection)
 
@@ -1306,11 +1365,13 @@ def test_select_spike_rows_propagates_unexpected_errors(
 
     if indexer_kind == "mask":
         selection = select_spikes_in_rows(
-            np.array([0.5, 4.5, 5.5, 1.5, 6.5]), np.arange(8.0), 0, 2
+            np.array([0.5, 4.5, 5.5, 1.5, 6.5]), 0, 2, time_edges=np.arange(8.0)
         )
         monkeypatch.setattr(jnp, "take", fail_selection)
     else:
-        selection = select_spikes_in_rows(np.arange(5.0), np.arange(6.0), 1, 3)
+        selection = select_spikes_in_rows(
+            np.arange(5.0), 1, 3, time_edges=np.arange(6.0)
+        )
         monkeypatch.setattr(type(features), "__getitem__", fail_selection)
     monkeypatch.setattr(np, "asarray", tracked_asarray)
 

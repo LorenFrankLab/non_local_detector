@@ -101,7 +101,6 @@ def _fit_sorted_kde(env, data):
         spike_times=data["spike_times"],
         environment=env,
         weights=weights,
-        sampling_frequency=data["sampling_frequency"],
         position_std=np.sqrt(12.5),
         block_size=16,
         disable_progress_bar=True,
@@ -119,16 +118,15 @@ def _fit_sorted_glm(env, data):
         edges=env.edges_,
         is_track_interior=env.is_track_interior_,
         is_track_boundary=env.is_track_boundary_,
-        sampling_frequency=data["sampling_frequency"],
         disable_progress_bar=True,
     )
     return enc
 
 
 def _predict_sorted_kde(enc, env, data, is_local=False):
-    t_edges = jnp.linspace(0.0, 1.0, 11)
+    t_edges = jnp.asarray(data.get("decode_time_edges", np.linspace(0.0, 1.0, 11)))
     return predict_sorted_spikes_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=jnp.asarray(data["position_time"]),
         position=jnp.asarray(data["position"]),
         spike_times=data["spike_times"],
@@ -146,9 +144,9 @@ def _predict_sorted_kde(enc, env, data, is_local=False):
 
 
 def _predict_sorted_glm(enc, env, data, is_local=False):
-    t_edges = jnp.linspace(0.0, 1.0, 11)
+    t_edges = jnp.asarray(data.get("decode_time_edges", np.linspace(0.0, 1.0, 11)))
     return predict_sorted_spikes_glm_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=jnp.asarray(data["position_time"]),
         position=jnp.asarray(data["position"]),
         spike_times=data["spike_times"],
@@ -170,7 +168,6 @@ def _fit_clusterless_kde(env, data):
         spike_times=data["spike_times"],
         spike_waveform_features=data["spike_waveform_features"],
         environment=env,
-        sampling_frequency=data["sampling_frequency"],
         position_std=np.sqrt(12.5),
         waveform_std=1.0,
         block_size=8,
@@ -180,9 +177,9 @@ def _fit_clusterless_kde(env, data):
 
 
 def _predict_clusterless_kde(enc, env, data, is_local=False):
-    t_edges = jnp.linspace(0.0, 1.0, 11)
+    t_edges = jnp.asarray(data.get("decode_time_edges", np.linspace(0.0, 1.0, 11)))
     return predict_clusterless_kde_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=jnp.asarray(data["position_time"]),
         position=jnp.asarray(data["position"]),
         spike_times=data["spike_times"],
@@ -210,7 +207,6 @@ def _fit_clusterless_gmm(env, data):
         spike_times=data["spike_times"],
         spike_waveform_features=data["spike_waveform_features"],
         environment=env,
-        sampling_frequency=data["sampling_frequency"],
         gmm_components_occupancy=10,
         gmm_components_gpi=5,
         gmm_components_joint=10,
@@ -221,9 +217,9 @@ def _fit_clusterless_gmm(env, data):
 
 
 def _predict_clusterless_gmm(enc, env, data, is_local=False):
-    t_edges = jnp.linspace(0.0, 1.0, 11)
+    t_edges = jnp.asarray(data.get("decode_time_edges", np.linspace(0.0, 1.0, 11)))
     return predict_clusterless_gmm_log_likelihood(
-        time=t_edges,
+        time_edges=t_edges,
         position_time=jnp.asarray(data["position_time"]),
         position=jnp.asarray(data["position"]),
         spike_times=data["spike_times"],
@@ -415,11 +411,12 @@ def test_sorted_models_kde_glm_agree_on_high_vs_low_ll_time_bins(
     """KDE and GLM should agree on which time bins have relatively high vs low LL.
 
     Uses rank correlation over mean LL per time bin (averaged across positions).
-    Both models use Poisson statistics, so their relative ordering of time bins
-    should be consistent even though absolute magnitudes differ.
+    Use 2 ms bins so expected counts are small for both fitted models. With
+    wide bins, a broad GLM can have expected counts above one while a sparse
+    KDE has rates near zero at many positions, reversing mean-score ordering.
     """
     env = cross_model_env
-    data = cross_model_data
+    data = {**cross_model_data, "decode_time_edges": np.linspace(0.0, 1.0, 501)}
 
     enc_kde = _fit_sorted_kde(env, data)
     enc_glm = _fit_sorted_glm(env, data)

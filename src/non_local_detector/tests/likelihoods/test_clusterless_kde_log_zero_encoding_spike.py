@@ -97,18 +97,17 @@ def _fit_predict_local(module, s):
         spike_times=[jnp.asarray(t) for t in s["enc_spike_times"]],
         spike_waveform_features=[jnp.asarray(f) for f in s["enc_feats"]],
         environment=s["env"],
-        sampling_frequency=50,
         position_std=np.sqrt(12.5),
         waveform_std=24.0,
         block_size=100,
         disable_progress_bar=True,
     )
     return module.predict_clusterless_kde_log_likelihood(
-        jnp.asarray(s["time"]),
         jnp.asarray(s["position_time"]),
         jnp.asarray(s["position"]),
         [jnp.asarray(t) for t in s["dec_spike_times"]],
         [jnp.asarray(f) for f in s["dec_feats"]],
+        time_edges=jnp.asarray(s["time"]),
         **encoding,
         is_local=True,
     )

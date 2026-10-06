@@ -1,12 +1,34 @@
 # Phase 6c — Detector uniformity guard
 
-> **SETTLED REQUIREMENT — VALIDATOR NEEDS PROTOTYPING.** Ship with 6a, when the
+> **IMPLEMENTED with 6a; completion reviewed 2026-10-05** (see the records below).
+> The completion review closes cached/base-Viterbi, generator, and invalid-clock
+> bypasses under the same settled precision policy. Package acceptance is complete;
+> completion changes are committed at `351a630`. External rollout remains pending.
+> Original status: settled requirement, validator needed prototyping. Ship with 6a, when the
 > explicit edge API is introduced. The earlier fixed-relative-tolerance snippet
 > is withdrawn because large absolute timestamps can make an intended uniform
 > grid fail it. Complete nonuniform direct-likelihood support arrives with 6b/6d.
 >
 > Re-verified against `main` at `ee2cc21` (2026-09-22); line references are to
 > that revision.
+
+## Re-verification at `09de7e9` (2026-09-25)
+
+`core.py`, `no_spike.py`, and `continuous_state_transitions.py` are unchanged
+since `ee2cc21`. The nonuniform grid (1× then 5× dt) still decodes without error
+through `predict`, `most_likely_sequence`, and `estimate_parameters`. Stale
+since `daa9362`: `estimate_parameters` now validates `time` in
+`_validate_estimation_arguments` before `fit`, and `fit` restores state on
+failure, so a rejected grid no longer leaves the detector refit; that function
+is the natural home for the guard. Float64 spacing error at 1.8M × 2 ms is
+2.0e-10 (origin 0) and 7.25e-5 (origin 1.7e9); float32 keeps 29 unique edges at
+1.7e9. `calculate_time_bins`' origin dependence reproduces at 0.7 s (350 vs 351
+bins), not at 0.3 s (150 at both origins).
+
+Decisions (user, 2026-09-25; see C3a API decisions): spacing is inferred from
+the edges, `sampling_frequency` is used only to generate grids, non-divisible
+requested intervals are rejected or explicitly trimmed, and the interval
+associated with learned transitions is recorded.
 
 ## Problem and contract
 
@@ -100,3 +122,126 @@ outputs should retain parity; invalid inputs gain an explicit error. Measure
 any golden impact with the associated 6a migration rather than assuming a new
 reference is required by the validator itself. Review bypass paths and the
 representability argument for the selected bound.
+
+## Implementation record
+
+Implemented with 6a on `feat/time-edges-uniform-bins`, not merged or released (see the
+[6a record](phase-6a-time-vocabulary.md#implementation-record)).
+
+- **Bound (prototyped).** Correctly built float64 grids (`t0 + i*dt`,
+  `arange`, `linspace`, cumulative sums, centers → edges) stay within 1.7 ulp
+  of the mean width for 1 to 1.8M bins, origins 0 to 1.75e9, widths 0.5 to
+  33 ms. The guard allows the larger of 4 ulp of `max|edge|` (in the edges'
+  own dtype; floating edges are not upcast) and 0.1% of the bin width, and
+  rejects edges whose ulp tolerance exceeds 1% of a bin width as unresolvable
+  (float32 Unix-epoch timestamps). The 0.1% floor (user decision, 2026-09-25,
+  after review) admits rounding inherited from a larger scale or dtype: epoch
+  edges shifted to start at 0 and short float32 grids cast to float64 pass.
+  Microsecond-rounded grids whose period is not a whole number of
+  microseconds (1/1500 s alternates 666 and 667 µs, a 1.0e-3 deviation) sit
+  on the floor and are rejected. A 2 ms bin displaced by 2e-3 of its width is
+  detected at a 1.7e9 origin; the 10 ms → 50 ms grid is rejected.
+- **Coverage.** `predict`, `most_likely_sequence`, and `estimate_parameters`
+  (both families; the estimation check is in `_validate_estimation_arguments`,
+  before `fit`) validate before any state change, including before covariate
+  transitions are predicted. The public `core.py` functions are out of scope:
+  they index observation rows and never see edges.
+- **Width is inferred from the edges.** `sampling_frequency` is used only by
+  `calculate_time_edges`, which rejects ranges that are not a whole number of
+  bins unless `trim=True`, and a nonpositive or non-finite frequency.
+- **Transitions.** `transition_time_bin_width_` records the width the discrete
+  transitions were learned at; decoding at another width raises.
+- **Downstream.** Spyglass decodes with raw camera timestamps (irregular) or
+  `linspace` grids at Unix-epoch origins; the former are rejected with the
+  uniformity message and must be regridded (`calculate_time_edges`), the latter
+  pass. Coordinate the spyglass change with its non_local_detector pin.
+
+## Completion review — 2026-10-05
+
+After finishing 6a and accepting the joint 6b/6d change, the user approved all
+three duration-sensitive snapshot corrections and requested completion of 6c.
+The approved patch is applied and all eight snapshots pass. This review checks
+the existing 6c implementation against the final Hz/support model contract;
+it does not introduce a new uniformity or convergence tolerance.
+
+### Findings reproduced and fixed
+
+- **Cached HMM bypass:** a fitted decoder's private `_predict` accepted
+  `[0, .002, .012]` with precomputed likelihoods, and accepted 4 ms bins for
+  transitions learned at 2 ms. The shared detector HMM path now validates the
+  complete edges and learned width before HMM work or transient state changes.
+  Base Viterbi applies the same validation before a custom likelihood callback.
+- **Grid construction precision:** near a Unix origin, a 10 MHz request could
+  return about 1,000 edges with only 420 unique values. `calculate_time_edges`
+  now checks the requested float64 width under the existing resolution ceiling
+  before allocation, then validates the generated edges with the shared guard.
+- **Center conversion boundary:** valid centers just below `2**31` can produce
+  an outer half-cell across the exponent boundary, doubling the edge ULP and
+  making the output unresolvable. `time_edges_from_centers` validates its output
+  rather than returning a grid that the detector must later reject.
+- **Overflow:** finite endpoints `[-float_max, float_max]` produced an infinite
+  span/width and escaped a NaN comparison. Central validation now requires
+  finite differences and span; the precision helper also rejects a nonfinite
+  representation bound.
+- **Invalid saved clock:** NaN widths, infinite tolerances, or finite tolerances
+  beyond the existing 1% clock-resolution ceiling could defeat the width check.
+  Unknown provenance now gives a clear refit error. Valid fitted clocks retain
+  the same matching rule; no legitimate fit emits tolerance above that ceiling.
+- **Documentation:** the bound is the larger of 4 ULP and 0.1% of width, not a
+  universal 0.1% cutoff. README/guide name `RandomWalk.movement_var` and
+  `EmpiricalMovement`'s sample-step/matrix-power behavior and explain that decode
+  width changes do not automatically rescale them. Detector likelihood assembly
+  remains uniform; direct registered predictors allow variable durations.
+
+### Acceptance evidence
+
+The initial new regressions had **10 failures / 6 passes**; further clock and
+overflow checks had **25 failures / 18 passes**. The final center-conversion and
+oversized-clock-tolerance regressions had **9 failures / 8 passes**. Every failure
+was reproduced before its correction. Covariate-route tests are preservation
+checks and passed before the new internal guards.
+
+All basic-grid, cached/provenance, and covariate-route tests pass. Explicit
+nonstationary fixtures exercise both detector families and assert that irregular
+edges fail before transition prediction, fitting, likelihood evaluation, or model
+mutation. The final focused grid/model/chunk/support/golden/snapshot run has
+**300 passed**. The final complete suite has **2,269 passed / 6 skipped / 0
+failed**, including all four goldens and all eight snapshots; the final float64
+run has **120 passed**, including the three core dtype skips. Evidence is in
+[time_grid_validation.md](../../../../docs/time_grid_validation.md).
+
+Both manually built and generated **1.8-million-bin, 2 ms** grids pass at origins
+0 and `1.7e9`, without allocating spatial posteriors. Generator output is
+byte-identical to the original `start + arange / frequency` formula; generation,
+validation, and comparison took approximately 15–20 ms on this CPU. This is a
+grid-helper measurement, not a full-session HMM performance claim.
+
+Controlled sorted-decoder and nonlocal results retain bit-identical centers,
+likelihoods, posteriors, and state probabilities against the reviewed 6b source.
+Golden input/output files and all tolerance constants are unchanged. Two final
+independent correctness/API/UX reviews report no remaining concrete phase-6c
+defect. Lint/format and whitespace checks pass; targeted mypy retains its existing
+diagnostics without new messages.
+
+Public `core.py` functions operate on observation rows and remain outside the
+edge contract. Direct likelihoods can use nonuniform durations after 6b, but a
+duration-calibrated nonuniform HMM is still deferred. Spyglass/replay adapter and
+dependency migration, real DataJoint/NWB integration, and release coordination
+remain separate; this package acceptance does not claim they are complete.
+
+The final accepted source checkpoint is `/private/tmp/nld-phase6c-accepted`,
+with hashes in `/private/tmp/nld-phase6c-accepted-source-hashes.json`. Its separate
+runtime/test diff against approved 6b is
+`/private/tmp/nld-phase6c-vs-accepted6b.patch`. This records completed package
+work, not a commit, merge, downstream migration, or release.
+
+
+## PR follow-up — 2026-10-06
+
+Prepared grid/tracking chunk workspace and stored-covariate row acceptance is recorded in the
+[follow-up validation](../../../../docs/time_grid_validation.md#pr-review-follow-up--2026-10-06)
+and [scope record](phase-6-worktree-scope.md#pr-review-follow-up--2026-10-06).
+The accepted checkpoint above remains unchanged; these fixes do not alter
+existing reference data, tolerance policies, convergence criteria, or deferred
+scientific policies. Final frozen suite: **2,656 / 6 skipped / 0 failed**; all source hashes match.
+GitHub CI is tracked in [PR #59 checks](https://github.com/LorenFrankLab/non_local_detector/pull/59/checks); downstream release qualification remains required.

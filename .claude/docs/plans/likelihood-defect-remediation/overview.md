@@ -117,10 +117,10 @@ in [PLAN.md](PLAN.md#execution-order-and-baselines), rather than numeric order a
 
 ```
 detector.fit()
-  └─ fit_encoding_model()          models/base.py:2983 (clusterless), :3986 (sorted)
+  └─ fit_encoding_model()          models/base.py (both families; built locally, published on success)
      ├─ is_group = is_training & is_encoding & is_environment
-     │    sorted: full timeline + mask weights; clusterless: subset timeline (Phase 5)
-     ├─ group spikes               _get_group_spike_data / _get_group_spikes
+     │    both families: full timeline, weights = mask (x EM weights)  _group_weights
+     ├─ group spikes               _group_spike_mask: interpolated weight > 0
      └─ registry fit fn            likelihoods/__init__.py:41 (sorted), :59 (clusterless)
 
 detector.predict()
@@ -215,11 +215,32 @@ record rather than treating the audit failure as current readiness.
 - Phase 4 (resolved): no new covariance-collapse warning appeared in either
   full-suite run; no fixture regularization, floor, or tolerance changed.
 - Phase 5 (decided): reject any nonzero damping regardless of backend or runtime
-  configuration; a general rebuild protocol is out of scope. Open: whether
-  `needs_position` should be true when `local_position_std` is set with no
-  local state.
+  configuration; a general rebuild protocol is out of scope. Also decided
+  (2026-09-25): `needs_position` is not true merely because
+  `local_position_std` is set; it requires a local state or a nonzero
+  non-local position penalty.
 
 ## Found during review, not yet scheduled
+
+- **Small/degenerate environment limits, reproduced during 6b acceptance
+  (2026-10-05).** A one-spatial-bin environment has an empty `edges_` array;
+  `Environment.get_bin_ind` raises when diffusion/MRF fit histograms use it.
+  Default RandomWalk also assumes more than one spatial center. These are
+  pre-existing geometry limits, independent of Hz conversion. A 6a result can
+  still be tested on one bin using KDE plus Uniform transitions. The 6b
+  calibration fixture uses three bins, evaluates its occupied center, and
+  retains the original numerical bound.
+- **GLM knot spacing larger than its spatial domain can leave no interior
+  cubic knots.** Patsy then raises during natural-spline construction. This
+  occurs independently of rate units. The small 6b calibration fixture uses
+  explicit knot spacing appropriate to its domain; generic small-domain
+  spline behavior remains a separate repair.
+- **EmpiricalMovement has an explicit-range histogram mismatch under the
+  installed NumPy.** Its transition histogram concatenates two position vectors
+  but supplies a one-position `position_range`, raising `ValueError: range
+  argument must have one entry per dimension`. Reproduced with finite inputs
+  and with NaN tracking; its implementation is unchanged by 6a/6b. Repair and
+  original-row/gap semantics require separate continuous-transition scope.
 
 - **`save_model` is broken for every GLM detector.** Reproduced end-to-end:
   `sorted_spikes_kde` saves fine, `sorted_spikes_glm` raises

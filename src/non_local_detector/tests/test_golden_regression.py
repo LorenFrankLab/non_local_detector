@@ -45,6 +45,7 @@ from non_local_detector.models.decoder import ClusterlessDecoder, SortedSpikesDe
 from non_local_detector.models.non_local_model import NonLocalClusterlessDetector
 from non_local_detector.simulate.clusterless_simulation import make_simulated_run_data
 from non_local_detector.simulate.sorted_spikes_simulation import make_simulated_data
+from non_local_detector.time_edges import time_edges_from_centers
 
 GOLDEN_DIR = Path(__file__).parent / "golden_data"
 
@@ -177,7 +178,7 @@ def _predict_clusterless_decoder(
     return decoder.predict(
         spike_times=pred_spike_times,
         spike_waveform_features=pred_spike_waveform_features,
-        time=position_time[n_encode:test_end_idx],
+        time_edges=time_edges_from_centers(position_time[n_encode:test_end_idx]),
         position=inputs["position"][n_encode:test_end_idx],
         position_time=position_time[n_encode:test_end_idx],
     )
@@ -298,7 +299,7 @@ def test_sorted_spikes_decoder_golden_regression(golden_path: Path) -> None:
     n_test = min(50, len(time_arr))
     results = decoder.predict(
         spike_times=spike_times,
-        time=time_arr[:n_test],
+        time_edges=time_edges_from_centers(time_arr[:n_test]),
         position=position[:n_test],
         position_time=time_arr[:n_test],
     )
@@ -371,7 +372,7 @@ def test_nonlocal_detector_golden_regression(golden_path: Path) -> None:
     results = detector.predict(
         spike_times=pred_spike_times,
         spike_waveform_features=pred_spike_waveform_features,
-        time=position_time[test_start_idx:test_end_idx],
+        time_edges=time_edges_from_centers(position_time[test_start_idx:test_end_idx]),
         position=inputs["position"][test_start_idx:test_end_idx],
         position_time=position_time[test_start_idx:test_end_idx],
     )

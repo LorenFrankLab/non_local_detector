@@ -57,22 +57,27 @@ import jax.numpy as jnp
 import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
+from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.clusterless_kde import kde_distance
 from non_local_detector.likelihoods.common import (
     EPS,
-    LOG_EPS,
+    LOG_RATE_EPS_HZ,
+    RATE_EPS_HZ,
     _SpikeTimeOrder,
     as_std_array,
+    decode_bin_centers,
     get_position_at_time,
     interpolate_weights_at_spike_times,
+    log_bin_duration_evidence,
     resolve_row_slice,
     safe_log,
     select_spike_rows,
     select_spikes_in_rows,
     sum_spikes_into_rows,
     validate_finite,
+    validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
 )
@@ -87,6 +92,11 @@ from non_local_detector.likelihoods.diffusion import (
 from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
     _interior_bin_indices,
+)
+from non_local_detector.time_edges import (
+    _DecodeTimeGrid,
+    _resolve_time_grid,
+    requires_time_edges,
 )
 
 logger = logging.getLogger(__name__)
@@ -247,14 +257,16 @@ def fit_clusterless_diffusion_encoding_model(
     spike_waveform_features: list[jnp.ndarray],
     environment: Environment,
     *,
-    sampling_frequency: int = 500,
     position_std: float = float(np.sqrt(12.5)),
     waveform_std: float = 24.0,
     weights: np.ndarray | None = None,
     heat_kernel_rank: int | None = None,
-    block_size: int = 10_000,
-    memory_budget: int = 536_870_912,
+    block_size: int = 10000,
+    memory_budget: int = 536870912,
     disable_progress_bar: bool = False,
+    encoding_time_range=None,
+    valid_position_intervals=None,
+    _encoding_support=None,
 ) -> dict:
     """Fit the clusterless graph-diffusion encoding model.
 
@@ -270,9 +282,6 @@ def fit_clusterless_diffusion_encoding_model(
         Spike waveform features (marks) for each electrode.
     environment : Environment
         The spatial environment (must be fitted).
-    sampling_frequency : int, optional
-        Samples per second, by default 500. Accepted for signature compatibility;
-        not used by the diffusion smoother.
     position_std : float, optional
         Heat-kernel smoothing standard deviation (the physical bandwidth) in
         coordinate units, by default ``sqrt(12.5)``. Scalar only: the heat kernel is
@@ -293,6 +302,16 @@ def fit_clusterless_diffusion_encoding_model(
     disable_progress_bar : bool, optional
         Turn off the progress bar, by default False.
 
+    encoding_time_range : array_like, shape (2,), optional
+        Acquisition start/stop in seconds. Clips encoding support using the
+        original interpolation basis. Uniform samples otherwise include endpoint
+        half-cells; a singleton requires explicit bounds or a tracking interval.
+    valid_position_intervals : array_like, shape (n_intervals, 2), optional
+        Ordered, non-overlapping continuous tracking intervals in seconds.
+        Required for irregular timestamps; each interval needs a finite sample.
+        Positions are held at segment endpoints and NaN rows split support.
+        Encoding support does not automatically mark decode bins missing.
+
     Returns
     -------
     encoding_model : dict
@@ -305,6 +324,14 @@ def fit_clusterless_diffusion_encoding_model(
         ``bin_sizes`` (dV per interior bin), ``position_std``, ``waveform_std``,
         ``block_size``, ``memory_budget``, ``disable_progress_bar``.
     """
+    support, weights, exposure_weights, position = prepare_encoding_support(
+        position_time,
+        position,
+        weights,
+        encoding_time_range=encoding_time_range,
+        valid_position_intervals=valid_position_intervals,
+        _encoding_support=_encoding_support,
+    )
     if environment.place_bin_centers_ is None:
         raise ValueError(
             "Environment must be fitted with place_bin_centers_. "
@@ -342,17 +369,22 @@ def fit_clusterless_diffusion_encoding_model(
 
     Lam, Q, labels, n_components = get_device_basis(environment, resolved_rank)
 
-    weight_sum = float(weights.sum())  # weighted occupancy time (sum w_pos)
+    weight_sum = float(exposure_weights.sum())  # weighted occupancy seconds
 
     # ---- occupancy pi = H O / (sum w_pos * dV), floored at EPS ----
-    occupancy_positions = get_position_at_time(
-        position_time, position, position_time, environment
-    )
-    occupancy_field = np.bincount(
-        _interior_bin_indices(environment, occupancy_positions, full_to_local),
-        weights=weights,
-        minlength=n_interior,
-    )
+    occupancy_field: np.ndarray
+    active = exposure_weights > 0
+    if np.any(active):
+        occupancy_positions = get_position_at_time(
+            position_time, position, position_time[active], environment
+        )
+        occupancy_field = np.bincount(
+            _interior_bin_indices(environment, occupancy_positions, full_to_local),
+            weights=exposure_weights[active],
+            minlength=n_interior,
+        )
+    else:
+        occupancy_field = np.zeros(n_interior)
     occupancy_hat = _diffuse_field(
         occupancy_field, Lam, Q, position_std, labels, n_components
     )
@@ -387,10 +419,7 @@ def fit_clusterless_diffusion_encoding_model(
         )
     ):
         electrode_spike_times = np.asarray(electrode_spike_times)
-        is_in_bounds = np.logical_and(
-            electrode_spike_times >= position_time[0],
-            electrode_spike_times <= position_time[-1],
-        )
+        is_in_bounds = support.contains(electrode_spike_times)
         electrode_spike_times = electrode_spike_times[is_in_bounds]
         # Validate only the in-window features that actually enter the fit.
         bounded_features = np.asarray(electrode_features)[is_in_bounds]
@@ -398,12 +427,16 @@ def fit_clusterless_diffusion_encoding_model(
         _validate_waveform_std_shape(waveform_std, bounded_features.shape[1], electrode)
 
         spike_weights = interpolate_weights_at_spike_times(
-            electrode_spike_times, position_time, weights
+            electrode_spike_times, position_time, weights, encoding_support=support
         )
         w_total = float(spike_weights.sum())
 
         spike_positions = get_position_at_time(
-            position_time, position, electrode_spike_times, environment
+            position_time,
+            position,
+            electrode_spike_times,
+            environment,
+            encoding_support=support,
         )
         bins = _interior_bin_indices(environment, spike_positions, full_to_local)
 
@@ -418,7 +451,7 @@ def fit_clusterless_diffusion_encoding_model(
             warnings.warn(
                 f"electrode {electrode} has zero total encoding weight (zero-rate): "
                 "no effective encoding spikes. It contributes no ground-process "
-                "intensity and its decode spikes floor to LOG_EPS.",
+                "intensity and its decode spikes use the rate floor in Hz.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -434,7 +467,7 @@ def fit_clusterless_diffusion_encoding_model(
         summed_ground_process_intensity += mean_rate * p_gpi / occupancy
 
     summed_ground_process_intensity = np.clip(
-        summed_ground_process_intensity, EPS, None
+        summed_ground_process_intensity, RATE_EPS_HZ, None
     )
 
     return {
@@ -454,27 +487,33 @@ def fit_clusterless_diffusion_encoding_model(
         "block_size": block_size,
         "memory_budget": memory_budget,
         "disable_progress_bar": disable_progress_bar,
+        "rate_units": "Hz",
+        "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
 
 
+@requires_time_edges
 def predict_clusterless_diffusion_log_likelihood(
-    time: np.ndarray,
     position_time: np.ndarray,
     position: np.ndarray,
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
     *,
+    time_edges: np.ndarray,
+    rate_units: str = "Hz",
+    encoding_exposure_seconds: float | None = None,
     is_local: bool = False,
     row_slice: slice | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
     **encoding_model: object,
 ) -> jnp.ndarray:
     """Predict the clusterless graph-diffusion log likelihood.
 
     Parameters
     ----------
-    time : np.ndarray, shape (n_time,)
-        Decoding time bins.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
     position_time : np.ndarray, shape (n_time_position,)
         Time of each position sample (used only by the local path; accepted for
         signature parity when ``is_local`` is False).
@@ -491,8 +530,8 @@ def predict_clusterless_diffusion_log_likelihood(
         the non-local path -- only the readout differs). By default False.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
-        ``time`` always stays the FULL decoding timeline: spikes are binned
-        against it and only those owned by the requested rows are evaluated, so
+        ``time_edges`` always stay the FULL decoding edges: spikes are binned
+        against them and only those owned by the requested rows are evaluated, so
         the result equals the full-time result sliced by ``row_slice`` while the
         spatial workspaces scale with the requested rows and selected spikes.
     _spike_time_order : _SpikeTimeOrder | None, optional
@@ -505,9 +544,13 @@ def predict_clusterless_diffusion_log_likelihood(
     Returns
     -------
     log_likelihood : jnp.ndarray, shape (n_rows, n_interior_bins) if ``is_local`` is
-        False, else (n_rows, 1). ``n_rows`` is ``n_time`` unless ``row_slice``
+        False, else (n_rows, 1). ``n_rows`` is ``n_bins`` unless ``row_slice``
         is given.
     """
+    if rate_units != "Hz":
+        raise ValidationError(
+            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
+        )
     environment: Environment = encoding_model["environment"]  # type: ignore[assignment]
     occupancy = jnp.asarray(encoding_model["occupancy"])
     summed_ground_process_intensity = jnp.asarray(
@@ -527,10 +570,21 @@ def predict_clusterless_diffusion_log_likelihood(
     memory_budget = int(encoding_model["memory_budget"])  # type: ignore[call-overload]
     disable_progress_bar = bool(encoding_model.get("disable_progress_bar", False))
 
-    time = np.asarray(time)
-    validate_finite(time, "time")
-    row_start, row_stop = resolve_row_slice(row_slice, len(time))
-    n_rows = row_stop - row_start
+    validate_population_lengths(
+        "electrode",
+        spike_times=spike_times,
+        spike_waveform_features=spike_waveform_features,
+        encoding_bin_indices=encoding_bin_indices,  # type: ignore[arg-type]
+        encoding_marks=encoding_marks,  # type: ignore[arg-type]
+        encoding_weights=encoding_weights,  # type: ignore[arg-type]
+        weight_total=weight_total,  # type: ignore[arg-type]
+        mean_rates=mean_rates,  # type: ignore[arg-type]
+    )
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if _spike_time_order is None:
+        _spike_time_order = _SpikeTimeOrder()
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_bins = occupancy.shape[0]
 
     # The encoding model is grid-bound: its occupancy, node_order, per-spike bin
@@ -569,7 +623,10 @@ def predict_clusterless_diffusion_log_likelihood(
         full_to_local = _full_to_local(node_order, n_total_bins)
 
         interpolated_position = get_position_at_time(
-            position_time, position, time[row_start:row_stop], environment
+            position_time,
+            position,
+            decode_bin_centers(time_edges, row_start, row_stop),
+            environment,
         )
         animal_time_bins = _interior_bin_indices(
             environment, interpolated_position, full_to_local
@@ -579,7 +636,10 @@ def predict_clusterless_diffusion_log_likelihood(
         local_ground_process_intensity = summed_ground_process_intensity[
             animal_time_bins
         ]  # (n_time,)
-        log_likelihood = -local_ground_process_intensity
+        log_likelihood = (
+            -jnp.asarray(_time_grid.durations(row_start, row_stop))
+            * local_ground_process_intensity
+        )
 
         for (
             electrode_bins,
@@ -606,9 +666,9 @@ def predict_clusterless_diffusion_log_likelihood(
         ):
             selection = select_spikes_in_rows(
                 electrode_spike_times,
-                time,
                 row_start,
                 row_stop,
+                time_edges=time_edges,
                 _spike_time_order=_spike_time_order,
             )
             electrode_spike_times = select_spike_rows(electrode_spike_times, selection)
@@ -626,11 +686,11 @@ def predict_clusterless_diffusion_log_likelihood(
             if n_decode == 0:
                 continue
 
-            # Zero-rate electrode: floor every observed decode spike to LOG_EPS,
+            # Zero-rate electrode: floor every observed decode spike to LOG_RATE_EPS_HZ,
             # identical contract to the non-local zero-rate guard.
             if electrode_weight_total == 0:
                 log_likelihood += sum_spikes_into_rows(
-                    jnp.full((n_decode,), LOG_EPS), selection
+                    jnp.full((n_decode,), LOG_RATE_EPS_HZ), selection
                 )
                 continue
 
@@ -686,7 +746,8 @@ def predict_clusterless_diffusion_log_likelihood(
                     safe_weight_total * bin_sizes[spike_bins_block]
                 )
                 lc = safe_log(
-                    electrode_mean_rate * p_e_at_animal / occupancy[spike_bins_block]
+                    electrode_mean_rate * p_e_at_animal / occupancy[spike_bins_block],
+                    eps=RATE_EPS_HZ,
                 )  # (n_block,)
                 log_likelihood += jax.ops.segment_sum(
                     lc,
@@ -695,11 +756,23 @@ def predict_clusterless_diffusion_log_likelihood(
                     num_segments=selection.n_rows,
                 )
 
-        return log_likelihood[:, None]
+        return (
+            log_likelihood
+            + log_bin_duration_evidence(
+                spike_times,
+                time_edges,
+                row_slice,
+                _spike_time_order,
+                _time_grid=_time_grid,
+            )
+        )[:, None]
 
     occupancy_col = occupancy[:, None]
 
-    log_likelihood = -summed_ground_process_intensity[None, :] * jnp.ones((n_rows, 1))
+    log_likelihood = (
+        -jnp.asarray(_time_grid.durations(row_start, row_stop))[:, None]
+        * summed_ground_process_intensity[None, :]
+    )
 
     for (
         electrode_bins,
@@ -726,9 +799,9 @@ def predict_clusterless_diffusion_log_likelihood(
     ):
         selection = select_spikes_in_rows(
             electrode_spike_times,
-            time,
             row_start,
             row_stop,
+            time_edges=time_edges,
             _spike_time_order=_spike_time_order,
         )
         # Validate only the in-window decode features that actually enter the
@@ -743,16 +816,16 @@ def predict_clusterless_diffusion_log_likelihood(
         if n_decode == 0:
             continue
 
-        # Zero-rate electrode: floor every observed decode spike to LOG_EPS BEFORE any
+        # Zero-rate electrode: floor every observed decode spike to LOG_RATE_EPS_HZ BEFORE any
         # division (D_e == 0 and P_e / weight_total_e is 0/0). Not skipped. Each
-        # time bin's contribution is (spikes in that bin) * LOG_EPS, identical across
+        # time bin's contribution is (spikes in that bin) * LOG_RATE_EPS_HZ, identical across
         # bins -- accumulate it from per-time-bin counts rather than materializing an
         # (n_decode, n_bins) array (which would be gigabytes at millions of spikes).
         if electrode_weight_total == 0:
             spike_counts = sum_spikes_into_rows(
                 jnp.ones(n_decode), selection
             )  # (n_rows,)
-            log_likelihood += spike_counts[:, None] * LOG_EPS
+            log_likelihood += spike_counts[:, None] * LOG_RATE_EPS_HZ
             continue
 
         seg = jnp.asarray(selection.bin_ind)
@@ -806,7 +879,7 @@ def predict_clusterless_diffusion_log_likelihood(
             # which carry unreliable near-zero evidence anyway.
             p_e = P / (safe_weight_total * bin_sizes[:, None])
             log_intensity = safe_log(
-                electrode_mean_rate * p_e / occupancy_col
+                electrode_mean_rate * p_e / occupancy_col, eps=RATE_EPS_HZ
             )  # (n_bins, n_block)
             log_likelihood += jax.ops.segment_sum(
                 log_intensity.T,
@@ -815,4 +888,9 @@ def predict_clusterless_diffusion_log_likelihood(
                 num_segments=selection.n_rows,
             )
 
-    return log_likelihood
+    return (
+        log_likelihood
+        + log_bin_duration_evidence(
+            spike_times, time_edges, row_slice, _spike_time_order, _time_grid=_time_grid
+        )[:, None]
+    )

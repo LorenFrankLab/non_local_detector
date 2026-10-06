@@ -51,21 +51,30 @@ import warnings
 import jax
 import jax.numpy as jnp
 import numpy as np
-import scipy.interpolate  # type: ignore[import-untyped]
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
+from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
+from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
+    RATE_EPS_HZ,
     KDEModel,
     _SpikeTimeOrder,
+    decode_bin_centers,
+    drop_zero_weight_samples,
     get_position_at_time,
     get_spikecount_per_time_bin,
     resolve_row_slice,
     validate_population_lengths,
     validate_weights,
     weighted_mean_rate,
+)
+from non_local_detector.time_edges import (
+    _DecodeTimeGrid,
+    _resolve_time_grid,
+    requires_time_edges,
 )
 
 
@@ -75,10 +84,13 @@ def fit_sorted_spikes_kde_encoding_model(
     spike_times: list[jnp.ndarray],
     environment: Environment,
     weights: jnp.ndarray | None = None,
-    sampling_frequency: int = 500,
     position_std: float = np.sqrt(12.5),
     block_size: int = 100,
     disable_progress_bar: bool = False,
+    *,
+    encoding_time_range=None,
+    valid_position_intervals=None,
+    _encoding_support=None,
 ) -> dict:
     """Fit a KDE encoding model for sorted spikes.
 
@@ -95,14 +107,22 @@ def fit_sorted_spikes_kde_encoding_model(
     weights : jnp.ndarray, shape (n_time_position,), optional
         Sample weights for each position time point, by default None.
         If None, uniform weights are used.
-    sampling_frequency : int, optional
-        Samples per second, by default 500
     position_std : float, optional
         Gaussian kernel standard deviation for position, by default sqrt(12.5)
     block_size : int, optional
         Size of blocks for KDE computation, by default 100
     disable_progress_bar : bool, optional
         Turn off progress bar, by default False
+
+    encoding_time_range : array_like, shape (2,), optional
+        Acquisition start/stop in seconds. Clips encoding support using the
+        original interpolation basis. Uniform samples otherwise include endpoint
+        half-cells; a singleton requires explicit bounds or a tracking interval.
+    valid_position_intervals : array_like, shape (n_intervals, 2), optional
+        Ordered, non-overlapping continuous tracking intervals in seconds.
+        Required for irregular timestamps; each interval needs a finite sample.
+        Positions are held at segment endpoints and NaN rows split support.
+        Encoding support does not automatically mark decode bins missing.
 
     Returns
     -------
@@ -114,10 +134,18 @@ def fit_sorted_spikes_kde_encoding_model(
         - 'occupancy': Occupancy density at interior place bins
         - 'mean_rates': Mean firing rates per neuron
         - 'place_fields': Derived place fields (firing rates) per neuron
-        - 'no_spike_part_log_likelihood': Summed place fields across neurons
+        - 'no_spike_part_log_likelihood': Sum of Hz rates across neurons
         - 'is_track_interior': Boolean mask for interior track bins
         - 'disable_progress_bar': Progress bar setting
     """
+    support, weights, exposure_weights, position = prepare_encoding_support(
+        position_time,
+        position,
+        weights,
+        encoding_time_range=encoding_time_range,
+        valid_position_intervals=valid_position_intervals,
+        _encoding_support=_encoding_support,
+    )
     position = position if position.ndim > 1 else jnp.expand_dims(position, axis=1)
     if isinstance(position_std, int | float):
         if environment.track_graph is not None and position.shape[1] > 1:
@@ -142,29 +170,20 @@ def fit_sorted_spikes_kde_encoding_model(
     else:
         weights = validate_weights(weights, position.shape[0])
 
+    occupancy_samples, occupancy_weights = drop_zero_weight_samples(
+        position, exposure_weights
+    )
     if environment.track_graph is not None and position.shape[1] > 1:
         # convert to 1D
-        position1D = get_linearized_position(
-            position,
+        occupancy_samples = get_linearized_position(
+            occupancy_samples,
             environment.track_graph,
             edge_order=environment.edge_order,
             edge_spacing=environment.edge_spacing,
         ).linear_position.to_numpy()[:, None]
-        occupancy_model = KDEModel(
-            std=position_std,
-            block_size=block_size,
-        ).fit(
-            position1D,
-            weights=weights,
-        )
-    else:
-        occupancy_model = KDEModel(
-            std=position_std,
-            block_size=block_size,
-        ).fit(
-            position,
-            weights=weights,
-        )
+    occupancy_model = KDEModel(std=position_std, block_size=block_size).fit(
+        occupancy_samples, weights=occupancy_weights
+    )
 
     occupancy = occupancy_model.predict(interior_place_bin_centers)
 
@@ -182,33 +201,20 @@ def fit_sorted_spikes_kde_encoding_model(
         desc="Encoding models",
         disable=disable_progress_bar,
     ):
-        neuron_spike_times = neuron_spike_times[
-            jnp.logical_and(
-                neuron_spike_times >= position_time[0],
-                neuron_spike_times <= position_time[-1],
-            )
-        ]
-        # Kept as interpn rather than the shared `interpolate_weights_at_spike_times`
-        # (np.interp) helper on purpose: the two differ by ~1e-16 and this fit is
-        # pinned by golden regression, so the cosmetic dedup is not worth re-baselining.
-        weights_at_spike_times = scipy.interpolate.interpn(
-            (position_time,),
-            weights,
-            neuron_spike_times,
-            bounds_error=False,
-            fill_value=None,
+        neuron_spike_times = neuron_spike_times[support.contains(neuron_spike_times)]
+        weights_at_spike_times = support.interpolate(
+            weights, neuron_spike_times, fill_value=0.0
         )
 
-        try:
-            weights_at_spike_times = weights_at_spike_times.squeeze(axis=1)
-        except np.exceptions.AxisError:
-            pass
-
-        weight_sum = weights.sum()
+        weight_sum = exposure_weights.sum()
         mean_rates.append(weighted_mean_rate(weights_at_spike_times, weight_sum))
         neuron_marginal_model = KDEModel(std=position_std, block_size=block_size).fit(
             get_position_at_time(
-                position_time, position, neuron_spike_times, environment
+                position_time,
+                position,
+                neuron_spike_times,
+                environment,
+                encoding_support=support,
             ),
             weights=weights_at_spike_times,
         )
@@ -231,7 +237,7 @@ def fit_sorted_spikes_kde_encoding_model(
                         marginal_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
                         EPS,
                     ),
-                    min=EPS,
+                    min=RATE_EPS_HZ,
                     max=None,
                 )
             )
@@ -262,11 +268,13 @@ def fit_sorted_spikes_kde_encoding_model(
         "no_spike_part_log_likelihood": no_spike_part_log_likelihood,
         "is_track_interior": is_track_interior,
         "disable_progress_bar": disable_progress_bar,
+        "rate_units": "Hz",
+        "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
 
 
+@requires_time_edges
 def predict_sorted_spikes_kde_log_likelihood(
-    time: jnp.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[np.ndarray],
@@ -282,14 +290,18 @@ def predict_sorted_spikes_kde_log_likelihood(
     is_local: bool = False,
     row_slice: slice | None = None,
     *,
+    time_edges: np.ndarray,
+    rate_units: str = "Hz",
+    encoding_exposure_seconds: float | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of sorted spikes using KDE encoding models.
 
     Parameters
     ----------
-    time : jnp.ndarray, shape (n_time,)
-        Decoding time bins.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
     position_time : jnp.ndarray, shape (n_time_position,)
         Sampling times for the position.
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
@@ -305,11 +317,12 @@ def predict_sorted_spikes_kde_log_likelihood(
     occupancy : jnp.ndarray, shape (n_place_bins,)
         Occupancy for each place bin.
     mean_rates : jnp.ndarray, shape (n_neurons,)
-        Mean rates for each neuron.
+        Mean firing rates in Hz for each neuron.
     place_fields : jnp.ndarray, shape (n_neurons, n_place_bins)
-        Place fields for each neuron.
+        Spatial firing rates in Hz for each neuron.
     no_spike_part_log_likelihood : jnp.ndarray, shape (n_place_bins,)
-        Log likelihood of no spike for each place bin.
+        Sum of Hz rates across neurons, despite the historical key name.
+        Multiply by each bin's duration and subtract to score no spikes.
     is_track_interior : jnp.ndarray, shape (n_place_bins,)
         Boolean mask for track interior.
     disable_progress_bar : bool, optional
@@ -318,8 +331,8 @@ def predict_sorted_spikes_kde_log_likelihood(
         Compute the log likelihood at the animal's position, by default False
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
-        ``time`` always stays the FULL decoding timeline, so spikes are binned
-        against it and only those owned by the requested rows are counted; the
+        ``time_edges`` always stay the FULL decoding edges, so spikes are binned
+        against them and only those owned by the requested rows are counted; the
         result equals the full-time result sliced by ``row_slice``.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
@@ -330,10 +343,18 @@ def predict_sorted_spikes_kde_log_likelihood(
     -------
     log_likelihood : jnp.ndarray, shape (n_rows, n_place_bins) or (n_rows, 1)
         The log likelihood of the spikes at each requested time bin. ``n_rows``
-        is ``n_time`` unless ``row_slice`` is given. The shape is
+        is ``n_bins`` unless ``row_slice`` is given. The shape is
         (n_rows, n_place_bins) if is_local is False, otherwise (n_rows, 1).
 
     """
+    if rate_units != "Hz":
+        raise ValidationError(
+            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
+        )
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if _spike_time_order is None:
+        _spike_time_order = _SpikeTimeOrder()
     validate_population_lengths(
         "neuron",
         spike_times=spike_times,
@@ -341,9 +362,10 @@ def predict_sorted_spikes_kde_log_likelihood(
         mean_rates=mean_rates,
         place_fields=place_fields,
     )
-    row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
+    durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
     n_rows = row_stop - row_start
-    row_time = time[row_start:row_stop]
+    row_time = decode_bin_centers(time_edges, row_start, row_stop)
     if is_local:
         log_likelihood = jnp.zeros((n_rows,))
 
@@ -366,7 +388,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
                 neuron_spike_times,
-                time,
+                time_edges=time_edges,
                 row_slice=row_slice,
                 _spike_time_order=_spike_time_order,
             )
@@ -384,7 +406,8 @@ def predict_sorted_spikes_kde_log_likelihood(
                 marginal_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
                 EPS,
             )
-            local_rate = jnp.clip(local_rate, min=EPS, max=None)
+            local_rate = jnp.clip(local_rate, min=RATE_EPS_HZ, max=None)
+            local_rate = local_rate * durations
             log_likelihood += (
                 jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
                 - local_rate
@@ -406,15 +429,18 @@ def predict_sorted_spikes_kde_log_likelihood(
         ):
             spike_count_per_time_bin = get_spikecount_per_time_bin(
                 neuron_spike_times,
-                time,
+                time_edges=time_edges,
                 row_slice=row_slice,
                 _spike_time_order=_spike_time_order,
             )
             log_likelihood += jax.scipy.special.xlogy(
                 np.expand_dims(spike_count_per_time_bin, axis=1),
-                jnp.expand_dims(place_field[is_track_interior], axis=0),
+                jnp.expand_dims(place_field[is_track_interior], axis=0)
+                * durations[:, None],
             )
 
-        log_likelihood -= no_spike_part_log_likelihood[is_track_interior]
+        log_likelihood -= (
+            durations[:, None] * no_spike_part_log_likelihood[is_track_interior]
+        )
 
     return log_likelihood

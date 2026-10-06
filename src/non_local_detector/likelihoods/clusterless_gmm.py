@@ -17,26 +17,35 @@ import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 from track_linearization import get_linearized_position  # type: ignore[import-untyped]
 
+from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
-    EPS,
-    LOG_EPS,
+    LOG_RATE_EPS_HZ,
+    RATE_EPS_HZ,
     _SpikeTimeOrder,
+    decode_bin_centers,
     get_position_at_time,
     interpolate_weights_at_spike_times,
+    log_bin_duration_evidence,
     resolve_row_slice,
     safe_log,
     select_spike_rows,
     select_spikes_in_rows,
     sum_spikes_into_rows,
     validate_population_lengths,
+    validate_spike_feature_pair,
     validate_weights,
     weighted_mean_rate,
 )
 from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _effective_sample_count,
+)
+from non_local_detector.time_edges import (
+    _DecodeTimeGrid,
+    _resolve_time_grid,
+    requires_time_edges,
 )
 
 # ---------------------------------------------------------------------
@@ -214,12 +223,15 @@ def _fit_gmm_density(
 def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
     """sample_weight for a GMM EM fit, or None to take the unweighted path.
 
-    Returns None when the caller passed no weights (keeps the unweighted fit
-    byte-identical) or when the weights sum to 0; otherwise the weights. An
+    Returns None when the caller passed no weights (keeps a direct unweighted
+    fit byte-identical; detectors always pass their group mask as weights) or
+    when the weights sum to 0; otherwise the weights. An
     all-zero ``sample_weight`` is rejected by ``GaussianMixtureModel.fit`` (it
     leaves no effective training data), so a fully de-weighted encoding group
     deliberately degrades to an unweighted occupancy fit after the caller's
-    "weights sum to 0" warning rather than raising. Because the unweighted
+    "weights sum to 0" warning rather than raising; detectors pass the full
+    position timeline, so that fallback occupancy covers every supplied sample,
+    not only the group's. Because the unweighted
     fallback keeps every position row, the caller's ``occupancy_n_samples < 1``
     check below is then reachable only for a zero-row position array.
     """
@@ -228,43 +240,12 @@ def _gmm_sample_weight(weights: np.ndarray, weights_was_none: bool):
     return weights
 
 
-def _validate_spike_feature_pair(
-    spike_times: np.ndarray | jnp.ndarray,
-    spike_features: np.ndarray | jnp.ndarray,
-    electrode: int,
-) -> tuple[np.ndarray | jnp.ndarray, np.ndarray | jnp.ndarray]:
-    """Validate one electrode's parallel spike/mark arrays without copying them."""
-    times_shape = np.shape(spike_times)
-    features_shape = np.shape(spike_features)
-    if len(times_shape) != 1:
-        raise ValidationError(
-            f"spike_times for electrode {electrode} must be 1-D",
-            expected="shape (n_spikes,)",
-            got=f"shape {times_shape}",
-        )
-    if len(features_shape) != 2:
-        raise ValidationError(
-            f"spike_waveform_features for electrode {electrode} must be 2-D",
-            expected="shape (n_spikes, n_features)",
-            got=f"shape {features_shape}",
-        )
-    if features_shape[0] != times_shape[0]:
-        raise ValidationError(
-            f"spike times and waveform features disagree for electrode {electrode}",
-            expected=f"{times_shape[0]} waveform-feature rows",
-            got=f"{features_shape[0]} rows",
-            hint="Provide exactly one waveform-feature row for every spike time.",
-        )
-    return spike_times, spike_features
-
-
 def fit_clusterless_gmm_encoding_model(
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
     spike_waveform_features: list[jnp.ndarray],
     environment: Environment,
-    sampling_frequency: int = 500,
     weights: jnp.ndarray | None = None,
     *,
     gmm_components_occupancy: int = 32,
@@ -274,11 +255,14 @@ def fit_clusterless_gmm_encoding_model(
     gmm_covariance_type_gpi: str = "full",
     gmm_covariance_type_joint: str = "full",
     gmm_random_state: int | None = 0,
-    gmm_reg_covar: float = 1e-6,
+    gmm_reg_covar: float = 1e-06,
     gmm_max_iter: int = 200,
-    gmm_tol: float = 1e-3,
+    gmm_tol: float = 0.001,
     disable_progress_bar: bool = False,
-    **kwargs,  # Accept but ignore KDE-specific parameters for API compatibility
+    encoding_time_range=None,
+    valid_position_intervals=None,
+    _encoding_support=None,
+    **kwargs,
 ) -> dict:
     """
     Fit the clusterless encoding model using GMMs.
@@ -321,6 +305,16 @@ def fit_clusterless_gmm_encoding_model(
     disable_progress_bar : bool, default=False
         If True, disable progress bar.
 
+    encoding_time_range : array_like, shape (2,), optional
+        Acquisition start/stop in seconds. Clips encoding support using the
+        original interpolation basis. Uniform samples otherwise include endpoint
+        half-cells; a singleton requires explicit bounds or a tracking interval.
+    valid_position_intervals : array_like, shape (n_intervals, 2), optional
+        Ordered, non-overlapping continuous tracking intervals in seconds.
+        Required for irregular timestamps; each interval needs a finite sample.
+        Positions are held at segment endpoints and NaN rows split support.
+        Encoding support does not automatically mark decode bins missing.
+
     Returns
     -------
     encoding_model : dict
@@ -338,6 +332,15 @@ def fit_clusterless_gmm_encoding_model(
         - gmm_effective_components
         - mark_dimensions
     """
+    weights_was_none = weights is None
+    support, weights, exposure_weights, position = prepare_encoding_support(
+        position_time,
+        position,
+        weights,
+        encoding_time_range=encoding_time_range,
+        valid_position_intervals=valid_position_intervals,
+        _encoding_support=_encoding_support,
+    )
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -349,12 +352,11 @@ def fit_clusterless_gmm_encoding_model(
     # Keep as numpy for interpolation (scipy.interpolate.interpn requires numpy anyway).
     position_time = np.asarray(position_time)
 
-    weights_was_none = weights is None
     if weights is None:
         weights = np.ones((position.shape[0],))
-    weights = validate_weights(weights, position.shape[0])
+    weights = validate_weights(np.asarray(weights), position.shape[0])
     # Weighted occupancy "time": sum of per-sample weights (uniform -> sample count).
-    weight_sum = float(weights.sum())
+    weight_sum = float(exposure_weights.sum())
     if weight_sum == 0.0:
         warnings.warn(
             "clusterless GMM encoding weights sum to 0 (no effective training data "
@@ -362,7 +364,7 @@ def fit_clusterless_gmm_encoding_model(
             UserWarning,
             stacklevel=2,
         )
-    occupancy_sample_weight = _gmm_sample_weight(weights, weights_was_none)
+    occupancy_sample_weight = _gmm_sample_weight(exposure_weights, False)
 
     # Interior bins (cached)
     if environment.is_track_interior_ is not None:
@@ -442,19 +444,15 @@ def fit_clusterless_gmm_encoding_model(
             disable=disable_progress_bar,
         )
     ):
-        elect_times, elect_feats = _validate_spike_feature_pair(
-            elect_times, elect_feats, electrode
-        )
+        validate_spike_feature_pair(elect_times, elect_feats, electrode)
         mark_dimensions.append(elect_feats.shape[1])
         # Clip to encoding window
-        in_bounds = np.logical_and(
-            elect_times >= position_time[0], elect_times <= position_time[-1]
-        )
+        in_bounds = support.contains(elect_times)
         elect_times = elect_times[in_bounds]
         elect_feats = _as_jnp(elect_feats[in_bounds])
         # Weight each encoding spike by the posterior weight at its spike time.
         elect_weights = interpolate_weights_at_spike_times(
-            elect_times, position_time, weights
+            elect_times, position_time, np.asarray(weights), encoding_support=support
         )
 
         # An electrode with no effective encoding spikes has no data to fit, so
@@ -473,7 +471,7 @@ def fit_clusterless_gmm_encoding_model(
             warnings.warn(
                 f"Clusterless GMM: electrode {electrode} has no effective encoding "
                 "spikes (empty or zero total weight); it is treated as "
-                "zero-rate -- its observed decode spikes are floored to LOG_EPS "
+                "zero-rate -- its observed decode spikes use the rate floor in Hz "
                 "rather than fit on the de-weighted spikes.",
                 UserWarning,
                 stacklevel=2,
@@ -487,13 +485,13 @@ def fit_clusterless_gmm_encoding_model(
 
         # Weighted mean firing rate: weighted spike count / weighted occupancy time.
         mean_rate = jnp.clip(
-            weighted_mean_rate(elect_weights, weight_sum), min=EPS
+            weighted_mean_rate(elect_weights, weight_sum), min=RATE_EPS_HZ
         )  # avoid 0 rate
         mean_rates.append(mean_rate)
 
         # Positions at spike times
         enc_pos = get_position_at_time(
-            position_time, position, elect_times, environment
+            position_time, position, elect_times, environment, encoding_support=support
         )
 
         joint_samples = jnp.concatenate([enc_pos, elect_feats], axis=1)
@@ -556,7 +554,7 @@ def fit_clusterless_gmm_encoding_model(
     # Clip the summed intensity once (not per electrode) so an empty bin gets a
     # single EPS floor rather than accumulating n_electrodes * EPS.
     summed_ground_process_intensity = jnp.clip(
-        summed_ground_process_intensity, min=EPS, max=None
+        summed_ground_process_intensity, min=RATE_EPS_HZ, max=None
     )
 
     return {
@@ -580,6 +578,8 @@ def fit_clusterless_gmm_encoding_model(
             "joint": effective_joint_components,
         },
         "mark_dimensions": mark_dimensions,
+        "rate_units": "Hz",
+        "encoding_exposure_seconds": float(exposure_weights.sum()),
     }
 
 
@@ -588,8 +588,8 @@ def fit_clusterless_gmm_encoding_model(
 # ---------------------------------------------------------------------
 
 
+@requires_time_edges
 def predict_clusterless_gmm_log_likelihood(
-    time: jnp.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
@@ -608,17 +608,21 @@ def predict_clusterless_gmm_log_likelihood(
     disable_progress_bar: bool = False,
     row_slice: slice | None = None,
     *,
+    time_edges: np.ndarray,
+    rate_units: str = "Hz",
+    encoding_exposure_seconds: float | None = None,
     mark_dimensions: list[int],
     _spike_time_order: _SpikeTimeOrder | None = None,
-    **kwargs,  # Accept and ignore extra kwargs for compatibility with model interface
+    _time_grid: _DecodeTimeGrid | None = None,
+    **kwargs,
 ) -> jnp.ndarray:
     """
     Predict the (non-local or local) log likelihood using the fitted GMM model.
 
     Parameters
     ----------
-    time : jnp.ndarray
-        Decoding time bins.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
     position_time : jnp.ndarray, shape (n_time_position,)
         Time of each position sample for the decoding period (used only by the
         local path; accepted for signature parity when ``is_local`` is False).
@@ -644,8 +648,8 @@ def predict_clusterless_gmm_log_likelihood(
     disable_progress_bar : bool, default=False
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
-        ``time`` always stays the FULL decoding timeline: spikes are binned
-        against it and only those owned by the requested rows are evaluated, so
+        ``time_edges`` always stay the FULL decoding edges: spikes are binned
+        against them and only those owned by the requested rows are evaluated, so
         the result equals the full-time result sliced by ``row_slice`` while the
         spatial workspaces scale with the requested rows and selected spikes.
     mark_dimensions : list[int], keyword-only
@@ -660,10 +664,18 @@ def predict_clusterless_gmm_log_likelihood(
     Returns
     -------
     log_likelihood :
-        If non-local: jnp.ndarray, shape (n_rows, n_bins)
+        If non-local: jnp.ndarray, shape (n_rows, n_place_bins)
         If local    : jnp.ndarray, shape (n_rows, 1)
-        ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
+        ``n_rows`` is ``n_bins`` unless ``row_slice`` is given.
     """
+    if rate_units != "Hz":
+        raise ValidationError(
+            "Encoding rates must be in Hz; refit legacy encoding models before decoding."
+        )
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if _spike_time_order is None:
+        _spike_time_order = _SpikeTimeOrder()
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -677,12 +689,12 @@ def predict_clusterless_gmm_log_likelihood(
     for electrode, (elect_times, elect_feats, expected_mark_dims) in enumerate(
         zip(spike_times, spike_waveform_features, mark_dimensions, strict=True)
     ):
-        _, features = _validate_spike_feature_pair(elect_times, elect_feats, electrode)
-        if features.shape[1] != expected_mark_dims:
+        validate_spike_feature_pair(elect_times, elect_feats, electrode)
+        if np.shape(elect_feats)[1] != expected_mark_dims:
             raise ValidationError(
                 f"waveform feature dimension changed for electrode {electrode}",
                 expected=f"{expected_mark_dims} features per spike",
-                got=f"{features.shape[1]} features",
+                got=f"{np.shape(elect_feats)[1]} features",
                 hint="Use the same waveform feature representation at fit and predict.",
             )
 
@@ -691,8 +703,8 @@ def predict_clusterless_gmm_log_likelihood(
     # the FULL-recording position on every call -- once per chunk under chunked
     # prediction -- for a non-local likelihood that never reads it.
     if is_local:
-        return compute_local_log_likelihood(
-            time=time,
+        local = compute_local_log_likelihood(
+            time_edges=time_edges,
             position_time=position_time,
             position=position,
             spike_times=spike_times,
@@ -705,10 +717,21 @@ def predict_clusterless_gmm_log_likelihood(
             disable_progress_bar=disable_progress_bar,
             row_slice=row_slice,
             _spike_time_order=_spike_time_order,
+            _time_grid=_time_grid,
         )
 
-    row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
-    n_rows = row_stop - row_start
+        return (
+            local
+            + log_bin_duration_evidence(
+                spike_times,
+                time_edges,
+                row_slice,
+                _spike_time_order,
+                _time_grid=_time_grid,
+            )[:, None]
+        )
+
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_bins = interior_place_bin_centers.shape[0]
     all_bin_ids = jnp.arange(n_bins)
 
@@ -716,7 +739,10 @@ def predict_clusterless_gmm_log_likelihood(
     # log_likelihood = (
     #     (-summed_ground_process_intensity).reshape(1, -1).repeat(n_rows, axis=0)
     # )  # (n_rows, n_bins)
-    log_likelihood = -1.0 * summed_ground_process_intensity * jnp.ones((n_rows, 1))
+    log_likelihood = (
+        -jnp.asarray(_time_grid.durations(row_start, row_stop))[:, None]
+        * summed_ground_process_intensity
+    )
 
     # Per-electrode contributions in log-space
     for elect_feats, elect_times, joint_gmm, mean_rate in tqdm(
@@ -731,20 +757,24 @@ def predict_clusterless_gmm_log_likelihood(
         # spikes, so no density was fit. The fitted rate is zero, so its
         # ground-process (integral) term is zero (already omitted at fit) and
         # every observed decoding spike is near-impossible under this model.
-        # Floor each such spike's log-intensity to LOG_EPS, added uniformly
+        # Floor each such spike's log-intensity to LOG_RATE_EPS_HZ, added uniformly
         # across position bins -- matching the KDE path and the marked-point-
         # process likelihood. This is *not* the same as skipping the electrode:
         # skipping would drop the negative evidence an observed spike carries
         # (e.g. against a state whose encoding de-weighted this electrode). With
         # no in-window spikes the row sums contribute zero.
         selection = select_spikes_in_rows(
-            elect_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
+            elect_times,
+            row_start,
+            row_stop,
+            time_edges=time_edges,
+            _spike_time_order=_spike_time_order,
         )
         if joint_gmm is None:
             spikes_per_bin = sum_spikes_into_rows(
                 jnp.ones(selection.bin_ind.shape[0]), selection
             )  # (n_rows,)
-            log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin[:, None]
+            log_likelihood = log_likelihood + LOG_RATE_EPS_HZ * spikes_per_bin[:, None]
             continue
 
         # Select FIRST, then convert: converting the whole array would
@@ -756,7 +786,7 @@ def predict_clusterless_gmm_log_likelihood(
         n_spikes = elect_feats.shape[0]
 
         # Precompute log(mean_rate) outside loop
-        log_mean_rate = safe_log(mean_rate, eps=EPS)
+        log_mean_rate = safe_log(mean_rate, eps=RATE_EPS_HZ)
 
         # Process spikes in blocks
         for spike_start in range(0, n_spikes, spike_block_size):
@@ -820,11 +850,16 @@ def predict_clusterless_gmm_log_likelihood(
                         log_occupancy[bin_start:bin_end],
                     )
 
-    return log_likelihood
+    return (
+        log_likelihood
+        + log_bin_duration_evidence(
+            spike_times, time_edges, row_slice, _spike_time_order, _time_grid=_time_grid
+        )[:, None]
+    )
 
 
 def compute_local_log_likelihood(
-    time: jnp.ndarray,
+    time_edges: np.ndarray,
     position_time: jnp.ndarray,
     position: jnp.ndarray,
     spike_times: list[jnp.ndarray],
@@ -838,6 +873,7 @@ def compute_local_log_likelihood(
     row_slice: slice | None = None,
     *,
     _spike_time_order: _SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
     """Local log-likelihood at the animal's interpolated position.
 
@@ -846,8 +882,8 @@ def compute_local_log_likelihood(
 
     Parameters
     ----------
-    time : jnp.ndarray, shape (n_time + 1,)
-        Time bin edges for decoding.
+    time_edges : np.ndarray, shape (n_bins + 1,)
+        Decoding bin edges.
     position_time : jnp.ndarray, shape (n_time_position,)
         Timestamps for position samples.
     position : jnp.ndarray, shape (n_time_position, n_position_dims)
@@ -862,7 +898,7 @@ def compute_local_log_likelihood(
         Turn off progress bar display, by default False.
     row_slice : slice | None, optional
         Contiguous range of output rows to compute, by default None (all rows).
-        ``time`` stays the FULL decoding timeline (see
+        ``time_edges`` stay the FULL decoding edges (see
         ``predict_clusterless_gmm_log_likelihood``).
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
@@ -886,13 +922,20 @@ def compute_local_log_likelihood(
     position = position if position.ndim > 1 else position[:, None]
     working_dtype = jax.dtypes.canonicalize_dtype(position.dtype)
 
-    row_start, row_stop = resolve_row_slice(row_slice, time.shape[0])
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if _spike_time_order is None:
+        _spike_time_order = _SpikeTimeOrder()
+    row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_rows = row_stop - row_start
 
     # Interpolate position at the requested rows' bin times (use bin centers)
 
     interp_pos = get_position_at_time(
-        position_time, position, time[row_start:row_stop], environment
+        position_time,
+        position,
+        decode_bin_centers(time_edges, row_start, row_stop),
+        environment,
     )  # (n_rows, pos_dims)
 
     # Occupancy density and its log at the animal's position
@@ -916,11 +959,15 @@ def compute_local_log_likelihood(
     ):
         # None marks a zero-rate electrode with no effective encoding spikes, so
         # floor each observed decoding spike's
-        # log-intensity to LOG_EPS (added to its time bin), matching the KDE path
+        # log-intensity to LOG_RATE_EPS_HZ (added to its time bin), matching the KDE path
         # and the marked-point-process likelihood. The integral term is zero. Do
         # not skip -- an observed spike is negative evidence, not "no data".
         selection = select_spikes_in_rows(
-            elect_times, time, row_start, row_stop, _spike_time_order=_spike_time_order
+            elect_times,
+            row_start,
+            row_stop,
+            time_edges=time_edges,
+            _spike_time_order=_spike_time_order,
         )
         if joint_gmm is None:
             # Skip the device reduction when the chunk owns none of its spikes:
@@ -929,7 +976,7 @@ def compute_local_log_likelihood(
                 spikes_per_bin = sum_spikes_into_rows(
                     jnp.ones(selection.bin_ind.shape[0]), selection
                 )  # (n_rows,)
-                log_likelihood = log_likelihood + LOG_EPS * spikes_per_bin
+                log_likelihood = log_likelihood + LOG_RATE_EPS_HZ * spikes_per_bin
             continue
 
         # Select FIRST, then convert (see the non-local branch).
@@ -950,7 +997,7 @@ def compute_local_log_likelihood(
                 occupancy_model, pos_at_spike_time
             )  # (n_spikes,)
             # Density difference first (see _accumulate_log_likelihood_block).
-            terms = safe_log(mean_rate, eps=EPS) + (
+            terms = safe_log(mean_rate, eps=RATE_EPS_HZ) + (
                 joint_logp - log_occ_at_spike_pos
             )  # (n_spikes,)
 
@@ -967,6 +1014,8 @@ def compute_local_log_likelihood(
     # Subtract the summed ground-process intensity once, floored at EPS to
     # mirror fit_clusterless_gmm_encoding_model's summed_ground_process_intensity
     # (a single EPS floor, not n_electrodes * EPS).
-    log_likelihood = log_likelihood - jnp.clip(summed_expected_counts, min=EPS)
+    log_likelihood = log_likelihood - jnp.asarray(
+        _time_grid.durations(row_start, row_stop)
+    ) * jnp.clip(summed_expected_counts, min=RATE_EPS_HZ)
 
     return log_likelihood[:, None]

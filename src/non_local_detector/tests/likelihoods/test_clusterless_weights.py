@@ -25,7 +25,7 @@ from non_local_detector.likelihoods.clusterless_kde import (
 def _predict_nonlocal(env, encoding, t_pos, pos, dec_spike_times, dec_feats, t_edges):
     return np.asarray(
         predict_clusterless_kde_log_likelihood(
-            time=t_edges,
+            time_edges=t_edges,
             position_time=t_pos,
             position=pos,
             spike_times=dec_spike_times,
@@ -58,7 +58,6 @@ def _fit(env, t_pos, pos, spike_times, feats, weights=None):
         spike_waveform_features=feats,
         environment=env,
         weights=weights,
-        sampling_frequency=10,
         position_std=np.sqrt(1.0),
         waveform_std=1.0,
         block_size=16,
@@ -242,7 +241,6 @@ def test_predict_preserves_old_positional_api(simple_1d_environment):
     t_edges = jnp.linspace(0.0, 10.0, 6)
     # Positional call through is_local (16th positional arg), as pre-change callers did.
     ll = predict_clusterless_kde_log_likelihood(
-        t_edges,
         t_pos,
         pos,
         [jnp.array([4.2, 5.6])],
@@ -257,9 +255,10 @@ def test_predict_preserves_old_positional_api(simple_1d_environment):
         enc["summed_ground_process_intensity"],
         jnp.asarray(enc["position_std"]),
         jnp.asarray(enc["waveform_std"]),
-        True,  # is_local, positional
+        True,
+        time_edges=t_edges,
     )
-    assert np.asarray(ll).shape == (t_edges.shape[0], 1)  # local -> (n_time, 1)
+    assert np.asarray(ll).shape == (t_edges.shape[0] - 1, 1)  # local -> (n_bins, 1)
 
 
 def _fit_gmm(env, t_pos, pos, spikes, feats, weights):
@@ -414,7 +413,12 @@ def test_gmm_component_counts_use_the_fitted_array_dtype(simple_1d_environment):
     spikes = [np.array([2.0, 4.0, 6.0, 9.0])]
     feats = [np.array([[0.0, 0.0], [0.2, 0.1], [1.0, -1.0], [-0.3, 0.4]])]
     weights = np.where(t_pos < 8.0, 1.0, 1e-9)
-    with jax.enable_x64(True), warnings.catch_warnings():
+    if hasattr(jax, "enable_x64"):
+        enable_x64 = jax.enable_x64
+    else:
+        from jax.experimental import enable_x64
+
+    with enable_x64(True), warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)  # no "reduced" warning
         encoding = fit_clusterless_gmm_encoding_model(
             position_time=t_pos,

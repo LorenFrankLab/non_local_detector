@@ -124,7 +124,7 @@ def profile_dimension(n_features):
 
     mean_ref, std_ref = time_function(
         predict_clusterless_kde_log_likelihood,
-        time=data["decoding"]["time"],
+        time_edges=data["decoding"]["time"],
         position=data["encoding"]["position"],
         position_time=data["encoding"]["position_time"],
         spike_times=data["decoding"]["spike_times"],
@@ -153,7 +153,7 @@ def profile_dimension(n_features):
 
     mean_gemm, std_gemm = time_function(
         predict_log,
-        time=data["decoding"]["time"],
+        time_edges=data["decoding"]["time"],
         position=data["encoding"]["position"],
         position_time=data["encoding"]["position_time"],
         spike_times=data["decoding"]["spike_times"],
@@ -172,7 +172,7 @@ def profile_dimension(n_features):
     print("\nLog-space without GEMM (linear fallback in log-space):")
     mean_no_gemm, std_no_gemm = time_function(
         predict_log,
-        time=data["decoding"]["time"],
+        time_edges=data["decoding"]["time"],
         position=data["encoding"]["position"],
         position_time=data["encoding"]["position_time"],
         spike_times=data["decoding"]["spike_times"],

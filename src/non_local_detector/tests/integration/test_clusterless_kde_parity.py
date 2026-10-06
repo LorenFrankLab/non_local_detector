@@ -33,6 +33,7 @@ from non_local_detector.likelihoods.clusterless_kde_log import (
 from non_local_detector.likelihoods.clusterless_kde_log import (
     predict_clusterless_kde_log_likelihood as predict_log,
 )
+from non_local_detector.time_edges import time_edges_from_centers
 
 
 @pytest.fixture
@@ -313,7 +314,7 @@ def test_predict_local_likelihood_parity(
 
     # Predict with original
     ll_original = predict_original(
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position_time=data["position_time"],
         position=data["position"],
         spike_times=data["spike_times"],
@@ -335,7 +336,7 @@ def test_predict_local_likelihood_parity(
 
     # Predict with log-space
     ll_log = predict_log(
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position_time=data["position_time"],
         position=data["position"],
         spike_times=data["spike_times"],
@@ -396,7 +397,7 @@ def test_predict_nonlocal_likelihood_parity(
 
     # Predict with original
     ll_original = predict_original(
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position_time=data["position_time"],
         position=data["position"],
         spike_times=data["spike_times"],
@@ -418,7 +419,7 @@ def test_predict_nonlocal_likelihood_parity(
 
     # Predict with log-space
     ll_log = predict_log(
-        time=time,
+        time_edges=time_edges_from_centers(time),
         position_time=data["position_time"],
         position=data["position"],
         spike_times=data["spike_times"],

@@ -7,6 +7,8 @@ import pandas as pd  # type: ignore[import-untyped]
 import xarray as xr
 from scipy.ndimage import gaussian_filter1d  # type: ignore[import-untyped]
 
+from non_local_detector.exceptions import ValidationError
+from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
 from non_local_detector.models import (
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
@@ -52,30 +54,46 @@ def get_multiunit_firing_rate(
     ----------
     spike_times : list[np.ndarray]
         Spike times for each neuron.
-    time : np.ndarray
-        Time bins.
+    time : np.ndarray, shape (n_time,)
+        Row timestamps, e.g. decode bin centers (``results.time``) or position
+        sample times; at least two, increasing. Each row counts the spikes
+        closer to it than to its neighbours, with half an interval beyond each
+        end.
     smoothing_sigma : float, optional
         Standard deviation of the Gaussian smoothing, by default 0.015
 
     Returns
     -------
     multiunit_firing_rate : pd.DataFrame
+
+    Raises
+    ------
+    ValidationError
+        If fewer than two timestamps are given: one timestamp does not
+        determine a row duration, so no rate can be computed.
     """
+    time = np.asarray(time)
+    if time.ndim != 1 or time.shape[0] < 2:
+        raise ValidationError(
+            "get_multiunit_firing_rate needs at least two timestamps",
+            expected="array with shape (n_time,), n_time >= 2",
+            got=f"array with shape {time.shape}",
+            hint="A single timestamp does not determine a row duration. Pass "
+            "the decode bin centers (results.time) or position sample times.",
+        )
+    row_edges = np.concatenate(
+        [
+            [time[0] - 0.5 * (time[1] - time[0])],
+            0.5 * (time[:-1] + time[1:]),
+            [time[-1] + 0.5 * (time[-1] - time[-2])],
+        ]
+    )
     spike_indicator = np.stack(
         [
-            np.bincount(
-                np.digitize(
-                    spike_times[
-                        np.logical_and(
-                            spike_times >= time[0],
-                            spike_times <= time[-1],
-                        )
-                    ],
-                    time[1:-1],
-                ),
-                minlength=len(time),
+            get_spikecount_per_time_bin(
+                np.asarray(unit_spike_times), time_edges=row_edges
             )
-            for spike_times in spike_times
+            for unit_spike_times in spike_times
         ],
         axis=1,
     )

@@ -19,6 +19,7 @@ from non_local_detector.models.non_local_model import (
     NonLocalSortedSpikesDetector,
 )
 from non_local_detector.tests.conftest import make_state_bins_results
+from non_local_detector.time_edges import time_edges_from_centers
 
 
 def _make_results_dataset_1d(state_names, n_time=10, n_bins_per_state=5):
@@ -184,7 +185,7 @@ class TestPositionTimeValidation:
             detector.predict(
                 spike_times=spike_times,
                 spike_waveform_features=spike_features,
-                time=time,
+                time_edges=time_edges_from_centers(time),
                 position=position,
                 position_time=None,
             )
@@ -202,7 +203,7 @@ class TestPositionTimeValidation:
         with pytest.raises(ValidationError, match="position_time is required"):
             detector.predict(
                 spike_times=spike_times,
-                time=time,
+                time_edges=time_edges_from_centers(time),
                 position=position,
                 position_time=None,
             )

@@ -98,7 +98,7 @@ def clusterless_likelihood_comparison() -> dict:
 
     # Predict KDE log-likelihood
     kde_log_likelihood = predict_clusterless_kde_log_likelihood(
-        time=test_edges,
+        time_edges=test_edges,
         position_time=test_position_time,
         position=sim.position[n_encode:],
         spike_times=test_spike_times,
@@ -122,7 +122,7 @@ def clusterless_likelihood_comparison() -> dict:
 
     # Predict GMM log-likelihood
     gmm_log_likelihood = predict_clusterless_gmm_log_likelihood(
-        time=test_edges,
+        time_edges=test_edges,
         position_time=test_position_time,
         position=sim.position[n_encode:],
         spike_times=test_spike_times,

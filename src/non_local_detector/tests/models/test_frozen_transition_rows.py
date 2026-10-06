@@ -16,6 +16,7 @@ from non_local_detector import (
     ClusterlessDecoder,
     NonLocalClusterlessDetector,
     NonLocalSortedSpikesDetector,
+    time_edges_from_centers,
 )
 from non_local_detector.models.base import (
     _normalize_frozen_discrete_transition_rows,
@@ -220,7 +221,7 @@ class TestFrozenRowEndToEnd:
             position_time=time,
             position=position,
             spike_times=spike_times,
-            time=time,
+            time_edges=time_edges_from_centers(time),
             is_training=~is_event,
             max_iter=3,
             estimate_encoding_model=False,
@@ -265,7 +266,7 @@ class TestFrozenRowEndToEnd:
             position_time=time,
             position=position,
             spike_times=spike_times,
-            time=time,
+            time_edges=time_edges_from_centers(time),
             is_training=~is_event,
             max_iter=3,
             estimate_encoding_model=False,
@@ -310,7 +311,7 @@ class TestFrozenRowsDecoderSmoke:
             position=sim.position,
             spike_times=sim.spike_times,
             spike_waveform_features=sim.spike_waveform_features,
-            time=sim.position_time,
+            time_edges=time_edges_from_centers(sim.position_time),
             max_iter=3,
             estimate_encoding_model=False,
         )

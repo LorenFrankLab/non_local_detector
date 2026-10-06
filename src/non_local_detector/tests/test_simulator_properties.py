@@ -184,16 +184,16 @@ def test_decoder_output_shapes_consistent(n_tetrodes: int) -> None:
     )
 
     # Predict on test data
-    # Note: After GMM fix, decoder returns n outputs from n time inputs
+    # The decoder returns one row per bin: n_time_bins + 1 edges
     n_time_bins = 10
-    test_time = np.linspace(
+    test_time_edges = np.linspace(
         sim.position_time[n_encode],
         sim.position_time[-1],
-        n_time_bins,
+        n_time_bins + 1,
     )
 
     results = decoder.predict(
-        time=test_time,
+        time_edges=test_time_edges,
         position_time=sim.position_time[n_encode:],
         position=sim.position[n_encode:],
         spike_times=[
