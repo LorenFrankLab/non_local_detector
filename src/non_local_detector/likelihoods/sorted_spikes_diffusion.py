@@ -54,7 +54,11 @@ from non_local_detector.likelihoods.diffusion import (
     environment_graph,
     to_density,
 )
-from non_local_detector.time_edges import requires_time_edges, validate_time_edges
+from non_local_detector.time_edges import (
+    _DecodeTimeGrid,
+    _resolve_time_grid,
+    requires_time_edges,
+)
 
 _LOCAL_INTERPOLATION_MODES = {"nearest", "linear"}
 
@@ -642,6 +646,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
     **_encoding_extras: object,
 ) -> jnp.ndarray:
     """Predict the Poisson log-likelihood of sorted spikes under the diffusion model.
@@ -719,7 +724,10 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         raise ValidationError(
             "Encoding rates must be in Hz; refit legacy encoding models before decoding."
         )
-    time_edges = validate_time_edges(time_edges)
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if _spike_time_order is None:
+        _spike_time_order = _SpikeTimeOrder()
     # Both paths broadcast or contract over neurons, so a population mismatch would
     # otherwise surface as a JAX shape error or, on the local path, broadcast one
     # neuron's rates across the observed spike trains.
@@ -731,7 +739,7 @@ def predict_sorted_spikes_diffusion_log_likelihood(
         interior_log_place_fields=interior_log_place_fields,
     )
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    durations = jnp.asarray(np.diff(time_edges)[row_start:row_stop])
+    durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
     if is_local:
         interpolated_position = get_position_at_time(
             position_time,

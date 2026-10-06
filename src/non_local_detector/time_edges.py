@@ -18,6 +18,7 @@ width, and rejects deviations above that larger bound. The separate precision
 guard rejects grids whose ulp bound exceeds 1% of their smallest bin width.
 """
 
+from dataclasses import dataclass
 from functools import wraps
 
 import numpy as np
@@ -167,6 +168,63 @@ def validate_time_edges(time_edges, name: str = "time_edges") -> np.ndarray:
     if np.issubdtype(edges.dtype, np.integer):
         return edges.astype(np.float64)
     return edges
+
+
+@dataclass(frozen=True, init=False)
+class _DecodeTimeGrid:
+    """Validated edges shared only within one likelihood prediction.
+
+    The caller must keep the edges unchanged while this context is in use.
+    A new public prediction or standalone likelihood call validates its inputs
+    again; this object must never be retained on a fitted detector.
+    """
+
+    edges: np.ndarray
+    uniform_width: float | None
+    uniform_tolerance: float | None
+
+    def __init__(self, edges) -> None:
+        object.__setattr__(self, "edges", validate_time_edges(edges))
+        object.__setattr__(self, "uniform_width", None)
+        object.__setattr__(self, "uniform_tolerance", None)
+
+    @classmethod
+    def from_validated_edges(
+        cls, edges: np.ndarray, *, uniform_width: float | None = None
+    ) -> "_DecodeTimeGrid":
+        """Bind edges already validated at the private model boundary.
+
+        ``uniform_width`` is supplied only after the detector's uniform-grid
+        check. Raw contexts leave it unset so they cannot bypass that check.
+        """
+        result = object.__new__(cls)
+        object.__setattr__(result, "edges", edges)
+        object.__setattr__(result, "uniform_width", uniform_width)
+        object.__setattr__(
+            result,
+            "uniform_tolerance",
+            None
+            if uniform_width is None
+            else _uniformity_tolerance(edges, uniform_width),
+        )
+        return result
+
+    @property
+    def n_bins(self) -> int:
+        return len(self.edges) - 1
+
+    def durations(self, row_start: int, row_stop: int) -> np.ndarray:
+        """Allocate durations only for the requested, normalized row range."""
+        return np.diff(self.edges[row_start : row_stop + 1])
+
+
+def _resolve_time_grid(
+    time_edges, time_grid: _DecodeTimeGrid | None = None
+) -> _DecodeTimeGrid:
+    """Reuse matching private preparation; validate fresh inputs otherwise."""
+    if isinstance(time_grid, _DecodeTimeGrid) and time_grid.edges is time_edges:
+        return time_grid
+    return _DecodeTimeGrid(time_edges)
 
 
 def uniform_time_bin_width(time_edges, name: str = "time_edges") -> float:

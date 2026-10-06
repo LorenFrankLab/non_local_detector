@@ -21,7 +21,11 @@ from non_local_detector.likelihoods.common import (
     get_spikecount_per_time_bin,
     resolve_row_slice,
 )
-from non_local_detector.time_edges import requires_time_edges, validate_time_edges
+from non_local_detector.time_edges import (
+    _DecodeTimeGrid,
+    _resolve_time_grid,
+    requires_time_edges,
+)
 
 
 def no_spike_time_bin_sizes(time_edges: np.ndarray) -> np.ndarray:
@@ -38,6 +42,7 @@ def predict_no_spike_log_likelihood(
     time_edges: np.ndarray,
     _time_bin_sizes: np.ndarray | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
     """Return the log likelihood of low spike rate for each time bin.
 
@@ -64,7 +69,7 @@ def predict_no_spike_log_likelihood(
     _time_bin_sizes : np.ndarray | None, optional
         Internal precomputed ``no_spike_time_bin_sizes(time_edges)`` for these edges.
         Detector predictions prepare it once and reuse it across chunks. Direct
-        callers can omit it; the same full-timeline durations is computed here.
+        callers can omit it; only the requested durations are computed here.
     _spike_time_order : _SpikeTimeOrder | None, optional
         Internal ordering preparation that a detector prediction shares across
         observation states and chunks. Direct callers omit it; the spike-time
@@ -110,11 +115,16 @@ def predict_no_spike_log_likelihood(
     >>> log_lik.shape
     (100, 1)
     """
-    time_edges = validate_time_edges(time_edges)
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if _spike_time_order is None:
+        _spike_time_order = _SpikeTimeOrder()
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     if _time_bin_sizes is None:
-        _time_bin_sizes = no_spike_time_bin_sizes(time_edges)
-    no_spike_rates = no_spike_rate * jnp.asarray(_time_bin_sizes[row_start:row_stop])
+        durations = _time_grid.durations(row_start, row_stop)
+    else:
+        durations = _time_bin_sizes[row_start:row_stop]
+    no_spike_rates = no_spike_rate * jnp.asarray(durations)
     no_spike_log_likelihood = jnp.zeros((row_stop - row_start,))
 
     for neuron_spike_times in tqdm(

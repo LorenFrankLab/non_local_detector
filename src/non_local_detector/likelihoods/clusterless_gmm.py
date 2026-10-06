@@ -42,7 +42,11 @@ from non_local_detector.likelihoods.gmm import (
     GaussianMixtureModel,
     _effective_sample_count,
 )
-from non_local_detector.time_edges import requires_time_edges, validate_time_edges
+from non_local_detector.time_edges import (
+    _DecodeTimeGrid,
+    _resolve_time_grid,
+    requires_time_edges,
+)
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -609,6 +613,7 @@ def predict_clusterless_gmm_log_likelihood(
     encoding_exposure_seconds: float | None = None,
     mark_dimensions: list[int],
     _spike_time_order: _SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
     **kwargs,
 ) -> jnp.ndarray:
     """
@@ -667,7 +672,10 @@ def predict_clusterless_gmm_log_likelihood(
         raise ValidationError(
             "Encoding rates must be in Hz; refit legacy encoding models before decoding."
         )
-    time_edges = validate_time_edges(time_edges)
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if _spike_time_order is None:
+        _spike_time_order = _SpikeTimeOrder()
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -709,12 +717,17 @@ def predict_clusterless_gmm_log_likelihood(
             disable_progress_bar=disable_progress_bar,
             row_slice=row_slice,
             _spike_time_order=_spike_time_order,
+            _time_grid=_time_grid,
         )
 
         return (
             local
             + log_bin_duration_evidence(
-                spike_times, time_edges, row_slice, _spike_time_order
+                spike_times,
+                time_edges,
+                row_slice,
+                _spike_time_order,
+                _time_grid=_time_grid,
             )[:, None]
         )
 
@@ -727,7 +740,7 @@ def predict_clusterless_gmm_log_likelihood(
     #     (-summed_ground_process_intensity).reshape(1, -1).repeat(n_rows, axis=0)
     # )  # (n_rows, n_bins)
     log_likelihood = (
-        -jnp.asarray(np.diff(time_edges)[row_start:row_stop])[:, None]
+        -jnp.asarray(_time_grid.durations(row_start, row_stop))[:, None]
         * summed_ground_process_intensity
     )
 
@@ -840,7 +853,7 @@ def predict_clusterless_gmm_log_likelihood(
     return (
         log_likelihood
         + log_bin_duration_evidence(
-            spike_times, time_edges, row_slice, _spike_time_order
+            spike_times, time_edges, row_slice, _spike_time_order, _time_grid=_time_grid
         )[:, None]
     )
 
@@ -860,6 +873,7 @@ def compute_local_log_likelihood(
     row_slice: slice | None = None,
     *,
     _spike_time_order: _SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
     """Local log-likelihood at the animal's interpolated position.
 
@@ -908,6 +922,10 @@ def compute_local_log_likelihood(
     position = position if position.ndim > 1 else position[:, None]
     working_dtype = jax.dtypes.canonicalize_dtype(position.dtype)
 
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if _spike_time_order is None:
+        _spike_time_order = _SpikeTimeOrder()
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_rows = row_stop - row_start
 
@@ -997,7 +1015,7 @@ def compute_local_log_likelihood(
     # mirror fit_clusterless_gmm_encoding_model's summed_ground_process_intensity
     # (a single EPS floor, not n_electrodes * EPS).
     log_likelihood = log_likelihood - jnp.asarray(
-        np.diff(time_edges)[row_start:row_stop]
+        _time_grid.durations(row_start, row_stop)
     ) * jnp.clip(summed_expected_counts, min=RATE_EPS_HZ)
 
     return log_likelihood[:, None]

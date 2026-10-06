@@ -11,7 +11,12 @@ from track_linearization import get_linearized_position  # type: ignore[import-u
 
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.time_edges import requires_time_edges, validate_time_edges
+from non_local_detector.time_edges import (
+    _DecodeTimeGrid,
+    _resolve_time_grid,
+    requires_time_edges,
+    validate_time_edges,
+)
 
 # JAX exposes this exception only privately. Older supported releases predate
 # explicit sharding and may lack the type; an empty tuple catches nothing.
@@ -32,9 +37,19 @@ RATE_EPS_HZ = (
 
 
 def log_bin_duration_evidence(
-    spike_times, time_edges, row_slice, spike_time_order, *, intensity_time_scale=1.0
+    spike_times,
+    time_edges,
+    row_slice,
+    spike_time_order,
+    *,
+    intensity_time_scale=1.0,
+    _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
     """The marked-process event term ``N_bin * log(duration_seconds)``."""
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if spike_time_order is None:
+        spike_time_order = _SpikeTimeOrder()
     start, stop = resolve_row_slice(row_slice, len(time_edges) - 1)
     counts = np.zeros(stop - start, dtype=int)
     for times in spike_times:
@@ -45,7 +60,7 @@ def log_bin_duration_evidence(
             _spike_time_order=spike_time_order,
         )
     return jnp.asarray(counts) * jnp.log(
-        jnp.asarray(np.diff(time_edges)[start:stop] / intensity_time_scale)
+        jnp.asarray(_time_grid.durations(start, stop) / intensity_time_scale)
     )
 
 

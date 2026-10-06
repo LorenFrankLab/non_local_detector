@@ -5,6 +5,7 @@ import pickle
 import warnings
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import partial
 from logging import getLogger
 
@@ -55,12 +56,14 @@ from non_local_detector.likelihoods.common import (
     decode_bin_centers,
     interpolate_weights_at_spike_times,
     resolve_row_slice,
+    validate_population_lengths,
     validate_spike_feature_population,
 )
 from non_local_detector.likelihoods.no_spike import no_spike_time_bin_sizes
 from non_local_detector.observation_models import ObservationModel
 from non_local_detector.time_edges import (
     _MAX_RELATIVE_SPACING_TOLERANCE,
+    _DecodeTimeGrid,
     _uniformity_tolerance,
     calculate_time_edges,
     requires_time_edges,
@@ -113,8 +116,52 @@ OUTPUT_INCLUDES: dict[str, set[str]] = {
 }
 
 
+@dataclass(frozen=True)
+class _LikelihoodPositionContext:
+    """Tracking preparation shared only during one likelihood prediction."""
+
+    time_edges: np.ndarray
+    source_time: np.ndarray | None
+    source_position: np.ndarray | None
+    position: np.ndarray | None
+    is_missing: np.ndarray | None
+    all_missing: bool
+
+    @classmethod
+    def prepare(
+        cls,
+        time_edges: np.ndarray,
+        position_time: np.ndarray | None,
+        position: np.ndarray | None,
+    ) -> "_LikelihoodPositionContext":
+        missing = _missing_bins(time_edges, None, position_time, position)
+        prepared = position
+        all_missing = False
+        if position is not None:
+            prepared = np.asarray(position)
+            prepared = prepared[:, None] if prepared.ndim == 1 else prepared
+            finite = np.all(np.isfinite(prepared), axis=1)
+            all_missing = not np.any(finite)
+            if not np.all(finite) and not all_missing:
+                prepared = prepared.copy()
+                prepared[~finite] = prepared[finite][0]
+        return cls(time_edges, position_time, position, prepared, missing, all_missing)
+
+    def matches(self, time_edges, position_time, position) -> bool:
+        return (
+            self.time_edges is time_edges
+            and self.source_time is position_time
+            and self.source_position is position
+        )
+
+
 def _prepare_likelihood_callback(
-    callback: Callable, time_edges: np.ndarray, *, has_no_spike: bool
+    callback: Callable,
+    time_edges: np.ndarray,
+    *,
+    has_no_spike: bool,
+    log_likelihood_args: tuple = (),
+    _time_grid: _DecodeTimeGrid | None = None,
 ) -> Callable:
     """Adapt a detector likelihood to core's observation-row callback contract.
 
@@ -147,6 +194,12 @@ def _prepare_likelihood_callback(
     prepared: dict[str, object] = {}
     if "_spike_time_order" in parameters:
         prepared["_spike_time_order"] = _SpikeTimeOrder()
+    if "_time_grid" in parameters and _time_grid is not None:
+        prepared["_time_grid"] = _time_grid
+    if "_position_context" in parameters and len(log_likelihood_args) >= 2:
+        prepared["_position_context"] = _LikelihoodPositionContext.prepare(
+            time_edges, *log_likelihood_args[:2]
+        )
     if has_no_spike and "_no_spike_time_bin_sizes" in parameters:
         prepared["_no_spike_time_bin_sizes"] = no_spike_time_bin_sizes(time_edges)
     bound = partial(callback, **prepared) if prepared else callback
@@ -299,6 +352,9 @@ def _decode_time_edges(
     time_edges: np.ndarray,
     transition_time_bin_width: float | None,
     transition_time_bin_width_tolerance: float = 0.0,
+    *,
+    _time_grid: _DecodeTimeGrid | None = None,
+    row_slice: slice | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Validate a detector decode grid and derive its bin centers.
 
@@ -328,7 +384,18 @@ def _decode_time_edges(
         If the edges are invalid or not uniform, or their width differs from
         ``transition_time_bin_width`` by more than the timestamp precision.
     """
-    time_edges, width = uniform_time_edges(time_edges)
+    prepared_uniform_grid = (
+        isinstance(_time_grid, _DecodeTimeGrid)
+        and _time_grid.edges is time_edges
+        and _time_grid.uniform_width is not None
+    )
+    if prepared_uniform_grid:
+        assert _time_grid is not None and _time_grid.uniform_width is not None
+        width = _time_grid.uniform_width
+        uniform_tolerance = _time_grid.uniform_tolerance
+    else:
+        time_edges, width = uniform_time_edges(time_edges)
+        uniform_tolerance = None
     if (
         transition_time_bin_width is not None
         and (
@@ -353,7 +420,12 @@ def _decode_time_edges(
     if transition_time_bin_width is not None and abs(
         width - transition_time_bin_width
     ) > max(
-        _uniformity_tolerance(time_edges, width), transition_time_bin_width_tolerance
+        (
+            uniform_tolerance
+            if uniform_tolerance is not None
+            else _uniformity_tolerance(time_edges, width)
+        ),
+        transition_time_bin_width_tolerance,
     ):
         raise ValidationError(
             "time_edges bin width differs from the learned transitions",
@@ -363,7 +435,8 @@ def _decode_time_edges(
             "and are not valid at another rate. Decode at the same bin width, "
             "or refit the detector for the new width.",
         )
-    return time_edges, decode_bin_centers(time_edges, 0, len(time_edges) - 1)
+    start, stop = resolve_row_slice(row_slice, len(time_edges) - 1)
+    return time_edges, decode_bin_centers(time_edges, start, stop)
 
 
 def _missing_bins(
@@ -507,8 +580,8 @@ def _group_weights(
 
     The group mask is the model's exposure: a sample outside it contributes no
     occupancy and owns no spikes. Warns when no sample has positive weight;
-    such a group is fit with zero exposure and its states decode from the prior
-    alone, which is usually a mask or label mistake.
+    such a group is fit with zero exposure. The existing rate floors still
+    determine its likelihood, which is usually a mask or label mistake.
 
     Parameters
     ----------
@@ -528,8 +601,8 @@ def _group_weights(
         warnings.warn(
             f"Encoding group {encoding_group!r} in environment "
             f"{environment_name!r} has no training samples with positive weight, "
-            "so its encoding model is fit with zero exposure and carries no "
-            "spike information. Check is_training, encoding_group_labels, and "
+            "so its encoding model is fit with zero exposure. Existing rate "
+            "floors still determine its likelihood. Check is_training, encoding_group_labels, and "
             "environment_labels.",
             UserWarning,
             stacklevel=3,
@@ -2140,6 +2213,55 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     "with the original recording. No-Spike uses its constructor rate in Hz.",
                 )
 
+    def _validate_decode_population(self, spike_times, spike_waveform_features=None):
+        """Validate active fitted populations before missing-data shortcuts."""
+        is_clusterless = isinstance(self, ClusterlessDetector)
+        if is_clusterless:
+            validate_spike_feature_population(spike_times, spike_waveform_features)
+        else:
+            for neuron, times in enumerate(spike_times):
+                if len(np.shape(times)) != 1:
+                    raise ValidationError(
+                        f"spike_times for neuron {neuron} must be 1-D",
+                        expected="one array with shape (n_spikes,) per neuron",
+                        got=f"shape {np.shape(times)}",
+                    )
+        field = "mean_rates" if is_clusterless else "place_fields"
+        for key in {
+            (obs.environment_name, obs.encoding_group)
+            for obs in self.observation_models
+            if not obs.is_no_spike
+        }:
+            model = self.encoding_model_[key]
+            validate_population_lengths(
+                "electrode" if is_clusterless else "neuron",
+                spike_times=spike_times,
+                **{field: model.get(field)},
+            )
+            if is_clusterless:
+                if "mark_dimensions" in model:
+                    dimensions = model["mark_dimensions"]
+                else:
+                    encoded_marks = model.get(
+                        "encoding_spike_waveform_features", model.get("encoding_marks")
+                    )
+                    dimensions = [np.shape(marks)[1] for marks in encoded_marks]
+                validate_population_lengths(
+                    "electrode", spike_times=spike_times, mark_dimensions=dimensions
+                )
+                for electrode, (features, expected) in enumerate(
+                    zip(spike_waveform_features, dimensions, strict=True)
+                ):
+                    if np.shape(features)[1] != expected:
+                        raise ValidationError(
+                            f"Waveform-feature dimensionality for electrode {electrode} "
+                            "does not match the fitted encoding model",
+                            expected=f"{expected} waveform features",
+                            got=f"{np.shape(features)[1]} waveform features",
+                            hint="Use the same waveform-feature selection for encoding "
+                            "and decoding, including when tracking is missing.",
+                        )
+
     def _learned_transition_time_bin_width(self) -> tuple[float | None, float]:
         """Bin width the discrete transitions were learned at, and its precision.
 
@@ -2235,13 +2357,30 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             if discrete_state_transitions is not None
             else self.discrete_state_transitions_
         )
+        if discrete_transitions.ndim == 3 and discrete_transitions.shape[0] != len(
+            time_centers
+        ):
+            raise ValidationError(
+                "Predict covariate transitions must have one row per decode bin",
+                expected=f"{len(time_centers)} transition rows",
+                got=f"{discrete_transitions.shape[0]} rows",
+                hint="Pass discrete_transition_covariate_data aligned to the "
+                "requested grid, or predict on the grid used by the fitted covariates.",
+            )
 
         log_likelihood_func = self.compute_log_likelihood
         if log_likelihoods is None:
+            time_grid = _DecodeTimeGrid.from_validated_edges(
+                time_edges,
+                uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
+                / (len(time_edges) - 1),
+            )
             log_likelihood_func = _prepare_likelihood_callback(
                 log_likelihood_func,
                 time_edges,
                 has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
+                log_likelihood_args=log_likelihood_args,
+                _time_grid=time_grid,
             )
 
         # Collect degenerate (all-impossible) timestep indices during the
@@ -2833,6 +2972,12 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             self.compute_log_likelihood,
             time_edges,
             has_no_spike=any(obs.is_no_spike for obs in self.observation_models),
+            log_likelihood_args=log_likelihood_args,
+            _time_grid=_DecodeTimeGrid.from_validated_edges(
+                time_edges,
+                uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
+                / (len(time_edges) - 1),
+            ),
         )
         is_track_interior = self.is_track_interior_state_bins_
         cross_is_track_interior = np.ix_(is_track_interior, is_track_interior)
@@ -3131,14 +3276,21 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             names=("state", *position_names),
         )
 
+        # Returned provenance must survive reuse or mutation of caller inputs.
+        bin_edges = np.array(time_edges, copy=True)
+        saved_missing = (
+            np.zeros(len(time), dtype=bool)
+            if is_missing is None
+            else np.array(is_missing, dtype=bool, copy=True)
+        )
         coords = {
             "time": time,
-            "time_bin_start": ("time", time_edges[:-1]),
-            "time_bin_end": ("time", time_edges[1:]),
+            "time_bin_start": ("time", bin_edges[:-1]),
+            "time_bin_end": ("time", bin_edges[1:]),
             "time_bin_end_inclusive": ("time", np.arange(len(time)) == len(time) - 1),
             "is_missing": (
                 "time",
-                np.zeros(len(time), dtype=bool) if is_missing is None else is_missing,
+                saved_missing,
             ),
             "state_ind": self.state_ind_,
             "states": states,
@@ -3634,6 +3786,8 @@ class ClusterlessDetector(_DetectorBase):
         *,
         time_edges: np.ndarray,
         _no_spike_time_bin_sizes: np.ndarray | None = None,
+        _time_grid: _DecodeTimeGrid | None = None,
+        _position_context: _LikelihoodPositionContext | None = None,
         _spike_time_order: _SpikeTimeOrder | None = None,
     ) -> jnp.ndarray:
         """
@@ -3704,12 +3858,31 @@ class ClusterlessDetector(_DetectorBase):
             ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
         self._validate_time_contract()
-        time_edges, _ = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
+        time_edges, row_time = _decode_time_edges(
+            time_edges,
+            *self._learned_transition_time_bin_width(),
+            _time_grid=_time_grid,
+            row_slice=row_slice,
         )
+        if (
+            not isinstance(_time_grid, _DecodeTimeGrid)
+            or _time_grid.edges is not time_edges
+        ):
+            _time_grid = _DecodeTimeGrid.from_validated_edges(
+                time_edges,
+                uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
+                / (len(time_edges) - 1),
+            )
         if position is not None and position_time is None:
             raise ValidationError("position_time is required when position is provided")
-        position_missing = _missing_bins(time_edges, None, position_time, position)
+        if not isinstance(
+            _position_context, _LikelihoodPositionContext
+        ) or not _position_context.matches(time_edges, position_time, position):
+            _position_context = _LikelihoodPositionContext.prepare(
+                time_edges, position_time, position
+            )
+        self._validate_decode_population(spike_times, spike_waveform_features)
+        position_missing = _position_context.is_missing
         logger.info("Computing log likelihood...")
         if _spike_time_order is None:
             _spike_time_order = _SpikeTimeOrder()
@@ -3741,7 +3914,6 @@ class ClusterlessDetector(_DetectorBase):
         # Position interpolation, local kernels and the non-local penalty are
         # pointwise in the decoding time, so they are evaluated at the requested
         # bins' centers; the spike likelihoods bin against the full edges.
-        row_time = decode_bin_centers(time_edges, row_start, row_stop)
         if is_missing is None:
             is_missing = np.zeros(n_rows, dtype=bool)
         else:
@@ -3752,19 +3924,9 @@ class ClusterlessDetector(_DetectorBase):
                 )
         if position_missing is not None:
             is_missing = is_missing | position_missing[row_start:row_stop]
-        if position is not None:
-            position = np.asarray(position)
-            position = position[:, None] if position.ndim == 1 else position
-            finite = np.all(np.isfinite(position), axis=1)
-            if not np.all(finite):
-                if not np.any(finite):
-                    return jnp.zeros(
-                        (n_rows, int(self.is_track_interior_state_bins_.sum()))
-                    )
-                # Every interpolation span touching these rows is already missing.
-                # Supply a finite placeholder only for masked backend workspaces.
-                position = position.copy()
-                position[~finite] = position[finite][0]
+        if _position_context.all_missing:
+            return jnp.zeros((n_rows, int(self.is_track_interior_state_bins_.sum())))
+        position = _position_context.position
 
         _, likelihood_func = _CLUSTERLESS_ALGORITHMS[self.clusterless_algorithm]
 
@@ -3800,6 +3962,7 @@ class ClusterlessDetector(_DetectorBase):
                     row_slice=row_slice,
                     _time_bin_sizes=_no_spike_time_bin_sizes,
                     _spike_time_order=_spike_time_order,
+                    _time_grid=_time_grid,
                 )
             elif likelihood_name not in computed_likelihoods:
                 likelihood_results[state_id] = likelihood_func(
@@ -3812,6 +3975,7 @@ class ClusterlessDetector(_DetectorBase):
                     is_local=effective_is_local,
                     row_slice=row_slice,
                     _spike_time_order=_spike_time_order,
+                    _time_grid=_time_grid,
                 )
                 computed_likelihoods[likelihood_name] = state_id
             else:
@@ -4712,6 +4876,8 @@ class SortedSpikesDetector(_DetectorBase):
         *,
         time_edges: np.ndarray,
         _no_spike_time_bin_sizes: np.ndarray | None = None,
+        _time_grid: _DecodeTimeGrid | None = None,
+        _position_context: _LikelihoodPositionContext | None = None,
         _spike_time_order: _SpikeTimeOrder | None = None,
     ) -> jnp.ndarray:
         """
@@ -4780,12 +4946,31 @@ class SortedSpikesDetector(_DetectorBase):
             ``n_rows`` is ``n_time`` unless ``row_slice`` is given.
         """
         self._validate_time_contract()
-        time_edges, _ = _decode_time_edges(
-            time_edges, *self._learned_transition_time_bin_width()
+        time_edges, row_time = _decode_time_edges(
+            time_edges,
+            *self._learned_transition_time_bin_width(),
+            _time_grid=_time_grid,
+            row_slice=row_slice,
         )
+        if (
+            not isinstance(_time_grid, _DecodeTimeGrid)
+            or _time_grid.edges is not time_edges
+        ):
+            _time_grid = _DecodeTimeGrid.from_validated_edges(
+                time_edges,
+                uniform_width=(float(time_edges[-1]) - float(time_edges[0]))
+                / (len(time_edges) - 1),
+            )
         if position is not None and position_time is None:
             raise ValidationError("position_time is required when position is provided")
-        position_missing = _missing_bins(time_edges, None, position_time, position)
+        if not isinstance(
+            _position_context, _LikelihoodPositionContext
+        ) or not _position_context.matches(time_edges, position_time, position):
+            _position_context = _LikelihoodPositionContext.prepare(
+                time_edges, position_time, position
+            )
+        self._validate_decode_population(spike_times)
+        position_missing = _position_context.is_missing
         logger.info("Computing log likelihood...")
         if _spike_time_order is None:
             _spike_time_order = _SpikeTimeOrder()
@@ -4794,7 +4979,6 @@ class SortedSpikesDetector(_DetectorBase):
         # Position interpolation, local kernels and the non-local penalty are
         # pointwise in the decoding time, so they are evaluated at the requested
         # bins' centers; the spike likelihoods bin against the full edges.
-        row_time = decode_bin_centers(time_edges, row_start, row_stop)
 
         non_local_penalty = getattr(self, "non_local_position_penalty", 0.0)
         # ``local_position_std`` only shapes Local states, so it does not require
@@ -4829,19 +5013,9 @@ class SortedSpikesDetector(_DetectorBase):
                 )
         if position_missing is not None:
             is_missing = is_missing | position_missing[row_start:row_stop]
-        if position is not None:
-            position = np.asarray(position)
-            position = position[:, None] if position.ndim == 1 else position
-            finite = np.all(np.isfinite(position), axis=1)
-            if not np.all(finite):
-                if not np.any(finite):
-                    return jnp.zeros(
-                        (n_rows, int(self.is_track_interior_state_bins_.sum()))
-                    )
-                # Every interpolation span touching these rows is already missing.
-                # Supply a finite placeholder only for masked backend workspaces.
-                position = position.copy()
-                position[~finite] = position[finite][0]
+        if _position_context.all_missing:
+            return jnp.zeros((n_rows, int(self.is_track_interior_state_bins_.sum())))
+        position = _position_context.position
 
         _, likelihood_func = _SORTED_SPIKES_ALGORITHMS[self.sorted_spikes_algorithm]
 
@@ -4877,6 +5051,7 @@ class SortedSpikesDetector(_DetectorBase):
                     row_slice=row_slice,
                     _time_bin_sizes=_no_spike_time_bin_sizes,
                     _spike_time_order=_spike_time_order,
+                    _time_grid=_time_grid,
                 )
             elif likelihood_name not in computed_likelihoods:
                 likelihood_results[state_id] = likelihood_func(
@@ -4888,6 +5063,7 @@ class SortedSpikesDetector(_DetectorBase):
                     is_local=effective_is_local,
                     row_slice=row_slice,
                     _spike_time_order=_spike_time_order,
+                    _time_grid=_time_grid,
                 )
                 computed_likelihoods[likelihood_name] = state_id
             else:

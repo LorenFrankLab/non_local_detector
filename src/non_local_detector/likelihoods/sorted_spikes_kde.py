@@ -71,7 +71,11 @@ from non_local_detector.likelihoods.common import (
     validate_weights,
     weighted_mean_rate,
 )
-from non_local_detector.time_edges import requires_time_edges, validate_time_edges
+from non_local_detector.time_edges import (
+    _DecodeTimeGrid,
+    _resolve_time_grid,
+    requires_time_edges,
+)
 
 
 def fit_sorted_spikes_kde_encoding_model(
@@ -290,6 +294,7 @@ def predict_sorted_spikes_kde_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of sorted spikes using KDE encoding models.
 
@@ -346,7 +351,10 @@ def predict_sorted_spikes_kde_log_likelihood(
         raise ValidationError(
             "Encoding rates must be in Hz; refit legacy encoding models before decoding."
         )
-    time_edges = validate_time_edges(time_edges)
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if _spike_time_order is None:
+        _spike_time_order = _SpikeTimeOrder()
     validate_population_lengths(
         "neuron",
         spike_times=spike_times,
@@ -355,7 +363,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         place_fields=place_fields,
     )
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
-    durations = jnp.asarray(np.diff(time_edges)[row_start:row_stop])
+    durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
     n_rows = row_stop - row_start
     row_time = decode_bin_centers(time_edges, row_start, row_stop)
     if is_local:

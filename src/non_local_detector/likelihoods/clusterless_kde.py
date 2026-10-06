@@ -32,7 +32,11 @@ from non_local_detector.likelihoods.common import (
     validate_weights,
     weighted_mean_rate,
 )
-from non_local_detector.time_edges import requires_time_edges, validate_time_edges
+from non_local_detector.time_edges import (
+    _DecodeTimeGrid,
+    _resolve_time_grid,
+    requires_time_edges,
+)
 
 
 def kde_distance(
@@ -399,6 +403,7 @@ def predict_clusterless_kde_log_likelihood(
     rate_units: str = "Hz",
     encoding_exposure_seconds: float | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
     """Predict the log likelihood of the clusterless KDE model.
 
@@ -466,7 +471,10 @@ def predict_clusterless_kde_log_likelihood(
         raise ValidationError(
             "Encoding rates must be in Hz; refit legacy encoding models before decoding."
         )
-    time_edges = validate_time_edges(time_edges)
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if _spike_time_order is None:
+        _spike_time_order = _SpikeTimeOrder()
     validate_population_lengths(
         "electrode",
         spike_times=spike_times,
@@ -502,13 +510,14 @@ def predict_clusterless_kde_log_likelihood(
             encoding_weights=encoding_weights,
             row_slice=row_slice,
             _spike_time_order=_spike_time_order,
+            _time_grid=_time_grid,
         )
     else:
         is_track_interior = environment.is_track_interior_.ravel()
         interior_place_bin_centers = environment.place_bin_centers_[is_track_interior]
 
         log_likelihood = (
-            -jnp.asarray(np.diff(time_edges)[row_start:row_stop])[:, None]
+            -jnp.asarray(_time_grid.durations(row_start, row_stop))[:, None]
             * summed_ground_process_intensity
         )
 
@@ -573,6 +582,7 @@ def predict_clusterless_kde_log_likelihood(
             row_slice,
             _spike_time_order,
             intensity_time_scale=RATE_REFERENCE_SECONDS,
+            _time_grid=_time_grid,
         )[:, None]
     )
 
@@ -597,6 +607,7 @@ def compute_local_log_likelihood(
     row_slice: slice | None = None,
     *,
     _spike_time_order: _SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
 ) -> jnp.ndarray:
     """Compute the log likelihood at the animal's position.
 
@@ -647,6 +658,10 @@ def compute_local_log_likelihood(
     -------
     log_likelihood : jnp.ndarray, shape (n_rows, 1)
     """
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if _spike_time_order is None:
+        _spike_time_order = _SpikeTimeOrder()
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_rows = row_stop - row_start
 
@@ -752,7 +767,7 @@ def compute_local_log_likelihood(
     # Subtract the summed ground-process intensity once, floored at EPS to
     # mirror fit_clusterless_kde_encoding_model's summed_ground_process_intensity
     # (a single EPS floor, not n_electrodes * EPS).
-    log_likelihood -= jnp.asarray(np.diff(time_edges)[row_start:row_stop]) * jnp.clip(
+    log_likelihood -= jnp.asarray(_time_grid.durations(row_start, row_stop)) * jnp.clip(
         summed_expected_counts, min=RATE_EPS_HZ
     )
     return log_likelihood[:, jnp.newaxis]

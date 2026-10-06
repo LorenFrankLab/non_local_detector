@@ -436,7 +436,10 @@ def test_invariants_place_fields_and_likelihood():
         )
     )
     assert np.all(np.isfinite(ll))
-    posterior = np.exp(ll - ll.max(axis=1, keepdims=True))
+    # This independent NumPy reference needs float64 reductions: float32
+    # normalization can differ from one by an ULP across supported platforms.
+    reference_ll = ll.astype(np.float64)
+    posterior = np.exp(reference_ll - reference_ll.max(axis=1, keepdims=True))
     posterior /= posterior.sum(axis=1, keepdims=True)
     np.testing.assert_allclose(posterior.sum(axis=1), 1.0, atol=1e-10)
 

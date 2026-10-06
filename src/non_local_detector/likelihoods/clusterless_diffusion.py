@@ -93,7 +93,11 @@ from non_local_detector.likelihoods.sorted_spikes_diffusion import (
     _full_to_local,
     _interior_bin_indices,
 )
-from non_local_detector.time_edges import requires_time_edges, validate_time_edges
+from non_local_detector.time_edges import (
+    _DecodeTimeGrid,
+    _resolve_time_grid,
+    requires_time_edges,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -501,6 +505,7 @@ def predict_clusterless_diffusion_log_likelihood(
     is_local: bool = False,
     row_slice: slice | None = None,
     _spike_time_order: _SpikeTimeOrder | None = None,
+    _time_grid: _DecodeTimeGrid | None = None,
     **encoding_model: object,
 ) -> jnp.ndarray:
     """Predict the clusterless graph-diffusion log likelihood.
@@ -575,7 +580,10 @@ def predict_clusterless_diffusion_log_likelihood(
         weight_total=weight_total,  # type: ignore[arg-type]
         mean_rates=mean_rates,  # type: ignore[arg-type]
     )
-    time_edges = validate_time_edges(time_edges)
+    _time_grid = _resolve_time_grid(time_edges, _time_grid)
+    time_edges = _time_grid.edges
+    if _spike_time_order is None:
+        _spike_time_order = _SpikeTimeOrder()
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     n_bins = occupancy.shape[0]
 
@@ -629,7 +637,7 @@ def predict_clusterless_diffusion_log_likelihood(
             animal_time_bins
         ]  # (n_time,)
         log_likelihood = (
-            -jnp.asarray(np.diff(time_edges)[row_start:row_stop])
+            -jnp.asarray(_time_grid.durations(row_start, row_stop))
             * local_ground_process_intensity
         )
 
@@ -751,14 +759,18 @@ def predict_clusterless_diffusion_log_likelihood(
         return (
             log_likelihood
             + log_bin_duration_evidence(
-                spike_times, time_edges, row_slice, _spike_time_order
+                spike_times,
+                time_edges,
+                row_slice,
+                _spike_time_order,
+                _time_grid=_time_grid,
             )
         )[:, None]
 
     occupancy_col = occupancy[:, None]
 
     log_likelihood = (
-        -jnp.asarray(np.diff(time_edges)[row_start:row_stop])[:, None]
+        -jnp.asarray(_time_grid.durations(row_start, row_stop))[:, None]
         * summed_ground_process_intensity[None, :]
     )
 
@@ -879,6 +891,6 @@ def predict_clusterless_diffusion_log_likelihood(
     return (
         log_likelihood
         + log_bin_duration_evidence(
-            spike_times, time_edges, row_slice, _spike_time_order
+            spike_times, time_edges, row_slice, _spike_time_order, _time_grid=_time_grid
         )[:, None]
     )
