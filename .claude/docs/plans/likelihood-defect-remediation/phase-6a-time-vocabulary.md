@@ -238,9 +238,11 @@ numerical comparison: `94dd814` (pre-migration API), run from a worktree.
   chunk edge is owned by the later chunk only and float64 spikes just below
   a float32 edge keep their bin.
   Both paths check the returned row count.
-- `_missing_bins`: a bin is missing when it overlaps `(t[k-1], t[k+1])` for a
-  non-finite position sample `k`, extended to ±∞ for a sample in an end
-  interval (linear extrapolation reads it). `position` must have one row per
+- `_missing_bins`: a bin is missing when any time it owns lies in
+  `[t[k-1], t[k+1])` for a non-finite position sample `k` (where linear
+  interpolation reads the sample; local clusterless likelihoods read position
+  at spike times, not only at bin centers), extended to ±∞ for a sample in an
+  end interval (linear extrapolation reads it). `position` must have one row per
   `position_time` sample; `position_time` must be finite and non-decreasing.
   Applied in `predict`, `most_likely_sequence` (previously ignored NaN
   positions) and both estimation wrappers (before `fit`).
@@ -295,7 +297,8 @@ docstring and CHANGELOG inaccuracies. Coverage added for all of these, NaN
 mapping in `most_likely_sequence`, user masks in estimation, a Unix-epoch
 parity test, a randomized `_missing_bins` oracle, and keyword-only signatures.
 
-**Not addressed here:**
+**Not addressed in the initial implementation** (see the completion review
+below for items subsequently resolved):
 
 - `get_spikecount_per_time_bin` does not validate its edges (it runs per unit
   and per chunk; callers validate once). Documented on the helper.
@@ -308,3 +311,55 @@ parity test, a randomized `_missing_bins` oracle, and keyword-only signatures.
   6b. `clusterless_diffusion` local prediction still rejects any NaN position
   (pre-existing). Viterbi with covariate transitions has no length check
   (pre-existing).
+
+## Completion review — 2026-10-05
+
+The user requested finishing/reviewing 6a before proceeding to 6b. An isolated
+6a/6c tree was constructed from the pre-review package and validated without
+any encoding-support, seconds/Hz, or unit-marker changes. The accepted source
+checkpoint is `/private/tmp/nld-phase6a-accepted`, with its implementation diff
+at `/private/tmp/nld-phase6a-accepted.patch` and per-file hashes in
+`/private/tmp/nld-phase6a-accepted-source-hashes.json`. This is the frozen review
+baseline for source commit `ef74945`, not a merge or release.
+
+Completed API/UX corrections:
+
+- Public direct likelihood/count/selection calls require keyword-only edges
+  with actionable migration errors. Package-level grid helpers are exported.
+  Direct counting validates array-like edges; internal prepared paths retain
+  shared ordering and bounded spike selection.
+- Viterbi accepts optional position inputs like prediction. A mismatched
+  fitted covariate-transition row count is rejected before likelihood work;
+  aligned tensors still work. New Viterbi covariate-data input is not added.
+- Direct model likelihood calls validate uniformity, learned width, masks,
+  and effective NaN missingness. Diffusion local prediction now neutralizes
+  missing tracking rows at the detector boundary instead of aborting.
+- Missing transition-clock provenance requires refitting, including cached
+  paths; missing metadata cannot safely imply unlearned transitions. This
+  guard is independent of the unit-marker rejection that follows in 6d.
+- Exact bin bounds, per-call final-edge inclusion, effective missingness, and
+  version information survive result persistence/concatenation. Both time
+  and spatial-index axes survive singleton results. The separate small
+  NetCDF loader correction excludes scalar coordinates from index rebuilding.
+- Examples cover actual row alignment, matching-rate restrictions at this
+  stage, removed-helper migration, final-row ownership, independent sequences,
+  and covariate/Viterbi limitations. Encoding rate units and No-Spike median
+  scaling remain unchanged until 6b/6d.
+
+Validation: **2,125 passed / 6 skipped / 0 failed** in the full suite; all four
+goldens and all eight snapshots pass without reference updates. The three
+default float64 skips pass separately; the focused float64/API run has
+**24 passed**. The API/chunk/row-parity run has **229 passed**, and the final
+public-contract module has **21 passed**. Controlled sorted-decoder and
+nonlocal outputs are bit-identical to the original 6a branch reference for
+centers, likelihoods, posteriors, and state probabilities. Ruff/format pass;
+targeted mypy reports 165 existing diagnostics versus 180 on the same baseline
+files, with no new diagnostic messages. Notebook code cells compile; external
+NWB data were unavailable for executing that notebook.
+
+Two independent read-only reviews covered correctness and API/UX, then checked
+the singleton-persistence and Viterbi-alignment corrections. No remaining
+material package-code issue was reported. The runnable example produces
+400 bins across two independent sequences with 51 missing observations.
+Actual Spyglass/replay adapters and dependency pins remain release coordination
+work; the package example does not claim downstream integration is complete.

@@ -1,6 +1,15 @@
 # Phase 6b — Rates in Hz and duration-scaled intensities
 
-> **C3b RESOLVED (2026-09-25) — NEEDS PROTOTYPING.** Depends on 6a/6c and ships
+**Worktree status (2026-10-05):** implemented and independently reviewed against
+the frozen accepted 6a/6c checkpoint, together with 6d. Physical calibration,
+support, metadata, and persistence acceptance checks pass. Three numerical
+snapshot corrections were explicitly approved and applied; all eight
+snapshots pass and package acceptance is complete. Source is committed at
+`b63ddc7`; external rollout remains pending. See the
+[implementation record](#implementation-and-review--2026-10-05) and
+[scope record](phase-6-worktree-scope.md).
+
+> **C3b RESOLVED (2026-09-25) — IMPLEMENTED, REVIEWED, ACCEPTED, AND COMMITTED.** Depends on 6a/6c and ships
 > atomically with 6d's model-unit validation and metadata plumbing. Phase 5
 > (canonical event weights, clusterless full-timeline weights) is merged. By the
 > user's rollout decision this phase also carries C3b's encoding support
@@ -157,3 +166,109 @@ existing numerical-change approval process before modifying references or bounds
 The release note must describe Hz storage, duration scaling, any removed fit
 arguments, and required refitting of incompatible models. Review the completed
 backend matrix and 6d compatibility tests together.
+
+## Implementation and review — 2026-10-05
+
+The user requested 6a completion/review before 6b. The separate accepted baseline
+is `/private/tmp/nld-phase6a-accepted`, not the earlier mixed worktree. All rate
+and encoding-support changes below are attributed to 6b/6d against that source.
+The implementation is committed at `b63ddc7`. The user approved all three snapshot
+corrections on 2026-10-05; they are applied and all eight snapshots pass.
+
+### Completed backend inventory
+
+`E = Σ w_i ∫ basis_i(t) dt` is weighted exposure seconds on the original
+recording support. Event weights remain dimensionless and are applied once.
+`d_j` is the actual duration of decode row j. Occupancy KDE/GMM/diffusion fits use
+the seconds weights, so occupancy shape also accounts for irregular sampling.
+
+| Backend | Fit/exposure and stored units | Event term | Ground/count term | Local consumer / metadata |
+|---|---|---|---|---|
+| Sorted KDE | Weighted events / E; `mean_rates`, `place_fields` Hz | `xlogy(n, field_Hz * d_j)` | `-d_j * sum(fields_Hz)` | KDE rate ratio uses the same Hz means and seconds occupancy; explicit marker keywords |
+| Sorted GLM | Exposure-offset Poisson fit; coefficients define log-Hz; fields Hz | `xlogy(n, exp(Xβ) * d_j)` | `-d_j * sum(exp(Xβ))` | Same fitted design/coefficient path; explicit marker keywords |
+| Sorted diffusion | Seconds occupancy; weighted events / E; fields Hz, cached interior fields log-Hz | `counts @ log(fields_Hz)` plus total counts `log(d_j)` | `-d_j * sum(fields_Hz)` | Hz field interpolation; marker checked by shared predictor |
+| Sorted MRF | Graph-bin seconds exposure offsets; η defines log-Hz; occupancy seconds | Shared diffusion Poisson predictor | Shared diffusion ground term | Shared local interpolation; fit emits marker/exposure |
+| Clusterless KDE | Weighted events / E; means and summed ground fields Hz | Mark intensity times `d_j`; native density floors evaluated at the 2 ms reference then duration conversion | `-d_j * summed_ground_Hz` | Local ground/mark KDE uses Hz means; explicit marker keywords |
+| Clusterless log-KDE | Same exposure/rate contract as probability KDE | Same physical duration conversion in log space | Same Hz-duration ground term | Local log-KDE uses Hz means; explicit marker keywords |
+| Clusterless GMM | Weighted events / E; means and summed ground fields Hz | `log(mean_Hz) + log(joint/occupancy) + log(d_j)` per event | `-d_j * summed_ground_Hz` | Same physical units in local mixture ratios and ground calculation; recognized marker checked |
+| Clusterless diffusion | Seconds occupancy; weighted events / E; means and summed ground fields Hz | `log(mark_intensity_Hz) + log(d_j)` per event | `-d_j * summed_ground_Hz` | Local ground lookup and mark interpolation retain the same units; marker checked |
+| No-Spike | Constructor rate was already Hz; no registry fit dictionary | `xlogy(n, rate_Hz * d_j)` | `-population_rate_Hz * d_j` | Full-grid durations prepared once and sliced by global rows; no second unit conversion |
+
+The historical `no_spike_part_log_likelihood` key stores the sum of Hz rates,
+not a log likelihood. All predictors retain their prior omission of count
+factorial constants; no count-factorial term is added. Gaussian mark-density
+normalization is retained. The event-duration factor is common to all
+states for a given observation, while the integrated-rate penalty depends on
+state/position and can change the posterior.
+
+### Support, numerical units, and review corrections
+
+- `EncodingSupport` validates the original timestamp/position timeline before
+  masking. Uniform defaults cover N*dt; acquisition bounds clip the original
+  interpolation basis. Irregular or disconnected tracking requires explicit
+  ordered intervals. NaNs split support; each declared segment needs a finite
+  sample. Endpoints are held within encoding segments. Adjacent segments remain
+  separate and own their shared boundary once on the right.
+- Seconds occupancy weights and dimensionless interpolated event weights are
+  separate. Analytic full/clipped/NaN/disconnected/adjacent tests exercise all
+  eight backend fits. The ignored fit `sampling_frequency` argument is removed.
+- Unit-bearing EPS floors are divided by the historical 0.002 seconds; density
+  floors retain their original units. Probability/log-KDE private primitives
+  keep their native safeguards and public predictors convert their evidence
+  consistently. This preserves the deferred C1 policy.
+- GLM objective normalization and L2 penalty use seconds: default 0.5 equals
+  the former 0.001 at 500 Hz. Stationary/singleton tracking defines the spline
+  from its environment before evaluating actual encoding samples; a one-center
+  environment uses an intercept. No artificial exposure/events are introduced.
+- MRF warm starts, exposure safeguards, and η bounds carry the 2 ms unit
+  conversion. Its objective removes only the corresponding count-dependent
+  unit constant to preserve the relative convergence test. Solver criteria and
+  tolerances are unchanged.
+- Review reproduced a Unix-timestamp failure in the legacy chunk adapter:
+  moving its closing edge changes physical exposure as well as event ownership.
+  Unmarked callbacks now support only full-grid requests; chunked callbacks
+  require `row_slice_aware` with full edges/global rows. A red→green regression
+  verifies rejection rather than silent altered likelihoods; marked paths keep
+  exact original durations and boundary ownership.
+- Encoding endpoint holding is not automatically decoding interpolation.
+  The migration guide gives conservative whole-bin masks on continuous finite
+  sample spans and per-segment tracking inputs. It retains the accepted 6a
+  removed-helper and Viterbi guidance and documents direct-call units and GLM
+  serialization limitations.
+
+### Acceptance evidence
+
+- All **16 public calibration cases** (eight backends × 30/500 Hz tracking)
+  recover the independently known 5 Hz rate when decoded in 2 ms and 4 ms bins,
+  using the existing `rtol=1e-5`. The same final fixtures fail against accepted
+  6a, demonstrating the rate error (and its stationary-GLM limitation).
+- All **seven supported model save/load families** preserve exact result
+  datasets and their fitted Hz/exposure/clock metadata. GLM is verified in memory;
+  its independent Patsy pickle defect remains deferred.
+- **26 additional compatibility cases** cover missing/unknown per-entry markers,
+  unsupported contract versions, likelihood/Viterbi/predict/cached rejection
+  before likelihood work, and legacy recovery through estimation refitting in
+  both detector families. **111 chunk/API tests** pass after callback review.
+- **101 selected float64 tests** pass. The runnable example yields 400 bins,
+  two independent sequences, and 68 missing observations with normalized
+  posteriors. Two independent reviewers found no remaining package correctness
+  or API/UX defect after the final corrections.
+- Controlled 500 Hz before/after data preserve centers exactly. Max posterior
+  differences from accepted 6a are `3.58e-7` (sorted decoder) and `2.38e-7`
+  (nonlocal); max log-likelihood difference is `1.91e-6`, from float32 unit
+  arithmetic. Outputs remain finite/normalized. Four golden files and numerical
+  tolerances are unchanged.
+- Pre-approval complete suite: **2,198 passed / 6 skipped / 3 failed**, with
+  only the subsequently approved snapshot expectations failing. The final focused run passed
+  107; lint/format/whitespace pass and targeted mypy introduces no new messages.
+  The required four-part numerical analysis is recorded in [time_grid_validation.md](../../../../docs/time_grid_validation.md).
+  The three duration-sensitive snapshot corrections were executed separately
+  against independent references, then explicitly approved and applied under
+  `CLAUDE.md`. All eight repository snapshots now pass. The post-approval
+  full run is recorded with the phase 6c completion evidence below.
+
+Release still requires coordinated Spyglass/replay adapter migration, original
+tracking support, aligned masks/covariates, dependency pins, and re-population of
+saved scientific results. External repositories were not modified or validated
+on a real DataJoint/NWB stack. Phases 7/8, the C1 background model, singleton
+geometry, general GLM knot defaults, and EmpiricalMovement defects remain separate.

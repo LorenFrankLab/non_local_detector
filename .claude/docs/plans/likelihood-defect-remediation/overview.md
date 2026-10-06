@@ -222,6 +222,26 @@ record rather than treating the audit failure as current readiness.
 
 ## Found during review, not yet scheduled
 
+- **Small/degenerate environment limits, reproduced during 6b acceptance
+  (2026-10-05).** A one-spatial-bin environment has an empty `edges_` array;
+  `Environment.get_bin_ind` raises when diffusion/MRF fit histograms use it.
+  Default RandomWalk also assumes more than one spatial center. These are
+  pre-existing geometry limits, independent of Hz conversion. A 6a result can
+  still be tested on one bin using KDE plus Uniform transitions. The 6b
+  calibration fixture uses three bins, evaluates its occupied center, and
+  retains the original numerical bound.
+- **GLM knot spacing larger than its spatial domain can leave no interior
+  cubic knots.** Patsy then raises during natural-spline construction. This
+  occurs independently of rate units. The small 6b calibration fixture uses
+  explicit knot spacing appropriate to its domain; generic small-domain
+  spline behavior remains a separate repair.
+- **EmpiricalMovement has an explicit-range histogram mismatch under the
+  installed NumPy.** Its transition histogram concatenates two position vectors
+  but supplies a one-position `position_range`, raising `ValueError: range
+  argument must have one entry per dimension`. Reproduced with finite inputs
+  and with NaN tracking; its implementation is unchanged by 6a/6b. Repair and
+  original-row/gap semantics require separate continuous-transition scope.
+
 - **`save_model` is broken for every GLM detector.** Reproduced end-to-end:
   `sorted_spikes_kde` saves fine, `sorted_spikes_glm` raises
   `NotImplementedError: Sorry, pickling not yet supported` because the encoding

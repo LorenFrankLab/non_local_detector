@@ -1,6 +1,10 @@
 # Phase 6c — Detector uniformity guard
 
-> **IMPLEMENTED with 6a** (see the implementation record below). Original status: settled requirement, validator needed prototyping. Ship with 6a, when the
+> **IMPLEMENTED with 6a; completion reviewed 2026-10-05** (see the records below).
+> The completion review closes cached/base-Viterbi, generator, and invalid-clock
+> bypasses under the same settled precision policy. Package acceptance is complete;
+> completion changes are committed at `351a630`. External rollout remains pending.
+> Original status: settled requirement, validator needed prototyping. Ship with 6a, when the
 > explicit edge API is introduced. The earlier fixed-relative-tolerance snippet
 > is withdrawn because large absolute timestamps can make an intended uniform
 > grid fail it. Complete nonuniform direct-likelihood support arrives with 6b/6d.
@@ -121,7 +125,7 @@ representability argument for the selected bound.
 
 ## Implementation record
 
-Shipped with 6a on `feat/time-edges-uniform-bins` (see the
+Implemented with 6a on `feat/time-edges-uniform-bins`, not merged or released (see the
 [6a record](phase-6a-time-vocabulary.md#implementation-record)).
 
 - **Bound (prototyped).** Correctly built float64 grids (`t0 + i*dt`,
@@ -151,3 +155,82 @@ Shipped with 6a on `feat/time-edges-uniform-bins` (see the
   `linspace` grids at Unix-epoch origins; the former are rejected with the
   uniformity message and must be regridded (`calculate_time_edges`), the latter
   pass. Coordinate the spyglass change with its non_local_detector pin.
+
+## Completion review — 2026-10-05
+
+After finishing 6a and accepting the joint 6b/6d change, the user approved all
+three duration-sensitive snapshot corrections and requested completion of 6c.
+The approved patch is applied and all eight snapshots pass. This review checks
+the existing 6c implementation against the final Hz/support model contract;
+it does not introduce a new uniformity or convergence tolerance.
+
+### Findings reproduced and fixed
+
+- **Cached HMM bypass:** a fitted decoder's private `_predict` accepted
+  `[0, .002, .012]` with precomputed likelihoods, and accepted 4 ms bins for
+  transitions learned at 2 ms. The shared detector HMM path now validates the
+  complete edges and learned width before HMM work or transient state changes.
+  Base Viterbi applies the same validation before a custom likelihood callback.
+- **Grid construction precision:** near a Unix origin, a 10 MHz request could
+  return about 1,000 edges with only 420 unique values. `calculate_time_edges`
+  now checks the requested float64 width under the existing resolution ceiling
+  before allocation, then validates the generated edges with the shared guard.
+- **Center conversion boundary:** valid centers just below `2**31` can produce
+  an outer half-cell across the exponent boundary, doubling the edge ULP and
+  making the output unresolvable. `time_edges_from_centers` validates its output
+  rather than returning a grid that the detector must later reject.
+- **Overflow:** finite endpoints `[-float_max, float_max]` produced an infinite
+  span/width and escaped a NaN comparison. Central validation now requires
+  finite differences and span; the precision helper also rejects a nonfinite
+  representation bound.
+- **Invalid saved clock:** NaN widths, infinite tolerances, or finite tolerances
+  beyond the existing 1% clock-resolution ceiling could defeat the width check.
+  Unknown provenance now gives a clear refit error. Valid fitted clocks retain
+  the same matching rule; no legitimate fit emits tolerance above that ceiling.
+- **Documentation:** the bound is the larger of 4 ULP and 0.1% of width, not a
+  universal 0.1% cutoff. README/guide name `RandomWalk.movement_var` and
+  `EmpiricalMovement`'s sample-step/matrix-power behavior and explain that decode
+  width changes do not automatically rescale them. Detector likelihood assembly
+  remains uniform; direct registered predictors allow variable durations.
+
+### Acceptance evidence
+
+The initial new regressions had **10 failures / 6 passes**; further clock and
+overflow checks had **25 failures / 18 passes**. The final center-conversion and
+oversized-clock-tolerance regressions had **9 failures / 8 passes**. Every failure
+was reproduced before its correction. Covariate-route tests are preservation
+checks and passed before the new internal guards.
+
+All basic-grid, cached/provenance, and covariate-route tests pass. Explicit
+nonstationary fixtures exercise both detector families and assert that irregular
+edges fail before transition prediction, fitting, likelihood evaluation, or model
+mutation. The final focused grid/model/chunk/support/golden/snapshot run has
+**300 passed**. The final complete suite has **2,269 passed / 6 skipped / 0
+failed**, including all four goldens and all eight snapshots; the final float64
+run has **120 passed**, including the three core dtype skips. Evidence is in
+[time_grid_validation.md](../../../../docs/time_grid_validation.md).
+
+Both manually built and generated **1.8-million-bin, 2 ms** grids pass at origins
+0 and `1.7e9`, without allocating spatial posteriors. Generator output is
+byte-identical to the original `start + arange / frequency` formula; generation,
+validation, and comparison took approximately 15–20 ms on this CPU. This is a
+grid-helper measurement, not a full-session HMM performance claim.
+
+Controlled sorted-decoder and nonlocal results retain bit-identical centers,
+likelihoods, posteriors, and state probabilities against the reviewed 6b source.
+Golden input/output files and all tolerance constants are unchanged. Two final
+independent correctness/API/UX reviews report no remaining concrete phase-6c
+defect. Lint/format and whitespace checks pass; targeted mypy retains its existing
+diagnostics without new messages.
+
+Public `core.py` functions operate on observation rows and remain outside the
+edge contract. Direct likelihoods can use nonuniform durations after 6b, but a
+duration-calibrated nonuniform HMM is still deferred. Spyglass/replay adapter and
+dependency migration, real DataJoint/NWB integration, and release coordination
+remain separate; this package acceptance does not claim they are complete.
+
+The final accepted source checkpoint is `/private/tmp/nld-phase6c-accepted`,
+with hashes in `/private/tmp/nld-phase6c-accepted-source-hashes.json`. Its separate
+runtime/test diff against approved 6b is
+`/private/tmp/nld-phase6c-vs-accepted6b.patch`. This records completed package
+work, not a commit, merge, downstream migration, or release.
