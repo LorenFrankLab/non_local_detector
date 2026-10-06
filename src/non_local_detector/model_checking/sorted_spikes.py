@@ -25,7 +25,8 @@ class TimeRescaling:
     Attributes
     ----------
     conditional_intensity : ndarray, shape (n_time,)
-        The fitted model mean response rate at each time.
+        Expected counts per bin by default. With ``rate_units="Hz"``, rates
+        in spikes per second at sample times or in bins defined by edges.
     is_spike : bool ndarray, shape (n_time,)
         Whether or not the neuron has spiked at that time.
     trial_id : ndarray, shape (n_time,), optional
@@ -56,6 +57,10 @@ class TimeRescaling:
         is_spike: np.ndarray,
         trial_id: np.ndarray | None = None,
         adjust_for_short_trials: bool = False,
+        *,
+        rate_units: str = "expected_counts",
+        time: np.ndarray | None = None,
+        time_edges: np.ndarray | None = None,
     ):
         """Initialize the TimeRescaling object.
 
@@ -65,13 +70,49 @@ class TimeRescaling:
         is_spike : np.ndarray, shape (n_time,)
         trial_id : np.ndarray | None, shape (n_time,), optional
         adjust_for_short_trials : bool, optional
+        rate_units : {"expected_counts", "Hz"}, optional
+            Existing expected-count callers retain integration at unit index
+            spacing. Hz inputs require exactly one physical grid below.
+        time : np.ndarray, shape (n_time,), optional
+            Sample times in seconds. Rates are integrated with the trapezoid
+            rule; spikes occur at sample times, and each contiguous trial run
+            starts at its first sample (zero initial integrated intensity).
+        time_edges : np.ndarray, shape (n_time + 1,), optional
+            Bin edges in seconds. Rates are constant in each bin, and spikes
+            are approximated at the bin's closing edge. The first interval
+            includes exposure from the trial's opening edge.
         """
-        self.conditional_intensity = np.asarray(conditional_intensity).squeeze()
+        self.conditional_intensity = np.atleast_1d(
+            np.asarray(conditional_intensity).squeeze()
+        )
         if trial_id is None:
             trial_id = np.ones_like(self.conditional_intensity)
-        self.trial_id = np.asarray(trial_id).squeeze()
-        self.is_spike = np.asarray(is_spike).squeeze()
+        self.trial_id = np.atleast_1d(np.asarray(trial_id).squeeze())
+        self.is_spike = np.atleast_1d(np.asarray(is_spike).squeeze())
         self.adjust_for_short_trials = adjust_for_short_trials
+        self.rate_units = rate_units
+        self.time = None if time is None else np.asarray(time, dtype=float)
+        self.time_edges = (
+            None if time_edges is None else np.asarray(time_edges, dtype=float)
+        )
+        # Validate physical inputs before splitting into trials. Existing
+        # index-based construction does not need to allocate an integral.
+        if (
+            not isinstance(rate_units, str)
+            or rate_units != "expected_counts"
+            or self.time is not None
+            or self.time_edges is not None
+        ):
+            _integrated_conditional_intensity(
+                self.conditional_intensity,
+                rate_units=rate_units,
+                time=self.time,
+                time_edges=self.time_edges,
+            )
+        if self.trial_id.shape != self.conditional_intensity.shape:
+            raise ValueError("trial_id must match conditional_intensity rows")
+        if self.is_spike.shape != self.conditional_intensity.shape:
+            raise ValueError("is_spike must match conditional_intensity rows")
 
     @property
     def n_spikes(self) -> int:
@@ -91,14 +132,31 @@ class TimeRescaling:
         trial_IDs = np.unique(self.trial_id)
         uniform_rescaled_ISIs_by_trial = []
         for trial in trial_IDs:
-            is_trial = np.isin(self.trial_id, trial)
-            uniform_rescaled_ISIs_by_trial.append(
-                uniform_rescaled_ISIs(
-                    self.conditional_intensity[is_trial],
-                    self.is_spike[is_trial],
-                    self.adjust_for_short_trials,
-                )
+            indices = np.flatnonzero(np.isin(self.trial_id, trial))
+            # Interrupted trials have separate physical observation windows.
+            # Retain the existing grouping behavior for index-based callers.
+            runs = (
+                np.split(indices, np.flatnonzero(np.diff(indices) > 1) + 1)
+                if self.rate_units == "Hz"
+                else [indices]
             )
+            for run in runs:
+                time = None if self.time is None else self.time[run]
+                edges = (
+                    None
+                    if self.time_edges is None
+                    else self.time_edges[run[0] : run[-1] + 2]
+                )
+                uniform_rescaled_ISIs_by_trial.append(
+                    uniform_rescaled_ISIs(
+                        self.conditional_intensity[run],
+                        self.is_spike[run],
+                        self.adjust_for_short_trials,
+                        rate_units=self.rate_units,
+                        time=time,
+                        time_edges=edges,
+                    )
+                )
 
         return np.concatenate(uniform_rescaled_ISIs_by_trial)
 
@@ -319,10 +377,69 @@ def _max_transformed_interval(
     return integrated_conditional_intensity[-1] - ici_at_spike + rescaled_ISIs
 
 
+def _integrated_conditional_intensity(
+    conditional_intensity: np.ndarray,
+    *,
+    rate_units: str,
+    time: np.ndarray | None = None,
+    time_edges: np.ndarray | None = None,
+    legacy_residuals: bool = False,
+) -> np.ndarray:
+    """Integrate explicitly selected rate units without guessing a clock."""
+    if not isinstance(rate_units, str) or rate_units not in ("expected_counts", "Hz"):
+        raise ValueError("rate_units must be 'expected_counts' or 'Hz'")
+    # Integrate Hz rates in float64 before any addition or multiplication.
+    # Preserve the original arithmetic for explicit legacy expected counts.
+    intensity = np.asarray(
+        conditional_intensity, dtype=float if rate_units == "Hz" else None
+    )
+    if rate_units == "expected_counts":
+        if time is not None or time_edges is not None:
+            raise ValueError(
+                "expected_counts uses the existing bin-index convention; "
+                "physical time or time_edges requires rate_units='Hz'"
+            )
+        return (
+            np.cumsum(intensity)
+            if legacy_residuals
+            else integrate.cumulative_trapezoid(intensity, initial=0.0)
+        )
+    if (time is None) == (time_edges is None):
+        raise ValueError(
+            "Hz inputs require exactly one of time or time_edges in seconds"
+        )
+    if intensity.ndim != 1 or not intensity.size:
+        raise ValueError(
+            "conditional_intensity must have nonempty one-dimensional rows"
+        )
+    if not np.all(np.isfinite(intensity)) or np.any(intensity < 0):
+        raise ValueError("conditional_intensity must be finite and nonnegative")
+    grid = np.asarray(time if time is not None else time_edges, dtype=float)
+    expected_size = len(intensity) + (time_edges is not None)
+    if grid.ndim != 1 or grid.size != expected_size:
+        shape = "n_time" if time is not None else "n_time + 1"
+        raise ValueError(f"physical grid must have shape ({shape},)")
+    with np.errstate(over="ignore", invalid="ignore"):
+        durations = np.diff(grid)
+    if (
+        not np.all(np.isfinite(grid))
+        or not np.all(np.isfinite(durations))
+        or np.any(durations <= 0)
+    ):
+        raise ValueError("physical time must be finite and strictly increasing")
+    if time_edges is not None:
+        return np.cumsum(intensity * durations)
+    return integrate.cumulative_trapezoid(intensity, x=grid, initial=0.0)
+
+
 def uniform_rescaled_ISIs(
     conditional_intensity: np.ndarray,
     is_spike: np.ndarray,
     adjust_for_short_trials: bool = True,
+    *,
+    rate_units: str = "expected_counts",
+    time: np.ndarray | None = None,
+    time_edges: np.ndarray | None = None,
 ) -> np.ndarray:
     """Rescales the interspike intervals (ISIs) to unit rate Poisson,
     adjusts for short time intervals, and transforms the ISIs to a
@@ -331,7 +448,8 @@ def uniform_rescaled_ISIs(
     Parameters
     ----------
     conditional_intensity : ndarray, shape (n_time,)
-        The fitted model mean response rate at each time.
+        Expected counts per bin by default; rates in spikes per second when
+        ``rate_units="Hz"``.
     is_spike : bool ndarray, shape (n_time,)
         Whether or not the neuron has spiked at that time.
     adjust_for_short_trials : bool, optional
@@ -340,6 +458,16 @@ def uniform_rescaled_ISIs(
         situation, the interspike interval is censored. If
         `adjust_for_short_trials` is True, we take this censoring into
         account using the adjustment in [1].
+    rate_units : {"expected_counts", "Hz"}, optional
+        ``expected_counts`` preserves the existing unit-index trapezoid.
+        Hz requires exactly one of ``time`` or ``time_edges`` in seconds.
+    time : np.ndarray, shape (n_time,), optional
+        Sample timestamps. Integrate rates by trapezoids from the first sample;
+        spike indicators refer to events at their corresponding sample times.
+    time_edges : np.ndarray, shape (n_time + 1,), optional
+        Integrate piecewise constant rates over each bin. Spike indicators are
+        approximated at closing edges; the first ISI starts at the first edge.
+        Exact within-bin spike times require an event-time rescaling method.
 
     Returns
     -------
@@ -352,15 +480,12 @@ def uniform_rescaled_ISIs(
            Computation 15, 2565-2576.
 
     """
-    try:
-        integrated_conditional_intensity = integrate.cumulative_trapezoid(
-            conditional_intensity, initial=0.0
-        )
-    except AttributeError:
-        # Older versions of scipy
-        integrated_conditional_intensity = integrate.cumtrapz(
-            conditional_intensity, initial=0.0
-        )
+    integrated_conditional_intensity = _integrated_conditional_intensity(
+        conditional_intensity, rate_units=rate_units, time=time, time_edges=time_edges
+    )
+    is_spike = np.asarray(is_spike)
+    if is_spike.shape != integrated_conditional_intensity.shape:
+        raise ValueError("is_spike must match conditional_intensity rows")
     # Rescale the ISIs to unit rate Poisson: \Lambda(spike_k) - \Lambda(spike_{k-1})
     # These should be exponentially distributed with mean 1
     rescaled_ISIs = _rescaled_ISIs(integrated_conditional_intensity, is_spike)
@@ -379,23 +504,51 @@ def uniform_rescaled_ISIs(
 
 
 def point_process_residuals(
-    conditional_intensity: np.ndarray, is_spike: np.ndarray
+    conditional_intensity: np.ndarray,
+    is_spike: np.ndarray,
+    *,
+    rate_units: str = "expected_counts",
+    time: np.ndarray | None = None,
+    time_edges: np.ndarray | None = None,
 ) -> np.ndarray:
     """Compute the residuals of the point process model.
 
     Parameters
     ----------
     conditional_intensity : np.ndarray, shape (n_time,)
-        The fitted model mean response rate at each time.
+        Expected counts per bin by default; rates in spikes per second when
+        ``rate_units="Hz"``.
     is_spike : np.ndarray, shape (n_time,)
         Whether or not the neuron has spiked at that time.
+    rate_units : {"expected_counts", "Hz"}, optional
+        Existing callers use cumulative observed minus expected bin counts.
+        Hz inputs require exactly one physical grid below.
+    time : np.ndarray, shape (n_time,), optional
+        Sample times in seconds; return cumulative observed events minus the
+        trapezoid integral starting at the first sample time.
+    time_edges : np.ndarray, shape (n_time + 1,), optional
+        Bin edges in seconds; return residuals at closing edges using expected
+        bin counts ``conditional_intensity * diff(time_edges)``.
 
     Returns
     -------
     residuals : np.ndarray, shape (n_time,)
         The residuals of the point process model.
     """
-    return np.cumsum(is_spike - conditional_intensity)
+    integrated = _integrated_conditional_intensity(
+        conditional_intensity,
+        rate_units=rate_units,
+        time=time,
+        time_edges=time_edges,
+        legacy_residuals=True,
+    )
+    is_spike = np.asarray(is_spike)
+    if is_spike.shape != integrated.shape:
+        raise ValueError("is_spike must match conditional_intensity rows")
+    if rate_units == "expected_counts":
+        # Retain the original accumulation order for existing callers.
+        return np.cumsum(is_spike - conditional_intensity)
+    return np.cumsum(is_spike) - integrated
 
 
 def plot_ks(

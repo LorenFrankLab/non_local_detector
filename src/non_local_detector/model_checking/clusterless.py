@@ -22,6 +22,8 @@ def interval_rescaling_transform(
     ground_process_intensity: np.ndarray,
     joint_mark_intensity: np.ndarray,
     permute_waveform_features: bool = False,
+    *,
+    rate_units: str = "Hz",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Rescale interspike intervals and mark intensities for goodness-of-fit testing.
 
@@ -32,18 +34,27 @@ def interval_rescaling_transform(
     Parameters
     ----------
     time : np.ndarray, shape (n_time,)
-        Time points corresponding to the intensity functions.
+        Strictly increasing physical sample times in seconds corresponding
+        to the intensity functions. The first interval starts at ``time[0]``.
     electrode_spike_times : np.ndarray, shape (n_spikes,)
         Times at which spikes occurred on this electrode.
     electrode_spike_waveform_features : np.ndarray, shape (n_spikes, n_waveform_features)
         Waveform feature matrix where each row corresponds to a spike.
     ground_process_intensity : np.ndarray, shape (n_time,)
-        Fitted ground process (temporal) intensity function.
+        Fitted ground process intensity in spikes per second by default.
+        Hz rates are linearly interpolated and integrated over physical time.
     joint_mark_intensity : np.ndarray, shape (n_spikes, n_waveform_features)
         Joint mark-time intensity function evaluated at spike times and features.
+        Its temporal units must match ``ground_process_intensity`` so their
+        ratio is a conditional mark density.
     permute_waveform_features : bool, optional
         Whether to randomly permute the order of waveform features during
         the Rosenblatt transformation. Default is False.
+    rate_units : {"Hz", "expected_counts"}, optional
+        Hz is the physical-time contract used by fitted encoding models.
+        Explicit ``expected_counts`` retains legacy integration at unit sample
+        spacing, including interpolation of that cumulative integral at spikes.
+        It does not infer or convert counts from the supplied timestamps.
 
     Returns
     -------
@@ -56,7 +67,7 @@ def interval_rescaling_transform(
     """
     # Rescale the interspike intervals across all observed spikes based on the ground intensity
     rescaled_ground_process_isi = _compute_rescaled_isi(
-        ground_process_intensity, electrode_spike_times, time
+        ground_process_intensity, electrode_spike_times, time, rate_units=rate_units
     )
     uniform_rescaled_ground_process_isi = scipy.stats.expon.cdf(
         rescaled_ground_process_isi
@@ -110,18 +121,27 @@ def interval_rescaling_transform(
 
 
 def _compute_rescaled_isi(
-    intensity: np.ndarray, spike_times: np.ndarray, time: np.ndarray
+    intensity: np.ndarray,
+    spike_times: np.ndarray,
+    time: np.ndarray,
+    *,
+    rate_units: str = "Hz",
 ) -> np.ndarray:
     """Compute the rescaled interspike intervals for a single electrode.
 
     Parameters
     ----------
     intensity : np.ndarray, shape (n_time,)
-        Ground process intensity function values at each time point.
+        Ground process rates in spikes per second by default.
     spike_times : np.ndarray, shape (n_spikes,)
         Times at which spikes occurred.
     time : np.ndarray, shape (n_time,)
-        Time points corresponding to the intensity values.
+        Strictly increasing sample times in seconds. The first rescaled ISI
+        begins at the first sample, not at an inferred acquisition boundary.
+    rate_units : {"Hz", "expected_counts"}, optional
+        Hz integrates the piecewise linear rate over seconds, including exact
+        integrals within cells when spikes fall between sample centers.
+        ``expected_counts`` explicitly preserves legacy unit-index integration.
 
     Returns
     -------
@@ -129,10 +149,58 @@ def _compute_rescaled_isi(
         Rescaled interspike intervals computed by integrating the intensity
         function between consecutive spike times.
     """
-    integrated_conditional_intensity = scipy.integrate.cumulative_trapezoid(
-        intensity, initial=0.0
-    )
-    ici_at_spike = np.interp(spike_times, time, integrated_conditional_intensity)
+    if not isinstance(rate_units, str) or rate_units not in ("Hz", "expected_counts"):
+        raise ValueError("rate_units must be 'Hz' or 'expected_counts'")
+    # Promote physical rates before quadrature and rate differences: integer
+    # arithmetic can wrap and finite float32 rates can overflow when added.
+    # The explicit legacy path retains its existing dtype and arithmetic.
+    intensity = np.asarray(intensity, dtype=float if rate_units == "Hz" else None)
+    time = np.asarray(time, dtype=float)
+    spike_times = np.asarray(spike_times, dtype=float)
+    if intensity.ndim != 1 or not intensity.size or time.shape != intensity.shape:
+        raise ValueError(
+            "time and intensity must have matching nonempty one-dimensional rows"
+        )
+    with np.errstate(over="ignore", invalid="ignore"):
+        durations = np.diff(time)
+    if (
+        not np.all(np.isfinite(time))
+        or not np.all(np.isfinite(durations))
+        or np.any(durations <= 0)
+    ):
+        raise ValueError("time must be finite and strictly increasing")
+    if (
+        spike_times.ndim != 1
+        or not np.all(np.isfinite(spike_times))
+        or np.any(np.diff(spike_times) < 0)
+    ):
+        raise ValueError("spike_times must be finite, one-dimensional, and ordered")
+    if np.any((spike_times < time[0]) | (spike_times > time[-1])):
+        raise ValueError("spike_times must lie within the intensity sample time range")
+    if not np.all(np.isfinite(intensity)) or np.any(intensity < 0):
+        raise ValueError(
+            "ground_process_intensity must be finite and nonnegative; "
+            "non-finite or <= 0 values at spike times are invalid"
+        )
+    if rate_units == "expected_counts":
+        integrated = scipy.integrate.cumulative_trapezoid(intensity, initial=0.0)
+        ici_at_spike = np.interp(spike_times, time, integrated)
+    elif len(time) == 1:
+        ici_at_spike = np.zeros_like(spike_times)
+    else:
+        integrated = scipy.integrate.cumulative_trapezoid(
+            intensity, x=time, initial=0.0
+        )
+        left = np.clip(
+            np.searchsorted(time, spike_times, side="right") - 1, 0, len(time) - 2
+        )
+        elapsed = spike_times - time[left]
+        fraction = elapsed / durations[left]
+        # Integrate the linear rate without squaring elapsed time or forming
+        # a slope that can overflow for a very short, otherwise valid cell.
+        ici_at_spike = integrated[left] + elapsed * (
+            intensity[left] + 0.5 * fraction * (intensity[left + 1] - intensity[left])
+        )
     ici_at_spike = np.concatenate((np.array([0]), ici_at_spike))
     return np.diff(ici_at_spike)
 

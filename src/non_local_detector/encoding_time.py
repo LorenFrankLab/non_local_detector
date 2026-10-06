@@ -18,7 +18,12 @@ class EncodingSupport:
     original interpolation basis. ``valid_position_intervals`` declares
     disconnected tracking segments; their endpoints are held constant.
     Uniform samples default to supported endpoint half-cells. NaN positions
-    split the original timeline before any samples are removed.
+    inside a tracking segment split its original timeline before acquisition
+    clipping. Samples outside a declared segment cannot shorten its support.
+    A sample on an adjacent segment's shared boundary anchors both bases and
+    declares a shared physical endpoint. Discontinuous endpoints need separate
+    measured sample spans or sequence-local tracking; one timestamp cannot
+    represent two different positions. Spike ownership is a separate rule.
     """
 
     def __init__(
@@ -106,34 +111,39 @@ class EncodingSupport:
         self.bounds = bounds
         if not self.indices.size:
             return
-        runs = np.split(self.indices, np.flatnonzero(np.diff(self.indices) > 1) + 1)
-        for run in runs:
-            first, last = run[0], run[-1]
-            lower = bounds[0] if first == 0 else (time[first - 1] + time[first]) / 2
-            upper = (
-                bounds[1]
-                if last == time.size - 1
-                else (time[last] + time[last + 1]) / 2
-            )
-            candidates = [(max(lower, bounds[0]), min(upper, bounds[1]), run)]
-            if intervals is not None:
-                candidates = []
-                for start, stop in intervals:
-                    indices = run[(time[run] >= start) & (time[run] <= stop)]
-                    if not indices.size:
-                        continue
-                    candidates.append(
-                        (
-                            max(start, lower, bounds[0]),
-                            min(stop, upper, bounds[1]),
-                            indices,
-                        )
-                    )
-            for start, stop, indices in candidates:
-                if stop <= start or not indices.size:
+        # Establish each tracking segment before splitting on missing samples.
+        # Acquisition bounds then clip these original interpolation bases;
+        # they must not remove the bracketing sample centers from a basis.
+        tracking_segments = (
+            [(bounds[0], bounds[1], np.arange(time.size))]
+            if intervals is None
+            else [
+                (start, stop, np.flatnonzero((time >= start) & (time <= stop)))
+                for start, stop in intervals
+            ]
+        )
+        for start, stop, segment_indices in tracking_segments:
+            indices = segment_indices[finite[segment_indices]]
+            if not indices.size:
+                continue
+            runs = np.split(indices, np.flatnonzero(np.diff(indices) > 1) + 1)
+            for run in runs:
+                first, last = run[0], run[-1]
+                lower = (
+                    start
+                    if first == segment_indices[0]
+                    else (time[first - 1] + time[first]) / 2
+                )
+                upper = (
+                    stop
+                    if last == segment_indices[-1]
+                    else (time[last] + time[last + 1]) / 2
+                )
+                lower, upper = max(lower, bounds[0]), min(upper, bounds[1])
+                if upper <= lower:
                     continue
-                self.segments.append((start, stop, indices))
-                self._integrate(start, stop, indices)
+                self.segments.append((lower, upper, run))
+                self._integrate(lower, upper, run)
 
     def _integrate(self, start, stop, indices):
         time = self.time[indices]
