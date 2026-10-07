@@ -303,6 +303,22 @@ def _prepare_likelihood_callback(
     return chunk_callback
 
 
+def _validate_transition_arguments(
+    transition_representation: str, max_dense_transition_bytes: int
+) -> None:
+    """Reject unsupported transition settings before any fitted state changes."""
+    if transition_representation not in {"dense", "structured", "auto"}:
+        raise ValidationError(
+            "transition_representation must be dense, structured, or auto"
+        )
+    if (
+        isinstance(max_dense_transition_bytes, (bool, np.bool_))
+        or not isinstance(max_dense_transition_bytes, (int, np.integer))
+        or max_dense_transition_bytes <= 0
+    ):
+        raise ValidationError("max_dense_transition_bytes must be a positive integer")
+
+
 def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
     """Reject any nonzero ``encoding_update_damping``.
 
@@ -1775,17 +1791,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
         self.continuous_transition_types = continuous_transition_types
 
-        if transition_representation not in {"dense", "structured", "auto"}:
-            raise ValidationError(
-                "transition_representation must be dense, structured, or auto"
-            )
-        if (
-            not isinstance(max_dense_transition_bytes, (int, np.integer))
-            or max_dense_transition_bytes <= 0
-        ):
-            raise ValidationError(
-                "max_dense_transition_bytes must be a positive integer"
-            )
+        _validate_transition_arguments(
+            transition_representation, max_dense_transition_bytes
+        )
         self._transition_representation_ = transition_representation
         self._max_dense_transition_bytes_ = int(max_dense_transition_bytes)
         self.__dict__.pop("_continuous_transition_operator_", None)
@@ -2217,6 +2225,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         _DetectorBase
             Fitted model.
         """
+        _validate_transition_arguments(
+            transition_representation, max_dense_transition_bytes
+        )
         # Validate required parameters
         if position is None:
             raise ValidationError(

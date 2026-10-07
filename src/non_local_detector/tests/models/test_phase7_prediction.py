@@ -330,3 +330,32 @@ def test_native_store_read_budget_can_be_set_when_reopening(tmp_path):
         model.load_results(store, max_read_bytes=100_000).acausal_posterior,
         result.acausal_posterior,
     )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"transition_representation": "Dense"},
+        {"transition_representation": "structurd"},
+        {"max_dense_transition_bytes": True},
+        {"max_dense_transition_bytes": 0},
+        {"max_dense_transition_bytes": -1},
+    ],
+)
+def test_fit_rejects_invalid_transition_arguments_before_refit(arguments, monkeypatch):
+    from non_local_detector.exceptions import ValidationError
+
+    model, fit, _ = recording("sorted")
+
+    def refit(*args, **kwargs):
+        raise AssertionError("environments were refit before validation")
+
+    monkeypatch.setattr(model, "initialize_environments", refit)
+    with pytest.raises(ValidationError):
+        model.fit(**fit, **arguments)
+
+
+def test_fit_accepts_numpy_integer_transition_budget():
+    model, fit, _ = recording("sorted")
+    model.fit(**fit, max_dense_transition_bytes=np.int64(2**20))
+    assert model._max_dense_transition_bytes_ == 2**20
