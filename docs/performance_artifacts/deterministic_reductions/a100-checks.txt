@@ -1,3 +1,9 @@
+# A100 80GB PCIe (zephyr GPU 7), JAX/jaxlib 0.9.0 + CUDA 12 plugin, Python 3.12.
+# e2e: clusterless detector compute_log_likelihood, 20000 encoding spikes,
+#      2000 rows, 400 decoding spikes, median of 3 warmed calls;
+#      before = 5bf46a29 (serial loop), after = 5a4047d8 (segmented scan).
+# determinism: benchmarks/check_likelihood_determinism.py, 50 repetitions.
+# tests: affected likelihood/checkpoint modules with JAX_ENABLE_X64=1.
 == xprof
   xplane.pb: /tmp/nld-review-fixes/xprof/serial_loop_20000x500/plugins/profile/2026_10_07_11_54_51/zephyr.cin.ucsf.edu.xplane.pb
   xplane.pb: /tmp/nld-review-fixes/xprof/segmented_scan_20000x500/plugins/profile/2026_10_07_11_54_56/zephyr.cin.ucsf.edu.xplane.pb

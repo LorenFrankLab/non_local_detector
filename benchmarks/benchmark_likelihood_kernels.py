@@ -202,7 +202,7 @@ def compare(name, calls, repeats, output_dir, rng):
             )
             >= 2 * 2**30
         ):
-            raise RuntimeError("Phase7c agent process exceeded its 2 GiB budget")
+            raise RuntimeError("Benchmark process exceeded its 2 GiB budget")
     np.savez(output_dir / f"{name}_outputs.npz", **values)
     return report
 

@@ -1,3 +1,14 @@
+# Gaussian divisor barrier gate on the CI CPU stack.
+# Host: zephyr (Linux x86_64). Environment verified when the run was made:
+# Python 3.13.15, JAX/jaxlib 0.11.2 (CPU), NumPy 2.5.3, SciPy 1.18.1.
+# Modules: test_clusterless_kde_streaming, test_streamed_kde, test_kde_common,
+# test_clusterless_kde, test_clusterless_kde_log_parity (171 tests).
+# Variants (pytest plugins in .claude/docs/plans/phase7-review-fixes/evidence/plugins):
+#   none             = code under test (singleton + mixed-precision barrier)
+#   nobarrier        = pre-barrier log_gaussian_pdf
+#   singletonbarrier = barrier only for singleton tiles (adopted)
+# hlo = optimized-HLO divide shapes at the _log_kernel_matrix call site;
+# "phase 1a CI site" = tests/likelihoods/test_sorted_nonlocal_accumulation.py.
 x64=0 variant=none: ================= 171 passed, 5 warnings in 125.26s (0:02:05) ==================
 x64=0 variant=nobarrier: ============ 1 failed, 170 passed, 5 warnings in 122.90s (0:02:02) =============
 x64=0 variant=singletonbarrier: ================= 171 passed, 5 warnings in 121.34s (0:02:01) ==================

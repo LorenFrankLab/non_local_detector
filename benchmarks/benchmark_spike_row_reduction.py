@@ -74,8 +74,33 @@ def measure(function, arguments, repeats):
 
 
 def recompilation_check(found, n_rows, n_columns, rng):
-    """Executables created and compile time across spike counts 1..64."""
+    """Executables created and compile time across spike counts 1..64.
+
+    ``bucketed_row_sum`` goes through ``deterministic_row_sum`` (which pads
+    concrete off-CPU calls to powers of two) and counts the segmented-scan
+    executables it creates; on CPU it takes the scatter path instead.
+    """
     report = {}
+    if hasattr(common, "deterministic_row_sum"):
+        scan = common.deterministic_segment_sum
+        before = scan._cache_size()
+        start = time.perf_counter()
+        for n_spikes in range(1, 65):
+            values = jnp.asarray(
+                rng.normal(size=(n_spikes, n_columns)).astype(np.float32)
+            )
+            ids = np.sort(rng.integers(0, n_rows, n_spikes)).astype(np.int32)
+            jax.block_until_ready(
+                common.deterministic_row_sum(
+                    values, ids, n_rows, indices_are_sorted=True
+                )
+            )
+        report["bucketed_row_sum"] = {
+            "spike_counts": 64,
+            "seconds": time.perf_counter() - start,
+            "new_scan_executables": scan._cache_size() - before,
+            "backend": jax.default_backend(),
+        }
     for name, function in found.items():
         if name == "segment_sum":
             continue
@@ -105,6 +130,11 @@ def main():
     parser.add_argument("--rows", type=int, default=256)
     parser.add_argument("--require-backend", choices=("cpu", "gpu"), default=None)
     parser.add_argument(
+        "--recompilation-only",
+        action="store_true",
+        help="skip the timing grid and run only the recompilation check",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path(tempfile.gettempdir()) / "benchmark_spike_row_reduction.json",
@@ -118,7 +148,7 @@ def main():
     rng = np.random.default_rng(20261007)
     found = candidates()
     records = []
-    for n_spikes in SPIKES:
+    for n_spikes in () if args.recompilation_only else SPIKES:
         for n_columns in COLUMNS:
             if n_spikes * n_columns * 4 > MAX_VALUES_BYTES:
                 continue

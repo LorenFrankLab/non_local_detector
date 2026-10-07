@@ -43,21 +43,26 @@ identical without adding contributions one spike at a time; CPU keeps its
 sequential scatter and verified sorted-index hint. Pairwise diffusion
 component reductions are unchanged. Exact replay hashes remain required; no
 implicit full-session likelihood cache was added. On an A100 (JAX 0.9.0), the
-scan takes 0.4-3.2 ms per reduction from 16 to 200,000 spikes, against 23 ms
-to 1.6 s for the serial loop it replaces and within about 2x of the
-nondeterministic scatter, which fails to launch at 16,930 columns with sorted
-ids. An xprof trace at 20,000 x 500 shows 180,000 kernel launches for three
-serial-loop calls against 31 for the scan. A 20,000-encoding-spike clusterless
-diffusion likelihood chunk drops from 0.37 s to 0.06 s. Off-CPU calls pad spike
-counts to powers of two because each new scan shape costs about 0.8 s to
-compile on the A100. `benchmarks/check_likelihood_determinism.py` gives one
+scan takes 0.3-3.2 ms per reduction from 16 to 200,000 spikes. The serial loop
+it replaces takes 0.5-0.8 ms at 16 spikes, 18-31 ms at 2,000 and 1.5-1.6 s
+at 200,000; the scan is similar at 16 spikes and 30-2,000x faster from 2,000.
+From 2,000 spikes the scan is within about 2x of the nondeterministic scatter
+(up to about 6x slower on sub-millisecond 16-spike calls); the scatter fails to
+launch at 16,930 columns with sorted ids. An xprof trace of three calls at
+20,000 x 500 shows 180,003 kernel launches for the serial loop, 177 for the
+scan and 6 for the scatter. A 20,000-encoding-spike clusterless diffusion
+likelihood chunk drops from 0.37 s to 0.06 s. Each new scan shape costs about
+0.8 s to compile on the A100, so concrete off-CPU calls pad spike counts to
+powers of two: 64 different spike counts create 7 executables (10.8 s) instead
+of 64. `benchmarks/check_likelihood_determinism.py` gives one
 SHA per case over 50 evaluations for four clusterless algorithms, default and
 collision-heavy, with x64 off and on; the affected likelihood and checkpoint
 modules pass on the A100 with x64 (444 tests). See the
 [reduction benchmarks](performance_artifacts/deterministic_reductions/a100-reduction-benchmark-5a4047d8.json)
 (baseline: [5bf46a29](performance_artifacts/deterministic_reductions/a100-reduction-benchmark-5bf46a29.json)),
 [determinism](performance_artifacts/deterministic_reductions/a100-determinism-x64-on.json),
-[xprof summary](performance_artifacts/deterministic_reductions/a100-xprof-20000x500.txt) and
+[xprof summary](performance_artifacts/deterministic_reductions/a100-xprof-20000x500.txt),
+[bucketed recompilation](performance_artifacts/deterministic_reductions/a100-recompilation-bucketed.json) and
 [end-to-end and test record](performance_artifacts/deterministic_reductions/a100-checks.txt).
 The earlier [replay report](performance_artifacts/phase7/gpu-replay.json) and
 [gradient controls](performance_artifacts/phase7/gpu-gradient-controls.json)

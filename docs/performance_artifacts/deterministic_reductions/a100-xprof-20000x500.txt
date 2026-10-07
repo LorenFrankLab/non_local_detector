@@ -1,3 +1,7 @@
+# xprof traces, A100 (JAX 0.9.0), 20000 spikes x 500 columns, 3 calls each.
+# Launch totals summed over every kernel row (the tables below show the top
+# rows only): serial loop 180,003 launches (4 distinct kernels); segmented
+# scan 177 launches (31 distinct kernels); scatter 6 launches (2 kernels).
 === serial_loop 20000x500, 3 calls
 === Kernels: total 376.7 ms across 4 kernels, TensorCore share 0.0%  ===
   dur(ms)   calls  tc  kernel                       op                                      
