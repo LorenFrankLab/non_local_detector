@@ -18,11 +18,11 @@ import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.likelihoods.common import (
+    _spike_counts_matrix,
     _SpikeTimeOrder,
     get_spikecount_per_time_bin,
     resolve_row_slice,
 )
-from non_local_detector.likelihoods.sorted_spikes_diffusion import _spike_counts_matrix
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,

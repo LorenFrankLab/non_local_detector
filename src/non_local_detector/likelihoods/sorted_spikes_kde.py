@@ -63,6 +63,7 @@ from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
     KDEModel,
     _poisson_nonlocal_log_likelihood,
+    _spike_counts_matrix,
     _SpikeTimeOrder,
     as_std_array,
     block_kde,
@@ -75,7 +76,6 @@ from non_local_detector.likelihoods.common import (
     validate_weights,
     weighted_mean_rate,
 )
-from non_local_detector.likelihoods.sorted_spikes_diffusion import _spike_counts_matrix
 from non_local_detector.time_edges import (
     _DecodeTimeGrid,
     _resolve_time_grid,
