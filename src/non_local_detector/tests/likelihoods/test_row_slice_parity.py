@@ -215,9 +215,7 @@ def test_local_glm_chunks_match_float64_reference(fitted_backends, decode_data):
     coefficients = np.asarray(model["coefficients"], dtype=np.float64)
     # Fitted coefficients can round the silent unit's exponent just below the
     # physical rate floor. Match the model's Hz floor before applying duration.
-    rates = np.maximum(
-        np.exp(design.astype(np.float64) @ coefficients.T), RATE_EPS_HZ
-    )
+    rates = np.maximum(np.exp(design.astype(np.float64) @ coefficients.T), RATE_EPS_HZ)
 
     # Derive full-timeline counts independently of the selection/count helpers.
     n_bins = len(time) - 1
