@@ -1,0 +1,115 @@
+{
+  "date": "2026-10-07",
+  "fix_commit": "7915637",
+  "final_runtime_aggregate_sha256": "4a6b3ba608338eab1cf667cdb3ca441a3a71315bd86faa18d10a8a497d9fb8b4",
+  "failed_ci_run": "https://github.com/LorenFrankLab/non_local_detector/actions/runs/37550790919",
+  "original_ci": {
+    "failures": 6,
+    "passed": 3131,
+    "skipped": 26,
+    "jax": "0.11.2",
+    "python": "3.13.15",
+    "numpy": "2.5.3",
+    "scipy": "1.18.1",
+    "other_python_jobs": "cancelled by fail-fast"
+  },
+  "tests": [
+    {
+      "log_name": "scoped-full-mac.log",
+      "log_sha256": "99c18e0bd7d20d3e3a02a69cc75a138719de1cde8db61fc95cb1d03cea3e497f",
+      "summary": "========== 3155 passed, 26 skipped, 603 warnings in 843.29s (0:14:03) ==========",
+      "passed": 3155,
+      "skipped": 26,
+      "runtime_aggregate_sha256": "00f33c9c37fa14b1214516e9ec48d80ff360ebfad7641331e20825aa35c70a8c",
+      "runtime": "macOS Python 3.13.13/JAX 0.9.0",
+      "scope": "Full candidate before mixed-precision and tracer-scoped query follow-ups"
+    },
+    {
+      "log_name": "mixed-precision-ci.log",
+      "log_sha256": "2c8f4dde95dc8c6f731b96093dc067b8c05853cda5d03008fa9ac164665aa047",
+      "summary": "======================= 112 passed, 3 warnings in 58.10s =======================",
+      "passed": 112,
+      "skipped": 0,
+      "runtime_aggregate_sha256": "bc96d8adcf3c1b2ba19d559955725874cdaac84d2dd2233d4e12dadc5560f257",
+      "runtime": "Linux Python 3.13.15/JAX 0.11.2",
+      "scope": "Gaussian and streamed density modules"
+    },
+    {
+      "log_name": "final-targeted-ci.log",
+      "log_sha256": "1c9ffbbbe0ad692abce8cb8d8032731ecfe5033346c98a3114258506a5b84915",
+      "summary": "=========== 239 passed, 20 skipped, 5 warnings in 132.47s (0:02:12) ============",
+      "passed": 239,
+      "skipped": 20,
+      "runtime_aggregate_sha256": "bc96d8adcf3c1b2ba19d559955725874cdaac84d2dd2233d4e12dadc5560f257",
+      "runtime": "Linux Python 3.13.15/JAX 0.11.2",
+      "scope": "Checkpoint, sorted, clusterless and transition modules"
+    },
+    {
+      "log_name": "final-query-ci.log",
+      "log_sha256": "8bf5650cbed30f0ff21d6831317771af618a3bb4e57cdc117cba04572e8b9a53",
+      "summary": "================== 121 passed, 2 warnings in 76.61s (0:01:16) ==================",
+      "passed": 121,
+      "skipped": 0,
+      "runtime_aggregate_sha256": "4a6b3ba608338eab1cf667cdb3ca441a3a71315bd86faa18d10a8a497d9fb8b4",
+      "runtime": "Linux Python 3.13.15/JAX 0.11.2",
+      "scope": "Final density and clusterless modules"
+    },
+    {
+      "log_name": "final-query-compiled-ci.log",
+      "log_sha256": "9baa255d96769d3956ad608d7ed0a2002cba9130809d7bb4df62cf356fab7a02",
+      "summary": "======================= 2 passed, 73 deselected in 8.69s =======================",
+      "passed": 2,
+      "skipped": 0,
+      "runtime_aggregate_sha256": "4a6b3ba608338eab1cf667cdb3ca441a3a71315bd86faa18d10a8a497d9fb8b4",
+      "runtime": "Linux Python 3.13.15/JAX 0.11.2",
+      "scope": "Additional compiled-primal assertions after final density batch"
+    },
+    {
+      "log_name": "scoped-gpu-x64.log",
+      "log_sha256": "00af0f3feff316b4d603458b178d35476927b85cf2f3d8cf69dafd82589726f6",
+      "summary": "================= 371 passed, 8 warnings in 535.23s (0:08:55) ==================",
+      "passed": 371,
+      "skipped": 0,
+      "runtime_aggregate_sha256": "bc96d8adcf3c1b2ba19d559955725874cdaac84d2dd2233d4e12dadc5560f257",
+      "runtime": "A100 Python 3.13.2/JAX 0.9.0, JAX_ENABLE_X64=1",
+      "scope": "All six affected modules"
+    },
+    {
+      "log_name": "final-query-gpu.log",
+      "log_sha256": "55dc229d1ae5e403007ce8e0fad4eab9194c9cfd6d7f031151eb36bc35a49821",
+      "summary": "================= 121 passed, 2 warnings in 151.68s (0:02:31) ==================",
+      "passed": 121,
+      "skipped": 0,
+      "runtime_aggregate_sha256": "4a6b3ba608338eab1cf667cdb3ca441a3a71315bd86faa18d10a8a497d9fb8b4",
+      "runtime": "A100 Python 3.13.2/JAX 0.9.0, JAX_ENABLE_X64=1",
+      "scope": "Final density/clusterless modules, including compiled primals"
+    },
+    {
+      "log_name": "query-older-x64.log",
+      "log_sha256": "f0e9ca8f2b476a6eba3091391d7184bf45f8be009863ed3ed0181db424dff2db",
+      "summary": "====================== 265 passed, 12 warnings in 41.39s =======================",
+      "passed": 265,
+      "skipped": 0,
+      "runtime_aggregate_sha256": "4a6b3ba608338eab1cf667cdb3ca441a3a71315bd86faa18d10a8a497d9fb8b4",
+      "runtime": "macOS Python 3.11.15/JAX 0.6.2, NumPy 1.26.4/SciPy 1.12.0, JAX_ENABLE_X64=1",
+      "scope": "Five affected numerical modules on older tested stack"
+    }
+  ],
+  "coverage_notes": [
+    "112+239 CI nodes cover all 371 affected nodes, with 351 passes/20 precision skips. Final query controls replace the earlier density/clusterless results; two existing gradient nodes additionally test compiled primal values.",
+    "The final source differs from the mixed-precision snapshot only in likelihoods/streamed_kde.py. All 121 controls for that final change passed on exact CI CPU and A100.",
+    "The older tested stack does not qualify declared dependency floors.",
+    "Earlier full-hour and wheel artifacts retain their original S2/S4/S6 source hashes."
+  ],
+  "full_ci_stack_attempt": {
+    "status": "aborted",
+    "error": "LLVM compilation error: Cannot allocate memory; Unable to allocate section memory",
+    "scope": "zephyr full-suite attempt; not counted as a full-suite pass; no unrelated production or CI settings changed"
+  },
+  "invariants": [
+    "Existing numerical tolerances unchanged",
+    "Golden/snapshot data unchanged",
+    "Convergence criteria unchanged",
+    "No Spyglass or main-branch edits"
+  ]
+}

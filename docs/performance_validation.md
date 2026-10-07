@@ -1,7 +1,9 @@
 # Phase 7 validation record
 
-Qualification is complete for the recorded configurations on `feat/phase7-performance`, based on merged
-Phase 6 (`fe1b2e9`). The [prediction guide](performance_prediction.md) describes
+The frozen S6 qualification below records configurations on `feat/phase7-performance`,
+based on merged Phase 6 (`fe1b2e9`). Subsequent CI-runtime corrections have a
+separate validation record at the end of this document; earlier hour-scale
+measurements retain their original source provenance. The [prediction guide](performance_prediction.md) describes
 the API; the [phase plan](../.claude/docs/plans/likelihood-defect-remediation/phase-7-performance.md)
 remains the acceptance checklist.
 
@@ -243,3 +245,74 @@ Its [manifest](performance_artifacts/phase7/source-s6.json) identifies the
 complete frozen source and synchronized benchmark script.
 See the [provenance audit](performance_artifacts/phase7/qualification-provenance.json)
 and [source-equivalence checks](performance_artifacts/phase7/source-equivalence.json).
+
+## CI-runtime corrections after S6
+
+The Python 3.13 CI run reproduced six failures with JAX/jaxlib 0.11.2,
+NumPy 2.5.3 and SciPy 1.18.1. The other Python jobs were cancelled by fail-fast.
+The corrections preserve existing tolerances, golden files and convergence
+criteria:
+
+- The legacy evidence-semantics test explicitly selects reference accumulation.
+  Stable checkpointed evidence retains its independent float64-sum tests.
+- Sorted KDE/GLM emissions accumulate active neurons in population order.
+  Host count metadata is packed into a power-of-two capacity and enters JIT
+  once per request; the numerical workspace uses fixed 64-row blocks. Traced
+  counts and unsafe products retain the full ordered `xlogy` path, including
+  zero/nonfinite behavior. Matrix reduction violated existing posterior
+  tolerances for 96 simultaneously active neurons on the CI CPU runtime.
+- Singleton Gaussian tails materialize their broadcast divisor before division.
+  Float32 kernels with enabled float64 accumulation use the same guard to
+  prevent tile-dependent elementary rounding from exceeding existing controls.
+  Integer, mixed-dtype and weak scalar promotion remain unchanged.
+- Structured Gaussian products cap only extreme finite normalization scales,
+  preventing a compiler-hoisted reciprocal from flushing to zero. Ordinary
+  scales keep their original arithmetic.
+- Transformed tiled-density calls use fixed evaluation-query tiles to preserve
+  compiled tail gradients. Concrete native calls retain their original exact
+  query-tail shapes and rounding. Encoding samples, weights and normalization
+  are never padded. Transformed and concrete primals can differ slightly in
+  floating-point rounding; compiled values and derivatives are checked against
+  independent analytic references at the existing tolerances.
+
+The [correction manifest](performance_artifacts/phase7/ci-fix-source.json)
+identifies the updated runtime. Local full-suite candidates passed **3,155 tests,
+26 skipped**. Follow-up controls cover the final Gaussian and query changes.
+On the exact CI CPU stack, all **351 enabled affected tests passed, 20 skipped**;
+the final query change additionally passed all 121 density/native controls.
+An A100 passed all **371 affected tests with actual float64 enabled**, followed
+by all 121 controls for the final query change, including the compiled-primal
+regression. The [test record](performance_artifacts/phase7/ci-fix-validation.json)
+distinguishes each tested snapshot. The final source also passes 265 numerical
+controls on the older tested Python 3.11/JAX 0.6.2 stack with actual float64.
+A zephyr full-suite attempt reported LLVM
+allocation failures; it is not recorded as a successful full CI-stack run.
+
+Updated-source native A100 checks use 2,000 decoding rows, 66,250 combined
+hidden bins, the same 64-unit/eight-electrode populations and ten seconds of
+encoding as the earlier GPU qualification. Posterior comparisons to S6 pass
+at unchanged `rtol=atol=1e-6`, with maximum absolute differences of `2.39e-7`
+(sorted) and `4.77e-7` (clusterless). The sorted output also matches an
+independent eager per-neuron reference within `3.28e-7`. Process RSS peaks are
+1.72/2.27 GiB; JAX allocator peaks are recorded separately and remain below
+8 GiB. These are short compact checks, not repeated hour-scale spatial exports
+or NVML measurements. The [native comparison record](performance_artifacts/phase7/ci-fix-native-comparison.json)
+contains exact source/input hashes, timings, resource counters and reference
+override provenance.
+
+The [ordered-emission benchmark](../scripts/benchmark_phase7_sorted_accumulation.py)
+measures synchronized warmed calls, including host packing, against the trusted
+pre-fix matrix and full ordered implementations. At 256 rows, 96 neurons and
+32,400 positions, sparse calls take **46.4 ms CPU / 1.48 ms A100**, respectively
+9.46×/7.80× faster than the full ordered fallback, but 1.49×/2.26× slower than
+the matrix reduction. A dense simultaneous burst expands the request capacity
+to the full population: **337 ms CPU / 12.0 ms A100**, 9.02×/13.5× slower than
+the matrix path. Both platforms retain two compiled signatures across 32
+changing sparse chunks. These kernel measurements reflect concurrent host
+load and do not establish an end-to-end speedup. Their
+[CPU](performance_artifacts/phase7/ci-fix-sorted-cpu.json) and
+[A100](performance_artifacts/phase7/ci-fix-sorted-gpu.json) manifests precede
+only the final query-workaround change; the measured emission module is
+byte-identical to the correction manifest. The earlier full-hour timings and
+built-wheel checks remain measurements of S2/S4/S6 and are not relabelled as
+qualification of the updated runtime.
