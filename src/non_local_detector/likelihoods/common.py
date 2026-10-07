@@ -373,6 +373,7 @@ def _poisson_nonlocal_log_likelihood(
             jnp.all(jnp.isfinite(rates))
             & jnp.all(jnp.isfinite(block_durations))
             & jnp.all(block_durations == block_durations[0])
+            & (block_durations[0] > 0)
             & (smallest > 0)
             & jnp.isfinite(largest)
             & (jnp.result_type(rates, block_durations) == accumulator_dtype)

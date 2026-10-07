@@ -338,8 +338,9 @@ the production run is a prerequisite, not an optional late speed improvement.
 
 CI follow-up: the matrix path's CI difference from the per-neuron float32
 reference was the reference's rounding, not matrix error; the matrix
-accumulation is retained and the test compares both against a float64 sum of
-the same inputs (see the
+accumulation is retained, and the test checks the matrix emission and the
+resulting posteriors against a float64 oracle, with the per-neuron reference's
+distance as the bound (see the
 [CI correction record](../../../../docs/performance_validation.md#ci-runtime-corrections-after-s6)).
 Earlier hour-scale matrix measurements retain their original source hashes.
 

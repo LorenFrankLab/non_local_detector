@@ -460,7 +460,11 @@ def test_many_neurons_match_native_posterior_and_evidence(nonlocal_model, monkey
         np.asarray(result.attrs["marginal_log_likelihoods"])
         for result in (reference, oracle, actual)
     ]
+    # Evidence magnitudes are large, so allow a few float32 ulp beyond the bound.
+    floor = max(
+        1e-6, 4 * float(np.max(np.spacing(np.abs(evidence[1]).astype(np.float32))))
+    )
     assert np.max(np.abs(evidence[2] - evidence[1])) <= (
-        2 * np.max(np.abs(evidence[0] - evidence[1])) + 1e-6
+        2 * np.max(np.abs(evidence[0] - evidence[1])) + floor
     )
     np.testing.assert_array_equal(actual.is_missing, missing)

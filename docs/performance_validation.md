@@ -257,11 +257,14 @@ criteria:
   Stable checkpointed evidence retains its independent float64-sum tests.
 - Sorted KDE/GLM emissions keep the fixed 64-row matrix accumulation. Its CI
   difference from the per-neuron float32 reference (decoder posterior 4/5130
-  elements, max 3.457e-05) is the reference's own rounding: running the same
-  model with the float64 sum of the same float32 inputs, rounded once,
-  reproduces that difference exactly against the per-neuron order. The test
-  now requires emissions within 16 float32 ulp of that float64 sum and
-  posteriors no further from it than the per-neuron reference. Integer counts
+  elements, max 3.457e-05) is attributed to the reference's own rounding: in
+  a local arm64 run, the same model with the float64 sum of the same float32
+  inputs, rounded once, differs from the per-neuron order by exactly that
+  pattern for the decoder (4/5130, 3.45706940e-05) and within 0.4% for the
+  non-local model (64 vs 89 elements, 1.708e-05 vs 1.702e-05). The CI x86
+  matrix output itself was not rerun. The test now requires emissions within
+  16 float32 ulp of that float64 sum (6.3 ulp measured) and posteriors no
+  further from the float64-emission run than the per-neuron reference. Integer counts
   enter `xlogy` as floats, and uniform-duration blocks keep each row's own
   duration derivative; both fixes leave forward values bitwise unchanged.
 - Singleton Gaussian tails materialize their broadcast divisor before division.
