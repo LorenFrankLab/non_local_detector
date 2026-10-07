@@ -12,6 +12,8 @@ then times one warm prediction with each stage instrumented:
 Instrumented stages synchronize with ``block_until_ready``, which removes
 asynchronous overlap, so stage times sum to slightly more than an
 uninstrumented prediction; the uninstrumented warm time is reported too.
+``--cprofile`` additionally records the host functions with the most own time
+during an uninstrumented warm prediction, to break down "other".
 
 Example::
 
@@ -20,8 +22,11 @@ Example::
 """
 
 import argparse
+import cProfile
+import io
 import json
 import os
+import pstats
 import sys
 import time
 from collections import defaultdict
@@ -49,6 +54,7 @@ def main():
     parser.add_argument("--mark-dimensions", type=int, default=4)
     parser.add_argument("--chunk-size", type=int, default=256)
     parser.add_argument("--require-backend", choices=["cpu", "gpu"], default=None)
+    parser.add_argument("--cprofile", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.population is None:
@@ -99,6 +105,25 @@ def main():
     start = time.perf_counter()
     model.predict(**predict_kwargs)
     uninstrumented = time.perf_counter() - start
+    host_functions = None
+    if args.cprofile:
+        profiler = cProfile.Profile()
+        profiler.enable()
+        model.predict(**predict_kwargs)
+        profiler.disable()
+        stream = io.StringIO()
+        stats = pstats.Stats(profiler, stream=stream).sort_stats("tottime")
+        host_functions = [
+            {
+                "function": f"{Path(file).name}:{line}({name})",
+                "own_seconds": own,
+                "cumulative_seconds": cumulative,
+                "calls": calls_,
+            }
+            for (file, line, name), (_, calls_, own, cumulative, _) in sorted(
+                stats.stats.items(), key=lambda item: -item[1][2]
+            )[:25]
+        ]
 
     seconds = defaultdict(float)
     calls = defaultdict(int)
@@ -189,12 +214,18 @@ def main():
         "stage_seconds": stages,
         "stage_fraction": {k: v / instrumented for k, v in stages.items()},
         "stage_calls": dict(calls),
+        "host_functions_by_own_time": host_functions,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=1))
     for name, value in sorted(stages.items(), key=lambda item: -item[1]):
         print(f"{name:26s} {value:9.3f} s  {100 * value / instrumented:5.1f}%")
     print(f"uninstrumented warm prediction: {uninstrumented:.3f} s")
+    for entry in host_functions or []:
+        print(
+            f"  {entry['own_seconds']:8.3f} s own {entry['calls']:8d} calls  "
+            f"{entry['function']}"
+        )
 
 
 if __name__ == "__main__":
