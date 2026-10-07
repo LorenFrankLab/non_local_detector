@@ -1,0 +1,123 @@
+{
+ "backend": "gpu",
+ "device": "cuda:0",
+ "device_kind": "NVIDIA A100 80GB PCIe",
+ "jax": "0.9.0",
+ "x64": false,
+ "repetitions": 50,
+ "all_bitwise_identical": true,
+ "cases": [
+  {
+   "algorithm": "clusterless_kde",
+   "case": "default",
+   "decoding_spikes_per_electrode": 51,
+   "shape": [
+    10,
+    34
+   ],
+   "dtype": "float32",
+   "distinct_sha256": 1,
+   "first_sha256": "294ae80848799d0fca08ba90162691fb4509537855b1d1df03883a7c4fd3d5f2",
+   "max_abs_difference": 0.0,
+   "seconds": 10.970555318519473
+  },
+  {
+   "algorithm": "clusterless_kde",
+   "case": "collision_heavy",
+   "decoding_spikes_per_electrode": 2000,
+   "shape": [
+    10,
+    34
+   ],
+   "dtype": "float32",
+   "distinct_sha256": 1,
+   "first_sha256": "c3cc5e3dcf3edf498b3fda26c8a09545bb6c794d813a907f6ae87bd7c146b3f3",
+   "max_abs_difference": 0.0,
+   "seconds": 10.437630376778543
+  },
+  {
+   "algorithm": "clusterless_kde_log",
+   "case": "default",
+   "decoding_spikes_per_electrode": 51,
+   "shape": [
+    10,
+    34
+   ],
+   "dtype": "float32",
+   "distinct_sha256": 1,
+   "first_sha256": "6ab5d12d5e806443abb95928dd49ede593aed579595e927a246deb9b98571d40",
+   "max_abs_difference": 0.0,
+   "seconds": 7.057881546206772
+  },
+  {
+   "algorithm": "clusterless_kde_log",
+   "case": "collision_heavy",
+   "decoding_spikes_per_electrode": 2000,
+   "shape": [
+    10,
+    34
+   ],
+   "dtype": "float32",
+   "distinct_sha256": 1,
+   "first_sha256": "11a72630d50f77715d9c0a3e05993cd39bdb0dbdd6abba7f64466fbd4be2154d",
+   "max_abs_difference": 0.0,
+   "seconds": 4.522987514734268
+  },
+  {
+   "algorithm": "clusterless_gmm",
+   "case": "default",
+   "decoding_spikes_per_electrode": 51,
+   "shape": [
+    10,
+    34
+   ],
+   "dtype": "float32",
+   "distinct_sha256": 1,
+   "first_sha256": "1d67d636442f359557d8b1d08b6e1fb49f9f65c7f616fdd6a7a39bc52dbe47c1",
+   "max_abs_difference": 0.0,
+   "seconds": 10.05033843126148
+  },
+  {
+   "algorithm": "clusterless_gmm",
+   "case": "collision_heavy",
+   "decoding_spikes_per_electrode": 2000,
+   "shape": [
+    10,
+    34
+   ],
+   "dtype": "float32",
+   "distinct_sha256": 1,
+   "first_sha256": "b452d1f6c659dc987fbd16195f3f2cb944a6f1747ddbcc39c4f6f70a5e14899a",
+   "max_abs_difference": 0.0,
+   "seconds": 9.187226416543126
+  },
+  {
+   "algorithm": "clusterless_diffusion",
+   "case": "default",
+   "decoding_spikes_per_electrode": 51,
+   "shape": [
+    10,
+    34
+   ],
+   "dtype": "float32",
+   "distinct_sha256": 1,
+   "first_sha256": "342b9a502e6a1cde43a73c6a1353fc9c4d0e4e4843f10d4db4c51d6c30899f96",
+   "max_abs_difference": 0.0,
+   "seconds": 14.02530896756798
+  },
+  {
+   "algorithm": "clusterless_diffusion",
+   "case": "collision_heavy",
+   "decoding_spikes_per_electrode": 2000,
+   "shape": [
+    10,
+    34
+   ],
+   "dtype": "float32",
+   "distinct_sha256": 1,
+   "first_sha256": "6befde7fd813d9a6ae9fd945b4063bab6829cdd439bb87c547e518f3cb3983c9",
+   "max_abs_difference": 0.0,
+   "seconds": 11.944639286026359
+  }
+ ]
+}

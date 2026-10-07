@@ -1,0 +1,1001 @@
+{
+ "backend": "gpu",
+ "device": "cuda:0",
+ "device_kind": "NVIDIA A100 80GB PCIe",
+ "jax": "0.9.0",
+ "x64": false,
+ "rows": 256,
+ "repeats": 5,
+ "common_sha256": "9b00d4ea9507242c95d9d2a7a0e2672294ce8be320f624cf352ed77e16d772ab",
+ "measurement": "compile+first separately; steady-state min/median/max of synchronized warmed calls; XLA temp bytes from memory_analysis",
+ "records": [
+  {
+   "n_spikes": 16,
+   "n_columns": 64,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.10439334809780121,
+    "min_seconds": 0.0002629989758133888,
+    "median_seconds": 0.0002674553543329239,
+    "max_seconds": 0.0004193587228655815,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.14539763052016497,
+    "min_seconds": 0.0006216512992978096,
+    "median_seconds": 0.000669015571475029,
+    "max_seconds": 0.0007452480494976044,
+    "temp_bytes": 516,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 0.440532180480659,
+    "min_seconds": 0.00020298361778259277,
+    "median_seconds": 0.000630735419690609,
+    "max_seconds": 0.0006728172302246094,
+    "temp_bytes": 7428,
+    "max_abs_difference_vs_segment_sum": 0.0
+   }
+  },
+  {
+   "n_spikes": 16,
+   "n_columns": 64,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.06324077770113945,
+    "min_seconds": 8.815526962280273e-05,
+    "median_seconds": 9.348336607217789e-05,
+    "max_seconds": 0.00011523440480232239,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.1224151374772191,
+    "min_seconds": 0.0005990862846374512,
+    "median_seconds": 0.0006853342056274414,
+    "max_seconds": 0.0007597450166940689,
+    "temp_bytes": 516,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 0.6158404462039471,
+    "min_seconds": 0.0003007054328918457,
+    "median_seconds": 0.0004163840785622597,
+    "max_seconds": 0.0006506368517875671,
+    "temp_bytes": 8488,
+    "max_abs_difference_vs_segment_sum": 0.0
+   }
+  },
+  {
+   "n_spikes": 16,
+   "n_columns": 500,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.0695631904527545,
+    "min_seconds": 0.00027337484061717987,
+    "median_seconds": 0.00036435388028621674,
+    "max_seconds": 0.0005461815744638443,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.13580057583749294,
+    "min_seconds": 0.00047040730714797974,
+    "median_seconds": 0.0006422428414225578,
+    "max_seconds": 0.0007672598585486412,
+    "temp_bytes": 2308,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 0.4281839868053794,
+    "min_seconds": 0.0003907913342118263,
+    "median_seconds": 0.0006334586068987846,
+    "max_seconds": 0.0006697755306959152,
+    "temp_bytes": 7428,
+    "max_abs_difference_vs_segment_sum": 0.0
+   }
+  },
+  {
+   "n_spikes": 16,
+   "n_columns": 500,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.06349341478198767,
+    "min_seconds": 0.00022408738732337952,
+    "median_seconds": 0.0002567097544670105,
+    "max_seconds": 0.0006401659920811653,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.11892806366086006,
+    "min_seconds": 0.0004879739135503769,
+    "median_seconds": 0.0006492268294095993,
+    "max_seconds": 0.0007365979254245758,
+    "temp_bytes": 2308,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 0.6567610343918204,
+    "min_seconds": 0.0004862304776906967,
+    "median_seconds": 0.000499761663377285,
+    "max_seconds": 0.0005237367004156113,
+    "temp_bytes": 8488,
+    "max_abs_difference_vs_segment_sum": 0.0
+   }
+  },
+  {
+   "n_spikes": 16,
+   "n_columns": 16930,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.06950700003653765,
+    "min_seconds": 0.00013231206685304642,
+    "median_seconds": 0.00038460269570350647,
+    "max_seconds": 0.000619211234152317,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.12702219001948833,
+    "min_seconds": 0.00045206397771835327,
+    "median_seconds": 0.000565648078918457,
+    "max_seconds": 0.0006971033290028572,
+    "temp_bytes": 68100,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 0.41593637876212597,
+    "min_seconds": 0.000413672998547554,
+    "median_seconds": 0.0005379524081945419,
+    "max_seconds": 0.0006743995472788811,
+    "temp_bytes": 479247,
+    "max_abs_difference_vs_segment_sum": 0.0
+   }
+  },
+  {
+   "n_spikes": 16,
+   "n_columns": 16930,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.057740891352295876,
+    "min_seconds": 9.050313383340836e-05,
+    "median_seconds": 9.949039667844772e-05,
+    "max_seconds": 0.00022137351334095,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.11811238341033459,
+    "min_seconds": 0.0005733063444495201,
+    "median_seconds": 0.000688076950609684,
+    "max_seconds": 0.0007639927789568901,
+    "temp_bytes": 68100,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 0.5223165694624186,
+    "min_seconds": 0.0005576079711318016,
+    "median_seconds": 0.00058011244982481,
+    "max_seconds": 0.0006166351959109306,
+    "temp_bytes": 479784,
+    "max_abs_difference_vs_segment_sum": 0.0
+   }
+  },
+  {
+   "n_spikes": 64,
+   "n_columns": 64,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.062213812954723835,
+    "min_seconds": 0.0002631181851029396,
+    "median_seconds": 0.00035771820694208145,
+    "max_seconds": 0.0003668712452054024,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.12367222737520933,
+    "min_seconds": 0.001080632209777832,
+    "median_seconds": 0.0011094706133008003,
+    "max_seconds": 0.0011408785358071327,
+    "temp_bytes": 516,
+    "max_abs_difference_vs_segment_sum": 4.76837158203125e-07
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.25785116199404,
+    "min_seconds": 0.0005773166194558144,
+    "median_seconds": 0.000692509114742279,
+    "max_seconds": 0.0007211612537503242,
+    "temp_bytes": 8708,
+    "max_abs_difference_vs_segment_sum": 4.76837158203125e-07
+   }
+  },
+  {
+   "n_spikes": 64,
+   "n_columns": 64,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.06926252692937851,
+    "min_seconds": 0.00023685302585363388,
+    "median_seconds": 0.0004693986847996712,
+    "max_seconds": 0.0005554985255002975,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.1282103694975376,
+    "min_seconds": 0.0010120663791894913,
+    "median_seconds": 0.0012248074635863304,
+    "max_seconds": 0.0012470334768295288,
+    "temp_bytes": 516,
+    "max_abs_difference_vs_segment_sum": 2.384185791015625e-07
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 0.9371692975983024,
+    "min_seconds": 0.0005593905225396156,
+    "median_seconds": 0.0007225601002573967,
+    "max_seconds": 0.001026734709739685,
+    "temp_bytes": 10536,
+    "max_abs_difference_vs_segment_sum": 2.384185791015625e-07
+   }
+  },
+  {
+   "n_spikes": 64,
+   "n_columns": 500,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.06401234399527311,
+    "min_seconds": 0.00020833779126405716,
+    "median_seconds": 0.0003080051392316818,
+    "max_seconds": 0.0003920663148164749,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.127670812420547,
+    "min_seconds": 0.001162586733698845,
+    "median_seconds": 0.0012074345722794533,
+    "max_seconds": 0.0012879697605967522,
+    "temp_bytes": 2308,
+    "max_abs_difference_vs_segment_sum": 4.76837158203125e-07
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.0515289828181267,
+    "min_seconds": 0.000323249027132988,
+    "median_seconds": 0.00044181011617183685,
+    "max_seconds": 0.0006647063419222832,
+    "temp_bytes": 13584,
+    "max_abs_difference_vs_segment_sum": 4.76837158203125e-07
+   }
+  },
+  {
+   "n_spikes": 64,
+   "n_columns": 500,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.0651352945715189,
+    "min_seconds": 0.00020730961114168167,
+    "median_seconds": 0.0002927267923951149,
+    "max_seconds": 0.00045937299728393555,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.1339688515290618,
+    "min_seconds": 0.0009820172563195229,
+    "median_seconds": 0.0010547908022999763,
+    "max_seconds": 0.0012209173291921616,
+    "temp_bytes": 2308,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 0.9089887952432036,
+    "min_seconds": 0.00042339134961366653,
+    "median_seconds": 0.0006122831255197525,
+    "max_seconds": 0.000730893574655056,
+    "temp_bytes": 46120,
+    "max_abs_difference_vs_segment_sum": 0.0
+   }
+  },
+  {
+   "n_spikes": 64,
+   "n_columns": 16930,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.0682705007493496,
+    "min_seconds": 0.000461711548268795,
+    "median_seconds": 0.000526166521012783,
+    "max_seconds": 0.0005527231842279434,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.13560183811932802,
+    "min_seconds": 0.0008764229714870453,
+    "median_seconds": 0.0011700382456183434,
+    "max_seconds": 0.0012096082791686058,
+    "temp_bytes": 68100,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 0.9511850029230118,
+    "min_seconds": 0.0003776317462325096,
+    "median_seconds": 0.0007219910621643066,
+    "max_seconds": 0.0008876640349626541,
+    "temp_bytes": 1562943,
+    "max_abs_difference_vs_segment_sum": 0.0
+   }
+  },
+  {
+   "n_spikes": 64,
+   "n_columns": 16930,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.07106985244899988,
+    "min_seconds": 0.00031141843646764755,
+    "median_seconds": 0.0003796210512518883,
+    "max_seconds": 0.0004038112238049507,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.11816329602152109,
+    "min_seconds": 0.0008014766499400139,
+    "median_seconds": 0.001036008819937706,
+    "max_seconds": 0.0011951625347137451,
+    "temp_bytes": 68100,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.1528851995244622,
+    "min_seconds": 0.00025793444365262985,
+    "median_seconds": 0.0006173728033900261,
+    "max_seconds": 0.000663435086607933,
+    "temp_bytes": 1563432,
+    "max_abs_difference_vs_segment_sum": 0.0
+   }
+  },
+  {
+   "n_spikes": 256,
+   "n_columns": 64,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.06441084295511246,
+    "min_seconds": 0.0003027385100722313,
+    "median_seconds": 0.00030560046434402466,
+    "max_seconds": 0.00046478118747472763,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.13356072641909122,
+    "min_seconds": 0.0030800681561231613,
+    "median_seconds": 0.0032291803508996964,
+    "max_seconds": 0.0033549517393112183,
+    "temp_bytes": 516,
+    "max_abs_difference_vs_segment_sum": 9.5367431640625e-07
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.4874298861250281,
+    "min_seconds": 0.00035445019602775574,
+    "median_seconds": 0.0004738634452223778,
+    "max_seconds": 0.0005661295726895332,
+    "temp_bytes": 14594,
+    "max_abs_difference_vs_segment_sum": 4.76837158203125e-07
+   }
+  },
+  {
+   "n_spikes": 256,
+   "n_columns": 64,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.0673505300655961,
+    "min_seconds": 0.0003223353996872902,
+    "median_seconds": 0.00034660566598176956,
+    "max_seconds": 0.0004494236782193184,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.12606488540768623,
+    "min_seconds": 0.0029943836852908134,
+    "median_seconds": 0.0030231159180402756,
+    "max_seconds": 0.0030999574810266495,
+    "temp_bytes": 516,
+    "max_abs_difference_vs_segment_sum": 4.76837158203125e-07
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.117665751837194,
+    "min_seconds": 0.00035558827221393585,
+    "median_seconds": 0.0004374254494905472,
+    "max_seconds": 0.0004479093477129936,
+    "temp_bytes": 16424,
+    "max_abs_difference_vs_segment_sum": 4.76837158203125e-07
+   }
+  },
+  {
+   "n_spikes": 256,
+   "n_columns": 500,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.0639824727550149,
+    "min_seconds": 0.00035352446138858795,
+    "median_seconds": 0.00037822872400283813,
+    "max_seconds": 0.0006656777113676071,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.12792166601866484,
+    "min_seconds": 0.0030188728123903275,
+    "median_seconds": 0.0030729826539754868,
+    "max_seconds": 0.0031663672998547554,
+    "temp_bytes": 2308,
+    "max_abs_difference_vs_segment_sum": 1.9073486328125e-06
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.014476340264082,
+    "min_seconds": 0.0003650542348623276,
+    "median_seconds": 0.0006679650396108627,
+    "max_seconds": 0.0007070340216159821,
+    "temp_bytes": 174596,
+    "max_abs_difference_vs_segment_sum": 9.5367431640625e-07
+   }
+  },
+  {
+   "n_spikes": 256,
+   "n_columns": 500,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.06569365691393614,
+    "min_seconds": 0.00043441448360681534,
+    "median_seconds": 0.00047487393021583557,
+    "max_seconds": 0.0006053214892745018,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.12179962731897831,
+    "min_seconds": 0.0031819436699151993,
+    "median_seconds": 0.003269338980317116,
+    "max_seconds": 0.0033632954582571983,
+    "temp_bytes": 2308,
+    "max_abs_difference_vs_segment_sum": 4.76837158203125e-07
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.160436642356217,
+    "min_seconds": 0.00025352276861667633,
+    "median_seconds": 0.0006844168528914452,
+    "max_seconds": 0.0007212767377495766,
+    "temp_bytes": 176168,
+    "max_abs_difference_vs_segment_sum": 4.76837158203125e-07
+   }
+  },
+  {
+   "n_spikes": 256,
+   "n_columns": 16930,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.05770171992480755,
+    "min_seconds": 0.0004349173977971077,
+    "median_seconds": 0.0004869699478149414,
+    "max_seconds": 0.0006235446780920029,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.12062305491417646,
+    "min_seconds": 0.0029101110994815826,
+    "median_seconds": 0.003049028106033802,
+    "max_seconds": 0.0032054446637630463,
+    "temp_bytes": 68100,
+    "max_abs_difference_vs_segment_sum": 9.5367431640625e-07
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 2.4511215640231967,
+    "min_seconds": 0.0003669857978820801,
+    "median_seconds": 0.0007073758170008659,
+    "max_seconds": 0.0007725339382886887,
+    "temp_bytes": 6913152,
+    "max_abs_difference_vs_segment_sum": 9.5367431640625e-07
+   }
+  },
+  {
+   "n_spikes": 256,
+   "n_columns": 16930,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.05900129675865173,
+    "min_seconds": 0.00047115329653024673,
+    "median_seconds": 0.0005237581208348274,
+    "max_seconds": 0.0006540892645716667,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.11472631990909576,
+    "min_seconds": 0.0028169527649879456,
+    "median_seconds": 0.0028501302003860474,
+    "max_seconds": 0.002886023372411728,
+    "temp_bytes": 68100,
+    "max_abs_difference_vs_segment_sum": 9.5367431640625e-07
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 2.678668432869017,
+    "min_seconds": 0.0005763312801718712,
+    "median_seconds": 0.0006931675598025322,
+    "max_seconds": 0.0008309902623295784,
+    "temp_bytes": 6914344,
+    "max_abs_difference_vs_segment_sum": 9.5367431640625e-07
+   }
+  },
+  {
+   "n_spikes": 2000,
+   "n_columns": 64,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.11334774550050497,
+    "min_seconds": 0.00022846274077892303,
+    "median_seconds": 0.000345500186085701,
+    "max_seconds": 0.00042799394577741623,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.1456419713795185,
+    "min_seconds": 0.02092535700649023,
+    "median_seconds": 0.021349860355257988,
+    "max_seconds": 0.02263455279171467,
+    "temp_bytes": 516,
+    "max_abs_difference_vs_segment_sum": 1.1920928955078125e-06
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.3186967689543962,
+    "min_seconds": 0.0003389483317732811,
+    "median_seconds": 0.0003411509096622467,
+    "max_seconds": 0.00047276075929403305,
+    "temp_bytes": 188679,
+    "max_abs_difference_vs_segment_sum": 2.86102294921875e-06
+   }
+  },
+  {
+   "n_spikes": 2000,
+   "n_columns": 64,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.05866990052163601,
+    "min_seconds": 0.0002973312512040138,
+    "median_seconds": 0.00047265831381082535,
+    "max_seconds": 0.0005134986713528633,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.12985101155936718,
+    "min_seconds": 0.019388818182051182,
+    "median_seconds": 0.020746704190969467,
+    "max_seconds": 0.02158571034669876,
+    "temp_bytes": 516,
+    "max_abs_difference_vs_segment_sum": 1.9073486328125e-06
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.4775592982769012,
+    "min_seconds": 0.0002529509365558624,
+    "median_seconds": 0.00037425942718982697,
+    "max_seconds": 0.0006601614877581596,
+    "temp_bytes": 197160,
+    "max_abs_difference_vs_segment_sum": 1.430511474609375e-06
+   }
+  },
+  {
+   "n_spikes": 2000,
+   "n_columns": 500,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.2525707446038723,
+    "min_seconds": 0.0003093620762228966,
+    "median_seconds": 0.00036178529262542725,
+    "max_seconds": 0.0004428597167134285,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.1561645744368434,
+    "min_seconds": 0.021237118169665337,
+    "median_seconds": 0.021712278947234154,
+    "max_seconds": 0.021824358962476254,
+    "temp_bytes": 2308,
+    "max_abs_difference_vs_segment_sum": 1.9073486328125e-06
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.424547327682376,
+    "min_seconds": 0.0004318719729781151,
+    "median_seconds": 0.0006636111065745354,
+    "max_seconds": 0.0007477086037397385,
+    "temp_bytes": 691719,
+    "max_abs_difference_vs_segment_sum": 2.86102294921875e-06
+   }
+  },
+  {
+   "n_spikes": 2000,
+   "n_columns": 500,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.06777491047978401,
+    "min_seconds": 0.0003121625632047653,
+    "median_seconds": 0.0003585396334528923,
+    "max_seconds": 0.0004960251972079277,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.16189733799546957,
+    "min_seconds": 0.02139280643314123,
+    "median_seconds": 0.021873610094189644,
+    "max_seconds": 0.022067665122449398,
+    "temp_bytes": 2308,
+    "max_abs_difference_vs_segment_sum": 1.9073486328125e-06
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.8429105188697577,
+    "min_seconds": 0.0005170805379748344,
+    "median_seconds": 0.0007369732484221458,
+    "max_seconds": 0.0008967472240328789,
+    "temp_bytes": 701224,
+    "max_abs_difference_vs_segment_sum": 1.9073486328125e-06
+   }
+  },
+  {
+   "n_spikes": 2000,
+   "n_columns": 16930,
+   "sorted": true,
+   "segment_sum": {
+    "error": "RESOURCE_EXHAUSTED: Failed to launch CUDA kernel: input_scatter_fusion; block dims: 128x1x1; grid dims: 63x1x1; shared memory size: 0: CUDA_ERROR_OUT_OF_MEMORY: out of memory"
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.14745329413563013,
+    "min_seconds": 0.01832886040210724,
+    "median_seconds": 0.01833879668265581,
+    "max_seconds": 0.01855980698019266,
+    "temp_bytes": 68100,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.4413160355761647,
+    "min_seconds": 0.0009748507291078568,
+    "median_seconds": 0.0010515954345464706,
+    "max_seconds": 0.0010951142758131027,
+    "temp_bytes": 23642749,
+    "max_abs_difference_vs_segment_sum": 3.814697265625e-06
+   }
+  },
+  {
+   "n_spikes": 2000,
+   "n_columns": 16930,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.06852186005562544,
+    "min_seconds": 0.0005453182384371758,
+    "median_seconds": 0.0008599068969488144,
+    "max_seconds": 0.0009102607145905495,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.14326814282685518,
+    "min_seconds": 0.021069243550300598,
+    "median_seconds": 0.021140080876648426,
+    "max_seconds": 0.0216294527053833,
+    "temp_bytes": 68100,
+    "max_abs_difference_vs_segment_sum": 1.9073486328125e-06
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.8360471483319998,
+    "min_seconds": 0.0005132732912898064,
+    "median_seconds": 0.0005207005888223648,
+    "max_seconds": 0.0005999105051159859,
+    "temp_bytes": 23651112,
+    "max_abs_difference_vs_segment_sum": 3.814697265625e-06
+   }
+  },
+  {
+   "n_spikes": 20000,
+   "n_columns": 64,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.10368319135159254,
+    "min_seconds": 0.0002957107499241829,
+    "median_seconds": 0.0003450559452176094,
+    "max_seconds": 0.0005447566509246826,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.2788960775360465,
+    "min_seconds": 0.1562332445755601,
+    "median_seconds": 0.15732233971357346,
+    "max_seconds": 0.15797710325568914,
+    "temp_bytes": 516,
+    "max_abs_difference_vs_segment_sum": 1.1444091796875e-05
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 2.378648671321571,
+    "min_seconds": 0.000530855730175972,
+    "median_seconds": 0.0005983617156744003,
+    "max_seconds": 0.0006941650062799454,
+    "temp_bytes": 487835,
+    "max_abs_difference_vs_segment_sum": 7.62939453125e-06
+   }
+  },
+  {
+   "n_spikes": 20000,
+   "n_columns": 64,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.05615155305713415,
+    "min_seconds": 0.00036167167127132416,
+    "median_seconds": 0.00037584733217954636,
+    "max_seconds": 0.000455574132502079,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.2599828261882067,
+    "min_seconds": 0.1557925995439291,
+    "median_seconds": 0.1562647894024849,
+    "max_seconds": 0.15734991524368525,
+    "temp_bytes": 516,
+    "max_abs_difference_vs_segment_sum": 1.33514404296875e-05
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 3.340773740783334,
+    "min_seconds": 0.0005965959280729294,
+    "median_seconds": 0.0007489686831831932,
+    "max_seconds": 0.0008067851886153221,
+    "temp_bytes": 614952,
+    "max_abs_difference_vs_segment_sum": 1.1444091796875e-05
+   }
+  },
+  {
+   "n_spikes": 20000,
+   "n_columns": 500,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.2190787633880973,
+    "min_seconds": 0.0002618953585624695,
+    "median_seconds": 0.0005758935585618019,
+    "max_seconds": 0.0005909036844968796,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.33585673477500677,
+    "min_seconds": 0.1603631842881441,
+    "median_seconds": 0.1909978585317731,
+    "max_seconds": 0.21462830901145935,
+    "temp_bytes": 2308,
+    "max_abs_difference_vs_segment_sum": 1.52587890625e-05
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.7657558741047978,
+    "min_seconds": 0.0003496045246720314,
+    "median_seconds": 0.0003669103607535362,
+    "max_seconds": 0.0004963343963027,
+    "temp_bytes": 3343949,
+    "max_abs_difference_vs_segment_sum": 9.5367431640625e-06
+   }
+  },
+  {
+   "n_spikes": 20000,
+   "n_columns": 500,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.05313784163445234,
+    "min_seconds": 0.00020221062004566193,
+    "median_seconds": 0.0002502407878637314,
+    "max_seconds": 0.0003437846899032593,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.30956687591969967,
+    "min_seconds": 0.16036125645041466,
+    "median_seconds": 0.16406825836747885,
+    "max_seconds": 0.21264852490276098,
+    "temp_bytes": 2308,
+    "max_abs_difference_vs_segment_sum": 1.1444091796875e-05
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 2.98068570997566,
+    "min_seconds": 0.00042571406811475754,
+    "median_seconds": 0.0004262533038854599,
+    "max_seconds": 0.000495164655148983,
+    "temp_bytes": 3426344,
+    "max_abs_difference_vs_segment_sum": 1.33514404296875e-05
+   }
+  },
+  {
+   "n_spikes": 20000,
+   "n_columns": 16930,
+   "sorted": true,
+   "segment_sum": {
+    "error": "RESOURCE_EXHAUSTED: Failed to launch CUDA kernel: input_scatter_fusion; block dims: 128x1x1; grid dims: 105x1x1; shared memory size: 0: CUDA_ERROR_OUT_OF_MEMORY: out of memory"
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.3115948745980859,
+    "min_seconds": 0.17803174443542957,
+    "median_seconds": 0.17813957668840885,
+    "max_seconds": 0.1782025396823883,
+    "temp_bytes": 68100,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 2.409446142613888,
+    "min_seconds": 0.0026317937299609184,
+    "median_seconds": 0.002892611548304558,
+    "max_seconds": 0.003491711802780628,
+    "temp_bytes": 111387981,
+    "max_abs_difference_vs_segment_sum": 1.9073486328125e-05
+   }
+  },
+  {
+   "n_spikes": 20000,
+   "n_columns": 16930,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.062181564047932625,
+    "min_seconds": 0.002737903967499733,
+    "median_seconds": 0.002759925089776516,
+    "max_seconds": 0.002812192775309086,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 0.28140284586697817,
+    "min_seconds": 0.21092060301452875,
+    "median_seconds": 0.2115023024380207,
+    "max_seconds": 0.21192549262195826,
+    "temp_bytes": 68100,
+    "max_abs_difference_vs_segment_sum": 7.62939453125e-06
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 3.587942467071116,
+    "min_seconds": 0.003119116649031639,
+    "median_seconds": 0.003178727813065052,
+    "max_seconds": 0.0032087042927742004,
+    "temp_bytes": 111470632,
+    "max_abs_difference_vs_segment_sum": 3.0517578125e-05
+   }
+  },
+  {
+   "n_spikes": 200000,
+   "n_columns": 64,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.10060916002839804,
+    "min_seconds": 0.0005788356065750122,
+    "median_seconds": 0.0006690090522170067,
+    "max_seconds": 0.0007874779403209686,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 1.6911870837211609,
+    "min_seconds": 1.5416115168482065,
+    "median_seconds": 1.5419912775978446,
+    "max_seconds": 1.5438667694106698,
+    "temp_bytes": 516,
+    "max_abs_difference_vs_segment_sum": 0.0001220703125
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 1.96810332685709,
+    "min_seconds": 0.0007902244105935097,
+    "median_seconds": 0.000820591114461422,
+    "max_seconds": 0.0009133778512477875,
+    "temp_bytes": 3639808,
+    "max_abs_difference_vs_segment_sum": 8.392333984375e-05
+   }
+  },
+  {
+   "n_spikes": 200000,
+   "n_columns": 64,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.06430034898221493,
+    "min_seconds": 0.0007499633356928825,
+    "median_seconds": 0.0009059105068445206,
+    "max_seconds": 0.0009803567081689835,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 2.0713665150105953,
+    "min_seconds": 1.5411275830119848,
+    "median_seconds": 1.5416069254279137,
+    "max_seconds": 1.54335493221879,
+    "temp_bytes": 516,
+    "max_abs_difference_vs_segment_sum": 7.2479248046875e-05
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 2.3021125216037035,
+    "min_seconds": 0.0006219884380698204,
+    "median_seconds": 0.0007018363103270531,
+    "max_seconds": 0.0008100606501102448,
+    "temp_bytes": 4846852,
+    "max_abs_difference_vs_segment_sum": 0.0001220703125
+   }
+  },
+  {
+   "n_spikes": 200000,
+   "n_columns": 500,
+   "sorted": true,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.17916621454060078,
+    "min_seconds": 0.0006542140617966652,
+    "median_seconds": 0.0008837040513753891,
+    "max_seconds": 0.0009397510439157486,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 1.737994690425694,
+    "min_seconds": 1.6011777929961681,
+    "median_seconds": 1.6013167528435588,
+    "max_seconds": 1.6018727449700236,
+    "temp_bytes": 2308,
+    "max_abs_difference_vs_segment_sum": 0.00012969970703125
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 2.196345930919051,
+    "min_seconds": 0.0006378674879670143,
+    "median_seconds": 0.0006491215899586678,
+    "max_seconds": 0.0006927801296114922,
+    "temp_bytes": 20972550,
+    "max_abs_difference_vs_segment_sum": 0.0001220703125
+   }
+  },
+  {
+   "n_spikes": 200000,
+   "n_columns": 500,
+   "sorted": false,
+   "segment_sum": {
+    "compile_and_first_seconds": 0.06289672944694757,
+    "min_seconds": 0.001053784042596817,
+    "median_seconds": 0.001055755652487278,
+    "max_seconds": 0.0010641105473041534,
+    "temp_bytes": 0,
+    "max_abs_difference_vs_segment_sum": 0.0
+   },
+   "serial_loop": {
+    "compile_and_first_seconds": 1.732952076010406,
+    "min_seconds": 1.6009132573381066,
+    "median_seconds": 1.6013052808120847,
+    "max_seconds": 1.6017096918076277,
+    "temp_bytes": 2308,
+    "max_abs_difference_vs_segment_sum": 6.866455078125e-05
+   },
+   "segmented_scan": {
+    "compile_and_first_seconds": 2.5445866528898478,
+    "min_seconds": 0.000767621211707592,
+    "median_seconds": 0.0007774271070957184,
+    "max_seconds": 0.0008083097636699677,
+    "temp_bytes": 18374497,
+    "max_abs_difference_vs_segment_sum": 0.00014495849609375
+   }
+  }
+ ],
+ "recompilation": {
+  "serial_loop": {
+   "spike_counts": 64,
+   "seconds": 9.538842907175422,
+   "new_executables": 64
+  },
+  "segmented_scan": {
+   "spike_counts": 64,
+   "seconds": 53.648291405290365,
+   "new_executables": 64
+  }
+ }
+}

@@ -764,35 +764,6 @@ def select_spikes_in_rows(
     )
 
 
-# Off-CPU spike counts at or below this use the serial loop instead of the
-# segmented scan. None always scans; set from GPU measurements.
-_SMALL_SERIAL_SPIKES: int | None = None
-
-
-@partial(jax.jit, static_argnames=("n_rows",))
-def _serial_row_sum(values, row_indices, n_rows):
-    """Add one row vector per step, in input order; invalid rows are dropped."""
-    output = jnp.zeros((n_rows, *values.shape[1:]), dtype=values.dtype)
-    if n_rows == 0 or values.shape[0] == 0 or values.size == 0:
-        return output
-    row_shape = (1, *values.shape[1:])
-    zero = jnp.asarray(0, dtype=row_indices.dtype)
-    trailing = (zero,) * (values.ndim - 1)
-
-    def add_spike(number, rows):
-        row = row_indices[number]
-        valid = (row >= 0) & (row < n_rows)
-        safe_row = jnp.clip(row, 0, n_rows - 1)
-        current = jax.lax.dynamic_slice(rows, (safe_row, *trailing), row_shape)
-        value = jax.lax.dynamic_slice(
-            values, (jnp.asarray(number, dtype=row_indices.dtype), *trailing), row_shape
-        )
-        updated = jnp.where(valid, current + value, current)
-        return jax.lax.dynamic_update_slice(rows, updated, (safe_row, *trailing))
-
-    return jax.lax.fori_loop(0, values.shape[0], add_spike, output)
-
-
 def _segmented_add(left, right):
     """Associative segmented sum: a segment start in ``right`` resets the total."""
     left_start, left_value = left
@@ -915,8 +886,6 @@ def deterministic_row_sum(
             num_segments=n_rows,
             indices_are_sorted=indices_are_sorted,
         )
-    if _SMALL_SERIAL_SPIKES is not None and values.shape[0] <= _SMALL_SERIAL_SPIKES:
-        return _serial_row_sum(values, jnp.asarray(row_ids), n_rows)
     row_ids = jnp.asarray(row_ids)
     if not isinstance(values, jax.core.Tracer):
         padding = _bucketed_size(values.shape[0]) - values.shape[0]
