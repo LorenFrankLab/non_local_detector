@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -12,11 +13,83 @@ from non_local_detector.likelihoods.common import (
     get_position_at_time,
     get_spikecount_per_time_bin,
     kde,
+    log_gaussian_pdf,
     log_kde,
     safe_divide,
     safe_log,
     validate_population_lengths,
 )
+
+
+@pytest.mark.parametrize("sigma_kind", ["float32", "float64", "weak"])
+def test_gaussian_mixed_dtype_preserves_true_division(sigma_kind):
+    previous = jax.config.x64_enabled
+    jax.config.update("jax_enable_x64", True)
+    try:
+        x = jnp.array([0.4, 1.3, 2.2], dtype=jnp.float64)
+        mean = jnp.float64(0.1)
+        sigma = (
+            0.7
+            if sigma_kind == "weak"
+            else jnp.asarray(
+                0.7, dtype=jnp.float32 if sigma_kind == "float32" else jnp.float64
+            )
+        )
+        reference = -0.5 * ((x - mean) / sigma) ** 2 - jnp.log(
+            sigma * jnp.sqrt(2.0 * jnp.pi)
+        )
+        actual = log_gaussian_pdf(x, mean, sigma)
+        assert actual.dtype == reference.dtype == jnp.float64
+        np.testing.assert_allclose(actual, reference, rtol=1e-14, atol=1e-14)
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+def test_gaussian_large_bandwidth_does_not_flush_standardized_coordinates():
+    previous = jax.config.x64_enabled
+    jax.config.update("jax_enable_x64", False)
+    try:
+        sigma = np.float32(1e38)
+        x = np.asarray([0, 1e38, 2e38], dtype=np.float32)
+        reference = -0.5 * (x.astype(np.float64) / float(sigma)) ** 2 - np.log(
+            float(sigma) * np.sqrt(2 * np.pi)
+        )
+        np.testing.assert_allclose(
+            log_gaussian_pdf(jnp.asarray(x), jnp.float32(0), jnp.float32(sigma)),
+            reference,
+            rtol=1e-6,
+            atol=1e-5,
+        )
+    finally:
+        jax.config.update("jax_enable_x64", previous)
+
+
+@pytest.mark.parametrize("x64", [False, True])
+def test_integer_gaussian_and_kde_inputs_use_floating_arithmetic(x64):
+    previous = jax.config.x64_enabled
+    jax.config.update("jax_enable_x64", x64)
+    try:
+        points = jnp.array([0, 1, 2])
+        mean, sigma = jnp.array(0), jnp.array(1)
+        expected = -0.5 * ((points - mean) / sigma) ** 2 - jnp.log(
+            sigma * jnp.sqrt(2.0 * jnp.pi)
+        )
+        actual = log_gaussian_pdf(points, mean, sigma)
+        assert actual.dtype == expected.dtype
+        np.testing.assert_array_equal(actual, expected)
+        np.testing.assert_array_equal(
+            kde(points[:, None], points[:, None], jnp.array([1]), jnp.ones(3)),
+            kde(
+                points[:, None].astype(actual.dtype),
+                points[:, None].astype(actual.dtype),
+                # Preserve the original bandwidth's normalization arithmetic;
+                # only the coordinate true-division promotion is under test.
+                jnp.array([1]),
+                jnp.ones(3),
+            ),
+        )
+    finally:
+        jax.config.update("jax_enable_x64", previous)
 
 
 def rng(seed=0):

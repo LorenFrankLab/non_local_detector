@@ -177,6 +177,11 @@ class GaussianGridBlock:
         normalizer = jnp.asarray(self.row_normalization, dtype=values.dtype)
         safe = jnp.where(normalizer > 0, normalizer, 1)
         scale = jnp.maximum(jnp.max(jnp.abs(values)), 1)
+        # Keep the original arithmetic for ordinary values. Cap finite scales
+        # so a compiler-hoisted reciprocal remains normal instead of flushing
+        # to zero; row-normalized products still undo exactly this scale.
+        limit = jnp.asarray(1 / jnp.finfo(values.dtype).tiny, dtype=values.dtype)
+        scale = jnp.where(jnp.isfinite(scale), jnp.minimum(scale, limit), scale)
         weighted = jnp.where(normalizer > 0, (values / scale) * mask / safe, 0)
         result = (
             _axes_product(weighted.reshape(self.grid_shape), self.factors).ravel()
@@ -190,6 +195,16 @@ class GaussianGridBlock:
         safe = jnp.where(normalizer > 0, normalizer, 1)
         maximum = jnp.max(jnp.abs(values))
         scale = jnp.where(maximum > 0, maximum, 1)
+        limits = jnp.finfo(values.dtype)
+        scale = jnp.where(
+            jnp.isfinite(scale),
+            jnp.clip(
+                scale,
+                jnp.asarray(limits.tiny, dtype=values.dtype),
+                jnp.asarray(1 / limits.tiny, dtype=values.dtype),
+            ),
+            scale,
+        )
         result = _axes_product(
             (values * mask / scale).reshape(self.grid_shape),
             self.factors,

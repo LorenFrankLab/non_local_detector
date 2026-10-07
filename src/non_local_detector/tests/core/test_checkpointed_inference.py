@@ -156,6 +156,9 @@ def test_original_degenerate_nan_and_missing_semantics(tmp_path, kind, caplog):
         state_ind=state_ind,
         chunk_size=3,
         is_missing=missing,
+        # This test checks the original float32 evidence carry. Stable host
+        # accumulation has its own analytic and posterior-equivalence tests.
+        evidence_accumulation="reference",
         output_mode="spatial",
         result_path=tmp_path / "result",
         return_outputs=("causal_posterior", "acausal_posterior"),

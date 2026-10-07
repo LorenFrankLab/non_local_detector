@@ -53,13 +53,30 @@ def _std(value, n_dims, name):
     return value
 
 
-@partial(jax.jit, static_argnames=("sample_tile_size", "eval_tile_size"))
+@partial(
+    jax.jit, static_argnames=("sample_tile_size", "eval_tile_size", "pad_evaluation")
+)
 def _sample_density_core(
-    points, samples, std, weights, sample_tile_size, eval_tile_size
+    points,
+    samples,
+    std,
+    weights,
+    sample_tile_size,
+    eval_tile_size,
+    pad_evaluation=False,
 ):
     n_points, n_samples = points.shape[0], samples.shape[0]
     dtype = jnp.result_type(points, samples, std, weights, jnp.zeros(()))
-    output = jnp.zeros(n_points, dtype=dtype)
+    if not n_points:
+        return jnp.zeros(0, dtype=dtype)
+    # Pad only evaluation queries, never encoding support or its denominator.
+    # Using the same tile shape for the final queries avoids a float32 nested-
+    # JIT transpose losing the last row's gradient on some CPU runtimes.
+    padded_points = (
+        n_points + (-n_points) % eval_tile_size if pad_evaluation else n_points
+    )
+    points = jnp.pad(points, ((0, padded_points - n_points), (0, 0)), mode="edge")
+    output = jnp.zeros(padded_points, dtype=dtype)
     weight_total = jnp.sum(weights)
     safe_total = jnp.where(weight_total > 0, weight_total, 1.0)
     full_samples, sample_tail = divmod(n_samples, sample_tile_size)
@@ -95,7 +112,7 @@ def _sample_density_core(
             )
         return jnp.where(weight_total > 0, numerator / safe_total, 0.0)
 
-    full_points, point_tail = divmod(n_points, eval_tile_size)
+    full_points, point_tail = divmod(padded_points, eval_tile_size)
     if full_points:
         full_point_inputs = points[: full_points * eval_tile_size]
 
@@ -109,15 +126,14 @@ def _sample_density_core(
         output = jax.lax.fori_loop(0, full_points, update_points, output)
     if point_tail:
         first = full_points * eval_tile_size
-        # Keep the exact tail separate rather than padding sample support.
         output = jnp.concatenate((output[:first], evaluate(points[first:])))
-    return output
+    return output[:n_points]
 
 
 def _sample_tiled_density(
     eval_points, samples, std, weights=None, *, sample_tile_size, eval_tile_size
 ):
-    """Plain linear density with exact sample/evaluation tails and no floors.
+    """Plain linear density with exact sample support and no floors.
 
     Use combined position/mark columns for a local joint density. Scalars expand
     bandwidths and sample vectors expand to columns as in ``KDEModel.predict``.
@@ -133,10 +149,22 @@ def _sample_tiled_density(
     weights = _weights(weights, samples.shape[0])
     sample_tile_size = _positive_tile(sample_tile_size, "sample_tile_size")
     eval_tile_size = _positive_tile(eval_tile_size, "eval_tile_size")
+    if any(
+        isinstance(value, jax.core.Tracer) for value in (points, samples, std, weights)
+    ):
+        return _sample_density_core(
+            points,
+            samples,
+            std,
+            weights,
+            sample_tile_size,
+            eval_tile_size,
+            pad_evaluation=True,
+        )
     first = points.shape[0] // eval_tile_size * eval_tile_size
     if 0 < first < points.shape[0]:
-        # Two bounded compiled calls keep the ragged evaluation tail independent
-        # of the full-tile loop, including its reverse-mode input gradients.
+        # Preserve native kernel shapes and rounding. Transformed calls above
+        # use fixed query tiles to avoid the nested-JIT tail transpose defect.
         prefix = _sample_density_core(
             points[:first], samples, std, weights, sample_tile_size, eval_tile_size
         )

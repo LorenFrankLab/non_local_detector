@@ -198,6 +198,93 @@ def test_float32_parameters_preserve_enabled_x64_accumulator_dtype():
         np.testing.assert_array_equal(actual, expected)
 
 
+@pytest.mark.parametrize("x64", [False, True])
+@pytest.mark.parametrize("kind", ["sparse", "coincident", "zero", "nonfinite"])
+def test_host_counts_preserve_ordered_neuron_arithmetic(x64, kind):
+    """Silent rows, count multiplicity, and dense bursts share the same oracle."""
+    from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
+
+    with x64_mode(x64):
+        rng = np.random.default_rng(8173)
+        dtype = np.float64 if x64 else np.float32
+        # Dyadic rate/exposure products isolate addition order from the
+        # backend's scalar-versus-vector elementary-function rounding.
+        rates = jnp.asarray(np.exp2(rng.integers(-4, 5, (96, 17))).astype(dtype))
+        counts = rng.poisson(0.025, (139, 96)).astype(np.int32)
+        counts[0] = 0
+        counts[1, :4] = [3, 0, 2, 1]
+        if kind == "coincident":
+            counts[100] = 1
+            counts[-1] = 2
+        elif kind == "zero":
+            rates = rates.at[0, 0].set(0)
+        elif kind == "nonfinite":
+            rates = rates.at[0, 0].set(jnp.nan).at[1, 1].set(jnp.inf)
+        durations = jnp.full(len(counts), 2**-9, dtype=dtype)
+        summed = jnp.sum(rates, axis=0)
+        expected = jnp.zeros((len(counts), rates.shape[1]))
+        for neuron in range(len(rates)):
+            expected += jax.scipy.special.xlogy(
+                jnp.asarray(counts[:, neuron, None]),
+                rates[neuron][None, :] * durations[:, None],
+            )
+        expected -= durations[:, None] * summed
+        actual = _poisson_nonlocal_log_likelihood(counts, rates, durations, summed)
+        np.testing.assert_array_equal(actual, expected)
+        for rows in [slice(0, 1), slice(1, 73), slice(73, 139)]:
+            np.testing.assert_array_equal(
+                _poisson_nonlocal_log_likelihood(
+                    counts[rows], rates, durations[rows], summed
+                ),
+                actual[rows],
+            )
+
+
+@pytest.mark.parametrize("host_counts", [False, True])
+@pytest.mark.parametrize("uniform", [False, True])
+def test_ordered_poisson_accumulation_preserves_rate_and_duration_gradients(
+    host_counts,
+    uniform,
+):
+    from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
+
+    with x64_mode(True):
+        counts = np.array([[0, 2, 0], [1, 0, 0], [0, 0, 0], [1, 0, 3]], dtype=np.int32)
+        if not host_counts:
+            counts = jnp.asarray(counts)
+        rates = jnp.array([[1.5, 0.2], [3.0, 2.2], [0.4, 7.0]])
+        durations = jnp.array(
+            [
+                0.002,
+                0.002 if uniform else 0.003,
+                0.002 if uniform else 0.004,
+                0.002 if uniform else 0.005,
+            ]
+        )
+
+        def reference(rates, durations):
+            value = jnp.zeros((len(counts), rates.shape[1]))
+            for neuron in range(len(rates)):
+                value += jax.scipy.special.xlogy(
+                    jnp.asarray(counts[:, neuron, None], dtype=rates.dtype),
+                    rates[neuron] * durations[:, None],
+                )
+            return jnp.sum(value - durations[:, None] * rates.sum(0))
+
+        def actual(rates, durations):
+            return jnp.sum(
+                _poisson_nonlocal_log_likelihood(counts, rates, durations, rates.sum(0))
+            )
+
+        for derivative in [jax.jacfwd, jax.jacrev]:
+            for result, expected in zip(
+                derivative(actual, argnums=(0, 1))(rates, durations),
+                derivative(reference, argnums=(0, 1))(rates, durations),
+                strict=True,
+            ):
+                np.testing.assert_allclose(result, expected, rtol=1e-10, atol=1e-10)
+
+
 def per_neuron_jax_reference(position_time, position, spike_times, **arguments):
     arguments = arguments | {
         "position_time": position_time,

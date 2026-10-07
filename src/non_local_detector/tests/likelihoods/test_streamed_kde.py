@@ -215,6 +215,21 @@ def test_density_and_finished_joint_gradients_match_independent_oracle(x64):
             (values["encoding_features"], jnp.zeros((9, 1))), axis=1
         )
         std = jnp.concatenate((values["waveform_stds"], jnp.ones(1)))
+        compiled_density = jax.jit(
+            lambda x: streamed._sample_tiled_density(
+                x,
+                samples,
+                std,
+                values["encoding_weights"],
+                sample_tile_size=4,
+                eval_tile_size=3,
+            )
+        )(points)
+        np.testing.assert_allclose(
+            compiled_density,
+            density_oracle(points, samples, std, values["encoding_weights"]),
+            **tolerance(x64),
+        )
         kernel = norm.pdf(
             np.asarray(points)[None],
             loc=np.asarray(samples)[:, None],
