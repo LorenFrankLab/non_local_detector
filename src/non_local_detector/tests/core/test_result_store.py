@@ -219,3 +219,26 @@ def test_writer_rejects_overlap_in_any_order(tmp_path):
             writer.write("posterior", start, np.ones((stop - start, 2), np.float32))
         writer.complete()
     np.testing.assert_array_equal(open_result_store(path).posterior, np.ones((12, 2)))
+
+
+def test_chunked_reads_handle_scalar_empty_and_zero_length_selections(tmp_path):
+    values = np.arange(46, dtype=np.float32).reshape(23, 2)
+    path = tmp_path / "result"
+    with IncrementalResultWriter(
+        path, {"posterior": (("time", "state_bins"), (23, 2), np.float32)}, {}
+    ) as writer:
+        for start, stop in [(10, 23), (0, 4), (4, 10)]:
+            writer.write("posterior", start, values[start:stop])
+        writer.complete()
+    loaded = open_result_store(path).posterior
+    assert float(loaded.isel(time=3, state_bins=1)) == values[3, 1]
+    np.testing.assert_array_equal(loaded.isel(time=-1), values[-1])
+    assert loaded.isel(time=[]).shape == (0, 2)
+    assert loaded.isel(time=[9, 10], state_bins=[]).shape == (2, 0)
+
+    empty = tmp_path / "empty"
+    with IncrementalResultWriter(
+        empty, {"posterior": (("time", "state_bins"), (0, 2), np.float32)}, {}
+    ) as writer:
+        writer.complete()
+    assert open_result_store(empty).posterior.values.shape == (0, 2)

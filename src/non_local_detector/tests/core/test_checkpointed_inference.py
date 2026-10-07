@@ -725,7 +725,37 @@ def test_sum_evidence_propagates_chunk_source_errors():
         _sum_evidence(chunks())
 
 
+def test_likelihood_overflow_error_aborts_stable_checkpointed_pass(tmp_path):
+    edges, initial, ll, state_ind, kwargs, _ = problem()
+
+    calls = []
+
+    def likelihood(edges, **kw):
+        # Fail once mid-forward pass; a swallowed error would surface later
+        # as an unrelated missing-checkpoint failure during replay.
+        calls.append(kw["row_slice"].start)
+        if calls.count(4) == 1 and kw["row_slice"].start == 4:
+            raise OverflowError("raised by the likelihood callback")
+        return ll[kw["row_slice"]]
+
+    with pytest.raises(OverflowError, match="likelihood callback"):
+        checkpointed_forward_backward(
+            edges,
+            initial,
+            likelihood,
+            state_ind=state_ind,
+            chunk_size=4,
+            evidence_accumulation="stable",
+            output_mode="spatial",
+            result_path=tmp_path / "result",
+            **kwargs,
+        )
+    assert not (tmp_path / "result").exists()
+
+
 def test_checkpointed_operator_leaves_reach_jit_as_device_arrays(tmp_path, monkeypatch):
+    import inspect
+
     import jax
 
     import non_local_detector.checkpointed_inference as checkpointed
@@ -756,13 +786,11 @@ def test_checkpointed_operator_leaves_reach_jit_as_device_arrays(tmp_path, monke
         for name in ("_forward_chunk", "_backward_chunk")
     }
 
-    def recording(name, operator_position):
+    def recording(name):
+        signature = inspect.signature(originals[name])
+
         def call(*args, **call_kwargs):
-            operator = (
-                call_kwargs["operator"]
-                if "operator" in call_kwargs
-                else args[operator_position]
-            )
+            operator = signature.bind(*args, **call_kwargs).arguments["operator"]
             leaf_types.extend(
                 type(leaf) for leaf in jax.tree_util.tree_leaves(operator)
             )
@@ -770,10 +798,8 @@ def test_checkpointed_operator_leaves_reach_jit_as_device_arrays(tmp_path, monke
 
         return call
 
-    monkeypatch.setattr(checkpointed, "_forward_chunk", recording("_forward_chunk", 4))
-    monkeypatch.setattr(
-        checkpointed, "_backward_chunk", recording("_backward_chunk", 2)
-    )
+    monkeypatch.setattr(checkpointed, "_forward_chunk", recording("_forward_chunk"))
+    monkeypatch.setattr(checkpointed, "_backward_chunk", recording("_backward_chunk"))
     result = checkpointed.checkpointed_forward_backward(
         edges,
         initial,
