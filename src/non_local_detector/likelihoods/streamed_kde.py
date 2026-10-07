@@ -18,8 +18,8 @@ import numpy as np
 from non_local_detector.likelihoods.common import (
     LOG_EPS,
     _log_kernel_matrix,
-    _ordered_spike_row_add,
     as_std_array,
+    deterministic_row_add,
     safe_log,
 )
 
@@ -388,7 +388,7 @@ def _joint_core(
                 rows = jax.lax.dynamic_slice(
                     row_indices, (first,), (decoding_tile_size,)
                 )
-                return _ordered_spike_row_add(sums, finished, rows, column_start)
+                return deterministic_row_add(sums, finished, rows, column_start)
 
             result = jax.lax.fori_loop(0, full_decoded, update_decoded, result)
         if decoded_tail:
@@ -397,7 +397,7 @@ def _joint_core(
             result = (
                 jax.lax.dynamic_update_slice(result, finished, (first, column_start))
                 if row_indices is None
-                else _ordered_spike_row_add(
+                else deterministic_row_add(
                     result, finished, row_indices[first:], column_start
                 )
             )

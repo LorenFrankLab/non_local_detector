@@ -64,10 +64,10 @@ from non_local_detector.likelihoods.common import (
     EPS,
     LOG_RATE_EPS_HZ,
     RATE_EPS_HZ,
-    _ordered_spike_row_sum,
     _SpikeTimeOrder,
     as_std_array,
     decode_bin_centers,
+    deterministic_row_sum,
     get_position_at_time,
     interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
@@ -696,6 +696,12 @@ def predict_clusterless_diffusion_log_likelihood(
 
             seg = jnp.asarray(selection.bin_ind)
 
+            # Bin-sorted encoding spikes make each block's spatial reduction a
+            # deterministic sorted-segment sum.
+            order = np.argsort(np.asarray(electrode_bins), kind="stable")
+            electrode_bins = np.asarray(electrode_bins)[order]
+            electrode_marks = np.asarray(electrode_marks)[order]
+            electrode_weights = np.asarray(electrode_weights)[order]
             enc_bins = jnp.asarray(electrode_bins)
             enc_marks = jnp.asarray(electrode_marks)
             enc_weights = jnp.asarray(electrode_weights)
@@ -733,7 +739,9 @@ def predict_clusterless_diffusion_log_likelihood(
                     decode_block, enc_marks, electrode_waveform_std
                 )
                 weighted_kernel = enc_weights[:, None] * mark_kernel
-                D = _ordered_spike_row_sum(weighted_kernel, enc_bins, n_bins)
+                D = deterministic_row_sum(
+                    weighted_kernel, enc_bins, n_bins, indices_are_sorted=True
+                )
                 P = heat_kernel_apply(
                     Lam, Q, position_std, D, labels, n_components=n_components
                 )
@@ -745,8 +753,11 @@ def predict_clusterless_diffusion_log_likelihood(
                     electrode_mean_rate * p_e_at_animal / occupancy[spike_bins_block],
                     eps=RATE_EPS_HZ,
                 )  # (n_block,)
-                log_likelihood += _ordered_spike_row_sum(
-                    lc, seg_block, selection.n_rows
+                log_likelihood += deterministic_row_sum(
+                    lc,
+                    seg_block,
+                    selection.n_rows,
+                    indices_are_sorted=selection.indices_are_sorted,
                 )
 
         return (
@@ -823,6 +834,12 @@ def predict_clusterless_diffusion_log_likelihood(
 
         seg = jnp.asarray(selection.bin_ind)
 
+        # Bin-sorted encoding spikes make each block's spatial reduction a
+        # deterministic sorted-segment sum.
+        order = np.argsort(np.asarray(electrode_bins), kind="stable")
+        electrode_bins = np.asarray(electrode_bins)[order]
+        electrode_marks = np.asarray(electrode_marks)[order]
+        electrode_weights = np.asarray(electrode_weights)[order]
         enc_bins = jnp.asarray(electrode_bins)
         enc_marks = jnp.asarray(electrode_marks)
         enc_weights = jnp.asarray(electrode_weights)
@@ -857,7 +874,9 @@ def predict_clusterless_diffusion_log_likelihood(
             mark_kernel = kde_distance(decode_block, enc_marks, electrode_waveform_std)
             # D_e[:, j] = sum_i w_i K(m_j, m_i) onehot(bin(x_i))  -> (n_bins, n_block)
             weighted_kernel = enc_weights[:, None] * mark_kernel
-            D = _ordered_spike_row_sum(weighted_kernel, enc_bins, n_bins)
+            D = deterministic_row_sum(
+                weighted_kernel, enc_bins, n_bins, indices_are_sorted=True
+            )
             P = heat_kernel_apply(
                 Lam, Q, position_std, D, labels, n_components=n_components
             )
@@ -870,8 +889,11 @@ def predict_clusterless_diffusion_log_likelihood(
             log_intensity = safe_log(
                 electrode_mean_rate * p_e / occupancy_col, eps=RATE_EPS_HZ
             )  # (n_bins, n_block)
-            log_likelihood += _ordered_spike_row_sum(
-                log_intensity.T, seg_block, selection.n_rows
+            log_likelihood += deterministic_row_sum(
+                log_intensity.T,
+                seg_block,
+                selection.n_rows,
+                indices_are_sorted=selection.indices_are_sorted,
             )
 
     return (

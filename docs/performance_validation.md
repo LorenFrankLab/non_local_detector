@@ -37,14 +37,18 @@ checkpoint products also request `HIGHEST`; their 12 CPU and 12 CUDA controls
 pass with x64 enabled. No separate GEMV defect was reproduced.
 
 CUDA float atomics also changed identical likelihood chunks between passes.
-Ordered event reductions and pairwise diffusion component reductions now
-produce one identical SHA across 50 evaluations in each of eight clusterless
-local/nonlocal cases. Exact replay hashes remain required; no implicit
-full-session likelihood cache was added. Dtype, invalid-index, empty, NaN/Inf,
-gradient and JVP controls pass. Concrete CPU reductions retain their verified
-sorted-index path.
-See the [replay report](performance_artifacts/phase7/gpu-replay.json) and
-[gradient controls](performance_artifacts/phase7/gpu-gradient-controls.json).
+Spike-row reductions off CPU now use a segmented scan with a fixed reduction
+tree and no scatters, so repeated evaluations of the same shapes are bitwise
+identical without adding contributions one spike at a time; CPU keeps its
+sequential scatter and verified sorted-index hint. Pairwise diffusion
+component reductions are unchanged. Exact replay hashes remain required; no
+implicit full-session likelihood cache was added. The
+[replay report](performance_artifacts/phase7/gpu-replay.json) (one SHA across
+50 evaluations in each of eight clusterless cases) and
+[gradient controls](performance_artifacts/phase7/gpu-gradient-controls.json)
+measured the earlier serial loop; `scripts/check_likelihood_determinism.py`
+reproduces the check for the current reduction (CPU: one SHA per algorithm
+over 50 evaluations; GPU rerun pending).
 
 Older-runtime testing exposed an existing GLM test-oracle error. Its float64
 reference used `EPS`, although both `fe1b2e9` and this branch clip local rates at

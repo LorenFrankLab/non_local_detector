@@ -1,4 +1,4 @@
-"""Spike reductions preserve ownership and exact repeated CUDA observations."""
+"""Spike reductions preserve ownership and are bitwise repeatable on every backend."""
 
 from contextlib import contextmanager
 
@@ -7,10 +7,27 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from non_local_detector.likelihoods.common import SpikeSelection, sum_spikes_into_rows
+import non_local_detector.likelihoods.common as common
+from non_local_detector.likelihoods.common import (
+    SpikeSelection,
+    deterministic_segment_sum,
+    sum_spikes_into_rows,
+)
 from non_local_detector.tests.likelihoods.conftest import FLOAT32_ROUNDING
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(params=["sequential", "segmented_scan"])
+def reduction_path(request, monkeypatch):
+    """Run on CPU's sequential scatter and on the off-CPU segmented scan."""
+    if request.param == "segmented_scan":
+        monkeypatch.setattr(common, "_reduces_sequentially", lambda values: False)
+        jax.clear_caches()
+        yield request.param
+        jax.clear_caches()
+    else:
+        yield request.param
 
 
 @contextmanager
@@ -54,7 +71,7 @@ def ordered_reference(values, ids, n_rows):
     ],
 )
 @pytest.mark.parametrize("tail", [(), (5,), (2, 3)])
-def test_fixed_input_order_and_invalid_row_drop(dtype, tail):
+def test_fixed_input_order_and_invalid_row_drop(dtype, tail, reduction_path):
     ids = np.array([2, -1, 2, 0, 99, 1, 2])
     values = (
         np.arange(7 * int(np.prod(tail) if tail else 1)).reshape(7, *tail) % 13 - 6
@@ -70,7 +87,9 @@ def test_fixed_input_order_and_invalid_row_drop(dtype, tail):
 @pytest.mark.parametrize(
     "n_values,n_rows,tail", [(0, 0, (3,)), (0, 4, (3,)), (7, 0, (3,)), (7, 4, (0,))]
 )
-def test_empty_shapes_keep_the_exact_requested_rows(n_values, n_rows, tail):
+def test_empty_shapes_keep_the_exact_requested_rows(
+    n_values, n_rows, tail, reduction_path
+):
     values = jnp.zeros((n_values, *tail), dtype=jnp.float32)
     actual = sum_spikes_into_rows(values, selection(np.zeros(n_values, int), n_rows))
     assert actual.shape == (n_rows, *tail)
@@ -98,7 +117,7 @@ def test_cpu_invalid_id_normalization_preserves_the_verified_sorted_hint(monkeyp
     np.testing.assert_array_equal(actual, [1.0, 1.0, 0.0])
 
 
-def test_nan_and_infinity_stay_in_their_owned_rows():
+def test_nan_and_infinity_stay_in_their_owned_rows(reduction_path):
     ids = np.array([0, 0, 2, 3, 3, -1, 99])
     values = np.array(
         [
@@ -118,7 +137,9 @@ def test_nan_and_infinity_stay_in_their_owned_rows():
     np.testing.assert_array_equal(actual, expected)
 
 
-def test_values_gradient_gathers_owned_rows_and_drops_invalid_entries():
+def test_values_gradient_gathers_owned_rows_and_drops_invalid_entries(
+    reduction_path,
+):
     ids = np.array([2, -1, 2, 0, 9, 1, 2])
     values = jnp.arange(21, dtype=jnp.float32).reshape(7, 3)
     weights = jnp.arange(12, dtype=jnp.float32).reshape(4, 3)
@@ -175,7 +196,9 @@ def test_component_mass_drops_invalid_labels_without_poisoning_other_components(
     np.testing.assert_array_equal(actual, [[1.0, 2.0], [np.inf, 3.0]])
 
 
-def test_gmm_tile_updates_keep_initial_term_and_each_spike_rounding_order():
+def test_gmm_tile_updates_keep_initial_term_without_cancellation_loss(
+    reduction_path,
+):
     from non_local_detector.likelihoods.clusterless_gmm import (
         _accumulate_log_likelihood_block,
     )
@@ -197,3 +220,102 @@ def test_gmm_tile_updates_keep_initial_term_and_each_spike_rounding_order():
         jnp.zeros(2),
     )
     np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("is_sorted", [True, False])
+@pytest.mark.parametrize("tail", [(), (5,), (2, 3)])
+def test_deterministic_segment_sum_matches_float64_reference(is_sorted, tail):
+    rng = np.random.default_rng(7613)
+    n_values, n_segments = 300, 17
+    ids = rng.integers(-2, n_segments + 2, n_values)
+    if is_sorted:
+        ids = np.sort(ids)
+    values = rng.normal(size=(n_values, *tail)).astype(np.float32)
+    exact = np.zeros((n_segments, *tail))
+    magnitude = np.zeros((n_segments, *tail))
+    for row, value in zip(ids, values.astype(np.float64), strict=True):
+        if 0 <= row < n_segments:
+            exact[row] += value
+            magnitude[row] += np.abs(value)
+    actual = deterministic_segment_sum(
+        jnp.asarray(values), jnp.asarray(ids, jnp.int32), n_segments, is_sorted
+    )
+    # Pairwise-summation bound: (ceil(log2 n) + 2) roundings of the magnitude.
+    bound = (np.ceil(np.log2(n_values)) + 2) * np.finfo(np.float32).eps * magnitude
+    assert np.all(np.abs(np.asarray(actual, np.float64) - exact) <= bound)
+
+
+def test_deterministic_segment_sum_is_bitwise_repeatable():
+    rng = np.random.default_rng(7614)
+    values = jnp.asarray(rng.normal(-13, 7, (5000, 254)).astype(np.float32))
+    ids = jnp.asarray(np.sort(rng.integers(0, 256, 5000)).astype(np.int32))
+    reference = np.asarray(deterministic_segment_sum(values, ids, 256, True))
+    for _ in range(20):
+        actual = np.asarray(deterministic_segment_sum(values, ids, 256, True))
+        np.testing.assert_array_equal(actual.view(np.uint32), reference.view(np.uint32))
+
+
+def clusterless_log_likelihood(algorithm):
+    """A small two-electrode detector; returns a function evaluating rows 2-12."""
+    from non_local_detector import Environment, NonLocalClusterlessDetector
+
+    rng = np.random.default_rng(7412)
+    position_time = np.linspace(0, 2, 201)
+    position = (4 + 3 * np.sin(position_time * 3))[:, None]
+    spikes = [np.sort(rng.uniform(0, 2, 72)) for _ in range(2)]
+    marks = [rng.normal(size=(72, 2)) for _ in range(2)]
+    model = NonLocalClusterlessDetector(
+        environments=Environment(place_bin_size=0.5, position_range=((0, 8),)),
+        infer_track_interior=False,
+        clusterless_algorithm=algorithm,
+    )
+    with pytest.warns(UserWarning, match="1D"):
+        model.fit(position_time, position, spikes, marks)
+    decode_spikes = [np.sort(rng.uniform(0, 1.6, 51)) for _ in range(2)]
+    decode_marks = [rng.normal(size=(51, 2)) for _ in range(2)]
+    # Three same-bin spikes with unequal marks on the first electrode.
+    decode_spikes[0][:3] = [0.41, 0.42, 0.43]
+    edges = np.linspace(0, 1.6, 17)
+
+    def evaluate():
+        return np.asarray(
+            model.compute_log_likelihood(
+                position_time,
+                position,
+                decode_spikes,
+                decode_marks,
+                row_slice=slice(2, 12),
+                time_edges=edges,
+            )
+        )
+
+    return evaluate
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "algorithm",
+    [
+        "clusterless_kde",
+        "clusterless_kde_log",
+        "clusterless_gmm",
+        "clusterless_diffusion",
+    ],
+)
+def test_clusterless_likelihoods_are_bitwise_repeatable(algorithm, monkeypatch):
+    evaluate = clusterless_log_likelihood(algorithm)
+    results = {}
+    for path in ("sequential", "segmented_scan"):
+        if path == "segmented_scan":
+            monkeypatch.setattr(common, "_reduces_sequentially", lambda values: False)
+            jax.clear_caches()
+        repeats = [evaluate() for _ in range(10)]
+        for repeat in repeats[1:]:
+            np.testing.assert_array_equal(
+                repeat.view(np.uint8), repeats[0].view(np.uint8)
+            )
+        results[path] = repeats[0]
+    jax.clear_caches()
+    np.testing.assert_allclose(
+        results["segmented_scan"], results["sequential"], **FLOAT32_ROUNDING
+    )

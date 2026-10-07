@@ -23,9 +23,9 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
     RATE_EPS_HZ,
-    _ordered_spike_row_add,
     _SpikeTimeOrder,
     decode_bin_centers,
+    deterministic_row_add,
     get_position_at_time,
     interpolate_weights_at_spike_times,
     log_bin_duration_evidence,
@@ -123,11 +123,11 @@ def _accumulate_log_likelihood_block(
     log_contribution = log_rate + (joint_logp - log_occupancy)
     if not bin_ids.shape[0]:
         return log_likelihood
-    # Callers provide contiguous, unique spatial tile columns. Preserve the
-    # initial ground-process term and each spike's addition order without
-    # allocating a full-row temporary or concurrent floating-point scatters.
-    return _ordered_spike_row_add(
-        log_likelihood, log_contribution, segment_ids, column_start=bin_ids[0]
+    # Callers provide contiguous, unique spatial tile columns. Keep the initial
+    # ground-process term and add the deterministically reduced contributions
+    # without a full-row temporary or concurrent floating-point scatters.
+    return deterministic_row_add(
+        log_likelihood, log_contribution, segment_ids, bin_ids[0]
     )
 
 

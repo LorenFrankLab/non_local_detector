@@ -754,46 +754,176 @@ def select_spikes_in_rows(
     )
 
 
-@jax.jit
-def _ordered_spike_row_add(output, values, row_indices, column_start=None):
-    """Add spike vectors in input order, optionally into a contiguous column tile."""
-    n_rows = output.shape[0]
+# Off-CPU spike counts at or below this use the serial loop instead of the
+# segmented scan. None always scans; set from GPU measurements.
+_SMALL_SERIAL_SPIKES: int | None = None
+
+
+@partial(jax.jit, static_argnames=("n_rows",))
+def _serial_row_sum(values, row_indices, n_rows):
+    """Add one row vector per step, in input order; invalid rows are dropped."""
+    output = jnp.zeros((n_rows, *values.shape[1:]), dtype=values.dtype)
     if n_rows == 0 or values.shape[0] == 0 or values.size == 0:
         return output
-    values = values.astype(output.dtype)
     row_shape = (1, *values.shape[1:])
     zero = jnp.asarray(0, dtype=row_indices.dtype)
-    trailing_starts = (zero,) * (values.ndim - 1)
-    if column_start is not None:
-        trailing_starts = (
-            jnp.asarray(column_start, dtype=row_indices.dtype),
-            *trailing_starts[1:],
-        )
+    trailing = (zero,) * (values.ndim - 1)
 
     def add_spike(number, rows):
         row = row_indices[number]
         valid = (row >= 0) & (row < n_rows)
         safe_row = jnp.clip(row, 0, n_rows - 1)
-        current = jax.lax.dynamic_slice(rows, (safe_row, *trailing_starts), row_shape)
+        current = jax.lax.dynamic_slice(rows, (safe_row, *trailing), row_shape)
         value = jax.lax.dynamic_slice(
-            values,
-            (
-                jnp.asarray(number, dtype=row_indices.dtype),
-                *((zero,) * (values.ndim - 1)),
-            ),
-            row_shape,
+            values, (jnp.asarray(number, dtype=row_indices.dtype), *trailing), row_shape
         )
         updated = jnp.where(valid, current + value, current)
-        return jax.lax.dynamic_update_slice(rows, updated, (safe_row, *trailing_starts))
+        return jax.lax.dynamic_update_slice(rows, updated, (safe_row, *trailing))
 
     return jax.lax.fori_loop(0, values.shape[0], add_spike, output)
 
 
-@partial(jax.jit, static_argnames=("n_rows",))
-def _ordered_spike_row_sum(values, row_indices, n_rows):
-    """Accumulate one row vector per step without concurrent float atomics."""
-    output = jnp.zeros((n_rows, *values.shape[1:]), dtype=values.dtype)
-    return _ordered_spike_row_add(output, values, row_indices)
+def _segmented_add(left, right):
+    """Associative segmented sum: a segment start in ``right`` resets the total."""
+    left_start, left_value = left
+    right_start, right_value = right
+    keep = right_start.reshape(
+        right_start.shape + (1,) * (right_value.ndim - right_start.ndim)
+    )
+    return left_start | right_start, jnp.where(
+        keep, right_value, left_value + right_value
+    )
+
+
+@partial(jax.jit, static_argnames=("num_segments", "indices_are_sorted"))
+def deterministic_segment_sum(
+    values: jnp.ndarray,
+    segment_ids: jnp.ndarray,
+    num_segments: int,
+    indices_are_sorted: bool = False,
+) -> jnp.ndarray:
+    """Sum rows into segments with a fixed reduction tree and no scatters.
+
+    Parameters
+    ----------
+    values : jnp.ndarray, shape (n, ...)
+    segment_ids : jnp.ndarray, shape (n,), integer
+        Ids outside ``[0, num_segments)`` are dropped.
+    num_segments : int
+    indices_are_sorted : bool
+        True only when ``segment_ids`` is verified nondecreasing.
+
+    Returns
+    -------
+    sums : jnp.ndarray, shape (num_segments, ...)
+        Repeated evaluation of the same shapes is bitwise identical on every
+        backend; a different ``n`` changes the tree and can change rounding.
+    """
+    n = values.shape[0]
+    shape = (num_segments, *values.shape[1:])
+    if n == 0 or num_segments == 0:
+        return jnp.zeros(shape, values.dtype)
+    # Clipping keeps sorted ids sorted: low invalid ids first, high ones last.
+    ids = jnp.clip(segment_ids, -1, num_segments)
+    if not indices_are_sorted:
+        order = jnp.argsort(ids, stable=True)
+        ids, values = ids[order], values[order]
+    starts = jnp.concatenate([jnp.ones(1, bool), ids[1:] != ids[:-1]])
+    _, prefix = jax.lax.associative_scan(_segmented_add, (starts, values))
+    # Each segment's total is its last prefix element: gather, never scatter.
+    segments = jnp.arange(num_segments, dtype=ids.dtype)
+    last = jnp.clip(jnp.searchsorted(ids, segments, side="right") - 1, 0, n - 1)
+    present = (ids[last] == segments).reshape(
+        (num_segments,) + (1,) * (values.ndim - 1)
+    )
+    return jnp.where(present, prefix[last], jnp.zeros((), values.dtype))
+
+
+def _reduces_sequentially(values) -> bool:
+    """Whether ``values`` live on CPU, where XLA scatter adds updates in order."""
+    if isinstance(values, jax.core.Tracer):
+        return jax.default_backend() == "cpu"
+    return all(device.platform == "cpu" for device in jnp.asarray(values).devices())
+
+
+def deterministic_row_sum(
+    values: jnp.ndarray,
+    row_ids: jnp.ndarray,
+    n_rows: int,
+    *,
+    indices_are_sorted: bool = False,
+) -> jnp.ndarray:
+    """Deterministic row sums: sequential scatter on CPU, segmented scan elsewhere.
+
+    Parameters
+    ----------
+    values : jnp.ndarray, shape (n, ...)
+    row_ids : array-like, shape (n,), integer
+        Ids outside ``[0, n_rows)`` are dropped.
+    n_rows : int
+    indices_are_sorted : bool
+        True only when ``row_ids`` is verified nondecreasing.
+
+    Returns
+    -------
+    sums : jnp.ndarray, shape (n_rows, ...)
+
+    Notes
+    -----
+    XLA:CPU scatter applies updates sequentially, so it is deterministic and
+    fastest there. Other backends avoid floating-point scatter atomics, which
+    change results between otherwise identical evaluations.
+    """
+    if _reduces_sequentially(values):
+        return jax.ops.segment_sum(
+            values,
+            row_ids,
+            num_segments=n_rows,
+            indices_are_sorted=indices_are_sorted,
+        )
+    if _SMALL_SERIAL_SPIKES is not None and values.shape[0] <= _SMALL_SERIAL_SPIKES:
+        return _serial_row_sum(values, jnp.asarray(row_ids), n_rows)
+    return deterministic_segment_sum(
+        values, jnp.asarray(row_ids), n_rows, indices_are_sorted
+    )
+
+
+def deterministic_row_add(
+    output: jnp.ndarray,
+    values: jnp.ndarray,
+    row_ids: jnp.ndarray,
+    column_start=0,
+    *,
+    indices_are_sorted: bool = False,
+) -> jnp.ndarray:
+    """Add per-spike column-tile vectors into ``output[:, column_start:...]``.
+
+    Parameters
+    ----------
+    output : jnp.ndarray, shape (n_rows, n_columns)
+    values : jnp.ndarray, shape (n, tile_columns)
+    row_ids : array-like, shape (n,), integer
+    column_start : int or scalar array
+        First output column of the tile.
+    indices_are_sorted : bool
+
+    Returns
+    -------
+    output : jnp.ndarray, shape (n_rows, n_columns)
+        The tile holds ``initial + sum(contributions)``; workspace is one
+        ``(n_rows, tile_columns)`` tile.
+    """
+    values = jnp.asarray(values).astype(output.dtype)
+    if output.shape[0] == 0 or values.shape[0] == 0 or values.size == 0:
+        return output
+    tile = deterministic_row_sum(
+        values, row_ids, output.shape[0], indices_are_sorted=indices_are_sorted
+    )
+    # dynamic_slice needs one index dtype; x64 makes a literal 0 int64.
+    column_start = jnp.asarray(column_start)
+    start = (jnp.zeros((), column_start.dtype), column_start)
+    current = jax.lax.dynamic_slice(output, start, tile.shape)
+    return jax.lax.dynamic_update_slice(output, current + tile, start)
 
 
 def sum_spikes_into_rows(values: jnp.ndarray, selection: SpikeSelection) -> jnp.ndarray:
@@ -814,12 +944,10 @@ def sum_spikes_into_rows(values: jnp.ndarray, selection: SpikeSelection) -> jnp.
 
     Notes
     -----
-    Concrete CPU arrays retain the existing segment reduction and its verified
-    ordering hint. CUDA arrays and transformed calls use a compiled loop that
-    adds contributions in their original selection order, one row vector at a
-    time, avoiding nondeterministic CUDA floating-point atomics. Invalid row
-    indices are dropped. Loop working storage is the row output plus a row
-    vector, excluding the caller's contributions.
+    Uses ``deterministic_row_sum``: CPU keeps the sequential segment reduction
+    and its verified ordering hint; other backends use a segmented scan with a
+    fixed reduction tree, so repeated evaluations are bitwise identical.
+    Invalid row indices are dropped.
     """
     values = jnp.asarray(values)
     if values.dtype == jnp.bool_:
@@ -837,16 +965,12 @@ def sum_spikes_into_rows(values: jnp.ndarray, selection: SpikeSelection) -> jnp.
     safe_indices = np.full(indices.shape, -1, dtype=np.intp)
     safe_indices[indices >= selection.n_rows] = selection.n_rows
     safe_indices[valid] = indices[valid]
-    if not isinstance(values, jax.core.Tracer) and all(
-        device.platform == "cpu" for device in values.devices()
-    ):
-        return jax.ops.segment_sum(
-            values,
-            safe_indices,
-            indices_are_sorted=selection.indices_are_sorted,
-            num_segments=selection.n_rows,
-        )
-    return _ordered_spike_row_sum(values, jnp.asarray(safe_indices), selection.n_rows)
+    return deterministic_row_sum(
+        values,
+        safe_indices,
+        selection.n_rows,
+        indices_are_sorted=selection.indices_are_sorted,
+    )
 
 
 @jax.jit
