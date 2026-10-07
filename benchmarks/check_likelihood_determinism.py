@@ -9,7 +9,7 @@ the exit status is nonzero unless every case has exactly one digest. Checkpointe
 GPU runs should select an idle device with CUDA_VISIBLE_DEVICES and set
 XLA_PYTHON_CLIENT_PREALLOCATE=false.
 
-Example: python scripts/check_likelihood_determinism.py --output REPORT.json
+Example: python benchmarks/check_likelihood_determinism.py --output REPORT.json
 """
 
 import argparse

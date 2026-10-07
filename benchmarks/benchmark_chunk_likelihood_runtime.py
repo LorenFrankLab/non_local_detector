@@ -1,14 +1,13 @@
 """Time a fixed likelihood chunk on 60-second and one-hour recordings.
 
-Usage: uv run python scripts/benchmark_chunk_likelihood_runtime.py /tmp/timings
+Usage: uv run python benchmarks/benchmark_chunk_likelihood_runtime.py /tmp/timings
 Use --compare-ordering --spikes-per-second 100 for a paired comparison of
 prepared ordering against checking each spike train on every chunk call.
 
 For a baseline comparison, extract the baseline's src/ into a separate directory
-and prepend the extracted src directory to PYTHONPATH. The script supports predictors both
-before and after row_slice was introduced. It saves timings and likelihood
-arrays for numerical comparison. No spike falls in the interval that the old
-chunk-local clipping discarded, so both versions do the same scientific work.
+and prepend the extracted src directory to PYTHONPATH. Predictors must accept
+keyword-only ``time_edges`` and ``row_slice``. It saves timings and likelihood
+arrays for numerical comparison.
 
 CPU/GPU synchronization is included, fitting/JIT compilation excluded. Ordinary
 measurements have three warmups and fifteen timed calls; paired measurements
@@ -36,10 +35,7 @@ from non_local_detector.likelihoods import (
     _SORTED_SPIKES_ALGORITHMS,
     common,
 )
-from non_local_detector.likelihoods.no_spike import (
-    no_spike_time_bin_size,
-    predict_no_spike_log_likelihood,
-)
+from non_local_detector.likelihoods.no_spike import predict_no_spike_log_likelihood
 
 BACKENDS = (
     "sorted_spikes_kde",
@@ -122,11 +118,12 @@ def main():
     encoding_features = [rng.normal(20, 5, (300, 4)) for _ in range(N_UNITS)]
     recordings = {}
     for duration in (60, 3600):
-        timeline = np.arange(round(duration / 0.002), dtype=np.float64) * 0.002
+        # Decode-bin edges: 2 ms bins covering the recording.
+        timeline = np.arange(round(duration / 0.002) + 1, dtype=np.float64) * 0.002
         interval = 1.0 / options.spikes_per_second
         unit_times = np.arange(interval / 2, duration, interval)
-        # Keep the comparison valid even against the pre-row-slice baseline,
-        # which drops spikes between the last chunk timestamp and the next row.
+        # Same spikes as earlier recordings of this benchmark, for comparable
+        # timings: none between the 500th and 501st bin starts.
         unit_times = unit_times[
             (unit_times <= timeline[499]) | (unit_times >= timeline[500])
         ]
@@ -169,15 +166,13 @@ def main():
             encoding = fit(**fit_kwargs)
         parameters = inspect.signature(predict).parameters
         for duration, (timeline, spikes, features, pt, pos) in recordings.items():
-            row_slice = slice(0, 500)
-            row_aware = "row_slice" in parameters
-            tt = timeline if row_aware else timeline[row_slice]
-            extra = {"row_slice": row_slice} if row_aware else {}
+            extra = {"row_slice": slice(0, 500), "time_edges": timeline}
             preparation_ms = 0.0
             spike_order_preparation_ms = 0.0
-            if name == "no_spike" and "_time_bin_size" in parameters:
+            if name == "no_spike" and "_time_bin_sizes" in parameters:
+                # Durations are prepared once per prediction, as in the detector.
                 start = time.perf_counter()
-                extra["_time_bin_size"] = no_spike_time_bin_size(timeline)
+                extra["_time_bin_sizes"] = np.diff(timeline)
                 preparation_ms = (time.perf_counter() - start) * 1000
             if "_spike_time_order" in parameters:
                 start = time.perf_counter()
@@ -188,9 +183,9 @@ def main():
                 spike_order_preparation_ms = (time.perf_counter() - start) * 1000
             for local in (False,) if name == "no_spike" else (False, True):
                 if name == "no_spike":
-                    callback = partial(predict, tt, spikes, **extra)
+                    callback = partial(predict, spikes, **extra)
                 else:
-                    args = (tt, pt, pos, spikes)
+                    args = (pt, pos, spikes)
                     if clusterless:
                         args = (*args, features)
                     callback = partial(

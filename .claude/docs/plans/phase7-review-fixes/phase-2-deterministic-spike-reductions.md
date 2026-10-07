@@ -24,7 +24,7 @@ set `CUDA_VISIBLE_DEVICES` and `XLA_PYTHON_CLIENT_PREALLOCATE=false`.
 ## Tasks
 
 1. **Baseline (before any code change).**
-   - Add `scripts/benchmark_spike_row_reduction.py`. It does synchronized,
+   - Add `benchmarks/benchmark_spike_row_reduction.py`. It does synchronized,
      warmed median timings (≥5 repeats) of the current
      `common._ordered_spike_row_sum`, the D1 `deterministic_segment_sum`
      (import it from the prototype
@@ -86,7 +86,7 @@ set `CUDA_VISIBLE_DEVICES` and `XLA_PYTHON_CLIENT_PREALLOCATE=false`.
    - Do not weaken any tolerance. A failure is a finding to report, not a
      reason to loosen a tolerance.
 6. **Determinism check script and test.**
-   - Add `scripts/check_likelihood_determinism.py`, reproducing the
+   - Add `benchmarks/check_likelihood_determinism.py`, reproducing the
      `gpu-replay.json` protocol: 8 cases (`clusterless_kde`,
      `clusterless_kde_log`, `clusterless_gmm`, `clusterless_diffusion` ×
      local/non-local), 2 electrodes, 72 encoding / 51 decoding marks,
@@ -135,9 +135,9 @@ set `CUDA_VISIBLE_DEVICES` and `XLA_PYTHON_CLIENT_PREALLOCATE=false`.
 | `test_deterministic_segment_sum_is_bitwise_repeatable` | 20 repeats give identical `uint32` views |
 | empty / all-invalid / NaN-row / gradient cases (extend existing tests) | zeros shape `(n_rows, ...)`; NaN confined to its row; `grad` gathers the cotangent at owned rows, 0 for invalid |
 | `test_clusterless_likelihoods_are_bitwise_repeatable` (`integration`) | one SHA per case over 10 CPU repeats |
-| `scripts/check_likelihood_determinism.py` on GPU | one SHA per case over 50 repeats, all 8 cases |
+| `benchmarks/check_likelihood_determinism.py` on GPU | one SHA per case over 50 repeats, all 8 cases |
 | Existing modules listed in task 7 | pass at unchanged tolerances on CPU (both JAX versions) and GPU (x64) |
-| `scripts/benchmark_spike_row_reduction.py` before/after | GPU: no regression at n ≤ 64; faster at n ≥ 2,000. CPU: unchanged within noise (same `segment_sum` path) |
+| `benchmarks/benchmark_spike_row_reduction.py` before/after | GPU: no regression at n ≤ 64; faster at n ≥ 2,000. CPU: unchanged within noise (same `segment_sum` path) |
 
 ## Fixtures
 

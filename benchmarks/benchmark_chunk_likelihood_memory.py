@@ -42,9 +42,9 @@ Measurements
 
 Usage
 -----
-    uv run python scripts/benchmark_chunk_likelihood_memory.py --sweep all
-    uv run python scripts/benchmark_chunk_likelihood_memory.py --quick
-    uv run python scripts/benchmark_chunk_likelihood_memory.py \
+    uv run python benchmarks/benchmark_chunk_likelihood_memory.py --sweep all
+    uv run python benchmarks/benchmark_chunk_likelihood_memory.py --quick
+    uv run python benchmarks/benchmark_chunk_likelihood_memory.py \
         --backends clusterless_kde sorted_spikes_kde --json out.json
 
 Limitations

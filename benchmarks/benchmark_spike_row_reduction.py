@@ -10,7 +10,7 @@ recompilation check reports how many executables varying spike counts create.
 GPU runs should select an idle device with CUDA_VISIBLE_DEVICES and set
 XLA_PYTHON_CLIENT_PREALLOCATE=false.
 
-Example: python scripts/benchmark_spike_row_reduction.py --require-backend gpu
+Example: python benchmarks/benchmark_spike_row_reduction.py --require-backend gpu
 """
 
 import argparse
@@ -34,6 +34,8 @@ MAX_VALUES_BYTES = 2 * 1024**3
 def candidates():
     """Reductions available in this checkout, keyed by a stable name."""
     found = {"segment_sum": None}
+    # The serial loop exists only in checkouts before the segmented scan
+    # (e.g. 5bf46a29); run there to benchmark it.
     for name in ("_serial_row_sum", "_ordered_spike_row_sum"):
         if hasattr(common, name):
             found["serial_loop"] = getattr(common, name)

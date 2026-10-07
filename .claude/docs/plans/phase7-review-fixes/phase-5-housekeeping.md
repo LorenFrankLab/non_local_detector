@@ -14,7 +14,7 @@ sorted test module renamed here is edited there, and
 - `src/non_local_detector/models/base.py:2188-2280`: `_DetectorBase._fit`. The environments are refit at `:2259-2264` before validation runs.
 - `src/non_local_detector/models/base.py:200` (checkpointed labelling) and `:3628-3638` (dense fallback that cannot work below xarray 2023.8).
 - `pyproject.toml:32`, `environment.yml:13`, `environment_gpu.yml:16`: `xarray >=2023.1`.
-- `scripts/benchmark_phase7b_operators.py:40-42` and `scripts/benchmark_checkpointed_inference.py:40-42`: hard-coded `/private/tmp` and `/tmp` defaults.
+- `scripts/benchmark_phase7b_operators.py:40-42` and `benchmarks/benchmark_checkpointed_inference.py:40-42`: hard-coded `/private/tmp` and `/tmp` defaults.
 - `src/non_local_detector/likelihoods/no_spike.py:149`, `sorted_spikes_kde.py:423`, `sorted_spikes_glm.py:630`: the three copies of the 256-row threshold. `sorted_spikes_diffusion.py:594-623`: `_spike_counts_matrix`, imported privately by `no_spike.py:25`, `sorted_spikes_kde.py:78`, `sorted_spikes_glm.py:80`.
 - `src/non_local_detector/likelihoods/streamed_kde.py:245`: the inaccurate reuse comment ([appendix E4](appendix.md#e4-streamed-joint-core-recomputes-the-mark-kernel)).
 
@@ -74,15 +74,15 @@ sorted test module renamed here is edited there, and
   | `tests/likelihoods/test_phase7c_sorted_accumulation.py` | `tests/likelihoods/test_sorted_nonlocal_accumulation.py` |
   | `tests/models/test_phase7_diagnostics.py` | `tests/models/test_checkpointed_diagnostics.py` |
   | `tests/models/test_phase7_prediction.py` | `tests/models/test_checkpointed_prediction.py` |
-  | `scripts/benchmark_phase7_pipeline.py` | `scripts/benchmark_native_pipeline.py` |
-  | `scripts/benchmark_phase7a_replay_cache.py` | `scripts/benchmark_replay_cache.py` |
-  | `scripts/benchmark_phase7b_operators.py` | `scripts/benchmark_transition_operators.py` |
-  | `scripts/benchmark_phase7c_buckets.py` | `scripts/benchmark_kde_buckets.py` |
-  | `scripts/benchmark_phase7c_likelihoods.py` | `scripts/benchmark_likelihood_kernels.py` |
-  | `scripts/qualify_phase7_long_encoding.py` | `scripts/qualify_long_encoding.py` |
+  | `scripts/benchmark_phase7_pipeline.py` | `benchmarks/benchmark_native_pipeline.py` |
+  | `scripts/benchmark_phase7a_replay_cache.py` | `benchmarks/benchmark_replay_cache.py` |
+  | `scripts/benchmark_phase7b_operators.py` | `benchmarks/benchmark_transition_operators.py` |
+  | `scripts/benchmark_phase7c_buckets.py` | `benchmarks/benchmark_kde_buckets.py` |
+  | `scripts/benchmark_phase7c_likelihoods.py` | `benchmarks/benchmark_likelihood_kernels.py` |
+  | `scripts/qualify_phase7_long_encoding.py` | `benchmarks/qualify_long_encoding.py` |
 
   - Remove "Phase 7a"/"Phase 7c" from the first docstring lines of
-    `scripts/benchmark_checkpointed_inference.py:1` and
+    `benchmarks/benchmark_checkpointed_inference.py:1` and
     `benchmark_phase7c_likelihoods.py:1`, and rename the
     `_phase7c_baseline_` module prefix at `benchmark_phase7c_likelihoods.py:60`
     to `_baseline_`.
@@ -123,7 +123,7 @@ sorted test module renamed here is edited there, and
 | full suite `uv run python -m pytest -m "not slow"` | passes after the renames; `pytest --collect-only -q` lists no `phase7` names |
 | `uv run python -m pytest -m unit --collect-only -q` | includes the lazy-distance and state-marginal tests |
 | likelihood and snapshot tests before/after the threshold/import move | identical results (bitwise) |
-| `python scripts/benchmark_transition_operators.py --help` and a smoke run with defaults on Linux | writes to the system temp dir without error |
+| `python benchmarks/benchmark_transition_operators.py --help` and a smoke run with defaults on Linux | writes to the system temp dir without error |
 
 ## Fixtures
 

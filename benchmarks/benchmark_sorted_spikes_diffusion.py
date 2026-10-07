@@ -6,13 +6,14 @@ to inform the dense-vs-truncated crossover and a default ``rank``.
 
 Run with::
 
-    uv run python scripts/benchmark_sorted_spikes_diffusion.py
+    uv run python benchmarks/benchmark_sorted_spikes_diffusion.py
 
 The eigenbasis is cached on the ``Environment`` and reused across neurons and EM
 refits, so the dense ``eigh`` cost is amortized; a truncated ``eigsh`` is only
 worthwhile when a single dense decomposition dominates the fit at large grids.
 """
 
+import argparse
 import time
 
 import numpy as np
@@ -68,11 +69,17 @@ def timeit(fn, repeat=3):
 
 
 def main():
-    n_neurons = 50
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--neurons", type=int, default=50)
+    parser.add_argument(
+        "--bin-sizes", type=float, nargs="+", default=[5.0, 2.5, 2.0, 1.5, 1.0]
+    )
+    args = parser.parse_args()
+    n_neurons = args.neurons
     print(
         f"{'n_int':>7} {'dense_eig':>10} {'trunc64':>9} {'diffuse':>9} {'fit_full':>9}"
     )
-    for bin_size in (5.0, 2.5, 2.0, 1.5, 1.0):
+    for bin_size in args.bin_sizes:
         env = make_env(bin_size)
         graph, node_order, bin_sizes = environment_graph(env)
         n_interior = node_order.shape[0]
