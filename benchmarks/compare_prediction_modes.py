@@ -27,6 +27,7 @@ Example::
 import argparse
 import inspect
 import json
+import os
 import platform
 import threading
 import time
@@ -34,6 +35,9 @@ from pathlib import Path
 
 import numpy as np
 import psutil
+
+# tqdm reads this when non_local_detector is imported inside main().
+os.environ.setdefault("TQDM_DISABLE", "1")
 
 SAMPLE_RATE = 500  # decode bins per second
 
