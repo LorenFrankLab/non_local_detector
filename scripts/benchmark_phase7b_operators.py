@@ -12,6 +12,7 @@ import platform
 import random
 import resource
 import statistics
+import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,7 +39,9 @@ def main():
     parser.add_argument("--repeat", type=int, default=5)
     parser.add_argument("--dense-budget-bytes", type=int, default=128 * 1024**2)
     parser.add_argument(
-        "--output", type=Path, default=Path("/private/tmp/nld-phase7b-benchmark.json")
+        "--output",
+        type=Path,
+        default=Path(tempfile.gettempdir()) / "benchmark_transition_operators.json",
     )
     args = parser.parse_args()
     if args.repeat < 5:
@@ -150,6 +153,7 @@ def main():
         ).ru_maxrss,
         "qualification": "isolated transition products only; no full-hour or unmeasured CUDA qualification",
     }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
 

@@ -17,6 +17,7 @@ import resource
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -38,7 +39,9 @@ def parse():
     parser.add_argument("--memory-budget-bytes", type=int, default=2 * 1024**3)
     parser.add_argument("--dtype", choices=["float32", "float64"], default="float32")
     parser.add_argument(
-        "--output", type=Path, default=Path("/tmp/phase7a-benchmark.json")
+        "--output",
+        type=Path,
+        default=Path(tempfile.gettempdir()) / "benchmark_checkpointed_inference.json",
     )
     parser.add_argument("--worker", choices=["dense", "checkpointed"])
     return parser.parse_args()
