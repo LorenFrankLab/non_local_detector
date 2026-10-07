@@ -24,20 +24,17 @@ blocking below relies on the restored matrix emission's fixed 64-row kernels.
 - **Row-block the non-local sorted emission.** In both non-local branches,
   replace the single `_spike_counts_matrix` call with a loop over row blocks.
   Add one shared constant next to the emission in
-  `likelihoods/common.py`:
-
-  ```python
-  # A multiple of the emission's fixed 64-row kernel, so blocked and unblocked
-  # requests are bitwise identical. Host counts are at most this many rows.
-  NONLOCAL_COUNT_BLOCK_ROWS = 4096
-  ```
+  `likelihoods/common.py`. *As implemented:* a fixed 4096-row block measured
+  27% slower than no blocking, so blocks are sized from
+  `NONLOCAL_COUNT_BLOCK_BYTES = 32 * 1024**2` (rows = budget / (8 × n_neurons),
+  rounded down to a multiple of 64; see commit 6180013b for timings).
 
   ```python
   rates = jnp.asarray(place_fields)[:, is_track_interior]
   summed = no_spike_part_log_likelihood[is_track_interior]
   blocks = []
-  for start in range(row_start, row_stop, NONLOCAL_COUNT_BLOCK_ROWS):
-      stop = min(start + NONLOCAL_COUNT_BLOCK_ROWS, row_stop)
+  for start in range(row_start, row_stop, block_rows):
+      stop = min(start + block_rows, row_stop)
       counts = _spike_counts_matrix(
           spike_times, time_edges, "Non-Local Likelihood", True,
           slice(start, stop), _spike_time_order=_spike_time_order,
@@ -100,7 +97,7 @@ blocking below relies on the restored matrix emission's fixed 64-row kernels.
 
 | Test | Asserts |
 | --- | --- |
-| `test_nonlocal_sorted_blocks_match_unblocked[kde/glm]` (new; monkeypatch `NONLOCAL_COUNT_BLOCK_ROWS` to 128 with 1,000 rows) | bitwise equal to a single-block call; `_spike_counts_matrix` never receives more than 128 rows (spy) |
+| `test_nonlocal_sorted_blocks_match_unblocked[kde/glm]` (new; monkeypatch `NONLOCAL_COUNT_BLOCK_BYTES` to a 128-row budget with 1,000 rows) | bitwise equal to a single-block call; `_spike_counts_matrix` never receives more than 128 rows (spy) |
 | `test_cross_distances_match_dense_shortest_paths` (new) | equals `nx.floyd_warshall`/dense `np.ix_` on a small 2-D grid with an exterior hole, including `inf` for unreachable bins |
 | `test_cross_distances_output_is_not_budgeted` (new) | with `max_dense_bytes=1024`, a 1,000 × 50 request succeeds; `to_dense()` still raises `GraphDistanceBudgetError` |
 | `test_row_cache_avoids_repeat_dijkstra_and_respects_budget` (new) | a second identical call runs 0 Dijkstra sources (spy); cache bytes never exceed `max_cache_bytes`; `max_cache_bytes=0` disables the cache |

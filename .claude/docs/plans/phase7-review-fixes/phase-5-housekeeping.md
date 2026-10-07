@@ -5,7 +5,7 @@
 **Depends on:** [phase 1a](phase-1a-sorted-matrix-emission.md), because the
 sorted test module renamed here is edited there, and
 [phase 4](phase-4-memory-bounds.md), because the shared constant sits next to
-`NONLOCAL_COUNT_BLOCK_ROWS`.
+`NONLOCAL_COUNT_BLOCK_BYTES`.
 
 **Inputs to read first:**
 

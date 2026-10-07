@@ -241,3 +241,38 @@ def test_lazy_distances_pickle_drops_cache_and_loads_old_state():
     legacy.__setstate__(old_state)
     assert legacy.max_cache_bytes > 0
     np.testing.assert_array_equal(legacy.cross_distances([3], [5]), dense[[3]][:, [5]])
+
+
+def test_cross_distances_reject_non_integer_or_multidimensional_indices():
+    graph, _ = graph_fixture()
+    lazy = LazyGraphDistances.from_graph(graph)
+    for rows in ([1.7], [[0, 1]], 3):
+        with pytest.raises(IndexError, match="one-dimensional integer"):
+            lazy.cross_distances(rows, [2])
+    with pytest.raises(IndexError):
+        lazy.cross_distances([7], [0])
+
+
+def test_environment_routes_whole_recording_requests_through_cross_distances():
+    kwargs = {
+        "place_bin_size": 1.0,
+        "position_range": ((0.0, 5.0), (0.0, 6.0)),
+        "infer_track_interior": False,
+    }
+    span = np.array([[0.0, 0.0], [5.0, 6.0]])
+    eager = Environment(**kwargs).fit_place_grid(span, infer_track_interior=False)
+    lazy_env = Environment(**kwargs).fit_place_grid(
+        span,
+        infer_track_interior=False,
+        compute_all_pairs_distances=False,
+        max_dense_distance_bytes=1024,
+    )
+    rng = np.random.default_rng(91)
+    position = rng.uniform([0.0, 0.0], [5.0, 6.0], (500, 2))
+    # 500 x 30 float64 distances far exceed the 1 KiB dense-matrix budget.
+    np.testing.assert_array_equal(
+        lazy_env.get_distances_to_interior_bins(position),
+        eager.get_distances_to_interior_bins(position),
+    )
+    with pytest.raises(GraphDistanceBudgetError):
+        lazy_env.distance_between_nodes_.to_dense()

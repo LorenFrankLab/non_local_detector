@@ -46,9 +46,11 @@ class LazyGraphDistances:
     ``max_workspace_bytes`` bounds each temporary Dijkstra row batch; it must
     accommodate at least one float64 N-element source row.
     ``max_cache_bytes`` bounds a least-recently-used cache of full source rows
-    (0 disables it). ``cross_distances`` returns a caller-owned block that is
-    not limited by ``max_dense_bytes``. Pickling retains only the sparse graph
-    and budgets, never the cache.
+    (0 disables it); indexing and ``cross_distances`` fill it, ``to_dense``
+    does not. ``cross_distances`` returns a caller-owned block that is not
+    limited by ``max_dense_bytes``. Pickling retains only the sparse graph and
+    budgets, never the cache. The cache makes queries stateful: share an
+    instance across threads only with external locking.
     """
 
     def __init__(
@@ -197,9 +199,14 @@ class LazyGraphDistances:
             Only the Dijkstra workspace and the row cache are budgeted; the
             caller already owns an array of this size.
         """
-        # Same index normalization as ``__getitem__`` (negative indices wrap).
-        rows = np.arange(self.shape[0])[np.asarray(rows, dtype=np.intp)]
-        columns = np.arange(self.shape[1])[np.asarray(columns, dtype=np.intp)]
+        rows, columns = np.asarray(rows), np.asarray(columns)
+        for name, index in (("rows", rows), ("columns", columns)):
+            if index.ndim != 1 or (index.size and index.dtype.kind not in "iu"):
+                raise IndexError(f"{name} must be a one-dimensional integer array")
+        # Same normalization as ``__getitem__``: negative indices wrap and
+        # out-of-range indices raise.
+        rows = np.arange(self.shape[0])[rows.astype(np.intp)]
+        columns = np.arange(self.shape[1])[columns.astype(np.intp)]
         out = np.empty((len(rows), len(columns)))
         if not out.size:
             return out

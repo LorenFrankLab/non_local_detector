@@ -204,13 +204,18 @@ def test_many_neurons_preserve_singleton_and_ragged_chunk_values(backend):
 
 
 @pytest.mark.parametrize("backend", [sorted_spikes_kde, sorted_spikes_glm])
-def test_nonlocal_sorted_blocks_match_unblocked(backend, monkeypatch):
+@pytest.mark.parametrize("rows", [None, slice(37, 901), slice(100, 100)])
+@pytest.mark.parametrize("zero_rate", [False, True])
+def test_nonlocal_sorted_blocks_match_unblocked(backend, rows, zero_rate, monkeypatch):
     """Bounded host count blocks reproduce the single-block emission exactly."""
     import non_local_detector.likelihoods.common as common
 
     rng = np.random.default_rng(7307)
     edges = np.arange(1001) * 0.002
-    fields = jnp.asarray(rng.uniform(0.02, 40, (3, 6)).astype(np.float32))
+    fields = rng.uniform(0.02, 40, (3, 6)).astype(np.float32)
+    if zero_rate:
+        fields[1, 2] = 0.0  # unsafe products take the per-neuron xlogy fallback
+    fields = jnp.asarray(fields)
     arguments = inputs(backend, np.ones((3, 4), np.float32))
     arguments.update(
         time_edges=edges,
@@ -224,7 +229,7 @@ def test_nonlocal_sorted_blocks_match_unblocked(backend, monkeypatch):
         if backend is sorted_spikes_kde
         else backend.predict_sorted_spikes_glm_log_likelihood
     )
-    unblocked = function(**arguments)
+    unblocked = function(**arguments, row_slice=rows)
     original = common._spike_counts_matrix
     block_rows = []
 
@@ -236,10 +241,11 @@ def test_nonlocal_sorted_blocks_match_unblocked(backend, monkeypatch):
     monkeypatch.setattr(common, "_spike_counts_matrix", spy)
     # Three neurons of int64 counts: a 128-row block budget.
     monkeypatch.setattr(common, "NONLOCAL_COUNT_BLOCK_BYTES", 128 * 3 * 8)
-    blocked = function(**arguments)
+    blocked = function(**arguments, row_slice=rows)
     np.testing.assert_array_equal(blocked, unblocked)
-    assert max(block_rows) == 128
-    assert sum(block_rows) == len(edges) - 1
+    start, stop, _ = (slice(None) if rows is None else rows).indices(len(edges) - 1)
+    assert sum(block_rows) == stop - start
+    assert max(block_rows, default=0) <= 128
 
 
 def test_float32_parameters_preserve_enabled_x64_accumulator_dtype():

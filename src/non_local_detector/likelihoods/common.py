@@ -495,6 +495,12 @@ def _blocked_nonlocal_poisson_log_likelihood(
     Returns
     -------
     log_likelihood : jnp.ndarray, shape (row_stop - row_start, n_bins)
+
+    Notes
+    -----
+    Host counts are bounded by ``NONLOCAL_COUNT_BLOCK_BYTES``. Concatenating
+    the block outputs briefly holds about twice the returned array. The
+    progress bar advances per block rather than per neuron.
     """
     if _spike_time_order is None:
         # Verify each neuron's spike ordering once, not once per block.
