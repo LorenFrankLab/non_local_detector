@@ -2018,7 +2018,7 @@ requires-dist = [
     { name = "sortingview", marker = "extra == 'viz'" },
     { name = "tqdm", specifier = ">=4.60" },
     { name = "track-linearization" },
-    { name = "xarray", specifier = ">=2023.1" },
+    { name = "xarray", specifier = ">=2023.8" },
 ]
 provides-extras = ["dev", "gpu", "test", "viz"]
 
