@@ -139,9 +139,14 @@ def main():
                 reference = None
                 for name, function in found.items():
                     compiled = compiled_reduction(name, function, args.rows, is_sorted)
-                    first, timings, temp_bytes, output = measure(
-                        compiled, (values, ids), args.repeats
-                    )
+                    try:
+                        first, timings, temp_bytes, output = measure(
+                            compiled, (values, ids), args.repeats
+                        )
+                    except jax.errors.JaxRuntimeError as error:
+                        # e.g. a kernel that cannot launch at this size.
+                        record[name] = {"error": str(error).splitlines()[0][:300]}
+                        continue
                     if reference is None:
                         reference = output.astype(np.float64)
                     record[name] = {
