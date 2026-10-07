@@ -28,23 +28,22 @@
       propagate unchanged; only ``math.fsum``'s own overflow is handled.
       """
       values = [float(value) for value in chunks]
-      has_nan = any(math.isnan(value) for value in values)
-      has_pos, has_neg = math.inf in values, -math.inf in values
-      if has_nan or (has_pos and has_neg):
-          return math.nan
-      if has_pos:
-          return math.inf
-      if has_neg:
-          return -math.inf
       try:
-          return math.fsum(values)
+          total = math.fsum(value for value in values if math.isfinite(value))
       except OverflowError:
-          # Extreme finite inputs can overflow fsum's partials; keep the
-          # scalar IEEE overflow behavior of sequential addition.
+          # Sequential IEEE addition, so [1e308, 1e308, -inf] stays NaN.
           total = 0.0
           for value in values:
               total += value
           return total
+      has_positive, has_negative = math.inf in values, -math.inf in values
+      if any(math.isnan(value) for value in values) or (has_positive and has_negative):
+          return math.nan
+      if has_positive:
+          return math.inf
+      if has_negative:
+          return -math.inf
+      return total
   ```
 
   An hour at 256-row chunks is about 7,000 floats. The call site at `:500`

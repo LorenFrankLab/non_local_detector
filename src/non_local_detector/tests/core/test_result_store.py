@@ -172,3 +172,50 @@ def test_loader_validates_headers_with_closed_mmaps_and_keeps_data_lazy(
     assert not loaded.posterior.variable._in_memory
     assert len(mappings) == 2
     assert all(mapping.closed for mapping in mappings)
+
+
+def test_chunked_reads_match_dense_for_random_outer_selections(tmp_path):
+    rng = np.random.default_rng(4207)
+    sizes = rng.integers(1, 9, 40)
+    n_rows = int(sizes.sum())
+    values = rng.normal(size=(n_rows, 5)).astype(np.float32)
+    starts = np.concatenate([[0], np.cumsum(sizes)[:-1]])
+    path = tmp_path / "result"
+    with IncrementalResultWriter(
+        path, {"posterior": (("time", "state_bins"), (n_rows, 5), np.float32)}, {}
+    ) as writer:
+        for chunk in rng.permutation(len(sizes)):
+            start, stop = starts[chunk], starts[chunk] + sizes[chunk]
+            writer.write("posterior", int(start), values[start:stop])
+        writer.complete()
+    loaded = open_result_store(path).posterior
+    selections = [
+        np.sort(rng.choice(n_rows, 37, replace=False)),
+        rng.choice(n_rows, 37, replace=False),
+        np.array([5, 5, 0, n_rows - 1, 5]),
+        slice(3, n_rows - 2, 3),
+    ]
+    for rows in selections:
+        for columns in [slice(None), [4, 0, 2]]:
+            np.testing.assert_array_equal(
+                loaded.isel(time=rows, state_bins=columns), values[rows][:, columns]
+            )
+    np.testing.assert_array_equal(loaded.isel(time=7), values[7])
+
+
+def test_writer_rejects_overlap_in_any_order(tmp_path):
+    variables = {"posterior": (("time", "state_bins"), (12, 2), np.float32)}
+    for first, second in [((0, 5), (4, 9)), ((4, 9), (0, 5)), ((2, 6), (0, 12))]:
+        path = tmp_path / f"result-{first[0]}-{second[0]}"
+        with pytest.raises(ValueError, match="overlap"):
+            with IncrementalResultWriter(path, variables, {}) as writer:
+                for start, stop in (first, second):
+                    writer.write(
+                        "posterior", start, np.zeros((stop - start, 2), np.float32)
+                    )
+    path = tmp_path / "adjacent"
+    with IncrementalResultWriter(path, variables, {}) as writer:
+        for start, stop in [(5, 9), (0, 5), (9, 12)]:
+            writer.write("posterior", start, np.ones((stop - start, 2), np.float32))
+        writer.complete()
+    np.testing.assert_array_equal(open_result_store(path).posterior, np.ones((12, 2)))

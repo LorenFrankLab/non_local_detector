@@ -8,6 +8,7 @@ working-memory bound and must be measured separately in production benchmarks.
 
 from __future__ import annotations
 
+import bisect
 import json
 import os
 import re
@@ -41,6 +42,7 @@ class IncrementalResultWriter:
         )
         self._published = False
         self._variables = {}
+        self._intervals = {}
         self._coordinates = {}
         try:
             for name, (dims, shape, dtype) in variables.items():
@@ -61,6 +63,7 @@ class IncrementalResultWriter:
                     "dtype": np.dtype(dtype).str,
                     "chunks": [],
                 }
+                self._intervals[name] = []
             for name, (dims, values) in coordinates.items():
                 self._check_name(name)
                 values = np.asarray(values)
@@ -98,8 +101,13 @@ class IncrementalResultWriter:
             )
         if start == stop:
             return
-        if any(
-            start < chunk["stop"] and stop > chunk["start"] for chunk in spec["chunks"]
+        # Sorted written (start, stop) intervals: only neighbours can overlap.
+        intervals = self._intervals[name]
+        position = bisect.bisect_left(intervals, (start, stop))
+        before = intervals[position - 1] if position else None
+        after = intervals[position] if position < len(intervals) else None
+        if (before is not None and before[1] > start) or (
+            after is not None and after[0] < stop
         ):
             raise ValueError("Output chunks overlap")
         filename = f"{name}-{start}-{stop}.npy"
@@ -107,6 +115,7 @@ class IncrementalResultWriter:
         spec["chunks"].append(
             {"start": int(start), "stop": int(stop), "file": filename}
         )
+        bisect.insort(intervals, (int(start), int(stop)))
 
     def complete(self, attrs=None):
         """Validate coverage and atomically expose a completed immutable result."""
@@ -164,6 +173,10 @@ class _ChunkedArray(BackendArray):
         self.path, self.spec = path, spec
         self.shape, self.dtype = tuple(spec["shape"]), np.dtype(spec["dtype"])
         self.max_read_bytes = max_read_bytes
+        # Opening validated contiguous row coverage in start order.
+        self._starts = np.array(
+            [chunk["start"] for chunk in spec["chunks"]], dtype=np.int64
+        )
 
     def __getitem__(self, key):
         return indexing.explicit_indexing_adapter(
@@ -182,12 +195,14 @@ class _ChunkedArray(BackendArray):
                 f"Explicit read needs {size} bytes, exceeding max_read_bytes={self.max_read_bytes}; select fewer rows/bins"
             )
         out = np.empty(read_shape, dtype=self.dtype)
-        for chunk in self.spec["chunks"]:
-            selected = np.flatnonzero(
-                (indices[0] >= chunk["start"]) & (indices[0] < chunk["stop"])
-            )
-            if not len(selected):
-                continue
+        # Group requested rows by owning chunk without scanning every chunk.
+        owner = np.searchsorted(self._starts, indices[0], side="right") - 1
+        order = np.argsort(owner, kind="stable")
+        touched, first = np.unique(owner[order], return_index=True)
+        bounds = np.append(first, len(order))
+        for number, lo, hi in zip(touched, bounds[:-1], bounds[1:], strict=True):
+            chunk = self.spec["chunks"][number]
+            selected = order[lo:hi]
             array = np.load(
                 self.path / chunk["file"], mmap_mode="r", allow_pickle=False
             )

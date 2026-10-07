@@ -714,6 +714,83 @@ def test_stable_fsum_overflow_exhausts_input_and_preserves_ieee_total(tail):
     assert len(visited) == len(values)
 
 
+def test_sum_evidence_propagates_chunk_source_errors():
+    from non_local_detector.checkpointed_inference import _sum_evidence
+
+    def chunks():
+        yield 1.0
+        raise OverflowError("raised by the likelihood callback")
+
+    with pytest.raises(OverflowError, match="likelihood callback"):
+        _sum_evidence(chunks())
+
+
+def test_checkpointed_operator_leaves_reach_jit_as_device_arrays(tmp_path, monkeypatch):
+    import jax
+
+    import non_local_detector.checkpointed_inference as checkpointed
+
+    edges, initial, ll, state_ind, kwargs, reference = problem()
+
+    @jax.tree_util.register_pytree_node_class
+    class MatrixOperator:
+        def __init__(self, matrix):
+            self.matrix = matrix
+
+        def forward(self, p, discrete_weights=None):
+            return p @ self.matrix
+
+        def backward(self, v, discrete_weights=None):
+            return self.matrix @ v
+
+        def tree_flatten(self):
+            return (self.matrix,), None
+
+        @classmethod
+        def tree_unflatten(cls, aux, children):
+            return cls(*children)
+
+    leaf_types = []
+    originals = {
+        name: getattr(checkpointed, name)
+        for name in ("_forward_chunk", "_backward_chunk")
+    }
+
+    def recording(name, operator_position):
+        def call(*args, **call_kwargs):
+            operator = (
+                call_kwargs["operator"]
+                if "operator" in call_kwargs
+                else args[operator_position]
+            )
+            leaf_types.extend(
+                type(leaf) for leaf in jax.tree_util.tree_leaves(operator)
+            )
+            return originals[name](*args, **call_kwargs)
+
+        return call
+
+    monkeypatch.setattr(checkpointed, "_forward_chunk", recording("_forward_chunk", 4))
+    monkeypatch.setattr(
+        checkpointed, "_backward_chunk", recording("_backward_chunk", 2)
+    )
+    result = checkpointed.checkpointed_forward_backward(
+        edges,
+        initial,
+        lambda edges, **kw: ll[kw["row_slice"]],
+        transition_operator=MatrixOperator(np.asarray(kwargs["transition_matrix"])),
+        state_ind=state_ind,
+        chunk_size=4,
+        output_mode="spatial",
+        result_path=tmp_path / "result",
+    )
+    assert leaf_types
+    assert all(issubclass(kind, jax.Array) for kind in leaf_types), set(leaf_types)
+    np.testing.assert_allclose(
+        result.dataset.acausal_posterior, reference[3], rtol=1e-5, atol=1e-6
+    )
+
+
 @pytest.mark.parametrize("tail", [[], [np.nan], [-np.inf]])
 def test_float64_evidence_overflow_keeps_full_replay_and_cleanup(tmp_path, tail):
     import jax

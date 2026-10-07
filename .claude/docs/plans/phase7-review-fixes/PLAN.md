@@ -1,6 +1,6 @@
 # Checkpointed-Performance Review Fixes Implementation Plan
 
-**Status:** Phase 1a done (matrix emission restored, plus two gradient fixes that leave forward values bitwise unchanged).
+**Status:** Phases 1a and 3 done. 1b and the GPU tasks of 2 wait for the A100/x86 host.
 
 This plan fixes the problems found when reviewing `feat/phase7-performance`
 against `main`, before that branch merges.

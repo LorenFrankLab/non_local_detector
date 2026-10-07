@@ -186,39 +186,27 @@ def _selected_rows(selected, n_time):
 
 
 def _sum_evidence(chunks):
-    """Streaming float64 sum with IEEE nonfinite propagation and bounded cache."""
-    nonfinite = [False, False, False]  # NaN, +inf, -inf
-    reference_total = 0.0
+    """Float64 sum of per-chunk evidence with IEEE nonfinite propagation.
 
-    def finite_chunks():
-        nonlocal reference_total
-        for value in chunks:
-            value = float(value)
-            reference_total += value
-            if math.isnan(value):
-                nonfinite[0] = True
-            elif value == math.inf:
-                nonfinite[1] = True
-            elif value == -math.inf:
-                nonfinite[2] = True
-            else:
-                yield value
-
-    finite = finite_chunks()
+    Holds one float per chunk. Exceptions raised while producing chunks
+    propagate unchanged; only ``math.fsum``'s own overflow is handled.
+    """
+    values = [float(value) for value in chunks]
     try:
-        total = math.fsum(finite)
+        total = math.fsum(value for value in values if math.isfinite(value))
     except OverflowError:
-        # Extreme float64 inputs can overflow fsum's intermediate partials.
-        # Consume every chunk so forward writes/diagnostics and later NaNs
-        # are retained, then preserve the scalar IEEE overflow behavior.
-        for _ in finite:
-            pass
-        return reference_total
-    if nonfinite[0] or (nonfinite[1] and nonfinite[2]):
+        # Extreme float64 inputs can overflow fsum's intermediate partials;
+        # preserve the scalar IEEE behavior of sequential addition.
+        total = 0.0
+        for value in values:
+            total += value
+        return total
+    has_positive, has_negative = math.inf in values, -math.inf in values
+    if any(math.isnan(value) for value in values) or (has_positive and has_negative):
         return math.nan
-    if nonfinite[1]:
+    if has_positive:
         return math.inf
-    if nonfinite[2]:
+    if has_negative:
         return -math.inf
     return total
 
@@ -372,6 +360,10 @@ def checkpointed_forward_backward(
         leaves, _ = jax.tree_util.tree_flatten(transition_operator)
         if len(leaves) == 1 and leaves[0] is transition_operator:
             transition_operator = _CallableTransition(transition_operator)
+        else:
+            # Transfer array leaves once; each jitted chunk call would otherwise
+            # convert host leaves again.
+            transition_operator = jax.device_put(transition_operator)
     dims = {
         name: ("time", "state_bins" if name in _SPATIAL else "states")
         for name in outputs
