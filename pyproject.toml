@@ -50,6 +50,8 @@ test = [
     "pytest",
     "pytest-cov",
     "hypothesis",
+    # Benchmark scripts record memory with psutil; their smoke test runs in CI.
+    "psutil",
 ]
 dev = [
     "non_local_detector[test]",
