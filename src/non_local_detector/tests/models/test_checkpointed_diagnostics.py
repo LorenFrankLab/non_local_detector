@@ -5,8 +5,6 @@ from functools import wraps
 import numpy as np
 import pytest
 
-from non_local_detector.tests.models.test_phase7_prediction import recording
-
 pytestmark = pytest.mark.integration
 
 
@@ -14,13 +12,14 @@ pytestmark = pytest.mark.integration
 @pytest.mark.parametrize("output_mode", ["compact", "spatial"])
 @pytest.mark.parametrize("neutralize_missing", [False, True])
 def test_native_diagnostics_keep_rows_outside_selected_outputs(
+    checkpoint_recording,
     tmp_path,
     monkeypatch,
     family,
     output_mode,
     neutralize_missing,
 ):
-    model, fit, predict = recording(family)
+    model, fit, predict = checkpoint_recording(family)
     model.fit(**fit)
     original = model.compute_log_likelihood
 

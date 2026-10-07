@@ -27,3 +27,47 @@ def sorted_sim():
     )
     n = 2_000
     return time[:n], position[:n], [st[st <= time[n - 1]] for st in spike_times]
+
+
+@pytest.fixture
+def checkpoint_recording():
+    """Builder for a small 2-D detector recording.
+
+    Calling it with ``"sorted"`` or ``"clusterless"`` returns
+    ``(model, fit_kwargs, predict_kwargs)``.
+    """
+    from non_local_detector import (
+        Environment,
+        NonLocalClusterlessDetector,
+        NonLocalSortedSpikesDetector,
+    )
+
+    def recording(family):
+        time = np.linspace(0, 2, 61)
+        position = np.column_stack((5 + 4 * np.sin(time), 5 + 4 * np.cos(time)))
+        spikes = [np.array([0.1, 0.3, 0.8, 1.2, 1.9])]
+        kwargs = {
+            "environments": Environment(
+                place_bin_size=2, position_range=((0, 10), (0, 10))
+            ),
+            "infer_track_interior": False,
+        }
+        if family == "sorted":
+            model = NonLocalSortedSpikesDetector(**kwargs)
+            args = {"spike_times": spikes}
+        else:
+            model = NonLocalClusterlessDetector(**kwargs)
+            args = {
+                "spike_times": spikes,
+                "spike_waveform_features": [np.arange(10.0).reshape(5, 2)],
+            }
+        fit = dict(position_time=time, position=position, **args)
+        predict = dict(
+            position_time=time,
+            position=position,
+            time_edges=np.linspace(0, 2, 101),
+            **args,
+        )
+        return model, fit, predict
+
+    return recording

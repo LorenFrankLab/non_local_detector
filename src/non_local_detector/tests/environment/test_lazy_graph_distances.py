@@ -12,6 +12,8 @@ from non_local_detector.graph_distances import (
     LazyGraphDistances,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def graph_fixture():
     graph = nx.Graph()

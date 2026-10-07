@@ -1,6 +1,6 @@
 # Checkpointed-Performance Review Fixes Implementation Plan
 
-**Status:** Phases 1a, 3 and 4 done; phase 2 implemented and CPU-validated (`_SMALL_SERIAL_SPIKES = None`, `_serial_row_sum` kept for the benchmark). Waiting for the A100/x86 host: phase 1b, phase 2 GPU baseline (run `scripts/benchmark_spike_row_reduction.py` at 5bf46a29 and at the phase 2 commit) and GPU determinism.
+**Status:** Phases 1a, 3, 4 and 5 done; phase 2 implemented and CPU-validated (`_SMALL_SERIAL_SPIKES = None`, `_serial_row_sum` kept for the benchmark). Waiting for the A100/x86 host: phase 1b, phase 2 GPU baseline (run `scripts/benchmark_spike_row_reduction.py` at 5bf46a29 and at 7c8eeb65 or later) and GPU determinism (`scripts/check_likelihood_determinism.py`). Test and script files named in older plan sections were renamed in phase 5 (see its table).
 
 This plan fixes the problems found when reviewing `feat/phase7-performance`
 against `main`, before that branch merges.

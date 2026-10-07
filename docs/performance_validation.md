@@ -131,7 +131,7 @@ already synchronize their outputs.
 
 ## Measured choices
 
-The [replay/cache prototype](../scripts/benchmark_phase7a_replay_cache.py)
+The [replay/cache prototype](../scripts/benchmark_replay_cache.py)
 compares `T=1,024`, `N=256` and checkpoint lengths 64/256, with five interleaved
 pairs on CPU and A100. Both paths produce bitwise-identical state probabilities
 and stable evidence; the cache stores chunks on disk with at most 262,144
@@ -210,7 +210,7 @@ Applicable tolerances remain unchanged. The
 [matching A100 numerical controls](performance_artifacts/phase7/gpu-long-encoding-numerics.json)
 also pass: float32 local/joint log errors at most `1.70e-6`/`1.77e-6`, and
 float64 log errors at most `3.55e-15`.
-The [published qualifier](../scripts/qualify_phase7_long_encoding.py) reproduces
+The [published qualifier](../scripts/qualify_long_encoding.py) reproduces
 the seeded inputs and independent references without allocating a full
 encoding-by-arena matrix.
 

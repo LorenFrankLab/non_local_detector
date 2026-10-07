@@ -8,6 +8,8 @@ from non_local_detector.core import (
     chunked_filter_smoother_covariate_dependent,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.parametrize("covariate", [False, True])
 @pytest.mark.parametrize("n_chunks", [1, 3])

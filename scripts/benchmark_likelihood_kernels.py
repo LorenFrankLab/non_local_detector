@@ -1,4 +1,4 @@
-"""Synchronized, bounded Phase 7c reference/likelihood benchmarks.
+"""Synchronized, bounded reference/likelihood kernel benchmarks.
 
 Use --baseline-dir with frozen likelihood source files, --output-dir for JSON
 and array artifacts, and --repeats >= 5. CPU RSS is sampled at 2 ms; this is a
@@ -57,7 +57,7 @@ def load_baseline(directory):
     loaded = {}
     for name in ["common", "sorted_spikes_kde", "sorted_spikes_glm", "clusterless_kde"]:
         path = directory / "likelihoods" / f"{name}.py"
-        module_name = f"_phase7c_baseline_{name}"
+        module_name = f"_baseline_{name}"
         spec = importlib.util.spec_from_file_location(module_name, path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module

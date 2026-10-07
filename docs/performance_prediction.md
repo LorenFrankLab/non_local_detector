@@ -200,7 +200,7 @@ allocation separately. The recorded A100 runs used an allocator fraction of
 card. Application working memory, CUDA context and filesystem cache need
 separate accounting.
 
-Run `scripts/benchmark_phase7_pipeline.py` for native pipeline measurements and
+Run `scripts/benchmark_native_pipeline.py` for native pipeline measurements and
 the dedicated checkpoint, operator and likelihood scripts for component
 measurements. Reports include synchronized runs, source/input hashes, dimensions,
 precision, process peaks and disk usage. `--platform gpu` fails if CUDA is

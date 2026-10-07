@@ -1,4 +1,4 @@
-"""Bounded Phase 7a benchmark; no production/full-hour claim.
+"""Bounded checkpointed-inference benchmark; no production/full-hour claim.
 
 Run duration ladders at fixed --chunk-size in isolated processes. This records
 compile/first-run separately, >=5 synchronized warm end-to-end repetitions,
