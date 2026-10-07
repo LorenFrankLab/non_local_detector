@@ -319,3 +319,33 @@ def test_clusterless_likelihoods_are_bitwise_repeatable(algorithm, monkeypatch):
     np.testing.assert_allclose(
         results["segmented_scan"], results["sequential"], **FLOAT32_ROUNDING
     )
+
+
+@pytest.mark.parametrize("id_dtype", [np.uint8, np.uint32, np.int8, np.int16])
+def test_deterministic_segment_sum_handles_unsigned_and_narrow_ids(id_dtype):
+    ids = np.array([0, 1, 1, 5, 22, 23, 100, 120], dtype=id_dtype)
+    values = np.arange(1, 9, dtype=np.float32)[:, None]
+    n_segments = 300
+    actual = deterministic_segment_sum(
+        jnp.asarray(values), jnp.asarray(ids), n_segments, False
+    )
+    np.testing.assert_array_equal(actual, ordered_reference(values, ids, n_segments))
+
+
+def test_concrete_off_cpu_calls_share_bucketed_executables(monkeypatch):
+    monkeypatch.setattr(common, "_reduces_sequentially", lambda values: False)
+    jax.clear_caches()
+    rng = np.random.default_rng(7615)
+    before = deterministic_segment_sum._cache_size()
+    for n_spikes in range(1, 65):
+        ids = np.sort(rng.integers(0, 12, n_spikes))
+        values = rng.normal(size=(n_spikes, 3)).astype(np.float32)
+        actual = common.deterministic_row_sum(
+            jnp.asarray(values), ids, 12, indices_are_sorted=True
+        )
+        np.testing.assert_allclose(
+            actual, ordered_reference(values, ids, 12), rtol=1e-6, atol=1e-6
+        )
+    # Spike counts 1..64 pad to the seven powers of two 1, 2, 4, ..., 64.
+    assert deterministic_segment_sum._cache_size() - before <= 7
+    jax.clear_caches()

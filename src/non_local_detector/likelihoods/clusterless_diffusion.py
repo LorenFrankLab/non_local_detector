@@ -438,11 +438,16 @@ def fit_clusterless_diffusion_encoding_model(
             environment,
             encoding_support=support,
         )
-        bins = _interior_bin_indices(environment, spike_positions, full_to_local)
+        bins = np.asarray(
+            _interior_bin_indices(environment, spike_positions, full_to_local)
+        )
+        # Bin-sorted encoding spikes make each prediction block's spatial
+        # reduction a deterministic sorted-segment sum.
+        order = np.argsort(bins, kind="stable")
 
-        encoding_bin_indices.append(np.asarray(bins))
-        encoding_marks.append(jnp.asarray(bounded_features))
-        encoding_weights.append(jnp.asarray(spike_weights))
+        encoding_bin_indices.append(bins[order])
+        encoding_marks.append(jnp.asarray(np.asarray(bounded_features)[order]))
+        encoding_weights.append(jnp.asarray(np.asarray(spike_weights)[order]))
         weight_total.append(w_total)
 
         if w_total == 0:
@@ -696,12 +701,13 @@ def predict_clusterless_diffusion_log_likelihood(
 
             seg = jnp.asarray(selection.bin_ind)
 
-            # Bin-sorted encoding spikes make each block's spatial reduction a
-            # deterministic sorted-segment sum.
-            order = np.argsort(np.asarray(electrode_bins), kind="stable")
-            electrode_bins = np.asarray(electrode_bins)[order]
-            electrode_marks = np.asarray(electrode_marks)[order]
-            electrode_weights = np.asarray(electrode_weights)[order]
+            electrode_bins = np.asarray(electrode_bins)
+            if np.any(electrode_bins[1:] < electrode_bins[:-1]):
+                # Models fitted before encoding spikes were stored bin-sorted.
+                order = np.argsort(electrode_bins, kind="stable")
+                electrode_bins = electrode_bins[order]
+                electrode_marks = np.asarray(electrode_marks)[order]
+                electrode_weights = np.asarray(electrode_weights)[order]
             enc_bins = jnp.asarray(electrode_bins)
             enc_marks = jnp.asarray(electrode_marks)
             enc_weights = jnp.asarray(electrode_weights)
@@ -834,12 +840,13 @@ def predict_clusterless_diffusion_log_likelihood(
 
         seg = jnp.asarray(selection.bin_ind)
 
-        # Bin-sorted encoding spikes make each block's spatial reduction a
-        # deterministic sorted-segment sum.
-        order = np.argsort(np.asarray(electrode_bins), kind="stable")
-        electrode_bins = np.asarray(electrode_bins)[order]
-        electrode_marks = np.asarray(electrode_marks)[order]
-        electrode_weights = np.asarray(electrode_weights)[order]
+        electrode_bins = np.asarray(electrode_bins)
+        if np.any(electrode_bins[1:] < electrode_bins[:-1]):
+            # Models fitted before encoding spikes were stored bin-sorted.
+            order = np.argsort(electrode_bins, kind="stable")
+            electrode_bins = electrode_bins[order]
+            electrode_marks = np.asarray(electrode_marks)[order]
+            electrode_weights = np.asarray(electrode_weights)[order]
         enc_bins = jnp.asarray(electrode_bins)
         enc_marks = jnp.asarray(electrode_marks)
         enc_weights = jnp.asarray(electrode_weights)

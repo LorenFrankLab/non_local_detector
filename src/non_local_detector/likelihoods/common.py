@@ -818,8 +818,10 @@ def deterministic_segment_sum(
     ----------
     values : jnp.ndarray, shape (n, ...)
     segment_ids : jnp.ndarray, shape (n,), integer
-        Ids outside ``[0, num_segments)`` are dropped.
+        Ids outside ``[0, num_segments)`` are dropped, including unsigned or
+        64-bit ids too large for the canonical index dtype.
     num_segments : int
+        Must be below 2**31.
     indices_are_sorted : bool
         True only when ``segment_ids`` is verified nondecreasing.
 
@@ -828,13 +830,21 @@ def deterministic_segment_sum(
     sums : jnp.ndarray, shape (num_segments, ...)
         Repeated evaluation of the same shapes is bitwise identical on every
         backend; a different ``n`` changes the tree and can change rounding.
+
+    Notes
+    -----
+    The scan keeps ``O(n)`` temporaries the size of ``values`` (about 1.5x
+    for sorted ids and 2.5x unsorted on XLA:CPU), unlike a scatter.
     """
     n = values.shape[0]
     shape = (num_segments, *values.shape[1:])
     if n == 0 or num_segments == 0:
         return jnp.zeros(shape, values.dtype)
-    # Clipping keeps sorted ids sorted: low invalid ids first, high ones last.
-    ids = jnp.clip(segment_ids, -1, num_segments)
+    # A canonical signed index dtype keeps -1 representable for unsigned and
+    # narrow ids; values that wrap negative are invalid and dropped. Clipping
+    # keeps sorted ids sorted: low invalid ids first, high ones last.
+    index_dtype = jax.dtypes.canonicalize_dtype(jnp.int64)
+    ids = jnp.clip(jnp.asarray(segment_ids).astype(index_dtype), -1, num_segments)
     if not indices_are_sorted:
         order = jnp.argsort(ids, stable=True)
         ids, values = ids[order], values[order]
@@ -850,10 +860,20 @@ def deterministic_segment_sum(
 
 
 def _reduces_sequentially(values) -> bool:
-    """Whether ``values`` live on CPU, where XLA scatter adds updates in order."""
+    """Whether ``values`` live on CPU, where XLA scatter adds updates in order.
+
+    Traced values carry no device, so the default backend decides; a CPU
+    default with work explicitly placed on an accelerator would therefore use
+    the scatter. The package never places work that way.
+    """
     if isinstance(values, jax.core.Tracer):
         return jax.default_backend() == "cpu"
-    return all(device.platform == "cpu" for device in jnp.asarray(values).devices())
+    return all(device.platform == "cpu" for device in values.devices())
+
+
+def _bucketed_size(n: int) -> int:
+    """Next power of two, so varying spike counts share few executables."""
+    return 1 << max(n - 1, 0).bit_length()
 
 
 def deterministic_row_sum(
@@ -882,8 +902,12 @@ def deterministic_row_sum(
     -----
     XLA:CPU scatter applies updates sequentially, so it is deterministic and
     fastest there. Other backends avoid floating-point scatter atomics, which
-    change results between otherwise identical evaluations.
+    change results between otherwise identical evaluations. Concrete
+    off-CPU calls pad the spike axis to a power of two with dropped ids, so
+    chunks with varying spike counts reuse a bounded set of executables.
     """
+    if not isinstance(values, jax.core.Tracer):
+        values = jnp.asarray(values)
     if _reduces_sequentially(values):
         return jax.ops.segment_sum(
             values,
@@ -893,9 +917,18 @@ def deterministic_row_sum(
         )
     if _SMALL_SERIAL_SPIKES is not None and values.shape[0] <= _SMALL_SERIAL_SPIKES:
         return _serial_row_sum(values, jnp.asarray(row_ids), n_rows)
-    return deterministic_segment_sum(
-        values, jnp.asarray(row_ids), n_rows, indices_are_sorted
-    )
+    row_ids = jnp.asarray(row_ids)
+    if not isinstance(values, jax.core.Tracer):
+        padding = _bucketed_size(values.shape[0]) - values.shape[0]
+        if padding:
+            # Trailing n_rows ids are dropped and keep sorted ids sorted.
+            values = jnp.concatenate(
+                [values, jnp.zeros((padding, *values.shape[1:]), values.dtype)]
+            )
+            row_ids = jnp.concatenate(
+                [row_ids, jnp.full(padding, n_rows, dtype=row_ids.dtype)]
+            )
+    return deterministic_segment_sum(values, row_ids, n_rows, indices_are_sorted)
 
 
 def deterministic_row_add(
@@ -920,8 +953,11 @@ def deterministic_row_add(
     Returns
     -------
     output : jnp.ndarray, shape (n_rows, n_columns)
-        The tile holds ``initial + sum(contributions)``; workspace is one
-        ``(n_rows, tile_columns)`` tile.
+        The tile holds ``initial + sum(contributions)``. Off CPU the reduction
+        also keeps scan temporaries the size of ``values`` (see
+        ``deterministic_segment_sum``). As with ``dynamic_slice``, a tile that
+        would run past the last column is shifted left, so callers must pass
+        tiles that fit.
     """
     values = jnp.asarray(values).astype(output.dtype)
     if output.shape[0] == 0 or values.shape[0] == 0 or values.size == 0:
