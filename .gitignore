@@ -161,3 +161,6 @@ _version.py
 
 # Git worktrees
 .worktrees/
+*.parquet
+*.nc
+/viewer_bundles
