@@ -47,6 +47,7 @@ names.
 
 | Script | Measures | Typical use |
 | --- | --- | --- |
+| `compare_prediction_modes.py` | One fit and prediction of a simulated 2-D recording: fit time, compile and warm prediction time, peak host RSS and device memory, and saved state probabilities. Modes are `dense`, `chunked` (`n_chunks`) and checkpointed `compact`. Works on older checkouts via `PYTHONPATH` and refuses modes they lack. | One configuration per process: `--family --mode --duration --arena --bin-size` |
 | `benchmark_spike_row_reduction.py` | Deterministic segmented-scan spike-row reduction versus scatter (and the serial loop in older checkouts). Reports compile and steady-state time, XLA temp bytes, agreement with scatter, and recompilation across spike counts. | GPU: `--require-backend gpu`; about 5 min on an A100 |
 | `check_likelihood_determinism.py` | Bitwise repeatability of clusterless likelihoods: 4 algorithms × default/collision-heavy cases. Exits nonzero on drift and records digests for cross-run comparison. | After reduction or likelihood changes, on CPU and GPU (`JAX_ENABLE_X64=0/1`) |
 | `benchmark_chunk_likelihood_runtime.py` | One 500-row likelihood chunk on 60 s and 1 h recordings, per backend. Optionally measures spike-ordering reuse (`--compare-ordering`). | `OUTPUT_DIR [--spikes-per-second N]` |
