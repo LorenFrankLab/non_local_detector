@@ -59,6 +59,7 @@ from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
+    COMPILED_ROW_LIMIT,
     EPS,
     RATE_EPS_HZ,
     KDEModel,
@@ -420,7 +421,7 @@ def predict_sorted_spikes_kde_log_likelihood(
         # A legacy full-recording request can contain millions of evaluation
         # blocks. Compile the model tuple only for bounded row chunks; larger
         # requests retain the existing per-model blocked evaluation.
-        if n_rows <= 256 and all(
+        if n_rows <= COMPILED_ROW_LIMIT and all(
             type(model) is KDEModel and model.samples_ is not None
             for model in marginal_models
         ):

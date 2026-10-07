@@ -454,6 +454,10 @@ def _poisson_nonlocal_log_likelihood(
     return likelihood - durations[:, None] * summed_rates
 
 
+# Requests above this many rows use per-neuron accumulation, so full-grid
+# callers never build a rows-by-population count buffer for local emissions.
+COMPILED_ROW_LIMIT = 256
+
 # Host bytes for one block of int64 spike counts. Block rows are a multiple of
 # the emission's fixed 64-row kernel, so blocked and unblocked requests are
 # bitwise identical.

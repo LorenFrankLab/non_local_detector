@@ -242,7 +242,9 @@ def _joint_numerator(
     full_positions, position_tail = divmod(centers.shape[0], position_tile_size)
 
     def add_encoding(result, marks, position_samples, sample_weights):
-        # Compute this mark tile once, then reuse it across all spatial tiles.
+        # One mark tile per encoding tile, reused across the spatial tiles in
+        # `centers`. `_joint_core` passes one spatial tile per call, so it is
+        # recomputed for each spatial tile.
         mark_kernel = jnp.exp(_log_kernel_matrix(decoded, marks, waveform_std))
 
         def contribution(point_tile):

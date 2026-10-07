@@ -18,6 +18,7 @@ import numpy as np
 from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.likelihoods.common import (
+    COMPILED_ROW_LIMIT,
     _spike_counts_matrix,
     _SpikeTimeOrder,
     get_spikecount_per_time_bin,
@@ -146,7 +147,7 @@ def predict_no_spike_log_likelihood(
     else:
         durations = _time_bin_sizes[row_start:row_stop]
     no_spike_rates = no_spike_rate * jnp.asarray(durations)
-    if row_stop - row_start > 256:
+    if row_stop - row_start > COMPILED_ROW_LIMIT:
         # Full-grid legacy callers must not acquire a rows-by-population count
         # buffer merely to use the optimization for bounded decode chunks.
         total = jnp.zeros((row_stop - row_start,))

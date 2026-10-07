@@ -65,6 +65,7 @@ from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment, get_n_bins
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
+    COMPILED_ROW_LIMIT,
     EPS,
     RATE_EPS_HZ,
     _blocked_nonlocal_poisson_log_likelihood,
@@ -627,7 +628,7 @@ def predict_sorted_spikes_glm_log_likelihood(
         emission_predict_matrix = make_spline_predict_matrix(
             emission_design_info, interpolated_position
         )
-        if row_stop - row_start > 256:
+        if row_stop - row_start > COMPILED_ROW_LIMIT:
             # Preserve bounded per-neuron workspace for legacy full-row calls.
             total = jnp.zeros((row_stop - row_start,))
             for events, coef in zip(
