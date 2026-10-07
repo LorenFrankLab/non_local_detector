@@ -161,3 +161,83 @@ def test_lazy_graph_rejects_insufficient_workspace_before_dijkstra():
     lazy = LazyGraphDistances.from_graph(graph, max_workspace_bytes=8)
     with pytest.raises(GraphDistanceBudgetError, match="workspace"):
         lazy[0, 1]
+
+
+def counting_dijkstra(monkeypatch):
+    import non_local_detector.graph_distances as module
+
+    sources = []
+    original = module.dijkstra
+
+    def counted(*args, **kwargs):
+        sources.extend(np.atleast_1d(kwargs["indices"]).tolist())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "dijkstra", counted)
+    return sources
+
+
+def test_cross_distances_match_dense_shortest_paths():
+    graph, dense = graph_fixture()
+    lazy = LazyGraphDistances.from_graph(graph, max_workspace_bytes=112)
+    rows = np.array([6, 0, 3, 3, -1, 2])
+    columns = np.array([5, 6, 0])
+    np.testing.assert_array_equal(
+        lazy.cross_distances(rows, columns), dense[np.ix_(rows, columns)]
+    )
+    assert np.isinf(lazy.cross_distances([6], [0])).all()
+    assert lazy.cross_distances([], columns).shape == (0, 3)
+
+
+def test_cross_distances_output_is_not_budgeted():
+    graph, dense = graph_fixture()
+    lazy = LazyGraphDistances.from_graph(graph, max_dense_bytes=64)
+    rows = np.tile(np.arange(7), 30)
+    np.testing.assert_array_equal(lazy.cross_distances(rows, np.arange(7)), dense[rows])
+    with pytest.raises(GraphDistanceBudgetError):
+        lazy.to_dense()
+
+
+def test_row_cache_avoids_repeat_dijkstra_and_respects_budget(monkeypatch):
+    graph, dense = graph_fixture()
+    sources = counting_dijkstra(monkeypatch)
+    row_bytes = 7 * 8
+    lazy = LazyGraphDistances.from_graph(graph, max_cache_bytes=3 * row_bytes)
+    lazy.cross_distances([0, 1, 2], np.arange(7))
+    assert sorted(sources) == [0, 1, 2]
+    sources.clear()
+    np.testing.assert_array_equal(lazy[[2, 1, 0], [5, 5, 5]], dense[[2, 1, 0], 5])
+    assert sources == []
+    lazy.cross_distances([3, 4], np.arange(7))
+    assert len(lazy._row_cache) * row_bytes <= lazy.max_cache_bytes
+    # Indexing touched sources in sorted order, so rows 0 and 1 are evicted.
+    assert list(lazy._row_cache) == [2, 3, 4]
+
+    sources.clear()
+    uncached = LazyGraphDistances.from_graph(graph, max_cache_bytes=0)
+    uncached.cross_distances([0], [1])
+    uncached.cross_distances([0], [1])
+    assert sources == [0, 0]
+    assert not uncached._row_cache
+
+
+def test_lazy_distances_pickle_drops_cache_and_loads_old_state():
+    graph, dense = graph_fixture()
+    lazy = LazyGraphDistances.from_graph(graph)
+    lazy.cross_distances([0, 1], [2])
+    assert lazy._row_cache
+    restored = pickle.loads(pickle.dumps(lazy))
+    assert not restored._row_cache
+    np.testing.assert_array_equal(
+        restored.cross_distances([0], [2]), dense[[0]][:, [2]]
+    )
+
+    old_state = {
+        name: value
+        for name, value in vars(lazy).items()
+        if name not in {"max_cache_bytes", "_row_cache"}
+    }
+    legacy = LazyGraphDistances.__new__(LazyGraphDistances)
+    legacy.__setstate__(old_state)
+    assert legacy.max_cache_bytes > 0
+    np.testing.assert_array_equal(legacy.cross_distances([3], [5]), dense[[3]][:, [5]])

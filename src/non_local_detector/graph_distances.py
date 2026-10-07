@@ -1,10 +1,13 @@
 """Exact bounded graph distances for fitted Cartesian environments.
 
 The sparse graph is retained; each query computes only its distinct source
-rows in bounded batches. No all-pairs cache is created. Unreachable nodes have
+rows in bounded batches, and recently used source rows are kept in a bounded
+cache. No all-pairs matrix is created. Unreachable nodes have
 infinite distance, including isolated exterior nodes (whose self-distance is
 zero), exactly as in the legacy NetworkX shortest-path matrix.
 """
+
+from collections import OrderedDict
 
 import networkx as nx
 import numpy as np
@@ -13,6 +16,7 @@ from scipy.sparse.csgraph import dijkstra
 
 DEFAULT_MAX_DENSE_DISTANCE_BYTES = 256 * 1024**2
 DEFAULT_DISTANCE_WORKSPACE_BYTES = 8 * 1024**2
+DEFAULT_DISTANCE_CACHE_BYTES = 64 * 1024**2
 
 
 class GraphDistanceBudgetError(MemoryError):
@@ -40,8 +44,11 @@ class LazyGraphDistances:
     Basic, paired and ``np.ix_`` selections compute exact shortest paths.
     ``np.asarray`` requires the full N-by-N result to fit ``max_dense_bytes``.
     ``max_workspace_bytes`` bounds each temporary Dijkstra row batch; it must
-    accommodate at least one float64 N-element source row. Pickling retains
-    only the sparse graph and budgets. Queries do not retain a dense cache.
+    accommodate at least one float64 N-element source row.
+    ``max_cache_bytes`` bounds a least-recently-used cache of full source rows
+    (0 disables it). ``cross_distances`` returns a caller-owned block that is
+    not limited by ``max_dense_bytes``. Pickling retains only the sparse graph
+    and budgets, never the cache.
     """
 
     def __init__(
@@ -51,9 +58,11 @@ class LazyGraphDistances:
         directed=False,
         max_dense_bytes=DEFAULT_MAX_DENSE_DISTANCE_BYTES,
         max_workspace_bytes=DEFAULT_DISTANCE_WORKSPACE_BYTES,
+        max_cache_bytes=DEFAULT_DISTANCE_CACHE_BYTES,
     ):
         _budget(0, max_dense_bytes, "Dense graph distances")
         _budget(0, max_workspace_bytes, "Graph distance workspace")
+        _budget(0, max_cache_bytes, "Graph distance row cache")
         graph = csr_matrix(graph, dtype=np.float64, copy=True)
         if graph.shape[0] != graph.shape[1]:
             raise ValueError("Graph adjacency must be square")
@@ -63,6 +72,18 @@ class LazyGraphDistances:
         self.directed = bool(directed)
         self.max_dense_bytes = int(max_dense_bytes)
         self.max_workspace_bytes = int(max_workspace_bytes)
+        self.max_cache_bytes = int(max_cache_bytes)
+        self._row_cache = OrderedDict()
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_row_cache"] = OrderedDict()
+        return state
+
+    def __setstate__(self, state):
+        state.setdefault("max_cache_bytes", DEFAULT_DISTANCE_CACHE_BYTES)
+        state.setdefault("_row_cache", OrderedDict())
+        self.__dict__.update(state)
 
     @classmethod
     def from_graph(cls, graph, **kwargs):
@@ -126,15 +147,76 @@ class LazyGraphDistances:
         flat_result = result.ravel()
         for start in range(0, len(sources), batch_rows):
             stop = min(start + batch_rows, len(sources))
-            distances = dijkstra(
-                self.graph, directed=self.directed, indices=sources[start:stop]
-            )
+            distances = self._rows_for(sources[start:stop])
             select = (inverse >= start) & (inverse < stop)
             flat_result[select] = distances[
                 inverse[select] - start, flat_columns[select]
             ]
             del distances
         return result
+
+    def _rows_for(self, sources):
+        """Full float64 rows for unique ``sources``, computing only uncached rows.
+
+        Callers bound ``len(sources)`` by the workspace budget.
+        """
+        row_bytes = self.shape[1] * 8
+        result = np.empty((len(sources), self.shape[1]))
+        missing = []
+        for position, source in enumerate(sources):
+            row = self._row_cache.get(int(source))
+            if row is None:
+                missing.append(position)
+            else:
+                self._row_cache.move_to_end(int(source))
+                result[position] = row
+        if missing:
+            result[missing] = dijkstra(
+                self.graph, directed=self.directed, indices=sources[missing]
+            )
+            if row_bytes <= self.max_cache_bytes:
+                for position in missing:
+                    self._row_cache[int(sources[position])] = result[position].copy()
+                while len(self._row_cache) * row_bytes > self.max_cache_bytes:
+                    self._row_cache.popitem(last=False)
+        return result
+
+    def cross_distances(self, rows, columns):
+        """Exact ``(len(rows), len(columns))`` distances; the output is caller-owned.
+
+        Parameters
+        ----------
+        rows : array-like of int, shape (n_rows,)
+            Source node per output row; repeated sources are computed once.
+        columns : array-like of int, shape (n_columns,)
+            Destination nodes.
+
+        Returns
+        -------
+        distances : np.ndarray, shape (n_rows, n_columns)
+            Only the Dijkstra workspace and the row cache are budgeted; the
+            caller already owns an array of this size.
+        """
+        # Same index normalization as ``__getitem__`` (negative indices wrap).
+        rows = np.arange(self.shape[0])[np.asarray(rows, dtype=np.intp)]
+        columns = np.arange(self.shape[1])[np.asarray(columns, dtype=np.intp)]
+        out = np.empty((len(rows), len(columns)))
+        if not out.size:
+            return out
+        row_bytes = self.shape[1] * 8
+        _budget(
+            row_bytes,
+            self.max_workspace_bytes,
+            "One source-row graph distance workspace",
+        )
+        batch_rows = max(1, self.max_workspace_bytes // row_bytes)
+        sources, inverse = np.unique(rows, return_inverse=True)
+        for start in range(0, len(sources), batch_rows):
+            stop = min(start + batch_rows, len(sources))
+            block = self._rows_for(sources[start:stop])[:, columns]
+            select = (inverse >= start) & (inverse < stop)
+            out[select] = block[inverse[select] - start]
+        return out
 
     def __getitem__(self, key):
         if not isinstance(key, tuple):

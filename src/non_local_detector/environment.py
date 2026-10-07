@@ -1028,6 +1028,12 @@ class Environment:
                 np.ix_(position_bin_inds, interior_bin_indices)
             ]
 
+        if isinstance(self.distance_between_nodes_, LazyGraphDistances):
+            # N-D deferred distances: exact rows for the visited source bins.
+            position_bin_inds = self.get_bin_ind(np.asarray(positions))
+            return self.distance_between_nodes_.cross_distances(
+                position_bin_inds, interior_bin_indices
+            )
         if self.distance_between_nodes_ is not None and not isinstance(
             self.distance_between_nodes_, dict
         ):
