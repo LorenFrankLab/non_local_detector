@@ -255,12 +255,15 @@ criteria:
 
 - The legacy evidence-semantics test explicitly selects reference accumulation.
   Stable checkpointed evidence retains its independent float64-sum tests.
-- Sorted KDE/GLM emissions accumulate active neurons in population order.
-  Host count metadata is packed into a power-of-two capacity and enters JIT
-  once per request; the numerical workspace uses fixed 64-row blocks. Traced
-  counts and unsafe products retain the full ordered `xlogy` path, including
-  zero/nonfinite behavior. Matrix reduction violated existing posterior
-  tolerances for 96 simultaneously active neurons on the CI CPU runtime.
+- Sorted KDE/GLM emissions keep the fixed 64-row matrix accumulation. Its CI
+  difference from the per-neuron float32 reference (decoder posterior 4/5130
+  elements, max 3.457e-05) is the reference's own rounding: running the same
+  model with the float64 sum of the same float32 inputs, rounded once,
+  reproduces that difference exactly against the per-neuron order. The test
+  now requires emissions within 16 float32 ulp of that float64 sum and
+  posteriors no further from it than the per-neuron reference. Integer counts
+  enter `xlogy` as floats, and uniform-duration blocks keep each row's own
+  duration derivative; both fixes leave forward values bitwise unchanged.
 - Singleton Gaussian tails materialize their broadcast divisor before division.
   Float32 kernels with enabled float64 accumulation use the same guard to
   prevent tile-dependent elementary rounding from exceeding existing controls.
@@ -300,19 +303,11 @@ or NVML measurements. The [native comparison record](performance_artifacts/phase
 contains exact source/input hashes, timings, resource counters and reference
 override provenance.
 
-The [ordered-emission benchmark](../scripts/benchmark_phase7_sorted_accumulation.py)
-measures synchronized warmed calls, including host packing, against the trusted
-pre-fix matrix and full ordered implementations. At 256 rows, 96 neurons and
-32,400 positions, sparse calls take **46.4 ms CPU / 1.48 ms A100**, respectively
-9.46×/7.80× faster than the full ordered fallback, but 1.49×/2.26× slower than
-the matrix reduction. A dense simultaneous burst expands the request capacity
-to the full population: **337 ms CPU / 12.0 ms A100**, 9.02×/13.5× slower than
-the matrix path. Both platforms retain two compiled signatures across 32
-changing sparse chunks. These kernel measurements reflect concurrent host
-load and do not establish an end-to-end speedup. Their
+An ordered sparse emission briefly replaced the matrix path; its
 [CPU](performance_artifacts/phase7/ci-fix-sorted-cpu.json) and
-[A100](performance_artifacts/phase7/ci-fix-sorted-gpu.json) manifests precede
-only the final query-workaround change; the measured emission module is
-byte-identical to the correction manifest. The earlier full-hour timings and
-built-wheel checks remain measurements of S2/S4/S6 and are not relabelled as
-qualification of the updated runtime.
+[A100](performance_artifacts/phase7/ci-fix-sorted-gpu.json) kernel timings
+(1.49×/2.26× slower than the matrix path for sparse chunks, 9.02×/13.5× for a
+simultaneous burst) are retained as historical measurements of that reverted
+variant. The earlier full-hour timings and built-wheel checks remain
+measurements of S2/S4/S6 and are not relabelled as qualification of the
+updated runtime.

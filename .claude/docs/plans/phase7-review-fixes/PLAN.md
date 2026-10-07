@@ -1,6 +1,6 @@
 # Checkpointed-Performance Review Fixes Implementation Plan
 
-**Status:** Not started.
+**Status:** Phase 1a done (matrix emission restored, plus two gradient fixes that leave forward values bitwise unchanged).
 
 This plan fixes the problems found when reviewing `feat/phase7-performance`
 against `main`, before that branch merges.

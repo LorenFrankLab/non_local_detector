@@ -1,5 +1,6 @@
 """Batched sorted likelihoods retain an independent per-neuron reference."""
 
+import math
 from contextlib import contextmanager
 
 import jax
@@ -85,6 +86,28 @@ def reference(arguments, rows):
         * np.asarray(arguments["no_spike_part_log_likelihood"])[interior]
     )
     return likelihood
+
+
+def float64_emission(counts, rates, durations, summed_rates):
+    """Non-local emission from the same inputs, summed exactly over neurons."""
+    counts = np.asarray(counts, np.float64)
+    rates = np.asarray(rates, np.float64)
+    durations = np.asarray(durations, np.float64)
+    terms = xlogy(
+        counts.T[:, :, None], rates[:, None, :] * durations[None, :, None]
+    )  # (n_neurons, n_rows, n_bins)
+    total = np.array(
+        [[math.fsum(column) for column in row.T] for row in terms.transpose(1, 0, 2)]
+    ).reshape(counts.shape[0], rates.shape[1])
+    return total - durations[:, None] * np.asarray(summed_rates, np.float64)
+
+
+def assert_within_ulps(actual, exact, dtype, ulps=16):
+    """Each element lies within ``ulps`` units in the last place of ``exact``."""
+    actual = np.asarray(actual, np.float64)
+    spacing = np.spacing(np.abs(exact).astype(dtype)).astype(np.float64)
+    error = np.abs(actual - exact) / spacing
+    assert np.all(error <= ulps), f"max error {np.max(error):.1f} ulp > {ulps}"
 
 
 @pytest.mark.parametrize("backend", [sorted_spikes_kde, sorted_spikes_glm])
@@ -200,8 +223,8 @@ def test_float32_parameters_preserve_enabled_x64_accumulator_dtype():
 
 @pytest.mark.parametrize("x64", [False, True])
 @pytest.mark.parametrize("kind", ["sparse", "coincident", "zero", "nonfinite"])
-def test_host_counts_preserve_ordered_neuron_arithmetic(x64, kind):
-    """Silent rows, count multiplicity, and dense bursts share the same oracle."""
+def test_host_counts_match_float64_oracle_and_keep_xlogy_fallback(x64, kind):
+    """Matrix rows stay near the exact sum; unsafe products keep ordered xlogy."""
     from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
 
     with x64_mode(x64):
@@ -230,7 +253,13 @@ def test_host_counts_preserve_ordered_neuron_arithmetic(x64, kind):
             )
         expected -= durations[:, None] * summed
         actual = _poisson_nonlocal_log_likelihood(counts, rates, durations, summed)
-        np.testing.assert_array_equal(actual, expected)
+        if kind in ("zero", "nonfinite"):
+            # Unsafe products take the sequential per-neuron xlogy fallback.
+            np.testing.assert_array_equal(actual, expected)
+        else:
+            assert_within_ulps(
+                actual, float64_emission(counts, rates, durations, summed), dtype
+            )
         for rows in [slice(0, 1), slice(1, 73), slice(73, 139)]:
             np.testing.assert_array_equal(
                 _poisson_nonlocal_log_likelihood(
@@ -242,7 +271,7 @@ def test_host_counts_preserve_ordered_neuron_arithmetic(x64, kind):
 
 @pytest.mark.parametrize("host_counts", [False, True])
 @pytest.mark.parametrize("uniform", [False, True])
-def test_ordered_poisson_accumulation_preserves_rate_and_duration_gradients(
+def test_poisson_accumulation_preserves_rate_and_duration_gradients(
     host_counts,
     uniform,
 ):
@@ -314,6 +343,40 @@ def per_neuron_jax_reference(position_time, position, spike_times, **arguments):
     )
 
 
+def float64_nonlocal_emission(spike_times, arguments):
+    """The per-neuron reference's emission, summed exactly in float64."""
+    edges = arguments["time_edges"]
+    rows = arguments.get("row_slice")
+    start, stop, _ = (slice(None) if rows is None else rows).indices(len(edges) - 1)
+    stop = max(start, stop)
+    interior = arguments["is_track_interior"]
+    fields = np.asarray(arguments["place_fields"])
+    durations = np.asarray(np.diff(edges)[start:stop]).astype(fields.dtype)
+    counts = np.stack(
+        [
+            get_spikecount_per_time_bin(spikes, time_edges=edges, row_slice=rows)
+            for spikes in spike_times
+        ],
+        axis=1,
+    )
+    return float64_emission(
+        counts,
+        fields[:, interior],
+        durations,
+        np.asarray(arguments["no_spike_part_log_likelihood"])[interior],
+    )
+
+
+def float64_oracle_reference(position_time, position, spike_times, **arguments):
+    """Correctly rounded non-local emission; the local state is unchanged."""
+    if arguments.get("is_local", False):
+        return per_neuron_jax_reference(
+            position_time, position, spike_times, **arguments
+        )
+    exact = float64_nonlocal_emission(spike_times, arguments)
+    return jnp.asarray(exact.astype(np.asarray(arguments["place_fields"]).dtype))
+
+
 @pytest.mark.parametrize("nonlocal_model", [False, True])
 def test_many_neurons_match_native_posterior_and_evidence(nonlocal_model, monkeypatch):
     from non_local_detector import (
@@ -355,21 +418,49 @@ def test_many_neurons_match_native_posterior_and_evidence(nonlocal_model, monkey
         "return_outputs": "all",
     }
     fitter, optimized = _SORTED_SPIKES_ALGORITHMS["sorted_spikes_kde"]
-    with monkeypatch.context() as reference_context:
-        reference_context.setitem(
-            _SORTED_SPIKES_ALGORITHMS,
-            "sorted_spikes_kde",
-            (fitter, per_neuron_jax_reference),
-        )
-        expected = model.predict(spikes, **arguments)
+    emissions = []
+
+    def recording(position_time, position, spike_times, **kwargs):
+        result = optimized(position_time, position, spike_times, **kwargs)
+        if not kwargs.get("is_local", False):
+            emissions.append((spike_times, kwargs, np.asarray(result)))
+        return result
+
+    results = {}
+    for name, likelihood in [
+        ("reference", per_neuron_jax_reference),
+        ("oracle", float64_oracle_reference),
+        ("optimized", recording),
+    ]:
+        with monkeypatch.context() as context:
+            context.setitem(
+                _SORTED_SPIKES_ALGORITHMS, "sorted_spikes_kde", (fitter, likelihood)
+            )
+            results[name] = model.predict(spikes, **arguments)
     assert _SORTED_SPIKES_ALGORITHMS["sorted_spikes_kde"][1] is optimized
-    actual = model.predict(spikes, **arguments)
-    for name in expected.data_vars:
-        np.testing.assert_allclose(actual[name], expected[name], rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(
-        actual.attrs["marginal_log_likelihoods"],
-        expected.attrs["marginal_log_likelihoods"],
-        rtol=1e-6,
-        atol=1e-6,
+
+    # The float32 emission stays within a few ulp of the exact float64 sum.
+    assert emissions
+    for spike_times, kwargs, emission in emissions:
+        exact = float64_nonlocal_emission(spike_times, kwargs)
+        assert_within_ulps(emission, exact, np.float32)
+
+    # Downstream outputs are no further from the correctly rounded emission's
+    # outputs than the per-neuron float32 reference is.
+    reference, oracle, actual = (
+        results["reference"],
+        results["oracle"],
+        results["optimized"],
+    )
+    for name in oracle.data_vars:
+        bound = np.max(np.abs(np.asarray(reference[name]) - np.asarray(oracle[name])))
+        error = np.max(np.abs(np.asarray(actual[name]) - np.asarray(oracle[name])))
+        assert error <= 2 * bound + 1e-6, (name, error, bound)
+    evidence = [
+        np.asarray(result.attrs["marginal_log_likelihoods"])
+        for result in (reference, oracle, actual)
+    ]
+    assert np.max(np.abs(evidence[2] - evidence[1])) <= (
+        2 * np.max(np.abs(evidence[0] - evidence[1])) + 1e-6
     )
     np.testing.assert_array_equal(actual.is_missing, missing)

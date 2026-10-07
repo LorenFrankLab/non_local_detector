@@ -683,7 +683,7 @@ def predict_sorted_spikes_glm_log_likelihood(
             _spike_time_order=_spike_time_order,
         )
         log_likelihood = _poisson_nonlocal_log_likelihood(
-            counts,
+            jnp.asarray(counts),
             jnp.asarray(place_fields)[:, is_track_interior],
             durations,
             no_spike_part_log_likelihood[is_track_interior],

@@ -338,43 +338,20 @@ def weighted_mean_rate(spike_weights: np.ndarray, weight_sum: float) -> float:
     return float(np.sum(spike_weights) / weight_sum) if weight_sum > 0 else 0.0
 
 
-def _ordered_poisson_count_block(
-    counts: jnp.ndarray,
-    rates: jnp.ndarray,
-    durations: jnp.ndarray,
-    dtype: np.dtype,
-) -> jnp.ndarray:
-    """Retain xlogy semantics for zeros, nonfinite values, and mixed dtypes."""
-
-    def add_neuron(likelihood, neuron):
-        neuron_counts, neuron_rates = neuron
-        product = jax.lax.optimization_barrier(
-            neuron_rates[None, :] * durations[:, None]
-        )
-        contribution = jax.lax.optimization_barrier(
-            jax.scipy.special.xlogy(
-                neuron_counts.astype(jnp.result_type(neuron_counts, product))[:, None],
-                product,
-            )
-        )
-        return jax.lax.optimization_barrier(likelihood + contribution), None
-
-    likelihood, _ = jax.lax.scan(
-        add_neuron,
-        jnp.zeros((counts.shape[0], rates.shape[1]), dtype=dtype),
-        (counts.T, rates),
-    )
-    return likelihood
-
-
 @jax.jit
-def _poisson_full_count_log_likelihood(
+def _poisson_nonlocal_log_likelihood(
     counts: jnp.ndarray,
     rates: jnp.ndarray,
     durations: jnp.ndarray,
     summed_rates: jnp.ndarray,
 ) -> jnp.ndarray:
-    """Ordered fallback for traced counts, retaining fixed 64-row arithmetic."""
+    """Batched Poisson emissions with fixed arithmetic across row partitions.
+
+    A fixed 64-row matrix kernel uses the same rate-duration products as the
+    per-neuron reference. Highest dot precision excludes a TF32 approximation.
+    Exact zeros, non-finite products and nonuniform durations retain xlogy.
+    Padding is internal and never contributes an observation or returned row.
+    """
     n_rows, n_neurons = counts.shape
     n_bins = rates.shape[1]
     accumulator_dtype = jnp.result_type(rates, durations, jnp.zeros(()))
@@ -390,8 +367,66 @@ def _poisson_full_count_log_likelihood(
     padded_durations = jnp.pad(durations, (0, padded_rows - n_rows), mode="edge")
 
     def emit_block(block_counts, block_durations):
-        return _ordered_poisson_count_block(
-            block_counts, rates, block_durations, accumulator_dtype
+        smallest = jnp.min(rates) * jnp.min(block_durations)
+        largest = jnp.max(rates) * jnp.max(block_durations)
+        matrix_is_safe = (
+            jnp.all(jnp.isfinite(rates))
+            & jnp.all(jnp.isfinite(block_durations))
+            & jnp.all(block_durations == block_durations[0])
+            & (smallest > 0)
+            & jnp.isfinite(largest)
+            & (jnp.result_type(rates, block_durations) == accumulator_dtype)
+        )
+
+        def matrix_accumulation(_):
+            dtype = jnp.result_type(rates, block_durations)
+            block_counts_float = block_counts.astype(dtype)
+            # Values use the block's common duration. The zero-valued term
+            # (exactly 0 for these finite durations) restores each row's own
+            # duration derivative, which the shared duration would collapse.
+            log_durations = jnp.log(block_durations.astype(dtype))
+            duration_tangent = (
+                block_counts_float.sum(axis=1, keepdims=True)
+                * (log_durations - jax.lax.stop_gradient(log_durations))[:, None]
+            )
+            return (
+                jnp.matmul(
+                    block_counts_float,
+                    jnp.log(
+                        rates.astype(dtype) * jax.lax.stop_gradient(block_durations[0])
+                    ),
+                    precision=jax.lax.Precision.HIGHEST,
+                )
+                + duration_tangent
+            ).astype(accumulator_dtype)
+
+        def xlogy_accumulation(_):
+            def add_neuron(likelihood, neuron):
+                neuron_counts, neuron_rates = neuron
+                product = jax.lax.optimization_barrier(
+                    neuron_rates[None, :] * block_durations[:, None]
+                )
+                # Floating counts give integer inputs a zero tangent instead of
+                # float0, so rate and duration derivatives pass through.
+                contribution = jax.lax.optimization_barrier(
+                    jax.scipy.special.xlogy(
+                        neuron_counts.astype(jnp.result_type(neuron_counts, product))[
+                            :, None
+                        ],
+                        product,
+                    )
+                )
+                return jax.lax.optimization_barrier(likelihood + contribution), None
+
+            likelihood, _ = jax.lax.scan(
+                add_neuron,
+                jnp.zeros((block_rows, n_bins), dtype=accumulator_dtype),
+                (block_counts.T, rates),
+            )
+            return likelihood
+
+        return jax.lax.cond(
+            matrix_is_safe, matrix_accumulation, xlogy_accumulation, None
         )
 
     likelihood = jnp.zeros((n_rows, n_bins), dtype=accumulator_dtype)
@@ -414,127 +449,7 @@ def _poisson_full_count_log_likelihood(
         first = n_full * block_rows
         tail = emit_block(padded_counts[first:], padded_durations[first:])[:remainder]
         likelihood = likelihood.at[first:].set(tail)
-    ground = jax.lax.optimization_barrier(durations[:, None] * summed_rates)
-    return likelihood - ground
-
-
-@jax.jit
-def _poisson_packed_log_likelihood(
-    neurons: jnp.ndarray,
-    counts: jnp.ndarray,
-    rates: jnp.ndarray,
-    durations: jnp.ndarray,
-    summed_rates: jnp.ndarray,
-) -> jnp.ndarray:
-    """Evaluate packed active neurons in order, with bounded 64-row workspace."""
-    n_rows, capacity = neurons.shape
-    n_neurons, n_bins = rates.shape
-    dtype = jnp.result_type(rates, durations, jnp.zeros(()))
-    padded_rows = n_rows + (-n_rows) % 64
-    neurons = jnp.pad(
-        neurons, ((0, padded_rows - n_rows), (0, 0)), constant_values=n_neurons
-    )
-    counts = jnp.pad(counts, ((0, padded_rows - n_rows), (0, 0)))
-    padded_durations = jnp.pad(durations, (0, padded_rows - n_rows), mode="edge")
-
-    def emit_block(ids, events, exposure):
-        smallest = jnp.min(rates) * jnp.min(exposure)
-        largest = jnp.max(rates) * jnp.max(exposure)
-        sparse_is_safe = (
-            jnp.all(jnp.isfinite(rates))
-            & jnp.all(jnp.isfinite(exposure))
-            & (smallest > 0)
-            & jnp.isfinite(largest)
-            & (jnp.result_type(rates, exposure) == dtype)
-        )
-
-        def sparse_accumulation(_):
-            def add_event(likelihood, event):
-                neuron, count = event
-                valid = neuron < n_neurons
-                selected_rates = rates[jnp.minimum(neuron, n_neurons - 1)]
-                # Each exposure keeps its own derivative even when all values
-                # happen to be equal. Materialize products before taking logs.
-                product = jax.lax.optimization_barrier(
-                    selected_rates * exposure[:, None]
-                )
-                count = count.astype(jnp.result_type(count, product))
-                contribution = jax.lax.optimization_barrier(
-                    jnp.where(valid[:, None], count[:, None] * jnp.log(product), 0)
-                )
-                return jax.lax.optimization_barrier(likelihood + contribution), None
-
-            result, _ = jax.lax.scan(
-                add_event, jnp.zeros((64, n_bins), dtype=dtype), (ids.T, events.T)
-            )
-            return result
-
-        def full_accumulation(_):
-            # Absent neurons still enter xlogy in the fallback, preserving its
-            # handling of zero counts paired with NaN or infinite rates.
-            full_counts = jnp.zeros((64, n_neurons), dtype=events.dtype)
-            full_counts = full_counts.at[jnp.arange(64)[:, None], ids].set(
-                events, mode="drop"
-            )
-            return _ordered_poisson_count_block(full_counts, rates, exposure, dtype)
-
-        return jax.lax.cond(
-            sparse_is_safe, sparse_accumulation, full_accumulation, None
-        )
-
-    def update_block(number, result):
-        first = number * 64
-        ids = jax.lax.dynamic_slice(neurons, (first, 0), (64, capacity))
-        events = jax.lax.dynamic_slice(counts, (first, 0), (64, capacity))
-        exposure = jax.lax.dynamic_slice(padded_durations, (first,), (64,))
-        return jax.lax.dynamic_update_slice(
-            result, emit_block(ids, events, exposure), (first, 0)
-        )
-
-    result = jax.lax.fori_loop(
-        0,
-        padded_rows // 64,
-        update_block,
-        jnp.zeros((padded_rows, n_bins), dtype=dtype),
-    )[:n_rows]
-    ground = jax.lax.optimization_barrier(durations[:, None] * summed_rates)
-    return result - ground
-
-
-def _poisson_nonlocal_log_likelihood(
-    counts: np.ndarray | jnp.ndarray,
-    rates: jnp.ndarray,
-    durations: jnp.ndarray,
-    summed_rates: jnp.ndarray,
-) -> jnp.ndarray:
-    """Ordered Poisson emissions, packing the host spike-count metadata.
-
-    Pack each row into the request's power-of-two active-neuron capacity. A
-    compiled scan visits only those neurons, in their original population order,
-    and never retains
-    a rows-by-neurons-by-positions contribution tensor. Fixed 64-row kernels
-    keep singleton and ragged requests consistent. JAX/traced counts use the
-    full ordered scan; native callers already build their counts on the host.
-    """
-    if not isinstance(counts, np.ndarray) or 0 in counts.shape or rates.shape[1] == 0:
-        return _poisson_full_count_log_likelihood(
-            jnp.asarray(counts), rates, durations, summed_rates
-        )
-    n_rows, n_neurons = counts.shape
-    active = np.count_nonzero(counts, axis=1)
-    maximum = int(active.max())
-    capacity = min(1 << (maximum - 1).bit_length(), n_neurons) if maximum else 0
-    selected_row, selected_neuron = np.nonzero(counts)
-    offsets = np.cumsum(active) - active
-    slots = np.arange(len(selected_row)) - offsets[selected_row]
-    ids = np.full((n_rows, capacity), n_neurons, dtype=np.int32)
-    events = np.zeros((n_rows, capacity), dtype=counts.dtype)
-    ids[selected_row, slots] = selected_neuron
-    events[selected_row, slots] = counts[selected_row, selected_neuron]
-    # Keep packing entirely on the host and enter JIT once. Group-dependent
-    # gathers/scatters otherwise introduce data-dependent compilation and GPU
-    # dispatch overhead despite fixed-size inner numerical kernels.
-    return _poisson_packed_log_likelihood(ids, events, rates, durations, summed_rates)
+    return likelihood - durations[:, None] * summed_rates
 
 
 def get_position_at_time(

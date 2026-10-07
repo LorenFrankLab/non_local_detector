@@ -336,14 +336,11 @@ the production run is a prerequisite, not an optional late speed improvement.
 
 ### 1. Matrix accumulation for sorted-spike likelihoods
 
-CI follow-up: the matrix prototype exceeded existing float32 posterior
-tolerances with 96 simultaneously active neurons on JAX 0.11.2 CPU. Production
-KDE/GLM emissions now pack host spike counts and scan active neurons in their
-original order using fixed 64-row numerical blocks. Traced or unsafe inputs
-retain ordered `xlogy` semantics. Dense bursts expand the request capacity and
-can be substantially slower than the matrix prototype; synchronized CPU/A100
-measurements and native posterior controls are recorded in the
-[CI correction record](../../../../docs/performance_validation.md#ci-runtime-corrections-after-s6).
+CI follow-up: the matrix path's CI difference from the per-neuron float32
+reference was the reference's rounding, not matrix error; the matrix
+accumulation is retained and the test compares both against a float64 sum of
+the same inputs (see the
+[CI correction record](../../../../docs/performance_validation.md#ci-runtime-corrections-after-s6)).
 Earlier hour-scale matrix measurements retain their original source hashes.
 
 Prototype shared per-chunk spike-count construction and matrix accumulation in
