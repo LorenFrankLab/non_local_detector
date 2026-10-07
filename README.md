@@ -62,6 +62,11 @@ pip install -e .[dev]
 
 ## 📖 Quick Start
 
+These examples target the source branch and the forthcoming 0.7 time/Hz API.
+For an older installed release, use its matching documentation. See the
+[time-grid migration guide](docs/time_grid_migration.md) and the opt-in
+[checkpointed prediction guide](docs/performance_prediction.md).
+
 ### Basic Replay Detection
 
 ```python

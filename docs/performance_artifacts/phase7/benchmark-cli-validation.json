@@ -1,0 +1,82 @@
+{
+  "benchmark_candidate_path": "/private/tmp/nld-phase7-replay-qualification/benchmark_cli_candidate.py",
+  "benchmark_candidate_sha256": "d38e6ef25d69d79396af5ce7d0d20123dd5290060c83378b4e486bc5d8a37918",
+  "captured_utc": "2026-10-06T22:14:36.650643+00:00",
+  "cpu_check": {
+    "allocator_environment": {
+      "XLA_PYTHON_CLIENT_MEM_FRACTION": null,
+      "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+    },
+    "configuration": {
+      "arena": 10.0,
+      "bin_size": 2.0,
+      "chunk_size": 16,
+      "cleanup_spatial": false,
+      "device_budget_gib": null,
+      "duration": 0.032,
+      "encoding_duration": 1.0,
+      "family": "sorted",
+      "host_budget_gib": 2.0,
+      "mark_dimensions": 2,
+      "mode": "compact",
+      "output": "/tmp/nld-phase7-benchmark-cli-cpu-d38e6ef2",
+      "platform": "cpu",
+      "population": 1,
+      "repeat": 1,
+      "save_reference": false,
+      "selected_intervals": null,
+      "spike_rate": 5.0,
+      "warm_duration": null
+    },
+    "device_memory_stats": null,
+    "exit_code": 0,
+    "hardware": {
+      "device_kinds": [
+        "cpu"
+      ],
+      "devices": [
+        "TFRT_CPU_0"
+      ],
+      "physical_ram": 4328810811392,
+      "platform": "Linux-5.15.0-187-generic-x86_64-with-glibc2.35",
+      "runtime": "cpu"
+    },
+    "log_path": "/private/tmp/nld-phase7-replay-qualification/cli-zephyr-cpu.log",
+    "log_sha256": "325d73259ea3a9a9575a8a3fbe007ffe4f17ad1b2ae3a73ce732b79285447853",
+    "median_warm_seconds": 0.02803341019898653,
+    "peak_process_rss_bytes": 753274880,
+    "repeat": 1,
+    "report_path": "/private/tmp/nld-phase7-replay-qualification/cli-zephyr-cpu-report.json",
+    "report_sha256": "797e47b9db8cd569e8c6ab7f16f6da66fb0d59f4c94c7d4294adf11a0201b557",
+    "rows": 16,
+    "runtime_aggregate_sha256": "11baf69a8a8c84c9974d9f44b768b9583e098a576ad0ac7b4cdbacefb073112b",
+    "source_unchanged": true,
+    "versions": {
+      "jax": "0.9.0",
+      "jaxlib": "0.9.0",
+      "numpy": "2.4.1",
+      "scipy": "1.17.0"
+    }
+  },
+  "gpu_unavailable_check": {
+    "error": "requested gpu backend unavailable: Unknown backend gpu; platforms present cpu",
+    "exit_code": 2,
+    "log_path": "/private/tmp/nld-phase7-replay-qualification/cli-gpu-unavailable.log",
+    "log_sha256": "bff2075ba6c7bf3e4bb45b19367dd85758d1cc3805bb457dadd5e6e09967d158",
+    "output_directory_created": false,
+    "scope": "Local CPU-only JAX process with JAX_PLATFORMS=cpu; no silent fallback."
+  },
+  "parent_source_path": "/private/tmp/nld-phase7-performance/scripts/benchmark_phase7_pipeline.py",
+  "qualification_limit": "GPU reservation enforcement is statically verified here, not newly executed. S4 production hours retain original benchmark SHA4f84217f plus explicit no-preallocation wrapper and NVML; these CLI smokes do not replace their measurements.",
+  "remote_script_path": "/tmp/nld-phase7-benchmark-cli-candidate-d38e6ef2.py",
+  "scope": "Benchmark CLI only; no package/runtime edits or new numerical tests. No CUDA execution or device initialization; explicit JAX_PLATFORMS=cpu and CUDA_VISIBLE_DEVICES empty on Zephyr.",
+  "static_cli_checks": {
+    "device_budget_uses_max_of": [
+      "peak_bytes_in_use",
+      "peak_bytes_reserved",
+      "peak_pool_bytes"
+    ],
+    "explicit_requested_backend": "jax.devices(args.platform)",
+    "preallocation_default_set_before_jax_import": true
+  }
+}

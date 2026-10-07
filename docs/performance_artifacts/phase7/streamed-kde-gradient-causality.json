@@ -1,0 +1,44 @@
+{
+  "python": "3.13.13",
+  "jax": "0.9.0",
+  "backend": "cpu",
+  "global_x64": false,
+  "source": "/private/tmp/nld-phase7-performance/src/non_local_detector/likelihoods/streamed_kde.py",
+  "source_sha256": "6920cd682a6bac05f0ab02f1672f2fc47f48510924dbae5816c6624697360a9c",
+  "before_variant": "current kernel math with prior fused full-prefix/scalar-tail wrapper",
+  "shape": {
+    "evaluation": 13,
+    "samples": 9,
+    "dimensions": 4,
+    "eval_tile": 3,
+    "sample_tile": 4
+  },
+  "before_compiled_forward_max_abs": 8.282271491896753e-10,
+  "before_compiled_grad_max_abs": 0.0010307478501245288,
+  "before_compiled_last_grad": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "before_disabled_jit_grad_max_abs": 1.0018692468520551e-09,
+  "before_disabled_jit_last_grad": [
+    -0.0010307480115443468,
+    -0.00030274756136350334,
+    0.00037652175524272025,
+    -0.0004901711363345385
+  ],
+  "before_compiled_jvp_max_abs": 1.4986439138275909e-09,
+  "final_grad_max_abs": 1.0018692468520551e-09,
+  "final_outer_jit_grad_max_abs": 1.2938884364974146e-09,
+  "final_last_grad": [
+    -0.0010307480115443468,
+    -0.00030274756136350334,
+    0.00037652175524272025,
+    -0.0004901710781268775
+  ],
+  "unchanged_float32_tolerance": {
+    "rtol": 1e-06,
+    "atol": 1e-05
+  }
+}

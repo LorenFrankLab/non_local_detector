@@ -1,0 +1,113 @@
+{
+  "scope": "System-wide shared Zephyr host; cannot attribute changes to these jobs or separate other users. Initial sample occurred after all four jobs started, so it is not a pre-job baseline. No cache dropping or source edits.",
+  "sample_interval_seconds": 1,
+  "started_unix": 1791324241.5069418,
+  "elapsed_seconds": 5774.413860082626,
+  "initial_sample": {
+    "timestamp_utc": "2026-10-06T22:04:01.507147+00:00",
+    "values_bytes": {
+      "total": 4328810811392,
+      "available": 3906899636224,
+      "used": 421911175168,
+      "free": 366296133632,
+      "active": 1254389948416,
+      "inactive": 2453205794816,
+      "buffers": 1264009216,
+      "cached": 3559813767168,
+      "shared": 892141568,
+      "slab": 103369940992,
+      "proc_MemAvailable": 3906899636224,
+      "proc_Buffers": 1264009216,
+      "proc_Cached": 3467280232448,
+      "proc_Dirty": 143360,
+      "proc_Writeback": 0,
+      "proc_WritebackTmp": 0
+    }
+  },
+  "latest_values_bytes": {
+    "total": 4328810811392,
+    "available": 4019054608384,
+    "used": 309756203008,
+    "free": 492216995840,
+    "active": 1254272618496,
+    "inactive": 2446943232000,
+    "buffers": 1264955392,
+    "cached": 3559379161088,
+    "shared": 850251776,
+    "slab": 103319552000,
+    "proc_MemAvailable": 4019054608384,
+    "proc_Buffers": 1264955392,
+    "proc_Cached": 3466855501824,
+    "proc_Dirty": 135168,
+    "proc_Writeback": 0,
+    "proc_WritebackTmp": 0
+  },
+  "range_bytes": {
+    "total": {
+      "minimum": 4328810811392,
+      "maximum": 4328810811392
+    },
+    "available": {
+      "minimum": 3827978231808,
+      "maximum": 4019054608384
+    },
+    "used": {
+      "minimum": 309756203008,
+      "maximum": 500832579584
+    },
+    "free": {
+      "minimum": 300478369792,
+      "maximum": 492216995840
+    },
+    "active": {
+      "minimum": 1254271414272,
+      "maximum": 1254848565248
+    },
+    "inactive": {
+      "minimum": 2446943232000,
+      "maximum": 2454345076736
+    },
+    "buffers": {
+      "minimum": 1264009216,
+      "maximum": 1265008640
+    },
+    "cached": {
+      "minimum": 3559379161088,
+      "maximum": 3560383045632
+    },
+    "shared": {
+      "minimum": 794042368,
+      "maximum": 892153856
+    },
+    "slab": {
+      "minimum": 103319552000,
+      "maximum": 103865421824
+    },
+    "proc_MemAvailable": {
+      "minimum": 3827978231808,
+      "maximum": 4019054608384
+    },
+    "proc_Buffers": {
+      "minimum": 1264009216,
+      "maximum": 1265008640
+    },
+    "proc_Cached": {
+      "minimum": 3466855501824,
+      "maximum": 3467849351168
+    },
+    "proc_Dirty": {
+      "minimum": 0,
+      "maximum": 226467840
+    },
+    "proc_Writeback": {
+      "minimum": 0,
+      "maximum": 7233536
+    },
+    "proc_WritebackTmp": {
+      "minimum": 0,
+      "maximum": 0
+    }
+  },
+  "samples": 5766,
+  "all_jobs_completed": true
+}

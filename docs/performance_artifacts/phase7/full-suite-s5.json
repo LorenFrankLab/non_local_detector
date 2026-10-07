@@ -1,0 +1,15 @@
+{
+  "snapshot": "S5",
+  "runtime_module_count": 60,
+  "runtime_aggregate_sha256": "acb5f0a8f504c97364b59b5375c7779ba041dfd63f303537a32f98a19f7501fd",
+  "archive_sha256": "b1b4ad77663696c8a1e6cef6cbc14247e0ed2427534ef579f9dda159806eaefe",
+  "passed": 3016,
+  "skipped": 26,
+  "warnings": 609,
+  "elapsed_seconds": 1658.97,
+  "exit_code": 0,
+  "log_sha256": "84cbca48ad53bb4619a45efc15b95b4d8028e1a5e1f722f24161bd6b3c30749c",
+  "scope": "Whole suite including shipped notebooks/consumer assets. Explicit optional encoding-tiled KDE implementation was not present in S5 and needs separate qualification.",
+  "numerical_reference_data_changed": false,
+  "tolerances_changed": false
+}

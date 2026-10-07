@@ -1,0 +1,64 @@
+{
+  "source_aggregate": "11baf69a8a8c84c9974d9f44b768b9583e098a576ad0ac7b4cdbacefb073112b",
+  "completed_short_runs": [
+    {
+      "name": "sorted64_1cm_spatial_smoke",
+      "configuration": {
+        "family": "sorted",
+        "platform": "gpu",
+        "arena": 180.0,
+        "bin_size": 1.0,
+        "duration": 0.64,
+        "encoding_duration": 10.0,
+        "chunk_size": 256,
+        "mode": "spatial",
+        "repeat": 5,
+        "host_budget_gib": 8.0,
+        "device_budget_gib": 6.4,
+        "population": 64,
+        "spike_rate": 5.0,
+        "mark_dimensions": 2,
+        "warm_duration": null,
+        "selected_intervals": null,
+        "cleanup_spatial": true,
+        "output": "/tmp/nld-phase7-gpu-reports/sorted64-S4-1cm-spatial-smoke",
+        "save_reference": false
+      },
+      "median_warm_seconds": 0.981758383102715,
+      "peak_host_bytes": 1894137856,
+      "sampled_total_device_peak_bytes": 1837760512,
+      "source_stable_during_run": true,
+      "process_exit_code": 0
+    },
+    {
+      "name": "clusterless8_2cm_spatial_smoke",
+      "configuration": {
+        "family": "clusterless",
+        "platform": "gpu",
+        "arena": 180.0,
+        "bin_size": 2.0,
+        "duration": 0.64,
+        "encoding_duration": 10.0,
+        "chunk_size": 256,
+        "mode": "spatial",
+        "repeat": 5,
+        "host_budget_gib": 8.0,
+        "device_budget_gib": 6.4,
+        "population": 8,
+        "spike_rate": 20.0,
+        "mark_dimensions": 4,
+        "warm_duration": null,
+        "selected_intervals": null,
+        "cleanup_spatial": true,
+        "output": "/tmp/nld-phase7-gpu-reports/clusterless8-S4-2cm-spatial-smoke",
+        "save_reference": false
+      },
+      "median_warm_seconds": 1.2625241158530116,
+      "peak_host_bytes": 1643229184,
+      "sampled_total_device_peak_bytes": 1563033600,
+      "source_stable_during_run": true,
+      "process_exit_code": 0
+    }
+  ],
+  "full_hour_runs": "All four completed with exit0; see gpu-full-hours-summary.json. These short-run measurements remain a separate collection."
+}

@@ -1,0 +1,36 @@
+{
+  "2": {
+    "same_inputs": true,
+    "same_result_within_existing_tolerance": true,
+    "values": {
+      "_marginal_log_likelihoods": {
+        "maxabs": 6.556510925292969e-06,
+        "before_dtype": "float64",
+        "after_dtype": "float64"
+      },
+      "acausal_state_probabilities": {
+        "maxabs": 4.172325134277344e-07,
+        "before_dtype": "float32",
+        "after_dtype": "float32"
+      }
+    },
+    "speedup": 4.612532600312867
+  },
+  "1": {
+    "same_inputs": true,
+    "same_result_within_existing_tolerance": true,
+    "values": {
+      "_marginal_log_likelihoods": {
+        "maxabs": 5.960464477539062e-07,
+        "before_dtype": "float64",
+        "after_dtype": "float64"
+      },
+      "acausal_state_probabilities": {
+        "maxabs": 3.8743019104003906e-07,
+        "before_dtype": "float32",
+        "after_dtype": "float32"
+      }
+    },
+    "speedup": 3.8965077151761527
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "platform": "cpu",
+  "hardware": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "devices": [
+    "TFRT_CPU_0"
+  ],
+  "source_aggregate": "8b96d773cf5cdb5ae678facfe04fdd30edb096fbb5dbb97b848134695bfab13c",
+  "script_sha256": "4e9e837294dcca1c8b934ade271e298692f85c39f4cdf7e7d278baa519967f2f",
+  "input_hashes": {
+    "tracking": "5b62ddcfd808b36894e5e17844ca11b34746fda81e866ecd7cca4806189c709d",
+    "position": "cd4e1d0dec95fac8d15ec7d70eaf027e5a4323ead9a946fc49ea2f6704edd9db",
+    "encoding_spikes": "00eb402951fb3f758f79f85917b0a6104ebf1bc22c47c31d1671b017f90beef8",
+    "encoding_marks": "5f815e029e97032f43138087350ddaac57b5c34cbb4cd1fcfafbf7a09e9b5701",
+    "decode_tracking": "750e7d34787bc66487349af687c1aabf7b5a5a352c06d8bb86218c74ba671130",
+    "decode_position": "5b387746aa01657234b5bc59c065d6003e0caf9a2723e85cd767d4adb5ed82e3",
+    "decode_spikes": "68e2578ad371d3e14ce6341c9b5dae790121a038970ea04807fd19068522aa0e",
+    "decode_marks": "588afa38acb1e76845f470ea8469b3ac02582050570fad453505ff3c25724fd0",
+    "time_edges": "e037b01b4d17caa7b014c818f13ae45bcd02358cc9890b38b30f13baaa0b6ac2"
+  },
+  "configuration": {
+    "encoding_duration": 10,
+    "decoding_duration": 0.64,
+    "population": 1,
+    "spike_rate": 20,
+    "marks": 4,
+    "arena": 20,
+    "bin_size": 2,
+    "position_std": 6,
+    "waveform_std": 24,
+    "decoding_block_size": 10000,
+    "encoding_block_size": 64,
+    "position_block_size": 32,
+    "chunk_size": 256,
+    "repeats": 5,
+    "timing_order": "original then tiled, interleaved each repeat; fit and prediction synchronized separately"
+  },
+  "times": {
+    "original": {
+      "fit": [
+        0.006747917039319873,
+        0.006164541933685541,
+        0.006279875058680773,
+        0.008263625204563141,
+        0.006667708046734333
+      ],
+      "predict": [
+        0.026919665979221463,
+        0.026554707903414965,
+        0.025946374982595444,
+        0.04122654185630381,
+        0.03319666697643697
+      ]
+    },
+    "tiled": {
+      "fit": [
+        0.006937582977116108,
+        0.006694542011246085,
+        0.00851200008764863,
+        0.0077258748933672905,
+        0.007172542158514261
+      ],
+      "predict": [
+        0.02561112493276596,
+        0.025795874884352088,
+        0.03198045818135142,
+        0.032955750124529004,
+        0.044164333026856184
+      ]
+    }
+  },
+  "medians": {
+    "original": {
+      "fit": 0.006667708046734333,
+      "predict": 0.026919665979221463
+    },
+    "tiled": {
+      "fit": 0.007172542158514261,
+      "predict": 0.03198045818135142
+    }
+  },
+  "max_abs_errors": {
+    "state_probabilities": 5.662441253662109e-07,
+    "log_evidence": 2.983957529067993e-06,
+    "occupancy": 1.1641532182693481e-09,
+    "mean_rates": 0.0
+  },
+  "existing_tolerance": {
+    "rtol": 1e-06,
+    "atol": 1e-05
+  },
+  "jax_enable_x64": false,
+  "global_matmul_precision": "None",
+  "source_stable": true
+}

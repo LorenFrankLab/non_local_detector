@@ -1,0 +1,229 @@
+{
+  "metadata": {
+    "seed": 7351,
+    "x64_enabled": true,
+    "devices": [
+      "TFRT_CPU_0"
+    ],
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "jax_version": "0.9.0",
+    "benchmark_sha256": "c86ebefc4f055679a93363c8efde606928df67505fbf677db81b9012b2a6347f",
+    "source_hashes": {
+      "common.py": "82a0f2807eeb84fb6b8361778c85be5ca563b300c23a7973985ff5fe506a2818",
+      "clusterless_kde.py": "41c3dbb267670334267ab95cd4033576bad5986c7b5a7dcdefd60c1a4d4b29a1"
+    },
+    "input_sha256": "403e10830bcb281323ea7152e6a5988fb853fcd9e6bc93015999944010b140be",
+    "final_rss_bytes": 510607360,
+    "measurement": "synchronized kernel calls; padding prepared before timing; all policies' inputs resident; final RSS is not a transient peak"
+  },
+  "policies": {
+    "exact": {
+      "compile_plus_first_seconds": 2.1002552919089794,
+      "kde_executable_shapes": 7,
+      "marked_executable_shapes": 6,
+      "shapes": [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          61,
+          97,
+          1
+        ],
+        [
+          63,
+          100,
+          2
+        ],
+        [
+          65,
+          103,
+          3
+        ],
+        [
+          127,
+          199,
+          5
+        ],
+        [
+          129,
+          201,
+          11
+        ],
+        [
+          131,
+          203,
+          19
+        ]
+      ],
+      "resident_input_bytes": 4823952,
+      "warm_seconds": [
+        0.009055957896634936,
+        0.015242125140503049,
+        0.0066910418681800365,
+        0.009039000142365694,
+        0.009120125090703368
+      ],
+      "max_abs_difference": 0.0,
+      "warm_median_seconds": 0.009055957896634936
+    },
+    "power2": {
+      "compile_plus_first_seconds": 1.7925853750202805,
+      "kde_executable_shapes": 5,
+      "marked_executable_shapes": 6,
+      "shapes": [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          64,
+          128,
+          1
+        ],
+        [
+          64,
+          128,
+          2
+        ],
+        [
+          128,
+          128,
+          4
+        ],
+        [
+          128,
+          256,
+          8
+        ],
+        [
+          256,
+          256,
+          16
+        ],
+        [
+          256,
+          256,
+          32
+        ]
+      ],
+      "resident_input_bytes": 7468000,
+      "warm_seconds": [
+        0.013272209092974663,
+        0.04079662496224046,
+        0.010203166864812374,
+        0.009709625039249659,
+        0.007576667005196214
+      ],
+      "max_abs_difference": 8.881784197001252e-16,
+      "warm_median_seconds": 0.010203166864812374
+    },
+    "multiple256": {
+      "compile_plus_first_seconds": 1.0719210419338197,
+      "kde_executable_shapes": 2,
+      "marked_executable_shapes": 1,
+      "shapes": [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          256,
+          256,
+          256
+        ],
+        [
+          256,
+          256,
+          256
+        ],
+        [
+          256,
+          256,
+          256
+        ],
+        [
+          256,
+          256,
+          256
+        ],
+        [
+          256,
+          256,
+          256
+        ],
+        [
+          256,
+          256,
+          256
+        ]
+      ],
+      "resident_input_bytes": 12800000,
+      "warm_seconds": [
+        0.034725792007520795,
+        0.04260941711254418,
+        0.02913862490095198,
+        0.03306937497109175,
+        0.021530749974772334
+      ],
+      "max_abs_difference": 8.881784197001252e-16,
+      "warm_median_seconds": 0.03306937497109175
+    },
+    "sqrt2": {
+      "compile_plus_first_seconds": 2.151931375032291,
+      "kde_executable_shapes": 5,
+      "marked_executable_shapes": 6,
+      "shapes": [
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          64,
+          128,
+          1
+        ],
+        [
+          64,
+          128,
+          2
+        ],
+        [
+          91,
+          128,
+          4
+        ],
+        [
+          128,
+          256,
+          6
+        ],
+        [
+          182,
+          256,
+          12
+        ],
+        [
+          182,
+          256,
+          23
+        ]
+      ],
+      "resident_input_bytes": 5941640,
+      "warm_seconds": [
+        0.018625959055498242,
+        0.05205520801246166,
+        0.013772375183179975,
+        0.009394624968990684,
+        0.008185416925698519
+      ],
+      "max_abs_difference": 1.7763568394002505e-15,
+      "warm_median_seconds": 0.013772375183179975
+    }
+  }
+}

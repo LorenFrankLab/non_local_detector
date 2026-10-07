@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Checkpointed prediction and structured transitions
+
+- Opt-in checkpointed prediction returns compact state probabilities or writes spatial arrays incrementally to an atomic directory store. Selected intervals retain whole-recording filtering/smoothing context; missing rows keep the existing transition and observation semantics.
+- Supported Cartesian uniform, identity, scalar and separable Gaussian blocks use exact structured products with explicit capability checks. Auto fallback and explicit lazy dense reads have byte budgets. Supported N-D setup defers all-pairs graph distances and evaluates requested distances in bounded batches.
+- Result stores preserve bin edges, global diagnostics, native labels and excluded-bin padding. Reopening is lazy with an explicit read limit; feasible compact/spatial results can still be exported to NetCDF. Existing dense prediction defaults remain available.
+- CPU and CUDA require separate qualification. EM/Viterbi retain their existing memory requirements; this change does not qualify those APIs for the production spatial workload. See [the API guide](docs/performance_prediction.md) and the Phase 7 measurement record for measured configurations and remaining release gates.
+- Checkpointed log-evidence totals use stable host float64 accumulation while preserving posterior arithmetic. This fixes an existing hour-scale float32 total drift; the dense driver retains its previous accumulation.
+- Dense state-probability aggregation, marked-KDE, GMM and diffusion contractions request highest multiplication precision. On CUDA this removes the excess error from TF32 multiplication; independent posterior-sum and intensity/gradient oracles and shuffled/ragged checks verify the corrections at unchanged tolerances.
+- Linear clusterless KDE supports optional encoding-sample and position tiles during fit and local/nonlocal prediction. Samples, weights, normalization and floors retain their existing semantics; tile limits bound kernel workspace, and longer-training throughput is qualified separately.
+
 ### Explicit time and rate contract
 
 - **Breaking:** fitted spike rates and ground-process intensities are Hz, using integrated encoding exposure in seconds. All eight backends and the no-spike model apply the actual decode-bin duration. The GLM default L2 penalty is 0.5 per second (the prior 0.001 at 500 Hz).

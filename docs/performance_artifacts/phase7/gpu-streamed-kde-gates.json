@@ -1,0 +1,44 @@
+{
+  "gates": [
+    {
+      "platform": "cpu",
+      "coverage": "75newhelper+14existingstreaming",
+      "jax_enable_x64": true,
+      "source_aggregate": "8b96d773cf5cdb5ae678facfe04fdd30edb096fbb5dbb97b848134695bfab13c",
+      "exit_code": 0,
+      "actual_summary": "89",
+      "log_path": "/private/tmp/nld-phase7-S6-streamed-cpu-x64-tests.log",
+      "log_sha256": "599f25e086cf1b8de0c8bee085c9000f16ec57123dd572006a9404bf44e1ef9f"
+    },
+    {
+      "platform": "cpu",
+      "coverage": "46newnativeintegration",
+      "jax_enable_x64": true,
+      "source_aggregate": "8b96d773cf5cdb5ae678facfe04fdd30edb096fbb5dbb97b848134695bfab13c",
+      "exit_code": 0,
+      "actual_summary": "46",
+      "log_path": "/private/tmp/nld-phase7-S6-native-streamed-cpu-x64-tests.log",
+      "log_sha256": "b339d31a6078ef6536e70a4a60508d93a02b8a3f5d5f41d448678857c85b7f43"
+    },
+    {
+      "platform": "gpu",
+      "coverage": "75newhelper+14existingstreaming",
+      "jax_enable_x64": true,
+      "source_aggregate": "8b96d773cf5cdb5ae678facfe04fdd30edb096fbb5dbb97b848134695bfab13c",
+      "exit_code": 0,
+      "actual_summary": "89",
+      "log_path": "/private/tmp/nld-phase7-gpu-artifacts/S6/gates/nld-phase7-gpu-S6-streamed-x64-tests.log",
+      "log_sha256": "e4ede900b6bdf9f3bb7676156b62a8dd1fa9404da1dbc392044e9defc90207ef"
+    },
+    {
+      "platform": "gpu",
+      "coverage": "46newnativeintegration",
+      "jax_enable_x64": true,
+      "source_aggregate": "8b96d773cf5cdb5ae678facfe04fdd30edb096fbb5dbb97b848134695bfab13c",
+      "exit_code": 0,
+      "actual_summary": "46",
+      "log_path": "/private/tmp/nld-phase7-gpu-artifacts/S6/gates/nld-phase7-gpu-S6-native-streamed-x64-tests.log",
+      "log_sha256": "73d25fa76ae5e5222b97be6049ab850be5ae8a87ad05d6afe2fe636d46727452"
+    }
+  ]
+}

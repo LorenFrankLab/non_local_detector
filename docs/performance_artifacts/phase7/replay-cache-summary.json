@@ -1,0 +1,57 @@
+{
+  "script_path": "/private/tmp/nld-phase7-performance/scripts/benchmark_phase7a_replay_cache.py",
+  "script_sha256": "3dab05f822458d78e97a6e8e765284f5390f2130a8d480a75457bb64af3694e1",
+  "engine_sha256": "f809eec9c14a6d1496ad6ddcaa7eb18362606e95253ca0be77208fa1ef6b13f1",
+  "runtime_aggregate": "8b96d773cf5cdb5ae678facfe04fdd30edb096fbb5dbb97b848134695bfab13c",
+  "scope": "T1024/N256 analytic LL, five alternating matched warm pairs at L64/256. Existing engine exact SHA unchanged; state marginals and stable evidence bitwise identical within each pair. Cache reads just-written files; OS cache uncontrolled, no fsync/cold-disk or neural/full-hour production-caching decision.",
+  "rows": [
+    {
+      "platform": "cpu",
+      "report_path": "/private/tmp/nld-phase7-replay-cache-artifacts/cpu-final-report.json",
+      "report_sha256": "b970671ff11be0c99cba0ce11b7a7af629550557e9e253bff90a012ae250ed64",
+      "warm_medians_seconds": {
+        "64": {
+          "recompute": 0.028460416942834854,
+          "disk_cache": 0.029821208911016583
+        },
+        "256": {
+          "recompute": 0.01872966601513326,
+          "disk_cache": 0.019179666182026267
+        }
+      },
+      "max_RSS_bytes": 433946624,
+      "max_NVML_bytes": 0,
+      "max_chunk_likelihood_bytes": 262144,
+      "max_likelihood_cache_logical_bytes": 1050624,
+      "max_likelihood_cache_allocated_bytes": 1114112,
+      "checkpoint_bytes": {
+        "64": 32768,
+        "256": 8192
+      }
+    },
+    {
+      "platform": "gpu",
+      "report_path": "/private/tmp/nld-phase7-replay-cache-artifacts/gpu-final-report.json",
+      "report_sha256": "e69e704c468b43b1f03771b2c87a83505085483297a040f174cf4b564dcc9e4a",
+      "warm_medians_seconds": {
+        "64": {
+          "recompute": 0.2762639205902815,
+          "disk_cache": 0.25684953946620226
+        },
+        "256": {
+          "recompute": 0.12902257312089205,
+          "disk_cache": 0.1260669333860278
+        }
+      },
+      "max_RSS_bytes": 931213312,
+      "max_NVML_bytes": 1416232960,
+      "max_chunk_likelihood_bytes": 262144,
+      "max_likelihood_cache_logical_bytes": 1050624,
+      "max_likelihood_cache_allocated_bytes": 107008,
+      "checkpoint_bytes": {
+        "64": 32768,
+        "256": 8192
+      }
+    }
+  ]
+}

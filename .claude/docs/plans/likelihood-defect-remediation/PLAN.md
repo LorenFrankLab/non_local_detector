@@ -1,8 +1,10 @@
 # Likelihood Defect Remediation
 
-Status: Phases 0–5 are merged on `main` (Phase 0 `c808dde`; Phase 1 `8c8765f` +
+Status: Phases 0–6 are merged on `main` (Phase 0 `c808dde`; Phase 1 `8c8765f` +
 `5bd63d4`; Phase 2 `86e22f0`; Phase 3 `ffc85a1`; Phase 4 `ee2cc21`; Phase 5
-`68e88b0`). The remaining phase plans were re-verified against `ee2cc21` on
+`68e88b0`; Phase 6 `fe1b2e9`, PR #59). Phase 7 is implemented and qualified for
+the recorded CPU/A100 configurations on `feat/phase7-performance`.
+The remaining phase plans were re-verified against `ee2cc21` on
 2026-09-22 and have the readiness states recorded below; Phase 5 did not change
 their blockers. C3b was resolved on 2026-09-25 (see
 [shared-contracts](shared-contracts.md#c3b--encoding-exposure-resolved-2026-09-25)).
@@ -110,7 +112,7 @@ encoding entries and missing encoding-state bypasses, while preserving unused
 and No-Spike-only entry behavior. The final complete suite passes **2,397 / 6
 skipped / 0 failed**; valid-model outputs remain bit-identical to accepted 6c.
 External adapter/pin coordination remains a release gate.
-Both pairs are committed; neither is merged or released. See the
+At this checkpoint both pairs were committed but not yet merged or released. See the
 [worktree scope record](phase-6-worktree-scope.md).
 
 
@@ -157,7 +159,7 @@ an assumption that every golden must change.
 | 6b/6d | **Implemented and reviewed against accepted 6a/6c**, committed. All eight backends pass physical-rate calibration through public fit/predict with 30/500 Hz tracking and 2/4 ms decoding; seven supported model families preserve exact predictions through save/load. Hz/support/metadata changes ship atomically. The three duration-sensitive corrections were explicitly approved and applied; all eight snapshots pass. The final integrated suite passes **2,397 / 6 skipped / 0 failed**. See the [6b review record](phase-6b-rate-units.md#implementation-and-review--2026-10-05), [6d completion record](phase-6d-model-compat.md#completion-review--2026-10-05), and [scope record](phase-6-worktree-scope.md). External adapter and dependency coordination remains required before release. |
 | 6c | **Package implementation finished, reviewed, and accepted**, committed. Cached/base-Viterbi and generator bypasses, overflow, and invalid clock provenance are closed under unchanged precision bounds. Final complete suite: **2,269 / 6 skipped / 0 failed**; focused: **300**; float64: **120**. Valid-grid arrays are bit-identical to reviewed 6b. See the [6c completion record](phase-6c-uniform-bins.md#completion-review--2026-10-05). Core row APIs and duration-calibrated transitions remain outside this guard; external rollout remains separate. |
 | 6d | **Package implementation finished, reviewed, and accepted**, committed. All active spike-state encoding entries are checked before dispatch; cached/base-Viterbi cannot bypass validation by omitting fitted encoding state. Unused/No-Spike-only entries are handled explicitly. New regressions: **128**; focused: **314**; float64 compatibility/persistence: **177**. Final complete suite: **2,397 / 6 skipped / 0 failed**; valid-model arrays are bit-identical to accepted 6c. See the [6d completion record](phase-6d-model-compat.md#completion-review--2026-10-05). Ships atomically with 6b; external rollout remains separate. |
-| 7 | **Expanded scope; needs prototyping.** 7a: bounded memory smoothing and incremental/compact outputs. 7b: structured forward/backward transitions. 7c: measured likelihood and compilation optimizations. Validate the representative workload, existing numerical tolerances, host/device peak memory, and end-to-end runtime before claiming production support. |
+| 7 | **Implemented and qualified for the recorded configurations** on `feat/phase7-performance`, based on merged Phase 6 `fe1b2e9`. 7a supplies checkpointed smoothing and incremental/compact outputs; 7b supplies supported structured transitions; 7c improves measured likelihood hotspots and adds optional encoding tiles. All eight CPU/A100 full-hour checks pass; long-encoding fit/short-prediction workspace checks pass separately. Final suite: 3,137 passed / 26 skipped, unchanged references and tolerances. Stable checkpointed evidence was explicitly approved. See the [Phase 7 record](phase-7-performance.md) for measured populations, outputs, durations and limits. |
 | 8 | **Density/component fixes need prototyping** (both reproduced at `ee2cc21`). Distinguish mass from density on variable-volume bins (sorted diffusion is the outlier; clusterless diffusion already uses the mass convention) and define unoccupied-component behavior consistently with the selected policy. Phase 3 now sets sorted-index hints from a verified ordering at every reduction site and shares ordering checks across states/chunks within each prediction. GPU validation remains outstanding. |
 
 ## Reading order

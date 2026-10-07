@@ -1,0 +1,295 @@
+{
+  "metadata": {
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "cpu_count": 18,
+    "total_host_bytes": 68719476736,
+    "jax": "0.9.0",
+    "devices": [
+      "TFRT_CPU_0"
+    ],
+    "x64_enabled": false,
+    "seed": 7301,
+    "repetitions": 5,
+    "rss_sampling_seconds": 0.002,
+    "baseline_revision": "fe1b2e9767552507b2953bcbdf654a62f3c14b6c",
+    "baseline_source_hashes": {
+      "common.py": "bd48d32d9fafaabf956a0ae50618a51d6e52725877d4a2de8d0dc65bf8805556",
+      "sorted_spikes_kde.py": "87b355914a305cf5952bc8e3267b10ef68aac9b45fab31bd3d1325dba5537d3a",
+      "clusterless_kde.py": "094aeaab2e4e1e8e2fbd7cf274015ac1c47524fac54b0287e908e4ff8801430c",
+      "sorted_spikes_glm.py": "5738925d833c6524b22e885ad6972fe6f57a60238c6ba55180a9a932e6001e9a"
+    },
+    "source_hashes": {
+      "common.py": "05dae215da499de9f92ee219d802bb9ce56a01ccd1656b6bb01a26cf3ec4c0ab",
+      "sorted_spikes_kde.py": "9158f93b75101921cf2cf32927abbbfe54288acc5c8fa492fe204aba4d9859f7",
+      "sorted_spikes_glm.py": "57baaf112ec2f7cea52079fd1f7c658882dc11cbc18878cc0c2d112026dc892f",
+      "clusterless_kde.py": "e3cb631327ada1bba765cb2615ae639d7e751e2d30d98cfb3034d543a82a3b3a"
+    },
+    "benchmark_source_hash": "fa2307f4f39c1f7e4ec99b30f5b5bb9573bcb6df08d44dd1cd6c45a9251247e7",
+    "input_artifact_hash": "2494e9970db0ef17a635402e4c52ac5cabb3cfae074bb49c7965edc1a025aa7b",
+    "dimensions": {
+      "sorted_rows": 513,
+      "neurons": 96,
+      "spatial_bins": 257,
+      "kde_eval": 201,
+      "kde_samples": [
+        61,
+        63,
+        65,
+        127,
+        129,
+        131
+      ],
+      "encoding_marks": 1025,
+      "decoding_marks": 513,
+      "marked_spatial_bins": 1024,
+      "mark_features": 4,
+      "block_size": 64
+    }
+  },
+  "sorted_kde": {
+    "baseline": {
+      "compile_plus_first_seconds": 0.9359377091750503,
+      "cold_initial_rss_bytes": 342982656,
+      "cold_peak_rss_bytes": 443154432,
+      "warm_seconds": [
+        0.04077791702002287,
+        0.04112766683101654,
+        0.04204829200170934,
+        0.04027962498366833,
+        0.0399592078756541
+      ],
+      "warm_median_seconds": 0.04077791702002287,
+      "warm_min_seconds": 0.0399592078756541,
+      "warm_max_seconds": 0.04204829200170934,
+      "warm_peak_rss_bytes": 467828736,
+      "output_dtype": "float32",
+      "output_shape": [
+        513,
+        257
+      ],
+      "max_abs_difference": 0.0,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "candidate": {
+      "compile_plus_first_seconds": 0.18339333310723305,
+      "cold_initial_rss_bytes": 439500800,
+      "cold_peak_rss_bytes": 447807488,
+      "warm_seconds": [
+        0.0015465421602129936,
+        0.0016475419979542494,
+        0.0015331250615417957,
+        0.0017753338906913996,
+        0.0016006659716367722
+      ],
+      "warm_median_seconds": 0.0016006659716367722,
+      "warm_min_seconds": 0.0015331250615417957,
+      "warm_max_seconds": 0.0017753338906913996,
+      "warm_peak_rss_bytes": 467828736,
+      "output_dtype": "float32",
+      "output_shape": [
+        513,
+        257
+      ],
+      "max_abs_difference": 3.0517578125e-05,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        26.367155108404436,
+        24.963046090530444,
+        27.426524460713754,
+        22.688478598232315,
+        24.96411405234881
+      ]
+    }
+  },
+  "sorted_glm": {
+    "baseline": {
+      "compile_plus_first_seconds": 0.949088916182518,
+      "cold_initial_rss_bytes": 463405056,
+      "cold_peak_rss_bytes": 467435520,
+      "warm_seconds": [
+        0.04272308317013085,
+        0.04124550009146333,
+        0.04078362509608269,
+        0.04190762504003942,
+        0.03947379207238555
+      ],
+      "warm_median_seconds": 0.04124550009146333,
+      "warm_min_seconds": 0.03947379207238555,
+      "warm_max_seconds": 0.04272308317013085,
+      "warm_peak_rss_bytes": 470089728,
+      "output_dtype": "float32",
+      "output_shape": [
+        513,
+        257
+      ],
+      "max_abs_difference": 0.0,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "candidate": {
+      "compile_plus_first_seconds": 0.23784283408895135,
+      "cold_initial_rss_bytes": 463781888,
+      "cold_peak_rss_bytes": 465190912,
+      "warm_seconds": [
+        0.0019625001586973667,
+        0.0015291250310838223,
+        0.0016372918616980314,
+        0.001680542016401887,
+        0.0016113331075757742
+      ],
+      "warm_median_seconds": 0.0016372918616980314,
+      "warm_min_seconds": 0.0015291250310838223,
+      "warm_max_seconds": 0.0019625001586973667,
+      "warm_peak_rss_bytes": 470089728,
+      "output_dtype": "float32",
+      "output_shape": [
+        513,
+        257
+      ],
+      "max_abs_difference": 3.0517578125e-05,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        21.76972214794052,
+        26.973268537909618,
+        24.90919673526386,
+        24.936969519968002,
+        24.497598843341127
+      ]
+    }
+  },
+  "kde_shapes": {
+    "baseline": {
+      "compile_plus_first_seconds": 0.42254079203121364,
+      "cold_initial_rss_bytes": 465420288,
+      "cold_peak_rss_bytes": 469630976,
+      "warm_seconds": [
+        0.0007482499349862337,
+        0.0006364581640809774,
+        0.0006296250503510237,
+        0.0007852499838918447,
+        0.0006500419694930315
+      ],
+      "warm_median_seconds": 0.0006500419694930315,
+      "warm_min_seconds": 0.0006296250503510237,
+      "warm_max_seconds": 0.0007852499838918447,
+      "warm_peak_rss_bytes": 478265344,
+      "output_dtype": "float32",
+      "output_shape": [
+        1206
+      ],
+      "max_abs_difference": 0.0,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "candidate": {
+      "compile_plus_first_seconds": 0.48643879196606576,
+      "cold_initial_rss_bytes": 467107840,
+      "cold_peak_rss_bytes": 469942272,
+      "warm_seconds": [
+        0.0007850839756429195,
+        0.0008994168601930141,
+        0.0007455830927938223,
+        0.0006387499161064625,
+        0.000710959080606699
+      ],
+      "warm_median_seconds": 0.0007455830927938223,
+      "warm_min_seconds": 0.0006387499161064625,
+      "warm_max_seconds": 0.0008994168601930141,
+      "warm_peak_rss_bytes": 478265344,
+      "output_dtype": "float32",
+      "output_shape": [
+        1206
+      ],
+      "max_abs_difference": 0.0,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        0.9530826742113521,
+        0.7076342375262945,
+        0.8444733476878012,
+        1.2293543436817682,
+        0.9143169940783601
+      ]
+    }
+  },
+  "clusterless_blocks": {
+    "baseline": {
+      "compile_plus_first_seconds": 0.6997605001088232,
+      "cold_initial_rss_bytes": 473382912,
+      "cold_peak_rss_bytes": 500449280,
+      "warm_seconds": [
+        0.0064055840484797955,
+        0.00626816600561142,
+        0.006341708125546575,
+        0.006970291957259178,
+        0.006731749977916479
+      ],
+      "warm_median_seconds": 0.0064055840484797955,
+      "warm_min_seconds": 0.00626816600561142,
+      "warm_max_seconds": 0.006970291957259178,
+      "warm_peak_rss_bytes": 511246336,
+      "output_dtype": "float32",
+      "output_shape": [
+        513,
+        1024
+      ],
+      "max_abs_difference": 0.0,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "candidate": {
+      "compile_plus_first_seconds": 0.08685829117894173,
+      "cold_initial_rss_bytes": 498384896,
+      "cold_peak_rss_bytes": 504233984,
+      "warm_seconds": [
+        0.005338999908417463,
+        0.005287708947435021,
+        0.004852666985243559,
+        0.005208666902035475,
+        0.004485958954319358
+      ],
+      "warm_median_seconds": 0.005208666902035475,
+      "warm_min_seconds": 0.004485958954319358,
+      "warm_max_seconds": 0.005338999908417463,
+      "warm_peak_rss_bytes": 511246336,
+      "output_dtype": "float32",
+      "output_shape": [
+        513,
+        1024
+      ],
+      "max_abs_difference": 2.86102294921875e-06,
+      "finite_pattern_equal": true,
+      "paired_warm_ratios": [
+        1.19977227165349,
+        1.1854219034979225,
+        1.3068500568514243,
+        1.3382103498565603,
+        1.5006267436831393
+      ]
+    }
+  }
+}

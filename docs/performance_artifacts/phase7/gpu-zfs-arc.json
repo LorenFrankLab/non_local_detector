@@ -1,0 +1,64 @@
+{
+  "scope": "System-wide shared-host ZFS ARC for all users; cannot attribute usage to these four jobs. Initial sample after all jobs started. Export filesystem zephyr-local/tmp is ZFS; no cache/filesystem policy changed.",
+  "sample_interval_seconds": 1,
+  "initial_sample": {
+    "timestamp_utc": "2026-10-06T22:06:17.357874+00:00",
+    "values_bytes": {
+      "c": 146492058016,
+      "c_min": 34359738368,
+      "c_max": 198438953472,
+      "size": 146132135696,
+      "data_size": 142480337408,
+      "metadata_size": 1829027328,
+      "l2_size": 0,
+      "arc_meta_used": 2639917840
+    }
+  },
+  "elapsed_seconds": 5638.447495222092,
+  "latest_values_bytes": {
+    "c": 198438953472,
+    "c_min": 34359738368,
+    "c_max": 198438953472,
+    "size": 15555341824,
+    "data_size": 14733275136,
+    "metadata_size": 258469888,
+    "l2_size": 0,
+    "arc_meta_used": 807974912
+  },
+  "range_bytes": {
+    "c": {
+      "minimum": 146492058016,
+      "maximum": 198438953472
+    },
+    "c_min": {
+      "minimum": 34359738368,
+      "maximum": 34359738368
+    },
+    "c_max": {
+      "minimum": 198438953472,
+      "maximum": 198438953472
+    },
+    "size": {
+      "minimum": 15555294320,
+      "maximum": 199133147808
+    },
+    "data_size": {
+      "minimum": 14733273600,
+      "maximum": 197767787520
+    },
+    "metadata_size": {
+      "minimum": 248978432,
+      "maximum": 1834989056
+    },
+    "l2_size": {
+      "minimum": 0,
+      "maximum": 0
+    },
+    "arc_meta_used": {
+      "minimum": 807929456,
+      "maximum": 2647442208
+    }
+  },
+  "samples": 5621,
+  "all_jobs_completed": true
+}
