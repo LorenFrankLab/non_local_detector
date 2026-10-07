@@ -322,22 +322,25 @@ def test_native_store_read_budget_can_be_set_when_reopening(
     )
 
 
+@pytest.mark.parametrize("family", ["sorted", "clusterless"])
 @pytest.mark.parametrize(
     "arguments",
     [
         {"transition_representation": "Dense"},
         {"transition_representation": "structurd"},
+        {"transition_representation": ["dense"]},
         {"max_dense_transition_bytes": True},
+        {"max_dense_transition_bytes": np.True_},
         {"max_dense_transition_bytes": 0},
         {"max_dense_transition_bytes": -1},
     ],
 )
 def test_fit_rejects_invalid_transition_arguments_before_refit(
-    checkpoint_recording, arguments, monkeypatch
+    checkpoint_recording, family, arguments, monkeypatch
 ):
     from non_local_detector.exceptions import ValidationError
 
-    model, fit, _ = checkpoint_recording("sorted")
+    model, fit, _ = checkpoint_recording(family)
 
     def refit(*args, **kwargs):
         raise AssertionError("environments were refit before validation")

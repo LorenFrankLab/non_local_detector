@@ -349,3 +349,23 @@ def test_concrete_off_cpu_calls_share_bucketed_executables(monkeypatch):
     # Spike counts 1..64 pad to the seven powers of two 1, 2, 4, ..., 64.
     assert deterministic_segment_sum._cache_size() - before <= 7
     jax.clear_caches()
+
+
+@pytest.mark.parametrize("id_dtype", [np.uint8, np.int8])
+@pytest.mark.parametrize("is_sorted", [True, False])
+def test_bucketed_row_sum_keeps_narrow_ids_valid(id_dtype, is_sorted, reduction_path):
+    # Seven ids pad to eight on the scan path; the 300-row padding id must not
+    # wrap to a valid narrow id.
+    ids = np.array([0, 1, 1, 5, 22, 100, 120], dtype=id_dtype)
+    if not is_sorted:
+        ids = ids[::-1].copy()
+    values = np.arange(1, 8, dtype=np.float32)[:, None]
+    actual = common.deterministic_row_sum(
+        jnp.asarray(values), ids, 300, indices_are_sorted=is_sorted
+    )
+    np.testing.assert_array_equal(actual, ordered_reference(values, ids, 300))
+
+
+def test_row_sum_rejects_mismatched_values_and_ids():
+    with pytest.raises(ValueError, match="one row per row id"):
+        common.deterministic_row_sum(jnp.ones((5, 2)), np.zeros(4, np.int32), 3)

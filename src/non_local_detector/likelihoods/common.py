@@ -804,8 +804,9 @@ def deterministic_segment_sum(
 
     Notes
     -----
-    The scan keeps ``O(n)`` temporaries the size of ``values`` (about 1.5x
-    for sorted ids and 2.5x unsorted on XLA:CPU), unlike a scatter.
+    Unlike a scatter, the scan keeps ``O(n)`` temporaries: about 1.5x the
+    size of ``values`` for sorted ids and 2.5x unsorted on XLA:CPU, and about
+    0.05-0.4x on an A100.
     """
     n = values.shape[0]
     shape = (num_segments, *values.shape[1:])
@@ -879,6 +880,8 @@ def deterministic_row_sum(
     """
     if not isinstance(values, jax.core.Tracer):
         values = jnp.asarray(values)
+    if values.ndim == 0 or values.shape[0] != np.shape(row_ids)[0]:
+        raise ValueError("values must contain one row per row id")
     if _reduces_sequentially(values):
         return jax.ops.segment_sum(
             values,
@@ -886,7 +889,8 @@ def deterministic_row_sum(
             num_segments=n_rows,
             indices_are_sorted=indices_are_sorted,
         )
-    row_ids = jnp.asarray(row_ids)
+    # Widen before padding so the n_rows sentinel cannot wrap in narrow dtypes.
+    row_ids = jnp.asarray(row_ids).astype(jax.dtypes.canonicalize_dtype(jnp.int64))
     if not isinstance(values, jax.core.Tracer):
         padding = _bucketed_size(values.shape[0]) - values.shape[0]
         if padding:
@@ -923,8 +927,9 @@ def deterministic_row_add(
     -------
     output : jnp.ndarray, shape (n_rows, n_columns)
         The tile holds ``initial + sum(contributions)``. Off CPU the reduction
-        also keeps scan temporaries the size of ``values`` (see
-        ``deterministic_segment_sum``). As with ``dynamic_slice``, a tile that
+        also keeps segmented-scan temporaries (see ``deterministic_segment_sum``;
+        about 0.05-0.4x of ``values`` measured on an A100). As with
+        ``dynamic_slice``, a tile that
         would run past the last column is shifted left, so callers must pass
         tiles that fit.
     """

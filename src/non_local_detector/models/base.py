@@ -307,7 +307,9 @@ def _validate_transition_arguments(
     transition_representation: str, max_dense_transition_bytes: int
 ) -> None:
     """Reject unsupported transition settings before any fitted state changes."""
-    if transition_representation not in {"dense", "structured", "auto"}:
+    if not isinstance(transition_representation, str) or (
+        transition_representation not in {"dense", "structured", "auto"}
+    ):
         raise ValidationError(
             "transition_representation must be dense, structured, or auto"
         )
