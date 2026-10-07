@@ -500,3 +500,42 @@ def test_drop_zero_weight_samples_preserves_density_and_shrinks_model():
     # No positive weight: inputs are returned as-is (zero-exposure behavior).
     zeros = np.zeros(500)
     assert drop_zero_weight_samples(samples, zeros)[0] is samples
+
+
+def _barrier_operand_sizes(jaxpr):
+    sizes = []
+    for equation in jaxpr.eqns:
+        if equation.primitive.name == "optimization_barrier":
+            sizes += [int(np.prod(var.aval.shape)) for var in equation.invars]
+        for value in equation.params.values():
+            for item in value if isinstance(value, (tuple, list)) else (value,):
+                inner = getattr(item, "jaxpr", item)
+                if hasattr(inner, "eqns"):
+                    sizes += _barrier_operand_sizes(inner)
+    return sizes
+
+
+@pytest.mark.parametrize("x64", [False, True])
+def test_kernel_matrix_barrier_is_vector_sized_for_float32_inputs(x64):
+    from non_local_detector.likelihoods.common import _log_kernel_matrix
+
+    previous = jax.config.x64_enabled
+    jax.config.update("jax_enable_x64", x64)
+    try:
+        n_eval, n_samples = 64, 2000
+        eval_points = jnp.ones((n_eval, 2), jnp.float32)
+        std = jnp.ones(2, jnp.float32)
+        tiled = jax.make_jaxpr(_log_kernel_matrix)(
+            eval_points, jnp.ones((n_samples, 2), jnp.float32), std
+        )
+        assert all(
+            size <= max(n_eval, n_samples)
+            for size in _barrier_operand_sizes(tiled.jaxpr)
+        )
+        # A singleton sample tail keeps its divisor guard.
+        singleton = jax.make_jaxpr(_log_kernel_matrix)(
+            eval_points, jnp.ones((1, 2), jnp.float32), std
+        )
+        assert _barrier_operand_sizes(singleton.jaxpr)
+    finally:
+        jax.config.update("jax_enable_x64", previous)

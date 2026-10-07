@@ -1039,15 +1039,13 @@ def log_gaussian_pdf(
     -------
     log_pdf : jnp.ndarray, shape (n_samples,)
     """
-    # Materialize the divisor's broadcast before division. Otherwise CPU XLA
-    # can choose a rounded scalar reciprocal for singleton sample tails or
-    # float32 kernels accumulated in enabled float64, depending on tile shape.
-    # Preserve true-division promotion and the original normalization formula.
+    # For singleton-shaped tiles XLA:CPU can rewrite division by a broadcast
+    # scalar into multiplication by a rounded reciprocal, so tiled and untiled
+    # KDEs disagree by about 2e-6 relative in Gaussian tails. Materializing the
+    # divisor (only a vector here) keeps true division. Preserve true-division
+    # promotion and the original normalization formula.
     divisor = sigma
-    mixed_precision = (
-        jax.config.x64_enabled and jnp.result_type(x, mean, sigma) == jnp.float32
-    )
-    if x.size == 1 or mean.size == 1 or mixed_precision:
+    if x.size == 1 or mean.size == 1:
         shape = jnp.broadcast_shapes(x.shape, mean.shape, jnp.shape(sigma))
         divisor = jax.lax.optimization_barrier(jnp.broadcast_to(sigma, shape))
     return -0.5 * ((x - mean) / divisor) ** 2 - jnp.log(sigma * jnp.sqrt(2.0 * jnp.pi))

@@ -272,9 +272,11 @@ criteria:
   enter `xlogy` as floats, and uniform-duration blocks keep each row's own
   duration derivative; both fixes leave forward values bitwise unchanged.
 - Singleton Gaussian tails materialize their broadcast divisor before division.
-  Float32 kernels with enabled float64 accumulation use the same guard to
-  prevent tile-dependent elementary rounding from exceeding existing controls.
-  Integer, mixed-dtype and weak scalar promotion remain unchanged.
+  A broader guard for float32 kernels under enabled float64 materialized a
+  kernel-sized buffer (160 MB at 20000 x 1000) and was removed after the
+  affected KDE modules passed without it on the CI x86 stack (JAX 0.11.2,
+  x64 on and off). Integer, mixed-dtype and weak scalar promotion remain
+  unchanged.
 - Structured Gaussian products cap only extreme finite normalization scales,
   preventing a compiler-hoisted reciprocal from flushing to zero. Ordinary
   scales keep their original arithmetic.
