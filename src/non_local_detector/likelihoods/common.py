@@ -454,6 +454,85 @@ def _poisson_nonlocal_log_likelihood(
     return likelihood - durations[:, None] * summed_rates
 
 
+# Host bytes for one block of int64 spike counts. Block rows are a multiple of
+# the emission's fixed 64-row kernel, so blocked and unblocked requests are
+# bitwise identical.
+NONLOCAL_COUNT_BLOCK_BYTES = 32 * 1024**2
+
+
+def _blocked_nonlocal_poisson_log_likelihood(
+    spike_times: list[np.ndarray],
+    time_edges: np.ndarray,
+    row_start: int,
+    row_stop: int,
+    rates: jnp.ndarray,
+    durations: jnp.ndarray,
+    summed_rates: jnp.ndarray,
+    *,
+    disable_progress_bar: bool = True,
+    _spike_time_order: "_SpikeTimeOrder | None" = None,
+) -> jnp.ndarray:
+    """Non-local Poisson emission computed over bounded host count blocks.
+
+    Parameters
+    ----------
+    spike_times : list of np.ndarray
+        One spike-time array per neuron.
+    time_edges : np.ndarray, shape (n_time_bins + 1,)
+        The complete decode grid.
+    row_start, row_stop : int
+        Global rows to evaluate.
+    rates : jnp.ndarray, shape (n_neurons, n_bins)
+        Interior place fields in Hz.
+    durations : jnp.ndarray, shape (row_stop - row_start,)
+        Bin durations in seconds for the requested rows.
+    summed_rates : jnp.ndarray, shape (n_bins,)
+        Population rate summed over neurons.
+    disable_progress_bar : bool
+    _spike_time_order : _SpikeTimeOrder, optional
+        Shared per-prediction spike ordering cache.
+
+    Returns
+    -------
+    log_likelihood : jnp.ndarray, shape (row_stop - row_start, n_bins)
+    """
+    if _spike_time_order is None:
+        # Verify each neuron's spike ordering once, not once per block.
+        _spike_time_order = _SpikeTimeOrder()
+    block_rows = max(
+        64, NONLOCAL_COUNT_BLOCK_BYTES // (8 * max(len(spike_times), 1)) // 64 * 64
+    )
+    blocks = []
+    for start in tqdm(
+        range(row_start, row_stop, block_rows),
+        unit="block",
+        desc="Non-Local Likelihood",
+        disable=disable_progress_bar,
+    ):
+        stop = min(start + block_rows, row_stop)
+        counts = _spike_counts_matrix(
+            spike_times,
+            time_edges,
+            "Non-Local Likelihood",
+            True,
+            slice(start, stop),
+            _spike_time_order=_spike_time_order,
+        )
+        blocks.append(
+            _poisson_nonlocal_log_likelihood(
+                jnp.asarray(counts),
+                rates,
+                durations[start - row_start : stop - row_start],
+                summed_rates,
+            )
+        )
+    if not blocks:
+        return _poisson_nonlocal_log_likelihood(
+            jnp.zeros((0, len(spike_times))), rates, durations, summed_rates
+        )
+    return blocks[0] if len(blocks) == 1 else jnp.concatenate(blocks)
+
+
 def get_position_at_time(
     time: np.ndarray | jnp.ndarray,
     position: jnp.ndarray,

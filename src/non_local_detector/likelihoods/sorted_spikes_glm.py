@@ -67,7 +67,7 @@ from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
     EPS,
     RATE_EPS_HZ,
-    _poisson_nonlocal_log_likelihood,
+    _blocked_nonlocal_poisson_log_likelihood,
     _spike_counts_matrix,
     _SpikeTimeOrder,
     decode_bin_centers,
@@ -674,19 +674,16 @@ def predict_sorted_spikes_glm_log_likelihood(
             durations,
         )[:, None]
     else:
-        counts = _spike_counts_matrix(
+        log_likelihood = _blocked_nonlocal_poisson_log_likelihood(
             spike_times,
             time_edges,
-            "Non-Local Likelihood",
-            disable_progress_bar,
-            row_slice,
-            _spike_time_order=_spike_time_order,
-        )
-        log_likelihood = _poisson_nonlocal_log_likelihood(
-            jnp.asarray(counts),
+            row_start,
+            row_stop,
             jnp.asarray(place_fields)[:, is_track_interior],
             durations,
             no_spike_part_log_likelihood[is_track_interior],
+            disable_progress_bar=disable_progress_bar,
+            _spike_time_order=_spike_time_order,
         )
 
     return log_likelihood
