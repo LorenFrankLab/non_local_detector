@@ -188,9 +188,10 @@ its own distances (`environment.py:619-630`) and is unaffected.
   breakdowns saved under `docs/performance_artifacts/em/`.
 - Documentation, as tasks of this PR: the `estimate_parameters` docstrings
   (`models/base.py:2796`, `:4729`, `:5832`) state that EM keeps three
-  `T × N` posteriors; a "Parameter estimation (EM)" section in
-  `docs/performance_prediction.md` gives measured dense-EM peaks and the
-  largest measured session per grid and tier; and a `CHANGELOG.md` entry.
+  `T × N` posteriors; the "Parameter estimation (EM)" section of
+  `docs/hardware_settings.md` gains the stage breakdown, the measured memory
+  growth per minute and the largest measured session per grid and tier; and a
+  `CHANGELOG.md` entry.
 
 ### Deliberately not in 9a
 
@@ -312,7 +313,7 @@ Sub-choices for A, to settle by experiment:
   labelled.
 - Public API (open questions 1–2): how checkpointed EM is selected and what it
   returns, documented in the `estimate_parameters` docstrings and in the EM
-  section of `docs/performance_prediction.md` (with measured tier limits),
+  section of `docs/hardware_settings.md` (with measured tier limits),
   plus a `CHANGELOG.md` entry. Code, tests and docstrings do not name this
   plan or its phases.
 - The dense EM path remains as reference and fallback. Nothing in it is
