@@ -1,5 +1,6 @@
 """Checkpoint/replay preserves the existing single-sequence dense reference."""
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -205,21 +206,37 @@ def test_failure_leaves_no_completed_output_or_checkpoints(tmp_path):
     assert not list(tmp_path.glob("checkpoints-*"))
 
 
+@jax.tree_util.register_pytree_node_class
+class MatrixProductOperator:
+    """Minimal pytree operator with the forward/backward product protocol."""
+
+    def __init__(self, matrix):
+        self.matrix = matrix
+
+    def forward(self, p, discrete_weights=None):
+        return p @ self.matrix
+
+    def backward(self, v, discrete_weights=None):
+        return self.matrix @ v
+
+    def tree_flatten(self):
+        return (self.matrix,), None
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        return cls(*children)
+
+
 def test_operator_forward_backward_protocol(tmp_path):
     edges, initial, ll, state_ind, kwargs, reference = problem()
-
-    class Operator:
-        def forward(self, p, discrete_weights=None):
-            return p @ jnp.asarray(kwargs["transition_matrix"])
-
-        def backward(self, v, discrete_weights=None):
-            return jnp.asarray(kwargs["transition_matrix"]) @ v
 
     result = checkpointed_forward_backward(
         edges,
         initial,
         lambda edges, **kw: ll[kw["row_slice"]],
-        transition_operator=Operator(),
+        transition_operator=MatrixProductOperator(
+            jnp.asarray(kwargs["transition_matrix"])
+        ),
         state_ind=state_ind,
         chunk_size=4,
         output_mode="spatial",
@@ -630,18 +647,47 @@ def test_numpy_integer_read_budget_is_normalized(tmp_path):
     )
 
 
+def test_unregistered_operator_is_rejected(tmp_path):
+    edges, initial, ll, state_ind, kwargs, reference = problem()
+
+    class Unregistered:
+        def forward(self, p, discrete_weights=None):
+            return p
+
+        def backward(self, v, discrete_weights=None):
+            return v
+
+    with pytest.raises(TypeError, match="registered JAX pytree"):
+        checkpointed_forward_backward(
+            edges,
+            initial,
+            lambda edges, **kw: ll[kw["row_slice"]],
+            transition_operator=Unregistered(),
+            state_ind=state_ind,
+            chunk_size=4,
+        )
+
+
 def test_production_grid_uniform_marginals_preserve_pairwise_normalization(tmp_path):
     n_spatial = 182 * 182
     sizes = (1, 1, n_spatial, n_spatial)
     state_ind = np.repeat(np.arange(4), sizes)
     initial = np.full(len(state_ind), 1 / len(state_ind), dtype=np.float32)
 
+    @jax.tree_util.register_pytree_node_class
     class Identity:
         def forward(self, values, discrete_weights=None):
             return values
 
         def backward(self, values, discrete_weights=None):
             return values
+
+        def tree_flatten(self):
+            return (), None
+
+        @classmethod
+        def tree_unflatten(cls, aux, children):
+            return cls()
 
     result = checkpointed_forward_backward(
         np.array([0.0, 0.002]),

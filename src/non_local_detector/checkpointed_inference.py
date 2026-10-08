@@ -108,23 +108,6 @@ class _DenseTransition:
         return cls(*children)
 
 
-@jax.tree_util.register_pytree_node_class
-class _CallableTransition:
-    """Use a non-pytree protocol object as a static pair of JAX functions."""
-
-    def __init__(self, operator):
-        self.forward, self.backward = operator.forward, operator.backward
-
-    def tree_flatten(self):
-        return (), (self.forward, self.backward)
-
-    @classmethod
-    def tree_unflatten(cls, aux, children):
-        result = object.__new__(cls)
-        result.forward, result.backward = aux
-        return result
-
-
 @partial(jax.jit, static_argnames=("keep_rows", "keep_predictive", "keep_increments"))
 def _forward_chunk(
     initial,
@@ -314,8 +297,9 @@ def checkpointed_forward_backward(
     The likelihood callback receives ``(full_edges, row_slice=global_slice,
     is_missing=chunk_mask)``. Counts must retain global edge/final-edge ownership.
     This driver applies neutral likelihoods to missing rows and checks replay
-    determinism. ``transition_operator`` implements pure-JAX ``forward(p, weight)``
-    and ``backward(v, weight)``; ``weight`` is None or the global discrete row.
+    determinism. ``transition_operator`` is a registered JAX pytree with pure-JAX
+    ``forward(p, weight)`` and ``backward(v, weight)``; ``weight`` is None or the
+    global discrete row.
     Alternatively supply a dense stationary matrix, or continuous/discrete
     factors and ``state_ind`` for the reference covariate path.
 
@@ -430,11 +414,16 @@ def checkpointed_forward_backward(
     else:
         leaves, _ = jax.tree_util.tree_flatten(transition_operator)
         if len(leaves) == 1 and leaves[0] is transition_operator:
-            transition_operator = _CallableTransition(transition_operator)
-        else:
-            # Transfer array leaves once; each jitted chunk call would otherwise
-            # convert host leaves again.
-            transition_operator = jax.device_put(transition_operator)
+            # An unregistered object would be a static jit argument: its arrays
+            # would be baked into the compiled chunks and later changes ignored.
+            raise TypeError(
+                "transition_operator must be a registered JAX pytree (for "
+                "example via jax.tree_util.register_pytree_node_class), got "
+                f"{type(transition_operator).__name__}."
+            )
+        # Transfer array leaves once; each jitted chunk call would otherwise
+        # convert host leaves again.
+        transition_operator = jax.device_put(transition_operator)
     dims = {
         name: ("time", "state_bins" if name in _SPATIAL else "states")
         for name in outputs
