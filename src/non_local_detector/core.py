@@ -753,6 +753,23 @@ def _call_log_likelihood_chunk(
     )
 
 
+def _state_marginals(posterior: jnp.ndarray, aggregation: jnp.ndarray) -> jnp.ndarray:
+    """Sum state-bin probabilities into discrete states at full float32 precision.
+
+    Parameters
+    ----------
+    posterior : jnp.ndarray, shape (n_time, n_state_bins)
+    aggregation : jnp.ndarray, shape (n_state_bins, n_states)
+        One-hot state membership.
+
+    Returns
+    -------
+    state_probabilities : jnp.ndarray, shape (n_time, n_states)
+    """
+    # The default CUDA precision (TF32) visibly changes these sums.
+    return jnp.matmul(posterior, aggregation, precision=jax.lax.Precision.HIGHEST)
+
+
 def chunked_filter_smoother(
     time: np.ndarray,
     state_ind: np.ndarray,
@@ -949,19 +966,11 @@ def chunked_filter_smoother(
         # Marginalize state bins -> discrete states by summing probabilities
         causal_posterior.append(causal_posterior_chunk)
         causal_state_probabilities.append(
-            jnp.matmul(
-                causal_posterior_chunk,
-                state_aggregation_matrix,
-                precision=jax.lax.Precision.HIGHEST,
-            )
+            _state_marginals(causal_posterior_chunk, state_aggregation_matrix)
         )
         predictive_posterior.append(predicted_probs_chunk)
         predictive_state_probabilities.append(
-            jnp.matmul(
-                predicted_probs_chunk,
-                state_aggregation_matrix,
-                precision=jax.lax.Precision.HIGHEST,
-            )
+            _state_marginals(predicted_probs_chunk, state_aggregation_matrix)
         )
 
         marginal_likelihood += marginal_likelihood_chunk
@@ -1002,11 +1011,7 @@ def chunked_filter_smoother(
         )
         acausal_posterior.append(acausal_posterior_chunk)
         acausal_state_probabilities.append(
-            jnp.matmul(
-                acausal_posterior_chunk,
-                state_aggregation_matrix,
-                precision=jax.lax.Precision.HIGHEST,
-            )
+            _state_marginals(acausal_posterior_chunk, state_aggregation_matrix)
         )
 
     # Concatenate JAX arrays on device
@@ -1601,19 +1606,11 @@ def chunked_filter_smoother_covariate_dependent(
         # Marginalize state bins -> discrete states by summing probabilities
         causal_posterior.append(causal_posterior_chunk)
         causal_state_probabilities.append(
-            jnp.matmul(
-                causal_posterior_chunk,
-                state_aggregation_matrix,
-                precision=jax.lax.Precision.HIGHEST,
-            )
+            _state_marginals(causal_posterior_chunk, state_aggregation_matrix)
         )
         predictive_posterior.append(predicted_probs_chunk)
         predictive_state_probabilities.append(
-            jnp.matmul(
-                predicted_probs_chunk,
-                state_aggregation_matrix,
-                precision=jax.lax.Precision.HIGHEST,
-            )
+            _state_marginals(predicted_probs_chunk, state_aggregation_matrix)
         )
 
         marginal_likelihood += marginal_likelihood_chunk
@@ -1659,11 +1656,7 @@ def chunked_filter_smoother_covariate_dependent(
         )
         acausal_posterior.append(acausal_posterior_chunk)
         acausal_state_probabilities.append(
-            jnp.matmul(
-                acausal_posterior_chunk,
-                state_aggregation_matrix,
-                precision=jax.lax.Precision.HIGHEST,
-            )
+            _state_marginals(acausal_posterior_chunk, state_aggregation_matrix)
         )
 
     # Concatenate JAX arrays on device
