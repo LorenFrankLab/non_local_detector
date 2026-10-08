@@ -1,5 +1,5 @@
 {
- "description": "First and warm checkpointed compact predictions, 30 s at 2 cm, 8 clusterless electrodes at 20 Hz with four waveform features; GMM uses 120 s of encoding (its fit is singular with 10 s), log-space KDE 10 s. Compilations are attributed by function from JAX compile logs. det-* runs disable XLA GPU autotuning so kernel choice is the same in every process; other runs use the default autotuning. Runs other than *final-gmm* used an earlier copy of benchmarks/profile_compilations.py (state probabilities saved as states.npy).",
+ "description": "First and warm checkpointed compact predictions, 30 s at 2 cm, 8 clusterless electrodes at 20 Hz with four waveform features; GMM uses 120 s of encoding (its fit is singular with 10 s), log-space KDE 10 s. Compilations are attributed by function from JAX compile logs. det-* runs disable XLA GPU autotuning so kernel choice is the same in every process; other runs use the default autotuning. Runs not in final*-gmm used an earlier copy of benchmarks/profile_compilations.py (state probabilities saved as states.npy).",
  "runs": {
   "base-gmm": {
    "algorithm": "clusterless_gmm",
@@ -528,7 +528,7 @@
     4.182691179215908
    ],
    "warm_compilations": 0,
-   "source": "compiled GMM kernels as committed (non-local spikes padded to four sizes per octave)",
+   "source": "compiled GMM kernels with local spike terms and expected counts in one kernel (superseded)",
    "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
   },
   "final-gmm-2": {
@@ -608,7 +608,7 @@
     4.216362101957202
    ],
    "warm_compilations": 0,
-   "source": "compiled GMM kernels as committed (non-local spikes padded to four sizes per octave)",
+   "source": "compiled GMM kernels with local spike terms and expected counts in one kernel (superseded)",
    "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
   },
   "det-final-gmm": {
@@ -688,7 +688,247 @@
     4.012435842305422
    ],
    "warm_compilations": 0,
-   "source": "compiled GMM kernels as committed (non-local spikes padded to four sizes per octave)",
+   "source": "compiled GMM kernels with local spike terms and expected counts in one kernel (superseded)",
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "final2-gmm": {
+   "family": "clusterless",
+   "algorithm": "clusterless_gmm",
+   "duration_s": 30.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "gpu",
+   "device": "cuda:0",
+   "jax": "0.9.0",
+   "xla_flags": null,
+   "fit_seconds": 16.09472810011357,
+   "first_predict_seconds": 32.5556572265923,
+   "first_compilations": 92,
+   "first_compile_seconds": 25.773112537000003,
+   "top_compiles": [
+    [
+     "jit(_add_electrode_gmm_intensities)",
+     5,
+     8.21193552
+    ],
+    [
+     "jit(_add_electrode_gmm_spike_terms)",
+     3,
+     3.9315369120000003
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     3.3839695460000003
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     2.636923313
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     1.333984136
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     2,
+     1.206567288
+    ],
+    [
+     "jit(scatter)",
+     4,
+     1.04001975
+    ],
+    [
+     "jit(_add_gmm_expected_counts)",
+     2,
+     0.810611486
+    ],
+    [
+     "jit(_sum_state_rows)",
+     4,
+     0.6057589059999999
+    ],
+    [
+     "jit(_poisson_row_log_likelihood)",
+     2,
+     0.465707063
+    ]
+   ],
+   "warm_seconds": [
+    4.203725309111178,
+    4.20626930706203,
+    4.199255540966988,
+    4.122320452705026,
+    4.020009143278003
+   ],
+   "warm_compilations": 0,
+   "source": "compiled GMM kernels as committed (non-local spikes padded to four sizes per octave; expected counts in their own kernel)",
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "final2-gmm-2": {
+   "family": "clusterless",
+   "algorithm": "clusterless_gmm",
+   "duration_s": 30.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "gpu",
+   "device": "cuda:0",
+   "jax": "0.9.0",
+   "xla_flags": null,
+   "fit_seconds": 16.264517037197948,
+   "first_predict_seconds": 32.90320965182036,
+   "first_compilations": 92,
+   "first_compile_seconds": 26.142621044,
+   "top_compiles": [
+    [
+     "jit(_add_electrode_gmm_intensities)",
+     5,
+     8.334726811
+    ],
+    [
+     "jit(_add_electrode_gmm_spike_terms)",
+     3,
+     3.9415543079999997
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     3.326246263
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     2.581617594
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     1.562076569
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     2,
+     1.161220789
+    ],
+    [
+     "jit(scatter)",
+     4,
+     1.1109731200000001
+    ],
+    [
+     "jit(_add_gmm_expected_counts)",
+     2,
+     0.8675129420000001
+    ],
+    [
+     "jit(_sum_state_rows)",
+     4,
+     0.63183093
+    ],
+    [
+     "jit(_poisson_row_log_likelihood)",
+     2,
+     0.47892165200000003
+    ]
+   ],
+   "warm_seconds": [
+    4.198296784423292,
+    4.197814729996026,
+    4.188483095727861,
+    4.11080405395478,
+    4.029841764830053
+   ],
+   "warm_compilations": 0,
+   "source": "compiled GMM kernels as committed (non-local spikes padded to four sizes per octave; expected counts in their own kernel)",
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "det-final2-gmm": {
+   "family": "clusterless",
+   "algorithm": "clusterless_gmm",
+   "duration_s": 30.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "gpu",
+   "device": "cuda:0",
+   "jax": "0.9.0",
+   "xla_flags": "--xla_gpu_autotune_level=0",
+   "fit_seconds": 12.105310979299247,
+   "first_predict_seconds": 23.1030132509768,
+   "first_compilations": 92,
+   "first_compile_seconds": 16.275626183,
+   "top_compiles": [
+    [
+     "jit(_add_electrode_gmm_intensities)",
+     5,
+     5.672638892999999
+    ],
+    [
+     "jit(_add_electrode_gmm_spike_terms)",
+     3,
+     2.6739308829999997
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     2.211332798
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     1.416501998
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     0.47567391400000003
+    ],
+    [
+     "jit(scatter)",
+     4,
+     0.43805622999999994
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     2,
+     0.402302504
+    ],
+    [
+     "jit(_add_gmm_expected_counts)",
+     2,
+     0.37551975299999996
+    ],
+    [
+     "jit(add)",
+     9,
+     0.364491702
+    ],
+    [
+     "jit(multiply)",
+     8,
+     0.33132267000000004
+    ]
+   ],
+   "warm_seconds": [
+    4.2163703963160515,
+    4.245794341899455,
+    4.246709832921624,
+    4.215967744588852,
+    4.214843141846359
+   ],
+   "warm_compilations": 0,
+   "source": "compiled GMM kernels as committed (non-local spikes padded to four sizes per octave; expected counts in their own kernel)",
    "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
   },
   "base-kdelog": {
@@ -998,22 +1238,27 @@
    "rows_with_different_most_likely_state": 0,
    "rows": 15000
   },
-  "final-gmm vs final-gmm-2": {
-   "max_abs_state_probability_difference": 0.00036960840225219727,
+  "final2-gmm vs final2-gmm-2": {
+   "max_abs_state_probability_difference": 0.000632166862487793,
    "rows_with_different_most_likely_state": 0,
    "rows": 15000
   },
-  "base-gmm vs final-gmm": {
-   "max_abs_state_probability_difference": 0.0003693699836730957,
+  "base-gmm vs final2-gmm": {
+   "max_abs_state_probability_difference": 4.774332046508789e-05,
    "rows_with_different_most_likely_state": 0,
    "rows": 15000
   },
-  "det-base-gmm vs det-final-gmm": {
+  "det-base-gmm vs det-final2-gmm": {
    "max_abs_state_probability_difference": 5.066394805908203e-07,
    "rows_with_different_most_likely_state": 0,
    "rows": 15000
   },
   "det-base-gmm vs det-new-gmm": {
+   "max_abs_state_probability_difference": 5.066394805908203e-07,
+   "rows_with_different_most_likely_state": 0,
+   "rows": 15000
+  },
+  "det-base-gmm vs det-final-gmm": {
    "max_abs_state_probability_difference": 5.066394805908203e-07,
    "rows_with_different_most_likely_state": 0,
    "rows": 15000

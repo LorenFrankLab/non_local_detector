@@ -558,18 +558,18 @@ Records: [scaling runs](performance_artifacts/scaling/a100-scaling-runs.json),
 ### Compiled GMM and log-space KDE likelihoods
 
 `clusterless_gmm` and `clusterless_kde_log` now evaluate each electrode's
-local and non-local terms in one compiled call per chunk, as the default
-clusterless KDE does, with decoding spikes padded to a few sizes. Log-space
-KDE also pads encoding samples with zero weights. Before, the GMM score
-recompiled for each spike-block shape, and the log-space KDE dispatched
-separately compiled operations whose shapes changed with every electrode's
-spike count. A100, 30 s at 2 cm, 8 electrodes at 20 Hz (GMM with 120 s of
-encoding, because its fit is singular with 10 s; log-space KDE with 10 s):
+terms in compiled calls per chunk, as the default clusterless KDE does, with
+decoding spikes padded to a few sizes. Log-space KDE also pads encoding
+samples with zero weights. Before, the GMM score recompiled for each
+spike-block shape, and the log-space KDE dispatched separately compiled
+operations whose shapes changed with every electrode's spike count. A100,
+30 s at 2 cm, 8 electrodes at 20 Hz (GMM with 120 s of encoding, because its
+fit is singular with 10 s; log-space KDE with 10 s):
 
 | Algorithm | First call | Compilations | Warm |
 | --- | ---: | ---: | ---: |
-| `clusterless_gmm` | 114 to 33 s | 521 to 90 | 4.42-4.45 to 4.08-4.22 s |
-| `clusterless_gmm`, autotuning off | 78 to 23 s | 521 to 90 | 4.49-4.55 to 4.01-4.20 s |
+| `clusterless_gmm` | 114 to 33 s | 521 to 92 | 4.42-4.45 to 4.02-4.21 s |
+| `clusterless_gmm`, autotuning off | 78 to 23 s | 521 to 92 | 4.49-4.55 to 4.21-4.25 s |
 | `clusterless_kde_log` | 77 to 28 s | 857 to 83 | 4.34-4.47 to 3.23-3.27 s |
 | `clusterless_kde_log`, autotuning off | 62 to 21 s | 857 to 83 | 4.44-4.56 to 3.21-3.25 s |
 
@@ -577,14 +577,15 @@ GMM non-local spikes are scored at every bin, so their padding sets the extra
 work. Padding them to powers of two, as the KDE paths do, left the A100 warm
 time within autotuning variation (4.52-4.60 s with default autotuning,
 4.36-4.39 s without) but made CPU warm predictions 6-9% slower. Four sizes per
-octave (at most 25% padding up to one block) removed that cost: on CPU, 10 s
-at 4 cm took 2.64-2.73 s against 2.66-2.71 s before, interleaved, with
-bitwise-identical state probabilities. Above one block, every padded
-clusterless kernel (including the default KDE) now pads the number of blocks
-to four sizes per octave rather than powers of two, which bounds the padded
-intensity array at a quarter more blocks; the detector default block size
-(10,000 spikes) never reached this regime in these workloads. Log-space KDE
-on CPU (30 s at 2 cm)
+octave (at most 25% padding up to one block) removed most of that cost: on
+CPU, 10 s at 4 cm took 2.66-2.73 s against 2.63-2.67 s before, interleaved,
+with bitwise-identical state probabilities. GMM expected counts use their own
+compiled function, so electrodes with and without spikes in a chunk compute
+them identically. Above one block, every padded clusterless kernel (including
+the default KDE) now pads the number of blocks to four sizes per octave
+rather than powers of two, which bounds the padded intensity array at a
+quarter more blocks; the detector default block size (10,000 spikes) never
+reached this regime in these workloads. Log-space KDE on CPU (30 s at 2 cm)
 took 17.8 s instead of 38.4 s for the first prediction and 15.8 s instead of
 21.0-21.3 s once compiled.
 
@@ -592,17 +593,17 @@ With XLA GPU autotuning off (`XLA_FLAGS=--xla_gpu_autotune_level=0`), both
 versions use the same kernels: GMM state probabilities moved by at most
 5.1e-7, and log-space KDE state probabilities were bitwise identical. With the
 default autotuning, separate runs of the new GMM code differed by up to
-3.7e-4, as much as old-versus-new, with the same most likely state at every
-bin. Log-space KDE old-versus-new differed by 4.5e-5, with the most likely
-state changed in 1 of 15,000 bins; the previous code alone differed by the
-same amounts with autotuning on versus off. Against an eager per-spike
+6.3e-4, more than old versus new (4.8e-5), with the same most likely state at
+every bin. Log-space KDE old versus new differed by 4.5e-5, with the most
+likely state changed in 1 of 15,000 bins; the previous code alone differed by
+the same amounts with autotuning on versus off. Against an eager per-spike
 reference, float32 likelihoods agree to 2.7e-7 (GMM) and 3.7e-7 (log-space
-KDE) relative, and float64 to 4.4e-16 and 6.3e-16, on JAX 0.9.0 and 0.11.2. The GMM `bin_tile_size` path and the log-space KDE
-streaming and encoding-tiled paths are unchanged.
+KDE) relative, and float64 to 4.4e-16 and 6.3e-16, on JAX 0.9.0 and 0.11.2.
+The GMM `bin_tile_size` path and the log-space KDE streaming and
+encoding-tiled paths are unchanged.
 
 Records: [A100 runs and state comparisons](performance_artifacts/compile/a100-gmm-kde-log-runs.json),
 [CPU runs](performance_artifacts/compile/cpu-gmm-kde-log-runs.json) and
 [likelihood agreement](performance_artifacts/compile/numerics-gmm-kde-log.txt),
-measured with `benchmarks/profile_compilations.py` (the A100 runs before the
-final GMM runs used an earlier copy that took the benchmark directory as an
-argument).
+measured with `benchmarks/profile_compilations.py` (runs before the final GMM
+runs used an earlier copy that took the benchmark directory as an argument).
