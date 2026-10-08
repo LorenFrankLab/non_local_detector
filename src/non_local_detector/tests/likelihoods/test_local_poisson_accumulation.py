@@ -238,19 +238,24 @@ def test_compiled_local_kde_graph_does_not_grow_with_rows():
     assert n_equations(4096) == n_equations(1050)
 
 
+@pytest.mark.parametrize("x64", [False, True])
 @pytest.mark.parametrize("n_points", [0, 1, 55, 56, 300])
-def test_traced_block_kde_matches_block_kde(n_points):
+def test_traced_block_kde_matches_block_kde(n_points, x64):
     rng = np.random.default_rng(7365)
-    points = jnp.asarray(rng.normal(size=(n_points, 2)))
-    samples = jnp.asarray(rng.normal(size=(9, 2)))
-    weights = jnp.asarray(rng.uniform(0.1, 1, 9))
-    std = jnp.asarray([0.7, 1.3])
-    # Block size 7: up to 56 points are unrolled, 300 points use the loop.
-    actual = jax.jit(common._traced_block_kde, static_argnums=3)(
-        points, samples, std, 7, weights
-    )
-    expected = common.block_kde(points, samples, std, 7, weights)
-    np.testing.assert_array_equal(actual, expected)
+    with precision_mode(x64):
+        points = jnp.asarray(rng.normal(size=(n_points, 2)))
+        samples = jnp.asarray(rng.normal(size=(9, 2)))
+        weights = jnp.asarray(rng.uniform(0.1, 1, 9))
+        std = jnp.asarray([0.7, 1.3])
+        # Block size 7: up to 56 points are unrolled, 300 points use the loop.
+        actual = jax.jit(common._traced_block_kde, static_argnums=3)(
+            points, samples, std, 7, weights
+        )
+        expected = common.block_kde(points, samples, std, 7, weights)
+        # Compiled and eager forms can round differently, e.g. when XLA
+        # multiplies by a hoisted reciprocal of the bandwidth instead of
+        # dividing; float32 differences reach about 1e-5 relative in tails.
+        np.testing.assert_allclose(actual, expected, rtol=1e-12 if x64 else 2e-5)
 
 
 def test_large_local_glm_request_keeps_bounded_neuron_workspace(monkeypatch):
@@ -382,4 +387,7 @@ def test_compiled_local_kde_preserves_each_model_and_addition_order(x64, n_rows,
             order,
             block_sizes=block_sizes,
         )
-        np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)
+        # Float32 allows compiled-versus-eager rounding (see above).
+        np.testing.assert_allclose(
+            actual, expected, rtol=1e-10 if x64 else 1e-6, atol=1e-10
+        )

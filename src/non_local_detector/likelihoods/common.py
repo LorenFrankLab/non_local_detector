@@ -1264,7 +1264,9 @@ def _traced_block_kde(points, samples, std, block_size, weights):
     Up to ``_UNROLLED_KDE_BLOCKS`` blocks are traced as ``block_kde`` does.
     More blocks run in a loop over the same block size, with a zero-padded
     final block evaluated and trimmed. Each point's density depends only on
-    that point, so both forms give identical values.
+    that point, so both forms compute the same values; compiled forms can
+    round differently (XLA may multiply by a hoisted reciprocal of the
+    bandwidth instead of dividing).
 
     Parameters
     ----------
