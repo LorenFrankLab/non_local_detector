@@ -2,8 +2,8 @@
 
 This measures the existing checkpoint engine on cheap analytic likelihoods,
 not neural likelihoods or a proposed production cache mode. Every invocation
-uses fresh checkpoint/cache directories, retains at most one likelihood chunk,
-and leaves the engine's exact replay digest check enabled. Filesystem reads are
+uses fresh checkpoint/cache directories, caches at most one likelihood chunk,
+and leaves the engine's replay checksum check enabled. Filesystem reads are
 of just-written files; no cold-disk, fsync, or storage-durability claim is made.
 """
 

@@ -307,6 +307,65 @@ def test_changed_likelihood_replay_fails_atomically(tmp_path):
     assert not list(tmp_path.glob(".result-*"))
 
 
+def _wrapping_checksum(values):
+    """NumPy oracle: plain and odd-position-weighted uint32 sums, mod 2**32."""
+    bits = np.ascontiguousarray(values).view(np.uint32).ravel()
+    weights = (2 * np.arange(bits.size, dtype=np.uint32) + 1).astype(np.uint32)
+    return np.array(
+        [np.sum(bits, dtype=np.uint32), np.sum(bits * weights, dtype=np.uint32)],
+        dtype=np.uint32,
+    )
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_prepared_chunk_masks_missing_rows_and_matches_checksum_oracle(dtype):
+    import jax
+
+    from non_local_detector.checkpointed_inference import _prepare_chunk
+    from non_local_detector.core import _degenerate_and_nan_masks
+
+    if dtype == np.float64 and not jax.config.x64_enabled:
+        pytest.skip("requires actual enabled float64")
+    rng = np.random.default_rng(3)
+    values = rng.normal(scale=1e3, size=(7, 5)).astype(dtype)
+    values[1] = -np.inf
+    values[2, 3] = np.nan
+    values[4, 0] = np.inf
+    missing = np.zeros(7, dtype=bool)
+    missing[[2, 5]] = True
+
+    prepared, degenerate, nan, checksum = _prepare_chunk(
+        jnp.asarray(values), jnp.asarray(missing)
+    )
+
+    expected = np.where(missing[:, None], dtype(0), values)
+    np.testing.assert_array_equal(np.asarray(prepared), expected)
+    expected_degenerate, expected_nan = _degenerate_and_nan_masks(expected)
+    np.testing.assert_array_equal(np.asarray(degenerate), expected_degenerate)
+    np.testing.assert_array_equal(np.asarray(nan), expected_nan)
+    assert np.asarray(checksum).dtype == np.uint32
+    np.testing.assert_array_equal(np.asarray(checksum), _wrapping_checksum(expected))
+
+
+def test_prepared_chunk_checksum_detects_one_ulp_and_swapped_values():
+    from non_local_detector.checkpointed_inference import _prepare_chunk
+
+    values = np.random.default_rng(4).normal(size=(64, 33)).astype(np.float32)
+    missing = jnp.zeros(64, dtype=bool)
+
+    def checksum(array):
+        return np.asarray(_prepare_chunk(jnp.asarray(array), missing)[3])
+
+    reference = checksum(values)
+    nudged = values.copy()
+    nudged[37, 11] = np.nextafter(nudged[37, 11], np.float32(np.inf))
+    swapped = values.copy()
+    swapped[[3, 50], [7, 20]] = swapped[[50, 3], [20, 7]]
+    for changed in (nudged, swapped):
+        assert not np.array_equal(checksum(changed), reference)
+    np.testing.assert_array_equal(checksum(values.copy()), reference)
+
+
 def test_checkpoint_directory_failure_leaves_no_output_staging(tmp_path):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     bad = tmp_path / "not-a-directory"

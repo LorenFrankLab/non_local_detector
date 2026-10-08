@@ -45,8 +45,8 @@ output while the spatial chunk is available. Spatial working memory depends on
 `chunk_size`, not the entire recording length. Recording inputs, coordinates,
 diagnostics and compact outputs still grow with recording length. Boundary
 messages go to disk and are replayed during backward smoothing; likelihoods are
-evaluated twice. Replay verifies identical likelihood chunks and fails if their
-values change between passes. Keep fitted parameters and callback inputs fixed
+evaluated twice. Replay compares a checksum of each likelihood chunk and fails
+if its values change between passes. Keep fitted parameters and callback inputs fixed
 throughout prediction.
 
 Chunking bounds forward/backward arrays and likelihood output rows. Likelihood

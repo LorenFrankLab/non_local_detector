@@ -1,6 +1,7 @@
 """Exact single-sequence forward/backward replay with disk boundary checkpoints.
 
-Only one likelihood/forward/smoothed chunk is retained. Selected output rows
+At most two likelihood/forward/smoothed chunks are live: host work for one
+chunk overlaps device work for the next. Selected output rows
 remain conditioned on the complete recording. First-pass evidence increments
 are summed in host float64 by default, preserving the state-probability dtype
 and arithmetic. Explicit reference mode retains the original cumulative carry.
@@ -11,7 +12,6 @@ Likelihood callbacks must be deterministic and honor global ``row_slice``.
 
 from __future__ import annotations
 
-import hashlib
 import math
 import tempfile
 from dataclasses import dataclass
@@ -25,7 +25,6 @@ import xarray as xr
 
 from non_local_detector.core import (
     _condition_on,
-    _degenerate_and_nan_masks,
     _divide_safe,
     _normalize,
     _warn_degenerate_and_nan_timesteps,
@@ -211,8 +210,39 @@ def _sum_evidence(chunks):
     return total
 
 
-def _digest(array):
-    return hashlib.sha256(memoryview(np.ascontiguousarray(array)).cast("B")).hexdigest()
+@jax.jit
+def _prepare_chunk(values, missing):
+    """Neutralize missing rows; return diagnostic masks and a replay checksum.
+
+    The checksum sums the value bits, plain and with odd position weights, in
+    wrapping uint32 arithmetic. Integer addition is associative, so parallel
+    reductions give identical bits on every backend. Any single changed element
+    changes both sums; it detects accidental changes but is not cryptographic.
+
+    Parameters
+    ----------
+    values : jax.Array, shape (n_rows, n_bins)
+    missing : jax.Array of bool, shape (n_rows,)
+
+    Returns
+    -------
+    values : jax.Array, shape (n_rows, n_bins)
+    degenerate, nan : jax.Array of bool, shape (n_rows,)
+        Same semantics as ``core._degenerate_and_nan_masks``.
+    checksum : jax.Array of uint32, shape (2,)
+    """
+    values = jnp.where(missing[:, None], jnp.zeros((), values.dtype), values)
+    degenerate = values.max(axis=-1) == -jnp.inf
+    nan = jnp.any(jnp.isnan(values), axis=-1)
+    bits = jax.lax.bitcast_convert_type(values, jnp.uint32).ravel()
+    position_weights = 2 * jnp.arange(bits.size, dtype=jnp.uint32) + 1
+    checksum = jnp.stack(
+        [
+            jnp.sum(bits, dtype=jnp.uint32),
+            jnp.sum(bits * position_weights, dtype=jnp.uint32),
+        ]
+    )
+    return values, degenerate, nan, checksum
 
 
 def checkpointed_forward_backward(
@@ -421,7 +451,8 @@ def checkpointed_forward_backward(
     nan_rows = np.zeros(n_time, dtype=bool)
 
     def likelihood(start, stop):
-        values = np.asarray(
+        """Return device ``(values, degenerate, nan, checksum)`` for one chunk."""
+        values = jnp.asarray(
             log_likelihood_func(
                 time_edges, row_slice=slice(start, stop), is_missing=missing[start:stop]
             ),
@@ -431,10 +462,9 @@ def checkpointed_forward_backward(
             raise ValueError(
                 "Likelihood callback must return exactly the requested global rows and hidden bins"
             )
-        values = np.where(missing[start:stop, None], np.asarray(0, dtype=dtype), values)
         diagnostics["likelihood_evaluations"] += 1
         diagnostics["max_chunk_rows"] = max(diagnostics["max_chunk_rows"], stop - start)
-        return values
+        return _prepare_chunk(values, jnp.asarray(missing[start:stop]))
 
     def emit(name, start, stop, values):
         first, last = np.searchsorted(selected, [start, stop])
@@ -447,6 +477,10 @@ def checkpointed_forward_backward(
         else:
             writer.write(name, int(first), values)
 
+    def emit_chunk(start, stop, chunk_outputs):
+        for name, value in chunk_outputs.items():
+            emit(name, start, stop, value)
+
     try:
         with tempfile.TemporaryDirectory(
             prefix="checkpoints-", dir=checkpoint_parent
@@ -454,39 +488,62 @@ def checkpointed_forward_backward(
             folder = Path(folder)
             predicted, evidence = jnp.asarray(initial), jnp.asarray(0, dtype=dtype)
 
+            def finish_forward_chunk(
+                start, stop, predicted, evidence, degenerate, nan, checksum, increments
+            ):
+                """Pull one dispatched chunk's results to the host and checkpoint it."""
+                checkpoint = folder / f"{start}.npz"
+                np.savez(
+                    checkpoint,
+                    predicted=np.asarray(predicted),
+                    evidence=np.asarray(evidence),
+                    checksum=np.asarray(checksum),
+                )
+                diagnostics["checkpoint_bytes"] += checkpoint.stat().st_size
+                degenerate, nan = np.asarray(degenerate), np.asarray(nan)
+                degenerate_rows[start:stop] = degenerate
+                nan_rows[start:stop] = nan
+                diagnostics["n_degenerate"] += int(degenerate.sum())
+                diagnostics["n_nan"] += int(nan.sum())
+                return (
+                    float(np.sum(np.asarray(increments), dtype=np.float64))
+                    if evidence_accumulation == "stable"
+                    else 0.0
+                )
+
             def forward_increment_sums():
                 nonlocal predicted, evidence
+                # Each chunk's host work runs after the next chunk is dispatched,
+                # so device computation overlaps host transfers and disk writes.
+                pending = None
                 for start in boundaries:
                     stop = min(start + chunk_size, n_time)
-                    values = likelihood(start, stop)
-                    checkpoint = folder / f"{start}.npz"
-                    np.savez(
-                        checkpoint,
-                        predicted=np.asarray(predicted),
-                        evidence=np.asarray(evidence),
-                        digest=_digest(values),
+                    values, degenerate, nan, checksum = likelihood(start, stop)
+                    chunk = (
+                        start,
+                        stop,
+                        predicted,
+                        evidence,
+                        degenerate,
+                        nan,
+                        checksum,
                     )
-                    diagnostics["checkpoint_bytes"] += checkpoint.stat().st_size
-                    degenerate, nan = _degenerate_and_nan_masks(values)
-                    degenerate_rows[start:stop] = degenerate
-                    nan_rows[start:stop] = nan
-                    diagnostics["n_degenerate"] += int(degenerate.sum())
-                    diagnostics["n_nan"] += int(nan.sum())
                     (evidence, predicted), increments = _forward_chunk(
                         predicted,
                         evidence,
-                        jnp.asarray(values),
+                        values,
                         None if weights is None else jnp.asarray(weights[start:stop]),
                         transition_operator,
                         keep_rows=False,
                         keep_predictive=False,
                         keep_increments=evidence_accumulation == "stable",
                     )
-                    yield (
-                        float(np.sum(np.asarray(increments), dtype=np.float64))
-                        if evidence_accumulation == "stable"
-                        else 0.0
-                    )
+                    del values
+                    if pending is not None:
+                        yield finish_forward_chunk(*pending)
+                    pending = (*chunk, increments)
+                if pending is not None:
+                    yield finish_forward_chunk(*pending)
 
             if evidence_accumulation == "stable":
                 marginal = _sum_evidence(forward_increment_sums())
@@ -495,14 +552,14 @@ def checkpointed_forward_backward(
                     pass
                 marginal = float(evidence)
             next_smoothed = jnp.asarray(initial)
+            # Outputs are emitted after the next chunk is dispatched; each chunk's
+            # checksum is verified before its outputs are emitted.
+            pending = None
             for start in reversed(boundaries):
                 stop = min(start + chunk_size, n_time)
-                values = likelihood(start, stop)
+                values, _, _, checksum = likelihood(start, stop)
                 with np.load(folder / f"{start}.npz", allow_pickle=False) as checkpoint:
-                    if _digest(values) != str(checkpoint["digest"]):
-                        raise ValueError(
-                            "Likelihood callback changed during checkpoint replay; deterministic inputs are required"
-                        )
+                    expected_checksum = checkpoint["checksum"]
                     prior, start_evidence = (
                         jnp.asarray(checkpoint["predicted"]),
                         jnp.asarray(checkpoint["evidence"]),
@@ -513,7 +570,7 @@ def checkpointed_forward_backward(
                 _, (filtered, predictive) = _forward_chunk(
                     prior,
                     start_evidence,
-                    jnp.asarray(values),
+                    values,
                     chunk_weights,
                     transition_operator,
                     keep_rows=True,
@@ -532,6 +589,7 @@ def checkpointed_forward_backward(
                     jnp.arange(start, stop),
                     n_time,
                 )
+                chunk_outputs = {}
                 for name in outputs:
                     value = (
                         values
@@ -550,9 +608,19 @@ def checkpointed_forward_backward(
                             ],
                             axis=1,
                         )
-                    emit(name, start, stop, value)
-                # Only the smoothed first-row carry survives the next iteration.
+                    chunk_outputs[name] = value
+                # Only the requested outputs and the smoothed first-row carry
+                # survive the next iteration.
                 del values, filtered, predictive, smoothed, chunk_weights, prior
+                if pending is not None:
+                    emit_chunk(*pending)
+                if not np.array_equal(np.asarray(checksum), expected_checksum):
+                    raise ValueError(
+                        "Likelihood callback changed during checkpoint replay; deterministic inputs are required"
+                    )
+                pending = (start, stop, chunk_outputs)
+            if pending is not None:
+                emit_chunk(*pending)
         _warn_degenerate_and_nan_timesteps(
             diagnostics["n_degenerate"],
             diagnostics["n_nan"],
