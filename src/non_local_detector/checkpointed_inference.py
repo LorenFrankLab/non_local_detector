@@ -501,7 +501,13 @@ def checkpointed_forward_backward(
         if first == last:
             return
         rows = selected[first:last] - start
-        values = np.asarray(values)[rows]
+        values = np.asarray(values)
+        # Contiguous rows (the usual case) are a view rather than a copy.
+        values = (
+            values[rows[0] : rows[-1] + 1]
+            if rows[-1] - rows[0] + 1 == len(rows)
+            else values[rows]
+        )
         if writer is None:
             arrays[name][first:last] = values
         else:

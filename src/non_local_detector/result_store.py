@@ -219,7 +219,11 @@ class _ChunkedArray(BackendArray):
                     selected,
                     *[np.arange(len(index)) for index in indices[1:]],
                 ]
-                out[np.ix_(*destination)] = array[np.ix_(*source)]
+                runs = [_contiguous(index) for index in (*source, *destination)]
+                if all(isinstance(run, slice) for run in runs):
+                    out[tuple(runs[len(source) :])] = array[tuple(runs[: len(source)])]
+                else:
+                    out[np.ix_(*destination)] = array[np.ix_(*source)]
             finally:
                 array._mmap.close()
         scalar_axes = tuple(
@@ -312,6 +316,16 @@ def _index_values(size, item):
     return np.where(values < 0, values + size, values)
 
 
+def _contiguous(index):
+    """``index`` as a slice when it is an ascending run, else unchanged.
+
+    Slices copy blocks of the memory map; integer arrays gather element-wise.
+    """
+    if len(index) and np.all(np.diff(index) == 1):
+        return slice(int(index[0]), int(index[-1]) + 1)
+    return index
+
+
 class PaddedBackendArray(BackendArray):
     """Lazily scatter selected interior columns into the original padded bins.
 
@@ -357,8 +371,8 @@ class PaddedBackendArray(BackendArray):
         if inside.any() and len(rows):
             selected = self.source.isel(
                 {
-                    self.source.dims[0]: rows,
-                    self.source.dims[1]: self.mapping[columns[inside]],
+                    self.source.dims[0]: _contiguous(rows),
+                    self.source.dims[1]: _contiguous(self.mapping[columns[inside]]),
                 }
             )
             output[:, inside] = selected.values
