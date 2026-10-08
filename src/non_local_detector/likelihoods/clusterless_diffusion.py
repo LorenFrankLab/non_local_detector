@@ -497,6 +497,23 @@ def fit_clusterless_diffusion_encoding_model(
     }
 
 
+def _bin_sorted_encoding(bins, marks, weights):
+    """Device encoding bins, marks and weights in nondecreasing bin order.
+
+    Predict sums by bin with ``indices_are_sorted=True``. Models fitted before
+    encoding spikes were stored bin-sorted are sorted here (stably).
+    """
+    bins = np.asarray(bins)
+    if np.any(bins[1:] < bins[:-1]):
+        order = np.argsort(bins, kind="stable")
+        bins, marks, weights = (
+            bins[order],
+            np.asarray(marks)[order],
+            np.asarray(weights)[order],
+        )
+    return jnp.asarray(bins), jnp.asarray(marks), jnp.asarray(weights)
+
+
 @requires_time_edges
 def predict_clusterless_diffusion_log_likelihood(
     position_time: np.ndarray,
@@ -701,16 +718,9 @@ def predict_clusterless_diffusion_log_likelihood(
 
             seg = jnp.asarray(selection.bin_ind)
 
-            electrode_bins = np.asarray(electrode_bins)
-            if np.any(electrode_bins[1:] < electrode_bins[:-1]):
-                # Models fitted before encoding spikes were stored bin-sorted.
-                order = np.argsort(electrode_bins, kind="stable")
-                electrode_bins = electrode_bins[order]
-                electrode_marks = np.asarray(electrode_marks)[order]
-                electrode_weights = np.asarray(electrode_weights)[order]
-            enc_bins = jnp.asarray(electrode_bins)
-            enc_marks = jnp.asarray(electrode_marks)
-            enc_weights = jnp.asarray(electrode_weights)
+            enc_bins, enc_marks, enc_weights = _bin_sorted_encoding(
+                electrode_bins, electrode_marks, electrode_weights
+            )
             n_enc = enc_marks.shape[0]
             n_features = enc_marks.shape[1]
             electrode_waveform_std = as_std_array(waveform_std, n_features)
@@ -840,16 +850,9 @@ def predict_clusterless_diffusion_log_likelihood(
 
         seg = jnp.asarray(selection.bin_ind)
 
-        electrode_bins = np.asarray(electrode_bins)
-        if np.any(electrode_bins[1:] < electrode_bins[:-1]):
-            # Models fitted before encoding spikes were stored bin-sorted.
-            order = np.argsort(electrode_bins, kind="stable")
-            electrode_bins = electrode_bins[order]
-            electrode_marks = np.asarray(electrode_marks)[order]
-            electrode_weights = np.asarray(electrode_weights)[order]
-        enc_bins = jnp.asarray(electrode_bins)
-        enc_marks = jnp.asarray(electrode_marks)
-        enc_weights = jnp.asarray(electrode_weights)
+        enc_bins, enc_marks, enc_weights = _bin_sorted_encoding(
+            electrode_bins, electrode_marks, electrode_weights
+        )
         n_enc = enc_marks.shape[0]
         n_features = enc_marks.shape[1]
         electrode_waveform_std = as_std_array(waveform_std, n_features)

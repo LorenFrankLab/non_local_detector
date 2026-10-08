@@ -483,14 +483,15 @@ def _concatenate_row_blocks(
     n_neurons : int
         Population size, which sets the block rows.
     evaluate : callable
-        ``evaluate(start, stop)`` returns the 1-D result for global rows
-        ``[start, stop)``.
+        ``evaluate(start, stop)`` returns the result for global rows
+        ``[start, stop)``, rows on the first axis.
     desc : str
     disable_progress_bar : bool
 
     Returns
     -------
-    result : jnp.ndarray, shape (row_stop - row_start,)
+    result : jnp.ndarray, shape (row_stop - row_start, ...)
+        One-dimensional zeros when no rows are requested.
     """
     block_rows = _count_block_rows(n_neurons)
     blocks = [
@@ -552,15 +553,12 @@ def _blocked_nonlocal_poisson_log_likelihood(
     if _spike_time_order is None:
         # Verify each neuron's spike ordering once, not once per block.
         _spike_time_order = _SpikeTimeOrder()
-    block_rows = _count_block_rows(len(spike_times))
-    blocks = []
-    for start in tqdm(
-        range(row_start, row_stop, block_rows),
-        unit="block",
-        desc="Non-Local Likelihood",
-        disable=disable_progress_bar,
-    ):
-        stop = min(start + block_rows, row_stop)
+    if row_start == row_stop:
+        return _poisson_nonlocal_log_likelihood(
+            jnp.zeros((0, len(spike_times))), rates, durations, summed_rates
+        )
+
+    def evaluate(start, stop):
         counts = _spike_counts_matrix(
             spike_times,
             time_edges,
@@ -569,19 +567,21 @@ def _blocked_nonlocal_poisson_log_likelihood(
             slice(start, stop),
             _spike_time_order=_spike_time_order,
         )
-        blocks.append(
-            _poisson_nonlocal_log_likelihood(
-                jnp.asarray(counts),
-                rates,
-                durations[start - row_start : stop - row_start],
-                summed_rates,
-            )
-        )
-    if not blocks:
         return _poisson_nonlocal_log_likelihood(
-            jnp.zeros((0, len(spike_times))), rates, durations, summed_rates
+            jnp.asarray(counts),
+            rates,
+            durations[start - row_start : stop - row_start],
+            summed_rates,
         )
-    return blocks[0] if len(blocks) == 1 else jnp.concatenate(blocks)
+
+    return _concatenate_row_blocks(
+        row_start,
+        row_stop,
+        len(spike_times),
+        evaluate,
+        "Non-Local Likelihood",
+        disable_progress_bar,
+    )
 
 
 def get_position_at_time(
@@ -1247,12 +1247,15 @@ def block_kde(
     return jnp.concatenate(blocks)
 
 
+def _quarter_octave(n: int) -> int:
+    """Smallest of four sizes per octave that is at least ``n`` (``n >= 1``)."""
+    step = 1 << max((n - 1).bit_length() - 3, 0)
+    return -(-n // step) * step
+
+
 def _padded_sample_count(n_samples: int) -> int:
     """Encoding samples per electrode: four sizes per octave, at most 25% padding."""
-    if n_samples <= 16:
-        return 16
-    step = 1 << max((n_samples - 1).bit_length() - 3, 0)
-    return -(-n_samples // step) * step
+    return 16 if n_samples <= 16 else _quarter_octave(n_samples)
 
 
 def _padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -> int:
@@ -1281,9 +1284,7 @@ def _padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -
             else 1 << max(n_spikes - 1, 15).bit_length()
         )
         return min(block_size, size)
-    n_blocks = -(-n_spikes // block_size)
-    step = 1 << max((n_blocks - 1).bit_length() - 3, 0)
-    return block_size * (-(-n_blocks // step) * step)
+    return block_size * _quarter_octave(-(-n_spikes // block_size))
 
 
 def _pad_rows(array, n_rows: int) -> np.ndarray:
@@ -1334,15 +1335,32 @@ def _padded_samples(
 _UNROLLED_KDE_BLOCKS = 8
 
 
+def _traced_blocks(blocked, kernel, points, samples, std, block_size, weights):
+    """Blocked KDE inside a trace, with a bounded graph for any row count.
+
+    Up to ``_UNROLLED_KDE_BLOCKS`` blocks are traced as ``blocked`` does. More
+    blocks run ``kernel`` in a loop over the same block size, with a
+    zero-padded final block evaluated and trimmed.
+    """
+    n_points = points.shape[0]
+    n_blocks = -(-n_points // block_size)
+    if n_blocks <= _UNROLLED_KDE_BLOCKS:
+        return blocked(points, samples, std, block_size, weights)
+    padded = jnp.pad(points, ((0, n_blocks * block_size - n_points), (0, 0)))
+    values = jax.lax.map(
+        lambda block: kernel(block, samples, std, weights),
+        padded.reshape(n_blocks, block_size, points.shape[1]),
+    )
+    return values.reshape(-1)[:n_points]
+
+
 def _traced_block_kde(points, samples, std, block_size, weights):
     """``block_kde`` inside a trace, with a bounded graph for any row count.
 
-    Up to ``_UNROLLED_KDE_BLOCKS`` blocks are traced as ``block_kde`` does.
-    More blocks run in a loop over the same block size, with a zero-padded
-    final block evaluated and trimmed. Each point's density depends only on
-    that point, so both forms compute the same values; compiled forms can
-    round differently (XLA may multiply by a hoisted reciprocal of the
-    bandwidth instead of dividing).
+    Each point's density depends only on that point, so the unrolled and
+    looped forms compute the same values; compiled forms can round
+    differently (XLA may multiply by a hoisted reciprocal of the bandwidth
+    instead of dividing).
 
     Parameters
     ----------
@@ -1356,16 +1374,7 @@ def _traced_block_kde(points, samples, std, block_size, weights):
     -------
     density : jnp.ndarray, shape (n_points,)
     """
-    n_points = points.shape[0]
-    n_blocks = -(-n_points // block_size)
-    if n_blocks <= _UNROLLED_KDE_BLOCKS:
-        return block_kde(points, samples, std, block_size, weights)
-    padded = jnp.pad(points, ((0, n_blocks * block_size - n_points), (0, 0)))
-    density = jax.lax.map(
-        lambda block: kde(block, samples, std, weights),
-        padded.reshape(n_blocks, block_size, points.shape[1]),
-    )
-    return density.reshape(-1)[:n_points]
+    return _traced_blocks(block_kde, kde, points, samples, std, block_size, weights)
 
 
 def _traced_block_log_kde(
@@ -1375,9 +1384,7 @@ def _traced_block_log_kde(
     block_size: int,
     weights: jnp.ndarray,
 ) -> jnp.ndarray:
-    """``block_log_kde`` inside a trace, with a bounded graph for any row count.
-
-    Blocked like :func:`_traced_block_kde`.
+    """``block_log_kde`` inside a trace, blocked like :func:`_traced_block_kde`.
 
     Parameters
     ----------
@@ -1391,16 +1398,9 @@ def _traced_block_log_kde(
     -------
     log_density : jnp.ndarray, shape (n_points,)
     """
-    n_points = points.shape[0]
-    n_blocks = -(-n_points // block_size)
-    if n_blocks <= _UNROLLED_KDE_BLOCKS:
-        return block_log_kde(points, samples, std, block_size, weights)
-    padded = jnp.pad(points, ((0, n_blocks * block_size - n_points), (0, 0)))
-    log_density = jax.lax.map(
-        lambda block: log_kde(block, samples, std, weights),
-        padded.reshape(n_blocks, block_size, points.shape[1]),
+    return _traced_blocks(
+        block_log_kde, log_kde, points, samples, std, block_size, weights
     )
-    return log_density.reshape(-1)[:n_points]
 
 
 @jax.jit
