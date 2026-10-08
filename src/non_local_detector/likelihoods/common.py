@@ -1264,6 +1264,26 @@ def _pad_rows(array, n_rows: int) -> np.ndarray:
     return np.concatenate([array, padding])
 
 
+def _padded_samples(spike_time_order, samples, weights):
+    """Device KDE samples and weights padded with zero-weight rows, once per prediction.
+
+    Zero-weight samples add nothing to weighted kernel sums, so electrodes with
+    nearby encoding sizes share compiled kernels.
+    """
+
+    def build():
+        n_samples = _padded_sample_count(np.shape(samples)[0])
+        sample_weights = (
+            np.ones(np.shape(samples)[0]) if weights is None else np.asarray(weights)
+        )
+        return (
+            jnp.asarray(_pad_rows(samples, n_samples)),
+            jnp.asarray(_pad_rows(sample_weights, n_samples)),
+        )
+
+    return spike_time_order.memo("padded_samples", (samples, weights), build)
+
+
 # Up to this many evaluation blocks are traced individually: faster on CPU
 # than a loop, and the compiled graph stays small.
 _UNROLLED_KDE_BLOCKS = 8
@@ -1301,6 +1321,35 @@ def _traced_block_kde(points, samples, std, block_size, weights):
         padded.reshape(n_blocks, block_size, points.shape[1]),
     )
     return density.reshape(-1)[:n_points]
+
+
+def _traced_block_log_kde(points, samples, std, block_size, weights):
+    """``block_log_kde`` inside a trace, with a bounded graph for any row count.
+
+    Blocked like :func:`_traced_block_kde`.
+
+    Parameters
+    ----------
+    points : jnp.ndarray, shape (n_points, n_dims)
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+    std : jnp.ndarray, shape (n_dims,)
+    block_size : int
+    weights : jnp.ndarray, shape (n_samples,)
+
+    Returns
+    -------
+    log_density : jnp.ndarray, shape (n_points,)
+    """
+    n_points = points.shape[0]
+    n_blocks = -(-n_points // block_size)
+    if n_blocks <= _UNROLLED_KDE_BLOCKS:
+        return block_log_kde(points, samples, std, block_size, weights)
+    padded = jnp.pad(points, ((0, n_blocks * block_size - n_points), (0, 0)))
+    log_density = jax.lax.map(
+        lambda block: log_kde(block, samples, std, weights),
+        padded.reshape(n_blocks, block_size, points.shape[1]),
+    )
+    return log_density.reshape(-1)[:n_points]
 
 
 @jax.jit

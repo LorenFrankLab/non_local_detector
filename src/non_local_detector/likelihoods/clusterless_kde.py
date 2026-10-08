@@ -17,7 +17,7 @@ from non_local_detector.likelihoods.common import (
     KDEModel,
     _log_kernel_matrix,
     _pad_rows,
-    _padded_sample_count,
+    _padded_samples,
     _padded_spike_count,
     _SpikeTimeOrder,
     _traced_block_kde,
@@ -72,26 +72,6 @@ def _tile_size(limit, size):
     """Keep configured capacity from padding a smaller or empty input."""
     size = max(1, size)
     return size if limit is None else min(limit, size)
-
-
-def _padded_samples(spike_time_order, samples, weights):
-    """Device KDE samples and weights padded with zero-weight rows, once per prediction.
-
-    Zero-weight samples add nothing to weighted kernel sums, so electrodes with
-    nearby encoding sizes share compiled kernels.
-    """
-
-    def build():
-        n_samples = _padded_sample_count(np.shape(samples)[0])
-        sample_weights = (
-            np.ones(np.shape(samples)[0]) if weights is None else np.asarray(weights)
-        )
-        return (
-            jnp.asarray(_pad_rows(samples, n_samples)),
-            jnp.asarray(_pad_rows(sample_weights, n_samples)),
-        )
-
-    return spike_time_order.memo("padded_samples", (samples, weights), build)
 
 
 def _predict_kde_density(model, points, encoding_block_size, position_block_size):
