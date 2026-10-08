@@ -2,7 +2,9 @@
 
 These opt-in APIs build on the 0.7 time/Hz contracts. Existing `fit()` and
 `predict()` calls keep their dense behavior. The modes apply to prediction with
-fitted parameters; EM and Viterbi retain their existing algorithms.
+fitted parameters; EM and Viterbi retain their existing algorithms. For
+suggested settings on 24 GB GPUs, A100s and CPUs, see
+[hardware_settings.md](hardware_settings.md).
 
 Fit a supported Cartesian model without constructing a combined dense
 transition matrix:

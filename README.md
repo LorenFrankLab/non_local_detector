@@ -64,8 +64,9 @@ pip install -e .[dev]
 
 These examples target the source branch and the forthcoming 0.7 time/Hz API.
 For an older installed release, use its matching documentation. See the
-[time-grid migration guide](docs/time_grid_migration.md) and the opt-in
-[checkpointed prediction guide](docs/performance_prediction.md).
+[time-grid migration guide](docs/time_grid_migration.md), the opt-in
+[checkpointed prediction guide](docs/performance_prediction.md), and
+[settings for your hardware](docs/hardware_settings.md) (24 GB GPUs, A100s, CPUs).
 
 ### Basic Replay Detection
 
