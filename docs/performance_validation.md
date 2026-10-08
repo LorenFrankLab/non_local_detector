@@ -537,7 +537,8 @@ in batches of 16 (d36234c8) bounds the local KDE kernel's graph. On the A100
 
 For a 120 s recording with 1,024 spread units, compilation fell from 254 to 34 s
 and the first prediction from 296 to 58 s. Without batching, compilation was
-faster (19 s) but warm predictions at 1,024 units were 12% slower (4.81 s).
+faster (19 s) but warm predictions at 1,024 units took 4.81 s, 12% longer
+than the previous code's 4.29 s.
 Local log-likelihoods changed by at most 5.7e-7 relative and state
 probabilities by at most 2.3e-6 on CPU, with the same most likely state at
 every bin; error against a float64 computation was unchanged.
