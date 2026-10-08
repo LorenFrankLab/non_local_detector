@@ -4,6 +4,8 @@ Status: Phases 0–6 are merged on `main` (Phase 0 `c808dde`; Phase 1 `8c8765f` 
 `5bd63d4`; Phase 2 `86e22f0`; Phase 3 `ffc85a1`; Phase 4 `ee2cc21`; Phase 5
 `68e88b0`; Phase 6 `fe1b2e9`, PR #59). Phase 7 is implemented and qualified for
 the recorded CPU/A100 configurations on `feat/phase7-performance`.
+Phase 9 (EM parameter estimation on 24 GB GPUs, A100s and CPUs) is planned
+and needs design and prototyping; its baselines were recorded on 2026-10-08.
 The remaining phase plans were re-verified against `ee2cc21` on
 2026-09-22 and have the readiness states recorded below; Phase 5 did not change
 their blockers. C3b was resolved on 2026-09-25 (see
@@ -138,6 +140,8 @@ coordination remain separate. See the [follow-up validation](../../../../docs/ti
 | 6b + 6d | 6a/6c, Phase 5 event weights, C3b, and C3b's unit-bearing floor decisions | Ship C3b encoding support, seconds exposure, Hz conversion, metadata plumbing, and legacy-model rejection atomically. |
 | 8 | Applicable C1 decisions for the zero-exposure floor (not Phase 6b units) | Can ship before Phase 7 and does not require Phase 6b units; sorted-index work was done in Phase 3 (GPU validation outstanding). |
 | 7 | Corrected likelihood/time baseline and relevant Phase 8 fixes | Pure-core prototypes may run earlier; production claims require the integrated corrected baseline. |
+| 9a | Phase 7 EM benchmark | Independent of 9b; preserves dense EM outputs. |
+| 9b | Phase 7 checkpointed driver, structured operators and compact outputs; 9a's stage measurements | Ships only after its parity and per-tier memory experiments pass; the dense EM path remains the reference and fallback. |
 
 Phases 0–5 remain the correctness priority before the Phase 6 migration. Review
 Phase 6a/6c separately from 6b/6d so time/coordinate effects and rate-unit effects
@@ -161,6 +165,7 @@ an assumption that every golden must change.
 | 6d | **Package implementation finished, reviewed, and accepted**, committed. All active spike-state encoding entries are checked before dispatch; cached/base-Viterbi cannot bypass validation by omitting fitted encoding state. Unused/No-Spike-only entries are handled explicitly. New regressions: **128**; focused: **314**; float64 compatibility/persistence: **177**. Final complete suite: **2,397 / 6 skipped / 0 failed**; valid-model arrays are bit-identical to accepted 6c. See the [6d completion record](phase-6d-model-compat.md#completion-review--2026-10-05). Ships atomically with 6b; external rollout remains separate. |
 | 7 | **Implemented and qualified for the recorded configurations** on `feat/phase7-performance`, based on merged Phase 6 `fe1b2e9`. 7a supplies checkpointed smoothing and incremental/compact outputs; 7b supplies supported structured transitions; 7c improves measured likelihood hotspots and adds optional encoding tiles. All eight CPU/A100 full-hour checks pass; long-encoding fit/short-prediction workspace checks pass separately. Final suite: 3,137 passed / 26 skipped, unchanged references and tolerances. Stable checkpointed evidence was explicitly approved. See the [Phase 7 record](phase-7-performance.md) for measured populations, outputs, durations and limits. |
 | 8 | **Density/component fixes need prototyping** (both reproduced at `ee2cc21`). Distinguish mass from density on variable-volume bins (sorted diffusion is the outlier; clusterless diffusion already uses the mass convention) and define unoccupied-component behavior consistently with the selected policy. Phase 3 now sets sorted-index hints from a verified ordering at every reduction site and shares ordering checks across states/chunks within each prediction. GPU validation remains outstanding. |
+| 9 | **Needs design and prototyping.** EM still uses the dense filter/smoother; baselines for A100 and CPU are recorded, with 24 GB GPU limits to be measured. 9a removes unneeded dense-fit costs and documents per-tier limits; 9b proposes bounded-memory EM. See [Phase 9](phase-9-em-performance.md). |
 
 ## Reading order
 
@@ -186,6 +191,7 @@ an assumption that every golden must change.
 | 6d | [phase-6d-model-compat.md](phase-6d-model-compat.md) | Saved models with per-sample rates are detected and rejected | None |
 | 7 | [phase-7-performance.md](phase-7-performance.md) | Checkpointed smoothing, incremental/compact outputs, structured transitions, and measured kernel optimizations | None (parity against the corrected baseline) |
 | 8 | [phase-8-remaining-findings.md](phase-8-remaining-findings.md) | `to_density` volume, MRF disconnected components, sorted-index contract | Changes possible on affected fixtures; measure |
+| 9 | [phase-9-em-performance.md](phase-9-em-performance.md) | 9a: dense-EM fixed costs and per-tier limits; 9b: bounded-memory EM | None (parity against dense EM) |
 
 ## Approval gates
 
