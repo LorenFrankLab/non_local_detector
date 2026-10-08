@@ -877,14 +877,18 @@ def predict_clusterless_kde_log_likelihood(
             if encoding_block_size is not None or position_block_size is not None:
                 # Accumulate completed mark tiles into rows without retaining
                 # an encoding-by-position or all-marks-by-position matrix.
-                if electrode_decoding_spike_waveform_features.shape[0] == 0:
+                n_spikes = electrode_decoding_spike_waveform_features.shape[0]
+                if n_spikes == 0:
                     continue
+                # Padded spikes (dropped from the row sums) let chunks with
+                # nearby spike counts share one compiled kernel.
+                n_padded = _padded_spike_count(n_spikes, block_size)
                 n_waveform_features = electrode_encoding_spike_waveform_features.shape[
                     1
                 ]
                 electrode_waveform_std = as_std_array(waveform_std, n_waveform_features)
                 log_likelihood += _streamed_joint_mark_row_sums(
-                    electrode_decoding_spike_waveform_features,
+                    _pad_rows(electrode_decoding_spike_waveform_features, n_padded),
                     electrode_encoding_spike_waveform_features,
                     electrode_encoding_positions,
                     interior_place_bin_centers,
@@ -893,7 +897,7 @@ def predict_clusterless_kde_log_likelihood(
                     occupancy,
                     electrode_mean_rate * RATE_REFERENCE_SECONDS,
                     electrode_encoding_weights,
-                    row_indices=selection.bin_ind,
+                    row_indices=spike_row_ids(selection, n_padded),
                     n_rows=selection.n_rows,
                     encoding_tile_size=_tile_size(
                         encoding_block_size,
@@ -902,9 +906,7 @@ def predict_clusterless_kde_log_likelihood(
                     position_tile_size=_tile_size(
                         position_block_size, interior_place_bin_centers.shape[0]
                     ),
-                    decoding_tile_size=_tile_size(
-                        block_size, electrode_decoding_spike_waveform_features.shape[0]
-                    ),
+                    decoding_tile_size=_tile_size(block_size, n_padded),
                 )
                 continue
             n_spikes = electrode_decoding_spike_waveform_features.shape[0]
