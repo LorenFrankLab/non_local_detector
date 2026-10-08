@@ -159,7 +159,9 @@ def _local_kde_log_likelihood(
     """
     if points.ndim == 1:
         points = points[:, None]
-    if not groups:
+    # No rows: also avoids lax.map batching zero-size arrays, which older JAX
+    # (0.6.x) cannot reshape.
+    if not groups or points.shape[0] == 0:
         return jnp.zeros((points.shape[0],))
 
     def group_terms(group, block_size):
