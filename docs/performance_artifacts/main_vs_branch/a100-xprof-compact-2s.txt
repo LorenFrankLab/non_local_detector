@@ -1,0 +1,17 @@
+# xprof of one warm branch compact prediction, A100 (JAX 0.9.0), sorted,
+# 2 cm grid (16,930 state bins), 2 s recording (1,000 rows, chunk 256).
+# Tracing a 30 s compact prediction ended in CUDA_ERROR_LAUNCH_FAILED inside
+# the traced call for both families; untraced runs of the same configurations
+# (and the 2 s traced run) succeed. Not checked with compute-sanitizer (only a
+# CUDA 11.6 sanitizer was available for a CUDA 12 runtime).
+Kernel time 762.8 ms across 201 kernels and 72,694 launches; warm wall 1.55 s
+(GPU busy ~50%); TensorCore share 0% (HIGHEST precision).
+  dur(ms)  calls  kernel
+    273.2   2000  input_concatenate_fusion   (structured transition product, per step)
+    143.8   1000  input_concatenate_fusion   (same)
+     28.7  18432  memcpy32_post
+     27.8  13304  input_reduce_fusion_12
+     25.9   4000  ampere_sgemm_64x32 (grid-axis factor products)
+     22.4   1000  input_add_multiply_reduce_fusion
+     19.3   3000  ampere_sgemm_64x32
+     18.0   8624  input_reduce_fusion_8 (jit(_forward_chunk)/while/body)

@@ -338,3 +338,63 @@ simultaneous burst) are retained as historical measurements of that reverted
 variant. The earlier full-hour timings and built-wheel checks remain
 measurements of S2/S4/S6 and are not relabelled as qualification of the
 updated runtime.
+
+## Comparison with main
+
+Same simulated workloads on `main` (8fdec995) and this branch, run with
+`benchmarks/compare_prediction_modes.py`: a 180 cm 2-D arena, 64 sorted units
+at 5 Hz or 8 clusterless electrodes at 20 Hz with 4 marks, 10 s of encoding.
+Times are steady-state warm predictions where available, otherwise the first
+prediction (including compilation). `main` dense is the default `predict`;
+branch compact is `inference_mode="checkpointed", output_mode="compact"` with
+structured transitions. Branch dense and chunked modes match `main` in time
+and memory, and `main`'s `n_chunks` does not reduce memory.
+
+| A100, 2 cm (16,930 state bins) | main dense | branch compact | ratio |
+| --- | ---: | ---: | ---: |
+| Sorted 30 s / 120 s | 40.3 s / 147.9 s | 25.8 s / 103.4 s | 1.56x / 1.43x |
+| Clusterless 30 s / 120 s | 39.0 s / 147.0 s | 46.1 s / 187.1 s | 0.84x / 0.79x |
+| Device peak at 120 s | 21.5 GB | 0.15 GB | |
+| Host RSS at 120 s | 26.3 GB | 1.5-2.4 GB | |
+| Fit | 235-273 s | 2.6-3.9 s | |
+
+| CPU (64 GB), main dense vs branch compact | sorted | clusterless |
+| --- | ---: | ---: |
+| 2 cm, 30 s | 645 s vs 18.0 s (36x) | 594 s vs 23.0 s (26x) |
+| 4 cm, 30 s to 16 min | 10.4-11.2x faster | 6.5-7.0x faster |
+| 4 cm, 16 min host RSS | 26.1 GB vs 1.6 GB | 29.9 GB vs 4.6 GB |
+| Fit, 2 cm | 168.5 s vs 1.1 s | 165.7 s vs 0.9 s |
+
+Capacity: on the A100, dense prediction (either version) at 2 cm completes
+4 minutes (41.8 GB device, 39 GB host) and fails at 8 minutes (out of device
+memory). Branch compact completes 60 minutes with 0.15 GB device memory:
+3,024 s for sorted and 5,603 s for clusterless (1.6/2.6 GB host). On the
+64 GB CPU at 4 cm, `main` dense completes 16 minutes (26-30 GB) and 32 minutes
+would exceed RAM, while compact completes 60 minutes in 644 s (sorted) and
+943 s (clusterless) with at most 4.5 GB.
+
+Where compact time goes on the A100 (30 s, 2 cm; `benchmarks/profile_checkpointed_prediction.py`):
+sorted spends about 50% in the per-step forward/backward kernels, 35% in
+host-side work and 15% in likelihoods; clusterless spends 57% in likelihoods
+(both passes), 26% in forward/backward kernels and 17% host-side. Host
+profiles show SHA-256 replay digests at 15% (sorted) and 7% (clusterless) of
+the prediction, and about 34,000 eager JAX dispatches per clusterless
+prediction from likelihood code outside `jit`. An xprof trace of a 2 s compact
+prediction attributes 55% of kernel time to the per-step structured
+transition product, with the GPU busy about half the time.
+
+Agreement and precision: the branch's state probabilities match `main` to
+2e-6 (CPU, dense) and 6e-4 (CPU, compact); on the A100 both versions differ
+by up to about 2e-3, the same size as `main`'s own dense-versus-chunked
+difference there. Against a float64 reference, float32 state probabilities
+in both versions err by up to about 5% on CPU and 1.8% on the A100 for this
+workload; the source of that float32 error has not been isolated.
+
+Records: [A100 runs](performance_artifacts/main_vs_branch/a100-runs.json),
+[CPU runs](performance_artifacts/main_vs_branch/cpu-runs.json),
+[stage profiles](performance_artifacts/main_vs_branch/a100-stage-profiles.json),
+[xprof summary](performance_artifacts/main_vs_branch/a100-xprof-compact-2s.txt) and
+[agreement and precision](performance_artifacts/main_vs_branch/agreement-and-precision.txt).
+Runs marked failed with `UnboundLocalError` completed their prediction; an
+earlier version of the comparison script could not save states with
+`--repeat 0`.

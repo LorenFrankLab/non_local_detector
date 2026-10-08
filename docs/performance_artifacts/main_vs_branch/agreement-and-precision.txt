@@ -1,0 +1,32 @@
+# Output agreement: acausal state probabilities, max |difference|.
+# Workloads are identical across versions and platforms (seeded simulation;
+# benchmarks/compare_prediction_modes.py). float32 unless stated.
+
+## Versus main dense, same platform
+A100, 2 cm grid      main chunked    branch dense    branch chunked  branch compact
+  sorted 30 s        4.88e-04        4.56e-04        7.31e-04        1.63e-03
+  sorted 120 s       4.88e-04        2.44e-04        6.30e-04        1.99e-03
+  clusterless 30 s   9.77e-04        1.06e-03        1.06e-03        2.26e-03
+  clusterless 120 s  9.77e-04        1.15e-03        9.18e-04        2.29e-03
+CPU                  branch dense    branch compact
+  sorted 30 s 4 cm   1.37e-06        3.87e-05
+  sorted 120 s 4 cm  1.79e-06        4.67e-05
+  sorted 30 s 2 cm   1.73e-06        3.43e-04
+  clusterless 30 s 4 cm   0.00e+00   2.39e-05
+  clusterless 120 s 4 cm  0.00e+00   7.62e-05
+  clusterless 30 s 2 cm   0.00e+00   5.61e-04
+On the A100, main's own chunked mode differs from its dense mode by 5e-4 to
+1e-3 (main uses default TF32 matmul precision there), the same size as the
+branch's differences.
+
+## Versus a float64 reference (CPU, JAX_ENABLE_X64=1, branch compact),
+## sorted 30 s, 2 cm grid
+                      max       mean      rows with any |diff| > 1e-2
+CPU f32 main dense    4.93e-02  3.75e-03  3776 / 15000
+CPU f32 compact       4.94e-02  3.76e-03  3777 / 15000
+A100 f32 main dense   1.76e-02  1.11e-03   137 / 15000
+A100 f32 branch dense 1.76e-02  1.11e-03   136 / 15000
+A100 f32 compact      1.70e-02  1.07e-03   102 / 15000
+The branch adds no error relative to main on either platform. float32 itself
+carries up to ~5% (CPU) and ~1.8% (A100) state-probability error on this
+workload in both versions; the source has not been isolated.

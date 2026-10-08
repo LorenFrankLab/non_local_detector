@@ -1,0 +1,478 @@
+{
+ "cprofile-clusterless-30.json": {
+  "family": "clusterless",
+  "duration_s": 30.0,
+  "rows": 15000,
+  "bin_size_cm": 2.0,
+  "arena_cm": 180.0,
+  "population": 8,
+  "chunk_size": 256,
+  "backend": "gpu",
+  "device": "cuda:0",
+  "jax": "0.9.0",
+  "uninstrumented_warm_seconds": 41.85527330171317,
+  "instrumented_seconds": 46.354172457009554,
+  "stage_seconds": {
+   "likelihood_local": 16.17344634886831,
+   "likelihood_no_spike": 0.4976659258827567,
+   "likelihood_nonlocal": 9.665888724848628,
+   "checkpoint_write": 0.04596672207117081,
+   "forward_filter_chunks": 7.188506712205708,
+   "checkpoint_read": 0.02329236175864935,
+   "backward_smoother_chunks": 4.7135208593681455,
+   "other": 8.045884802006185
+  },
+  "stage_fraction": {
+   "likelihood_local": 0.3489102596722683,
+   "likelihood_no_spike": 0.01073616245321409,
+   "likelihood_nonlocal": 0.20852251722998838,
+   "checkpoint_write": 0.000991641520810277,
+   "forward_filter_chunks": 0.1550778782400349,
+   "checkpoint_read": 0.0005024868425868563,
+   "backward_smoother_chunks": 0.10168493167987469,
+   "other": 0.17357412236122247
+  },
+  "stage_calls": {
+   "likelihood_local": 118,
+   "likelihood_no_spike": 118,
+   "likelihood_nonlocal": 118,
+   "checkpoint_write": 59,
+   "forward_filter_chunks": 118,
+   "checkpoint_read": 59,
+   "backward_smoother_chunks": 59
+  },
+  "host_functions_by_own_time": [
+   {
+    "function": "array.py:631(_value)",
+    "own_seconds": 10.314021709,
+    "cumulative_seconds": 10.31836226,
+    "calls": 472
+   },
+   {
+    "function": "dispatch.py:84(apply_primitive)",
+    "own_seconds": 8.333042073,
+    "cumulative_seconds": 8.528623556000001,
+    "calls": 34427
+   },
+   {
+    "function": "~:0(<built-in method _hashlib.openssl_sha256>)",
+    "own_seconds": 2.830357422,
+    "cumulative_seconds": 2.830357422,
+    "calls": 118
+   },
+   {
+    "function": "checkpointed_inference.py:218(checkpointed_forward_backward)",
+    "own_seconds": 2.428060908,
+    "cumulative_seconds": 49.158535569,
+    "calls": 1
+   },
+   {
+    "function": "array_methods.py:604(deferring_binary_op)",
+    "own_seconds": 2.040600679,
+    "cumulative_seconds": 3.463625335,
+    "calls": 14221
+   },
+   {
+    "function": "lax_numpy.py:2712(where)",
+    "own_seconds": 1.7925503120000001,
+    "cumulative_seconds": 1.9403390100000002,
+    "calls": 4838
+   },
+   {
+    "function": "ufunc_api.py:175(__call__)",
+    "own_seconds": 1.261742893,
+    "cumulative_seconds": 1.3877445160000002,
+    "calls": 7671
+   },
+   {
+    "function": "common.py:1119(block_kde)",
+    "own_seconds": 1.136782929,
+    "cumulative_seconds": 1.6617425270000001,
+    "calls": 2950
+   },
+   {
+    "function": "checkpointed_inference.py:423(likelihood)",
+    "own_seconds": 1.014304536,
+    "cumulative_seconds": 33.715505378,
+    "calls": 118
+   },
+   {
+    "function": "~:0(<built-in method builtins.isinstance>)",
+    "own_seconds": 0.8858514300000001,
+    "cumulative_seconds": 0.9030372430000001,
+    "calls": 1269305
+   },
+   {
+    "function": "util.py:297(wrapper)",
+    "own_seconds": 0.8842479200000001,
+    "cumulative_seconds": 1.505227168,
+    "calls": 187856
+   },
+   {
+    "function": "common.py:851(deterministic_row_sum)",
+    "own_seconds": 0.7189675790000001,
+    "cumulative_seconds": 6.571978458,
+    "calls": 1888
+   },
+   {
+    "function": "clusterless_kde.py:231(block_estimate_log_joint_mark_intensity)",
+    "own_seconds": 0.447544573,
+    "cumulative_seconds": 1.6016156080000001,
+    "calls": 944
+   },
+   {
+    "function": "lax.py:1623(_convert_element_type)",
+    "own_seconds": 0.41570756000000003,
+    "cumulative_seconds": 8.766729598000001,
+    "calls": 38142
+   },
+   {
+    "function": "dtypes.py:932(dtype)",
+    "own_seconds": 0.373934786,
+    "cumulative_seconds": 0.702859797,
+    "calls": 65637
+   },
+   {
+    "function": "pxla.py:235(batched_device_put)",
+    "own_seconds": 0.327490842,
+    "cumulative_seconds": 0.34534451200000005,
+    "calls": 3207
+   },
+   {
+    "function": "lax_numpy.py:4220(pad)",
+    "own_seconds": 0.32357287,
+    "cumulative_seconds": 0.924706019,
+    "calls": 944
+   },
+   {
+    "function": "clusterless_kde.py:768(compute_local_log_likelihood)",
+    "own_seconds": 0.31353770200000003,
+    "cumulative_seconds": 18.000656789,
+    "calls": 118
+   },
+   {
+    "function": "core.py:634(_true_bind)",
+    "own_seconds": 0.287963603,
+    "cumulative_seconds": 10.625119782,
+    "calls": 34427
+   },
+   {
+    "function": "array_constructors.py:85(array)",
+    "own_seconds": 0.27705546000000003,
+    "cumulative_seconds": 2.4947427490000003,
+    "calls": 10450
+   },
+   {
+    "function": "common.py:1049(_log_kernel_matrix)",
+    "own_seconds": 0.27620289600000003,
+    "cumulative_seconds": 4.423505262,
+    "calls": 944
+   },
+   {
+    "function": "~:0(<jaxlib.utils.safe_map>)",
+    "own_seconds": 0.263385702,
+    "cumulative_seconds": 2.5420971740000002,
+    "calls": 110021
+   },
+   {
+    "function": "dtypes.py:876(is_weakly_typed)",
+    "own_seconds": 0.243093426,
+    "cumulative_seconds": 0.27122565800000004,
+    "calls": 71421
+   },
+   {
+    "function": "core.py:1782(get_aval)",
+    "own_seconds": 0.23745238700000001,
+    "cumulative_seconds": 2.33970843,
+    "calls": 101394
+   },
+   {
+    "function": "core.py:1196(process_primitive)",
+    "own_seconds": 0.23186540700000002,
+    "cumulative_seconds": 8.938736323,
+    "calls": 34427
+   }
+  ]
+ },
+ "stages-sorted-30.json": {
+  "family": "sorted",
+  "duration_s": 30.0,
+  "rows": 15000,
+  "bin_size_cm": 2.0,
+  "arena_cm": 180.0,
+  "population": 64,
+  "chunk_size": 256,
+  "backend": "gpu",
+  "device": "cuda:0",
+  "jax": "0.9.0",
+  "uninstrumented_warm_seconds": 22.521504662930965,
+  "instrumented_seconds": 24.068518173880875,
+  "stage_seconds": {
+   "likelihood_local": 1.2416019467636943,
+   "likelihood_no_spike": 0.946332298219204,
+   "likelihood_nonlocal": 1.2928739888593554,
+   "checkpoint_write": 0.06273055262863636,
+   "forward_filter_chunks": 7.3404174111783504,
+   "checkpoint_read": 0.026755020022392273,
+   "backward_smoother_chunks": 4.699209528975189,
+   "other": 8.458597427234054
+  },
+  "stage_fraction": {
+   "likelihood_local": 0.05158613994404854,
+   "likelihood_no_spike": 0.03931826178007762,
+   "likelihood_nonlocal": 0.05371639332006657,
+   "checkpoint_write": 0.0026063321462270776,
+   "forward_filter_chunks": 0.3049800306835741,
+   "checkpoint_read": 0.0011116189135161128,
+   "backward_smoother_chunks": 0.19524299315089388,
+   "other": 0.3514382300615961
+  },
+  "stage_calls": {
+   "likelihood_local": 118,
+   "likelihood_no_spike": 118,
+   "likelihood_nonlocal": 118,
+   "checkpoint_write": 59,
+   "forward_filter_chunks": 118,
+   "checkpoint_read": 59,
+   "backward_smoother_chunks": 59
+  }
+ },
+ "stages-clusterless-30.json": {
+  "family": "clusterless",
+  "duration_s": 30.0,
+  "rows": 15000,
+  "bin_size_cm": 2.0,
+  "arena_cm": 180.0,
+  "population": 8,
+  "chunk_size": 256,
+  "backend": "gpu",
+  "device": "cuda:0",
+  "jax": "0.9.0",
+  "uninstrumented_warm_seconds": 45.05710191372782,
+  "instrumented_seconds": 46.01878968253732,
+  "stage_seconds": {
+   "likelihood_local": 15.960044755600393,
+   "likelihood_no_spike": 0.496187936514616,
+   "likelihood_nonlocal": 9.566343574784696,
+   "checkpoint_write": 0.047982257790863514,
+   "forward_filter_chunks": 7.207636941224337,
+   "checkpoint_read": 0.024619250558316708,
+   "backward_smoother_chunks": 4.722216776572168,
+   "other": 7.993758189491928
+  },
+  "stage_fraction": {
+   "likelihood_local": 0.34681583035324215,
+   "likelihood_no_spike": 0.010782290015395683,
+   "likelihood_nonlocal": 0.20787907810654183,
+   "checkpoint_write": 0.001042666661202332,
+   "forward_filter_chunks": 0.1566237832621532,
+   "checkpoint_read": 0.0005349825740345131,
+   "backward_smoother_chunks": 0.10261497117044129,
+   "other": 0.173706397856989
+  },
+  "stage_calls": {
+   "likelihood_local": 118,
+   "likelihood_no_spike": 118,
+   "likelihood_nonlocal": 118,
+   "checkpoint_write": 59,
+   "forward_filter_chunks": 118,
+   "checkpoint_read": 59,
+   "backward_smoother_chunks": 59
+  }
+ },
+ "cprofile-sorted-30.json": {
+  "family": "sorted",
+  "duration_s": 30.0,
+  "rows": 15000,
+  "bin_size_cm": 2.0,
+  "arena_cm": 180.0,
+  "population": 64,
+  "chunk_size": 256,
+  "backend": "gpu",
+  "device": "cuda:0",
+  "jax": "0.9.0",
+  "uninstrumented_warm_seconds": 24.525367775931954,
+  "instrumented_seconds": 26.419010130688548,
+  "stage_seconds": {
+   "likelihood_local": 1.4337432822212577,
+   "likelihood_no_spike": 1.0986285079270601,
+   "likelihood_nonlocal": 1.5063403872773051,
+   "checkpoint_write": 0.05153900757431984,
+   "forward_filter_chunks": 7.212860672734678,
+   "checkpoint_read": 0.029630674049258232,
+   "backward_smoother_chunks": 4.699756328947842,
+   "other": 10.386511269956827
+  },
+  "stage_fraction": {
+   "likelihood_local": 0.0542693793268132,
+   "likelihood_no_spike": 0.0415847718174302,
+   "likelihood_nonlocal": 0.05701729095169721,
+   "checkpoint_write": 0.0019508303800698304,
+   "forward_filter_chunks": 0.2730178245533945,
+   "checkpoint_read": 0.0011215663986910314,
+   "backward_smoother_chunks": 0.177892975766286,
+   "other": 0.393145360805618
+  },
+  "stage_calls": {
+   "likelihood_local": 118,
+   "likelihood_no_spike": 118,
+   "likelihood_nonlocal": 118,
+   "checkpoint_write": 59,
+   "forward_filter_chunks": 118,
+   "checkpoint_read": 59,
+   "backward_smoother_chunks": 59
+  },
+  "host_functions_by_own_time": [
+   {
+    "function": "array.py:631(_value)",
+    "own_seconds": 10.2777752,
+    "cumulative_seconds": 10.283116556000001,
+    "calls": 472
+   },
+   {
+    "function": "~:0(<built-in method _hashlib.openssl_sha256>)",
+    "own_seconds": 3.6569386170000002,
+    "cumulative_seconds": 3.6569386170000002,
+    "calls": 118
+   },
+   {
+    "function": "dispatch.py:84(apply_primitive)",
+    "own_seconds": 1.4727265150000002,
+    "cumulative_seconds": 1.510860947,
+    "calls": 5197
+   },
+   {
+    "function": "checkpointed_inference.py:423(likelihood)",
+    "own_seconds": 1.33953023,
+    "cumulative_seconds": 10.758640407000001,
+    "calls": 118
+   },
+   {
+    "function": "threading.py:641(wait)",
+    "own_seconds": 1.321689775,
+    "cumulative_seconds": 20.366853176000003,
+    "calls": 2
+   },
+   {
+    "function": "checkpointed_inference.py:218(checkpointed_forward_backward)",
+    "own_seconds": 1.065595168,
+    "cumulative_seconds": 6.697566185,
+    "calls": 1
+   },
+   {
+    "function": "common.py:670(select_spikes_in_rows)",
+    "own_seconds": 0.368009601,
+    "cumulative_seconds": 1.3498677840000002,
+    "calls": 22656
+   },
+   {
+    "function": "indexing.py:1300(_index_to_gather)",
+    "own_seconds": 0.279525363,
+    "cumulative_seconds": 2.621895599,
+    "calls": 1298
+   },
+   {
+    "function": "util.py:297(wrapper)",
+    "own_seconds": 0.23218890600000003,
+    "cumulative_seconds": 0.41616275900000005,
+    "calls": 44774
+   },
+   {
+    "function": "checkpointed_inference.py:457(forward_increment_sums)",
+    "own_seconds": 0.21970361600000002,
+    "cumulative_seconds": 11.883766657,
+    "calls": 60
+   },
+   {
+    "function": "sorted_spikes_kde.py:319(predict_sorted_spikes_kde_log_likelihood)",
+    "own_seconds": 0.21075126900000002,
+    "cumulative_seconds": 3.8865568820000003,
+    "calls": 236
+   },
+   {
+    "function": "~:0(<method 'searchsorted' of 'numpy.ndarray' objects>)",
+    "own_seconds": 0.20432354700000002,
+    "cumulative_seconds": 0.20432354700000002,
+    "calls": 68027
+   },
+   {
+    "function": "no_spike.py:58(predict_no_spike_log_likelihood)",
+    "own_seconds": 0.20354924600000002,
+    "cumulative_seconds": 1.4959912080000002,
+    "calls": 118
+   },
+   {
+    "function": "~:0(<built-in method builtins.isinstance>)",
+    "own_seconds": 0.198498281,
+    "cumulative_seconds": 0.209227574,
+    "calls": 297178
+   },
+   {
+    "function": "common.py:1424(get_spikecount_per_time_bin)",
+    "own_seconds": 0.171552221,
+    "cumulative_seconds": 1.6791887980000002,
+    "calls": 22656
+   },
+   {
+    "function": "reductions.py:405(max)",
+    "own_seconds": 0.166952598,
+    "cumulative_seconds": 0.16731795700000002,
+    "calls": 59
+   },
+   {
+    "function": "pxla.py:235(batched_device_put)",
+    "own_seconds": 0.137946425,
+    "cumulative_seconds": 0.145249067,
+    "calls": 1319
+   },
+   {
+    "function": "_function_base_impl.py:5651(digitize)",
+    "own_seconds": 0.130815866,
+    "cumulative_seconds": 0.496889544,
+    "calls": 22656
+   },
+   {
+    "function": "time_edges.py:45(wrapped)",
+    "own_seconds": 0.123498246,
+    "cumulative_seconds": 27.089265021000003,
+    "calls": 45786
+   },
+   {
+    "function": "fromnumeric.py:48(_wrapfunc)",
+    "own_seconds": 0.11226198000000001,
+    "cumulative_seconds": 0.387195974,
+    "calls": 69339
+   },
+   {
+    "function": "fromnumeric.py:1421(searchsorted)",
+    "own_seconds": 0.10704637600000001,
+    "cumulative_seconds": 0.45275042200000004,
+    "calls": 68027
+   },
+   {
+    "function": "array_constructors.py:85(array)",
+    "own_seconds": 0.098988277,
+    "cumulative_seconds": 1.173264545,
+    "calls": 3488
+   },
+   {
+    "function": "dtypes.py:932(dtype)",
+    "own_seconds": 0.083469206,
+    "cumulative_seconds": 0.15565066200000002,
+    "calls": 19123
+   },
+   {
+    "function": "shape_base.py:378(stack)",
+    "own_seconds": 0.08322507600000001,
+    "cumulative_seconds": 0.090487758,
+    "calls": 354
+   },
+   {
+    "function": "common.py:467(_blocked_nonlocal_poisson_log_likelihood)",
+    "own_seconds": 0.07227314900000001,
+    "cumulative_seconds": 1.037614764,
+    "calls": 118
+   }
+  ]
+ }
+}
