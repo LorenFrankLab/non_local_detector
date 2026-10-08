@@ -1,6 +1,7 @@
 """Preserve local/No-Spike Poisson arithmetic while batching dispatches."""
 
 from contextlib import contextmanager
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -8,6 +9,7 @@ import numpy as np
 import pytest
 
 from non_local_detector.likelihoods import (
+    common,
     no_spike,
     sorted_spikes_glm,
     sorted_spikes_kde,
@@ -114,50 +116,145 @@ def test_compiled_local_glm_empty_population_keeps_zero_likelihood():
     np.testing.assert_array_equal(result, np.zeros(17))
 
 
-def test_large_no_spike_request_keeps_bounded_neuron_workspace(monkeypatch):
-    def oversized(*args):
-        raise AssertionError("Full rows times population count matrix is unbounded")
+def record_rows(monkeypatch, module, name, argument=0):
+    """Wrap a compiled kernel to record the rows of each call's ``argument``."""
+    original = getattr(module, name)
+    rows = []
 
-    monkeypatch.setattr(no_spike, "_poisson_row_log_likelihood", oversized)
-    edges = np.arange(3001) * 0.002
+    def wrapper(*args, **kwargs):
+        rows.append(args[argument].shape[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, name, wrapper)
+    return rows
+
+
+def small_count_blocks(monkeypatch, n_neurons, block_rows=64):
+    monkeypatch.setattr(common, "COUNT_BLOCK_BYTES", block_rows * n_neurons * 8)
+    assert common._count_block_rows(n_neurons) == block_rows
+
+
+def test_large_no_spike_request_keeps_bounded_neuron_workspace(monkeypatch):
     events = spikes(3)
+    small_count_blocks(monkeypatch, len(events))
+    rows = record_rows(monkeypatch, no_spike, "_poisson_row_log_likelihood")
+    edges = np.arange(3001) * 0.002
     result = no_spike.predict_no_spike_log_likelihood(events, time_edges=edges)
     expected = no_spike_reference(events, edges, 1e-10, slice(None))
-    np.testing.assert_allclose(result, expected, rtol=1e-10, atol=1e-10)
+    assert max(rows) == 64 and sum(rows) == 3000
+    np.testing.assert_array_equal(result, expected)
 
 
-def test_large_local_kde_request_does_not_trace_recording_sized_graph(monkeypatch):
-    def oversized(*args, **kwargs):
-        raise AssertionError("Tracing all KDE evaluation blocks at once is unbounded")
+def local_kde_problem(n_rows, block_size):
+    rng = np.random.default_rng(7364)
+    models = [
+        KDEModel(std=std, block_size=block_size).fit(
+            jnp.asarray(rng.uniform(0, 1, (size, 1)))
+        )
+        for size, std in zip([5, 9, 13], [0.2, 0.3, 0.5], strict=True)
+    ]
+    edges = np.arange(n_rows + 1) * 0.002
+    kwargs = {
+        "position_time": np.array([0.0, edges[-1]]),
+        "position": np.array([[0.0], [1.0]]),
+        "spike_times": [rng.uniform(0, edges[-1], 40) for _ in models],
+        "environment": None,
+        "marginal_models": models,
+        "occupancy_model": models[-1],
+        "occupancy": None,
+        "mean_rates": [2.0, 5.0, 0.5],
+        "place_fields": np.ones((len(models), 1)),
+        "no_spike_part_log_likelihood": np.ones(1),
+        "is_track_interior": np.ones(1, bool),
+        "disable_progress_bar": True,
+        "is_local": True,
+        "time_edges": edges,
+    }
+    return models, kwargs
 
-    monkeypatch.setattr(sorted_spikes_kde, "_local_kde_log_likelihood", oversized)
-    model = KDEModel(std=1.0, block_size=100).fit(jnp.ones((3, 1)))
-    edges = np.arange(3001) * 0.002
-    result = sorted_spikes_kde.predict_sorted_spikes_kde_log_likelihood(
-        position_time=np.array([0.0, 6.0]),
-        position=np.array([[0.0], [1.0]]),
-        spike_times=[np.array([0.006])],
-        environment=None,
-        marginal_models=[model],
-        occupancy_model=model,
-        occupancy=None,
-        mean_rates=[2.0],
-        place_fields=np.ones((1, 1)),
-        no_spike_part_log_likelihood=np.ones(1),
-        is_track_interior=np.ones(1, bool),
-        disable_progress_bar=True,
-        is_local=True,
-        time_edges=edges,
+
+def local_kde_reference(models, kwargs):
+    edges = kwargs["time_edges"]
+    centers = (edges[:-1] + edges[1:]) / 2
+    points = jnp.asarray(centers / edges[-1])[:, None]
+    occupancy = kwargs["occupancy_model"].predict(points)
+    durations = jnp.asarray(np.diff(edges))
+    total = jnp.zeros(len(centers))
+    for events, model, mean_rate in zip(
+        kwargs["spike_times"], models, kwargs["mean_rates"], strict=True
+    ):
+        counts = get_spikecount_per_time_bin(events, time_edges=edges)
+        rate = mean_rate * jnp.where(
+            occupancy > 0,
+            model.predict(points) / jnp.where(occupancy > 0, occupancy, 1.0),
+            EPS,
+        )
+        expected = jnp.clip(rate, min=RATE_EPS_HZ, max=None) * durations
+        total += jax.scipy.special.xlogy(counts, expected) - expected
+    return total[:, None]
+
+
+@pytest.mark.parametrize("block_size", [100, None])
+def test_large_local_kde_request_uses_bounded_compiled_blocks(monkeypatch, block_size):
+    models, kwargs = local_kde_problem(3000, block_size)
+    small_count_blocks(monkeypatch, len(models))
+    rows = record_rows(monkeypatch, sorted_spikes_kde, "_local_kde_log_likelihood")
+    result = sorted_spikes_kde.predict_sorted_spikes_kde_log_likelihood(**kwargs)
+    assert max(rows) == 64 and sum(rows) == 3000
+    np.testing.assert_allclose(
+        result, local_kde_reference(models, kwargs), rtol=1e-6, atol=1e-6
     )
-    assert result.shape == (3000, 1)
-    np.testing.assert_allclose(result[3], np.log(0.004) - 0.004, rtol=1e-6, atol=1e-6)
+
+
+def test_local_kde_rows_do_not_depend_on_count_blocks(monkeypatch):
+    models, kwargs = local_kde_problem(300, None)
+    unblocked = sorted_spikes_kde.predict_sorted_spikes_kde_log_likelihood(**kwargs)
+    small_count_blocks(monkeypatch, len(models))
+    blocked = sorted_spikes_kde.predict_sorted_spikes_kde_log_likelihood(**kwargs)
+    np.testing.assert_array_equal(blocked, unblocked)
+
+
+def test_compiled_local_kde_graph_does_not_grow_with_rows():
+    model = KDEModel(std=1.0, block_size=100).fit(jnp.ones((3, 1)))
+    leaves = ((model.samples_, model.weights_, model.std),)
+
+    def n_equations(n_rows):
+        jaxpr = jax.make_jaxpr(
+            partial(
+                sorted_spikes_kde._local_kde_log_likelihood.__wrapped__,
+                block_sizes=(100,),
+            )
+        )(
+            jnp.zeros((n_rows, 1)),
+            jnp.ones(n_rows),
+            jnp.zeros((n_rows, 1), dtype=int),
+            jnp.ones(1),
+            jnp.ones(n_rows),
+            leaves,
+        )
+        return len(jaxpr.jaxpr.eqns)
+
+    assert n_equations(4096) == n_equations(1050)
+
+
+@pytest.mark.parametrize("n_points", [0, 1, 55, 56, 300])
+def test_traced_block_kde_matches_block_kde(n_points):
+    rng = np.random.default_rng(7365)
+    points = jnp.asarray(rng.normal(size=(n_points, 2)))
+    samples = jnp.asarray(rng.normal(size=(9, 2)))
+    weights = jnp.asarray(rng.uniform(0.1, 1, 9))
+    std = jnp.asarray([0.7, 1.3])
+    # Block size 7: up to 56 points are unrolled, 300 points use the loop.
+    actual = jax.jit(sorted_spikes_kde._traced_block_kde, static_argnums=3)(
+        points, samples, std, 7, weights
+    )
+    expected = common.block_kde(points, samples, std, 7, weights)
+    np.testing.assert_array_equal(actual, expected)
 
 
 def test_large_local_glm_request_keeps_bounded_neuron_workspace(monkeypatch):
-    def oversized(*args):
-        raise AssertionError("Full rows times population rate matrix is unbounded")
-
-    monkeypatch.setattr(sorted_spikes_glm, "_local_glm_log_likelihood", oversized)
+    small_count_blocks(monkeypatch, 1)
+    rows = record_rows(monkeypatch, sorted_spikes_glm, "_local_glm_log_likelihood")
     monkeypatch.setattr(
         sorted_spikes_glm,
         "make_spline_predict_matrix",
@@ -177,6 +274,7 @@ def test_large_local_glm_request_keeps_bounded_neuron_workspace(monkeypatch):
         is_local=True,
         time_edges=np.arange(3001) * 0.002,
     )
+    assert max(rows) == 64 and sum(rows) == 3000
     assert result.shape == (3000, 1)
     np.testing.assert_allclose(result[3], np.log(0.002) - 0.002, rtol=1e-6, atol=1e-6)
 

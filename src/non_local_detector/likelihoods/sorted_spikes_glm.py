@@ -65,15 +65,14 @@ from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment, get_n_bins
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
-    COMPILED_ROW_LIMIT,
     EPS,
     RATE_EPS_HZ,
     _blocked_nonlocal_poisson_log_likelihood,
+    _concatenate_row_blocks,
     _spike_counts_matrix,
     _SpikeTimeOrder,
     decode_bin_centers,
     get_position_at_time,
-    get_spikecount_per_time_bin,
     resolve_row_slice,
     validate_population_lengths,
     validate_weights,
@@ -628,51 +627,30 @@ def predict_sorted_spikes_glm_log_likelihood(
         emission_predict_matrix = make_spline_predict_matrix(
             emission_design_info, interpolated_position
         )
-        if row_stop - row_start > COMPILED_ROW_LIMIT:
-            # Preserve bounded per-neuron workspace for legacy full-row calls.
-            total = jnp.zeros((row_stop - row_start,))
-            for events, coef in zip(
-                tqdm(
-                    spike_times,
-                    unit="cell",
-                    desc="Local Likelihood",
-                    disable=disable_progress_bar,
-                ),
-                coefficients,
-                strict=True,
-            ):
-                expected = (
-                    jnp.clip(
-                        jnp.exp(emission_predict_matrix @ coef),
-                        min=RATE_EPS_HZ,
-                        max=None,
-                    )
-                    * durations
-                )
-                count = jnp.asarray(
-                    get_spikecount_per_time_bin(
-                        events,
-                        time_edges=time_edges,
-                        row_slice=row_slice,
-                        _spike_time_order=_spike_time_order,
-                    ),
-                    dtype=expected.dtype,
-                )
-                total += jax.scipy.special.xlogy(count, expected) - expected
-            return total[:, None]
-        counts = _spike_counts_matrix(
-            spike_times,
-            time_edges,
+        design = jnp.asarray(emission_predict_matrix)
+        coefficients = jnp.asarray(coefficients)
+
+        def evaluate(start, stop):
+            rows = slice(start - row_start, stop - row_start)
+            counts = _spike_counts_matrix(
+                spike_times,
+                time_edges,
+                "Local Likelihood",
+                True,
+                slice(start, stop),
+                _spike_time_order=_spike_time_order,
+            )
+            return _local_glm_log_likelihood(
+                design[rows], coefficients, jnp.asarray(counts), durations[rows]
+            )
+
+        log_likelihood = _concatenate_row_blocks(
+            row_start,
+            row_stop,
+            len(spike_times),
+            evaluate,
             "Local Likelihood",
             disable_progress_bar,
-            row_slice,
-            _spike_time_order=_spike_time_order,
-        )
-        log_likelihood = _local_glm_log_likelihood(
-            jnp.asarray(emission_predict_matrix),
-            jnp.asarray(coefficients),
-            jnp.asarray(counts),
-            durations,
         )[:, None]
     else:
         log_likelihood = _blocked_nonlocal_poisson_log_likelihood(

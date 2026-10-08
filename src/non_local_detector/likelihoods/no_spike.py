@@ -15,13 +15,11 @@ import jax
 import jax.numpy as jnp
 import jax.scipy
 import numpy as np
-from tqdm.autonotebook import tqdm  # type: ignore[import-untyped]
 
 from non_local_detector.likelihoods.common import (
-    COMPILED_ROW_LIMIT,
+    _concatenate_row_blocks,
     _spike_counts_matrix,
     _SpikeTimeOrder,
-    get_spikecount_per_time_bin,
     resolve_row_slice,
 )
 from non_local_detector.time_edges import (
@@ -147,30 +145,21 @@ def predict_no_spike_log_likelihood(
     else:
         durations = _time_bin_sizes[row_start:row_stop]
     no_spike_rates = no_spike_rate * jnp.asarray(durations)
-    if row_stop - row_start > COMPILED_ROW_LIMIT:
-        # Full-grid legacy callers must not acquire a rows-by-population count
-        # buffer merely to use the optimization for bounded decode chunks.
-        total = jnp.zeros((row_stop - row_start,))
-        for events in tqdm(spike_times, unit="cell", desc="No Spike Likelihood"):
-            counts = jnp.asarray(
-                get_spikecount_per_time_bin(
-                    events,
-                    time_edges=time_edges,
-                    row_slice=row_slice,
-                    _spike_time_order=_spike_time_order,
-                ),
-                dtype=no_spike_rates.dtype,
-            )
-            total += jax.scipy.special.xlogy(counts, no_spike_rates) - no_spike_rates
-        return total[:, None]
-    counts = _spike_counts_matrix(
-        spike_times,
-        time_edges,
-        "No Spike Likelihood",
-        False,
-        row_slice,
-        _spike_time_order=_spike_time_order,
-    )
-    return _poisson_row_log_likelihood(jnp.asarray(counts), no_spike_rates[:, None])[
-        :, None
-    ]
+
+    def evaluate(start, stop):
+        counts = _spike_counts_matrix(
+            spike_times,
+            time_edges,
+            "No Spike Likelihood",
+            True,
+            slice(start, stop),
+            _spike_time_order=_spike_time_order,
+        )
+        return _poisson_row_log_likelihood(
+            jnp.asarray(counts),
+            no_spike_rates[start - row_start : stop - row_start, None],
+        )
+
+    return _concatenate_row_blocks(
+        row_start, row_stop, len(spike_times), evaluate, "No Spike Likelihood", False
+    )[:, None]

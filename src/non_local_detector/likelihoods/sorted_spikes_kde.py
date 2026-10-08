@@ -59,11 +59,11 @@ from non_local_detector.encoding_time import prepare_encoding_support
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ValidationError
 from non_local_detector.likelihoods.common import (
-    COMPILED_ROW_LIMIT,
     EPS,
     RATE_EPS_HZ,
     KDEModel,
     _blocked_nonlocal_poisson_log_likelihood,
+    _concatenate_row_blocks,
     _spike_counts_matrix,
     _SpikeTimeOrder,
     as_std_array,
@@ -72,6 +72,7 @@ from non_local_detector.likelihoods.common import (
     drop_zero_weight_samples,
     get_position_at_time,
     get_spikecount_per_time_bin,
+    kde,
     resolve_row_slice,
     validate_population_lengths,
     validate_weights,
@@ -82,6 +83,42 @@ from non_local_detector.time_edges import (
     _resolve_time_grid,
     requires_time_edges,
 )
+
+# Up to this many evaluation blocks are traced individually: faster on CPU
+# than a loop, and the compiled graph stays small.
+_UNROLLED_KDE_BLOCKS = 8
+
+
+def _traced_block_kde(points, samples, std, block_size, weights):
+    """``block_kde`` inside a trace, with a bounded graph for any row count.
+
+    Up to ``_UNROLLED_KDE_BLOCKS`` blocks are traced as ``block_kde`` does.
+    More blocks run in a loop over the same block size, with a zero-padded
+    final block evaluated and trimmed. Each point's density depends only on
+    that point, so both forms give identical values.
+
+    Parameters
+    ----------
+    points : jnp.ndarray, shape (n_points, n_dims)
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+    std : jnp.ndarray, shape (n_dims,)
+    block_size : int
+    weights : jnp.ndarray, shape (n_samples,)
+
+    Returns
+    -------
+    density : jnp.ndarray, shape (n_points,)
+    """
+    n_points = points.shape[0]
+    n_blocks = -(-n_points // block_size)
+    if n_blocks <= _UNROLLED_KDE_BLOCKS:
+        return block_kde(points, samples, std, block_size, weights)
+    padded = jnp.pad(points, ((0, n_blocks * block_size - n_points), (0, 0)))
+    density = jax.lax.map(
+        lambda block: kde(block, samples, std, weights),
+        padded.reshape(n_blocks, block_size, points.shape[1]),
+    )
+    return density.reshape(-1)[:n_points]
 
 
 @partial(jax.jit, static_argnames=("block_sizes",))
@@ -98,7 +135,7 @@ def _local_kde_log_likelihood(
         zip(model_leaves, block_sizes, strict=True)
     ):
         marginal = jax.lax.optimization_barrier(
-            block_kde(
+            _traced_block_kde(
                 points, samples, as_std_array(std, points.shape[1]), block_size, weights
             )
         )
@@ -418,35 +455,48 @@ def predict_sorted_spikes_kde_log_likelihood(
         )
         occupancy = occupancy_model.predict(interpolated_position)
 
-        # A legacy full-recording request can contain millions of evaluation
-        # blocks. Compile the model tuple only for bounded row chunks; larger
-        # requests retain the existing per-model blocked evaluation.
-        if n_rows <= COMPILED_ROW_LIMIT and all(
+        # Fitted KDE models run compiled over spike-count row blocks, so the
+        # host count matrix and compiled graph stay bounded for any request.
+        if all(
             type(model) is KDEModel and model.samples_ is not None
             for model in marginal_models
         ):
-            counts = _spike_counts_matrix(
-                spike_times,
-                time_edges,
+            points = jnp.asarray(interpolated_position)
+            occupancy = jnp.asarray(occupancy)
+            leaves = tuple(
+                (model.samples_, model.weights_, model.std) for model in marginal_models
+            )
+
+            def evaluate(start, stop):
+                rows = slice(start - row_start, stop - row_start)
+                counts = _spike_counts_matrix(
+                    spike_times,
+                    time_edges,
+                    "Local Likelihood",
+                    True,
+                    slice(start, stop),
+                    _spike_time_order=_spike_time_order,
+                )
+                return _local_kde_log_likelihood(
+                    points[rows],
+                    occupancy[rows],
+                    jnp.asarray(counts),
+                    jnp.asarray(mean_rates),
+                    durations[rows],
+                    leaves,
+                    block_sizes=tuple(
+                        stop - start if model.block_size is None else model.block_size
+                        for model in marginal_models
+                    ),
+                )
+
+            return _concatenate_row_blocks(
+                row_start,
+                row_stop,
+                len(spike_times),
+                evaluate,
                 "Local Likelihood",
                 disable_progress_bar,
-                row_slice,
-                _spike_time_order=_spike_time_order,
-            )
-            return _local_kde_log_likelihood(
-                jnp.asarray(interpolated_position),
-                jnp.asarray(occupancy),
-                jnp.asarray(counts),
-                jnp.asarray(mean_rates),
-                durations,
-                tuple(
-                    (model.samples_, model.weights_, model.std)
-                    for model in marginal_models
-                ),
-                block_sizes=tuple(
-                    n_rows if model.block_size is None else model.block_size
-                    for model in marginal_models
-                ),
             )[:, None]
 
         for neuron_spike_times, neuron_marginal_model, neuron_mean_rate in zip(

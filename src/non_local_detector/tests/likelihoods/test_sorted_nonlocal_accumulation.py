@@ -240,7 +240,7 @@ def test_nonlocal_sorted_blocks_match_unblocked(backend, rows, zero_rate, monkey
 
     monkeypatch.setattr(common, "_spike_counts_matrix", spy)
     # Three neurons of int64 counts: a 128-row block budget.
-    monkeypatch.setattr(common, "NONLOCAL_COUNT_BLOCK_BYTES", 128 * 3 * 8)
+    monkeypatch.setattr(common, "COUNT_BLOCK_BYTES", 128 * 3 * 8)
     blocked = function(**arguments, row_slice=rows)
     np.testing.assert_array_equal(blocked, unblocked)
     start, stop, _ = (slice(None) if rows is None else rows).indices(len(edges) - 1)

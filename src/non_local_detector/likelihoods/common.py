@@ -454,14 +454,57 @@ def _poisson_nonlocal_log_likelihood(
     return likelihood - durations[:, None] * summed_rates
 
 
-# Requests above this many rows use per-neuron accumulation, so full-grid
-# callers never build a rows-by-population count buffer for local emissions.
-COMPILED_ROW_LIMIT = 256
+# Host bytes for one block of int64 spike counts, so full-grid requests never
+# build a rows-by-population count matrix. Block rows are a multiple of the
+# non-local emission's fixed 64-row kernel, so blocked and unblocked requests
+# are bitwise identical.
+COUNT_BLOCK_BYTES = 32 * 1024**2
 
-# Host bytes for one block of int64 spike counts. Block rows are a multiple of
-# the emission's fixed 64-row kernel, so blocked and unblocked requests are
-# bitwise identical.
-NONLOCAL_COUNT_BLOCK_BYTES = 32 * 1024**2
+
+def _count_block_rows(n_neurons: int) -> int:
+    """Rows per spike-count block within ``COUNT_BLOCK_BYTES``, a multiple of 64."""
+    return max(64, COUNT_BLOCK_BYTES // (8 * max(n_neurons, 1)) // 64 * 64)
+
+
+def _concatenate_row_blocks(
+    row_start: int,
+    row_stop: int,
+    n_neurons: int,
+    evaluate,
+    desc: str,
+    disable_progress_bar: bool,
+) -> jnp.ndarray:
+    """Concatenate ``evaluate(start, stop)`` over spike-count row blocks.
+
+    Parameters
+    ----------
+    row_start, row_stop : int
+        Global rows to evaluate.
+    n_neurons : int
+        Population size, which sets the block rows.
+    evaluate : callable
+        ``evaluate(start, stop)`` returns the 1-D result for global rows
+        ``[start, stop)``.
+    desc : str
+    disable_progress_bar : bool
+
+    Returns
+    -------
+    result : jnp.ndarray, shape (row_stop - row_start,)
+    """
+    block_rows = _count_block_rows(n_neurons)
+    blocks = [
+        evaluate(start, min(start + block_rows, row_stop))
+        for start in tqdm(
+            range(row_start, row_stop, block_rows),
+            unit="block",
+            desc=desc,
+            disable=disable_progress_bar,
+        )
+    ]
+    if not blocks:
+        return jnp.zeros((0,))
+    return blocks[0] if len(blocks) == 1 else jnp.concatenate(blocks)
 
 
 def _blocked_nonlocal_poisson_log_likelihood(
@@ -502,16 +545,14 @@ def _blocked_nonlocal_poisson_log_likelihood(
 
     Notes
     -----
-    Host counts are bounded by ``NONLOCAL_COUNT_BLOCK_BYTES``. Concatenating
+    Host counts are bounded by ``COUNT_BLOCK_BYTES``. Concatenating
     the block outputs briefly holds about twice the returned array. The
     progress bar advances per block rather than per neuron.
     """
     if _spike_time_order is None:
         # Verify each neuron's spike ordering once, not once per block.
         _spike_time_order = _SpikeTimeOrder()
-    block_rows = max(
-        64, NONLOCAL_COUNT_BLOCK_BYTES // (8 * max(len(spike_times), 1)) // 64 * 64
-    )
+    block_rows = _count_block_rows(len(spike_times))
     blocks = []
     for start in tqdm(
         range(row_start, row_stop, block_rows),
