@@ -667,7 +667,19 @@ class LazyDenseTransition:
             self.max_bytes,
             "Dense transition selection",
         )
-        return self.operator.entries(rows, columns)
+        if not requested_shape:
+            return self.operator.entries(rows, columns)
+        # Evaluate leading-axis chunks of about to_dense's size so index
+        # temporaries stay small; entries are elementwise, so values match.
+        rows = np.broadcast_to(rows, requested_shape)
+        columns = np.broadcast_to(columns, requested_shape)
+        chunk = max(1, 64 * self.shape[1] // max(1, int(np.prod(requested_shape[1:]))))
+        result = np.empty(requested_shape, dtype=float)
+        for start in range(0, requested_shape[0], chunk):
+            result[start : start + chunk] = self.operator.entries(
+                rows[start : start + chunk], columns[start : start + chunk]
+            )
+        return result
 
     def __setitem__(self, key, value):
         raise TypeError(
