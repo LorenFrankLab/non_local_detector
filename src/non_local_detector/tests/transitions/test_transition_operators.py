@@ -282,6 +282,11 @@ def assert_products(operator, dense, dtype):
     assert operator.forward(left).dtype == left.dtype
 
 
+def product_operator(operator, fused):
+    """The block operator, or its fused product-only form."""
+    return operator.fused() if fused else operator
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("kind", [Uniform, Identity, Discrete])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
@@ -293,6 +298,7 @@ def test_simple_exact_products(kind, dtype):
         dense, _ = dense_reference(transitions, [env], sizes)
         operator = build_transition_operator(transitions, [env], sizes)
         assert_products(operator, dense, dtype)
+        assert_products(operator.fused(), dense, dtype)
         np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
 
 
@@ -310,6 +316,7 @@ def test_separable_gaussian_products_with_holes_nonzero_mean_and_diagonal_covari
         dense, _ = dense_reference(transitions, [env], sizes)
         operator = build_transition_operator(transitions, [env], sizes)
         assert_products(operator, dense, dtype)
+        assert_products(operator.fused(), dense, dtype)
         np.testing.assert_allclose(
             np.asarray(LazyDenseTransition(operator)), dense, rtol=1e-12, atol=1e-14
         )
@@ -323,8 +330,9 @@ def test_empty_destination_and_gaussian_underflow_preserve_zero_rows(kind):
     transitions = [[kind()]]
     dense, _ = dense_reference(transitions, [env], (20,))
     operator = build_transition_operator(transitions, [env], (20,))
-    np.testing.assert_array_equal(operator.forward(jnp.ones(20)), np.zeros(20))
-    np.testing.assert_array_equal(operator.backward(jnp.ones(20)), np.zeros(20))
+    for product in (operator, operator.fused()):
+        np.testing.assert_array_equal(product.forward(jnp.ones(20)), np.zeros(20))
+        np.testing.assert_array_equal(product.backward(jnp.ones(20)), np.zeros(20))
     np.testing.assert_array_equal(np.asarray(LazyDenseTransition(operator)), dense)
     if kind is RandomWalk:
         env.is_track_interior_[:] = True
@@ -357,12 +365,17 @@ def test_default_four_state_and_multibin_local_match_original_masks_and_rectangu
             ]
         )
         joint = dense * weights[np.ix_(state_ind, state_ind)]
-        assert_products(operator.bind_discrete(weights), joint, dtype)
-        assert_products(
-            operator.restricted(mask).bind_discrete(weights),
-            joint[np.ix_(mask, mask)],
-            dtype,
-        )
+        for fused in (False, True):
+            assert_products(
+                product_operator(operator.bind_discrete(weights), fused), joint, dtype
+            )
+            assert_products(
+                product_operator(
+                    operator.restricted(mask).bind_discrete(weights), fused
+                ),
+                joint[np.ix_(mask, mask)],
+                dtype,
+            )
         np.testing.assert_allclose(
             joint[np.ix_(mask, mask)].sum(axis=1), 1.0, atol=1e-14
         )
@@ -476,13 +489,17 @@ def test_supported_construction_and_pickle_never_call_dense_builders(monkeypatch
 
 
 @pytest.mark.unit
-def test_runtime_products_and_discrete_weights_have_correct_gradients():
+@pytest.mark.parametrize("fused", [False, True])
+def test_runtime_products_and_discrete_weights_have_correct_gradients(fused):
     with enable_x64(True):
         env, observations, transitions, sizes, mask = default_layout()
         dense, state_ind = dense_reference(transitions, [env], sizes, observations)
-        operator = build_transition_operator(
-            transitions, [env], sizes, observations
-        ).restricted(mask)
+        operator = product_operator(
+            build_transition_operator(
+                transitions, [env], sizes, observations
+            ).restricted(mask),
+            fused,
+        )
         dense = jnp.asarray(dense[np.ix_(mask, mask)])
         state_ind = state_ind[mask]
         rng = np.random.default_rng(10)
@@ -610,7 +627,10 @@ def structured_hmm(operator, initial, likelihood, weights):
 @pytest.mark.parametrize(
     "case", ["ordinary", "singleton", "missing", "impossible", "nan", "zero_support"]
 )
-def test_hmm_filter_smoother_and_evidence_match_dense_reference(covariate, dtype, case):
+@pytest.mark.parametrize("fused", [False, True])
+def test_hmm_filter_smoother_and_evidence_match_dense_reference(
+    covariate, dtype, case, fused
+):
     from non_local_detector.core import (
         _filter_covariate_dependent_impl,
         _filter_impl,
@@ -623,9 +643,12 @@ def test_hmm_filter_smoother_and_evidence_match_dense_reference(covariate, dtype
         dense, state_ind = dense_reference(transitions, [env], sizes, observations)
         dense = jnp.asarray(dense[np.ix_(mask, mask)], dtype=dtype)
         state_ind = jnp.asarray(state_ind[mask])
-        operator = build_transition_operator(
-            transitions, [env], sizes, observations
-        ).restricted(mask)
+        operator = product_operator(
+            build_transition_operator(
+                transitions, [env], sizes, observations
+            ).restricted(mask),
+            fused,
+        )
         rng = np.random.default_rng(100)
         n_time = 1 if case == "singleton" else 17
         likelihood = rng.normal(size=(n_time, mask.sum())).astype(dtype)
@@ -683,7 +706,10 @@ def test_hmm_filter_smoother_and_evidence_match_dense_reference(covariate, dtype
 
 
 @pytest.mark.integration
-def test_hmm_gradients_through_nonuniform_prior_likelihood_and_discrete_parameters():
+@pytest.mark.parametrize("fused", [False, True])
+def test_hmm_gradients_through_nonuniform_prior_likelihood_and_discrete_parameters(
+    fused,
+):
     from non_local_detector.core import _filter_covariate_dependent_impl
 
     with enable_x64(True):
@@ -691,9 +717,12 @@ def test_hmm_gradients_through_nonuniform_prior_likelihood_and_discrete_paramete
         dense, state_ind = dense_reference(transitions, [env], sizes, observations)
         dense = jnp.asarray(dense[np.ix_(mask, mask)])
         state_ind = jnp.asarray(state_ind[mask])
-        operator = build_transition_operator(
-            transitions, [env], sizes, observations
-        ).restricted(mask)
+        operator = product_operator(
+            build_transition_operator(
+                transitions, [env], sizes, observations
+            ).restricted(mask),
+            fused,
+        )
         rng = np.random.default_rng(8)
         logits = jnp.asarray(rng.normal(size=mask.sum()))
         likelihood = jnp.asarray(rng.normal(size=(5, mask.sum())))
@@ -720,7 +749,8 @@ def test_hmm_gradients_through_nonuniform_prior_likelihood_and_discrete_paramete
 
 
 @pytest.mark.parametrize("all_impossible", [False, True])
-def test_hmm_boundary_gradients_match_dense_reference(all_impossible):
+@pytest.mark.parametrize("fused", [False, True])
+def test_hmm_boundary_gradients_match_dense_reference(all_impossible, fused):
     from non_local_detector.core import _filter_covariate_dependent_impl
 
     with enable_x64(True):
@@ -728,9 +758,12 @@ def test_hmm_boundary_gradients_match_dense_reference(all_impossible):
         dense, state_ind = dense_reference(transitions, [env], sizes, observations)
         dense = jnp.asarray(dense[np.ix_(mask, mask)])
         state_ind = jnp.asarray(state_ind[mask])
-        operator = build_transition_operator(
-            transitions, [env], sizes, observations
-        ).restricted(mask)
+        operator = product_operator(
+            build_transition_operator(
+                transitions, [env], sizes, observations
+            ).restricted(mask),
+            fused,
+        )
         prior = jnp.zeros(mask.sum()).at[0].set(1.0)
         ll = (
             jnp.full((3, mask.sum()), -jnp.inf)

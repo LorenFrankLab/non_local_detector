@@ -399,6 +399,42 @@ class BlockTransitionOperator:
             output.append(result)
         return jnp.concatenate(output)
 
+    def fused(self):
+        """Return a product-only operator with rank-one blocks folded together.
+
+        See ``FusedBlockTransition``. Products agree with this operator to
+        rounding; ``entries`` and dense views stay on this operator.
+        """
+        boundaries = np.cumsum((0, *self.state_sizes))
+        n_states = len(self.state_sizes)
+        sources, destinations, weight_index = [], [], []
+        blocks, positions = [], []
+        for source, row in enumerate(self.blocks):
+            for target, block in enumerate(row):
+                factors = _rank_one_factors(block)
+                if factors is _EMPTY_BLOCK:
+                    continue
+                if factors is None:
+                    blocks.append(block)
+                    positions.append((source, target))
+                    continue
+                column = np.zeros(boundaries[-1])
+                column[boundaries[source] : boundaries[source + 1]] = factors[0]
+                destination = np.zeros(boundaries[-1])
+                destination[boundaries[target] : boundaries[target + 1]] = factors[1]
+                sources.append(column)
+                destinations.append(destination)
+                weight_index.append(source * n_states + target)
+        return FusedBlockTransition(
+            np.stack(sources, axis=1) if sources else np.zeros((boundaries[-1], 0)),
+            np.stack(destinations) if destinations else np.zeros((0, boundaries[-1])),
+            np.asarray(weight_index, dtype=np.int32),
+            tuple(blocks),
+            tuple(positions),
+            self.state_sizes,
+            self.discrete_weights,
+        )
+
     def entries(self, rows, columns):
         rows, columns = np.broadcast_arrays(rows, columns)
         shape = rows.shape
@@ -434,6 +470,129 @@ class BlockTransitionOperator:
             stop = min(start + 64, self.n_bins)
             result[start:stop] = self.entries(np.arange(start, stop)[:, None], columns)
         return result
+
+
+_EMPTY_BLOCK = object()
+
+
+def _rank_one_factors(block):
+    """Host ``(source, destination)`` vectors of a rank-one block, else None.
+
+    A uniform block adds ``(source * normalization) . p`` times its destination
+    mask; a scalar identity block is the same with unit vectors. Restricted
+    blocks index their original's vectors. Returns ``_EMPTY_BLOCK`` for a
+    restriction with no rows or columns, which contributes nothing.
+    """
+    if isinstance(block, RestrictedBlock):
+        if not len(block.rows) or not len(block.columns):
+            return _EMPTY_BLOCK
+        factors = _rank_one_factors(block.original)
+        if factors is None or factors is _EMPTY_BLOCK:
+            return None
+        return factors[0][np.asarray(block.rows)], factors[1][np.asarray(block.columns)]
+    if isinstance(block, UniformBlock):
+        normalization = np.asarray(block.normalization, dtype=float)
+        # A non-finite normalization (no valid destination) keeps its own product.
+        if normalization.ndim or not np.isfinite(normalization):
+            return None
+        return (
+            np.asarray(block.source_mask, dtype=float) * normalization,
+            np.asarray(block.destination_mask, dtype=float),
+        )
+    if isinstance(block, IdentityBlock) and block.shape == (1, 1):
+        return np.asarray(block.mask, dtype=float), np.ones(1)
+    return None
+
+
+@_register_operator
+@dataclass(frozen=True)
+class FusedBlockTransition:
+    """Block-operator products with every rank-one block in two matrices.
+
+    Uniform and scalar identity blocks are rank one. Their source vectors,
+    scaled by their normalizations, form the columns of ``sources`` and their
+    destination masks the rows of ``destinations``, so all of them cost one
+    product with each matrix per call instead of a reduction, scatter and
+    gather per block. Gaussian, dense and spatial identity blocks keep their
+    own products. Any NaN in the input makes the whole output NaN, as in
+    ``BlockTransitionOperator``. Products agree with that operator to rounding,
+    not bitwise, because the rank-one sums are taken in a different order.
+
+    Built by ``BlockTransitionOperator.fused``. Forward products are ``p @ T``
+    and backward products ``T @ v``.
+    """
+
+    sources: object  # (n_bins, n_rank_one)
+    destinations: object  # (n_rank_one, n_bins)
+    weight_index: object  # (n_rank_one,) flat index into the S-by-S weights
+    blocks: tuple
+    block_positions: tuple = field(metadata={"static": True})
+    state_sizes: tuple = field(metadata={"static": True})
+    discrete_weights: object = None
+
+    @property
+    def shape(self):
+        return (sum(self.state_sizes),) * 2
+
+    @property
+    def n_bins(self):
+        return self.shape[0]
+
+    def _flat_weights(self, values, override):
+        weights = self.discrete_weights if override is None else override
+        if weights is None:
+            return jnp.ones(len(self.state_sizes) ** 2, dtype=values.dtype)
+        if weights.shape != (len(self.state_sizes),) * 2:
+            raise ValueError("Pass one S-by-S discrete transition matrix per step")
+        return jnp.asarray(weights, dtype=values.dtype).ravel()
+
+    def forward(self, probabilities, discrete_weights=None):
+        probabilities = jnp.asarray(probabilities)
+        weights = self._flat_weights(probabilities, discrete_weights)
+        boundaries = tuple(np.cumsum((0, *self.state_sizes)))
+        precision = jax.lax.Precision.HIGHEST
+        source_sums = jnp.matmul(
+            probabilities,
+            jnp.asarray(self.sources, dtype=probabilities.dtype),
+            precision=precision,
+        )
+        result = jnp.matmul(
+            source_sums * weights[self.weight_index],
+            jnp.asarray(self.destinations, dtype=probabilities.dtype),
+            precision=precision,
+        )
+        for (source, target), block in zip(
+            self.block_positions, self.blocks, strict=True
+        ):
+            values = probabilities[boundaries[source] : boundaries[source + 1]]
+            result = result.at[boundaries[target] : boundaries[target + 1]].add(
+                weights[source * len(self.state_sizes) + target] * block.forward(values)
+            )
+        return _nan_result(result, probabilities)
+
+    def backward(self, values, discrete_weights=None):
+        values = jnp.asarray(values)
+        weights = self._flat_weights(values, discrete_weights)
+        boundaries = tuple(np.cumsum((0, *self.state_sizes)))
+        precision = jax.lax.Precision.HIGHEST
+        destination_sums = jnp.matmul(
+            jnp.asarray(self.destinations, dtype=values.dtype),
+            values,
+            precision=precision,
+        )
+        result = jnp.matmul(
+            jnp.asarray(self.sources, dtype=values.dtype),
+            destination_sums * weights[self.weight_index],
+            precision=precision,
+        )
+        for (source, target), block in zip(
+            self.block_positions, self.blocks, strict=True
+        ):
+            part = values[boundaries[target] : boundaries[target + 1]]
+            result = result.at[boundaries[source] : boundaries[source + 1]].add(
+                weights[source * len(self.state_sizes) + target] * block.backward(part)
+            )
+        return _nan_result(result, values)
 
 
 class LazyDenseTransition:
