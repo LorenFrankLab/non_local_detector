@@ -51,6 +51,7 @@ def main():
     parser.add_argument("--bin-size", type=float, default=2.0)
     parser.add_argument("--population", type=int, default=None)
     parser.add_argument("--spike-rate", type=float, default=None)
+    parser.add_argument("--rate-spread", type=float, default=0.0)
     parser.add_argument("--mark-dimensions", type=int, default=4)
     parser.add_argument(
         "--chunk-size",

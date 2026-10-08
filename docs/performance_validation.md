@@ -471,3 +471,62 @@ Records: [A100 runs](performance_artifacts/bottlenecks/a100-runs.json),
 [A100 reproducibility](performance_artifacts/bottlenecks/a100-reproducibility.json),
 [A100 scan steps](performance_artifacts/bottlenecks/a100-scan-steps.json) and
 [A100 stage profiles](performance_artifacts/bottlenecks/a100-stage-profiles.json).
+
+## Scaling with data size
+
+One factor at a time from the 30 s baseline above (64 sorted units at 5 Hz or 8
+clusterless electrodes at 20 Hz, 10 s of encoding, 2 cm grid), A100, default
+chunk size, code at 1f777c84:
+
+| Factor | Range | Warm, sorted / clusterless | First call, sorted / clusterless |
+| --- | --- | --- | --- |
+| Encoding length | 10 s to 30 min | 2.95 to 3.22 s / 4.42 to 5.00 s | 25 to 34 s / 67 to 95 s |
+| Decoding spike rate | 4× | 2.99 s / 4.39 s | 27 s / 80 s |
+| Sorted units | 64, 256, 1,024 | 2.95, 3.23, 5.16 s | 25, 55, 232 s |
+| Clusterless electrodes | 8, 32, 128 | 4.42, 8.13, 16.85 s | 67, 121, 169 s |
+| Grid | 4, 2, 1 cm (4,420 to 66,250 bins) | 2.48, 2.95, 4.30 s / 2.62, 4.42, 9.09 s | 18, 25, 29 s / 15, 67, 79 s |
+
+Device peaks stayed at 1.35-1.50 GB, because default chunks shrink from 15,183
+to 1,012 rows as grids grow, except with 30 min of encoding: 3.7 GB (sorted)
+and 5.1 GB (clusterless), measured over the whole process including fitting.
+Recording length scales linearly, as in the hour-scale runs above.
+
+Population size drove first-call time through compilation. With 1,024 sorted
+units, 195 s of a 235 s first prediction compiled the local KDE kernel, whose
+graph grows with the number of units. JAX's persistent compilation cache cut a
+second process's first prediction to 44 s when shapes repeated exactly; a 33 s
+recording, whose last chunk differs, still took 151 s. With 128 electrodes,
+126 s of a 179 s first prediction went to 1,698 compilations, and warm
+likelihoods made 35,000 eager dispatches.
+
+Compiling each electrode's clusterless terms with padded spike counts
+(a5dc6e3a) addresses the clusterless case. Rates spread 8× across electrodes
+(`--rate-spread 3`) mimic electrodes with different encoding counts. Each row
+pairs the previous and compiled code in runs made at the same time; the A100
+pairs ran ten at once on a second A100 host, so the previous code's 128-electrode
+times differ from the sweep above (16.85 s warm, 169 s first call):
+
+| Clusterless, 30 s unless noted | First call | Warm | Host RSS |
+| --- | ---: | ---: | ---: |
+| A100, 8 electrodes | 66 to 25 s | 4.3 to 3.2 s | 2.4 to 1.5 GB |
+| A100, 128 electrodes | 182 to 29 s | 22.0 to 6.9 s | 4.3 to 1.5 GB |
+| A100, 128 electrodes, rates spread 8× | 953 to 131 s | 24.4 to 5.6 s | 7.0 to 2.4 GB |
+| A100, 600 s, rates spread 8× | 768 to 139 s | 77 to 62 s | 6.3 to 1.9 GB |
+| CPU, 8 electrodes | 30 to 19 s | 17.0 to 16.4 s | 4.8 to 3.3 GB |
+
+For a 120 s recording with 128 spread electrodes, the previous code had not
+finished its first prediction after 3,000 s; the compiled version took 152 s,
+114 s of it compiling 43 variants of each kernel. Coarser encoding padding
+compiles less but computes more: two sizes per octave gave 73 s of compilation
+and 6.6 s warm, powers of two 52 s and 7.4 s, against 114 s and 5.6 s at four
+per octave. State probabilities moved by at most 3.0e-6 on CPU, with the same
+most likely state at every bin, and error against a float64 computation was
+unchanged.
+
+Records: [scaling runs](performance_artifacts/scaling/a100-scaling-runs.json),
+[diagnostics and cache test](performance_artifacts/scaling/a100-scaling-diagnostics.txt),
+[clusterless runs](performance_artifacts/scaling/a100-clusterless-runs.json),
+[CPU clusterless runs](performance_artifacts/scaling/cpu-clusterless-runs.json),
+[compilation counts](performance_artifacts/scaling/a100-clusterless-compiles.txt),
+[128-electrode profile](performance_artifacts/scaling/a100-profile-clusterless-128.json) and
+[numerical comparison](performance_artifacts/scaling/numerics-clusterless-compiled.txt).

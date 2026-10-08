@@ -43,7 +43,17 @@ SAMPLE_RATE = 500  # decode bins per second
 
 
 def workload(args):
-    """Encoding and decoding inputs shared with benchmark_native_pipeline.py."""
+    """Encoding and decoding inputs shared with benchmark_native_pipeline.py.
+
+    ``rate_spread`` (default 0) gives units log-spaced rates spanning
+    ``2**rate_spread`` around ``spike_rate``, so they differ in spike counts.
+    """
+    spread = getattr(args, "rate_spread", 0.0)
+    unit_rates = (
+        args.spike_rate * 2.0 ** (spread * np.linspace(-0.5, 0.5, args.population))
+        if spread
+        else np.full(args.population, args.spike_rate)
+    )
     encoding_rng = np.random.default_rng(7341)
     decoding_rng = np.random.default_rng(7342)
     tracking_time = np.arange(int(args.encoding_duration * 30) + 1) / 30
@@ -56,16 +66,14 @@ def workload(args):
     training_spikes = [
         np.sort(
             encoding_rng.uniform(
-                0, args.encoding_duration, int(args.encoding_duration * args.spike_rate)
+                0, args.encoding_duration, int(args.encoding_duration * rate)
             )
         )
-        for _ in range(args.population)
+        for rate in unit_rates
     ]
     decode_spikes = [
-        np.sort(
-            decoding_rng.uniform(0, args.duration, int(args.duration * args.spike_rate))
-        )
-        for _ in range(args.population)
+        np.sort(decoding_rng.uniform(0, args.duration, int(args.duration * rate)))
+        for rate in unit_rates
     ]
     decode_time = np.arange(int(args.duration * 30) + 1) / 30
     decode_position = np.column_stack(
@@ -116,6 +124,12 @@ def main():
     parser.add_argument("--bin-size", type=float, default=2.0, help="cm")
     parser.add_argument("--population", type=int, default=None)
     parser.add_argument("--spike-rate", type=float, default=None, help="Hz")
+    parser.add_argument(
+        "--rate-spread",
+        type=float,
+        default=0.0,
+        help="log2 range of per-unit rates around --spike-rate (0: equal rates)",
+    )
     parser.add_argument("--mark-dimensions", type=int, default=4)
     parser.add_argument("--chunk-rows", type=int, default=15_000)
     parser.add_argument(
@@ -195,6 +209,7 @@ def main():
         "bin_size_cm": args.bin_size,
         "population": args.population,
         "spike_rate_hz": args.spike_rate,
+        "rate_spread": args.rate_spread,
         "encoding_duration_s": args.encoding_duration,
         "chunk_rows": args.chunk_rows if args.mode == "chunked" else None,
         "checkpoint_chunk_size": (
