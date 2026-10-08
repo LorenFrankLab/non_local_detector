@@ -1,7 +1,5 @@
 """Sample/spatial tiles preserve the linear KDE model and its final floor."""
 
-from contextlib import contextmanager
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -13,23 +11,10 @@ from non_local_detector.likelihoods.clusterless_kde import (
     estimate_log_joint_mark_intensity,
 )
 from non_local_detector.likelihoods.common import EPS, LOG_EPS, kde
-from non_local_detector.tests.likelihoods.conftest import FLOAT32_ROUNDING
+from non_local_detector.tests.conftest import precision_mode
+from non_local_detector.tests.likelihoods.conftest import FLOAT32_ROUNDING, tolerance
 
 pytestmark = pytest.mark.unit
-
-
-@contextmanager
-def precision_mode(x64):
-    previous = jax.config.x64_enabled
-    jax.config.update("jax_enable_x64", x64)
-    try:
-        yield
-    finally:
-        jax.config.update("jax_enable_x64", previous)
-
-
-def tolerance(x64):
-    return {"rtol": 1e-10, "atol": 1e-10} if x64 else FLOAT32_ROUNDING
 
 
 def weights_for(n_samples, kind):

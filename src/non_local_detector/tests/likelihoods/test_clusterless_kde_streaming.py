@@ -1,16 +1,15 @@
 """Opt-in linear KDE workspace limits preserve fitted support and row ownership."""
 
 import copy
-from contextlib import contextmanager
 
-import jax
 import numpy as np
 import pytest
 
 import non_local_detector.likelihoods.clusterless_kde as linear
 from non_local_detector import NonLocalClusterlessDetector
 from non_local_detector.exceptions import ValidationError
-from non_local_detector.tests.likelihoods.conftest import FLOAT32_ROUNDING
+from non_local_detector.tests.conftest import precision_mode
+from non_local_detector.tests.likelihoods.conftest import FLOAT32_ROUNDING, tolerance
 
 pytestmark = pytest.mark.unit
 
@@ -73,20 +72,6 @@ def predict(encoding, values, is_local, row_slice=None, **policy):
         row_slice=row_slice,
         **dict(encoding, **policy),
     )
-
-
-def tolerance(x64):
-    return {"rtol": 1e-10, "atol": 1e-10} if x64 else FLOAT32_ROUNDING
-
-
-@contextmanager
-def precision_mode(x64):
-    previous = jax.config.x64_enabled
-    jax.config.update("jax_enable_x64", x64)
-    try:
-        yield
-    finally:
-        jax.config.update("jax_enable_x64", previous)
 
 
 @pytest.mark.parametrize("name", ["encoding_block_size", "position_block_size"])

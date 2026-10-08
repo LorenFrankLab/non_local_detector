@@ -1,7 +1,6 @@
 """Batched sorted likelihoods retain an independent per-neuron reference."""
 
 import math
-from contextlib import contextmanager
 
 import jax
 import jax.numpy as jnp
@@ -11,27 +10,17 @@ from scipy.special import xlogy
 
 from non_local_detector.likelihoods import sorted_spikes_glm, sorted_spikes_kde
 from non_local_detector.likelihoods.common import get_spikecount_per_time_bin
+from non_local_detector.tests.conftest import precision_mode
 from non_local_detector.tests.likelihoods.conftest import EXACT
 
 pytestmark = pytest.mark.unit
-
-
-@contextmanager
-def x64_mode(enabled):
-    """Portable precision context for both older and current supported JAX."""
-    previous = jax.config.x64_enabled
-    jax.config.update("jax_enable_x64", enabled)
-    try:
-        yield
-    finally:
-        jax.config.update("jax_enable_x64", previous)
 
 
 @pytest.fixture
 def float32_arithmetic():
     # These references intentionally round every operation to float32. The
     # separate mixed-input and native tests retain their real x64 policies.
-    with x64_mode(False):
+    with precision_mode(False):
         yield
 
 
@@ -251,7 +240,7 @@ def test_nonlocal_sorted_blocks_match_unblocked(backend, rows, zero_rate, monkey
 def test_float32_parameters_preserve_enabled_x64_accumulator_dtype():
     from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
 
-    with x64_mode(True):
+    with precision_mode(True):
         counts = jnp.ones((2, 1), dtype=jnp.int32)
         rates = jnp.ones((1, 3), dtype=jnp.float32)
         durations = jnp.full(2, 0.002, dtype=jnp.float32)
@@ -272,7 +261,7 @@ def test_host_counts_match_float64_oracle_and_keep_xlogy_fallback(x64, kind):
     """Matrix rows stay near the exact sum; unsafe products keep ordered xlogy."""
     from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
 
-    with x64_mode(x64):
+    with precision_mode(x64):
         rng = np.random.default_rng(8173)
         dtype = np.float64 if x64 else np.float32
         # Dyadic rate/exposure products isolate addition order from the
@@ -322,7 +311,7 @@ def test_poisson_accumulation_preserves_rate_and_duration_gradients(
 ):
     from non_local_detector.likelihoods.common import _poisson_nonlocal_log_likelihood
 
-    with x64_mode(True):
+    with precision_mode(True):
         counts = np.array([[0, 2, 0], [1, 0, 0], [0, 0, 0], [1, 0, 3]], dtype=np.int32)
         if not host_counts:
             counts = jnp.asarray(counts)

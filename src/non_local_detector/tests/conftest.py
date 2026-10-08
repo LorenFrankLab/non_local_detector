@@ -12,6 +12,9 @@ Usage:
     from conftest import assert_probability_distribution
 """
 
+from contextlib import contextmanager
+
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
@@ -23,6 +26,17 @@ from non_local_detector.environment import Environment
 # ==============================================================================
 # SYNTHETIC RESULTS BUILDERS
 # ==============================================================================
+
+
+@contextmanager
+def precision_mode(x64: bool):
+    """Set JAX's global x64 flag for the block, then restore the previous one."""
+    previous = jax.config.x64_enabled
+    jax.config.update("jax_enable_x64", x64)
+    try:
+        yield
+    finally:
+        jax.config.update("jax_enable_x64", previous)
 
 
 def make_state_bins_results(

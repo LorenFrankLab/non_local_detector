@@ -19,13 +19,12 @@ from non_local_detector.likelihoods.common import (
     safe_log,
     validate_population_lengths,
 )
+from non_local_detector.tests.conftest import precision_mode
 
 
 @pytest.mark.parametrize("sigma_kind", ["float32", "float64", "weak"])
 def test_gaussian_mixed_dtype_preserves_true_division(sigma_kind):
-    previous = jax.config.x64_enabled
-    jax.config.update("jax_enable_x64", True)
-    try:
+    with precision_mode(True):
         x = jnp.array([0.4, 1.3, 2.2], dtype=jnp.float64)
         mean = jnp.float64(0.1)
         sigma = (
@@ -41,14 +40,10 @@ def test_gaussian_mixed_dtype_preserves_true_division(sigma_kind):
         actual = log_gaussian_pdf(x, mean, sigma)
         assert actual.dtype == reference.dtype == jnp.float64
         np.testing.assert_allclose(actual, reference, rtol=1e-14, atol=1e-14)
-    finally:
-        jax.config.update("jax_enable_x64", previous)
 
 
 def test_gaussian_large_bandwidth_does_not_flush_standardized_coordinates():
-    previous = jax.config.x64_enabled
-    jax.config.update("jax_enable_x64", False)
-    try:
+    with precision_mode(False):
         sigma = np.float32(1e38)
         x = np.asarray([0, 1e38, 2e38], dtype=np.float32)
         reference = -0.5 * (x.astype(np.float64) / float(sigma)) ** 2 - np.log(
@@ -60,15 +55,11 @@ def test_gaussian_large_bandwidth_does_not_flush_standardized_coordinates():
             rtol=1e-6,
             atol=1e-5,
         )
-    finally:
-        jax.config.update("jax_enable_x64", previous)
 
 
 @pytest.mark.parametrize("x64", [False, True])
 def test_integer_gaussian_and_kde_inputs_use_floating_arithmetic(x64):
-    previous = jax.config.x64_enabled
-    jax.config.update("jax_enable_x64", x64)
-    try:
+    with precision_mode(x64):
         points = jnp.array([0, 1, 2])
         mean, sigma = jnp.array(0), jnp.array(1)
         expected = -0.5 * ((points - mean) / sigma) ** 2 - jnp.log(
@@ -88,8 +79,6 @@ def test_integer_gaussian_and_kde_inputs_use_floating_arithmetic(x64):
                 jnp.ones(3),
             ),
         )
-    finally:
-        jax.config.update("jax_enable_x64", previous)
 
 
 def rng(seed=0):
@@ -519,9 +508,7 @@ def _barrier_operand_sizes(jaxpr):
 def test_kernel_matrix_barrier_is_vector_sized_for_float32_inputs(x64):
     from non_local_detector.likelihoods.common import _log_kernel_matrix
 
-    previous = jax.config.x64_enabled
-    jax.config.update("jax_enable_x64", x64)
-    try:
+    with precision_mode(x64):
         n_eval, n_samples = 64, 2000
         eval_points = jnp.ones((n_eval, 2), jnp.float32)
         std = jnp.ones(2, jnp.float32)
@@ -537,5 +524,3 @@ def test_kernel_matrix_barrier_is_vector_sized_for_float32_inputs(x64):
             eval_points, jnp.ones((1, 2), jnp.float32), std
         )
         assert _barrier_operand_sizes(singleton.jaxpr)
-    finally:
-        jax.config.update("jax_enable_x64", previous)

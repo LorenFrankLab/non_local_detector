@@ -41,6 +41,11 @@ EXACT: dict[str, float] = {"rtol": 0.0, "atol": 0.0}
 FLOAT32_ROUNDING: dict[str, float] = {"rtol": 1e-6, "atol": 1e-5}
 
 
+def tolerance(x64: bool) -> dict[str, float]:
+    """Float64 references at 1e-10; float32 at the rounding bound above."""
+    return {"rtol": 1e-10, "atol": 1e-10} if x64 else FLOAT32_ROUNDING
+
+
 def parity_kwargs(algorithm: str, *, is_local: bool = False) -> dict[str, float]:
     """Likelihood parity: fixed-rate sorted paths are exact; others may round."""
     if algorithm in _SORTED_SPIKES_ALGORITHMS and not (

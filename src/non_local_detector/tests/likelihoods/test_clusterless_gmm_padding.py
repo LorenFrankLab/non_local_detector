@@ -1,8 +1,5 @@
 """Padded, compiled clusterless GMM kernels match the per-electrode formulation."""
 
-from contextlib import contextmanager
-
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -26,6 +23,7 @@ from non_local_detector.likelihoods.common import (
     select_spikes_in_rows,
     sum_spikes_into_rows,
 )
+from non_local_detector.tests.conftest import precision_mode
 
 pytestmark = pytest.mark.unit
 
@@ -34,16 +32,6 @@ GMM_COMPONENTS = {
     "gmm_components_gpi": 4,
     "gmm_components_joint": 8,
 }
-
-
-@contextmanager
-def precision_mode(x64):
-    previous = jax.config.x64_enabled
-    jax.config.update("jax_enable_x64", x64)
-    try:
-        yield
-    finally:
-        jax.config.update("jax_enable_x64", previous)
 
 
 def make_recording(x64):

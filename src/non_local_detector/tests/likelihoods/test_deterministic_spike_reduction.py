@@ -1,7 +1,5 @@
 """Spike reductions preserve ownership and are bitwise repeatable on every backend."""
 
-from contextlib import contextmanager
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -13,6 +11,7 @@ from non_local_detector.likelihoods.common import (
     deterministic_segment_sum,
     sum_spikes_into_rows,
 )
+from non_local_detector.tests.conftest import precision_mode
 from non_local_detector.tests.likelihoods.conftest import FLOAT32_ROUNDING
 
 pytestmark = pytest.mark.unit
@@ -30,16 +29,9 @@ def reduction_path(request, monkeypatch):
         yield request.param
 
 
-@contextmanager
-def precision_mode(dtype):
-    previous = jax.config.x64_enabled
-    jax.config.update(
-        "jax_enable_x64", np.dtype(dtype).itemsize > 4 and dtype != np.complex64
-    )
-    try:
-        yield
-    finally:
-        jax.config.update("jax_enable_x64", previous)
+def dtype_precision(dtype):
+    """``precision_mode`` with x64 enabled for 64-bit dtypes."""
+    return precision_mode(np.dtype(dtype).itemsize > 4 and dtype != np.complex64)
 
 
 def selection(ids, n_rows):
@@ -78,7 +70,7 @@ def test_fixed_input_order_and_invalid_row_drop(dtype, tail, reduction_path):
     ).astype(dtype)
     if np.issubdtype(dtype, np.complexfloating):
         values += (values * 0.25j).astype(dtype)
-    with precision_mode(dtype):
+    with dtype_precision(dtype):
         actual = sum_spikes_into_rows(jnp.asarray(values), selection(ids, 4))
         assert actual.dtype == jnp.asarray(values).dtype
         np.testing.assert_array_equal(actual, ordered_reference(values, ids, 4))

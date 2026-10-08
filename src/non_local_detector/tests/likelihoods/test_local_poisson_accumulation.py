@@ -1,6 +1,5 @@
 """Preserve local/No-Spike Poisson arithmetic while batching dispatches."""
 
-from contextlib import contextmanager
 from functools import partial
 
 import jax
@@ -20,18 +19,9 @@ from non_local_detector.likelihoods.common import (
     KDEModel,
     get_spikecount_per_time_bin,
 )
+from non_local_detector.tests.conftest import precision_mode
 
 pytestmark = pytest.mark.unit
-
-
-@contextmanager
-def precision_mode(x64):
-    previous = jax.config.x64_enabled
-    jax.config.update("jax_enable_x64", x64)
-    try:
-        yield
-    finally:
-        jax.config.update("jax_enable_x64", previous)
 
 
 def spikes(population):
