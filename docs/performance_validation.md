@@ -381,7 +381,8 @@ profiles show SHA-256 replay digests at 15% (sorted) and 7% (clusterless) of
 the prediction, and about 34,000 eager JAX dispatches per clusterless
 prediction from likelihood code outside `jit`. An xprof trace of a 2 s compact
 prediction attributes 55% of kernel time to the per-step structured
-transition product, with the GPU busy about half the time.
+transition product, with the GPU busy about half the time. The
+[bottleneck fixes](#bottleneck-fixes-after-the-comparison) below address these.
 
 Agreement and precision: the branch's state probabilities match `main` to
 2e-6 (CPU, dense) and 6e-4 (CPU, compact); on the A100 both versions differ
@@ -398,3 +399,75 @@ Records: [A100 runs](performance_artifacts/main_vs_branch/a100-runs.json),
 Runs marked failed with `UnboundLocalError` completed their prediction; an
 earlier version of the comparison script could not save states with
 `--repeat 0`.
+
+## Bottleneck fixes after the comparison
+
+The comparison above found per-step transition kernels, replay digests, host
+round trips and per-chunk likelihood overhead dominating compact prediction.
+These changes address them, measured on the same workloads (30 s, 2 cm,
+16,930 state bins; A100 with JAX 0.9.0, and the development Mac CPU):
+
+| Warm compact prediction, 30 s | A100 sorted | A100 clusterless | CPU sorted | CPU clusterless |
+| --- | ---: | ---: | ---: | ---: |
+| Before (09d1d67a, 256-row chunks) | 25.8 s | 47.4 s | 18.0 s | 23.2 s |
+| Likelihood chunks kept on the device, checksum replay, pipelined host work | 14.0 s | 40.2 s | 16.5 s | 21.7 s |
+| plus compiled local likelihood row blocks, 4,096-row chunks | 11.6 s | 12.3 s | 16.3 s | 18.2 s |
+| plus fused rank-one transition blocks, 4,096-row chunks | 2.9 s | 4.3 s | 16.4 s | 17.6 s |
+| plus the byte-based default chunk size (3,963 rows) | 2.9 s | 4.2 s | 15.8 s | 16.8 s |
+
+- **Replay.** Likelihood chunks stay on the device. Missing-row neutralization,
+  degenerate/NaN masks and an order-independent uint32 checksum are computed in
+  one jitted call, replacing a host SHA-256 and each chunk's round trip through
+  host memory, and each chunk's host work overlaps device work on the next. CPU state probabilities
+  are bitwise unchanged, as are A100 ones with autotuning disabled.
+- **Local likelihood row blocks.** Sorted local and no-spike likelihoods above
+  256 rows fell back to per-neuron uncompiled loops, so larger chunks were
+  slower for sorted spikes (31.2 s at 1,024 rows). They now run compiled over
+  row blocks within the spike-count budget, bitwise unchanged.
+- **Fused transition blocks.** 15 of the 16 blocks of the default non-local
+  operator are rank one. Folding them into two matrix products per step cut an
+  A100 forward step from 215 to 55 µs and a backward step from 311 to 78 µs
+  (`benchmarks/benchmark_checkpoint_scan_steps.py`). The summation order changes:
+  state probabilities moved by at most 5.4e-7 on the A100 with autotuning
+  disabled and 7.3e-6 on CPU, with the same most likely state at every bin and
+  rows still summing to 1 within 4.8e-7. Operator products and filter/smoother
+  outputs still match the dense reference within the existing tolerances.
+- **Chunk size.** The default now targets 256 MiB of float32 likelihoods per
+  chunk (at least 256 rows). For this grid the A100 device peak rose from
+  0.15 GB at 256 rows to 1.48 GB at 3,963 rows, with host RSS unchanged
+  (1.3-2.5 GB). On CPU, where chunks live in host memory, peak RSS rose from
+  0.9 to 3.4 GB (sorted) and from 2.8 to 4.8 GB (clusterless). First A100
+  predictions, including compilation, fell from 59.7 to 23.5 s (sorted) and
+  from 104.3 to 56.9 s (clusterless).
+
+Hour scale on the A100, first prediction including compilation: sorted 60 min
+took 363.9 s (3,023.8 s before) and clusterless 60 min took 680.8 s
+(5,603.5 s before), with device peaks of 1.48 and 1.36 GB. Host RSS was 1.55 GB
+for sorted (1.60 GB before) and 4.59 GB for clusterless (2.58 GB before); the
+clusterless increase was not attributed. Warm cost is
+linear: 0.096 s per recording second for sorted and 0.14 s for clusterless.
+
+Not adopted, with measurements in the records below: unrolling the
+forward/backward scans (14.6 s at unroll 2 versus 14.0 s, and slower
+compilation at 4 and 8); XLA command buffers for while loops (no change);
+removing the restriction wrappers or adding optimization barriers to per-block
+NaN checks (slower on the A100); `--xla_gpu_deterministic_ops=true` (a
+prediction had not finished after 13.5 minutes, versus about 1.5 minutes).
+
+Separate A100 processes are not bitwise reproducible by default: XLA
+autotuning chooses kernels per process, and state probabilities from repeated
+runs of unchanged code differed by up to 3.1e-4. With
+`XLA_FLAGS=--xla_gpu_autotune_level=0`, three runs were bitwise identical at
+the same speed.
+
+What remains: on the A100, per-step forward/backward kernels take 87% of a
+sorted prediction and 70% of a clusterless one (about 20 fusions and 2-4 cuBLAS
+calls per step). Clusterless likelihoods take about 1 s of 4.2 s, and their
+first prediction compiles one program per new spike-count shape: 1,275
+compilations and 137.9 s for a 120 s recording, versus 17.1 s once warm.
+
+Records: [A100 runs](performance_artifacts/bottlenecks/a100-runs.json),
+[CPU runs](performance_artifacts/bottlenecks/cpu-runs.json),
+[A100 reproducibility](performance_artifacts/bottlenecks/a100-reproducibility.json),
+[A100 scan steps](performance_artifacts/bottlenecks/a100-scan-steps.json) and
+[A100 stage profiles](performance_artifacts/bottlenecks/a100-stage-profiles.json).

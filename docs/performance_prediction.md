@@ -205,6 +205,14 @@ allocation separately. The recorded A100 runs used an allocator fraction of
 card. Application working memory, CUDA context and filesystem cache need
 separate accounting.
 
+Repeated CUDA predictions in separate processes are not bitwise identical by
+default, because XLA autotuning chooses kernels in each process. For the
+benchmark workload in the [validation record](performance_validation.md), state
+probabilities from separate runs of unchanged code differed by up to 3.1e-4.
+Setting `XLA_FLAGS=--xla_gpu_autotune_level=0` before starting Python made three
+A100 runs bitwise identical without changing their prediction time. Within one
+process, checkpoint replay is deterministic and checked.
+
 Run `benchmarks/benchmark_native_pipeline.py` for native pipeline measurements and
 the dedicated checkpoint, operator and likelihood scripts for component
 measurements. Reports include synchronized runs, source/input hashes, dimensions,
