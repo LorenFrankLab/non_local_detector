@@ -354,3 +354,37 @@ def test_fit_accepts_numpy_integer_transition_budget(checkpoint_recording):
     model, fit, _ = checkpoint_recording("sorted")
     model.fit(**fit, max_dense_transition_bytes=np.int64(2**20))
     assert model._max_dense_transition_bytes_ == 2**20
+
+
+@pytest.mark.parametrize("chunk_size", [None, 13])
+def test_default_chunk_size_uses_the_likelihood_byte_budget(
+    checkpoint_recording, tmp_path, monkeypatch, chunk_size
+):
+    import non_local_detector.checkpointed_inference as checkpointed
+
+    model, fit, predict = checkpoint_recording("sorted")
+    model.fit(**fit, transition_representation="structured")
+    passed = []
+    driver = checkpointed.checkpointed_forward_backward
+
+    def record(*args, **kwargs):
+        passed.append(kwargs["chunk_size"])
+        return driver(*args, **kwargs)
+
+    monkeypatch.setattr(checkpointed, "checkpointed_forward_backward", record)
+    options = {} if chunk_size is None else {"chunk_size": chunk_size}
+    result = model.predict(
+        **predict,
+        inference_mode="checkpointed",
+        output_mode="compact",
+        checkpoint_dir=tmp_path / "checkpoints",
+        **options,
+    )
+    n_bins = np.count_nonzero(model.is_track_interior_state_bins_)
+    expected = (
+        checkpointed.default_chunk_size(n_bins, np.float32)
+        if chunk_size is None
+        else chunk_size
+    )
+    assert passed == [expected]
+    assert np.isfinite(result["acausal_state_probabilities"]).all()

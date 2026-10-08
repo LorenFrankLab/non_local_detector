@@ -2574,6 +2574,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         """Decode with complete conditioning and bounded spatial working memory."""
         from non_local_detector.checkpointed_inference import (
             checkpointed_forward_backward,
+            default_chunk_size,
         )
 
         if output_mode == "spatial" and result_path is None:
@@ -2591,6 +2592,8 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         )
         interior = self.is_track_interior_state_bins_
         states = self.state_ind_[interior]
+        if chunk_size is None:
+            chunk_size = default_chunk_size(np.count_nonzero(interior), np.float32)
         discrete = (
             self.discrete_state_transitions_
             if discrete_transitions is None
@@ -4397,7 +4400,7 @@ class ClusterlessDetector(_DetectorBase):
         n_chunks: int = 1,
         inference_mode: str = "dense",
         output_mode: str = "spatial",
-        chunk_size: int = 256,
+        chunk_size: int | None = None,
         result_path: str | Path | None = None,
         checkpoint_dir: str | Path | None = None,
         selected_intervals: np.ndarray | None = None,
@@ -4475,8 +4478,11 @@ class ClusterlessDetector(_DetectorBase):
             full-session spatial arrays. Spatial writes lazy incremental arrays
             and requires result_path. Dense prediction uses spatial output.
         chunk_size : int, optional
-            Maximum checkpoint/replay rows, by default 256. In checkpointed mode
-            leave n_chunks=1 and cache_likelihood=False.
+            Maximum checkpoint/replay rows. By default, enough rows for one
+            chunk of float32 likelihoods to take about 256 MiB, and at least
+            256 (3,963 rows for 16,930 state bins). Larger chunks amortize
+            per-chunk overhead; device working memory grows with chunk rows.
+            In checkpointed mode leave n_chunks=1 and cache_likelihood=False.
         result_path : str or Path, optional
             New directory for atomic incremental output. Existing destinations
             are never overwritten. Optional for compact, required for spatial.
@@ -5575,7 +5581,7 @@ class SortedSpikesDetector(_DetectorBase):
         n_chunks: int = 1,
         inference_mode: str = "dense",
         output_mode: str = "spatial",
-        chunk_size: int = 256,
+        chunk_size: int | None = None,
         result_path: str | Path | None = None,
         checkpoint_dir: str | Path | None = None,
         selected_intervals: np.ndarray | None = None,
@@ -5628,8 +5634,11 @@ class SortedSpikesDetector(_DetectorBase):
             full-session spatial arrays. Spatial writes lazy incremental arrays
             and requires result_path. Dense prediction uses spatial output.
         chunk_size : int, optional
-            Maximum checkpoint/replay rows, by default 256. In checkpointed mode
-            leave n_chunks=1 and cache_likelihood=False.
+            Maximum checkpoint/replay rows. By default, enough rows for one
+            chunk of float32 likelihoods to take about 256 MiB, and at least
+            256 (3,963 rows for 16,930 state bins). Larger chunks amortize
+            per-chunk overhead; device working memory grows with chunk rows.
+            In checkpointed mode leave n_chunks=1 and cache_likelihood=False.
         result_path : str or Path, optional
             New directory for atomic incremental output. Existing destinations
             are never overwritten. Optional for compact, required for spatial.

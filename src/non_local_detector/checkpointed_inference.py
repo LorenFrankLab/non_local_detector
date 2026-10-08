@@ -50,6 +50,32 @@ _MARGINAL = {
 }
 
 
+# Detector predictions size checkpoint chunks so one chunk of likelihoods is
+# about this many bytes.
+DEFAULT_CHUNK_BYTES = 256 * 1024**2
+MIN_DEFAULT_CHUNK_SIZE = 256
+
+
+def default_chunk_size(n_bins: int, dtype=np.float32) -> int:
+    """Rows per checkpoint chunk so one likelihood chunk is ``DEFAULT_CHUNK_BYTES``.
+
+    Parameters
+    ----------
+    n_bins : int
+        Hidden state bins per row.
+    dtype : numpy dtype, optional
+        Likelihood dtype.
+
+    Returns
+    -------
+    chunk_size : int
+        At least ``MIN_DEFAULT_CHUNK_SIZE``. Larger chunks amortize per-chunk
+        overhead; device working memory grows in proportion to chunk rows.
+    """
+    row_bytes = max(int(n_bins), 1) * np.dtype(dtype).itemsize
+    return max(MIN_DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_BYTES // row_bytes)
+
+
 @jax.tree_util.register_pytree_node_class
 class _DenseTransition:
     def __init__(self, matrix, state_ind=None):

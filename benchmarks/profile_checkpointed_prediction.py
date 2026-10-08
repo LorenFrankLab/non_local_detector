@@ -52,7 +52,12 @@ def main():
     parser.add_argument("--population", type=int, default=None)
     parser.add_argument("--spike-rate", type=float, default=None)
     parser.add_argument("--mark-dimensions", type=int, default=4)
-    parser.add_argument("--chunk-size", type=int, default=256)
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=None,
+        help="rows per checkpoint chunk (default: the detector default)",
+    )
     parser.add_argument("--require-backend", choices=["cpu", "gpu"], default=None)
     parser.add_argument("--cprofile", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
@@ -85,9 +90,10 @@ def main():
     predict_kwargs.update(
         inference_mode="checkpointed",
         output_mode="compact",
-        chunk_size=args.chunk_size,
         checkpoint_dir=checkpoint_dir,
     )
+    if args.chunk_size is not None:
+        predict_kwargs["chunk_size"] = args.chunk_size
     detector = (
         NonLocalSortedSpikesDetector
         if args.family == "sorted"
@@ -101,6 +107,10 @@ def main():
         infer_track_interior=False,
     )
     model.fit(**fit_kwargs)
+    if args.chunk_size is None:
+        args.chunk_size = checkpointed.default_chunk_size(
+            int(np.count_nonzero(model.is_track_interior_state_bins_))
+        )
     model.predict(**predict_kwargs)  # compile and warm
     start = time.perf_counter()
     model.predict(**predict_kwargs)

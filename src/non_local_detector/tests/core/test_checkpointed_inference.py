@@ -366,6 +366,18 @@ def test_prepared_chunk_checksum_detects_one_ulp_and_swapped_values():
     np.testing.assert_array_equal(checksum(values.copy()), reference)
 
 
+def test_default_chunk_size_targets_the_likelihood_byte_budget():
+    from non_local_detector.checkpointed_inference import (
+        DEFAULT_CHUNK_BYTES,
+        MIN_DEFAULT_CHUNK_SIZE,
+        default_chunk_size,
+    )
+
+    assert default_chunk_size(16_930) == DEFAULT_CHUNK_BYTES // (16_930 * 4) == 3963
+    assert default_chunk_size(16_930, np.float64) == 1981
+    assert default_chunk_size(10**7) == MIN_DEFAULT_CHUNK_SIZE == 256
+
+
 def test_checkpoint_directory_failure_leaves_no_output_staging(tmp_path):
     edges, initial, ll, state_ind, kwargs, _ = problem()
     bad = tmp_path / "not-a-directory"

@@ -118,7 +118,12 @@ def main():
     parser.add_argument("--spike-rate", type=float, default=None, help="Hz")
     parser.add_argument("--mark-dimensions", type=int, default=4)
     parser.add_argument("--chunk-rows", type=int, default=15_000)
-    parser.add_argument("--checkpoint-chunk-size", type=int, default=256)
+    parser.add_argument(
+        "--checkpoint-chunk-size",
+        type=int,
+        default=None,
+        help="rows per checkpoint chunk (default: the detector default)",
+    )
     parser.add_argument("--repeat", type=int, default=2, help="warm predictions")
     parser.add_argument("--require-backend", choices=["cpu", "gpu"], default=None)
     parser.add_argument("--profile-dir", type=Path, default=None)
@@ -166,9 +171,10 @@ def main():
         predict_kwargs.update(
             inference_mode="checkpointed",
             output_mode="compact",
-            chunk_size=args.checkpoint_chunk_size,
             checkpoint_dir=args.output / "checkpoints",
         )
+        if args.checkpoint_chunk_size is not None:
+            predict_kwargs["chunk_size"] = args.checkpoint_chunk_size
 
     process = psutil.Process()
     peak_rss = [process.memory_info().rss]
@@ -207,6 +213,17 @@ def main():
         model.fit(**fit_kwargs)
         report["fit_seconds"] = time.perf_counter() - start
         report["state_bins"] = int(model.state_ind_.shape[0])
+        if args.mode == "compact" and args.checkpoint_chunk_size is None:
+            try:
+                from non_local_detector.checkpointed_inference import (
+                    default_chunk_size,
+                )
+            except ImportError:  # older checkouts default to 256 rows
+                report["checkpoint_chunk_size"] = 256
+            else:
+                report["checkpoint_chunk_size"] = default_chunk_size(
+                    int(np.count_nonzero(model.is_track_interior_state_bins_))
+                )
         start = time.perf_counter()
         result = model.predict(**predict_kwargs)
         states = np.asarray(result["acausal_state_probabilities"])

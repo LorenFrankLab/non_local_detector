@@ -23,7 +23,6 @@ probabilities = detector.predict(
     time_edges=time_edges,
     inference_mode="checkpointed",
     output_mode="compact",
-    chunk_size=256,
     return_outputs=["filter", "predictive"],
 )
 ```
@@ -99,7 +98,14 @@ hour-scale drift from repeatedly adding increments to a float32 total. The dense
 driver retains its previous total accumulation.
 
 Checkpointed prediction uses `chunk_size`. Leave the older `n_chunks=1` and
-`cache_likelihood=False` controls at their defaults. `checkpoint_dir` chooses
+`cache_likelihood=False` controls at their defaults. By default each chunk holds
+enough rows for its float32 likelihoods to take about 256 MiB, and at least 256
+rows: 3,963 rows for a 2 cm grid of 16,930 state bins. Larger chunks spend less
+time on per-chunk overhead, and working memory grows with chunk rows. For that
+grid and a 30 s recording, the A100 device peak was 0.15 GB at 256 rows and
+1.48 GB at the default; on CPU, where chunks live in host memory, peak RSS rose
+from 0.9 to 3.4 GB (sorted) and from 2.8 to 4.8 GB (clusterless). Pass a smaller
+`chunk_size` to fit a smaller budget; 256 restores the previous footprint. `checkpoint_dir` chooses
 where temporary boundary files are written; files are removed after success or
 failure. Supplying `result_path` also persists compact outputs when desired.
 
@@ -115,7 +121,6 @@ results = detector.predict(
     output_mode="spatial",
     result_path="session-posterior",
     selected_intervals=[[10.0, 12.0], [90.0, 91.0]],
-    chunk_size=256,
 )
 window = results.acausal_posterior.sel(time=slice(10.0, 10.5)).values
 reopened = detector.load_results("session-posterior")
