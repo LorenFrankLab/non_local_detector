@@ -206,6 +206,42 @@ def test_padded_kernels_match_the_per_electrode_formulation(recording, is_local,
         np.testing.assert_allclose(actual, expected, **tolerance)
 
 
+@pytest.mark.parametrize("is_local", [False, True])
+def test_degenerate_electrodes_match_the_per_electrode_formulation(is_local):
+    """All-zero encoding weights, a zero mean rate and no encoding spikes."""
+    env, position_time, position, encoding, times, marks, edges = make_recording(False)
+    features = list(encoding["encoding_spike_waveform_features"])
+    positions = list(encoding["encoding_positions"])
+    weights = [
+        np.ones(len(f)) if w is None else np.asarray(w)
+        for f, w in zip(
+            features,
+            encoding["encoding_weights"] or [None] * len(features),
+            strict=True,
+        )
+    ]
+    weights[0] = np.zeros_like(weights[0])
+    mean_rates = np.array(encoding["mean_rates"], dtype=float)
+    mean_rates[1] = 0.0
+    features[2], positions[2], weights[2] = (
+        features[2][:0],
+        positions[2][:0],
+        weights[2][:0],
+    )
+    encoding = {
+        **encoding,
+        "encoding_spike_waveform_features": features,
+        "encoding_positions": positions,
+        "encoding_weights": weights,
+        "mean_rates": jnp.asarray(mean_rates),
+    }
+    recording = (env, position_time, position, encoding, times, marks, edges)
+    actual = predict(recording, is_local, slice(0, 2000))
+    expected = reference(recording, is_local, slice(0, 2000))
+    assert np.all(np.isfinite(actual))
+    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-4)
+
+
 def test_high_dimensional_marks_use_the_logsumexp_path():
     """Above eight waveform dimensions the kernels take the logsumexp branch."""
     recording = make_recording(False, waveform_dims=(9, 9, 10))

@@ -1294,22 +1294,22 @@ def _pad_with_last_row(array, n_rows: int) -> np.ndarray:
     donate_argnums=0,
 )
 def _add_electrode_log_mark_intensities(
-    total,
-    decoding_features,
-    row_ids,
-    encoding_features,
-    encoding_positions,
-    encoding_weights,
-    waveform_stds,
-    position_std,
-    place_bin_centers,
-    occupancy,
-    mean_rate,
+    total: jnp.ndarray,
+    decoding_features: jnp.ndarray,
+    row_ids: jnp.ndarray,
+    encoding_features: jnp.ndarray,
+    encoding_positions: jnp.ndarray,
+    encoding_weights: jnp.ndarray,
+    waveform_stds: jnp.ndarray,
+    position_std: jnp.ndarray,
+    place_bin_centers: jnp.ndarray,
+    occupancy: jnp.ndarray,
+    mean_rate: float,
     *,
-    block_size,
-    pos_tile_size,
-    indices_are_sorted,
-):
+    block_size: int,
+    pos_tile_size: int | None,
+    indices_are_sorted: bool,
+) -> jnp.ndarray:
     """Add one electrode's non-local log marked intensities to their rows.
 
     Parameters
@@ -1373,32 +1373,32 @@ def _add_electrode_log_mark_intensities(
     donate_argnums=(0, 1),
 )
 def _add_electrode_local_terms(
-    log_likelihood,
-    expected_counts,
-    spike_positions,
-    decoding_features,
-    row_ids,
-    encoding_positions,
-    encoding_features,
-    encoding_weights,
-    position_std,
-    waveform_stds,
-    occupancy_samples,
-    occupancy_weights,
-    occupancy_std,
-    gpi_samples,
-    gpi_weights,
-    gpi_std,
-    positions,
-    occupancy,
-    scaled_rate,
-    mean_rate,
+    log_likelihood: jnp.ndarray,
+    expected_counts: jnp.ndarray,
+    spike_positions: jnp.ndarray,
+    decoding_features: jnp.ndarray,
+    row_ids: jnp.ndarray,
+    encoding_positions: jnp.ndarray,
+    encoding_features: jnp.ndarray,
+    encoding_weights: jnp.ndarray,
+    position_std: jnp.ndarray,
+    waveform_stds: jnp.ndarray,
+    occupancy_samples: jnp.ndarray,
+    occupancy_weights: jnp.ndarray,
+    occupancy_std: jnp.ndarray,
+    gpi_samples: jnp.ndarray,
+    gpi_weights: jnp.ndarray,
+    gpi_std: jnp.ndarray,
+    positions: jnp.ndarray,
+    occupancy: jnp.ndarray,
+    scaled_rate: float,
+    mean_rate: float,
     *,
-    block_size,
-    occupancy_block_size,
-    gpi_block_size,
-    indices_are_sorted,
-):
+    block_size: int,
+    occupancy_block_size: int,
+    gpi_block_size: int,
+    indices_are_sorted: bool,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Add one electrode's local spike terms and expected count rate.
 
     Parameters
@@ -2213,6 +2213,15 @@ def compute_local_log_likelihood(
         electrode_decoding_spike_waveform_features = select_spike_rows(
             electrode_decoding_spike_waveform_features, selection
         )
+        if position_at_spike_time.shape[0] == 0:
+            # Expected counts only: there are no spikes to score.
+            summed_expected_counts += electrode_mean_rate * jnp.where(
+                occupancy > 0.0,
+                electrode_gpi_model.predict(interpolated_position)
+                / jnp.where(occupancy > 0.0, occupancy, 1.0),
+                0.0,
+            )
+            continue
         # Expand waveform_std to match this electrode's feature count if scalar
         n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
 

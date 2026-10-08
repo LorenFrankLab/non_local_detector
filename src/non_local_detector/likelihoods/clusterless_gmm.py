@@ -146,7 +146,9 @@ def _gmm_parameters(gmm: GaussianMixtureModel) -> tuple[jnp.ndarray, ...]:
     return gmm.means_, gmm.precisions_chol_, gmm.weights_
 
 
-def _gmm_score(points, parameters, covariance_type):
+def _gmm_score(
+    points: jnp.ndarray, parameters: tuple[jnp.ndarray, ...], covariance_type: str
+) -> jnp.ndarray:
     """Traceable ``GaussianMixtureModel.score_samples`` on fitted parameters."""
     means, precisions_chol, weights = parameters
     return _estimate_log_prob_resp(
@@ -160,18 +162,18 @@ def _gmm_score(points, parameters, covariance_type):
     donate_argnums=0,
 )
 def _add_electrode_gmm_intensities(
-    log_likelihood,
-    features,
-    row_ids,
-    bin_centers,
-    parameters,
-    log_rate,
-    log_occupancy,
+    log_likelihood: jnp.ndarray,
+    features: jnp.ndarray,
+    row_ids: jnp.ndarray,
+    bin_centers: jnp.ndarray,
+    parameters: tuple[jnp.ndarray, ...],
+    log_rate: jnp.ndarray,
+    log_occupancy: jnp.ndarray,
     *,
-    covariance_type,
-    block_size,
-    indices_are_sorted,
-):
+    covariance_type: str,
+    block_size: int,
+    indices_are_sorted: bool,
+) -> jnp.ndarray:
     """Add one electrode's non-local log intensities to their rows.
 
     Parameters
@@ -229,23 +231,23 @@ def _add_electrode_gmm_intensities(
     donate_argnums=(0, 1),
 )
 def _add_electrode_gmm_local_terms(
-    log_likelihood,
-    expected_counts,
-    spike_positions,
-    features,
-    row_ids,
-    joint,
-    occupancy,
-    gpi,
-    positions,
-    log_occupancy,
-    mean_rate,
+    log_likelihood: jnp.ndarray,
+    expected_counts: jnp.ndarray,
+    spike_positions: jnp.ndarray,
+    features: jnp.ndarray,
+    row_ids: jnp.ndarray,
+    joint: tuple[jnp.ndarray, ...],
+    occupancy: tuple[jnp.ndarray, ...],
+    gpi: tuple[jnp.ndarray, ...],
+    positions: jnp.ndarray,
+    log_occupancy: jnp.ndarray,
+    mean_rate: jnp.ndarray,
     *,
-    joint_type,
-    occupancy_type,
-    gpi_type,
-    indices_are_sorted,
-):
+    joint_type: str,
+    occupancy_type: str,
+    gpi_type: str,
+    indices_are_sorted: bool,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Add one electrode's local spike terms and expected count rate.
 
     Parameters

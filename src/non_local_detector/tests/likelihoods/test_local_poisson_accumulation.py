@@ -258,6 +258,27 @@ def test_traced_block_kde_matches_block_kde(n_points, x64):
         np.testing.assert_allclose(actual, expected, rtol=1e-12 if x64 else 2e-5)
 
 
+@pytest.mark.parametrize("x64", [False, True])
+@pytest.mark.parametrize("n_points", [0, 1, 55, 56, 300])
+def test_traced_block_log_kde_matches_block_log_kde(n_points, x64):
+    rng = np.random.default_rng(7366)
+    with precision_mode(x64):
+        points = jnp.asarray(rng.normal(size=(n_points, 2)))
+        samples = jnp.asarray(rng.normal(size=(9, 2)))
+        weights = jnp.asarray(np.r_[0.0, rng.uniform(0.1, 1, 8)])
+        std = jnp.asarray([0.7, 1.3])
+        # Block size 7: up to 56 points are unrolled, 300 points use the loop.
+        actual = jax.jit(common._traced_block_log_kde, static_argnums=3)(
+            points, samples, std, 7, weights
+        )
+        expected = common.block_log_kde(points, samples, std, 7, weights)
+        assert actual.shape == expected.shape
+        # Log densities; float32 allows compiled-versus-eager rounding.
+        np.testing.assert_allclose(
+            actual, expected, rtol=0, atol=1e-12 if x64 else 2e-5
+        )
+
+
 def test_large_local_glm_request_keeps_bounded_neuron_workspace(monkeypatch):
     small_count_blocks(monkeypatch, 1)
     rows = record_rows(monkeypatch, sorted_spikes_glm, "_local_glm_log_likelihood")

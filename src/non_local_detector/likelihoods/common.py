@@ -1284,11 +1284,27 @@ def _pad_rows(array, n_rows: int) -> np.ndarray:
     return np.concatenate([array, padding])
 
 
-def _padded_samples(spike_time_order, samples, weights):
+def _padded_samples(
+    spike_time_order: "_SpikeTimeOrder",
+    samples: np.ndarray | jnp.ndarray,
+    weights: np.ndarray | jnp.ndarray | None,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Device KDE samples and weights padded with zero-weight rows, once per prediction.
 
     Zero-weight samples add nothing to weighted kernel sums, so electrodes with
     nearby encoding sizes share compiled kernels.
+
+    Parameters
+    ----------
+    spike_time_order : _SpikeTimeOrder
+        The prediction's preparation cache; results are reused per source arrays.
+    samples : array, shape (n_samples, n_dims)
+    weights : array, shape (n_samples,), or None
+        None means uniform weights.
+
+    Returns
+    -------
+    samples, weights : jnp.ndarray, shape (n_padded, n_dims) and (n_padded,)
     """
 
     def build():
@@ -1343,7 +1359,13 @@ def _traced_block_kde(points, samples, std, block_size, weights):
     return density.reshape(-1)[:n_points]
 
 
-def _traced_block_log_kde(points, samples, std, block_size, weights):
+def _traced_block_log_kde(
+    points: jnp.ndarray,
+    samples: jnp.ndarray,
+    std: jnp.ndarray,
+    block_size: int,
+    weights: jnp.ndarray,
+) -> jnp.ndarray:
     """``block_log_kde`` inside a trace, with a bounded graph for any row count.
 
     Blocked like :func:`_traced_block_kde`.
