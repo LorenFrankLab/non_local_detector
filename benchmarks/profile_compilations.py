@@ -27,7 +27,7 @@ import numpy as np
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import workload  # noqa: E402
+from compare_prediction_modes import set_population_defaults, workload  # noqa: E402
 
 COMPILE_MESSAGE = re.compile(r"Finished XLA compilation of (\S+) in ([0-9.e-]+) sec")
 
@@ -66,10 +66,7 @@ def main():
     parser.add_argument("--warm-repeats", type=int, default=3)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if args.population is None:
-        args.population = 64 if args.family == "sorted" else 8
-    if args.spike_rate is None:
-        args.spike_rate = 5.0 if args.family == "sorted" else 20.0
+    set_population_defaults(args)
     args.output.mkdir(parents=True, exist_ok=True)
 
     import jax

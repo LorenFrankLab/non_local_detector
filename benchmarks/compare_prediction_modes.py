@@ -107,6 +107,14 @@ def workload(args):
     return fit, predict
 
 
+def set_population_defaults(args):
+    """Fill unset population and spike rate: 64 units at 5 Hz or 8 electrodes at 20 Hz."""
+    if args.population is None:
+        args.population = 64 if args.family == "sorted" else 8
+    if args.spike_rate is None:
+        args.spike_rate = 5.0 if args.family == "sorted" else 20.0
+
+
 def device_peak_bytes(jax):
     stats = jax.local_devices()[0].memory_stats() or {}
     return stats.get("peak_bytes_in_use")
@@ -148,10 +156,7 @@ def main():
     parser.add_argument("--profile-dir", type=Path, default=None)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if args.population is None:
-        args.population = 64 if args.family == "sorted" else 8
-    if args.spike_rate is None:
-        args.spike_rate = 5.0 if args.family == "sorted" else 20.0
+    set_population_defaults(args)
 
     import jax
 

@@ -328,8 +328,10 @@ def main():
             "baseline": lambda: baseline[
                 "clusterless_kde"
             ].block_estimate_log_joint_mark_intensity(**clusterless_args),
-            "candidate": lambda: clusterless_kde.block_estimate_log_joint_mark_intensity(
-                **clusterless_args
+            "candidate": lambda: (
+                clusterless_kde.block_estimate_log_joint_mark_intensity(
+                    **clusterless_args
+                )
             ),
         },
         args.repeats,

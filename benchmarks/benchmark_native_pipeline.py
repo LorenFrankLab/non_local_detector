@@ -24,6 +24,9 @@ from pathlib import Path
 import numpy as np
 import psutil
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from compare_prediction_modes import workload  # noqa: E402
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -189,56 +192,13 @@ def main():
         and spatial_estimate > shutil.disk_usage(args.output).free * 0.8
     ):
         parser.error("full spatial output exceeds available disk reserve")
-    encoding_rng = np.random.default_rng(7341)
-    decoding_rng = np.random.default_rng(7342)
-    tracking_time = np.arange(int(args.encoding_duration * 30) + 1) / 30
-    position = np.column_stack(
-        (
-            args.arena * (0.5 + 0.4 * np.sin(tracking_time)),
-            args.arena * (0.5 + 0.4 * np.cos(tracking_time * 0.71)),
-        )
-    )
-    training_spikes = [
-        np.sort(
-            encoding_rng.uniform(
-                0,
-                args.encoding_duration,
-                int(args.encoding_duration * args.spike_rate),
-            )
-        )
-        for _ in range(args.population)
-    ]
-    decode_spikes = [
-        np.sort(
-            decoding_rng.uniform(0, args.duration, int(args.duration * args.spike_rate))
-        )
-        for _ in range(args.population)
-    ]
+    fit, predict = workload(args)
     parameters = {
         "environments": Environment(
             place_bin_size=args.bin_size,
             position_range=((0, args.arena), (0, args.arena)),
         ),
         "infer_track_interior": False,
-    }
-    fit = {
-        "position_time": tracking_time,
-        "position": position,
-        "spike_times": training_spikes,
-        "encoding_time_range": [0, args.encoding_duration],
-    }
-    decode_tracking_time = np.arange(int(args.duration * 30) + 1) / 30
-    decode_position = np.column_stack(
-        (
-            args.arena * (0.5 + 0.4 * np.sin(decode_tracking_time)),
-            args.arena * (0.5 + 0.4 * np.cos(decode_tracking_time * 0.71)),
-        )
-    )
-    predict = {
-        "spike_times": decode_spikes,
-        "position_time": decode_tracking_time,
-        "position": decode_position,
-        "time_edges": np.arange(n_rows + 1) / 500,
     }
     if args.family == "sorted":
         model = NonLocalSortedSpikesDetector(**parameters)
@@ -252,14 +212,6 @@ def main():
                 "position_block_size": args.position_block_size,
             }
         model = NonLocalClusterlessDetector(**parameters)
-        fit["spike_waveform_features"] = [
-            encoding_rng.normal(size=(len(s), args.mark_dimensions))
-            for s in training_spikes
-        ]
-        predict["spike_waveform_features"] = [
-            decoding_rng.normal(size=(len(s), args.mark_dimensions))
-            for s in decode_spikes
-        ]
     if args.mode != "dense":
         fit["transition_representation"] = "structured"
         predict.update(
@@ -421,8 +373,8 @@ def main():
                 environment.centers_shape_ for environment in model.environments
             ],
             "states": model.state_names,
-            "encoding_spikes": [len(times) for times in training_spikes],
-            "decoding_spikes": [len(times) for times in decode_spikes],
+            "encoding_spikes": [len(times) for times in fit["spike_times"]],
+            "decoding_spikes": [len(times) for times in predict["spike_times"]],
         },
         "fit_seconds": fit_seconds,
         "compile_plus_first_seconds": first_seconds,

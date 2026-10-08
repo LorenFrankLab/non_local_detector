@@ -28,7 +28,11 @@ import psutil
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import SAMPLE_RATE, workload  # noqa: E402
+from compare_prediction_modes import (  # noqa: E402
+    device_peak_bytes,
+    set_population_defaults,
+    workload,
+)
 
 
 def main():
@@ -47,10 +51,7 @@ def main():
     parser.add_argument("--require-backend", choices=["cpu", "gpu"], default=None)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if args.population is None:
-        args.population = 64 if args.family == "sorted" else 8
-    if args.spike_rate is None:
-        args.spike_rate = 5.0 if args.family == "sorted" else 20.0
+    set_population_defaults(args)
 
     import jax
 
@@ -65,7 +66,7 @@ def main():
         parser.error(f"default backend is {backend}, not {args.require_backend}")
     args.output.mkdir(parents=True, exist_ok=True)
     args.encoding_duration = args.duration
-    fit_kwargs, _ = workload(args)
+    fit_kwargs, predict_kwargs = workload(args)
     em_kwargs = {
         key: fit_kwargs[key]
         for key in ("position_time", "position", "spike_times")
@@ -73,9 +74,7 @@ def main():
     }
     if args.family == "clusterless":
         em_kwargs["spike_waveform_features"] = fit_kwargs["spike_waveform_features"]
-    em_kwargs["time_edges"] = np.arange(int(round(args.duration * SAMPLE_RATE)) + 1) / (
-        SAMPLE_RATE
-    )
+    em_kwargs["time_edges"] = predict_kwargs["time_edges"]
     detector = (
         NonLocalSortedSpikesDetector
         if args.family == "sorted"
@@ -153,10 +152,9 @@ def main():
         stop.set()
         sampler.join()
         report["peak_host_rss_bytes"] = peak_rss[0]
-        stats = (
-            (jax.local_devices()[0].memory_stats() or {}) if backend != "cpu" else {}
+        report["peak_device_bytes"] = (
+            device_peak_bytes(jax) if backend != "cpu" else None
         )
-        report["peak_device_bytes"] = stats.get("peak_bytes_in_use")
         (args.output / "report.json").write_text(json.dumps(report, indent=1))
         print(json.dumps(report))
     return 0 if report["status"] == "ok" else 1

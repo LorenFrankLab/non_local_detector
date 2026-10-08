@@ -39,7 +39,7 @@ import numpy as np
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_prediction_modes import workload  # noqa: E402
+from compare_prediction_modes import set_population_defaults, workload  # noqa: E402
 
 
 def main():
@@ -63,10 +63,7 @@ def main():
     parser.add_argument("--cprofile", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if args.population is None:
-        args.population = 64 if args.family == "sorted" else 8
-    if args.spike_rate is None:
-        args.spike_rate = 5.0 if args.family == "sorted" else 20.0
+    set_population_defaults(args)
 
     import jax
 
