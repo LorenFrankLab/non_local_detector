@@ -76,6 +76,41 @@ def test_auto_manifold_fallback_preserves_deferred_topology(direction):
     assert isinstance(lazy.distance_between_nodes_, LazyGraphDistances)
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("direction", [None, "outward"])
+def test_dense_manifold_random_walk_uses_deferred_graph_distances(direction):
+    """Deferred distances give the graph-distance walk, never the Euclidean one."""
+    kwargs = {"place_bin_size": 1.0, "position_range": ((0.0, 5.0), (0.0, 6.0))}
+    position = np.array([[0.0, 0.0], [5.0, 6.0]])
+    shape = (
+        Environment(**kwargs)
+        .fit_place_grid(position, infer_track_interior=False)
+        .centers_shape_
+    )
+    mask = np.ones(shape, dtype=bool)
+    mask[2, 1:-1] = False
+    environments = [
+        Environment(
+            **kwargs, is_track_interior=mask, is_track_interior_=mask
+        ).fit_place_grid(
+            position,
+            infer_track_interior=False,
+            compute_all_pairs_distances=compute,
+        )
+        for compute in (True, False)
+    ]
+    eager, lazy = (
+        RandomWalk(
+            use_manifold_distance=True, direction=direction
+        ).make_state_transition([environment])
+        for environment in environments
+    )
+    euclidean = RandomWalk(direction=None).make_state_transition([environments[0]])
+    assert isinstance(environments[1].distance_between_nodes_, LazyGraphDistances)
+    np.testing.assert_allclose(lazy, eager, rtol=1e-12, atol=1e-14)
+    assert not np.allclose(lazy, euclidean)
+
+
 def test_manifold_fallback_cumulative_distance_and_block_budget_preflight(monkeypatch):
     position = np.array([[0.0, 0.0], [3.0, 4.0]])
     env = Environment(place_bin_size=1.0).fit_place_grid(
@@ -84,7 +119,7 @@ def test_manifold_fallback_cumulative_distance_and_block_budget_preflight(monkey
     count = len(env.place_bin_centers_)
     calls = []
     monkeypatch.setattr(
-        LazyGraphDistances, "__array__", lambda *a, **k: calls.append(True)
+        LazyGraphDistances, "to_dense", lambda *a, **k: calls.append(True)
     )
     with pytest.raises(DenseTransitionBudgetError, match="distance"):
         build_transition_operator(
