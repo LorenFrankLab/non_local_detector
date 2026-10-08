@@ -236,14 +236,26 @@ def _sum_evidence(chunks):
     return total
 
 
+def _mix32(bits):
+    """Bijective 32-bit integer hash (lowbias32) in wrapping uint32 arithmetic."""
+    bits = bits ^ (bits >> 16)
+    bits = bits * jnp.uint32(0x7FEB352D)
+    bits = bits ^ (bits >> 15)
+    bits = bits * jnp.uint32(0x846CA68B)
+    return bits ^ (bits >> 16)
+
+
 @jax.jit
 def _prepare_chunk(values, missing):
     """Neutralize missing rows; return diagnostic masks and a replay checksum.
 
-    The checksum sums the value bits, plain and with odd position weights, in
-    wrapping uint32 arithmetic. Integer addition is associative, so parallel
-    reductions give identical bits on every backend. Any single changed element
-    changes both sums; it detects accidental changes but is not cryptographic.
+    The checksum holds two wrapping uint32 sums over the value bits: one
+    weighted by odd position weights, and one of a bijective hash of each
+    element's bits mixed with its position. Integer addition is associative,
+    so parallel reductions give identical bits on every backend. Any single
+    changed element changes both sums, and the hashed sum catches structured
+    multi-element changes, such as two sign flips, that cancel in a linear
+    sum. It detects accidental changes but is not cryptographic.
 
     Parameters
     ----------
@@ -261,11 +273,14 @@ def _prepare_chunk(values, missing):
     degenerate = values.max(axis=-1) == -jnp.inf
     nan = jnp.any(jnp.isnan(values), axis=-1)
     bits = jax.lax.bitcast_convert_type(values, jnp.uint32).ravel()
-    position_weights = 2 * jnp.arange(bits.size, dtype=jnp.uint32) + 1
+    positions = jnp.arange(bits.size, dtype=jnp.uint32)
     checksum = jnp.stack(
         [
-            jnp.sum(bits, dtype=jnp.uint32),
-            jnp.sum(bits * position_weights, dtype=jnp.uint32),
+            jnp.sum(bits * (2 * positions + 1), dtype=jnp.uint32),
+            jnp.sum(
+                _mix32(bits ^ _mix32(positions + jnp.uint32(0x9E3779B9))),
+                dtype=jnp.uint32,
+            ),
         ]
     )
     return values, degenerate, nan, checksum

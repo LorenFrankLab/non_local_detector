@@ -307,14 +307,26 @@ def test_changed_likelihood_replay_fails_atomically(tmp_path):
     assert not list(tmp_path.glob(".result-*"))
 
 
+def _mix32(bits):
+    """NumPy lowbias32 hash with uint32 wraparound."""
+    bits = bits ^ (bits >> np.uint32(16))
+    bits = bits * np.uint32(0x7FEB352D)
+    bits = bits ^ (bits >> np.uint32(15))
+    bits = bits * np.uint32(0x846CA68B)
+    return bits ^ (bits >> np.uint32(16))
+
+
 def _wrapping_checksum(values):
-    """NumPy oracle: plain and odd-position-weighted uint32 sums, mod 2**32."""
+    """NumPy oracle: odd-position-weighted and position-hashed uint32 sums."""
     bits = np.ascontiguousarray(values).view(np.uint32).ravel()
-    weights = (2 * np.arange(bits.size, dtype=np.uint32) + 1).astype(np.uint32)
-    return np.array(
-        [np.sum(bits, dtype=np.uint32), np.sum(bits * weights, dtype=np.uint32)],
-        dtype=np.uint32,
-    )
+    positions = np.arange(bits.size, dtype=np.uint32)
+    with np.errstate(over="ignore"):
+        weighted = bits * (np.uint32(2) * positions + np.uint32(1))
+        hashed = _mix32(bits ^ _mix32(positions + np.uint32(0x9E3779B9)))
+        return np.array(
+            [np.sum(weighted, dtype=np.uint32), np.sum(hashed, dtype=np.uint32)],
+            dtype=np.uint32,
+        )
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
@@ -347,7 +359,7 @@ def test_prepared_chunk_masks_missing_rows_and_matches_checksum_oracle(dtype):
     np.testing.assert_array_equal(np.asarray(checksum), _wrapping_checksum(expected))
 
 
-def test_prepared_chunk_checksum_detects_one_ulp_and_swapped_values():
+def test_prepared_chunk_checksum_detects_one_ulp_swapped_and_negated_values():
     from non_local_detector.checkpointed_inference import _prepare_chunk
 
     values = np.random.default_rng(4).normal(size=(64, 33)).astype(np.float32)
@@ -361,7 +373,10 @@ def test_prepared_chunk_checksum_detects_one_ulp_and_swapped_values():
     nudged[37, 11] = np.nextafter(nudged[37, 11], np.float32(np.inf))
     swapped = values.copy()
     swapped[[3, 50], [7, 20]] = swapped[[50, 3], [20, 7]]
-    for changed in (nudged, swapped):
+    # Two sign-bit flips add 2**31 twice, which cancels in a plain uint32 sum.
+    negated = values.copy()
+    negated[[1, 3], [2, 0]] *= -1
+    for changed in (nudged, swapped, negated):
         assert not np.array_equal(checksum(changed), reference)
     np.testing.assert_array_equal(checksum(values.copy()), reference)
 
@@ -376,6 +391,32 @@ def test_default_chunk_size_targets_the_likelihood_byte_budget():
     assert default_chunk_size(16_930) == DEFAULT_CHUNK_BYTES // (16_930 * 4) == 3963
     assert default_chunk_size(16_930, np.float64) == 1981
     assert default_chunk_size(10**7) == MIN_DEFAULT_CHUNK_SIZE == 256
+
+
+def test_replay_change_in_an_earlier_chunk_fails_atomically(tmp_path):
+    edges, initial, ll, state_ind, kwargs, _ = problem()
+    calls = {}
+
+    def callback(edges, *, row_slice, is_missing):
+        calls[row_slice.start] = calls.get(row_slice.start, 0) + 1
+        # Only the first chunk, replayed last, changes; later chunks are
+        # emitted before its checksum is checked.
+        changed = row_slice.start == 0 and calls[0] > 1
+        return ll[row_slice] + (1 if changed else 0)
+
+    with pytest.raises(ValueError, match="changed during checkpoint replay"):
+        checkpointed_forward_backward(
+            edges,
+            initial,
+            callback,
+            state_ind=state_ind,
+            result_path=tmp_path / "result",
+            chunk_size=4,
+            **kwargs,
+        )
+    assert calls == {0: 2, 4: 2, 8: 2, 12: 2}
+    assert not (tmp_path / "result").exists()
+    assert not list(tmp_path.glob(".result-*"))
 
 
 def test_checkpoint_directory_failure_leaves_no_output_staging(tmp_path):

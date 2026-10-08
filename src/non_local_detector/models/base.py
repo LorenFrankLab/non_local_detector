@@ -4481,7 +4481,10 @@ class ClusterlessDetector(_DetectorBase):
             Maximum checkpoint/replay rows. By default, enough rows for one
             chunk of float32 likelihoods to take about 256 MiB, and at least
             256 (3,963 rows for 16,930 state bins). Larger chunks amortize
-            per-chunk overhead; device working memory grows with chunk rows.
+            per-chunk overhead; working memory grows with chunk rows, to
+            several times one likelihood chunk. At the default for 16,930
+            state bins, a 30 s recording peaked at about 1.5 GB of A100
+            device memory, or 3.4-4.8 GB of CPU process memory.
             In checkpointed mode leave n_chunks=1 and cache_likelihood=False.
         result_path : str or Path, optional
             New directory for atomic incremental output. Existing destinations
@@ -5637,7 +5640,10 @@ class SortedSpikesDetector(_DetectorBase):
             Maximum checkpoint/replay rows. By default, enough rows for one
             chunk of float32 likelihoods to take about 256 MiB, and at least
             256 (3,963 rows for 16,930 state bins). Larger chunks amortize
-            per-chunk overhead; device working memory grows with chunk rows.
+            per-chunk overhead; working memory grows with chunk rows, to
+            several times one likelihood chunk. At the default for 16,930
+            state bins, a 30 s recording peaked at about 1.5 GB of A100
+            device memory, or 3.4-4.8 GB of CPU process memory.
             In checkpointed mode leave n_chunks=1 and cache_likelihood=False.
         result_path : str or Path, optional
             New directory for atomic incremental output. Existing destinations
