@@ -24,7 +24,6 @@ from non_local_detector.likelihoods.common import (
     LOG_RATE_EPS_HZ,
     RATE_EPS_HZ,
     _pad_rows,
-    _padded_sample_count,
     _padded_spike_count,
     _SpikeTimeOrder,
     decode_bin_centers,
@@ -139,21 +138,6 @@ def _accumulate_log_likelihood_block(
 
 # Local spike terms are padded like one non-local block of this size.
 _LOCAL_SPIKE_BLOCK = 1000
-
-
-def _padded_gmm_spike_count(n_spikes: int, block_size: int) -> int:
-    """Decoding spikes per non-local GMM call: four sizes per octave.
-
-    Scoring a spike at every bin dominates the GMM's cost, so up to one block
-    padding is kept to at most 25%, at the price of more compiled sizes than
-    powers of two. Above one block, the number of whole blocks is padded the
-    same way.
-    """
-    if n_spikes <= block_size:
-        return min(block_size, _padded_sample_count(n_spikes))
-    n_blocks = -(-n_spikes // block_size)
-    step = 1 << max((n_blocks - 1).bit_length() - 3, 0)
-    return block_size * (-(-n_blocks // step) * step)
 
 
 def _gmm_parameters(gmm: GaussianMixtureModel) -> tuple[jnp.ndarray, ...]:
@@ -962,7 +946,8 @@ def predict_clusterless_gmm_log_likelihood(
         if bin_tile_size is None or bin_tile_size >= n_bins:
             # Spikes padded to a few counts (padding rows are dropped from the
             # row sums) let electrodes and chunks share one compiled kernel.
-            n_padded = _padded_gmm_spike_count(n_spikes, spike_block_size)
+            # Each spike is scored at every bin, so pad finely.
+            n_padded = _padded_spike_count(n_spikes, spike_block_size, fine=True)
             log_likelihood = _add_electrode_gmm_intensities(
                 log_likelihood,
                 jnp.asarray(

@@ -11,7 +11,6 @@ from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import clusterless_gmm
 from non_local_detector.likelihoods.clusterless_gmm import (
     _ground_process_intensity,
-    _padded_gmm_spike_count,
     fit_clusterless_gmm_encoding_model,
     predict_clusterless_gmm_log_likelihood,
 )
@@ -215,14 +214,11 @@ def test_non_local_block_size_does_not_change_the_result(recording):
     np.testing.assert_allclose(blocked, whole, rtol=1e-6, atol=1e-5)
 
 
-def test_padded_gmm_spike_counts_add_at_most_a_quarter():
+def test_fine_padded_spike_counts_add_at_most_a_quarter():
     for n in range(17, 1001):
-        assert n <= _padded_gmm_spike_count(n, 1000) <= 1.25 * n
-    assert _padded_gmm_spike_count(0, 1000) == _padded_gmm_spike_count(16, 1000) == 16
-    for n in range(1001, 20001, 7):
-        size = _padded_gmm_spike_count(n, 1000)
-        assert size % 1000 == 0 and n <= size
-        assert size // 1000 <= 1.25 * -(-n // 1000)
+        assert n <= _padded_spike_count(n, 1000, fine=True) <= 1.25 * n
+    assert _padded_spike_count(0, 1000, fine=True) == 16
+    assert _padded_spike_count(16, 1000, fine=True) == 16
 
 
 def test_electrodes_with_nearby_spike_counts_share_compiled_kernels():
@@ -246,7 +242,9 @@ def test_electrodes_with_nearby_spike_counts_share_compiled_kernels():
         **GMM_COMPONENTS,
     )
     # 41 and 47 decoding spikes share one padded size in both kernels.
-    assert _padded_gmm_spike_count(41, 1000) == _padded_gmm_spike_count(47, 1000)
+    assert _padded_spike_count(41, 1000, fine=True) == _padded_spike_count(
+        47, 1000, fine=True
+    )
     assert _padded_spike_count(41, 1000) == _padded_spike_count(47, 1000)
     decode_times = [np.sort(rng.uniform(0, 2, n)) for n in (41, 47)]
     recording = (

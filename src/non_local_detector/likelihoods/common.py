@@ -1246,15 +1246,35 @@ def _padded_sample_count(n_samples: int) -> int:
     return -(-n_samples // step) * step
 
 
-def _padded_spike_count(n_spikes: int, block_size: int) -> int:
+def _padded_spike_count(n_spikes: int, block_size: int, *, fine: bool = False) -> int:
     """Decoding spikes per electrode kernel call, from a few sizes.
 
-    Powers of two (at least 16) up to one block, then whole blocks in powers
-    of two, so chunks with varying spike counts reuse few compiled kernels.
+    Up to one block: powers of two (at least 16), or with ``fine`` four sizes
+    per octave (at most 25% padding) for kernels whose per-spike cost is
+    high. Above one block: whole blocks, their count padded to four sizes
+    per octave, so a large request grows by at most a quarter plus one
+    block. Chunks with varying spike counts then reuse few compiled kernels.
+
+    Parameters
+    ----------
+    n_spikes : int
+    block_size : int
+    fine : bool, optional
+
+    Returns
+    -------
+    n_padded : int
     """
     if n_spikes <= block_size:
-        return min(block_size, 1 << max(n_spikes - 1, 15).bit_length())
-    return block_size * (1 << (-(-n_spikes // block_size) - 1).bit_length())
+        size = (
+            _padded_sample_count(n_spikes)
+            if fine
+            else 1 << max(n_spikes - 1, 15).bit_length()
+        )
+        return min(block_size, size)
+    n_blocks = -(-n_spikes // block_size)
+    step = 1 << max((n_blocks - 1).bit_length() - 3, 0)
+    return block_size * (-(-n_blocks // step) * step)
 
 
 def _pad_rows(array, n_rows: int) -> np.ndarray:
