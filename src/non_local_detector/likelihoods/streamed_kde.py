@@ -18,6 +18,7 @@ import numpy as np
 from non_local_detector.likelihoods.common import (
     LOG_EPS,
     _log_kernel_matrix,
+    _normalized_row_ids,
     as_std_array,
     deterministic_row_add,
     safe_log,
@@ -507,10 +508,7 @@ def _streamed_joint_mark_row_sums(
     indices = np.asarray(row_indices)
     if indices.shape != (inputs[0].shape[0],) or indices.dtype.kind not in "iu":
         raise ValueError("row_indices must contain one integer per decoding mark")
-    valid = (indices >= 0) & (indices < n_rows)
-    normalized = np.full(indices.shape, -1, dtype=np.intp)
-    normalized[indices >= n_rows] = n_rows
-    normalized[valid] = indices[valid]
+    normalized = _normalized_row_ids(indices, n_rows)
     return _joint_core(
         *inputs,
         _positive_tile(encoding_tile_size, "encoding_tile_size"),

@@ -1040,29 +1040,38 @@ def sum_spikes_into_rows(values: jnp.ndarray, selection: SpikeSelection) -> jnp.
     )
 
 
-def spike_row_ids(selection: SpikeSelection, n_padded: int | None = None) -> np.ndarray:
+def _normalized_row_ids(
+    indices: np.ndarray, n_rows: int, n_padded: int | None = None
+) -> np.ndarray:
     """Host row ids for ``deterministic_row_sum``, optionally padded.
 
     Parameters
     ----------
-    selection : SpikeSelection
+    indices : array-like, shape (n_selected,), integer
+    n_rows : int
     n_padded : int, optional
-        Length to pad to. Padded entries use the dropped id ``selection.n_rows``,
-        which keeps sorted ids sorted.
+        Length to pad to. Padded entries use the dropped id ``n_rows``, which
+        keeps sorted ids sorted.
 
     Returns
     -------
     row_ids : np.ndarray of intp, shape (n_padded or n_selected,)
-        Invalid indices are normalized before JAX dtype canonicalization, so a
-        huge unsigned or out-of-range index cannot truncate into a valid row.
+        Negative ids become -1 and ids at or above ``n_rows`` become ``n_rows``
+        before JAX dtype canonicalization, so a huge unsigned or out-of-range
+        index cannot truncate into a valid row.
     """
-    indices = np.asarray(selection.bin_ind)
+    indices = np.asarray(indices)
     n_ids = len(indices) if n_padded is None else n_padded
-    safe_indices = np.full(n_ids, selection.n_rows, dtype=np.intp)
-    valid = (indices >= 0) & (indices < selection.n_rows)
+    safe_indices = np.full(n_ids, n_rows, dtype=np.intp)
+    valid = (indices >= 0) & (indices < n_rows)
     safe_indices[: len(indices)][indices < 0] = -1
     safe_indices[: len(indices)][valid] = indices[valid]
     return safe_indices
+
+
+def spike_row_ids(selection: SpikeSelection, n_padded: int | None = None) -> np.ndarray:
+    """``_normalized_row_ids`` for a selection's spikes and row count."""
+    return _normalized_row_ids(selection.bin_ind, selection.n_rows, n_padded)
 
 
 @jax.jit
