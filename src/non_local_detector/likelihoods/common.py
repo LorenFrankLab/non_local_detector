@@ -1238,6 +1238,21 @@ def block_kde(
     return jnp.concatenate(blocks)
 
 
+def _padded_sample_count(n_samples: int) -> int:
+    """Encoding samples per electrode: four sizes per octave, at most 25% padding."""
+    if n_samples <= 16:
+        return 16
+    step = 1 << max((n_samples - 1).bit_length() - 3, 0)
+    return -(-n_samples // step) * step
+
+
+def _pad_rows(array, n_rows: int) -> np.ndarray:
+    """Zero rows appended on the host to reach ``n_rows``."""
+    array = np.asarray(array)
+    padding = np.zeros((n_rows - array.shape[0], *array.shape[1:]), array.dtype)
+    return np.concatenate([array, padding])
+
+
 # Up to this many evaluation blocks are traced individually: faster on CPU
 # than a loop, and the compiled graph stays small.
 _UNROLLED_KDE_BLOCKS = 8

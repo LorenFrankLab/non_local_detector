@@ -216,13 +216,13 @@ def test_local_kde_rows_do_not_depend_on_count_blocks(monkeypatch):
 
 def test_compiled_local_kde_graph_does_not_grow_with_rows():
     model = KDEModel(std=1.0, block_size=100).fit(jnp.ones((3, 1)))
-    leaves = ((model.samples_, model.weights_, model.std),)
+    groups, block_sizes, order = sorted_spikes_kde._kde_leaf_groups([model], 1)
 
     def n_equations(n_rows):
         jaxpr = jax.make_jaxpr(
             partial(
                 sorted_spikes_kde._local_kde_log_likelihood.__wrapped__,
-                block_sizes=(100,),
+                block_sizes=block_sizes,
             )
         )(
             jnp.zeros((n_rows, 1)),
@@ -230,7 +230,8 @@ def test_compiled_local_kde_graph_does_not_grow_with_rows():
             jnp.zeros((n_rows, 1), dtype=int),
             jnp.ones(1),
             jnp.ones(n_rows),
-            leaves,
+            groups,
+            order,
         )
         return len(jaxpr.jaxpr.eqns)
 
@@ -288,14 +289,16 @@ def test_compiled_local_kde_accepts_vector_positions(x64):
         counts = jnp.ones((17, 1))
         means = jnp.array([2.0])
         durations = jnp.full(17, 0.002)
+        groups, block_sizes, order = sorted_spikes_kde._kde_leaf_groups([model], 1)
         actual = sorted_spikes_kde._local_kde_log_likelihood(
             points,
             occupancy,
             counts,
             means,
             durations,
-            ((model.samples_, model.weights_, model.std),),
-            block_sizes=(7,),
+            groups,
+            order,
+            block_sizes=block_sizes,
         )
         expected = (
             jax.scipy.special.xlogy(counts[:, 0], 2.0 * durations) - 2.0 * durations
@@ -368,13 +371,15 @@ def test_compiled_local_kde_preserves_each_model_and_addition_order(x64, n_rows,
             )
             rate = jnp.clip(rate, min=RATE_EPS_HZ, max=None) * durations
             expected += jax.scipy.special.xlogy(counts[:, unit], rate) - rate
+        groups, block_sizes, order = sorted_spikes_kde._kde_leaf_groups(models, 2)
         actual = sorted_spikes_kde._local_kde_log_likelihood(
             points,
             occupancy,
             counts,
             means,
             durations,
-            tuple((model.samples_, model.weights_, model.std) for model in models),
-            block_sizes=(7,) * len(models),
+            groups,
+            order,
+            block_sizes=block_sizes,
         )
         np.testing.assert_allclose(actual, expected, rtol=1e-10, atol=1e-10)

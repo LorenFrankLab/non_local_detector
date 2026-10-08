@@ -16,6 +16,8 @@ from non_local_detector.likelihoods.common import (
     RATE_REFERENCE_SECONDS,
     KDEModel,
     _log_kernel_matrix,
+    _pad_rows,
+    _padded_sample_count,
     _SpikeTimeOrder,
     _traced_block_kde,
     as_std_array,
@@ -80,21 +82,6 @@ def _padded_spike_count(n_spikes: int, block_size: int) -> int:
     if n_spikes <= block_size:
         return min(block_size, 1 << max(n_spikes - 1, 15).bit_length())
     return block_size * (1 << (-(-n_spikes // block_size) - 1).bit_length())
-
-
-def _padded_sample_count(n_samples: int) -> int:
-    """Encoding samples per electrode: four sizes per octave, at most 25% padding."""
-    if n_samples <= 16:
-        return 16
-    step = 1 << max((n_samples - 1).bit_length() - 3, 0)
-    return -(-n_samples // step) * step
-
-
-def _pad_rows(array, n_rows: int) -> np.ndarray:
-    """Zero rows appended on the host to reach ``n_rows``."""
-    array = np.asarray(array)
-    padding = np.zeros((n_rows - array.shape[0], *array.shape[1:]), array.dtype)
-    return np.concatenate([array, padding])
 
 
 def _padded_samples(spike_time_order, samples, weights):
