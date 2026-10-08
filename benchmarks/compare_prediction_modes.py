@@ -125,6 +125,11 @@ def main():
     parser.add_argument("--population", type=int, default=None)
     parser.add_argument("--spike-rate", type=float, default=None, help="Hz")
     parser.add_argument(
+        "--algorithm",
+        default=None,
+        help="likelihood algorithm (default: the detector default)",
+    )
+    parser.add_argument(
         "--rate-spread",
         type=float,
         default=0.0,
@@ -173,6 +178,17 @@ def main():
             position_range=((0, args.arena), (0, args.arena)),
         ),
         infer_track_interior=False,
+        **(
+            {}
+            if args.algorithm is None
+            else {
+                (
+                    "sorted_spikes_algorithm"
+                    if args.family == "sorted"
+                    else "clusterless_algorithm"
+                ): args.algorithm
+            }
+        ),
     )
     predict_parameters = inspect.signature(model.predict).parameters
     n_rows = len(predict_kwargs["time_edges"]) - 1
@@ -210,6 +226,7 @@ def main():
         "population": args.population,
         "spike_rate_hz": args.spike_rate,
         "rate_spread": args.rate_spread,
+        "algorithm": args.algorithm,
         "encoding_duration_s": args.encoding_duration,
         "chunk_rows": args.chunk_rows if args.mode == "chunked" else None,
         "checkpoint_chunk_size": (
