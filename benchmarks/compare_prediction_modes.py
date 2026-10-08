@@ -205,7 +205,7 @@ def main():
         report["state_bins"] = int(model.state_ind_.shape[0])
         start = time.perf_counter()
         result = model.predict(**predict_kwargs)
-        np.asarray(result["acausal_state_probabilities"])
+        states = np.asarray(result["acausal_state_probabilities"])
         report["compile_and_first_predict_seconds"] = time.perf_counter() - start
         warm = []
         for number in range(args.repeat):
