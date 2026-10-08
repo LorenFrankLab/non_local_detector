@@ -2213,15 +2213,6 @@ def compute_local_log_likelihood(
         electrode_decoding_spike_waveform_features = select_spike_rows(
             electrode_decoding_spike_waveform_features, selection
         )
-        if position_at_spike_time.shape[0] == 0:
-            # Expected counts only: there are no spikes to score.
-            summed_expected_counts += electrode_mean_rate * jnp.where(
-                occupancy > 0.0,
-                electrode_gpi_model.predict(interpolated_position)
-                / jnp.where(occupancy > 0.0, occupancy, 1.0),
-                0.0,
-            )
-            continue
         # Expand waveform_std to match this electrode's feature count if scalar
         n_waveform_features = electrode_encoding_spike_waveform_features.shape[1]
 

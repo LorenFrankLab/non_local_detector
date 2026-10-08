@@ -258,10 +258,11 @@ def test_electrodes_with_nearby_spike_counts_share_compiled_kernels():
     )
     kernels = (
         clusterless_gmm._add_electrode_gmm_intensities,
-        clusterless_gmm._add_electrode_gmm_local_terms,
+        clusterless_gmm._add_electrode_gmm_spike_terms,
+        clusterless_gmm._add_gmm_expected_counts,
     )
     for kernel in kernels:
         kernel.clear_cache()
     for is_local in (False, True):
         predict(recording, is_local, None)
-    assert [kernel._cache_size() for kernel in kernels] == [1, 1]
+    assert [kernel._cache_size() for kernel in kernels] == [1, 1, 1]

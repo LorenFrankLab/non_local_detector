@@ -222,45 +222,76 @@ def _add_electrode_gmm_intensities(
 
 @partial(
     jax.jit,
-    static_argnames=(
-        "joint_type",
-        "occupancy_type",
-        "gpi_type",
-        "indices_are_sorted",
-    ),
-    donate_argnums=(0, 1),
+    static_argnames=("joint_type", "occupancy_type", "indices_are_sorted"),
+    donate_argnums=0,
 )
-def _add_electrode_gmm_local_terms(
+def _add_electrode_gmm_spike_terms(
     log_likelihood: jnp.ndarray,
-    expected_counts: jnp.ndarray,
     spike_positions: jnp.ndarray,
     features: jnp.ndarray,
     row_ids: jnp.ndarray,
     joint: tuple[jnp.ndarray, ...],
     occupancy: tuple[jnp.ndarray, ...],
-    gpi: tuple[jnp.ndarray, ...],
-    positions: jnp.ndarray,
-    log_occupancy: jnp.ndarray,
     mean_rate: jnp.ndarray,
     *,
     joint_type: str,
     occupancy_type: str,
-    gpi_type: str,
     indices_are_sorted: bool,
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Add one electrode's local spike terms and expected count rate.
+) -> jnp.ndarray:
+    """Add one electrode's local spike terms to their rows.
 
     Parameters
     ----------
-    log_likelihood, expected_counts : jnp.ndarray, shape (n_rows,)
-        Running sums over electrodes; donated.
+    log_likelihood : jnp.ndarray, shape (n_rows,)
+        Running sum over electrodes; donated.
     spike_positions : jnp.ndarray, shape (n_padded_spikes, n_position_dims)
         Position at each decoding spike; padding rows are zero.
     features : jnp.ndarray, shape (n_padded_spikes, n_features)
     row_ids : jnp.ndarray, shape (n_padded_spikes,)
         Local rows; padding uses ``n_rows``, which the row sum drops.
-    joint, occupancy, gpi : tuple of jnp.ndarray
+    joint, occupancy : tuple of jnp.ndarray
         Fitted means, Cholesky precisions and weights of each GMM.
+    mean_rate : jnp.ndarray, scalar
+
+    Returns
+    -------
+    log_likelihood : jnp.ndarray, shape (n_rows,)
+    """
+    joint_logp = _gmm_score(
+        jnp.concatenate([spike_positions, features], axis=1), joint, joint_type
+    )
+    occupancy_logp = _gmm_score(spike_positions, occupancy, occupancy_type)
+    # Density difference first (see _accumulate_log_likelihood_block).
+    terms = safe_log(mean_rate, eps=RATE_EPS_HZ) + (joint_logp - occupancy_logp)
+    return log_likelihood + deterministic_row_sum(
+        terms,
+        row_ids,
+        log_likelihood.shape[0],
+        indices_are_sorted=indices_are_sorted,
+    )
+
+
+@partial(jax.jit, static_argnames=("gpi_type",), donate_argnums=0)
+def _add_gmm_expected_counts(
+    expected_counts: jnp.ndarray,
+    gpi: tuple[jnp.ndarray, ...],
+    positions: jnp.ndarray,
+    log_occupancy: jnp.ndarray,
+    mean_rate: jnp.ndarray,
+    *,
+    gpi_type: str,
+) -> jnp.ndarray:
+    """Add one electrode's expected count rate at the animal's position.
+
+    Electrodes with and without spikes in a chunk use this same compiled
+    function, so their expected counts round identically.
+
+    Parameters
+    ----------
+    expected_counts : jnp.ndarray, shape (n_rows,)
+        Running sum over electrodes; donated.
+    gpi : tuple of jnp.ndarray
+        Fitted means, Cholesky precisions and weights of the electrode's GPI GMM.
     positions : jnp.ndarray, shape (n_rows, n_position_dims)
         Animal position at each row.
     log_occupancy : jnp.ndarray, shape (n_rows,)
@@ -269,24 +300,11 @@ def _add_electrode_gmm_local_terms(
 
     Returns
     -------
-    log_likelihood, expected_counts : jnp.ndarray, shape (n_rows,)
+    expected_counts : jnp.ndarray, shape (n_rows,)
     """
-    joint_logp = _gmm_score(
-        jnp.concatenate([spike_positions, features], axis=1), joint, joint_type
-    )
-    occupancy_logp = _gmm_score(spike_positions, occupancy, occupancy_type)
-    # Density difference first (see _accumulate_log_likelihood_block).
-    terms = safe_log(mean_rate, eps=RATE_EPS_HZ) + (joint_logp - occupancy_logp)
-    log_likelihood = log_likelihood + deterministic_row_sum(
-        terms,
-        row_ids,
-        log_likelihood.shape[0],
-        indices_are_sorted=indices_are_sorted,
-    )
-    expected_counts = expected_counts + _ground_process_intensity(
+    return expected_counts + _ground_process_intensity(
         mean_rate, _gmm_score(positions, gpi, gpi_type), log_occupancy
     )
-    return log_likelihood, expected_counts
 
 
 def _ground_process_intensity(
@@ -1136,38 +1154,37 @@ def compute_local_log_likelihood(
             continue
 
         n_spikes = selection.bin_ind.shape[0]
-        if n_spikes == 0:
-            # Expected counts only: the joint model has no spikes to score.
-            summed_expected_counts = summed_expected_counts + _ground_process_intensity(
-                mean_rate, _gmm_logp(gpi_gmm, interp_pos), log_occ_at_pos
+        if n_spikes:
+            # Spikes padded to a few counts (padding rows are dropped from the
+            # row sums) let electrodes and chunks share one compiled kernel.
+            n_padded = _padded_spike_count(n_spikes, _LOCAL_SPIKE_BLOCK)
+            spike_positions = get_position_at_time(
+                position_time,
+                position,
+                select_spike_rows(elect_times, selection),
+                environment,
             )
-            continue
-
-        # Spikes padded to a few counts (padding rows are dropped from the row
-        # sums) let electrodes and chunks share one compiled kernel.
-        n_padded = _padded_spike_count(n_spikes, _LOCAL_SPIKE_BLOCK)
-        spike_positions = get_position_at_time(
-            position_time,
-            position,
-            select_spike_rows(elect_times, selection),
-            environment,
-        )
-        log_likelihood, summed_expected_counts = _add_electrode_gmm_local_terms(
-            log_likelihood,
+            log_likelihood = _add_electrode_gmm_spike_terms(
+                log_likelihood,
+                jnp.asarray(_pad_rows(spike_positions, n_padded), dtype=working_dtype),
+                jnp.asarray(
+                    _pad_rows(select_spike_rows(elect_feats, selection), n_padded)
+                ),
+                jnp.asarray(spike_row_ids(selection, n_padded)),
+                _gmm_parameters(joint_gmm),
+                _gmm_parameters(occupancy_model),
+                mean_rate,
+                joint_type=joint_gmm.covariance_type,
+                occupancy_type=occupancy_model.covariance_type,
+                indices_are_sorted=selection.indices_are_sorted,
+            )
+        summed_expected_counts = _add_gmm_expected_counts(
             summed_expected_counts,
-            jnp.asarray(_pad_rows(spike_positions, n_padded), dtype=working_dtype),
-            jnp.asarray(_pad_rows(select_spike_rows(elect_feats, selection), n_padded)),
-            jnp.asarray(spike_row_ids(selection, n_padded)),
-            _gmm_parameters(joint_gmm),
-            _gmm_parameters(occupancy_model),
             _gmm_parameters(gpi_gmm),
             interp_pos,
             log_occ_at_pos,
             mean_rate,
-            joint_type=joint_gmm.covariance_type,
-            occupancy_type=occupancy_model.covariance_type,
             gpi_type=gpi_gmm.covariance_type,
-            indices_are_sorted=selection.indices_are_sorted,
         )
 
     # Subtract the summed ground-process intensity once, floored at EPS to
