@@ -1,0 +1,567 @@
+{
+ "description": "CPU first and warm checkpointed compact predictions with benchmarks/profile_compilations.py; GMM 10 s at 4 cm with 120 s of encoding, log-space KDE 30 s at 2 cm with 10 s of encoding, 8 clusterless electrodes at 20 Hz. Runs were sequential with nothing else running; cpu-new2/base2/new3 GMM runs were interleaved.",
+ "runs": {
+  "cpu-base-gmm": {
+   "family": "clusterless",
+   "algorithm": "clusterless_gmm",
+   "duration_s": 10.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 4.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "cpu",
+   "device": "TFRT_CPU_0",
+   "jax": "0.9.0",
+   "xla_flags": null,
+   "fit_seconds": 4.217753166973125,
+   "first_predict_seconds": 4.0997235419927165,
+   "first_compilations": 73,
+   "first_compile_seconds": 1.624072317,
+   "top_compiles": [
+    [
+     "jit(_estimate_log_prob_resp)",
+     4,
+     0.394611598
+    ],
+    [
+     "jit(_forward_chunk)",
+     2,
+     0.23477482800000002
+    ],
+    [
+     "jit(add)",
+     8,
+     0.12492537499999999
+    ],
+    [
+     "jit(_backward_chunk)",
+     1,
+     0.114539146
+    ],
+    [
+     "jit(broadcast_in_dim)",
+     10,
+     0.08074021399999999
+    ],
+    [
+     "jit(multiply)",
+     4,
+     0.06464576799999999
+    ],
+    [
+     "jit(_prepare_chunk)",
+     1,
+     0.058826208
+    ],
+    [
+     "jit(scatter)",
+     2,
+     0.056019068000000005
+    ],
+    [
+     "jit(_sum_state_rows)",
+     2,
+     0.050928830999999994
+    ],
+    [
+     "jit(select_n)",
+     3,
+     0.042587281
+    ]
+   ],
+   "warm_seconds": [
+    2.6704929170082323,
+    2.6875522499904037,
+    2.711870667000767
+   ],
+   "warm_compilations": 0,
+   "source": "e9e41cbe (before)",
+   "host": "Apple M1 Max, 10 cores, 64 GB (idle)"
+  },
+  "cpu-new-gmm": {
+   "family": "clusterless",
+   "algorithm": "clusterless_gmm",
+   "duration_s": 10.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 4.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "cpu",
+   "device": "TFRT_CPU_0",
+   "jax": "0.9.0",
+   "xla_flags": null,
+   "fit_seconds": 4.450180999992881,
+   "first_predict_seconds": 3.9890929170069285,
+   "first_compilations": 51,
+   "first_compile_seconds": 1.470377683,
+   "top_compiles": [
+    [
+     "jit(_forward_chunk)",
+     2,
+     0.24716401100000002
+    ],
+    [
+     "jit(_add_electrode_gmm_local_terms)",
+     1,
+     0.169150352
+    ],
+    [
+     "jit(_add_electrode_gmm_intensities)",
+     1,
+     0.139199972
+    ],
+    [
+     "jit(_backward_chunk)",
+     1,
+     0.113884926
+    ],
+    [
+     "jit(_prepare_chunk)",
+     1,
+     0.090095758
+    ],
+    [
+     "jit(add)",
+     5,
+     0.08132314699999998
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     1,
+     0.073729992
+    ],
+    [
+     "jit(multiply)",
+     4,
+     0.063230276
+    ],
+    [
+     "jit(_sum_state_rows)",
+     2,
+     0.054594277999999996
+    ],
+    [
+     "jit(scatter)",
+     2,
+     0.052652121
+    ]
+   ],
+   "warm_seconds": [
+    2.8342899999697693,
+    2.94448545796331,
+    2.9290266250027344
+   ],
+   "warm_compilations": 0,
+   "source": "compiled kernels, GMM spikes padded to powers of two (not adopted)",
+   "host": "Apple M1 Max, 10 cores, 64 GB (idle)"
+  },
+  "cpu-new2-gmm": {
+   "family": "clusterless",
+   "algorithm": "clusterless_gmm",
+   "duration_s": 10.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 4.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "cpu",
+   "device": "TFRT_CPU_0",
+   "jax": "0.9.0",
+   "xla_flags": null,
+   "fit_seconds": 4.1613119170069695,
+   "first_predict_seconds": 3.761907459003851,
+   "first_compilations": 51,
+   "first_compile_seconds": 1.407959936,
+   "top_compiles": [
+    [
+     "jit(_forward_chunk)",
+     2,
+     0.24224782
+    ],
+    [
+     "jit(_add_electrode_gmm_local_terms)",
+     1,
+     0.177175999
+    ],
+    [
+     "jit(_add_electrode_gmm_intensities)",
+     1,
+     0.13203907
+    ],
+    [
+     "jit(_backward_chunk)",
+     1,
+     0.106457949
+    ],
+    [
+     "jit(_prepare_chunk)",
+     1,
+     0.082875967
+    ],
+    [
+     "jit(add)",
+     5,
+     0.075945615
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     1,
+     0.067675829
+    ],
+    [
+     "jit(multiply)",
+     4,
+     0.058131457
+    ],
+    [
+     "jit(scatter)",
+     2,
+     0.053217172
+    ],
+    [
+     "jit(_sum_state_rows)",
+     2,
+     0.049493789
+    ]
+   ],
+   "warm_seconds": [
+    2.6605298339854926,
+    2.6367397920112126,
+    2.6851147079723887,
+    2.7315362920053303,
+    2.6891213330090977
+   ],
+   "warm_compilations": 0,
+   "source": "compiled kernels as committed",
+   "host": "Apple M1 Max, 10 cores, 64 GB (idle)"
+  },
+  "cpu-base2-gmm": {
+   "family": "clusterless",
+   "algorithm": "clusterless_gmm",
+   "duration_s": 10.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 4.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "cpu",
+   "device": "TFRT_CPU_0",
+   "jax": "0.9.0",
+   "xla_flags": null,
+   "fit_seconds": 4.134564792038873,
+   "first_predict_seconds": 3.9347564579802565,
+   "first_compilations": 73,
+   "first_compile_seconds": 1.618364094,
+   "top_compiles": [
+    [
+     "jit(_estimate_log_prob_resp)",
+     4,
+     0.38445711
+    ],
+    [
+     "jit(_forward_chunk)",
+     2,
+     0.240681172
+    ],
+    [
+     "jit(add)",
+     8,
+     0.120449781
+    ],
+    [
+     "jit(_backward_chunk)",
+     1,
+     0.112774134
+    ],
+    [
+     "jit(broadcast_in_dim)",
+     10,
+     0.07887411000000001
+    ],
+    [
+     "jit(_prepare_chunk)",
+     1,
+     0.073976994
+    ],
+    [
+     "jit(multiply)",
+     4,
+     0.058845043
+    ],
+    [
+     "jit(_sum_state_rows)",
+     2,
+     0.051410914
+    ],
+    [
+     "jit(scatter)",
+     2,
+     0.049993992
+    ],
+    [
+     "jit(select_n)",
+     3,
+     0.043713093
+    ]
+   ],
+   "warm_seconds": [
+    2.6881316250073723,
+    2.668564833002165,
+    2.6553089580265805,
+    2.700110625009984,
+    2.6561028330470435
+   ],
+   "warm_compilations": 0,
+   "source": "e9e41cbe (before)",
+   "host": "Apple M1 Max, 10 cores, 64 GB (idle)"
+  },
+  "cpu-new3-gmm": {
+   "family": "clusterless",
+   "algorithm": "clusterless_gmm",
+   "duration_s": 10.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 4.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "cpu",
+   "device": "TFRT_CPU_0",
+   "jax": "0.9.0",
+   "xla_flags": null,
+   "fit_seconds": 4.167155959003139,
+   "first_predict_seconds": 3.718623749969993,
+   "first_compilations": 51,
+   "first_compile_seconds": 1.38505912,
+   "top_compiles": [
+    [
+     "jit(_forward_chunk)",
+     2,
+     0.22933197
+    ],
+    [
+     "jit(_add_electrode_gmm_local_terms)",
+     1,
+     0.164674759
+    ],
+    [
+     "jit(_add_electrode_gmm_intensities)",
+     1,
+     0.128820896
+    ],
+    [
+     "jit(_backward_chunk)",
+     1,
+     0.106366873
+    ],
+    [
+     "jit(add)",
+     5,
+     0.07759595
+    ],
+    [
+     "jit(_prepare_chunk)",
+     1,
+     0.074487209
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     1,
+     0.067532063
+    ],
+    [
+     "jit(multiply)",
+     4,
+     0.059788942
+    ],
+    [
+     "jit(scatter)",
+     2,
+     0.056119919000000004
+    ],
+    [
+     "jit(_sum_state_rows)",
+     2,
+     0.049212218
+    ]
+   ],
+   "warm_seconds": [
+    2.69210204196861,
+    2.676177582994569,
+    2.7094232909730636,
+    2.6866139579797164,
+    2.705147708998993
+   ],
+   "warm_compilations": 0,
+   "source": "compiled kernels as committed",
+   "host": "Apple M1 Max, 10 cores, 64 GB (idle)"
+  },
+  "cpu-base-kdelog": {
+   "family": "clusterless",
+   "algorithm": "clusterless_kde_log",
+   "duration_s": 30.0,
+   "encoding_duration_s": 10.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "cpu",
+   "device": "TFRT_CPU_0",
+   "jax": "0.9.0",
+   "xla_flags": null,
+   "fit_seconds": 0.8540754590067081,
+   "first_predict_seconds": 38.376207583001815,
+   "first_compilations": 859,
+   "first_compile_seconds": 16.864844796,
+   "top_compiles": [
+    [
+     "jit(log_kde)",
+     24,
+     2.954199313
+    ],
+    [
+     "jit(log)",
+     27,
+     1.5539786830000004
+    ],
+    [
+     "jit(dynamic_slice)",
+     78,
+     1.4918797009999998
+    ],
+    [
+     "jit(_where)",
+     54,
+     1.1276912639999999
+    ],
+    [
+     "jit(scatter-add)",
+     48,
+     0.745488407
+    ],
+    [
+     "jit(clip)",
+     26,
+     0.6852521870000001
+    ],
+    [
+     "jit(add)",
+     37,
+     0.6521799569999999
+    ],
+    [
+     "jit(_pad)",
+     24,
+     0.567921641
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     0.5072345739999999
+    ],
+    [
+     "jit(subtract)",
+     26,
+     0.45462942
+    ]
+   ],
+   "warm_seconds": [
+    21.1639420830179,
+    21.034386957995594,
+    21.270215834025294
+   ],
+   "warm_compilations": 0,
+   "source": "e9e41cbe (before)",
+   "host": "Apple M1 Max, 10 cores, 64 GB (idle)"
+  },
+  "cpu-new-kdelog": {
+   "family": "clusterless",
+   "algorithm": "clusterless_kde_log",
+   "duration_s": 30.0,
+   "encoding_duration_s": 10.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "cpu",
+   "device": "TFRT_CPU_0",
+   "jax": "0.9.0",
+   "xla_flags": null,
+   "fit_seconds": 0.8383387500070967,
+   "first_predict_seconds": 17.811234250024427,
+   "first_compilations": 83,
+   "first_compile_seconds": 2.747552154,
+   "top_compiles": [
+    [
+     "jit(_add_electrode_local_terms)",
+     3,
+     0.522851944
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     0.457279444
+    ],
+    [
+     "jit(_add_electrode_log_mark_intensities)",
+     3,
+     0.24763703299999998
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     0.24013495499999998
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     0.15692996999999997
+    ],
+    [
+     "jit(add)",
+     9,
+     0.14963007
+    ],
+    [
+     "jit(_sum_state_rows)",
+     4,
+     0.129178762
+    ],
+    [
+     "jit(multiply)",
+     8,
+     0.128372431
+    ],
+    [
+     "jit(broadcast_in_dim)",
+     11,
+     0.092668533
+    ],
+    [
+     "jit(scatter)",
+     4,
+     0.09133839599999999
+    ]
+   ],
+   "warm_seconds": [
+    15.80453133303672,
+    15.814425249991473,
+    15.831348875013646
+   ],
+   "warm_compilations": 0,
+   "source": "compiled kernels as committed",
+   "host": "Apple M1 Max, 10 cores, 64 GB (idle)"
+  }
+ },
+ "state_probability_comparisons": {
+  "cpu-base-gmm vs cpu-new2-gmm": {
+   "max_abs_state_probability_difference": 0.0,
+   "same_most_likely_state_fraction": 1.0
+  },
+  "cpu-base-kdelog vs cpu-new-kdelog": {
+   "max_abs_state_probability_difference": 1.7881393432617188e-06,
+   "same_most_likely_state_fraction": 1.0
+  }
+ }
+}

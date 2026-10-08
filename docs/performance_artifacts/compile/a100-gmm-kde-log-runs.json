@@ -1,0 +1,1025 @@
+{
+ "description": "First and warm checkpointed compact predictions, 30 s at 2 cm, 8 clusterless electrodes at 20 Hz with four waveform features; GMM uses 120 s of encoding (its fit is singular with 10 s), log-space KDE 10 s. Compilations are attributed by function from JAX compile logs. det-* runs disable XLA GPU autotuning so kernel choice is the same in every process; other runs use the default autotuning. Runs other than final-gmm* used an earlier copy of benchmarks/profile_compilations.py (state probabilities saved as states.npy).",
+ "runs": {
+  "base-gmm": {
+   "algorithm": "clusterless_gmm",
+   "jax": "0.9.0",
+   "backend": "gpu",
+   "duration_s": 30.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "rate_spread": 0.0,
+   "fit_seconds": 16.84358410257846,
+   "first_predict_seconds": 114.68954186607152,
+   "first_compilations": 521,
+   "first_compile_seconds": 99.02183223899999,
+   "top_compiles": [
+    [
+     "jit(_estimate_log_prob_resp)",
+     74,
+     45.786364316
+    ],
+    [
+     "jit(_accumulate_log_likelihood_block)",
+     24,
+     27.874684334999998
+    ],
+    [
+     "jit(concatenate)",
+     96,
+     4.336271290999999
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     3.373447418
+    ],
+    [
+     "jit(broadcast_in_dim)",
+     104,
+     3.254624371
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     2.639715433
+    ],
+    [
+     "jit(deterministic_segment_sum)",
+     3,
+     2.005176068
+    ],
+    [
+     "jit(add)",
+     37,
+     1.5634198190000004
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     1.49300766
+    ],
+    [
+     "jit(scatter)",
+     4,
+     1.12249732
+    ]
+   ],
+   "warm_seconds": [
+    4.428363870829344,
+    4.44875805079937,
+    4.449961559846997
+   ],
+   "warm_compilations": 0,
+   "source": "e9e41cbe (before)",
+   "xla_flags": null,
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "base-gmm-2": {
+   "algorithm": "clusterless_gmm",
+   "jax": "0.9.0",
+   "backend": "gpu",
+   "duration_s": 30.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "rate_spread": 0.0,
+   "fit_seconds": 16.428798790089786,
+   "first_predict_seconds": 113.83237965404987,
+   "first_compilations": 521,
+   "first_compile_seconds": 98.361493108,
+   "top_compiles": [
+    [
+     "jit(_estimate_log_prob_resp)",
+     74,
+     45.52108835700002
+    ],
+    [
+     "jit(_accumulate_log_likelihood_block)",
+     24,
+     27.756060122999994
+    ],
+    [
+     "jit(concatenate)",
+     96,
+     4.279669760999999
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     3.3488729
+    ],
+    [
+     "jit(broadcast_in_dim)",
+     104,
+     3.2190234720000004
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     2.676603794
+    ],
+    [
+     "jit(deterministic_segment_sum)",
+     3,
+     1.952630281
+    ],
+    [
+     "jit(add)",
+     37,
+     1.5707795619999996
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     1.438733339
+    ],
+    [
+     "jit(tile)",
+     24,
+     1.099785804
+    ]
+   ],
+   "warm_seconds": [
+    4.440302792005241,
+    4.423782845027745,
+    4.441138155758381
+   ],
+   "warm_compilations": 0,
+   "source": "e9e41cbe (before)",
+   "xla_flags": null,
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "det-base-gmm": {
+   "algorithm": "clusterless_gmm",
+   "jax": "0.9.0",
+   "backend": "gpu",
+   "duration_s": 30.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "rate_spread": 0.0,
+   "fit_seconds": 14.116512368433177,
+   "first_predict_seconds": 77.96913174726069,
+   "first_compilations": 521,
+   "first_compile_seconds": 62.583988195,
+   "top_compiles": [
+    [
+     "jit(_accumulate_log_likelihood_block)",
+     24,
+     27.143229246
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     74,
+     15.597594501000001
+    ],
+    [
+     "jit(concatenate)",
+     96,
+     4.090166334
+    ],
+    [
+     "jit(broadcast_in_dim)",
+     104,
+     3.035769696999999
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     2.1730608929999997
+    ],
+    [
+     "jit(deterministic_segment_sum)",
+     3,
+     1.907365799
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     1.4983127120000002
+    ],
+    [
+     "jit(add)",
+     37,
+     1.493047953
+    ],
+    [
+     "jit(tile)",
+     24,
+     1.0733146660000001
+    ],
+    [
+     "jit(subtract)",
+     26,
+     1.0250782980000002
+    ]
+   ],
+   "warm_seconds": [
+    4.550667637959123,
+    4.503682019189,
+    4.49451491702348
+   ],
+   "warm_compilations": 0,
+   "source": "e9e41cbe (before)",
+   "xla_flags": "--xla_gpu_autotune_level=0",
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "new-gmm": {
+   "algorithm": "clusterless_gmm",
+   "jax": "0.9.0",
+   "backend": "gpu",
+   "duration_s": 30.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "rate_spread": 0.0,
+   "fit_seconds": 16.946907648816705,
+   "first_predict_seconds": 29.731262860819697,
+   "first_compilations": 88,
+   "first_compile_seconds": 23.052154067,
+   "top_compiles": [
+    [
+     "jit(_add_electrode_gmm_intensities)",
+     3,
+     5.434966564
+    ],
+    [
+     "jit(_add_electrode_gmm_local_terms)",
+     3,
+     4.701166867
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     3.383511543
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     2.655528307
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     1.409699917
+    ],
+    [
+     "jit(scatter)",
+     4,
+     1.130205631
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     2,
+     1.114230394
+    ],
+    [
+     "jit(_sum_state_rows)",
+     4,
+     0.601380586
+    ],
+    [
+     "jit(_poisson_row_log_likelihood)",
+     2,
+     0.46600461
+    ],
+    [
+     "jit(add)",
+     9,
+     0.38344168700000003
+    ]
+   ],
+   "warm_seconds": [
+    4.556114707142115,
+    4.5468216352164745,
+    4.5197092378512025
+   ],
+   "warm_compilations": 0,
+   "source": "compiled kernels, GMM spikes padded to powers of two (not adopted)",
+   "xla_flags": null,
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "new-gmm-2": {
+   "algorithm": "clusterless_gmm",
+   "jax": "0.9.0",
+   "backend": "gpu",
+   "duration_s": 30.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "rate_spread": 0.0,
+   "fit_seconds": 16.428092025220394,
+   "first_predict_seconds": 29.819742894731462,
+   "first_compilations": 88,
+   "first_compile_seconds": 22.991791011,
+   "top_compiles": [
+    [
+     "jit(_add_electrode_gmm_intensities)",
+     3,
+     5.404548883
+    ],
+    [
+     "jit(_add_electrode_gmm_local_terms)",
+     3,
+     4.71237874
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     3.2563648229999997
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     2.708343029
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     1.404252529
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     2,
+     1.193088293
+    ],
+    [
+     "jit(scatter)",
+     4,
+     1.113239289
+    ],
+    [
+     "jit(_sum_state_rows)",
+     4,
+     0.6345896719999999
+    ],
+    [
+     "jit(_poisson_row_log_likelihood)",
+     2,
+     0.43389725700000004
+    ],
+    [
+     "jit(add)",
+     9,
+     0.3702538020000001
+    ]
+   ],
+   "warm_seconds": [
+    4.597901591099799,
+    4.5718265902251005,
+    4.589354617521167
+   ],
+   "warm_compilations": 0,
+   "source": "compiled kernels, GMM spikes padded to powers of two (not adopted)",
+   "xla_flags": null,
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "det-new-gmm": {
+   "algorithm": "clusterless_gmm",
+   "jax": "0.9.0",
+   "backend": "gpu",
+   "duration_s": 30.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "rate_spread": 0.0,
+   "fit_seconds": 14.059090695343912,
+   "first_predict_seconds": 21.497813598252833,
+   "first_compilations": 88,
+   "first_compile_seconds": 14.686739443,
+   "top_compiles": [
+    [
+     "jit(_add_electrode_gmm_intensities)",
+     3,
+     3.9892060750000002
+    ],
+    [
+     "jit(_add_electrode_gmm_local_terms)",
+     3,
+     3.107662439
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     2.207063197
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     1.431972027
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     0.46498704
+    ],
+    [
+     "jit(scatter)",
+     4,
+     0.44602108
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     2,
+     0.400734186
+    ],
+    [
+     "jit(add)",
+     9,
+     0.378219604
+    ],
+    [
+     "jit(multiply)",
+     8,
+     0.34258270300000004
+    ],
+    [
+     "jit(_sum_state_rows)",
+     4,
+     0.268014193
+    ]
+   ],
+   "warm_seconds": [
+    4.394458835944533,
+    4.358794078230858,
+    4.378051334992051
+   ],
+   "warm_compilations": 0,
+   "source": "compiled kernels, GMM spikes padded to powers of two (not adopted)",
+   "xla_flags": "--xla_gpu_autotune_level=0",
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "final-gmm": {
+   "family": "clusterless",
+   "algorithm": "clusterless_gmm",
+   "duration_s": 30.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "gpu",
+   "device": "cuda:0",
+   "jax": "0.9.0",
+   "xla_flags": null,
+   "fit_seconds": 17.112738264724612,
+   "first_predict_seconds": 32.62583355884999,
+   "first_compilations": 90,
+   "first_compile_seconds": 25.88561368,
+   "top_compiles": [
+    [
+     "jit(_add_electrode_gmm_intensities)",
+     5,
+     8.422300338
+    ],
+    [
+     "jit(_add_electrode_gmm_local_terms)",
+     3,
+     4.734356403
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     3.116904497
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     2.626894712
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     1.43066144
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     2,
+     1.200920821
+    ],
+    [
+     "jit(scatter)",
+     4,
+     1.172546863
+    ],
+    [
+     "jit(_sum_state_rows)",
+     4,
+     0.581874609
+    ],
+    [
+     "jit(_poisson_row_log_likelihood)",
+     2,
+     0.477399111
+    ],
+    [
+     "jit(add)",
+     9,
+     0.369908333
+    ]
+   ],
+   "warm_seconds": [
+    4.119000239297748,
+    4.113947348669171,
+    4.194378320127726,
+    4.190758625045419,
+    4.182691179215908
+   ],
+   "warm_compilations": 0,
+   "source": "compiled kernels as committed (GMM non-local spikes padded to four sizes per octave)",
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "final-gmm-2": {
+   "family": "clusterless",
+   "algorithm": "clusterless_gmm",
+   "duration_s": 30.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "gpu",
+   "device": "cuda:0",
+   "jax": "0.9.0",
+   "xla_flags": null,
+   "fit_seconds": 17.51517379283905,
+   "first_predict_seconds": 32.490878474898636,
+   "first_compilations": 90,
+   "first_compile_seconds": 25.864295249,
+   "top_compiles": [
+    [
+     "jit(_add_electrode_gmm_intensities)",
+     5,
+     8.400913239
+    ],
+    [
+     "jit(_add_electrode_gmm_local_terms)",
+     3,
+     4.790880203
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     3.208744526
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     2.555266619
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     1.432317257
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     2,
+     1.20000577
+    ],
+    [
+     "jit(scatter)",
+     4,
+     1.117074489
+    ],
+    [
+     "jit(_sum_state_rows)",
+     4,
+     0.578742027
+    ],
+    [
+     "jit(_poisson_row_log_likelihood)",
+     2,
+     0.483650923
+    ],
+    [
+     "jit(add)",
+     9,
+     0.3662750720000001
+    ]
+   ],
+   "warm_seconds": [
+    4.08321987092495,
+    4.0897151520475745,
+    4.215421421453357,
+    4.213906412012875,
+    4.216362101957202
+   ],
+   "warm_compilations": 0,
+   "source": "compiled kernels as committed (GMM non-local spikes padded to four sizes per octave)",
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "det-final-gmm": {
+   "family": "clusterless",
+   "algorithm": "clusterless_gmm",
+   "duration_s": 30.0,
+   "encoding_duration_s": 120.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "spike_rate_hz": 20.0,
+   "rate_spread": 0.0,
+   "backend": "gpu",
+   "device": "cuda:0",
+   "jax": "0.9.0",
+   "xla_flags": "--xla_gpu_autotune_level=0",
+   "fit_seconds": 13.175470313057303,
+   "first_predict_seconds": 22.923085450194776,
+   "first_compilations": 90,
+   "first_compile_seconds": 16.190369847,
+   "top_compiles": [
+    [
+     "jit(_add_electrode_gmm_intensities)",
+     5,
+     5.616553784
+    ],
+    [
+     "jit(_add_electrode_gmm_local_terms)",
+     3,
+     3.0756127839999996
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     2.152120352
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     1.440044641
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     0.458442688
+    ],
+    [
+     "jit(scatter)",
+     4,
+     0.445002794
+    ],
+    [
+     "jit(_estimate_log_prob_resp)",
+     2,
+     0.39460516
+    ],
+    [
+     "jit(add)",
+     9,
+     0.36842298599999995
+    ],
+    [
+     "jit(multiply)",
+     8,
+     0.333789586
+    ],
+    [
+     "jit(_sum_state_rows)",
+     4,
+     0.27017283400000003
+    ]
+   ],
+   "warm_seconds": [
+    4.196545090526342,
+    4.183289534412324,
+    4.058520966209471,
+    4.009071885608137,
+    4.012435842305422
+   ],
+   "warm_compilations": 0,
+   "source": "compiled kernels as committed (GMM non-local spikes padded to four sizes per octave)",
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "base-kdelog": {
+   "algorithm": "clusterless_kde_log",
+   "jax": "0.9.0",
+   "backend": "gpu",
+   "duration_s": 30.0,
+   "encoding_duration_s": 10.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "rate_spread": 0.0,
+   "fit_seconds": 3.4730655839666724,
+   "first_predict_seconds": 77.33475480508059,
+   "first_compilations": 857,
+   "first_compile_seconds": 61.06961989,
+   "top_compiles": [
+    [
+     "jit(log_kde)",
+     24,
+     12.882830619999996
+    ],
+    [
+     "jit(deterministic_segment_sum)",
+     6,
+     5.325098037
+    ],
+    [
+     "jit(concatenate)",
+     101,
+     4.493960143000001
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     3.380089044
+    ],
+    [
+     "jit(broadcast_in_dim)",
+     104,
+     3.2134706950000007
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     2.670514584
+    ],
+    [
+     "jit(dynamic_slice)",
+     78,
+     2.6101839480000004
+    ],
+    [
+     "jit(_where)",
+     54,
+     2.3261232400000003
+    ],
+    [
+     "jit(kde)",
+     8,
+     2.320611001
+    ],
+    [
+     "jit(add)",
+     37,
+     1.5799565299999996
+    ]
+   ],
+   "warm_seconds": [
+    4.3953645853325725,
+    4.4730678061023355,
+    4.335344766266644
+   ],
+   "warm_compilations": 0,
+   "source": "e9e41cbe (before)",
+   "xla_flags": null,
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "det-base-kdelog": {
+   "algorithm": "clusterless_kde_log",
+   "jax": "0.9.0",
+   "backend": "gpu",
+   "duration_s": 30.0,
+   "encoding_duration_s": 10.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "rate_spread": 0.0,
+   "fit_seconds": 3.9669236885383725,
+   "first_predict_seconds": 62.02518235612661,
+   "first_compilations": 857,
+   "first_compile_seconds": 46.498568062000004,
+   "top_compiles": [
+    [
+     "jit(log_kde)",
+     24,
+     6.814256667999999
+    ],
+    [
+     "jit(deterministic_segment_sum)",
+     6,
+     4.891721487
+    ],
+    [
+     "jit(concatenate)",
+     101,
+     4.254357099000001
+    ],
+    [
+     "jit(broadcast_in_dim)",
+     104,
+     3.1162722120000015
+    ],
+    [
+     "jit(dynamic_slice)",
+     78,
+     2.457182883
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     2.222116947
+    ],
+    [
+     "jit(_where)",
+     54,
+     2.179742100000001
+    ],
+    [
+     "jit(add)",
+     37,
+     1.5105838779999996
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     1.473914861
+    ],
+    [
+     "jit(log)",
+     27,
+     1.1659793859999996
+    ]
+   ],
+   "warm_seconds": [
+    4.561957570724189,
+    4.476122493855655,
+    4.440431904047728
+   ],
+   "warm_compilations": 0,
+   "source": "e9e41cbe (before)",
+   "xla_flags": "--xla_gpu_autotune_level=0",
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "new-kdelog": {
+   "algorithm": "clusterless_kde_log",
+   "jax": "0.9.0",
+   "backend": "gpu",
+   "duration_s": 30.0,
+   "encoding_duration_s": 10.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "rate_spread": 0.0,
+   "fit_seconds": 3.022592549212277,
+   "first_predict_seconds": 27.72847332060337,
+   "first_compilations": 83,
+   "first_compile_seconds": 22.143108607,
+   "top_compiles": [
+    [
+     "jit(_add_electrode_log_mark_intensities)",
+     3,
+     5.712156057
+    ],
+    [
+     "jit(_add_electrode_local_terms)",
+     3,
+     4.456296206
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     3.173081397
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     2.6541793350000003
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     1.412245751
+    ],
+    [
+     "jit(scatter)",
+     4,
+     1.133437157
+    ],
+    [
+     "jit(_sum_state_rows)",
+     4,
+     0.6473217
+    ],
+    [
+     "jit(kde)",
+     2,
+     0.574972391
+    ],
+    [
+     "jit(_poisson_row_log_likelihood)",
+     2,
+     0.491849423
+    ],
+    [
+     "jit(add)",
+     9,
+     0.36776781
+    ]
+   ],
+   "warm_seconds": [
+    3.232148641720414,
+    3.2697685305029154,
+    3.2586963921785355
+   ],
+   "warm_compilations": 0,
+   "source": "compiled kernels as committed (GMM non-local spikes padded to four sizes per octave)",
+   "xla_flags": null,
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  },
+  "det-new-kdelog": {
+   "algorithm": "clusterless_kde_log",
+   "jax": "0.9.0",
+   "backend": "gpu",
+   "duration_s": 30.0,
+   "encoding_duration_s": 10.0,
+   "bin_size_cm": 2.0,
+   "population": 8,
+   "rate_spread": 0.0,
+   "fit_seconds": 3.9687430700287223,
+   "first_predict_seconds": 20.88943983335048,
+   "first_compilations": 83,
+   "first_compile_seconds": 15.252585173,
+   "top_compiles": [
+    [
+     "jit(_add_electrode_log_mark_intensities)",
+     3,
+     4.649376154
+    ],
+    [
+     "jit(_add_electrode_local_terms)",
+     3,
+     3.427500963
+    ],
+    [
+     "jit(_forward_chunk)",
+     4,
+     2.1336658
+    ],
+    [
+     "jit(_backward_chunk)",
+     2,
+     1.457905293
+    ],
+    [
+     "jit(_prepare_chunk)",
+     2,
+     0.451344252
+    ],
+    [
+     "jit(scatter)",
+     4,
+     0.43994212099999996
+    ],
+    [
+     "jit(add)",
+     9,
+     0.367013931
+    ],
+    [
+     "jit(multiply)",
+     8,
+     0.338175773
+    ],
+    [
+     "jit(kde)",
+     2,
+     0.289907694
+    ],
+    [
+     "jit(_sum_state_rows)",
+     4,
+     0.263669253
+    ]
+   ],
+   "warm_seconds": [
+    3.2075360622256994,
+    3.2448657117784023,
+    3.2457439666613936
+   ],
+   "warm_compilations": 0,
+   "source": "compiled kernels as committed (GMM non-local spikes padded to four sizes per octave)",
+   "xla_flags": "--xla_gpu_autotune_level=0",
+   "host": "zephyr.cin.ucsf.edu (A100 80 GB)"
+  }
+ },
+ "state_probability_comparisons": {
+  "base-gmm vs base-gmm-2": {
+   "max_abs_state_probability_difference": 2.980232238769531e-07,
+   "same_most_likely_state_fraction": 1.0
+  },
+  "final-gmm vs final-gmm-2": {
+   "max_abs_state_probability_difference": 0.00036960840225219727,
+   "same_most_likely_state_fraction": 1.0
+  },
+  "base-gmm vs final-gmm": {
+   "max_abs_state_probability_difference": 0.0003693699836730957,
+   "same_most_likely_state_fraction": 1.0
+  },
+  "det-base-gmm vs det-final-gmm": {
+   "max_abs_state_probability_difference": 5.066394805908203e-07,
+   "same_most_likely_state_fraction": 1.0
+  },
+  "det-base-gmm vs det-new-gmm": {
+   "max_abs_state_probability_difference": 5.066394805908203e-07,
+   "same_most_likely_state_fraction": 1.0
+  },
+  "base-kdelog vs new-kdelog": {
+   "max_abs_state_probability_difference": 4.5239925384521484e-05,
+   "same_most_likely_state_fraction": 0.9999333333333333
+  },
+  "det-base-kdelog vs det-new-kdelog": {
+   "max_abs_state_probability_difference": 0.0,
+   "same_most_likely_state_fraction": 1.0
+  }
+ }
+}
