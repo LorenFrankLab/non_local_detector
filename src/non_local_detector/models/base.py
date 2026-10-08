@@ -2656,18 +2656,29 @@ class _DetectorBase(BaseEstimator, abc.ABC):
                     "selected_intervals must be ordered non-overlapping start/stop pairs"
                 )
             mask = np.zeros(len(centers), dtype=bool)
-            width = np.diff(edges)
-            for start, stop in intervals:
+            # The tolerances are under 1% of a bin width, so bins more than one
+            # bin outside an interval can never be selected; apply the rule only
+            # from one bin before each start to one bin after each stop.
+            firsts = np.maximum(np.searchsorted(edges[:-1], intervals[:, 0]) - 1, 0)
+            lasts = np.minimum(
+                np.searchsorted(edges[1:], intervals[:, 1], side="right") + 1,
+                len(centers),
+            )
+            for (start, stop), first, last in zip(
+                intervals, firsts, lasts, strict=True
+            ):
+                lower, upper = edges[first:last], edges[first + 1 : last + 1]
+                width = upper - lower
                 lower_tol = np.minimum(
-                    4 * np.maximum(np.spacing(abs(start)), np.spacing(abs(edges[:-1]))),
+                    4 * np.maximum(np.spacing(abs(start)), np.spacing(abs(lower))),
                     width * 0.01,
                 )
                 upper_tol = np.minimum(
-                    4 * np.maximum(np.spacing(abs(stop)), np.spacing(abs(edges[1:]))),
+                    4 * np.maximum(np.spacing(abs(stop)), np.spacing(abs(upper))),
                     width * 0.01,
                 )
-                mask |= (edges[:-1] >= start - lower_tol) & (
-                    edges[1:] <= stop + upper_tol
+                mask[first:last] |= (lower >= start - lower_tol) & (
+                    upper <= stop + upper_tol
                 )
             selected = np.flatnonzero(mask)
         outputs = {"acausal_state_probabilities"}
