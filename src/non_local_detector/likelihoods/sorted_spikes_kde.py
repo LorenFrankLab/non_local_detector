@@ -73,7 +73,6 @@ from non_local_detector.likelihoods.common import (
     decode_bin_centers,
     drop_zero_weight_samples,
     get_position_at_time,
-    get_spikecount_per_time_bin,
     resolve_row_slice,
     validate_population_lengths,
     validate_weights,
@@ -502,11 +501,8 @@ def predict_sorted_spikes_kde_log_likelihood(
     )
     row_start, row_stop = resolve_row_slice(row_slice, time_edges.shape[0] - 1)
     durations = jnp.asarray(_time_grid.durations(row_start, row_stop))
-    n_rows = row_stop - row_start
     row_time = decode_bin_centers(time_edges, row_start, row_stop)
     if is_local:
-        log_likelihood = jnp.zeros((n_rows,))
-
         # Need to interpolate position
         interpolated_position = get_position_at_time(
             position_time, position, row_time, environment
@@ -515,89 +511,53 @@ def predict_sorted_spikes_kde_log_likelihood(
 
         # Fitted KDE models run compiled over spike-count row blocks, so the
         # host count matrix and compiled graph stay bounded for any request.
-        if all(
-            type(model) is KDEModel and model.samples_ is not None
-            for model in marginal_models
-        ):
-            points = jnp.asarray(interpolated_position)
-            if points.ndim == 1:
-                points = points[:, None]
-            occupancy = jnp.asarray(occupancy)
-            groups, block_sizes, order = _spike_time_order.memo(
-                f"kde_leaf_groups_{points.shape[1]}",
-                tuple(marginal_models),
-                lambda: _kde_leaf_groups(marginal_models, points.shape[1]),
-            )
-
-            def evaluate(start, stop):
-                rows = slice(start - row_start, stop - row_start)
-                counts = _spike_counts_matrix(
-                    spike_times,
-                    time_edges,
-                    "Local Likelihood",
-                    True,
-                    slice(start, stop),
-                    _spike_time_order=_spike_time_order,
+        for model in marginal_models:
+            if not isinstance(model, KDEModel):
+                raise TypeError(
+                    "Local sorted-spikes KDE likelihood needs KDEModel marginal "
+                    f"models from the fitted encoding model, got {type(model).__name__}."
                 )
-                return _local_kde_log_likelihood(
-                    points[rows],
-                    occupancy[rows],
-                    jnp.asarray(counts),
-                    jnp.asarray(mean_rates),
-                    durations[rows],
-                    groups,
-                    order,
-                    block_sizes=block_sizes,
-                )
+            if model.samples_ is None:
+                raise RuntimeError("This KDE instance is not fitted yet.")
+        points = jnp.asarray(interpolated_position)
+        if points.ndim == 1:
+            points = points[:, None]
+        occupancy = jnp.asarray(occupancy)
+        groups, block_sizes, order = _spike_time_order.memo(
+            f"kde_leaf_groups_{points.shape[1]}",
+            tuple(marginal_models),
+            lambda: _kde_leaf_groups(marginal_models, points.shape[1]),
+        )
 
-            return _concatenate_row_blocks(
-                row_start,
-                row_stop,
-                len(spike_times),
-                evaluate,
-                "Local Likelihood",
-                disable_progress_bar,
-            )[:, None]
-
-        for neuron_spike_times, neuron_marginal_model, neuron_mean_rate in zip(
-            tqdm(
+        def evaluate(start, stop):
+            rows = slice(start - row_start, stop - row_start)
+            counts = _spike_counts_matrix(
                 spike_times,
-                unit="cell",
-                desc="Local Likelihood",
-                disable=disable_progress_bar,
-            ),
-            marginal_models,
-            mean_rates,
-            strict=True,
-        ):
-            spike_count_per_time_bin = get_spikecount_per_time_bin(
-                neuron_spike_times,
-                time_edges=time_edges,
-                row_slice=row_slice,
+                time_edges,
+                "Local Likelihood",
+                True,
+                slice(start, stop),
                 _spike_time_order=_spike_time_order,
             )
-            marginal_density = neuron_marginal_model.predict(interpolated_position)
-            # A NaN marginal at decode means a NaN interpolated position
-            # (dropped tracking / out-of-bounds) -- an expected decode-time gap,
-            # not a degenerate encoding model (that is surfaced at fit time and,
-            # after input validation, cannot occur here). Zero-fill quietly; a
-            # per-timestep warning would just be noise.
-            marginal_density = jnp.where(
-                jnp.isnan(marginal_density), 0.0, marginal_density
-            )
-            local_rate = neuron_mean_rate * jnp.where(
-                occupancy > 0.0,
-                marginal_density / jnp.where(occupancy > 0.0, occupancy, 1.0),
-                EPS,
-            )
-            local_rate = jnp.clip(local_rate, min=RATE_EPS_HZ, max=None)
-            local_rate = local_rate * durations
-            log_likelihood += (
-                jax.scipy.special.xlogy(spike_count_per_time_bin, local_rate)
-                - local_rate
+            return _local_kde_log_likelihood(
+                points[rows],
+                occupancy[rows],
+                jnp.asarray(counts),
+                jnp.asarray(mean_rates),
+                durations[rows],
+                groups,
+                order,
+                block_sizes=block_sizes,
             )
 
-        log_likelihood = jnp.expand_dims(log_likelihood, axis=1)
+        return _concatenate_row_blocks(
+            row_start,
+            row_stop,
+            len(spike_times),
+            evaluate,
+            "Local Likelihood",
+            disable_progress_bar,
+        )[:, None]
     else:
         log_likelihood = _blocked_nonlocal_poisson_log_likelihood(
             spike_times,
