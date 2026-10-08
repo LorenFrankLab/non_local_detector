@@ -47,6 +47,7 @@ from non_local_detector.discrete_state_transitions import (
 from non_local_detector.encoding_time import EncodingSupport
 from non_local_detector.environment import Environment
 from non_local_detector.exceptions import ConfigurationError, ValidationError
+from non_local_detector.graph_distances import DEFAULT_MAX_DENSE_DISTANCE_BYTES
 from non_local_detector.likelihoods import (
     _CLUSTERLESS_ALGORITHMS,
     _SORTED_SPIKES_ALGORITHMS,
@@ -62,6 +63,7 @@ from non_local_detector.likelihoods.common import (
 )
 from non_local_detector.likelihoods.no_spike import no_spike_time_bin_sizes
 from non_local_detector.observation_models import ObservationModel
+from non_local_detector.result_store import DEFAULT_MAX_READ_BYTES
 from non_local_detector.time_edges import (
     _MAX_RELATIVE_SPACING_TOLERANCE,
     _DecodeTimeGrid,
@@ -70,6 +72,7 @@ from non_local_detector.time_edges import (
     requires_time_edges,
     uniform_time_edges,
 )
+from non_local_detector.transition_operators import DEFAULT_MAX_DENSE_BYTES
 
 try:
     from non_local_detector._version import __version__ as _PACKAGE_VERSION
@@ -1657,7 +1660,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         environment_labels: np.ndarray | None = None,
         *,
         compute_all_pairs_distances: bool = True,
-        max_dense_distance_bytes: int = 256 * 1024**2,
+        max_dense_distance_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
     ) -> None:
         """
         Fits the Environment class on the position data to get information about the spatial environment.
@@ -1795,7 +1798,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         environment_labels: np.ndarray | None = None,
         *,
         transition_representation: str = "dense",
-        max_dense_transition_bytes: int = 256 * 1024**2,
+        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> None:
         """
         Constructs the transition matrices for the continuous states.
@@ -2235,7 +2238,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         discrete_transition_covariate_data: pd.DataFrame | dict | None = None,
         *,
         transition_representation: str = "dense",
-        max_dense_transition_bytes: int = 256 * 1024**2,
+        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> "_DetectorBase":
         """
         Fit the model to the data.
@@ -3475,7 +3478,9 @@ class _DetectorBase(BaseEstimator, abc.ABC):
 
     @staticmethod
     def load_results(
-        filename: str | Path = "results.nc", *, max_read_bytes: int = 512 * 1024**2
+        filename: str | Path = "results.nc",
+        *,
+        max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
     ) -> xr.Dataset:
         """
         Loads the results from a netcdf file and converts the
@@ -4098,7 +4103,7 @@ class ClusterlessDetector(_DetectorBase):
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
         transition_representation: str = "dense",
-        max_dense_transition_bytes: int = 256 * 1024**2,
+        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> "ClusterlessDetector":
         """
         Fit the detector to the data.
@@ -4455,7 +4460,7 @@ class ClusterlessDetector(_DetectorBase):
         result_path: str | Path | None = None,
         checkpoint_dir: str | Path | None = None,
         selected_intervals: np.ndarray | None = None,
-        max_read_bytes: int = 512 * 1024**2,
+        max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         save_causal_posterior_to_results: bool | None = None,
@@ -5278,7 +5283,7 @@ class SortedSpikesDetector(_DetectorBase):
         encoding_time_range: np.ndarray | None = None,
         valid_position_intervals: np.ndarray | None = None,
         transition_representation: str = "dense",
-        max_dense_transition_bytes: int = 256 * 1024**2,
+        max_dense_transition_bytes: int = DEFAULT_MAX_DENSE_BYTES,
     ) -> "SortedSpikesDetector":
         """
         Fit the detector to the data.
@@ -5628,7 +5633,7 @@ class SortedSpikesDetector(_DetectorBase):
         result_path: str | Path | None = None,
         checkpoint_dir: str | Path | None = None,
         selected_intervals: np.ndarray | None = None,
-        max_read_bytes: int = 512 * 1024**2,
+        max_read_bytes: int = DEFAULT_MAX_READ_BYTES,
         return_outputs: str | list[str] | set[str] | None = None,
         save_log_likelihood_to_results: bool | None = None,
         save_causal_posterior_to_results: bool | None = None,

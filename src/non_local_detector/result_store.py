@@ -21,6 +21,9 @@ import xarray as xr
 from xarray.backends import BackendArray
 from xarray.core import indexing
 
+# Largest single explicit read from a result store, in bytes.
+DEFAULT_MAX_READ_BYTES = 512 * 1024**2
+
 
 class IncrementalResultWriter:
     """Write nonoverlapping contiguous chunks, then publish atomically.
@@ -278,7 +281,7 @@ def _validate_variable_chunks(path, spec):
         raise ValueError("Incomplete result chunk row coverage")
 
 
-def open_result_store(path, *, max_read_bytes=512 * 1024**2):
+def open_result_store(path, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
     """Open a completed chunk store without materializing spatial data.
 
     Coordinates are recording-sized metadata and loaded eagerly; each spatial
@@ -334,7 +337,7 @@ class PaddedBackendArray(BackendArray):
     DataArray whose backend remains lazy until selected rows/bins are read.
     """
 
-    def __init__(self, source, interior_mask, *, max_read_bytes=512 * 1024**2):
+    def __init__(self, source, interior_mask, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
         self.source = source.variable if isinstance(source, xr.DataArray) else source
         self.mask = np.asarray(interior_mask, dtype=bool)
         if (
@@ -382,7 +385,7 @@ class PaddedBackendArray(BackendArray):
         return np.squeeze(output, axis=scalar_axes) if scalar_axes else output
 
 
-def pad_state_bins(variable, interior_mask, *, max_read_bytes=512 * 1024**2):
+def pad_state_bins(variable, interior_mask, *, max_read_bytes=DEFAULT_MAX_READ_BYTES):
     """Return a lazy padded variable; caller supplies original bin coordinates."""
     source = variable.variable if isinstance(variable, xr.DataArray) else variable
     backend = PaddedBackendArray(source, interior_mask, max_read_bytes=max_read_bytes)

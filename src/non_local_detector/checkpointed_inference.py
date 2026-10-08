@@ -31,6 +31,7 @@ from non_local_detector.core import (
 )
 from non_local_detector.likelihoods.common import decode_bin_centers
 from non_local_detector.result_store import (
+    DEFAULT_MAX_READ_BYTES,
     IncrementalResultWriter,
     _validate_read_budget,
     open_result_store,
@@ -288,7 +289,7 @@ def checkpointed_forward_backward(
     return_outputs=None,
     selected_rows=None,
     dtype=np.float32,
-    max_read_bytes=512 * 1024**2,
+    max_read_bytes=DEFAULT_MAX_READ_BYTES,
     result_attrs=None,
     evidence_accumulation="stable",
 ):

@@ -64,7 +64,10 @@ from scipy.interpolate import interp1d  # type: ignore[import-untyped]
 from track_linearization import plot_graph_as_1D  # type: ignore[import-untyped]
 
 from non_local_detector.exceptions import ConfigurationError, ValidationError
-from non_local_detector.graph_distances import LazyGraphDistances
+from non_local_detector.graph_distances import (
+    DEFAULT_MAX_DENSE_DISTANCE_BYTES,
+    LazyGraphDistances,
+)
 
 
 def get_centers(bin_edges: np.ndarray) -> np.ndarray:
@@ -469,7 +472,7 @@ class Environment:
         infer_track_interior: bool = True,
         *,
         compute_all_pairs_distances: bool = True,
-        max_dense_distance_bytes: int = 256 * 1024**2,
+        max_dense_distance_bytes: int = DEFAULT_MAX_DENSE_DISTANCE_BYTES,
     ) -> "Environment":
         """Fits a discrete grid of the spatial environment.
 
