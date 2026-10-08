@@ -666,7 +666,7 @@ def _spikes_are_ascending(spike_times: np.ndarray) -> bool:
 
 
 class _SpikeTimeOrder:
-    """Host spike times and verified ordering, scoped to one prediction.
+    """Host spike times, verified ordering and other preparation for one prediction.
 
     Each original input is converted and checked on first use, then reused by
     every observation state and chunk. Strong references prevent identity reuse.
@@ -677,6 +677,18 @@ class _SpikeTimeOrder:
 
     def __init__(self) -> None:
         self._entries: dict[int, tuple[object, np.ndarray, bool]] = {}
+        self._prepared: dict[tuple, tuple[tuple, object]] = {}
+
+    def memo(self, name: str, sources: tuple, build):
+        """Return ``build()``, computed once per ``name`` and ``sources`` identities.
+
+        ``sources`` are kept alive so their ids cannot be reused during the
+        prediction.
+        """
+        key = (name, *map(id, sources))
+        if key not in self._prepared:
+            self._prepared[key] = (sources, build())
+        return self._prepared[key][1]
 
     def get(self, spike_times) -> tuple[np.ndarray, bool]:
         """Return the original input's host values and established ordering."""
@@ -1020,18 +1032,37 @@ def sum_spikes_into_rows(values: jnp.ndarray, selection: SpikeSelection) -> jnp.
         raise ValueError("Spike row indices must be a one-dimensional integer array")
     if values.ndim == 0 or values.shape[0] != len(indices):
         raise ValueError("Values must contain one entry per selected spike")
-    # Normalize invalid host metadata before JAX dtype canonicalization, so a
-    # huge unsigned/out-of-range index cannot truncate into a valid row.
-    valid = (indices >= 0) & (indices < selection.n_rows)
-    safe_indices = np.full(indices.shape, -1, dtype=np.intp)
-    safe_indices[indices >= selection.n_rows] = selection.n_rows
-    safe_indices[valid] = indices[valid]
     return deterministic_row_sum(
         values,
-        safe_indices,
+        spike_row_ids(selection),
         selection.n_rows,
         indices_are_sorted=selection.indices_are_sorted,
     )
+
+
+def spike_row_ids(selection: SpikeSelection, n_padded: int | None = None) -> np.ndarray:
+    """Host row ids for ``deterministic_row_sum``, optionally padded.
+
+    Parameters
+    ----------
+    selection : SpikeSelection
+    n_padded : int, optional
+        Length to pad to. Padded entries use the dropped id ``selection.n_rows``,
+        which keeps sorted ids sorted.
+
+    Returns
+    -------
+    row_ids : np.ndarray of intp, shape (n_padded or n_selected,)
+        Invalid indices are normalized before JAX dtype canonicalization, so a
+        huge unsigned or out-of-range index cannot truncate into a valid row.
+    """
+    indices = np.asarray(selection.bin_ind)
+    n_ids = len(indices) if n_padded is None else n_padded
+    safe_indices = np.full(n_ids, selection.n_rows, dtype=np.intp)
+    valid = (indices >= 0) & (indices < selection.n_rows)
+    safe_indices[: len(indices)][indices < 0] = -1
+    safe_indices[: len(indices)][valid] = indices[valid]
+    return safe_indices
 
 
 @jax.jit
@@ -1205,6 +1236,43 @@ def block_kde(
         for start in range(0, n_eval_points, block_size)
     ]
     return jnp.concatenate(blocks)
+
+
+# Up to this many evaluation blocks are traced individually: faster on CPU
+# than a loop, and the compiled graph stays small.
+_UNROLLED_KDE_BLOCKS = 8
+
+
+def _traced_block_kde(points, samples, std, block_size, weights):
+    """``block_kde`` inside a trace, with a bounded graph for any row count.
+
+    Up to ``_UNROLLED_KDE_BLOCKS`` blocks are traced as ``block_kde`` does.
+    More blocks run in a loop over the same block size, with a zero-padded
+    final block evaluated and trimmed. Each point's density depends only on
+    that point, so both forms give identical values.
+
+    Parameters
+    ----------
+    points : jnp.ndarray, shape (n_points, n_dims)
+    samples : jnp.ndarray, shape (n_samples, n_dims)
+    std : jnp.ndarray, shape (n_dims,)
+    block_size : int
+    weights : jnp.ndarray, shape (n_samples,)
+
+    Returns
+    -------
+    density : jnp.ndarray, shape (n_points,)
+    """
+    n_points = points.shape[0]
+    n_blocks = -(-n_points // block_size)
+    if n_blocks <= _UNROLLED_KDE_BLOCKS:
+        return block_kde(points, samples, std, block_size, weights)
+    padded = jnp.pad(points, ((0, n_blocks * block_size - n_points), (0, 0)))
+    density = jax.lax.map(
+        lambda block: kde(block, samples, std, weights),
+        padded.reshape(n_blocks, block_size, points.shape[1]),
+    )
+    return density.reshape(-1)[:n_points]
 
 
 @jax.jit

@@ -245,7 +245,7 @@ def test_traced_block_kde_matches_block_kde(n_points):
     weights = jnp.asarray(rng.uniform(0.1, 1, 9))
     std = jnp.asarray([0.7, 1.3])
     # Block size 7: up to 56 points are unrolled, 300 points use the loop.
-    actual = jax.jit(sorted_spikes_kde._traced_block_kde, static_argnums=3)(
+    actual = jax.jit(common._traced_block_kde, static_argnums=3)(
         points, samples, std, 7, weights
     )
     expected = common.block_kde(points, samples, std, 7, weights)

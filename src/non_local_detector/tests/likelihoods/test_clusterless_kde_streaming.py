@@ -193,8 +193,10 @@ def test_opt_in_fit_and_prediction_never_build_legacy_full_kernel(
 
     monkeypatch.setattr(linear.KDEModel, "predict", forbidden)
     monkeypatch.setattr(linear, "kde_distance", forbidden)
-    monkeypatch.setattr(linear, "block_kde", forbidden)
+    monkeypatch.setattr(linear, "_traced_block_kde", forbidden)
     monkeypatch.setattr(linear, "block_estimate_log_joint_mark_intensity", forbidden)
+    monkeypatch.setattr(linear, "_add_electrode_mark_intensities", forbidden)
+    monkeypatch.setattr(linear, "_add_electrode_local_terms", forbidden)
     values = data()
     encoding = fit(
         simple_1d_environment, values, encoding_block_size=4, position_block_size=5
