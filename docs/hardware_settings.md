@@ -20,8 +20,8 @@ time a short segment of your own data before a long run.
 | | A100 80 GB | 24 GB GPU | CPU |
 | --- | --- | --- | --- |
 | Decoding mode | Structured fit, checkpointed prediction | Same | Same |
-| `chunk_size` | Default | Default | Default; `256` if memory is tight |
-| Decoding memory, 1–2 cm | About 1.5 GB of device memory | Fits; measured within a 4 GB cap | 3.3–4.0 GB of RAM at 2 cm |
+| `chunk_size` | Default | Default | Default; `256` cuts RAM about 3× at similar speed |
+| Decoding memory, 1–2 cm | About 1.5 GB of device memory | Fits; measured within a 4 GB cap | 3.3–4.0 GB of RAM at 2 cm (about 1 GB with `chunk_size=256`) |
 | Decoding one hour at 2 cm | 6 min (sorted), 11 min (clusterless) | Not measured | About 30 min (projected from 30 s runs) |
 | EM | 60 s at 2 cm used 15.5 GB of device memory | 60 s at 2 cm fits; longer sessions need a coarser grid or a shorter segment | 60 s at 4 cm took 8 min and 10 GB of RAM |
 | Precision | float32 (default) | float32; float64 is slow on most 24 GB cards | float32 |
@@ -60,9 +60,9 @@ encoding data were large: with 30 minutes of encoding, peaks were 3.7 GB
 (sorted) and 5.1 GB (clusterless), including fitting.
 
 On a CPU, chunks live in RAM: 30 s at 2 cm peaked at 3.3–3.5 GB with the default
-`chunk_size` (64 sorted units or 8 electrodes; 4.0 GB with 256 units). A
-smaller `chunk_size` lowers this at some cost in speed: with 256-row chunks, an
-earlier version peaked at 0.9 GB (sorted) and 2.8 GB (clusterless).
+`chunk_size` (64 sorted units or 8 electrodes; 4.0 GB with 256 units). With
+`chunk_size=256` the peak fell to 1.1 GB (sorted) and 1.0 GB (clusterless) at
+about the same speed (15.1–16.1 s against 15.7–15.9 s).
 
 **Speed.** On the A100, one hour at 2 cm took 364 s (sorted) and 681 s
 (clusterless), including compilation; after compilation, each recording second
@@ -130,5 +130,6 @@ slower than float32.
 ## Where the numbers come from
 
 - Decoding and scaling: [performance_validation.md](performance_validation.md)
-  and `docs/performance_artifacts/` (the `bottlenecks/` and `scaling/` records).
+  and `docs/performance_artifacts/` (the `bottlenecks/` and `scaling/` records,
+  including `scaling/cpu-chunk-size-runs.json` for CPU chunk sizes).
 - EM, memory caps and graph-distance timing: `docs/performance_artifacts/em/`.

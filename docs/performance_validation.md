@@ -436,8 +436,13 @@ These changes address them, measured on the same workloads (30 s, 2 cm,
   chunk (at least 256 rows). For this grid the A100 device peak rose from
   0.15 GB at 256 rows to 1.48 GB at 3,963 rows, with host RSS unchanged
   (1.3-2.5 GB). On CPU, where chunks live in host memory, peak RSS rose from
-  0.9 to 3.4 GB (sorted) and from 2.8 to 4.8 GB (clusterless). First A100
-  predictions, including compilation, fell from 59.7 to 23.5 s (sorted) and
+  0.9 to 3.4 GB (sorted) and from 2.8 to 4.8 GB (clusterless). After the
+  compiled clusterless likelihood, CPU peaks were 3.3 GB for both families at
+  the default and 1.1 GB (sorted) and 1.0 GB (clusterless) at 256 rows, at
+  about the same speed
+  ([CPU chunk sizes](performance_artifacts/scaling/cpu-chunk-size-runs.json)).
+  First A100 predictions, including compilation, fell from 59.7 to 23.5 s
+  (sorted) and
   from 104.3 to 56.9 s (clusterless).
 
 Hour scale on the A100, first prediction including compilation: sorted 60 min

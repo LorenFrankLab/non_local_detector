@@ -105,9 +105,10 @@ enough rows for its float32 likelihoods to take about 256 MiB, and at least 256
 rows: 3,963 rows for a 2 cm grid of 16,930 state bins. Larger chunks spend less
 time on per-chunk overhead, and working memory grows with chunk rows. For that
 grid and a 30 s recording, the A100 device peak was 0.15 GB at 256 rows and
-1.48 GB at the default; on CPU, where chunks live in host memory, peak RSS rose
-from 0.9 to 3.4 GB (sorted) and from 2.8 to 4.8 GB (clusterless). Pass a smaller
-`chunk_size` to fit a smaller budget; 256 restores the previous footprint. `checkpoint_dir` chooses
+1.48 GB at the default. On CPU, where chunks live in host memory, peak RSS was
+1.1 GB (sorted) and 1.0 GB (clusterless) at 256 rows against 3.3 GB for both at
+the default, at about the same speed. Pass a smaller `chunk_size` to fit a
+smaller budget. `checkpoint_dir` chooses
 where temporary boundary files are written; files are removed after success or
 failure. Supplying `result_path` also persists compact outputs when desired.
 
@@ -177,8 +178,10 @@ For structured models, `continuous_state_transitions_` is a read-only lazy dense
 view. Feasible selections and explicit conversion are budgeted; oversized dense
 access from plotting, dense prediction or Viterbi fails before allocation.
 Pickling retains the compact operator. EM refits its model using the existing
-dense path; phase 7 does not make EM or Viterbi suitable for full-hour spatial
-workloads. Use a separate feasible configuration to estimate parameters.
+dense path; checkpointed prediction does not make EM or Viterbi suitable for
+full-hour spatial workloads. Use a separate feasible configuration to estimate
+parameters; [hardware_settings.md](hardware_settings.md#parameter-estimation-em)
+lists measured EM memory and run time.
 
 ## Missing data and sequences
 
@@ -222,7 +225,8 @@ precision, process peaks and disk usage. `--platform gpu` fails if CUDA is
 unavailable. Shortened recordings and synthetic populations establish only the
 configurations recorded in their reports; CPU measurements do not qualify CUDA
 or smaller GPU hardware. Full-hour production claims require measured runs at
-both spatial sizes and declared host/device/disk budgets. The Phase 8 diffusion
-volume and unoccupied-MRF correctness work remains separate. See the
+both spatial sizes and declared host/device/disk budgets. Known correctness
+issues in the sorted diffusion likelihood's bin volumes and in unoccupied MRF
+components are tracked separately. See the
 [validation record](performance_validation.md) for measured configurations,
 source provenance and limits.

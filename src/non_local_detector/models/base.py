@@ -4484,7 +4484,8 @@ class ClusterlessDetector(_DetectorBase):
             per-chunk overhead; working memory grows with chunk rows, to
             several times one likelihood chunk. At the default for 16,930
             state bins, a 30 s recording peaked at about 1.5 GB of A100
-            device memory, or 3.4-4.8 GB of CPU process memory.
+            device memory, or 3.3 GB of CPU process memory (about 1 GB with
+            chunk_size=256, at similar CPU speed).
             In checkpointed mode leave n_chunks=1 and cache_likelihood=False.
         result_path : str or Path, optional
             New directory for atomic incremental output. Existing destinations
@@ -5643,7 +5644,8 @@ class SortedSpikesDetector(_DetectorBase):
             per-chunk overhead; working memory grows with chunk rows, to
             several times one likelihood chunk. At the default for 16,930
             state bins, a 30 s recording peaked at about 1.5 GB of A100
-            device memory, or 3.4-4.8 GB of CPU process memory.
+            device memory, or 3.3 GB of CPU process memory (about 1 GB with
+            chunk_size=256, at similar CPU speed).
             In checkpointed mode leave n_chunks=1 and cache_likelihood=False.
         result_path : str or Path, optional
             New directory for atomic incremental output. Existing destinations
