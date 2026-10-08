@@ -876,18 +876,25 @@ def _structured_block(transition, environments, source_size, target_size):
     )
 
 
+# Package transitions whose dense constructors the fallback planner understands.
+_KNOWN_TRANSITIONS = (
+    Discrete,
+    Uniform,
+    Identity,
+    RandomWalk,
+    RandomWalkDirection1,
+    RandomWalkDirection2,
+    EmpiricalMovement,
+)
+# Blocks built without a dense constructor.
+_STRUCTURED_BLOCKS = (UniformBlock, IdentityBlock, GaussianGridBlock)
+
+
 def _check_known_fallback_shape(transition, environments, expected):
     """Fail invalid primitive shapes before their dense constructor allocates."""
     if type(transition) is Discrete:
         shape = (1, 1)
-    elif type(transition) in (
-        Identity,
-        RandomWalk,
-        RandomWalkDirection1,
-        RandomWalkDirection2,
-        EmpiricalMovement,
-        Uniform,
-    ):
+    elif type(transition) in _KNOWN_TRANSITIONS:
         env = _find_environment(environments, transition.environment_name)
         count = len(env.place_bin_centers_)
         other = count
@@ -986,20 +993,11 @@ def build_transition_operator(
     # may bridge that legacy contract. Opaque custom constructors have no
     # verified distance-view contract and cannot claim bounded exact fallback.
     distance_environments = {}
-    known = (
-        Discrete,
-        Uniform,
-        Identity,
-        RandomWalk,
-        RandomWalkDirection1,
-        RandomWalkDirection2,
-        EmpiricalMovement,
-    )
     for row in plan:
         for block in row:
-            if isinstance(block, (UniformBlock, IdentityBlock, GaussianGridBlock)):
+            if isinstance(block, _STRUCTURED_BLOCKS):
                 continue
-            if type(block) not in known and any(
+            if type(block) not in _KNOWN_TRANSITIONS and any(
                 isinstance(env.distance_between_nodes_, LazyGraphDistances)
                 for env in environments
             ):
@@ -1035,7 +1033,7 @@ def build_transition_operator(
     for source, row in enumerate(plan):
         result = []
         for target, block in enumerate(row):
-            if isinstance(block, (UniformBlock, IdentityBlock, GaussianGridBlock)):
+            if isinstance(block, _STRUCTURED_BLOCKS):
                 result.append(block)
                 continue
             if isinstance(block, EmpiricalMovement):
