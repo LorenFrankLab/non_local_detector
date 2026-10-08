@@ -190,6 +190,10 @@ def main():
         "population": args.population,
         "spike_rate_hz": args.spike_rate,
         "encoding_duration_s": args.encoding_duration,
+        "chunk_rows": args.chunk_rows if args.mode == "chunked" else None,
+        "checkpoint_chunk_size": (
+            args.checkpoint_chunk_size if args.mode == "compact" else None
+        ),
         "backend": backend,
         "device": str(jax.local_devices()[0]),
         "jax": jax.__version__,
