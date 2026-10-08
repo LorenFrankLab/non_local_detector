@@ -1,0 +1,34 @@
+# XLA compilations during a first prediction, A100 (JAX 0.9.0): sorted compact, 120 s, 1,024 units
+# with rates spread 2**3 around 5 Hz, 2 cm grid, default chunk size. headF = before grouping
+# KDE leaves; sortedjit = grouped leaves (unbatched neuron map).
+== compile-headF-sorted1024-spread3-120.txt
+sorted population 1024: first predict 295.7 s, 63 compilations, 254.1 s compiling
+     240.2 s      2x  jit(_local_kde_log_likelihood)
+       3.4 s      4x  jit(_forward_chunk)
+       2.7 s      2x  jit(_backward_chunk)
+       2.2 s      2x  jit(_poisson_nonlocal_log_likelihood)
+       1.5 s      2x  jit(_prepare_chunk)
+       1.2 s      4x  jit(scatter)
+       0.6 s      2x  jit(kde)
+       0.6 s      4x  jit(_sum_state_rows)
+== compile-sortedjit-sorted1024-spread3-120.txt
+sorted population 1024: first predict 42.0 s, 97 compilations, 19.4 s compiling
+       6.3 s      2x  jit(_local_kde_log_likelihood)
+       2.8 s      4x  jit(_forward_chunk)
+       2.2 s      2x  jit(_backward_chunk)
+       1.8 s      2x  jit(_poisson_nonlocal_log_likelihood)
+       1.3 s      2x  jit(_prepare_chunk)
+       1.3 s     23x  jit(concatenate)
+       1.1 s      4x  jit(scatter)
+       0.6 s      2x  jit(kde)
+# sortedjitb = grouped leaves with lax.map batch_size=16 (as committed).
+== compile-sortedjitb-sorted1024-spread3-120.txt
+sorted population 1024: first predict 58.4 s, 97 compilations, 34.2 s compiling
+      19.2 s      2x  jit(_local_kde_log_likelihood)
+       3.2 s      4x  jit(_forward_chunk)
+       2.6 s      2x  jit(_backward_chunk)
+       2.2 s      2x  jit(_poisson_nonlocal_log_likelihood)
+       1.5 s      2x  jit(_prepare_chunk)
+       1.4 s     23x  jit(concatenate)
+       1.2 s      4x  jit(scatter)
+       0.7 s      4x  jit(_sum_state_rows)

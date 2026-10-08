@@ -523,10 +523,33 @@ per octave. State probabilities moved by at most 3.0e-6 on CPU, with the same
 most likely state at every bin, and error against a float64 computation was
 unchanged.
 
+Grouping sorted units by padded encoding-sample count and evaluating each group
+in batches of 16 (d36234c8) bounds the local KDE kernel's graph. On the A100
+(paired runs, medians of three at 1,024 units):
+
+| Sorted, 30 s unless noted | First call | Warm |
+| --- | ---: | ---: |
+| 64 units | 24.5 to 19.1 s | 2.93 to 3.00 s |
+| 256 units, rates spread 8× | 86.7 to 40.9 s | 3.14 to 3.27 s |
+| 1,024 units | 220 to 22 s | 4.29 to 4.41 s |
+| 1,024 units, rates spread 8× | 281 to 43 s | 4.24 to 4.26 s |
+| CPU, 64 / 256 spread units | 19.4 to 17.3 s / 31.5 to 18.3 s | +0.8% / +0.6% |
+
+For a 120 s recording with 1,024 spread units, compilation fell from 254 to 34 s
+and the first prediction from 296 to 58 s. Without batching, compilation was
+faster (19 s) but warm predictions at 1,024 units were 12% slower (4.81 s).
+Local log-likelihoods changed by at most 5.7e-7 relative and state
+probabilities by at most 2.3e-6 on CPU, with the same most likely state at
+every bin; error against a float64 computation was unchanged.
+
 Records: [scaling runs](performance_artifacts/scaling/a100-scaling-runs.json),
 [diagnostics and cache test](performance_artifacts/scaling/a100-scaling-diagnostics.txt),
 [clusterless runs](performance_artifacts/scaling/a100-clusterless-runs.json),
 [CPU clusterless runs](performance_artifacts/scaling/cpu-clusterless-runs.json),
 [compilation counts](performance_artifacts/scaling/a100-clusterless-compiles.txt),
-[128-electrode profile](performance_artifacts/scaling/a100-profile-clusterless-128.json) and
-[numerical comparison](performance_artifacts/scaling/numerics-clusterless-compiled.txt).
+[128-electrode profile](performance_artifacts/scaling/a100-profile-clusterless-128.json),
+[numerical comparison](performance_artifacts/scaling/numerics-clusterless-compiled.txt),
+[sorted runs](performance_artifacts/scaling/a100-sorted-runs.json),
+[CPU sorted runs](performance_artifacts/scaling/cpu-sorted-runs.json),
+[sorted compilation](performance_artifacts/scaling/a100-sorted-compiles.txt) and
+[sorted numerical comparison](performance_artifacts/scaling/numerics-sorted-compiled.txt).
