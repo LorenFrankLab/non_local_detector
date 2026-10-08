@@ -321,6 +321,37 @@ def _validate_transition_arguments(
         raise ValidationError("max_dense_transition_bytes must be a positive integer")
 
 
+def _validate_inference_arguments(
+    inference_mode: str,
+    output_mode: str,
+    cache_likelihood: bool,
+    n_chunks: int,
+    chunk_size: int | None,
+    result_path,
+    checkpoint_dir,
+    selected_intervals,
+) -> None:
+    """Reject prediction-mode settings that the chosen inference mode ignores."""
+    if inference_mode not in {"dense", "checkpointed"}:
+        raise ValidationError("inference_mode must be dense or checkpointed")
+    if inference_mode == "checkpointed" and (cache_likelihood or n_chunks != 1):
+        raise ValueError(
+            "Checkpointed prediction uses chunk_size; leave cache_likelihood=False and n_chunks=1"
+        )
+    if output_mode not in {"compact", "spatial"}:
+        raise ValidationError("output_mode must be compact or spatial")
+    if inference_mode == "dense" and (
+        output_mode != "spatial"
+        or chunk_size is not None
+        or result_path is not None
+        or checkpoint_dir is not None
+        or selected_intervals is not None
+    ):
+        raise ValueError(
+            "output selection/storage options require inference_mode='checkpointed'"
+        )
+
+
 def _validate_encoding_update_damping(encoding_update_damping: float) -> None:
     """Reject any nonzero ``encoding_update_damping``.
 
@@ -2569,6 +2600,7 @@ class _DetectorBase(BaseEstimator, abc.ABC):
         checkpoint_dir,
         selected_intervals,
         requested_outputs,
+        return_outputs,
         max_read_bytes,
     ) -> xr.Dataset:
         """Decode with complete conditioning and bounded spatial working memory."""
@@ -2577,6 +2609,14 @@ class _DetectorBase(BaseEstimator, abc.ABC):
             default_chunk_size,
         )
 
+        if (
+            output_mode == "compact"
+            and isinstance(return_outputs, str)
+            and return_outputs == "predictive"
+        ):
+            # The string "predictive" also names the spatial predictive
+            # posterior, which compact output cannot hold.
+            requested_outputs = requested_outputs - {"predictive_posterior"}
         if output_mode == "spatial" and result_path is None:
             raise ValueError("Checkpointed spatial prediction requires result_path")
         if output_mode == "compact" and requested_outputs & {
@@ -4621,23 +4661,16 @@ class ClusterlessDetector(_DetectorBase):
         # path accumulates the per-chunk rows instead -- which allocates the
         # same full (n_time, n_state_bins) array, the documented exception to
         # per-chunk allocation.
-        if inference_mode not in {"dense", "checkpointed"}:
-            raise ValidationError("inference_mode must be dense or checkpointed")
-        if inference_mode == "checkpointed" and (cache_likelihood or n_chunks != 1):
-            raise ValueError(
-                "Checkpointed prediction uses chunk_size; leave cache_likelihood=False and n_chunks=1"
-            )
-        if output_mode not in {"compact", "spatial"}:
-            raise ValidationError("output_mode must be compact or spatial")
-        if inference_mode == "dense" and (
-            output_mode != "spatial"
-            or result_path is not None
-            or checkpoint_dir is not None
-            or selected_intervals is not None
-        ):
-            raise ValueError(
-                "output selection/storage options require inference_mode='checkpointed'"
-            )
+        _validate_inference_arguments(
+            inference_mode,
+            output_mode,
+            cache_likelihood,
+            n_chunks,
+            chunk_size,
+            result_path,
+            checkpoint_dir,
+            selected_intervals,
+        )
         return_log_likelihood = "log_likelihood" in requested_outputs
         if (
             inference_mode == "dense"
@@ -4660,12 +4693,6 @@ class ClusterlessDetector(_DetectorBase):
             )
             _validate_covariate_time_length(predicted_transitions, time_centers)
         if inference_mode == "checkpointed":
-            if (
-                output_mode == "compact"
-                and isinstance(return_outputs, str)
-                and return_outputs == "predictive"
-            ):
-                requested_outputs = requested_outputs - {"predictive_posterior"}
             return self._predict_checkpointed(
                 time_edges=time_edges,
                 log_likelihood_args=(
@@ -4682,6 +4709,7 @@ class ClusterlessDetector(_DetectorBase):
                 checkpoint_dir=checkpoint_dir,
                 selected_intervals=selected_intervals,
                 requested_outputs=requested_outputs,
+                return_outputs=return_outputs,
                 max_read_bytes=max_read_bytes,
             )
 
@@ -5730,23 +5758,16 @@ class SortedSpikesDetector(_DetectorBase):
         # path accumulates the per-chunk rows instead -- which allocates the
         # same full (n_time, n_state_bins) array, the documented exception to
         # per-chunk allocation.
-        if inference_mode not in {"dense", "checkpointed"}:
-            raise ValidationError("inference_mode must be dense or checkpointed")
-        if inference_mode == "checkpointed" and (cache_likelihood or n_chunks != 1):
-            raise ValueError(
-                "Checkpointed prediction uses chunk_size; leave cache_likelihood=False and n_chunks=1"
-            )
-        if output_mode not in {"compact", "spatial"}:
-            raise ValidationError("output_mode must be compact or spatial")
-        if inference_mode == "dense" and (
-            output_mode != "spatial"
-            or result_path is not None
-            or checkpoint_dir is not None
-            or selected_intervals is not None
-        ):
-            raise ValueError(
-                "output selection/storage options require inference_mode='checkpointed'"
-            )
+        _validate_inference_arguments(
+            inference_mode,
+            output_mode,
+            cache_likelihood,
+            n_chunks,
+            chunk_size,
+            result_path,
+            checkpoint_dir,
+            selected_intervals,
+        )
         return_log_likelihood = "log_likelihood" in requested_outputs
         if (
             inference_mode == "dense"
@@ -5770,12 +5791,6 @@ class SortedSpikesDetector(_DetectorBase):
             _validate_covariate_time_length(predicted_transitions, time_centers)
 
         if inference_mode == "checkpointed":
-            if (
-                output_mode == "compact"
-                and isinstance(return_outputs, str)
-                and return_outputs == "predictive"
-            ):
-                requested_outputs = requested_outputs - {"predictive_posterior"}
             return self._predict_checkpointed(
                 time_edges=time_edges,
                 log_likelihood_args=(position_time, position, spike_times),
@@ -5787,6 +5802,7 @@ class SortedSpikesDetector(_DetectorBase):
                 checkpoint_dir=checkpoint_dir,
                 selected_intervals=selected_intervals,
                 requested_outputs=requested_outputs,
+                return_outputs=return_outputs,
                 max_read_bytes=max_read_bytes,
             )
 

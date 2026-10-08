@@ -96,6 +96,8 @@ def test_checkpoint_options_do_not_silently_use_dense_prediction(
     model.fit(**fit)
     with pytest.raises(ValueError, match="checkpointed"):
         model.predict(**predict, output_mode="compact")
+    with pytest.raises(ValueError, match="checkpointed"):
+        model.predict(**predict, chunk_size=64)
     with pytest.raises(ValueError, match="result_path"):
         model.predict(**predict, inference_mode="checkpointed", output_mode="spatial")
 
