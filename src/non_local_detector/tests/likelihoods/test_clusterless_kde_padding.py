@@ -7,8 +7,6 @@ import pytest
 from non_local_detector.environment import Environment
 from non_local_detector.likelihoods import clusterless_kde
 from non_local_detector.likelihoods.clusterless_kde import (
-    _padded_sample_count,
-    _padded_spike_count,
     block_estimate_log_joint_mark_intensity,
     fit_clusterless_kde_encoding_model,
     kde_distance,
@@ -18,6 +16,8 @@ from non_local_detector.likelihoods.common import (
     RATE_EPS_HZ,
     RATE_REFERENCE_SECONDS,
     SpikeSelection,
+    _padded_sample_count,
+    _padded_spike_count,
     _SpikeTimeOrder,
     as_std_array,
     block_kde,

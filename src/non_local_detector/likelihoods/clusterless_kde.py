@@ -18,6 +18,7 @@ from non_local_detector.likelihoods.common import (
     _log_kernel_matrix,
     _pad_rows,
     _padded_sample_count,
+    _padded_spike_count,
     _SpikeTimeOrder,
     _traced_block_kde,
     as_std_array,
@@ -71,17 +72,6 @@ def _tile_size(limit, size):
     """Keep configured capacity from padding a smaller or empty input."""
     size = max(1, size)
     return size if limit is None else min(limit, size)
-
-
-def _padded_spike_count(n_spikes: int, block_size: int) -> int:
-    """Decoding spikes per electrode kernel call, from a few sizes.
-
-    Powers of two (at least 16) up to one block, then whole blocks in powers
-    of two, so chunks with varying spike counts reuse few compiled kernels.
-    """
-    if n_spikes <= block_size:
-        return min(block_size, 1 << max(n_spikes - 1, 15).bit_length())
-    return block_size * (1 << (-(-n_spikes // block_size) - 1).bit_length())
 
 
 def _padded_samples(spike_time_order, samples, weights):

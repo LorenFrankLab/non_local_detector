@@ -1246,6 +1246,17 @@ def _padded_sample_count(n_samples: int) -> int:
     return -(-n_samples // step) * step
 
 
+def _padded_spike_count(n_spikes: int, block_size: int) -> int:
+    """Decoding spikes per electrode kernel call, from a few sizes.
+
+    Powers of two (at least 16) up to one block, then whole blocks in powers
+    of two, so chunks with varying spike counts reuse few compiled kernels.
+    """
+    if n_spikes <= block_size:
+        return min(block_size, 1 << max(n_spikes - 1, 15).bit_length())
+    return block_size * (1 << (-(-n_spikes // block_size) - 1).bit_length())
+
+
 def _pad_rows(array, n_rows: int) -> np.ndarray:
     """Zero rows appended on the host to reach ``n_rows``."""
     array = np.asarray(array)
